@@ -49,6 +49,11 @@ EOF
     printf '%s\n' 'Created .env with generated secrets. Keep this file private.'
 fi
 
+if ! docker compose --env-file .env -f docker-compose.prod.yml config >/dev/null; then
+    printf '%s\n' 'The production Compose configuration is invalid. Check .env and try again.' >&2
+    exit 1
+fi
+
 docker compose --env-file .env -f docker-compose.prod.yml up -d --build
 
 HOST_PORT="$(docker compose --env-file .env -f docker-compose.prod.yml port app 3000 | awk -F: '{print $NF}')"
@@ -66,5 +71,6 @@ for attempt in $(seq 1 30); do
 done
 
 docker compose --env-file .env -f docker-compose.prod.yml ps
+docker compose --env-file .env -f docker-compose.prod.yml logs app
 printf '%s\n' 'Deployment started but the health check did not become ready in time.' >&2
 exit 1

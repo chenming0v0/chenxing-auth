@@ -212,14 +212,14 @@ cargo run
 ./deploy/install.sh
 ```
 
-脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码和 `ADMIN_TOKEN`，启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。已有 `.env` 不会被覆盖；生产环境应将 `APP_ISSUER` 设置为固定的 HTTPS 地址，并将 `.env` 作为秘密文件保护。
+脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码和 `ADMIN_TOKEN`，先校验生产 Compose 配置，再启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。已有 `.env` 不会被覆盖；生产环境应将 `APP_ISSUER` 设置为固定的 HTTPS 地址，并将 `.env` 作为秘密文件保护。健康检查失败时脚本会输出 Compose 状态和应用日志，便于定位启动问题。
 
 生产 Compose 文件为 `docker-compose.prod.yml`。数据库、Redis 和 JWK 密钥分别使用 Docker volume 持久化，应用容器以非 root 用户运行。默认只发布认证 API 端口，TLS 和反向代理应由服务器网关提供。
 
 ## GitHub Actions
 
 - `.github/workflows/ci.yml`：Rust 1.94 格式化、编译、测试、Clippy 和 `cargo-llvm-cov` 覆盖率门槛（行覆盖率至少 75%）。
-- `.github/workflows/build.yml`：构建 Linux x86_64/ARM64、Windows GNU/MSVC、macOS x86_64/ARM64 二进制，并构建发布 Linux `amd64/arm64` 的 GHCR 镜像。
+- `.github/workflows/build.yml`：构建 Linux x86_64/ARM64、Windows GNU/MSVC、macOS x86_64/ARM64 二进制；打 `v*` tag 时生成 `.tar.gz`/`.zip` 发布包、`SHA256SUMS` 并创建 GitHub Release，同时构建发布 Linux `amd64/arm64` 的 GHCR 镜像。
 
 GitHub Actions 使用 MIT 项目可用的公开仓库免费额度；发布镜像需要仓库 Actions 具备 `packages: write` 权限。
 
