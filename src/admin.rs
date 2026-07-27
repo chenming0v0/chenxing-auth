@@ -1,6 +1,7 @@
 use subtle::ConstantTimeEq;
 
 pub mod handlers;
+pub mod key_handlers;
 
 #[derive(Clone)]
 pub struct AdminAuthenticator {

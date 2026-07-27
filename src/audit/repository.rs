@@ -4,8 +4,8 @@ use super::AuditEvent;
 
 pub async fn insert(pool: &PgPool, event: &AuditEvent) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO audit_events\
-         (id, actor_type, actor_id, action, resource_type, resource_id, metadata, created_at)\
+        "INSERT INTO audit_events
+         (id, actor_type, actor_id, action, resource_type, resource_id, metadata, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(event.id)

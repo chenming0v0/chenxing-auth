@@ -1,0 +1,12 @@
+.git
+.github
+.codex
+.env
+data
+target
+*.log
+Dockerfile
+docker-compose*.yml
+deploy
+README.md
+AGENTS.md

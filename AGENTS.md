@@ -11,7 +11,7 @@
 - OAuth 2.0 / OpenID Connect
 - JWK / JWKS 密钥管理
 
-当前仓库处于后端初始化和协议能力建设阶段，已有 Rust/Cargo 配置和可编译的 Axum 服务。健康检查、账号注册/登录、Redis Session、HttpOnly Cookie/CSRF 基础、Client 生命周期、OIDC Discovery、JWKS、PKCE、带 nonce 的授权码、Access Token、ID Token、Refresh Token、UserInfo、审计和初版管理 Client API 已开始实现；前端、完整管理后台、管理员身份体系和完整生产 OAuth/OIDC 互操作仍未完成。实现新功能前，先确认目标是否已经落入现有架构和数据边界；不要把规划文档中的能力当作已实现能力。
+当前仓库处于后端能力建设和部署自动化阶段，已有 Rust/Cargo 配置和可编译的 Axum 服务。健康检查、账号注册/登录、Redis Session、HttpOnly Cookie/CSRF 基础、Client 生命周期、OIDC Discovery、JWKS 多版本轮换、PKCE、带 nonce 的授权码、Access Token、ID Token、Refresh Token、UserInfo、审计、初版管理 Client API、Docker 生产部署和 GitHub Actions 多平台构建流程已经实现；前端、完整管理后台、管理员身份体系和完整生产 OAuth/OIDC 互操作仍未完成。实现新功能前，先确认目标是否已经落入现有架构和数据边界；不要把规划文档中的能力当作已实现能力。
 
 认证中枢独立于天穹辰星的其他子项目平台，专门负责账号、登录认证、OAuth/OIDC 授权、会话和身份信息服务。天穹辰星其他子项目是认证平台的接入方，应通过 Client 接入，不应把各自的业务功能或业务数据直接并入认证平台。
 
@@ -83,6 +83,7 @@ OAuth 2.0、OIDC、JWT、JWK/JWKS 和密码学相关能力优先使用成熟的 
 - `APP_ISSUER` 是 OIDC 发行者标识，不能从请求 Host 或反向代理输入推导；Discovery、JWT Claims 和后续协议响应必须使用同一配置值。
 - 当前 OAuth 授权端点的 Session 头部是临时后端接入方式，前端 Cookie/CSRF/授权确认流程完成前不得把它当作生产浏览器方案。
 - `ADMIN_TOKEN` 为空时必须拒绝所有管理员 API；Client Secret 只能在创建时返回，后续列表和查询不得返回哈希或明文。
+- 签名密钥轮换必须共享 AppState 克隆的密钥状态，按 JWT `kid` 选择验证公钥；管理员响应不得包含私钥材料。
 - 浏览器 Cookie 会话的状态变更必须校验 HttpOnly Session Cookie、CSRF Cookie 和 `X-CSRF-Token` 三者绑定；开发期请求头兼容逻辑不能成为生产浏览器认证方案。
 
 ## 测试要求
@@ -95,6 +96,7 @@ OAuth 2.0、OIDC、JWT、JWK/JWKS 和密码学相关能力优先使用成熟的 
 - 管理后台覆盖权限隔离、审计记录和敏感字段脱敏。
 - 密钥轮换覆盖新旧 JWK 的发布与验证过渡。
 - 修复缺陷时先增加能够复现问题的测试，再修改实现。
+- 新增部署和 CI 能力必须同时验证脚本语法、Compose 配置、Action 文件结构和覆盖率门槛；不能只验证 Rust 编译。
 
 完成任何代码变更后，必须使用项目级 `src-line-limit` skill 检查 `src` 目录：
 
@@ -112,6 +114,7 @@ cargo fmt --check
 cargo check --all-targets --all-features
 cargo test --all-features
 cargo clippy --all-targets --all-features -- -D warnings
+cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --fail-under-lines 75
 cargo audit
 ```
 

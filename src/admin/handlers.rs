@@ -255,7 +255,7 @@ async fn record_admin_event(state: &AppState, action: &str, client_id: &str) {
         .await;
 }
 
-fn is_admin(state: &AppState, headers: &HeaderMap) -> bool {
+pub(crate) fn is_admin_request(state: &AppState, headers: &HeaderMap) -> bool {
     let Some(value) = headers.get(axum::http::header::AUTHORIZATION) else {
         return false;
     };
@@ -266,4 +266,8 @@ fn is_admin(state: &AppState, headers: &HeaderMap) -> bool {
         return false;
     };
     state.admin.is_valid(token)
+}
+
+fn is_admin(state: &AppState, headers: &HeaderMap) -> bool {
+    is_admin_request(state, headers)
 }

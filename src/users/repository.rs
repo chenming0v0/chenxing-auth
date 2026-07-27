@@ -42,7 +42,7 @@ pub async fn insert_user(
     };
 
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, display_name, status, created_at)\
+        "INSERT INTO users (id, email, password_hash, display_name, status, created_at)
          VALUES ($1, $2, $3, $4, 'active', $5)",
     )
     .bind(user.id)
@@ -100,7 +100,7 @@ pub async fn insert_user_in_transaction(
     user: &NewUser,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO users (id, email, password_hash, display_name, status, created_at)\
+        "INSERT INTO users (id, email, password_hash, display_name, status, created_at)
          VALUES ($1, $2, $3, $4, 'active', $5)",
     )
     .bind(user.id)

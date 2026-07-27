@@ -56,8 +56,8 @@ pub async fn insert_client(
     };
 
     sqlx::query(
-        "INSERT INTO oauth_clients\
-         (id, client_id, client_name, client_secret_hash, redirect_uris, scopes, status, created_at)\
+        "INSERT INTO oauth_clients
+         (id, client_id, client_name, client_secret_hash, redirect_uris, scopes, status, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, 'active', $7)",
     )
     .bind(client.id)
@@ -123,7 +123,7 @@ pub async fn list_clients(pool: &PgPool) -> Result<Vec<ListedClient>, sqlx::Erro
             String,
         ),
     >(
-        "SELECT id, client_id, client_name, redirect_uris, scopes, status\
+        "SELECT id, client_id, client_name, redirect_uris, scopes, status
          FROM oauth_clients ORDER BY created_at DESC",
     )
     .fetch_all(pool)
@@ -152,7 +152,7 @@ pub async fn update_client(
     scopes: &[String],
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(
-        "UPDATE oauth_clients SET client_name = $2, redirect_uris = $3, scopes = $4\
+        "UPDATE oauth_clients SET client_name = $2, redirect_uris = $3, scopes = $4
          WHERE client_id = $1",
     )
     .bind(client_id)

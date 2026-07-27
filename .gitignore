@@ -2,6 +2,8 @@
 /data/
 /.env
 *.log
+lcov.info
+coverage/
 .DS_Store
 .idea/
 .vscode/

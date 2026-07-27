@@ -15,7 +15,7 @@ fn access_token_is_signed_with_current_key_and_contains_scope() {
     .expect("access token");
 
     let header = jsonwebtoken::decode_header(&token).expect("JWT header");
-    assert_eq!(header.kid.as_deref(), Some(keys.key_id()));
+    assert_eq!(header.kid.as_deref(), Some(keys.key_id().as_str()));
     assert_eq!(header.alg, jsonwebtoken::Algorithm::RS256);
 }
 

@@ -10,6 +10,7 @@ use crate::{
     admin::handlers::{
         create_client, disable_client, enable_client, list_clients, rotate_secret, update_client,
     },
+    admin::key_handlers::rotate_signing_key,
     oauth::OpenIdConfiguration,
     oauth::handlers::{authorize, token},
     oauth::userinfo::userinfo,
@@ -53,6 +54,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/admin/clients/{client_id}/rotate-secret",
             axum::routing::post(rotate_secret),
+        )
+        .route(
+            "/api/v1/admin/keys/rotate",
+            axum::routing::post(rotate_signing_key),
         )
         .with_state(state)
         .layer(TraceLayer::new_for_http())

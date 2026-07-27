@@ -30,13 +30,7 @@ pub fn decode_access_token(
     audience: &str,
     token: &str,
 ) -> Result<AccessTokenClaims, TokenError> {
-    let mut validation = Validation::new(Algorithm::RS256);
-    validation.set_issuer(&[issuer]);
-    validation.set_audience(&[audience]);
-    let decoding_key = keys.decoding_key().map_err(TokenError::Validation)?;
-    let data = decode::<AccessTokenClaims>(token, &decoding_key, &validation)
-        .map_err(TokenError::Validation)?;
-    Ok(data.claims)
+    decode_with_validation(keys, issuer, audience, token, true)
 }
 
 pub fn decode_userinfo_token(
@@ -44,13 +38,34 @@ pub fn decode_userinfo_token(
     issuer: &str,
     token: &str,
 ) -> Result<AccessTokenClaims, TokenError> {
+    decode_with_validation(keys, issuer, "", token, false)
+}
+
+fn decode_with_validation(
+    keys: &KeyManager,
+    issuer: &str,
+    audience: &str,
+    token: &str,
+    validate_audience: bool,
+) -> Result<AccessTokenClaims, TokenError> {
+    let header = jsonwebtoken::decode_header(token).map_err(TokenError::Validation)?;
+    let key_id = header.kid.as_deref().ok_or_else(invalid_token_error)?;
     let mut validation = Validation::new(Algorithm::RS256);
-    validation.set_issuer(&[issuer]);
-    validation.validate_aud = false;
-    let decoding_key = keys.decoding_key().map_err(TokenError::Validation)?;
+    validation.set_issuer(&[issuer.trim_end_matches('/')]);
+    validation.validate_aud = validate_audience;
+    if validate_audience {
+        validation.set_audience(&[audience]);
+    }
+    let decoding_key = keys
+        .decoding_key_for(key_id)
+        .map_err(TokenError::Validation)?;
     let data = decode::<AccessTokenClaims>(token, &decoding_key, &validation)
         .map_err(TokenError::Validation)?;
     Ok(data.claims)
+}
+
+fn invalid_token_error() -> jsonwebtoken::errors::Error {
+    jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidToken)
 }
 
 pub fn issue_access_token(
@@ -76,5 +91,6 @@ pub fn issue_access_token(
     };
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some(keys.key_id().to_owned());
-    encode(&header, &claims, keys.encoding_key()).map_err(TokenError::from)
+    let encoding_key = keys.encoding_key();
+    encode(&header, &claims, &encoding_key).map_err(TokenError::from)
 }

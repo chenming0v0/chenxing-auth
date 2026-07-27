@@ -104,7 +104,7 @@ src/
 - Redirect URI 采用精确匹配或经明确设计的安全匹配策略，禁止任意通配。
 - 管理后台默认采用最小权限原则，并保留关键操作审计记录。
 - 会话和短期授权状态优先使用 Redis，并设置明确 TTL；持久化事实以 PostgreSQL 为准。
-- 签名密钥支持轮换，JWKS 发布必须保留必要的旧公钥以完成令牌验证过渡。
+- 签名密钥支持多版本轮换，JWKS 发布保留旧公钥并按 JWT `kid` 验证过渡期令牌；私钥只保存在受保护的密钥卷中。
 - 所有外部输入都必须经过结构化校验；错误响应不得泄露凭据、内部堆栈或敏感配置。
 - 生产环境必须使用 TLS，并通过配置或密钥管理系统注入敏感配置。
 
@@ -135,13 +135,14 @@ src/
 - 用户、登录、Session、授权码和 Client 管理审计事件
 - `/oauth/authorize` 和 `/oauth/token` 后端端点初版
 - 授权码和 Refresh Token 在绑定、过期和 PKCE 检查通过后使用 Redis 原子消费
+- 管理员密钥轮换 API：`POST /api/v1/admin/keys/rotate`，只返回新的 `key_id` 和公开 JWK 数量
 - 用户、Client、OAuth/OIDC、Session、JWK 和业务扩展模块边界
 
 后续按以下顺序推进：
 
 1. 完成登录页面、授权确认页面和完整浏览器 Cookie/CSRF 流程。
 2. 完成完整管理后台、管理员身份体系和权限分级。
-3. 增加密钥多版本轮换、旧公钥保留和受保护密钥存储。
+3. 增加管理员身份体系、权限分级和完整管理后台 UI。
 4. 增加完整 OAuth/OIDC 互操作测试和业务扩展接口。
 5. 增加部署、安全测试、限流和生产可观测性。
 
@@ -179,6 +180,7 @@ cargo run
 - `POST /api/v1/admin/clients/{client_id}/disable`：禁用 Client
 - `POST /api/v1/admin/clients/{client_id}/enable`：启用 Client
 - `POST /api/v1/admin/clients/{client_id}/rotate-secret`：轮换 Client Secret
+- `POST /api/v1/admin/keys/rotate`：管理员轮换 RS256 签名密钥，旧公钥继续发布
 
 以下能力仍在开发中，尚不可作为完整生产能力使用：
 
@@ -186,8 +188,27 @@ cargo run
 - 完整管理后台 UI 和管理员身份体系
 - 授权码/Token 的完整 OAuth/OIDC 互操作测试
 - 完整的 OIDC 登录交互、授权确认页面和 nonce 验证端到端测试
-- 多版本密钥轮换、撤销策略和受保护密钥存储
-- Docker 或其他部署方式的生产配置
+- 密钥撤销策略和外部受保护密钥存储
+- 完整管理员身份体系、权限分级和管理后台 UI
+
+## Docker 部署
+
+服务器安装 Docker Engine、Docker Compose v2 和 `curl` 后，在项目根目录执行：
+
+```bash
+./deploy/install.sh
+```
+
+脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码和 `ADMIN_TOKEN`，启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。已有 `.env` 不会被覆盖；生产环境应将 `APP_ISSUER` 设置为固定的 HTTPS 地址，并将 `.env` 作为秘密文件保护。
+
+生产 Compose 文件为 `docker-compose.prod.yml`。数据库、Redis 和 JWK 密钥分别使用 Docker volume 持久化，应用容器以非 root 用户运行。默认只发布认证 API 端口，TLS 和反向代理应由服务器网关提供。
+
+## GitHub Actions
+
+- `.github/workflows/ci.yml`：Rust 1.94 格式化、编译、测试、Clippy 和 `cargo-llvm-cov` 覆盖率门槛（行覆盖率至少 75%）。
+- `.github/workflows/build.yml`：构建 Linux x86_64/ARM64、Windows GNU/MSVC、macOS x86_64/ARM64 二进制，并构建发布 Linux `amd64/arm64` 的 GHCR 镜像。
+
+GitHub Actions 使用 MIT 项目可用的公开仓库免费额度；发布镜像需要仓库 Actions 具备 `packages: write` 权限。
 
 当前 `/oauth/authorize` 同时支持开发期 `X-Chenxing-Session` 和 HttpOnly Session Cookie；浏览器 Cookie 会话的状态变更必须携带 `X-CSRF-Token`，并与 CSRF Cookie 和 Session 中的 Token 一致。完整登录页和授权确认页面仍未实现。
 

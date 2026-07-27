@@ -81,5 +81,6 @@ pub fn issue_id_token_with_profile(
     };
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some(keys.key_id().to_owned());
-    encode(&header, &claims, keys.encoding_key()).map_err(IdTokenError::from)
+    let encoding_key = keys.encoding_key();
+    encode(&header, &claims, &encoding_key).map_err(IdTokenError::from)
 }
