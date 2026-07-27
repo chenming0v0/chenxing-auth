@@ -48,6 +48,12 @@ impl RefreshTokenStore {
             .map_err(RefreshTokenStoreError::from)
     }
 
+    pub async fn remove(&self, value: &str) -> Result<(), RefreshTokenStoreError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let _: usize = connection.del(Self::key(value)).await?;
+        Ok(())
+    }
+
     pub async fn take_if_matches(
         &self,
         value: &str,

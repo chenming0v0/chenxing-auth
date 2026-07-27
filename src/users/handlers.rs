@@ -172,7 +172,9 @@ pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -
                     serde_json::json!({"result": "success"}),
                 ))
                 .await;
-            StatusCode::NO_CONTENT.into_response()
+            let mut response = StatusCode::NO_CONTENT.into_response();
+            cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure);
+            response
         }
         Err(session_error) => {
             tracing::error!(error = %session_error, "failed to revoke session");

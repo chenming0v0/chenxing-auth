@@ -8,6 +8,7 @@ use crate::{
     db::Database,
     keys::{KeyManager, KeyManagerError},
     oauth::refresh_store::RefreshTokenStore,
+    oauth::revocation::TokenRevocationStore,
     oauth::store::AuthorizationCodeStore,
     sessions::store::SessionStore,
     users::service::UserService,
@@ -24,6 +25,7 @@ pub struct AppState {
     pub keys: KeyManager,
     pub authorization_codes: AuthorizationCodeStore,
     pub refresh_tokens: RefreshTokenStore,
+    pub revocations: TokenRevocationStore,
     pub admin: AdminAuthenticator,
     pub audit: AuditService,
 }
@@ -48,6 +50,7 @@ impl AppState {
         let keys = KeyManager::load_or_generate(&config.key_directory)?;
         let authorization_codes = AuthorizationCodeStore::new(redis.clone());
         let refresh_tokens = RefreshTokenStore::new(redis.clone());
+        let revocations = TokenRevocationStore::new(redis.clone());
         let admin = AdminAuthenticator::new(config.admin_token.clone());
         let audit = AuditService::new(database.clone());
 
@@ -61,6 +64,7 @@ impl AppState {
             keys,
             authorization_codes,
             refresh_tokens,
+            revocations,
             admin,
             audit,
         })

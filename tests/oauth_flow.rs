@@ -6,7 +6,10 @@ use axum::{
         header::{LOCATION, SET_COOKIE},
     },
 };
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use chenxing_auth::{api, config::Config, db, state::AppState};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -119,6 +122,56 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
         .expect("client secret")
         .to_owned();
 
+    let basic_credentials = STANDARD.encode(format!("{client_id}:{client_secret}"));
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/revoke")
+                .header("authorization", format!("Basic {basic_credentials}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "token=unknown-token&token_type_hint=access_token",
+                ))
+                .expect("revocation request"),
+        )
+        .await
+        .expect("revocation response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let invalid_basic = STANDARD.encode(format!("{client_id}:wrong-secret"));
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/revoke")
+                .header("authorization", format!("Basic {invalid_basic}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("token=unknown-token"))
+                .expect("invalid revocation request"),
+        )
+        .await
+        .expect("invalid revocation response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/revoke")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "token=unknown-token&client_id={client_id}&client_secret={client_secret}"
+                )))
+                .expect("form revocation request"),
+        )
+        .await
+        .expect("form revocation response");
+    assert_eq!(response.status(), StatusCode::OK);
+
     let response = router
         .clone()
         .oneshot(
@@ -184,8 +237,8 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
     );
 
     let form = format!(
-        "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Fflow.example%2Fcallback&client_id={}&client_secret={}&code_verifier={}",
-        code, client_id, client_secret, verifier,
+        "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Fflow.example%2Fcallback&code_verifier={}",
+        code, verifier,
     );
     let response = router
         .clone()
@@ -193,6 +246,7 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
             Request::builder()
                 .method("POST")
                 .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic_credentials}"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(form))
                 .expect("token request"),
@@ -201,9 +255,15 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
         .expect("token response");
     assert_eq!(response.status(), StatusCode::OK);
     let token = json_body(response).await;
-    let access_token = token["access_token"].as_str().expect("access token");
+    let access_token = token["access_token"]
+        .as_str()
+        .expect("access token")
+        .to_owned();
     assert!(token["id_token"].as_str().is_some());
-    let refresh_token = token["refresh_token"].as_str().expect("refresh token");
+    let refresh_token = token["refresh_token"]
+        .as_str()
+        .expect("refresh token")
+        .to_owned();
 
     let response = router
         .clone()
@@ -226,12 +286,17 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
         refresh_token, client_id, client_secret,
     );
     let response = router
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic_credentials}"))
                 .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(refresh_form))
+                .body(Body::from(refresh_form.replace(
+                    &format!("&client_id={client_id}&client_secret={client_secret}"),
+                    "",
+                )))
                 .expect("refresh request"),
         )
         .await
@@ -240,6 +305,54 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
     let refreshed = json_body(response).await;
     assert!(refreshed["access_token"].as_str().is_some());
     assert!(refreshed["refresh_token"].as_str().is_some());
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/revoke")
+                .header("authorization", format!("Basic {basic_credentials}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("token={access_token}")))
+                .expect("access token revocation request"),
+        )
+        .await
+        .expect("access token revocation response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/oauth/userinfo")
+                .header("authorization", format!("Bearer {access_token}"))
+                .body(Body::empty())
+                .expect("revoked userinfo request"),
+        )
+        .await
+        .expect("revoked userinfo response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let csrf = session_cookie
+        .split(';')
+        .find_map(|value| value.trim().strip_prefix("chenxing_csrf="))
+        .expect("CSRF cookie")
+        .to_owned();
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/auth/session")
+                .header("cookie", &session_cookie)
+                .header("x-csrf-token", csrf)
+                .body(Body::empty())
+                .expect("session revoke request"),
+        )
+        .await
+        .expect("session revoke response");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers().get_all(SET_COOKIE).iter().count(), 2);
 
     sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
         .bind(client_id)

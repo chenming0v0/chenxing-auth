@@ -13,6 +13,7 @@ use crate::{
     admin::key_handlers::rotate_signing_key,
     oauth::OpenIdConfiguration,
     oauth::handlers::{authorize, token},
+    oauth::revocation_handler::revoke,
     oauth::userinfo::userinfo,
     state::AppState,
     users::handlers::{login_user, register_user, revoke_session},
@@ -28,6 +29,7 @@ pub fn router(state: AppState) -> Router {
         .route("/.well-known/jwks.json", get(jwks))
         .route("/oauth/authorize", get(authorize))
         .route("/oauth/token", post(token))
+        .route("/oauth/revoke", post(revoke))
         .route("/oauth/userinfo", get(userinfo))
         .route("/api/v1/users", post(register_user))
         .route("/api/v1/auth/login", post(login_user))

@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use super::{
     authorization::{AuthorizationRequest, validate_authorization_request},
+    client_auth::{ClientCredentialError, resolve_client_credentials},
     code::AuthorizationCode,
     pkce::verify_s256,
     refresh::RefreshToken,
@@ -21,8 +22,8 @@ pub struct TokenRequest {
     pub grant_type: String,
     pub code: Option<String>,
     pub redirect_uri: Option<String>,
-    pub client_id: String,
-    pub client_secret: String,
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
     pub code_verifier: Option<String>,
     pub refresh_token: Option<String>,
     pub scope: Option<String>,
@@ -95,7 +96,26 @@ pub async fn authorize(
     Redirect::to(redirect_uri.as_str()).into_response()
 }
 
-pub async fn token(State(state): State<AppState>, Form(request): Form<TokenRequest>) -> Response {
+pub async fn token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(mut request): Form<TokenRequest>,
+) -> Response {
+    let credentials = match resolve_client_credentials(
+        &headers,
+        request.client_id.as_deref(),
+        request.client_secret.as_deref(),
+    ) {
+        Ok(credentials) => credentials,
+        Err(ClientCredentialError::MultipleMethods | ClientCredentialError::Invalid) => {
+            return error::unauthorized("invalid_client", "client credentials are invalid");
+        }
+        Err(ClientCredentialError::Missing) => {
+            return error::unauthorized("invalid_client", "client credentials are required");
+        }
+    };
+    request.client_id = Some(credentials.client_id);
+    request.client_secret = Some(credentials.client_secret);
     match request.grant_type.as_str() {
         "authorization_code" => exchange_authorization_code(state, request).await,
         "refresh_token" => exchange_refresh_token(state, request).await,
@@ -124,7 +144,11 @@ async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> 
             return error::internal();
         }
     };
-    if code.client_id != request.client_id || code.redirect_uri != redirect_uri {
+    let client_id = request
+        .client_id
+        .as_deref()
+        .expect("client authentication resolved");
+    if code.client_id != client_id || code.redirect_uri != redirect_uri {
         return error::bad_request("invalid_grant", "authorization code binding is invalid");
     }
     if let Err(code_error) = verify_code_is_redeemable(&code) {
@@ -148,7 +172,7 @@ async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> 
     }
 
     let refresh = RefreshToken::new_with_nonce(
-        request.client_id.clone(),
+        client_id.to_owned(),
         code.user_id.clone(),
         code.scopes.clone(),
         code.nonce.clone(),
@@ -160,7 +184,7 @@ async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> 
     issue_token_response(
         &state,
         &code.user_id,
-        &request.client_id,
+        client_id,
         &code.scopes,
         Some(refresh.value),
         code.nonce.as_deref(),
@@ -175,6 +199,10 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
     let Some(refresh_value) = request.refresh_token.as_deref() else {
         return error::bad_request("invalid_request", "refresh_token is required");
     };
+    let client_id = request
+        .client_id
+        .as_deref()
+        .expect("client authentication resolved");
     let refresh = match state.refresh_tokens.find(refresh_value).await {
         Ok(Some(refresh)) => refresh,
         Ok(None) => return error::bad_request("invalid_grant", "refresh token is invalid"),
@@ -183,9 +211,7 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
             return error::internal();
         }
     };
-    if let Err(refresh_error) =
-        refresh.validate(&request.client_id, time::OffsetDateTime::now_utc())
-    {
+    if let Err(refresh_error) = refresh.validate(client_id, time::OffsetDateTime::now_utc()) {
         return error::bad_request("invalid_grant", refresh_error.to_string());
     }
     let scopes = match request.scope.as_deref() {
@@ -220,7 +246,7 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
         }
     }
     let next_refresh = RefreshToken::new_with_nonce(
-        request.client_id.clone(),
+        client_id.to_owned(),
         refresh.user_id.clone(),
         scopes.clone(),
         refresh.nonce.clone(),
@@ -232,7 +258,7 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
     issue_token_response(
         &state,
         &refresh.user_id,
-        &request.client_id,
+        client_id,
         &scopes,
         Some(next_refresh.value),
         refresh.nonce.as_deref(),
@@ -241,9 +267,17 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
 }
 
 async fn verify_client_credentials(state: &AppState, request: &TokenRequest) -> Option<Response> {
+    let client_id = request
+        .client_id
+        .as_deref()
+        .expect("client authentication resolved");
+    let client_secret = request
+        .client_secret
+        .as_deref()
+        .expect("client authentication resolved");
     match state
         .clients
-        .verify_credentials(&request.client_id, &request.client_secret)
+        .verify_credentials(client_id, client_secret)
         .await
     {
         Ok(true) => None,

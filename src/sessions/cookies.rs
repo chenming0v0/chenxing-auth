@@ -35,6 +35,17 @@ pub fn append_login_cookies(
     );
 }
 
+pub fn append_clear_cookies(headers: &mut HeaderMap, secure: bool) {
+    for name in [SESSION_COOKIE, CSRF_COOKIE] {
+        headers.append(
+            SET_COOKIE,
+            build_cookie(name, "", 0, secure, name == SESSION_COOKIE)
+                .parse()
+                .expect("clear cookie is valid ASCII"),
+        );
+    }
+}
+
 pub fn session_id(headers: &HeaderMap) -> Option<Uuid> {
     headers
         .get("x-chenxing-session")

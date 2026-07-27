@@ -25,3 +25,11 @@ fn pkce_s256_rejects_invalid_verifier_length() {
 
     assert_eq!(error, PkceError::InvalidVerifier);
 }
+
+#[test]
+fn pkce_s256_rejects_verifier_with_disallowed_characters() {
+    let error = verify_s256("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjk!", "challenge")
+        .expect_err("PKCE verifier must use the RFC 7636 character set");
+
+    assert_eq!(error, PkceError::InvalidCharacters);
+}

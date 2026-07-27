@@ -6,6 +6,8 @@ use thiserror::Error;
 pub enum PkceError {
     #[error("PKCE verifier must be 43 to 128 characters")]
     InvalidVerifier,
+    #[error("PKCE verifier contains disallowed characters")]
+    InvalidCharacters,
     #[error("PKCE verifier does not match challenge")]
     Mismatch,
 }
@@ -13,6 +15,12 @@ pub enum PkceError {
 pub fn verify_s256(verifier: &str, challenge: &str) -> Result<(), PkceError> {
     if !(43..=128).contains(&verifier.len()) {
         return Err(PkceError::InvalidVerifier);
+    }
+    if !verifier
+        .bytes()
+        .all(|character| character.is_ascii_alphanumeric() || b"-._~".contains(&character))
+    {
+        return Err(PkceError::InvalidCharacters);
     }
     let digest = Sha256::digest(verifier.as_bytes());
     let encoded = URL_SAFE_NO_PAD.encode(digest);

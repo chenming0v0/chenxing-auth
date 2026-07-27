@@ -46,6 +46,14 @@ pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Resp
             return error::unauthorized("invalid_token", "access token is invalid");
         }
     };
+    match state.revocations.is_revoked(token).await {
+        Ok(true) => return error::unauthorized("invalid_token", "access token is revoked"),
+        Ok(false) => {}
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to check access token revocation");
+            return error::internal();
+        }
+    }
     let Ok(user_id) = uuid::Uuid::parse_str(&claims.sub) else {
         return error::unauthorized("invalid_token", "access token subject is invalid");
     };

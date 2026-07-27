@@ -4,6 +4,7 @@
 //! of reimplementing token signing or protocol parsing here.
 
 pub mod authorization;
+pub mod client_auth;
 pub mod code;
 pub mod handlers;
 pub mod id_token;
@@ -11,6 +12,8 @@ pub mod pkce;
 pub mod refresh;
 pub mod refresh_store;
 pub mod response;
+pub mod revocation;
+pub mod revocation_handler;
 pub mod session;
 pub mod store;
 pub mod token;
