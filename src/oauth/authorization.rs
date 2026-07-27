@@ -1,7 +1,7 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct AuthorizationRequest {
     pub client_id: String,
     pub redirect_uri: String,
@@ -16,6 +16,7 @@ pub struct AuthorizationRequest {
 #[derive(Debug, Clone)]
 pub struct RegisteredClient {
     pub client_id: String,
+    pub client_name: String,
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
 }

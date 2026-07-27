@@ -2,12 +2,15 @@ use redis::Client;
 
 use crate::{
     admin::AdminAuthenticator,
+    admin::{service::AdminService, session::AdminSessionStore},
     audit::AuditService,
     clients::service::ClientService,
     config::Config,
+    consents::ConsentService,
     db::Database,
     keys::{KeyManager, KeyManagerError},
     oauth::refresh_store::RefreshTokenStore,
+    oauth::request_store::AuthorizationRequestStore,
     oauth::revocation::TokenRevocationStore,
     oauth::store::AuthorizationCodeStore,
     sessions::store::SessionStore,
@@ -25,8 +28,12 @@ pub struct AppState {
     pub keys: KeyManager,
     pub authorization_codes: AuthorizationCodeStore,
     pub refresh_tokens: RefreshTokenStore,
+    pub authorization_requests: AuthorizationRequestStore,
+    pub consents: ConsentService,
     pub revocations: TokenRevocationStore,
     pub admin: AdminAuthenticator,
+    pub admins: AdminService,
+    pub admin_sessions: AdminSessionStore,
     pub audit: AuditService,
 }
 
@@ -50,8 +57,12 @@ impl AppState {
         let keys = KeyManager::load_or_generate(&config.key_directory)?;
         let authorization_codes = AuthorizationCodeStore::new(redis.clone());
         let refresh_tokens = RefreshTokenStore::new(redis.clone());
+        let authorization_requests = AuthorizationRequestStore::new(redis.clone());
+        let consents = ConsentService::new(database.clone());
         let revocations = TokenRevocationStore::new(redis.clone());
         let admin = AdminAuthenticator::new(config.admin_token.clone());
+        let admins = AdminService::new(database.clone());
+        let admin_sessions = AdminSessionStore::new(redis.clone());
         let audit = AuditService::new(database.clone());
 
         Ok(Self {
@@ -64,8 +75,12 @@ impl AppState {
             keys,
             authorization_codes,
             refresh_tokens,
+            authorization_requests,
+            consents,
             revocations,
             admin,
+            admins,
+            admin_sessions,
             audit,
         })
     }

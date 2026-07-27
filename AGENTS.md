@@ -11,7 +11,7 @@
 - OAuth 2.0 / OpenID Connect
 - JWK / JWKS 密钥管理
 
-当前仓库处于后端能力建设和部署自动化阶段，已有 Rust/Cargo 配置和可编译的 Axum 服务。健康检查、账号注册/登录、Redis Session、HttpOnly Cookie/CSRF 基础、Client 生命周期、OIDC Discovery、JWKS 多版本轮换、PKCE、带 nonce 的授权码、Access Token、ID Token、Refresh Token、UserInfo、审计、初版管理 Client API、Docker 生产部署和 GitHub Actions 多平台构建流程已经实现；前端、完整管理后台、管理员身份体系和完整生产 OAuth/OIDC 互操作仍未完成。实现新功能前，先确认目标是否已经落入现有架构和数据边界；不要把规划文档中的能力当作已实现能力。
+当前仓库处于后端能力建设和部署自动化阶段，已有 Rust/Cargo 配置和可编译的 Axum 服务。健康检查、账号注册/登录、浏览器登录与授权确认、Redis Session、HttpOnly Cookie/CSRF、Client 生命周期、OIDC Discovery、JWKS 多版本轮换、PKCE、带 nonce 的授权码、Access Token、ID Token、Refresh Token、UserInfo、Token 撤销、审计、管理员身份/角色/Session、用户与 Client 管理 API、Docker 生产部署和 GitHub Actions 多平台构建流程已经实现；完整视觉化管理后台和广泛第三方互操作仍未完成。实现新功能前，先确认目标是否已经落入现有架构和数据边界；不要把规划文档中的能力当作已实现能力。
 
 认证中枢独立于天穹辰星的其他子项目平台，专门负责账号、登录认证、OAuth/OIDC 授权、会话和身份信息服务。天穹辰星其他子项目是认证平台的接入方，应通过 Client 接入，不应把各自的业务功能或业务数据直接并入认证平台。
 
@@ -81,10 +81,11 @@ OAuth 2.0、OIDC、JWT、JWK/JWKS 和密码学相关能力优先使用成熟的 
 - 公共接口、配置项、迁移和协议行为应同步更新文档和测试。
 - 代码注释解释原因、协议约束或安全边界，不重复描述显而易见的代码。
 - `APP_ISSUER` 是 OIDC 发行者标识，不能从请求 Host 或反向代理输入推导；Discovery、JWT Claims 和后续协议响应必须使用同一配置值。
-- 当前 OAuth 授权端点的 Session 头部是临时后端接入方式，前端 Cookie/CSRF/授权确认流程完成前不得把它当作生产浏览器方案。
+- 当前 OAuth 授权端点的 Session 头部是开发期兼容方式；生产浏览器应使用登录页签发的 HttpOnly Cookie 和授权确认页。
 - `ADMIN_TOKEN` 为空时必须拒绝所有管理员 API；Client Secret 只能在创建时返回，后续列表和查询不得返回哈希或明文。
 - 签名密钥轮换必须共享 AppState 克隆的密钥状态，按 JWT `kid` 选择验证公钥；管理员响应不得包含私钥材料。
 - 浏览器 Cookie 会话的状态变更必须校验 HttpOnly Session Cookie、CSRF Cookie 和 `X-CSRF-Token` 三者绑定；开发期请求头兼容逻辑不能成为生产浏览器认证方案。
+- 管理员角色必须通过 `AdminPermission` 校验；管理员 Session 的写操作必须校验独立的管理员 CSRF Cookie 和 `X-CSRF-Token`。
 
 ## 测试要求
 

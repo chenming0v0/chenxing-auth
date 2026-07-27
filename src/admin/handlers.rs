@@ -8,6 +8,10 @@ use axum::{
 use serde::Serialize;
 
 use crate::{
+    admin::{
+        authorization::{current_admin_mutation, current_admin_permission},
+        domain::AdminPermission,
+    },
     audit::AuditEvent,
     clients::{domain::ClientRegistrationInput, service::ClientServiceError},
     error,
@@ -39,8 +43,10 @@ pub async fn create_client(
     headers: HeaderMap,
     Json(input): Json<ClientRegistrationInput>,
 ) -> Response {
-    if !is_admin(&state, &headers) {
-        return error::unauthorized("admin_required", "administrator authorization is required");
+    if let Err(response) =
+        current_admin_permission(&state, &headers, AdminPermission::ManageClients).await
+    {
+        return response;
     }
 
     match state.clients.register(input).await {
@@ -87,8 +93,10 @@ pub async fn create_client(
 }
 
 pub async fn list_clients(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if !is_admin(&state, &headers) {
-        return error::unauthorized("admin_required", "administrator authorization is required");
+    if let Err(response) =
+        current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
+    {
+        return response;
     }
     match state.clients.list().await {
         Ok(clients) => (
@@ -121,8 +129,10 @@ pub async fn update_client(
     Path(client_id): Path<String>,
     Json(input): Json<ClientRegistrationInput>,
 ) -> Response {
-    if !is_admin(&state, &headers) {
-        return error::unauthorized("admin_required", "administrator authorization is required");
+    if let Err(response) =
+        current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
+    {
+        return response;
     }
     match state.clients.update(&client_id, input).await {
         Ok(true) => {
@@ -157,8 +167,10 @@ pub async fn set_client_status(
     Path(client_id): Path<String>,
     status: &'static str,
 ) -> Response {
-    if !is_admin(&state, &headers) {
-        return error::unauthorized("admin_required", "administrator authorization is required");
+    if let Err(response) =
+        current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
+    {
+        return response;
     }
     match state.clients.set_status(&client_id, status).await {
         Ok(true) => {
@@ -210,8 +222,10 @@ pub async fn rotate_secret(
     headers: HeaderMap,
     Path(client_id): Path<String>,
 ) -> Response {
-    if !is_admin(&state, &headers) {
-        return error::unauthorized("admin_required", "administrator authorization is required");
+    if let Err(response) =
+        current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
+    {
+        return response;
     }
     match state.clients.rotate_secret(&client_id).await {
         Ok(secret) => {
@@ -262,12 +276,5 @@ pub(crate) fn is_admin_request(state: &AppState, headers: &HeaderMap) -> bool {
     let Ok(value) = value.to_str() else {
         return false;
     };
-    let Some(token) = value.strip_prefix("Bearer ") else {
-        return false;
-    };
-    state.admin.is_valid(token)
-}
-
-fn is_admin(state: &AppState, headers: &HeaderMap) -> bool {
-    is_admin_request(state, headers)
+    state.admin.is_authorization_header_valid(value)
 }

@@ -6,17 +6,20 @@
 pub mod authorization;
 pub mod client_auth;
 pub mod code;
+pub mod consent;
 pub mod handlers;
 pub mod id_token;
 pub mod pkce;
 pub mod refresh;
 pub mod refresh_store;
+pub mod request_store;
 pub mod response;
 pub mod revocation;
 pub mod revocation_handler;
 pub mod session;
 pub mod store;
 pub mod token;
+pub mod token_handlers;
 pub mod userinfo;
 
 use serde::Serialize;
@@ -27,6 +30,7 @@ pub struct OpenIdConfiguration {
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub userinfo_endpoint: String,
+    pub revocation_endpoint: String,
     pub jwks_uri: String,
     pub response_types_supported: Vec<&'static str>,
     pub subject_types_supported: Vec<&'static str>,
@@ -43,6 +47,7 @@ impl OpenIdConfiguration {
             authorization_endpoint: format!("{issuer}/oauth/authorize"),
             token_endpoint: format!("{issuer}/oauth/token"),
             userinfo_endpoint: format!("{issuer}/oauth/userinfo"),
+            revocation_endpoint: format!("{issuer}/oauth/revoke"),
             jwks_uri: format!("{issuer}/.well-known/jwks.json"),
             issuer,
             response_types_supported: vec!["code"],

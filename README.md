@@ -2,9 +2,9 @@
 
 辰星认证中枢是独立运行的登录认证平台，面向天穹辰星各子项目平台及其他受信任应用提供统一身份认证能力。它在产品、服务和数据边界上独立于天穹辰星的其他业务平台，不承载具体子项目的业务功能。
 
-用户侧产品名称为 **辰星通行证**。用户创建辰星通行证账号后，可以使用该账号注册和登录天穹辰星的其他子项目平台。平台计划提供统一登录、OAuth 2.0 / OpenID Connect（OIDC）授权、用户与 Client 管理、会话管理，以及面向业务系统的认证扩展能力。
+用户侧产品名称为 **辰星通行证**。用户创建辰星通行证账号后，可以使用该账号注册和登录天穹辰星的其他子项目平台。平台提供统一登录、OAuth 2.0 / OpenID Connect（OIDC）授权、用户与 Client 管理、会话管理，以及隔离的业务扩展接口。
 
-> 当前项目处于后端初始化和协议能力建设阶段。核心用户、Session、Client、OAuth/OIDC 授权码、PKCE、Access Token、OIDC ID Token、UserInfo、JWKS、Refresh Token 和审计能力已建立；登录页、授权确认页、完整管理后台和生产级互操作仍在开发中。
+当前仓库以可运行的后端和部署能力为主，前端优先级较低。浏览器登录、授权确认、管理员账号会话、角色权限、用户/Client/审计管理 API、OAuth/OIDC 授权码流程和 Docker/GitHub Actions 已实现；完整视觉化管理后台和第三方互操作认证矩阵仍属于后续增强项。
 
 ## 项目定位
 
@@ -77,7 +77,7 @@
 天穹辰星其他子项目属于认证平台的接入方，通过 Client 配置和 OAuth/OIDC 协议使用辰星通行证；它们不是认证平台的内部业务模块。
 ```
 
-建议的代码边界如下，实际目录会以实现阶段的设计为准：
+主要代码边界如下：
 
 ```text
 src/
@@ -137,14 +137,20 @@ src/
 - 授权码和 Refresh Token 在绑定、过期和 PKCE 检查通过后使用 Redis 原子消费
 - 管理员密钥轮换 API：`POST /api/v1/admin/keys/rotate`，只返回新的 `key_id` 和公开 JWK 数量
 - 用户、Client、OAuth/OIDC、Session、JWK 和业务扩展模块边界
+- `/auth/login` 辰星通行证浏览器登录页
+- `/oauth/authorize/consent` 授权确认页、拒绝回调和 `user_consents` 持久化
+- 管理员 bootstrap、登录、注销、HttpOnly Session/CSRF Cookie
+- `owner`、`operator`、`auditor` 角色与最小权限矩阵
+- 用户列表、用户启停、管理员列表、审计查询和管理后台入口
+- `/oauth/revoke` RFC 7009 风格 Token 撤销以及 Discovery 中的撤销端点
+- `BusinessExtension` 扩展 trait 与结构化业务 Claim 类型
 
-后续按以下顺序推进：
+后续增强方向：
 
-1. 完成登录页面、授权确认页面和完整浏览器 Cookie/CSRF 流程。
-2. 完成完整管理后台、管理员身份体系和权限分级。
-3. 增加管理员身份体系、权限分级和完整管理后台 UI。
-4. 增加完整 OAuth/OIDC 互操作测试和业务扩展接口。
-5. 增加部署、安全测试、限流和生产可观测性。
+1. 将管理后台入口从轻量服务端 HTML 扩展为完整前端应用。
+2. 增加更多真实 OIDC Provider/Client 互操作测试和限流策略。
+3. 将签名私钥接入外部受保护密钥存储，并增加密钥撤销策略。
+4. 为业务子项目提供经过评审的具体扩展实现。
 
 在对应功能真正实现之前，不应把规划中的接口、环境变量或命令写成已可用能力。
 
@@ -172,8 +178,17 @@ cargo run
 - `GET /health`：返回服务健康状态
 - `POST /api/v1/users`：创建辰星通行证账号，JSON 字段为 `email`、`password` 和可选的 `display_name`
 - `POST /api/v1/auth/login`：验证辰星通行证账号并创建 Redis Session，JSON 字段为 `email` 和 `password`
+- `GET /auth/login`、`POST /auth/login`：浏览器登录页，仅由带有效授权请求的流程使用
+- `GET /oauth/authorize/consent`、`POST /oauth/authorize/consent`：浏览器授权确认和 CSRF 保护
 - `DELETE /api/v1/auth/session`：撤销当前 Session，需要 `X-Chenxing-Session` 请求头
+- `POST /oauth/token`：授权码/Refresh Token 交换，支持 HTTP Basic 或表单 Client 认证
+- `POST /oauth/revoke`：撤销 Access Token 或 Refresh Token
 - `GET /oauth/userinfo`：使用 `Authorization: Bearer <access_token>` 返回 OIDC UserInfo
+- `POST /api/v1/admin/bootstrap`：仅使用 `ADMIN_TOKEN` 初始化第一个管理员，成功后不可重复 bootstrap
+- `POST /api/v1/admin/auth/login`、`DELETE /api/v1/admin/auth/logout`：管理员 API Session
+- `GET /api/v1/admin/admins`、`POST /api/v1/admin/admins`：查看/创建管理员；创建操作要求 Owner 和 CSRF
+- `GET /api/v1/admin/users`、`POST /api/v1/admin/users/{user_id}/{status}`：用户管理
+- `GET /api/v1/admin/audit`：审计查询
 - `POST /api/v1/admin/clients`：使用管理员 Bearer Token 注册 Client，Client Secret 只在创建响应中返回
 - `GET /api/v1/admin/clients`：使用管理员 Bearer Token 查看 Client 列表
 - `PUT /api/v1/admin/clients/{client_id}`：更新 Client 配置
@@ -182,14 +197,12 @@ cargo run
 - `POST /api/v1/admin/clients/{client_id}/rotate-secret`：轮换 Client Secret
 - `POST /api/v1/admin/keys/rotate`：管理员轮换 RS256 签名密钥，旧公钥继续发布
 
-以下能力仍在开发中，尚不可作为完整生产能力使用：
+以下能力仍属于后续增强项，当前不应直接视为完整生产认证产品：
 
-- 登录和授权确认页面
-- 完整管理后台 UI 和管理员身份体系
-- 授权码/Token 的完整 OAuth/OIDC 互操作测试
-- 完整的 OIDC 登录交互、授权确认页面和 nonce 验证端到端测试
+- 完整视觉化管理后台 UI（当前提供轻量 HTML 入口和完整管理 API）
+- 大规模第三方 OAuth/OIDC 互操作认证矩阵
 - 密钥撤销策略和外部受保护密钥存储
-- 完整管理员身份体系、权限分级和管理后台 UI
+- 生产级限流、告警和密钥托管集成
 
 ## Docker 部署
 
@@ -210,7 +223,7 @@ cargo run
 
 GitHub Actions 使用 MIT 项目可用的公开仓库免费额度；发布镜像需要仓库 Actions 具备 `packages: write` 权限。
 
-当前 `/oauth/authorize` 同时支持开发期 `X-Chenxing-Session` 和 HttpOnly Session Cookie；浏览器 Cookie 会话的状态变更必须携带 `X-CSRF-Token`，并与 CSRF Cookie 和 Session 中的 Token 一致。完整登录页和授权确认页面仍未实现。
+当前 `/oauth/authorize` 同时支持开发期 `X-Chenxing-Session` 和 HttpOnly Session Cookie；带 `Accept: text/html` 的浏览器流程会进入登录页和授权确认页。浏览器 Cookie 会话的状态变更必须携带 `X-CSRF-Token`，并与 CSRF Cookie 和 Session 中的 Token 一致。管理员 Session 使用独立 Cookie 名称和相同的双提交 CSRF 约束。
 
 `KEY_DIRECTORY` 默认指向 `data/keys`，该目录包含运行时私钥并已加入 `.gitignore`。`ADMIN_TOKEN` 为空时，管理 API 默认全部拒绝访问。
 

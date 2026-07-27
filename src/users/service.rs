@@ -73,4 +73,15 @@ impl UserService {
     ) -> Result<Option<repository::UserProfile>, UserServiceError> {
         Ok(repository::find_profile_by_id(&self.pool, id).await?)
     }
+
+    pub async fn list(&self) -> Result<Vec<repository::ListedUser>, UserServiceError> {
+        Ok(repository::list_users(&self.pool).await?)
+    }
+
+    pub async fn set_status(&self, id: uuid::Uuid, status: &str) -> Result<bool, UserServiceError> {
+        if !matches!(status, "active" | "disabled") {
+            return Ok(false);
+        }
+        Ok(repository::set_user_status(&self.pool, id, status).await?)
+    }
 }

@@ -67,6 +67,55 @@ pub fn csrf_cookie(headers: &HeaderMap) -> Option<String> {
     cookie_value(headers, CSRF_COOKIE)
 }
 
+pub fn cookie_value_by_name(headers: &HeaderMap, name: &str) -> Option<String> {
+    cookie_value(headers, name)
+}
+
+pub fn append_named_login_cookies(
+    headers: &mut HeaderMap,
+    session_name: &str,
+    csrf_name: &str,
+    session_id: Uuid,
+    csrf_token: &str,
+    max_age_seconds: u64,
+    secure: bool,
+) {
+    headers.append(
+        SET_COOKIE,
+        build_cookie(
+            session_name,
+            &session_id.to_string(),
+            max_age_seconds,
+            secure,
+            true,
+        )
+        .parse()
+        .expect("session cookie is valid ASCII"),
+    );
+    headers.append(
+        SET_COOKIE,
+        build_cookie(csrf_name, csrf_token, max_age_seconds, secure, false)
+            .parse()
+            .expect("CSRF cookie is valid ASCII"),
+    );
+}
+
+pub fn append_named_clear_cookies(
+    headers: &mut HeaderMap,
+    session_name: &str,
+    csrf_name: &str,
+    secure: bool,
+) {
+    for name in [session_name, csrf_name] {
+        headers.append(
+            SET_COOKIE,
+            build_cookie(name, "", 0, secure, name == session_name)
+                .parse()
+                .expect("clear cookie is valid ASCII"),
+        );
+    }
+}
+
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     let header = headers.get(COOKIE)?.to_str().ok()?;
     header.split(';').find_map(|part| {

@@ -1,42 +1,40 @@
 use axum::{
-    extract::{Form, Query, State},
+    extract::{Query, State},
     http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
 };
-use serde::Deserialize;
 
 use super::{
-    authorization::{AuthorizationRequest, validate_authorization_request},
-    client_auth::{ClientCredentialError, resolve_client_credentials},
+    authorization::{
+        AuthorizationRequest, ValidatedAuthorizationRequest, validate_authorization_request,
+    },
     code::AuthorizationCode,
-    pkce::verify_s256,
-    refresh::RefreshToken,
-    response::issue_token_response,
     session::session_user_id,
 };
 use crate::audit::AuditEvent;
 use crate::{error, state::AppState};
-
-#[derive(Debug, Deserialize)]
-pub struct TokenRequest {
-    pub grant_type: String,
-    pub code: Option<String>,
-    pub redirect_uri: Option<String>,
-    pub client_id: Option<String>,
-    pub client_secret: Option<String>,
-    pub code_verifier: Option<String>,
-    pub refresh_token: Option<String>,
-    pub scope: Option<String>,
-}
 
 pub async fn authorize(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(request): Query<AuthorizationRequest>,
 ) -> Response {
-    let Some(user_id) = session_user_id(&state, &headers).await else {
-        return error::unauthorized("login_required", "an authenticated session is required");
-    };
+    let user_id = session_user_id(&state, &headers).await;
+    if user_id.is_none() {
+        if !accepts_html(&headers) {
+            return error::unauthorized("login_required", "an authenticated session is required");
+        }
+        let pending = match pending_from_browser_request(&request) {
+            Ok(pending) => pending,
+            Err(message) => return error::bad_request("invalid_request", message),
+        };
+        let request_id = pending.request_id.clone();
+        if let Err(store_error) = state.authorization_requests.save(&pending).await {
+            tracing::error!(error = %store_error, "failed to store browser authorization request");
+            return error::internal();
+        }
+        return Redirect::to(&format!("/auth/login?request_id={request_id}")).into_response();
+    }
 
     let Some(client) = (match state.clients.find_registered(&request.client_id).await {
         Ok(client) => client,
@@ -56,6 +54,60 @@ pub async fn authorize(
         }
     };
 
+    let user_id = user_id.expect("checked above");
+
+    if headers.get("cookie").is_some() && accepts_html(&headers) {
+        let scopes = validated.scopes.clone();
+        let user_uuid = match uuid::Uuid::parse_str(&user_id) {
+            Ok(user_uuid) => user_uuid,
+            Err(_) => return error::unauthorized("invalid_session", "session user is invalid"),
+        };
+        match state
+            .consents
+            .has_scopes(user_uuid, &validated.client_id, &scopes)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) if accepts_html(&headers) => {
+                let request_id = uuid::Uuid::new_v4().to_string();
+                let pending = super::consent::PendingAuthorization {
+                    request_id: request_id.clone(),
+                    client_id: validated.client_id,
+                    redirect_uri: validated.redirect_uri,
+                    scope: validated.scopes.join(" "),
+                    state: validated.state,
+                    nonce: validated.nonce,
+                    code_challenge: validated.code_challenge,
+                    code_challenge_method: "S256".to_owned(),
+                };
+                if let Err(store_error) = state.authorization_requests.save(&pending).await {
+                    tracing::error!(error = %store_error, "failed to store consent request");
+                    return error::internal();
+                }
+                return Redirect::to(&format!("/oauth/authorize/consent?request_id={request_id}"))
+                    .into_response();
+            }
+            Ok(false) => {
+                return error::unauthorized(
+                    "consent_required",
+                    "authorization consent is required",
+                );
+            }
+            Err(database_error) => {
+                tracing::error!(error = %database_error, "failed to load user consent");
+                return error::internal();
+            }
+        }
+    }
+
+    issue_authorization_code(&state, user_id, validated).await
+}
+
+pub async fn issue_authorization_code(
+    state: &AppState,
+    user_id: String,
+    validated: ValidatedAuthorizationRequest,
+) -> Response {
     let code = AuthorizationCode::new_with_nonce(
         validated.client_id,
         validated.redirect_uri.clone(),
@@ -96,204 +148,71 @@ pub async fn authorize(
     Redirect::to(redirect_uri.as_str()).into_response()
 }
 
-pub async fn token(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Form(mut request): Form<TokenRequest>,
-) -> Response {
-    let credentials = match resolve_client_credentials(
-        &headers,
-        request.client_id.as_deref(),
-        request.client_secret.as_deref(),
-    ) {
-        Ok(credentials) => credentials,
-        Err(ClientCredentialError::MultipleMethods | ClientCredentialError::Invalid) => {
-            return error::unauthorized("invalid_client", "client credentials are invalid");
-        }
-        Err(ClientCredentialError::Missing) => {
-            return error::unauthorized("invalid_client", "client credentials are required");
-        }
-    };
-    request.client_id = Some(credentials.client_id);
-    request.client_secret = Some(credentials.client_secret);
-    match request.grant_type.as_str() {
-        "authorization_code" => exchange_authorization_code(state, request).await,
-        "refresh_token" => exchange_refresh_token(state, request).await,
-        _ => error::bad_request("unsupported_grant_type", "grant type is unsupported"),
+pub fn validated_pending_request(
+    pending: super::consent::PendingAuthorization,
+) -> ValidatedAuthorizationRequest {
+    ValidatedAuthorizationRequest {
+        client_id: pending.client_id,
+        redirect_uri: pending.redirect_uri,
+        scopes: pending
+            .scope
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
+        state: pending.state,
+        nonce: pending.nonce,
+        code_challenge: pending.code_challenge,
     }
 }
 
-async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> Response {
-    if let Some(response) = verify_client_credentials(&state, &request).await {
-        return response;
+pub use super::token_handlers::token;
+
+fn accepts_html(headers: &HeaderMap) -> bool {
+    headers
+        .get("accept")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|item| item.trim().starts_with("text/html"))
+        })
+}
+
+fn pending_from_browser_request(
+    request: &AuthorizationRequest,
+) -> Result<super::consent::PendingAuthorization, &'static str> {
+    if request.client_id.trim().is_empty() || request.response_type != "code" {
+        return Err("authorization request is invalid");
     }
-    let Some(code_value) = request.code.as_deref() else {
-        return error::bad_request("invalid_request", "code is required");
-    };
-    let Some(redirect_uri) = request.redirect_uri.as_deref() else {
-        return error::bad_request("invalid_request", "redirect_uri is required");
-    };
-    let Some(code_verifier) = request.code_verifier.as_deref() else {
-        return error::bad_request("invalid_request", "code_verifier is required");
-    };
-    let code = match state.authorization_codes.find(code_value).await {
-        Ok(Some(code)) => code,
-        Ok(None) => return error::bad_request("invalid_grant", "authorization code is invalid"),
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to retrieve OAuth authorization code");
-            return error::internal();
-        }
-    };
-    let client_id = request
-        .client_id
-        .as_deref()
-        .expect("client authentication resolved");
-    if code.client_id != client_id || code.redirect_uri != redirect_uri {
-        return error::bad_request("invalid_grant", "authorization code binding is invalid");
-    }
-    if let Err(code_error) = verify_code_is_redeemable(&code) {
-        return error::bad_request("invalid_grant", code_error);
-    }
-    if let Err(pkce_error) = verify_s256(code_verifier, &code.code_challenge) {
-        tracing::info!(error = %pkce_error, "OAuth PKCE verification failed");
-        return error::bad_request("invalid_grant", "PKCE verification failed");
-    }
-    match state
-        .authorization_codes
-        .take_if_matches(code_value, &code)
-        .await
+    let redirect = url::Url::parse(&request.redirect_uri).map_err(|_| "redirect URI is invalid")?;
+    if redirect.scheme() != "https"
+        || redirect.host_str().is_none()
+        || redirect.fragment().is_some()
     {
-        Ok(true) => {}
-        Ok(false) => return error::bad_request("invalid_grant", "authorization code is invalid"),
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to consume OAuth authorization code");
-            return error::internal();
-        }
+        return Err("redirect URI is invalid");
     }
-
-    let refresh = RefreshToken::new_with_nonce(
-        client_id.to_owned(),
-        code.user_id.clone(),
-        code.scopes.clone(),
-        code.nonce.clone(),
-    );
-    if let Err(store_error) = state.refresh_tokens.save(&refresh).await {
-        tracing::error!(error = %store_error, "failed to store refresh token");
-        return error::internal();
-    }
-    issue_token_response(
-        &state,
-        &code.user_id,
-        client_id,
-        &code.scopes,
-        Some(refresh.value),
-        code.nonce.as_deref(),
-    )
-    .await
-}
-
-async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Response {
-    if let Some(response) = verify_client_credentials(&state, &request).await {
-        return response;
-    }
-    let Some(refresh_value) = request.refresh_token.as_deref() else {
-        return error::bad_request("invalid_request", "refresh_token is required");
-    };
-    let client_id = request
-        .client_id
+    let state = request
+        .state
         .as_deref()
-        .expect("client authentication resolved");
-    let refresh = match state.refresh_tokens.find(refresh_value).await {
-        Ok(Some(refresh)) => refresh,
-        Ok(None) => return error::bad_request("invalid_grant", "refresh token is invalid"),
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to retrieve refresh token");
-            return error::internal();
-        }
-    };
-    if let Err(refresh_error) = refresh.validate(client_id, time::OffsetDateTime::now_utc()) {
-        return error::bad_request("invalid_grant", refresh_error.to_string());
-    }
-    let scopes = match request.scope.as_deref() {
-        Some(scope) => {
-            let requested = scope
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-            if requested
-                .iter()
-                .any(|scope| !refresh.scopes.contains(scope))
-            {
-                return error::bad_request(
-                    "invalid_scope",
-                    "requested scope exceeds original grant",
-                );
-            }
-            requested
-        }
-        None => refresh.scopes.clone(),
-    };
-    match state
-        .refresh_tokens
-        .take_if_matches(refresh_value, &refresh)
-        .await
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("state is required")?;
+    if request.scope.split_whitespace().next().is_none()
+        || request.code_challenge_method.as_deref() != Some("S256")
+        || request.code_challenge.as_deref().is_none_or(str::is_empty)
     {
-        Ok(true) => {}
-        Ok(false) => return error::bad_request("invalid_grant", "refresh token is invalid"),
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to consume refresh token");
-            return error::internal();
-        }
+        return Err("authorization request is invalid");
     }
-    let next_refresh = RefreshToken::new_with_nonce(
-        client_id.to_owned(),
-        refresh.user_id.clone(),
-        scopes.clone(),
-        refresh.nonce.clone(),
-    );
-    if let Err(store_error) = state.refresh_tokens.save(&next_refresh).await {
-        tracing::error!(error = %store_error, "failed to rotate refresh token");
-        return error::internal();
-    }
-    issue_token_response(
-        &state,
-        &refresh.user_id,
-        client_id,
-        &scopes,
-        Some(next_refresh.value),
-        refresh.nonce.as_deref(),
-    )
-    .await
-}
-
-async fn verify_client_credentials(state: &AppState, request: &TokenRequest) -> Option<Response> {
-    let client_id = request
-        .client_id
-        .as_deref()
-        .expect("client authentication resolved");
-    let client_secret = request
-        .client_secret
-        .as_deref()
-        .expect("client authentication resolved");
-    match state
-        .clients
-        .verify_credentials(client_id, client_secret)
-        .await
-    {
-        Ok(true) => None,
-        Ok(false) => Some(error::unauthorized(
-            "invalid_client",
-            "client credentials are invalid",
-        )),
-        Err(client_error) => {
-            tracing::error!(error = %client_error, "failed to verify OAuth client credentials");
-            Some(error::internal())
-        }
-    }
-}
-
-fn verify_code_is_redeemable(code: &AuthorizationCode) -> Result<(), &'static str> {
-    let mut code = code.clone();
-    code.redeem_at(time::OffsetDateTime::now_utc())
-        .map_err(|_| "authorization code is expired or already redeemed")
+    Ok(super::consent::PendingAuthorization {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        client_id: request.client_id.clone(),
+        redirect_uri: request.redirect_uri.clone(),
+        scope: request.scope.clone(),
+        state: state.to_owned(),
+        nonce: request
+            .nonce
+            .clone()
+            .filter(|value| !value.trim().is_empty()),
+        code_challenge: request.code_challenge.clone().expect("checked above"),
+        code_challenge_method: "S256".to_owned(),
+    })
 }

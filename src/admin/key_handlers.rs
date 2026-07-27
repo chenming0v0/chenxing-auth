@@ -6,6 +6,7 @@ use axum::{
 };
 use serde::Serialize;
 
+use super::{authorization::current_admin_mutation, domain::AdminPermission};
 use crate::{audit::AuditEvent, error, state::AppState};
 
 #[derive(Debug, Serialize)]
@@ -15,8 +16,10 @@ pub struct KeyRotationResponse {
 }
 
 pub async fn rotate_signing_key(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if !super::handlers::is_admin_request(&state, &headers) {
-        return error::unauthorized("admin_required", "administrator authorization is required");
+    if let Err(response) =
+        current_admin_mutation(&state, &headers, AdminPermission::RotateKeys).await
+    {
+        return response;
     }
 
     if let Err(key_error) = state.keys.rotate() {

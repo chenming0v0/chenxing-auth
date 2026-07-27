@@ -18,6 +18,7 @@ pub struct NewClient {
 #[derive(Debug)]
 pub struct StoredClient {
     pub client_id: String,
+    pub client_name: String,
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
     pub status: String,
@@ -77,15 +78,16 @@ pub async fn find_client_by_id(
     pool: &PgPool,
     client_id: &str,
 ) -> Result<Option<StoredClient>, sqlx::Error> {
-    sqlx::query_as::<_, (String, Json<Vec<String>>, Json<Vec<String>>, String)>(
-        "SELECT client_id, redirect_uris, scopes, status FROM oauth_clients WHERE client_id = $1",
+    sqlx::query_as::<_, (String, String, Json<Vec<String>>, Json<Vec<String>>, String)>(
+        "SELECT client_id, client_name, redirect_uris, scopes, status FROM oauth_clients WHERE client_id = $1",
     )
     .bind(client_id)
     .fetch_optional(pool)
     .await
     .map(|record| {
-        record.map(|(client_id, redirect_uris, scopes, status)| StoredClient {
+        record.map(|(client_id, client_name, redirect_uris, scopes, status)| StoredClient {
             client_id,
+            client_name,
             redirect_uris: redirect_uris.0,
             scopes: scopes.0,
             status,

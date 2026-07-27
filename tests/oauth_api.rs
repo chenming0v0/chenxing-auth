@@ -43,3 +43,26 @@ async fn authorization_endpoint_requires_an_authenticated_session() {
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn browser_authorization_without_a_session_redirects_to_login() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .uri("/oauth/authorize?client_id=cx_project&redirect_uri=https%3A%2F%2Fproject.example%2Fcallback&response_type=code&scope=openid&state=state&code_challenge=challenge&code_challenge_method=S256")
+                .header("accept", "text/html")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("/auth/login?request_id="))
+    );
+}

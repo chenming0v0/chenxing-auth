@@ -38,6 +38,14 @@ async fn openid_configuration_publishes_standard_endpoints() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    let configuration: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+    assert_eq!(
+        configuration["revocation_endpoint"],
+        "http://127.0.0.1:3000/oauth/revoke"
+    );
 }
 
 #[tokio::test]

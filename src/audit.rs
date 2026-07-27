@@ -20,6 +20,10 @@ impl AuditService {
             tracing::error!(error = %error, action = %event.action, "failed to persist audit event");
         }
     }
+
+    pub async fn list(&self, limit: i64) -> Result<Vec<AuditEvent>, sqlx::Error> {
+        repository::list(&self.pool, limit.clamp(1, 200)).await
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -104,6 +104,7 @@ impl ClientService {
         }
         Ok(Some(OAuthRegisteredClient {
             client_id: client.client_id,
+            client_name: client.client_name,
             redirect_uris: client.redirect_uris,
             scopes: client.scopes,
         }))

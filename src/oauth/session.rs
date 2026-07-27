@@ -1,12 +1,21 @@
 use axum::http::HeaderMap;
 use uuid::Uuid;
 
-use crate::{sessions::cookies, state::AppState};
+use crate::{
+    sessions::{cookies, domain::Session},
+    state::AppState,
+};
 
-pub async fn session_user_id(state: &AppState, headers: &HeaderMap) -> Option<String> {
+pub async fn session_for_headers(state: &AppState, headers: &HeaderMap) -> Option<Session> {
     let session_id = session_id_from_headers(headers)?;
     let session = state.sessions.find(session_id).await.ok().flatten()?;
-    session.is_active().then_some(session.user_id)
+    session.is_active().then_some(session)
+}
+
+pub async fn session_user_id(state: &AppState, headers: &HeaderMap) -> Option<String> {
+    session_for_headers(state, headers)
+        .await
+        .map(|session| session.user_id)
 }
 
 fn session_id_from_headers(headers: &HeaderMap) -> Option<Uuid> {

@@ -28,6 +28,15 @@ pub struct UserProfile {
     pub status: String,
 }
 
+#[derive(Debug)]
+pub struct ListedUser {
+    pub id: Uuid,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub status: String,
+    pub created_at: OffsetDateTime,
+}
+
 pub async fn insert_user(
     pool: &PgPool,
     registration: ValidatedRegistration,
@@ -93,6 +102,38 @@ pub async fn find_profile_by_id(
             status,
         })
     })
+}
+
+pub async fn list_users(pool: &sqlx::PgPool) -> Result<Vec<ListedUser>, sqlx::Error> {
+    sqlx::query_as::<_, (Uuid, String, Option<String>, String, OffsetDateTime)>(
+        "SELECT id, email, display_name, status, created_at FROM users ORDER BY created_at DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .map(|rows| {
+        rows.into_iter()
+            .map(|(id, email, display_name, status, created_at)| ListedUser {
+                id,
+                email,
+                display_name,
+                status,
+                created_at,
+            })
+            .collect()
+    })
+}
+
+pub async fn set_user_status(
+    pool: &sqlx::PgPool,
+    id: Uuid,
+    status: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
+        .bind(id)
+        .bind(status)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 pub async fn insert_user_in_transaction(

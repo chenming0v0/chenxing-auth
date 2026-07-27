@@ -1,6 +1,6 @@
 use axum::{
     Router,
-    body::Body,
+    body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
 use chenxing_auth::config::Config;
@@ -42,6 +42,37 @@ async fn userinfo_requires_bearer_token() {
         .await
         .expect("response from router");
 
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_login_page_is_public_but_dashboard_requires_session() {
+    let router = test_router();
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/login")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("login page response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("login page body");
+    assert!(String::from_utf8_lossy(&body).contains("管理员登录"));
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/admin")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("dashboard response");
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 

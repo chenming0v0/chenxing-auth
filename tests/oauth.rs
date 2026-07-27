@@ -6,6 +6,7 @@ use chenxing_auth::oauth::authorization::{
 fn client() -> RegisteredClient {
     RegisteredClient {
         client_id: "cx_project".to_owned(),
+        client_name: "Project".to_owned(),
         redirect_uris: vec!["https://project.example/callback".to_owned()],
         scopes: vec!["openid".to_owned(), "profile".to_owned()],
     }
@@ -70,6 +71,15 @@ fn authorization_request_rejects_scope_outside_client_registration() {
     .expect_err("unregistered scope must be rejected");
 
     assert_eq!(error, AuthorizationRequestError::ScopeNotAllowed);
+}
+
+#[test]
+fn authorization_consent_decision_accepts_only_approve_or_deny() {
+    use chenxing_auth::oauth::consent::{ConsentDecision, parse_decision};
+
+    assert_eq!(parse_decision("approve"), Some(ConsentDecision::Approve));
+    assert_eq!(parse_decision("deny"), Some(ConsentDecision::Deny));
+    assert_eq!(parse_decision("ignore"), None);
 }
 
 #[test]
