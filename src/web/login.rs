@@ -86,6 +86,23 @@ pub async fn login_post(State(state): State<AppState>, Form(form): Form<LoginFor
         tracing::error!(error = %session_error, "failed to persist browser session");
         return error::internal();
     }
+    let Some(mut pending) = state
+        .authorization_requests
+        .find(request_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return html_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "授权请求已失效，请从接入平台重新开始登录。",
+        );
+    };
+    pending.session_id = Some(session.id);
+    if let Err(store_error) = state.authorization_requests.save(&pending).await {
+        tracing::error!(error = %store_error, "failed to bind authorization request to session");
+        return error::internal();
+    }
     state
         .audit
         .record(AuditEvent::new(

@@ -13,13 +13,23 @@ use crate::{
     },
     admin::key_handlers::rotate_signing_key,
     admin::management_handlers::{list_admins, list_audit, list_users, set_user_status},
+    admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
     admin::web_handlers::{dashboard, login_page, login_submit, protected_placeholder},
     oauth::OpenIdConfiguration,
     oauth::handlers::{authorize, token},
     oauth::revocation_handler::revoke,
+    oauth::ui_handlers::{decide_authorization_request, inspect_authorization_request},
     oauth::userinfo::userinfo,
     state::AppState,
     users::handlers::{login_user, register_user, revoke_session},
+    users::oauth_client_handlers::{
+        create_owned_client, disable_owned_client, enable_owned_client, list_owned_clients,
+        rotate_owned_client_secret, update_owned_client,
+    },
+    users::ui_handlers::{
+        auth_status, change_current_user_password, current_user_profile, list_user_sessions,
+        revoke_user_session, update_current_user_profile,
+    },
     web::handlers::{consent_get, consent_post, login_get, login_post},
 };
 
@@ -39,11 +49,27 @@ pub fn router(state: AppState) -> Router {
         .route("/oauth/token", post(token))
         .route("/oauth/revoke", post(revoke))
         .route("/oauth/userinfo", get(userinfo))
+        .route(
+            "/api/v1/oauth/authorize/requests/{request_id}",
+            get(inspect_authorization_request).post(decide_authorization_request),
+        )
         .route("/api/v1/users", post(register_user))
         .route("/api/v1/auth/login", post(login_user))
+        .route("/api/v1/auth/status", get(auth_status))
+        .route(
+            "/api/v1/auth/me",
+            get(current_user_profile).patch(update_current_user_profile),
+        )
+        .route("/api/v1/auth/password", post(change_current_user_password))
+        .route("/api/v1/auth/sessions", get(list_user_sessions))
+        .route(
+            "/api/v1/auth/sessions/{session_id}",
+            axum::routing::delete(revoke_user_session),
+        )
         .route("/api/v1/admin/bootstrap", post(bootstrap_admin))
         .route("/api/v1/admin/admins", get(list_admins).post(create_admin))
         .route("/api/v1/admin/auth/login", post(login_admin))
+        .route("/api/v1/admin/auth/me", get(admin_me))
         .route(
             "/api/v1/admin/auth/logout",
             axum::routing::delete(logout_admin),
@@ -54,6 +80,10 @@ pub fn router(state: AppState) -> Router {
             post(set_user_status),
         )
         .route("/api/v1/admin/audit", get(list_audit))
+        .route("/api/v1/admin/overview", get(admin_overview))
+        .route("/api/v1/admin/users/query", get(query_users))
+        .route("/api/v1/admin/clients/query", get(query_clients))
+        .route("/api/v1/admin/audit/query", get(query_audit))
         .route("/admin", get(dashboard))
         .route("/admin/login", get(login_page).post(login_submit))
         .route("/admin/users", get(protected_placeholder))
@@ -63,6 +93,26 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/auth/session",
             axum::routing::delete(revoke_session),
+        )
+        .route(
+            "/api/v1/auth/oauth-clients",
+            axum::routing::get(list_owned_clients).post(create_owned_client),
+        )
+        .route(
+            "/api/v1/auth/oauth-clients/{client_id}",
+            axum::routing::put(update_owned_client),
+        )
+        .route(
+            "/api/v1/auth/oauth-clients/{client_id}/disable",
+            axum::routing::post(disable_owned_client),
+        )
+        .route(
+            "/api/v1/auth/oauth-clients/{client_id}/enable",
+            axum::routing::post(enable_owned_client),
+        )
+        .route(
+            "/api/v1/auth/oauth-clients/{client_id}/rotate-secret",
+            axum::routing::post(rotate_owned_client_secret),
         )
         .route(
             "/api/v1/admin/clients",

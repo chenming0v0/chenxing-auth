@@ -58,7 +58,19 @@ pub fn validate_registration(
         return Err(RegistrationError::PasswordTooShort);
     }
 
-    let display_name = input.display_name.and_then(|name| {
+    let display_name = validate_display_name(input.display_name)?;
+
+    Ok(ValidatedRegistration {
+        email,
+        password: input.password,
+        display_name,
+    })
+}
+
+pub fn validate_display_name(
+    display_name: Option<String>,
+) -> Result<Option<String>, RegistrationError> {
+    let display_name = display_name.and_then(|name| {
         let name = name.trim().to_owned();
         (!name.is_empty()).then_some(name)
     });
@@ -68,12 +80,7 @@ pub fn validate_registration(
     {
         return Err(RegistrationError::DisplayNameTooLong);
     }
-
-    Ok(ValidatedRegistration {
-        email,
-        password: input.password,
-        display_name,
-    })
+    Ok(display_name)
 }
 
 pub fn validate_login(input: LoginInput) -> Result<ValidatedLogin, LoginError> {

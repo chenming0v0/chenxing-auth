@@ -41,6 +41,27 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             Cow::Borrowed(include_str!("../migrations/0003_admins.sql")),
             false,
         ),
+        Migration::new(
+            4,
+            Cow::Borrowed("user sessions"),
+            MigrationType::Simple,
+            Cow::Borrowed(include_str!("../migrations/0004_ui_sessions.sql")),
+            false,
+        ),
+        Migration::new(
+            5,
+            Cow::Borrowed("client owners"),
+            MigrationType::Simple,
+            Cow::Borrowed(include_str!("../migrations/0005_client_owners.sql")),
+            false,
+        ),
+        Migration::new(
+            6,
+            Cow::Borrowed("client owner cascade"),
+            MigrationType::Simple,
+            Cow::Borrowed(include_str!("../migrations/0006_client_owner_cascade.sql")),
+            false,
+        ),
     ];
 
     Migrator {

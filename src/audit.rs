@@ -24,6 +24,29 @@ impl AuditService {
     pub async fn list(&self, limit: i64) -> Result<Vec<AuditEvent>, crate::sqlx::Error> {
         repository::list(&self.pool, limit.clamp(1, 200)).await
     }
+
+    pub async fn query(
+        &self,
+        action: Option<&str>,
+        resource_type: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<AuditEvent>, i64), crate::sqlx::Error> {
+        let total = repository::count_filtered(&self.pool, action, resource_type).await?;
+        let events = repository::list_filtered(
+            &self.pool,
+            action,
+            resource_type,
+            limit.clamp(1, 100),
+            offset.max(0),
+        )
+        .await?;
+        Ok((events, total))
+    }
+
+    pub async fn count(&self) -> Result<i64, crate::sqlx::Error> {
+        repository::count_filtered(&self.pool, None, None).await
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

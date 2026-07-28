@@ -84,6 +84,25 @@ pub async fn find_credentials_by_email(
     })
 }
 
+pub async fn find_credentials_by_id(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<UserCredentials>, crate::sqlx::Error> {
+    crate::sqlx::query_as::<_, (Uuid, String, String)>(
+        "SELECT id, password_hash, status FROM users WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map(|record| {
+        record.map(|(id, password_hash, status)| UserCredentials {
+            id,
+            password_hash,
+            status,
+        })
+    })
+}
+
 pub async fn find_profile_by_id(
     pool: &PgPool,
     id: Uuid,
@@ -131,6 +150,32 @@ pub async fn set_user_status(
     let result = crate::sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
         .bind(id)
         .bind(status)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+pub async fn update_display_name(
+    pool: &PgPool,
+    id: Uuid,
+    display_name: Option<&str>,
+) -> Result<bool, crate::sqlx::Error> {
+    let result = crate::sqlx::query("UPDATE users SET display_name = $2 WHERE id = $1")
+        .bind(id)
+        .bind(display_name)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+pub async fn update_password_hash(
+    pool: &PgPool,
+    id: Uuid,
+    password_hash: &str,
+) -> Result<bool, crate::sqlx::Error> {
+    let result = crate::sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
+        .bind(id)
+        .bind(password_hash)
         .execute(pool)
         .await?;
     Ok(result.rows_affected() == 1)

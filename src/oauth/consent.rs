@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsentDecision {
@@ -31,4 +32,5 @@ pub struct PendingAuthorization {
     pub nonce: Option<String>,
     pub code_challenge: String,
     pub code_challenge_method: String,
+    pub session_id: Option<Uuid>,
 }

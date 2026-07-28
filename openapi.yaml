@@ -96,6 +96,190 @@ paths:
               schema:
                 $ref: '#/components/schemas/LoginResponse'
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/status:
+    get:
+      tags: [User Auth]
+      summary: 查询当前登录状态
+      operationId: authStatus
+      responses:
+        '200':
+          description: 登录状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthStatusResponse' }
+  /api/v1/auth/me:
+    get:
+      tags: [User Auth]
+      summary: 查询当前用户资料
+      operationId: currentUserProfile
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 当前用户资料
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserMeResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [User Auth]
+      summary: 更新当前用户资料
+      operationId: updateCurrentUserProfile
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateProfileInput' }
+      responses:
+        '200':
+          description: 更新后的用户资料
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserMeResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/password:
+    post:
+      tags: [User Auth]
+      summary: 修改当前用户密码
+      operationId: changeCurrentUserPassword
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangePasswordInput' }
+      responses:
+        '204': { description: 密码已修改并撤销所有用户 Session }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/sessions:
+    get:
+      tags: [User Auth]
+      summary: 查询当前用户 Session
+      operationId: listUserSessions
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 当前用户的活跃 Session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/sessions/{session_id}:
+    delete:
+      tags: [User Auth]
+      summary: 撤销指定用户 Session
+      operationId: revokeUserSession
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: Session 已撤销 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/auth/oauth-clients:
+    get:
+      tags: [User Auth]
+      summary: 查询当前用户的 OAuth 项目
+      operationId: listOwnedOAuthClients
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 只包含当前用户拥有的 OAuth 项目和配额使用量
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnedOAuthClientList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [User Auth]
+      summary: 创建当前用户的 OAuth 项目
+      operationId: createOwnedOAuthClient
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientInput' }
+      responses:
+        '201':
+          description: 创建成功，Client Secret 只返回一次
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegisteredOwnedOAuthClient' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/auth/oauth-clients/{client_id}:
+    put:
+      tags: [User Auth]
+      summary: 更新当前用户拥有的 OAuth 项目
+      operationId: updateOwnedOAuthClient
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientInput' }
+      responses:
+        '204': { description: 更新成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/auth/oauth-clients/{client_id}/disable:
+    post:
+      tags: [User Auth]
+      summary: 禁用当前用户拥有的 OAuth 项目
+      operationId: disableOwnedOAuthClient
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: 禁用成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/auth/oauth-clients/{client_id}/enable:
+    post:
+      tags: [User Auth]
+      summary: 启用当前用户拥有的 OAuth 项目
+      operationId: enableOwnedOAuthClient
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: 启用成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/auth/oauth-clients/{client_id}/rotate-secret:
+    post:
+      tags: [User Auth]
+      summary: 轮换当前用户 OAuth 项目的 Secret
+      operationId: rotateOwnedOAuthClientSecret
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '200':
+          description: 新 Secret，只返回一次
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientSecretResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/auth/session:
     delete:
       tags: [User Auth]
@@ -127,6 +311,44 @@ paths:
         '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/oauth/authorize/requests/{request_id}:
+    get:
+      tags: [OAuth/OIDC]
+      summary: 查询绑定到当前 Session 的待授权请求
+      operationId: inspectAuthorizationRequest
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: request_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 安全的授权确认数据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PendingAuthorizationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [OAuth/OIDC]
+      summary: 批准或拒绝绑定到当前 Session 的授权请求
+      operationId: decideAuthorizationRequest
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: request_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthorizationDecisionInput' }
+      responses:
+        '200':
+          description: 决策结果和已校验的回调地址
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthorizationDecisionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /oauth/token:
     post:
       tags: [OAuth/OIDC]
@@ -217,6 +439,19 @@ paths:
                 properties:
                   admin_id: { type: string, format: uuid }
                   expires_in: { type: integer, format: int64 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/auth/me:
+    get:
+      tags: [Admin Auth]
+      summary: 查询当前管理员身份和权限
+      operationId: adminMe
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      responses:
+        '200':
+          description: 管理员身份摘要
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminMeResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/admin/auth/logout:
     delete:
@@ -373,6 +608,76 @@ paths:
         - { name: limit, in: query, schema: { type: integer, default: 50, minimum: 1 } }
       responses:
         '200': { description: 审计事件列表, content: { application/json: { schema: { type: array, items: { type: object } } } } }
+  /api/v1/admin/overview:
+    get:
+      tags: [Admin Operations]
+      summary: 管理后台概览统计
+      operationId: adminOverview
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      responses:
+        '200':
+          description: 全局资源计数
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminOverview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/users/query:
+    get:
+      tags: [Admin Users]
+      summary: 分页筛选用户
+      operationId: queryUsers
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - { $ref: '#/components/parameters/Search' }
+        - { $ref: '#/components/parameters/StatusFilter' }
+      responses:
+        '200':
+          description: 分页用户列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PagedUsers' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/clients/query:
+    get:
+      tags: [Admin Clients]
+      summary: 分页筛选 OAuth Client
+      operationId: queryClients
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - { $ref: '#/components/parameters/Search' }
+        - { $ref: '#/components/parameters/StatusFilter' }
+      responses:
+        '200':
+          description: 分页 Client 列表，包含 owner_user_id 但不包含 Secret
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PagedClients' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/audit/query:
+    get:
+      tags: [Admin Operations]
+      summary: 分页筛选审计事件
+      operationId: queryAudit
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: resource_type, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: 分页审计事件
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PagedAudit' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/admin/keys/rotate:
     post:
       tags: [Admin Operations]
@@ -401,6 +706,10 @@ components:
   parameters:
     ClientId: { name: client_id, in: query, required: true, schema: { type: string } }
     CsrfHeader: { name: X-CSRF-Token, in: header, required: true, schema: { type: string } }
+    Page: { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+    PageSize: { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+    Search: { name: search, in: query, required: false, schema: { type: string, maxLength: 128 } }
+    StatusFilter: { name: status, in: query, required: false, schema: { type: string, enum: [active, disabled] } }
   headers:
     SetCookie: { description: Session 和 CSRF Cookie, schema: { type: string } }
   responses:
@@ -408,6 +717,8 @@ components:
     Unauthorized: { description: 未认证或凭据无效, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Forbidden: { description: 无权限, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Conflict: { description: 资源冲突, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    NotFound: { description: 资源不存在, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    TooManyRequests: { description: OAuth 配额已耗尽, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   schemas:
     ErrorResponse:
       type: object
@@ -446,6 +757,74 @@ components:
       properties:
         session_id: { type: string, format: uuid }
         expires_at: { type: string, format: date-time }
+    AuthStatusResponse:
+      type: object
+      required: [authenticated]
+      properties:
+        authenticated: { type: boolean }
+    UserMeResponse:
+      type: object
+      required: [id, email, status, current_session_expires_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        display_name: { type: string, nullable: true }
+        status: { type: string }
+        current_session_expires_at: { type: string, format: date-time }
+    UpdateProfileInput:
+      type: object
+      properties:
+        display_name: { type: string, nullable: true, maxLength: 128 }
+    ChangePasswordInput:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password: { type: string, format: password }
+        new_password: { type: string, format: password, minLength: 12 }
+    SessionItem:
+      type: object
+      required: [id, created_at, expires_at, current]
+      properties:
+        id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        current: { type: boolean }
+    SessionListResponse:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/SessionItem' } }
+    QuotaSnapshot:
+      type: object
+      required: [daily_limit, daily_used, monthly_limit, monthly_used]
+      properties:
+        daily_limit: { type: integer, format: int64, example: 2500 }
+        daily_used: { type: integer, format: int64 }
+        monthly_limit: { type: integer, format: int64, example: 50000 }
+        monthly_used: { type: integer, format: int64 }
+    OwnedOAuthClient:
+      type: object
+      required: [id, client_id, client_name, redirect_uris, scopes, status, quota]
+      properties:
+        id: { type: string, format: uuid }
+        client_id: { type: string }
+        client_name: { type: string }
+        redirect_uris: { type: array, items: { type: string, format: uri } }
+        scopes: { type: array, items: { type: string } }
+        status: { type: string, enum: [active, disabled] }
+        quota: { $ref: '#/components/schemas/QuotaSnapshot' }
+    OwnedOAuthClientList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/OwnedOAuthClient' } }
+    RegisteredOwnedOAuthClient:
+      allOf:
+        - $ref: '#/components/schemas/OwnedOAuthClient'
+        - type: object
+          required: [client_secret]
+          properties:
+            client_secret: { type: string, format: password }
     TokenRequest:
       type: object
       required: [grant_type]
@@ -474,6 +853,68 @@ components:
         sub: { type: string }
         email: { type: string, format: email }
         name: { type: string }
+    PendingAuthorizationResponse:
+      type: object
+      required: [request_id, client_id, client_name, redirect_host, scopes, expires_in]
+      properties:
+        request_id: { type: string }
+        client_id: { type: string }
+        client_name: { type: string }
+        redirect_host: { type: string }
+        scopes: { type: array, items: { type: string } }
+        expires_in: { type: integer, format: int64, example: 600 }
+    AuthorizationDecisionInput:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approve, deny] }
+    AuthorizationDecisionResponse:
+      type: object
+      required: [decision, redirect_to]
+      properties:
+        decision: { type: string, enum: [approve, deny] }
+        redirect_to: { type: string, format: uri }
+    AdminMeResponse:
+      type: object
+      required: [role, permissions, status]
+      properties:
+        admin_id: { type: string, format: uuid, nullable: true }
+        email: { type: string, format: email, nullable: true }
+        role: { type: string, enum: [owner, operator, auditor] }
+        permissions: { type: array, items: { type: string } }
+        status: { type: string }
+    AdminOverview:
+      type: object
+      required: [users, oauth_clients, administrators, audit_events]
+      properties:
+        users: { type: integer, format: int64 }
+        oauth_clients: { type: integer, format: int64 }
+        administrators: { type: integer, format: int64 }
+        audit_events: { type: integer, format: int64 }
+    PagedUsers:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/PublicUser' } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+    PagedClients:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ClientSummary' } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+    PagedAudit:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { type: object } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
     AdminInput:
       type: object
       required: [email, password, role]
@@ -490,9 +931,8 @@ components:
         status: { type: string }
     ClientInput:
       type: object
-      required: [client_id, client_name, redirect_uris, scopes]
+      required: [client_name, redirect_uris, scopes]
       properties:
-        client_id: { type: string }
         client_name: { type: string }
         redirect_uris: { type: array, items: { type: string, format: uri } }
         scopes: { type: array, items: { type: string } }
@@ -502,7 +942,9 @@ components:
         - type: object
           properties:
             id: { type: string, format: uuid }
+            client_id: { type: string }
             status: { type: string }
+            owner_user_id: { type: string, format: uuid, nullable: true }
     RegisteredClient:
       allOf:
         - $ref: '#/components/schemas/ClientSummary'
