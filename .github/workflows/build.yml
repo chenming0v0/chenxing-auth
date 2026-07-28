@@ -34,7 +34,7 @@ jobs:
             builder: cargo
             suffix: '.exe'
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-14
             builder: cargo
             suffix: ''
           - target: aarch64-apple-darwin
