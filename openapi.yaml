@@ -95,6 +95,142 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LoginResponse'
+        '202':
+          description: 密码正确但需要首次绑定或完成认证因子，不设置 Session Cookie
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PendingLoginResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/totp/setup:
+    post:
+      tags: [User Auth]
+      summary: 开始 TOTP 首次绑定
+      operationId: startTotpSetup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginTicketInput' }
+      responses:
+        '200':
+          description: 返回一次性 TOTP 秘钥和标准 otpauth URI
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TotpSetupResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/v1/auth/totp/setup/confirm:
+    post:
+      tags: [User Auth]
+      summary: 确认 TOTP 并完成登录
+      operationId: confirmTotpSetup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TotpConfirmInput' }
+      responses:
+        '200':
+          description: TOTP 正确，已设置 Session 和 CSRF Cookie
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/passkeys/register/start:
+    post:
+      tags: [User Auth]
+      summary: 开始 passkey 注册
+      operationId: startPasskeyRegistration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginTicketInput' }
+      responses:
+        '200':
+          description: WebAuthn 注册 challenge
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebAuthnOptions' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/v1/auth/passkeys/register/finish:
+    post:
+      tags: [User Auth]
+      summary: 完成 passkey 注册并登录
+      operationId: finishPasskeyRegistration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyRegistrationInput' }
+      responses:
+        '200':
+          description: passkey 注册成功，已设置 Session 和 CSRF Cookie
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/passkeys/authentication/start:
+    post:
+      tags: [User Auth]
+      summary: 开始 passkey 登录验证
+      operationId: startPasskeyAuthentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginTicketInput' }
+      responses:
+        '200':
+          description: WebAuthn 登录 challenge
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebAuthnOptions' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/v1/auth/passkeys/authentication/finish:
+    post:
+      tags: [User Auth]
+      summary: 完成 passkey 登录验证
+      operationId: finishPasskeyAuthentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyAuthenticationInput' }
+      responses:
+        '200':
+          description: passkey 验证成功，已设置 Session 和 CSRF Cookie
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/login/totp:
+    post:
+      tags: [User Auth]
+      summary: 浏览器 OAuth 登录的 TOTP 完成步骤
+      operationId: browserTotpLogin
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [request_id, login_ticket, code]
+              properties:
+                request_id: { type: string }
+                login_ticket: { type: string }
+                code: { type: string, pattern: '^[0-9]{6}$' }
+      responses:
+        '303': { description: 因子验证成功，重定向到授权确认页 }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/status:
     get:
@@ -744,6 +880,50 @@ components:
       properties:
         email: { type: string, format: email }
         password: { type: string, format: password }
+        totp_code: { type: string, pattern: '^[0-9]{6}$' }
+    PendingLoginResponse:
+      type: object
+      required: [status, login_ticket, methods]
+      properties:
+        status: { type: string, enum: [factor_setup_required, factor_required] }
+        login_ticket: { type: string }
+        methods: { type: array, items: { type: string, enum: [totp, passkey] } }
+    LoginTicketInput:
+      type: object
+      required: [login_ticket]
+      properties:
+        login_ticket: { type: string }
+    TotpSetupResponse:
+      type: object
+      required: [secret_base32, otpauth_url]
+      properties:
+        secret_base32: { type: string }
+        otpauth_url: { type: string, format: uri }
+    TotpConfirmInput:
+      allOf:
+        - $ref: '#/components/schemas/LoginTicketInput'
+        - type: object
+          required: [code]
+          properties:
+            code: { type: string, pattern: '^[0-9]{6}$' }
+    WebAuthnOptions:
+      type: object
+      description: WebAuthn options returned by webauthn-rs; pass through to navigator.credentials.
+      additionalProperties: true
+    PasskeyRegistrationInput:
+      allOf:
+        - $ref: '#/components/schemas/LoginTicketInput'
+        - type: object
+          required: [credential]
+          properties:
+            credential: { type: object, additionalProperties: true }
+    PasskeyAuthenticationInput:
+      allOf:
+        - $ref: '#/components/schemas/LoginTicketInput'
+        - type: object
+          required: [credential]
+          properties:
+            credential: { type: object, additionalProperties: true }
     PublicUser:
       type: object
       properties:

@@ -1,4 +1,4 @@
-use chenxing_auth::config::{Config, ConfigError};
+use chenxing_auth::config::{AuthEncryptionKey, Config, ConfigError};
 
 #[test]
 fn config_accepts_valid_runtime_values() {
@@ -45,4 +45,28 @@ fn config_rejects_zero_session_ttl() {
         error,
         ConfigError::InvalidValue("SESSION_TTL_SECONDS")
     ));
+}
+
+#[test]
+fn config_debug_does_not_expose_authentication_key() {
+    let key = AuthEncryptionKey::new([7_u8; 32]);
+    let debug = format!("{key:?}");
+    assert!(debug.contains("REDACTED"));
+    assert!(!debug.contains("7"));
+}
+
+#[test]
+fn test_configuration_uses_a_webauthn_compatible_local_origin() {
+    let config = Config::from_values_with_issuer(
+        "127.0.0.1".to_owned(),
+        3000,
+        "http://127.0.0.1:3000".to_owned(),
+        "postgres://localhost/chenxing_auth".to_owned(),
+        "redis://localhost".to_owned(),
+        3600,
+    )
+    .expect("valid configuration");
+
+    assert_eq!(config.webauthn_rp_id, "localhost");
+    assert_eq!(config.webauthn_origin, "http://localhost:3000");
 }

@@ -25,11 +25,13 @@ sqlx-core = { version = "0.8.6", default-features = false, features = ["_rt-toki
 sqlx-postgres = { version = "0.8.6", default-features = false, features = ["json", "migrate", "time", "uuid"] }
 thiserror = "2"
 time = { version = "0.3", features = ["serde"] }
+totp-rs = { version = "5.7.2", default-features = false, features = ["gen_secret", "otpauth", "zeroize"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2"
+webauthn-rs = { version = "0.6.1-dev", default-features = false, features = ["danger-allow-state-serialisation"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 pkcs8 = { version = "0.10", features = ["std"] }
 

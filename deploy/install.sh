@@ -31,6 +31,7 @@ else
     POSTGRES_USER="${POSTGRES_USER:-chenxing}"
     POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 32)}"
     ADMIN_TOKEN="${ADMIN_TOKEN:-$(openssl rand -hex 32)}"
+    AUTH_ENCRYPTION_KEY="${AUTH_ENCRYPTION_KEY:-$(openssl rand -base64 32)}"
 
     umask 077
     cat > .env <<EOF
@@ -38,6 +39,7 @@ APP_HOST=0.0.0.0
 APP_PORT=${APP_PORT}
 APP_ISSUER=${APP_ISSUER}
 ADMIN_TOKEN=${ADMIN_TOKEN}
+AUTH_ENCRYPTION_KEY=${AUTH_ENCRYPTION_KEY}
 KEY_DIRECTORY=/var/lib/chenxing-auth/keys
 COOKIE_SECURE=true
 POSTGRES_DB=${POSTGRES_DB}

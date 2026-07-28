@@ -7,6 +7,7 @@ use axum::{
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
 use serde_json::Value;
+use totp_rs::TOTP;
 use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
@@ -108,6 +109,46 @@ async fn register_and_login(router: &Router, suffix: &str) -> (String, String) {
         )
         .await
         .expect("login response");
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let ticket = json(response).await["login_ticket"]
+        .as_str()
+        .expect("login ticket")
+        .to_owned();
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/totp/setup")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"login_ticket": ticket}).to_string(),
+                ))
+                .expect("TOTP setup request"),
+        )
+        .await
+        .expect("TOTP setup response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let setup = json(response).await;
+    let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/totp/setup/confirm")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "login_ticket": ticket,
+                        "code": totp.generate_current().expect("TOTP code")
+                    })
+                    .to_string(),
+                ))
+                .expect("TOTP confirmation request"),
+        )
+        .await
+        .expect("TOTP confirmation response");
     assert_eq!(response.status(), StatusCode::OK);
     let cookie_header = cookies(&response);
     let csrf_token = csrf(&cookie_header).to_owned();

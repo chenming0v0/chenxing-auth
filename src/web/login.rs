@@ -8,6 +8,7 @@ use serde::Deserialize;
 use super::helpers::{html_error, pending_request_exists};
 use crate::{
     audit::AuditEvent,
+    auth_factors::service::TotpConfirmation,
     error,
     sessions::{cookies, domain::Session},
     state::AppState,
@@ -24,6 +25,14 @@ pub struct LoginForm {
     pub request_id: Option<String>,
     pub email: String,
     pub password: String,
+    pub totp_code: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BrowserTotpForm {
+    pub request_id: String,
+    pub login_ticket: String,
+    pub code: String,
 }
 
 pub async fn login_get(State(state): State<AppState>, Query(query): Query<LoginQuery>) -> Response {
@@ -58,6 +67,7 @@ pub async fn login_post(State(state): State<AppState>, Form(form): Form<LoginFor
         .authenticate(LoginInput {
             email: form.email,
             password: form.password,
+            totp_code: None,
         })
         .await
     {
@@ -74,6 +84,185 @@ pub async fn login_post(State(state): State<AppState>, Form(form): Form<LoginFor
             return error::internal();
         }
     };
+    let methods = match state.factors.available_methods(user_id).await {
+        Ok(methods) => methods,
+        Err(factor_error) => {
+            tracing::error!(error = %factor_error, "failed to load browser login factors");
+            return error::internal();
+        }
+    };
+    let setup_required = methods.is_empty();
+    let ticket_methods = if setup_required {
+        vec![
+            crate::auth_factors::domain::FactorMethod::Totp,
+            crate::auth_factors::domain::FactorMethod::Passkey,
+        ]
+    } else {
+        methods
+    };
+    let (ticket_id, _) = match state
+        .factors
+        .create_login_ticket(user_id, ticket_methods)
+        .await
+    {
+        Ok(ticket) => ticket,
+        Err(factor_error) => {
+            tracing::error!(error = %factor_error, "failed to create browser login ticket");
+            return error::internal();
+        }
+    };
+    if let Some(code) = form.totp_code.as_deref() {
+        return finish_totp_login(&state, request_id, &ticket_id, code, setup_required).await;
+    }
+    if setup_required {
+        return render_totp_setup(&state, request_id, ticket_id, user_id).await;
+    }
+    if methods_contains_totp(&state, user_id).await {
+        return render_totp_verify(request_id, ticket_id);
+    }
+    html_error(
+        axum::http::StatusCode::BAD_REQUEST,
+        "请使用 passkey WebAuthn 接口完成登录。",
+    )
+}
+
+pub async fn browser_totp_post(
+    State(state): State<AppState>,
+    Form(form): Form<BrowserTotpForm>,
+) -> Response {
+    if !pending_request_exists(&state, &form.request_id).await {
+        return html_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "授权请求已失效，请从接入平台重新开始登录。",
+        );
+    }
+    let setup_result = state
+        .factors
+        .confirm_totp_enrollment(&form.login_ticket, &form.code)
+        .await;
+    match setup_result {
+        Ok(TotpConfirmation::Completed(user_id)) => {
+            return complete_browser_login(&state, &form.request_id, user_id, "totp").await;
+        }
+        Ok(TotpConfirmation::InvalidCode) => {
+            return html_error(axum::http::StatusCode::UNAUTHORIZED, "动态验证码不正确。");
+        }
+        Ok(TotpConfirmation::InvalidTicket) => {}
+        Err(factor_error) => {
+            tracing::error!(error = %factor_error, "failed to confirm browser TOTP setup");
+            return error::internal();
+        }
+    }
+    match state
+        .factors
+        .verify_totp_login(&form.login_ticket, &form.code)
+        .await
+    {
+        Ok(TotpConfirmation::Completed(user_id)) => {
+            complete_browser_login(&state, &form.request_id, user_id, "totp").await
+        }
+        Ok(TotpConfirmation::InvalidCode) => {
+            html_error(axum::http::StatusCode::UNAUTHORIZED, "动态验证码不正确。")
+        }
+        Ok(TotpConfirmation::InvalidTicket) => {
+            html_error(axum::http::StatusCode::BAD_REQUEST, "登录请求已失效。")
+        }
+        Err(factor_error) => {
+            tracing::error!(error = %factor_error, "failed to verify browser TOTP");
+            error::internal()
+        }
+    }
+}
+
+async fn render_totp_setup(
+    state: &AppState,
+    request_id: &str,
+    ticket_id: String,
+    user_id: uuid::Uuid,
+) -> Response {
+    let Some(profile) = (match state.users.find_profile(user_id).await {
+        Ok(profile) => profile,
+        Err(user_error) => {
+            tracing::error!(error = %user_error, "failed to load browser TOTP account");
+            return error::internal();
+        }
+    }) else {
+        return error::internal();
+    };
+    let enrollment = match state
+        .factors
+        .start_totp_enrollment(&ticket_id, &profile.email, "Chenxing Pass")
+        .await
+    {
+        Ok(Some(enrollment)) => enrollment,
+        Ok(None) => return error::bad_request("invalid_login_ticket", "login request is invalid"),
+        Err(factor_error) => {
+            tracing::error!(error = %factor_error, "failed to start browser TOTP setup");
+            return error::internal();
+        }
+    };
+    let body = format!(
+        "<main><h1>设置动态验证码</h1><p>请将以下 URI 导入 Google Authenticator，然后输入当前六位验证码。</p><p><code>{}</code></p><form method=\"post\" action=\"/auth/login/totp\"><input type=\"hidden\" name=\"request_id\" value=\"{}\"><input type=\"hidden\" name=\"login_ticket\" value=\"{}\"><label>动态验证码<input name=\"code\" inputmode=\"numeric\" pattern=\"[0-9]{{6}}\" required></label><button type=\"submit\">确认登录</button></form></main>",
+        crate::web::escape_html(enrollment.otpauth_url()),
+        crate::web::escape_html(request_id),
+        crate::web::escape_html(&ticket_id),
+    );
+    Html(crate::web::page("设置动态验证码", &body)).into_response()
+}
+
+fn render_totp_verify(request_id: &str, ticket_id: String) -> Response {
+    let body = format!(
+        "<main><h1>输入动态验证码</h1><form method=\"post\" action=\"/auth/login/totp\"><input type=\"hidden\" name=\"request_id\" value=\"{}\"><input type=\"hidden\" name=\"login_ticket\" value=\"{}\"><label>动态验证码<input name=\"code\" inputmode=\"numeric\" pattern=\"[0-9]{{6}}\" required></label><button type=\"submit\">继续</button></form></main>",
+        crate::web::escape_html(request_id),
+        crate::web::escape_html(&ticket_id),
+    );
+    Html(crate::web::page("输入动态验证码", &body)).into_response()
+}
+
+async fn finish_totp_login(
+    state: &AppState,
+    request_id: &str,
+    ticket_id: &str,
+    code: &str,
+    setup_required: bool,
+) -> Response {
+    let result = if setup_required {
+        state.factors.confirm_totp_enrollment(ticket_id, code).await
+    } else {
+        state.factors.verify_totp_login(ticket_id, code).await
+    };
+    match result {
+        Ok(TotpConfirmation::Completed(user_id)) => {
+            complete_browser_login(state, request_id, user_id, "totp").await
+        }
+        Ok(TotpConfirmation::InvalidCode) => {
+            html_error(axum::http::StatusCode::UNAUTHORIZED, "动态验证码不正确。")
+        }
+        Ok(TotpConfirmation::InvalidTicket) => {
+            html_error(axum::http::StatusCode::BAD_REQUEST, "登录请求已失效。")
+        }
+        Err(factor_error) => {
+            tracing::error!(error = %factor_error, "failed to finish browser TOTP login");
+            error::internal()
+        }
+    }
+}
+
+async fn methods_contains_totp(state: &AppState, user_id: uuid::Uuid) -> bool {
+    state
+        .factors
+        .available_methods(user_id)
+        .await
+        .map(|methods| methods.contains(&crate::auth_factors::domain::FactorMethod::Totp))
+        .unwrap_or(false)
+}
+
+async fn complete_browser_login(
+    state: &AppState,
+    request_id: &str,
+    user_id: uuid::Uuid,
+    factor: &str,
+) -> Response {
     let ttl = std::time::Duration::from_secs(state.config.session_ttl_seconds);
     let session = match Session::new(user_id.to_string(), ttl) {
         Ok(session) => session,
@@ -111,7 +300,7 @@ pub async fn login_post(State(state): State<AppState>, Form(form): Form<LoginFor
             "login".to_owned(),
             "session".to_owned(),
             Some(session.id.to_string()),
-            serde_json::json!({"result": "success", "channel": "browser"}),
+            serde_json::json!({"result": "success", "channel": "browser", "factor": factor}),
         ))
         .await;
     let mut response =

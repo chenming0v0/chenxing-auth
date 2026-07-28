@@ -15,6 +15,10 @@ use crate::{
     admin::management_handlers::{list_admins, list_audit, list_users, set_user_status},
     admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
     admin::web_handlers::{dashboard, login_page, login_submit, protected_placeholder},
+    auth_factors::handlers::{
+        confirm_totp_setup, finish_passkey_authentication, finish_passkey_registration,
+        start_passkey_authentication, start_passkey_registration, start_totp_setup,
+    },
     oauth::OpenIdConfiguration,
     oauth::handlers::{authorize, token},
     oauth::revocation_handler::revoke,
@@ -30,7 +34,7 @@ use crate::{
         auth_status, change_current_user_password, current_user_profile, list_user_sessions,
         revoke_user_session, update_current_user_profile,
     },
-    web::handlers::{consent_get, consent_post, login_get, login_post},
+    web::handlers::{browser_totp_post, consent_get, consent_post, login_get, login_post},
 };
 
 pub fn router(state: AppState) -> Router {
@@ -55,6 +59,24 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/users", post(register_user))
         .route("/api/v1/auth/login", post(login_user))
+        .route("/api/v1/auth/totp/setup", post(start_totp_setup))
+        .route("/api/v1/auth/totp/setup/confirm", post(confirm_totp_setup))
+        .route(
+            "/api/v1/auth/passkeys/register/start",
+            post(start_passkey_registration),
+        )
+        .route(
+            "/api/v1/auth/passkeys/register/finish",
+            post(finish_passkey_registration),
+        )
+        .route(
+            "/api/v1/auth/passkeys/authentication/start",
+            post(start_passkey_authentication),
+        )
+        .route(
+            "/api/v1/auth/passkeys/authentication/finish",
+            post(finish_passkey_authentication),
+        )
         .route("/api/v1/auth/status", get(auth_status))
         .route(
             "/api/v1/auth/me",
@@ -90,6 +112,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/clients", get(protected_placeholder))
         .route("/admin/audit", get(protected_placeholder))
         .route("/auth/login", get(login_get).post(login_post))
+        .route("/auth/login/totp", post(browser_totp_post))
         .route(
             "/api/v1/auth/session",
             axum::routing::delete(revoke_session),

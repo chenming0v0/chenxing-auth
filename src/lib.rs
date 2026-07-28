@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod api;
 pub mod audit;
+pub mod auth_factors;
 pub mod clients;
 pub mod config;
 pub mod consents;

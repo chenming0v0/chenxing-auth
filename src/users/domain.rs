@@ -14,6 +14,7 @@ pub struct RegistrationInput {
 pub struct LoginInput {
     pub email: String,
     pub password: String,
+    pub totp_code: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

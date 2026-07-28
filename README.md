@@ -108,6 +108,7 @@ src/
 - Redirect URI 采用精确匹配或经明确设计的安全匹配策略，禁止任意通配。
 - 管理后台默认采用最小权限原则，并保留关键操作审计记录。
 - 会话和短期授权状态优先使用 Redis，并设置明确 TTL；持久化事实以 PostgreSQL 为准。
+- TOTP 秘钥使用 `AUTH_ENCRYPTION_KEY` 加密后保存；生产环境必须使用随机、持久化且受保护的 32 字节 Base64 密钥。
 - 签名密钥支持多版本轮换，JWKS 发布保留旧公钥并按 JWT `kid` 验证过渡期令牌；私钥只保存在受保护的密钥卷中。
 - 所有外部输入都必须经过结构化校验；错误响应不得泄露凭据、内部堆栈或敏感配置。
 - 生产环境必须使用 TLS，并通过配置或密钥管理系统注入敏感配置。
@@ -124,7 +125,7 @@ src/
 - Redis Client 边界
 - 用户注册输入校验和 Argon2 密码哈希
 - `POST /api/v1/users` 基础注册接口
-- `POST /api/v1/auth/login` 登录并创建 Redis Session
+- `POST /api/v1/auth/login` 密码登录并执行 TOTP 或 WebAuthn 因子流程
 - RSA 2048 位签名密钥生成和 JWKS 发布
 - OIDC Discovery 元数据端点
 - OAuth 授权请求校验（精确 Redirect URI、Scope、State 和 PKCE S256）
@@ -206,6 +207,8 @@ cargo run
 当前 `/oauth/authorize` 同时支持开发期 `X-Chenxing-Session` 和 HttpOnly Session Cookie；带 `Accept: text/html` 的浏览器流程会进入登录页和授权确认页。浏览器 Cookie 会话的状态变更必须携带 `X-CSRF-Token`，并与 CSRF Cookie 和 Session 中的 Token 一致。管理员 Session 使用独立 Cookie 名称和相同的双提交 CSRF 约束。
 
 `KEY_DIRECTORY` 默认指向 `data/keys`，该目录包含运行时私钥并已加入 `.gitignore`。`ADMIN_TOKEN` 为空时，管理 API 默认全部拒绝访问。
+
+用户首次密码登录会返回短期 `login_ticket`，前端需要完成 TOTP 或 WebAuthn passkey 注册后才会获得 Session。后续登录需要密码加已绑定的 TOTP 或 passkey。生产环境应设置固定的 `WEBAUTHN_RP_ID` 和 `WEBAUTHN_ORIGIN`，默认从固定 `APP_ISSUER` 派生，不能从请求 Host 派生。
 
 ## 开源协议
 

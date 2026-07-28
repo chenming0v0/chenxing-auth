@@ -3,9 +3,11 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header::SET_COOKIE},
 };
+use chenxing_auth::auth_factors::{crypto::decrypt_totp_secret, repository};
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
 use serde_json::Value;
+use totp_rs::{Algorithm, TOTP};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -108,10 +110,106 @@ async fn login(router: &Router, email: &str, password: &str) -> (String, String)
         )
         .await
         .expect("login response");
+    if response.status() == StatusCode::ACCEPTED {
+        let pending = json(response).await;
+        if pending["status"] == "factor_required" {
+            let code = current_totp_code(email).await;
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/auth/login")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({
+                                "email": email,
+                                "password": password,
+                                "totp_code": code
+                            })
+                            .to_string(),
+                        ))
+                        .expect("factor login request"),
+                )
+                .await
+                .expect("factor login response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let cookie_header = cookies(&response);
+            let csrf_token = csrf(&cookie_header);
+            return (cookie_header, csrf_token);
+        }
+        let ticket = pending["login_ticket"]
+            .as_str()
+            .expect("login ticket")
+            .to_owned();
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/totp/setup")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"login_ticket": ticket}).to_string(),
+                    ))
+                    .expect("TOTP setup request"),
+            )
+            .await
+            .expect("TOTP setup response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let setup = json(response).await;
+        let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/auth/totp/setup/confirm")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "login_ticket": ticket,
+                            "code": totp.generate_current().expect("TOTP code")
+                        })
+                        .to_string(),
+                    ))
+                    .expect("TOTP confirmation request"),
+            )
+            .await
+            .expect("TOTP confirmation response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let cookie_header = cookies(&response);
+        let csrf_token = csrf(&cookie_header);
+        return (cookie_header, csrf_token);
+    }
     assert_eq!(response.status(), StatusCode::OK);
     let cookie_header = cookies(&response);
     let csrf_token = csrf(&cookie_header);
     (cookie_header, csrf_token)
+}
+
+async fn current_totp_code(email: &str) -> String {
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let database = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&database_url)
+        .await
+        .expect("PostgreSQL");
+    let user_id: (Uuid,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
+        .bind(email)
+        .fetch_one(&database)
+        .await
+        .expect("user lookup");
+    let encrypted = repository::find_totp_secret(&database, user_id.0)
+        .await
+        .expect("TOTP lookup")
+        .expect("TOTP factor");
+    let secret = decrypt_totp_secret(&[0_u8; 32], &encrypted).expect("TOTP secret");
+    TOTP::new(Algorithm::SHA1, 6, 1, 30, secret, None, String::new())
+        .expect("TOTP")
+        .generate_current()
+        .expect("TOTP code")
 }
 
 #[tokio::test]
@@ -209,7 +307,12 @@ async fn user_can_update_profile_list_sessions_and_rotate_password() {
                 .uri("/api/v1/auth/login")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": email, "password": new_password}).to_string(),
+                    serde_json::json!({
+                        "email": email,
+                        "password": new_password,
+                        "totp_code": current_totp_code(&email).await
+                    })
+                    .to_string(),
                 ))
                 .expect("new password login request"),
         )

@@ -70,6 +70,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0006_client_owner_cascade.sql")),
             false,
         ),
+        Migration::new(
+            7,
+            Cow::Borrowed("authentication factors"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0007_auth_factors.sql")),
+            false,
+        ),
     ];
 
     Migrator {

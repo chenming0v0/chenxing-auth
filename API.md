@@ -61,16 +61,40 @@
 请求：
 
 ```json
-{"email":"user@example.com","password":"at-least-12-chars"}
+{"email":"user@example.com","password":"at-least-12-chars","totp_code":"123456"}
 ```
 
-响应 `200`：
+首次登录或已绑定因子但尚未完成验证时响应 `202`，不会设置 Session Cookie：
+
+```json
+{"status":"factor_setup_required","login_ticket":"opaque-ticket","methods":["totp","passkey"]}
+```
+
+已绑定因子时 `status` 为 `factor_required`，`methods` 只包含已绑定方式。TOTP 登录可在本请求中携带当前六位 `totp_code`；passkey 使用下面的 WebAuthn challenge 接口。
+
+因子完成后响应 `200`：
 
 ```json
 {"session_id":"uuid","expires_at":"2026-08-04T00:00:00Z"}
 ```
 
 同时设置 HttpOnly Session Cookie 和 CSRF Cookie。浏览器请求应使用 `credentials: "include"`。
+
+### 首次 TOTP 绑定
+
+1. `POST /api/v1/auth/totp/setup`，请求 `{"login_ticket":"opaque-ticket"}`，响应一次性返回 `secret_base32` 和 `otpauth_url`。前端可将 URI 交给 Google Authenticator 扫描；服务端不返回二维码图片。
+2. `POST /api/v1/auth/totp/setup/confirm`，请求 `{"login_ticket":"opaque-ticket","code":"123456"}`。验证码正确后保存加密秘钥、消费 ticket 并返回 Session Cookie；错误验证码不会消费 ticket。
+
+### Passkey / WebAuthn
+
+- `POST /api/v1/auth/passkeys/register/start`：请求 `login_ticket`，返回 WebAuthn `PublicKeyCredentialCreationOptions`。
+- `POST /api/v1/auth/passkeys/register/finish`：请求 `login_ticket` 和浏览器 `navigator.credentials.create()` 返回的 `credential`，验证通过后保存公开凭据并返回 Session。
+- `POST /api/v1/auth/passkeys/authentication/start`：请求 `login_ticket`，返回 `PublicKeyCredentialRequestOptions`。
+- `POST /api/v1/auth/passkeys/authentication/finish`：请求 `login_ticket` 和浏览器 `navigator.credentials.get()` 返回的 `credential`，验证通过后更新 credential counter、消费 ticket 并返回 Session。
+
+所有 `login_ticket` 和 WebAuthn challenge 默认有效 5 分钟；ticket 是一次性的。WebAuthn 的 RP ID 和 origin 由固定配置 `WEBAUTHN_RP_ID`、`WEBAUTHN_ORIGIN` 控制，不能从请求 Host 推导。
+
+浏览器 OAuth 登录在密码步骤后也必须完成 TOTP；服务端页面会将首次绑定的 `otpauth://` URI 和验证码表单提交到 `POST /auth/login/totp`，成功后才绑定 OAuth 授权请求并跳转到授权确认页。仅有 passkey 的浏览器客户端应使用上述 WebAuthn API 完成因子后再继续授权。
 
 ### `DELETE /api/v1/auth/session`
 
