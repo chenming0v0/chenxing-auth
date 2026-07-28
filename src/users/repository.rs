@@ -1,4 +1,4 @@
-use sqlx::{PgPool, Postgres, Transaction};
+use crate::sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -41,7 +41,7 @@ pub async fn insert_user(
     pool: &PgPool,
     registration: ValidatedRegistration,
     password_hash: String,
-) -> Result<NewUser, sqlx::Error> {
+) -> Result<NewUser, crate::sqlx::Error> {
     let user = NewUser {
         id: Uuid::new_v4(),
         email: registration.email,
@@ -50,7 +50,7 @@ pub async fn insert_user(
         created_at: OffsetDateTime::now_utc(),
     };
 
-    sqlx::query(
+    crate::sqlx::query(
         "INSERT INTO users (id, email, password_hash, display_name, status, created_at)
          VALUES ($1, $2, $3, $4, 'active', $5)",
     )
@@ -68,8 +68,8 @@ pub async fn insert_user(
 pub async fn find_credentials_by_email(
     pool: &PgPool,
     email: &str,
-) -> Result<Option<UserCredentials>, sqlx::Error> {
-    sqlx::query_as::<_, (Uuid, String, String)>(
+) -> Result<Option<UserCredentials>, crate::sqlx::Error> {
+    crate::sqlx::query_as::<_, (Uuid, String, String)>(
         "SELECT id, password_hash, status FROM users WHERE email = $1",
     )
     .bind(email)
@@ -87,8 +87,8 @@ pub async fn find_credentials_by_email(
 pub async fn find_profile_by_id(
     pool: &PgPool,
     id: Uuid,
-) -> Result<Option<UserProfile>, sqlx::Error> {
-    sqlx::query_as::<_, (Uuid, String, Option<String>, String)>(
+) -> Result<Option<UserProfile>, crate::sqlx::Error> {
+    crate::sqlx::query_as::<_, (Uuid, String, Option<String>, String)>(
         "SELECT id, email, display_name, status FROM users WHERE id = $1",
     )
     .bind(id)
@@ -104,8 +104,8 @@ pub async fn find_profile_by_id(
     })
 }
 
-pub async fn list_users(pool: &sqlx::PgPool) -> Result<Vec<ListedUser>, sqlx::Error> {
-    sqlx::query_as::<_, (Uuid, String, Option<String>, String, OffsetDateTime)>(
+pub async fn list_users(pool: &crate::sqlx::PgPool) -> Result<Vec<ListedUser>, crate::sqlx::Error> {
+    crate::sqlx::query_as::<_, (Uuid, String, Option<String>, String, OffsetDateTime)>(
         "SELECT id, email, display_name, status, created_at FROM users ORDER BY created_at DESC",
     )
     .fetch_all(pool)
@@ -124,11 +124,11 @@ pub async fn list_users(pool: &sqlx::PgPool) -> Result<Vec<ListedUser>, sqlx::Er
 }
 
 pub async fn set_user_status(
-    pool: &sqlx::PgPool,
+    pool: &crate::sqlx::PgPool,
     id: Uuid,
     status: &str,
-) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
+) -> Result<bool, crate::sqlx::Error> {
+    let result = crate::sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
         .bind(id)
         .bind(status)
         .execute(pool)
@@ -139,8 +139,8 @@ pub async fn set_user_status(
 pub async fn insert_user_in_transaction(
     transaction: &mut Transaction<'_, Postgres>,
     user: &NewUser,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+) -> Result<(), crate::sqlx::Error> {
+    crate::sqlx::query(
         "INSERT INTO users (id, email, password_hash, display_name, status, created_at)
          VALUES ($1, $2, $3, $4, 'active', $5)",
     )

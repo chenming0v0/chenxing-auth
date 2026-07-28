@@ -1,5 +1,6 @@
 use std::{env, time::Duration};
 
+use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{
     clients::{domain::ValidatedClientRegistration, repository as client_repository},
     db,
@@ -15,11 +16,10 @@ use chenxing_auth::{
     },
 };
 use redis::AsyncCommands;
-use sqlx::postgres::PgPoolOptions;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-async fn database() -> sqlx::PgPool {
+async fn database() -> chenxing_auth::sqlx::PgPool {
     let url = env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let pool = PgPoolOptions::new()
@@ -121,12 +121,12 @@ async fn postgres_repositories_round_trip_users_and_clients() {
             .expect("update client secret")
     );
 
-    sqlx::query("DELETE FROM oauth_clients WHERE id = $1")
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE id = $1")
         .bind(client.id)
         .execute(&pool)
         .await
         .expect("cleanup client");
-    sqlx::query("DELETE FROM users WHERE id = $1")
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user.id)
         .execute(&pool)
         .await
@@ -155,7 +155,7 @@ async fn postgres_transaction_user_insert_and_missing_client_paths_work() {
             .is_none()
     );
 
-    sqlx::query("DELETE FROM users WHERE id = $1")
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user.id)
         .execute(&pool)
         .await

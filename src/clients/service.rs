@@ -1,9 +1,9 @@
+use crate::sqlx::PgPool;
 use argon2::{
     Argon2,
     password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
 };
 use serde::Serialize;
-use sqlx::PgPool;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -52,7 +52,7 @@ pub enum ClientServiceError {
     #[error("could not hash client secret")]
     SecretHash,
     #[error("could not persist client")]
-    Database(#[from] sqlx::Error),
+    Database(#[from] crate::sqlx::Error),
     #[error("client data is invalid")]
     InvalidData,
 }

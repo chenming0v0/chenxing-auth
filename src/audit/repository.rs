@@ -1,11 +1,11 @@
-use sqlx::PgPool;
+use crate::sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::AuditEvent;
 
-pub async fn insert(pool: &PgPool, event: &AuditEvent) -> Result<(), sqlx::Error> {
-    sqlx::query(
+pub async fn insert(pool: &PgPool, event: &AuditEvent) -> Result<(), crate::sqlx::Error> {
+    crate::sqlx::query(
         "INSERT INTO audit_events
          (id, actor_type, actor_id, action, resource_type, resource_id, metadata, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -23,8 +23,8 @@ pub async fn insert(pool: &PgPool, event: &AuditEvent) -> Result<(), sqlx::Error
     Ok(())
 }
 
-pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<AuditEvent>, sqlx::Error> {
-    sqlx::query_as::<
+pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<AuditEvent>, crate::sqlx::Error> {
+    crate::sqlx::query_as::<
         _,
         (
             Uuid,

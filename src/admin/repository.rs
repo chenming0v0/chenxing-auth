@@ -1,4 +1,4 @@
-use sqlx::PgPool;
+use crate::sqlx::PgPool;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -16,9 +16,9 @@ pub async fn insert(
     email: &str,
     password_hash: &str,
     role: &str,
-) -> Result<Uuid, sqlx::Error> {
+) -> Result<Uuid, crate::sqlx::Error> {
     let id = Uuid::new_v4();
-    sqlx::query(
+    crate::sqlx::query(
         "INSERT INTO admins (id, email, password_hash, role, status, created_at)
          VALUES ($1, $2, $3, $4, 'active', $5)",
     )
@@ -37,13 +37,13 @@ pub async fn insert_bootstrap(
     email: &str,
     password_hash: &str,
     role: &str,
-) -> Result<Option<Uuid>, sqlx::Error> {
+) -> Result<Option<Uuid>, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+    crate::sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(7_341_928_i64)
         .execute(&mut *transaction)
         .await?;
-    let initialized: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM admins)")
+    let initialized: bool = crate::sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM admins)")
         .fetch_one(&mut *transaction)
         .await?;
     if initialized {
@@ -51,7 +51,7 @@ pub async fn insert_bootstrap(
         return Ok(None);
     }
     let id = Uuid::new_v4();
-    sqlx::query(
+    crate::sqlx::query(
         "INSERT INTO admins (id, email, password_hash, role, status, created_at)
          VALUES ($1, $2, $3, $4, 'active', $5)",
     )
@@ -66,8 +66,11 @@ pub async fn insert_bootstrap(
     Ok(Some(id))
 }
 
-pub async fn find_by_email(pool: &PgPool, email: &str) -> Result<Option<StoredAdmin>, sqlx::Error> {
-    sqlx::query_as::<_, (Uuid, String, String, String, String)>(
+pub async fn find_by_email(
+    pool: &PgPool,
+    email: &str,
+) -> Result<Option<StoredAdmin>, crate::sqlx::Error> {
+    crate::sqlx::query_as::<_, (Uuid, String, String, String, String)>(
         "SELECT id, email, password_hash, role, status FROM admins WHERE email = $1",
     )
     .bind(email)
@@ -84,8 +87,11 @@ pub async fn find_by_email(pool: &PgPool, email: &str) -> Result<Option<StoredAd
     })
 }
 
-pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<StoredAdmin>, sqlx::Error> {
-    sqlx::query_as::<_, (Uuid, String, String, String, String)>(
+pub async fn find_by_id(
+    pool: &PgPool,
+    id: Uuid,
+) -> Result<Option<StoredAdmin>, crate::sqlx::Error> {
+    crate::sqlx::query_as::<_, (Uuid, String, String, String, String)>(
         "SELECT id, email, password_hash, role, status FROM admins WHERE id = $1",
     )
     .bind(id)
@@ -102,8 +108,8 @@ pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<StoredAdmin>, 
     })
 }
 
-pub async fn touch_login(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE admins SET last_login_at = $2 WHERE id = $1")
+pub async fn touch_login(pool: &PgPool, id: Uuid) -> Result<(), crate::sqlx::Error> {
+    crate::sqlx::query("UPDATE admins SET last_login_at = $2 WHERE id = $1")
         .bind(id)
         .bind(OffsetDateTime::now_utc())
         .execute(pool)
@@ -111,8 +117,8 @@ pub async fn touch_login(pool: &PgPool, id: Uuid) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-pub async fn list(pool: &PgPool) -> Result<Vec<StoredAdmin>, sqlx::Error> {
-    sqlx::query_as::<_, (Uuid, String, String, String, String)>(
+pub async fn list(pool: &PgPool) -> Result<Vec<StoredAdmin>, crate::sqlx::Error> {
+    crate::sqlx::query_as::<_, (Uuid, String, String, String, String)>(
         "SELECT id, email, password_hash, role, status FROM admins ORDER BY created_at DESC",
     )
     .fetch_all(pool)
@@ -130,8 +136,8 @@ pub async fn list(pool: &PgPool) -> Result<Vec<StoredAdmin>, sqlx::Error> {
     })
 }
 
-pub async fn set_status(pool: &PgPool, id: Uuid, status: &str) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("UPDATE admins SET status = $2 WHERE id = $1")
+pub async fn set_status(pool: &PgPool, id: Uuid, status: &str) -> Result<bool, crate::sqlx::Error> {
+    let result = crate::sqlx::query("UPDATE admins SET status = $2 WHERE id = $1")
         .bind(id)
         .bind(status)
         .execute(pool)

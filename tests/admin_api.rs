@@ -2,13 +2,17 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
+use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
 use serde_json::Value;
-use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn setup() -> (axum::Router, sqlx::PgPool, std::path::PathBuf) {
+async fn setup() -> (
+    axum::Router,
+    chenxing_auth::sqlx::PgPool,
+    std::path::PathBuf,
+) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -230,17 +234,17 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
         .expect("second bootstrap response");
     assert_eq!(response.status(), StatusCode::CONFLICT);
 
-    sqlx::query("DELETE FROM admins WHERE email = $1")
+    chenxing_auth::sqlx::query("DELETE FROM admins WHERE email = $1")
         .bind(&email)
         .execute(&database)
         .await
         .expect("cleanup admin");
-    sqlx::query("DELETE FROM admins WHERE email = $1")
+    chenxing_auth::sqlx::query("DELETE FROM admins WHERE email = $1")
         .bind(format!("operator-{email}"))
         .execute(&database)
         .await
         .expect("cleanup operator");
-    sqlx::query("DELETE FROM users WHERE email = $1")
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE email = $1")
         .bind(&user_email)
         .execute(&database)
         .await

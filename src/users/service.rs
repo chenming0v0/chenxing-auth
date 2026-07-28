@@ -1,4 +1,4 @@
-use sqlx::PgPool;
+use crate::sqlx::PgPool;
 use thiserror::Error;
 
 use super::{
@@ -22,7 +22,7 @@ pub enum UserServiceError {
     #[error("could not hash password")]
     PasswordHash,
     #[error("could not persist user")]
-    Database(#[from] sqlx::Error),
+    Database(#[from] crate::sqlx::Error),
     #[error("credentials are invalid")]
     InvalidCredentials,
 }

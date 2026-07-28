@@ -40,7 +40,7 @@ pub struct AppState {
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
     #[error("database configuration is invalid: {0}")]
-    Database(#[from] sqlx::Error),
+    Database(#[from] crate::sqlx::Error),
     #[error("redis configuration is invalid: {0}")]
     Redis(#[from] redis::RedisError),
     #[error("key manager initialization failed: {0}")]

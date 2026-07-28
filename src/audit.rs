@@ -7,11 +7,11 @@ pub mod repository;
 
 #[derive(Clone)]
 pub struct AuditService {
-    pool: sqlx::PgPool,
+    pool: crate::sqlx::PgPool,
 }
 
 impl AuditService {
-    pub fn new(pool: sqlx::PgPool) -> Self {
+    pub fn new(pool: crate::sqlx::PgPool) -> Self {
         Self { pool }
     }
 
@@ -21,7 +21,7 @@ impl AuditService {
         }
     }
 
-    pub async fn list(&self, limit: i64) -> Result<Vec<AuditEvent>, sqlx::Error> {
+    pub async fn list(&self, limit: i64) -> Result<Vec<AuditEvent>, crate::sqlx::Error> {
         repository::list(&self.pool, limit.clamp(1, 200)).await
     }
 }

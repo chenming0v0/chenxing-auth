@@ -19,6 +19,24 @@ fn key_manager_generates_a_public_signing_key() {
 }
 
 #[test]
+fn generated_private_key_uses_aws_lc_rsa_format() {
+    let manager = KeyManager::generate().expect("RSA signing key");
+    let token = issue_access_token(
+        &manager,
+        "https://auth.example.com",
+        "user-1",
+        "cx_project",
+        &["openid".to_owned()],
+        3600,
+    )
+    .expect("access token signed by AWS-LC");
+
+    assert!(
+        decode_access_token(&manager, "https://auth.example.com", "cx_project", &token,).is_ok()
+    );
+}
+
+#[test]
 fn key_rotation_keeps_previous_public_key_for_token_validation() {
     let manager = KeyManager::generate().expect("signing key");
     let old_key_id = manager.key_id().to_owned();

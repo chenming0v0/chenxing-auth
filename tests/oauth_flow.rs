@@ -10,15 +10,15 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
+use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
 
-async fn test_router() -> (Router, sqlx::PgPool, std::path::PathBuf) {
+async fn test_router() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -354,12 +354,12 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(response.headers().get_all(SET_COOKIE).iter().count(), 2);
 
-    sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
         .bind(client_id)
         .execute(&database)
         .await
         .expect("cleanup client");
-    sqlx::query("DELETE FROM users WHERE id = $1")
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(Uuid::parse_str(&user_id).expect("user UUID"))
         .execute(&database)
         .await

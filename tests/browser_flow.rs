@@ -6,13 +6,13 @@ use axum::{
         header::{LOCATION, SET_COOKIE},
     },
 };
+use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
-use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
 
-async fn setup() -> (Router, sqlx::PgPool, std::path::PathBuf) {
+async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -256,22 +256,22 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
             .is_some_and(|value| value.contains("code="))
     );
 
-    let user_id: (Uuid,) = sqlx::query_as("SELECT id FROM users WHERE email = $1")
+    let user_id: (Uuid,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
         .bind(&email)
         .fetch_one(&database)
         .await
         .expect("user lookup");
-    sqlx::query("DELETE FROM user_consents WHERE user_id = $1")
+    chenxing_auth::sqlx::query("DELETE FROM user_consents WHERE user_id = $1")
         .bind(user_id.0)
         .execute(&database)
         .await
         .expect("consent cleanup");
-    sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
         .bind(client_id)
         .execute(&database)
         .await
         .expect("client cleanup");
-    sqlx::query("DELETE FROM users WHERE id = $1")
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id.0)
         .execute(&database)
         .await

@@ -1,4 +1,4 @@
-use sqlx::{PgPool, types::Json};
+use crate::sqlx::{PgPool, types::Json};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -17,8 +17,8 @@ impl ConsentService {
         user_id: Uuid,
         client_id: &str,
         scopes: &[String],
-    ) -> Result<bool, sqlx::Error> {
-        let Some(stored) = sqlx::query_as::<_, (Json<Vec<String>>, )>(
+    ) -> Result<bool, crate::sqlx::Error> {
+        let Some(stored) = crate::sqlx::query_as::<_, (Json<Vec<String>>, )>(
             "SELECT c.scopes FROM user_consents c JOIN oauth_clients oc ON oc.id = c.client_id WHERE c.user_id = $1 AND oc.client_id = $2",
         )
         .bind(user_id)
@@ -36,8 +36,8 @@ impl ConsentService {
         user_id: Uuid,
         client_id: &str,
         scopes: &[String],
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query(
+    ) -> Result<(), crate::sqlx::Error> {
+        crate::sqlx::query(
             "INSERT INTO user_consents (user_id, client_id, scopes, updated_at)
              SELECT $1, id, $3, $4 FROM oauth_clients WHERE client_id = $2
              ON CONFLICT (user_id, client_id) DO UPDATE SET scopes = EXCLUDED.scopes, updated_at = EXCLUDED.updated_at",

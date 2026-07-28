@@ -10,7 +10,7 @@ use crate::users::credentials::verify_password;
 
 #[derive(Clone)]
 pub struct AdminService {
-    pool: sqlx::PgPool,
+    pool: crate::sqlx::PgPool,
 }
 
 #[derive(Debug, Error)]
@@ -26,11 +26,11 @@ pub enum AdminServiceError {
     #[error("password hashing failed")]
     PasswordHash,
     #[error("database operation failed: {0}")]
-    Database(#[from] sqlx::Error),
+    Database(#[from] crate::sqlx::Error),
 }
 
 impl AdminService {
-    pub fn new(pool: sqlx::PgPool) -> Self {
+    pub fn new(pool: crate::sqlx::PgPool) -> Self {
         Self { pool }
     }
 

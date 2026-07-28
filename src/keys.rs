@@ -1,8 +1,12 @@
 //! JWK/JWKS key storage, publication, rotation, and revocation boundary.
 
+use aws_lc_rs::{
+    encoding::AsDer,
+    rsa::{KeyPair, KeySize},
+};
 use jsonwebtoken::jwk::{Jwk, JwkSet, KeyOperations, PublicKeyUse};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey};
-use rsa::{RsaPrivateKey, pkcs1::EncodeRsaPrivateKey, rand_core::OsRng};
+use pkcs8::PrivateKeyInfo;
 use std::{
     collections::BTreeMap,
     fs,
@@ -31,10 +35,12 @@ struct KeyState {
 
 #[derive(Debug, Error)]
 pub enum KeyManagerError {
-    #[error("failed to generate RSA key: {0}")]
-    Generation(#[from] rsa::errors::Error),
-    #[error("failed to encode RSA key: {0}")]
-    Encoding(#[from] rsa::pkcs1::Error),
+    #[error("failed to generate RSA key")]
+    Generation,
+    #[error("failed to encode RSA key")]
+    Encoding,
+    #[error("failed to parse generated RSA key")]
+    Pkcs8(#[from] pkcs8::Error),
     #[error("failed to create JWT key: {0}")]
     Jwt(#[from] jsonwebtoken::errors::Error),
     #[error("key storage operation failed: {0}")]
@@ -182,8 +188,10 @@ fn build_key_state(
 }
 
 fn generate_rsa_key() -> Result<(String, Vec<u8>), KeyManagerError> {
-    let private_key = RsaPrivateKey::new(&mut OsRng, 2048)?;
-    let der = private_key.to_pkcs1_der()?.as_bytes().to_vec();
+    let key_pair = KeyPair::generate(KeySize::Rsa2048).map_err(|_| KeyManagerError::Generation)?;
+    let pkcs8 = key_pair.as_der().map_err(|_| KeyManagerError::Encoding)?;
+    let private_key_info = PrivateKeyInfo::try_from(pkcs8.as_ref())?;
+    let der = private_key_info.private_key.to_vec();
     Ok((format!("cx-{}", uuid::Uuid::new_v4().simple()), der))
 }
 
