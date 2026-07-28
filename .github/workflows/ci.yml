@@ -104,7 +104,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: [quality, coverage]
     runs-on: ubuntu-latest
-    environment: production
+    environment: apifox
     steps:
       - name: Import OpenAPI specification
         env:
