@@ -1,61 +1,101 @@
-import { createContext, useContext, useState, ReactNode } from "react";
-import {
-  Account, ACCOUNTS, ConnectedApp, CONNECTED_APPS,
-  OAuthClient, INITIAL_CLIENTS, AdminUser, ADMIN_USERS,
-} from "./data/mock";
+import { createContext, useContext, useEffect, useMemo, useState, ReactNode } from "react";
+import { api, ApiError, OAuthClient, UserProfile, UserSession } from "./api";
+
+export interface AppUser extends UserProfile {
+  name: string;
+  color: string;
+}
 
 interface Store {
-  user: Account | null;
-  login: (a: Account) => void;
-  logout: () => void;
-  accounts: Account[];
-  addAccount: (a: Account) => void;
-  connections: ConnectedApp[];
-  revoke: (id: string) => void;
-  addConnection: (app: ConnectedApp) => void;
+  user: AppUser | null;
+  loading: boolean;
+  error: string | null;
   clients: OAuthClient[];
-  addClient: (c: OAuthClient) => void;
-  removeClient: (id: string) => void;
-  users: AdminUser[];
-  toggleUserStatus: (id: string) => void;
+  sessions: UserSession[];
+  refresh: () => Promise<void>;
+  login: (email: string, password: string) => Promise<void>;
+  register: (email: string, password: string, displayName: string) => Promise<void>;
+  logout: () => Promise<void>;
+  updateProfile: (displayName: string) => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+  revokeSession: (id: string) => Promise<void>;
+  createClient: (input: { client_name: string; redirect_uris: string[]; scopes: string[] }) => Promise<OAuthClient & { client_secret: string }>;
+  updateClient: (id: string, input: { client_name: string; redirect_uris: string[]; scopes: string[] }) => Promise<void>;
+  setClientStatus: (id: string, status: "enable" | "disable") => Promise<void>;
+  rotateClientSecret: (id: string) => Promise<string>;
+  clearError: () => void;
 }
 
 const Ctx = createContext<Store>(null as unknown as Store);
 
-export function StoreProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<Account | null>(null);
-  const [accounts, setAccounts] = useState<Account[]>(ACCOUNTS);
-  const [connections, setConnections] = useState<ConnectedApp[]>(CONNECTED_APPS);
-  const [clients, setClients] = useState<OAuthClient[]>(INITIAL_CLIENTS);
-  const [users, setUsers] = useState<AdminUser[]>(ADMIN_USERS);
+function colorFor(value: string) {
+  const colors = ["from-indigo-500 to-violet-600", "from-cyan-400 to-blue-600", "from-fuchsia-500 to-purple-700", "from-emerald-400 to-teal-600"];
+  const hash = [...value].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  return colors[hash % colors.length];
+}
 
-  return (
-    <Ctx.Provider
-      value={{
-        user,
-        login: (a) => setUser(a),
-        logout: () => setUser(null),
-        accounts,
-        addAccount: (a) => setAccounts((p) => [a, ...p]),
-        connections,
-        revoke: (id) => setConnections((p) => p.filter((c) => c.id !== id)),
-        addConnection: (app) =>
-          setConnections((p) => (p.some((c) => c.id === app.id) ? p : [app, ...p])),
-        clients,
-        addClient: (c) => setClients((p) => [c, ...p]),
-        removeClient: (id) => setClients((p) => p.filter((c) => c.id !== id)),
-        users,
-        toggleUserStatus: (id) =>
-          setUsers((p) =>
-            p.map((u) =>
-              u.id === id ? { ...u, status: u.status === "冻结" ? "正常" : "冻结" } : u
-            )
-          ),
-      }}
-    >
-      {children}
-    </Ctx.Provider>
-  );
+function mapUser(profile: UserProfile): AppUser {
+  return { ...profile, name: profile.display_name || profile.email.split("@")[0], color: colorFor(profile.id) };
+}
+
+export function StoreProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<AppUser | null>(null);
+  const [clients, setClients] = useState<OAuthClient[]>([]);
+  const [sessions, setSessions] = useState<UserSession[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = async () => {
+    setLoading(true);
+    try {
+      const profile = await api.me();
+      const [clientResponse, sessionResponse] = await Promise.all([api.clients(), api.sessions()]);
+      setUser(mapUser(profile));
+      setClients(clientResponse.items);
+      setSessions(sessionResponse.items);
+      setError(null);
+    } catch (value) {
+      if (!(value instanceof ApiError) || value.status !== 401) setError(value instanceof Error ? value.message : "加载失败");
+      setUser(null);
+      setClients([]);
+      setSessions([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void refresh(); }, []);
+
+  const value = useMemo<Store>(() => ({
+    user,
+    loading,
+    error,
+    clients,
+    sessions,
+    refresh,
+    login: async (email, password) => {
+      await api.login({ email, password });
+      await refresh();
+    },
+    register: async (email, password, displayName) => {
+      await api.register({ email, password, display_name: displayName || undefined });
+      await api.login({ email, password });
+      await refresh();
+    },
+    logout: async () => {
+      try { await api.logout(); } finally { setUser(null); setClients([]); setSessions([]); }
+    },
+    updateProfile: async (displayName) => { setUser(mapUser(await api.updateProfile(displayName))); },
+    changePassword: async (currentPassword, newPassword) => { await api.changePassword(currentPassword, newPassword); setUser(null); setClients([]); setSessions([]); },
+    revokeSession: async (id) => { await api.revokeSession(id); await refresh(); },
+    createClient: async (input) => { const created = await api.createClient(input); setClients((current) => [created, ...current]); return created; },
+    updateClient: async (id, input) => { await api.updateClient(id, input); await refresh(); },
+    setClientStatus: async (id, status) => { await api.setClientStatus(id, status); setClients((current) => current.map((client) => client.id === id ? { ...client, status: status === "enable" ? "active" : "disabled" } : client)); },
+    rotateClientSecret: async (id) => (await api.rotateClientSecret(id)).client_secret,
+    clearError: () => setError(null),
+  }), [user, loading, error, clients, sessions]);
+
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
 export const useStore = () => useContext(Ctx);

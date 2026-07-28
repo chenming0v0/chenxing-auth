@@ -8,7 +8,7 @@
 
 用户侧产品名称为 **辰星通行证**。用户创建辰星通行证账号后，可以使用该账号注册和登录天穹辰星的其他子项目平台。平台提供统一登录、OAuth 2.0 / OpenID Connect（OIDC）授权、用户与 Client 管理、会话管理，以及隔离的业务扩展接口。
 
-当前仓库以可运行的后端和部署能力为主，前端优先级较低。浏览器登录、授权确认、管理员账号会话、角色权限、用户/Client/审计管理 API、OAuth/OIDC 授权码流程和 Docker/GitHub Actions 已实现；完整视觉化管理后台和第三方互操作认证矩阵仍属于后续增强项。
+当前仓库包含可运行的后端和同源 React Web 控制台。浏览器登录、注册、资料与 Session 管理、用户 OAuth Client 管理、OAuth/OIDC 授权码流程和 Docker/GitHub Actions 已实现；前端构建产物会内嵌进 Rust 二进制，由同一个 Axum 服务提供，不要求单独的静态站点或反向代理。
 
 ## 项目定位
 
@@ -164,6 +164,7 @@ src/
 ### 前置条件
 
 - Rust 1.94 或兼容的稳定版工具链
+- Node.js 22 或兼容版本及 npm
 - PostgreSQL 14 或更高版本
 - Redis 6 或更高版本
 
@@ -172,11 +173,15 @@ src/
 ### 常用命令
 
 ```powershell
+npm ci --prefix web
+npm run build --prefix web
 cargo fmt
 cargo check --all-targets --all-features
 cargo test --all-features
 cargo run
 ```
+
+`cargo build`/`cargo run` 在缺少 `web/dist/index.html` 时会通过 Cargo build script 自动安装并构建 Web。生产 Docker 和 GitHub Actions 会在 Rust 编译前显式完成同样的步骤。启动后访问 `http://127.0.0.1:3000/` 即可同时使用 Web 和 API。
 
 ## API 文档
 
@@ -185,7 +190,7 @@ cargo run
 
 以下能力仍属于后续增强项，当前不应直接视为完整生产认证产品：
 
-- 完整视觉化管理后台 UI（当前提供轻量 HTML 入口和完整管理 API）
+- 用户已授权应用的聚合列表 API（当前页面明确展示后端能力边界）
 - 大规模第三方 OAuth/OIDC 互操作认证矩阵
 - 密钥撤销策略和外部受保护密钥存储
 - 生产级限流、告警和密钥托管集成
@@ -200,7 +205,7 @@ cargo run
 
 脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码和 `ADMIN_TOKEN`，先校验生产 Compose 配置，再启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。已有 `.env` 不会被覆盖；生产环境应将 `APP_ISSUER` 设置为固定的 HTTPS 地址，并将 `.env` 作为秘密文件保护。健康检查失败时脚本会输出 Compose 状态和应用日志，便于定位启动问题。
 
-生产 Compose 文件为 `docker-compose.prod.yml`。数据库、Redis 和 JWK 密钥分别使用 Docker volume 持久化，应用容器以非 root 用户运行。默认只发布认证 API 端口，TLS 和反向代理应由服务器网关提供。
+生产 Compose 文件为 `docker-compose.prod.yml`。数据库、Redis、JWK 密钥和内嵌 Web 都由应用容器提供，应用容器以非 root 用户运行。TLS 终止可以交给服务器网关，但 Web/API 本身不依赖反向代理。
 
 ## GitHub Actions
 

@@ -44,6 +44,13 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build embedded web
+        run: npm ci --prefix web && npm run build --prefix web
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.94.0

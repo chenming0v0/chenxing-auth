@@ -1,117 +1,40 @@
-import { motion } from "framer-motion";
-import {
-  Mail, Fingerprint, ShieldCheck, Smartphone, KeyRound,
-  MapPin, Calendar, Copy, Check, Pencil,
-} from "lucide-react";
-import { useState } from "react";
-import { Avatar, Badge, PageFade, GhostButton } from "../../components/ui";
+import { FormEvent, useState } from "react";
+import { Calendar, Check, Copy, KeyRound, LockKeyhole, LogOut, Mail, Save, Smartphone } from "lucide-react";
+import { errorMessage, formatDate } from "../../api";
+import { Avatar, Badge, Field, GlowButton, GhostButton, PageFade } from "../../components/ui";
 import { useStore } from "../../store";
 
 export default function Profile() {
-  const { user } = useStore();
-  const [copied, setCopied] = useState(false);
+  const { user, sessions, updateProfile, changePassword, revokeSession } = useStore();
+  const [name, setName] = useState(user?.display_name ?? "");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   if (!user) return null;
 
-  const copy = () => {
-    navigator.clipboard?.writeText(user.uid).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1400);
+  const saveProfile = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); setError(null); setMessage(null);
+    try { await updateProfile(name); setMessage("资料已更新"); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); }
   };
+  const savePassword = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); setError(null); setMessage(null);
+    try { await changePassword(currentPassword, newPassword); setCurrentPassword(""); setNewPassword(""); setMessage("密码已修改，所有旧 Session 已撤销，请重新登录"); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); }
+  };
+  const copyId = () => { void navigator.clipboard?.writeText(user.id); setMessage("用户 ID 已复制"); };
 
-  const security = [
-    { icon: <ShieldCheck size={16} />, title: "双因素验证", desc: "TOTP 验证器已绑定", status: "已开启", tone: "green" as const },
-    { icon: <Smartphone size={16} />, title: "受信设备", desc: "3 台设备处于活跃状态", status: "3 台", tone: "cyan" as const },
-    { icon: <KeyRound size={16} />, title: "通行密钥 Passkey", desc: "支持指纹 / 面容快捷登录", status: "2 个", tone: "indigo" as const },
-    { icon: <Mail size={16} />, title: "恢复邮箱", desc: "re****@backup.star", status: "已验证", tone: "green" as const },
-  ];
-
-  return (
-    <PageFade>
-      <div className="grid gap-6 lg:grid-cols-3">
-        {/* identity card */}
-        <motion.div
-          initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
-          className="glass relative overflow-hidden rounded-3xl p-7 lg:col-span-1"
-        >
-          <div className="aurora -right-14 -top-16 h-52 w-52 bg-indigo-500/25" />
-          <div className="relative flex flex-col items-center pt-4 text-center">
-            <div className="relative">
-              <div className="orbit-ring absolute -inset-3 animate-[spin_18s_linear_infinite]" />
-              <Avatar name={user.name} color={user.color} size="xl" />
-            </div>
-            <h1 className="mt-5 text-xl font-bold text-white">{user.name}</h1>
-            <div className="mt-1 text-sm text-slate-500">{user.email}</div>
-            <div className="mt-3 flex gap-2">
-              <Badge tone="indigo">{user.role === "owner" ? "超级管理员" : user.role === "admin" ? "管理员" : "认证用户"}</Badge>
-              <Badge tone="green">已实名</Badge>
-            </div>
-
-            <button
-              onClick={copy}
-              className="code-block mt-6 flex w-full cursor-pointer items-center justify-between rounded-xl px-4 py-3 text-left transition hover:border-indigo-400/40"
-            >
-              <div>
-                <div className="text-[10px] uppercase tracking-widest text-slate-600">辰星 ID</div>
-                <div className="mt-0.5 font-mono text-sm text-cyan-300">{user.uid}</div>
-              </div>
-              {copied ? <Check size={15} className="text-emerald-400" /> : <Copy size={15} className="text-slate-500" />}
-            </button>
-
-            <div className="mt-5 grid w-full grid-cols-2 gap-3 text-left text-xs text-slate-500">
-              <div className="flex items-center gap-2"><Calendar size={13} className="text-indigo-400/70" /> 2024-12 注册</div>
-              <div className="flex items-center gap-2"><MapPin size={13} className="text-indigo-400/70" /> 上海 · 中国</div>
-            </div>
-
-            <GhostButton className="mt-6 w-full">
-              <Pencil size={13} className="mr-1.5 inline" /> 编辑公开资料
-            </GhostButton>
-          </div>
-        </motion.div>
-
-        <div className="space-y-6 lg:col-span-2">
-          {/* public profile visible to apps */}
-          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.08 }} className="glass rounded-3xl p-7">
-            <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-white">
-              <Fingerprint size={16} className="text-indigo-300" /> 第三方应用可见信息
-            </div>
-            <p className="mb-5 text-xs text-slate-500">当你授权 profile / email Scope 时，应用将读取以下字段</p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {[
-                ["sub（唯一标识）", user.uid],
-                ["name（昵称）", user.name],
-                ["email", user.email],
-                ["email_verified", "true"],
-                ["locale", "zh-CN"],
-                ["zoneinfo", "Asia/Shanghai"],
-              ].map(([k, v]) => (
-                <div key={k} className="rounded-xl border border-white/6 bg-white/[0.02] px-4 py-3">
-                  <div className="text-[10px] font-medium uppercase tracking-wider text-slate-600">{k}</div>
-                  <div className="mt-1 truncate font-mono text-[13px] text-slate-200">{v}</div>
-                </div>
-              ))}
-            </div>
-          </motion.div>
-
-          {/* security */}
-          <motion.div initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.16 }} className="glass rounded-3xl p-7">
-            <div className="mb-5 flex items-center gap-2 text-sm font-semibold text-white">
-              <ShieldCheck size={16} className="text-emerald-400" /> 安全防护
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {security.map((s) => (
-                <div key={s.title} className="flex items-center gap-3.5 rounded-2xl border border-white/6 bg-white/[0.02] p-4 transition hover:border-indigo-400/25">
-                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-500/12 text-indigo-300">{s.icon}</span>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[13px] font-medium text-white">{s.title}</div>
-                    <div className="truncate text-[11px] text-slate-500">{s.desc}</div>
-                  </div>
-                  <Badge tone={s.tone}>{s.status}</Badge>
-                </div>
-              ))}
-            </div>
-          </motion.div>
-        </div>
+  return <PageFade>
+    <div className="mb-6"><h1 className="text-xl font-bold text-white">通行证资料</h1><p className="mt-1 text-sm text-slate-500">管理公开身份信息、密码和当前登录 Session。</p></div>
+    <div className="grid gap-6 lg:grid-cols-3">
+      <section className="glass rounded-3xl p-7"><div className="flex flex-col items-center text-center"><Avatar name={user.name} color={user.color} size="xl" /><h2 className="mt-5 text-xl font-bold text-white">{user.name}</h2><div className="mt-1 text-sm text-slate-500">{user.email}</div><div className="mt-3"><Badge tone="green">{user.status === "active" ? "正常" : user.status}</Badge></div><button onClick={copyId} className="code-block mt-6 flex w-full cursor-pointer items-center justify-between rounded-xl px-4 py-3 text-left hover:border-indigo-400/40"><div><div className="text-[10px] uppercase tracking-widest text-slate-600">用户 ID</div><div className="mt-0.5 truncate font-mono text-xs text-cyan-300">{user.id}</div></div><Copy size={15} className="text-slate-500" /></button></div></section>
+      <div className="space-y-6 lg:col-span-2">
+        <section className="glass rounded-3xl p-7"><div className="mb-5 flex items-center gap-2 text-sm font-semibold text-white"><Mail size={16} className="text-indigo-300" />公开资料</div><form className="space-y-4" onSubmit={saveProfile}><Field label="邮箱（不可修改）" value={user.email} disabled /><Field label="显示名称" value={name} maxLength={128} onChange={(event) => setName(event.target.value)} /><div className="flex justify-end"><GlowButton type="submit" disabled={busy}><Save size={14} className="mr-1.5 inline" />保存资料</GlowButton></div></form></section>
+        <section className="glass rounded-3xl p-7"><div className="mb-5 flex items-center gap-2 text-sm font-semibold text-white"><LockKeyhole size={16} className="text-amber-300" />修改密码</div><form className="grid gap-4 sm:grid-cols-2" onSubmit={savePassword}><Field label="当前密码" type="password" required minLength={1} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /><Field label="新密码" type="password" required minLength={12} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><div className="sm:col-span-2 flex items-center justify-between gap-3"><span className="text-xs text-slate-600">修改后所有已登录设备都会退出。</span><GlowButton type="submit" disabled={busy}>更新密码</GlowButton></div></form></section>
       </div>
-    </PageFade>
-  );
+    </div>
+    {(message || error) && <div role="status" className={`mt-6 rounded-xl border px-4 py-3 text-sm ${error ? "border-rose-400/20 bg-rose-500/10 text-rose-200" : "border-emerald-400/20 bg-emerald-500/10 text-emerald-200"}`}>{error ?? message}</div>}
+    <section className="mt-6 glass rounded-3xl p-7"><div className="mb-5 flex items-center gap-2 text-sm font-semibold text-white"><Smartphone size={16} className="text-cyan-300" />登录 Session</div><div className="space-y-2">{sessions.map((session) => <div key={session.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-white/6 bg-white/[0.02] px-4 py-3"><span className={`h-2 w-2 rounded-full ${session.current ? "bg-emerald-400" : "bg-slate-600"}`} /><div className="min-w-0 flex-1"><div className="font-mono text-xs text-slate-300">{session.id}</div><div className="mt-1 flex flex-wrap gap-3 text-[11px] text-slate-600"><span><Calendar size={11} className="mr-1 inline" />创建 {formatDate(session.created_at)}</span><span>过期 {formatDate(session.expires_at)}</span></div></div>{session.current ? <Badge tone="green"><Check size={11} />当前设备</Badge> : <GhostButton className="px-3 py-1.5" onClick={() => void revokeSession(session.id)}><LogOut size={12} className="mr-1 inline" />撤销</GhostButton>}</div>)}{sessions.length === 0 && <div className="py-6 text-center text-sm text-slate-600">暂无活跃 Session</div>}</div></section>
+    <div className="mt-6 flex items-center gap-2 text-xs text-slate-600"><KeyRound size={13} className="text-indigo-300/70" />密码与 Session 由认证中枢统一管理，前端不会保存密码。</div>
+  </PageFade>;
 }

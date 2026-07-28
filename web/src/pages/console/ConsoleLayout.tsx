@@ -3,7 +3,7 @@ import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   LayoutDashboard, UserRound, Plug, Code2, FlaskConical,
-  Users, LogOut, Bell, Search, ChevronRight,
+  LogOut, Bell, Search, ChevronRight,
 } from "lucide-react";
 import { Logo, Avatar, Badge } from "../../components/ui";
 import { BRAND } from "../../data/mock";
@@ -16,19 +16,18 @@ const NAV = [
   { to: "/console/connections", icon: <Plug size={17} />, label: "授权管理", group: "个人中心" },
   { to: "/console/developer", icon: <Code2 size={17} />, label: "开发者应用", group: "开发者" },
   { to: "/console/playground", icon: <FlaskConical size={17} />, label: "OAuth 测试台", group: "开发者" },
-  { to: "/console/users", icon: <Users size={17} />, label: "用户管理", group: "管理后台" },
 ];
 
 export default function ConsoleLayout() {
   const nav = useNavigate();
   const loc = useLocation();
-  const { user, logout, accounts, login } = useStore();
+  const { user, loading, logout } = useStore();
 
   useEffect(() => {
-    if (!user) login(accounts[0]); // demo auto-login
-  }, [user, login, accounts]);
+    if (!loading && !user) nav("/login", { replace: true });
+  }, [loading, user, nav]);
 
-  if (!user) return null;
+  if (loading || !user) return <div className="flex min-h-screen items-center justify-center bg-[#05060f] text-sm text-slate-500">正在加载你的控制台…</div>;
 
   const current = NAV.find((n) => (n.end ? loc.pathname === n.to : loc.pathname.startsWith(n.to)));
   let lastGroup = "";
@@ -126,7 +125,7 @@ export default function ConsoleLayout() {
             <Bell size={16} />
             <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-cyan-400" />
           </button>
-          <Badge tone="cyan">演示环境</Badge>
+          <Badge tone="green">已连接</Badge>
         </header>
 
         <main className="p-5 md:p-8">

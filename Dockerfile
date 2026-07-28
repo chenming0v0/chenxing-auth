@@ -1,9 +1,19 @@
+FROM node:22-bookworm-slim AS web-builder
+
+WORKDIR /build/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web ./
+RUN npm run build
+
 FROM rust:1.94-bookworm AS builder
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
+COPY build.rs ./
 COPY src ./src
 COPY migrations ./migrations
+COPY --from=web-builder /build/web/dist ./web/dist
 RUN cargo build --release --locked
 
 FROM debian:bookworm-slim AS runtime

@@ -1,7 +1,9 @@
 use axum::{
     Json, Router,
     extract::State,
-    routing::{get, post},
+    http::{StatusCode, header::CONTENT_TYPE},
+    response::IntoResponse,
+    routing::{any, get, post},
 };
 use serde::Serialize;
 use tower_http::trace::TraceLayer;
@@ -161,8 +163,21 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/admin/keys/rotate",
             axum::routing::post(rotate_signing_key),
         )
+        .fallback(any(web_app))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
+}
+
+async fn web_app(request: axum::extract::Request) -> impl IntoResponse {
+    if request.method() != axum::http::Method::GET {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    (
+        StatusCode::OK,
+        [(CONTENT_TYPE, "text/html; charset=utf-8")],
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/web/dist/index.html")),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Serialize)]
