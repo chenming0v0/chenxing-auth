@@ -3,7 +3,7 @@ name: Build And Publish
 on:
   workflow_dispatch:
   push:
-    branches: [master]
+    branches: [releases, master]
     tags: ['v*']
 
 permissions:
