@@ -119,6 +119,24 @@ cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --fail-
 cargo audit
 ```
 
+本机快速运行测试可安装并使用 `cargo-nextest`。它会并行调度不同的测试二进制；`cargo test -- --test-threads` 只控制单个测试二进制内部的线程，不能并行化多个 `tests/*.rs` 测试进程：
+
+```powershell
+cargo install cargo-nextest --locked
+cargo nextest run --all-features --test-threads 32
+```
+
+`cargo-nextest` 是本地加速工具，不替代标准 `cargo test` 的通用验证命令；CI 使用 Runner 默认资源，不要硬编码本机的 32 线程。
+
+本机编译性能基准：热缓存下 `cargo check --all-targets --all-features` 和 `cargo test --all-features --no-run` 通常应接近亚秒级；冷编译全部测试目标约需几十秒，主要成本来自 `aws-lc-sys`、`ring`、`sqlx` 等依赖和测试二进制链接。日常开发优先使用：
+
+```powershell
+cargo check --all-targets --all-features
+cargo nextest run --all-features --test-threads 32
+```
+
+不要同时启动多个 Cargo 编译或测试命令；它们会争抢 package cache 和 target build lock，导致耗时明显增加。
+
 如果某个命令暂时因工具链或外部服务不可用而无法运行，必须在变更说明中明确记录原因，不要声称验证通过。
 
 ## Git 与提交
