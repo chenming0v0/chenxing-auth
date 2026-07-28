@@ -100,7 +100,7 @@ pub fn validate_login(input: LoginInput) -> Result<ValidatedLogin, LoginError> {
     })
 }
 
-fn is_valid_email(email: &str) -> bool {
+pub(crate) fn is_valid_email(email: &str) -> bool {
     let mut parts = email.split('@');
     let Some(local) = parts.next() else {
         return false;

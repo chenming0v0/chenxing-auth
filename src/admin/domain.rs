@@ -13,6 +13,7 @@ pub enum AdminPermission {
     ManageClients,
     RotateKeys,
     ReadAudit,
+    ManageSettings,
 }
 
 impl AdminRole {

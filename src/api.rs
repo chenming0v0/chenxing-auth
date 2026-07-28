@@ -17,6 +17,7 @@ use crate::{
     },
     admin::key_handlers::rotate_signing_key,
     admin::management_handlers::{list_admins, list_audit, list_users, set_user_status},
+    admin::settings_handlers::{get_registration_email, update_registration_email},
     admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
     admin::web_handlers::{dashboard, login_page, login_submit, protected_placeholder},
     auth_factors::handlers::{
@@ -111,6 +112,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/admin/users/query", get(query_users))
         .route("/api/v1/admin/clients/query", get(query_clients))
         .route("/api/v1/admin/audit/query", get(query_audit))
+        .route(
+            "/api/v1/admin/settings/registration-email",
+            get(get_registration_email).put(update_registration_email),
+        )
         .route("/admin", get(dashboard))
         .route("/admin/login", get(login_page).post(login_submit))
         .route("/admin/users", get(protected_placeholder))

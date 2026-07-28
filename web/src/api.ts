@@ -102,6 +102,10 @@ function csrfCookie(name = "chenxing_csrf") {
     ?.slice(name.length + 1) ?? "";
 }
 
+function adminCsrfCookie() {
+  return csrfCookie("chenxing_admin_csrf");
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
@@ -123,6 +127,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 function mutation(init: RequestInit = {}): RequestInit {
   const headers = new Headers(init.headers);
   headers.set("X-CSRF-Token", csrfCookie());
+  return { ...init, headers };
+}
+
+function adminMutation(init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers);
+  headers.set("X-CSRF-Token", adminCsrfCookie());
   return { ...init, headers };
 }
 
@@ -156,6 +166,12 @@ export const api = {
   decideAuthorization: (id: string, decision: "approve" | "deny") =>
     request<{ decision: string; redirect_to: string }>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(id)}`, mutation({ method: "POST", body: JSON.stringify({ decision }) })),
   adminMe: () => request<AdminProfile>("/api/v1/admin/auth/me"),
+  adminLogin: (input: { username: string; password: string }) =>
+    request<{ admin_id: number; expires_in: number }>("/api/v1/admin/auth/login", { method: "POST", body: JSON.stringify(input) }),
+  adminLogout: () => request<void>("/api/v1/admin/auth/logout", adminMutation({ method: "DELETE" })),
+  adminRegistrationEmail: () => request<{ registration_email_from: string | null }>("/api/v1/admin/settings/registration-email"),
+  updateAdminRegistrationEmail: (registration_email_from: string | null) =>
+    request<{ registration_email_from: string | null }>("/api/v1/admin/settings/registration-email", adminMutation({ method: "PUT", body: JSON.stringify({ registration_email_from }) })),
   adminOverview: () => request<AdminOverview>("/api/v1/admin/overview"),
   adminUsers: (search = "", status = "") => request<PageResponse<AdminUser>>(`/api/v1/admin/users/query?page=1&page_size=100&search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}`),
   adminSetUserStatus: (id: number, status: "active" | "disabled") =>
@@ -171,6 +187,7 @@ export function errorMessage(error: unknown) {
     if (error.code === "email_already_registered") return "这个邮箱已经注册";
     if (error.code === "oauth_client_quota_exceeded") return "最多创建 2 个 OAuth 应用";
     if (error.code === "csrf_invalid") return "页面安全校验已失效，请刷新后重试";
+    if (error.code === "invalid_email") return "请输入有效的邮箱地址";
     return error.message;
   }
   return "网络暂时不可用，请稍后重试";

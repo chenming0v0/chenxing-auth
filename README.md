@@ -145,6 +145,7 @@ src/
 - `/auth/login` 辰星通行证浏览器登录页
 - `/oauth/authorize/consent` 授权确认页、拒绝回调和 `user_consents` 持久化
 - 管理员 bootstrap、登录、注销、HttpOnly Session/CSRF Cookie
+- 管理员 Web 控制台与 PostgreSQL 持久化的注册邮件发件地址设置
 - `owner`、`operator`、`auditor` 角色与最小权限矩阵
 - 用户列表、用户启停、管理员列表、审计查询和管理后台入口
 - `/oauth/revoke` RFC 7009 风格 Token 撤销以及 Discovery 中的撤销端点

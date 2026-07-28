@@ -828,6 +828,39 @@ paths:
               schema: { $ref: '#/components/schemas/PagedAudit' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/settings/registration-email:
+    get:
+      tags: [Admin Operations]
+      summary: 查询注册邮件发件地址
+      operationId: getRegistrationEmailSetting
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      responses:
+        '200':
+          description: 当前注册邮件发件地址。未配置时为 null。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegistrationEmailSettingResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      tags: [Admin Operations]
+      summary: 更新注册邮件发件地址
+      operationId: updateRegistrationEmailSetting
+      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateRegistrationEmailSettingInput' }
+      responses:
+        '200':
+          description: 更新后的注册邮件发件地址
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegistrationEmailSettingResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /api/v1/admin/keys/rotate:
     post:
       tags: [Admin Operations]
@@ -1091,6 +1124,16 @@ components:
         oauth_clients: { type: integer, format: int64 }
         administrators: { type: integer, format: int64 }
         audit_events: { type: integer, format: int64 }
+    RegistrationEmailSettingResponse:
+      type: object
+      required: [registration_email_from]
+      properties:
+        registration_email_from: { type: string, format: email, nullable: true }
+    UpdateRegistrationEmailSettingInput:
+      type: object
+      required: [registration_email_from]
+      properties:
+        registration_email_from: { type: string, format: email, nullable: true }
     PagedUsers:
       type: object
       required: [items, page, page_size, total]

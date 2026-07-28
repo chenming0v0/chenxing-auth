@@ -11,6 +11,7 @@ pub mod extensions;
 pub mod keys;
 pub mod oauth;
 pub mod sessions;
+pub mod settings;
 pub mod state;
 pub mod users;
 pub mod web;

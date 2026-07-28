@@ -15,6 +15,9 @@ import Connections from "./pages/console/Connections";
 import Developer from "./pages/console/Developer";
 import Playground from "./pages/console/Playground";
 import OAuthConsent from "./pages/OAuthConsent";
+import AdminLogin from "./pages/AdminLogin";
+import AdminConsoleLayout from "./pages/AdminConsoleLayout";
+import AdminSettings from "./pages/AdminSettings";
 
 export default function App() {
   return (
@@ -42,7 +45,7 @@ function BootstrapGate() {
 
   if (initialized === null && !error) return <GateLoading />;
   if (error) return <GateError message={error} onRetry={checkStatus} />;
-  if (!initialized) return <Bootstrap onComplete={() => { setInitialized(true); window.location.assign("/login"); }} />;
+  if (!initialized) return <Bootstrap onComplete={() => { setInitialized(true); window.location.assign("/admin-console/login"); }} />;
 
   return <Routes>
     <Route path="/" element={<Landing />} />
@@ -50,6 +53,11 @@ function BootstrapGate() {
     <Route path="/register" element={<Register />} />
     <Route path="/oauth/authorize" element={<OAuthFlow />} />
     <Route path="/oauth/consent" element={<OAuthConsent />} />
+    <Route path="/admin-console/login" element={<AdminLogin />} />
+    <Route path="/admin-console" element={<AdminConsoleLayout />}>
+      <Route index element={<Navigate to="settings" replace />} />
+      <Route path="settings" element={<AdminSettings />} />
+    </Route>
     <Route path="/console" element={<ConsoleLayout />}>
       <Route index element={<Overview />} />
       <Route path="profile" element={<Profile />} />

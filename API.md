@@ -228,6 +228,15 @@ grant_type=refresh_token&refresh_token=...
 
 撤销管理员 Session，要求管理员 Session Cookie、管理员 CSRF Cookie 和 `X-CSRF-Token`；响应 `204`。
 
+### 注册邮件发件地址
+
+管理员 Web 控制台入口为 `/admin-console/login`，登录后在“邮件设置”页面维护用户注册流程使用的发件地址。该设置使用独立的管理员 Session Cookie、管理员 CSRF Cookie 和 `X-CSRF-Token` 保护，只有 Owner 可修改。
+
+- `GET /api/v1/admin/settings/registration-email`：读取当前发件地址，未配置时返回 `{"registration_email_from":null}`。
+- `PUT /api/v1/admin/settings/registration-email`：更新发件地址，提交 `{"registration_email_from":"no-reply@example.com"}`；传 `null` 或空字符串可清除配置，成功返回更新后的设置。
+
+发件地址保存于 PostgreSQL 的 `app_settings` 表，不从环境变量、请求 Host 或前端状态推导。当前设置资源只保存地址本身；SMTP 连接参数、发送凭据和邮件模板属于后续邮件服务接入边界。
+
 ### 用户管理
 
 - `GET /api/v1/admin/users`：列出用户，需要 `ManageUsers`。

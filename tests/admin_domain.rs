@@ -26,11 +26,14 @@ fn administrator_permission_matrix_is_least_privilege() {
     assert!(AdminRole::Owner.allows(ManageClients));
     assert!(AdminRole::Owner.allows(RotateKeys));
     assert!(AdminRole::Owner.allows(ReadAudit));
+    assert!(AdminRole::Owner.allows(ManageSettings));
 
     assert!(!AdminRole::Operator.allows(ManageUsers));
     assert!(AdminRole::Operator.allows(ManageClients));
     assert!(!AdminRole::Operator.allows(RotateKeys));
+    assert!(!AdminRole::Operator.allows(ManageSettings));
     assert!(!AdminRole::Auditor.allows(ManageClients));
+    assert!(!AdminRole::Auditor.allows(ManageSettings));
 }
 
 #[test]

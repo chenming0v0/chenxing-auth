@@ -16,6 +16,7 @@ use crate::{
     oauth::revocation::TokenRevocationStore,
     oauth::store::AuthorizationCodeStore,
     sessions::store::SessionStore,
+    settings::SettingsService,
     users::service::UserService,
 };
 
@@ -25,6 +26,7 @@ pub struct AppState {
     pub database: Database,
     pub redis: Client,
     pub sessions: SessionStore,
+    pub settings: SettingsService,
     pub users: UserService,
     pub clients: ClientService,
     pub keys: KeyManager,
@@ -58,6 +60,7 @@ impl AppState {
         let database = crate::db::connect(&config)?;
         let redis = redis::Client::open(config.redis_url.as_str())?;
         let sessions = SessionStore::with_metadata(redis.clone(), database.clone());
+        let settings = SettingsService::new(database.clone());
         let users = UserService::new(database.clone());
         let factors = AuthFactorService::new(
             database.clone(),
@@ -84,6 +87,7 @@ impl AppState {
             database,
             redis,
             sessions,
+            settings,
             users,
             clients,
             keys,

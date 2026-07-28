@@ -298,6 +298,7 @@ fn permissions(role: AdminRole) -> Vec<&'static str> {
         (AdminPermission::ManageClients, "manage_clients"),
         (AdminPermission::RotateKeys, "rotate_keys"),
         (AdminPermission::ReadAudit, "read_audit"),
+        (AdminPermission::ManageSettings, "manage_settings"),
     ]
     .into_iter()
     .filter_map(|(permission, name)| role.allows(permission).then_some(name))
