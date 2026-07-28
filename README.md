@@ -177,29 +177,10 @@ cargo test --all-features
 cargo run
 ```
 
-当前 API：
+## API 文档
 
-- `GET /health`：返回服务健康状态
-- `POST /api/v1/users`：创建辰星通行证账号，JSON 字段为 `email`、`password` 和可选的 `display_name`
-- `POST /api/v1/auth/login`：验证辰星通行证账号并创建 Redis Session，JSON 字段为 `email` 和 `password`
-- `GET /auth/login`、`POST /auth/login`：浏览器登录页，仅由带有效授权请求的流程使用
-- `GET /oauth/authorize/consent`、`POST /oauth/authorize/consent`：浏览器授权确认和 CSRF 保护
-- `DELETE /api/v1/auth/session`：撤销当前 Session，需要 `X-Chenxing-Session` 请求头
-- `POST /oauth/token`：授权码/Refresh Token 交换，支持 HTTP Basic 或表单 Client 认证
-- `POST /oauth/revoke`：撤销 Access Token 或 Refresh Token
-- `GET /oauth/userinfo`：使用 `Authorization: Bearer <access_token>` 返回 OIDC UserInfo
-- `POST /api/v1/admin/bootstrap`：仅使用 `ADMIN_TOKEN` 初始化第一个管理员，成功后不可重复 bootstrap
-- `POST /api/v1/admin/auth/login`、`DELETE /api/v1/admin/auth/logout`：管理员 API Session
-- `GET /api/v1/admin/admins`、`POST /api/v1/admin/admins`：查看/创建管理员；创建操作要求 Owner 和 CSRF
-- `GET /api/v1/admin/users`、`POST /api/v1/admin/users/{user_id}/{status}`：用户管理
-- `GET /api/v1/admin/audit`：审计查询
-- `POST /api/v1/admin/clients`：使用管理员 Bearer Token 注册 Client，Client Secret 只在创建响应中返回
-- `GET /api/v1/admin/clients`：使用管理员 Bearer Token 查看 Client 列表
-- `PUT /api/v1/admin/clients/{client_id}`：更新 Client 配置
-- `POST /api/v1/admin/clients/{client_id}/disable`：禁用 Client
-- `POST /api/v1/admin/clients/{client_id}/enable`：启用 Client
-- `POST /api/v1/admin/clients/{client_id}/rotate-secret`：轮换 Client Secret
-- `POST /api/v1/admin/keys/rotate`：管理员轮换 RS256 签名密钥，旧公钥继续发布
+- [给人看的 API 文档](https://wiki.auth.clya.top)
+- [给 AI 看的 API 文档](https://wiki.auth.clya.top/llms.txt)
 
 以下能力仍属于后续增强项，当前不应直接视为完整生产认证产品：
 
