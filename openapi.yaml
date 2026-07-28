@@ -1,0 +1,516 @@
+openapi: 3.0.3
+info:
+  title: 辰星认证中枢 API
+  version: 1.0.0
+  description: |
+    辰星通行证用户认证、OAuth 2.0/OIDC 和管理员管理 API。
+    当前定义以仓库实际路由为准。生产环境请将服务器地址替换为固定的 APP_ISSUER。
+servers:
+  - url: http://127.0.0.1:3000
+    description: 本地开发
+tags:
+  - name: System
+  - name: User Auth
+  - name: OAuth/OIDC
+  - name: Admin Auth
+  - name: Admin Users
+  - name: Admin Clients
+  - name: Admin Operations
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: 健康检查
+      operationId: health
+      responses:
+        '200':
+          description: 服务正常
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /.well-known/openid-configuration:
+    get:
+      tags: [OAuth/OIDC]
+      summary: OIDC Discovery
+      operationId: openidConfiguration
+      responses:
+        '200':
+          description: OIDC 配置
+          content:
+            application/json:
+              schema:
+                type: object
+  /.well-known/jwks.json:
+    get:
+      tags: [OAuth/OIDC]
+      summary: JWKS 公钥集合
+      operationId: jwks
+      responses:
+        '200':
+          description: 公钥集合
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/v1/users:
+    post:
+      tags: [User Auth]
+      summary: 注册用户
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegistrationInput'
+      responses:
+        '201':
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: '#/components/schemas/PublicUser' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/auth/login:
+    post:
+      tags: [User Auth]
+      summary: 用户登录
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginInput'
+      responses:
+        '200':
+          description: 登录成功，同时设置 Session 和 CSRF Cookie
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/session:
+    delete:
+      tags: [User Auth]
+      summary: 注销当前 Session
+      operationId: revokeSession
+      security: [{ sessionCookie: [] }, { chenxingSession: [] }]
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      responses:
+        '204': { description: 注销成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /oauth/authorize:
+    get:
+      tags: [OAuth/OIDC]
+      summary: OAuth 授权码入口
+      operationId: authorize
+      security: [{ sessionCookie: [] }, {}]
+      parameters:
+        - { $ref: '#/components/parameters/ClientId' }
+        - { name: redirect_uri, in: query, required: true, schema: { type: string, format: uri } }
+        - { name: response_type, in: query, required: true, schema: { type: string, enum: [code] } }
+        - { name: scope, in: query, required: true, schema: { type: string, example: 'openid email profile' } }
+        - { name: state, in: query, required: true, schema: { type: string } }
+        - { name: nonce, in: query, schema: { type: string } }
+        - { name: code_challenge, in: query, required: true, schema: { type: string } }
+        - { name: code_challenge_method, in: query, required: true, schema: { type: string, enum: [S256] } }
+      responses:
+        '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /oauth/token:
+    post:
+      tags: [OAuth/OIDC]
+      summary: 交换授权码或刷新 Token
+      operationId: token
+      security: [{ basicClientAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TokenRequest'
+      responses:
+        '200':
+          description: Token 响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /oauth/userinfo:
+    get:
+      tags: [OAuth/OIDC]
+      summary: 获取 OIDC UserInfo
+      operationId: userinfo
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: 用户信息
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserInfo'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /oauth/revoke:
+    post:
+      tags: [OAuth/OIDC]
+      summary: 撤销 Token
+      operationId: revokeToken
+      security: [{ basicClientAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+                token_type_hint: { type: string, enum: [access_token, refresh_token] }
+      responses:
+        '200': { description: 撤销完成，无响应体 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/bootstrap:
+    post:
+      tags: [Admin Auth]
+      summary: 初始化首个管理员
+      operationId: bootstrapAdmin
+      security: [{ adminBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminInput' }
+      responses:
+        '201': { description: 初始化成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/auth/login:
+    post:
+      tags: [Admin Auth]
+      summary: 管理员登录
+      operationId: loginAdmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginInput' }
+      responses:
+        '200':
+          description: 登录成功，同时设置管理员 Session 和 CSRF Cookie
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  admin_id: { type: string, format: uuid }
+                  expires_in: { type: integer, format: int64 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/auth/logout:
+    delete:
+      tags: [Admin Auth]
+      summary: 管理员注销
+      operationId: logoutAdmin
+      security: [{ adminSessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      responses:
+        '204': { description: 注销成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/users:
+    get:
+      tags: [Admin Users]
+      summary: 用户列表
+      operationId: listUsers
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      responses:
+        '200':
+          description: 用户列表
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/PublicUser' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/admin/users/{user_id}/{status}:
+    post:
+      tags: [Admin Users]
+      summary: 设置用户状态
+      operationId: setUserStatus
+      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: status, in: path, required: true, schema: { type: string, example: disabled } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: 更新成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/admin/clients:
+    get:
+      tags: [Admin Clients]
+      summary: Client 列表
+      operationId: listClients
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      responses:
+        '200':
+          description: Client 列表，不包含 Secret
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/ClientSummary' } }
+    post:
+      tags: [Admin Clients]
+      summary: 创建 Client
+      operationId: createClient
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientInput' }
+      responses:
+        '201':
+          description: 创建成功，Secret 只返回一次
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegisteredClient' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/clients/{client_id}:
+    put:
+      tags: [Admin Clients]
+      summary: 更新 Client
+      operationId: updateClient
+      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientInput' }
+      responses:
+        '204': { description: 更新成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/admin/clients/{client_id}/disable:
+    post:
+      tags: [Admin Clients]
+      summary: 禁用 Client
+      operationId: disableClient
+      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      parameters: [{ name: client_id, in: path, required: true, schema: { type: string } }, { $ref: '#/components/parameters/CsrfHeader' }]
+      responses:
+        '204': { description: 操作成功 }
+  /api/v1/admin/clients/{client_id}/enable:
+    post:
+      tags: [Admin Clients]
+      summary: 启用 Client
+      operationId: enableClient
+      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      parameters: [{ name: client_id, in: path, required: true, schema: { type: string } }, { $ref: '#/components/parameters/CsrfHeader' }]
+      responses:
+        '204': { description: 操作成功 }
+  /api/v1/admin/clients/{client_id}/rotate-secret:
+    post:
+      tags: [Admin Clients]
+      summary: 轮换 Client Secret
+      operationId: rotateClientSecret
+      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      parameters: [{ name: client_id, in: path, required: true, schema: { type: string } }, { $ref: '#/components/parameters/CsrfHeader' }]
+      responses:
+        '200':
+          description: 新 Secret，只返回一次
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientSecretResponse' }
+  /api/v1/admin/admins:
+    get:
+      tags: [Admin Auth]
+      summary: 管理员列表
+      operationId: listAdmins
+      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      responses:
+        '200':
+          description: 管理员摘要
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/AdminSummary' } }
+    post:
+      tags: [Admin Auth]
+      summary: 创建管理员
+      operationId: createAdmin
+      security: [{ adminSessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminInput' }
+      responses:
+        '201': { description: 创建成功 }
+  /api/v1/admin/audit:
+    get:
+      tags: [Admin Operations]
+      summary: 审计事件列表
+      operationId: listAudit
+      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, default: 50, minimum: 1 } }
+      responses:
+        '200': { description: 审计事件列表, content: { application/json: { schema: { type: array, items: { type: object } } } } }
+  /api/v1/admin/keys/rotate:
+    post:
+      tags: [Admin Operations]
+      summary: 轮换签名密钥
+      operationId: rotateSigningKey
+      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      responses:
+        '200':
+          description: 轮换结果
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key_id: { type: string }
+                  published_key_count: { type: integer }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+    adminBearer: { type: http, scheme: bearer }
+    basicClientAuth: { type: http, scheme: basic }
+    sessionCookie: { type: apiKey, in: cookie, name: chenxing_session }
+    adminSessionCookie: { type: apiKey, in: cookie, name: chenxing_admin_session }
+    chenxingSession: { type: apiKey, in: header, name: X-Chenxing-Session }
+  parameters:
+    ClientId: { name: client_id, in: query, required: true, schema: { type: string } }
+    CsrfHeader: { name: X-CSRF-Token, in: header, required: true, schema: { type: string } }
+  headers:
+    SetCookie: { description: Session 和 CSRF Cookie, schema: { type: string } }
+  responses:
+    BadRequest: { description: 请求错误, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    Unauthorized: { description: 未认证或凭据无效, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    Forbidden: { description: 无权限, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    Conflict: { description: 资源冲突, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+    HealthResponse:
+      type: object
+      properties:
+        status: { type: string, example: ok }
+        service: { type: string, example: chenxing-auth }
+    RegistrationInput:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password, minLength: 12 }
+        display_name: { type: string, nullable: true, maxLength: 128 }
+    LoginInput:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+    PublicUser:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        display_name: { type: string, nullable: true }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+    LoginResponse:
+      type: object
+      properties:
+        session_id: { type: string, format: uuid }
+        expires_at: { type: string, format: date-time }
+    TokenRequest:
+      type: object
+      required: [grant_type]
+      properties:
+        grant_type: { type: string, enum: [authorization_code, refresh_token] }
+        code: { type: string }
+        redirect_uri: { type: string, format: uri }
+        code_verifier: { type: string }
+        refresh_token: { type: string }
+        scope: { type: string }
+        client_id: { type: string }
+        client_secret: { type: string, format: password }
+    TokenResponse:
+      type: object
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer, format: int64 }
+        scope: { type: string }
+        refresh_token: { type: string }
+        id_token: { type: string }
+    UserInfo:
+      type: object
+      required: [sub]
+      properties:
+        sub: { type: string }
+        email: { type: string, format: email }
+        name: { type: string }
+    AdminInput:
+      type: object
+      required: [email, password, role]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password, minLength: 12 }
+        role: { type: string, enum: [owner, operator, auditor] }
+    AdminSummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role: { type: string }
+        status: { type: string }
+    ClientInput:
+      type: object
+      required: [client_id, client_name, redirect_uris, scopes]
+      properties:
+        client_id: { type: string }
+        client_name: { type: string }
+        redirect_uris: { type: array, items: { type: string, format: uri } }
+        scopes: { type: array, items: { type: string } }
+    ClientSummary:
+      allOf:
+        - $ref: '#/components/schemas/ClientInput'
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            status: { type: string }
+    RegisteredClient:
+      allOf:
+        - $ref: '#/components/schemas/ClientSummary'
+        - type: object
+          properties:
+            client_secret: { type: string, format: password }
+    ClientSecretResponse:
+      type: object
+      properties:
+        client_id: { type: string }
+        client_secret: { type: string, format: password }
