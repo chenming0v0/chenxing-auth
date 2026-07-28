@@ -1,0 +1,4 @@
+interface:
+  display_name: "同步 OpenAPI 接口文档"
+  short_description: "保持 OpenAPI 契约与后端路由同步"
+  default_prompt: "后端接口发生变化后，更新 openapi.yaml 并校验接口契约。"
