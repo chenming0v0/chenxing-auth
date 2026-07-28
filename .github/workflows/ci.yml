@@ -98,3 +98,35 @@ jobs:
         with:
           name: rust-coverage
           path: lcov.info
+
+  apifox-sync:
+    name: Sync OpenAPI to Apifox
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [quality, coverage]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Import OpenAPI specification
+        env:
+          API_FOX_KEY: ${{ secrets.API_FOX_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$API_FOX_KEY"
+          curl --fail-with-body --silent --show-error \
+            --request POST \
+            --url "https://api.apifox.com/v1/projects/8641664/import-openapi?locale=zh-CN" \
+            --header "Authorization: Bearer $API_FOX_KEY" \
+            --header "X-Apifox-Api-Version: 2024-03-28" \
+            --header "Content-Type: application/json" \
+            --data '{
+              "input": {
+                "url": "https://raw.githubusercontent.com/chenming0v0/chenxing-auth/master/openapi.yaml"
+              },
+              "options": {
+                "endpointOverwriteBehavior": "AUTO_MERGE",
+                "schemaOverwriteBehavior": "AUTO_MERGE",
+                "updateFolderOfChangedEndpoint": true,
+                "prependBasePath": false,
+                "deleteUnmatchedResources": false
+              }
+            }'
