@@ -93,6 +93,7 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
     let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let email = format!("browser-{suffix}@example.com");
+    let username = format!("browser-{suffix}");
     let password = "correct horse battery";
 
     let response = router
@@ -103,7 +104,8 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
                 .uri("/api/v1/users")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": email, "password": password}).to_string(),
+                    serde_json::json!({"username": username, "email": email, "password": password})
+                        .to_string(),
                 ))
                 .expect("registration request"),
         )
@@ -167,7 +169,7 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
                 .uri("/auth/login")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(format!(
-                    "request_id={request_id}&email={email}&password={password}"
+                    "request_id={request_id}&identifier={username}&password={password}"
                 )))
                 .expect("browser login request"),
         )

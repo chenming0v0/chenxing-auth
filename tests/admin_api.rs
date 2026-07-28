@@ -220,6 +220,7 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
     );
 
     let user_email = format!("managed-{username}@example.com");
+    let user_username = format!("managed-{username}");
     let response = router
         .clone()
         .oneshot(
@@ -228,7 +229,7 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
                 .uri("/api/v1/users")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": user_email, "password": password}).to_string(),
+                    serde_json::json!({"username": user_username, "email": user_email, "password": password}).to_string(),
                 ))
                 .expect("user registration request"),
         )

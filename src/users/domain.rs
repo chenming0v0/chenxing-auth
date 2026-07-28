@@ -6,6 +6,7 @@ pub type UserId = i64;
 
 #[derive(Debug, Deserialize)]
 pub struct RegistrationInput {
+    pub username: String,
     pub email: String,
     pub password: String,
     pub display_name: Option<String>,
@@ -13,27 +14,29 @@ pub struct RegistrationInput {
 
 #[derive(Debug, Deserialize)]
 pub struct LoginInput {
-    pub email: String,
+    #[serde(alias = "email")]
+    pub identifier: String,
     pub password: String,
     pub totp_code: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedLogin {
-    pub email: String,
+    pub identifier: String,
     pub password: String,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum LoginError {
-    #[error("email is invalid")]
-    InvalidEmail,
+    #[error("username or email is invalid")]
+    InvalidIdentifier,
     #[error("password is empty")]
     EmptyPassword,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedRegistration {
+    pub username: String,
     pub email: String,
     pub password: String,
     pub display_name: Option<String>,
@@ -41,6 +44,8 @@ pub struct ValidatedRegistration {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RegistrationError {
+    #[error("username is invalid")]
+    InvalidUsername,
     #[error("email is invalid")]
     InvalidEmail,
     #[error("password must be at least {MIN_PASSWORD_LENGTH} characters")]
@@ -61,8 +66,10 @@ pub fn validate_registration(
     }
 
     let display_name = validate_display_name(input.display_name)?;
+    let username = validate_username(&input.username).ok_or(RegistrationError::InvalidUsername)?;
 
     Ok(ValidatedRegistration {
+        username,
         email,
         password: input.password,
         display_name,
@@ -86,18 +93,30 @@ pub fn validate_display_name(
 }
 
 pub fn validate_login(input: LoginInput) -> Result<ValidatedLogin, LoginError> {
-    let email = input.email.trim().to_ascii_lowercase();
-    if !is_valid_email(&email) {
-        return Err(LoginError::InvalidEmail);
+    let identifier = input.identifier.trim().to_ascii_lowercase();
+    if !is_valid_email(&identifier) && validate_username(&identifier).is_none() {
+        return Err(LoginError::InvalidIdentifier);
     }
     if input.password.is_empty() {
         return Err(LoginError::EmptyPassword);
     }
 
     Ok(ValidatedLogin {
-        email,
+        identifier,
         password: input.password,
     })
+}
+
+pub fn validate_username(username: &str) -> Option<String> {
+    let username = username.trim().to_ascii_lowercase();
+    let length = username.chars().count();
+    if !(3..=64).contains(&length)
+        || username.contains('@')
+        || username.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    Some(username)
 }
 
 fn is_valid_email(email: &str) -> bool {
@@ -118,6 +137,7 @@ fn is_valid_email(email: &str) -> bool {
 #[derive(Debug, Clone, Serialize)]
 pub struct PublicUser {
     pub id: UserId,
+    pub username: String,
     pub email: String,
     pub display_name: Option<String>,
     pub status: String,

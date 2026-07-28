@@ -72,7 +72,7 @@ async fn registration_endpoint_rejects_invalid_email_without_database_call() {
                 .uri("/api/v1/users")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    r#"{"email":"invalid","password":"correct horse battery","display_name":null}"#,
+                    r#"{"username":"invalid-user","email":"invalid","password":"correct horse battery","display_name":null}"#,
                 ))
                 .expect("valid request"),
         )
@@ -83,14 +83,14 @@ async fn registration_endpoint_rejects_invalid_email_without_database_call() {
 }
 
 #[tokio::test]
-async fn login_endpoint_rejects_invalid_email_without_database_call() {
+async fn login_endpoint_rejects_invalid_identifier_without_database_call() {
     let response = test_router()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/auth/login")
                 .header("content-type", "application/json")
-                .body(Body::from(r#"{"email":"invalid","password":"password"}"#))
+                .body(Body::from(r#"{"identifier":"ab","password":"password"}"#))
                 .expect("valid request"),
         )
         .await

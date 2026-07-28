@@ -79,6 +79,7 @@ fn csrf(cookies: &str) -> &str {
 
 async fn register_and_login(router: &Router, suffix: &str) -> (String, String) {
     let email = format!("ui-{suffix}@example.com");
+    let username = format!("ui-{suffix}");
     let password = "correct horse battery";
     let response = router
         .clone()
@@ -88,7 +89,8 @@ async fn register_and_login(router: &Router, suffix: &str) -> (String, String) {
                 .uri("/api/v1/users")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": email, "password": password}).to_string(),
+                    serde_json::json!({"username": username, "email": email, "password": password})
+                        .to_string(),
                 ))
                 .expect("register request"),
         )
@@ -103,7 +105,7 @@ async fn register_and_login(router: &Router, suffix: &str) -> (String, String) {
                 .uri("/api/v1/auth/login")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": email, "password": password}).to_string(),
+                    serde_json::json!({"identifier": username, "password": password}).to_string(),
                 ))
                 .expect("login request"),
         )

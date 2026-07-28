@@ -91,6 +91,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0009_user_integer_ids.sql")),
             false,
         ),
+        Migration::new(
+            10,
+            Cow::Borrowed("usernames"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0010_usernames.sql")),
+            false,
+        ),
     ];
 
     Migrator {

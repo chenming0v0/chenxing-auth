@@ -71,6 +71,7 @@ fn cookies(response: &axum::response::Response) -> String {
 async fn owner_can_use_admin_ui_queries_but_normal_user_cannot() {
     let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
+    let username = format!("admin-ui-user-{suffix}");
     let email = format!("admin-ui-user-{suffix}@example.com");
     let password = "correct horse battery";
     let response = router
@@ -81,7 +82,8 @@ async fn owner_can_use_admin_ui_queries_but_normal_user_cannot() {
                 .uri("/api/v1/users")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": email, "password": password}).to_string(),
+                    serde_json::json!({"username": username, "email": email, "password": password})
+                        .to_string(),
                 ))
                 .expect("register request"),
         )
@@ -128,7 +130,7 @@ async fn owner_can_use_admin_ui_queries_but_normal_user_cannot() {
                 .uri("/api/v1/auth/login")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": email, "password": password}).to_string(),
+                    serde_json::json!({"identifier": email, "password": password}).to_string(),
                 ))
                 .expect("user login request"),
         )

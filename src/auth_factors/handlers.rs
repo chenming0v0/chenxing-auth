@@ -144,7 +144,7 @@ pub async fn start_passkey_registration(
         .start_passkey_registration(
             &input.login_ticket,
             &profile.email,
-            profile.display_name.as_deref().unwrap_or(&profile.email),
+            profile.display_name.as_deref().unwrap_or(&profile.username),
         )
         .await
     {

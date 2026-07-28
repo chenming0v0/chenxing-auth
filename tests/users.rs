@@ -3,6 +3,7 @@ use chenxing_auth::users::domain::{RegistrationError, RegistrationInput, validat
 #[test]
 fn registration_normalizes_email_and_keeps_display_name() {
     let result = validate_registration(RegistrationInput {
+        username: " chenxing-user ".to_owned(),
         email: "  User@Example.COM ".to_owned(),
         password: "correct horse battery".to_owned(),
         display_name: Some("辰星用户".to_owned()),
@@ -10,12 +11,14 @@ fn registration_normalizes_email_and_keeps_display_name() {
     .expect("valid registration");
 
     assert_eq!(result.email, "user@example.com");
+    assert_eq!(result.username, "chenxing-user");
     assert_eq!(result.display_name.as_deref(), Some("辰星用户"));
 }
 
 #[test]
 fn registration_accepts_a_ten_character_password() {
     let result = validate_registration(RegistrationInput {
+        username: "ten-char-user".to_owned(),
         email: "user@example.com".to_owned(),
         password: "1234567890".to_owned(),
         display_name: None,
@@ -27,6 +30,7 @@ fn registration_accepts_a_ten_character_password() {
 #[test]
 fn registration_rejects_short_password() {
     let error = validate_registration(RegistrationInput {
+        username: "short-user".to_owned(),
         email: "user@example.com".to_owned(),
         password: "too-short".to_owned(),
         display_name: None,
@@ -39,6 +43,7 @@ fn registration_rejects_short_password() {
 #[test]
 fn registration_rejects_invalid_email() {
     let error = validate_registration(RegistrationInput {
+        username: "valid-user".to_owned(),
         email: "not-an-email".to_owned(),
         password: "correct horse battery".to_owned(),
         display_name: None,
@@ -46,4 +51,17 @@ fn registration_rejects_invalid_email() {
     .expect_err("invalid email must be rejected");
 
     assert_eq!(error, RegistrationError::InvalidEmail);
+}
+
+#[test]
+fn registration_requires_a_valid_username() {
+    let error = validate_registration(RegistrationInput {
+        username: "ab".to_owned(),
+        email: "user@example.com".to_owned(),
+        password: "correct horse battery".to_owned(),
+        display_name: None,
+    })
+    .expect_err("short username must be rejected");
+
+    assert_eq!(error, RegistrationError::InvalidUsername);
 }

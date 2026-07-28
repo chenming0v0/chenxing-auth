@@ -21,6 +21,7 @@ pub struct LimitQuery {
 #[derive(Debug, Serialize)]
 pub struct UserSummary {
     pub id: UserId,
+    pub username: String,
     pub email: String,
     pub display_name: Option<String>,
     pub status: String,
@@ -49,6 +50,7 @@ pub async fn list_users(State(state): State<AppState>, headers: HeaderMap) -> Re
                     .into_iter()
                     .map(|user| UserSummary {
                         id: user.id,
+                        username: user.username,
                         email: user.email,
                         display_name: user.display_name,
                         status: user.status,

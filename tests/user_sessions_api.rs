@@ -77,7 +77,7 @@ fn csrf(cookies: &str) -> String {
         .to_owned()
 }
 
-async fn register(router: &Router, email: &str, password: &str) {
+async fn register(router: &Router, username: &str, email: &str, password: &str) {
     let response = router
         .clone()
         .oneshot(
@@ -86,7 +86,8 @@ async fn register(router: &Router, email: &str, password: &str) {
                 .uri("/api/v1/users")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": email, "password": password}).to_string(),
+                    serde_json::json!({"username": username, "email": email, "password": password})
+                        .to_string(),
                 ))
                 .expect("register request"),
         )
@@ -95,7 +96,7 @@ async fn register(router: &Router, email: &str, password: &str) {
     assert_eq!(response.status(), StatusCode::CREATED);
 }
 
-async fn login(router: &Router, email: &str, password: &str) -> (String, String) {
+async fn login(router: &Router, identifier: &str, email: &str, password: &str) -> (String, String) {
     let response = router
         .clone()
         .oneshot(
@@ -104,7 +105,7 @@ async fn login(router: &Router, email: &str, password: &str) -> (String, String)
                 .uri("/api/v1/auth/login")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": email, "password": password}).to_string(),
+                    serde_json::json!({"identifier": identifier, "password": password}).to_string(),
                 ))
                 .expect("login request"),
         )
@@ -123,7 +124,7 @@ async fn login(router: &Router, email: &str, password: &str) -> (String, String)
                         .header("content-type", "application/json")
                         .body(Body::from(
                             serde_json::json!({
-                                "email": email,
+                                "identifier": identifier,
                                 "password": password,
                                 "totp_code": code
                             })
@@ -219,9 +220,10 @@ async fn user_can_update_profile_list_sessions_and_rotate_password() {
     let email = format!("sessions-{suffix}@example.com");
     let old_password = "correct horse battery";
     let new_password = "new correct password";
-    register(&router, &email, old_password).await;
-    let (first_cookies, first_csrf) = login(&router, &email, old_password).await;
-    let (second_cookies, _) = login(&router, &email, old_password).await;
+    let username = format!("sessions-{suffix}");
+    register(&router, &username, &email, old_password).await;
+    let (first_cookies, first_csrf) = login(&router, &username, &email, old_password).await;
+    let (second_cookies, _) = login(&router, &email, &email, old_password).await;
 
     let response = router
         .clone()
@@ -238,7 +240,9 @@ async fn user_can_update_profile_list_sessions_and_rotate_password() {
         .await
         .expect("profile update response");
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(json(response).await["display_name"], "Session User");
+    let profile = json(response).await;
+    assert_eq!(profile["username"], username);
+    assert_eq!(profile["display_name"], "Session User");
 
     let response = router
         .clone()
@@ -308,7 +312,7 @@ async fn user_can_update_profile_list_sessions_and_rotate_password() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "email": email,
+                        "identifier": email,
                         "password": new_password,
                         "totp_code": current_totp_code(&email).await
                     })
