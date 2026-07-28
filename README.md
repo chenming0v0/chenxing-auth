@@ -148,6 +148,7 @@ src/
 - 用户列表、用户启停、管理员列表、审计查询和管理后台入口
 - `/oauth/revoke` RFC 7009 风格 Token 撤销以及 Discovery 中的撤销端点
 - `BusinessExtension` 扩展 trait 与结构化业务 Claim 类型
+- 配置驱动的自定义 OAuth/OIDC 提供商管理、加密 Client Secret、外部身份绑定和浏览器回调登录
 
 后续增强方向：
 
@@ -200,6 +201,11 @@ cargo run
 - `POST /api/v1/admin/clients/{client_id}/enable`：启用 Client
 - `POST /api/v1/admin/clients/{client_id}/rotate-secret`：轮换 Client Secret
 - `POST /api/v1/admin/keys/rotate`：管理员轮换 RS256 签名密钥，旧公钥继续发布
+- `GET /api/v1/admin/oauth/providers`、`POST /api/v1/admin/oauth/providers`：查看/创建自定义 OAuth 提供商
+- `PUT /api/v1/admin/oauth/providers/{slug}`：更新自定义 OAuth 提供商
+- `POST /api/v1/admin/oauth/providers/{slug}/enable`、`/disable`：启停自定义 OAuth 提供商
+- `GET /admin/settings/oauth`：可视化配置自定义 OAuth 提供商
+- `GET /auth/external/{slug}`、`/callback`：用户通过已启用的外部 OAuth 提供商登录或注册辰星账号
 
 以下能力仍属于后续增强项，当前不应直接视为完整生产认证产品：
 

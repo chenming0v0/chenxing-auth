@@ -10,6 +10,7 @@ pub mod consent;
 pub mod handlers;
 pub mod id_token;
 pub mod pkce;
+pub mod providers;
 pub mod refresh;
 pub mod refresh_store;
 pub mod request_store;

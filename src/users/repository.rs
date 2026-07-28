@@ -17,6 +17,7 @@ pub struct NewUser {
 pub struct UserCredentials {
     pub id: Uuid,
     pub password_hash: String,
+    pub password_login_enabled: bool,
     pub status: String,
 }
 
@@ -69,18 +70,21 @@ pub async fn find_credentials_by_email(
     pool: &PgPool,
     email: &str,
 ) -> Result<Option<UserCredentials>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (Uuid, String, String)>(
-        "SELECT id, password_hash, status FROM users WHERE email = $1",
+    crate::sqlx::query_as::<_, (Uuid, String, bool, String)>(
+        "SELECT id, password_hash, password_login_enabled, status FROM users WHERE email = $1",
     )
     .bind(email)
     .fetch_optional(pool)
     .await
     .map(|record| {
-        record.map(|(id, password_hash, status)| UserCredentials {
-            id,
-            password_hash,
-            status,
-        })
+        record.map(
+            |(id, password_hash, password_login_enabled, status)| UserCredentials {
+                id,
+                password_hash,
+                password_login_enabled,
+                status,
+            },
+        )
     })
 }
 

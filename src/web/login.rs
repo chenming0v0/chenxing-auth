@@ -17,6 +17,8 @@ use crate::{
 #[derive(Debug, Deserialize)]
 pub struct LoginQuery {
     pub request_id: Option<String>,
+    pub external: Option<String>,
+    pub external_error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,9 +38,42 @@ pub async fn login_get(State(state): State<AppState>, Query(query): Query<LoginQ
         );
     }
     let request_id = query.request_id.unwrap_or_default();
+    let notice = if query.external.as_deref() == Some("success") {
+        "外部账号登录成功。"
+    } else if query.external_error.is_some() {
+        "外部账号登录未完成，请重试或使用邮箱密码登录。"
+    } else {
+        ""
+    };
+    let providers = match state.external_oauth.list().await {
+        Ok(providers) => providers
+            .into_iter()
+            .filter(|provider| provider.status == "active")
+            .map(|provider| {
+                format!(
+                    "<a class=\"provider\" href=\"/auth/external/{}?request_id={}\">使用 {} 登录</a>",
+                    crate::web::escape_html(&provider.slug),
+                    url::form_urlencoded::byte_serialize(request_id.as_bytes()).collect::<String>(),
+                    crate::web::escape_html(&provider.name),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to list external OAuth providers for login page");
+            String::new()
+        }
+    };
+    let external_login = if providers.is_empty() {
+        String::new()
+    } else {
+        format!("<section><h2>其他登录方式</h2>{providers}</section>")
+    };
     let body = format!(
-        "<main><h1>辰星通行证登录</h1><p>登录后继续访问授权请求。</p><form method=\"post\" action=\"/auth/login\"><input type=\"hidden\" name=\"request_id\" value=\"{}\"><label>邮箱<input name=\"email\" type=\"email\" autocomplete=\"username\" required></label><label>密码<input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button type=\"submit\">登录</button></form></main>",
-        crate::web::escape_html(&request_id)
+        "<main><h1>辰星通行证登录</h1><p>{}</p><form method=\"post\" action=\"/auth/login\"><input type=\"hidden\" name=\"request_id\" value=\"{}\"><label>邮箱<input name=\"email\" type=\"email\" autocomplete=\"username\" required></label><label>密码<input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button type=\"submit\">登录</button></form>{}<p><a href=\"/\">返回首页</a></p></main>",
+        crate::web::escape_html(notice),
+        crate::web::escape_html(&request_id),
+        external_login,
     );
     Html(crate::web::page("辰星通行证登录", &body)).into_response()
 }

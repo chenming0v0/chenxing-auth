@@ -11,6 +11,7 @@ pub enum AdminPermission {
     ManageClients,
     RotateKeys,
     ReadAudit,
+    ManageIdentityProviders,
 }
 
 impl AdminRole {
@@ -34,7 +35,10 @@ impl AdminRole {
     pub const fn allows(self, permission: AdminPermission) -> bool {
         match self {
             Self::Owner => true,
-            Self::Operator => matches!(permission, AdminPermission::ManageClients),
+            Self::Operator => matches!(
+                permission,
+                AdminPermission::ManageClients | AdminPermission::ManageIdentityProviders
+            ),
             Self::Auditor => matches!(permission, AdminPermission::ReadAudit),
         }
     }

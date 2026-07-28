@@ -41,6 +41,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             Cow::Borrowed(include_str!("../migrations/0003_admins.sql")),
             false,
         ),
+        Migration::new(
+            4,
+            Cow::Borrowed("external oauth providers"),
+            MigrationType::Simple,
+            Cow::Borrowed(include_str!("../migrations/0004_external_oauth.sql")),
+            false,
+        ),
     ];
 
     Migrator {

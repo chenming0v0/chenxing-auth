@@ -9,6 +9,9 @@ use crate::{
     consents::ConsentService,
     db::Database,
     keys::{KeyManager, KeyManagerError},
+    oauth::providers::{
+        secrets::SecretManager, service::ExternalOAuthService, state_store::ExternalLoginStateStore,
+    },
     oauth::refresh_store::RefreshTokenStore,
     oauth::request_store::AuthorizationRequestStore,
     oauth::revocation::TokenRevocationStore,
@@ -35,6 +38,8 @@ pub struct AppState {
     pub admins: AdminService,
     pub admin_sessions: AdminSessionStore,
     pub audit: AuditService,
+    pub external_oauth: ExternalOAuthService,
+    pub external_login_states: ExternalLoginStateStore,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +50,10 @@ pub enum StateError {
     Redis(#[from] redis::RedisError),
     #[error("key manager initialization failed: {0}")]
     Keys(#[from] KeyManagerError),
+    #[error("external OAuth initialization failed: {0}")]
+    ExternalOAuth(#[from] crate::oauth::providers::service::ExternalOAuthError),
+    #[error("external OAuth secret initialization failed: {0}")]
+    ExternalOAuthSecret(#[from] crate::oauth::providers::secrets::SecretError),
 }
 
 impl AppState {
@@ -64,6 +73,9 @@ impl AppState {
         let admins = AdminService::new(database.clone());
         let admin_sessions = AdminSessionStore::new(redis.clone());
         let audit = AuditService::new(database.clone());
+        let secret_manager = SecretManager::load_or_generate(&config.key_directory)?;
+        let external_oauth = ExternalOAuthService::new(database.clone(), secret_manager)?;
+        let external_login_states = ExternalLoginStateStore::new(redis.clone());
 
         Ok(Self {
             config,
@@ -82,6 +94,8 @@ impl AppState {
             admins,
             admin_sessions,
             audit,
+            external_oauth,
+            external_login_states,
         })
     }
 

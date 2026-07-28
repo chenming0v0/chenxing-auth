@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 pub const SESSION_COOKIE: &str = "chenxing_session";
 pub const CSRF_COOKIE: &str = "chenxing_csrf";
+pub const EXTERNAL_STATE_COOKIE: &str = "chenxing_external_oauth_state";
 
 pub fn append_login_cookies(
     headers: &mut HeaderMap,
@@ -46,6 +47,29 @@ pub fn append_clear_cookies(headers: &mut HeaderMap, secure: bool) {
     }
 }
 
+pub fn append_external_state_cookie(
+    headers: &mut HeaderMap,
+    state: &str,
+    max_age_seconds: u64,
+    secure: bool,
+) {
+    headers.append(
+        SET_COOKIE,
+        build_cookie(EXTERNAL_STATE_COOKIE, state, max_age_seconds, secure, true)
+            .parse()
+            .expect("external OAuth state cookie is valid ASCII"),
+    );
+}
+
+pub fn append_clear_external_state_cookie(headers: &mut HeaderMap, secure: bool) {
+    headers.append(
+        SET_COOKIE,
+        build_cookie(EXTERNAL_STATE_COOKIE, "", 0, secure, true)
+            .parse()
+            .expect("external OAuth state cookie is valid ASCII"),
+    );
+}
+
 pub fn session_id(headers: &HeaderMap) -> Option<Uuid> {
     headers
         .get("x-chenxing-session")
@@ -65,6 +89,10 @@ pub fn csrf_token(headers: &HeaderMap) -> Option<String> {
 
 pub fn csrf_cookie(headers: &HeaderMap) -> Option<String> {
     cookie_value(headers, CSRF_COOKIE)
+}
+
+pub fn external_state(headers: &HeaderMap) -> Option<String> {
+    cookie_value(headers, EXTERNAL_STATE_COOKIE)
 }
 
 pub fn cookie_value_by_name(headers: &HeaderMap, name: &str) -> Option<String> {
