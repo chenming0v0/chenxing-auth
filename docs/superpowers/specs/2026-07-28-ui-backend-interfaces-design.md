@@ -14,6 +14,15 @@ Provide stable JSON APIs for a future Chenxing Pass user center, administrator c
 - `POST /api/v1/auth/password` accepts `current_password` and `new_password`. It validates the current credential, updates the slow hash, and revokes all of the user's sessions after the password changes. It requires the user session and CSRF validation.
 - `GET /api/v1/auth/sessions` returns session metadata owned by the authenticated user. Each item contains only an opaque session ID, creation time, expiration time, and a `current` flag.
 - `DELETE /api/v1/auth/sessions/{session_id}` revokes one session owned by the authenticated user. It requires the user session and CSRF validation; revoking the current session also clears the browser cookies.
+- `GET /api/v1/auth/oauth-clients` lists only OAuth projects owned by the authenticated user.
+- `POST /api/v1/auth/oauth-clients` registers an OAuth project for the authenticated user. The response contains the new Client Secret exactly once.
+- `PUT /api/v1/auth/oauth-clients/{client_id}` updates a project only when its owner is the authenticated user.
+- `POST /api/v1/auth/oauth-clients/{client_id}/disable` and `/enable` change status only for an owned project.
+- `POST /api/v1/auth/oauth-clients/{client_id}/rotate-secret` rotates the Secret only for an owned project and returns the new Secret exactly once.
+
+Each normal user may own at most two OAuth projects. The quota counts both active and disabled projects, so disabling a project cannot be used to bypass the limit. The quota is checked inside the same PostgreSQL transaction that inserts the project and serializes on the owning user row, so concurrent requests cannot create a third project.
+
+Each normal-user-owned OAuth project has an authorization quota of 2,500 successful authorization-code issues per UTC calendar day and 50,000 per UTC calendar month. The UI project response includes daily/monthly limit, used, and remaining values. Administrator-created ownerless projects are not subject to this normal-user quota.
 
 The account API does not expose password hashes, CSRF values, session payloads, IP addresses, user agents, or business data owned by downstream clients.
 
@@ -27,6 +36,8 @@ The account API does not expose password hashes, CSRF values, session payloads, 
 
 Existing array-based list routes remain unchanged for current consumers. Console query routes never return password hashes, client secret hashes, client secrets, private keys, or raw sensitive audit values. Bearer administrator authentication remains supported for API clients. Browser-session mutations continue to require the separate administrator CSRF cookie and header.
 
+Administrators are the highest-level operators in this service. The `Owner` role retains every `AdminPermission` and can see and manage all users and OAuth projects, including projects created by normal users. `Operator` and `Auditor` remain limited by the existing permission matrix. Normal user sessions cannot authenticate to any `/api/v1/admin/*` route and receive no user-list capability.
+
 ### OAuth and login UI
 
 - `GET /api/v1/oauth/authorize/requests/{request_id}` returns the pending request for the current user session: client display name, client ID, redirect host, requested scopes, and request expiration. It rejects missing, expired, already-consumed, or differently-bound sessions.
@@ -37,9 +48,13 @@ Existing array-based list routes remain unchanged for current consumers. Console
 
 Add migration `0004_ui_sessions.sql` with a `user_sessions` table containing session ID, user ID, creation time, expiration time, revoked time, and an index on `(user_id, created_at DESC)`. This table is metadata only. The Redis session payload remains the source of truth for active session secrets and CSRF binding.
 
+Add migration `0005_client_owners.sql` with nullable `oauth_clients.owner_user_id` referencing `users(id)` using `ON DELETE SET NULL`, plus an owner index. Existing administrator-created projects use `NULL`; normal-user-created projects always store the authenticated user's ID. Admin list/query responses include a non-sensitive owner ID or `null`, while normal-user responses never include another user's data.
+
 On login, create the Redis session and its metadata record. Session lookup requires an active Redis payload and an unexpired, non-revoked metadata row. Revocation removes the Redis payload and marks the metadata row revoked. Password changes revoke all metadata rows and Redis sessions belonging to the user through a user-session index maintained by the session store. Expired metadata is excluded from queries and may be retained for auditability.
 
 Pending OAuth requests must include the initiating session ID. JSON and HTML consent handlers verify that the current session matches it before exposing or consuming the request. The existing authorization code remains bound to client, redirect URI, user, scopes, PKCE challenge, and nonce.
+
+After an authorization request has passed Client, redirect URI, scope, PKCE, consent, and session checks, the service atomically checks and increments the owned project's daily and monthly Redis counters. Counters are keyed by Client ID and UTC period, expire at the next period boundary, and never accept an increment that would cross either limit. A quota rejection returns a protocol-safe authorization error with the original `state`; the JSON UI decision endpoint returns a machine-readable quota error. Quota counters are not exposed as secrets and are not stored in normal logs.
 
 ## Layering
 
@@ -54,6 +69,7 @@ Use the existing JSON error envelope and stable error codes. Validate page bound
 - Add domain tests for profile validation, password policy, session ownership, pagination bounds, and OAuth decision parsing.
 - Add API tests for authenticated/unauthenticated status, profile update, password rotation and session revocation, CSRF failures, admin permission isolation, query filters, and OAuth request binding/one-time consumption.
 - Add repository/integration coverage for session metadata lifecycle and user-wide revocation using the existing PostgreSQL and Redis test setup.
+- Add Redis-backed quota tests for daily and monthly limits, period key expiry calculation, ownerless administrator Clients, and concurrent increments at the limit.
 - Update `openapi.yaml` for every new route, schema, parameter, response, security declaration, and CSRF header. Run the repository OpenAPI validator and all required Rust checks.
 
 ## Compatibility and rollout
