@@ -203,11 +203,6 @@ cargo run
 
 ## GitHub Actions
 
-- `.github/workflows/ci.yml`：Rust 1.94 格式化、编译、测试、Clippy 和 `cargo-llvm-cov` 覆盖率门槛（行覆盖率至少 75%）。
-- `.github/workflows/build.yml`：构建 Linux x86_64/ARM64、Windows GNU/MSVC、macOS x86_64/ARM64 二进制；打 `v*` tag 时生成 `.tar.gz`/`.zip` 发布包、`SHA256SUMS` 并创建 GitHub Release，同时构建发布 Linux `amd64/arm64` 的 GHCR 镜像。
-
-GitHub Actions 使用 MIT 项目可用的公开仓库免费额度；发布镜像需要仓库 Actions 具备 `packages: write` 权限。
-
 当前 `/oauth/authorize` 同时支持开发期 `X-Chenxing-Session` 和 HttpOnly Session Cookie；带 `Accept: text/html` 的浏览器流程会进入登录页和授权确认页。浏览器 Cookie 会话的状态变更必须携带 `X-CSRF-Token`，并与 CSRF Cookie 和 Session 中的 Token 一致。管理员 Session 使用独立 Cookie 名称和相同的双提交 CSRF 约束。
 
 `KEY_DIRECTORY` 默认指向 `data/keys`，该目录包含运行时私钥并已加入 `.gitignore`。`ADMIN_TOKEN` 为空时，管理 API 默认全部拒绝访问。
