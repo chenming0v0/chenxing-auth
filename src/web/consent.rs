@@ -41,6 +41,12 @@ pub async fn consent_get(
     if let Err(response) = validate_pending(&state, &pending).await {
         return response;
     }
+    if pending.session_id != Some(session.id) {
+        return error::unauthorized(
+            "invalid_session",
+            "authorization request is not bound to this session",
+        );
+    }
     let client_name = match state.clients.find_registered(&pending.client_id).await {
         Ok(Some(client)) => client.client_name,
         Ok(None) => {
@@ -95,6 +101,12 @@ pub async fn consent_post(
     };
     if let Err(response) = validate_pending(&state, &pending).await {
         return response;
+    }
+    if pending.session_id != Some(session.id) {
+        return error::unauthorized(
+            "invalid_session",
+            "authorization request is not bound to this session",
+        );
     }
     let Some(pending_request) = state
         .authorization_requests

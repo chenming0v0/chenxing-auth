@@ -82,6 +82,25 @@
 - CSRF Cookie
 - `X-CSRF-Token`，且值与 CSRF Cookie 和 Session 内 Token 一致
 
+### 用户中心 UI API
+
+- `GET /api/v1/auth/status`：返回当前是否登录。
+- `GET /api/v1/auth/me`：返回当前用户资料和当前 Session 到期时间。
+- `PATCH /api/v1/auth/me`：更新 `display_name`，需要用户 CSRF。
+- `POST /api/v1/auth/password`：校验当前密码并修改密码，成功返回 `204`，同时撤销该用户所有 Session。
+- `GET /api/v1/auth/sessions`：返回当前用户的 Session 元数据，不返回 Session 或 CSRF 秘密。
+- `DELETE /api/v1/auth/sessions/{session_id}`：撤销当前用户拥有的指定 Session，需要用户 CSRF。
+
+普通用户 OAuth 项目接口：
+
+- `GET /api/v1/auth/oauth-clients`：只返回当前用户拥有的项目。
+- `POST /api/v1/auth/oauth-clients`：创建项目，Secret 只返回一次；每个普通用户最多拥有 2 个项目，禁用项目仍占用配额。
+- `PUT /api/v1/auth/oauth-clients/{client_id}`：更新自己的项目，需要用户 CSRF。
+- `POST /api/v1/auth/oauth-clients/{client_id}/disable`、`/enable`：切换自己的项目状态，需要用户 CSRF。
+- `POST /api/v1/auth/oauth-clients/{client_id}/rotate-secret`：轮换自己的 Secret，只返回新 Secret 一次，需要用户 CSRF。
+
+每个普通用户项目的 OAuth 授权配额按 UTC 统计：每天最多 `2500` 次、每月最多 `50000` 次。项目响应中的 `quota` 包含 `daily_limit`、`daily_used`、`monthly_limit`、`monthly_used`。管理员创建的全局 OAuth Client 不受普通用户项目配额限制。普通用户不能访问 `/api/v1/admin/*`，也没有用户列表权限。
+
 ## OAuth 2.0 / OIDC
 
 ### `GET /oauth/authorize`
@@ -102,6 +121,10 @@
 | `nonce` | 使用 OIDC 时建议必填并随机生成 |
 
 未登录的浏览器请求会重定向到 `/auth/login?request_id=...`；非 HTML 请求返回 `401 login_required`。首次授权会进入 `/oauth/authorize/consent?request_id=...`。
+
+### `GET /api/v1/oauth/authorize/requests/{request_id}` / `POST ...`
+
+供 JSON 授权确认 UI 使用。请求必须绑定当前浏览器 Session；GET 返回 Client 名称、Redirect 主机、Scope 和剩余有效时间。POST JSON 请求为 `{"decision":"approve"}` 或 `{"decision":"deny"}`，需要用户 CSRF，成功返回经过校验的 `redirect_to`，请求被一次性消费。普通用户项目超过日/月配额时返回 `429 oauth_quota_exceeded`；标准 `/oauth/authorize` 流程返回协议安全的 `temporarily_unavailable` 重定向。
 
 ### `GET /auth/login` / `POST /auth/login`
 
@@ -196,7 +219,7 @@ grant_type=refresh_token&refresh_token=...
 请求字段：
 
 ```json
-{"client_id":"my-app","client_name":"我的应用","redirect_uris":["https://app.example/callback"],"scopes":["openid","email"]}
+{"client_name":"我的应用","redirect_uris":["https://app.example/callback"],"scopes":["openid","email"]}
 ```
 
 - `POST /api/v1/admin/clients`：创建 Client，需要 `ManageClients`。响应包含 `client_secret`，只返回这一次。
@@ -206,7 +229,7 @@ grant_type=refresh_token&refresh_token=...
 - `POST /api/v1/admin/clients/{client_id}/enable`：启用，成功 `204`。
 - `POST /api/v1/admin/clients/{client_id}/rotate-secret`：轮换 Secret，成功响应包含新的 `client_id` 和 `client_secret`，只显示新 Secret 一次。
 
-Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`、`scopes`、`status`。
+Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`、`scopes`、`status`、`owner_user_id`。不返回 Secret 或其哈希。
 
 ### `GET /api/v1/admin/audit?limit=50`
 
@@ -219,6 +242,16 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 ```json
 {"key_id":"...","published_key_count":2}
 ```
+
+### 管理后台 UI API
+
+- `GET /api/v1/admin/auth/me`：返回管理员角色、权限和身份摘要。Owner 是最高级角色，拥有全部权限。
+- `GET /api/v1/admin/overview`：返回全局用户、OAuth Client、管理员和审计计数。
+- `GET /api/v1/admin/users/query?page=1&page_size=20&search=...&status=active`：分页筛选用户，需要 `ManageUsers`。
+- `GET /api/v1/admin/clients/query?page=1&page_size=20&search=...&status=active`：分页筛选全局 Client，需要 `ManageClients`，返回 owner ID 但不返回 Secret。
+- `GET /api/v1/admin/audit/query?page=1&page_size=20&action=...&resource_type=...`：分页筛选审计，需要 `ReadAudit`。
+
+分页响应统一为 `{"items":[],"page":1,"page_size":20,"total":0}`。管理员 API 继续支持 Bearer Token；浏览器 Session 写操作仍必须使用管理员 CSRF Cookie 和 `X-CSRF-Token`。
 
 ## 权限矩阵
 

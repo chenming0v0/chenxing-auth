@@ -36,6 +36,7 @@ struct ClientSummary {
     redirect_uris: Vec<String>,
     scopes: Vec<String>,
     status: String,
+    owner_user_id: Option<uuid::Uuid>,
 }
 
 pub async fn create_client(
@@ -85,7 +86,11 @@ pub async fn create_client(
                 error::internal()
             }
         }
-        Err(ClientServiceError::SecretHash | ClientServiceError::InvalidData) => {
+        Err(
+            ClientServiceError::SecretHash
+            | ClientServiceError::InvalidData
+            | ClientServiceError::QuotaExceeded,
+        ) => {
             tracing::error!("failed to create OAuth client secret");
             error::internal()
         }
@@ -111,6 +116,7 @@ pub async fn list_clients(State(state): State<AppState>, headers: HeaderMap) -> 
                         redirect_uris: client.redirect_uris,
                         scopes: client.scopes,
                         status: client.status,
+                        owner_user_id: client.owner_user_id,
                     })
                     .collect::<Vec<_>>(),
             ),
@@ -157,7 +163,11 @@ pub async fn update_client(
             tracing::error!(error = %database_error, "failed to update OAuth client");
             error::internal()
         }
-        Err(ClientServiceError::SecretHash | ClientServiceError::InvalidData) => error::internal(),
+        Err(
+            ClientServiceError::SecretHash
+            | ClientServiceError::InvalidData
+            | ClientServiceError::QuotaExceeded,
+        ) => error::internal(),
     }
 }
 
@@ -195,9 +205,9 @@ pub async fn set_client_status(
         Err(ClientServiceError::InvalidData) => {
             error::bad_request("invalid_status", "status is invalid")
         }
-        Err(ClientServiceError::Validation(_)) | Err(ClientServiceError::SecretHash) => {
-            error::internal()
-        }
+        Err(ClientServiceError::Validation(_))
+        | Err(ClientServiceError::SecretHash)
+        | Err(ClientServiceError::QuotaExceeded) => error::internal(),
     }
 }
 
@@ -252,6 +262,7 @@ pub async fn rotate_secret(
         }
         Err(ClientServiceError::SecretHash) => error::internal(),
         Err(ClientServiceError::Validation(_)) => error::internal(),
+        Err(ClientServiceError::QuotaExceeded) => error::internal(),
     }
 }
 

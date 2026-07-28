@@ -24,6 +24,16 @@ pub async fn insert(pool: &PgPool, event: &AuditEvent) -> Result<(), crate::sqlx
 }
 
 pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<AuditEvent>, crate::sqlx::Error> {
+    list_filtered(pool, None, None, limit, 0).await
+}
+
+pub async fn list_filtered(
+    pool: &PgPool,
+    action: Option<&str>,
+    resource_type: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<AuditEvent>, crate::sqlx::Error> {
     crate::sqlx::query_as::<
         _,
         (
@@ -38,9 +48,15 @@ pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<AuditEvent>, crate::s
         ),
     >(
         "SELECT id, actor_type, actor_id, action, resource_type, resource_id, metadata, created_at
-         FROM audit_events ORDER BY created_at DESC LIMIT $1",
+         FROM audit_events
+         WHERE ($1::text IS NULL OR action = $1)
+           AND ($2::text IS NULL OR resource_type = $2)
+         ORDER BY created_at DESC, id DESC LIMIT $3 OFFSET $4",
     )
+    .bind(action)
+    .bind(resource_type)
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await
     .map(|rows| {
@@ -68,4 +84,20 @@ pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<AuditEvent>, crate::s
             )
             .collect()
     })
+}
+
+pub async fn count_filtered(
+    pool: &PgPool,
+    action: Option<&str>,
+    resource_type: Option<&str>,
+) -> Result<i64, crate::sqlx::Error> {
+    crate::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_events
+         WHERE ($1::text IS NULL OR action = $1)
+           AND ($2::text IS NULL OR resource_type = $2)",
+    )
+    .bind(action)
+    .bind(resource_type)
+    .fetch_one(pool)
+    .await
 }

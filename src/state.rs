@@ -9,6 +9,7 @@ use crate::{
     consents::ConsentService,
     db::Database,
     keys::{KeyManager, KeyManagerError},
+    oauth::quota::OAuthQuotaStore,
     oauth::refresh_store::RefreshTokenStore,
     oauth::request_store::AuthorizationRequestStore,
     oauth::revocation::TokenRevocationStore,
@@ -31,6 +32,7 @@ pub struct AppState {
     pub authorization_requests: AuthorizationRequestStore,
     pub consents: ConsentService,
     pub revocations: TokenRevocationStore,
+    pub oauth_quotas: OAuthQuotaStore,
     pub admin: AdminAuthenticator,
     pub admins: AdminService,
     pub admin_sessions: AdminSessionStore,
@@ -51,7 +53,7 @@ impl AppState {
     pub fn new(config: Config) -> Result<Self, StateError> {
         let database = crate::db::connect(&config)?;
         let redis = redis::Client::open(config.redis_url.as_str())?;
-        let sessions = SessionStore::new(redis.clone());
+        let sessions = SessionStore::with_metadata(redis.clone(), database.clone());
         let users = UserService::new(database.clone());
         let clients = ClientService::new(database.clone());
         let keys = KeyManager::load_or_generate(&config.key_directory)?;
@@ -60,6 +62,7 @@ impl AppState {
         let authorization_requests = AuthorizationRequestStore::new(redis.clone());
         let consents = ConsentService::new(database.clone());
         let revocations = TokenRevocationStore::new(redis.clone());
+        let oauth_quotas = OAuthQuotaStore::new(redis.clone());
         let admin = AdminAuthenticator::new(config.admin_token.clone());
         let admins = AdminService::new(database.clone());
         let admin_sessions = AdminSessionStore::new(redis.clone());
@@ -78,6 +81,7 @@ impl AppState {
             authorization_requests,
             consents,
             revocations,
+            oauth_quotas,
             admin,
             admins,
             admin_sessions,

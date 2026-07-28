@@ -10,6 +10,7 @@ pub mod consent;
 pub mod handlers;
 pub mod id_token;
 pub mod pkce;
+pub mod quota;
 pub mod refresh;
 pub mod refresh_store;
 pub mod request_store;
@@ -20,6 +21,7 @@ pub mod session;
 pub mod store;
 pub mod token;
 pub mod token_handlers;
+pub mod ui_handlers;
 pub mod userinfo;
 
 use serde::Serialize;
