@@ -35,7 +35,7 @@ function colorFor(value: string) {
 }
 
 function mapUser(profile: UserProfile): AppUser {
-  return { ...profile, name: profile.display_name || profile.email.split("@")[0], color: colorFor(profile.id) };
+  return { ...profile, name: profile.display_name || profile.email.split("@")[0], color: colorFor(String(profile.id)) };
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {

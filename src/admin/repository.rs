@@ -1,11 +1,12 @@
 use crate::sqlx::PgPool;
 use time::OffsetDateTime;
-use uuid::Uuid;
+
+use super::domain::AdminId;
 
 #[derive(Debug)]
 pub struct StoredAdmin {
-    pub id: Uuid,
-    pub email: String,
+    pub id: AdminId,
+    pub username: String,
     pub password_hash: String,
     pub role: String,
     pub status: String,
@@ -13,31 +14,30 @@ pub struct StoredAdmin {
 
 pub async fn insert(
     pool: &PgPool,
-    email: &str,
+    username: &str,
     password_hash: &str,
     role: &str,
-) -> Result<Uuid, crate::sqlx::Error> {
-    let id = Uuid::new_v4();
-    crate::sqlx::query(
-        "INSERT INTO admins (id, email, password_hash, role, status, created_at)
-         VALUES ($1, $2, $3, $4, 'active', $5)",
+) -> Result<AdminId, crate::sqlx::Error> {
+    let id: AdminId = crate::sqlx::query_scalar(
+        "INSERT INTO admins (username, password_hash, role, status, created_at)
+         VALUES ($1, $2, $3, 'active', $4)
+         RETURNING id",
     )
-    .bind(id)
-    .bind(email)
+    .bind(username)
     .bind(password_hash)
     .bind(role)
     .bind(OffsetDateTime::now_utc())
-    .execute(pool)
+    .fetch_one(pool)
     .await?;
     Ok(id)
 }
 
 pub async fn insert_bootstrap(
     pool: &PgPool,
-    email: &str,
+    username: &str,
     password_hash: &str,
     role: &str,
-) -> Result<Option<Uuid>, crate::sqlx::Error> {
+) -> Result<Option<AdminId>, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
     crate::sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(7_341_928_i64)
@@ -50,36 +50,41 @@ pub async fn insert_bootstrap(
         transaction.rollback().await?;
         return Ok(None);
     }
-    let id = Uuid::new_v4();
-    crate::sqlx::query(
-        "INSERT INTO admins (id, email, password_hash, role, status, created_at)
-         VALUES ($1, $2, $3, $4, 'active', $5)",
+    let id: AdminId = crate::sqlx::query_scalar(
+        "INSERT INTO admins (username, password_hash, role, status, created_at)
+         VALUES ($1, $2, $3, 'active', $4)
+         RETURNING id",
     )
-    .bind(id)
-    .bind(email)
+    .bind(username)
     .bind(password_hash)
     .bind(role)
     .bind(OffsetDateTime::now_utc())
-    .execute(&mut *transaction)
+    .fetch_one(&mut *transaction)
     .await?;
     transaction.commit().await?;
     Ok(Some(id))
 }
 
-pub async fn find_by_email(
+pub async fn is_initialized(pool: &PgPool) -> Result<bool, crate::sqlx::Error> {
+    crate::sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM admins)")
+        .fetch_one(pool)
+        .await
+}
+
+pub async fn find_by_username(
     pool: &PgPool,
-    email: &str,
+    username: &str,
 ) -> Result<Option<StoredAdmin>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (Uuid, String, String, String, String)>(
-        "SELECT id, email, password_hash, role, status FROM admins WHERE email = $1",
+    crate::sqlx::query_as::<_, (AdminId, String, String, String, String)>(
+        "SELECT id, username, password_hash, role, status FROM admins WHERE username = $1",
     )
-    .bind(email)
+    .bind(username)
     .fetch_optional(pool)
     .await
     .map(|record| {
-        record.map(|(id, email, password_hash, role, status)| StoredAdmin {
+        record.map(|(id, username, password_hash, role, status)| StoredAdmin {
             id,
-            email,
+            username,
             password_hash,
             role,
             status,
@@ -89,18 +94,18 @@ pub async fn find_by_email(
 
 pub async fn find_by_id(
     pool: &PgPool,
-    id: Uuid,
+    id: AdminId,
 ) -> Result<Option<StoredAdmin>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (Uuid, String, String, String, String)>(
-        "SELECT id, email, password_hash, role, status FROM admins WHERE id = $1",
+    crate::sqlx::query_as::<_, (AdminId, String, String, String, String)>(
+        "SELECT id, username, password_hash, role, status FROM admins WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
     .await
     .map(|record| {
-        record.map(|(id, email, password_hash, role, status)| StoredAdmin {
+        record.map(|(id, username, password_hash, role, status)| StoredAdmin {
             id,
-            email,
+            username,
             password_hash,
             role,
             status,
@@ -108,7 +113,7 @@ pub async fn find_by_id(
     })
 }
 
-pub async fn touch_login(pool: &PgPool, id: Uuid) -> Result<(), crate::sqlx::Error> {
+pub async fn touch_login(pool: &PgPool, id: AdminId) -> Result<(), crate::sqlx::Error> {
     crate::sqlx::query("UPDATE admins SET last_login_at = $2 WHERE id = $1")
         .bind(id)
         .bind(OffsetDateTime::now_utc())
@@ -118,16 +123,16 @@ pub async fn touch_login(pool: &PgPool, id: Uuid) -> Result<(), crate::sqlx::Err
 }
 
 pub async fn list(pool: &PgPool) -> Result<Vec<StoredAdmin>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (Uuid, String, String, String, String)>(
-        "SELECT id, email, password_hash, role, status FROM admins ORDER BY created_at DESC",
+    crate::sqlx::query_as::<_, (AdminId, String, String, String, String)>(
+        "SELECT id, username, password_hash, role, status FROM admins ORDER BY created_at DESC",
     )
     .fetch_all(pool)
     .await
     .map(|rows| {
         rows.into_iter()
-            .map(|(id, email, password_hash, role, status)| StoredAdmin {
+            .map(|(id, username, password_hash, role, status)| StoredAdmin {
                 id,
-                email,
+                username,
                 password_hash,
                 role,
                 status,
@@ -136,7 +141,11 @@ pub async fn list(pool: &PgPool) -> Result<Vec<StoredAdmin>, crate::sqlx::Error>
     })
 }
 
-pub async fn set_status(pool: &PgPool, id: Uuid, status: &str) -> Result<bool, crate::sqlx::Error> {
+pub async fn set_status(
+    pool: &PgPool,
+    id: AdminId,
+    status: &str,
+) -> Result<bool, crate::sqlx::Error> {
     let result = crate::sqlx::query("UPDATE admins SET status = $2 WHERE id = $1")
         .bind(id)
         .bind(status)

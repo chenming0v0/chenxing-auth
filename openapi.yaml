@@ -545,16 +545,30 @@ paths:
       tags: [Admin Auth]
       summary: 初始化首个管理员
       operationId: bootstrapAdmin
-      security: [{ adminBearer: [] }]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/AdminInput' }
+            schema: { $ref: '#/components/schemas/BootstrapAdminInput' }
       responses:
-        '201': { description: 初始化成功 }
+        '201':
+          description: 初始化成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BootstrapAdminResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/bootstrap/status:
+    get:
+      tags: [Admin Auth]
+      summary: 查询管理员初始化状态
+      operationId: adminBootstrapStatus
+      responses:
+        '200':
+          description: 初始化状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BootstrapStatusResponse' }
   /api/v1/admin/auth/login:
     post:
       tags: [Admin Auth]
@@ -564,7 +578,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/LoginInput' }
+            schema: { $ref: '#/components/schemas/AdminLoginInput' }
       responses:
         '200':
           description: 登录成功，同时设置管理员 Session 和 CSRF Cookie
@@ -573,7 +587,7 @@ paths:
               schema:
                 type: object
                 properties:
-                  admin_id: { type: string, format: uuid }
+                  admin_id: { type: integer, format: int64, minimum: 1 }
                   expires_in: { type: integer, format: int64 }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/admin/auth/me:
@@ -621,7 +635,7 @@ paths:
       operationId: setUserStatus
       security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
       parameters:
-        - { name: user_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
         - { name: status, in: path, required: true, schema: { type: string, example: disabled } }
         - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
@@ -872,15 +886,21 @@ components:
       required: [email, password]
       properties:
         email: { type: string, format: email }
-        password: { type: string, format: password, minLength: 12 }
+        password: { type: string, format: password, minLength: 10 }
         display_name: { type: string, nullable: true, maxLength: 128 }
     LoginInput:
       type: object
       required: [email, password]
       properties:
         email: { type: string, format: email }
-        password: { type: string, format: password }
+        password: { type: string, format: password, minLength: 10 }
         totp_code: { type: string, pattern: '^[0-9]{6}$' }
+    AdminLoginInput:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 64 }
+        password: { type: string, format: password, minLength: 10 }
     PendingLoginResponse:
       type: object
       required: [status, login_ticket, methods]
@@ -927,7 +947,7 @@ components:
     PublicUser:
       type: object
       properties:
-        id: { type: string, format: uuid }
+        id: { type: integer, format: int64, minimum: 1 }
         email: { type: string, format: email }
         display_name: { type: string, nullable: true }
         status: { type: string }
@@ -946,7 +966,7 @@ components:
       type: object
       required: [id, email, status, current_session_expires_at]
       properties:
-        id: { type: string, format: uuid }
+        id: { type: integer, format: int64, minimum: 1 }
         email: { type: string, format: email }
         display_name: { type: string, nullable: true }
         status: { type: string }
@@ -960,7 +980,7 @@ components:
       required: [current_password, new_password]
       properties:
         current_password: { type: string, format: password }
-        new_password: { type: string, format: password, minLength: 12 }
+        new_password: { type: string, format: password, minLength: 10 }
     SessionItem:
       type: object
       required: [id, created_at, expires_at, current]
@@ -1058,8 +1078,8 @@ components:
       type: object
       required: [role, permissions, status]
       properties:
-        admin_id: { type: string, format: uuid, nullable: true }
-        email: { type: string, format: email, nullable: true }
+        admin_id: { type: integer, format: int64, minimum: 1, nullable: true }
+        username: { type: string, nullable: true }
         role: { type: string, enum: [owner, operator, auditor] }
         permissions: { type: array, items: { type: string } }
         status: { type: string }
@@ -1097,16 +1117,33 @@ components:
         total: { type: integer, format: int64 }
     AdminInput:
       type: object
-      required: [email, password, role]
+      required: [username, password, role]
       properties:
-        email: { type: string, format: email }
-        password: { type: string, format: password, minLength: 12 }
+        username: { type: string, minLength: 3, maxLength: 64 }
+        password: { type: string, format: password, minLength: 10 }
         role: { type: string, enum: [owner, operator, auditor] }
+    BootstrapAdminInput:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 64 }
+        password: { type: string, format: password, minLength: 10 }
+    BootstrapAdminResponse:
+      type: object
+      required: [id, role]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        role: { type: string, enum: [owner] }
+    BootstrapStatusResponse:
+      type: object
+      required: [initialized]
+      properties:
+        initialized: { type: boolean }
     AdminSummary:
       type: object
       properties:
-        id: { type: string, format: uuid }
-        email: { type: string, format: email }
+        id: { type: integer, format: int64, minimum: 1 }
+        username: { type: string }
         role: { type: string }
         status: { type: string }
     ClientInput:
@@ -1124,7 +1161,7 @@ components:
             id: { type: string, format: uuid }
             client_id: { type: string }
             status: { type: string }
-            owner_user_id: { type: string, format: uuid, nullable: true }
+            owner_user_id: { type: integer, format: int64, minimum: 1, nullable: true }
     RegisteredClient:
       allOf:
         - $ref: '#/components/schemas/ClientSummary'

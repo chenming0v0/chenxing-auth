@@ -1,10 +1,11 @@
 use crate::sqlx::PgPool;
+use crate::users::domain::UserId;
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
 pub async fn insert_totp_factor(
     pool: &PgPool,
-    user_id: Uuid,
+    user_id: UserId,
     encrypted_secret: &[u8],
 ) -> Result<(), crate::sqlx::Error> {
     crate::sqlx::query(
@@ -22,7 +23,7 @@ pub async fn insert_totp_factor(
 
 pub async fn find_totp_secret(
     pool: &PgPool,
-    user_id: Uuid,
+    user_id: UserId,
 ) -> Result<Option<Vec<u8>>, crate::sqlx::Error> {
     crate::sqlx::query_scalar("SELECT encrypted_secret FROM user_totp_factors WHERE user_id = $1")
         .bind(user_id)
@@ -32,7 +33,7 @@ pub async fn find_totp_secret(
 
 pub async fn list_factor_methods(
     pool: &PgPool,
-    user_id: Uuid,
+    user_id: UserId,
 ) -> Result<Vec<String>, crate::sqlx::Error> {
     let rows = crate::sqlx::query_as::<_, (String,)>(
         "SELECT method FROM (
@@ -49,7 +50,7 @@ pub async fn list_factor_methods(
 
 pub async fn list_passkeys(
     pool: &PgPool,
-    user_id: Uuid,
+    user_id: UserId,
 ) -> Result<Vec<Passkey>, crate::sqlx::Error> {
     let rows = crate::sqlx::query_as::<_, (serde_json::Value,)>(
         "SELECT credential FROM user_passkeys WHERE user_id = $1 ORDER BY created_at ASC",
@@ -67,7 +68,7 @@ pub async fn list_passkeys(
 
 pub async fn insert_passkey(
     pool: &PgPool,
-    user_id: Uuid,
+    user_id: UserId,
     credential_id: &[u8],
     passkey: &Passkey,
 ) -> Result<(), crate::sqlx::Error> {

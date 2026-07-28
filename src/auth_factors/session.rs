@@ -11,6 +11,7 @@ use crate::{
     error,
     sessions::{cookies, domain::Session},
     state::AppState,
+    users::domain::UserId,
 };
 
 #[derive(Debug, Serialize)]
@@ -19,7 +20,7 @@ pub struct LoginResponse {
     pub expires_at: time::OffsetDateTime,
 }
 
-pub async fn issue_user_session(state: &AppState, user_id: uuid::Uuid, factor: &str) -> Response {
+pub async fn issue_user_session(state: &AppState, user_id: UserId, factor: &str) -> Response {
     let ttl = Duration::from_secs(state.config.session_ttl_seconds);
     let session = match Session::new(user_id.to_string(), ttl) {
         Ok(session) => session,

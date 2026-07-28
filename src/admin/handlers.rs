@@ -16,6 +16,7 @@ use crate::{
     clients::{domain::ClientRegistrationInput, service::ClientServiceError},
     error,
     state::AppState,
+    users::domain::UserId,
 };
 
 #[derive(Debug, Serialize)]
@@ -36,7 +37,7 @@ struct ClientSummary {
     redirect_uris: Vec<String>,
     scopes: Vec<String>,
     status: String,
-    owner_user_id: Option<uuid::Uuid>,
+    owner_user_id: Option<UserId>,
 }
 
 pub async fn create_client(

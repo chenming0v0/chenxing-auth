@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use time::{Duration, OffsetDateTime};
-use uuid::Uuid;
+
+use crate::users::domain::UserId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -11,7 +12,7 @@ pub enum FactorMethod {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginTicket {
-    pub user_id: Uuid,
+    pub user_id: UserId,
     methods: Vec<FactorMethod>,
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
@@ -20,7 +21,7 @@ pub struct LoginTicket {
 impl LoginTicket {
     pub const TTL: Duration = Duration::minutes(5);
 
-    pub fn new(user_id: Uuid, methods: Vec<FactorMethod>) -> Self {
+    pub fn new(user_id: UserId, methods: Vec<FactorMethod>) -> Self {
         let created_at = OffsetDateTime::now_utc();
         Self {
             user_id,

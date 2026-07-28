@@ -55,25 +55,81 @@ async fn json(response: axum::response::Response) -> Value {
 #[tokio::test]
 async fn bootstrap_admin_can_login_and_use_cookie_session() {
     let (router, database, key_directory) = setup().await;
-    let email = format!("admin-{}@example.com", Uuid::new_v4().simple());
-    let password = "administrator-password";
+    let username = format!("admin-{}", Uuid::new_v4().simple());
+    let password = "1234567890";
 
     let response = router
         .clone()
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri("/api/v1/admin/bootstrap")
-                .header("authorization", "Bearer bootstrap-admin-token")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({"email": email, "password": password}).to_string(),
-                ))
-                .expect("bootstrap request"),
+                .uri("/api/v1/admin/bootstrap/status")
+                .body(Body::empty())
+                .expect("bootstrap status request"),
         )
         .await
-        .expect("bootstrap response");
-    assert_eq!(response.status(), StatusCode::CREATED);
+        .expect("bootstrap status response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json(response).await["initialized"], false);
+
+    let contender = format!("contender-{}", Uuid::new_v4().simple());
+    let first_request = router.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/bootstrap")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"username": username, "password": password, "role": "operator"})
+                    .to_string(),
+            ))
+            .expect("first bootstrap request"),
+    );
+    let second_request = router.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/bootstrap")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"username": contender, "password": password, "role": "auditor"})
+                    .to_string(),
+            ))
+            .expect("second concurrent bootstrap request"),
+    );
+    let (first_response, second_response) = tokio::join!(first_request, second_request);
+    let first_response = first_response.expect("first bootstrap response");
+    let second_response = second_response.expect("second bootstrap response");
+    assert!(
+        (first_response.status() == StatusCode::CREATED
+            && second_response.status() == StatusCode::CONFLICT)
+            || (first_response.status() == StatusCode::CONFLICT
+                && second_response.status() == StatusCode::CREATED),
+        "bootstrap statuses: {} and {}",
+        first_response.status(),
+        second_response.status()
+    );
+    let username = if first_response.status() == StatusCode::CREATED {
+        let response = json(first_response).await;
+        assert_eq!(response["id"], 1);
+        assert_eq!(response["role"], "owner");
+        username
+    } else {
+        let response = json(second_response).await;
+        assert_eq!(response["id"], 1);
+        assert_eq!(response["role"], "owner");
+        contender
+    };
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/bootstrap/status")
+                .body(Body::empty())
+                .expect("initialized status request"),
+        )
+        .await
+        .expect("initialized status response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json(response).await["initialized"], true);
 
     let response = router
         .clone()
@@ -83,7 +139,7 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
                 .uri("/api/v1/admin/auth/login")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": email, "password": password}).to_string(),
+                    serde_json::json!({"username": username, "password": password}).to_string(),
                 ))
                 .expect("login request"),
         )
@@ -131,7 +187,7 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
-                        "email": format!("operator-{email}"),
+                        "username": format!("operator-{username}"),
                         "password": password,
                         "role": "operator"
                     })
@@ -163,7 +219,7 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
             .is_some_and(|admins| admins.len() >= 2)
     );
 
-    let user_email = format!("managed-{email}");
+    let user_email = format!("managed-{username}@example.com");
     let response = router
         .clone()
         .oneshot(
@@ -180,7 +236,8 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
         .expect("user registration response");
     assert_eq!(response.status(), StatusCode::CREATED);
     let user = json(response).await;
-    let user_id = user["user"]["id"].as_str().expect("user id").to_owned();
+    let user_id = user["user"]["id"].as_i64().expect("numeric user id");
+    assert_eq!(user_id, 1);
 
     let response = router
         .clone()
@@ -222,10 +279,9 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/admin/bootstrap")
-                .header("authorization", "Bearer bootstrap-admin-token")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": format!("second-{email}"), "password": password})
+                    serde_json::json!({"username": format!("second-{username}"), "password": password})
                         .to_string(),
                 ))
                 .expect("second bootstrap request"),
@@ -234,13 +290,13 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
         .expect("second bootstrap response");
     assert_eq!(response.status(), StatusCode::CONFLICT);
 
-    chenxing_auth::sqlx::query("DELETE FROM admins WHERE email = $1")
-        .bind(&email)
+    chenxing_auth::sqlx::query("DELETE FROM admins WHERE username = $1")
+        .bind(&username)
         .execute(&database)
         .await
         .expect("cleanup admin");
-    chenxing_auth::sqlx::query("DELETE FROM admins WHERE email = $1")
-        .bind(format!("operator-{email}"))
+    chenxing_auth::sqlx::query("DELETE FROM admins WHERE username = $1")
+        .bind(format!("operator-{username}"))
         .execute(&database)
         .await
         .expect("cleanup operator");

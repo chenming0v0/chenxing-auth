@@ -16,6 +16,7 @@ use crate::{
     error,
     sessions::{cookies, domain::Session},
     state::AppState,
+    users::domain::UserId,
 };
 
 const PENDING_REQUEST_TTL_SECONDS: u64 = 600;
@@ -42,7 +43,7 @@ struct DecisionResponse {
 }
 
 struct UserContext {
-    user_id: Uuid,
+    user_id: UserId,
     session: Session,
 }
 
@@ -264,7 +265,9 @@ async fn current_user(state: &AppState, headers: &HeaderMap) -> Result<UserConte
             "user session is invalid",
         ));
     }
-    let user_id = Uuid::parse_str(&session.user_id)
+    let user_id = session
+        .user_id
+        .parse::<UserId>()
         .map_err(|_| error::unauthorized("invalid_session", "user session is invalid"))?;
     Ok(UserContext { user_id, session })
 }

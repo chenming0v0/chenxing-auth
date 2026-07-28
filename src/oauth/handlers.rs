@@ -59,13 +59,13 @@ pub async fn authorize(
 
     if headers.get("cookie").is_some() && accepts_html(&headers) {
         let scopes = validated.scopes.clone();
-        let user_uuid = match uuid::Uuid::parse_str(&user_id) {
-            Ok(user_uuid) => user_uuid,
+        let user_id = match user_id.parse::<crate::users::domain::UserId>() {
+            Ok(user_id) => user_id,
             Err(_) => return error::unauthorized("invalid_session", "session user is invalid"),
         };
         match state
             .consents
-            .has_scopes(user_uuid, &validated.client_id, &scopes)
+            .has_scopes(user_id, &validated.client_id, &scopes)
             .await
         {
             Ok(true) => {}

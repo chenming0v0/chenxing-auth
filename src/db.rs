@@ -77,6 +77,20 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0007_auth_factors.sql")),
             false,
         ),
+        Migration::new(
+            8,
+            Cow::Borrowed("admin usernames"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0008_admin_usernames.sql")),
+            false,
+        ),
+        Migration::new(
+            9,
+            Cow::Borrowed("integer user ids"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0009_user_integer_ids.sql")),
+            false,
+        ),
     ];
 
     Migrator {

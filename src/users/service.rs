@@ -4,7 +4,7 @@ use thiserror::Error;
 use super::{
     credentials::{hash_password, verify_password},
     domain::{
-        LoginError, LoginInput, PublicUser, RegistrationError, RegistrationInput,
+        LoginError, LoginInput, PublicUser, RegistrationError, RegistrationInput, UserId,
         validate_display_name, validate_login, validate_registration,
     },
     repository,
@@ -47,7 +47,7 @@ impl UserService {
         })
     }
 
-    pub async fn authenticate(&self, input: LoginInput) -> Result<uuid::Uuid, UserServiceError> {
+    pub async fn authenticate(&self, input: LoginInput) -> Result<UserId, UserServiceError> {
         let login = validate_login(input).map_err(|error| match error {
             LoginError::InvalidEmail | LoginError::EmptyPassword => {
                 UserServiceError::InvalidCredentials
@@ -69,14 +69,14 @@ impl UserService {
 
     pub async fn find_profile(
         &self,
-        id: uuid::Uuid,
+        id: UserId,
     ) -> Result<Option<repository::UserProfile>, UserServiceError> {
         Ok(repository::find_profile_by_id(&self.pool, id).await?)
     }
 
     pub async fn update_display_name(
         &self,
-        id: uuid::Uuid,
+        id: UserId,
         display_name: Option<String>,
     ) -> Result<Option<repository::UserProfile>, UserServiceError> {
         let display_name = validate_display_name(display_name)?;
@@ -88,7 +88,7 @@ impl UserService {
 
     pub async fn change_password(
         &self,
-        id: uuid::Uuid,
+        id: UserId,
         current_password: &str,
         new_password: &str,
     ) -> Result<(), UserServiceError> {
@@ -117,7 +117,7 @@ impl UserService {
         Ok(repository::list_users(&self.pool).await?)
     }
 
-    pub async fn set_status(&self, id: uuid::Uuid, status: &str) -> Result<bool, UserServiceError> {
+    pub async fn set_status(&self, id: UserId, status: &str) -> Result<bool, UserServiceError> {
         if !matches!(status, "active" | "disabled") {
             return Ok(false);
         }

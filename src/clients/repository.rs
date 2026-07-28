@@ -4,6 +4,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::domain::ValidatedClientRegistration;
+use crate::users::domain::UserId;
 
 #[derive(Debug)]
 pub struct NewClient {
@@ -14,7 +15,7 @@ pub struct NewClient {
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
     pub created_at: OffsetDateTime,
-    pub owner_user_id: Option<Uuid>,
+    pub owner_user_id: Option<UserId>,
 }
 
 #[derive(Debug)]
@@ -24,7 +25,7 @@ pub struct StoredClient {
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
     pub status: String,
-    pub owner_user_id: Option<Uuid>,
+    pub owner_user_id: Option<UserId>,
 }
 
 #[derive(Debug)]
@@ -41,7 +42,7 @@ pub struct ListedClient {
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
     pub status: String,
-    pub owner_user_id: Option<Uuid>,
+    pub owner_user_id: Option<UserId>,
 }
 
 #[derive(Debug, Error)]
@@ -89,7 +90,7 @@ pub async fn insert_client(
 
 pub async fn insert_owned_client(
     pool: &PgPool,
-    owner_user_id: Uuid,
+    owner_user_id: UserId,
     registration: ValidatedClientRegistration,
     client_id: String,
     client_secret_hash: String,
@@ -142,7 +143,7 @@ pub async fn find_client_by_id(
     pool: &PgPool,
     client_id: &str,
 ) -> Result<Option<StoredClient>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (String, String, Json<Vec<String>>, Json<Vec<String>>, String, Option<Uuid>)>(
+    crate::sqlx::query_as::<_, (String, String, Json<Vec<String>>, Json<Vec<String>>, String, Option<UserId>)>(
         "SELECT client_id, client_name, redirect_uris, scopes, status, owner_user_id FROM oauth_clients WHERE client_id = $1",
     )
     .bind(client_id)
@@ -188,7 +189,7 @@ pub async fn list_clients(pool: &PgPool) -> Result<Vec<ListedClient>, crate::sql
             Json<Vec<String>>,
             Json<Vec<String>>,
             String,
-            Option<Uuid>,
+            Option<UserId>,
         ),
     >(
         "SELECT id, client_id, client_name, redirect_uris, scopes, status, owner_user_id
@@ -217,7 +218,7 @@ pub async fn list_clients(pool: &PgPool) -> Result<Vec<ListedClient>, crate::sql
 
 pub async fn list_clients_for_owner(
     pool: &crate::sqlx::PgPool,
-    owner_user_id: Uuid,
+    owner_user_id: UserId,
 ) -> Result<Vec<ListedClient>, crate::sqlx::Error> {
     crate::sqlx::query_as::<
         _,
@@ -228,7 +229,7 @@ pub async fn list_clients_for_owner(
             Json<Vec<String>>,
             Json<Vec<String>>,
             String,
-            Option<Uuid>,
+            Option<UserId>,
         ),
     >(
         "SELECT id, client_id, client_name, redirect_uris, scopes, status, owner_user_id
@@ -278,7 +279,7 @@ pub async fn update_client(
 
 pub async fn update_owned_client(
     pool: &crate::sqlx::PgPool,
-    owner_user_id: Uuid,
+    owner_user_id: UserId,
     client_id: &str,
     name: &str,
     redirect_uris: &[String],
@@ -313,7 +314,7 @@ pub async fn set_client_status(
 
 pub async fn set_owned_client_status(
     pool: &crate::sqlx::PgPool,
-    owner_user_id: Uuid,
+    owner_user_id: UserId,
     client_id: &str,
     status: &str,
 ) -> Result<bool, crate::sqlx::Error> {
@@ -345,7 +346,7 @@ pub async fn update_client_secret(
 
 pub async fn update_owned_client_secret(
     pool: &crate::sqlx::PgPool,
-    owner_user_id: Uuid,
+    owner_user_id: UserId,
     client_id: &str,
     client_secret_hash: &str,
 ) -> Result<bool, crate::sqlx::Error> {

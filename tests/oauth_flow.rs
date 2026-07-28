@@ -93,7 +93,7 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
         .expect("registration response");
     assert_eq!(response.status(), StatusCode::CREATED);
     let user = json_body(response).await;
-    let user_id = user["user"]["id"].as_str().expect("user id").to_owned();
+    let user_id = user["user"]["id"].as_i64().expect("numeric user id");
 
     let response = router
         .clone()
@@ -319,7 +319,8 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
         .expect("userinfo response");
     assert_eq!(response.status(), StatusCode::OK);
     let userinfo = json_body(response).await;
-    assert_eq!(userinfo["sub"].as_str(), Some(user_id.as_str()));
+    let user_id_text = user_id.to_string();
+    assert_eq!(userinfo["sub"].as_str(), Some(user_id_text.as_str()));
     assert_eq!(userinfo["email"].as_str(), Some(email.as_str()));
 
     let refresh_form = format!(
@@ -401,7 +402,7 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
         .await
         .expect("cleanup client");
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(Uuid::parse_str(&user_id).expect("user UUID"))
+        .bind(user_id)
         .execute(&database)
         .await
         .expect("cleanup user");

@@ -12,7 +12,10 @@ use crate::{
     error,
     sessions::{cookies, domain::Session},
     state::AppState,
-    users::{domain::LoginInput, service::UserServiceError},
+    users::{
+        domain::{LoginInput, UserId},
+        service::UserServiceError,
+    },
 };
 
 #[derive(Debug, Deserialize)]
@@ -178,7 +181,7 @@ async fn render_totp_setup(
     state: &AppState,
     request_id: &str,
     ticket_id: String,
-    user_id: uuid::Uuid,
+    user_id: UserId,
 ) -> Response {
     let Some(profile) = (match state.users.find_profile(user_id).await {
         Ok(profile) => profile,
@@ -248,7 +251,7 @@ async fn finish_totp_login(
     }
 }
 
-async fn methods_contains_totp(state: &AppState, user_id: uuid::Uuid) -> bool {
+async fn methods_contains_totp(state: &AppState, user_id: UserId) -> bool {
     state
         .factors
         .available_methods(user_id)
@@ -260,7 +263,7 @@ async fn methods_contains_totp(state: &AppState, user_id: uuid::Uuid) -> bool {
 async fn complete_browser_login(
     state: &AppState,
     request_id: &str,
-    user_id: uuid::Uuid,
+    user_id: UserId,
     factor: &str,
 ) -> Response {
     let ttl = std::time::Duration::from_secs(state.config.session_ttl_seconds);

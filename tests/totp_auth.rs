@@ -116,7 +116,7 @@ async fn password_login_without_factor_returns_pending_setup_ticket() {
     );
     assert_eq!(body["methods"][0], "totp");
 
-    let user_id: (Uuid,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
+    let user_id: (i64,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
         .bind(&email)
         .fetch_one(&database)
         .await
@@ -256,7 +256,7 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    let user_id: (Uuid,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
+    let user_id: (i64,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
         .bind(&email)
         .fetch_one(&database)
         .await

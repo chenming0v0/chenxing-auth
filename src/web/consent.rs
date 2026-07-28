@@ -120,7 +120,7 @@ pub async fn consent_post(
             "授权请求已被处理或已失效。",
         );
     };
-    let user_id = match uuid::Uuid::parse_str(&session.user_id) {
+    let user_id = match session.user_id.parse::<crate::users::domain::UserId>() {
         Ok(user_id) => user_id,
         Err(_) => return error::unauthorized("invalid_session", "session user is invalid"),
     };

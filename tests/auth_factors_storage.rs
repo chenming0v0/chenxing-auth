@@ -3,7 +3,6 @@ use chenxing_auth::auth_factors::{
     store::LoginTicketStore,
 };
 use redis::AsyncCommands;
-use uuid::Uuid;
 
 fn redis_client() -> redis::Client {
     let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
@@ -15,7 +14,7 @@ async fn login_ticket_is_readable_then_consumed_once() {
     let client = redis_client();
     let store = LoginTicketStore::new(client.clone());
     let (ticket_id, ticket) = store
-        .create(Uuid::new_v4(), vec![FactorMethod::Totp])
+        .create(42, vec![FactorMethod::Totp])
         .await
         .expect("create ticket");
 
@@ -48,7 +47,7 @@ async fn login_ticket_is_readable_then_consumed_once() {
 
 #[test]
 fn login_ticket_serializes_without_secrets() {
-    let ticket = LoginTicket::new(Uuid::new_v4(), vec![FactorMethod::Passkey]);
+    let ticket = LoginTicket::new(42, vec![FactorMethod::Passkey]);
     let json = serde_json::to_value(ticket).expect("ticket JSON");
     assert!(json.get("user_id").is_some());
     assert!(json.get("methods").is_some());

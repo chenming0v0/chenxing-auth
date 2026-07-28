@@ -7,7 +7,7 @@ import { BRAND } from "../data/mock";
 import { errorMessage } from "../api";
 import { useStore } from "../store";
 
-function AuthShell({ children, title, subtitle }: { children: ReactNode; title: string; subtitle: string }) {
+export function AuthShell({ children, title, subtitle }: { children: ReactNode; title: string; subtitle: string }) {
   return <div className="relative flex min-h-screen overflow-hidden bg-[#05060f]">
     <Starfield density={0.00016} />
     <div className="aurora left-[-15%] top-[-10%] h-[500px] w-[500px] bg-indigo-600/25" />
@@ -24,7 +24,7 @@ function AuthShell({ children, title, subtitle }: { children: ReactNode; title: 
   </div>;
 }
 
-function FormError({ value }: { value: string | null }) { return value ? <div role="alert" className="rounded-xl border border-rose-400/20 bg-rose-500/10 px-3.5 py-3 text-xs leading-relaxed text-rose-200">{value}</div> : null; }
+export function FormError({ value }: { value: string | null }) { return value ? <div role="alert" className="rounded-xl border border-rose-400/20 bg-rose-500/10 px-3.5 py-3 text-xs leading-relaxed text-rose-200">{value}</div> : null; }
 
 export function Login() {
   const navigate = useNavigate();
@@ -39,7 +39,7 @@ export function Login() {
     <form className="mt-6 space-y-4" onSubmit={submit}>
       <FormError value={error} />
       <Field label="邮箱" icon={<Mail size={15} />} type="email" autoComplete="username" required placeholder="you@example.com" value={email} onChange={(event) => setEmail(event.target.value)} />
-      <Field label="密码" icon={<LockKeyhole size={15} />} type="password" autoComplete="current-password" required placeholder="至少 12 个字符" value={password} onChange={(event) => setPassword(event.target.value)} />
+      <Field label="密码" icon={<LockKeyhole size={15} />} type="password" autoComplete="current-password" required placeholder="至少 10 个字符" value={password} onChange={(event) => setPassword(event.target.value)} />
       <GlowButton className="w-full py-3" type="submit" disabled={busy}>{busy ? <Loader2 size={16} className="mx-auto animate-spin" /> : <>登录 <ArrowRight size={15} className="ml-1 inline" /></>}</GlowButton>
     </form>
     <p className="mt-6 text-center text-xs text-slate-500">还没有通行证？ <Link to={`/register${params.get("request_id") ? `?request_id=${encodeURIComponent(params.get("request_id")!)}` : ""}`} className="font-medium text-indigo-400 hover:text-indigo-300">立即创建</Link></p>
@@ -60,8 +60,8 @@ export function Register() {
     <FormError value={error} />
     <Field label="显示名称（可选）" icon={<UserRound size={15} />} autoComplete="name" placeholder="你的昵称" value={name} onChange={(event) => setName(event.target.value)} />
     <Field label="邮箱" icon={<Mail size={15} />} type="email" autoComplete="email" required placeholder="you@example.com" value={email} onChange={(event) => setEmail(event.target.value)} />
-    <Field label="密码" icon={<LockKeyhole size={15} />} type="password" autoComplete="new-password" required minLength={12} placeholder="至少 12 个字符" value={password} onChange={(event) => setPassword(event.target.value)} />
-    <div className="rounded-xl border border-indigo-400/10 bg-indigo-500/5 px-3.5 py-3 text-xs leading-relaxed text-slate-500">密码会使用慢哈希保存。请使用 12 个字符以上的独立密码。</div>
+    <Field label="密码" icon={<LockKeyhole size={15} />} type="password" autoComplete="new-password" required minLength={10} placeholder="至少 10 个字符" value={password} onChange={(event) => setPassword(event.target.value)} />
+    <div className="rounded-xl border border-indigo-400/10 bg-indigo-500/5 px-3.5 py-3 text-xs leading-relaxed text-slate-500">密码会使用慢哈希保存。请使用 10 个字符以上的独立密码。</div>
     <GlowButton className="w-full py-3" type="submit" disabled={busy}>{busy ? <Loader2 size={16} className="mx-auto animate-spin" /> : <>创建并登录 <ArrowRight size={15} className="ml-1 inline" /></>}</GlowButton>
   </form><p className="mt-6 text-center text-xs text-slate-500">已有通行证？ <Link to={`/login${params.get("request_id") ? `?request_id=${encodeURIComponent(params.get("request_id")!)}` : ""}`} className="font-medium text-indigo-400 hover:text-indigo-300">返回登录</Link></p></AuthShell>;
 }

@@ -16,7 +16,7 @@ export class ApiError extends Error {
 }
 
 export interface UserProfile {
-  id: string;
+  id: number;
   email: string;
   display_name: string | null;
   status: string;
@@ -61,8 +61,8 @@ export interface PendingAuthorization {
 }
 
 export interface AdminProfile {
-  admin_id: string | null;
-  email: string | null;
+  admin_id: number | null;
+  username: string | null;
   role: string;
   permissions: string[];
   status: string;
@@ -75,8 +75,12 @@ export interface AdminOverview {
   audit_events: number | null;
 }
 
+export interface BootstrapStatus {
+  initialized: boolean;
+}
+
 export interface AdminUser {
-  id: string;
+  id: number;
   email: string;
   display_name: string | null;
   status: string;
@@ -123,8 +127,11 @@ function mutation(init: RequestInit = {}): RequestInit {
 }
 
 export const api = {
+  bootstrapStatus: () => request<BootstrapStatus>("/api/v1/admin/bootstrap/status"),
+  bootstrapAdmin: (input: { username: string; password: string }) =>
+    request<{ id: number; role: string }>("/api/v1/admin/bootstrap", { method: "POST", body: JSON.stringify(input) }),
   register: (input: { email: string; password: string; display_name?: string }) =>
-    request<{ user: { id: string } }>("/api/v1/users", { method: "POST", body: JSON.stringify(input) }),
+    request<{ user: { id: number } }>("/api/v1/users", { method: "POST", body: JSON.stringify(input) }),
   login: (input: { email: string; password: string }) =>
     request<{ session_id: string; expires_at: string }>("/api/v1/auth/login", { method: "POST", body: JSON.stringify(input) }),
   logout: () => request<void>("/api/v1/auth/session", mutation({ method: "DELETE" })),
@@ -151,13 +158,16 @@ export const api = {
   adminMe: () => request<AdminProfile>("/api/v1/admin/auth/me"),
   adminOverview: () => request<AdminOverview>("/api/v1/admin/overview"),
   adminUsers: (search = "", status = "") => request<PageResponse<AdminUser>>(`/api/v1/admin/users/query?page=1&page_size=100&search=${encodeURIComponent(search)}&status=${encodeURIComponent(status)}`),
-  adminSetUserStatus: (id: string, status: "active" | "disabled") =>
+  adminSetUserStatus: (id: number, status: "active" | "disabled") =>
     request<void>(`/api/v1/admin/users/${encodeURIComponent(id)}/${status}`, mutation({ method: "POST" })),
 };
 
 export function errorMessage(error: unknown) {
   if (error instanceof ApiError) {
     if (error.code === "invalid_credentials") return "邮箱或密码不正确";
+    if (error.code === "bootstrap_already_completed") return "初始化已经完成，请使用管理员登录";
+    if (error.code === "invalid_username") return "请输入有效的管理员用户名";
+    if (error.code === "password_too_short") return "管理员密码至少需要 10 个字符";
     if (error.code === "email_already_registered") return "这个邮箱已经注册";
     if (error.code === "oauth_client_quota_exceeded") return "最多创建 2 个 OAuth 应用";
     if (error.code === "csrf_invalid") return "页面安全校验已失效，请刷新后重试";

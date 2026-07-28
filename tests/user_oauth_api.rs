@@ -462,7 +462,7 @@ async fn disabled_user_cannot_use_an_existing_browser_session() {
     let email = format!("ui-{suffix}@example.com");
     let (cookies, _) = register_and_login(&router, &suffix).await;
     let (user_id,) =
-        chenxing_auth::sqlx::query_as::<_, (Uuid,)>("SELECT id FROM users WHERE email = $1")
+        chenxing_auth::sqlx::query_as::<_, (i64,)>("SELECT id FROM users WHERE email = $1")
             .bind(&email)
             .fetch_one(&database)
             .await

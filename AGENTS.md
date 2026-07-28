@@ -82,7 +82,7 @@ OAuth 2.0、OIDC、JWT、JWK/JWKS 和密码学相关能力优先使用成熟的 
 - 代码注释解释原因、协议约束或安全边界，不重复描述显而易见的代码。
 - `APP_ISSUER` 是 OIDC 发行者标识，不能从请求 Host 或反向代理输入推导；Discovery、JWT Claims 和后续协议响应必须使用同一配置值。
 - 当前 OAuth 授权端点的 Session 头部是开发期兼容方式；生产浏览器应使用登录页签发的 HttpOnly Cookie 和授权确认页。
-- `ADMIN_TOKEN` 为空时必须拒绝所有管理员 API；Client Secret 只能在创建时返回，后续列表和查询不得返回哈希或明文。
+- `ADMIN_TOKEN` 为空时必须拒绝所有已初始化的管理员 API；唯一例外是 `admins` 表为空时公开的首个管理员初始化接口。Client Secret 只能在创建时返回，后续列表和查询不得返回哈希或明文。
 - 签名密钥轮换必须共享 AppState 克隆的密钥状态，按 JWT `kid` 选择验证公钥；管理员响应不得包含私钥材料。
 - 浏览器 Cookie 会话的状态变更必须校验 HttpOnly Session Cookie、CSRF Cookie 和 `X-CSRF-Token` 三者绑定；开发期请求头兼容逻辑不能成为生产浏览器认证方案。
 - 管理员角色必须通过 `AdminPermission` 校验；管理员 Session 的写操作必须校验独立的管理员 CSRF Cookie 和 `X-CSRF-Token`。
@@ -150,6 +150,8 @@ cargo nextest run --all-features --test-threads 32
 ## 当前仓库状态
 
 后端已形成按用户、Client、OAuth、Session、密钥、审计和管理边界拆分的模块结构。新增实现应先更新受影响的约定、迁移和测试，再开始跨模块修改；规划中的前端和生产运维能力不能被描述为已完成。
+
+首次打开 Web 前端时，应用必须先查询管理员初始化状态。`admins` 表为空时显示初始化界面，提交用户名和密码后通过公开初始化接口创建唯一的首个 Owner 管理员；初始化使用 PostgreSQL advisory lock 保证并发请求最多成功一次。普通用户和管理员都使用从 `1` 开始递增的整数 ID 作为主键，二者序列独立，首个初始化管理员的 ID 固定为 `1`。管理员用户名不要求邮箱，初始化成功只显示成功提示并跳转管理员登录页，不自动创建管理员 Session。管理员已存在时不得再次公开创建，必须使用管理员用户名登录和已授权的管理接口。需要重新初始化时，由维护人员清理数据库后再重新执行初始化流程。用户密码和管理员密码的最小长度统一为 10 个字符。
 
 ## API Wiki 与 OpenAPI
 

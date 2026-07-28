@@ -5,6 +5,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::domain::Session;
+use crate::users::domain::UserId;
 
 #[derive(Clone)]
 pub struct SessionStore {
@@ -51,7 +52,9 @@ impl SessionStore {
             .set_ex(self.key(&session.id), payload, ttl.as_secs().max(1))
             .await?;
         if let Some(pool) = &self.metadata {
-            let user_id = uuid::Uuid::parse_str(&session.user_id)
+            let user_id = session
+                .user_id
+                .parse::<UserId>()
                 .map_err(|_| SessionStoreError::InvalidUserId)?;
             crate::sqlx::query(
                 "INSERT INTO user_sessions (id, user_id, created_at, expires_at, revoked_at)
@@ -105,7 +108,7 @@ impl SessionStore {
 
     pub async fn list_for_user(
         &self,
-        user_id: uuid::Uuid,
+        user_id: UserId,
     ) -> Result<Vec<SessionSummary>, SessionStoreError> {
         let pool = self
             .metadata
@@ -138,7 +141,7 @@ impl SessionStore {
 
     pub async fn revoke_for_user(
         &self,
-        user_id: uuid::Uuid,
+        user_id: UserId,
         session_id: uuid::Uuid,
     ) -> Result<bool, SessionStoreError> {
         let pool = self
@@ -160,7 +163,7 @@ impl SessionStore {
         Ok(true)
     }
 
-    pub async fn revoke_all_for_user(&self, user_id: uuid::Uuid) -> Result<(), SessionStoreError> {
+    pub async fn revoke_all_for_user(&self, user_id: UserId) -> Result<(), SessionStoreError> {
         let pool = self
             .metadata
             .as_ref()

@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const MIN_PASSWORD_LENGTH: usize = 12;
+pub const MIN_PASSWORD_LENGTH: usize = 10;
+pub type UserId = i64;
 
 #[derive(Debug, Deserialize)]
 pub struct RegistrationInput {
@@ -116,7 +117,7 @@ fn is_valid_email(email: &str) -> bool {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PublicUser {
-    pub id: uuid::Uuid,
+    pub id: UserId,
     pub email: String,
     pub display_name: Option<String>,
     pub status: String,

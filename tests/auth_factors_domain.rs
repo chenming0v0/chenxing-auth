@@ -2,7 +2,6 @@ use chenxing_auth::auth_factors::{
     crypto::{decrypt_totp_secret, encrypt_totp_secret},
     domain::{FactorMethod, LoginTicket, validate_totp_code},
 };
-use uuid::Uuid;
 
 #[test]
 fn totp_code_must_be_exactly_six_ascii_digits() {
@@ -28,7 +27,7 @@ fn totp_secret_encryption_round_trips_with_application_key() {
 
 #[test]
 fn login_ticket_exposes_only_configured_factor_methods() {
-    let user_id = Uuid::new_v4();
+    let user_id = 42_i64;
     let ticket = LoginTicket::new(user_id, vec![FactorMethod::Totp, FactorMethod::Passkey]);
 
     assert_eq!(ticket.user_id, user_id);

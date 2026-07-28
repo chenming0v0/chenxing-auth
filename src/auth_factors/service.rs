@@ -1,3 +1,4 @@
+use crate::users::domain::UserId;
 use redis::Client;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -23,19 +24,19 @@ const PASSKEY_AUTHENTICATION_PREFIX: &str = "chenxing:auth:passkey-authenticatio
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingTotpSetup {
-    user_id: Uuid,
+    user_id: UserId,
     encrypted_secret: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingPasskeyRegistration {
-    user_id: Uuid,
+    user_id: UserId,
     state: PasskeyRegistration,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingPasskeyAuthentication {
-    user_id: Uuid,
+    user_id: UserId,
     state: PasskeyAuthentication,
 }
 
@@ -43,14 +44,14 @@ struct PendingPasskeyAuthentication {
 pub enum TotpConfirmation {
     InvalidTicket,
     InvalidCode,
-    Completed(Uuid),
+    Completed(UserId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasskeyConfirmation {
     InvalidTicket,
     InvalidCredential,
-    Completed(Uuid),
+    Completed(UserId),
 }
 
 #[derive(Clone)]
@@ -95,7 +96,7 @@ impl AuthFactorService {
 
     pub async fn available_methods(
         &self,
-        user_id: Uuid,
+        user_id: UserId,
     ) -> Result<Vec<FactorMethod>, AuthFactorServiceError> {
         let methods = repository::list_factor_methods(&self.pool, user_id).await?;
         Ok(methods
@@ -110,7 +111,7 @@ impl AuthFactorService {
 
     pub async fn create_login_ticket(
         &self,
-        user_id: Uuid,
+        user_id: UserId,
         methods: Vec<FactorMethod>,
     ) -> Result<(String, LoginTicket), AuthFactorServiceError> {
         Ok(self.tickets.create(user_id, methods).await?)
@@ -119,7 +120,7 @@ impl AuthFactorService {
     pub async fn user_id_for_ticket(
         &self,
         ticket_id: &str,
-    ) -> Result<Option<Uuid>, AuthFactorServiceError> {
+    ) -> Result<Option<UserId>, AuthFactorServiceError> {
         Ok(self
             .tickets
             .find(ticket_id)
@@ -129,7 +130,7 @@ impl AuthFactorService {
 
     pub async fn verify_totp(
         &self,
-        user_id: Uuid,
+        user_id: UserId,
         code: &str,
     ) -> Result<bool, AuthFactorServiceError> {
         let Some(encrypted_secret) = repository::find_totp_secret(&self.pool, user_id).await?
@@ -249,7 +250,7 @@ impl AuthFactorService {
                 .collect(),
         );
         let (challenge, state) = self.webauthn.start_passkey_registration(
-            ticket.user_id,
+            Uuid::from_u128(ticket.user_id as u128),
             user_name,
             display_name,
             exclude,

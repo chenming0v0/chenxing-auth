@@ -196,7 +196,7 @@ async fn current_totp_code(email: &str) -> String {
         .connect(&database_url)
         .await
         .expect("PostgreSQL");
-    let user_id: (Uuid,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
+    let user_id: (i64,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
         .bind(email)
         .fetch_one(&database)
         .await

@@ -6,7 +6,7 @@
 
 - Base URL 使用部署后的认证服务地址，例如 `https://auth.example.com`。
 - JSON 请求发送 `Content-Type: application/json`；OAuth Token 和 Revocation 请求发送 `application/x-www-form-urlencoded`。
-- 时间使用 RFC 3339 字符串，ID 使用 UUID 字符串。
+- 时间使用 RFC 3339 字符串；普通用户和管理员 ID 是从 1 开始递增的整数，Session、OAuth Client 等其他实体 ID 仍使用 UUID 字符串。
 - 认证失败、参数错误等 JSON 错误统一为：
 
 ```json
@@ -43,15 +43,15 @@
 请求：
 
 ```json
-{"email":"user@example.com","password":"at-least-12-chars","display_name":"显示名称"}
+{"email":"user@example.com","password":"at-least-10-chars","display_name":"显示名称"}
 ```
 
-`display_name` 可省略或为 `null`，最长 128 个字符；密码至少 12 个字符。
+`display_name` 可省略或为 `null`，最长 128 个字符；密码至少 10 个字符。
 
 响应 `201`：
 
 ```json
-{"user":{"id":"uuid","email":"user@example.com","display_name":"显示名称","status":"active","created_at":"2026-07-28T00:00:00Z"}}
+{"user":{"id":1,"email":"user@example.com","display_name":"显示名称","status":"active","created_at":"2026-07-28T00:00:00Z"}}
 ```
 
 常见错误：`invalid_email`、`password_too_short`、`display_name_too_long`、`email_already_registered`。
@@ -61,7 +61,7 @@
 请求：
 
 ```json
-{"email":"user@example.com","password":"at-least-12-chars","totp_code":"123456"}
+{"email":"user@example.com","password":"at-least-10-chars","totp_code":"123456"}
 ```
 
 首次登录或已绑定因子但尚未完成验证时响应 `202`，不会设置 Session Cookie：
@@ -189,7 +189,7 @@ grant_type=refresh_token&refresh_token=...
 响应字段按 Scope 返回：
 
 ```json
-{"sub":"user-uuid","email":"user@example.com","name":"显示名称"}
+{"sub":"1","email":"user@example.com","name":"显示名称"}
 ```
 
 ### `POST /oauth/revoke`
@@ -198,27 +198,31 @@ grant_type=refresh_token&refresh_token=...
 
 ## 管理 API
 
-管理员 Bearer Token 请求头：`Authorization: Bearer <ADMIN_TOKEN>`。`ADMIN_TOKEN` 为空时所有管理员 API 都拒绝访问。
+管理员 Bearer Token 请求头：`Authorization: Bearer <ADMIN_TOKEN>`。初始化完成后，管理员 API 使用 Bearer Token 或管理员 Session；`ADMIN_TOKEN` 为空时拒绝 Bearer Token 管理请求。
 
 管理员 Session 登录后，管理写操作使用独立的管理员 Session/CSRF Cookie，并要求 `X-CSRF-Token`。管理员角色：`owner`、`operator`、`auditor`。
 
 ### `POST /api/v1/admin/bootstrap`
 
-仅用于初始化首个管理员，使用 `ADMIN_TOKEN` Bearer 认证；成功后不可重复初始化。
+仅用于初始化首个管理员，无需认证。只有 `admins` 表为空时请求才会成功；初始化使用数据库并发锁保证最多创建一个管理员，成功后不可重复初始化。管理员不需要邮箱，只设置用户名和密码，首个管理员角色固定为 `owner`。
 
 ```json
-{"email":"admin@example.com","password":"at-least-12-chars","role":"owner"}
+{"username":"chenxing-admin","password":"at-least-10-chars"}
 ```
 
-成功响应包含管理员 `id` 和 `role`。
+成功响应包含管理员 `id` 和 `role`，不会自动创建管理员 Session。
+
+### `GET /api/v1/admin/bootstrap/status`
+
+公开查询初始化状态，响应为 `{"initialized":false}` 或 `{"initialized":true}`。Web 前端首次打开时先查询此接口；状态为未初始化时显示管理员初始化界面。
 
 ### `POST /api/v1/admin/auth/login`
 
 ```json
-{"email":"admin@example.com","password":"at-least-12-chars"}
+{"username":"chenxing-admin","password":"at-least-10-chars"}
 ```
 
-响应：`{"admin_id":"uuid","expires_in":604800}`，同时设置管理员 Session 和 CSRF Cookie。
+响应：`{"admin_id":1,"expires_in":604800}`，同时设置管理员 Session 和 CSRF Cookie。首个初始化管理员的 ID 为 `1`。
 
 ### `DELETE /api/v1/admin/auth/logout`
 
@@ -236,7 +240,7 @@ grant_type=refresh_token&refresh_token=...
 - `GET /api/v1/admin/admins`：列出管理员，需要 `ManageUsers`。
 - `POST /api/v1/admin/admins`：创建管理员，需要 Owner 权限和管理员 CSRF。
 
-创建字段：`email`、`password`、`role`。返回的管理员摘要不包含密码或哈希。
+创建字段：`username`、`password`、`role`。返回的管理员摘要不包含密码或哈希。
 
 ### Client 管理
 

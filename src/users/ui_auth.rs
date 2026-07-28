@@ -5,11 +5,12 @@ use crate::{
     error,
     sessions::{cookies, domain::Session},
     state::AppState,
+    users::domain::UserId,
 };
 
 #[derive(Debug)]
 pub(crate) struct UserContext {
-    pub user_id: Uuid,
+    pub user_id: UserId,
     pub session: Session,
 }
 
@@ -42,7 +43,9 @@ pub(crate) async fn current_user(
             "user session is invalid",
         ));
     }
-    let user_id = Uuid::parse_str(&session.user_id)
+    let user_id = session
+        .user_id
+        .parse::<UserId>()
         .map_err(|_| error::unauthorized("invalid_session", "user session is invalid"))?;
     let Some(profile) = state
         .users

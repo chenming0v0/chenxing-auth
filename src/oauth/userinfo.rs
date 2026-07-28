@@ -54,7 +54,7 @@ pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Resp
             return error::internal();
         }
     }
-    let Ok(user_id) = uuid::Uuid::parse_str(&claims.sub) else {
+    let Ok(user_id) = claims.sub.parse::<crate::users::domain::UserId>() else {
         return error::unauthorized("invalid_token", "access token subject is invalid");
     };
     let Some(profile) = (match state.users.find_profile(user_id).await {

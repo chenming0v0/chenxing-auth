@@ -73,7 +73,7 @@ async fn issue_id_token(
     if !scopes.iter().any(|scope| scope == "openid") {
         return Ok(None);
     }
-    let Ok(subject) = uuid::Uuid::parse_str(user_id) else {
+    let Ok(subject) = user_id.parse::<crate::users::domain::UserId>() else {
         tracing::error!(user_id, "cannot issue ID token for invalid user id");
         return Err(error::internal());
     };

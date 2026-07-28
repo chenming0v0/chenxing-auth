@@ -125,7 +125,7 @@ async fn passkey_registration_start_returns_creation_challenge_for_login_ticket(
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let user_id: (Uuid,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
+    let user_id: (i64,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
         .bind(&email)
         .fetch_one(&database)
         .await

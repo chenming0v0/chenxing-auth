@@ -1,4 +1,5 @@
 use crate::sqlx::PgPool;
+use crate::users::domain::UserId;
 use argon2::{
     Argon2,
     password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
@@ -39,7 +40,7 @@ pub struct ClientSummary {
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
     pub status: String,
-    pub owner_user_id: Option<Uuid>,
+    pub owner_user_id: Option<UserId>,
 }
 
 #[derive(Debug, Serialize)]
@@ -99,7 +100,7 @@ impl ClientService {
 
     pub async fn register_for_user(
         &self,
-        owner_user_id: Uuid,
+        owner_user_id: UserId,
         input: ClientRegistrationInput,
     ) -> Result<RegisteredClientSecret, ClientServiceError> {
         let registration = validate_client_registration(input)?;
@@ -182,7 +183,7 @@ impl ClientService {
 
     pub async fn list_for_user(
         &self,
-        owner_user_id: Uuid,
+        owner_user_id: UserId,
     ) -> Result<Vec<ClientSummary>, ClientServiceError> {
         Ok(
             repository::list_clients_for_owner(&self.pool, owner_user_id)
@@ -219,7 +220,7 @@ impl ClientService {
 
     pub async fn update_for_user(
         &self,
-        owner_user_id: Uuid,
+        owner_user_id: UserId,
         client_id: &str,
         input: ClientRegistrationInput,
     ) -> Result<bool, ClientServiceError> {
@@ -248,7 +249,7 @@ impl ClientService {
 
     pub async fn set_status_for_user(
         &self,
-        owner_user_id: Uuid,
+        owner_user_id: UserId,
         client_id: &str,
         status: &str,
     ) -> Result<bool, ClientServiceError> {
@@ -282,7 +283,7 @@ impl ClientService {
 
     pub async fn rotate_secret_for_user(
         &self,
-        owner_user_id: Uuid,
+        owner_user_id: UserId,
         client_id: &str,
     ) -> Result<RotatedClientSecret, ClientServiceError> {
         let client_secret = format!("cxs_{}", Uuid::new_v4().simple());

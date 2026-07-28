@@ -1,6 +1,6 @@
+use crate::users::domain::UserId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use uuid::Uuid;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AuthorizationRequest {
@@ -20,7 +20,7 @@ pub struct RegisteredClient {
     pub client_name: String,
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
-    pub owner_user_id: Option<Uuid>,
+    pub owner_user_id: Option<UserId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,7 +31,7 @@ pub struct ValidatedAuthorizationRequest {
     pub state: String,
     pub nonce: Option<String>,
     pub code_challenge: String,
-    pub owner_user_id: Option<uuid::Uuid>,
+    pub owner_user_id: Option<UserId>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

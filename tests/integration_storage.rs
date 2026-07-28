@@ -64,7 +64,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
         .expect("stored profile");
     assert_eq!(profile.display_name.as_deref(), Some("Storage User"));
     assert!(
-        user_repository::find_profile_by_id(&pool, Uuid::new_v4())
+        user_repository::find_profile_by_id(&pool, -1)
             .await
             .expect("find missing profile")
             .is_none()
@@ -137,14 +137,14 @@ async fn postgres_repositories_round_trip_users_and_clients() {
 async fn postgres_transaction_user_insert_and_missing_client_paths_work() {
     let pool = database().await;
     let user = NewUser {
-        id: Uuid::new_v4(),
+        id: 0,
         email: format!("transaction-{}@example.com", Uuid::new_v4().simple()),
         password_hash: "hash".to_owned(),
         display_name: None,
         created_at: OffsetDateTime::now_utc(),
     };
     let mut transaction = pool.begin().await.expect("begin transaction");
-    user_repository::insert_user_in_transaction(&mut transaction, &user)
+    let user_id = user_repository::insert_user_in_transaction(&mut transaction, &user)
         .await
         .expect("insert user in transaction");
     transaction.commit().await.expect("commit transaction");
@@ -156,7 +156,7 @@ async fn postgres_transaction_user_insert_and_missing_client_paths_work() {
     );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user.id)
+        .bind(user_id)
         .execute(&pool)
         .await
         .expect("cleanup transaction user");

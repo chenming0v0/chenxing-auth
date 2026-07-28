@@ -9,7 +9,9 @@ use serde::Serialize;
 use tower_http::trace::TraceLayer;
 
 use crate::{
-    admin::auth_handlers::{bootstrap_admin, create_admin, login_admin, logout_admin},
+    admin::auth_handlers::{
+        bootstrap_admin, bootstrap_status, create_admin, login_admin, logout_admin,
+    },
     admin::handlers::{
         create_client, disable_client, enable_client, list_clients, rotate_secret, update_client,
     },
@@ -90,6 +92,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/auth/sessions/{session_id}",
             axum::routing::delete(revoke_user_session),
         )
+        .route("/api/v1/admin/bootstrap/status", get(bootstrap_status))
         .route("/api/v1/admin/bootstrap", post(bootstrap_admin))
         .route("/api/v1/admin/admins", get(list_admins).post(create_admin))
         .route("/api/v1/admin/auth/login", post(login_admin))

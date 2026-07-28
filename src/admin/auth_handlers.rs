@@ -5,9 +5,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use serde::Serialize;
 
 use super::{
-    authorization::{current_admin_mutation, is_bootstrap_token},
+    authorization::current_admin_mutation,
     domain::AdminRole,
     session::{ADMIN_CSRF_COOKIE, ADMIN_SESSION_COOKIE},
 };
@@ -17,42 +18,50 @@ pub use super::authorization::admin_csrf_valid;
 
 #[derive(Debug, Deserialize)]
 pub struct AdminCredentials {
-    pub email: String,
+    pub username: String,
     pub password: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct BootstrapAdmin {
-    pub email: String,
+    pub username: String,
     pub password: String,
-    pub role: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateAdmin {
-    pub email: String,
+    pub username: String,
     pub password: String,
     pub role: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct BootstrapStatusResponse {
+    pub initialized: bool,
+}
+
+pub async fn bootstrap_status(State(state): State<AppState>) -> Response {
+    match state.admins.is_initialized().await {
+        Ok(initialized) => (
+            StatusCode::OK,
+            Json(BootstrapStatusResponse { initialized }),
+        )
+            .into_response(),
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to query administrator bootstrap status");
+            error::internal()
+        }
+    }
+}
+
 pub async fn bootstrap_admin(
     State(state): State<AppState>,
-    headers: HeaderMap,
     Json(input): Json<BootstrapAdmin>,
 ) -> Response {
-    if !is_bootstrap_token(&state, &headers) {
-        return error::unauthorized(
-            "admin_required",
-            "bootstrap administrator authorization is required",
-        );
-    }
-    let role = match parse_role(input.role.as_deref().unwrap_or("owner")) {
-        Some(role) => role,
-        None => return error::bad_request("invalid_role", "administrator role is invalid"),
-    };
+    let role = AdminRole::Owner;
     match state
         .admins
-        .bootstrap(&input.email, &input.password, role)
+        .bootstrap(&input.username, &input.password, role)
         .await
     {
         Ok(Some(id)) => {
@@ -77,8 +86,8 @@ pub async fn bootstrap_admin(
             "bootstrap_already_completed",
             "bootstrap administrator is already configured",
         ),
-        Err(super::service::AdminServiceError::InvalidEmail) => {
-            error::bad_request("invalid_email", "administrator email is invalid")
+        Err(super::service::AdminServiceError::InvalidUsername) => {
+            error::bad_request("invalid_username", "administrator username is invalid")
         }
         Err(super::service::AdminServiceError::PasswordTooShort) => {
             error::bad_request("password_too_short", "administrator password is too short")
@@ -107,17 +116,17 @@ pub async fn create_admin(
     let Some(role) = parse_role(&input.role) else {
         return error::bad_request("invalid_role", "administrator role is invalid");
     };
-    create_admin_record(&state, &input.email, &input.password, role, "admin").await
+    create_admin_record(&state, &input.username, &input.password, role, "admin").await
 }
 
 async fn create_admin_record(
     state: &AppState,
-    email: &str,
+    username: &str,
     password: &str,
     role: AdminRole,
     actor_type: &str,
 ) -> Response {
-    match state.admins.create(email, password, role).await {
+    match state.admins.create(username, password, role).await {
         Ok(id) => {
             state
                 .audit
@@ -149,11 +158,11 @@ async fn create_admin_record(
         {
             error::conflict(
                 "admin_already_registered",
-                "administrator email is already registered",
+                "administrator username is already registered",
             )
         }
-        Err(super::service::AdminServiceError::InvalidEmail) => {
-            error::bad_request("invalid_email", "administrator email is invalid")
+        Err(super::service::AdminServiceError::InvalidUsername) => {
+            error::bad_request("invalid_username", "administrator username is invalid")
         }
         Err(super::service::AdminServiceError::PasswordTooShort) => {
             error::bad_request("password_too_short", "administrator password is too short")
@@ -171,7 +180,7 @@ pub async fn login_admin(
 ) -> Response {
     let (admin_id, _) = match state
         .admins
-        .authenticate(&input.email, &input.password)
+        .authenticate(&input.username, &input.password)
         .await
     {
         Ok(value) => value,

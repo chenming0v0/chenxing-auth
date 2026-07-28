@@ -1,3 +1,5 @@
+pub type AdminId = i64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminRole {
     Owner,

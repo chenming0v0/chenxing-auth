@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::{
     authorization::current_admin_permission,
-    domain::{AdminPermission, AdminRole},
+    domain::{AdminId, AdminPermission, AdminRole},
     handlers::is_admin_request,
     session::ADMIN_SESSION_COOKIE,
 };
@@ -27,8 +27,8 @@ pub struct PageQuery {
 
 #[derive(Debug, Serialize)]
 struct AdminMeResponse {
-    admin_id: Option<Uuid>,
-    email: Option<String>,
+    admin_id: Option<AdminId>,
+    username: Option<String>,
     role: &'static str,
     permissions: Vec<&'static str>,
     status: &'static str,
@@ -56,7 +56,7 @@ pub async fn admin_me(State(state): State<AppState>, headers: HeaderMap) -> Resp
             axum::http::StatusCode::OK,
             Json(AdminMeResponse {
                 admin_id: None,
-                email: None,
+                username: None,
                 role: AdminRole::Owner.as_str(),
                 permissions: permissions(AdminRole::Owner),
                 status: "active",
@@ -72,7 +72,7 @@ pub async fn admin_me(State(state): State<AppState>, headers: HeaderMap) -> Resp
     let Some(session) = state.admin_sessions.find(session_id).await.ok().flatten() else {
         return error::unauthorized("invalid_session", "administrator session is invalid");
     };
-    let Some((admin_id, email, role, status)) =
+    let Some((admin_id, username, role, status)) =
         state.admins.find(session.admin_id).await.ok().flatten()
     else {
         return error::unauthorized("invalid_session", "administrator account is invalid");
@@ -84,7 +84,7 @@ pub async fn admin_me(State(state): State<AppState>, headers: HeaderMap) -> Resp
         axum::http::StatusCode::OK,
         Json(AdminMeResponse {
             admin_id: Some(admin_id),
-            email: Some(email),
+            username: Some(username),
             role: role.as_str(),
             permissions: permissions(role),
             status: "active",

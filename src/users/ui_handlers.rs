@@ -7,6 +7,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::domain::UserId;
 use super::ui_auth::{UserContext, current_user, mutation_error, mutation_user};
 use crate::{error, sessions::cookies, state::AppState};
 
@@ -17,7 +18,7 @@ struct AuthStatusResponse {
 
 #[derive(Debug, Serialize)]
 struct UserMeResponse {
-    id: Uuid,
+    id: UserId,
     email: String,
     display_name: Option<String>,
     status: String,

@@ -290,7 +290,7 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
             .is_some_and(|value| value.contains("code="))
     );
 
-    let user_id: (Uuid,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
+    let user_id: (i64,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
         .bind(&email)
         .fetch_one(&database)
         .await

@@ -4,6 +4,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::domain::{FactorMethod, LoginTicket};
+use crate::users::domain::UserId;
 
 const LOGIN_TICKET_PREFIX: &str = "chenxing:auth:login-ticket:";
 
@@ -27,7 +28,7 @@ impl LoginTicketStore {
 
     pub async fn create(
         &self,
-        user_id: Uuid,
+        user_id: UserId,
         methods: Vec<FactorMethod>,
     ) -> Result<(String, LoginTicket), LoginTicketStoreError> {
         let ticket_id = Uuid::new_v4().to_string();

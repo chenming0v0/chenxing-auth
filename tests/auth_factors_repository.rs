@@ -18,15 +18,15 @@ async fn database() -> chenxing_auth::sqlx::PgPool {
 #[tokio::test]
 async fn totp_factor_round_trip_returns_ciphertext_only() {
     let pool = database().await;
-    let user_id = Uuid::new_v4();
-    chenxing_auth::sqlx::query(
-        "INSERT INTO users (id, email, password_hash, status, created_at)
-         VALUES ($1, $2, $3, 'active', NOW())",
+    let suffix = Uuid::new_v4().simple().to_string();
+    let user_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO users (email, password_hash, status, created_at)
+         VALUES ($1, $2, 'active', NOW())
+         RETURNING id",
     )
-    .bind(user_id)
-    .bind(format!("factor-{}@example.com", user_id.simple()))
+    .bind(format!("factor-{suffix}@example.com"))
     .bind("test-hash")
-    .execute(&pool)
+    .fetch_one(&pool)
     .await
     .expect("insert test user");
 
