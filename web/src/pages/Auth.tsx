@@ -5,7 +5,7 @@ import Starfield from "../components/Starfield";
 import { Field, GlowButton, Logo } from "../components/ui";
 import { BRAND } from "../data/mock";
 import { errorMessage } from "../api";
-import { useStore } from "../store";
+import { LoginResult, useStore } from "../store";
 
 export function AuthShell({ children, title, subtitle }: { children: ReactNode; title: string; subtitle: string }) {
   return <div className="relative flex min-h-screen overflow-hidden bg-[#05060f]">
@@ -29,19 +29,37 @@ export function FormError({ value }: { value: string | null }) { return value ? 
 export function Login() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const { login } = useStore();
+  const { login, startTotpSetup, completeTotp } = useStore();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await login(identifier, password); const requestId = params.get("request_id"); const returnTo = params.get("return_to"); navigate(requestId ? `/oauth/consent?request_id=${encodeURIComponent(requestId)}` : returnTo || "/console"); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
+  const [pending, setPending] = useState<Extract<LoginResult, { status: string }> | null>(null);
+  const [totpSetup, setTotpSetup] = useState<{ otpauth_url: string } | null>(null);
+  const [code, setCode] = useState("");
+  const goNext = () => { const requestId = params.get("request_id"); const returnTo = params.get("return_to"); navigate(requestId ? `/oauth/consent?request_id=${encodeURIComponent(requestId)}` : returnTo || "/console"); };
+  const handleLoginResult = async (result: LoginResult) => {
+    if ("session_id" in result) { goNext(); return; }
+    setPending(result);
+    if (result.status === "factor_setup_required") {
+      const setup = await startTotpSetup(result.login_ticket);
+      setTotpSetup(setup);
+    }
+  };
+  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await handleLoginResult(await login(identifier, password)); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
+  const finishTotp = async (event: FormEvent) => { event.preventDefault(); if (!pending) return; setBusy(true); setError(null); try { await completeTotp(pending.login_ticket, code); goNext(); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
   return <AuthShell title="登录辰星通行证" subtitle={params.get("request_id") ? "登录后继续完成授权确认" : "使用你的身份进入认证中枢"}>
-    <form className="mt-6 space-y-4" onSubmit={submit}>
+    {!pending ? <form className="mt-6 space-y-4" onSubmit={submit}>
       <FormError value={error} />
       <Field label="用户名或邮箱" icon={<UserRound size={15} />} type="text" autoComplete="username" required placeholder="用户名或 you@example.com" value={identifier} onChange={(event) => setIdentifier(event.target.value)} />
       <Field label="密码" icon={<LockKeyhole size={15} />} type="password" autoComplete="current-password" required placeholder="至少 10 个字符" value={password} onChange={(event) => setPassword(event.target.value)} />
       <GlowButton className="w-full py-3" type="submit" disabled={busy}>{busy ? <Loader2 size={16} className="mx-auto animate-spin" /> : <>登录 <ArrowRight size={15} className="ml-1 inline" /></>}</GlowButton>
-    </form>
+    </form> : <form className="mt-6 space-y-4" onSubmit={finishTotp}>
+      <FormError value={error} />
+      <div className="rounded-xl border border-indigo-400/15 bg-indigo-500/5 px-3.5 py-3 text-xs leading-relaxed text-slate-400">{totpSetup ? <>请使用验证器扫描以下 URI，然后输入当前验证码。<code className="mt-2 block break-all text-[10px] text-cyan-300">{totpSetup.otpauth_url}</code></> : "请输入验证器中的当前六位验证码。"}</div>
+      <Field label="动态验证码" icon={<ShieldCheck size={15} />} inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required value={code} onChange={(event) => setCode(event.target.value)} />
+      <GlowButton className="w-full py-3" type="submit" disabled={busy || code.length !== 6}>{busy ? <Loader2 size={16} className="mx-auto animate-spin" /> : <>完成登录 <ArrowRight size={15} className="ml-1 inline" /></>}</GlowButton>
+    </form>}
     <p className="mt-6 text-center text-xs text-slate-500">还没有通行证？ <Link to={`/register${params.get("request_id") ? `?request_id=${encodeURIComponent(params.get("request_id")!)}` : ""}`} className="font-medium text-indigo-400 hover:text-indigo-300">立即创建</Link></p>
   </AuthShell>;
 }
@@ -49,21 +67,37 @@ export function Login() {
 export function Register() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const { register } = useStore();
+  const { register, startTotpSetup, completeTotp } = useStore();
   const [name, setName] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await register(username, email, password, name); const requestId = params.get("request_id"); navigate(requestId ? `/oauth/consent?request_id=${encodeURIComponent(requestId)}` : "/console"); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
-  return <AuthShell title="创建辰星通行证" subtitle="一个账号，连接所有接入辰星的应用"><form className="mt-6 space-y-4" onSubmit={submit}>
-    <FormError value={error} />
-    <Field label="用户名" icon={<UserRound size={15} />} autoComplete="username" required minLength={3} maxLength={64} placeholder="你的登录用户名" value={username} onChange={(event) => setUsername(event.target.value)} />
-    <Field label="显示名称（可选）" icon={<UserRound size={15} />} autoComplete="name" placeholder="你的昵称" value={name} onChange={(event) => setName(event.target.value)} />
-    <Field label="邮箱" icon={<Mail size={15} />} type="email" autoComplete="email" required placeholder="you@example.com" value={email} onChange={(event) => setEmail(event.target.value)} />
-    <Field label="密码" icon={<LockKeyhole size={15} />} type="password" autoComplete="new-password" required minLength={10} placeholder="至少 10 个字符" value={password} onChange={(event) => setPassword(event.target.value)} />
-    <div className="rounded-xl border border-indigo-400/10 bg-indigo-500/5 px-3.5 py-3 text-xs leading-relaxed text-slate-500">密码会使用慢哈希保存。请使用 10 个字符以上的独立密码。</div>
-    <GlowButton className="w-full py-3" type="submit" disabled={busy}>{busy ? <Loader2 size={16} className="mx-auto animate-spin" /> : <>创建并登录 <ArrowRight size={15} className="ml-1 inline" /></>}</GlowButton>
-  </form><p className="mt-6 text-center text-xs text-slate-500">已有通行证？ <Link to={`/login${params.get("request_id") ? `?request_id=${encodeURIComponent(params.get("request_id")!)}` : ""}`} className="font-medium text-indigo-400 hover:text-indigo-300">返回登录</Link></p></AuthShell>;
+  const [pending, setPending] = useState<Extract<LoginResult, { status: string }> | null>(null);
+  const [totpSetup, setTotpSetup] = useState<{ otpauth_url: string } | null>(null);
+  const [code, setCode] = useState("");
+  const goNext = () => { const requestId = params.get("request_id"); navigate(requestId ? `/oauth/consent?request_id=${encodeURIComponent(requestId)}` : "/console"); };
+  const handleLoginResult = async (result: LoginResult) => { if ("session_id" in result) { goNext(); return; } setPending(result); if (result.status === "factor_setup_required") setTotpSetup(await startTotpSetup(result.login_ticket)); };
+  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await handleLoginResult(await register(username, email, password, name)); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
+  const finishTotp = async (event: FormEvent) => { event.preventDefault(); if (!pending) return; setBusy(true); setError(null); try { await completeTotp(pending.login_ticket, code); goNext(); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
+  return <AuthShell title="创建辰星通行证" subtitle="一个账号，连接所有接入辰星的应用">
+    <form className="mt-6 space-y-4" onSubmit={pending ? finishTotp : submit}>
+      {!pending ? <>
+        <FormError value={error} />
+        <Field label="用户名" icon={<UserRound size={15} />} autoComplete="username" required minLength={3} maxLength={64} placeholder="你的登录用户名" value={username} onChange={(event) => setUsername(event.target.value)} />
+        <Field label="显示名称（可选）" icon={<UserRound size={15} />} autoComplete="name" placeholder="你的昵称" value={name} onChange={(event) => setName(event.target.value)} />
+        <Field label="邮箱" icon={<Mail size={15} />} type="email" autoComplete="email" required placeholder="you@example.com" value={email} onChange={(event) => setEmail(event.target.value)} />
+        <Field label="密码" icon={<LockKeyhole size={15} />} type="password" autoComplete="new-password" required minLength={10} placeholder="至少 10 个字符" value={password} onChange={(event) => setPassword(event.target.value)} />
+        <div className="rounded-xl border border-indigo-400/10 bg-indigo-500/5 px-3.5 py-3 text-xs leading-relaxed text-slate-500">密码会使用慢哈希保存。请使用 10 个字符以上的独立密码。</div>
+        <GlowButton className="w-full py-3" type="submit" disabled={busy}>{busy ? <Loader2 size={16} className="mx-auto animate-spin" /> : <>创建并登录 <ArrowRight size={15} className="ml-1 inline" /></>}</GlowButton>
+      </> : <>
+        <FormError value={error} />
+        <div className="rounded-xl border border-indigo-400/15 bg-indigo-500/5 px-3.5 py-3 text-xs leading-relaxed text-slate-400">{totpSetup ? <>请使用验证器扫描以下 URI，然后输入当前验证码。<code className="mt-2 block break-all text-[10px] text-cyan-300">{totpSetup.otpauth_url}</code></> : "请输入验证器中的当前六位验证码。"}</div>
+        <Field label="动态验证码" icon={<ShieldCheck size={15} />} inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required value={code} onChange={(event) => setCode(event.target.value)} />
+        <GlowButton className="w-full py-3" type="submit" disabled={busy || code.length !== 6}>{busy ? <Loader2 size={16} className="mx-auto animate-spin" /> : <>完成登录 <ArrowRight size={15} className="ml-1 inline" /></>}</GlowButton>
+      </>}
+    </form>
+    <p className="mt-6 text-center text-xs text-slate-500">已有通行证？ <Link to={`/login${params.get("request_id") ? `?request_id=${encodeURIComponent(params.get("request_id")!)}` : ""}`} className="font-medium text-indigo-400 hover:text-indigo-300">返回登录</Link></p>
+  </AuthShell>;
 }

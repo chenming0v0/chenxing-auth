@@ -3,18 +3,39 @@ use axum::http::HeaderMap;
 use crate::{
     sessions::{cookies, domain::Session},
     state::AppState,
+    users::{domain::UserId, service::UserServiceError},
 };
 
 pub async fn session_for_headers(state: &AppState, headers: &HeaderMap) -> Option<Session> {
     let session_token = session_id_from_headers(headers)?;
     let session = state.sessions.find(&session_token).await.ok().flatten()?;
-    session.is_active().then_some(session)
+    if !session.is_active() {
+        return None;
+    }
+    active_user_id(state, &session.user_id)
+        .await
+        .ok()
+        .flatten()?;
+    Some(session)
 }
 
 pub async fn session_user_id(state: &AppState, headers: &HeaderMap) -> Option<String> {
     session_for_headers(state, headers)
         .await
         .map(|session| session.user_id)
+}
+
+pub async fn active_user_id(
+    state: &AppState,
+    user_id: &str,
+) -> Result<Option<UserId>, UserServiceError> {
+    let Ok(user_id) = user_id.parse::<UserId>() else {
+        return Ok(None);
+    };
+    let Some(profile) = state.users.find_profile(user_id).await? else {
+        return Ok(None);
+    };
+    Ok((profile.status == "active").then_some(user_id))
 }
 
 fn session_id_from_headers(headers: &HeaderMap) -> Option<String> {

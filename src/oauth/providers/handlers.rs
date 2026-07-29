@@ -189,6 +189,15 @@ pub async fn external_callback(
             )
             .await;
         }
+        Err(ExternalOAuthError::OwnerBootstrapRequired) => {
+            return external_error_with_request(
+                &state,
+                &slug,
+                stored_state.request_id.as_deref(),
+                "owner_bootstrap_required",
+            )
+            .await;
+        }
         Err(error_value) => {
             tracing::error!(error = %error_value, provider = %slug, "failed to resolve external OAuth identity");
             return external_error_with_request(

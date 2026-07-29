@@ -3,6 +3,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
+use chenxing_auth::sqlx::{Connection, PgConnection};
 use chenxing_auth::{
     api,
     config::Config,
@@ -14,10 +15,56 @@ use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+async fn clear_session_revocation_markers(connection: &mut redis::aio::MultiplexedConnection) {
+    let mut cursor = 0_u64;
+    loop {
+        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg("chenxing:session:revoked-before:*")
+            .arg("COUNT")
+            .arg(100)
+            .query_async(connection)
+            .await
+            .expect("scan session revocation markers");
+        if !keys.is_empty() {
+            let _: usize = redis::AsyncCommands::del(connection, keys)
+                .await
+                .expect("delete session revocation markers");
+        }
+        cursor = next_cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+}
+
+struct SharedDatabaseLock {
+    _connection: PgConnection,
+}
+
+async fn shared_database_lock(database_url: &str) -> SharedDatabaseLock {
+    let mut connection = PgConnection::connect(database_url)
+        .await
+        .expect("database lock connection");
+    chenxing_auth::sqlx::query("BEGIN")
+        .execute(&mut connection)
+        .await
+        .expect("database lock transaction");
+    chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock(hashtext('chenxing-shared-reset'))")
+        .execute(&mut connection)
+        .await
+        .expect("database reset lock");
+    SharedDatabaseLock {
+        _connection: connection,
+    }
+}
+
 async fn setup() -> (
     axum::Router,
     chenxing_auth::sqlx::PgPool,
     std::path::PathBuf,
+    SharedDatabaseLock,
 ) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
@@ -29,6 +76,7 @@ async fn setup() -> (
         .await
         .expect("PostgreSQL");
     db::migrate(&database).await.expect("migrations");
+    let lock = shared_database_lock(&database_url).await;
     chenxing_auth::sqlx::query("TRUNCATE users RESTART IDENTITY CASCADE")
         .execute(&database)
         .await
@@ -38,10 +86,7 @@ async fn setup() -> (
         .get_multiplexed_async_connection()
         .await
         .expect("Redis connection");
-    let _: () = redis::cmd("FLUSHDB")
-        .query_async(&mut redis_connection)
-        .await
-        .expect("reset Redis test database");
+    clear_session_revocation_markers(&mut redis_connection).await;
     let key_directory = std::env::temp_dir().join(format!("chenxing-admin-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
@@ -59,6 +104,7 @@ async fn setup() -> (
         api::router(AppState::new(config).expect("state")),
         database,
         key_directory,
+        lock,
     )
 }
 
@@ -97,7 +143,7 @@ async fn browser_session(database_url: &str, redis_url: &str, user_id: i64) -> (
 
 #[tokio::test]
 async fn bootstrap_admin_can_login_and_use_cookie_session() {
-    let (router, database, key_directory) = setup().await;
+    let (router, database, key_directory, _lock) = setup().await;
     let username = format!("admin-{}", Uuid::new_v4().simple());
     let email = format!("{username}@example.com");
     let password = "1234567890";
@@ -323,7 +369,7 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
 
 #[tokio::test]
 async fn owner_role_mutation_is_owner_only_and_updates_existing_sessions() {
-    let (router, database, key_directory) = setup().await;
+    let (router, database, key_directory, _lock) = setup().await;
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -414,7 +460,7 @@ async fn owner_role_mutation_is_owner_only_and_updates_existing_sessions() {
         )
         .await
         .expect("demoted session response");
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     let (owner_cookie, owner_csrf) = browser_session(&database_url, &redis_url, 1).await;
     let response = router

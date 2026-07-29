@@ -75,6 +75,52 @@ pub async fn insert_user(
     })
 }
 
+pub async fn insert_user_after_owner(
+    pool: &PgPool,
+    registration: ValidatedRegistration,
+    password_hash: String,
+) -> Result<Option<NewUser>, crate::sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    crate::sqlx::query("SELECT pg_advisory_xact_lock(7341928)")
+        .execute(&mut *transaction)
+        .await?;
+    let owner_exists: bool =
+        crate::sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE role = 'owner')")
+            .fetch_one(&mut *transaction)
+            .await?;
+    if !owner_exists {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+
+    let username = registration.username;
+    let email = registration.email;
+    let display_name = registration.display_name;
+    let created_at = OffsetDateTime::now_utc();
+    let id: UserId = crate::sqlx::query_scalar(
+        "INSERT INTO users (username, email, password_hash, display_name, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'active', $5, $5)
+         RETURNING id",
+    )
+    .bind(&username)
+    .bind(&email)
+    .bind(&password_hash)
+    .bind(&display_name)
+    .bind(created_at)
+    .fetch_one(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+
+    Ok(Some(NewUser {
+        id,
+        username,
+        email,
+        password_hash,
+        display_name,
+        created_at,
+    }))
+}
+
 pub async fn find_credentials_by_identifier(
     pool: &PgPool,
     identifier: &str,
@@ -236,7 +282,7 @@ pub async fn bootstrap_owner(
     username: &str,
     email: &str,
     password_hash: &str,
-) -> Result<Option<UserProfile>, crate::sqlx::Error> {
+) -> Result<BootstrapOwnerOutcome, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
     crate::sqlx::query("SELECT pg_advisory_xact_lock(7341928)")
         .execute(&mut *transaction)
@@ -247,8 +293,18 @@ pub async fn bootstrap_owner(
             .await?;
     if owner_exists {
         transaction.rollback().await?;
-        return Ok(None);
+        return Ok(BootstrapOwnerOutcome::AlreadyConfigured);
     }
+    let users_exist: bool = crate::sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users)")
+        .fetch_one(&mut *transaction)
+        .await?;
+    if users_exist {
+        transaction.rollback().await?;
+        return Ok(BootstrapOwnerOutcome::RequiresEmptyDatabase);
+    }
+    crate::sqlx::query("SELECT setval(pg_get_serial_sequence('users', 'id'), 1, false)")
+        .execute(&mut *transaction)
+        .await?;
     let id: UserId = crate::sqlx::query_scalar(
         "INSERT INTO users (username, email, password_hash, role, status, created_at, updated_at)
          VALUES ($1, $2, $3, 'owner', 'active', NOW(), NOW()) RETURNING id",
@@ -259,7 +315,18 @@ pub async fn bootstrap_owner(
     .fetch_one(&mut *transaction)
     .await?;
     transaction.commit().await?;
-    find_profile_by_id(pool, id).await
+    Ok(BootstrapOwnerOutcome::Created(
+        find_profile_by_id(pool, id)
+            .await?
+            .expect("inserted owner must exist"),
+    ))
+}
+
+#[derive(Debug)]
+pub enum BootstrapOwnerOutcome {
+    Created(UserProfile),
+    AlreadyConfigured,
+    RequiresEmptyDatabase,
 }
 
 pub async fn insert_user_with_role(
@@ -268,8 +335,20 @@ pub async fn insert_user_with_role(
     email: &str,
     password_hash: &str,
     role: UserRole,
-) -> Result<UserId, crate::sqlx::Error> {
-    crate::sqlx::query_scalar(
+) -> Result<Option<UserId>, crate::sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    crate::sqlx::query("SELECT pg_advisory_xact_lock(7341928)")
+        .execute(&mut *transaction)
+        .await?;
+    let owner_exists: bool =
+        crate::sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE role = 'owner')")
+            .fetch_one(&mut *transaction)
+            .await?;
+    if !owner_exists {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+    let id: UserId = crate::sqlx::query_scalar(
         "INSERT INTO users (username, email, password_hash, role, status, created_at, updated_at)
          VALUES ($1, $2, $3, $4, 'active', NOW(), NOW()) RETURNING id",
     )
@@ -277,8 +356,10 @@ pub async fn insert_user_with_role(
     .bind(email)
     .bind(password_hash)
     .bind(role.as_str())
-    .fetch_one(pool)
-    .await
+    .fetch_one(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Some(id))
 }
 
 pub async fn set_user_role(

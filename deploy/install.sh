@@ -56,7 +56,13 @@ if ! docker compose --env-file .env -f docker-compose.prod.yml config >/dev/null
     exit 1
 fi
 
-docker compose --env-file .env -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env -f docker-compose.prod.yml up -d postgres redis
+if ! docker compose --env-file .env -f docker-compose.prod.yml run --rm --build app migrate; then
+    printf '%s\n' 'Database migration failed. This release uses a fresh unified SQLx baseline and does not roll old schemas forward automatically.' >&2
+    printf '%s\n' 'Back up the database and follow the documented reset/migration procedure before retrying.' >&2
+    exit 1
+fi
+docker compose --env-file .env -f docker-compose.prod.yml up -d --build app
 
 HOST_PORT="$(docker compose --env-file .env -f docker-compose.prod.yml port app 3000 | awk -F: '{print $NF}')"
 if [[ -z "$HOST_PORT" ]]; then

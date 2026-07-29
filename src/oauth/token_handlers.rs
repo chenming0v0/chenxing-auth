@@ -11,6 +11,7 @@ use super::{
     pkce::verify_s256,
     refresh::RefreshToken,
     response::issue_token_response,
+    session::active_user_id,
 };
 use crate::{error, state::AppState};
 
@@ -88,6 +89,14 @@ async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> 
         tracing::info!(error = %pkce_error, "OAuth PKCE verification failed");
         return error::bad_request("invalid_grant", "PKCE verification failed");
     }
+    match active_user_id(&state, &code.user_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return error::bad_request("invalid_grant", "authorization code is invalid"),
+        Err(database_error) => {
+            tracing::error!(error = %database_error, "failed to load authorization code user");
+            return error::internal();
+        }
+    }
     match state
         .authorization_codes
         .take_if_matches(code_value, &code)
@@ -142,6 +151,14 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
     };
     if let Err(refresh_error) = refresh.validate(client_id, time::OffsetDateTime::now_utc()) {
         return error::bad_request("invalid_grant", refresh_error.to_string());
+    }
+    match active_user_id(&state, &refresh.user_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return error::bad_request("invalid_grant", "refresh token is invalid"),
+        Err(database_error) => {
+            tracing::error!(error = %database_error, "failed to load refresh token user");
+            return error::internal();
+        }
     }
     let scopes = match request.scope.as_deref() {
         Some(scope) => {

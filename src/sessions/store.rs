@@ -51,13 +51,14 @@ impl SessionStore {
         session: &mut Session,
         ttl: Duration,
     ) -> Result<(), SessionStoreError> {
-        if let Some(pool) = &self.metadata {
+        serde_json::to_string(session)?;
+        let metadata_id = if let Some(pool) = &self.metadata {
             let user_id = session
                 .user_id
                 .parse::<UserId>()
                 .map_err(|_| SessionStoreError::InvalidUserId)?;
             let token_hash = Sha256::digest(session.token.as_bytes()).to_vec();
-            session.id = crate::sqlx::query_scalar(
+            let id = crate::sqlx::query_scalar(
                 "INSERT INTO user_sessions (token_hash, user_id, created_at, expires_at)
                  VALUES ($1, $2, $3, $4) RETURNING id",
             )
@@ -67,25 +68,42 @@ impl SessionStore {
             .bind(session.expires_at)
             .fetch_one(pool)
             .await?;
-        }
-        let mut connection = self.client.get_multiplexed_async_connection().await?;
+            session.id = id;
+            Some(id)
+        } else {
+            None
+        };
+        let payload = match serde_json::to_string(session) {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.delete_metadata(metadata_id).await;
+                return Err(error.into());
+            }
+        };
+        let mut connection = match self.client.get_multiplexed_async_connection().await {
+            Ok(connection) => connection,
+            Err(error) => {
+                self.delete_metadata(metadata_id).await;
+                return Err(error.into());
+            }
+        };
         if let Err(error) = connection
-            .set_ex::<_, _, ()>(
-                self.key(&session.token),
-                serde_json::to_string(session)?,
-                ttl.as_secs().max(1),
-            )
+            .set_ex::<_, _, ()>(self.key(&session.token), payload, ttl.as_secs().max(1))
             .await
         {
-            if let Some(pool) = &self.metadata {
-                let _ = crate::sqlx::query("DELETE FROM user_sessions WHERE id = $1")
-                    .bind(session.id)
-                    .execute(pool)
-                    .await;
-            }
+            self.delete_metadata(metadata_id).await;
             return Err(error.into());
         }
         Ok(())
+    }
+
+    async fn delete_metadata(&self, id: Option<i64>) {
+        if let (Some(pool), Some(id)) = (&self.metadata, id) {
+            let _ = crate::sqlx::query("DELETE FROM user_sessions WHERE id = $1")
+                .bind(id)
+                .execute(pool)
+                .await;
+        }
     }
 
     pub async fn find(&self, token: &str) -> Result<Option<Session>, SessionStoreError> {

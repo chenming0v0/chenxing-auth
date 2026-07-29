@@ -59,7 +59,7 @@ pub async fn bootstrap_admin(
         display_name: None,
     };
     match state.users.bootstrap_owner(registration).await {
-        Ok(Some(profile)) => {
+        Ok(crate::users::service::BootstrapOwnerResult::Created(profile)) => {
             state
                 .audit
                 .record(AuditEvent::new(
@@ -75,9 +75,13 @@ pub async fn bootstrap_admin(
                 "id": profile.id, "username": profile.username, "email": profile.email, "role": "owner"
             }))).into_response()
         }
-        Ok(None) => error::conflict(
+        Ok(crate::users::service::BootstrapOwnerResult::AlreadyConfigured) => error::conflict(
             "bootstrap_already_completed",
             "owner bootstrap is already configured",
+        ),
+        Ok(crate::users::service::BootstrapOwnerResult::RequiresEmptyDatabase) => error::conflict(
+            "owner_bootstrap_requires_empty_database",
+            "owner bootstrap requires an empty users table; clear the database before retrying",
         ),
         Err(crate::users::service::UserServiceError::Validation(
             RegistrationError::InvalidEmail,
@@ -88,6 +92,10 @@ pub async fn bootstrap_admin(
         Err(crate::users::service::UserServiceError::Validation(
             RegistrationError::PasswordTooShort,
         )) => error::bad_request("password_too_short", "password is too short"),
+        Err(crate::users::service::UserServiceError::OwnerBootstrapRequired) => error::conflict(
+            "owner_bootstrap_required",
+            "owner bootstrap must be completed before creating privileged users",
+        ),
         Err(crate::users::service::UserServiceError::Database(error_value))
             if error_value
                 .as_database_error()

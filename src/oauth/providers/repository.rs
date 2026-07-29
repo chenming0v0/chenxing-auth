@@ -166,6 +166,28 @@ pub async fn create_user_with_identity(
     password_hash: &str,
 ) -> Result<UserId, CreateIdentityError> {
     let mut transaction = pool.begin().await?;
+    crate::sqlx::query("SELECT pg_advisory_xact_lock(7341928)")
+        .execute(&mut *transaction)
+        .await?;
+    let existing_identity: Option<(UserId, String)> = crate::sqlx::query_as(
+        "SELECT i.user_id, u.status
+         FROM oauth_external_identities i
+         JOIN users u ON u.id = i.user_id
+         WHERE i.provider_id = $1 AND i.subject = $2
+         FOR UPDATE OF i, u",
+    )
+    .bind(provider_id)
+    .bind(subject)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if let Some((user_id, status)) = existing_identity {
+        transaction.rollback().await?;
+        if status != "active" {
+            return Err(CreateIdentityError::UserDisabled);
+        }
+        return Ok(user_id);
+    }
+
     let existing_user: Option<UserId> =
         crate::sqlx::query_scalar("SELECT id FROM users WHERE email = $1 FOR UPDATE")
             .bind(email)
@@ -174,6 +196,15 @@ pub async fn create_user_with_identity(
     if existing_user.is_some() {
         transaction.rollback().await?;
         return Err(CreateIdentityError::EmailAlreadyRegistered);
+    }
+
+    let owner_exists: bool =
+        crate::sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE role = 'owner')")
+            .fetch_one(&mut *transaction)
+            .await?;
+    if !owner_exists {
+        transaction.rollback().await?;
+        return Err(CreateIdentityError::OwnerBootstrapRequired);
     }
 
     let username = format!("oauth_{}", Uuid::new_v4().simple());
@@ -213,6 +244,10 @@ pub enum CreateIdentityError {
     Database(#[from] crate::sqlx::Error),
     #[error("email is already registered")]
     EmailAlreadyRegistered,
+    #[error("external user is disabled")]
+    UserDisabled,
+    #[error("owner bootstrap is required before creating external users")]
+    OwnerBootstrapRequired,
 }
 
 type ProviderRow = (

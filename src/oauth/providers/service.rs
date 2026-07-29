@@ -49,6 +49,8 @@ pub enum ExternalOAuthError {
     EmailAlreadyRegistered,
     #[error("external user is disabled")]
     UserDisabled,
+    #[error("owner bootstrap is required")]
+    OwnerBootstrapRequired,
 }
 
 #[derive(Debug, Clone)]
@@ -254,6 +256,10 @@ impl ExternalOAuthService {
         .map_err(|error| match error {
             CreateIdentityError::EmailAlreadyRegistered => {
                 ExternalOAuthError::EmailAlreadyRegistered
+            }
+            CreateIdentityError::UserDisabled => ExternalOAuthError::UserDisabled,
+            CreateIdentityError::OwnerBootstrapRequired => {
+                ExternalOAuthError::OwnerBootstrapRequired
             }
             CreateIdentityError::Database(error) => ExternalOAuthError::Database(error),
         })

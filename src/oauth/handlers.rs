@@ -10,7 +10,7 @@ use super::{
     },
     code::AuthorizationCode,
     quota::QuotaConsumeResult,
-    session::session_user_id,
+    session::{active_user_id, session_user_id},
 };
 use crate::audit::AuditEvent;
 use crate::{error, state::AppState};
@@ -120,6 +120,19 @@ pub async fn issue_authorization_code_result(
     user_id: String,
     validated: ValidatedAuthorizationRequest,
 ) -> Result<AuthorizationCodeIssue, Response> {
+    match active_user_id(state, &user_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return Err(error::unauthorized(
+                "user_disabled",
+                "user account is disabled",
+            ));
+        }
+        Err(database_error) => {
+            tracing::error!(error = %database_error, "failed to load OAuth authorization user");
+            return Err(error::internal());
+        }
+    }
     let Some(client) = state
         .clients
         .find_registered(&validated.client_id)

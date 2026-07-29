@@ -22,7 +22,7 @@ export default function AdminConsoleLayout() {
     }).catch((value) => {
       if (!active) return;
       if (value instanceof ApiError && value.status === 401) navigate("/login?return_to=%2Fadmin-console", { replace: true });
-      else if (value instanceof ApiError && value.code === "admin_forbidden") navigate("/console", { replace: true });
+      else if (value instanceof ApiError && value.status === 403) navigate("/console", { replace: true });
       else setError(errorMessage(value));
     }).finally(() => {
       if (active) setLoading(false);

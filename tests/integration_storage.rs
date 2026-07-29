@@ -409,9 +409,14 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
             .is_none()
     );
 
+    let session_key = format!(
+        "chenxing:session:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(sha2::Sha256::digest(session.token.as_bytes()))
+    );
     let _: usize = connection
         .del(&[
-            format!("chenxing:session:{}", session.id),
+            session_key,
             format!("chenxing:oauth:code:{}", code.value),
             format!("chenxing:oauth:refresh:{}", refresh.value),
         ])
@@ -569,4 +574,61 @@ async fn session_find_uses_database_identity_for_cached_payloads() {
         .execute(&pool)
         .await
         .expect("cleanup metadata identity users");
+}
+
+#[tokio::test]
+async fn session_save_cleans_metadata_when_redis_connection_fails() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("metadata-connection-failure-{}", Uuid::new_v4().simple()),
+            email: format!(
+                "metadata-connection-failure-{}@example.com",
+                Uuid::new_v4().simple()
+            ),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert metadata connection failure user");
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve Redis port");
+    let port = listener
+        .local_addr()
+        .expect("reserved Redis address")
+        .port();
+    drop(listener);
+    let redis = redis::Client::open(format!("redis://127.0.0.1:{port}/")).expect("Redis URL");
+    let sessions = SessionStore::with_metadata(redis, pool.clone());
+    let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
+
+    assert!(
+        sessions
+            .save(&mut session, Duration::from_secs(60))
+            .await
+            .is_err()
+    );
+    assert!(
+        session.id > 0,
+        "database insert must happen before Redis access"
+    );
+    assert_eq!(
+        chenxing_auth::sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM user_sessions WHERE id = $1",
+        )
+        .bind(session.id)
+        .fetch_one(&pool)
+        .await
+        .expect("count orphaned session metadata"),
+        0
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup metadata connection failure user");
 }

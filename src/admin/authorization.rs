@@ -44,7 +44,7 @@ pub async fn current_admin_permission(
     }
     let context = current_user(state, headers).await?;
     if !context.role.allows(permission) {
-        return Err(error::unauthorized(
+        return Err(error::forbidden(
             "admin_forbidden",
             "administrator permission is insufficient",
         ));
@@ -65,7 +65,7 @@ pub async fn current_admin_mutation(
         return Err(error::bad_request("csrf_invalid", "CSRF token is invalid"));
     }
     if !context.role.allows(permission) {
-        return Err(error::unauthorized(
+        return Err(error::forbidden(
             "admin_forbidden",
             "administrator permission is insufficient",
         ));

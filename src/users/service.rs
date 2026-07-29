@@ -27,6 +27,8 @@ pub enum UserServiceError {
     InvalidCredentials,
     #[error("last active owner is required")]
     LastOwnerRequired,
+    #[error("owner bootstrap is required before public registration")]
+    OwnerBootstrapRequired,
 }
 
 impl UserService {
@@ -38,7 +40,11 @@ impl UserService {
         let registration = validate_registration(input)?;
         let password_hash =
             hash_password(&registration.password).map_err(|_| UserServiceError::PasswordHash)?;
-        let user = repository::insert_user(&self.pool, registration, password_hash).await?;
+        let Some(user) =
+            repository::insert_user_after_owner(&self.pool, registration, password_hash).await?
+        else {
+            return Err(UserServiceError::OwnerBootstrapRequired);
+        };
 
         Ok(PublicUser {
             id: user.id,
@@ -54,17 +60,30 @@ impl UserService {
     pub async fn bootstrap_owner(
         &self,
         input: RegistrationInput,
-    ) -> Result<Option<repository::UserProfile>, UserServiceError> {
+    ) -> Result<BootstrapOwnerResult, UserServiceError> {
         let registration = validate_registration(input)?;
         let password_hash =
             hash_password(&registration.password).map_err(|_| UserServiceError::PasswordHash)?;
-        Ok(repository::bootstrap_owner(
-            &self.pool,
-            &registration.username,
-            &registration.email,
-            &password_hash,
+        Ok(
+            match repository::bootstrap_owner(
+                &self.pool,
+                &registration.username,
+                &registration.email,
+                &password_hash,
+            )
+            .await?
+            {
+                repository::BootstrapOwnerOutcome::Created(profile) => {
+                    BootstrapOwnerResult::Created(profile)
+                }
+                repository::BootstrapOwnerOutcome::AlreadyConfigured => {
+                    BootstrapOwnerResult::AlreadyConfigured
+                }
+                repository::BootstrapOwnerOutcome::RequiresEmptyDatabase => {
+                    BootstrapOwnerResult::RequiresEmptyDatabase
+                }
+            },
         )
-        .await?)
     }
 
     pub async fn owner_initialized(&self) -> Result<bool, UserServiceError> {
@@ -83,14 +102,18 @@ impl UserService {
         let registration = validate_registration(input)?;
         let password_hash =
             hash_password(&registration.password).map_err(|_| UserServiceError::PasswordHash)?;
-        Ok(repository::insert_user_with_role(
+        let Some(id) = repository::insert_user_with_role(
             &self.pool,
             &registration.username,
             &registration.email,
             &password_hash,
             role,
         )
-        .await?)
+        .await?
+        else {
+            return Err(UserServiceError::OwnerBootstrapRequired);
+        };
+        Ok(id)
     }
 
     pub async fn authenticate(&self, input: LoginInput) -> Result<UserId, UserServiceError> {
@@ -195,4 +218,11 @@ impl UserService {
             _ => Ok(false),
         }
     }
+}
+
+#[derive(Debug)]
+pub enum BootstrapOwnerResult {
+    Created(repository::UserProfile),
+    AlreadyConfigured,
+    RequiresEmptyDatabase,
 }

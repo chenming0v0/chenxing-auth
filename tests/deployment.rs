@@ -77,7 +77,22 @@ fn database_uses_one_explicit_unified_baseline() {
 #[test]
 fn application_startup_does_not_mutate_schema_outside_migrations() {
     let main = include_str!("../src/main.rs");
-    assert!(main.contains("db::migrate"));
+    assert!(main.contains("\"migrate\""));
+    assert!(!main.contains("db::migrate(&state.database)"));
     assert!(!main.contains("CREATE TABLE"));
     assert!(!main.contains("ALTER TABLE"));
+}
+
+#[test]
+fn installer_runs_migrations_before_starting_the_application() {
+    let migrate =
+        "docker compose --env-file .env -f docker-compose.prod.yml run --rm --build app migrate";
+    let start = "docker compose --env-file .env -f docker-compose.prod.yml up -d --build app";
+    let migrate_at = INSTALL_SCRIPT
+        .find(migrate)
+        .expect("installer must run the explicit migration command");
+    let start_at = INSTALL_SCRIPT
+        .find(start)
+        .expect("installer must start the app explicitly");
+    assert!(migrate_at < start_at, "migration must precede app startup");
 }

@@ -1,5 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState, ReactNode } from "react";
-import { api, ApiError, OAuthClient, UserProfile, UserSession } from "./api";
+import { api, ApiError, LoginResponse, OAuthClient, PendingLoginResponse, TotpSetupResponse, UserProfile, UserSession } from "./api";
+
+export type LoginResult = LoginResponse | PendingLoginResponse;
 
 export interface AppUser extends UserProfile {
   name: string;
@@ -13,16 +15,18 @@ interface Store {
   clients: OAuthClient[];
   sessions: UserSession[];
   refresh: () => Promise<void>;
-  login: (identifier: string, password: string) => Promise<void>;
-  register: (username: string, email: string, password: string, displayName: string) => Promise<void>;
+  login: (identifier: string, password: string) => Promise<LoginResult>;
+  register: (username: string, email: string, password: string, displayName: string) => Promise<LoginResult>;
+  startTotpSetup: (loginTicket: string) => Promise<TotpSetupResponse>;
+  completeTotp: (loginTicket: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
   updateProfile: (displayName: string) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
-  revokeSession: (id: string) => Promise<void>;
+  revokeSession: (id: number) => Promise<void>;
   createClient: (input: { client_name: string; redirect_uris: string[]; scopes: string[] }) => Promise<OAuthClient & { client_secret: string }>;
-  updateClient: (id: string, input: { client_name: string; redirect_uris: string[]; scopes: string[] }) => Promise<void>;
-  setClientStatus: (id: string, status: "enable" | "disable") => Promise<void>;
-  rotateClientSecret: (id: string) => Promise<string>;
+  updateClient: (clientId: string, input: { client_name: string; redirect_uris: string[]; scopes: string[] }) => Promise<void>;
+  setClientStatus: (clientId: string, status: "enable" | "disable") => Promise<void>;
+  rotateClientSecret: (clientId: string) => Promise<string>;
   clearError: () => void;
 }
 
@@ -74,14 +78,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     sessions,
     refresh,
     login: async (identifier, password) => {
-      await api.login({ identifier, password });
-      await refresh();
+      const result = await api.login({ identifier, password });
+      if ("session_id" in result) await refresh();
+      return result;
     },
     register: async (username, email, password, displayName) => {
       await api.register({ username, email, password, display_name: displayName || undefined });
-      await api.login({ identifier: username, password });
-      await refresh();
+      return await (async () => {
+        const result = await api.login({ identifier: username, password });
+        if ("session_id" in result) await refresh();
+        return result;
+      })();
     },
+    startTotpSetup: async (loginTicket) => api.totpSetup(loginTicket),
+    completeTotp: async (loginTicket, code) => { await api.totpLogin(loginTicket, code); await refresh(); },
     logout: async () => {
       try { await api.logout(); } finally { setUser(null); setClients([]); setSessions([]); }
     },
@@ -89,9 +99,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     changePassword: async (currentPassword, newPassword) => { await api.changePassword(currentPassword, newPassword); setUser(null); setClients([]); setSessions([]); },
     revokeSession: async (id) => { await api.revokeSession(id); await refresh(); },
     createClient: async (input) => { const created = await api.createClient(input); setClients((current) => [created, ...current]); return created; },
-    updateClient: async (id, input) => { await api.updateClient(id, input); await refresh(); },
-    setClientStatus: async (id, status) => { await api.setClientStatus(id, status); setClients((current) => current.map((client) => client.id === id ? { ...client, status: status === "enable" ? "active" : "disabled" } : client)); },
-    rotateClientSecret: async (id) => (await api.rotateClientSecret(id)).client_secret,
+    updateClient: async (clientId, input) => { await api.updateClient(clientId, input); await refresh(); },
+    setClientStatus: async (clientId, status) => { await api.setClientStatus(clientId, status); setClients((current) => current.map((client) => client.client_id === clientId ? { ...client, status: status === "enable" ? "active" : "disabled" } : client)); },
+    rotateClientSecret: async (clientId) => (await api.rotateClientSecret(clientId)).client_secret,
     clearError: () => setError(null),
   }), [user, loading, error, clients, sessions]);
 

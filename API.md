@@ -87,6 +87,8 @@
 1. `POST /api/v1/auth/totp/setup`，请求 `{"login_ticket":"opaque-ticket"}`，响应一次性返回 `secret_base32` 和 `otpauth_url`。前端可将 URI 交给 Google Authenticator 扫描；服务端不返回二维码图片。
 2. `POST /api/v1/auth/totp/setup/confirm`，请求 `{"login_ticket":"opaque-ticket","code":"123456"}`。验证码正确后保存加密秘钥、消费 ticket 并返回 Session Cookie；错误验证码不会消费 ticket。
 
+已有 TOTP 的待处理登录也可以调用 `POST /api/v1/auth/totp/login`，请求同样包含 `login_ticket` 和当前六位 `code`。验证码正确后消费 ticket 并返回 Session Cookie；无效 ticket 返回 `400`，错误验证码返回 `401`。
+
 ### Passkey / WebAuthn
 
 - `POST /api/v1/auth/passkeys/register/start`：请求 `login_ticket`，返回 WebAuthn `PublicKeyCredentialCreationOptions`。

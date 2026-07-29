@@ -81,6 +81,22 @@ export interface BootstrapStatus {
   initialized: boolean;
 }
 
+export interface PendingLoginResponse {
+  status: "factor_setup_required" | "factor_required";
+  login_ticket: string;
+  methods: Array<"totp" | "passkey">;
+}
+
+export interface LoginResponse {
+  session_id: string;
+  expires_at: unknown;
+}
+
+export interface TotpSetupResponse {
+  secret_base32: string;
+  otpauth_url: string;
+}
+
 export interface AdminUser {
   id: number;
   username: string;
@@ -136,8 +152,12 @@ export const api = {
     request<{ id: number; role: string }>("/api/v1/admin/bootstrap", { method: "POST", body: JSON.stringify(input) }),
   register: (input: { username: string; email: string; password: string; display_name?: string }) =>
     request<{ user: { id: number } }>("/api/v1/users", { method: "POST", body: JSON.stringify(input) }),
-  login: (input: { identifier: string; password: string }) =>
-    request<{ session_id: string; expires_at: string }>("/api/v1/auth/login", { method: "POST", body: JSON.stringify(input) }),
+  login: (input: { identifier: string; password: string; totp_code?: string }) =>
+    request<LoginResponse | PendingLoginResponse>("/api/v1/auth/login", { method: "POST", body: JSON.stringify(input) }),
+  totpSetup: (login_ticket: string) =>
+    request<TotpSetupResponse>("/api/v1/auth/totp/setup", { method: "POST", body: JSON.stringify({ login_ticket }) }),
+  totpLogin: (login_ticket: string, code: string) =>
+    request<LoginResponse>("/api/v1/auth/totp/login", { method: "POST", body: JSON.stringify({ login_ticket, code }) }),
   logout: () => request<void>("/api/v1/auth/session", mutation({ method: "DELETE" })),
   me: () => request<UserProfile>("/api/v1/auth/me"),
   updateProfile: (display_name: string) =>
@@ -149,12 +169,12 @@ export const api = {
   clients: () => request<{ items: OAuthClient[] }>("/api/v1/auth/oauth-clients"),
   createClient: (input: { client_name: string; redirect_uris: string[]; scopes: string[] }) =>
     request<RegisteredOAuthClient>("/api/v1/auth/oauth-clients", mutation({ method: "POST", body: JSON.stringify(input) })),
-  updateClient: (id: number, input: { client_name: string; redirect_uris: string[]; scopes: string[] }) =>
-    request<void>(`/api/v1/auth/oauth-clients/${encodeURIComponent(id)}`, mutation({ method: "PUT", body: JSON.stringify(input) })),
-  setClientStatus: (id: number, status: "enable" | "disable") =>
-    request<void>(`/api/v1/auth/oauth-clients/${encodeURIComponent(id)}/${status}`, mutation({ method: "POST" })),
-  rotateClientSecret: (id: number) =>
-    request<{ client_secret: string }>(`/api/v1/auth/oauth-clients/${encodeURIComponent(id)}/rotate-secret`, mutation({ method: "POST" })),
+  updateClient: (client_id: string, input: { client_name: string; redirect_uris: string[]; scopes: string[] }) =>
+    request<void>(`/api/v1/auth/oauth-clients/${encodeURIComponent(client_id)}`, mutation({ method: "PUT", body: JSON.stringify(input) })),
+  setClientStatus: (client_id: string, status: "enable" | "disable") =>
+    request<void>(`/api/v1/auth/oauth-clients/${encodeURIComponent(client_id)}/${status}`, mutation({ method: "POST" })),
+  rotateClientSecret: (client_id: string) =>
+    request<{ client_secret: string }>(`/api/v1/auth/oauth-clients/${encodeURIComponent(client_id)}/rotate-secret`, mutation({ method: "POST" })),
   pendingAuthorization: (id: string) =>
     request<PendingAuthorization>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(id)}`),
   decideAuthorization: (id: string, decision: "approve" | "deny") =>
@@ -175,6 +195,7 @@ export function errorMessage(error: unknown) {
   if (error instanceof ApiError) {
     if (error.code === "invalid_credentials") return "用户名、邮箱或密码不正确";
     if (error.code === "bootstrap_already_completed") return "初始化已经完成，请使用通行证登录";
+    if (error.code === "owner_bootstrap_requires_empty_database") return "数据库已有用户但没有 Owner，请清空开发数据后重新初始化";
     if (error.code === "invalid_username") return "请输入有效的用户名";
     if (error.code === "password_too_short") return "密码至少需要 10 个字符";
     if (error.code === "email_already_registered") return "这个邮箱已经注册";

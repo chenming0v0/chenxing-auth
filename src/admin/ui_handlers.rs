@@ -63,7 +63,7 @@ pub async fn admin_me(State(state): State<AppState>, headers: HeaderMap) -> Resp
         return error::unauthorized("admin_required", "administrator authorization is required");
     };
     if !matches!(context.role, UserRole::Admin | UserRole::Owner) {
-        return error::unauthorized("admin_forbidden", "administrator authorization is required");
+        return error::forbidden("admin_forbidden", "administrator authorization is required");
     }
     let Some(profile) = state
         .users

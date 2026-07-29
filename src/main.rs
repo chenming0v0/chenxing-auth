@@ -10,8 +10,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_target(false)
         .init();
 
+    if std::env::args().nth(1).as_deref() == Some("migrate") {
+        let database = db::connect(&config)?;
+        db::migrate(&database).await?;
+        info!("database migrations completed");
+        return Ok(());
+    }
+
     let state = AppState::new(config.clone())?;
-    db::migrate(&state.database).await?;
     let app = api::router(state);
     let address = format!("{}:{}", config.host, config.port);
     let listener = TcpListener::bind(&address).await?;

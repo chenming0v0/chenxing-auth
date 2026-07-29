@@ -25,7 +25,7 @@ use crate::{
     admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
     admin::web_handlers::{dashboard, login_page, login_submit, protected_placeholder},
     auth_factors::handlers::{
-        confirm_totp_setup, finish_passkey_authentication, finish_passkey_registration,
+        confirm_totp_setup, finish_passkey_authentication, finish_passkey_registration, login_totp,
         start_passkey_authentication, start_passkey_registration, start_totp_setup,
     },
     oauth::OpenIdConfiguration,
@@ -71,6 +71,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(login_user))
         .route("/api/v1/auth/totp/setup", post(start_totp_setup))
         .route("/api/v1/auth/totp/setup/confirm", post(confirm_totp_setup))
+        .route("/api/v1/auth/totp/login", post(login_totp))
         .route(
             "/api/v1/auth/passkeys/register/start",
             post(start_passkey_registration),

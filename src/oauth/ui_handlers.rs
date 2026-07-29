@@ -10,6 +10,7 @@ use super::{
     authorization::{AuthorizationRequest, validate_authorization_request},
     consent::{ConsentDecision, PendingAuthorization, parse_decision},
     handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
+    session::active_user_id,
 };
 use crate::{
     error,
@@ -267,6 +268,16 @@ async fn current_user(state: &AppState, headers: &HeaderMap) -> Result<UserConte
         .user_id
         .parse::<UserId>()
         .map_err(|_| error::unauthorized("invalid_session", "user session is invalid"))?;
+    match active_user_id(state, &user_id.to_string()).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return Err(error::unauthorized(
+                "user_disabled",
+                "user account is disabled",
+            ));
+        }
+        Err(_) => return Err(error::internal()),
+    }
     Ok(UserContext { user_id, session })
 }
 

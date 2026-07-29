@@ -21,6 +21,18 @@ pub struct LoginResponse {
 }
 
 pub async fn issue_user_session(state: &AppState, user_id: UserId, factor: &str) -> Response {
+    let Some(profile) = (match state.users.find_profile(user_id).await {
+        Ok(profile) => profile,
+        Err(user_error) => {
+            tracing::error!(error = %user_error, "failed to load session user");
+            return error::internal();
+        }
+    }) else {
+        return error::unauthorized("invalid_session", "user account is invalid");
+    };
+    if profile.status != "active" {
+        return error::unauthorized("user_disabled", "user account is disabled");
+    }
     let ttl = Duration::from_secs(state.config.session_ttl_seconds);
     let mut session = match Session::new(user_id.to_string(), ttl) {
         Ok(session) => session,

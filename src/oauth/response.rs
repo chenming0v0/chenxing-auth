@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use super::{
     id_token::{IdTokenProfile, issue_id_token_with_profile},
+    session::active_user_id,
     token::issue_access_token,
 };
 use crate::{error, state::AppState};
@@ -31,6 +32,14 @@ pub async fn issue_token_response(
     refresh_token: Option<String>,
     nonce: Option<&str>,
 ) -> Response {
+    match active_user_id(state, user_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return error::unauthorized("user_disabled", "user account is disabled"),
+        Err(database_error) => {
+            tracing::error!(error = %database_error, "failed to load token user");
+            return error::internal();
+        }
+    }
     let token = match issue_access_token(
         &state.keys,
         &state.config.issuer_url,
