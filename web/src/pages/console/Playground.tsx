@@ -1,18 +1,263 @@
 import { useEffect, useMemo, useState } from "react";
-import { ExternalLink, FlaskConical, Link2, LockKeyhole, Rocket } from "lucide-react";
-import { GlowButton, GhostButton, PageFade } from "../../components/ui";
+import { ExternalLink, Rocket, ShieldCheck, Trash2 } from "lucide-react";
+import {
+  EmptyState, GhostButton, GlowButton, Notice, PageFade, PageHeader, Section,
+} from "../../components/ui";
+import { CodeSample, CopyField } from "../../components/CopyField";
 import { SCOPES } from "../../data/mock";
 import { useStore } from "../../store";
+import { cn } from "../../utils/cn";
 
-function randomValue(size = 24) { const bytes = new Uint8Array(size); crypto.getRandomValues(bytes); return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
-async function pkceChallenge(verifier: string) { const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)); return btoa(String.fromCharCode(...new Uint8Array(digest))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+const PKCE_PREFIX = "chenxing:pkce:";
+
+function base64Url(bytes: Uint8Array) {
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function randomValue(size = 32) {
+  const bytes = new Uint8Array(size);
+  crypto.getRandomValues(bytes);
+  return base64Url(bytes);
+}
+
+async function pkceChallenge(verifier: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return base64Url(new Uint8Array(digest));
+}
+
+interface BuiltRequest {
+  url: string;
+  state: string;
+  verifier: string;
+  challenge: string;
+  redirectUri: string;
+  clientId: string;
+  scopes: string[];
+}
 
 export default function Playground() {
   const { clients } = useStore();
-  const [clientId, setClientId] = useState(""); const [picked, setPicked] = useState<string[]>([]); const [url, setUrl] = useState(""); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
-  const client = useMemo(() => clients.find((item) => item.client_id === clientId) ?? clients[0], [clients, clientId]);
-  useEffect(() => { setPicked(client?.scopes ?? []); setUrl(""); }, [client]);
-  const toggle = (scope: string) => setPicked((current) => current.includes(scope) ? current.filter((item) => item !== scope) : [...current, scope]);
-  const build = async () => { if (!client) { setError("请先创建一个 OAuth 应用"); return; } if (!client.redirect_uris[0]) { setError("当前应用没有 Redirect URI"); return; } setBusy(true); setError(null); try { const verifier = randomValue(32); const state = randomValue(18); const challenge = await pkceChallenge(verifier); sessionStorage.setItem(`chenxing:pkce:${state}`, JSON.stringify({ verifier, clientId: client.client_id })); const query = new URLSearchParams({ client_id: client.client_id, redirect_uri: client.redirect_uris[0], response_type: "code", scope: picked.join(" "), state, code_challenge: challenge, code_challenge_method: "S256" }); setUrl(`${window.location.origin}/oauth/authorize?${query.toString()}`); } catch { setError("当前浏览器不支持安全随机数或 PKCE"); } finally { setBusy(false); } };
-  return <PageFade><div className="mb-6"><h1 className="flex items-center gap-2.5 text-xl font-bold text-white"><FlaskConical size={20} className="text-cyan-300" />OAuth 测试台</h1><p className="mt-1 text-sm text-slate-500">生成真实的授权码 + PKCE 请求。批准后，浏览器会返回你配置的 Redirect URI。</p></div><div className="grid gap-6 lg:grid-cols-2"><section className="glass rounded-3xl p-6"><div className="mb-4 text-sm font-semibold text-slate-200">配置授权请求</div><label className="mb-5 block"><span className="mb-2 block text-xs text-slate-500">OAuth Client</span><select value={client?.client_id ?? ""} onChange={(event) => setClientId(event.target.value)} className="field w-full rounded-xl px-3.5 py-2.5 text-sm text-white outline-none"><option value="">选择一个应用</option>{clients.map((item) => <option key={item.id} value={item.client_id}>{item.client_name}</option>)}</select></label><div className="mb-5"><div className="mb-2 text-xs text-slate-500">已注册 Scopes</div><div className="flex flex-wrap gap-1.5">{SCOPES.filter((scope) => client?.scopes.includes(scope.id)).map((scope) => <button key={scope.id} onClick={() => toggle(scope.id)} className={`cursor-pointer rounded-lg border px-2.5 py-1.5 font-mono text-[11px] transition ${picked.includes(scope.id) ? "border-cyan-400/50 bg-cyan-500/12 text-cyan-300" : "border-white/8 text-slate-600 hover:text-slate-400"}`}>{scope.id}</button>)}</div>{client && <div className="mt-2 text-[11px] text-slate-600">只允许请求该 Client 已注册的 Scope。</div>}</div><div className="mb-5 flex items-start gap-2.5 rounded-xl border border-white/6 bg-white/[0.02] px-3.5 py-3 text-xs leading-6 text-slate-500"><LockKeyhole size={14} className="mt-1 shrink-0 text-indigo-300" />PKCE verifier 只保存在当前浏览器 Session Storage，不发送到授权端点。</div>{error && <div role="alert" className="mb-4 rounded-xl border border-rose-400/20 bg-rose-500/10 px-3.5 py-3 text-xs text-rose-200">{error}</div>}<GlowButton className="w-full py-3" onClick={() => void build()} disabled={busy || !client}>{busy ? "生成中…" : <><Rocket size={15} className="mr-1.5 inline" />生成授权请求</>}</GlowButton></section><section className="glass rounded-3xl p-6"><div className="mb-4 flex items-center justify-between"><div className="text-sm font-semibold text-slate-200">授权 URL</div>{url && <button title="复制授权 URL" onClick={() => void navigator.clipboard?.writeText(url)} className="rounded-lg p-2 text-slate-500 hover:bg-white/5 hover:text-white"><Link2 size={14} /></button>}</div>{url ? <><pre className="code-block max-h-64 overflow-auto rounded-xl p-4 text-[11px] leading-relaxed text-cyan-300">{url}</pre><div className="mt-4 flex flex-wrap gap-3"><a href={url} className="btn-glow inline-flex items-center rounded-xl px-5 py-2.5 text-sm font-semibold text-white"><ExternalLink size={14} className="mr-1.5" />打开授权页面</a><GhostButton onClick={() => setUrl("")}>清除</GhostButton></div><p className="mt-5 text-xs leading-6 text-slate-600">这是协议请求本身。Token 交换应在你的服务端使用 Client Secret 完成，前端不会伪造访问令牌。</p></> : <div className="flex flex-col items-center py-20 text-center"><Rocket size={32} className="mb-4 text-slate-600" /><div className="text-sm text-slate-400">还没有生成授权请求</div><div className="mt-1.5 text-xs text-slate-600">选择一个 Client 后生成带 PKCE 的真实 URL。</div></div>}</section></div></PageFade>;
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [built, setBuilt] = useState<BuiltRequest | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const client = useMemo(
+    () => clients.find((item) => item.id === selectedId) ?? clients[0],
+    [clients, selectedId]
+  );
+
+  useEffect(() => {
+    setPicked(client?.scopes ?? []);
+    setBuilt(null);
+    setError(null);
+  }, [client]);
+
+  const toggle = (scope: string) =>
+    setPicked((current) =>
+      current.includes(scope) ? current.filter((item) => item !== scope) : [...current, scope]
+    );
+
+  const build = async () => {
+    if (!client) return;
+    const redirectUri = client.redirect_uris[0];
+    if (!redirectUri) {
+      setError("当前应用没有配置回调地址，请先在「接入应用」中补齐。");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const verifier = randomValue(32);
+      const state = randomValue(16);
+      const challenge = await pkceChallenge(verifier);
+      sessionStorage.setItem(
+        `${PKCE_PREFIX}${state}`,
+        JSON.stringify({ verifier, clientId: client.client_id })
+      );
+      const query = new URLSearchParams({
+        client_id: client.client_id,
+        redirect_uri: redirectUri,
+        response_type: "code",
+        scope: picked.join(" "),
+        state,
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
+      setBuilt({
+        url: `${window.location.origin}/oauth/authorize?${query.toString()}`,
+        state,
+        verifier,
+        challenge,
+        redirectUri,
+        clientId: client.client_id,
+        scopes: picked,
+      });
+    } catch {
+      setError("当前浏览器不支持 Web Crypto，无法生成 PKCE 参数。");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const discard = () => {
+    if (built) sessionStorage.removeItem(`${PKCE_PREFIX}${built.state}`);
+    setBuilt(null);
+  };
+
+  if (clients.length === 0) {
+    return (
+      <PageFade>
+        <PageHeader title="授权测试" description="用真实的授权码 + PKCE 流程验证你的接入配置。" />
+        <div className="panel rounded-xl">
+          <EmptyState
+            icon={<Rocket size={20} />}
+            title="需要先注册一个应用"
+            description="测试台会使用你应用的 Client ID 和回调地址来构造真实的授权请求。"
+          />
+        </div>
+      </PageFade>
+    );
+  }
+
+  return (
+    <PageFade>
+      <PageHeader
+        title="授权测试"
+        description="构造一个真实的授权请求。批准后浏览器会带 code 跳转到你配置的回调地址，令牌交换需在你的服务端完成。"
+      />
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Section title="1 · 构造授权请求" className="min-w-0">
+          <div className="space-y-5">
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-medium text-slate-400">应用</span>
+              <select
+                value={client?.id ?? ""}
+                onChange={(event) => setSelectedId(Number(event.target.value))}
+                className="field w-full cursor-pointer rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none"
+              >
+                {clients.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.client_name}
+                    {item.status !== "active" ? "（已停用）" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {client?.status !== "active" && (
+              <Notice tone="warn">该应用已停用，授权端点会拒绝它的请求。</Notice>
+            )}
+
+            <div>
+              <div className="mb-2 text-xs font-medium text-slate-400">Scope</div>
+              <div className="flex flex-wrap gap-2">
+                {SCOPES.filter((scope) => client?.scopes.includes(scope.id)).map((scope) => {
+                  const active = picked.includes(scope.id);
+                  return (
+                    <button
+                      key={scope.id}
+                      type="button"
+                      onClick={() => toggle(scope.id)}
+                      aria-pressed={active}
+                      className={cn(
+                        "cursor-pointer rounded-md border px-2.5 py-1.5 font-mono text-[11.5px] transition-colors",
+                        active
+                          ? "border-indigo-500 bg-indigo-500/[0.12] text-indigo-200"
+                          : "border-hairline text-slate-500 hover:border-slate-600 hover:text-slate-300"
+                      )}
+                    >
+                      {scope.id}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-[11px] text-slate-500">
+                只能请求该应用已注册的 Scope，多余的会被授权端点拒绝。
+              </p>
+            </div>
+
+            <div>
+              <div className="mb-1.5 text-xs font-medium text-slate-400">回调地址</div>
+              <div className="code-block truncate rounded-lg px-3 py-2 text-[12.5px]">
+                {client?.redirect_uris[0] ?? "未配置"}
+              </div>
+            </div>
+
+            {error && <Notice tone="error">{error}</Notice>}
+
+            <GlowButton className="w-full" onClick={() => void build()} disabled={busy}>
+              <Rocket size={15} /> {busy ? "生成中…" : "生成授权请求"}
+            </GlowButton>
+          </div>
+        </Section>
+
+        <Section
+          title="2 · 发起并交换令牌"
+          className="min-w-0"
+          actions={built && <GhostButton className="px-3 py-1.5 text-xs" onClick={discard}><Trash2 size={13} /> 丢弃</GhostButton>}
+        >
+          {!built ? (
+            <EmptyState
+              icon={<Rocket size={20} />}
+              title="尚未生成请求"
+              description="生成后这里会显示授权 URL、PKCE 参数，以及你的服务端交换令牌所需的示例请求。"
+            />
+          ) : (
+            <div className="space-y-5">
+              <CopyField label="授权 URL" value={built.url} />
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <CopyField label="state" value={built.state} />
+                <CopyField label="code_challenge" value={built.challenge} hint="S256" />
+              </div>
+
+              <CopyField
+                label="code_verifier"
+                value={built.verifier}
+                hint="单次使用 · 仅存于本页 sessionStorage"
+              />
+
+              <Notice tone="info">
+                <span className="flex items-start gap-2">
+                  <ShieldCheck size={14} className="mt-0.5 shrink-0 text-slate-500" />
+                  verifier 不会发给授权端点，只在你的服务端交换令牌时提交，用于证明请求来自同一个客户端。
+                </span>
+              </Notice>
+
+              <div>
+                <div className="mb-2 text-xs font-medium text-slate-400">服务端交换令牌</div>
+                <CodeSample
+                  language="http"
+                  code={[
+                    "POST /oauth/token",
+                    "Content-Type: application/x-www-form-urlencoded",
+                    "",
+                    "grant_type=authorization_code",
+                    "&code=<回调里拿到的 code>",
+                    `&redirect_uri=${built.redirectUri}`,
+                    `&client_id=${built.clientId}`,
+                    "&client_secret=<你的 Client Secret>",
+                    `&code_verifier=${built.verifier}`,
+                  ].join("\n")}
+                />
+              </div>
+
+              <a
+                href={built.url}
+                className="btn-glow inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-5 py-2.5 text-sm font-medium text-white"
+              >
+                <ExternalLink size={15} /> 打开授权页面
+              </a>
+              <p className="text-center text-[11px] text-slate-500">
+                将跳转到真实的授权确认页，完成后回到 {built.redirectUri}
+              </p>
+            </div>
+          )}
+        </Section>
+      </div>
+    </PageFade>
+  );
 }

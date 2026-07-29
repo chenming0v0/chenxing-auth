@@ -1,24 +1,383 @@
 import { FormEvent, useState } from "react";
-import { BarChart3, Check, Code2, Copy, Eye, EyeOff, Globe, KeyRound, Loader2, Pencil, Plus, Power, RefreshCw } from "lucide-react";
+import {
+  AlertTriangle, Check, Code2, KeyRound, Loader2, Pencil, Plus, Power, RefreshCw,
+} from "lucide-react";
 import { errorMessage, OAuthClient, RegisteredOAuthClient } from "../../api";
-import { Badge, Field, GlowButton, GhostButton, Modal, PageFade } from "../../components/ui";
+import {
+  Badge, EmptyState, Field, GhostButton, GlowButton, IconButton, Modal, Notice,
+  PageFade, PageHeader, Section, TextArea,
+} from "../../components/ui";
+import { CopyField, EndpointRow } from "../../components/CopyField";
 import { SCOPES } from "../../data/mock";
 import { useStore } from "../../store";
+import { cn } from "../../utils/cn";
 
-function SecretRow({ label, value }: { label: string; value: string }) { const [show, setShow] = useState(false); const [copied, setCopied] = useState(false); const copy = () => { void navigator.clipboard?.writeText(value); setCopied(true); setTimeout(() => setCopied(false), 1200); }; return <div className="code-block flex items-center gap-2 rounded-xl px-3.5 py-2.5"><div className="min-w-0 flex-1"><div className="text-[9.5px] uppercase tracking-widest text-slate-600">{label}</div><div className="truncate font-mono text-[12.5px] text-cyan-300">{show ? value : `${value.slice(0, 8)}••••••••••••••••`}</div></div><button title={show ? "隐藏" : "显示"} onClick={() => setShow((value) => !value)} className="rounded-lg p-1.5 text-slate-500 hover:text-white">{show ? <EyeOff size={13} /> : <Eye size={13} />}</button><button title="复制" onClick={copy} className="rounded-lg p-1.5 text-slate-500 hover:text-white">{copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}</button></div>; }
+const CLIENT_LIMIT = 2;
 
-type ClientInput = { client_name: string; redirect_uris: string[]; scopes: string[] };
+/** Endpoints follow the browser origin, which is the issuer for a same-origin console. */
+function endpoints() {
+  const origin = window.location.origin;
+  return [
+    { label: "Discovery", method: "GET", url: `${origin}/.well-known/openid-configuration` },
+    { label: "JWKS", method: "GET", url: `${origin}/.well-known/jwks.json` },
+    { label: "Authorization", method: "GET", url: `${origin}/oauth/authorize` },
+    { label: "Token", method: "POST", url: `${origin}/oauth/token` },
+    { label: "UserInfo", method: "GET", url: `${origin}/oauth/userinfo` },
+    { label: "Revocation", method: "POST", url: `${origin}/oauth/revoke` },
+  ];
+}
 
 export default function Developer() {
   const { clients, createClient, updateClient, setClientStatus, rotateClientSecret } = useStore();
-  const [open, setOpen] = useState(false); const [editing, setEditing] = useState<OAuthClient | null>(null); const [created, setCreated] = useState<RegisteredOAuthClient | null>(null); const [name, setName] = useState(""); const [uri, setUri] = useState(""); const [picked, setPicked] = useState<string[]>(["openid", "profile"]); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
-  const reset = () => { setOpen(false); setEditing(null); setCreated(null); setName(""); setUri(""); setPicked(["openid", "profile"]); setError(null); };
-  const startEdit = (client: OAuthClient) => { setEditing(client); setName(client.client_name); setUri(client.redirect_uris[0] ?? ""); setPicked(client.scopes); setOpen(true); };
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); const input: ClientInput = { client_name: name, redirect_uris: uri.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean), scopes: picked.length ? picked : ["openid"] }; try { if (editing) await updateClient(editing.client_id, input); else setCreated(await createClient(input)); if (editing) reset(); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
-  const rotate = async (client: OAuthClient) => { setBusy(true); setError(null); try { const secret = await rotateClientSecret(client.client_id); setCreated({ ...client, client_secret: secret }); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
-  return <PageFade><div className="mb-6 flex flex-wrap items-end justify-between gap-4"><div><h1 className="text-xl font-bold text-white">开发者应用</h1><p className="mt-1 text-sm text-slate-500">创建 OAuth Client，接入「使用辰星通行证登录」 · 已使用 {clients.length} / 2</p></div><GlowButton onClick={() => setOpen(true)} disabled={clients.length >= 2}><Plus size={14} className="mr-1 inline" />创建应用</GlowButton></div><div className="mb-6 rounded-2xl border border-cyan-400/15 bg-cyan-500/5 px-4 py-3 text-xs leading-6 text-slate-400"><KeyRound size={14} className="mr-2 inline text-cyan-300" />Client Secret 只会在创建和轮换成功后返回一次，离开提示后服务端不会再次返回旧 Secret。</div><div className="grid gap-5 lg:grid-cols-2">{clients.map((client) => <ClientCard key={client.id} client={client} onEdit={() => startEdit(client)} onToggle={() => void setClientStatus(client.client_id, client.status === "active" ? "disable" : "enable")} onRotate={() => void rotate(client)} busy={busy} />)}{clients.length === 0 && <div className="glass flex flex-col items-center rounded-3xl py-20 text-center lg:col-span-2"><Code2 size={34} className="mb-4 text-slate-600" /><div className="text-sm font-medium text-slate-300">还没有 OAuth 应用</div><div className="mt-1.5 text-xs text-slate-600">创建第一个应用，开始接入标准授权码流程。</div></div>}</div><Modal open={open} onClose={reset} title={editing ? "编辑 OAuth 应用" : created ? "应用创建成功" : "创建 OAuth 应用"} wide>{created ? <div><div className="mb-5 flex items-center gap-3 rounded-2xl border border-emerald-400/20 bg-emerald-500/8 px-4 py-3 text-sm text-emerald-300"><KeyRound size={16} /> Secret 仅展示这一次，请立即保存</div><div className="space-y-2.5"><SecretRow label="Client ID" value={created.client_id} /><SecretRow label="Client Secret" value={created.client_secret} /></div><div className="mt-6 flex justify-end"><GlowButton onClick={reset}>完成</GlowButton></div></div> : <form className="space-y-4" onSubmit={submit}><div className="grid gap-4 sm:grid-cols-2"><Field label="应用名称" required value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：星图笔记" /><Field label="Redirect URI（每行一个）" required value={uri} onChange={(event) => setUri(event.target.value)} placeholder="https://example.com/callback" /></div><div><div className="mb-2 text-xs font-medium tracking-wide text-slate-400">Scopes</div><div className="grid gap-2 sm:grid-cols-2">{SCOPES.map((scope) => <button type="button" key={scope.id} onClick={() => setPicked((current) => current.includes(scope.id) ? current.filter((item) => item !== scope.id) : [...current, scope.id])} className={`flex items-start gap-2.5 rounded-xl border p-3 text-left transition ${picked.includes(scope.id) ? "border-indigo-400/50 bg-indigo-500/12" : "border-white/8 bg-white/[0.02] hover:border-white/16"}`}><span className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[9px] ${picked.includes(scope.id) ? "border-indigo-400 bg-indigo-500 text-white" : "border-slate-600"}`}>{picked.includes(scope.id) && <Check size={10} />}</span><span><span className="block text-xs font-medium text-slate-200">{scope.label}</span><span className="mt-0.5 block text-[10.5px] leading-relaxed text-slate-500">{scope.desc}</span></span></button>)}</div></div>{error && <div role="alert" className="rounded-xl border border-rose-400/20 bg-rose-500/10 px-3.5 py-3 text-xs text-rose-200">{error}</div>}<div className="flex justify-end gap-3 pt-2"><GhostButton type="button" onClick={reset}>取消</GhostButton><GlowButton type="submit" disabled={busy}>{busy ? <Loader2 size={15} className="animate-spin" /> : editing ? <><Pencil size={14} className="mr-1 inline" />保存</> : <><Plus size={14} className="mr-1 inline" />创建</>}</GlowButton></div></form>}</Modal></PageFade>;
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<OAuthClient | null>(null);
+  const [credentials, setCredentials] = useState<RegisteredOAuthClient | null>(null);
+  const [name, setName] = useState("");
+  const [uris, setUris] = useState("");
+  const [picked, setPicked] = useState<string[]>(["openid", "profile"]);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const atLimit = clients.length >= CLIENT_LIMIT;
+
+  const closeForm = () => {
+    setFormOpen(false);
+    setEditing(null);
+    setName("");
+    setUris("");
+    setPicked(["openid", "profile"]);
+    setError(null);
+  };
+
+  const openCreate = () => {
+    closeForm();
+    setFormOpen(true);
+  };
+
+  const openEdit = (client: OAuthClient) => {
+    setEditing(client);
+    setName(client.client_name);
+    setUris(client.redirect_uris.join("\n"));
+    setPicked(client.scopes);
+    setError(null);
+    setFormOpen(true);
+  };
+
+  const togglePicked = (scope: string) =>
+    setPicked((current) =>
+      current.includes(scope) ? current.filter((item) => item !== scope) : [...current, scope]
+    );
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    const input = {
+      client_name: name.trim(),
+      redirect_uris: uris.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean),
+      scopes: picked.length ? picked : ["openid"],
+    };
+    try {
+      if (editing) {
+        await updateClient(editing.client_id, input);
+        closeForm();
+      } else {
+        const created = await createClient(input);
+        closeForm();
+        setCredentials(created);
+      }
+    } catch (value) {
+      setError(errorMessage(value));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rotate = async (client: OAuthClient) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const secret = await rotateClientSecret(client.client_id);
+      setCredentials({ ...client, client_secret: secret });
+    } catch (value) {
+      setError(errorMessage(value));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <PageFade>
+      <PageHeader
+        title="接入应用"
+        description="注册 OAuth Client，让你的项目支持「使用辰星通行证登录」。授权码流程需要 PKCE（S256）。"
+        actions={
+          <GlowButton onClick={openCreate} disabled={atLimit}>
+            <Plus size={15} /> 注册应用
+          </GlowButton>
+        }
+      />
+
+      {error && !formOpen && (
+        <div className="mb-5">
+          <Notice tone="error">{error}</Notice>
+        </div>
+      )}
+
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="min-w-0 space-y-5 lg:col-span-2">
+          {clients.length === 0 ? (
+            <div className="panel rounded-xl">
+              <EmptyState
+                icon={<Code2 size={20} />}
+                title="还没有注册应用"
+                description="注册后你会得到一组 Client ID 与 Client Secret，用于向认证中枢发起授权码流程。"
+                action={<GlowButton onClick={openCreate}><Plus size={15} /> 注册应用</GlowButton>}
+              />
+            </div>
+          ) : (
+            clients.map((client) => (
+              <ClientCard
+                key={client.id}
+                client={client}
+                busy={busy}
+                onEdit={() => openEdit(client)}
+                onToggle={() => void setClientStatus(client.client_id, client.status === "active" ? "disable" : "enable")}
+                onRotate={() => void rotate(client)}
+              />
+            ))
+          )}
+
+          <p className="text-xs text-slate-500">
+            已使用 {clients.length} / {CLIENT_LIMIT} 个应用配额
+            {atLimit && " · 已达上限，如需更多请联系管理员"}
+          </p>
+        </div>
+
+        <aside className="min-w-0 space-y-5">
+          <Section
+            title="服务端点"
+            description="已在 OIDC Discovery 文档公布，客户端库可自动发现。"
+          >
+            <div className="-mx-5 -my-5">
+              {endpoints().map((endpoint) => (
+                <EndpointRow key={endpoint.label} {...endpoint} />
+              ))}
+            </div>
+          </Section>
+
+          <Section title="协议支持">
+            <dl className="space-y-3 text-xs">
+              <SpecRow label="授权类型" value="authorization_code" />
+              <SpecRow label="Response Type" value="code" />
+              <SpecRow label="PKCE" value="S256（必需）" />
+              <SpecRow label="ID Token 签名" value="RS256" />
+              <SpecRow label="支持 Scope" value={SCOPES.map((scope) => scope.id).join(" ")} />
+            </dl>
+          </Section>
+        </aside>
+      </div>
+
+      <Modal
+        open={formOpen}
+        onClose={closeForm}
+        wide
+        title={editing ? "编辑应用" : "注册应用"}
+        description={editing ? `修改 ${editing.client_name} 的名称、回调地址与 Scope。` : "填写基本信息后，系统会生成一组客户端凭据。"}
+      >
+        <form className="space-y-5" onSubmit={submit}>
+          <Field
+            label="应用名称"
+            required
+            maxLength={128}
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="例如：星图笔记"
+            hint="会显示在用户的授权确认页面上。"
+          />
+
+          <TextArea
+            label="回调地址（每行一个）"
+            required
+            rows={3}
+            value={uris}
+            onChange={(event) => setUris(event.target.value)}
+            placeholder="https://example.com/oauth/callback"
+            hint="必须与授权请求中的 redirect_uri 完全一致，包括协议、端口和路径。"
+          />
+
+          <div>
+            <div className="mb-2 text-xs font-medium text-slate-400">请求的 Scope</div>
+            <div className="space-y-2">
+              {SCOPES.map((scope) => {
+                const active = picked.includes(scope.id);
+                return (
+                  <button
+                    type="button"
+                    key={scope.id}
+                    onClick={() => togglePicked(scope.id)}
+                    aria-pressed={active}
+                    className={cn(
+                      "flex w-full cursor-pointer items-start gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors",
+                      active ? "border-indigo-500 bg-indigo-500/[0.08]" : "border-hairline hover:border-slate-600"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border",
+                        active ? "border-indigo-500 bg-indigo-500 text-white" : "border-slate-600"
+                      )}
+                    >
+                      {active && <Check size={11} />}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block font-mono text-xs text-slate-200">{scope.id}</span>
+                      <span className="mt-0.5 block text-[11px] leading-relaxed text-slate-500">{scope.desc}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {!picked.includes("openid") && (
+              <div className="mt-2.5">
+                <Notice tone="warn">未勾选 openid 时不会签发 ID Token，OIDC 客户端库通常无法完成登录。</Notice>
+              </div>
+            )}
+          </div>
+
+          {error && <Notice tone="error">{error}</Notice>}
+
+          <div className="flex justify-end gap-2 border-t border-hairline pt-4">
+            <GhostButton type="button" onClick={closeForm}>取消</GhostButton>
+            <GlowButton type="submit" disabled={busy}>
+              {busy ? <Loader2 size={15} className="animate-spin" /> : editing ? <Pencil size={14} /> : <Plus size={15} />}
+              {editing ? "保存修改" : "注册应用"}
+            </GlowButton>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={Boolean(credentials)}
+        onClose={() => setCredentials(null)}
+        wide
+        title="客户端凭据"
+        description="Client Secret 只在此刻返回一次，关闭后无法再次查看。"
+      >
+        {credentials && (
+          <div className="space-y-4">
+            <Notice tone="warn">
+              <span className="flex items-start gap-2">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                请立即保存 Secret 并存放在服务端。若丢失，只能轮换出新的 Secret。
+              </span>
+            </Notice>
+            <CopyField label="Client ID" value={credentials.client_id} />
+            <CopyField label="Client Secret" value={credentials.client_secret} secret hint="仅显示一次" />
+            <div className="flex justify-end border-t border-hairline pt-4">
+              <GlowButton onClick={() => setCredentials(null)}>我已保存</GlowButton>
+            </div>
+          </div>
+        )}
+      </Modal>
+    </PageFade>
+  );
 }
 
-function ClientCard({ client, onEdit, onToggle, onRotate, busy }: { client: OAuthClient; onEdit: () => void; onToggle: () => void; onRotate: () => void; busy: boolean }) { return <div className="glass rounded-3xl p-6 transition hover:border-indigo-400/30"><div className="mb-5 flex items-start gap-4"><div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500/25 to-cyan-500/15 text-indigo-300"><Code2 size={19} /></div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold text-white">{client.client_name}</h3><Badge tone={client.status === "active" ? "green" : "slate"}>{client.status === "active" ? "启用" : "已停用"}</Badge></div><div className="mt-0.5 text-xs text-slate-500">Client ID 已生成 · 项目配额独立计算</div></div></div><SecretRow label="Client ID" value={client.client_id} /><div className="code-block mt-2.5 flex items-center gap-2.5 rounded-xl px-3.5 py-2.5"><Globe size={13} className="shrink-0 text-slate-600" /><div className="min-w-0 flex-1"><div className="text-[9.5px] uppercase tracking-widest text-slate-600">Redirect URI</div><div className="truncate font-mono text-[12.5px] text-slate-300">{client.redirect_uris.join(", ")}</div></div></div><div className="mt-4 flex flex-wrap gap-1.5">{client.scopes.map((scope) => <span key={scope} className="rounded-lg border border-indigo-400/20 bg-indigo-500/8 px-2 py-1 font-mono text-[10.5px] text-indigo-300">{scope}</span>)}</div><div className="mt-5 grid grid-cols-2 gap-3"><Quota label="今日" used={client.quota.daily_used} limit={client.quota.daily_limit} /><Quota label="本月" used={client.quota.monthly_used} limit={client.quota.monthly_limit} /></div><div className="mt-5 flex flex-wrap items-center gap-2 border-t border-white/6 pt-4"><button title="编辑" onClick={onEdit} className="rounded-lg p-2 text-slate-500 hover:bg-white/5 hover:text-white"><Pencil size={14} /></button><button title={client.status === "active" ? "停用" : "启用"} onClick={onToggle} className="rounded-lg p-2 text-slate-500 hover:bg-white/5 hover:text-white"><Power size={14} /></button><button title="轮换 Secret" disabled={busy} onClick={onRotate} className="rounded-lg p-2 text-slate-500 hover:bg-white/5 hover:text-white"><RefreshCw size={14} /></button><span className="ml-auto flex items-center gap-1.5 text-[11px] text-slate-600"><BarChart3 size={11} />剩余 {Math.max(0, client.quota.daily_limit - client.quota.daily_used).toLocaleString()} 次今日额度</span></div></div>; }
+function SpecRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <dt className="shrink-0 text-slate-500">{label}</dt>
+      <dd className="min-w-0 text-right font-mono text-[11.5px] text-slate-300">{value}</dd>
+    </div>
+  );
+}
 
-function Quota({ label, used, limit }: { label: string; used: number; limit: number }) { const percent = Math.min(100, limit ? used / limit * 100 : 0); return <div><div className="mb-1 flex justify-between text-[11px] text-slate-500"><span>{label}</span><span className="font-mono">{used.toLocaleString()} / {limit.toLocaleString()}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-white/8"><div className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-cyan-400" style={{ width: `${percent}%` }} /></div></div>; }
+function ClientCard({
+  client, onEdit, onToggle, onRotate, busy,
+}: { client: OAuthClient; onEdit: () => void; onToggle: () => void; onRotate: () => void; busy: boolean }) {
+  const disabled = client.status !== "active";
+  return (
+    <div className="panel rounded-xl">
+      <div className="flex items-start justify-between gap-4 border-b border-hairline px-5 py-4">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="truncate text-sm font-semibold text-white">{client.client_name}</h3>
+            <Badge tone={disabled ? "slate" : "green"}>{disabled ? "已停用" : "启用中"}</Badge>
+          </div>
+          <p className="mt-1 text-xs text-slate-500">
+            {client.redirect_uris.length} 个回调地址 · {client.scopes.length} 个 Scope
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <IconButton title="编辑" onClick={onEdit}><Pencil size={14} /></IconButton>
+          <IconButton title="轮换 Secret" onClick={onRotate} disabled={busy}>
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+          </IconButton>
+          <IconButton
+            title={disabled ? "启用" : "停用"}
+            onClick={onToggle}
+            className={disabled ? "" : "hover:bg-rose-500/10 hover:text-rose-300"}
+          >
+            <Power size={14} />
+          </IconButton>
+        </div>
+      </div>
+
+      <div className="space-y-4 p-5">
+        <CopyField label="Client ID" value={client.client_id} />
+
+        <div>
+          <div className="mb-1.5 text-xs font-medium text-slate-400">回调地址</div>
+          <div className="space-y-1.5">
+            {client.redirect_uris.map((uri) => (
+              <div key={uri} className="code-block truncate rounded-lg px-3 py-2 text-[12.5px]">{uri}</div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="mb-1.5 text-xs font-medium text-slate-400">Scope</div>
+          <div className="flex flex-wrap gap-1.5">
+            {client.scopes.map((scope) => (
+              <code key={scope} className="rounded-md border border-hairline px-2 py-1 font-mono text-[11px] text-slate-300">
+                {scope}
+              </code>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-4 border-t border-hairline pt-4 sm:grid-cols-2">
+          <Quota label="今日调用" used={client.quota.daily_used} limit={client.quota.daily_limit} />
+          <Quota label="本月调用" used={client.quota.monthly_used} limit={client.quota.monthly_limit} />
+        </div>
+
+        <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+          <KeyRound size={12} />
+          Secret 以哈希形式保存，轮换后旧 Secret 立即失效。
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Quota({ label, used, limit }: { label: string; used: number; limit: number }) {
+  const ratio = limit > 0 ? Math.min(1, used / limit) : 0;
+  const high = ratio >= 0.9;
+  return (
+    <div>
+      <div className="mb-1.5 flex items-baseline justify-between text-[11px]">
+        <span className="text-slate-500">{label}</span>
+        <span className={cn("font-mono tabular-nums", high ? "text-amber-300" : "text-slate-400")}>
+          {used.toLocaleString()} / {limit.toLocaleString()}
+        </span>
+      </div>
+      <div className="h-1 overflow-hidden rounded-full bg-white/[0.06]">
+        <div
+          className={cn("h-full rounded-full", high ? "bg-amber-400" : "bg-indigo-500")}
+          style={{ width: `${ratio * 100}%` }}
+        />
+      </div>
+    </div>
+  );
+}

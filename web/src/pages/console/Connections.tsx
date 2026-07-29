@@ -1,8 +1,43 @@
 import { useNavigate } from "react-router-dom";
-import { ExternalLink, Info, Plug, ShieldCheck } from "lucide-react";
-import { GhostButton, PageFade } from "../../components/ui";
+import { FlaskConical, Plug } from "lucide-react";
+import { EmptyState, GhostButton, PageFade, PageHeader, Section } from "../../components/ui";
 
 export default function Connections() {
   const navigate = useNavigate();
-  return <PageFade><div className="mb-6"><h1 className="text-xl font-bold text-white">授权管理</h1><p className="mt-1 text-sm text-slate-500">第三方应用授权由 OAuth/OIDC 流程产生。</p></div><div className="glass rounded-3xl p-8"><div className="flex flex-col items-center text-center"><div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-500/12 text-indigo-300"><Plug size={25} /></div><h2 className="mt-5 text-lg font-semibold text-white">授权记录 API 尚未开放给用户中心</h2><p className="mt-2 max-w-lg text-sm leading-7 text-slate-500">当前后端已经提供授权确认、Session 绑定和令牌撤销能力，但还没有“列出用户已授权应用”的用户 API。页面不会伪造连接数据；你可以使用 OAuth 测试台验证真实授权流程。</p><div className="mt-6 flex flex-wrap justify-center gap-3"><GhostButton onClick={() => navigate("/console/playground")}><ExternalLink size={14} className="mr-1.5 inline" />打开 OAuth 测试台</GhostButton></div></div></div><div className="mt-6 grid gap-4 md:grid-cols-2"><div className="glass-soft rounded-2xl p-5"><Info size={17} className="text-cyan-300" /><div className="mt-3 text-sm font-medium text-white">当前边界</div><p className="mt-1 text-xs leading-6 text-slate-500">认证平台管理身份事实；下游应用自己的业务账号和授权记录仍由下游 Client 负责。</p></div><div className="glass-soft rounded-2xl p-5"><ShieldCheck size={17} className="text-emerald-300" /><div className="mt-3 text-sm font-medium text-white">授权安全</div><p className="mt-1 text-xs leading-6 text-slate-500">每次授权都会校验 redirect URI、Scope、PKCE、State、Nonce 和当前登录 Session。</p></div></div></PageFade>;
+
+  return (
+    <PageFade>
+      <PageHeader
+        title="已授权应用"
+        description="你通过辰星通行证登录过的第三方应用会显示在这里。"
+      />
+
+      <div className="panel mb-6 rounded-xl">
+        <EmptyState
+          icon={<Plug size={20} />}
+          title="此功能尚未开放"
+          description="服务端目前提供授权确认、会话绑定和令牌撤销，但还没有「列出用户已授权应用」的接口。这里不会展示虚构数据，接口就绪后会接上真实记录。"
+          action={
+            <GhostButton onClick={() => navigate("/console/playground")}>
+              <FlaskConical size={14} /> 前往授权测试
+            </GhostButton>
+          }
+        />
+      </div>
+
+      <div className="grid gap-5 md:grid-cols-2">
+        <Section title="现在可以怎么撤销">
+          <p className="text-xs leading-relaxed text-slate-400">
+            修改密码会撤销全部历史会话；在通行证资料中也可以单独撤销某个设备的登录会话。第三方应用持有的令牌由服务端的撤销端点处理。
+          </p>
+        </Section>
+
+        <Section title="平台边界">
+          <p className="text-xs leading-relaxed text-slate-400">
+            认证中枢只负责身份事实与协议授权。接入方自己的业务账号、角色和数据由各子项目管理，不会出现在这里。
+          </p>
+        </Section>
+      </div>
+    </PageFade>
+  );
 }
