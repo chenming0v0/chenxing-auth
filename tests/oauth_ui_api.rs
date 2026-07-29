@@ -10,7 +10,7 @@ use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
 use redis::AsyncCommands;
 use serde_json::Value;
-use totp_rs::TOTP;
+use totp_rs::{Secret, TOTP};
 use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
@@ -104,6 +104,14 @@ fn html_value(body: &str, name: &str) -> String {
         .to_owned()
 }
 
+fn html_data_attribute(body: &str, name: &str) -> String {
+    body.split(&format!("data-{name}=\""))
+        .nth(1)
+        .and_then(|value| value.split('"').next())
+        .expect("HTML data attribute")
+        .to_owned()
+}
+
 #[tokio::test]
 async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
     let (router, database, key_directory) = setup().await;
@@ -183,13 +191,20 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
     assert_eq!(response.status(), StatusCode::OK);
     let setup_body = body(response).await;
     let ticket = html_value(&setup_body, "login_ticket");
-    let uri = setup_body
-        .split("<code>")
-        .nth(1)
-        .and_then(|value| value.split("</code>").next())
-        .expect("TOTP URI")
-        .replace("&amp;", "&");
-    let totp = TOTP::from_url(&uri).expect("TOTP");
+    assert!(setup_body.contains("<svg"));
+    assert!(setup_body.contains("无法扫描"));
+    assert!(!setup_body.contains("otpauth://"));
+    let secret = html_data_attribute(&setup_body, "totp-secret");
+    let totp = TOTP::new(
+        totp_rs::Algorithm::SHA1,
+        6,
+        1,
+        30,
+        Secret::Encoded(secret).to_bytes().expect("TOTP secret"),
+        None,
+        String::new(),
+    )
+    .expect("TOTP");
     let response = router
         .clone()
         .oneshot(

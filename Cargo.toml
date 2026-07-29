@@ -1,6 +1,6 @@
 [package]
 name = "chenxing-auth"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 description = "天穹辰星 · 辰星认证中枢"
 license = "MIT"
@@ -36,6 +36,7 @@ url = "2"
 webauthn-rs = { version = "0.6.1-dev", default-features = false, features = ["danger-allow-state-serialisation"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 pkcs8 = { version = "0.10", features = ["std"] }
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

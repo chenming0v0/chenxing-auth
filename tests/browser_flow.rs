@@ -8,7 +8,7 @@ use axum::{
 };
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
-use totp_rs::TOTP;
+use totp_rs::{Secret, TOTP};
 use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
@@ -85,6 +85,14 @@ fn html_value(body: &str, name: &str) -> String {
         .nth(1)
         .and_then(|value| value.split('"').next())
         .expect("HTML form value")
+        .to_owned()
+}
+
+fn html_data_attribute(body: &str, name: &str) -> String {
+    body.split(&format!("data-{name}=\""))
+        .nth(1)
+        .and_then(|value| value.split('"').next())
+        .expect("HTML data attribute")
         .to_owned()
 }
 
@@ -201,13 +209,33 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
     assert_eq!(response.status(), StatusCode::OK);
     let setup_body = body(response).await;
     let ticket = html_value(&setup_body, "login_ticket");
-    let uri = setup_body
-        .split("<code>")
-        .nth(1)
-        .and_then(|value| value.split("</code>").next())
-        .expect("TOTP URI")
-        .replace("&amp;", "&");
-    let totp = TOTP::from_url(&uri).expect("TOTP");
+    assert!(
+        setup_body.contains("<svg"),
+        "setup page should contain a local QR SVG"
+    );
+    assert!(
+        setup_body.contains("无法扫描"),
+        "setup page should offer manual secret entry"
+    );
+    assert!(
+        setup_body.contains("复制"),
+        "setup page should offer a copy control"
+    );
+    assert!(
+        !setup_body.contains("otpauth://"),
+        "setup page must not print the complete otpauth URI"
+    );
+    let secret = html_data_attribute(&setup_body, "totp-secret");
+    let totp = TOTP::new(
+        totp_rs::Algorithm::SHA1,
+        6,
+        1,
+        30,
+        Secret::Encoded(secret).to_bytes().expect("TOTP secret"),
+        None,
+        String::new(),
+    )
+    .expect("TOTP");
     let response = router
         .clone()
         .oneshot(

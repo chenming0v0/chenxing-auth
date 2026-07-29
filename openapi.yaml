@@ -114,7 +114,7 @@ paths:
             schema: { $ref: '#/components/schemas/LoginTicketInput' }
       responses:
         '200':
-          description: 返回一次性 TOTP 秘钥和标准 otpauth URI
+          description: 返回一次性 TOTP 秘钥和标准 otpauth URI；客户端应在本地将 otpauth URI 生成二维码，禁止提交到第三方二维码服务
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TotpSetupResponse' }
