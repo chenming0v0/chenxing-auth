@@ -136,8 +136,9 @@ src/
 
 ## API 文档
 
-[给人看的 API 文档](https://wiki.auth.clya.top)
-[给 AI 看的 API 文档](https://wiki.auth.clya.top/llms.txt)
+- [给人看的 API 文档](https://wiki.auth.clya.top)
+- [给 AI 看的 API 文档](https://wiki.auth.clya.top/llms.txt)
+
 
 以下能力仍属于后续增强项，当前不应直接视为完整生产认证产品：
 
