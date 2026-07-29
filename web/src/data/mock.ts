@@ -10,15 +10,21 @@ export const BRAND = {
 
 export interface ScopeDef {
   id: string;
-  label: string;
+  /** Shown to the developer when registering a client. */
   desc: string;
-  sensitive?: boolean;
+  /** Shown to the end user on the consent screen. */
+  consent: string;
 }
 
+/**
+ * Mirrors `scopes_supported` in the OIDC discovery document (src/oauth.rs).
+ * The authorize endpoint rejects anything outside this list, so do not add
+ * entries here before the server supports them.
+ */
 export const SCOPES: ScopeDef[] = [
-  { id: "openid", label: "身份标识 (openid)", desc: "获取你的唯一辰星 ID，用于识别你的账户" },
-  { id: "profile", label: "基本资料 (profile)", desc: "查看你的昵称、头像与公开个人信息" },
-  { id: "email", label: "邮箱地址 (email)", desc: "查看你的主邮箱地址" },
-  { id: "star.storage", label: "星辉云存储 (star.storage)", desc: "读取并管理你授权的云端文件", sensitive: true },
-  { id: "star.orbit", label: "轨道数据 (star.orbit)", desc: "访问你的活动轨迹与使用统计", sensitive: true },
+  { id: "openid", desc: "签发 ID Token，OIDC 流程必需", consent: "用于识别你的辰星通行证" },
+  { id: "profile", desc: "在 UserInfo 返回 name 等公开资料 Claim", consent: "你的显示名称等公开资料" },
+  { id: "email", desc: "在 UserInfo 返回 email Claim", consent: "你的邮箱地址" },
 ];
+
+export const SCOPE_MAP = new Map(SCOPES.map((scope) => [scope.id, scope]));

@@ -18,11 +18,11 @@ interface Store {
   logout: () => Promise<void>;
   updateProfile: (displayName: string) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
-  revokeSession: (id: string) => Promise<void>;
+  revokeSession: (id: number) => Promise<void>;
   createClient: (input: { client_name: string; redirect_uris: string[]; scopes: string[] }) => Promise<OAuthClient & { client_secret: string }>;
-  updateClient: (id: string, input: { client_name: string; redirect_uris: string[]; scopes: string[] }) => Promise<void>;
-  setClientStatus: (id: string, status: "enable" | "disable") => Promise<void>;
-  rotateClientSecret: (id: string) => Promise<string>;
+  updateClient: (id: number, input: { client_name: string; redirect_uris: string[]; scopes: string[] }) => Promise<void>;
+  setClientStatus: (id: number, status: "enable" | "disable") => Promise<void>;
+  rotateClientSecret: (id: number) => Promise<string>;
   clearError: () => void;
 }
 

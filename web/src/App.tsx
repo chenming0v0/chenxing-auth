@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { api, errorMessage } from "./api";
 import { StoreProvider } from "./store";
-import Starfield from "./components/Starfield";
 import { GlowButton } from "./components/ui";
 import Bootstrap from "./pages/Bootstrap";
 import Landing from "./pages/Landing";
@@ -70,9 +69,21 @@ function BootstrapGate() {
 }
 
 function GateLoading() {
-  return <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#05060f]"><Starfield density={0.00016} /><div className="relative z-10 text-center text-xs text-slate-500">正在准备辰星认证中枢</div></div>;
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-app text-xs text-slate-500">
+      正在准备辰星认证中枢…
+    </div>
+  );
 }
 
 function GateError({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#05060f] p-6"><Starfield density={0.00016} /><div className="glass relative z-10 w-full max-w-md rounded-3xl p-8 text-center"><h1 className="text-xl font-bold text-white">无法检查初始化状态</h1><p className="mt-2 text-xs leading-relaxed text-slate-500">{message}</p><GlowButton className="mt-6" onClick={onRetry}>重新检查</GlowButton></div></div>;
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-app p-6">
+      <div className="panel w-full max-w-md rounded-xl px-6 py-10 text-center">
+        <h1 className="text-base font-semibold text-white">无法检查初始化状态</h1>
+        <p className="mt-2 text-xs leading-relaxed text-slate-500">{message}</p>
+        <GlowButton className="mt-6" onClick={onRetry}>重新检查</GlowButton>
+      </div>
+    </div>
+  );
 }

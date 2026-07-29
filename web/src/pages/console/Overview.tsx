@@ -1,21 +1,81 @@
 import { useNavigate } from "react-router-dom";
-import { Activity, ArrowUpRight, Code2, Fingerprint, Plug, ShieldCheck } from "lucide-react";
-import { PageFade, Stat, Badge } from "../../components/ui";
+import { ArrowRight, Code2, FlaskConical, Plug, ShieldCheck, UserRound } from "lucide-react";
+import { Badge, PageFade, PageHeader, Section, Stat } from "../../components/ui";
 import { useStore } from "../../store";
 import { formatDate } from "../../api";
 
+const SHORTCUTS = [
+  { icon: <Code2 size={16} />, title: "接入应用", desc: "注册 OAuth Client 并获取凭据", to: "/console/developer" },
+  { icon: <FlaskConical size={16} />, title: "授权测试", desc: "验证授权码 + PKCE 流程", to: "/console/playground" },
+  { icon: <UserRound size={16} />, title: "通行证资料", desc: "更新资料、密码与登录会话", to: "/console/profile" },
+  { icon: <Plug size={16} />, title: "已授权应用", desc: "查看第三方访问范围", to: "/console/connections" },
+];
+
 export default function Overview() {
-  const nav = useNavigate();
+  const navigate = useNavigate();
   const { user, clients, sessions } = useStore();
   if (!user) return null;
-  const quick = [
-    { icon: <Fingerprint size={18} />, title: "通行证资料", desc: "更新公开身份信息", to: "/console/profile" },
-    { icon: <Code2 size={18} />, title: "开发者应用", desc: `${clients.length} / 2 个 OAuth 项目`, to: "/console/developer" },
-    { icon: <Plug size={18} />, title: "授权管理", desc: "查看接入与授权说明", to: "/console/connections" },
-    { icon: <ShieldCheck size={18} />, title: "OAuth 测试台", desc: "验证授权码 + PKCE 流程", to: "/console/playground" },
-  ];
-  return <PageFade><div className="glass relative mb-6 overflow-hidden rounded-3xl p-7 md:p-8"><div className="aurora -right-16 -top-20 h-64 w-64 bg-indigo-500/25" /><div className="relative flex flex-wrap items-center gap-5"><div className={`flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br text-2xl font-semibold text-white shadow-lg ${user.color}`}>{user.name.slice(0, 1).toUpperCase()}</div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-3"><h1 className="text-2xl font-bold text-white">欢迎回来，{user.name}</h1><Badge tone="green">账户正常</Badge></div><p className="mt-1.5 text-sm text-slate-400">{user.email} · Session 有效至 {formatDate(user.current_session_expires_at)}</p></div></div></div>
-    <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4"><Stat icon={<Code2 size={17} />} label="OAuth 项目" value={String(clients.length)} sub="最多 2 个" /><Stat icon={<Activity size={17} />} label="今日授权额度" value={clients.length ? `${clients.reduce((sum, client) => sum + client.quota.daily_used, 0).toLocaleString()}` : "0"} sub="按项目统计" /><Stat icon={<ShieldCheck size={17} />} label="活跃 Session" value={String(sessions.length)} /><Stat icon={<Fingerprint size={17} />} label="身份状态" value="正常" sub="可安全使用" /></div>
-    <div className="grid gap-6 lg:grid-cols-5"><div className="lg:col-span-2"><h2 className="mb-3 text-sm font-semibold text-slate-300">快捷入口</h2><div className="grid gap-3">{quick.map((item) => <button key={item.to} onClick={() => nav(item.to)} className="glass group flex cursor-pointer items-center gap-4 rounded-2xl p-4 text-left transition-all hover:border-indigo-400/35 hover:bg-indigo-500/[0.06]"><span className="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/12 text-indigo-300">{item.icon}</span><span className="flex-1"><span className="block text-sm font-medium text-white">{item.title}</span><span className="block text-xs text-slate-500">{item.desc}</span></span><ArrowUpRight size={15} className="text-slate-600 transition group-hover:text-indigo-300" /></button>)}</div></div><div className="lg:col-span-3"><h2 className="mb-3 text-sm font-semibold text-slate-300">当前状态</h2><div className="glass rounded-2xl p-6"><div className="flex items-start gap-3"><span className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-300"><ShieldCheck size={17} /></span><div><div className="text-sm font-medium text-white">你的 Session 正在工作</div><p className="mt-1 text-xs leading-6 text-slate-500">登录 Cookie 由服务端管理，前端不会读取 Session 秘密。执行资料修改、应用创建等操作时会自动携带 CSRF 校验。</p></div></div></div></div></div>
-  </PageFade>;
+
+  const activeClients = clients.filter((client) => client.status === "active").length;
+  const dailyUsed = clients.reduce((sum, client) => sum + client.quota.daily_used, 0);
+
+  return (
+    <PageFade>
+      <PageHeader
+        title={`欢迎回来，${user.name}`}
+        description={
+          <>
+            {user.email} · 当前会话有效至 {formatDate(user.current_session_expires_at)}
+          </>
+        }
+        actions={<Badge tone={user.status === "active" ? "green" : "amber"}>{user.status === "active" ? "账户正常" : user.status}</Badge>}
+      />
+
+      <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <Stat label="接入应用" value={String(clients.length)} sub={`${activeClients} 个启用中`} />
+        <Stat label="今日授权调用" value={dailyUsed.toLocaleString()} sub="所有应用合计" />
+        <Stat label="活跃会话" value={String(sessions.length)} sub="含当前设备" />
+        <Stat label="账户角色" value={user.role === "owner" ? "所有者" : user.role === "admin" ? "管理员" : "用户"} />
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Section title="快捷入口">
+          <div className="grid gap-2">
+            {SHORTCUTS.map((item) => (
+              <button
+                key={item.to}
+                onClick={() => navigate(item.to)}
+                className="group flex cursor-pointer items-center gap-3 rounded-lg border border-hairline px-3.5 py-3 text-left transition-colors hover:border-slate-600 hover:bg-white/[0.02]"
+              >
+                <span className="text-slate-500 group-hover:text-indigo-400">{item.icon}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[13px] font-medium text-slate-200">{item.title}</span>
+                  <span className="block text-[11px] text-slate-500">{item.desc}</span>
+                </span>
+                <ArrowRight size={14} className="text-slate-600 group-hover:text-slate-400" />
+              </button>
+            ))}
+          </div>
+        </Section>
+
+        <Section title="会话安全">
+          <div className="space-y-4 text-xs leading-relaxed text-slate-400">
+            <div className="flex items-start gap-2.5">
+              <ShieldCheck size={15} className="mt-0.5 shrink-0 text-emerald-400" />
+              <p>
+                登录状态保存在 HttpOnly Cookie 中，前端读取不到会话密钥。所有写操作都会附带 CSRF 令牌校验。
+              </p>
+            </div>
+            <p>
+              修改密码会立即撤销全部历史会话。如果发现陌生设备，可在
+              <button onClick={() => navigate("/console/profile")} className="mx-1 cursor-pointer text-indigo-400 hover:text-indigo-300">
+                通行证资料
+              </button>
+              中单独撤销。
+            </p>
+          </div>
+        </Section>
+      </div>
+    </PageFade>
+  );
 }
