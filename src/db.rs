@@ -105,6 +105,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0011_usernames.sql")),
             false,
         ),
+        Migration::new(
+            12,
+            Cow::Borrowed("external oauth providers"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0012_external_oauth.sql")),
+            false,
+        ),
     ];
 
     Migrator {

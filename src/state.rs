@@ -10,6 +10,9 @@ use crate::{
     consents::ConsentService,
     db::Database,
     keys::{KeyManager, KeyManagerError},
+    oauth::providers::{
+        secrets::SecretManager, service::ExternalOAuthService, state_store::ExternalLoginStateStore,
+    },
     oauth::quota::OAuthQuotaStore,
     oauth::refresh_store::RefreshTokenStore,
     oauth::request_store::AuthorizationRequestStore,
@@ -41,6 +44,8 @@ pub struct AppState {
     pub admin_sessions: AdminSessionStore,
     pub audit: AuditService,
     pub factors: AuthFactorService,
+    pub external_oauth: ExternalOAuthService,
+    pub external_login_states: ExternalLoginStateStore,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -53,6 +58,10 @@ pub enum StateError {
     Keys(#[from] KeyManagerError),
     #[error("authentication factor initialization failed: {0}")]
     AuthFactors(#[from] webauthn_rs::prelude::WebauthnError),
+    #[error("external OAuth initialization failed: {0}")]
+    ExternalOAuth(#[from] crate::oauth::providers::service::ExternalOAuthError),
+    #[error("external OAuth secret initialization failed: {0}")]
+    ExternalOAuthSecret(#[from] crate::oauth::providers::secrets::SecretError),
 }
 
 impl AppState {
@@ -81,6 +90,9 @@ impl AppState {
         let admins = AdminService::new(database.clone());
         let admin_sessions = AdminSessionStore::new(redis.clone());
         let audit = AuditService::new(database.clone());
+        let secret_manager = SecretManager::load_or_generate(&config.key_directory)?;
+        let external_oauth = ExternalOAuthService::new(database.clone(), secret_manager)?;
+        let external_login_states = ExternalLoginStateStore::new(redis.clone());
 
         Ok(Self {
             config,
@@ -102,6 +114,8 @@ impl AppState {
             admin_sessions,
             audit,
             factors,
+            external_oauth,
+            external_login_states,
         })
     }
 

@@ -14,7 +14,7 @@ pub async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Res
     {
         return response;
     }
-    let body = "<main><h1>辰星认证中枢管理后台</h1><nav><a href=\"/admin/users\">用户管理</a> · <a href=\"/admin/clients\">Client 管理</a> · <a href=\"/admin/audit\">审计日志</a></nav><p>请使用管理 API 执行具体操作。</p></main>";
+    let body = "<main><h1>辰星认证中枢管理后台</h1><nav><a href=\"/admin/users\">用户管理</a> · <a href=\"/admin/clients\">Client 管理</a> · <a href=\"/admin/settings/oauth\">OAuth 提供商设置</a> · <a href=\"/admin/audit\">审计日志</a></nav><p>请使用管理 API 执行具体操作。</p></main>";
     Html(web::page("管理后台", body)).into_response()
 }
 

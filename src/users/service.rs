@@ -60,6 +60,7 @@ impl UserService {
             return Err(UserServiceError::InvalidCredentials);
         };
         if credentials.status != "active"
+            || !credentials.password_login_enabled
             || !verify_password(&login.password, &credentials.password_hash)
         {
             return Err(UserServiceError::InvalidCredentials);

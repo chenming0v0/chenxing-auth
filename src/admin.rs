@@ -6,6 +6,8 @@ pub mod domain;
 pub mod handlers;
 pub mod key_handlers;
 pub mod management_handlers;
+pub mod provider_handlers;
+pub mod provider_web_handlers;
 pub mod repository;
 pub mod service;
 pub mod session;

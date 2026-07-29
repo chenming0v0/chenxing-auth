@@ -17,6 +17,10 @@ use crate::{
     },
     admin::key_handlers::rotate_signing_key,
     admin::management_handlers::{list_admins, list_audit, list_users, set_user_status},
+    admin::provider_handlers::{
+        create_provider, disable_provider, enable_provider, list_providers, update_provider,
+    },
+    admin::provider_web_handlers::oauth_settings,
     admin::settings_handlers::{get_registration_email, update_registration_email},
     admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
     admin::web_handlers::{dashboard, login_page, login_submit, protected_placeholder},
@@ -26,6 +30,7 @@ use crate::{
     },
     oauth::OpenIdConfiguration,
     oauth::handlers::{authorize, token},
+    oauth::providers::handlers::{external_callback, start_external_login},
     oauth::revocation_handler::revoke,
     oauth::ui_handlers::{decide_authorization_request, inspect_authorization_request},
     oauth::userinfo::userinfo,
@@ -116,13 +121,32 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/admin/settings/registration-email",
             get(get_registration_email).put(update_registration_email),
         )
+        .route(
+            "/api/v1/admin/oauth/providers",
+            get(list_providers).post(create_provider),
+        )
+        .route(
+            "/api/v1/admin/oauth/providers/{slug}",
+            axum::routing::put(update_provider),
+        )
+        .route(
+            "/api/v1/admin/oauth/providers/{slug}/disable",
+            post(disable_provider),
+        )
+        .route(
+            "/api/v1/admin/oauth/providers/{slug}/enable",
+            post(enable_provider),
+        )
         .route("/admin", get(dashboard))
         .route("/admin/login", get(login_page).post(login_submit))
         .route("/admin/users", get(protected_placeholder))
         .route("/admin/clients", get(protected_placeholder))
         .route("/admin/audit", get(protected_placeholder))
+        .route("/admin/settings/oauth", get(oauth_settings))
         .route("/auth/login", get(login_get).post(login_post))
         .route("/auth/login/totp", post(browser_totp_post))
+        .route("/auth/external/{slug}", get(start_external_login))
+        .route("/auth/external/{slug}/callback", get(external_callback))
         .route(
             "/api/v1/auth/session",
             axum::routing::delete(revoke_session),

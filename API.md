@@ -154,7 +154,13 @@
 
 ### `GET /auth/login` / `POST /auth/login`
 
-浏览器登录页面，仅用于 OAuth 浏览器流程。登录表单字段为 `request_id`、`identifier`（用户名或邮箱）、`password`，成功后继续原授权请求。前端 SPA 一般不需要直接调用此 HTML 接口。
+浏览器登录页面，仅用于 OAuth 浏览器流程。登录表单字段为 `request_id`、`identifier`（用户名或邮箱）、`password`，成功后继续原授权请求。页面会动态显示已启用的自定义 OAuth 提供商。
+
+### `GET /auth/external/{slug}` / `GET /auth/external/{slug}/callback`
+
+开始并完成自定义外部 OAuth 2.0/OIDC 登录。`slug` 来自管理员设置；开始请求可携带 `request_id` 以便登录后继续辰星的授权确认。系统使用一次性 Redis `state` 和 HttpOnly Cookie 绑定浏览器流程，回调成功后创建辰星 Session。
+
+外部 UserInfo 必须按配置提供合法 `email` 和唯一 `sub`；可选校验 `email_verified`。首次外部登录在邮箱不存在时创建辰星账号并绑定 `(provider, sub)`；如果邮箱已存在，不会自动接管或合并本地账号，而是返回 `oauth_account_link_required` 页面提示。
 
 ### `GET /oauth/authorize/consent` / `POST /oauth/authorize/consent`
 
@@ -270,6 +276,17 @@ grant_type=refresh_token&refresh_token=...
 
 Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`、`scopes`、`status`、`owner_user_id`。不返回 Secret 或其哈希。
 
+### 自定义 OAuth 提供商管理
+
+管理员可以在 `GET /admin/settings/oauth` 打开设置页，也可以直接使用以下 API。提供商默认停用，确认配置无误后再启用。
+
+- `POST /api/v1/admin/oauth/providers`：创建提供商。必须填写名称、唯一小写 `slug`、授权/Token/UserInfo 地址、Client ID/Secret、Scopes；Secret 只在请求中出现，服务端使用 `KEY_DIRECTORY/oauth-provider-secret.key` 以 AES-256-GCM 加密保存。
+- `GET /api/v1/admin/oauth/providers`：列出提供商摘要，包含 `callback_uri` 和 `client_secret_configured`，不返回 Secret 或密文。
+- `PUT /api/v1/admin/oauth/providers/{slug}`：更新配置；`client_secret` 省略时保留原 Secret。
+- `POST /api/v1/admin/oauth/providers/{slug}/enable`、`/disable`：启用或停用。
+
+提供商支持 `basic`（Token 请求 HTTP Basic）和 `request_body`（Token 表单）两种 Client 认证方式；Claim 路径支持点分隔对象路径，例如 `profile.email`。管理员 Session 写操作需要管理员 CSRF Cookie 与 `X-CSRF-Token`；Bearer Token 是现有自动化兼容方式。
+
 ### `GET /api/v1/admin/audit?limit=50`
 
 查询审计事件，需要 `ReadAudit`。`limit` 可选，默认 50。
@@ -294,11 +311,11 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 
 ## 权限矩阵
 
-| 角色 | 用户/管理员 | Client | 审计 | 密钥轮换 |
-| --- | --- | --- | --- | --- |
-| `owner` | 是 | 是 | 是 | 是 |
-| `operator` | 是 | 是 | 否 | 否 |
-| `auditor` | 否 | 否 | 是 | 否 |
+| 角色 | 用户/管理员 | Client | OAuth 提供商 | 审计 | 密钥轮换 |
+| --- | --- | --- | --- | --- | --- |
+| `owner` | 是 | 是 | 是 | 是 | 是 |
+| `operator` | 是 | 是 | 是 | 否 | 否 |
+| `auditor` | 否 | 否 | 否 | 是 | 否 |
 
 ## 前端接入建议
 
