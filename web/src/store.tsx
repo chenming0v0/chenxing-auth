@@ -13,8 +13,8 @@ interface Store {
   clients: OAuthClient[];
   sessions: UserSession[];
   refresh: () => Promise<void>;
-  login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, displayName: string) => Promise<void>;
+  login: (identifier: string, password: string) => Promise<void>;
+  register: (username: string, email: string, password: string, displayName: string) => Promise<void>;
   logout: () => Promise<void>;
   updateProfile: (displayName: string) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
@@ -35,7 +35,7 @@ function colorFor(value: string) {
 }
 
 function mapUser(profile: UserProfile): AppUser {
-  return { ...profile, name: profile.display_name || profile.email.split("@")[0], color: colorFor(String(profile.id)) };
+  return { ...profile, name: profile.display_name || profile.username, color: colorFor(String(profile.id)) };
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -73,13 +73,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     clients,
     sessions,
     refresh,
-    login: async (email, password) => {
-      await api.login({ email, password });
+    login: async (identifier, password) => {
+      await api.login({ identifier, password });
       await refresh();
     },
-    register: async (email, password, displayName) => {
-      await api.register({ email, password, display_name: displayName || undefined });
-      await api.login({ email, password });
+    register: async (username, email, password, displayName) => {
+      await api.register({ username, email, password, display_name: displayName || undefined });
+      await api.login({ identifier: username, password });
       await refresh();
     },
     logout: async () => {

@@ -49,6 +49,9 @@ pub async fn register_user(
         Err(UserServiceError::Validation(RegistrationError::InvalidEmail)) => {
             error::bad_request("invalid_email", "email is invalid")
         }
+        Err(UserServiceError::Validation(RegistrationError::InvalidUsername)) => {
+            error::bad_request("invalid_username", "username is invalid")
+        }
         Err(UserServiceError::Validation(RegistrationError::PasswordTooShort)) => {
             error::bad_request("password_too_short", "password is too short")
         }
@@ -61,7 +64,18 @@ pub async fn register_user(
                 .and_then(|error| error.code())
                 .is_some_and(|code| code == "23505") =>
         {
-            error::conflict("email_already_registered", "email is already registered")
+            let constraint = database_error
+                .as_database_error()
+                .and_then(|error| error.constraint())
+                .unwrap_or_default();
+            if constraint == "users_username_key" {
+                error::conflict(
+                    "username_already_registered",
+                    "username is already registered",
+                )
+            } else {
+                error::conflict("email_already_registered", "email is already registered")
+            }
         }
         Err(UserServiceError::Database(database_error)) => {
             tracing::error!(error = %database_error, "failed to register user");
@@ -83,7 +97,10 @@ pub async fn login_user(State(state): State<AppState>, Json(input): Json<LoginIn
     let user_id = match state.users.authenticate(input).await {
         Ok(user_id) => user_id,
         Err(UserServiceError::InvalidCredentials) => {
-            return error::unauthorized("invalid_credentials", "email or password is incorrect");
+            return error::unauthorized(
+                "invalid_credentials",
+                "username, email, or password is incorrect",
+            );
         }
         Err(UserServiceError::Database(database_error)) => {
             tracing::error!(error = %database_error, "failed to authenticate user");

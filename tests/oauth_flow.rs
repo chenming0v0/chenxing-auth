@@ -70,6 +70,7 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
     let (router, database, key_directory) = test_router().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let email = format!("flow-{suffix}@example.com");
+    let username = format!("flow-{suffix}");
     let password = "correct horse battery";
 
     let response = router
@@ -81,6 +82,7 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
+                        "username": username,
                         "email": email,
                         "password": password,
                         "display_name": "Flow User"
@@ -181,7 +183,7 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
                 .uri("/api/v1/auth/login")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": email, "password": password}).to_string(),
+                    serde_json::json!({"identifier": username, "password": password}).to_string(),
                 ))
                 .expect("login request"),
         )

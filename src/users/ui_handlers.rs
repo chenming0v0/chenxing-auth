@@ -19,6 +19,7 @@ struct AuthStatusResponse {
 #[derive(Debug, Serialize)]
 struct UserMeResponse {
     id: UserId,
+    username: String,
     email: String,
     display_name: Option<String>,
     status: String,
@@ -195,6 +196,7 @@ fn profile_response(
         StatusCode::OK,
         Json(UserMeResponse {
             id: profile.id,
+            username: profile.username,
             email: profile.email,
             display_name: profile.display_name,
             status: profile.status,

@@ -109,6 +109,7 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
     let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let email = format!("oauth-ui-{suffix}@example.com");
+    let username = format!("oauth-ui-{suffix}");
     let password = "correct horse battery";
     let response = router
         .clone()
@@ -118,7 +119,8 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
                 .uri("/api/v1/users")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": email, "password": password}).to_string(),
+                    serde_json::json!({"username": username, "email": email, "password": password})
+                        .to_string(),
                 ))
                 .expect("register request"),
         )

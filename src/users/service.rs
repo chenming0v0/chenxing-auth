@@ -40,6 +40,7 @@ impl UserService {
 
         Ok(PublicUser {
             id: user.id,
+            username: user.username,
             email: user.email,
             display_name: user.display_name,
             status: "active".to_owned(),
@@ -49,12 +50,12 @@ impl UserService {
 
     pub async fn authenticate(&self, input: LoginInput) -> Result<UserId, UserServiceError> {
         let login = validate_login(input).map_err(|error| match error {
-            LoginError::InvalidEmail | LoginError::EmptyPassword => {
+            LoginError::InvalidIdentifier | LoginError::EmptyPassword => {
                 UserServiceError::InvalidCredentials
             }
         })?;
         let Some(credentials) =
-            repository::find_credentials_by_email(&self.pool, &login.email).await?
+            repository::find_credentials_by_identifier(&self.pool, &login.identifier).await?
         else {
             return Err(UserServiceError::InvalidCredentials);
         };

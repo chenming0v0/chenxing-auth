@@ -70,18 +70,19 @@ async fn post(router: &Router, uri: &str, body: serde_json::Value) -> axum::resp
 #[tokio::test]
 async fn passkey_registration_start_returns_creation_challenge_for_login_ticket() {
     let (router, database, key_directory, email) = setup().await;
+    let username = format!("passkey-{}", Uuid::new_v4().simple());
     let password = "correct horse battery";
     let response = post(
         &router,
         "/api/v1/users",
-        serde_json::json!({"email": email, "password": password}),
+        serde_json::json!({"username": username, "email": email, "password": password}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
     let response = post(
         &router,
         "/api/v1/auth/login",
-        serde_json::json!({"email": email, "password": password}),
+        serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
     let ticket = json_response(response).await["login_ticket"]

@@ -6,6 +6,7 @@ use super::domain::{UserId, ValidatedRegistration};
 #[derive(Debug)]
 pub struct NewUser {
     pub id: UserId,
+    pub username: String,
     pub email: String,
     pub password_hash: String,
     pub display_name: Option<String>,
@@ -22,6 +23,7 @@ pub struct UserCredentials {
 #[derive(Debug)]
 pub struct UserProfile {
     pub id: UserId,
+    pub username: String,
     pub email: String,
     pub display_name: Option<String>,
     pub status: String,
@@ -30,6 +32,7 @@ pub struct UserProfile {
 #[derive(Debug)]
 pub struct ListedUser {
     pub id: UserId,
+    pub username: String,
     pub email: String,
     pub display_name: Option<String>,
     pub status: String,
@@ -41,14 +44,16 @@ pub async fn insert_user(
     registration: ValidatedRegistration,
     password_hash: String,
 ) -> Result<NewUser, crate::sqlx::Error> {
+    let username = registration.username;
     let email = registration.email;
     let display_name = registration.display_name;
     let created_at = OffsetDateTime::now_utc();
     let id: UserId = crate::sqlx::query_scalar(
-        "INSERT INTO users (email, password_hash, display_name, status, created_at)
-         VALUES ($1, $2, $3, 'active', $4)
+        "INSERT INTO users (username, email, password_hash, display_name, status, created_at)
+         VALUES ($1, $2, $3, $4, 'active', $5)
          RETURNING id",
     )
+    .bind(&username)
     .bind(&email)
     .bind(&password_hash)
     .bind(&display_name)
@@ -58,6 +63,7 @@ pub async fn insert_user(
 
     Ok(NewUser {
         id,
+        username,
         email,
         password_hash,
         display_name,
@@ -65,14 +71,15 @@ pub async fn insert_user(
     })
 }
 
-pub async fn find_credentials_by_email(
+pub async fn find_credentials_by_identifier(
     pool: &PgPool,
-    email: &str,
+    identifier: &str,
 ) -> Result<Option<UserCredentials>, crate::sqlx::Error> {
     crate::sqlx::query_as::<_, (UserId, String, String)>(
-        "SELECT id, password_hash, status FROM users WHERE email = $1",
+        "SELECT id, password_hash, status FROM users
+         WHERE email = $1 OR username = $1",
     )
-    .bind(email)
+    .bind(identifier)
     .fetch_optional(pool)
     .await
     .map(|record| {
@@ -82,6 +89,13 @@ pub async fn find_credentials_by_email(
             status,
         })
     })
+}
+
+pub async fn find_credentials_by_email(
+    pool: &PgPool,
+    email: &str,
+) -> Result<Option<UserCredentials>, crate::sqlx::Error> {
+    find_credentials_by_identifier(pool, email).await
 }
 
 pub async fn find_credentials_by_id(
@@ -107,15 +121,16 @@ pub async fn find_profile_by_id(
     pool: &PgPool,
     id: UserId,
 ) -> Result<Option<UserProfile>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (UserId, String, Option<String>, String)>(
-        "SELECT id, email, display_name, status FROM users WHERE id = $1",
+    crate::sqlx::query_as::<_, (UserId, String, String, Option<String>, String)>(
+        "SELECT id, username, email, display_name, status FROM users WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
     .await
     .map(|record| {
-        record.map(|(id, email, display_name, status)| UserProfile {
+        record.map(|(id, username, email, display_name, status)| UserProfile {
             id,
+            username,
             email,
             display_name,
             status,
@@ -124,15 +139,16 @@ pub async fn find_profile_by_id(
 }
 
 pub async fn list_users(pool: &crate::sqlx::PgPool) -> Result<Vec<ListedUser>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (UserId, String, Option<String>, String, OffsetDateTime)>(
-        "SELECT id, email, display_name, status, created_at FROM users ORDER BY created_at DESC",
+    crate::sqlx::query_as::<_, (UserId, String, String, Option<String>, String, OffsetDateTime)>(
+        "SELECT id, username, email, display_name, status, created_at FROM users ORDER BY created_at DESC",
     )
     .fetch_all(pool)
     .await
     .map(|rows| {
         rows.into_iter()
-            .map(|(id, email, display_name, status, created_at)| ListedUser {
+            .map(|(id, username, email, display_name, status, created_at)| ListedUser {
                 id,
+                username,
                 email,
                 display_name,
                 status,
@@ -186,10 +202,11 @@ pub async fn insert_user_in_transaction(
     user: &NewUser,
 ) -> Result<UserId, crate::sqlx::Error> {
     crate::sqlx::query_scalar(
-        "INSERT INTO users (email, password_hash, display_name, status, created_at)
-         VALUES ($1, $2, $3, 'active', $4)
+        "INSERT INTO users (username, email, password_hash, display_name, status, created_at)
+         VALUES ($1, $2, $3, $4, 'active', $5)
          RETURNING id",
     )
+    .bind(&user.username)
     .bind(&user.email)
     .bind(&user.password_hash)
     .bind(&user.display_name)

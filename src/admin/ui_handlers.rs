@@ -169,7 +169,8 @@ pub async fn query_users(
             .is_none_or(|status| status == user.status)
             && query.search.as_deref().is_none_or(|search| {
                 let search = search.to_ascii_lowercase();
-                user.email.to_ascii_lowercase().contains(&search)
+                user.username.to_ascii_lowercase().contains(&search)
+                    || user.email.to_ascii_lowercase().contains(&search)
                     || user
                         .display_name
                         .as_deref()
@@ -183,6 +184,7 @@ pub async fn query_users(
         .take(page_size as usize)
         .map(|user| super::management_handlers::UserSummary {
             id: user.id,
+            username: user.username,
             email: user.email,
             display_name: user.display_name,
             status: user.status,

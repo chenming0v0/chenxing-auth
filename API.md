@@ -43,26 +43,28 @@
 请求：
 
 ```json
-{"email":"user@example.com","password":"at-least-10-chars","display_name":"显示名称"}
+{"username":"chenxing-user","email":"user@example.com","password":"at-least-10-chars","display_name":"显示名称"}
 ```
 
-`display_name` 可省略或为 `null`，最长 128 个字符；密码至少 10 个字符。
+`username` 必填，长度 3-64 个字符且不可包含空格或 `@`；必须唯一。`display_name` 可省略或为 `null`，最长 128 个字符；密码至少 10 个字符。
 
 响应 `201`：
 
 ```json
-{"user":{"id":1,"email":"user@example.com","display_name":"显示名称","status":"active","created_at":"2026-07-28T00:00:00Z"}}
+{"user":{"id":1,"username":"chenxing-user","email":"user@example.com","display_name":"显示名称","status":"active","created_at":"2026-07-28T00:00:00Z"}}
 ```
 
-常见错误：`invalid_email`、`password_too_short`、`display_name_too_long`、`email_already_registered`。
+常见错误：`invalid_username`、`invalid_email`、`password_too_short`、`display_name_too_long`、`username_already_registered`、`email_already_registered`。
 
 ### `POST /api/v1/auth/login`
 
 请求：
 
 ```json
-{"email":"user@example.com","password":"at-least-10-chars","totp_code":"123456"}
+{"identifier":"chenxing-user","password":"at-least-10-chars","totp_code":"123456"}
 ```
+
+`identifier` 可以填写普通用户注册时的 `username` 或邮箱地址。为兼容旧客户端，服务端仍接受请求体中的 `email` 别名；新客户端应使用 `identifier`。
 
 首次登录或已绑定因子但尚未完成验证时响应 `202`，不会设置 Session Cookie：
 
@@ -152,7 +154,7 @@
 
 ### `GET /auth/login` / `POST /auth/login`
 
-浏览器登录页面，仅用于 OAuth 浏览器流程。登录表单字段为 `request_id`、`email`、`password`，成功后继续原授权请求。前端 SPA 一般不需要直接调用此 HTML 接口。
+浏览器登录页面，仅用于 OAuth 浏览器流程。登录表单字段为 `request_id`、`identifier`（用户名或邮箱）、`password`，成功后继续原授权请求。前端 SPA 一般不需要直接调用此 HTML 接口。
 
 ### `GET /oauth/authorize/consent` / `POST /oauth/authorize/consent`
 
@@ -242,7 +244,7 @@ grant_type=refresh_token&refresh_token=...
 - `GET /api/v1/admin/users`：列出用户，需要 `ManageUsers`。
 - `POST /api/v1/admin/users/{user_id}/{status}`：设置用户状态，需要 `ManageUsers`。状态由后端支持值决定，常用为 `active`、`disabled`；成功 `204`。
 
-用户列表元素：`id`、`email`、`display_name`、`status`、`created_at`。
+用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`created_at`。
 
 ### 管理员管理
 

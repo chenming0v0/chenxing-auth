@@ -44,6 +44,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
     let user = user_repository::insert_user(
         &pool,
         ValidatedRegistration {
+            username: format!("storage-user-{suffix}"),
             email: email.clone(),
             password: "correct horse battery".to_owned(),
             display_name: Some("Storage User".to_owned()),
@@ -138,6 +139,7 @@ async fn postgres_transaction_user_insert_and_missing_client_paths_work() {
     let pool = database().await;
     let user = NewUser {
         id: 0,
+        username: format!("transaction-user-{}", Uuid::new_v4().simple()),
         email: format!("transaction-{}@example.com", Uuid::new_v4().simple()),
         password_hash: "hash".to_owned(),
         display_name: None,
@@ -168,6 +170,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
     let owner = user_repository::insert_user(
         &pool,
         ValidatedRegistration {
+            username: format!("owner-{}", Uuid::new_v4().simple()),
             email: format!("owner-{}@example.com", Uuid::new_v4().simple()),
             password: "correct horse battery".to_owned(),
             display_name: None,
@@ -179,6 +182,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
     let other = user_repository::insert_user(
         &pool,
         ValidatedRegistration {
+            username: format!("other-{}", Uuid::new_v4().simple()),
             email: format!("other-{}@example.com", Uuid::new_v4().simple()),
             password: "correct horse battery".to_owned(),
             display_name: None,
@@ -264,6 +268,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
     let orphan_owner = user_repository::insert_user(
         &pool,
         ValidatedRegistration {
+            username: format!("orphan-{}", Uuid::new_v4().simple()),
             email: format!("orphan-{}@example.com", Uuid::new_v4().simple()),
             password: "correct horse battery".to_owned(),
             display_name: None,
@@ -415,6 +420,7 @@ async fn session_revocation_generation_rejects_restored_old_payloads() {
     let user = user_repository::insert_user(
         &pool,
         ValidatedRegistration {
+            username: format!("generation-{}", Uuid::new_v4().simple()),
             email: format!("generation-{}@example.com", Uuid::new_v4().simple()),
             password: "correct horse battery".to_owned(),
             display_name: None,

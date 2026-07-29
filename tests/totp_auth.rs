@@ -75,6 +75,7 @@ async fn request(
 #[tokio::test]
 async fn password_login_without_factor_returns_pending_setup_ticket() {
     let (router, database, key_directory, email) = setup().await;
+    let username = format!("totp-{}", Uuid::new_v4().simple());
     let password = "correct horse battery";
     let response = router
         .clone()
@@ -84,7 +85,8 @@ async fn password_login_without_factor_returns_pending_setup_ticket() {
                 .uri("/api/v1/users")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": email, "password": password}).to_string(),
+                    serde_json::json!({"username": username, "email": email, "password": password})
+                        .to_string(),
                 ))
                 .expect("registration request"),
         )
@@ -100,7 +102,7 @@ async fn password_login_without_factor_returns_pending_setup_ticket() {
                 .uri("/api/v1/auth/login")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"email": email, "password": password}).to_string(),
+                    serde_json::json!({"identifier": username, "password": password}).to_string(),
                 ))
                 .expect("login request"),
         )
@@ -132,11 +134,12 @@ async fn password_login_without_factor_returns_pending_setup_ticket() {
 #[tokio::test]
 async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
     let (router, database, key_directory, email) = setup().await;
+    let username = format!("totp-{}", Uuid::new_v4().simple());
     let password = "correct horse battery";
     let response = request(
         &router,
         "/api/v1/users",
-        serde_json::json!({"email": email, "password": password}),
+        serde_json::json!({"username": username, "email": email, "password": password}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -144,7 +147,7 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
     let response = request(
         &router,
         "/api/v1/auth/login",
-        serde_json::json!({"email": email, "password": password}),
+        serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
     let ticket = json_body(response).await["login_ticket"]
@@ -197,7 +200,7 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
     let response = request(
         &router,
         "/api/v1/auth/login",
-        serde_json::json!({"email": email, "password": password}),
+        serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::ACCEPTED);
@@ -207,7 +210,7 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
         request(
             &router,
             "/api/v1/auth/login",
-            serde_json::json!({"email": email, "password": password}),
+            serde_json::json!({"identifier": username, "password": password}),
         )
         .await,
     )
@@ -226,7 +229,7 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
     let response = request(
         &router,
         "/api/v1/auth/login",
-        serde_json::json!({"email": email, "password": password, "totp_code": "000000"}),
+        serde_json::json!({"identifier": username, "password": password, "totp_code": "000000"}),
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -248,7 +251,7 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
         &router,
         "/api/v1/auth/login",
         serde_json::json!({
-            "email": email,
+            "identifier": email,
             "password": password,
             "totp_code": valid_code.generate_current().expect("valid code")
         }),

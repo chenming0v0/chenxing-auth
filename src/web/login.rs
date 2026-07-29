@@ -26,7 +26,8 @@ pub struct LoginQuery {
 #[derive(Debug, Deserialize)]
 pub struct LoginForm {
     pub request_id: Option<String>,
-    pub email: String,
+    #[serde(alias = "email")]
+    pub identifier: String,
     pub password: String,
     pub totp_code: Option<String>,
 }
@@ -49,7 +50,7 @@ pub async fn login_get(State(state): State<AppState>, Query(query): Query<LoginQ
     }
     let request_id = query.request_id.unwrap_or_default();
     let body = format!(
-        "<main><h1>辰星通行证登录</h1><p>登录后继续访问授权请求。</p><form method=\"post\" action=\"/auth/login\"><input type=\"hidden\" name=\"request_id\" value=\"{}\"><label>邮箱<input name=\"email\" type=\"email\" autocomplete=\"username\" required></label><label>密码<input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button type=\"submit\">登录</button></form></main>",
+        "<main><h1>辰星通行证登录</h1><p>登录后继续访问授权请求。</p><form method=\"post\" action=\"/auth/login\"><input type=\"hidden\" name=\"request_id\" value=\"{}\"><label>用户名或邮箱<input name=\"identifier\" type=\"text\" autocomplete=\"username\" required></label><label>密码<input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button type=\"submit\">登录</button></form></main>",
         crate::web::escape_html(&request_id)
     );
     Html(crate::web::page("辰星通行证登录", &body)).into_response()
@@ -68,7 +69,7 @@ pub async fn login_post(State(state): State<AppState>, Form(form): Form<LoginFor
     let user_id = match state
         .users
         .authenticate(LoginInput {
-            email: form.email,
+            identifier: form.identifier,
             password: form.password,
             totp_code: None,
         })
@@ -76,7 +77,10 @@ pub async fn login_post(State(state): State<AppState>, Form(form): Form<LoginFor
     {
         Ok(user_id) => user_id,
         Err(UserServiceError::InvalidCredentials) => {
-            return html_error(axum::http::StatusCode::UNAUTHORIZED, "邮箱或密码不正确。");
+            return html_error(
+                axum::http::StatusCode::UNAUTHORIZED,
+                "用户名、邮箱或密码不正确。",
+            );
         }
         Err(UserServiceError::Database(database_error)) => {
             tracing::error!(error = %database_error, "failed to authenticate browser login");

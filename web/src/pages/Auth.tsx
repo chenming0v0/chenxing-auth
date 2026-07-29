@@ -30,15 +30,15 @@ export function Login() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const { login } = useStore();
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await login(email, password); const requestId = params.get("request_id"); navigate(requestId ? `/oauth/consent?request_id=${encodeURIComponent(requestId)}` : "/console"); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
+  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await login(identifier, password); const requestId = params.get("request_id"); navigate(requestId ? `/oauth/consent?request_id=${encodeURIComponent(requestId)}` : "/console"); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
   return <AuthShell title="登录辰星通行证" subtitle={params.get("request_id") ? "登录后继续完成授权确认" : "使用你的身份进入认证中枢"}>
     <form className="mt-6 space-y-4" onSubmit={submit}>
       <FormError value={error} />
-      <Field label="邮箱" icon={<Mail size={15} />} type="email" autoComplete="username" required placeholder="you@example.com" value={email} onChange={(event) => setEmail(event.target.value)} />
+      <Field label="用户名或邮箱" icon={<UserRound size={15} />} type="text" autoComplete="username" required placeholder="用户名或 you@example.com" value={identifier} onChange={(event) => setIdentifier(event.target.value)} />
       <Field label="密码" icon={<LockKeyhole size={15} />} type="password" autoComplete="current-password" required placeholder="至少 10 个字符" value={password} onChange={(event) => setPassword(event.target.value)} />
       <GlowButton className="w-full py-3" type="submit" disabled={busy}>{busy ? <Loader2 size={16} className="mx-auto animate-spin" /> : <>登录 <ArrowRight size={15} className="ml-1 inline" /></>}</GlowButton>
     </form>
@@ -51,13 +51,15 @@ export function Register() {
   const [params] = useSearchParams();
   const { register } = useStore();
   const [name, setName] = useState("");
+  const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await register(email, password, name); const requestId = params.get("request_id"); navigate(requestId ? `/oauth/consent?request_id=${encodeURIComponent(requestId)}` : "/console"); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
+  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await register(username, email, password, name); const requestId = params.get("request_id"); navigate(requestId ? `/oauth/consent?request_id=${encodeURIComponent(requestId)}` : "/console"); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
   return <AuthShell title="创建辰星通行证" subtitle="一个账号，连接所有接入辰星的应用"><form className="mt-6 space-y-4" onSubmit={submit}>
     <FormError value={error} />
+    <Field label="用户名" icon={<UserRound size={15} />} autoComplete="username" required minLength={3} maxLength={64} placeholder="你的登录用户名" value={username} onChange={(event) => setUsername(event.target.value)} />
     <Field label="显示名称（可选）" icon={<UserRound size={15} />} autoComplete="name" placeholder="你的昵称" value={name} onChange={(event) => setName(event.target.value)} />
     <Field label="邮箱" icon={<Mail size={15} />} type="email" autoComplete="email" required placeholder="you@example.com" value={email} onChange={(event) => setEmail(event.target.value)} />
     <Field label="密码" icon={<LockKeyhole size={15} />} type="password" autoComplete="new-password" required minLength={10} placeholder="至少 10 个字符" value={password} onChange={(event) => setPassword(event.target.value)} />

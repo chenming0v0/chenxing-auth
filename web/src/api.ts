@@ -17,6 +17,7 @@ export class ApiError extends Error {
 
 export interface UserProfile {
   id: number;
+  username: string;
   email: string;
   display_name: string | null;
   status: string;
@@ -81,6 +82,7 @@ export interface BootstrapStatus {
 
 export interface AdminUser {
   id: number;
+  username: string;
   email: string;
   display_name: string | null;
   status: string;
@@ -140,9 +142,9 @@ export const api = {
   bootstrapStatus: () => request<BootstrapStatus>("/api/v1/admin/bootstrap/status"),
   bootstrapAdmin: (input: { username: string; password: string }) =>
     request<{ id: number; role: string }>("/api/v1/admin/bootstrap", { method: "POST", body: JSON.stringify(input) }),
-  register: (input: { email: string; password: string; display_name?: string }) =>
+  register: (input: { username: string; email: string; password: string; display_name?: string }) =>
     request<{ user: { id: number } }>("/api/v1/users", { method: "POST", body: JSON.stringify(input) }),
-  login: (input: { email: string; password: string }) =>
+  login: (input: { identifier: string; password: string }) =>
     request<{ session_id: string; expires_at: string }>("/api/v1/auth/login", { method: "POST", body: JSON.stringify(input) }),
   logout: () => request<void>("/api/v1/auth/session", mutation({ method: "DELETE" })),
   me: () => request<UserProfile>("/api/v1/auth/me"),
@@ -180,11 +182,12 @@ export const api = {
 
 export function errorMessage(error: unknown) {
   if (error instanceof ApiError) {
-    if (error.code === "invalid_credentials") return "邮箱或密码不正确";
+    if (error.code === "invalid_credentials") return "用户名、邮箱或密码不正确";
     if (error.code === "bootstrap_already_completed") return "初始化已经完成，请使用管理员登录";
     if (error.code === "invalid_username") return "请输入有效的管理员用户名";
     if (error.code === "password_too_short") return "管理员密码至少需要 10 个字符";
     if (error.code === "email_already_registered") return "这个邮箱已经注册";
+    if (error.code === "username_already_registered") return "这个用户名已经注册";
     if (error.code === "oauth_client_quota_exceeded") return "最多创建 2 个 OAuth 应用";
     if (error.code === "csrf_invalid") return "页面安全校验已失效，请刷新后重试";
     if (error.code === "invalid_email") return "请输入有效的邮箱地址";

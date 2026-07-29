@@ -20,10 +20,11 @@ async fn totp_factor_round_trip_returns_ciphertext_only() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let user_id: i64 = chenxing_auth::sqlx::query_scalar(
-        "INSERT INTO users (email, password_hash, status, created_at)
-         VALUES ($1, $2, 'active', NOW())
+        "INSERT INTO users (username, email, password_hash, status, created_at)
+         VALUES ($1, $2, $3, 'active', NOW())
          RETURNING id",
     )
+    .bind(format!("factor-{suffix}"))
     .bind(format!("factor-{suffix}@example.com"))
     .bind("test-hash")
     .fetch_one(&pool)
