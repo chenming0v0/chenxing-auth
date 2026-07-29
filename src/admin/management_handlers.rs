@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     authorization::{AdminActor, current_admin_mutation, current_admin_permission},
-    domain::{AdminId, AdminPermission},
+    domain::AdminPermission,
 };
 use crate::{error, state::AppState};
 
@@ -36,7 +36,7 @@ pub struct UserSummary {
 
 #[derive(Debug, Serialize)]
 pub struct AdminSummary {
-    pub id: AdminId,
+    pub id: UserId,
     pub username: String,
     pub role: &'static str,
     pub status: String,
@@ -190,7 +190,6 @@ pub async fn list_admins(State(state): State<AppState>, headers: HeaderMap) -> R
                 users
                     .into_iter()
                     .filter(|user| matches!(user.role, UserRole::Admin | UserRole::Owner))
-                    .into_iter()
                     .map(|user| AdminSummary {
                         id: user.id,
                         username: user.username,

@@ -41,7 +41,7 @@ pub async fn consent_get(
     if let Err(response) = validate_pending(&state, &pending).await {
         return response;
     }
-    if pending.session_id != Some(session.id) {
+    if pending.session_id.as_deref() != Some(session.token.as_str()) {
         return error::unauthorized(
             "invalid_session",
             "authorization request is not bound to this session",
@@ -102,7 +102,7 @@ pub async fn consent_post(
     if let Err(response) = validate_pending(&state, &pending).await {
         return response;
     }
-    if pending.session_id != Some(session.id) {
+    if pending.session_id.as_deref() != Some(session.token.as_str()) {
         return error::unauthorized(
             "invalid_session",
             "authorization request is not bound to this session",

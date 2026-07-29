@@ -186,10 +186,9 @@ async fn admin_audit_query_pages_beyond_the_previous_two_hundred_event_limit() {
     for _ in 0..205 {
         chenxing_auth::sqlx::query(
             "INSERT INTO audit_events
-             (id, actor_type, actor_id, action, resource_type, resource_id, metadata, created_at)
-             VALUES ($1, 'test', NULL, $2, 'test', NULL, '{}'::jsonb, NOW())",
+             (actor_type, actor_user_id, action, resource_type, resource_id, metadata, created_at)
+             VALUES ('test', NULL, $1, 'test', NULL, '{}'::jsonb, NOW())",
         )
-        .bind(Uuid::new_v4())
         .bind(&action)
         .execute(&database)
         .await

@@ -5,7 +5,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use super::{
     authorization::{AuthorizationRequest, validate_authorization_request},
@@ -67,7 +66,7 @@ pub async fn inspect_authorization_request(
             "authorization request is expired",
         );
     };
-    if pending.session_id != Some(context.session.id) {
+    if pending.session_id.as_deref() != Some(context.session.token.as_str()) {
         return error::unauthorized(
             "invalid_session",
             "authorization request is not bound to this session",
@@ -130,7 +129,7 @@ pub async fn decide_authorization_request(
             "authorization request is expired",
         );
     };
-    if pending.session_id != Some(context.session.id) {
+    if pending.session_id.as_deref() != Some(context.session.token.as_str()) {
         return error::unauthorized(
             "invalid_session",
             "authorization request is not bound to this session",
@@ -240,8 +239,7 @@ fn error_redirect(pending: &PendingAuthorization) -> Option<String> {
 }
 
 async fn current_user(state: &AppState, headers: &HeaderMap) -> Result<UserContext, Response> {
-    let Some(session_id) = cookies::cookie_value_by_name(headers, cookies::SESSION_COOKIE)
-        .and_then(|value| Uuid::parse_str(&value).ok())
+    let Some(session_token) = cookies::cookie_value_by_name(headers, cookies::SESSION_COOKIE)
     else {
         return Err(error::unauthorized(
             "login_required",
@@ -250,7 +248,7 @@ async fn current_user(state: &AppState, headers: &HeaderMap) -> Result<UserConte
     };
     let Some(session) = state
         .sessions
-        .find(session_id)
+        .find(&session_token)
         .await
         .map_err(|_| error::internal())?
     else {

@@ -201,14 +201,14 @@ pub async fn external_callback(
         }
     };
     let ttl = std::time::Duration::from_secs(state.config.session_ttl_seconds);
-    let session = match Session::new(user_id.to_string(), ttl) {
+    let mut session = match Session::new(user_id.to_string(), ttl) {
         Ok(session) => session,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to create external OAuth session");
             return error::internal();
         }
     };
-    if let Err(error_value) = state.sessions.save(&session, ttl).await {
+    if let Err(error_value) = state.sessions.save(&mut session, ttl).await {
         tracing::error!(error = %error_value, "failed to save external OAuth session");
         return error::internal();
     }
@@ -230,7 +230,7 @@ pub async fn external_callback(
     };
     cookies::append_login_cookies(
         response.headers_mut(),
-        session.id,
+        &session.token,
         &session.csrf_token,
         state.config.session_ttl_seconds,
         state.config.cookie_secure,

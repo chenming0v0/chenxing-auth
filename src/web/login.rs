@@ -306,14 +306,14 @@ async fn complete_browser_login(
     factor: &str,
 ) -> Response {
     let ttl = std::time::Duration::from_secs(state.config.session_ttl_seconds);
-    let session = match Session::new(user_id.to_string(), ttl) {
+    let mut session = match Session::new(user_id.to_string(), ttl) {
         Ok(session) => session,
         Err(session_error) => {
             tracing::error!(error = %session_error, "failed to create browser session");
             return error::internal();
         }
     };
-    if let Err(session_error) = state.sessions.save(&session, ttl).await {
+    if let Err(session_error) = state.sessions.save(&mut session, ttl).await {
         tracing::error!(error = %session_error, "failed to persist browser session");
         return error::internal();
     }
@@ -329,7 +329,7 @@ async fn complete_browser_login(
             "授权请求已失效，请从接入平台重新开始登录。",
         );
     };
-    pending.session_id = Some(session.id);
+    pending.session_id = Some(session.token.clone());
     if let Err(store_error) = state.authorization_requests.save(&pending).await {
         tracing::error!(error = %store_error, "failed to bind authorization request to session");
         return error::internal();
@@ -349,7 +349,7 @@ async fn complete_browser_login(
         Redirect::to(&format!("/oauth/authorize/consent?request_id={request_id}")).into_response();
     cookies::append_login_cookies(
         response.headers_mut(),
-        session.id,
+        &session.token,
         &session.csrf_token,
         state.config.session_ttl_seconds,
         state.config.cookie_secure,

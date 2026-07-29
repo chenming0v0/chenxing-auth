@@ -5,7 +5,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use super::domain::UserId;
 use super::ui_auth::{UserContext, current_user, mutation_error, mutation_user};
@@ -23,6 +22,7 @@ struct UserMeResponse {
     email: String,
     display_name: Option<String>,
     status: String,
+    role: super::domain::UserRole,
     current_session_expires_at: time::OffsetDateTime,
 }
 
@@ -39,7 +39,7 @@ pub struct ChangePasswordInput {
 
 #[derive(Debug, Serialize)]
 struct SessionItem {
-    id: Uuid,
+    id: i64,
     created_at: time::OffsetDateTime,
     expires_at: time::OffsetDateTime,
     current: bool,
@@ -163,7 +163,7 @@ pub async fn list_user_sessions(State(state): State<AppState>, headers: HeaderMa
 pub async fn revoke_user_session(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(session_id): Path<Uuid>,
+    Path(session_id): Path<i64>,
 ) -> Response {
     let Ok(context) = mutation_user(&state, &headers).await else {
         return mutation_error(&state, &headers).await;
@@ -200,6 +200,7 @@ fn profile_response(
             email: profile.email,
             display_name: profile.display_name,
             status: profile.status,
+            role: profile.role,
             current_session_expires_at: context.session.expires_at,
         }),
     )

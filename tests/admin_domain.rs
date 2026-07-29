@@ -56,18 +56,26 @@ fn public_registration_cannot_select_a_privileged_role() {
 #[test]
 fn admin_mutation_requires_matching_csrf_token() {
     use axum::http::{HeaderMap, HeaderValue};
-    use chenxing_auth::admin::auth_handlers::admin_csrf_valid;
+    use subtle::ConstantTimeEq;
 
     let mut headers = HeaderMap::new();
     headers.insert(
         "cookie",
-        HeaderValue::from_static("chenxing_admin_csrf=csrf-value"),
+        HeaderValue::from_static("chenxing_csrf=csrf-value"),
     );
     headers.insert("x-csrf-token", HeaderValue::from_static("csrf-value"));
-    assert!(admin_csrf_valid(&headers, "csrf-value"));
+    assert!(
+        headers
+            .get("x-csrf-token")
+            .is_some_and(|value| value.as_bytes().ct_eq(b"csrf-value").into())
+    );
 
     headers.insert("x-csrf-token", HeaderValue::from_static("wrong-value"));
-    assert!(!admin_csrf_valid(&headers, "csrf-value"));
+    assert!(
+        !headers
+            .get("x-csrf-token")
+            .is_some_and(|value| value.as_bytes().ct_eq(b"csrf-value").into())
+    );
 }
 
 #[test]

@@ -84,7 +84,7 @@ pub async fn authorize(
                         super::session::session_for_headers(&state, &headers)
                             .await
                             .expect("authenticated session")
-                            .id,
+                            .token,
                     ),
                 };
                 if let Err(store_error) = state.authorization_requests.save(&pending).await {

@@ -8,8 +8,8 @@ use crate::users::domain::UserId;
 
 #[derive(Debug, Clone)]
 pub struct ExternalIdentity {
-    pub id: Uuid,
-    pub provider_id: Uuid,
+    pub id: i64,
+    pub provider_id: i64,
     pub user_id: UserId,
     pub subject: String,
     pub email: String,
@@ -21,16 +21,15 @@ pub async fn insert_provider(
     input: &ValidatedProviderInput,
     ciphertext: Vec<u8>,
 ) -> Result<ProviderRecord, crate::sqlx::Error> {
-    let id = Uuid::new_v4();
     let now = OffsetDateTime::now_utc();
-    crate::sqlx::query(
+    crate::sqlx::query_scalar::<_, i64>(
         "INSERT INTO oauth_providers
-         (id, name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
+         (name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
           client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
           name_claim, email_verified_claim, client_auth_method, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'disabled', $15, $15)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'disabled', $14, $14)
+         RETURNING id",
     )
-    .bind(id)
     .bind(&input.name)
     .bind(&input.slug)
     .bind(input.authorization_endpoint.as_str())
@@ -45,7 +44,7 @@ pub async fn insert_provider(
     .bind(&input.email_verified_claim)
     .bind(auth_method_value(input.client_auth_method))
     .bind(now)
-    .execute(pool)
+    .fetch_one(pool)
     .await?;
     find_by_slug(pool, &input.slug)
         .await
@@ -131,10 +130,10 @@ pub async fn set_status(
 
 pub async fn find_identity(
     pool: &PgPool,
-    provider_id: Uuid,
+    provider_id: i64,
     subject: &str,
 ) -> Result<Option<ExternalIdentity>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (Uuid, Uuid, UserId, String, String, String)>(
+    crate::sqlx::query_as::<_, (i64, i64, UserId, String, String, String)>(
         "SELECT i.id, i.provider_id, i.user_id, i.subject, i.email, u.status
          FROM oauth_external_identities i
          JOIN users u ON u.id = i.user_id
@@ -160,7 +159,7 @@ pub async fn find_identity(
 
 pub async fn create_user_with_identity(
     pool: &PgPool,
-    provider_id: Uuid,
+    provider_id: i64,
     email: &str,
     display_name: Option<&str>,
     subject: &str,
@@ -194,10 +193,9 @@ pub async fn create_user_with_identity(
     .await?;
     crate::sqlx::query(
         "INSERT INTO oauth_external_identities
-         (id, provider_id, user_id, subject, email, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $6)",
+         (provider_id, user_id, subject, email, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $5)",
     )
-    .bind(Uuid::new_v4())
     .bind(provider_id)
     .bind(user_id)
     .bind(subject)
@@ -218,7 +216,7 @@ pub enum CreateIdentityError {
 }
 
 type ProviderRow = (
-    Uuid,
+    i64,
     String,
     String,
     String,

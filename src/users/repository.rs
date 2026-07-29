@@ -230,3 +230,130 @@ pub async fn insert_user_in_transaction(
     .fetch_one(&mut **transaction)
     .await
 }
+
+pub async fn bootstrap_owner(
+    pool: &PgPool,
+    username: &str,
+    email: &str,
+    password_hash: &str,
+) -> Result<Option<UserProfile>, crate::sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    crate::sqlx::query("SELECT pg_advisory_xact_lock(7341928)")
+        .execute(&mut *transaction)
+        .await?;
+    let owner_exists: bool =
+        crate::sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE role = 'owner')")
+            .fetch_one(&mut *transaction)
+            .await?;
+    if owner_exists {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+    let id: UserId = crate::sqlx::query_scalar(
+        "INSERT INTO users (username, email, password_hash, role, status, created_at, updated_at)
+         VALUES ($1, $2, $3, 'owner', 'active', NOW(), NOW()) RETURNING id",
+    )
+    .bind(username)
+    .bind(email)
+    .bind(password_hash)
+    .fetch_one(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    find_profile_by_id(pool, id).await
+}
+
+pub async fn insert_user_with_role(
+    pool: &PgPool,
+    username: &str,
+    email: &str,
+    password_hash: &str,
+    role: UserRole,
+) -> Result<UserId, crate::sqlx::Error> {
+    crate::sqlx::query_scalar(
+        "INSERT INTO users (username, email, password_hash, role, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'active', NOW(), NOW()) RETURNING id",
+    )
+    .bind(username)
+    .bind(email)
+    .bind(password_hash)
+    .bind(role.as_str())
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn set_user_role(
+    pool: &PgPool,
+    id: UserId,
+    role: UserRole,
+) -> Result<bool, crate::sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let active_owners: Vec<(UserId,)> = crate::sqlx::query_as(
+        "SELECT id FROM users WHERE role = 'owner' AND status = 'active' ORDER BY id FOR UPDATE",
+    )
+    .fetch_all(&mut *transaction)
+    .await?;
+    let current: Option<(String, String)> =
+        crate::sqlx::query_as("SELECT role, status FROM users WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let Some((current_role, status)) = current else {
+        transaction.rollback().await?;
+        return Ok(false);
+    };
+    if current_role == "owner"
+        && role != UserRole::Owner
+        && status == "active"
+        && active_owners.len() <= 1
+    {
+        transaction.rollback().await?;
+        return Err(crate::sqlx::Error::Protocol(
+            "last active owner required".to_owned(),
+        ));
+    }
+    crate::sqlx::query("UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1")
+        .bind(id)
+        .bind(role.as_str())
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok(true)
+}
+
+pub async fn set_user_status_guarded(
+    pool: &PgPool,
+    id: UserId,
+    status: &str,
+) -> Result<Option<&'static str>, crate::sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let active_owners: Vec<(UserId,)> = crate::sqlx::query_as(
+        "SELECT id FROM users WHERE role = 'owner' AND status = 'active' ORDER BY id FOR UPDATE",
+    )
+    .fetch_all(&mut *transaction)
+    .await?;
+    let current: Option<(String, String)> =
+        crate::sqlx::query_as("SELECT role, status FROM users WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let Some((role, current_status)) = current else {
+        transaction.rollback().await?;
+        return Ok(None);
+    };
+    if role == "owner"
+        && current_status == "active"
+        && status == "disabled"
+        && active_owners.len() <= 1
+    {
+        transaction.rollback().await?;
+        return Ok(Some("last_owner_required"));
+    }
+    let result =
+        crate::sqlx::query("UPDATE users SET status = $2, updated_at = NOW() WHERE id = $1")
+            .bind(id)
+            .bind(status)
+            .execute(&mut *transaction)
+            .await?;
+    transaction.commit().await?;
+    Ok((result.rows_affected() == 1).then_some("updated"))
+}

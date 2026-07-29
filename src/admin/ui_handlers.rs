@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     authorization::current_admin_permission,
-    domain::{AdminId, AdminPermission, AdminRole},
+    domain::{AdminPermission, AdminRole},
     handlers::is_admin_request,
 };
 use crate::{error, state::AppState, users::domain::UserRole, users::ui_auth::current_user};
@@ -24,7 +24,7 @@ pub struct PageQuery {
 }
 #[derive(Debug, Serialize)]
 struct AdminMeResponse {
-    admin_id: Option<AdminId>,
+    user_id: Option<crate::users::domain::UserId>,
     username: Option<String>,
     role: &'static str,
     permissions: Vec<&'static str>,
@@ -50,7 +50,7 @@ pub async fn admin_me(State(state): State<AppState>, headers: HeaderMap) -> Resp
         return (
             axum::http::StatusCode::OK,
             Json(AdminMeResponse {
-                admin_id: None,
+                user_id: None,
                 username: None,
                 role: "owner",
                 permissions: permissions(AdminRole::Owner),
@@ -77,7 +77,7 @@ pub async fn admin_me(State(state): State<AppState>, headers: HeaderMap) -> Resp
     (
         axum::http::StatusCode::OK,
         Json(AdminMeResponse {
-            admin_id: Some(profile.id),
+            user_id: Some(profile.id),
             username: Some(profile.username),
             role: context.role.as_str(),
             permissions: permissions(context.role),

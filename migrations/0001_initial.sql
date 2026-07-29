@@ -8,8 +8,8 @@ CREATE TABLE users (
     status TEXT NOT NULL DEFAULT 'active',
     password_login_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     email_verified_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_login_at TIMESTAMPTZ,
     CONSTRAINT users_role_check CHECK (role IN ('user', 'admin', 'owner')),
     CONSTRAINT users_status_check CHECK (status IN ('active', 'disabled'))

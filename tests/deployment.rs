@@ -68,7 +68,10 @@ fn database_uses_one_explicit_unified_baseline() {
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "sql"))
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
-    assert_eq!(migrations, vec![std::ffi::OsString::from("0001_initial.sql")]);
+    assert_eq!(
+        migrations,
+        vec![std::ffi::OsString::from("0001_initial.sql")]
+    );
 }
 
 #[test]

@@ -1,6 +1,5 @@
 use crate::sqlx::PgPool;
 use crate::users::domain::UserId;
-use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
 pub async fn insert_totp_factor(
@@ -75,10 +74,9 @@ pub async fn insert_passkey(
     let credential = serde_json::to_value(passkey)
         .map_err(|error| crate::sqlx::Error::Encode(Box::new(error)))?;
     crate::sqlx::query(
-        "INSERT INTO user_passkeys (id, user_id, credential_id, credential, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW())",
+        "INSERT INTO user_passkeys (user_id, credential_id, credential, created_at, updated_at)
+         VALUES ($1, $2, $3, NOW(), NOW())",
     )
-    .bind(Uuid::new_v4())
     .bind(user_id)
     .bind(credential_id)
     .bind(credential)

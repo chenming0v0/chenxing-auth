@@ -89,6 +89,7 @@ pub async fn register_user(
             tracing::error!("invalid credentials reached registration handler");
             error::internal()
         }
+        Err(UserServiceError::LastOwnerRequired) => error::internal(),
     }
 }
 
@@ -188,7 +189,7 @@ pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -
         if csrf != csrf_cookie {
             return error::bad_request("csrf_invalid", "CSRF token is invalid");
         }
-        let Some(session) = state.sessions.find(session_id).await.ok().flatten() else {
+        let Some(session) = state.sessions.find(&session_id).await.ok().flatten() else {
             return error::unauthorized("invalid_session", "session is invalid");
         };
         if !session.validates_csrf(&csrf) {
@@ -196,7 +197,7 @@ pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -
         }
     }
 
-    match state.sessions.revoke(session_id).await {
+    match state.sessions.revoke(&session_id).await {
         Ok(()) => {
             state
                 .audit

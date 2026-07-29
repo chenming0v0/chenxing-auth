@@ -1,5 +1,6 @@
 use std::{env, time::Duration};
 
+use base64::Engine;
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{
     clients::{domain::ValidatedClientRegistration, repository as client_repository},
@@ -16,6 +17,7 @@ use chenxing_auth::{
     },
 };
 use redis::AsyncCommands;
+use sha2::Digest;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -315,25 +317,28 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
         .expect("Redis connection");
 
     let sessions = SessionStore::new(client.clone());
-    let session =
+    let mut session =
         Session::new("storage-user".to_owned(), Duration::from_secs(60)).expect("session");
     sessions
-        .save(&session, Duration::from_secs(60))
+        .save(&mut session, Duration::from_secs(60))
         .await
         .expect("save session");
     assert_eq!(
         sessions
-            .find(session.id)
+            .find(&session.token)
             .await
             .expect("find session")
             .unwrap()
             .id,
         session.id
     );
-    sessions.revoke(session.id).await.expect("revoke session");
+    sessions
+        .revoke(&session.token)
+        .await
+        .expect("revoke session");
     assert!(
         sessions
-            .find(session.id)
+            .find(&session.token)
             .await
             .expect("find revoked session")
             .is_none()
@@ -431,9 +436,9 @@ async fn session_revocation_generation_rejects_restored_old_payloads() {
     .expect("insert generation user");
     let client = redis_client();
     let sessions = SessionStore::with_metadata(client.clone(), pool.clone());
-    let session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
+    let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
     sessions
-        .save(&session, Duration::from_secs(60))
+        .save(&mut session, Duration::from_secs(60))
         .await
         .expect("save session");
     sessions
@@ -447,7 +452,11 @@ async fn session_revocation_generation_rejects_restored_old_payloads() {
         .expect("Redis connection");
     let _: () = connection
         .set_ex(
-            format!("chenxing:session:{}", session.id),
+            format!(
+                "chenxing:session:{}",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(sha2::Sha256::digest(session.token.as_bytes()))
+            ),
             serde_json::to_string(&session).expect("session JSON"),
             60,
         )
@@ -455,7 +464,7 @@ async fn session_revocation_generation_rejects_restored_old_payloads() {
         .expect("restore old payload");
     assert!(
         sessions
-            .find(session.id)
+            .find(&session.token)
             .await
             .expect("find restored session")
             .is_none()
@@ -466,4 +475,98 @@ async fn session_revocation_generation_rejects_restored_old_payloads() {
         .execute(&pool)
         .await
         .expect("cleanup generation user");
+}
+
+#[tokio::test]
+async fn session_find_rejects_metadata_revocation_even_when_redis_payload_exists() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("metadata-revoke-{}", Uuid::new_v4().simple()),
+            email: format!("metadata-revoke-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert metadata revoke user");
+    let client = redis_client();
+    let sessions = SessionStore::with_metadata(client, pool.clone());
+    let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
+    sessions
+        .save(&mut session, Duration::from_secs(60))
+        .await
+        .expect("save session");
+    chenxing_auth::sqlx::query("UPDATE user_sessions SET revoked_at = NOW() WHERE id = $1")
+        .bind(session.id)
+        .execute(&pool)
+        .await
+        .expect("revoke session metadata");
+
+    assert!(
+        sessions
+            .find(&session.token)
+            .await
+            .expect("find revoked metadata session")
+            .is_none()
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup metadata revoke user");
+}
+
+#[tokio::test]
+async fn session_find_uses_database_identity_for_cached_payloads() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("metadata-identity-{}", Uuid::new_v4().simple()),
+            email: format!("metadata-identity-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert metadata identity user");
+    let other = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("metadata-other-{}", Uuid::new_v4().simple()),
+            email: format!("metadata-other-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert metadata other user");
+    let client = redis_client();
+    let sessions = SessionStore::with_metadata(client, pool.clone());
+    let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
+    sessions
+        .save(&mut session, Duration::from_secs(60))
+        .await
+        .expect("save session");
+    session.user_id = other.id.to_string();
+
+    let found = sessions
+        .find(&session.token)
+        .await
+        .expect("find cached session")
+        .expect("cached session remains valid");
+    assert_eq!(found.user_id, user.id.to_string());
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id IN ($1, $2)")
+        .bind(user.id)
+        .bind(other.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup metadata identity users");
 }

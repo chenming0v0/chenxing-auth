@@ -4,7 +4,7 @@ use thiserror::Error;
 use super::{
     credentials::{hash_password, verify_password},
     domain::{
-        LoginError, LoginInput, PublicUser, RegistrationError, RegistrationInput, UserId,
+        LoginError, LoginInput, PublicUser, RegistrationError, RegistrationInput, UserId, UserRole,
         validate_display_name, validate_login, validate_registration,
     },
     repository,
@@ -25,6 +25,8 @@ pub enum UserServiceError {
     Database(#[from] crate::sqlx::Error),
     #[error("credentials are invalid")]
     InvalidCredentials,
+    #[error("last active owner is required")]
+    LastOwnerRequired,
 }
 
 impl UserService {
@@ -47,6 +49,48 @@ impl UserService {
             role: super::domain::UserRole::User,
             created_at: user.created_at,
         })
+    }
+
+    pub async fn bootstrap_owner(
+        &self,
+        input: RegistrationInput,
+    ) -> Result<Option<repository::UserProfile>, UserServiceError> {
+        let registration = validate_registration(input)?;
+        let password_hash =
+            hash_password(&registration.password).map_err(|_| UserServiceError::PasswordHash)?;
+        Ok(repository::bootstrap_owner(
+            &self.pool,
+            &registration.username,
+            &registration.email,
+            &password_hash,
+        )
+        .await?)
+    }
+
+    pub async fn owner_initialized(&self) -> Result<bool, UserServiceError> {
+        Ok(
+            crate::sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE role = 'owner')")
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    pub async fn create_privileged(
+        &self,
+        input: RegistrationInput,
+        role: UserRole,
+    ) -> Result<UserId, UserServiceError> {
+        let registration = validate_registration(input)?;
+        let password_hash =
+            hash_password(&registration.password).map_err(|_| UserServiceError::PasswordHash)?;
+        Ok(repository::insert_user_with_role(
+            &self.pool,
+            &registration.username,
+            &registration.email,
+            &password_hash,
+            role,
+        )
+        .await?)
     }
 
     pub async fn authenticate(&self, input: LoginInput) -> Result<UserId, UserServiceError> {
@@ -125,5 +169,30 @@ impl UserService {
             return Ok(false);
         }
         Ok(repository::set_user_status(&self.pool, id, status).await?)
+    }
+
+    pub async fn set_role(&self, id: UserId, role: UserRole) -> Result<bool, UserServiceError> {
+        match repository::set_user_role(&self.pool, id, role).await {
+            Ok(value) => Ok(value),
+            Err(crate::sqlx::Error::Protocol(message)) if message.contains("last active owner") => {
+                Err(UserServiceError::LastOwnerRequired)
+            }
+            Err(error) => Err(UserServiceError::Database(error)),
+        }
+    }
+
+    pub async fn set_status_guarded(
+        &self,
+        id: UserId,
+        status: &str,
+    ) -> Result<bool, UserServiceError> {
+        if !matches!(status, "active" | "disabled") {
+            return Ok(false);
+        }
+        match repository::set_user_status_guarded(&self.pool, id, status).await? {
+            Some("last_owner_required") => Err(UserServiceError::LastOwnerRequired),
+            Some("updated") => Ok(true),
+            _ => Ok(false),
+        }
     }
 }

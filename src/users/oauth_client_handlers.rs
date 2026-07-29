@@ -5,7 +5,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
-use uuid::Uuid;
 
 use super::ui_auth::{current_user, mutation_error, mutation_user};
 use crate::{
@@ -20,7 +19,7 @@ use crate::{
 
 #[derive(Debug, Serialize)]
 struct OwnedClientResponse {
-    id: Uuid,
+    id: i64,
     client_id: String,
     client_name: String,
     redirect_uris: Vec<String>,
