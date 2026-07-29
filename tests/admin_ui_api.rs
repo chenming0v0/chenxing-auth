@@ -5,6 +5,7 @@ use axum::{
 };
 use base64::Engine;
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
+use chenxing_auth::sqlx::{Connection, PgConnection};
 use chenxing_auth::{
     api,
     config::Config,
@@ -17,7 +18,33 @@ use sha2::Digest;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
+struct SharedDatabaseLock {
+    _connection: PgConnection,
+}
+
+async fn shared_database_lock(database_url: &str) -> SharedDatabaseLock {
+    let mut connection = PgConnection::connect(database_url)
+        .await
+        .expect("database lock connection");
+    chenxing_auth::sqlx::query("BEGIN")
+        .execute(&mut connection)
+        .await
+        .expect("database lock transaction");
+    chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock(hashtext('chenxing-shared-reset'))")
+        .execute(&mut connection)
+        .await
+        .expect("database reset lock");
+    SharedDatabaseLock {
+        _connection: connection,
+    }
+}
+
+async fn setup() -> (
+    Router,
+    chenxing_auth::sqlx::PgPool,
+    std::path::PathBuf,
+    SharedDatabaseLock,
+) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -28,6 +55,11 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
         .await
         .expect("PostgreSQL");
     db::migrate(&database).await.expect("migrations");
+    let lock = shared_database_lock(&database_url).await;
+    chenxing_auth::sqlx::query("TRUNCATE users RESTART IDENTITY CASCADE")
+        .execute(&database)
+        .await
+        .expect("reset identity test database");
     let key_directory = std::env::temp_dir().join(format!("chenxing-admin-ui-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
@@ -45,6 +77,7 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
         api::router(AppState::new(config).expect("state")),
         database,
         key_directory,
+        lock,
     )
 }
 
@@ -89,11 +122,34 @@ async fn browser_session(
 
 #[tokio::test]
 async fn owner_can_use_admin_ui_queries_but_normal_user_cannot() {
-    let (router, database, key_directory) = setup().await;
+    let (router, database, key_directory, _lock) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
+    let owner_username = format!("admin-ui-owner-{suffix}");
+    let owner_email = format!("admin-ui-owner-{suffix}@example.com");
     let username = format!("admin-ui-user-{suffix}");
     let email = format!("admin-ui-user-{suffix}@example.com");
     let password = "correct horse battery";
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/bootstrap")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": owner_username,
+                        "email": owner_email,
+                        "password": password
+                    })
+                    .to_string(),
+                ))
+                .expect("owner bootstrap request"),
+        )
+        .await
+        .expect("owner bootstrap response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
     let response = router
         .clone()
         .oneshot(
@@ -193,6 +249,11 @@ async fn owner_can_use_admin_ui_queries_but_normal_user_cannot() {
     .expect("cleanup session");
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE email = $1")
+        .bind(owner_email)
+        .execute(&database)
+        .await
+        .expect("cleanup owner");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE email = $1")
         .bind(email)
         .execute(&database)
         .await
@@ -202,7 +263,7 @@ async fn owner_can_use_admin_ui_queries_but_normal_user_cannot() {
 
 #[tokio::test]
 async fn admin_query_rejects_an_offset_that_would_overflow() {
-    let (router, database, key_directory) = setup().await;
+    let (router, database, key_directory, _lock) = setup().await;
     let response = router
         .oneshot(
             Request::builder()
@@ -224,7 +285,7 @@ async fn admin_query_rejects_an_offset_that_would_overflow() {
 
 #[tokio::test]
 async fn admin_audit_query_pages_beyond_the_previous_two_hundred_event_limit() {
-    let (router, database, key_directory) = setup().await;
+    let (router, database, key_directory, _lock) = setup().await;
     let action = format!("page-test-{}", Uuid::new_v4().simple());
     for _ in 0..205 {
         chenxing_auth::sqlx::query(
