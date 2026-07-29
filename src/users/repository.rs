@@ -1,7 +1,7 @@
 use crate::sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 
-use super::domain::{UserId, ValidatedRegistration};
+use super::domain::{UserId, UserRole, ValidatedRegistration};
 
 #[derive(Debug)]
 pub struct NewUser {
@@ -19,6 +19,7 @@ pub struct UserCredentials {
     pub password_hash: String,
     pub password_login_enabled: bool,
     pub status: String,
+    pub role: UserRole,
 }
 
 #[derive(Debug)]
@@ -28,6 +29,7 @@ pub struct UserProfile {
     pub email: String,
     pub display_name: Option<String>,
     pub status: String,
+    pub role: UserRole,
 }
 
 #[derive(Debug)]
@@ -37,6 +39,7 @@ pub struct ListedUser {
     pub email: String,
     pub display_name: Option<String>,
     pub status: String,
+    pub role: UserRole,
     pub created_at: OffsetDateTime,
 }
 
@@ -50,8 +53,8 @@ pub async fn insert_user(
     let display_name = registration.display_name;
     let created_at = OffsetDateTime::now_utc();
     let id: UserId = crate::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, display_name, status, created_at)
-         VALUES ($1, $2, $3, $4, 'active', $5)
+        "INSERT INTO users (username, email, password_hash, display_name, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'active', $5, $5)
          RETURNING id",
     )
     .bind(&username)
@@ -76,8 +79,8 @@ pub async fn find_credentials_by_identifier(
     pool: &PgPool,
     identifier: &str,
 ) -> Result<Option<UserCredentials>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (UserId, String, bool, String)>(
-        "SELECT id, password_hash, password_login_enabled, status FROM users
+    crate::sqlx::query_as::<_, (UserId, String, bool, String, String)>(
+        "SELECT id, password_hash, password_login_enabled, status, role FROM users
          WHERE email = $1 OR username = $1",
     )
     .bind(identifier)
@@ -85,11 +88,12 @@ pub async fn find_credentials_by_identifier(
     .await
     .map(|record| {
         record.map(
-            |(id, password_hash, password_login_enabled, status)| UserCredentials {
+            |(id, password_hash, password_login_enabled, status, role)| UserCredentials {
                 id,
                 password_hash,
                 password_login_enabled,
                 status,
+                role: UserRole::parse(&role).unwrap_or(UserRole::User),
             },
         )
     })
@@ -106,19 +110,20 @@ pub async fn find_credentials_by_id(
     pool: &PgPool,
     id: UserId,
 ) -> Result<Option<UserCredentials>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (UserId, String, bool, String)>(
-        "SELECT id, password_hash, password_login_enabled, status FROM users WHERE id = $1",
+    crate::sqlx::query_as::<_, (UserId, String, bool, String, String)>(
+        "SELECT id, password_hash, password_login_enabled, status, role FROM users WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
     .await
     .map(|record| {
         record.map(
-            |(id, password_hash, password_login_enabled, status)| UserCredentials {
+            |(id, password_hash, password_login_enabled, status, role)| UserCredentials {
                 id,
                 password_hash,
                 password_login_enabled,
                 status,
+                role: UserRole::parse(&role).unwrap_or(UserRole::User),
             },
         )
     })
@@ -128,37 +133,41 @@ pub async fn find_profile_by_id(
     pool: &PgPool,
     id: UserId,
 ) -> Result<Option<UserProfile>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (UserId, String, String, Option<String>, String)>(
-        "SELECT id, username, email, display_name, status FROM users WHERE id = $1",
+    crate::sqlx::query_as::<_, (UserId, String, String, Option<String>, String, String)>(
+        "SELECT id, username, email, display_name, status, role FROM users WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
     .await
     .map(|record| {
-        record.map(|(id, username, email, display_name, status)| UserProfile {
-            id,
-            username,
-            email,
-            display_name,
-            status,
-        })
-    })
-}
-
-pub async fn list_users(pool: &crate::sqlx::PgPool) -> Result<Vec<ListedUser>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (UserId, String, String, Option<String>, String, OffsetDateTime)>(
-        "SELECT id, username, email, display_name, status, created_at FROM users ORDER BY created_at DESC",
-    )
-    .fetch_all(pool)
-    .await
-    .map(|rows| {
-        rows.into_iter()
-            .map(|(id, username, email, display_name, status, created_at)| ListedUser {
+        record.map(
+            |(id, username, email, display_name, status, role)| UserProfile {
                 id,
                 username,
                 email,
                 display_name,
                 status,
+                role: UserRole::parse(&role).unwrap_or(UserRole::User),
+            },
+        )
+    })
+}
+
+pub async fn list_users(pool: &crate::sqlx::PgPool) -> Result<Vec<ListedUser>, crate::sqlx::Error> {
+    crate::sqlx::query_as::<_, (UserId, String, String, Option<String>, String, String, OffsetDateTime)>(
+        "SELECT id, username, email, display_name, status, role, created_at FROM users ORDER BY created_at DESC",
+    )
+    .fetch_all(pool)
+    .await
+    .map(|rows| {
+        rows.into_iter()
+            .map(|(id, username, email, display_name, status, role, created_at)| ListedUser {
+                id,
+                username,
+                email,
+                display_name,
+                status,
+                role: UserRole::parse(&role).unwrap_or(UserRole::User),
                 created_at,
             })
             .collect()
@@ -209,8 +218,8 @@ pub async fn insert_user_in_transaction(
     user: &NewUser,
 ) -> Result<UserId, crate::sqlx::Error> {
     crate::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, display_name, status, created_at)
-         VALUES ($1, $2, $3, $4, 'active', $5)
+        "INSERT INTO users (username, email, password_hash, display_name, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'active', $5, $5)
          RETURNING id",
     )
     .bind(&user.username)

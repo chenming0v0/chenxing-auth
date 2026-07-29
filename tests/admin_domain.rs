@@ -1,39 +1,56 @@
-use chenxing_auth::admin::domain::{AdminPermission, AdminRole};
+use chenxing_auth::users::domain::{UserPermission, UserRole};
 
 #[test]
-fn administrator_roles_have_explicit_permissions() {
-    assert!(AdminRole::Owner.allows(AdminPermission::ManageUsers));
-    assert!(AdminRole::Operator.allows(AdminPermission::ManageClients));
-    assert!(!AdminRole::Operator.allows(AdminPermission::RotateKeys));
-    assert!(AdminRole::Auditor.allows(AdminPermission::ReadAudit));
-    assert!(!AdminRole::Auditor.allows(AdminPermission::ManageUsers));
+fn hierarchical_user_roles_have_explicit_permissions() {
+    assert!(UserRole::Owner.allows(UserPermission::ManageUsers));
+    assert!(UserRole::Admin.allows(UserPermission::ManageClients));
+    assert!(!UserRole::Admin.allows(UserPermission::RotateKeys));
+    assert!(UserRole::Owner.allows(UserPermission::ManageRoles));
+    assert!(!UserRole::User.allows(UserPermission::ReadAudit));
 }
 
 #[test]
-fn administrator_roles_round_trip_from_storage_values() {
-    assert_eq!(AdminRole::parse("owner"), Some(AdminRole::Owner));
-    assert_eq!(AdminRole::parse("operator"), Some(AdminRole::Operator));
-    assert_eq!(AdminRole::parse("auditor"), Some(AdminRole::Auditor));
-    assert_eq!(AdminRole::parse("root"), None);
-    assert_eq!(AdminRole::Auditor.as_str(), "auditor");
+fn user_roles_round_trip_and_compare_hierarchy() {
+    assert_eq!(UserRole::parse("owner"), Some(UserRole::Owner));
+    assert_eq!(UserRole::parse("admin"), Some(UserRole::Admin));
+    assert_eq!(UserRole::parse("user"), Some(UserRole::User));
+    assert_eq!(UserRole::parse("root"), None);
+    assert!(UserRole::Owner.is_at_least(UserRole::Admin));
+    assert!(!UserRole::User.is_at_least(UserRole::Admin));
+    assert_eq!(UserRole::Admin.as_str(), "admin");
 }
 
 #[test]
-fn administrator_permission_matrix_is_least_privilege() {
-    use AdminPermission::*;
+fn user_permission_matrix_is_least_privilege() {
+    use UserPermission::*;
 
-    assert!(AdminRole::Owner.allows(ManageUsers));
-    assert!(AdminRole::Owner.allows(ManageClients));
-    assert!(AdminRole::Owner.allows(RotateKeys));
-    assert!(AdminRole::Owner.allows(ReadAudit));
-    assert!(AdminRole::Owner.allows(ManageSettings));
+    assert!(UserRole::Owner.allows(ManageUsers));
+    assert!(UserRole::Owner.allows(ManageClients));
+    assert!(UserRole::Owner.allows(RotateKeys));
+    assert!(UserRole::Owner.allows(ReadAudit));
+    assert!(UserRole::Owner.allows(ManageSettings));
+    assert!(UserRole::Owner.allows(ManageIdentityProviders));
+    assert!(UserRole::Owner.allows(ManageRoles));
 
-    assert!(!AdminRole::Operator.allows(ManageUsers));
-    assert!(AdminRole::Operator.allows(ManageClients));
-    assert!(!AdminRole::Operator.allows(RotateKeys));
-    assert!(!AdminRole::Operator.allows(ManageSettings));
-    assert!(!AdminRole::Auditor.allows(ManageClients));
-    assert!(!AdminRole::Auditor.allows(ManageSettings));
+    assert!(UserRole::Admin.allows(ManageUsers));
+    assert!(UserRole::Admin.allows(ManageClients));
+    assert!(!UserRole::Admin.allows(RotateKeys));
+    assert!(!UserRole::Admin.allows(ManageRoles));
+    assert!(!UserRole::User.allows(ManageClients));
+    assert!(!UserRole::User.allows(ManageSettings));
+}
+
+#[test]
+fn public_registration_cannot_select_a_privileged_role() {
+    let input: chenxing_auth::users::domain::RegistrationInput =
+        serde_json::from_value(serde_json::json!({
+            "username": "public-user",
+            "email": "public@example.com",
+            "password": "1234567890",
+            "role": "owner"
+        }))
+        .expect("registration input with unknown fields is accepted");
+    assert!(chenxing_auth::users::domain::validate_registration(input).is_ok());
 }
 
 #[test]

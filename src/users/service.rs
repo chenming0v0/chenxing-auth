@@ -44,6 +44,7 @@ impl UserService {
             email: user.email,
             display_name: user.display_name,
             status: "active".to_owned(),
+            role: super::domain::UserRole::User,
             created_at: user.created_at,
         })
     }
