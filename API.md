@@ -84,7 +84,7 @@
 
 ### 首次 TOTP 绑定
 
-1. `POST /api/v1/auth/totp/setup`，请求 `{"login_ticket":"opaque-ticket"}`，响应一次性返回 `secret_base32` 和 `otpauth_url`。前端可将 URI 交给 Google Authenticator 扫描；服务端不返回二维码图片。
+1. `POST /api/v1/auth/totp/setup`，请求 `{"login_ticket":"opaque-ticket"}`，响应一次性返回 `secret_base32` 和 `otpauth_url`。前端应使用项目内二维码组件将 `otpauth_url` 作为二维码内容本地生成二维码；`secret_base32` 仅用于无法扫描时手动输入或复制。服务端不调用第三方二维码服务，也不返回二维码图片。
 2. `POST /api/v1/auth/totp/setup/confirm`，请求 `{"login_ticket":"opaque-ticket","code":"123456"}`。验证码正确后保存加密秘钥、消费 ticket 并返回 Session Cookie；错误验证码不会消费 ticket。
 
 已有 TOTP 的待处理登录也可以调用 `POST /api/v1/auth/totp/login`，请求同样包含 `login_ticket` 和当前六位 `code`。验证码正确后消费 ticket 并返回 Session Cookie；无效 ticket 返回 `400`，错误验证码返回 `401`。
@@ -98,7 +98,7 @@
 
 所有 `login_ticket` 和 WebAuthn challenge 默认有效 5 分钟；ticket 是一次性的。WebAuthn 的 RP ID 和 origin 由固定配置 `WEBAUTHN_RP_ID`、`WEBAUTHN_ORIGIN` 控制，不能从请求 Host 推导。
 
-浏览器 OAuth 登录在密码步骤后也必须完成 TOTP；服务端页面会将首次绑定的 `otpauth://` URI 和验证码表单提交到 `POST /auth/login/totp`，成功后才绑定 OAuth 授权请求并跳转到授权确认页。仅有 passkey 的浏览器客户端应使用上述 WebAuthn API 完成因子后再继续授权。
+浏览器 OAuth 登录在密码步骤后也必须完成 TOTP；服务端页面会本地生成绑定二维码，并在“无法扫描”区域提供 `secret_base32` 和复制按钮，不直接显示完整 `otpauth://` URI。验证码表单提交到 `POST /auth/login/totp`，成功后才绑定 OAuth 授权请求并跳转到授权确认页。仅有 passkey 的浏览器客户端应使用上述 WebAuthn API 完成因子后再继续授权。
 
 ### `DELETE /api/v1/auth/session`
 

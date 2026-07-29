@@ -243,11 +243,17 @@ async fn render_totp_setup(
             return error::internal();
         }
     };
+    let Some(qr_svg) = crate::web::totp_qr_svg(enrollment.otpauth_url()) else {
+        tracing::error!("failed to render browser TOTP QR code");
+        return error::internal();
+    };
+    let secret = crate::web::escape_html(enrollment.secret_base32());
     let body = format!(
-        "<main><h1>设置动态验证码</h1><p>请将以下 URI 导入 Google Authenticator，然后输入当前六位验证码。</p><p><code>{}</code></p><form method=\"post\" action=\"/auth/login/totp\"><input type=\"hidden\" name=\"request_id\" value=\"{}\"><input type=\"hidden\" name=\"login_ticket\" value=\"{}\"><label>动态验证码<input name=\"code\" inputmode=\"numeric\" pattern=\"[0-9]{{6}}\" required></label><button type=\"submit\">确认登录</button></form></main>",
-        crate::web::escape_html(enrollment.otpauth_url()),
-        crate::web::escape_html(request_id),
-        crate::web::escape_html(&ticket_id),
+        "<main><h1>设置动态验证码</h1><p>请使用验证器扫描二维码，然后输入当前六位验证码。</p><div class=\"totp-qr\" aria-label=\"TOTP 验证器绑定二维码\">{qr_svg}</div><details><summary>无法扫描？手动输入密钥</summary><div class=\"totp-secret\" data-totp-secret=\"{secret}\"><code>{secret}</code><button type=\"button\" onclick=\"copyTotpSecret(this)\">复制</button></div></details><form method=\"post\" action=\"/auth/login/totp\"><input type=\"hidden\" name=\"request_id\" value=\"{request_id}\"><input type=\"hidden\" name=\"login_ticket\" value=\"{ticket_id}\"><label>动态验证码<input name=\"code\" inputmode=\"numeric\" pattern=\"[0-9]{{6}}\" required></label><button type=\"submit\">确认登录</button></form><script>async function copyTotpSecret(button){{const value=button.parentElement.dataset.totpSecret;try{{if(navigator.clipboard?.writeText){{await navigator.clipboard.writeText(value);}}else{{const textarea=document.createElement('textarea');textarea.value=value;textarea.setAttribute('readonly','');textarea.style.position='fixed';textarea.style.opacity='0';document.body.appendChild(textarea);textarea.select();if(!document.execCommand('copy')) throw new Error('copy failed');textarea.remove();}}button.textContent='已复制';window.setTimeout(() => button.textContent='复制',1600);}}catch{{button.textContent='复制失败';window.setTimeout(() => button.textContent='复制',1600);}}}}</script></main>",
+        qr_svg = qr_svg,
+        secret = secret,
+        request_id = crate::web::escape_html(request_id),
+        ticket_id = crate::web::escape_html(&ticket_id),
     );
     Html(crate::web::page("设置动态验证码", &body)).into_response()
 }

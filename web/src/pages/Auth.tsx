@@ -2,8 +2,9 @@ import { FormEvent, ReactNode, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowRight, Loader2, LockKeyhole, Mail, ShieldCheck, UserRound } from "lucide-react";
 import { Field, GlowButton, Logo, Notice } from "../components/ui";
+import { TotpSetupPanel } from "../components/TotpSetupPanel";
 import { BRAND } from "../data/mock";
-import { errorMessage } from "../api";
+import { errorMessage, TotpSetupResponse } from "../api";
 import { LoginResult, useStore } from "../store";
 
 /** Carries request_id through login/register so an interrupted OAuth flow can resume. */
@@ -64,7 +65,7 @@ export function Login() {
   const [error, setError] = useState<string | null>(null);
   const requestId = params.get("request_id");
   const [pending, setPending] = useState<Extract<LoginResult, { status: string }> | null>(null);
-  const [totpSetup, setTotpSetup] = useState<{ otpauth_url: string } | null>(null);
+  const [totpSetup, setTotpSetup] = useState<TotpSetupResponse | null>(null);
   const [code, setCode] = useState("");
 
   const goNext = () => {
@@ -147,16 +148,7 @@ export function Login() {
       ) : (
         <form className="mt-6 space-y-4" onSubmit={finishTotp}>
           {error && <Notice tone="error">{error}</Notice>}
-          <Notice>
-            {totpSetup ? (
-              <>
-                请使用验证器扫描以下 URI，然后输入当前验证码。
-                <code className="mt-2 block break-all text-[10px] text-cyan-300">{totpSetup.otpauth_url}</code>
-              </>
-            ) : (
-              "请输入验证器中的当前六位验证码。"
-            )}
-          </Notice>
+          {totpSetup ? <TotpSetupPanel setup={totpSetup} /> : <Notice>请输入验证器中的当前六位验证码。</Notice>}
           <Field
             label="动态验证码"
             icon={<ShieldCheck size={15} />}
@@ -196,7 +188,7 @@ export function Register() {
   const [error, setError] = useState<string | null>(null);
   const requestId = params.get("request_id");
   const [pending, setPending] = useState<Extract<LoginResult, { status: string }> | null>(null);
-  const [totpSetup, setTotpSetup] = useState<{ otpauth_url: string } | null>(null);
+  const [totpSetup, setTotpSetup] = useState<TotpSetupResponse | null>(null);
   const [code, setCode] = useState("");
 
   const goNext = () => {
@@ -293,16 +285,7 @@ export function Register() {
       ) : (
         <form className="mt-6 space-y-4" onSubmit={finishTotp}>
           {error && <Notice tone="error">{error}</Notice>}
-          <Notice>
-            {totpSetup ? (
-              <>
-                请使用验证器扫描以下 URI，然后输入当前验证码。
-                <code className="mt-2 block break-all text-[10px] text-cyan-300">{totpSetup.otpauth_url}</code>
-              </>
-            ) : (
-              "请输入验证器中的当前六位验证码。"
-            )}
-          </Notice>
+          {totpSetup ? <TotpSetupPanel setup={totpSetup} /> : <Notice>请输入验证器中的当前六位验证码。</Notice>}
           <Field
             label="动态验证码"
             icon={<ShieldCheck size={15} />}
