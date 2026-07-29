@@ -202,7 +202,12 @@ export function errorMessage(error: unknown) {
     if (error.code === "username_already_registered") return "这个用户名已经注册";
     if (error.code === "oauth_client_quota_exceeded") return "最多创建 2 个 OAuth 应用";
     if (error.code === "csrf_invalid") return "页面安全校验已失效，请刷新后重试";
+    if (error.code === "csrf_required") return "页面安全校验已失效，请刷新后重试";
     if (error.code === "invalid_email") return "请输入有效的邮箱地址";
+    if (error.code === "invalid_factor") return "验证码不正确，请重新输入";
+    if (error.code === "invalid_login_ticket") return "登录已超时，请重新输入密码登录";
+    if (error.code === "user_disabled") return "这个账号已被停用，请联系管理员";
+    if (error.code === "invalid_display_name" || error.code === "display_name_too_long") return "显示名称不合法或过长";
     return error.message;
   }
   return "网络暂时不可用，请稍后重试";
