@@ -132,6 +132,8 @@ src/
 
 复制 `.env.example` 为 `.env`，按本地环境修改连接地址。服务启动时会自动执行 `migrations/` 中的版本化迁移。
 
+本次统一身份数据库重构使用新的单一基线迁移，不支持保留旧开发数据滚动升级。首次在本地切换到该版本时，请确认 Compose 项目为本仓库的 `chenxing-auth` 后执行 `docker compose down -v`，再运行 `docker compose up -d postgres redis`；该操作会删除本地 PostgreSQL/Redis 开发数据，生产环境不得照此操作。
+
 `cargo build`/`cargo run` 在缺少 `web/dist/index.html` 时会通过 Cargo build script 自动安装并构建 Web。生产 Docker 和 GitHub Actions 会在 Rust 编译前显式完成同样的步骤。启动后访问 `http://127.0.0.1:3000/` 即可同时使用 Web 和 API。
 
 ## API 文档
@@ -161,7 +163,7 @@ src/
 
 ## GitHub Actions
 
-当前 `/oauth/authorize` 同时支持开发期 `X-Chenxing-Session` 和 HttpOnly Session Cookie；带 `Accept: text/html` 的浏览器流程会进入登录页和授权确认页。浏览器 Cookie 会话的状态变更必须携带 `X-CSRF-Token`，并与 CSRF Cookie 和 Session 中的 Token 一致。管理员 Session 使用独立 Cookie 名称和相同的双提交 CSRF 约束。
+当前 `/oauth/authorize` 同时支持开发期 `X-Chenxing-Session` 和 HttpOnly Session Cookie；带 `Accept: text/html` 的浏览器流程会进入登录页和授权确认页。浏览器 Cookie 会话的状态变更必须携带 `X-CSRF-Token`，并与 CSRF Cookie 和 Session 中的 Token 一致。管理 API 复用普通用户 Session 和 CSRF Cookie，角色决定管理权限。
 
 `KEY_DIRECTORY` 默认指向 `data/keys`，该目录包含运行时私钥并已加入 `.gitignore`。`ADMIN_TOKEN` 为空时，管理 API 默认全部拒绝访问。
 
