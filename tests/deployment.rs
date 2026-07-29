@@ -62,24 +62,13 @@ fn deployment_files_are_present_at_repository_root() {
 fn database_uses_one_explicit_unified_baseline() {
     assert!(DB_MODULE.contains("unified identity baseline"));
     assert!(DB_MODULE.contains("include_str!(\"../migrations/0001_initial.sql\")"));
-    for legacy in [
-        "0002_audit_events.sql",
-        "0003_admins.sql",
-        "0004_ui_sessions.sql",
-        "0005_client_owners.sql",
-        "0006_client_owner_cascade.sql",
-        "0007_auth_factors.sql",
-        "0008_admin_usernames.sql",
-        "0009_user_integer_ids.sql",
-        "0010_app_settings.sql",
-        "0011_usernames.sql",
-        "0012_external_oauth.sql",
-    ] {
-        assert!(
-            !Path::new("migrations").join(legacy).exists(),
-            "legacy migration remains: {legacy}"
-        );
-    }
+    let migrations = std::fs::read_dir("migrations")
+        .expect("migrations directory")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "sql"))
+        .map(|entry| entry.file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(migrations, vec![std::ffi::OsString::from("0001_initial.sql")]);
 }
 
 #[test]

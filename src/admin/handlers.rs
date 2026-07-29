@@ -21,7 +21,7 @@ use crate::{
 
 #[derive(Debug, Serialize)]
 struct RegisteredClientResponse {
-    id: uuid::Uuid,
+    id: i64,
     client_id: String,
     client_secret: String,
     client_name: String,
@@ -31,7 +31,7 @@ struct RegisteredClientResponse {
 
 #[derive(Debug, Serialize)]
 struct ClientSummary {
-    id: uuid::Uuid,
+    id: i64,
     client_id: String,
     client_name: String,
     redirect_uris: Vec<String>,
@@ -45,11 +45,11 @@ pub async fn create_client(
     headers: HeaderMap,
     Json(input): Json<ClientRegistrationInput>,
 ) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageClients).await
+    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
     {
-        return response;
-    }
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
 
     match state.clients.register(input).await {
         Ok(client) => {
@@ -66,7 +66,7 @@ pub async fn create_client(
                 }),
             )
                 .into_response();
-            record_admin_event(&state, "client_create", &client_id).await;
+            record_admin_event(&state, actor, "client_create", &client_id).await;
             response
         }
         Err(ClientServiceError::Validation(validation_error)) => {
@@ -100,7 +100,7 @@ pub async fn create_client(
 
 pub async fn list_clients(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Err(response) =
-        current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
+        current_admin_permission(&state, &headers, AdminPermission::ManageClients).await
     {
         return response;
     }
@@ -136,18 +136,19 @@ pub async fn update_client(
     Path(client_id): Path<String>,
     Json(input): Json<ClientRegistrationInput>,
 ) -> Response {
-    if let Err(response) =
-        current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
+    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
     {
-        return response;
-    }
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     match state.clients.update(&client_id, input).await {
         Ok(true) => {
+            let (actor_type, actor_id) = actor.audit_fields();
             state
                 .audit
                 .record(AuditEvent::new(
-                    "admin".to_owned(),
-                    None,
+                    actor_type.to_owned(),
+                    actor_id,
                     "client_update".to_owned(),
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),
@@ -178,18 +179,19 @@ pub async fn set_client_status(
     Path(client_id): Path<String>,
     status: &'static str,
 ) -> Response {
-    if let Err(response) =
-        current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
+    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
     {
-        return response;
-    }
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     match state.clients.set_status(&client_id, status).await {
         Ok(true) => {
+            let (actor_type, actor_id) = actor.audit_fields();
             state
                 .audit
                 .record(AuditEvent::new(
-                    "admin".to_owned(),
-                    None,
+                    actor_type.to_owned(),
+                    actor_id,
                     format!("client_{status}"),
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),
@@ -233,19 +235,20 @@ pub async fn rotate_secret(
     headers: HeaderMap,
     Path(client_id): Path<String>,
 ) -> Response {
-    if let Err(response) =
-        current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
+    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
     {
-        return response;
-    }
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     match state.clients.rotate_secret(&client_id).await {
         Ok(secret) => {
             let client_id = secret.client_id.clone();
+            let (actor_type, actor_id) = actor.audit_fields();
             state
                 .audit
                 .record(AuditEvent::new(
-                    "admin".to_owned(),
-                    None,
+                    actor_type.to_owned(),
+                    actor_id,
                     "client_secret_rotate".to_owned(),
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),
@@ -267,12 +270,18 @@ pub async fn rotate_secret(
     }
 }
 
-async fn record_admin_event(state: &AppState, action: &str, client_id: &str) {
+async fn record_admin_event(
+    state: &AppState,
+    actor: super::authorization::AdminActor,
+    action: &str,
+    client_id: &str,
+) {
+    let (actor_type, actor_id) = actor.audit_fields();
     state
         .audit
         .record(AuditEvent::new(
-            "admin".to_owned(),
-            None,
+            actor_type.to_owned(),
+            actor_id,
             action.to_owned(),
             "oauth_client".to_owned(),
             Some(client_id.to_owned()),

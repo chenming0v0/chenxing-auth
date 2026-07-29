@@ -5,15 +5,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use super::{
     authorization::current_admin_permission,
     domain::{AdminId, AdminPermission, AdminRole},
     handlers::is_admin_request,
-    session::ADMIN_SESSION_COOKIE,
 };
-use crate::{error, sessions::cookies, state::AppState};
+use crate::{error, state::AppState, users::domain::UserRole, users::ui_auth::current_user};
 
 #[derive(Debug, Deserialize)]
 pub struct PageQuery {
@@ -24,7 +22,6 @@ pub struct PageQuery {
     pub action: Option<String>,
     pub resource_type: Option<String>,
 }
-
 #[derive(Debug, Serialize)]
 struct AdminMeResponse {
     admin_id: Option<AdminId>,
@@ -33,7 +30,6 @@ struct AdminMeResponse {
     permissions: Vec<&'static str>,
     status: &'static str,
 }
-
 #[derive(Debug, Serialize)]
 struct OverviewResponse {
     users: usize,
@@ -41,7 +37,6 @@ struct OverviewResponse {
     administrators: usize,
     audit_events: usize,
 }
-
 #[derive(Debug, Serialize)]
 struct PageResponse<T> {
     items: Vec<T>,
@@ -57,36 +52,35 @@ pub async fn admin_me(State(state): State<AppState>, headers: HeaderMap) -> Resp
             Json(AdminMeResponse {
                 admin_id: None,
                 username: None,
-                role: AdminRole::Owner.as_str(),
+                role: "owner",
                 permissions: permissions(AdminRole::Owner),
                 status: "active",
             }),
         )
             .into_response();
     }
-    let Some(session_id) = cookies::cookie_value_by_name(&headers, ADMIN_SESSION_COOKIE)
-        .and_then(|value| Uuid::parse_str(&value).ok())
-    else {
+    let Ok(context) = current_user(&state, &headers).await else {
         return error::unauthorized("admin_required", "administrator authorization is required");
     };
-    let Some(session) = state.admin_sessions.find(session_id).await.ok().flatten() else {
-        return error::unauthorized("invalid_session", "administrator session is invalid");
-    };
-    let Some((admin_id, username, role, status)) =
-        state.admins.find(session.admin_id).await.ok().flatten()
-    else {
-        return error::unauthorized("invalid_session", "administrator account is invalid");
-    };
-    if status != "active" {
-        return error::unauthorized("admin_forbidden", "administrator account is disabled");
+    if !matches!(context.role, UserRole::Admin | UserRole::Owner) {
+        return error::unauthorized("admin_forbidden", "administrator authorization is required");
     }
+    let Some(profile) = state
+        .users
+        .find_profile(context.user_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return error::unauthorized("invalid_session", "user account is invalid");
+    };
     (
         axum::http::StatusCode::OK,
         Json(AdminMeResponse {
-            admin_id: Some(admin_id),
-            username: Some(username),
-            role: role.as_str(),
-            permissions: permissions(role),
+            admin_id: Some(profile.id),
+            username: Some(profile.username),
+            role: context.role.as_str(),
+            permissions: permissions(context.role),
             status: "active",
         }),
     )
@@ -100,39 +94,35 @@ pub async fn admin_overview(State(state): State<AppState>, headers: HeaderMap) -
         return response;
     }
     let users = match state.users.list().await {
-        Ok(value) => value.len(),
+        Ok(value) => value,
         Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to count users for admin overview");
+            tracing::error!(error = %error_value, "failed to count users");
             return error::internal();
         }
     };
     let oauth_clients = match state.clients.list().await {
         Ok(value) => value.len(),
         Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to count clients for admin overview");
-            return error::internal();
-        }
-    };
-    let administrators = match state.admins.list().await {
-        Ok(value) => value.len(),
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to count administrators for admin overview");
+            tracing::error!(error = %error_value, "failed to count clients");
             return error::internal();
         }
     };
     let audit_events = match state.audit.count().await {
         Ok(value) => value as usize,
         Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to count audit events for admin overview");
+            tracing::error!(error = %error_value, "failed to count audit events");
             return error::internal();
         }
     };
     (
         axum::http::StatusCode::OK,
         Json(OverviewResponse {
-            users,
+            users: users.len(),
             oauth_clients,
-            administrators,
+            administrators: users
+                .iter()
+                .filter(|user| matches!(user.role, UserRole::Admin | UserRole::Owner))
+                .count(),
             audit_events,
         }),
     )
@@ -188,6 +178,7 @@ pub async fn query_users(
             email: user.email,
             display_name: user.display_name,
             status: user.status,
+            role: user.role,
             created_at: user.created_at,
         })
         .collect();
@@ -251,7 +242,7 @@ pub async fn query_audit(
             "page must be positive and page_size must be between 1 and 100",
         );
     };
-    let (events, total) = match state
+    let (items, total) = match state
         .audit
         .query(
             query.action.as_deref(),
@@ -267,7 +258,6 @@ pub async fn query_audit(
             return error::internal();
         }
     };
-    let items = events;
     page_response(items, page, page_size, total)
 }
 
@@ -277,10 +267,8 @@ fn bounds(query: &PageQuery) -> Option<(i64, i64, i64)> {
     if page < 1 || !(1..=100).contains(&page_size) {
         return None;
     }
-    let offset = (page - 1).checked_mul(page_size)?;
-    Some((page, page_size, offset))
+    Some((page, page_size, (page - 1).checked_mul(page_size)?))
 }
-
 fn page_response<T: Serialize>(items: Vec<T>, page: i64, page_size: i64, total: i64) -> Response {
     (
         axum::http::StatusCode::OK,
@@ -293,7 +281,6 @@ fn page_response<T: Serialize>(items: Vec<T>, page: i64, page_size: i64, total: 
     )
         .into_response()
 }
-
 fn permissions(role: AdminRole) -> Vec<&'static str> {
     [
         (AdminPermission::ManageUsers, "manage_users"),
@@ -301,6 +288,11 @@ fn permissions(role: AdminRole) -> Vec<&'static str> {
         (AdminPermission::RotateKeys, "rotate_keys"),
         (AdminPermission::ReadAudit, "read_audit"),
         (AdminPermission::ManageSettings, "manage_settings"),
+        (
+            AdminPermission::ManageIdentityProviders,
+            "manage_identity_providers",
+        ),
+        (AdminPermission::ManageRoles, "manage_roles"),
     ]
     .into_iter()
     .filter_map(|(permission, name)| role.allows(permission).then_some(name))
