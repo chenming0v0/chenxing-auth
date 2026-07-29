@@ -9,14 +9,14 @@ use serde::Serialize;
 use tower_http::trace::TraceLayer;
 
 use crate::{
-    admin::auth_handlers::{
-        bootstrap_admin, bootstrap_status, create_admin, login_admin, logout_admin,
-    },
+    admin::auth_handlers::{bootstrap_admin, bootstrap_status, create_admin},
     admin::handlers::{
         create_client, disable_client, enable_client, list_clients, rotate_secret, update_client,
     },
     admin::key_handlers::rotate_signing_key,
-    admin::management_handlers::{list_admins, list_audit, list_users, set_user_status},
+    admin::management_handlers::{
+        list_admins, list_audit, list_users, set_user_role, set_user_status,
+    },
     admin::provider_handlers::{
         create_provider, disable_provider, enable_provider, list_providers, update_provider,
     },
@@ -25,7 +25,7 @@ use crate::{
     admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
     admin::web_handlers::{dashboard, login_page, login_submit, protected_placeholder},
     auth_factors::handlers::{
-        confirm_totp_setup, finish_passkey_authentication, finish_passkey_registration,
+        confirm_totp_setup, finish_passkey_authentication, finish_passkey_registration, login_totp,
         start_passkey_authentication, start_passkey_registration, start_totp_setup,
     },
     oauth::OpenIdConfiguration,
@@ -71,6 +71,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(login_user))
         .route("/api/v1/auth/totp/setup", post(start_totp_setup))
         .route("/api/v1/auth/totp/setup/confirm", post(confirm_totp_setup))
+        .route("/api/v1/auth/totp/login", post(login_totp))
         .route(
             "/api/v1/auth/passkeys/register/start",
             post(start_passkey_registration),
@@ -101,17 +102,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/admin/bootstrap/status", get(bootstrap_status))
         .route("/api/v1/admin/bootstrap", post(bootstrap_admin))
         .route("/api/v1/admin/admins", get(list_admins).post(create_admin))
-        .route("/api/v1/admin/auth/login", post(login_admin))
         .route("/api/v1/admin/auth/me", get(admin_me))
-        .route(
-            "/api/v1/admin/auth/logout",
-            axum::routing::delete(logout_admin),
-        )
         .route("/api/v1/admin/users", get(list_users))
         .route(
             "/api/v1/admin/users/{user_id}/{status}",
             post(set_user_status),
         )
+        .route("/api/v1/admin/users/{user_id}/role", post(set_user_role))
         .route("/api/v1/admin/audit", get(list_audit))
         .route("/api/v1/admin/overview", get(admin_overview))
         .route("/api/v1/admin/users/query", get(query_users))

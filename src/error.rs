@@ -44,6 +44,17 @@ pub fn unauthorized(code: &'static str, message: impl Into<String>) -> Response 
         .into_response()
 }
 
+pub fn forbidden(code: &'static str, message: impl Into<String>) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ErrorResponse {
+            code: code.to_owned(),
+            message: message.into(),
+        }),
+    )
+        .into_response()
+}
+
 pub fn not_found(code: &'static str, message: impl Into<String>) -> Response {
     (
         StatusCode::NOT_FOUND,

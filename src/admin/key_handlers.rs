@@ -16,11 +16,10 @@ pub struct KeyRotationResponse {
 }
 
 pub async fn rotate_signing_key(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(response) =
-        current_admin_mutation(&state, &headers, AdminPermission::RotateKeys).await
-    {
-        return response;
-    }
+    let actor = match current_admin_mutation(&state, &headers, AdminPermission::RotateKeys).await {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
 
     if let Err(key_error) = state.keys.rotate() {
         tracing::error!(error = %key_error, "failed to rotate signing key");
@@ -31,8 +30,8 @@ pub async fn rotate_signing_key(State(state): State<AppState>, headers: HeaderMa
     state
         .audit
         .record(AuditEvent::new(
-            "admin".to_owned(),
-            None,
+            actor.actor_type().to_owned(),
+            actor.user_id().map(|id| id.to_string()),
             "signing_key_rotate".to_owned(),
             "signing_key".to_owned(),
             Some(key_id.clone()),

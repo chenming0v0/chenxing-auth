@@ -2,7 +2,6 @@ use redis::Client;
 
 use crate::{
     admin::AdminAuthenticator,
-    admin::{service::AdminService, session::AdminSessionStore},
     audit::AuditService,
     auth_factors::service::AuthFactorService,
     clients::service::ClientService,
@@ -40,8 +39,6 @@ pub struct AppState {
     pub revocations: TokenRevocationStore,
     pub oauth_quotas: OAuthQuotaStore,
     pub admin: AdminAuthenticator,
-    pub admins: AdminService,
-    pub admin_sessions: AdminSessionStore,
     pub audit: AuditService,
     pub factors: AuthFactorService,
     pub external_oauth: ExternalOAuthService,
@@ -87,8 +84,6 @@ impl AppState {
         let revocations = TokenRevocationStore::new(redis.clone());
         let oauth_quotas = OAuthQuotaStore::new(redis.clone());
         let admin = AdminAuthenticator::new(config.admin_token.clone());
-        let admins = AdminService::new(database.clone());
-        let admin_sessions = AdminSessionStore::new(redis.clone());
         let audit = AuditService::new(database.clone());
         let secret_manager = SecretManager::load_or_generate(&config.key_directory)?;
         let external_oauth = ExternalOAuthService::new(database.clone(), secret_manager)?;
@@ -110,8 +105,6 @@ impl AppState {
             revocations,
             oauth_quotas,
             admin,
-            admins,
-            admin_sessions,
             audit,
             factors,
             external_oauth,

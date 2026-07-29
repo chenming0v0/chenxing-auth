@@ -3,7 +3,6 @@ use axum::http::{
     header::{COOKIE, SET_COOKIE},
 };
 use cookie::{Cookie, SameSite};
-use uuid::Uuid;
 
 pub const SESSION_COOKIE: &str = "chenxing_session";
 pub const CSRF_COOKIE: &str = "chenxing_csrf";
@@ -11,22 +10,16 @@ pub const EXTERNAL_STATE_COOKIE: &str = "chenxing_external_oauth_state";
 
 pub fn append_login_cookies(
     headers: &mut HeaderMap,
-    session_id: Uuid,
+    session_token: &str,
     csrf_token: &str,
     max_age_seconds: u64,
     secure: bool,
 ) {
     headers.append(
         SET_COOKIE,
-        build_cookie(
-            SESSION_COOKIE,
-            &session_id.to_string(),
-            max_age_seconds,
-            secure,
-            true,
-        )
-        .parse()
-        .expect("session cookie is valid ASCII"),
+        build_cookie(SESSION_COOKIE, session_token, max_age_seconds, secure, true)
+            .parse()
+            .expect("session cookie is valid ASCII"),
     );
     headers.append(
         SET_COOKIE,
@@ -70,14 +63,12 @@ pub fn append_clear_external_state_cookie(headers: &mut HeaderMap, secure: bool)
     );
 }
 
-pub fn session_id(headers: &HeaderMap) -> Option<Uuid> {
+pub fn session_id(headers: &HeaderMap) -> Option<String> {
     headers
         .get("x-chenxing-session")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| Uuid::parse_str(value).ok())
-        .or_else(|| {
-            cookie_value(headers, SESSION_COOKIE).and_then(|value| Uuid::parse_str(&value).ok())
-        })
+        .map(str::to_owned)
+        .or_else(|| cookie_value(headers, SESSION_COOKIE))
 }
 
 pub fn csrf_token(headers: &HeaderMap) -> Option<String> {
@@ -103,22 +94,16 @@ pub fn append_named_login_cookies(
     headers: &mut HeaderMap,
     session_name: &str,
     csrf_name: &str,
-    session_id: Uuid,
+    session_token: &str,
     csrf_token: &str,
     max_age_seconds: u64,
     secure: bool,
 ) {
     headers.append(
         SET_COOKIE,
-        build_cookie(
-            session_name,
-            &session_id.to_string(),
-            max_age_seconds,
-            secure,
-            true,
-        )
-        .parse()
-        .expect("session cookie is valid ASCII"),
+        build_cookie(session_name, session_token, max_age_seconds, secure, true)
+            .parse()
+            .expect("session cookie is valid ASCII"),
     );
     headers.append(
         SET_COOKIE,

@@ -1,18 +1,21 @@
 use crate::sqlx::PgPool;
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use super::AuditEvent;
 
 pub async fn insert(pool: &PgPool, event: &AuditEvent) -> Result<(), crate::sqlx::Error> {
     crate::sqlx::query(
         "INSERT INTO audit_events
-         (id, actor_type, actor_id, action, resource_type, resource_id, metadata, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+         (actor_type, actor_user_id, action, resource_type, resource_id, metadata, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
-    .bind(event.id)
     .bind(&event.actor_type)
-    .bind(&event.actor_id)
+    .bind(
+        event
+            .actor_id
+            .as_deref()
+            .and_then(|id| id.parse::<i64>().ok()),
+    )
     .bind(&event.action)
     .bind(&event.resource_type)
     .bind(&event.resource_id)
@@ -37,9 +40,9 @@ pub async fn list_filtered(
     crate::sqlx::query_as::<
         _,
         (
-            Uuid,
+            i64,
             String,
-            Option<String>,
+            Option<i64>,
             String,
             String,
             Option<String>,
@@ -47,7 +50,7 @@ pub async fn list_filtered(
             OffsetDateTime,
         ),
     >(
-        "SELECT id, actor_type, actor_id, action, resource_type, resource_id, metadata, created_at
+        "SELECT id, actor_type, actor_user_id, action, resource_type, resource_id, metadata, created_at
          FROM audit_events
          WHERE ($1::text IS NULL OR action = $1)
            AND ($2::text IS NULL OR resource_type = $2)
@@ -65,7 +68,7 @@ pub async fn list_filtered(
                 |(
                     id,
                     actor_type,
-                    actor_id,
+                    actor_user_id,
                     action,
                     resource_type,
                     resource_id,
@@ -74,7 +77,7 @@ pub async fn list_filtered(
                 )| AuditEvent {
                     id,
                     actor_type,
-                    actor_id,
+                    actor_id: actor_user_id.map(|id| id.to_string()),
                     action,
                     resource_type,
                     resource_id,

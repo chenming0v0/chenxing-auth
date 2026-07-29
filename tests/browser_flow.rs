@@ -92,6 +92,29 @@ fn html_value(body: &str, name: &str) -> String {
 async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() {
     let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/bootstrap")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": format!("browser-owner-{suffix}"),
+                        "email": format!("browser-owner-{suffix}@example.com"),
+                        "password": "correct horse battery"
+                    })
+                    .to_string(),
+                ))
+                .expect("bootstrap request"),
+        )
+        .await
+        .expect("bootstrap response");
+    assert!(matches!(
+        response.status(),
+        StatusCode::CREATED | StatusCode::CONFLICT
+    ));
     let email = format!("browser-{suffix}@example.com");
     let username = format!("browser-{suffix}");
     let password = "correct horse battery";

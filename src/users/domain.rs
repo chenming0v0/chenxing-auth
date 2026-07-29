@@ -4,6 +4,66 @@ use thiserror::Error;
 pub const MIN_PASSWORD_LENGTH: usize = 10;
 pub type UserId = i64;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserRole {
+    User,
+    Admin,
+    Owner,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserPermission {
+    ManageUsers,
+    ManageClients,
+    ReadAudit,
+    ManageSettings,
+    ManageIdentityProviders,
+    RotateKeys,
+    ManageRoles,
+}
+
+impl UserRole {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::User),
+            "admin" => Some(Self::Admin),
+            "owner" => Some(Self::Owner),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Admin => "admin",
+            Self::Owner => "owner",
+        }
+    }
+
+    pub const fn allows(self, permission: UserPermission) -> bool {
+        match self {
+            Self::User => false,
+            Self::Admin => matches!(
+                permission,
+                UserPermission::ManageUsers
+                    | UserPermission::ManageClients
+                    | UserPermission::ReadAudit
+                    | UserPermission::ManageSettings
+                    | UserPermission::ManageIdentityProviders
+            ),
+            Self::Owner => true,
+        }
+    }
+
+    pub const fn is_at_least(self, required: Self) -> bool {
+        matches!(
+            (self, required),
+            (Self::Owner, _) | (Self::Admin, Self::Admin | Self::User) | (Self::User, Self::User)
+        )
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RegistrationInput {
     pub username: String,
@@ -141,5 +201,6 @@ pub struct PublicUser {
     pub email: String,
     pub display_name: Option<String>,
     pub status: String,
+    pub role: UserRole,
     pub created_at: time::OffsetDateTime,
 }

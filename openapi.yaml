@@ -3,7 +3,7 @@ info:
   title: 辰星认证中枢 API
   version: 1.0.0
   description: |
-    辰星通行证用户认证、OAuth 2.0/OIDC 和管理员管理 API。
+    辰星通行证用户认证、OAuth 2.0/OIDC 和统一用户管理 API。
     当前定义以仓库实际路由为准。生产环境请将服务器地址替换为固定的 APP_ISSUER。
 servers:
   - url: http://127.0.0.1:3000
@@ -124,6 +124,26 @@ paths:
       tags: [User Auth]
       summary: 确认 TOTP 并完成登录
       operationId: confirmTotpSetup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TotpConfirmInput' }
+      responses:
+        '200':
+          description: TOTP 正确，已设置 Session 和 CSRF Cookie
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/totp/login:
+    post:
+      tags: [User Auth]
+      summary: 使用 TOTP 完成待处理登录
+      operationId: loginTotp
       requestBody:
         required: true
         content:
@@ -312,7 +332,7 @@ paths:
       operationId: revokeUserSession
       security: [{ sessionCookie: [] }]
       parameters:
-        - { name: session_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: session_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
         - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
         '204': { description: Session 已撤销 }
@@ -598,25 +618,25 @@ paths:
   /api/v1/admin/bootstrap:
     post:
       tags: [Admin Auth]
-      summary: 初始化首个管理员
+      summary: 初始化首个 Owner 用户
       operationId: bootstrapAdmin
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/BootstrapAdminInput' }
+            schema: { $ref: '#/components/schemas/BootstrapOwnerInput' }
       responses:
         '201':
           description: 初始化成功
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/BootstrapAdminResponse' }
+              schema: { $ref: '#/components/schemas/BootstrapOwnerResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/admin/bootstrap/status:
     get:
       tags: [Admin Auth]
-      summary: 查询管理员初始化状态
+      summary: 查询 Owner 初始化状态
       operationId: adminBootstrapStatus
       responses:
         '200':
@@ -624,57 +644,26 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/BootstrapStatusResponse' }
-  /api/v1/admin/auth/login:
-    post:
-      tags: [Admin Auth]
-      summary: 管理员登录
-      operationId: loginAdmin
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/AdminLoginInput' }
-      responses:
-        '200':
-          description: 登录成功，同时设置管理员 Session 和 CSRF Cookie
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  admin_id: { type: integer, format: int64, minimum: 1 }
-                  expires_in: { type: integer, format: int64 }
-        '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/admin/auth/me:
     get:
       tags: [Admin Auth]
-      summary: 查询当前管理员身份和权限
+      summary: 查询当前管理身份和权限
       operationId: adminMe
-      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
       responses:
         '200':
-          description: 管理员身份摘要
+          description: 管理身份摘要
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AdminMeResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-  /api/v1/admin/auth/logout:
-    delete:
-      tags: [Admin Auth]
-      summary: 管理员注销
-      operationId: logoutAdmin
-      security: [{ adminSessionCookie: [] }]
-      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
-      responses:
-        '204': { description: 注销成功 }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /api/v1/admin/users:
     get:
       tags: [Admin Users]
       summary: 用户列表
       operationId: listUsers
-      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
       responses:
         '200':
           description: 用户列表
@@ -688,7 +677,7 @@ paths:
       tags: [Admin Users]
       summary: 设置用户状态
       operationId: setUserStatus
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
         - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
         - { name: status, in: path, required: true, schema: { type: string, example: disabled } }
@@ -698,12 +687,36 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/admin/users/{user_id}/role:
+    post:
+      tags: [Admin Users]
+      summary: 修改用户角色
+      operationId: setUserRole
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [user, admin, owner] }
+      responses:
+        '204': { description: 更新成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/admin/clients:
     get:
       tags: [Admin Clients]
       summary: Client 列表
       operationId: listClients
-      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
       responses:
         '200':
           description: Client 列表，不包含 Secret
@@ -714,7 +727,7 @@ paths:
       tags: [Admin Clients]
       summary: 创建 Client
       operationId: createClient
-      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -733,7 +746,7 @@ paths:
       tags: [Admin Clients]
       summary: 更新 Client
       operationId: updateClient
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
         - { name: client_id, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
@@ -752,7 +765,7 @@ paths:
       tags: [Admin Clients]
       summary: 禁用 Client
       operationId: disableClient
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters: [{ name: client_id, in: path, required: true, schema: { type: string } }, { $ref: '#/components/parameters/CsrfHeader' }]
       responses:
         '204': { description: 操作成功 }
@@ -761,7 +774,7 @@ paths:
       tags: [Admin Clients]
       summary: 启用 Client
       operationId: enableClient
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters: [{ name: client_id, in: path, required: true, schema: { type: string } }, { $ref: '#/components/parameters/CsrfHeader' }]
       responses:
         '204': { description: 操作成功 }
@@ -770,7 +783,7 @@ paths:
       tags: [Admin Clients]
       summary: 轮换 Client Secret
       operationId: rotateClientSecret
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters: [{ name: client_id, in: path, required: true, schema: { type: string } }, { $ref: '#/components/parameters/CsrfHeader' }]
       responses:
         '200':
@@ -781,20 +794,20 @@ paths:
   /api/v1/admin/admins:
     get:
       tags: [Admin Auth]
-      summary: 管理员列表
+      summary: 管理员和 Owner 列表
       operationId: listAdmins
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       responses:
         '200':
-          description: 管理员摘要
+          description: 管理员和 Owner 摘要
           content:
             application/json:
               schema: { type: array, items: { $ref: '#/components/schemas/AdminSummary' } }
     post:
       tags: [Admin Auth]
-      summary: 创建管理员
+      summary: 创建管理员或 Owner
       operationId: createAdmin
-      security: [{ adminSessionCookie: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
       requestBody:
         required: true
@@ -808,7 +821,7 @@ paths:
       tags: [Admin Operations]
       summary: 审计事件列表
       operationId: listAudit
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
         - { name: limit, in: query, schema: { type: integer, default: 50, minimum: 1 } }
       responses:
@@ -818,7 +831,7 @@ paths:
       tags: [Admin Operations]
       summary: 管理后台概览统计
       operationId: adminOverview
-      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
       responses:
         '200':
           description: 全局资源计数
@@ -831,7 +844,7 @@ paths:
       tags: [Admin Users]
       summary: 分页筛选用户
       operationId: queryUsers
-      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
       parameters:
         - { $ref: '#/components/parameters/Page' }
         - { $ref: '#/components/parameters/PageSize' }
@@ -850,7 +863,7 @@ paths:
       tags: [Admin Clients]
       summary: 分页筛选 OAuth Client
       operationId: queryClients
-      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
       parameters:
         - { $ref: '#/components/parameters/Page' }
         - { $ref: '#/components/parameters/PageSize' }
@@ -869,7 +882,7 @@ paths:
       tags: [Admin Operations]
       summary: 分页筛选审计事件
       operationId: queryAudit
-      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
       parameters:
         - { $ref: '#/components/parameters/Page' }
         - { $ref: '#/components/parameters/PageSize' }
@@ -888,7 +901,7 @@ paths:
       tags: [Admin Operations]
       summary: 查询注册邮件发件地址
       operationId: getRegistrationEmailSetting
-      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
       responses:
         '200':
           description: 当前注册邮件发件地址。未配置时为 null。
@@ -900,7 +913,7 @@ paths:
       tags: [Admin Operations]
       summary: 更新注册邮件发件地址
       operationId: updateRegistrationEmailSetting
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
       requestBody:
         required: true
@@ -921,7 +934,7 @@ paths:
       tags: [Admin OAuth Providers]
       summary: 自定义 OAuth 提供商列表
       operationId: listOAuthProviders
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       responses:
         '200':
           description: 提供商摘要，不包含 Client Secret
@@ -934,7 +947,7 @@ paths:
       tags: [Admin OAuth Providers]
       summary: 创建自定义 OAuth 提供商
       operationId: createOAuthProvider
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
       requestBody:
         required: true
@@ -955,7 +968,7 @@ paths:
       tags: [Admin OAuth Providers]
       summary: 更新自定义 OAuth 提供商
       operationId: updateOAuthProvider
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
@@ -974,7 +987,7 @@ paths:
       tags: [Admin OAuth Providers]
       summary: 停用自定义 OAuth 提供商
       operationId: disableOAuthProvider
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
@@ -987,7 +1000,7 @@ paths:
       tags: [Admin OAuth Providers]
       summary: 启用自定义 OAuth 提供商
       operationId: enableOAuthProvider
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
@@ -1000,7 +1013,7 @@ paths:
       tags: [Admin OAuth Providers]
       summary: 自定义 OAuth 提供商设置页
       operationId: oauthProviderSettingsPage
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       responses:
         '200': { description: HTML 设置页面, content: { text/html: { schema: { type: string } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1009,7 +1022,7 @@ paths:
       tags: [Admin Operations]
       summary: 轮换签名密钥
       operationId: rotateSigningKey
-      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
       responses:
         '200':
@@ -1027,11 +1040,10 @@ components:
     adminBearer: { type: http, scheme: bearer }
     basicClientAuth: { type: http, scheme: basic }
     sessionCookie: { type: apiKey, in: cookie, name: chenxing_session }
-    adminSessionCookie: { type: apiKey, in: cookie, name: chenxing_admin_session }
     chenxingSession: { type: apiKey, in: header, name: X-Chenxing-Session }
   parameters:
     ClientId: { name: client_id, in: query, required: true, schema: { type: string } }
-    CsrfHeader: { name: X-CSRF-Token, in: header, required: true, schema: { type: string } }
+    CsrfHeader: { name: X-CSRF-Token, in: header, required: true, description: 浏览器 Session 写操作必需；ADMIN_TOKEN Bearer 请求不需要, schema: { type: string } }
     Page: { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
     PageSize: { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
     Search: { name: search, in: query, required: false, schema: { type: string, maxLength: 128 } }
@@ -1072,12 +1084,6 @@ components:
         identifier: { type: string, description: 用户名或邮箱 }
         password: { type: string, format: password, minLength: 10 }
         totp_code: { type: string, pattern: '^[0-9]{6}$' }
-    AdminLoginInput:
-      type: object
-      required: [username, password]
-      properties:
-        username: { type: string, minLength: 3, maxLength: 64 }
-        password: { type: string, format: password, minLength: 10 }
     PendingLoginResponse:
       type: object
       required: [status, login_ticket, methods]
@@ -1123,18 +1129,19 @@ components:
             credential: { type: object, additionalProperties: true }
     PublicUser:
       type: object
-      required: [id, username, email, status, created_at]
+      required: [id, username, email, status, role, created_at]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         username: { type: string, minLength: 3, maxLength: 64 }
         email: { type: string, format: email }
         display_name: { type: string, nullable: true }
         status: { type: string }
+        role: { type: string, enum: [user, admin, owner] }
         created_at: { type: string, format: date-time }
     LoginResponse:
       type: object
       properties:
-        session_id: { type: string, format: uuid }
+        session_id: { type: string, description: URL-safe random Session token; PostgreSQL stores only its SHA-256 hash }
         expires_at: { type: string, format: date-time }
     AuthStatusResponse:
       type: object
@@ -1143,13 +1150,14 @@ components:
         authenticated: { type: boolean }
     UserMeResponse:
       type: object
-      required: [id, username, email, status, current_session_expires_at]
+      required: [id, username, email, status, role, current_session_expires_at]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         username: { type: string, minLength: 3, maxLength: 64 }
         email: { type: string, format: email }
         display_name: { type: string, nullable: true }
         status: { type: string }
+        role: { type: string, enum: [user, admin, owner] }
         current_session_expires_at: { type: string, format: date-time }
     UpdateProfileInput:
       type: object
@@ -1165,7 +1173,7 @@ components:
       type: object
       required: [id, created_at, expires_at, current]
       properties:
-        id: { type: string, format: uuid }
+        id: { type: integer, format: int64, minimum: 1 }
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
         current: { type: boolean }
@@ -1186,7 +1194,7 @@ components:
       type: object
       required: [id, client_id, client_name, redirect_uris, scopes, status, quota]
       properties:
-        id: { type: string, format: uuid }
+        id: { type: integer, format: int64, minimum: 1 }
         client_id: { type: string }
         client_name: { type: string }
         redirect_uris: { type: array, items: { type: string, format: uri } }
@@ -1258,9 +1266,9 @@ components:
       type: object
       required: [role, permissions, status]
       properties:
-        admin_id: { type: integer, format: int64, minimum: 1, nullable: true }
+        user_id: { type: integer, format: int64, minimum: 1, nullable: true }
         username: { type: string, nullable: true }
-        role: { type: string, enum: [owner, operator, auditor] }
+        role: { type: string, enum: [owner, admin] }
         permissions: { type: array, items: { type: string } }
         status: { type: string }
     AdminOverview:
@@ -1307,22 +1315,26 @@ components:
         total: { type: integer, format: int64 }
     AdminInput:
       type: object
-      required: [username, password, role]
+      required: [username, email, password, role]
       properties:
         username: { type: string, minLength: 3, maxLength: 64 }
+        email: { type: string, format: email }
         password: { type: string, format: password, minLength: 10 }
-        role: { type: string, enum: [owner, operator, auditor] }
-    BootstrapAdminInput:
+        role: { type: string, enum: [admin, owner] }
+    BootstrapOwnerInput:
       type: object
-      required: [username, password]
+      required: [username, email, password]
       properties:
         username: { type: string, minLength: 3, maxLength: 64 }
+        email: { type: string, format: email }
         password: { type: string, format: password, minLength: 10 }
-    BootstrapAdminResponse:
+    BootstrapOwnerResponse:
       type: object
-      required: [id, role]
+      required: [id, username, email, role]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
+        username: { type: string }
+        email: { type: string, format: email }
         role: { type: string, enum: [owner] }
     BootstrapStatusResponse:
       type: object
@@ -1374,7 +1386,7 @@ components:
     OAuthProviderSummary:
       type: object
       properties:
-        id: { type: string, format: uuid }
+        id: { type: integer, format: int64, minimum: 1 }
         name: { type: string }
         slug: { type: string }
         callback_uri: { type: string, format: uri }
@@ -1402,7 +1414,7 @@ components:
         - $ref: '#/components/schemas/ClientInput'
         - type: object
           properties:
-            id: { type: string, format: uuid }
+            id: { type: integer, format: int64, minimum: 1 }
             client_id: { type: string }
             status: { type: string }
             owner_user_id: { type: integer, format: int64, minimum: 1, nullable: true }

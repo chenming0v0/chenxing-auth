@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use url::Url;
-use uuid::Uuid;
 
 const MAX_NAME_LENGTH: usize = 128;
 const MAX_SLUG_LENGTH: usize = 64;
@@ -38,7 +37,7 @@ pub struct ProviderInput {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderSummary {
-    pub id: Uuid,
+    pub id: i64,
     pub name: String,
     pub slug: String,
     pub authorization_endpoint: String,
@@ -74,7 +73,7 @@ pub struct ValidatedProviderInput {
 
 #[derive(Debug, Clone)]
 pub struct ProviderRecord {
-    pub id: Uuid,
+    pub id: i64,
     pub name: String,
     pub slug: String,
     pub authorization_endpoint: Url,

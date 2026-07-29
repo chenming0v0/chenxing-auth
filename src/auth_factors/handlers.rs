@@ -30,6 +30,12 @@ pub struct TotpConfirmInput {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct TotpLoginInput {
+    pub login_ticket: String,
+    pub code: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct PasskeyTicketInput {
     pub login_ticket: String,
 }
@@ -112,6 +118,48 @@ pub async fn confirm_totp_setup(
         }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to confirm TOTP enrollment");
+            error::internal()
+        }
+    }
+}
+
+pub async fn login_totp(
+    State(state): State<AppState>,
+    Json(input): Json<TotpLoginInput>,
+) -> Response {
+    match state
+        .factors
+        .confirm_totp_enrollment(&input.login_ticket, &input.code)
+        .await
+    {
+        Ok(crate::auth_factors::service::TotpConfirmation::Completed(user_id)) => {
+            return issue_user_session(&state, user_id, "totp").await;
+        }
+        Ok(crate::auth_factors::service::TotpConfirmation::InvalidCode) => {
+            return error::unauthorized("invalid_factor", "authentication factor is invalid");
+        }
+        Ok(crate::auth_factors::service::TotpConfirmation::InvalidTicket) => {}
+        Err(factor_error) => {
+            tracing::error!(error = %factor_error, "failed to confirm TOTP enrollment login");
+            return error::internal();
+        }
+    }
+    match state
+        .factors
+        .verify_totp_login(&input.login_ticket, &input.code)
+        .await
+    {
+        Ok(crate::auth_factors::service::TotpConfirmation::Completed(user_id)) => {
+            issue_user_session(&state, user_id, "totp").await
+        }
+        Ok(crate::auth_factors::service::TotpConfirmation::InvalidCode) => {
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
+        }
+        Ok(crate::auth_factors::service::TotpConfirmation::InvalidTicket) => {
+            error::bad_request("invalid_login_ticket", "login ticket is invalid")
+        }
+        Err(factor_error) => {
+            tracing::error!(error = %factor_error, "failed to verify TOTP login");
             error::internal()
         }
     }

@@ -45,11 +45,42 @@ jobs:
       RUST_BACKTRACE: 1
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.94.0
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Validate web build
+        run: npm ci --prefix web && npm run build --prefix web
+      - name: Validate OpenAPI
+        run: python .codex/skills/sync-openapi/scripts/validate_openapi.py
+      - name: Validate deployment files
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n deploy/install.sh
+          cp .env.example .env
+          docker compose --env-file .env -f docker-compose.prod.yml config --quiet
+      - name: Check Rust source file size
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          while IFS= read -r -d '' file; do
+            lines="$(wc -l < "$file")"
+            if (( lines > 500 )); then
+              printf 'source file exceeds 500 lines: %s (%s)\n' "$file" "$lines" >&2
+              failed=1
+            elif (( lines > 300 )); then
+              printf 'source file warning: %s (%s lines)\n' "$file" "$lines"
+            fi
+          done < <(find src -type f -print0)
+          exit "$failed"
       - run: cargo fmt --all -- --check
       - run: cargo check --all-targets --all-features
       - run: cargo test --all-features

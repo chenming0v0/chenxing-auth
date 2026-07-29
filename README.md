@@ -106,10 +106,10 @@ src/
 - 用户、Client、OAuth/OIDC、Session、JWK 和业务扩展模块边界
 - `/auth/login` 辰星通行证浏览器登录页
 - `/oauth/authorize/consent` 授权确认页、拒绝回调和 `user_consents` 持久化
-- 管理员 bootstrap、登录、注销、HttpOnly Session/CSRF Cookie
-- 管理员 Web 控制台与 PostgreSQL 持久化的注册邮件发件地址设置
-- `owner`、`operator`、`auditor` 角色与最小权限矩阵
-- 用户列表、用户启停、管理员列表、审计查询和管理后台入口
+- Owner bootstrap、统一用户登录、注销、HttpOnly Session/CSRF Cookie
+- 统一用户管理 Web 控制台与 PostgreSQL 持久化的注册邮件发件地址设置
+- `user`、`admin`、`owner` 层级角色与最小权限矩阵
+- 用户列表、用户启停、角色管理、特权用户列表、审计查询和管理后台入口
 - `/oauth/revoke` RFC 7009 风格 Token 撤销以及 Discovery 中的撤销端点
 - `BusinessExtension` 扩展 trait 与结构化业务 Claim 类型
 - 配置驱动的自定义 OAuth/OIDC 提供商管理、加密 Client Secret、外部身份绑定和浏览器回调登录
@@ -130,7 +130,9 @@ src/
 - PostgreSQL 14 或更高版本
 - Redis 6 或更高版本
 
-复制 `.env.example` 为 `.env`，按本地环境修改连接地址。服务启动时会自动执行 `migrations/` 中的版本化迁移。
+复制 `.env.example` 为 `.env`，按本地环境修改连接地址。正常服务启动不会修改数据库结构；需要执行迁移时运行 `cargo run -- migrate`，生产 Docker 部署脚本会在启动应用前显式执行同一迁移命令。
+
+本次统一身份数据库重构使用新的单一基线迁移，不支持保留旧开发数据滚动升级。旧数据库中的 `_sqlx_migrations` 记录也不能被这条新基线自动转换；生产环境部署遇到迁移失败时必须先备份并执行经过批准的数据迁移或重建方案。首次在本地切换到该版本时，请确认 Compose 项目为本仓库的 `chenxing-auth` 后执行 `docker compose down -v`，再运行 `docker compose up -d postgres redis`；该操作会删除本地 PostgreSQL/Redis 开发数据，生产环境不得照此操作。
 
 `cargo build`/`cargo run` 在缺少 `web/dist/index.html` 时会通过 Cargo build script 自动安装并构建 Web。生产 Docker 和 GitHub Actions 会在 Rust 编译前显式完成同样的步骤。启动后访问 `http://127.0.0.1:3000/` 即可同时使用 Web 和 API。
 
@@ -161,7 +163,7 @@ src/
 
 ## GitHub Actions
 
-当前 `/oauth/authorize` 同时支持开发期 `X-Chenxing-Session` 和 HttpOnly Session Cookie；带 `Accept: text/html` 的浏览器流程会进入登录页和授权确认页。浏览器 Cookie 会话的状态变更必须携带 `X-CSRF-Token`，并与 CSRF Cookie 和 Session 中的 Token 一致。管理员 Session 使用独立 Cookie 名称和相同的双提交 CSRF 约束。
+当前 `/oauth/authorize` 同时支持开发期 `X-Chenxing-Session` 和 HttpOnly Session Cookie；带 `Accept: text/html` 的浏览器流程会进入登录页和授权确认页。浏览器 Cookie 会话的状态变更必须携带 `X-CSRF-Token`，并与 CSRF Cookie 和 Session 中的 Token 一致。管理 API 复用普通用户 Session 和 CSRF Cookie，角色决定管理权限。
 
 `KEY_DIRECTORY` 默认指向 `data/keys`，该目录包含运行时私钥并已加入 `.gitignore`。`ADMIN_TOKEN` 为空时，管理 API 默认全部拒绝访问。
 

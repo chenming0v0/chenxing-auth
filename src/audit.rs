@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 pub mod repository;
 
@@ -51,7 +50,7 @@ impl AuditService {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
-    pub id: Uuid,
+    pub id: i64,
     pub actor_type: String,
     pub actor_id: Option<String>,
     pub action: String,
@@ -71,7 +70,7 @@ impl AuditEvent {
         metadata: Value,
     ) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: 0,
             actor_type,
             actor_id,
             action,

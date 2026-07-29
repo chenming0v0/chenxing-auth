@@ -1,14 +1,13 @@
 use crate::sqlx::{PgPool, types::Json};
 use thiserror::Error;
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use super::domain::ValidatedClientRegistration;
 use crate::users::domain::UserId;
 
 #[derive(Debug)]
 pub struct NewClient {
-    pub id: Uuid,
+    pub id: i64,
     pub client_id: String,
     pub client_name: String,
     pub client_secret_hash: String,
@@ -36,7 +35,7 @@ pub struct StoredClientCredentials {
 
 #[derive(Debug)]
 pub struct ListedClient {
-    pub id: Uuid,
+    pub id: i64,
     pub client_id: String,
     pub client_name: String,
     pub redirect_uris: Vec<String>,
@@ -60,7 +59,7 @@ pub async fn insert_client(
     client_secret_hash: String,
 ) -> Result<NewClient, crate::sqlx::Error> {
     let client = NewClient {
-        id: Uuid::new_v4(),
+        id: 0,
         client_id,
         client_name: registration.client_name,
         client_secret_hash,
@@ -70,21 +69,23 @@ pub async fn insert_client(
         owner_user_id: None,
     };
 
-    crate::sqlx::query(
+    let id: i64 = crate::sqlx::query_scalar(
         "INSERT INTO oauth_clients
-         (id, client_id, client_name, client_secret_hash, redirect_uris, scopes, status, created_at, owner_user_id)
-         VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, NULL)",
+         (client_id, client_name, client_secret_hash, redirect_uris, scopes, status, created_at, owner_user_id)
+         VALUES ($1, $2, $3, $4, $5, 'active', $6, NULL)
+         RETURNING id",
     )
-    .bind(client.id)
     .bind(&client.client_id)
     .bind(&client.client_name)
     .bind(&client.client_secret_hash)
     .bind(serde_json::to_value(&client.redirect_uris).expect("redirect URIs are serializable"))
     .bind(serde_json::to_value(&client.scopes).expect("scopes are serializable"))
     .bind(client.created_at)
-    .execute(pool)
+    .fetch_one(pool)
     .await?;
 
+    let mut client = client;
+    client.id = id;
     Ok(client)
 }
 
@@ -111,7 +112,7 @@ pub async fn insert_owned_client(
     }
 
     let client = NewClient {
-        id: Uuid::new_v4(),
+        id: 0,
         client_id,
         client_name: registration.client_name,
         client_secret_hash,
@@ -120,12 +121,12 @@ pub async fn insert_owned_client(
         created_at: OffsetDateTime::now_utc(),
         owner_user_id: Some(owner_user_id),
     };
-    crate::sqlx::query(
+    let id: i64 = crate::sqlx::query_scalar(
         "INSERT INTO oauth_clients
-         (id, client_id, client_name, client_secret_hash, redirect_uris, scopes, status, created_at, owner_user_id)
-         VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8)",
+         (client_id, client_name, client_secret_hash, redirect_uris, scopes, status, created_at, owner_user_id)
+         VALUES ($1, $2, $3, $4, $5, 'active', $6, $7)
+         RETURNING id",
     )
-    .bind(client.id)
     .bind(&client.client_id)
     .bind(&client.client_name)
     .bind(&client.client_secret_hash)
@@ -133,9 +134,11 @@ pub async fn insert_owned_client(
     .bind(serde_json::to_value(&client.scopes).expect("scopes are serializable"))
     .bind(client.created_at)
     .bind(client.owner_user_id)
-    .execute(&mut *transaction)
+    .fetch_one(&mut *transaction)
     .await?;
     transaction.commit().await?;
+    let mut client = client;
+    client.id = id;
     Ok(client)
 }
 
@@ -183,7 +186,7 @@ pub async fn list_clients(pool: &PgPool) -> Result<Vec<ListedClient>, crate::sql
     crate::sqlx::query_as::<
         _,
         (
-            Uuid,
+            i64,
             String,
             String,
             Json<Vec<String>>,
@@ -223,7 +226,7 @@ pub async fn list_clients_for_owner(
     crate::sqlx::query_as::<
         _,
         (
-            Uuid,
+            i64,
             String,
             String,
             Json<Vec<String>>,

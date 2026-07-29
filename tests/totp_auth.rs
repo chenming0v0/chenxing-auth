@@ -37,13 +37,34 @@ async fn setup() -> (
     .expect("test configuration");
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
+    let owner_suffix = Uuid::new_v4().simple().to_string();
+    let state = AppState::new(config).expect("test state");
+    let router = api::router(state);
+    let bootstrap = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/bootstrap")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": format!("totp-owner-{owner_suffix}"),
+                        "email": format!("totp-owner-{owner_suffix}@example.com"),
+                        "password": "correct horse battery"
+                    })
+                    .to_string(),
+                ))
+                .expect("bootstrap request"),
+        )
+        .await
+        .expect("bootstrap response");
+    assert!(matches!(
+        bootstrap.status(),
+        StatusCode::CREATED | StatusCode::CONFLICT
+    ));
     let email = format!("totp-{}@example.com", Uuid::new_v4().simple());
-    (
-        api::router(AppState::new(config).expect("test state")),
-        database,
-        key_directory,
-        email,
-    )
+    (router, database, key_directory, email)
 }
 
 async fn json_body(response: axum::response::Response) -> serde_json::Value {
@@ -128,6 +149,68 @@ async fn password_login_without_factor_returns_pending_setup_ticket() {
         .execute(&database)
         .await
         .expect("user cleanup");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn totp_login_endpoint_completes_a_pending_factor_ticket() {
+    let (router, database, key_directory, email) = setup().await;
+    let username = format!("totp-login-{}", Uuid::new_v4().simple());
+    let password = "correct horse battery";
+    let response = request(
+        &router,
+        "/api/v1/users",
+        serde_json::json!({"username": username, "email": email, "password": password}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let pending = json_body(
+        request(
+            &router,
+            "/api/v1/auth/login",
+            serde_json::json!({"identifier": username, "password": password}),
+        )
+        .await,
+    )
+    .await;
+    let ticket = pending["login_ticket"].as_str().expect("login ticket");
+    let setup = json_body(
+        request(
+            &router,
+            "/api/v1/auth/totp/setup",
+            serde_json::json!({"login_ticket": ticket}),
+        )
+        .await,
+    )
+    .await;
+    let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
+
+    let response = request(
+        &router,
+        "/api/v1/auth/totp/login",
+        serde_json::json!({"login_ticket": ticket, "code": "000000"}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let response = request(
+        &router,
+        "/api/v1/auth/totp/login",
+        serde_json::json!({
+            "login_ticket": ticket,
+            "code": totp.generate_current().expect("TOTP code")
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("set-cookie").is_some());
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE email = $1")
+        .bind(&email)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

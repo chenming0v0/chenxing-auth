@@ -235,7 +235,7 @@ async fn normal_user_can_create_only_two_owned_oauth_projects() {
         )
         .await
         .expect("admin list response");
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
     let response = router
         .clone()

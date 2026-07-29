@@ -6,7 +6,7 @@
 
 - Base URL 使用部署后的认证服务地址，例如 `https://auth.example.com`。
 - JSON 请求发送 `Content-Type: application/json`；OAuth Token 和 Revocation 请求发送 `application/x-www-form-urlencoded`。
-- 时间使用 RFC 3339 字符串；普通用户和管理员 ID 是从 1 开始递增的整数，Session、OAuth Client 等其他实体 ID 仍使用 UUID 字符串。
+- 时间使用 RFC 3339 字符串；用户、Session、OAuth Client、认证因子、外部身份、提供商和审计事件的数据库内部 ID 是从 1 开始递增的整数。Client ID、提供商 slug、Session Token、授权码等协议或凭据标识仍使用字符串。
 - 认证失败、参数错误等 JSON 错误统一为：
 
 ```json
@@ -86,6 +86,8 @@
 
 1. `POST /api/v1/auth/totp/setup`，请求 `{"login_ticket":"opaque-ticket"}`，响应一次性返回 `secret_base32` 和 `otpauth_url`。前端可将 URI 交给 Google Authenticator 扫描；服务端不返回二维码图片。
 2. `POST /api/v1/auth/totp/setup/confirm`，请求 `{"login_ticket":"opaque-ticket","code":"123456"}`。验证码正确后保存加密秘钥、消费 ticket 并返回 Session Cookie；错误验证码不会消费 ticket。
+
+已有 TOTP 的待处理登录也可以调用 `POST /api/v1/auth/totp/login`，请求同样包含 `login_ticket` 和当前六位 `code`。验证码正确后消费 ticket 并返回 Session Cookie；无效 ticket 返回 `400`，错误验证码返回 `401`。
 
 ### Passkey / WebAuthn
 
@@ -206,39 +208,27 @@ grant_type=refresh_token&refresh_token=...
 
 ## 管理 API
 
-管理员 Bearer Token 请求头：`Authorization: Bearer <ADMIN_TOKEN>`。初始化完成后，管理员 API 使用 Bearer Token 或管理员 Session；`ADMIN_TOKEN` 为空时拒绝 Bearer Token 管理请求。
+管理员 Bearer Token 请求头：`Authorization: Bearer <ADMIN_TOKEN>`。初始化完成后，管理 API 使用 Bearer Token 或普通用户 Session；`ADMIN_TOKEN` 为空时拒绝 Bearer Token 管理请求。浏览器写操作使用普通 `chenxing_session`、`chenxing_csrf` Cookie 和 `X-CSRF-Token` 三者绑定。
 
-管理员 Session 登录后，管理写操作使用独立的管理员 Session/CSRF Cookie，并要求 `X-CSRF-Token`。管理员角色：`owner`、`operator`、`auditor`。
+角色为 `user`、`admin`、`owner`，权限按层级继承。管理员登录不再有独立接口、密码表、Session 或 Cookie；所有角色使用 `/api/v1/auth/login`。
 
 ### `POST /api/v1/admin/bootstrap`
 
-仅用于初始化首个管理员，无需认证。只有 `admins` 表为空时请求才会成功；初始化使用数据库并发锁保证最多创建一个管理员，成功后不可重复初始化。管理员不需要邮箱，只设置用户名和密码，首个管理员角色固定为 `owner`。
+仅用于初始化首个 Owner，无需认证。只有不存在 Owner 时请求才会成功；初始化使用数据库并发锁保证最多创建一个 Owner，成功后不可重复初始化。请求必须包含用户名、邮箱和密码，首个 Owner 的用户 ID 为 `1`，成功后不自动创建 Session。
 
 ```json
-{"username":"chenxing-admin","password":"at-least-10-chars"}
+{"username":"chenxing-owner","email":"owner@example.com","password":"at-least-10-chars"}
 ```
 
-成功响应包含管理员 `id` 和 `role`，不会自动创建管理员 Session。
+成功响应包含统一用户 `id`、`username`、`email` 和 `role`，不会自动创建 Session。
 
 ### `GET /api/v1/admin/bootstrap/status`
 
-公开查询初始化状态，响应为 `{"initialized":false}` 或 `{"initialized":true}`。Web 前端首次打开时先查询此接口；状态为未初始化时显示管理员初始化界面。
-
-### `POST /api/v1/admin/auth/login`
-
-```json
-{"username":"chenxing-admin","password":"at-least-10-chars"}
-```
-
-响应：`{"admin_id":1,"expires_in":604800}`，同时设置管理员 Session 和 CSRF Cookie。首个初始化管理员的 ID 为 `1`。
-
-### `DELETE /api/v1/admin/auth/logout`
-
-撤销管理员 Session，要求管理员 Session Cookie、管理员 CSRF Cookie 和 `X-CSRF-Token`；响应 `204`。
+公开查询初始化状态，响应为 `{"initialized":false}` 或 `{"initialized":true}`。Web 前端首次打开时先查询此接口；状态为未初始化时显示 Owner 初始化界面。
 
 ### 注册邮件发件地址
 
-管理员 Web 控制台入口为 `/admin-console/login`，登录后在“邮件设置”页面维护用户注册流程使用的发件地址。该设置使用独立的管理员 Session Cookie、管理员 CSRF Cookie 和 `X-CSRF-Token` 保护，只有 Owner 可修改。
+管理员 Web 控制台入口为 `/admin-console/login`，会跳转到统一登录页；登录后在“邮件设置”页面维护用户注册流程使用的发件地址。该设置使用普通 Session Cookie、CSRF Cookie 和 `X-CSRF-Token` 保护，只有 Owner 可修改。
 
 - `GET /api/v1/admin/settings/registration-email`：读取当前发件地址，未配置时返回 `{"registration_email_from":null}`。
 - `PUT /api/v1/admin/settings/registration-email`：更新发件地址，提交 `{"registration_email_from":"no-reply@example.com"}`；传 `null` 或空字符串可清除配置，成功返回更新后的设置。
@@ -250,14 +240,15 @@ grant_type=refresh_token&refresh_token=...
 - `GET /api/v1/admin/users`：列出用户，需要 `ManageUsers`。
 - `POST /api/v1/admin/users/{user_id}/{status}`：设置用户状态，需要 `ManageUsers`。状态由后端支持值决定，常用为 `active`、`disabled`；成功 `204`。
 
-用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`created_at`。
+用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`role`、`created_at`。
 
-### 管理员管理
+### 特权用户管理
 
-- `GET /api/v1/admin/admins`：列出管理员，需要 `ManageUsers`。
-- `POST /api/v1/admin/admins`：创建管理员，需要 Owner 权限和管理员 CSRF。
+- `GET /api/v1/admin/admins`：列出角色为 `admin` 或 `owner` 的统一用户，需要 `ManageUsers`。
+- `POST /api/v1/admin/admins`：创建完整的特权用户，需要 Owner 权限和普通用户 CSRF。
+- `POST /api/v1/admin/users/{user_id}/role`：修改其他用户角色，仅 Owner 可用；禁止自我改角色，降级最后一个活跃 Owner 返回 `409 last_owner_required`。
 
-创建字段：`username`、`password`、`role`。返回的管理员摘要不包含密码或哈希。
+创建字段：`username`、`email`、`password`、`role`，角色只允许 `admin` 或 `owner`。返回的用户摘要不包含密码或哈希。
 
 ### Client 管理
 
@@ -285,7 +276,7 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 - `PUT /api/v1/admin/oauth/providers/{slug}`：更新配置；`client_secret` 省略时保留原 Secret。
 - `POST /api/v1/admin/oauth/providers/{slug}/enable`、`/disable`：启用或停用。
 
-提供商支持 `basic`（Token 请求 HTTP Basic）和 `request_body`（Token 表单）两种 Client 认证方式；Claim 路径支持点分隔对象路径，例如 `profile.email`。管理员 Session 写操作需要管理员 CSRF Cookie 与 `X-CSRF-Token`；Bearer Token 是现有自动化兼容方式。
+提供商支持 `basic`（Token 请求 HTTP Basic）和 `request_body`（Token 表单）两种 Client 认证方式；Claim 路径支持点分隔对象路径，例如 `profile.email`。浏览器写操作需要普通 CSRF Cookie 与 `X-CSRF-Token`；Bearer Token 是现有自动化兼容方式。
 
 ### `GET /api/v1/admin/audit?limit=50`
 
@@ -301,21 +292,21 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 
 ### 管理后台 UI API
 
-- `GET /api/v1/admin/auth/me`：返回管理员角色、权限和身份摘要。Owner 是最高级角色，拥有全部权限。
+- `GET /api/v1/admin/auth/me`：从普通用户 Session 返回当前管理用户的统一 `user_id`、角色、权限和身份摘要；Bearer Token 自动化请求的 `user_id` 为 `null`。Owner 是最高级角色，拥有全部权限。
 - `GET /api/v1/admin/overview`：返回全局用户、OAuth Client、管理员和审计计数。
 - `GET /api/v1/admin/users/query?page=1&page_size=20&search=...&status=active`：分页筛选用户，需要 `ManageUsers`。
 - `GET /api/v1/admin/clients/query?page=1&page_size=20&search=...&status=active`：分页筛选全局 Client，需要 `ManageClients`，返回 owner ID 但不返回 Secret。
 - `GET /api/v1/admin/audit/query?page=1&page_size=20&action=...&resource_type=...`：分页筛选审计，需要 `ReadAudit`。
 
-分页响应统一为 `{"items":[],"page":1,"page_size":20,"total":0}`。管理员 API 继续支持 Bearer Token；浏览器 Session 写操作仍必须使用管理员 CSRF Cookie 和 `X-CSRF-Token`。
+分页响应统一为 `{"items":[],"page":1,"page_size":20,"total":0}`。管理员 API 继续支持 Bearer Token；浏览器 Session 写操作必须使用普通 CSRF Cookie 和 `X-CSRF-Token`。
 
 ## 权限矩阵
 
 | 角色 | 用户/管理员 | Client | OAuth 提供商 | 审计 | 密钥轮换 |
 | --- | --- | --- | --- | --- | --- |
 | `owner` | 是 | 是 | 是 | 是 | 是 |
-| `operator` | 是 | 是 | 是 | 否 | 否 |
-| `auditor` | 否 | 否 | 否 | 是 | 否 |
+| `admin` | 是 | 是 | 是 | 是 | 否 |
+| `user` | 否 | 本人 | 否 | 否 | 否 |
 
 ## 前端接入建议
 

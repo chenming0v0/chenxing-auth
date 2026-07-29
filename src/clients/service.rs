@@ -24,7 +24,7 @@ pub const USER_OAUTH_CLIENT_QUOTA: usize = 2;
 
 #[derive(Debug)]
 pub struct RegisteredClientSecret {
-    pub id: Uuid,
+    pub id: i64,
     pub client_id: String,
     pub client_secret: String,
     pub client_name: String,
@@ -34,7 +34,7 @@ pub struct RegisteredClientSecret {
 
 #[derive(Debug, Serialize)]
 pub struct ClientSummary {
-    pub id: Uuid,
+    pub id: i64,
     pub client_id: String,
     pub client_name: String,
     pub redirect_uris: Vec<String>,

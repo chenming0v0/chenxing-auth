@@ -11,7 +11,14 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
-use chenxing_auth::{api, config::Config, db, state::AppState};
+use chenxing_auth::{
+    api,
+    config::Config,
+    db,
+    oauth::{code::AuthorizationCode, refresh::RefreshToken},
+    sessions::domain::Session,
+    state::AppState,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use totp_rs::TOTP;
@@ -19,7 +26,7 @@ use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
 
-async fn test_router() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
+async fn test_state() -> (AppState, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -44,6 +51,11 @@ async fn test_router() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathB
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let state = AppState::new(config).expect("test state");
+    (state, database, key_directory)
+}
+
+async fn test_router() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
+    let (state, database, key_directory) = test_state().await;
     (api::router(state), database, key_directory)
 }
 
@@ -65,10 +77,491 @@ fn cookie_header(response: &axum::response::Response) -> String {
         .join("; ")
 }
 
+fn session_cookie(session: &Session) -> String {
+    format!(
+        "chenxing_session={}; chenxing_csrf={}",
+        session.token, session.csrf_token
+    )
+}
+
+async fn register_test_user(router: &Router, suffix: &str) -> (i64, String, String, String) {
+    let username = format!("disabled-{suffix}");
+    let email = format!("disabled-{suffix}@example.com");
+    let password = "correct horse battery";
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/users")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": username,
+                        "email": email,
+                        "password": password,
+                    })
+                    .to_string(),
+                ))
+                .expect("registration request"),
+        )
+        .await
+        .expect("registration response");
+    let status = response.status();
+    let body = json_body(response).await;
+    assert_eq!(status, StatusCode::CREATED, "registration response: {body}");
+    let user_id = body["user"]["id"].as_i64().expect("numeric user id");
+    (user_id, username, email, password.to_owned())
+}
+
+async fn ensure_owner_bootstrapped(router: &Router, suffix: &str) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/bootstrap")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": format!("test-owner-{suffix}"),
+                        "email": format!("test-owner-{suffix}@example.com"),
+                        "password": "correct horse battery",
+                    })
+                    .to_string(),
+                ))
+                .expect("bootstrap request"),
+        )
+        .await
+        .expect("bootstrap response");
+    assert!(
+        matches!(
+            response.status(),
+            StatusCode::CREATED | StatusCode::CONFLICT
+        ),
+        "unexpected bootstrap response: {}",
+        response.status()
+    );
+}
+
+async fn create_test_client(router: &Router, token: &str) -> (String, String) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/clients")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "client_name": "Disabled User Client",
+                        "redirect_uris": ["https://disabled.example/callback"],
+                        "scopes": ["openid", "profile", "email"]
+                    })
+                    .to_string(),
+                ))
+                .expect("client request"),
+        )
+        .await
+        .expect("client response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let client = json_body(response).await;
+    (
+        client["client_id"].as_str().expect("client id").to_owned(),
+        client["client_secret"]
+            .as_str()
+            .expect("client secret")
+            .to_owned(),
+    )
+}
+
+async fn disable_user(database: &chenxing_auth::sqlx::PgPool, user_id: i64) {
+    chenxing_auth::sqlx::query("UPDATE users SET status = 'disabled' WHERE id = $1")
+        .bind(user_id)
+        .execute(database)
+        .await
+        .expect("disable user");
+}
+
+#[tokio::test]
+async fn disabled_user_session_cannot_authorize_or_submit_consent() {
+    let (state, database, key_directory) = test_state().await;
+    let router = api::router(state.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    ensure_owner_bootstrapped(&router, &suffix).await;
+    let (user_id, _username, _email, _password) = register_test_user(&router, &suffix).await;
+    let (client_id, _client_secret) = create_test_client(&router, "flow-admin-token").await;
+    let mut session =
+        Session::new(user_id.to_string(), std::time::Duration::from_secs(3600)).expect("session");
+    state
+        .sessions
+        .save(&mut session, std::time::Duration::from_secs(3600))
+        .await
+        .expect("persist session");
+    let cookie = session_cookie(&session);
+    let authorize_uri = format!(
+        "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Fdisabled.example%2Fcallback&response_type=code&scope=openid%20profile&state=disabled-state&nonce=disabled-nonce&code_challenge=disabled-challenge&code_challenge_method=S256"
+    );
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&authorize_uri)
+                .header("accept", "text/html")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .expect("authorize request"),
+        )
+        .await
+        .expect("authorize response");
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let consent_location = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("consent location")
+        .to_owned();
+    assert!(consent_location.starts_with("/oauth/authorize/consent?request_id="));
+    let request_id = Url::parse(&format!("http://localhost{consent_location}"))
+        .expect("consent URL")
+        .query_pairs()
+        .find(|(key, _)| key == "request_id")
+        .map(|(_, value)| value.into_owned())
+        .expect("request id");
+
+    disable_user(&database, user_id).await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&authorize_uri)
+                .header("accept", "text/html")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .expect("disabled authorize request"),
+        )
+        .await
+        .expect("disabled authorize response");
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("/auth/login?request_id="))
+    );
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/oauth/authorize/consent?request_id={request_id}"))
+                .header("accept", "text/html")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .expect("disabled HTML consent request"),
+        )
+        .await
+        .expect("disabled HTML consent response");
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("/auth/login?request_id="))
+    );
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/oauth/authorize/requests/{request_id}"))
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .expect("disabled inspect request"),
+        )
+        .await
+        .expect("disabled inspect response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/authorize/consent")
+                .header("cookie", &cookie)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "request_id={request_id}&decision=approve&csrf_token={}",
+                    session.csrf_token
+                )))
+                .expect("disabled consent request"),
+        )
+        .await
+        .expect("disabled consent response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
+        .bind(client_id)
+        .execute(&database)
+        .await
+        .expect("cleanup client");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn disabled_user_cannot_exchange_oauth_credentials_without_consuming_them() {
+    let (state, database, key_directory) = test_state().await;
+    let router = api::router(state.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    ensure_owner_bootstrapped(&router, &suffix).await;
+    let (user_id, _username, _email, _password) = register_test_user(&router, &suffix).await;
+    let (client_id, client_secret) = create_test_client(&router, "flow-admin-token").await;
+    let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let code = AuthorizationCode::new_with_nonce(
+        client_id.clone(),
+        "https://disabled.example/callback".to_owned(),
+        user_id.to_string(),
+        vec!["openid".to_owned(), "profile".to_owned()],
+        challenge,
+        Some("disabled-nonce".to_owned()),
+    );
+    let refresh = RefreshToken::new_with_nonce(
+        client_id.clone(),
+        user_id.to_string(),
+        vec!["openid".to_owned(), "profile".to_owned()],
+        Some("disabled-nonce".to_owned()),
+    );
+    state
+        .authorization_codes
+        .save(&code)
+        .await
+        .expect("save authorization code");
+    state
+        .refresh_tokens
+        .save(&refresh)
+        .await
+        .expect("save refresh token");
+    disable_user(&database, user_id).await;
+    let basic = STANDARD.encode(format!("{client_id}:{client_secret}"));
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Fdisabled.example%2Fcallback&code_verifier={verifier}",
+                    code.value
+                )))
+                .expect("code exchange request"),
+        )
+        .await
+        .expect("code exchange response");
+    assert_ne!(response.status(), StatusCode::OK);
+    assert!(
+        state
+            .authorization_codes
+            .find(&code.value)
+            .await
+            .expect("find authorization code")
+            .is_some(),
+        "disabled-user rejection must not consume the authorization code"
+    );
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=refresh_token&refresh_token={}",
+                    refresh.value
+                )))
+                .expect("refresh request"),
+        )
+        .await
+        .expect("refresh response");
+    assert_ne!(response.status(), StatusCode::OK);
+    assert!(
+        state
+            .refresh_tokens
+            .find(&refresh.value)
+            .await
+            .expect("find refresh token")
+            .is_some(),
+        "disabled-user rejection must not consume the refresh token"
+    );
+
+    let response = chenxing_auth::oauth::response::issue_token_response(
+        &state,
+        &user_id.to_string(),
+        &client_id,
+        &["openid".to_owned(), "profile".to_owned()],
+        None,
+        Some("disabled-nonce"),
+    )
+    .await;
+    assert_ne!(response.status(), StatusCode::OK);
+
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
+        .bind(client_id)
+        .execute(&database)
+        .await
+        .expect("cleanup client");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn owner_login_issues_shared_session_and_csrf_cookies() {
+    let (state, database, key_directory) = test_state().await;
+    let router = api::router(state);
+    let suffix = Uuid::new_v4().simple().to_string();
+    ensure_owner_bootstrapped(&router, &suffix).await;
+    let username = format!("oauth-owner-{suffix}");
+    let email = format!("{username}@example.com");
+    let password = "correct horse battery";
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/admins")
+                .header("authorization", "Bearer flow-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": username,
+                        "email": email,
+                        "password": password,
+                        "role": "owner"
+                    })
+                    .to_string(),
+                ))
+                .expect("owner creation request"),
+        )
+        .await
+        .expect("owner creation response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let owner_id = json_body(response).await["id"].as_i64().expect("owner id");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "identifier": username,
+                        "password": password
+                    })
+                    .to_string(),
+                ))
+                .expect("owner login request"),
+        )
+        .await
+        .expect("owner login response");
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let login_ticket = json_body(response).await["login_ticket"]
+        .as_str()
+        .expect("owner login ticket")
+        .to_owned();
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/totp/setup")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"login_ticket": login_ticket}).to_string(),
+                ))
+                .expect("owner TOTP setup request"),
+        )
+        .await
+        .expect("owner TOTP setup response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let setup = json_body(response).await;
+    let totp =
+        TOTP::from_url(setup["otpauth_url"].as_str().expect("owner TOTP URI")).expect("owner TOTP");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/totp/setup/confirm")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "login_ticket": login_ticket,
+                        "code": totp.generate_current().expect("owner TOTP code")
+                    })
+                    .to_string(),
+                ))
+                .expect("owner TOTP confirmation request"),
+        )
+        .await
+        .expect("owner TOTP confirmation response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookie = cookie_header(&response);
+    assert!(cookie.contains("chenxing_session="));
+    assert!(cookie.contains("chenxing_csrf="));
+    assert!(!cookie.contains("admin_session"));
+    assert!(!cookie.contains("admin_csrf"));
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/users")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .expect("owner cookie management request"),
+        )
+        .await
+        .expect("owner cookie management response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(owner_id)
+        .execute(&database)
+        .await
+        .expect("cleanup owner");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
 #[tokio::test]
 async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
     let (router, database, key_directory) = test_router().await;
     let suffix = Uuid::new_v4().simple().to_string();
+    ensure_owner_bootstrapped(&router, &suffix).await;
     let email = format!("flow-{suffix}@example.com");
     let username = format!("flow-{suffix}");
     let password = "correct horse battery";

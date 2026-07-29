@@ -1,7 +1,10 @@
 import { FormEvent, useState } from "react";
-import { Calendar, Check, Copy, KeyRound, LockKeyhole, LogOut, Mail, Save, Smartphone } from "lucide-react";
+import { Check, LogOut, Save } from "lucide-react";
 import { errorMessage, formatDate } from "../../api";
-import { Avatar, Badge, Field, GlowButton, GhostButton, PageFade } from "../../components/ui";
+import {
+  Avatar, Badge, Field, GhostButton, GlowButton, Notice, PageFade, PageHeader, Section,
+} from "../../components/ui";
+import { CopyField } from "../../components/CopyField";
 import { useStore } from "../../store";
 
 export default function Profile() {
@@ -12,29 +15,157 @@ export default function Profile() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
   if (!user) return null;
 
   const saveProfile = async (event: FormEvent) => {
-    event.preventDefault(); setBusy(true); setError(null); setMessage(null);
-    try { await updateProfile(name); setMessage("资料已更新"); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); }
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      await updateProfile(name);
+      setMessage("资料已更新。");
+    } catch (value) {
+      setError(errorMessage(value));
+    } finally {
+      setBusy(false);
+    }
   };
-  const savePassword = async (event: FormEvent) => {
-    event.preventDefault(); setBusy(true); setError(null); setMessage(null);
-    try { await changePassword(currentPassword, newPassword); setCurrentPassword(""); setNewPassword(""); setMessage("密码已修改，所有旧 Session 已撤销，请重新登录"); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); }
-  };
-  const copyId = () => { void navigator.clipboard?.writeText(String(user.id)); setMessage("用户 ID 已复制"); };
 
-  return <PageFade>
-    <div className="mb-6"><h1 className="text-xl font-bold text-white">通行证资料</h1><p className="mt-1 text-sm text-slate-500">管理公开身份信息、密码和当前登录 Session。</p></div>
-    <div className="grid gap-6 lg:grid-cols-3">
-      <section className="glass rounded-3xl p-7"><div className="flex flex-col items-center text-center"><Avatar name={user.name} color={user.color} size="xl" /><h2 className="mt-5 text-xl font-bold text-white">{user.name}</h2><div className="mt-1 text-sm text-slate-500">{user.email}</div><div className="mt-3"><Badge tone="green">{user.status === "active" ? "正常" : user.status}</Badge></div><button onClick={copyId} className="code-block mt-6 flex w-full cursor-pointer items-center justify-between rounded-xl px-4 py-3 text-left hover:border-indigo-400/40"><div><div className="text-[10px] uppercase tracking-widest text-slate-600">用户 ID</div><div className="mt-0.5 truncate font-mono text-xs text-cyan-300">{user.id}</div></div><Copy size={15} className="text-slate-500" /></button></div></section>
-      <div className="space-y-6 lg:col-span-2">
-        <section className="glass rounded-3xl p-7"><div className="mb-5 flex items-center gap-2 text-sm font-semibold text-white"><Mail size={16} className="text-indigo-300" />公开资料</div><form className="space-y-4" onSubmit={saveProfile}><Field label="用户名（不可修改）" value={user.username} disabled /><Field label="邮箱（不可修改）" value={user.email} disabled /><Field label="显示名称" value={name} maxLength={128} onChange={(event) => setName(event.target.value)} /><div className="flex justify-end"><GlowButton type="submit" disabled={busy}><Save size={14} className="mr-1.5 inline" />保存资料</GlowButton></div></form></section>
-        <section className="glass rounded-3xl p-7"><div className="mb-5 flex items-center gap-2 text-sm font-semibold text-white"><LockKeyhole size={16} className="text-amber-300" />修改密码</div><form className="grid gap-4 sm:grid-cols-2" onSubmit={savePassword}><Field label="当前密码" type="password" required minLength={1} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /><Field label="新密码" type="password" required minLength={10} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /><div className="sm:col-span-2 flex items-center justify-between gap-3"><span className="text-xs text-slate-600">修改后所有已登录设备都会退出。</span><GlowButton type="submit" disabled={busy}>更新密码</GlowButton></div></form></section>
+  const savePassword = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      await changePassword(currentPassword, newPassword);
+      setCurrentPassword("");
+      setNewPassword("");
+      setMessage("密码已修改，所有会话已撤销，请重新登录。");
+    } catch (value) {
+      setError(errorMessage(value));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <PageFade>
+      <PageHeader title="通行证资料" description="管理公开身份信息、密码和登录会话。" />
+
+      {(message || error) && (
+        <div className="mb-5">
+          <Notice tone={error ? "error" : "success"}>{error ?? message}</Notice>
+        </div>
+      )}
+
+      <div className="grid gap-6 lg:grid-cols-3">
+        <Section className="lg:col-span-1">
+          <div className="flex flex-col items-center text-center">
+            <Avatar name={user.name} color={user.color} size="xl" />
+            <h2 className="mt-4 text-base font-semibold text-white">{user.name}</h2>
+            <div className="mt-1 text-xs text-slate-500">{user.email}</div>
+            <div className="mt-3 flex items-center gap-2">
+              <Badge tone={user.status === "active" ? "green" : "amber"}>
+                {user.status === "active" ? "正常" : user.status}
+              </Badge>
+              <Badge>{user.role === "owner" ? "所有者" : user.role === "admin" ? "管理员" : "用户"}</Badge>
+            </div>
+          </div>
+          <div className="mt-5 border-t border-hairline pt-5">
+            <CopyField label="用户 ID" value={String(user.id)} hint="sub Claim" />
+          </div>
+        </Section>
+
+        <div className="space-y-6 lg:col-span-2">
+          <Section title="公开资料" description="显示名称会出现在授权确认页面上。">
+            <form className="space-y-4" onSubmit={saveProfile}>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="用户名" value={user.username} disabled hint="创建后不可修改" />
+                <Field label="邮箱" value={user.email} disabled hint="如需更换请联系管理员" />
+              </div>
+              <Field
+                label="显示名称"
+                value={name}
+                maxLength={128}
+                placeholder="留空则显示用户名"
+                onChange={(event) => setName(event.target.value)}
+              />
+              <div className="flex justify-end border-t border-hairline pt-4">
+                <GlowButton type="submit" disabled={busy}><Save size={14} /> 保存资料</GlowButton>
+              </div>
+            </form>
+          </Section>
+
+          <Section title="修改密码" description="修改后所有已登录设备都会退出，包括当前设备。">
+            <form className="space-y-4" onSubmit={savePassword}>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field
+                  label="当前密码"
+                  type="password"
+                  autoComplete="current-password"
+                  required
+                  value={currentPassword}
+                  onChange={(event) => setCurrentPassword(event.target.value)}
+                />
+                <Field
+                  label="新密码"
+                  type="password"
+                  autoComplete="new-password"
+                  required
+                  minLength={10}
+                  value={newPassword}
+                  onChange={(event) => setNewPassword(event.target.value)}
+                  hint="至少 10 个字符"
+                />
+              </div>
+              <div className="flex justify-end border-t border-hairline pt-4">
+                <GlowButton type="submit" disabled={busy}>更新密码</GlowButton>
+              </div>
+            </form>
+          </Section>
+        </div>
       </div>
-    </div>
-    {(message || error) && <div role="status" className={`mt-6 rounded-xl border px-4 py-3 text-sm ${error ? "border-rose-400/20 bg-rose-500/10 text-rose-200" : "border-emerald-400/20 bg-emerald-500/10 text-emerald-200"}`}>{error ?? message}</div>}
-    <section className="mt-6 glass rounded-3xl p-7"><div className="mb-5 flex items-center gap-2 text-sm font-semibold text-white"><Smartphone size={16} className="text-cyan-300" />登录 Session</div><div className="space-y-2">{sessions.map((session) => <div key={session.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-white/6 bg-white/[0.02] px-4 py-3"><span className={`h-2 w-2 rounded-full ${session.current ? "bg-emerald-400" : "bg-slate-600"}`} /><div className="min-w-0 flex-1"><div className="font-mono text-xs text-slate-300">{session.id}</div><div className="mt-1 flex flex-wrap gap-3 text-[11px] text-slate-600"><span><Calendar size={11} className="mr-1 inline" />创建 {formatDate(session.created_at)}</span><span>过期 {formatDate(session.expires_at)}</span></div></div>{session.current ? <Badge tone="green"><Check size={11} />当前设备</Badge> : <GhostButton className="px-3 py-1.5" onClick={() => void revokeSession(session.id)}><LogOut size={12} className="mr-1 inline" />撤销</GhostButton>}</div>)}{sessions.length === 0 && <div className="py-6 text-center text-sm text-slate-600">暂无活跃 Session</div>}</div></section>
-    <div className="mt-6 flex items-center gap-2 text-xs text-slate-600"><KeyRound size={13} className="text-indigo-300/70" />密码与 Session 由认证中枢统一管理，前端不会保存密码。</div>
-  </PageFade>;
+
+      <Section
+        className="mt-6"
+        title="登录会话"
+        description="每个会话对应一台设备的登录状态。撤销后该设备需要重新登录。"
+      >
+        {sessions.length === 0 ? (
+          <p className="py-4 text-center text-xs text-slate-500">暂无活跃会话</p>
+        ) : (
+          <div className="space-y-2">
+            {sessions.map((session) => (
+              <div
+                key={session.id}
+                className="flex flex-wrap items-center gap-3 rounded-lg border border-hairline px-3.5 py-3"
+              >
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${session.current ? "bg-emerald-400" : "bg-slate-600"}`} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs text-slate-300">
+                    会话 <span className="font-mono">#{session.id}</span>
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-slate-500">
+                    创建于 {formatDate(session.created_at)} · 过期 {formatDate(session.expires_at)}
+                  </div>
+                </div>
+                {session.current ? (
+                  <Badge tone="green"><Check size={11} /> 当前设备</Badge>
+                ) : (
+                  <GhostButton
+                    className="px-3 py-1.5 text-xs"
+                    onClick={() => void revokeSession(session.id)}
+                  >
+                    <LogOut size={12} /> 撤销
+                  </GhostButton>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+    </PageFade>
+  );
 }

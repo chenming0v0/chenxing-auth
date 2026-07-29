@@ -71,11 +71,13 @@ pub async fn create_provider(
     headers: HeaderMap,
     Json(input): Json<ProviderInput>,
 ) -> Response {
-    if let Err(response) =
-        current_admin_mutation(&state, &headers, AdminPermission::ManageIdentityProviders).await
-    {
-        return response;
-    }
+    let actor =
+        match current_admin_mutation(&state, &headers, AdminPermission::ManageIdentityProviders)
+            .await
+        {
+            Ok(actor) => actor,
+            Err(response) => return response,
+        };
     if input.client_secret.as_deref().is_none_or(str::is_empty) {
         return error::bad_request(
             "invalid_oauth_provider",
@@ -84,7 +86,7 @@ pub async fn create_provider(
     }
     match state.external_oauth.create(input).await {
         Ok(provider) => {
-            record_provider_event(&state, "oauth_provider_create", &provider.slug).await;
+            record_provider_event(&state, actor, "oauth_provider_create", &provider.slug).await;
             (
                 StatusCode::CREATED,
                 Json(provider_response(&state, provider)),
@@ -101,17 +103,19 @@ pub async fn update_provider(
     Path(slug): Path<String>,
     Json(input): Json<ProviderInput>,
 ) -> Response {
-    if let Err(response) =
-        current_admin_mutation(&state, &headers, AdminPermission::ManageIdentityProviders).await
-    {
-        return response;
-    }
+    let actor =
+        match current_admin_mutation(&state, &headers, AdminPermission::ManageIdentityProviders)
+            .await
+        {
+            Ok(actor) => actor,
+            Err(response) => return response,
+        };
     if input.slug != slug {
         return error::bad_request("invalid_oauth_provider", "provider slug cannot be changed");
     }
     match state.external_oauth.update(&slug, input).await {
         Ok(true) => {
-            record_provider_event(&state, "oauth_provider_update", &slug).await;
+            record_provider_event(&state, actor, "oauth_provider_update", &slug).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::bad_request("oauth_provider_not_found", "provider was not found"),
@@ -141,14 +145,16 @@ async fn set_provider_status(
     slug: String,
     status: &str,
 ) -> Response {
-    if let Err(response) =
-        current_admin_mutation(&state, &headers, AdminPermission::ManageIdentityProviders).await
-    {
-        return response;
-    }
+    let actor =
+        match current_admin_mutation(&state, &headers, AdminPermission::ManageIdentityProviders)
+            .await
+        {
+            Ok(actor) => actor,
+            Err(response) => return response,
+        };
     match state.external_oauth.set_status(&slug, status).await {
         Ok(true) => {
-            record_provider_event(&state, &format!("oauth_provider_{status}"), &slug).await;
+            record_provider_event(&state, actor, &format!("oauth_provider_{status}"), &slug).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::bad_request("oauth_provider_not_found", "provider was not found"),
@@ -187,12 +193,18 @@ fn provider_error_response(error_value: ExternalOAuthError) -> Response {
     }
 }
 
-async fn record_provider_event(state: &AppState, action: &str, slug: &str) {
+async fn record_provider_event(
+    state: &AppState,
+    actor: super::authorization::AdminActor,
+    action: &str,
+    slug: &str,
+) {
+    let (actor_type, actor_id) = actor.audit_fields();
     state
         .audit
         .record(AuditEvent::new(
-            "admin".to_owned(),
-            None,
+            actor_type.to_owned(),
+            actor_id,
             action.to_owned(),
             "oauth_provider".to_owned(),
             Some(slug.to_owned()),

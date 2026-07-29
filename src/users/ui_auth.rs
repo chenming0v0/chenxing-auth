@@ -1,5 +1,4 @@
 use axum::{http::HeaderMap, response::Response};
-use uuid::Uuid;
 
 use crate::{
     error,
@@ -12,14 +11,14 @@ use crate::{
 pub(crate) struct UserContext {
     pub user_id: UserId,
     pub session: Session,
+    pub role: super::domain::UserRole,
 }
 
 pub(crate) async fn current_user(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<UserContext, Response> {
-    let Some(session_id) = cookies::cookie_value_by_name(headers, cookies::SESSION_COOKIE)
-        .and_then(|value| Uuid::parse_str(&value).ok())
+    let Some(session_token) = cookies::cookie_value_by_name(headers, cookies::SESSION_COOKIE)
     else {
         return Err(error::unauthorized(
             "login_required",
@@ -28,7 +27,7 @@ pub(crate) async fn current_user(
     };
     let Some(session) = state
         .sessions
-        .find(session_id)
+        .find(&session_token)
         .await
         .map_err(|_| error::internal())?
     else {
@@ -64,7 +63,11 @@ pub(crate) async fn current_user(
             "user account is disabled",
         ));
     }
-    Ok(UserContext { user_id, session })
+    Ok(UserContext {
+        user_id,
+        session,
+        role: profile.role,
+    })
 }
 
 pub(crate) async fn mutation_user(

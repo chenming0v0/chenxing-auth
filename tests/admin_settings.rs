@@ -5,6 +5,10 @@ use axum::{
 };
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
+use chenxing_auth::{
+    sessions::{cookies, domain::Session, store::SessionStore},
+    sqlx,
+};
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -48,6 +52,30 @@ async fn json(response: axum::response::Response) -> Value {
             .expect("body"),
     )
     .expect("JSON")
+}
+
+async fn browser_session(database_url: &str, redis_url: &str, user_id: i64) -> (String, String) {
+    let database = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(database_url)
+        .await
+        .expect("session PostgreSQL");
+    let redis = redis::Client::open(redis_url).expect("session Redis");
+    let store = SessionStore::with_metadata(redis, database);
+    let mut session = Session::new(user_id.to_string(), std::time::Duration::from_secs(3600))
+        .expect("browser session");
+    store
+        .save(&mut session, std::time::Duration::from_secs(3600))
+        .await
+        .expect("save browser session");
+    let cookie = format!(
+        "{}={}; {}={}",
+        cookies::SESSION_COOKIE,
+        session.token,
+        cookies::CSRF_COOKIE,
+        session.csrf_token
+    );
+    (cookie, session.csrf_token)
 }
 
 #[tokio::test]
@@ -149,5 +177,63 @@ async fn owner_can_read_update_and_persist_registration_email_setting() {
     .expect("stored setting");
     assert_eq!(stored.as_deref(), Some(email.as_str()));
 
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn session_authenticated_setting_mutation_records_user_actor() {
+    let (router, database, key_directory) = setup().await;
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let username = format!("settings-owner-{}", Uuid::new_v4().simple());
+    let email = format!("{username}@example.com");
+    let user_id: i64 = sqlx::query_scalar(
+        "INSERT INTO users (username, email, password_hash, role, created_at, updated_at)
+         VALUES ($1, $2, 'test-hash', 'owner', NOW(), NOW())
+         RETURNING id",
+    )
+    .bind(&username)
+    .bind(&email)
+    .fetch_one(&database)
+    .await
+    .expect("owner user");
+    let (cookie, csrf) = browser_session(&database_url, &redis_url, user_id).await;
+    let registration_email = format!("sender-{}@example.com", Uuid::new_v4().simple());
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/settings/registration-email")
+                .header("cookie", cookie)
+                .header("x-csrf-token", csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"registration_email_from": registration_email}).to_string(),
+                ))
+                .expect("session setting request"),
+        )
+        .await
+        .expect("session setting response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let actor: Option<i64> = sqlx::query_scalar(
+        "SELECT actor_user_id FROM audit_events
+         WHERE action = 'registration_email_update' AND resource_id = $1
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(chenxing_auth::settings::REGISTRATION_EMAIL_FROM_KEY)
+    .fetch_one(&database)
+    .await
+    .expect("registration audit event");
+    assert_eq!(actor, Some(user_id));
+
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup owner");
     let _ = std::fs::remove_dir_all(key_directory);
 }

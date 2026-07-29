@@ -5,50 +5,44 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
-use serde::Serialize;
 
-use super::{
-    authorization::current_admin_mutation,
-    domain::AdminRole,
-    session::{ADMIN_CSRF_COOKIE, ADMIN_SESSION_COOKIE},
+use super::{authorization::current_admin_mutation, domain::AdminPermission};
+use crate::{
+    audit::AuditEvent,
+    error,
+    state::AppState,
+    users::domain::{RegistrationError, RegistrationInput, UserRole},
 };
-use crate::{audit::AuditEvent, error, sessions::cookies, state::AppState};
-
-pub use super::authorization::admin_csrf_valid;
-
-#[derive(Debug, Deserialize)]
-pub struct AdminCredentials {
-    pub username: String,
-    pub password: String,
-}
 
 #[derive(Debug, Deserialize)]
 pub struct BootstrapAdmin {
     pub username: String,
+    pub email: String,
     pub password: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateAdmin {
     pub username: String,
+    pub email: String,
     pub password: String,
     pub role: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct BootstrapStatusResponse {
     pub initialized: bool,
 }
 
 pub async fn bootstrap_status(State(state): State<AppState>) -> Response {
-    match state.admins.is_initialized().await {
+    match state.users.owner_initialized().await {
         Ok(initialized) => (
             StatusCode::OK,
             Json(BootstrapStatusResponse { initialized }),
         )
             .into_response(),
         Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to query administrator bootstrap status");
+            tracing::error!(error = %error_value, "failed to query owner bootstrap status");
             error::internal()
         }
     }
@@ -58,42 +52,71 @@ pub async fn bootstrap_admin(
     State(state): State<AppState>,
     Json(input): Json<BootstrapAdmin>,
 ) -> Response {
-    let role = AdminRole::Owner;
-    match state
-        .admins
-        .bootstrap(&input.username, &input.password, role)
-        .await
-    {
-        Ok(Some(id)) => {
+    let registration = RegistrationInput {
+        username: input.username,
+        email: input.email,
+        password: input.password,
+        display_name: None,
+    };
+    match state.users.bootstrap_owner(registration).await {
+        Ok(crate::users::service::BootstrapOwnerResult::Created(profile)) => {
             state
                 .audit
                 .record(AuditEvent::new(
                     "bootstrap".to_owned(),
                     None,
-                    "admin_bootstrap".to_owned(),
-                    "admin".to_owned(),
-                    Some(id.to_string()),
-                    serde_json::json!({"role": role.as_str()}),
+                    "owner_bootstrap".to_owned(),
+                    "user".to_owned(),
+                    Some(profile.id.to_string()),
+                    serde_json::json!({"role": "owner"}),
                 ))
                 .await;
-            (
-                StatusCode::CREATED,
-                Json(serde_json::json!({"id": id, "role": role.as_str()})),
-            )
-                .into_response()
+            (StatusCode::CREATED, Json(serde_json::json!({
+                "id": profile.id, "username": profile.username, "email": profile.email, "role": "owner"
+            }))).into_response()
         }
-        Ok(None) => error::conflict(
+        Ok(crate::users::service::BootstrapOwnerResult::AlreadyConfigured) => error::conflict(
             "bootstrap_already_completed",
-            "bootstrap administrator is already configured",
+            "owner bootstrap is already configured",
         ),
-        Err(super::service::AdminServiceError::InvalidUsername) => {
-            error::bad_request("invalid_username", "administrator username is invalid")
+        Ok(crate::users::service::BootstrapOwnerResult::RequiresEmptyDatabase) => error::conflict(
+            "owner_bootstrap_requires_empty_database",
+            "owner bootstrap requires an empty users table; clear the database before retrying",
+        ),
+        Err(crate::users::service::UserServiceError::Validation(
+            RegistrationError::InvalidEmail,
+        )) => error::bad_request("invalid_email", "email is invalid"),
+        Err(crate::users::service::UserServiceError::Validation(
+            RegistrationError::InvalidUsername,
+        )) => error::bad_request("invalid_username", "username is invalid"),
+        Err(crate::users::service::UserServiceError::Validation(
+            RegistrationError::PasswordTooShort,
+        )) => error::bad_request("password_too_short", "password is too short"),
+        Err(crate::users::service::UserServiceError::OwnerBootstrapRequired) => error::conflict(
+            "owner_bootstrap_required",
+            "owner bootstrap must be completed before creating privileged users",
+        ),
+        Err(crate::users::service::UserServiceError::Database(error_value))
+            if error_value
+                .as_database_error()
+                .and_then(|e| e.constraint())
+                .is_some_and(|name| name == "users_username_key") =>
+        {
+            error::conflict(
+                "username_already_registered",
+                "username is already registered",
+            )
         }
-        Err(super::service::AdminServiceError::PasswordTooShort) => {
-            error::bad_request("password_too_short", "administrator password is too short")
+        Err(crate::users::service::UserServiceError::Database(error_value))
+            if error_value
+                .as_database_error()
+                .and_then(|e| e.constraint())
+                .is_some_and(|name| name == "users_email_key") =>
+        {
+            error::conflict("email_already_registered", "email is already registered")
         }
         Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to bootstrap administrator");
+            tracing::error!(error = %error_value, "failed to bootstrap owner");
             error::internal()
         }
     }
@@ -104,42 +127,34 @@ pub async fn create_admin(
     headers: HeaderMap,
     Json(input): Json<CreateAdmin>,
 ) -> Response {
-    if let Err(response) = current_admin_mutation(
-        &state,
-        &headers,
-        super::domain::AdminPermission::ManageUsers,
-    )
-    .await
-    {
-        return response;
-    }
-    let Some(role) = parse_role(&input.role) else {
-        return error::bad_request("invalid_role", "administrator role is invalid");
+    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageRoles).await {
+        Ok(actor) => actor,
+        Err(response) => return response,
     };
-    create_admin_record(&state, &input.username, &input.password, role, "admin").await
-}
-
-async fn create_admin_record(
-    state: &AppState,
-    username: &str,
-    password: &str,
-    role: AdminRole,
-    actor_type: &str,
-) -> Response {
-    match state.admins.create(username, password, role).await {
+    let Some(role) = UserRole::parse(&input.role)
+        .filter(|role| matches!(role, UserRole::Admin | UserRole::Owner))
+    else {
+        return error::bad_request(
+            "invalid_role",
+            "privileged user role must be admin or owner",
+        );
+    };
+    let registration = RegistrationInput {
+        username: input.username,
+        email: input.email,
+        password: input.password,
+        display_name: None,
+    };
+    match state.users.create_privileged(registration, role).await {
         Ok(id) => {
+            let (actor_type, actor_id) = actor.audit_fields();
             state
                 .audit
                 .record(AuditEvent::new(
                     actor_type.to_owned(),
-                    None,
-                    if actor_type == "bootstrap" {
-                        "admin_bootstrap"
-                    } else {
-                        "admin_create"
-                    }
-                    .to_owned(),
-                    "admin".to_owned(),
+                    actor_id,
+                    "user_create".to_owned(),
+                    "user".to_owned(),
                     Some(id.to_string()),
                     serde_json::json!({"role": role.as_str()}),
                 ))
@@ -150,102 +165,37 @@ async fn create_admin_record(
             )
                 .into_response()
         }
-        Err(super::service::AdminServiceError::Database(database_error))
-            if database_error
+        Err(crate::users::service::UserServiceError::Validation(
+            RegistrationError::InvalidEmail,
+        )) => error::bad_request("invalid_email", "email is invalid"),
+        Err(crate::users::service::UserServiceError::Validation(
+            RegistrationError::InvalidUsername,
+        )) => error::bad_request("invalid_username", "username is invalid"),
+        Err(crate::users::service::UserServiceError::Validation(
+            RegistrationError::PasswordTooShort,
+        )) => error::bad_request("password_too_short", "password is too short"),
+        Err(crate::users::service::UserServiceError::Database(error_value))
+            if error_value
                 .as_database_error()
-                .and_then(|error| error.code())
-                .is_some_and(|code| code == "23505") =>
+                .and_then(|e| e.constraint())
+                .is_some_and(|name| name == "users_username_key") =>
         {
             error::conflict(
-                "admin_already_registered",
-                "administrator username is already registered",
+                "username_already_registered",
+                "username is already registered",
             )
         }
-        Err(super::service::AdminServiceError::InvalidUsername) => {
-            error::bad_request("invalid_username", "administrator username is invalid")
-        }
-        Err(super::service::AdminServiceError::PasswordTooShort) => {
-            error::bad_request("password_too_short", "administrator password is too short")
+        Err(crate::users::service::UserServiceError::Database(error_value))
+            if error_value
+                .as_database_error()
+                .and_then(|e| e.constraint())
+                .is_some_and(|name| name == "users_email_key") =>
+        {
+            error::conflict("email_already_registered", "email is already registered")
         }
         Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to create administrator");
+            tracing::error!(error = %error_value, "failed to create privileged user");
             error::internal()
         }
     }
-}
-
-pub async fn login_admin(
-    State(state): State<AppState>,
-    Json(input): Json<AdminCredentials>,
-) -> Response {
-    let (admin_id, _) = match state
-        .admins
-        .authenticate(&input.username, &input.password)
-        .await
-    {
-        Ok(value) => value,
-        Err(super::service::AdminServiceError::InvalidCredentials) => {
-            return error::unauthorized(
-                "invalid_credentials",
-                "administrator credentials are invalid",
-            );
-        }
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to authenticate administrator");
-            return error::internal();
-        }
-    };
-    let session = match state
-        .admin_sessions
-        .create(
-            admin_id,
-            std::time::Duration::from_secs(state.config.session_ttl_seconds),
-        )
-        .await
-    {
-        Ok(session) => session,
-        Err(redis_error) => {
-            tracing::error!(error = %redis_error, "failed to create admin session");
-            return error::internal();
-        }
-    };
-    let mut response = (StatusCode::OK, Json(serde_json::json!({"admin_id": admin_id, "expires_in": state.config.session_ttl_seconds}))).into_response();
-    cookies::append_named_login_cookies(
-        response.headers_mut(),
-        ADMIN_SESSION_COOKIE,
-        ADMIN_CSRF_COOKIE,
-        session.id,
-        &session.csrf_token,
-        state.config.session_ttl_seconds,
-        state.config.cookie_secure,
-    );
-    response
-}
-
-pub async fn logout_admin(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Some(session_id) = super::authorization::admin_session_id(&headers) else {
-        return error::unauthorized("invalid_session", "administrator session is invalid");
-    };
-    let Some(session) = state.admin_sessions.find(session_id).await.ok().flatten() else {
-        return error::unauthorized("invalid_session", "administrator session is invalid");
-    };
-    if !super::authorization::admin_csrf_valid(&headers, &session.csrf_token) {
-        return error::bad_request("csrf_invalid", "CSRF token is invalid");
-    }
-    if let Err(redis_error) = state.admin_sessions.revoke(session_id).await {
-        tracing::error!(error = %redis_error, "failed to revoke admin session");
-        return error::internal();
-    }
-    let mut response = StatusCode::NO_CONTENT.into_response();
-    cookies::append_named_clear_cookies(
-        response.headers_mut(),
-        ADMIN_SESSION_COOKIE,
-        ADMIN_CSRF_COOKIE,
-        state.config.cookie_secure,
-    );
-    response
-}
-
-fn parse_role(value: &str) -> Option<AdminRole> {
-    AdminRole::parse(value)
 }

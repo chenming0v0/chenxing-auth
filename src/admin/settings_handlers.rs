@@ -48,7 +48,7 @@ pub async fn update_registration_email(
     headers: HeaderMap,
     Json(input): Json<UpdateRegistrationEmail>,
 ) -> Response {
-    let admin_id =
+    let actor =
         match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
             Ok(admin_id) => admin_id,
             Err(response) => return response,
@@ -76,8 +76,8 @@ pub async fn update_registration_email(
     state
         .audit
         .record(AuditEvent::new(
-            "admin".to_owned(),
-            (admin_id > 0).then(|| admin_id.to_string()),
+            actor.actor_type().to_owned(),
+            actor.user_id().map(|id| id.to_string()),
             "registration_email_update".to_owned(),
             "setting".to_owned(),
             Some(crate::settings::REGISTRATION_EMAIL_FROM_KEY.to_owned()),

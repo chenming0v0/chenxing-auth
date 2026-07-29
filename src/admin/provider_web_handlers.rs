@@ -17,8 +17,7 @@ pub async fn oauth_settings(State(state): State<AppState>, headers: HeaderMap) -
     {
         return response;
     }
-    let csrf = cookies::cookie_value_by_name(&headers, super::session::ADMIN_CSRF_COOKIE)
-        .unwrap_or_default();
+    let csrf = cookies::cookie_value_by_name(&headers, cookies::CSRF_COOKIE).unwrap_or_default();
     let body = format!(
         r#"<main>
 <h1>自定义 OAuth 提供商</h1>

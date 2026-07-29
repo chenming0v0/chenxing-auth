@@ -89,6 +89,11 @@ pub async fn register_user(
             tracing::error!("invalid credentials reached registration handler");
             error::internal()
         }
+        Err(UserServiceError::LastOwnerRequired) => error::internal(),
+        Err(UserServiceError::OwnerBootstrapRequired) => error::conflict(
+            "owner_bootstrap_required",
+            "owner bootstrap must be completed before public registration",
+        ),
     }
 }
 
@@ -174,8 +179,16 @@ pub async fn login_user(State(state): State<AppState>, Json(input): Json<LoginIn
 }
 
 pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Some(session_id) = cookies::session_id(&headers) else {
+    let Some(session_token) = cookies::session_id(&headers) else {
         return error::unauthorized("invalid_session", "session is invalid");
+    };
+    let session = match state.sessions.find(&session_token).await {
+        Ok(Some(session)) => session,
+        Ok(None) => return error::unauthorized("invalid_session", "session is invalid"),
+        Err(session_error) => {
+            tracing::error!(error = %session_error, "failed to load session for revocation");
+            return error::internal();
+        }
     };
 
     if headers.get("cookie").is_some() {
@@ -188,24 +201,21 @@ pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -
         if csrf != csrf_cookie {
             return error::bad_request("csrf_invalid", "CSRF token is invalid");
         }
-        let Some(session) = state.sessions.find(session_id).await.ok().flatten() else {
-            return error::unauthorized("invalid_session", "session is invalid");
-        };
         if !session.validates_csrf(&csrf) {
             return error::bad_request("csrf_invalid", "CSRF token is invalid");
         }
     }
 
-    match state.sessions.revoke(session_id).await {
+    match state.sessions.revoke(&session_token).await {
         Ok(()) => {
             state
                 .audit
                 .record(AuditEvent::new(
                     "user".to_owned(),
-                    None,
+                    Some(session.user_id),
                     "session_revoke".to_owned(),
                     "session".to_owned(),
-                    Some(session_id.to_string()),
+                    Some(session.id.to_string()),
                     serde_json::json!({"result": "success"}),
                 ))
                 .await;
