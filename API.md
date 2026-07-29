@@ -238,7 +238,7 @@ grant_type=refresh_token&refresh_token=...
 - `GET /api/v1/admin/users`：列出用户，需要 `ManageUsers`。
 - `POST /api/v1/admin/users/{user_id}/{status}`：设置用户状态，需要 `ManageUsers`。状态由后端支持值决定，常用为 `active`、`disabled`；成功 `204`。
 
-用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`created_at`。
+用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`role`、`created_at`。
 
 ### 特权用户管理
 
@@ -290,7 +290,7 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 
 ### 管理后台 UI API
 
-- `GET /api/v1/admin/auth/me`：从普通用户 Session 返回当前管理用户角色、权限和身份摘要。Owner 是最高级角色，拥有全部权限。
+- `GET /api/v1/admin/auth/me`：从普通用户 Session 返回当前管理用户的统一 `user_id`、角色、权限和身份摘要；Bearer Token 自动化请求的 `user_id` 为 `null`。Owner 是最高级角色，拥有全部权限。
 - `GET /api/v1/admin/overview`：返回全局用户、OAuth Client、管理员和审计计数。
 - `GET /api/v1/admin/users/query?page=1&page_size=20&search=...&status=active`：分页筛选用户，需要 `ManageUsers`。
 - `GET /api/v1/admin/clients/query?page=1&page_size=20&search=...&status=active`：分页筛选全局 Client，需要 `ManageClients`，返回 owner ID 但不返回 Secret。

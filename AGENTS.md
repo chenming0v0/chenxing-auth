@@ -11,7 +11,7 @@
 - OAuth 2.0 / OpenID Connect
 - JWK / JWKS 密钥管理
 
-当前仓库处于后端能力建设和部署自动化阶段，已有 Rust/Cargo 配置和可编译的 Axum 服务。健康检查、账号注册/登录、浏览器登录与授权确认、Redis Session、HttpOnly Cookie/CSRF、Client 生命周期、OIDC Discovery、JWKS 多版本轮换、PKCE、带 nonce 的授权码、Access Token、ID Token、Refresh Token、UserInfo、Token 撤销、审计、管理员身份/角色/Session、用户与 Client 管理 API、Docker 生产部署和 GitHub Actions 多平台构建流程已经实现；完整视觉化管理后台和广泛第三方互操作仍未完成。实现新功能前，先确认目标是否已经落入现有架构和数据边界；不要把规划文档中的能力当作已实现能力。
+当前仓库处于后端能力建设和部署自动化阶段，已有 Rust/Cargo 配置和可编译的 Axum 服务。健康检查、账号注册/登录、浏览器登录与授权确认、Redis Session、HttpOnly Cookie/CSRF、Client 生命周期、OIDC Discovery、JWKS 多版本轮换、PKCE、带 nonce 的授权码、Access Token、ID Token、Refresh Token、UserInfo、Token 撤销、审计、统一用户角色与管理 API、Docker 生产部署和 GitHub Actions 多平台构建流程已经实现；完整视觉化管理后台和广泛第三方互操作仍未完成。实现新功能前，先确认目标是否已经落入现有架构和数据边界；不要把规划文档中的能力当作已实现能力。
 
 认证中枢独立于天穹辰星的其他子项目平台，专门负责账号、登录认证、OAuth/OIDC 授权、会话和身份信息服务。天穹辰星其他子项目是认证平台的接入方，应通过 Client 接入，不应把各自的业务功能或业务数据直接并入认证平台。
 
@@ -46,7 +46,7 @@ OAuth 2.0、OIDC、JWT、JWK/JWKS 和密码学相关能力优先使用成熟的 
 
 ### 数据职责
 
-- PostgreSQL 保存用户、Client、授权关系、密钥元数据、管理员和审计等持久化事实。
+- PostgreSQL 保存用户、Client、授权关系、密钥元数据和审计等持久化事实。
 - Redis 保存 Session、授权码、State、PKCE 相关短期状态、限流状态和可失效缓存，并设置 TTL。
 - 敏感值不写入普通日志；令牌、Client Secret、会话 Cookie 和授权码必须按凭据处理。
 - 数据库变更使用可审查、可回滚策略清晰的迁移文件，不在应用启动时静默修改生产结构。
@@ -82,10 +82,10 @@ OAuth 2.0、OIDC、JWT、JWK/JWKS 和密码学相关能力优先使用成熟的 
 - 代码注释解释原因、协议约束或安全边界，不重复描述显而易见的代码。
 - `APP_ISSUER` 是 OIDC 发行者标识，不能从请求 Host 或反向代理输入推导；Discovery、JWT Claims 和后续协议响应必须使用同一配置值。
 - 当前 OAuth 授权端点的 Session 头部是开发期兼容方式；生产浏览器应使用登录页签发的 HttpOnly Cookie 和授权确认页。
-- `ADMIN_TOKEN` 为空时必须拒绝所有已初始化的管理员 API；唯一例外是 `admins` 表为空时公开的首个管理员初始化接口。Client Secret 只能在创建时返回，后续列表和查询不得返回哈希或明文。
+- `ADMIN_TOKEN` 为空时必须拒绝所有已初始化的管理 API；唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口。Client Secret 只能在创建时返回，后续列表和查询不得返回哈希或明文。
 - 签名密钥轮换必须共享 AppState 克隆的密钥状态，按 JWT `kid` 选择验证公钥；管理员响应不得包含私钥材料。
 - 浏览器 Cookie 会话的状态变更必须校验 HttpOnly Session Cookie、CSRF Cookie 和 `X-CSRF-Token` 三者绑定；开发期请求头兼容逻辑不能成为生产浏览器认证方案。
-- 管理员角色必须通过 `AdminPermission` 校验；管理员 Session 的写操作必须校验独立的管理员 CSRF Cookie 和 `X-CSRF-Token`。
+- 管理角色必须通过 `AdminPermission` 校验；管理 Session 的写操作必须校验普通 HttpOnly Session Cookie、CSRF Cookie 和 `X-CSRF-Token`。
 
 ## 测试要求
 
@@ -147,7 +147,7 @@ cargo nextest run --all-features --test-threads 32
 
 后端已形成按用户、Client、OAuth、Session、密钥、审计和管理边界拆分的模块结构。新增实现应先更新受影响的约定、迁移和测试，再开始跨模块修改；规划中的前端和生产运维能力不能被描述为已完成。
 
-首次打开 Web 前端时，应用必须先查询管理员初始化状态。`admins` 表为空时显示初始化界面，提交用户名和密码后通过公开初始化接口创建唯一的首个 Owner 管理员；初始化使用 PostgreSQL advisory lock 保证并发请求最多成功一次。普通用户和管理员都使用从 `1` 开始递增的整数 ID 作为主键，二者序列独立，首个初始化管理员的 ID 固定为 `1`。管理员用户名不要求邮箱，初始化成功只显示成功提示并跳转管理员登录页，不自动创建管理员 Session。管理员已存在时不得再次公开创建，必须使用管理员用户名登录和已授权的管理接口。需要重新初始化时，由维护人员清理数据库后再重新执行初始化流程
+首次打开 Web 前端时，应用必须先查询 Owner 初始化状态。不存在 Owner 时显示初始化界面，提交用户名、邮箱和密码后通过公开初始化接口创建唯一的首个 Owner 用户；初始化使用 PostgreSQL advisory lock 保证并发请求最多成功一次。普通用户、管理员和 Owner 都使用同一组从 `1` 开始递增的用户 ID，首个初始化 Owner 的 ID 固定为 `1`。初始化成功只显示成功提示并跳转统一登录页，不自动创建 Session。Owner 已存在时不得再次公开创建，用户必须使用统一登录和已授权的管理接口。需要重新初始化时，由维护人员清理数据库后再重新执行流程
 
 ## API Wiki 与 OpenAPI
 

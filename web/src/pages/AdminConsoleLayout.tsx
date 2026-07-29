@@ -21,7 +21,8 @@ export default function AdminConsoleLayout() {
       if (active) setAdmin(profile);
     }).catch((value) => {
       if (!active) return;
-      if (value instanceof ApiError && value.status === 401) navigate("/admin-console/login", { replace: true });
+      if (value instanceof ApiError && value.status === 401) navigate("/login?return_to=%2Fadmin-console", { replace: true });
+      else if (value instanceof ApiError && value.code === "admin_forbidden") navigate("/console", { replace: true });
       else setError(errorMessage(value));
     }).finally(() => {
       if (active) setLoading(false);
@@ -30,11 +31,11 @@ export default function AdminConsoleLayout() {
   }, [navigate]);
 
   const logout = async () => {
-    try { await api.adminLogout(); } finally { navigate("/admin-console/login", { replace: true }); }
+    try { await api.logout(); } finally { navigate("/", { replace: true }); }
   };
 
   if (loading) return <div className="flex min-h-screen items-center justify-center bg-[#05060f] text-sm text-slate-500">正在验证管理员 Session…</div>;
-  if (!admin) return <div className="flex min-h-screen items-center justify-center bg-[#05060f] p-6 text-center"><div className="glass max-w-md rounded-3xl p-8"><ShieldCheck size={30} className="mx-auto text-amber-300" /><h1 className="mt-4 text-lg font-semibold text-white">无法加载管理 Session</h1><p className="mt-2 text-xs leading-6 text-slate-500">{error ?? "请重新登录管理员账户。"}</p><Link to="/admin-console/login" className="mt-6 inline-block rounded-xl bg-indigo-500 px-5 py-2.5 text-sm font-semibold text-white">返回管理员登录</Link></div></div>;
+  if (!admin) return <div className="flex min-h-screen items-center justify-center bg-[#05060f] p-6 text-center"><div className="glass max-w-md rounded-3xl p-8"><ShieldCheck size={30} className="mx-auto text-amber-300" /><h1 className="mt-4 text-lg font-semibold text-white">无法加载管理权限</h1><p className="mt-2 text-xs leading-6 text-slate-500">{error ?? "请使用管理员身份登录。"}</p><Link to="/login?return_to=%2Fadmin-console" className="mt-6 inline-block rounded-xl bg-indigo-500 px-5 py-2.5 text-sm font-semibold text-white">返回通行证登录</Link></div></div>;
 
   return (
     <div className="relative flex min-h-screen bg-[#05060f]">

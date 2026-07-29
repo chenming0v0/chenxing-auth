@@ -106,10 +106,10 @@ src/
 - 用户、Client、OAuth/OIDC、Session、JWK 和业务扩展模块边界
 - `/auth/login` 辰星通行证浏览器登录页
 - `/oauth/authorize/consent` 授权确认页、拒绝回调和 `user_consents` 持久化
-- 管理员 bootstrap、登录、注销、HttpOnly Session/CSRF Cookie
-- 管理员 Web 控制台与 PostgreSQL 持久化的注册邮件发件地址设置
-- `owner`、`operator`、`auditor` 角色与最小权限矩阵
-- 用户列表、用户启停、管理员列表、审计查询和管理后台入口
+- Owner bootstrap、统一用户登录、注销、HttpOnly Session/CSRF Cookie
+- 统一用户管理 Web 控制台与 PostgreSQL 持久化的注册邮件发件地址设置
+- `user`、`admin`、`owner` 层级角色与最小权限矩阵
+- 用户列表、用户启停、角色管理、特权用户列表、审计查询和管理后台入口
 - `/oauth/revoke` RFC 7009 风格 Token 撤销以及 Discovery 中的撤销端点
 - `BusinessExtension` 扩展 trait 与结构化业务 Claim 类型
 - 配置驱动的自定义 OAuth/OIDC 提供商管理、加密 Client Secret、外部身份绑定和浏览器回调登录

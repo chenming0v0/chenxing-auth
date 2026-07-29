@@ -45,7 +45,7 @@ function BootstrapGate() {
 
   if (initialized === null && !error) return <GateLoading />;
   if (error) return <GateError message={error} onRetry={checkStatus} />;
-  if (!initialized) return <Bootstrap onComplete={() => { setInitialized(true); window.location.assign("/admin-console/login"); }} />;
+  if (!initialized) return <Bootstrap onComplete={() => { setInitialized(true); window.location.assign("/login?return_to=%2Fadmin-console"); }} />;
 
   return <Routes>
     <Route path="/" element={<Landing />} />

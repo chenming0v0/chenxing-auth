@@ -34,7 +34,7 @@ export function Login() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await login(identifier, password); const requestId = params.get("request_id"); navigate(requestId ? `/oauth/consent?request_id=${encodeURIComponent(requestId)}` : "/console"); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
+  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await login(identifier, password); const requestId = params.get("request_id"); const returnTo = params.get("return_to"); navigate(requestId ? `/oauth/consent?request_id=${encodeURIComponent(requestId)}` : returnTo || "/console"); } catch (value) { setError(errorMessage(value)); } finally { setBusy(false); } };
   return <AuthShell title="登录辰星通行证" subtitle={params.get("request_id") ? "登录后继续完成授权确认" : "使用你的身份进入认证中枢"}>
     <form className="mt-6 space-y-4" onSubmit={submit}>
       <FormError value={error} />
