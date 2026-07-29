@@ -1,3 +1,4 @@
+use crate::users::domain::UserId;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -5,11 +6,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use super::{
     authorization::{current_admin_mutation, current_admin_permission},
-    domain::AdminPermission,
+    domain::{AdminId, AdminPermission},
 };
 use crate::{error, state::AppState};
 
@@ -20,7 +20,7 @@ pub struct LimitQuery {
 
 #[derive(Debug, Serialize)]
 pub struct UserSummary {
-    pub id: Uuid,
+    pub id: UserId,
     pub email: String,
     pub display_name: Option<String>,
     pub status: String,
@@ -29,8 +29,8 @@ pub struct UserSummary {
 
 #[derive(Debug, Serialize)]
 pub struct AdminSummary {
-    pub id: Uuid,
-    pub email: String,
+    pub id: AdminId,
+    pub username: String,
     pub role: &'static str,
     pub status: String,
 }
@@ -68,7 +68,7 @@ pub async fn list_users(State(state): State<AppState>, headers: HeaderMap) -> Re
 pub async fn set_user_status(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path((user_id, status)): Path<(Uuid, String)>,
+    Path((user_id, status)): Path<(UserId, String)>,
 ) -> Response {
     if let Err(response) =
         current_admin_mutation(&state, &headers, AdminPermission::ManageUsers).await
@@ -129,9 +129,9 @@ pub async fn list_admins(State(state): State<AppState>, headers: HeaderMap) -> R
             Json(
                 admins
                     .into_iter()
-                    .map(|(id, email, role, status)| AdminSummary {
+                    .map(|(id, username, role, status)| AdminSummary {
                         id,
-                        email,
+                        username,
                         role: role.as_str(),
                         status,
                     })

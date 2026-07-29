@@ -44,6 +44,28 @@ pub fn unauthorized(code: &'static str, message: impl Into<String>) -> Response 
         .into_response()
 }
 
+pub fn not_found(code: &'static str, message: impl Into<String>) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse {
+            code: code.to_owned(),
+            message: message.into(),
+        }),
+    )
+        .into_response()
+}
+
+pub fn too_many_requests(code: &'static str, message: impl Into<String>) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(ErrorResponse {
+            code: code.to_owned(),
+            message: message.into(),
+        }),
+    )
+        .into_response()
+}
+
 pub fn internal() -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,

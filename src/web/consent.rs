@@ -41,6 +41,12 @@ pub async fn consent_get(
     if let Err(response) = validate_pending(&state, &pending).await {
         return response;
     }
+    if pending.session_id != Some(session.id) {
+        return error::unauthorized(
+            "invalid_session",
+            "authorization request is not bound to this session",
+        );
+    }
     let client_name = match state.clients.find_registered(&pending.client_id).await {
         Ok(Some(client)) => client.client_name,
         Ok(None) => {
@@ -96,6 +102,12 @@ pub async fn consent_post(
     if let Err(response) = validate_pending(&state, &pending).await {
         return response;
     }
+    if pending.session_id != Some(session.id) {
+        return error::unauthorized(
+            "invalid_session",
+            "authorization request is not bound to this session",
+        );
+    }
     let Some(pending_request) = state
         .authorization_requests
         .take(&form.request_id)
@@ -108,7 +120,7 @@ pub async fn consent_post(
             "授权请求已被处理或已失效。",
         );
     };
-    let user_id = match uuid::Uuid::parse_str(&session.user_id) {
+    let user_id = match session.user_id.parse::<crate::users::domain::UserId>() {
         Ok(user_id) => user_id,
         Err(_) => return error::unauthorized("invalid_session", "session user is invalid"),
     };

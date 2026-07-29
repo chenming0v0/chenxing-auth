@@ -1,3 +1,4 @@
+use crate::users::domain::UserId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -19,6 +20,7 @@ pub struct RegisteredClient {
     pub client_name: String,
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
+    pub owner_user_id: Option<UserId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +31,7 @@ pub struct ValidatedAuthorizationRequest {
     pub state: String,
     pub nonce: Option<String>,
     pub code_challenge: String,
+    pub owner_user_id: Option<UserId>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -89,5 +92,6 @@ pub fn validate_authorization_request(
         state,
         nonce: request.nonce.filter(|nonce| !nonce.trim().is_empty()),
         code_challenge: request.code_challenge.expect("checked above"),
+        owner_user_id: Some(client.owner_user_id).flatten(),
     })
 }

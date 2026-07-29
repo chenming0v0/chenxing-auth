@@ -1,4 +1,5 @@
 use crate::sqlx::PgPool;
+use crate::users::domain::UserId;
 use argon2::{
     Argon2,
     password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
@@ -9,7 +10,7 @@ use uuid::Uuid;
 
 use super::{
     domain::{ClientRegistrationError, ClientRegistrationInput, validate_client_registration},
-    repository,
+    repository::{self, ClientInsertError},
 };
 use crate::oauth::authorization::RegisteredClient as OAuthRegisteredClient;
 use crate::users::credentials::verify_password;
@@ -18,6 +19,8 @@ use crate::users::credentials::verify_password;
 pub struct ClientService {
     pool: PgPool,
 }
+
+pub const USER_OAUTH_CLIENT_QUOTA: usize = 2;
 
 #[derive(Debug)]
 pub struct RegisteredClientSecret {
@@ -29,7 +32,7 @@ pub struct RegisteredClientSecret {
     pub scopes: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct ClientSummary {
     pub id: Uuid,
     pub client_id: String,
@@ -37,6 +40,7 @@ pub struct ClientSummary {
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
     pub status: String,
+    pub owner_user_id: Option<UserId>,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,6 +57,8 @@ pub enum ClientServiceError {
     SecretHash,
     #[error("could not persist client")]
     Database(#[from] crate::sqlx::Error),
+    #[error("normal user OAuth project quota has been exhausted")]
+    QuotaExceeded,
     #[error("client data is invalid")]
     InvalidData,
 }
@@ -92,6 +98,42 @@ impl ClientService {
         })
     }
 
+    pub async fn register_for_user(
+        &self,
+        owner_user_id: UserId,
+        input: ClientRegistrationInput,
+    ) -> Result<RegisteredClientSecret, ClientServiceError> {
+        let registration = validate_client_registration(input)?;
+        let client_id = format!("cx_{}", Uuid::new_v4().simple());
+        let client_secret = format!("cxs_{}", Uuid::new_v4().simple());
+        let salt = SaltString::generate(&mut OsRng);
+        let client_secret_hash = Argon2::default()
+            .hash_password(client_secret.as_bytes(), &salt)
+            .map_err(|_| ClientServiceError::SecretHash)?
+            .to_string();
+        let client = repository::insert_owned_client(
+            &self.pool,
+            owner_user_id,
+            registration,
+            client_id,
+            client_secret_hash,
+        )
+        .await
+        .map_err(|error| match error {
+            ClientInsertError::QuotaExceeded => ClientServiceError::QuotaExceeded,
+            ClientInsertError::Database(error) => ClientServiceError::Database(error),
+        })?;
+
+        Ok(RegisteredClientSecret {
+            id: client.id,
+            client_id: client.client_id,
+            client_secret,
+            client_name: client.client_name,
+            redirect_uris: client.redirect_uris,
+            scopes: client.scopes,
+        })
+    }
+
     pub async fn find_registered(
         &self,
         client_id: &str,
@@ -107,6 +149,7 @@ impl ClientService {
             client_name: client.client_name,
             redirect_uris: client.redirect_uris,
             scopes: client.scopes,
+            owner_user_id: client.owner_user_id,
         }))
     }
 
@@ -133,8 +176,30 @@ impl ClientService {
                 redirect_uris: client.redirect_uris,
                 scopes: client.scopes,
                 status: client.status,
+                owner_user_id: client.owner_user_id,
             })
             .collect())
+    }
+
+    pub async fn list_for_user(
+        &self,
+        owner_user_id: UserId,
+    ) -> Result<Vec<ClientSummary>, ClientServiceError> {
+        Ok(
+            repository::list_clients_for_owner(&self.pool, owner_user_id)
+                .await?
+                .into_iter()
+                .map(|client| ClientSummary {
+                    id: client.id,
+                    client_id: client.client_id,
+                    client_name: client.client_name,
+                    redirect_uris: client.redirect_uris,
+                    scopes: client.scopes,
+                    status: client.status,
+                    owner_user_id: client.owner_user_id,
+                })
+                .collect(),
+        )
     }
 
     pub async fn update(
@@ -145,6 +210,24 @@ impl ClientService {
         let registration = validate_client_registration(input)?;
         Ok(repository::update_client(
             &self.pool,
+            client_id,
+            &registration.client_name,
+            &registration.redirect_uris,
+            &registration.scopes,
+        )
+        .await?)
+    }
+
+    pub async fn update_for_user(
+        &self,
+        owner_user_id: UserId,
+        client_id: &str,
+        input: ClientRegistrationInput,
+    ) -> Result<bool, ClientServiceError> {
+        let registration = validate_client_registration(input)?;
+        Ok(repository::update_owned_client(
+            &self.pool,
+            owner_user_id,
             client_id,
             &registration.client_name,
             &registration.redirect_uris,
@@ -164,6 +247,21 @@ impl ClientService {
         Ok(repository::set_client_status(&self.pool, client_id, status).await?)
     }
 
+    pub async fn set_status_for_user(
+        &self,
+        owner_user_id: UserId,
+        client_id: &str,
+        status: &str,
+    ) -> Result<bool, ClientServiceError> {
+        if !matches!(status, "active" | "disabled") {
+            return Err(ClientServiceError::InvalidData);
+        }
+        Ok(
+            repository::set_owned_client_status(&self.pool, owner_user_id, client_id, status)
+                .await?,
+        )
+    }
+
     pub async fn rotate_secret(
         &self,
         client_id: &str,
@@ -175,6 +273,28 @@ impl ClientService {
             .map_err(|_| ClientServiceError::SecretHash)?
             .to_string();
         if !repository::update_client_secret(&self.pool, client_id, &hash).await? {
+            return Err(ClientServiceError::InvalidData);
+        }
+        Ok(RotatedClientSecret {
+            client_id: client_id.to_owned(),
+            client_secret,
+        })
+    }
+
+    pub async fn rotate_secret_for_user(
+        &self,
+        owner_user_id: UserId,
+        client_id: &str,
+    ) -> Result<RotatedClientSecret, ClientServiceError> {
+        let client_secret = format!("cxs_{}", Uuid::new_v4().simple());
+        let salt = SaltString::generate(&mut OsRng);
+        let hash = Argon2::default()
+            .hash_password(client_secret.as_bytes(), &salt)
+            .map_err(|_| ClientServiceError::SecretHash)?
+            .to_string();
+        if !repository::update_owned_client_secret(&self.pool, owner_user_id, client_id, &hash)
+            .await?
+        {
             return Err(ClientServiceError::InvalidData);
         }
         Ok(RotatedClientSecret {

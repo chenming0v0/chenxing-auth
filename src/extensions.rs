@@ -1,6 +1,7 @@
 //! Isolated extension points for business platforms integrating with the
 //! independent Chenxing authentication service.
 
+use crate::users::domain::UserId;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -15,7 +16,7 @@ pub trait BusinessExtension: Send + Sync {
 
     fn claims_for_user(
         &self,
-        user_id: uuid::Uuid,
+        user_id: UserId,
         requested_scopes: &[String],
     ) -> Vec<BusinessExtensionClaim>;
 }
@@ -30,7 +31,7 @@ impl BusinessExtension for EmptyExtension {
 
     fn claims_for_user(
         &self,
-        _user_id: uuid::Uuid,
+        _user_id: UserId,
         _requested_scopes: &[String],
     ) -> Vec<BusinessExtensionClaim> {
         Vec::new()

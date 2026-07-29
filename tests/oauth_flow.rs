@@ -14,6 +14,7 @@ use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use totp_rs::TOTP;
 use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
@@ -92,7 +93,7 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
         .expect("registration response");
     assert_eq!(response.status(), StatusCode::CREATED);
     let user = json_body(response).await;
-    let user_id = user["user"]["id"].as_str().expect("user id").to_owned();
+    let user_id = user["user"]["id"].as_i64().expect("numeric user id");
 
     let response = router
         .clone()
@@ -186,6 +187,46 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
         )
         .await
         .expect("login response");
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let ticket = json_body(response).await["login_ticket"]
+        .as_str()
+        .expect("login ticket")
+        .to_owned();
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/totp/setup")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"login_ticket": ticket}).to_string(),
+                ))
+                .expect("TOTP setup request"),
+        )
+        .await
+        .expect("TOTP setup response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let setup = json_body(response).await;
+    let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/totp/setup/confirm")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "login_ticket": ticket,
+                        "code": totp.generate_current().expect("TOTP code")
+                    })
+                    .to_string(),
+                ))
+                .expect("TOTP confirmation request"),
+        )
+        .await
+        .expect("TOTP confirmation response");
     assert_eq!(response.status(), StatusCode::OK);
     let session_cookie = cookie_header(&response);
     assert!(session_cookie.contains("chenxing_session="));
@@ -278,7 +319,8 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
         .expect("userinfo response");
     assert_eq!(response.status(), StatusCode::OK);
     let userinfo = json_body(response).await;
-    assert_eq!(userinfo["sub"].as_str(), Some(user_id.as_str()));
+    let user_id_text = user_id.to_string();
+    assert_eq!(userinfo["sub"].as_str(), Some(user_id_text.as_str()));
     assert_eq!(userinfo["email"].as_str(), Some(email.as_str()));
 
     let refresh_form = format!(
@@ -360,7 +402,7 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh() {
         .await
         .expect("cleanup client");
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(Uuid::parse_str(&user_id).expect("user UUID"))
+        .bind(user_id)
         .execute(&database)
         .await
         .expect("cleanup user");

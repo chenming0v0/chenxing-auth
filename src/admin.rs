@@ -9,6 +9,8 @@ pub mod management_handlers;
 pub mod repository;
 pub mod service;
 pub mod session;
+pub mod settings_handlers;
+pub mod ui_handlers;
 pub mod web_handlers;
 
 #[derive(Clone)]

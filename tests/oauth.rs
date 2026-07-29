@@ -9,6 +9,7 @@ fn client() -> RegisteredClient {
         client_name: "Project".to_owned(),
         redirect_uris: vec!["https://project.example/callback".to_owned()],
         scopes: vec!["openid".to_owned(), "profile".to_owned()],
+        owner_user_id: None,
     }
 }
 

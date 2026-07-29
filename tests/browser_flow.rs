@@ -8,6 +8,7 @@ use axum::{
 };
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
+use totp_rs::TOTP;
 use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
@@ -76,6 +77,14 @@ fn location(response: &axum::response::Response) -> String {
         .get(LOCATION)
         .and_then(|value| value.to_str().ok())
         .expect("redirect location")
+        .to_owned()
+}
+
+fn html_value(body: &str, name: &str) -> String {
+    body.split(&format!("name=\"{name}\" value=\""))
+        .nth(1)
+        .and_then(|value| value.split('"').next())
+        .expect("HTML form value")
         .to_owned()
 }
 
@@ -164,6 +173,31 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
         )
         .await
         .expect("browser login response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let setup_body = body(response).await;
+    let ticket = html_value(&setup_body, "login_ticket");
+    let uri = setup_body
+        .split("<code>")
+        .nth(1)
+        .and_then(|value| value.split("</code>").next())
+        .expect("TOTP URI")
+        .replace("&amp;", "&");
+    let totp = TOTP::from_url(&uri).expect("TOTP");
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/auth/login/totp")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "request_id={request_id}&login_ticket={ticket}&code={}",
+                    totp.generate_current().expect("TOTP code")
+                )))
+                .expect("browser TOTP request"),
+        )
+        .await
+        .expect("browser TOTP response");
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     let session_cookies = cookies(&response);
     let consent_location = location(&response);
@@ -256,7 +290,7 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
             .is_some_and(|value| value.contains("code="))
     );
 
-    let user_id: (Uuid,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
+    let user_id: (i64,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
         .bind(&email)
         .fetch_one(&database)
         .await

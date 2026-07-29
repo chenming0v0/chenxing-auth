@@ -3,9 +3,11 @@ use argon2::{
     password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
 };
 use thiserror::Error;
-use uuid::Uuid;
 
-use super::{domain::AdminRole, repository};
+use super::{
+    domain::{AdminId, AdminRole},
+    repository,
+};
 use crate::users::credentials::verify_password;
 
 #[derive(Clone)]
@@ -15,8 +17,8 @@ pub struct AdminService {
 
 #[derive(Debug, Error)]
 pub enum AdminServiceError {
-    #[error("admin email is invalid")]
-    InvalidEmail,
+    #[error("admin username is invalid")]
+    InvalidUsername,
     #[error("admin password is too short")]
     PasswordTooShort,
     #[error("admin role is invalid")]
@@ -36,12 +38,12 @@ impl AdminService {
 
     pub async fn create(
         &self,
-        email: &str,
+        username: &str,
         password: &str,
         role: AdminRole,
-    ) -> Result<Uuid, AdminServiceError> {
-        let email = normalize_email(email)?;
-        if password.chars().count() < 12 {
+    ) -> Result<AdminId, AdminServiceError> {
+        let username = normalize_username(username)?;
+        if password.chars().count() < crate::users::domain::MIN_PASSWORD_LENGTH {
             return Err(AdminServiceError::PasswordTooShort);
         }
         let salt = SaltString::generate(&mut OsRng);
@@ -49,17 +51,17 @@ impl AdminService {
             .hash_password(password.as_bytes(), &salt)
             .map_err(|_| AdminServiceError::PasswordHash)?
             .to_string();
-        Ok(repository::insert(&self.pool, &email, &hash, role.as_str()).await?)
+        Ok(repository::insert(&self.pool, &username, &hash, role.as_str()).await?)
     }
 
     pub async fn bootstrap(
         &self,
-        email: &str,
+        username: &str,
         password: &str,
         role: AdminRole,
-    ) -> Result<Option<Uuid>, AdminServiceError> {
-        let email = normalize_email(email)?;
-        if password.chars().count() < 12 {
+    ) -> Result<Option<AdminId>, AdminServiceError> {
+        let username = normalize_username(username)?;
+        if password.chars().count() < crate::users::domain::MIN_PASSWORD_LENGTH {
             return Err(AdminServiceError::PasswordTooShort);
         }
         let salt = SaltString::generate(&mut OsRng);
@@ -67,16 +69,20 @@ impl AdminService {
             .hash_password(password.as_bytes(), &salt)
             .map_err(|_| AdminServiceError::PasswordHash)?
             .to_string();
-        Ok(repository::insert_bootstrap(&self.pool, &email, &hash, role.as_str()).await?)
+        Ok(repository::insert_bootstrap(&self.pool, &username, &hash, role.as_str()).await?)
+    }
+
+    pub async fn is_initialized(&self) -> Result<bool, AdminServiceError> {
+        Ok(repository::is_initialized(&self.pool).await?)
     }
 
     pub async fn authenticate(
         &self,
-        email: &str,
+        username: &str,
         password: &str,
-    ) -> Result<(Uuid, AdminRole), AdminServiceError> {
-        let email = normalize_email(email)?;
-        let Some(admin) = repository::find_by_email(&self.pool, &email).await? else {
+    ) -> Result<(AdminId, AdminRole), AdminServiceError> {
+        let username = normalize_username(username)?;
+        let Some(admin) = repository::find_by_username(&self.pool, &username).await? else {
             return Err(AdminServiceError::InvalidCredentials);
         };
         let Some(role) = AdminRole::parse(&admin.role) else {
@@ -91,28 +97,30 @@ impl AdminService {
 
     pub async fn find(
         &self,
-        id: Uuid,
-    ) -> Result<Option<(Uuid, String, AdminRole, String)>, AdminServiceError> {
+        id: AdminId,
+    ) -> Result<Option<(AdminId, String, AdminRole, String)>, AdminServiceError> {
         Ok(repository::find_by_id(&self.pool, id)
             .await?
             .and_then(|admin| {
                 AdminRole::parse(&admin.role)
-                    .map(|role| (admin.id, admin.email, role, admin.status))
+                    .map(|role| (admin.id, admin.username, role, admin.status))
             }))
     }
 
-    pub async fn list(&self) -> Result<Vec<(Uuid, String, AdminRole, String)>, AdminServiceError> {
+    pub async fn list(
+        &self,
+    ) -> Result<Vec<(AdminId, String, AdminRole, String)>, AdminServiceError> {
         Ok(repository::list(&self.pool)
             .await?
             .into_iter()
             .filter_map(|admin| {
                 AdminRole::parse(&admin.role)
-                    .map(|role| (admin.id, admin.email, role, admin.status))
+                    .map(|role| (admin.id, admin.username, role, admin.status))
             })
             .collect())
     }
 
-    pub async fn set_status(&self, id: Uuid, status: &str) -> Result<bool, AdminServiceError> {
+    pub async fn set_status(&self, id: AdminId, status: &str) -> Result<bool, AdminServiceError> {
         if !matches!(status, "active" | "disabled") {
             return Ok(false);
         }
@@ -120,13 +128,11 @@ impl AdminService {
     }
 }
 
-fn normalize_email(value: &str) -> Result<String, AdminServiceError> {
-    let email = value.trim().to_ascii_lowercase();
-    let mut parts = email.split('@');
-    let local = parts.next().unwrap_or_default();
-    let domain = parts.next().unwrap_or_default();
-    if parts.next().is_some() || local.is_empty() || !domain.contains('.') {
-        return Err(AdminServiceError::InvalidEmail);
+fn normalize_username(value: &str) -> Result<String, AdminServiceError> {
+    let username = value.trim().to_owned();
+    let length = username.chars().count();
+    if !(3..=64).contains(&length) || username.chars().any(char::is_whitespace) {
+        return Err(AdminServiceError::InvalidUsername);
     }
-    Ok(email)
+    Ok(username)
 }

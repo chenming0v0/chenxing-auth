@@ -8,7 +8,7 @@
 
 用户侧产品名称为 **辰星通行证**。用户创建辰星通行证账号后，可以使用该账号注册和登录天穹辰星的其他子项目平台。平台提供统一登录、OAuth 2.0 / OpenID Connect（OIDC）授权、用户与 Client 管理、会话管理，以及隔离的业务扩展接口。
 
-当前仓库以可运行的后端和部署能力为主，前端优先级较低。浏览器登录、授权确认、管理员账号会话、角色权限、用户/Client/审计管理 API、OAuth/OIDC 授权码流程和 Docker/GitHub Actions 已实现；完整视觉化管理后台和第三方互操作认证矩阵仍属于后续增强项。
+当前仓库包含可运行的后端和同源 React Web 控制台。浏览器登录、注册、资料与 Session 管理、用户 OAuth Client 管理、OAuth/OIDC 授权码流程和 Docker/GitHub Actions 已实现；前端构建产物会内嵌进 Rust 二进制，由同一个 Axum 服务提供，不要求单独的静态站点或反向代理。
 
 ## 项目定位
 
@@ -108,6 +108,7 @@ src/
 - Redirect URI 采用精确匹配或经明确设计的安全匹配策略，禁止任意通配。
 - 管理后台默认采用最小权限原则，并保留关键操作审计记录。
 - 会话和短期授权状态优先使用 Redis，并设置明确 TTL；持久化事实以 PostgreSQL 为准。
+- TOTP 秘钥使用 `AUTH_ENCRYPTION_KEY` 加密后保存；生产环境必须使用随机、持久化且受保护的 32 字节 Base64 密钥。
 - 签名密钥支持多版本轮换，JWKS 发布保留旧公钥并按 JWT `kid` 验证过渡期令牌；私钥只保存在受保护的密钥卷中。
 - 所有外部输入都必须经过结构化校验；错误响应不得泄露凭据、内部堆栈或敏感配置。
 - 生产环境必须使用 TLS，并通过配置或密钥管理系统注入敏感配置。
@@ -124,7 +125,7 @@ src/
 - Redis Client 边界
 - 用户注册输入校验和 Argon2 密码哈希
 - `POST /api/v1/users` 基础注册接口
-- `POST /api/v1/auth/login` 登录并创建 Redis Session
+- `POST /api/v1/auth/login` 密码登录并执行 TOTP 或 WebAuthn 因子流程
 - RSA 2048 位签名密钥生成和 JWKS 发布
 - OIDC Discovery 元数据端点
 - OAuth 授权请求校验（精确 Redirect URI、Scope、State 和 PKCE S256）
@@ -144,6 +145,7 @@ src/
 - `/auth/login` 辰星通行证浏览器登录页
 - `/oauth/authorize/consent` 授权确认页、拒绝回调和 `user_consents` 持久化
 - 管理员 bootstrap、登录、注销、HttpOnly Session/CSRF Cookie
+- 管理员 Web 控制台与 PostgreSQL 持久化的注册邮件发件地址设置
 - `owner`、`operator`、`auditor` 角色与最小权限矩阵
 - 用户列表、用户启停、管理员列表、审计查询和管理后台入口
 - `/oauth/revoke` RFC 7009 风格 Token 撤销以及 Discovery 中的撤销端点
@@ -163,6 +165,7 @@ src/
 ### 前置条件
 
 - Rust 1.94 或兼容的稳定版工具链
+- Node.js 22 或兼容版本及 npm
 - PostgreSQL 14 或更高版本
 - Redis 6 或更高版本
 
@@ -171,39 +174,24 @@ src/
 ### 常用命令
 
 ```powershell
+npm ci --prefix web
+npm run build --prefix web
 cargo fmt
 cargo check --all-targets --all-features
 cargo test --all-features
 cargo run
 ```
 
-当前 API：
+`cargo build`/`cargo run` 在缺少 `web/dist/index.html` 时会通过 Cargo build script 自动安装并构建 Web。生产 Docker 和 GitHub Actions 会在 Rust 编译前显式完成同样的步骤。启动后访问 `http://127.0.0.1:3000/` 即可同时使用 Web 和 API。
 
-- `GET /health`：返回服务健康状态
-- `POST /api/v1/users`：创建辰星通行证账号，JSON 字段为 `email`、`password` 和可选的 `display_name`
-- `POST /api/v1/auth/login`：验证辰星通行证账号并创建 Redis Session，JSON 字段为 `email` 和 `password`
-- `GET /auth/login`、`POST /auth/login`：浏览器登录页，仅由带有效授权请求的流程使用
-- `GET /oauth/authorize/consent`、`POST /oauth/authorize/consent`：浏览器授权确认和 CSRF 保护
-- `DELETE /api/v1/auth/session`：撤销当前 Session，需要 `X-Chenxing-Session` 请求头
-- `POST /oauth/token`：授权码/Refresh Token 交换，支持 HTTP Basic 或表单 Client 认证
-- `POST /oauth/revoke`：撤销 Access Token 或 Refresh Token
-- `GET /oauth/userinfo`：使用 `Authorization: Bearer <access_token>` 返回 OIDC UserInfo
-- `POST /api/v1/admin/bootstrap`：仅使用 `ADMIN_TOKEN` 初始化第一个管理员，成功后不可重复 bootstrap
-- `POST /api/v1/admin/auth/login`、`DELETE /api/v1/admin/auth/logout`：管理员 API Session
-- `GET /api/v1/admin/admins`、`POST /api/v1/admin/admins`：查看/创建管理员；创建操作要求 Owner 和 CSRF
-- `GET /api/v1/admin/users`、`POST /api/v1/admin/users/{user_id}/{status}`：用户管理
-- `GET /api/v1/admin/audit`：审计查询
-- `POST /api/v1/admin/clients`：使用管理员 Bearer Token 注册 Client，Client Secret 只在创建响应中返回
-- `GET /api/v1/admin/clients`：使用管理员 Bearer Token 查看 Client 列表
-- `PUT /api/v1/admin/clients/{client_id}`：更新 Client 配置
-- `POST /api/v1/admin/clients/{client_id}/disable`：禁用 Client
-- `POST /api/v1/admin/clients/{client_id}/enable`：启用 Client
-- `POST /api/v1/admin/clients/{client_id}/rotate-secret`：轮换 Client Secret
-- `POST /api/v1/admin/keys/rotate`：管理员轮换 RS256 签名密钥，旧公钥继续发布
+## API 文档
+
+- [给人看的 API 文档](https://wiki.auth.clya.top)
+- [给 AI 看的 API 文档](https://wiki.auth.clya.top/llms.txt)
 
 以下能力仍属于后续增强项，当前不应直接视为完整生产认证产品：
 
-- 完整视觉化管理后台 UI（当前提供轻量 HTML 入口和完整管理 API）
+- 用户已授权应用的聚合列表 API（当前页面明确展示后端能力边界）
 - 大规模第三方 OAuth/OIDC 互操作认证矩阵
 - 密钥撤销策略和外部受保护密钥存储
 - 生产级限流、告警和密钥托管集成
@@ -218,18 +206,15 @@ cargo run
 
 脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码和 `ADMIN_TOKEN`，先校验生产 Compose 配置，再启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。已有 `.env` 不会被覆盖；生产环境应将 `APP_ISSUER` 设置为固定的 HTTPS 地址，并将 `.env` 作为秘密文件保护。健康检查失败时脚本会输出 Compose 状态和应用日志，便于定位启动问题。
 
-生产 Compose 文件为 `docker-compose.prod.yml`。数据库、Redis 和 JWK 密钥分别使用 Docker volume 持久化，应用容器以非 root 用户运行。默认只发布认证 API 端口，TLS 和反向代理应由服务器网关提供。
+生产 Compose 文件为 `docker-compose.prod.yml`。数据库、Redis、JWK 密钥和内嵌 Web 都由应用容器提供，应用容器以非 root 用户运行。TLS 终止可以交给服务器网关，但 Web/API 本身不依赖反向代理。
 
 ## GitHub Actions
-
-- `.github/workflows/ci.yml`：Rust 1.94 格式化、编译、测试、Clippy 和 `cargo-llvm-cov` 覆盖率门槛（行覆盖率至少 75%）。
-- `.github/workflows/build.yml`：构建 Linux x86_64/ARM64、Windows GNU/MSVC、macOS x86_64/ARM64 二进制；打 `v*` tag 时生成 `.tar.gz`/`.zip` 发布包、`SHA256SUMS` 并创建 GitHub Release，同时构建发布 Linux `amd64/arm64` 的 GHCR 镜像。
-
-GitHub Actions 使用 MIT 项目可用的公开仓库免费额度；发布镜像需要仓库 Actions 具备 `packages: write` 权限。
 
 当前 `/oauth/authorize` 同时支持开发期 `X-Chenxing-Session` 和 HttpOnly Session Cookie；带 `Accept: text/html` 的浏览器流程会进入登录页和授权确认页。浏览器 Cookie 会话的状态变更必须携带 `X-CSRF-Token`，并与 CSRF Cookie 和 Session 中的 Token 一致。管理员 Session 使用独立 Cookie 名称和相同的双提交 CSRF 约束。
 
 `KEY_DIRECTORY` 默认指向 `data/keys`，该目录包含运行时私钥并已加入 `.gitignore`。`ADMIN_TOKEN` 为空时，管理 API 默认全部拒绝访问。
+
+用户首次密码登录会返回短期 `login_ticket`，前端需要完成 TOTP 或 WebAuthn passkey 注册后才会获得 Session。后续登录需要密码加已绑定的 TOTP 或 passkey。生产环境应设置固定的 `WEBAUTHN_RP_ID` 和 `WEBAUTHN_ORIGIN`，默认从固定 `APP_ISSUER` 派生，不能从请求 Host 派生。
 
 ## 开源协议
 

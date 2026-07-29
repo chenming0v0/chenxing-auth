@@ -14,6 +14,17 @@ fn registration_normalizes_email_and_keeps_display_name() {
 }
 
 #[test]
+fn registration_accepts_a_ten_character_password() {
+    let result = validate_registration(RegistrationInput {
+        email: "user@example.com".to_owned(),
+        password: "1234567890".to_owned(),
+        display_name: None,
+    });
+
+    assert!(result.is_ok());
+}
+
+#[test]
 fn registration_rejects_short_password() {
     let error = validate_registration(RegistrationInput {
         email: "user@example.com".to_owned(),

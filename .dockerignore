@@ -10,3 +10,5 @@ docker-compose*.yml
 deploy
 README.md
 AGENTS.md
+web/node_modules
+web/dist

@@ -4,16 +4,19 @@ use crate::{
     admin::AdminAuthenticator,
     admin::{service::AdminService, session::AdminSessionStore},
     audit::AuditService,
+    auth_factors::service::AuthFactorService,
     clients::service::ClientService,
     config::Config,
     consents::ConsentService,
     db::Database,
     keys::{KeyManager, KeyManagerError},
+    oauth::quota::OAuthQuotaStore,
     oauth::refresh_store::RefreshTokenStore,
     oauth::request_store::AuthorizationRequestStore,
     oauth::revocation::TokenRevocationStore,
     oauth::store::AuthorizationCodeStore,
     sessions::store::SessionStore,
+    settings::SettingsService,
     users::service::UserService,
 };
 
@@ -23,6 +26,7 @@ pub struct AppState {
     pub database: Database,
     pub redis: Client,
     pub sessions: SessionStore,
+    pub settings: SettingsService,
     pub users: UserService,
     pub clients: ClientService,
     pub keys: KeyManager,
@@ -31,10 +35,12 @@ pub struct AppState {
     pub authorization_requests: AuthorizationRequestStore,
     pub consents: ConsentService,
     pub revocations: TokenRevocationStore,
+    pub oauth_quotas: OAuthQuotaStore,
     pub admin: AdminAuthenticator,
     pub admins: AdminService,
     pub admin_sessions: AdminSessionStore,
     pub audit: AuditService,
+    pub factors: AuthFactorService,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -45,14 +51,24 @@ pub enum StateError {
     Redis(#[from] redis::RedisError),
     #[error("key manager initialization failed: {0}")]
     Keys(#[from] KeyManagerError),
+    #[error("authentication factor initialization failed: {0}")]
+    AuthFactors(#[from] webauthn_rs::prelude::WebauthnError),
 }
 
 impl AppState {
     pub fn new(config: Config) -> Result<Self, StateError> {
         let database = crate::db::connect(&config)?;
         let redis = redis::Client::open(config.redis_url.as_str())?;
-        let sessions = SessionStore::new(redis.clone());
+        let sessions = SessionStore::with_metadata(redis.clone(), database.clone());
+        let settings = SettingsService::new(database.clone());
         let users = UserService::new(database.clone());
+        let factors = AuthFactorService::new(
+            database.clone(),
+            redis.clone(),
+            config.auth_encryption_key.clone(),
+            &config.webauthn_rp_id,
+            &config.webauthn_origin,
+        )?;
         let clients = ClientService::new(database.clone());
         let keys = KeyManager::load_or_generate(&config.key_directory)?;
         let authorization_codes = AuthorizationCodeStore::new(redis.clone());
@@ -60,6 +76,7 @@ impl AppState {
         let authorization_requests = AuthorizationRequestStore::new(redis.clone());
         let consents = ConsentService::new(database.clone());
         let revocations = TokenRevocationStore::new(redis.clone());
+        let oauth_quotas = OAuthQuotaStore::new(redis.clone());
         let admin = AdminAuthenticator::new(config.admin_token.clone());
         let admins = AdminService::new(database.clone());
         let admin_sessions = AdminSessionStore::new(redis.clone());
@@ -70,6 +87,7 @@ impl AppState {
             database,
             redis,
             sessions,
+            settings,
             users,
             clients,
             keys,
@@ -78,10 +96,12 @@ impl AppState {
             authorization_requests,
             consents,
             revocations,
+            oauth_quotas,
             admin,
             admins,
             admin_sessions,
             audit,
+            factors,
         })
     }
 

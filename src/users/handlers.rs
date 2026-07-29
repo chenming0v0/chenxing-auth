@@ -5,16 +5,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
-use std::time::Duration;
 
 use super::{
     domain::{LoginInput, RegistrationError, RegistrationInput},
     service::UserServiceError,
 };
 use crate::{
-    audit::AuditEvent,
-    error,
-    sessions::{cookies, domain::Session},
+    audit::AuditEvent, auth_factors::session::issue_user_session, error, sessions::cookies,
     state::AppState,
 };
 
@@ -24,9 +21,10 @@ struct CreatedUserResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct LoginResponse {
-    session_id: uuid::Uuid,
-    expires_at: time::OffsetDateTime,
+struct PendingLoginResponse {
+    status: &'static str,
+    login_ticket: String,
+    methods: Vec<crate::auth_factors::domain::FactorMethod>,
 }
 
 pub async fn register_user(
@@ -81,6 +79,7 @@ pub async fn register_user(
 }
 
 pub async fn login_user(State(state): State<AppState>, Json(input): Json<LoginInput>) -> Response {
+    let totp_code = input.totp_code.clone();
     let user_id = match state.users.authenticate(input).await {
         Ok(user_id) => user_id,
         Err(UserServiceError::InvalidCredentials) => {
@@ -96,44 +95,65 @@ pub async fn login_user(State(state): State<AppState>, Json(input): Json<LoginIn
         }
     };
 
-    let ttl = Duration::from_secs(state.config.session_ttl_seconds);
-    let session = match Session::new(user_id.to_string(), ttl) {
-        Ok(session) => session,
-        Err(session_error) => {
-            tracing::error!(error = %session_error, "failed to create session");
+    let methods = match state.factors.available_methods(user_id).await {
+        Ok(methods) => methods,
+        Err(factor_error) => {
+            tracing::error!(error = %factor_error, "failed to load authentication factors");
             return error::internal();
         }
     };
-    let response = LoginResponse {
-        session_id: session.id,
-        expires_at: session.expires_at,
-    };
-    if let Err(session_error) = state.sessions.save(&session, ttl).await {
-        tracing::error!(error = %session_error, "failed to persist session");
-        return error::internal();
+    if methods.contains(&crate::auth_factors::domain::FactorMethod::Totp) && totp_code.is_some() {
+        let valid = match state
+            .factors
+            .verify_totp(user_id, totp_code.as_deref().unwrap_or_default())
+            .await
+        {
+            Ok(valid) => valid,
+            Err(factor_error) => {
+                tracing::error!(error = %factor_error, "failed to verify TOTP");
+                return error::internal();
+            }
+        };
+        if !valid {
+            return error::unauthorized("invalid_factor", "authentication factor is invalid");
+        }
+        return issue_user_session(&state, user_id, "totp").await;
     }
 
-    state
-        .audit
-        .record(AuditEvent::new(
-            "user".to_owned(),
-            Some(user_id.to_string()),
-            "login".to_owned(),
-            "session".to_owned(),
-            Some(session.id.to_string()),
-            serde_json::json!({"result": "success"}),
-        ))
-        .await;
-
-    let mut response = (StatusCode::OK, Json(response)).into_response();
-    cookies::append_login_cookies(
-        response.headers_mut(),
-        session.id,
-        &session.csrf_token,
-        state.config.session_ttl_seconds,
-        state.config.cookie_secure,
-    );
-    response
+    let setup_required = methods.is_empty();
+    let ticket_methods = if setup_required {
+        vec![
+            crate::auth_factors::domain::FactorMethod::Totp,
+            crate::auth_factors::domain::FactorMethod::Passkey,
+        ]
+    } else {
+        methods
+    };
+    let (login_ticket, _) = match state
+        .factors
+        .create_login_ticket(user_id, ticket_methods.clone())
+        .await
+    {
+        Ok(ticket) => ticket,
+        Err(factor_error) => {
+            tracing::error!(error = %factor_error, "failed to create pending login ticket");
+            return error::internal();
+        }
+    };
+    let status = if setup_required {
+        "factor_setup_required"
+    } else {
+        "factor_required"
+    };
+    (
+        StatusCode::ACCEPTED,
+        Json(PendingLoginResponse {
+            status,
+            login_ticket,
+            methods: ticket_methods,
+        }),
+    )
+        .into_response()
 }
 
 pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -> Response {

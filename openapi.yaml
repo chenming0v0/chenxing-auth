@@ -95,7 +95,327 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LoginResponse'
+        '202':
+          description: 密码正确但需要首次绑定或完成认证因子，不设置 Session Cookie
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PendingLoginResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/totp/setup:
+    post:
+      tags: [User Auth]
+      summary: 开始 TOTP 首次绑定
+      operationId: startTotpSetup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginTicketInput' }
+      responses:
+        '200':
+          description: 返回一次性 TOTP 秘钥和标准 otpauth URI
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TotpSetupResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/v1/auth/totp/setup/confirm:
+    post:
+      tags: [User Auth]
+      summary: 确认 TOTP 并完成登录
+      operationId: confirmTotpSetup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TotpConfirmInput' }
+      responses:
+        '200':
+          description: TOTP 正确，已设置 Session 和 CSRF Cookie
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/passkeys/register/start:
+    post:
+      tags: [User Auth]
+      summary: 开始 passkey 注册
+      operationId: startPasskeyRegistration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginTicketInput' }
+      responses:
+        '200':
+          description: WebAuthn 注册 challenge
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebAuthnOptions' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/v1/auth/passkeys/register/finish:
+    post:
+      tags: [User Auth]
+      summary: 完成 passkey 注册并登录
+      operationId: finishPasskeyRegistration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyRegistrationInput' }
+      responses:
+        '200':
+          description: passkey 注册成功，已设置 Session 和 CSRF Cookie
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/passkeys/authentication/start:
+    post:
+      tags: [User Auth]
+      summary: 开始 passkey 登录验证
+      operationId: startPasskeyAuthentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginTicketInput' }
+      responses:
+        '200':
+          description: WebAuthn 登录 challenge
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebAuthnOptions' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+  /api/v1/auth/passkeys/authentication/finish:
+    post:
+      tags: [User Auth]
+      summary: 完成 passkey 登录验证
+      operationId: finishPasskeyAuthentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeyAuthenticationInput' }
+      responses:
+        '200':
+          description: passkey 验证成功，已设置 Session 和 CSRF Cookie
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /auth/login/totp:
+    post:
+      tags: [User Auth]
+      summary: 浏览器 OAuth 登录的 TOTP 完成步骤
+      operationId: browserTotpLogin
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [request_id, login_ticket, code]
+              properties:
+                request_id: { type: string }
+                login_ticket: { type: string }
+                code: { type: string, pattern: '^[0-9]{6}$' }
+      responses:
+        '303': { description: 因子验证成功，重定向到授权确认页 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/status:
+    get:
+      tags: [User Auth]
+      summary: 查询当前登录状态
+      operationId: authStatus
+      responses:
+        '200':
+          description: 登录状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthStatusResponse' }
+  /api/v1/auth/me:
+    get:
+      tags: [User Auth]
+      summary: 查询当前用户资料
+      operationId: currentUserProfile
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 当前用户资料
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserMeResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    patch:
+      tags: [User Auth]
+      summary: 更新当前用户资料
+      operationId: updateCurrentUserProfile
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateProfileInput' }
+      responses:
+        '200':
+          description: 更新后的用户资料
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserMeResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/password:
+    post:
+      tags: [User Auth]
+      summary: 修改当前用户密码
+      operationId: changeCurrentUserPassword
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangePasswordInput' }
+      responses:
+        '204': { description: 密码已修改并撤销所有用户 Session }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/sessions:
+    get:
+      tags: [User Auth]
+      summary: 查询当前用户 Session
+      operationId: listUserSessions
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 当前用户的活跃 Session
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/sessions/{session_id}:
+    delete:
+      tags: [User Auth]
+      summary: 撤销指定用户 Session
+      operationId: revokeUserSession
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: session_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: Session 已撤销 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/auth/oauth-clients:
+    get:
+      tags: [User Auth]
+      summary: 查询当前用户的 OAuth 项目
+      operationId: listOwnedOAuthClients
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 只包含当前用户拥有的 OAuth 项目和配额使用量
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OwnedOAuthClientList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [User Auth]
+      summary: 创建当前用户的 OAuth 项目
+      operationId: createOwnedOAuthClient
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientInput' }
+      responses:
+        '201':
+          description: 创建成功，Client Secret 只返回一次
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegisteredOwnedOAuthClient' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/auth/oauth-clients/{client_id}:
+    put:
+      tags: [User Auth]
+      summary: 更新当前用户拥有的 OAuth 项目
+      operationId: updateOwnedOAuthClient
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ClientInput' }
+      responses:
+        '204': { description: 更新成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/auth/oauth-clients/{client_id}/disable:
+    post:
+      tags: [User Auth]
+      summary: 禁用当前用户拥有的 OAuth 项目
+      operationId: disableOwnedOAuthClient
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: 禁用成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/auth/oauth-clients/{client_id}/enable:
+    post:
+      tags: [User Auth]
+      summary: 启用当前用户拥有的 OAuth 项目
+      operationId: enableOwnedOAuthClient
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: 启用成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/auth/oauth-clients/{client_id}/rotate-secret:
+    post:
+      tags: [User Auth]
+      summary: 轮换当前用户 OAuth 项目的 Secret
+      operationId: rotateOwnedOAuthClientSecret
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '200':
+          description: 新 Secret，只返回一次
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ClientSecretResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/auth/session:
     delete:
       tags: [User Auth]
@@ -127,6 +447,44 @@ paths:
         '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/oauth/authorize/requests/{request_id}:
+    get:
+      tags: [OAuth/OIDC]
+      summary: 查询绑定到当前 Session 的待授权请求
+      operationId: inspectAuthorizationRequest
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: request_id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 安全的授权确认数据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PendingAuthorizationResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [OAuth/OIDC]
+      summary: 批准或拒绝绑定到当前 Session 的授权请求
+      operationId: decideAuthorizationRequest
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: request_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AuthorizationDecisionInput' }
+      responses:
+        '200':
+          description: 决策结果和已校验的回调地址
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthorizationDecisionResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /oauth/token:
     post:
       tags: [OAuth/OIDC]
@@ -187,16 +545,30 @@ paths:
       tags: [Admin Auth]
       summary: 初始化首个管理员
       operationId: bootstrapAdmin
-      security: [{ adminBearer: [] }]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/AdminInput' }
+            schema: { $ref: '#/components/schemas/BootstrapAdminInput' }
       responses:
-        '201': { description: 初始化成功 }
+        '201':
+          description: 初始化成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BootstrapAdminResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/bootstrap/status:
+    get:
+      tags: [Admin Auth]
+      summary: 查询管理员初始化状态
+      operationId: adminBootstrapStatus
+      responses:
+        '200':
+          description: 初始化状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BootstrapStatusResponse' }
   /api/v1/admin/auth/login:
     post:
       tags: [Admin Auth]
@@ -206,7 +578,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/LoginInput' }
+            schema: { $ref: '#/components/schemas/AdminLoginInput' }
       responses:
         '200':
           description: 登录成功，同时设置管理员 Session 和 CSRF Cookie
@@ -215,8 +587,21 @@ paths:
               schema:
                 type: object
                 properties:
-                  admin_id: { type: string, format: uuid }
+                  admin_id: { type: integer, format: int64, minimum: 1 }
                   expires_in: { type: integer, format: int64 }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/auth/me:
+    get:
+      tags: [Admin Auth]
+      summary: 查询当前管理员身份和权限
+      operationId: adminMe
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      responses:
+        '200':
+          description: 管理员身份摘要
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminMeResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/admin/auth/logout:
     delete:
@@ -250,7 +635,7 @@ paths:
       operationId: setUserStatus
       security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
       parameters:
-        - { name: user_id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
         - { name: status, in: path, required: true, schema: { type: string, example: disabled } }
         - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
@@ -373,6 +758,109 @@ paths:
         - { name: limit, in: query, schema: { type: integer, default: 50, minimum: 1 } }
       responses:
         '200': { description: 审计事件列表, content: { application/json: { schema: { type: array, items: { type: object } } } } }
+  /api/v1/admin/overview:
+    get:
+      tags: [Admin Operations]
+      summary: 管理后台概览统计
+      operationId: adminOverview
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      responses:
+        '200':
+          description: 全局资源计数
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminOverview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/users/query:
+    get:
+      tags: [Admin Users]
+      summary: 分页筛选用户
+      operationId: queryUsers
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - { $ref: '#/components/parameters/Search' }
+        - { $ref: '#/components/parameters/StatusFilter' }
+      responses:
+        '200':
+          description: 分页用户列表
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PagedUsers' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/clients/query:
+    get:
+      tags: [Admin Clients]
+      summary: 分页筛选 OAuth Client
+      operationId: queryClients
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - { $ref: '#/components/parameters/Search' }
+        - { $ref: '#/components/parameters/StatusFilter' }
+      responses:
+        '200':
+          description: 分页 Client 列表，包含 owner_user_id 但不包含 Secret
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PagedClients' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/audit/query:
+    get:
+      tags: [Admin Operations]
+      summary: 分页筛选审计事件
+      operationId: queryAudit
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+        - { name: action, in: query, schema: { type: string } }
+        - { name: resource_type, in: query, schema: { type: string } }
+      responses:
+        '200':
+          description: 分页审计事件
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PagedAudit' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/admin/settings/registration-email:
+    get:
+      tags: [Admin Operations]
+      summary: 查询注册邮件发件地址
+      operationId: getRegistrationEmailSetting
+      security: [{ adminBearer: [] }, { adminSessionCookie: [] }]
+      responses:
+        '200':
+          description: 当前注册邮件发件地址。未配置时为 null。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegistrationEmailSettingResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      tags: [Admin Operations]
+      summary: 更新注册邮件发件地址
+      operationId: updateRegistrationEmailSetting
+      security: [{ adminSessionCookie: [] }, { adminBearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateRegistrationEmailSettingInput' }
+      responses:
+        '200':
+          description: 更新后的注册邮件发件地址
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegistrationEmailSettingResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /api/v1/admin/keys/rotate:
     post:
       tags: [Admin Operations]
@@ -401,6 +889,10 @@ components:
   parameters:
     ClientId: { name: client_id, in: query, required: true, schema: { type: string } }
     CsrfHeader: { name: X-CSRF-Token, in: header, required: true, schema: { type: string } }
+    Page: { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
+    PageSize: { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+    Search: { name: search, in: query, required: false, schema: { type: string, maxLength: 128 } }
+    StatusFilter: { name: status, in: query, required: false, schema: { type: string, enum: [active, disabled] } }
   headers:
     SetCookie: { description: Session 和 CSRF Cookie, schema: { type: string } }
   responses:
@@ -408,6 +900,8 @@ components:
     Unauthorized: { description: 未认证或凭据无效, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Forbidden: { description: 无权限, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Conflict: { description: 资源冲突, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    NotFound: { description: 资源不存在, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    TooManyRequests: { description: OAuth 配额已耗尽, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   schemas:
     ErrorResponse:
       type: object
@@ -425,18 +919,68 @@ components:
       required: [email, password]
       properties:
         email: { type: string, format: email }
-        password: { type: string, format: password, minLength: 12 }
+        password: { type: string, format: password, minLength: 10 }
         display_name: { type: string, nullable: true, maxLength: 128 }
     LoginInput:
       type: object
       required: [email, password]
       properties:
         email: { type: string, format: email }
-        password: { type: string, format: password }
+        password: { type: string, format: password, minLength: 10 }
+        totp_code: { type: string, pattern: '^[0-9]{6}$' }
+    AdminLoginInput:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 64 }
+        password: { type: string, format: password, minLength: 10 }
+    PendingLoginResponse:
+      type: object
+      required: [status, login_ticket, methods]
+      properties:
+        status: { type: string, enum: [factor_setup_required, factor_required] }
+        login_ticket: { type: string }
+        methods: { type: array, items: { type: string, enum: [totp, passkey] } }
+    LoginTicketInput:
+      type: object
+      required: [login_ticket]
+      properties:
+        login_ticket: { type: string }
+    TotpSetupResponse:
+      type: object
+      required: [secret_base32, otpauth_url]
+      properties:
+        secret_base32: { type: string }
+        otpauth_url: { type: string, format: uri }
+    TotpConfirmInput:
+      allOf:
+        - $ref: '#/components/schemas/LoginTicketInput'
+        - type: object
+          required: [code]
+          properties:
+            code: { type: string, pattern: '^[0-9]{6}$' }
+    WebAuthnOptions:
+      type: object
+      description: WebAuthn options returned by webauthn-rs; pass through to navigator.credentials.
+      additionalProperties: true
+    PasskeyRegistrationInput:
+      allOf:
+        - $ref: '#/components/schemas/LoginTicketInput'
+        - type: object
+          required: [credential]
+          properties:
+            credential: { type: object, additionalProperties: true }
+    PasskeyAuthenticationInput:
+      allOf:
+        - $ref: '#/components/schemas/LoginTicketInput'
+        - type: object
+          required: [credential]
+          properties:
+            credential: { type: object, additionalProperties: true }
     PublicUser:
       type: object
       properties:
-        id: { type: string, format: uuid }
+        id: { type: integer, format: int64, minimum: 1 }
         email: { type: string, format: email }
         display_name: { type: string, nullable: true }
         status: { type: string }
@@ -446,6 +990,74 @@ components:
       properties:
         session_id: { type: string, format: uuid }
         expires_at: { type: string, format: date-time }
+    AuthStatusResponse:
+      type: object
+      required: [authenticated]
+      properties:
+        authenticated: { type: boolean }
+    UserMeResponse:
+      type: object
+      required: [id, email, status, current_session_expires_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        email: { type: string, format: email }
+        display_name: { type: string, nullable: true }
+        status: { type: string }
+        current_session_expires_at: { type: string, format: date-time }
+    UpdateProfileInput:
+      type: object
+      properties:
+        display_name: { type: string, nullable: true, maxLength: 128 }
+    ChangePasswordInput:
+      type: object
+      required: [current_password, new_password]
+      properties:
+        current_password: { type: string, format: password }
+        new_password: { type: string, format: password, minLength: 10 }
+    SessionItem:
+      type: object
+      required: [id, created_at, expires_at, current]
+      properties:
+        id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        current: { type: boolean }
+    SessionListResponse:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/SessionItem' } }
+    QuotaSnapshot:
+      type: object
+      required: [daily_limit, daily_used, monthly_limit, monthly_used]
+      properties:
+        daily_limit: { type: integer, format: int64, example: 2500 }
+        daily_used: { type: integer, format: int64 }
+        monthly_limit: { type: integer, format: int64, example: 50000 }
+        monthly_used: { type: integer, format: int64 }
+    OwnedOAuthClient:
+      type: object
+      required: [id, client_id, client_name, redirect_uris, scopes, status, quota]
+      properties:
+        id: { type: string, format: uuid }
+        client_id: { type: string }
+        client_name: { type: string }
+        redirect_uris: { type: array, items: { type: string, format: uri } }
+        scopes: { type: array, items: { type: string } }
+        status: { type: string, enum: [active, disabled] }
+        quota: { $ref: '#/components/schemas/QuotaSnapshot' }
+    OwnedOAuthClientList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/OwnedOAuthClient' } }
+    RegisteredOwnedOAuthClient:
+      allOf:
+        - $ref: '#/components/schemas/OwnedOAuthClient'
+        - type: object
+          required: [client_secret]
+          properties:
+            client_secret: { type: string, format: password }
     TokenRequest:
       type: object
       required: [grant_type]
@@ -474,25 +1086,113 @@ components:
         sub: { type: string }
         email: { type: string, format: email }
         name: { type: string }
+    PendingAuthorizationResponse:
+      type: object
+      required: [request_id, client_id, client_name, redirect_host, scopes, expires_in]
+      properties:
+        request_id: { type: string }
+        client_id: { type: string }
+        client_name: { type: string }
+        redirect_host: { type: string }
+        scopes: { type: array, items: { type: string } }
+        expires_in: { type: integer, format: int64, example: 600 }
+    AuthorizationDecisionInput:
+      type: object
+      required: [decision]
+      properties:
+        decision: { type: string, enum: [approve, deny] }
+    AuthorizationDecisionResponse:
+      type: object
+      required: [decision, redirect_to]
+      properties:
+        decision: { type: string, enum: [approve, deny] }
+        redirect_to: { type: string, format: uri }
+    AdminMeResponse:
+      type: object
+      required: [role, permissions, status]
+      properties:
+        admin_id: { type: integer, format: int64, minimum: 1, nullable: true }
+        username: { type: string, nullable: true }
+        role: { type: string, enum: [owner, operator, auditor] }
+        permissions: { type: array, items: { type: string } }
+        status: { type: string }
+    AdminOverview:
+      type: object
+      required: [users, oauth_clients, administrators, audit_events]
+      properties:
+        users: { type: integer, format: int64 }
+        oauth_clients: { type: integer, format: int64 }
+        administrators: { type: integer, format: int64 }
+        audit_events: { type: integer, format: int64 }
+    RegistrationEmailSettingResponse:
+      type: object
+      required: [registration_email_from]
+      properties:
+        registration_email_from: { type: string, format: email, nullable: true }
+    UpdateRegistrationEmailSettingInput:
+      type: object
+      required: [registration_email_from]
+      properties:
+        registration_email_from: { type: string, format: email, nullable: true }
+    PagedUsers:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/PublicUser' } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+    PagedClients:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ClientSummary' } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
+    PagedAudit:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { type: object } }
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer, format: int64 }
     AdminInput:
       type: object
-      required: [email, password, role]
+      required: [username, password, role]
       properties:
-        email: { type: string, format: email }
-        password: { type: string, format: password, minLength: 12 }
+        username: { type: string, minLength: 3, maxLength: 64 }
+        password: { type: string, format: password, minLength: 10 }
         role: { type: string, enum: [owner, operator, auditor] }
+    BootstrapAdminInput:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 3, maxLength: 64 }
+        password: { type: string, format: password, minLength: 10 }
+    BootstrapAdminResponse:
+      type: object
+      required: [id, role]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        role: { type: string, enum: [owner] }
+    BootstrapStatusResponse:
+      type: object
+      required: [initialized]
+      properties:
+        initialized: { type: boolean }
     AdminSummary:
       type: object
       properties:
-        id: { type: string, format: uuid }
-        email: { type: string, format: email }
+        id: { type: integer, format: int64, minimum: 1 }
+        username: { type: string }
         role: { type: string }
         status: { type: string }
     ClientInput:
       type: object
-      required: [client_id, client_name, redirect_uris, scopes]
+      required: [client_name, redirect_uris, scopes]
       properties:
-        client_id: { type: string }
         client_name: { type: string }
         redirect_uris: { type: array, items: { type: string, format: uri } }
         scopes: { type: array, items: { type: string } }
@@ -502,7 +1202,9 @@ components:
         - type: object
           properties:
             id: { type: string, format: uuid }
+            client_id: { type: string }
             status: { type: string }
+            owner_user_id: { type: integer, format: int64, minimum: 1, nullable: true }
     RegisteredClient:
       allOf:
         - $ref: '#/components/schemas/ClientSummary'

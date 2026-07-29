@@ -64,7 +64,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
         .expect("stored profile");
     assert_eq!(profile.display_name.as_deref(), Some("Storage User"));
     assert!(
-        user_repository::find_profile_by_id(&pool, Uuid::new_v4())
+        user_repository::find_profile_by_id(&pool, -1)
             .await
             .expect("find missing profile")
             .is_none()
@@ -137,14 +137,14 @@ async fn postgres_repositories_round_trip_users_and_clients() {
 async fn postgres_transaction_user_insert_and_missing_client_paths_work() {
     let pool = database().await;
     let user = NewUser {
-        id: Uuid::new_v4(),
+        id: 0,
         email: format!("transaction-{}@example.com", Uuid::new_v4().simple()),
         password_hash: "hash".to_owned(),
         display_name: None,
         created_at: OffsetDateTime::now_utc(),
     };
     let mut transaction = pool.begin().await.expect("begin transaction");
-    user_repository::insert_user_in_transaction(&mut transaction, &user)
+    let user_id = user_repository::insert_user_in_transaction(&mut transaction, &user)
         .await
         .expect("insert user in transaction");
     transaction.commit().await.expect("commit transaction");
@@ -156,10 +156,149 @@ async fn postgres_transaction_user_insert_and_missing_client_paths_work() {
     );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(user.id)
+        .bind(user_id)
         .execute(&pool)
         .await
         .expect("cleanup transaction user");
+}
+
+#[tokio::test]
+async fn owned_clients_are_isolated_and_limited_to_two_projects() {
+    let pool = database().await;
+    let owner = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            email: format!("owner-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert owner");
+    let other = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            email: format!("other-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert other owner");
+
+    let registration = || ValidatedClientRegistration {
+        client_name: "Owned Client".to_owned(),
+        redirect_uris: vec!["https://owned.example/callback".to_owned()],
+        scopes: vec!["openid".to_owned()],
+    };
+    client_repository::insert_owned_client(
+        &pool,
+        owner.id,
+        registration(),
+        format!("owned-client-first-{}", Uuid::new_v4().simple()),
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert first owned client");
+    let (concurrent_a, concurrent_b) = tokio::join!(
+        client_repository::insert_owned_client(
+            &pool,
+            owner.id,
+            registration(),
+            format!("owned-client-a-{}", Uuid::new_v4().simple()),
+            "hash".to_owned(),
+        ),
+        client_repository::insert_owned_client(
+            &pool,
+            owner.id,
+            registration(),
+            format!("owned-client-b-{}", Uuid::new_v4().simple()),
+            "hash".to_owned(),
+        ),
+    );
+    let concurrent_results = [concurrent_a, concurrent_b];
+    assert_eq!(
+        concurrent_results
+            .iter()
+            .filter(|result| result.is_ok())
+            .count(),
+        1
+    );
+    assert_eq!(
+        concurrent_results
+            .iter()
+            .filter(|result| matches!(
+                result,
+                Err(client_repository::ClientInsertError::QuotaExceeded)
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(
+        client_repository::list_clients_for_owner(&pool, owner.id)
+            .await
+            .expect("list owner clients")
+            .len(),
+        2
+    );
+    assert!(
+        client_repository::list_clients_for_owner(&pool, other.id)
+            .await
+            .expect("list other clients")
+            .is_empty()
+    );
+    assert!(matches!(
+        client_repository::insert_owned_client(
+            &pool,
+            owner.id,
+            registration(),
+            format!("owned-client-third-{}", Uuid::new_v4().simple()),
+            "hash".to_owned(),
+        )
+        .await,
+        Err(client_repository::ClientInsertError::QuotaExceeded)
+    ));
+
+    let orphan_owner = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            email: format!("orphan-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert orphan owner");
+    let orphan_client = client_repository::insert_owned_client(
+        &pool,
+        orphan_owner.id,
+        registration(),
+        format!("orphan-client-{}", Uuid::new_v4().simple()),
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert orphan client");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(orphan_owner.id)
+        .execute(&pool)
+        .await
+        .expect("delete owner");
+    assert!(
+        client_repository::find_client_by_id(&pool, &orphan_client.client_id)
+            .await
+            .expect("find deleted client")
+            .is_none()
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id IN ($1, $2)")
+        .bind(owner.id)
+        .bind(other.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup owned clients and users");
 }
 
 #[tokio::test]
@@ -268,4 +407,57 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
         ])
         .await
         .expect("cleanup Redis keys");
+}
+
+#[tokio::test]
+async fn session_revocation_generation_rejects_restored_old_payloads() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            email: format!("generation-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert generation user");
+    let client = redis_client();
+    let sessions = SessionStore::with_metadata(client.clone(), pool.clone());
+    let session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
+    sessions
+        .save(&session, Duration::from_secs(60))
+        .await
+        .expect("save session");
+    sessions
+        .revoke_all_for_user(user.id)
+        .await
+        .expect("revoke all sessions");
+
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let _: () = connection
+        .set_ex(
+            format!("chenxing:session:{}", session.id),
+            serde_json::to_string(&session).expect("session JSON"),
+            60,
+        )
+        .await
+        .expect("restore old payload");
+    assert!(
+        sessions
+            .find(session.id)
+            .await
+            .expect("find restored session")
+            .is_none()
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup generation user");
 }

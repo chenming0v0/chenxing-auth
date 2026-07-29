@@ -1,6 +1,6 @@
 use crate::sqlx::{PgPool, types::Json};
+use crate::users::domain::UserId;
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct ConsentService {
@@ -14,7 +14,7 @@ impl ConsentService {
 
     pub async fn has_scopes(
         &self,
-        user_id: Uuid,
+        user_id: UserId,
         client_id: &str,
         scopes: &[String],
     ) -> Result<bool, crate::sqlx::Error> {
@@ -33,7 +33,7 @@ impl ConsentService {
 
     pub async fn save(
         &self,
-        user_id: Uuid,
+        user_id: UserId,
         client_id: &str,
         scopes: &[String],
     ) -> Result<(), crate::sqlx::Error> {

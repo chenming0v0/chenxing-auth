@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod api;
 pub mod audit;
+pub mod auth_factors;
 pub mod clients;
 pub mod config;
 pub mod consents;
@@ -10,6 +11,7 @@ pub mod extensions;
 pub mod keys;
 pub mod oauth;
 pub mod sessions;
+pub mod settings;
 pub mod state;
 pub mod users;
 pub mod web;

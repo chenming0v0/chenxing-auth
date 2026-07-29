@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const MIN_PASSWORD_LENGTH: usize = 12;
+pub const MIN_PASSWORD_LENGTH: usize = 10;
+pub type UserId = i64;
 
 #[derive(Debug, Deserialize)]
 pub struct RegistrationInput {
@@ -14,6 +15,7 @@ pub struct RegistrationInput {
 pub struct LoginInput {
     pub email: String,
     pub password: String,
+    pub totp_code: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +60,19 @@ pub fn validate_registration(
         return Err(RegistrationError::PasswordTooShort);
     }
 
-    let display_name = input.display_name.and_then(|name| {
+    let display_name = validate_display_name(input.display_name)?;
+
+    Ok(ValidatedRegistration {
+        email,
+        password: input.password,
+        display_name,
+    })
+}
+
+pub fn validate_display_name(
+    display_name: Option<String>,
+) -> Result<Option<String>, RegistrationError> {
+    let display_name = display_name.and_then(|name| {
         let name = name.trim().to_owned();
         (!name.is_empty()).then_some(name)
     });
@@ -68,12 +82,7 @@ pub fn validate_registration(
     {
         return Err(RegistrationError::DisplayNameTooLong);
     }
-
-    Ok(ValidatedRegistration {
-        email,
-        password: input.password,
-        display_name,
-    })
+    Ok(display_name)
 }
 
 pub fn validate_login(input: LoginInput) -> Result<ValidatedLogin, LoginError> {
@@ -91,7 +100,7 @@ pub fn validate_login(input: LoginInput) -> Result<ValidatedLogin, LoginError> {
     })
 }
 
-fn is_valid_email(email: &str) -> bool {
+pub(crate) fn is_valid_email(email: &str) -> bool {
     let mut parts = email.split('@');
     let Some(local) = parts.next() else {
         return false;
@@ -108,7 +117,7 @@ fn is_valid_email(email: &str) -> bool {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PublicUser {
-    pub id: uuid::Uuid,
+    pub id: UserId,
     pub email: String,
     pub display_name: Option<String>,
     pub status: String,

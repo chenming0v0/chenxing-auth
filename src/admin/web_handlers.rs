@@ -19,13 +19,13 @@ pub async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Res
 }
 
 pub async fn login_page() -> Response {
-    let body = "<main><h1>管理员登录</h1><form method=\"post\" action=\"/admin/login\"><label>邮箱<input name=\"email\" type=\"email\" required></label><label>密码<input name=\"password\" type=\"password\" required></label><button type=\"submit\">登录</button></form></main>";
+    let body = "<main><h1>管理员登录</h1><form method=\"post\" action=\"/admin/login\"><label>用户名<input name=\"username\" required></label><label>密码<input name=\"password\" type=\"password\" required></label><button type=\"submit\">登录</button></form></main>";
     Html(web::page("管理员登录", body)).into_response()
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AdminLoginForm {
-    pub email: String,
+    pub username: String,
     pub password: String,
 }
 
@@ -33,8 +33,12 @@ pub async fn login_submit(
     State(state): State<AppState>,
     Form(form): Form<AdminLoginForm>,
 ) -> Response {
-    let Ok((admin_id, _role)) = state.admins.authenticate(&form.email, &form.password).await else {
-        return (StatusCode::UNAUTHORIZED, Html(web::page("管理员登录", "<main><h1>登录失败</h1><p>管理员邮箱或密码不正确。</p><a href=\"/admin/login\">返回登录</a></main>"))).into_response();
+    let Ok((admin_id, _role)) = state
+        .admins
+        .authenticate(&form.username, &form.password)
+        .await
+    else {
+        return (StatusCode::UNAUTHORIZED, Html(web::page("管理员登录", "<main><h1>登录失败</h1><p>管理员用户名或密码不正确。</p><a href=\"/admin/login\">返回登录</a></main>"))).into_response();
     };
     let session = match state
         .admin_sessions

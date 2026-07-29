@@ -2,21 +2,17 @@ use axum::http::HeaderMap;
 use subtle::ConstantTimeEq;
 
 use super::{
-    domain::AdminPermission,
+    domain::{AdminId, AdminPermission},
     handlers::is_admin_request,
     session::{ADMIN_CSRF_COOKIE, ADMIN_SESSION_COOKIE},
 };
 use crate::{error, sessions::cookies, state::AppState};
 
-pub fn is_bootstrap_token(state: &AppState, headers: &HeaderMap) -> bool {
-    is_admin_request(state, headers)
-}
-
 pub async fn current_admin_permission(
     state: &AppState,
     headers: &HeaderMap,
     permission: AdminPermission,
-) -> Result<uuid::Uuid, axum::response::Response> {
+) -> Result<AdminId, axum::response::Response> {
     let Some((admin_id, role, status)) = load_admin(state, headers).await? else {
         return Err(error::unauthorized(
             "admin_required",
@@ -36,10 +32,10 @@ pub async fn current_admin_mutation(
     state: &AppState,
     headers: &HeaderMap,
     permission: AdminPermission,
-) -> Result<uuid::Uuid, axum::response::Response> {
+) -> Result<AdminId, axum::response::Response> {
     let Some(session_id) = admin_session_id(headers) else {
         if is_admin_request(state, headers) {
-            return Ok(uuid::Uuid::nil());
+            return Ok(0);
         }
         return Err(error::unauthorized(
             "admin_required",
@@ -78,10 +74,10 @@ pub async fn current_admin_mutation(
 async fn load_admin(
     state: &AppState,
     headers: &HeaderMap,
-) -> Result<Option<(uuid::Uuid, super::domain::AdminRole, String)>, axum::response::Response> {
+) -> Result<Option<(AdminId, super::domain::AdminRole, String)>, axum::response::Response> {
     if is_admin_request(state, headers) {
         return Ok(Some((
-            uuid::Uuid::nil(),
+            0,
             super::domain::AdminRole::Owner,
             "active".to_owned(),
         )));

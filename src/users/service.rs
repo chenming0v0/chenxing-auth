@@ -4,8 +4,8 @@ use thiserror::Error;
 use super::{
     credentials::{hash_password, verify_password},
     domain::{
-        LoginError, LoginInput, PublicUser, RegistrationError, RegistrationInput, validate_login,
-        validate_registration,
+        LoginError, LoginInput, PublicUser, RegistrationError, RegistrationInput, UserId,
+        validate_display_name, validate_login, validate_registration,
     },
     repository,
 };
@@ -47,7 +47,7 @@ impl UserService {
         })
     }
 
-    pub async fn authenticate(&self, input: LoginInput) -> Result<uuid::Uuid, UserServiceError> {
+    pub async fn authenticate(&self, input: LoginInput) -> Result<UserId, UserServiceError> {
         let login = validate_login(input).map_err(|error| match error {
             LoginError::InvalidEmail | LoginError::EmptyPassword => {
                 UserServiceError::InvalidCredentials
@@ -69,16 +69,55 @@ impl UserService {
 
     pub async fn find_profile(
         &self,
-        id: uuid::Uuid,
+        id: UserId,
     ) -> Result<Option<repository::UserProfile>, UserServiceError> {
         Ok(repository::find_profile_by_id(&self.pool, id).await?)
+    }
+
+    pub async fn update_display_name(
+        &self,
+        id: UserId,
+        display_name: Option<String>,
+    ) -> Result<Option<repository::UserProfile>, UserServiceError> {
+        let display_name = validate_display_name(display_name)?;
+        if !repository::update_display_name(&self.pool, id, display_name.as_deref()).await? {
+            return Ok(None);
+        }
+        Ok(repository::find_profile_by_id(&self.pool, id).await?)
+    }
+
+    pub async fn change_password(
+        &self,
+        id: UserId,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<(), UserServiceError> {
+        if new_password.chars().count() < crate::users::domain::MIN_PASSWORD_LENGTH {
+            return Err(UserServiceError::Validation(
+                RegistrationError::PasswordTooShort,
+            ));
+        }
+        let Some(credentials) = repository::find_credentials_by_id(&self.pool, id).await? else {
+            return Err(UserServiceError::InvalidCredentials);
+        };
+        if credentials.status != "active"
+            || !verify_password(current_password, &credentials.password_hash)
+        {
+            return Err(UserServiceError::InvalidCredentials);
+        }
+        let password_hash =
+            hash_password(new_password).map_err(|_| UserServiceError::PasswordHash)?;
+        if !repository::update_password_hash(&self.pool, id, &password_hash).await? {
+            return Err(UserServiceError::InvalidCredentials);
+        }
+        Ok(())
     }
 
     pub async fn list(&self) -> Result<Vec<repository::ListedUser>, UserServiceError> {
         Ok(repository::list_users(&self.pool).await?)
     }
 
-    pub async fn set_status(&self, id: uuid::Uuid, status: &str) -> Result<bool, UserServiceError> {
+    pub async fn set_status(&self, id: UserId, status: &str) -> Result<bool, UserServiceError> {
         if !matches!(status, "active" | "disabled") {
             return Ok(false);
         }

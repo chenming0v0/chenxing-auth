@@ -6,13 +6,15 @@ use redis::{AsyncCommands, Client};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::domain::AdminId;
+
 pub const ADMIN_SESSION_COOKIE: &str = "chenxing_admin_session";
 pub const ADMIN_CSRF_COOKIE: &str = "chenxing_admin_csrf";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminSession {
     pub id: Uuid,
-    pub admin_id: Uuid,
+    pub admin_id: AdminId,
     pub csrf_token: String,
 }
 
@@ -28,7 +30,7 @@ impl AdminSessionStore {
 
     pub async fn create(
         &self,
-        admin_id: Uuid,
+        admin_id: AdminId,
         ttl: Duration,
     ) -> Result<AdminSession, redis::RedisError> {
         let mut bytes = [0_u8; 32];

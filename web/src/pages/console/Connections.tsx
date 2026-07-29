@@ -1,0 +1,8 @@
+import { useNavigate } from "react-router-dom";
+import { ExternalLink, Info, Plug, ShieldCheck } from "lucide-react";
+import { GhostButton, PageFade } from "../../components/ui";
+
+export default function Connections() {
+  const navigate = useNavigate();
+  return <PageFade><div className="mb-6"><h1 className="text-xl font-bold text-white">授权管理</h1><p className="mt-1 text-sm text-slate-500">第三方应用授权由 OAuth/OIDC 流程产生。</p></div><div className="glass rounded-3xl p-8"><div className="flex flex-col items-center text-center"><div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-500/12 text-indigo-300"><Plug size={25} /></div><h2 className="mt-5 text-lg font-semibold text-white">授权记录 API 尚未开放给用户中心</h2><p className="mt-2 max-w-lg text-sm leading-7 text-slate-500">当前后端已经提供授权确认、Session 绑定和令牌撤销能力，但还没有“列出用户已授权应用”的用户 API。页面不会伪造连接数据；你可以使用 OAuth 测试台验证真实授权流程。</p><div className="mt-6 flex flex-wrap justify-center gap-3"><GhostButton onClick={() => navigate("/console/playground")}><ExternalLink size={14} className="mr-1.5 inline" />打开 OAuth 测试台</GhostButton></div></div></div><div className="mt-6 grid gap-4 md:grid-cols-2"><div className="glass-soft rounded-2xl p-5"><Info size={17} className="text-cyan-300" /><div className="mt-3 text-sm font-medium text-white">当前边界</div><p className="mt-1 text-xs leading-6 text-slate-500">认证平台管理身份事实；下游应用自己的业务账号和授权记录仍由下游 Client 负责。</p></div><div className="glass-soft rounded-2xl p-5"><ShieldCheck size={17} className="text-emerald-300" /><div className="mt-3 text-sm font-medium text-white">授权安全</div><p className="mt-1 text-xs leading-6 text-slate-500">每次授权都会校验 redirect URI、Scope、PKCE、State、Nonce 和当前登录 Session。</p></div></div></PageFade>;
+}
