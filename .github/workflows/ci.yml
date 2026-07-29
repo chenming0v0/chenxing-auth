@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [dev, releases, master]
+    branches: [dev, releases]
   pull_request:
 
 permissions:
@@ -101,7 +101,7 @@ jobs:
 
   apifox-sync:
     name: Sync OpenAPI to Apifox
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     needs: [quality, coverage]
     runs-on: ubuntu-latest
     environment: apifox
@@ -120,7 +120,7 @@ jobs:
             --header "Content-Type: application/json" \
             --data '{
               "input": {
-                "url": "https://raw.githubusercontent.com/chenming0v0/chenxing-auth/master/openapi.yaml"
+                "url": "https://raw.githubusercontent.com/chenming0v0/chenxing-auth/dev/openapi.yaml"
               },
               "options": {
                 "endpointOverwriteBehavior": "AUTO_MERGE",

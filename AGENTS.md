@@ -147,6 +147,14 @@ cargo nextest run --all-features --test-threads 32
 - 不覆盖或删除其他贡献者未完成的工作；发现冲突时在现有改动上继续协作。
 - 新功能应同时包含必要的迁移、配置、测试和文档更新。
 
+### 分支工作流
+
+- 本项目的主要开发分支是 `dev`。用户未明确指定分支、说“主要分支”或要求合并到主线时，默认使用 `dev`，不要自行使用已废弃的 `master`。
+- `releases` 是释放分支，仅在变更已经在 `dev` 验证通过、准备发布或用户明确要求“释放分支”时使用。
+- 功能分支应从当前明确的目标基线创建；开始工作前必须检查当前分支、工作区状态、远端跟踪关系以及目标分支的祖先关系，确认没有把功能分支误合入 `dev` 或 `releases`。
+- 涉及分支合并、推送、删除或发布时，先向用户确认目标分支语义；“主要分支”表示 `dev`，“释放分支”明确表示 `releases`。
+- 删除或改写分支前必须先确认提交已安全存在于正确的远端分支，并保留必要的恢复引用；禁止未经确认删除远端分支或执行强制推送。
+
 ## 当前仓库状态
 
 后端已形成按用户、Client、OAuth、Session、密钥、审计和管理边界拆分的模块结构。新增实现应先更新受影响的约定、迁移和测试，再开始跨模块修改；规划中的前端和生产运维能力不能被描述为已完成。
@@ -160,4 +168,4 @@ cargo nextest run --all-features --test-threads 32
 - 新增、删除或修改任何后端 HTTP 路由、请求参数、响应结构、错误码或鉴权方式后，必须调用项目级 `sync-openapi` skill，同步更新 `openapi.yaml`。
 - 更新后必须验证 YAML/OpenAPI 基础结构，并确认接口分组、`operationId`、Security Scheme、请求体和响应模型没有遗漏；不能只更新 `API.md`。
 - Apifox 导入建议开启“自动生成调试用例”“导入 Security Scheme”和“将 Servers 导入为环境”；无 Security 的接口保持无需鉴权。
-- GitHub Actions 的 `apifox-sync` Job 在 `master` 质量检查通过后，使用仓库 Environment Secret `API_FOX_KEY` 将 `openapi.yaml` 自动导入 Apifox 项目 `8642631`；不要在工作流、日志或提交中写入该密钥。
+- GitHub Actions 的 `apifox-sync` Job 在 `dev` 质量检查通过后，使用仓库 Environment Secret `API_FOX_KEY` 将 `openapi.yaml` 自动导入 Apifox 项目 `8642631`；不要在工作流、日志或提交中写入该密钥。
