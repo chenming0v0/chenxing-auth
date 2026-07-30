@@ -36,19 +36,21 @@ export function TotpSetupPanel({ setup }: { setup: TotpSetupResponse }) {
 
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-slate-600/40 bg-white/[0.03] p-3.5 text-xs leading-relaxed text-slate-400">
-        <p>请使用验证器扫描二维码，然后输入当前六位验证码。</p>
-        <div className="mt-4 flex justify-center rounded-lg bg-white p-4">
-          <QRCodeSVG
-            value={setup.otpauth_url}
-            size={192}
-            level="M"
-            includeMargin
-            className="h-auto w-full max-w-[192px]"
-            aria-label="TOTP 验证器绑定二维码"
-          />
+      <div className="rounded-lg border border-slate-600/40 bg-white/[0.03] p-4 text-xs leading-relaxed text-slate-400">
+        <p className="text-center">请使用验证器扫描二维码，然后输入当前六位验证码。</p>
+        <div className="mt-4 flex justify-center">
+          <div className="rounded-xl bg-white p-3 shadow-lg shadow-black/30 ring-1 ring-black/5">
+            <QRCodeSVG
+              value={setup.otpauth_url}
+              size={160}
+              level="M"
+              includeMargin={false}
+              className="h-40 w-40"
+              aria-label="TOTP 验证器绑定二维码"
+            />
+          </div>
         </div>
-        <p className="mt-3 text-center text-[11px] text-slate-500">
+        <p className="mt-4 text-center text-[11px] text-slate-500">
           支持 Google Authenticator、Microsoft Authenticator 和 2FAS
         </p>
       </div>
