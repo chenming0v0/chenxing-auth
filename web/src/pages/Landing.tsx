@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { ArrowRight, Code2, Fingerprint, LockKeyhole, Settings, ShieldCheck } from "lucide-react";
+import { ArrowRight, Code2, Fingerprint, LockKeyhole, ShieldCheck } from "lucide-react";
 import { BrandMark, GhostButton, GlowButton } from "../components/ui";
 import { BRAND } from "../data/constants";
 import { useStore } from "../store";
@@ -20,13 +20,6 @@ export default function Landing() {
       <header className="relative z-10 mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
         <BrandMark compact />
         <div className="flex items-center gap-2.5">
-          <Link
-            to="/admin-console/login"
-            title="管理员入口"
-            className="rounded-lg p-2 text-slate-600 transition-colors hover:bg-white/[0.04] hover:text-slate-300"
-          >
-            <Settings size={15} />
-          </Link>
           {loading ? (
             <span className="text-xs text-slate-600">检查登录状态…</span>
           ) : user ? (

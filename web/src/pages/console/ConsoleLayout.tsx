@@ -1,17 +1,27 @@
-import { useEffect } from "react";
+import { ReactNode, useEffect } from "react";
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
-import { Code2, FlaskConical, LayoutDashboard, LogOut, Plug, UserRound } from "lucide-react";
+import { Code2, FlaskConical, LayoutDashboard, LogOut, Mail, Plug, UserRound } from "lucide-react";
 import { Avatar, Logo } from "../../components/ui";
 import { BRAND } from "../../data/constants";
 import { useStore } from "../../store";
 import { cn } from "../../utils/cn";
 
-const NAV = [
+interface NavItem {
+  to: string;
+  end?: boolean;
+  icon: ReactNode;
+  label: string;
+  group: string;
+  adminOnly?: boolean;
+}
+
+const NAV: NavItem[] = [
   { to: "/console", end: true, icon: <LayoutDashboard size={16} />, label: "总览", group: "账户" },
   { to: "/console/profile", icon: <UserRound size={16} />, label: "通行证资料", group: "账户" },
   { to: "/console/connections", icon: <Plug size={16} />, label: "已授权应用", group: "账户" },
   { to: "/console/developer", icon: <Code2 size={16} />, label: "接入应用", group: "开发者" },
   { to: "/console/playground", icon: <FlaskConical size={16} />, label: "授权测试", group: "开发者" },
+  { to: "/console/settings", icon: <Mail size={16} />, label: "邮件设置", group: "系统管理", adminOnly: true },
 ];
 
 export default function ConsoleLayout() {
@@ -31,7 +41,9 @@ export default function ConsoleLayout() {
     );
   }
 
-  const current = NAV.find((item) =>
+  const canManage = user.role === "admin" || user.role === "owner";
+  const nav = NAV.filter((item) => !item.adminOnly || canManage);
+  const current = nav.find((item) =>
     item.end ? location.pathname === item.to : location.pathname.startsWith(item.to)
   );
   let lastGroup = "";
@@ -53,7 +65,7 @@ export default function ConsoleLayout() {
         </button>
 
         <nav className="flex-1 overflow-y-auto px-2 py-2">
-          {NAV.map((item) => {
+          {nav.map((item) => {
             const header = item.group !== lastGroup ? item.group : null;
             lastGroup = item.group;
             return (
@@ -124,7 +136,7 @@ export default function ConsoleLayout() {
       </div>
 
       <nav className="fixed inset-x-0 bottom-0 z-30 flex border-t border-hairline bg-surface py-1.5 lg:hidden">
-        {NAV.map((item) => (
+        {nav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}

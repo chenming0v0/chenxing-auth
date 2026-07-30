@@ -62,14 +62,6 @@ export interface PendingAuthorization {
   expires_in: number;
 }
 
-export interface AdminProfile {
-  user_id: number | null;
-  username: string | null;
-  role: string;
-  permissions: string[];
-  status: string;
-}
-
 export interface AdminOverview {
   users: number | null;
   oauth_clients: number | null;
@@ -179,7 +171,6 @@ export const api = {
     request<PendingAuthorization>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(id)}`),
   decideAuthorization: (id: string, decision: "approve" | "deny") =>
     request<{ decision: string; redirect_to: string }>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(id)}`, mutation({ method: "POST", body: JSON.stringify({ decision }) })),
-  adminMe: () => request<AdminProfile>("/api/v1/admin/auth/me"),
   adminRegistrationEmail: () => request<{ registration_email_from: string | null }>("/api/v1/admin/settings/registration-email"),
   updateAdminRegistrationEmail: (registration_email_from: string | null) =>
     request<{ registration_email_from: string | null }>("/api/v1/admin/settings/registration-email", mutation({ method: "PUT", body: JSON.stringify({ registration_email_from }) })),
