@@ -11,6 +11,11 @@ servers:
 tags:
   - name: System
   - name: User Auth
+  - name: User Auth/Account
+  - name: User Auth/MFA
+  - name: User Auth/Sessions
+  - name: User Auth/OAuth Clients
+  - name: User Auth/Browser Login
   - name: OAuth/OIDC
   - name: Admin Auth
   - name: Admin Users
@@ -56,7 +61,7 @@ paths:
                 type: object
   /api/v1/users:
     post:
-      tags: [User Auth]
+      tags: [User Auth/Account]
       summary: 注册用户
       operationId: registerUser
       requestBody:
@@ -78,7 +83,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/auth/login:
     post:
-      tags: [User Auth]
+      tags: [User Auth/Account]
       summary: 用户登录
       operationId: loginUser
       requestBody:
@@ -104,7 +109,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/totp/setup:
     post:
-      tags: [User Auth]
+      tags: [User Auth/MFA]
       summary: 开始 TOTP 首次绑定
       operationId: startTotpSetup
       requestBody:
@@ -121,7 +126,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
   /api/v1/auth/totp/setup/confirm:
     post:
-      tags: [User Auth]
+      tags: [User Auth/MFA]
       summary: 确认 TOTP 并完成登录
       operationId: confirmTotpSetup
       requestBody:
@@ -141,7 +146,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/totp/login:
     post:
-      tags: [User Auth]
+      tags: [User Auth/MFA]
       summary: 使用 TOTP 完成待处理登录
       operationId: loginTotp
       requestBody:
@@ -161,7 +166,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/passkeys/register/start:
     post:
-      tags: [User Auth]
+      tags: [User Auth/MFA]
       summary: 开始 passkey 注册
       operationId: startPasskeyRegistration
       requestBody:
@@ -178,7 +183,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
   /api/v1/auth/passkeys/register/finish:
     post:
-      tags: [User Auth]
+      tags: [User Auth/MFA]
       summary: 完成 passkey 注册并登录
       operationId: finishPasskeyRegistration
       requestBody:
@@ -198,7 +203,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/passkeys/authentication/start:
     post:
-      tags: [User Auth]
+      tags: [User Auth/MFA]
       summary: 开始 passkey 登录验证
       operationId: startPasskeyAuthentication
       requestBody:
@@ -215,7 +220,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
   /api/v1/auth/passkeys/authentication/finish:
     post:
-      tags: [User Auth]
+      tags: [User Auth/MFA]
       summary: 完成 passkey 登录验证
       operationId: finishPasskeyAuthentication
       requestBody:
@@ -235,7 +240,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
   /auth/login/totp:
     post:
-      tags: [User Auth]
+      tags: [User Auth/MFA]
       summary: 浏览器 OAuth 登录的 TOTP 完成步骤
       operationId: browserTotpLogin
       requestBody:
@@ -255,7 +260,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/status:
     get:
-      tags: [User Auth]
+      tags: [User Auth/Account]
       summary: 查询当前登录状态
       operationId: authStatus
       responses:
@@ -266,7 +271,7 @@ paths:
               schema: { $ref: '#/components/schemas/AuthStatusResponse' }
   /api/v1/auth/me:
     get:
-      tags: [User Auth]
+      tags: [User Auth/Account]
       summary: 查询当前用户资料
       operationId: currentUserProfile
       security: [{ sessionCookie: [] }]
@@ -278,7 +283,7 @@ paths:
               schema: { $ref: '#/components/schemas/UserMeResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     patch:
-      tags: [User Auth]
+      tags: [User Auth/Account]
       summary: 更新当前用户资料
       operationId: updateCurrentUserProfile
       security: [{ sessionCookie: [] }]
@@ -298,7 +303,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/password:
     post:
-      tags: [User Auth]
+      tags: [User Auth/Account]
       summary: 修改当前用户密码
       operationId: changeCurrentUserPassword
       security: [{ sessionCookie: [] }]
@@ -314,7 +319,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/sessions:
     get:
-      tags: [User Auth]
+      tags: [User Auth/Sessions]
       summary: 查询当前用户 Session
       operationId: listUserSessions
       security: [{ sessionCookie: [] }]
@@ -327,7 +332,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/sessions/{session_id}:
     delete:
-      tags: [User Auth]
+      tags: [User Auth/Sessions]
       summary: 撤销指定用户 Session
       operationId: revokeUserSession
       security: [{ sessionCookie: [] }]
@@ -341,7 +346,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/auth/oauth-clients:
     get:
-      tags: [User Auth]
+      tags: [User Auth/OAuth Clients]
       summary: 查询当前用户的 OAuth 项目
       operationId: listOwnedOAuthClients
       security: [{ sessionCookie: [] }]
@@ -353,7 +358,7 @@ paths:
               schema: { $ref: '#/components/schemas/OwnedOAuthClientList' }
         '401': { $ref: '#/components/responses/Unauthorized' }
     post:
-      tags: [User Auth]
+      tags: [User Auth/OAuth Clients]
       summary: 创建当前用户的 OAuth 项目
       operationId: createOwnedOAuthClient
       security: [{ sessionCookie: [] }]
@@ -374,7 +379,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/auth/oauth-clients/{client_id}:
     put:
-      tags: [User Auth]
+      tags: [User Auth/OAuth Clients]
       summary: 更新当前用户拥有的 OAuth 项目
       operationId: updateOwnedOAuthClient
       security: [{ sessionCookie: [] }]
@@ -393,7 +398,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/auth/oauth-clients/{client_id}/disable:
     post:
-      tags: [User Auth]
+      tags: [User Auth/OAuth Clients]
       summary: 禁用当前用户拥有的 OAuth 项目
       operationId: disableOwnedOAuthClient
       security: [{ sessionCookie: [] }]
@@ -407,7 +412,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/auth/oauth-clients/{client_id}/enable:
     post:
-      tags: [User Auth]
+      tags: [User Auth/OAuth Clients]
       summary: 启用当前用户拥有的 OAuth 项目
       operationId: enableOwnedOAuthClient
       security: [{ sessionCookie: [] }]
@@ -421,7 +426,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/auth/oauth-clients/{client_id}/rotate-secret:
     post:
-      tags: [User Auth]
+      tags: [User Auth/OAuth Clients]
       summary: 轮换当前用户 OAuth 项目的 Secret
       operationId: rotateOwnedOAuthClientSecret
       security: [{ sessionCookie: [] }]
@@ -439,7 +444,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/auth/session:
     delete:
-      tags: [User Auth]
+      tags: [User Auth/Sessions]
       summary: 注销当前 Session
       operationId: revokeSession
       security: [{ sessionCookie: [] }, { chenxingSession: [] }]
@@ -451,7 +456,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
   /auth/login:
     get:
-      tags: [User Auth]
+      tags: [User Auth/Browser Login]
       summary: 浏览器登录页
       operationId: browserLoginPage
       parameters:
@@ -461,7 +466,7 @@ paths:
       responses:
         '200': { description: HTML 登录页面, content: { text/html: { schema: { type: string } } } }
     post:
-      tags: [User Auth]
+      tags: [User Auth/Browser Login]
       summary: 提交浏览器密码登录
       operationId: browserLogin
       requestBody:
@@ -481,7 +486,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
   /auth/external/{slug}:
     get:
-      tags: [User Auth]
+      tags: [User Auth/Browser Login]
       summary: 开始自定义外部 OAuth 登录
       operationId: startExternalOAuthLogin
       parameters:
@@ -492,7 +497,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
   /auth/external/{slug}/callback:
     get:
-      tags: [User Auth]
+      tags: [User Auth/Browser Login]
       summary: 自定义外部 OAuth 回调
       operationId: externalOAuthCallback
       parameters:
