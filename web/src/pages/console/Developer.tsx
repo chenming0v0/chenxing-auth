@@ -8,7 +8,7 @@ import {
   PageFade, PageHeader, Section, TextArea,
 } from "../../components/ui";
 import { CopyField, EndpointRow } from "../../components/CopyField";
-import { SCOPES } from "../../data/mock";
+import { SCOPES } from "../../data/constants";
 import { useStore } from "../../store";
 import { cn } from "../../utils/cn";
 

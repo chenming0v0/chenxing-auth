@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { Code2, FlaskConical, LayoutDashboard, LogOut, Plug, UserRound } from "lucide-react";
 import { Avatar, Logo } from "../../components/ui";
-import { BRAND } from "../../data/mock";
+import { BRAND } from "../../data/constants";
 import { useStore } from "../../store";
 import { cn } from "../../utils/cn";
 

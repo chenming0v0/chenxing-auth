@@ -4,7 +4,7 @@ import {
   EmptyState, GhostButton, GlowButton, Notice, PageFade, PageHeader, Section,
 } from "../../components/ui";
 import { CodeSample, CopyField } from "../../components/CopyField";
-import { SCOPES } from "../../data/mock";
+import { SCOPES } from "../../data/constants";
 import { useStore } from "../../store";
 import { cn } from "../../utils/cn";
 

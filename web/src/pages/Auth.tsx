@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowRight, Loader2, LockKeyhole, Mail, ShieldCheck, UserRound } from "lucide-react";
 import { Field, GlowButton, Logo, Notice } from "../components/ui";
 import { TotpSetupPanel } from "../components/TotpSetupPanel";
-import { BRAND } from "../data/mock";
+import { BRAND } from "../data/constants";
 import { errorMessage, TotpSetupResponse } from "../api";
 import { LoginResult, useStore } from "../store";
 

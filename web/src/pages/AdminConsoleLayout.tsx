@@ -3,7 +3,7 @@ import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { LogOut, Mail, ShieldAlert, ShieldCheck } from "lucide-react";
 import { api, AdminProfile, ApiError, errorMessage } from "../api";
 import { Badge, GlowButton, Logo } from "../components/ui";
-import { BRAND } from "../data/mock";
+import { BRAND } from "../data/constants";
 import { cn } from "../utils/cn";
 
 const NAV = [{ to: "/admin-console/settings", label: "邮件设置", icon: <Mail size={16} /> }];

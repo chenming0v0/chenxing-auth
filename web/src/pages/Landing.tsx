@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { ArrowRight, Code2, Fingerprint, LockKeyhole, Settings, ShieldCheck } from "lucide-react";
 import { BrandMark, GhostButton, GlowButton } from "../components/ui";
-import { BRAND } from "../data/mock";
+import { BRAND } from "../data/constants";
 import { useStore } from "../store";
 
 const FEATURES = [

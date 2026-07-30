@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { AlertTriangle, Check, Loader2, Lock, X } from "lucide-react";
 import { Avatar, GhostButton, GlowButton, Logo, Notice } from "../components/ui";
 import { api, errorMessage, PendingAuthorization } from "../api";
-import { SCOPE_MAP } from "../data/mock";
+import { SCOPE_MAP } from "../data/constants";
 import { useStore } from "../store";
 
 export default function OAuthConsent() {

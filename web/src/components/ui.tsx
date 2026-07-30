@@ -1,7 +1,7 @@
 import { ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X } from "lucide-react";
-import { LOGO_URL, BRAND } from "../data/mock";
+import { LOGO_URL, BRAND } from "../data/constants";
 import { cn } from "../utils/cn";
 
 /* ---------- Logo ---------- */
