@@ -1,25 +1,31 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Check, Loader2, Mail, Save, ShieldAlert } from "lucide-react";
-import { useOutletContext } from "react-router-dom";
-import { AdminProfile, api, errorMessage } from "../api";
-import { Field, GlowButton, Notice, PageFade, PageHeader, Section } from "../components/ui";
+import { api, errorMessage } from "../../api";
+import { Field, GlowButton, Notice, PageFade, PageHeader, Section } from "../../components/ui";
+import { useStore } from "../../store";
 
-export default function AdminSettings() {
-  const admin = useOutletContext<AdminProfile>();
+export default function Settings() {
+  const { user } = useStore();
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const canManage = user?.role === "admin" || user?.role === "owner";
+
   useEffect(() => {
+    if (!canManage) {
+      setLoading(false);
+      return;
+    }
     let active = true;
     void api.adminRegistrationEmail()
       .then((value) => { if (active) setEmail(value.registration_email_from ?? ""); })
       .catch((value) => { if (active) setError(errorMessage(value)); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, []);
+  }, [canManage]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -37,7 +43,7 @@ export default function AdminSettings() {
     }
   };
 
-  if (!admin.permissions.includes("manage_settings")) {
+  if (!canManage) {
     return (
       <PageFade>
         <div className="panel mx-auto max-w-lg rounded-xl px-6 py-14 text-center">
