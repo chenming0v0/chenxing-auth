@@ -1,8 +1,11 @@
 use axum::{
     Json, Router,
     extract::State,
-    http::{StatusCode, header::CONTENT_TYPE},
-    response::IntoResponse,
+    http::{
+        HeaderMap, StatusCode,
+        header::{ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_TYPE, ORIGIN, VARY},
+    },
+    response::{IntoResponse, Response},
     routing::{any, get, post},
 };
 use serde::Serialize;
@@ -222,8 +225,19 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
-async fn openid_configuration(State(state): State<AppState>) -> Json<OpenIdConfiguration> {
-    Json(OpenIdConfiguration::for_issuer(&state.config.issuer_url))
+async fn openid_configuration(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let mut response =
+        Json(OpenIdConfiguration::for_issuer(&state.config.issuer_url)).into_response();
+    if headers.contains_key(ORIGIN) {
+        response.headers_mut().insert(
+            ACCESS_CONTROL_ALLOW_ORIGIN,
+            axum::http::HeaderValue::from_static("*"),
+        );
+        response
+            .headers_mut()
+            .insert(VARY, axum::http::HeaderValue::from_static("Origin"));
+    }
+    response
 }
 
 async fn jwks(State(state): State<AppState>) -> Json<jsonwebtoken::jwk::JwkSet> {

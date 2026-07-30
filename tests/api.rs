@@ -49,6 +49,28 @@ async fn openid_configuration_publishes_standard_endpoints() {
 }
 
 #[tokio::test]
+async fn openid_configuration_allows_newapi_origin() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/openid-configuration")
+                .header("origin", "https://zd.chenl.ing")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|value| value.to_str().ok()),
+        Some("*")
+    );
+}
+
+#[tokio::test]
 async fn jwks_endpoint_returns_a_key_set_document() {
     let response = test_router()
         .oneshot(
