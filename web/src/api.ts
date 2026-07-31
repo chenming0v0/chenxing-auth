@@ -154,6 +154,32 @@ interface PageResponse<T> {
   total: number;
 }
 
+export interface PlanSummary {
+  code: string;
+  name: string;
+  description: string | null;
+  /** "permanent" 或 RFC3339 到期时间字符串。 */
+  validity: string;
+}
+
+/**
+ * 单项权益。序列化约定（与后端 EntitlementItem 一致）：
+ * - `limit` 为数字 → 有上限；
+ * - `limit: null` → 无限，显示 ∞；
+ * - 没有 `limit` 字段 → 只是个数值、无上限概念（如 QPS）。
+ */
+export interface Entitlement {
+  key: string;
+  label: string;
+  used: number;
+  limit?: number | null;
+}
+
+export interface EntitlementsResponse {
+  plan: PlanSummary;
+  entitlements: Entitlement[];
+}
+
 function csrfCookie(name = "chenxing_csrf") {
   return document.cookie
     .split(";")
@@ -216,6 +242,7 @@ export const api = {
   changePassword: (current_password: string, new_password: string) =>
     request<void>("/api/v1/auth/password", mutation({ method: "POST", body: JSON.stringify({ current_password, new_password }) })),
   sessions: () => request<{ items: UserSession[] }>("/api/v1/auth/sessions"),
+  entitlements: () => request<EntitlementsResponse>("/api/v1/auth/entitlements"),
   revokeSession: (id: number) => request<void>(`/api/v1/auth/sessions/${encodeURIComponent(id)}`, mutation({ method: "DELETE" })),
   clients: () => request<{ items: OAuthClient[] }>("/api/v1/auth/oauth-clients"),
   createClient: (input: { client_name: string; redirect_uris: string[]; scopes: string[] }) =>
