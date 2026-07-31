@@ -223,7 +223,7 @@ async fn disabled_user_session_cannot_authorize_or_submit_consent() {
         .and_then(|value| value.to_str().ok())
         .expect("consent location")
         .to_owned();
-    assert!(consent_location.starts_with("/oauth/authorize/consent?request_id="));
+    assert!(consent_location.starts_with("/oauth/consent?request_id="));
     let request_id = Url::parse(&format!("http://localhost{consent_location}"))
         .expect("consent URL")
         .query_pairs()
@@ -251,30 +251,10 @@ async fn disabled_user_session_cannot_authorize_or_submit_consent() {
             .headers()
             .get(LOCATION)
             .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.starts_with("/auth/login?request_id="))
+            .is_some_and(|value| value.starts_with("/login?request_id="))
     );
 
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/oauth/authorize/consent?request_id={request_id}"))
-                .header("accept", "text/html")
-                .header("cookie", &cookie)
-                .body(Body::empty())
-                .expect("disabled HTML consent request"),
-        )
-        .await
-        .expect("disabled HTML consent response");
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert!(
-        response
-            .headers()
-            .get(LOCATION)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.starts_with("/auth/login?request_id="))
-    );
-
+    // A disabled user's session can no longer inspect the pending request over JSON.
     let response = router
         .clone()
         .oneshot(
@@ -288,18 +268,19 @@ async fn disabled_user_session_cannot_authorize_or_submit_consent() {
         .expect("disabled inspect response");
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
+    // Nor submit a JSON consent decision.
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/oauth/authorize/consent")
+                .uri(format!("/api/v1/oauth/authorize/requests/{request_id}"))
                 .header("cookie", &cookie)
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(format!(
-                    "request_id={request_id}&decision=approve&csrf_token={}",
-                    session.csrf_token
-                )))
+                .header("x-csrf-token", &session.csrf_token)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"decision": "approve"}).to_string(),
+                ))
                 .expect("disabled consent request"),
         )
         .await

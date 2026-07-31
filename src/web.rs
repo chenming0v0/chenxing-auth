@@ -1,7 +1,4 @@
-pub mod consent;
-pub mod handlers;
 pub mod helpers;
-pub mod login;
 
 pub fn escape_html(value: &str) -> String {
     value
@@ -19,15 +16,3 @@ pub fn page(title: &str, body: &str) -> String {
     )
 }
 
-pub fn totp_qr_svg(otpauth_url: &str) -> Option<String> {
-    let svg = qrcode::QrCode::new(otpauth_url.as_bytes())
-        .ok()?
-        .render::<qrcode::render::svg::Color>()
-        .min_dimensions(288, 288)
-        .build();
-    Some(
-        svg.strip_prefix("<?xml version=\"1.0\" standalone=\"yes\"?>")
-            .unwrap_or(&svg)
-            .to_owned(),
-    )
-}

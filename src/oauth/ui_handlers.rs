@@ -10,7 +10,6 @@ use super::{
     authorization::{AuthorizationRequest, validate_authorization_request},
     consent::{ConsentDecision, PendingAuthorization, parse_decision},
     handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
-    session::active_user_id,
 };
 use crate::{
     error,
@@ -101,6 +100,59 @@ pub async fn inspect_authorization_request(
         }),
     )
         .into_response()
+}
+
+/// Bind a pending authorization request to the caller's session.
+///
+/// The browser hits `/oauth/authorize` before any session exists, so the pending
+/// request is created with `session_id: None` and the user is sent to the SPA
+/// login page. Once the SPA logs in over JSON, it calls this endpoint so the
+/// pending request is tied to the freshly-issued session — after which `inspect`
+/// and `decide` accept it. Mirrors the binding the server-rendered
+/// `complete_browser_login` used to perform.
+pub async fn bind_authorization_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+) -> Response {
+    let Ok(context) = current_user(&state, &headers).await else {
+        return error::unauthorized("login_required", "an authenticated session is required");
+    };
+    if !csrf_valid(&headers, &context.session) {
+        return error::bad_request("csrf_invalid", "CSRF token is invalid");
+    }
+    let Some(mut pending) = state
+        .authorization_requests
+        .find(&request_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return error::bad_request(
+            "authorization_request_expired",
+            "authorization request is expired",
+        );
+    };
+    // Only allow binding an unbound request, or re-binding one already owned by
+    // this same session (idempotent retry). Refuse to steal another session's request.
+    match pending.session_id.as_deref() {
+        None => {}
+        Some(existing) if existing == context.session.token => {
+            return (axum::http::StatusCode::NO_CONTENT, ()).into_response();
+        }
+        Some(_) => {
+            return error::unauthorized(
+                "invalid_session",
+                "authorization request is bound to another session",
+            );
+        }
+    }
+    pending.session_id = Some(context.session.token.clone());
+    if let Err(error_value) = state.authorization_requests.save(&pending).await {
+        tracing::error!(error = %error_value, "failed to bind authorization request to session");
+        return error::internal();
+    }
+    (axum::http::StatusCode::NO_CONTENT, ()).into_response()
 }
 
 pub async fn decide_authorization_request(
@@ -240,44 +292,18 @@ fn error_redirect(pending: &PendingAuthorization) -> Option<String> {
 }
 
 async fn current_user(state: &AppState, headers: &HeaderMap) -> Result<UserContext, Response> {
-    let Some(session_token) = cookies::cookie_value_by_name(headers, cookies::SESSION_COOKIE)
-    else {
+    // Accepts both the browser Session cookie and the X-Chenxing-Session header,
+    // matching every other authenticated endpoint via session_for_headers.
+    let Some(session) = super::session::session_for_headers(state, headers).await else {
         return Err(error::unauthorized(
             "login_required",
             "an authenticated session is required",
         ));
     };
-    let Some(session) = state
-        .sessions
-        .find(&session_token)
-        .await
-        .map_err(|_| error::internal())?
-    else {
-        return Err(error::unauthorized(
-            "invalid_session",
-            "user session is invalid",
-        ));
-    };
-    if !session.is_active() {
-        return Err(error::unauthorized(
-            "invalid_session",
-            "user session is invalid",
-        ));
-    }
     let user_id = session
         .user_id
         .parse::<UserId>()
         .map_err(|_| error::unauthorized("invalid_session", "user session is invalid"))?;
-    match active_user_id(state, &user_id.to_string()).await {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return Err(error::unauthorized(
-                "user_disabled",
-                "user account is disabled",
-            ));
-        }
-        Err(_) => return Err(error::internal()),
-    }
     Ok(UserContext { user_id, session })
 }
 

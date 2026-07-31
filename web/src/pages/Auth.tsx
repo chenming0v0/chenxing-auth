@@ -1,15 +1,57 @@
-import { FormEvent, ReactNode, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowRight, Loader2, LockKeyhole, Mail, ShieldCheck, UserRound } from "lucide-react";
+import { ArrowRight, Fingerprint, KeyRound, Loader2, LockKeyhole, Mail, ShieldCheck, UserRound } from "lucide-react";
 import { Field, GlowButton, Logo, Notice } from "../components/ui";
 import { TotpSetupPanel } from "../components/TotpSetupPanel";
 import { BRAND } from "../data/constants";
-import { errorMessage, TotpSetupResponse } from "../api";
+import { api, errorMessage, ExternalProvider, TotpSetupResponse } from "../api";
 import { LoginResult, useStore } from "../store";
 
 /** Carries request_id through login/register so an interrupted OAuth flow can resume. */
 function requestQuery(requestId: string | null) {
   return requestId ? `?request_id=${encodeURIComponent(requestId)}` : "";
+}
+
+/**
+ * After a JSON login succeeds mid OAuth flow, the freshly-issued session must be
+ * bound to the pending authorization request before the consent screen will
+ * accept it. With no request_id this is a plain console login.
+ */
+async function continueAfterLogin(requestId: string | null, navigate: (to: string) => void, returnTo: string) {
+  if (requestId) {
+    await api.bindAuthorization(requestId);
+    navigate(`/oauth/consent?request_id=${encodeURIComponent(requestId)}`);
+  } else {
+    navigate(returnTo);
+  }
+}
+
+/** External identity-provider buttons. Full-page navigations into the server-run
+ *  external OAuth flow, which returns to the SPA consent/login route. */
+function ExternalLogins({ requestId }: { requestId: string | null }) {
+  const [providers, setProviders] = useState<ExternalProvider[]>([]);
+  useEffect(() => {
+    void api.externalProviders().then(setProviders).catch(() => setProviders([]));
+  }, []);
+  if (providers.length === 0) return null;
+  return (
+    <div className="mt-6">
+      <div className="flex items-center gap-3 text-[11px] text-slate-600">
+        <span className="h-px flex-1 bg-hairline" /> 或使用外部账号 <span className="h-px flex-1 bg-hairline" />
+      </div>
+      <div className="mt-4 space-y-2.5">
+        {providers.map((provider) => (
+          <a
+            key={provider.slug}
+            href={`/auth/external/${encodeURIComponent(provider.slug)}${requestQuery(requestId)}`}
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-hairline bg-white/[0.03] px-4 py-2.5 text-sm font-medium text-slate-300 transition-colors hover:border-slate-600 hover:bg-white/[0.06] hover:text-white"
+          >
+            <KeyRound size={15} /> 使用 {provider.name} 登录
+          </a>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export function AuthShell({ children, title, subtitle }: { children: ReactNode; title: string; subtitle: string }) {
@@ -55,57 +97,163 @@ export function AuthShell({ children, title, subtitle }: { children: ReactNode; 
   );
 }
 
+type PendingFactor = Extract<LoginResult, { status: string }>;
+
+interface FactorFlow {
+  pending: PendingFactor | null;
+  totpSetup: TotpSetupResponse | null;
+  usePasskey: boolean;
+  busy: boolean;
+  code: string;
+  setCode: (value: string) => void;
+  begin: (result: PendingFactor) => Promise<void>;
+  submitTotp: (event: FormEvent) => Promise<void>;
+  runPasskey: () => Promise<void>;
+}
+
+/**
+ * Drives the second-factor step shared by login and register. A pending login
+ * can require TOTP (verify existing, or first-time enrollment with a QR code) or
+ * passkey (register when none exists, authenticate otherwise). `onDone` fires
+ * once a session is issued — the caller decides where to go next.
+ */
+function useFactorFlow(opts: {
+  requestId: string | null;
+  onDone: () => void;
+  startTotpSetup: (ticket: string) => Promise<TotpSetupResponse>;
+  completeTotp: (ticket: string, code: string) => Promise<void>;
+  registerPasskey: (ticket: string) => Promise<void>;
+  loginPasskey: (ticket: string) => Promise<void>;
+  setError: (value: string | null) => void;
+}): FactorFlow {
+  const [pending, setPending] = useState<PendingFactor | null>(null);
+  const [totpSetup, setTotpSetup] = useState<TotpSetupResponse | null>(null);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  // Prefer TOTP when available; fall back to passkey only when it's the sole method.
+  const usePasskey = !!pending && !pending.methods.includes("totp") && pending.methods.includes("passkey");
+  const isSetup = pending?.status === "factor_setup_required";
+
+  const begin = async (result: PendingFactor) => {
+    setPending(result);
+    const passkeyOnly = !result.methods.includes("totp") && result.methods.includes("passkey");
+    if (result.status === "factor_setup_required" && !passkeyOnly) {
+      setTotpSetup(await opts.startTotpSetup(result.login_ticket));
+    }
+  };
+
+  const submitTotp = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!pending) return;
+    setBusy(true);
+    opts.setError(null);
+    try {
+      await opts.completeTotp(pending.login_ticket, code);
+      opts.onDone();
+    } catch (value) {
+      opts.setError(errorMessage(value));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runPasskey = async () => {
+    if (!pending) return;
+    setBusy(true);
+    opts.setError(null);
+    try {
+      if (isSetup) await opts.registerPasskey(pending.login_ticket);
+      else await opts.loginPasskey(pending.login_ticket);
+      opts.onDone();
+    } catch (value) {
+      if (value instanceof Error && value.message === "passkey_cancelled") opts.setError("passkey 操作已取消，请重试。");
+      else opts.setError(errorMessage(value));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return { pending, totpSetup, usePasskey, busy, code, setCode, begin, submitTotp, runPasskey };
+}
+
+function FactorStep({ factor, error }: { factor: FactorFlow; error: string | null }) {
+  if (factor.usePasskey) {
+    const isSetup = factor.pending?.status === "factor_setup_required";
+    return (
+      <div className="mt-6 space-y-4">
+        {error && <Notice tone="error">{error}</Notice>}
+        <div className="flex flex-col items-center rounded-xl border border-hairline bg-white/[0.02] px-6 py-8 text-center">
+          <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-300">
+            <Fingerprint size={24} />
+          </span>
+          <p className="text-sm font-medium text-white">{isSetup ? "注册 passkey" : "使用 passkey 登录"}</p>
+          <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
+            {isSetup ? "使用设备的指纹、面容或安全密钥创建 passkey。" : "使用你的指纹、面容或安全密钥完成验证。"}
+          </p>
+        </div>
+        <GlowButton className="w-full" type="button" disabled={factor.busy} onClick={() => void factor.runPasskey()}>
+          {factor.busy ? <Loader2 size={16} className="animate-spin" /> : <>{isSetup ? "创建 passkey" : "验证 passkey"} <Fingerprint size={15} /></>}
+        </GlowButton>
+      </div>
+    );
+  }
+
+  return (
+    <form className="mt-6 space-y-4" onSubmit={factor.submitTotp}>
+      {error && <Notice tone="error">{error}</Notice>}
+      {factor.totpSetup ? <TotpSetupPanel setup={factor.totpSetup} /> : <Notice>请输入验证器中的当前六位验证码。</Notice>}
+      <Field
+        label="动态验证码"
+        icon={<ShieldCheck size={15} />}
+        inputMode="numeric"
+        pattern="[0-9]{6}"
+        maxLength={6}
+        required
+        placeholder="6 位数字"
+        value={factor.code}
+        onChange={(event) => factor.setCode(event.target.value)}
+      />
+      <GlowButton className="w-full" type="submit" disabled={factor.busy || factor.code.length !== 6}>
+        {factor.busy ? <Loader2 size={16} className="animate-spin" /> : <>完成登录 <ArrowRight size={15} /></>}
+      </GlowButton>
+    </form>
+  );
+}
+
 export function Login() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const { login, startTotpSetup, completeTotp } = useStore();
+  const requestId = params.get("request_id");
+  const returnTo = params.get("return_to") || "/console";
+  const externalError = params.get("external_error");
+  const { login, startTotpSetup, completeTotp, registerPasskey, loginPasskey } = useStore();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const requestId = params.get("request_id");
-  const [pending, setPending] = useState<Extract<LoginResult, { status: string }> | null>(null);
-  const [totpSetup, setTotpSetup] = useState<TotpSetupResponse | null>(null);
-  const [code, setCode] = useState("");
+  const [error, setError] = useState<string | null>(externalError ? "外部账号登录未完成，请重试或使用密码登录。" : null);
 
-  const goNext = () => {
-    if (requestId) {
-      navigate(`/oauth/consent?request_id=${encodeURIComponent(requestId)}`);
-    } else {
-      navigate(params.get("return_to") || "/console");
-    }
-  };
-
-  const handleLoginResult = async (result: LoginResult) => {
-    if ("session_id" in result) {
-      goNext();
-      return;
-    }
-    setPending(result);
-    if (result.status === "factor_setup_required") setTotpSetup(await startTotpSetup(result.login_ticket));
-  };
+  const factor = useFactorFlow({
+    requestId,
+    onDone: () => void continueAfterLogin(requestId, navigate, returnTo),
+    startTotpSetup,
+    completeTotp,
+    registerPasskey,
+    loginPasskey,
+    setError,
+  });
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await handleLoginResult(await login(identifier, password));
-    } catch (value) {
-      setError(errorMessage(value));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const finishTotp = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!pending) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await completeTotp(pending.login_ticket, code);
-      goNext();
+      const result = await login(identifier, password);
+      if ("session_id" in result) {
+        await continueAfterLogin(requestId, navigate, returnTo);
+      } else {
+        await factor.begin(result);
+      }
     } catch (value) {
       setError(errorMessage(value));
     } finally {
@@ -118,52 +266,38 @@ export function Login() {
       title="登录辰星通行证"
       subtitle={requestId ? "登录后继续完成授权确认" : "使用你的用户名或邮箱登录"}
     >
-      {!pending ? (
-        <form className="mt-6 space-y-4" onSubmit={submit}>
-          {error && <Notice tone="error">{error}</Notice>}
-          <Field
-            label="用户名或邮箱"
-            icon={<UserRound size={15} />}
-            type="text"
-            autoComplete="username"
-            required
-            placeholder="用户名或 you@example.com"
-            value={identifier}
-            onChange={(event) => setIdentifier(event.target.value)}
-          />
-          <Field
-            label="密码"
-            icon={<LockKeyhole size={15} />}
-            type="password"
-            autoComplete="current-password"
-            required
-            placeholder="输入密码"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-          />
-          <GlowButton className="w-full" type="submit" disabled={busy}>
-            {busy ? <Loader2 size={16} className="animate-spin" /> : <>登录 <ArrowRight size={15} /></>}
-          </GlowButton>
-        </form>
+      {!factor.pending ? (
+        <>
+          <form className="mt-6 space-y-4" onSubmit={submit}>
+            {error && <Notice tone="error">{error}</Notice>}
+            <Field
+              label="用户名或邮箱"
+              icon={<UserRound size={15} />}
+              type="text"
+              autoComplete="username"
+              required
+              placeholder="用户名或 you@example.com"
+              value={identifier}
+              onChange={(event) => setIdentifier(event.target.value)}
+            />
+            <Field
+              label="密码"
+              icon={<LockKeyhole size={15} />}
+              type="password"
+              autoComplete="current-password"
+              required
+              placeholder="输入密码"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+            <GlowButton className="w-full" type="submit" disabled={busy}>
+              {busy ? <Loader2 size={16} className="animate-spin" /> : <>登录 <ArrowRight size={15} /></>}
+            </GlowButton>
+          </form>
+          <ExternalLogins requestId={requestId} />
+        </>
       ) : (
-        <form className="mt-6 space-y-4" onSubmit={finishTotp}>
-          {error && <Notice tone="error">{error}</Notice>}
-          {totpSetup ? <TotpSetupPanel setup={totpSetup} /> : <Notice>请输入验证器中的当前六位验证码。</Notice>}
-          <Field
-            label="动态验证码"
-            icon={<ShieldCheck size={15} />}
-            inputMode="numeric"
-            pattern="[0-9]{6}"
-            maxLength={6}
-            required
-            placeholder="6 位数字"
-            value={code}
-            onChange={(event) => setCode(event.target.value)}
-          />
-          <GlowButton className="w-full" type="submit" disabled={busy || code.length !== 6}>
-            {busy ? <Loader2 size={16} className="animate-spin" /> : <>完成登录 <ArrowRight size={15} /></>}
-          </GlowButton>
-        </form>
+        <FactorStep factor={factor} error={error} />
       )}
 
       <p className="mt-6 text-center text-xs text-slate-500">
@@ -179,52 +313,36 @@ export function Login() {
 export function Register() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const { register, startTotpSetup, completeTotp } = useStore();
+  const requestId = params.get("request_id");
+  const { register, startTotpSetup, completeTotp, registerPasskey, loginPasskey } = useStore();
   const [username, setUsername] = useState("");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const requestId = params.get("request_id");
-  const [pending, setPending] = useState<Extract<LoginResult, { status: string }> | null>(null);
-  const [totpSetup, setTotpSetup] = useState<TotpSetupResponse | null>(null);
-  const [code, setCode] = useState("");
 
-  const goNext = () => {
-    navigate(requestId ? `/oauth/consent?request_id=${encodeURIComponent(requestId)}` : "/console");
-  };
-
-  const handleLoginResult = async (result: LoginResult) => {
-    if ("session_id" in result) {
-      goNext();
-      return;
-    }
-    setPending(result);
-    if (result.status === "factor_setup_required") setTotpSetup(await startTotpSetup(result.login_ticket));
-  };
+  const factor = useFactorFlow({
+    requestId,
+    onDone: () => void continueAfterLogin(requestId, navigate, "/console"),
+    startTotpSetup,
+    completeTotp,
+    registerPasskey,
+    loginPasskey,
+    setError,
+  });
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await handleLoginResult(await register(username, email, password, name));
-    } catch (value) {
-      setError(errorMessage(value));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const finishTotp = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!pending) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await completeTotp(pending.login_ticket, code);
-      goNext();
+      const result = await register(username, email, password, name);
+      if ("session_id" in result) {
+        await continueAfterLogin(requestId, navigate, "/console");
+      } else {
+        await factor.begin(result);
+      }
     } catch (value) {
       setError(errorMessage(value));
     } finally {
@@ -234,7 +352,7 @@ export function Register() {
 
   return (
     <AuthShell title="创建辰星通行证" subtitle="一个账号，连接所有接入辰星的应用">
-      {!pending ? (
+      {!factor.pending ? (
         <form className="mt-6 space-y-4" onSubmit={submit}>
           {error && <Notice tone="error">{error}</Notice>}
           <Field
@@ -283,24 +401,7 @@ export function Register() {
           </GlowButton>
         </form>
       ) : (
-        <form className="mt-6 space-y-4" onSubmit={finishTotp}>
-          {error && <Notice tone="error">{error}</Notice>}
-          {totpSetup ? <TotpSetupPanel setup={totpSetup} /> : <Notice>请输入验证器中的当前六位验证码。</Notice>}
-          <Field
-            label="动态验证码"
-            icon={<ShieldCheck size={15} />}
-            inputMode="numeric"
-            pattern="[0-9]{6}"
-            maxLength={6}
-            required
-            placeholder="6 位数字"
-            value={code}
-            onChange={(event) => setCode(event.target.value)}
-          />
-          <GlowButton className="w-full" type="submit" disabled={busy || code.length !== 6}>
-            {busy ? <Loader2 size={16} className="animate-spin" /> : <>完成登录 <ArrowRight size={15} /></>}
-          </GlowButton>
-        </form>
+        <FactorStep factor={factor} error={error} />
       )}
 
       <p className="mt-6 text-center text-xs text-slate-500">

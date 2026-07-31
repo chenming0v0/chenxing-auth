@@ -4,7 +4,7 @@ use crate::{
     oauth::providers::{service::ExternalOAuthError, state_store::ExternalLoginState},
     sessions::{cookies, domain::Session},
     state::AppState,
-    web::helpers::{html_error, pending_request_exists},
+    web::helpers::pending_request_exists,
 };
 use axum::{
     extract::{Path, Query, State},
@@ -18,6 +18,36 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 pub struct ExternalLoginQuery {
     pub request_id: Option<String>,
+}
+
+/// Public-facing view of an external identity provider: only what the login page
+/// needs to render a button. Deliberately omits endpoints, client_id and claims.
+#[derive(Debug, serde::Serialize)]
+pub struct PublicProvider {
+    pub slug: String,
+    pub name: String,
+}
+
+/// Lists active external OAuth providers for the SPA login page. No auth required —
+/// the same list was previously baked into the server-rendered login HTML.
+pub async fn list_public_providers(State(state): State<AppState>) -> Response {
+    match state.external_oauth.list().await {
+        Ok(providers) => {
+            let active: Vec<PublicProvider> = providers
+                .into_iter()
+                .filter(|provider| provider.status == "active")
+                .map(|provider| PublicProvider {
+                    slug: provider.slug,
+                    name: provider.name,
+                })
+                .collect();
+            (StatusCode::OK, axum::Json(active)).into_response()
+        }
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to list public external providers");
+            error::internal()
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,10 +73,7 @@ pub async fn start_external_login(
     if let Some(request_id) = query.request_id.as_deref()
         && !pending_request_exists(&state, request_id).await
     {
-        return html_error(
-            StatusCode::BAD_REQUEST,
-            "授权请求已失效，请从接入平台重新开始登录。",
-        );
+        return Redirect::to("/login?external_error=oauth_request_expired").into_response();
     }
     let state_value = random_state();
     if let Err(store_error) = state
@@ -232,10 +259,12 @@ pub async fn external_callback(
             serde_json::json!({"result": "success", "channel": "external_oauth", "provider": slug}),
         ))
         .await;
+    // Session is already bound to the pending request here, so hand straight to
+    // the SPA consent screen; otherwise land on the SPA login page.
     let mut response = if let Some(request_id) = stored_state.request_id {
-        Redirect::to(&format!("/oauth/authorize/consent?request_id={request_id}")).into_response()
+        Redirect::to(&format!("/oauth/consent?request_id={request_id}")).into_response()
     } else {
-        Redirect::to("/auth/login?external=success").into_response()
+        Redirect::to("/login?external=success").into_response()
     };
     cookies::append_login_cookies(
         response.headers_mut(),
@@ -260,8 +289,8 @@ async fn external_error_with_request(
 ) -> Response {
     tracing::info!(provider = %slug, error_code = %code, "external OAuth login failed");
     let location = match request_id.filter(|value| !value.is_empty()) {
-        Some(request_id) => format!("/auth/login?request_id={request_id}&external_error={code}"),
-        None => format!("/auth/login?external_error={code}"),
+        Some(request_id) => format!("/login?request_id={request_id}&external_error={code}"),
+        None => format!("/login?external_error={code}"),
     };
     let mut response = Redirect::to(&location).into_response();
     cookies::append_clear_external_state_cookie(response.headers_mut(), state.config.cookie_secure);

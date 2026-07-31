@@ -63,6 +63,6 @@ async fn browser_authorization_without_a_session_redirects_to_login() {
             .headers()
             .get("location")
             .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.starts_with("/auth/login?request_id="))
+            .is_some_and(|value| value.starts_with("/login?request_id="))
     );
 }

@@ -1,5 +1,11 @@
 import { createContext, useContext, useEffect, useMemo, useState, ReactNode } from "react";
 import { api, ApiError, LoginResponse, OAuthClient, PendingLoginResponse, TotpSetupResponse, UserProfile, UserSession } from "./api";
+import {
+  decodeCreationOptions,
+  decodeRequestOptions,
+  encodeAuthenticationCredential,
+  encodeRegistrationCredential,
+} from "./utils/webauthn";
 
 export type LoginResult = LoginResponse | PendingLoginResponse;
 
@@ -19,6 +25,8 @@ interface Store {
   register: (username: string, email: string, password: string, displayName: string) => Promise<LoginResult>;
   startTotpSetup: (loginTicket: string) => Promise<TotpSetupResponse>;
   completeTotp: (loginTicket: string, code: string) => Promise<void>;
+  registerPasskey: (loginTicket: string) => Promise<void>;
+  loginPasskey: (loginTicket: string) => Promise<void>;
   logout: () => Promise<void>;
   updateProfile: (displayName: string) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
@@ -92,6 +100,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     startTotpSetup: async (loginTicket) => api.totpSetup(loginTicket),
     completeTotp: async (loginTicket, code) => { await api.totpLogin(loginTicket, code); await refresh(); },
+    registerPasskey: async (loginTicket) => {
+      const options = await api.passkeyRegisterStart(loginTicket);
+      const credential = await navigator.credentials.create({ publicKey: decodeCreationOptions(options) });
+      if (!credential) throw new Error("passkey_cancelled");
+      await api.passkeyRegisterFinish(loginTicket, encodeRegistrationCredential(credential as PublicKeyCredential));
+      await refresh();
+    },
+    loginPasskey: async (loginTicket) => {
+      const options = await api.passkeyLoginStart(loginTicket);
+      const credential = await navigator.credentials.get({ publicKey: decodeRequestOptions(options) });
+      if (!credential) throw new Error("passkey_cancelled");
+      await api.passkeyLoginFinish(loginTicket, encodeAuthenticationCredential(credential as PublicKeyCredential));
+      await refresh();
+    },
     logout: async () => {
       try { await api.logout(); } finally { setUser(null); setClients([]); setSessions([]); }
     },

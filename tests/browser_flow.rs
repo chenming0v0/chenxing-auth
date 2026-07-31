@@ -8,7 +8,7 @@ use axum::{
 };
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
-use totp_rs::{Secret, TOTP};
+use totp_rs::TOTP;
 use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
@@ -54,6 +54,7 @@ async fn body(response: axum::response::Response) -> String {
     .expect("UTF-8 response")
 }
 
+/// Joins the first pair of every Set-Cookie header into a Cookie request value.
 fn cookies(response: &axum::response::Response) -> String {
     response
         .headers()
@@ -80,26 +81,32 @@ fn location(response: &axum::response::Response) -> String {
         .to_owned()
 }
 
-fn html_value(body: &str, name: &str) -> String {
-    body.split(&format!("name=\"{name}\" value=\""))
-        .nth(1)
-        .and_then(|value| value.split('"').next())
-        .expect("HTML form value")
+fn cookie_value(cookie_header: &str, name: &str) -> String {
+    cookie_header
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
+        .expect("cookie present")
         .to_owned()
 }
 
-fn html_data_attribute(body: &str, name: &str) -> String {
-    body.split(&format!("data-{name}=\""))
-        .nth(1)
-        .and_then(|value| value.split('"').next())
-        .expect("HTML data attribute")
-        .to_owned()
+fn request_id_from(location: &str) -> String {
+    Url::parse(&format!("http://localhost{location}"))
+        .expect("redirect URL")
+        .query_pairs()
+        .find(|(key, _)| key == "request_id")
+        .map(|(_, value)| value.into_owned())
+        .expect("request id")
 }
 
+/// Full browser OAuth flow entirely over JSON, mirroring how the React SPA drives it:
+/// authorize (creates pending, redirects to SPA login) → JSON login + TOTP enrollment
+/// (issues session) → bind session to the pending request → inspect → approve →
+/// authorization code. Re-running authorize with a stored consent yields a code directly.
 #[tokio::test]
-async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() {
+async fn spa_json_oauth_flow_issues_authorization_code_and_reuses_consent() {
     let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
+
     let response = router
         .clone()
         .oneshot(
@@ -123,6 +130,7 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
         response.status(),
         StatusCode::CREATED | StatusCode::CONFLICT
     ));
+
     let email = format!("browser-{suffix}@example.com");
     let username = format!("browser-{suffix}");
     let password = "correct horse battery";
@@ -166,11 +174,13 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
         .expect("client response");
     let client: serde_json::Value =
         serde_json::from_str(&body(response).await).expect("client JSON");
-    let client_id = client["client_id"].as_str().expect("client id");
+    let client_id = client["client_id"].as_str().expect("client id").to_owned();
 
     let authorize_uri = format!(
         "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Fbrowser.example%2Fcallback&response_type=code&scope=openid%20profile&state=browser-state&nonce=browser-nonce&code_challenge=browser-challenge&code_challenge_method=S256"
     );
+
+    // Unauthenticated browser hit: pending is created, user is sent to the SPA login page.
     let response = router
         .clone()
         .oneshot(
@@ -184,128 +194,131 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
         .expect("authorize response");
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     let login_location = location(&response);
-    assert!(login_location.starts_with("/auth/login?request_id="));
-    let request_id = Url::parse(&format!("http://localhost{login_location}"))
-        .expect("login URL")
-        .query_pairs()
-        .find(|(key, _)| key == "request_id")
-        .map(|(_, value)| value.into_owned())
-        .expect("request id");
+    assert!(
+        login_location.starts_with("/login?request_id="),
+        "expected SPA login redirect, got {login_location}"
+    );
+    let request_id = request_id_from(&login_location);
 
+    // SPA logs in over JSON. First factor: password → pending factor ticket.
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/auth/login")
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(format!(
-                    "request_id={request_id}&identifier={username}&password={password}"
-                )))
-                .expect("browser login request"),
+                .uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"identifier": username, "password": password}).to_string(),
+                ))
+                .expect("login request"),
         )
         .await
-        .expect("browser login response");
-    assert_eq!(response.status(), StatusCode::OK);
-    let setup_body = body(response).await;
-    let ticket = html_value(&setup_body, "login_ticket");
-    assert!(
-        setup_body.contains("<svg"),
-        "setup page should contain a local QR SVG"
-    );
-    assert!(
-        setup_body.contains("无法扫描"),
-        "setup page should offer manual secret entry"
-    );
-    assert!(
-        setup_body.contains("复制"),
-        "setup page should offer a copy control"
-    );
-    assert!(
-        !setup_body.contains("otpauth://"),
-        "setup page must not print the complete otpauth URI"
-    );
-    let secret = html_data_attribute(&setup_body, "totp-secret");
-    let totp = TOTP::new(
-        totp_rs::Algorithm::SHA1,
-        6,
-        1,
-        30,
-        Secret::Encoded(secret).to_bytes().expect("TOTP secret"),
-        None,
-        String::new(),
-    )
-    .expect("TOTP");
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/auth/login/totp")
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(format!(
-                    "request_id={request_id}&login_ticket={ticket}&code={}",
-                    totp.generate_current().expect("TOTP code")
-                )))
-                .expect("browser TOTP request"),
-        )
-        .await
-        .expect("browser TOTP response");
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    let session_cookies = cookies(&response);
-    let consent_location = location(&response);
-    assert!(consent_location.starts_with("/oauth/authorize/consent?request_id="));
-    let consent_id = Url::parse(&format!("http://localhost{consent_location}"))
-        .expect("consent URL")
-        .query_pairs()
-        .find(|(key, _)| key == "request_id")
-        .map(|(_, value)| value.into_owned())
-        .expect("consent request id");
-    let csrf = session_cookies
-        .split(';')
-        .find_map(|part| part.trim().strip_prefix("chenxing_csrf="))
-        .expect("csrf cookie")
+        .expect("login response");
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let pending_login: serde_json::Value =
+        serde_json::from_str(&body(response).await).expect("pending login JSON");
+    assert_eq!(pending_login["status"], "factor_setup_required");
+    let login_ticket = pending_login["login_ticket"]
+        .as_str()
+        .expect("login ticket")
         .to_owned();
 
+    // TOTP enrollment: fetch the secret, then confirm the current code to get a session.
     let response = router
         .clone()
         .oneshot(
             Request::builder()
-                .uri(&consent_location)
-                .header("accept", "text/html")
-                .header("cookie", &session_cookies)
-                .body(Body::empty())
-                .expect("consent page request"),
+                .method("POST")
+                .uri("/api/v1/auth/totp/setup")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"login_ticket": login_ticket}).to_string(),
+                ))
+                .expect("totp setup request"),
         )
         .await
-        .expect("consent page response");
+        .expect("totp setup response");
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(body(response).await.contains("Browser Client"));
+    let setup: serde_json::Value = serde_json::from_str(&body(response).await).expect("setup JSON");
+    let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("otpauth url")).expect("TOTP");
 
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/oauth/authorize/consent")
-                .header("content-type", "application/x-www-form-urlencoded")
-                .header("cookie", &session_cookies)
-                .body(Body::from(format!(
-                    "request_id={consent_id}&decision=approve&csrf_token={csrf}"
-                )))
-                .expect("consent decision request"),
+                .uri("/api/v1/auth/totp/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "login_ticket": login_ticket,
+                        "code": totp.generate_current().expect("totp code")
+                    })
+                    .to_string(),
+                ))
+                .expect("totp login request"),
         )
         .await
-        .expect("consent decision response");
-    let consent_status = response.status();
-    let consent_location = location(&response);
-    let consent_body = body(response).await;
-    assert_eq!(
-        consent_status,
-        StatusCode::SEE_OTHER,
-        "consent response: {consent_body}"
-    );
-    let first_code = Url::parse(&consent_location)
+        .expect("totp login response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let session_cookies = cookies(&response);
+    let csrf = cookie_value(&session_cookies, "chenxing_csrf");
+
+    // Bind the freshly-issued session to the pending authorization request.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/oauth/authorize/requests/{request_id}/bind"))
+                .header("cookie", &session_cookies)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .expect("bind request"),
+        )
+        .await
+        .expect("bind response");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // Inspect returns safe consent data for the bound request.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/oauth/authorize/requests/{request_id}"))
+                .header("cookie", &session_cookies)
+                .body(Body::empty())
+                .expect("inspect request"),
+        )
+        .await
+        .expect("inspect response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let pending: serde_json::Value =
+        serde_json::from_str(&body(response).await).expect("pending JSON");
+    assert_eq!(pending["client_name"], "Browser Client");
+    assert_eq!(pending["redirect_host"], "browser.example");
+
+    // Approve → authorization code redirect to the client callback.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/oauth/authorize/requests/{request_id}"))
+                .header("cookie", &session_cookies)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::json!({"decision": "approve"}).to_string()))
+                .expect("decide request"),
+        )
+        .await
+        .expect("decide response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let decision: serde_json::Value =
+        serde_json::from_str(&body(response).await).expect("decision JSON");
+    assert_eq!(decision["decision"], "approve");
+    let first_code = Url::parse(decision["redirect_to"].as_str().expect("redirect_to"))
         .expect("callback URL")
         .query_pairs()
         .find(|(key, _)| key == "code")
@@ -313,6 +326,7 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
         .expect("authorization code");
     assert!(!first_code.is_empty());
 
+    // Re-running authorize with a stored consent + session cookie issues a code directly.
     let response = router
         .clone()
         .oneshot(
@@ -325,22 +339,11 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
         )
         .await
         .expect("repeat authorize response");
-    let repeat_status = response.status();
-    let repeat_location = response
-        .headers()
-        .get(LOCATION)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
-    let repeat_body = body(response).await;
-    assert_eq!(
-        repeat_status,
-        StatusCode::SEE_OTHER,
-        "repeat response: {repeat_body}"
-    );
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let repeat_location = location(&response);
     assert!(
-        repeat_location
-            .as_deref()
-            .is_some_and(|value| value.contains("code="))
+        repeat_location.contains("code="),
+        "expected direct code redirect, got {repeat_location}"
     );
 
     let user_id: (i64,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
@@ -354,7 +357,7 @@ async fn browser_login_and_consent_issue_authorization_code_and_reuse_consent() 
         .await
         .expect("consent cleanup");
     chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
-        .bind(client_id)
+        .bind(&client_id)
         .execute(&database)
         .await
         .expect("client cleanup");

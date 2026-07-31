@@ -33,9 +33,11 @@ use crate::{
     },
     oauth::OpenIdConfiguration,
     oauth::handlers::{authorize, token},
-    oauth::providers::handlers::{external_callback, start_external_login},
+    oauth::providers::handlers::{external_callback, list_public_providers, start_external_login},
     oauth::revocation_handler::revoke,
-    oauth::ui_handlers::{decide_authorization_request, inspect_authorization_request},
+    oauth::ui_handlers::{
+        bind_authorization_request, decide_authorization_request, inspect_authorization_request,
+    },
     oauth::userinfo::userinfo,
     state::AppState,
     users::handlers::{login_user, register_user, revoke_session},
@@ -47,7 +49,6 @@ use crate::{
         auth_status, change_current_user_password, current_user_profile, list_user_sessions,
         revoke_user_session, update_current_user_profile,
     },
-    web::handlers::{browser_totp_post, consent_get, consent_post, login_get, login_post},
 };
 
 pub fn router(state: AppState) -> Router {
@@ -59,16 +60,16 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/.well-known/jwks.json", get(jwks))
         .route("/oauth/authorize", get(authorize))
-        .route(
-            "/oauth/authorize/consent",
-            get(consent_get).post(consent_post),
-        )
         .route("/oauth/token", post(token))
         .route("/oauth/revoke", post(revoke))
         .route("/oauth/userinfo", get(userinfo))
         .route(
             "/api/v1/oauth/authorize/requests/{request_id}",
             get(inspect_authorization_request).post(decide_authorization_request),
+        )
+        .route(
+            "/api/v1/oauth/authorize/requests/{request_id}/bind",
+            post(bind_authorization_request),
         )
         .route("/api/v1/users", post(register_user))
         .route("/api/v1/auth/login", post(login_user))
@@ -143,8 +144,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/clients", get(protected_placeholder))
         .route("/admin/audit", get(protected_placeholder))
         .route("/admin/settings/oauth", get(oauth_settings))
-        .route("/auth/login", get(login_get).post(login_post))
-        .route("/auth/login/totp", post(browser_totp_post))
+        .route("/api/v1/auth/external-providers", get(list_public_providers))
         .route("/auth/external/{slug}", get(start_external_login))
         .route("/auth/external/{slug}/callback", get(external_callback))
         .route(
