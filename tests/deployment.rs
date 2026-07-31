@@ -59,9 +59,11 @@ fn deployment_files_are_present_at_repository_root() {
 }
 
 #[test]
-fn database_uses_one_explicit_unified_baseline() {
+fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("unified identity baseline"));
+    assert!(DB_MODULE.contains("plans and entitlements"));
     assert!(DB_MODULE.contains("include_str!(\"../migrations/0001_initial.sql\")"));
+    assert!(DB_MODULE.contains("include_str!(\"../migrations/0002_plans.sql\")"));
     let migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -70,7 +72,10 @@ fn database_uses_one_explicit_unified_baseline() {
         .collect::<Vec<_>>();
     assert_eq!(
         migrations,
-        vec![std::ffi::OsString::from("0001_initial.sql")]
+        vec![
+            std::ffi::OsString::from("0001_initial.sql"),
+            std::ffi::OsString::from("0002_plans.sql"),
+        ]
     );
 }
 

@@ -13,10 +13,12 @@ use crate::{
         secrets::SecretManager, service::ExternalOAuthService, state_store::ExternalLoginStateStore,
     },
     oauth::quota::OAuthQuotaStore,
+    oauth::rate_limit::QpsRateLimiter,
     oauth::refresh_store::RefreshTokenStore,
     oauth::request_store::AuthorizationRequestStore,
     oauth::revocation::TokenRevocationStore,
     oauth::store::AuthorizationCodeStore,
+    plans::service::PlanService,
     sessions::store::SessionStore,
     settings::SettingsService,
     users::service::UserService,
@@ -38,6 +40,8 @@ pub struct AppState {
     pub consents: ConsentService,
     pub revocations: TokenRevocationStore,
     pub oauth_quotas: OAuthQuotaStore,
+    pub qps: QpsRateLimiter,
+    pub plans: PlanService,
     pub admin: AdminAuthenticator,
     pub audit: AuditService,
     pub factors: AuthFactorService,
@@ -83,6 +87,8 @@ impl AppState {
         let consents = ConsentService::new(database.clone());
         let revocations = TokenRevocationStore::new(redis.clone());
         let oauth_quotas = OAuthQuotaStore::new(redis.clone());
+        let qps = QpsRateLimiter::new(redis.clone());
+        let plans = PlanService::new(database.clone());
         let admin = AdminAuthenticator::new(config.admin_token.clone());
         let audit = AuditService::new(database.clone());
         let secret_manager = SecretManager::load_or_generate(&config.key_directory)?;
@@ -104,6 +110,8 @@ impl AppState {
             consents,
             revocations,
             oauth_quotas,
+            qps,
+            plans,
             admin,
             audit,
             factors,

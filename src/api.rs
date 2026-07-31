@@ -20,6 +20,9 @@ use crate::{
     admin::management_handlers::{
         list_admins, list_audit, list_users, set_user_role, set_user_status,
     },
+    admin::plan_handlers::{
+        archive_plan, assign_plan, create_plan, list_plans, restore_plan, update_plan,
+    },
     admin::provider_handlers::{
         create_provider, disable_provider, enable_provider, list_providers, update_provider,
     },
@@ -42,6 +45,7 @@ use crate::{
     },
     oauth::userinfo::userinfo,
     state::AppState,
+    users::entitlements_handlers::current_entitlements,
     users::handlers::{login_user, register_user, revoke_session},
     users::oauth_client_handlers::{
         create_owned_client, disable_owned_client, enable_owned_client, list_owned_clients,
@@ -100,6 +104,7 @@ pub fn router(state: AppState) -> Router {
             get(current_user_profile).patch(update_current_user_profile),
         )
         .route("/api/v1/auth/password", post(change_current_user_password))
+        .route("/api/v1/auth/entitlements", get(current_entitlements))
         .route("/api/v1/auth/sessions", get(list_user_sessions))
         .route(
             "/api/v1/auth/sessions/{session_id}",
@@ -115,6 +120,11 @@ pub fn router(state: AppState) -> Router {
             post(set_user_status),
         )
         .route("/api/v1/admin/users/{user_id}/role", post(set_user_role))
+        .route("/api/v1/admin/users/{user_id}/plan", post(assign_plan))
+        .route("/api/v1/admin/plans", get(list_plans).post(create_plan))
+        .route("/api/v1/admin/plans/{id}", axum::routing::put(update_plan))
+        .route("/api/v1/admin/plans/{id}/archive", post(archive_plan))
+        .route("/api/v1/admin/plans/{id}/restore", post(restore_plan))
         .route("/api/v1/admin/audit", get(list_audit))
         .route("/api/v1/admin/overview", get(admin_overview))
         .route("/api/v1/admin/users/query", get(query_users))

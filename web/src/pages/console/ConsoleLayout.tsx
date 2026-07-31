@@ -1,6 +1,6 @@
 import { ReactNode, useEffect } from "react";
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
-import { Code2, FlaskConical, LayoutDashboard, LogOut, Plug, Settings2, UserRound, UsersRound } from "lucide-react";
+import { Code2, Crown, FlaskConical, LayoutDashboard, LogOut, Plug, Settings2, UserRound, UsersRound } from "lucide-react";
 import { Avatar, Logo } from "../../components/ui";
 import { BRAND } from "../../data/constants";
 import { useStore } from "../../store";
@@ -17,6 +17,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { to: "/console", end: true, icon: <LayoutDashboard size={16} />, label: "总览", group: "账户" },
+  { to: "/console/entitlements", icon: <Crown size={16} />, label: "套餐与权益", group: "账户" },
   { to: "/console/profile", icon: <UserRound size={16} />, label: "通行证资料", group: "账户" },
   { to: "/console/connections", icon: <Plug size={16} />, label: "已授权应用", group: "账户" },
   { to: "/console/developer", icon: <Code2 size={16} />, label: "接入应用", group: "开发者" },

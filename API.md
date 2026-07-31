@@ -116,18 +116,19 @@
 - `GET /api/v1/auth/me`：返回当前用户资料和当前 Session 到期时间。
 - `PATCH /api/v1/auth/me`：更新 `display_name`，需要用户 CSRF。
 - `POST /api/v1/auth/password`：校验当前密码并修改密码，成功返回 `204`，同时撤销该用户所有 Session。
+- `GET /api/v1/auth/entitlements`：返回当前生效套餐摘要（`code`、`name`、`description`、`validity`）和各项权益用量；`limit` 为 `null` 表示无限，缺失表示数值无上限概念（如 QPS）。
 - `GET /api/v1/auth/sessions`：返回当前用户的 Session 元数据，不返回 Session 或 CSRF 秘密。
 - `DELETE /api/v1/auth/sessions/{session_id}`：撤销当前用户拥有的指定 Session，需要用户 CSRF。
 
 普通用户 OAuth 项目接口：
 
 - `GET /api/v1/auth/oauth-clients`：只返回当前用户拥有的项目。
-- `POST /api/v1/auth/oauth-clients`：创建项目，Secret 只返回一次；每个普通用户最多拥有 2 个项目，禁用项目仍占用配额。
+- `POST /api/v1/auth/oauth-clients`：创建项目，Secret 只返回一次；项目数量上限来自当前生效套餐的 `oauth_clients_limit`（默认套餐为 2），禁用项目仍占用配额。
 - `PUT /api/v1/auth/oauth-clients/{client_id}`：更新自己的项目，需要用户 CSRF。
 - `POST /api/v1/auth/oauth-clients/{client_id}/disable`、`/enable`：切换自己的项目状态，需要用户 CSRF。
 - `POST /api/v1/auth/oauth-clients/{client_id}/rotate-secret`：轮换自己的 Secret，只返回新 Secret 一次，需要用户 CSRF。
 
-每个普通用户项目的 OAuth 授权配额按 UTC 统计：每天最多 `2500` 次、每月最多 `50000` 次。项目响应中的 `quota` 包含 `daily_limit`、`daily_used`、`monthly_limit`、`monthly_used`。管理员创建的全局 OAuth Client 不受普通用户项目配额限制。普通用户不能访问 `/api/v1/admin/*`，也没有用户列表权限。
+每个普通用户项目的 OAuth 授权配额按 UTC 统计，日/月上限来自用户当前生效套餐（默认套餐为每天 `2500` 次、每月 `50000` 次，`monthly_auth_limit` 为 `null` 表示不限）。项目响应中的 `quota` 包含 `daily_limit`、`daily_used`、`monthly_limit`、`monthly_used`；套餐的真实分母以 `GET /api/v1/auth/entitlements` 返回为准。管理员创建的全局 OAuth Client 不受普通用户项目配额限制。普通用户不能访问 `/api/v1/admin/*`，也没有用户列表权限。
 
 ## OAuth 2.0 / OIDC
 
@@ -192,6 +193,8 @@ grant_type=refresh_token&refresh_token=...
 
 `refresh_token` 会轮换；包含 `openid` Scope 时返回 `id_token`。授权码和刷新 Token 均为一次性消费。
 
+Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒窗口限流，超限返回 `429 qps_exceeded`；套餐未配置 `max_qps`（`null`）时不限流。
+
 ### `GET /oauth/userinfo`
 
 请求头：`Authorization: Bearer <access_token>`。
@@ -250,6 +253,19 @@ grant_type=refresh_token&refresh_token=...
 
 创建字段：`username`、`email`、`password`、`role`，角色只允许 `admin` 或 `owner`。返回的用户摘要不包含密码或哈希。
 
+### 套餐与权益管理
+
+套餐定义 OAuth Client 数量、日/月授权配额和 QPS 上限；未显式分配套餐或套餐过期的用户回落到默认套餐。
+
+- `GET /api/v1/admin/plans`：列出全部套餐（含已归档），每个元素带 `assigned_users`，需要 `ManageSettings`。
+- `POST /api/v1/admin/plans`：创建套餐，提交 `code`、`name`、`description`、`oauth_clients_limit`、`daily_auth_limit`、`monthly_auth_limit`、`max_qps`、`is_default`；`code` 服务端归一化为小写。成功 `201`。
+- `PUT /api/v1/admin/plans/{id}`：更新套餐，字段同创建，成功返回更新后的套餐。
+- `POST /api/v1/admin/plans/{id}/archive`：归档套餐；默认套餐不可归档，返回 `409 default_plan_protected`。
+- `POST /api/v1/admin/plans/{id}/restore`：恢复套餐。
+- `POST /api/v1/admin/users/{user_id}/plan`：为用户分配套餐，提交 `{"plan_id":1,"expires_at":"2026-12-31T00:00:00Z"}`；`expires_at` 传 `null` 或省略表示永久有效，归档套餐不可分配。
+
+套餐写入需要 `ManageSettings` 权限（Owner 和 admin 角色均具备），并记录审计事件。
+
 ### Client 管理
 
 请求字段：
@@ -302,11 +318,11 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 
 ## 权限矩阵
 
-| 角色 | 用户/管理员 | Client | OAuth 提供商 | 审计 | 密钥轮换 |
-| --- | --- | --- | --- | --- | --- |
-| `owner` | 是 | 是 | 是 | 是 | 是 |
-| `admin` | 是 | 是 | 是 | 是 | 否 |
-| `user` | 否 | 本人 | 否 | 否 | 否 |
+| 角色 | 用户/管理员 | Client | OAuth 提供商 | 套餐 | 审计 | 密钥轮换 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `owner` | 是 | 是 | 是 | 是 | 是 | 是 |
+| `admin` | 是 | 是 | 是 | 是 | 是 | 否 |
+| `user` | 否 | 本人 | 否 | 否 | 否 | 否 |
 
 ## 前端接入建议
 

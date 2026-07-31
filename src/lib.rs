@@ -10,6 +10,7 @@ pub mod error;
 pub mod extensions;
 pub mod keys;
 pub mod oauth;
+pub mod plans;
 pub mod sessions;
 pub mod settings;
 pub mod state;

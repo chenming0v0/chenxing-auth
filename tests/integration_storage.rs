@@ -205,6 +205,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         registration(),
         format!("owned-client-first-{}", Uuid::new_v4().simple()),
         "hash".to_owned(),
+        2,
     )
     .await
     .expect("insert first owned client");
@@ -215,6 +216,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
             registration(),
             format!("owned-client-a-{}", Uuid::new_v4().simple()),
             "hash".to_owned(),
+            2,
         ),
         client_repository::insert_owned_client(
             &pool,
@@ -222,6 +224,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
             registration(),
             format!("owned-client-b-{}", Uuid::new_v4().simple()),
             "hash".to_owned(),
+            2,
         ),
     );
     let concurrent_results = [concurrent_a, concurrent_b];
@@ -262,6 +265,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
             registration(),
             format!("owned-client-third-{}", Uuid::new_v4().simple()),
             "hash".to_owned(),
+            2,
         )
         .await,
         Err(client_repository::ClientInsertError::QuotaExceeded)
@@ -285,6 +289,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         registration(),
         format!("orphan-client-{}", Uuid::new_v4().simple()),
         "hash".to_owned(),
+        2,
     )
     .await
     .expect("insert orphan client");

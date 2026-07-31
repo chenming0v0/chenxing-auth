@@ -1,12 +1,6 @@
-use chenxing_auth::clients::{
-    domain::{ClientRegistrationError, ClientRegistrationInput, validate_client_registration},
-    service::USER_OAUTH_CLIENT_QUOTA,
+use chenxing_auth::clients::domain::{
+    ClientRegistrationError, ClientRegistrationInput, validate_client_registration,
 };
-
-#[test]
-fn normal_user_oauth_project_quota_is_two() {
-    assert_eq!(USER_OAUTH_CLIENT_QUOTA, 2);
-}
 
 #[test]
 fn client_registration_trims_and_deduplicates_scopes() {

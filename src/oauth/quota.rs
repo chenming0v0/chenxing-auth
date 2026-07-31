@@ -9,10 +9,13 @@ pub const MONTHLY_AUTHORIZATION_LIMIT: u64 = 50_000;
 const CONSUME_SCRIPT: &str = r#"
 local day = tonumber(redis.call('GET', KEYS[1]) or '0')
 local month = tonumber(redis.call('GET', KEYS[2]) or '0')
-if day >= tonumber(ARGV[1]) then
+local daily_limit = tonumber(ARGV[1])
+local monthly_limit = tonumber(ARGV[2])
+-- 负值表示该维度不设上限（套餐里 monthly_auth_limit 为 NULL）
+if daily_limit >= 0 and day >= daily_limit then
   return {0, 1, day, month}
 end
-if month >= tonumber(ARGV[2]) then
+if monthly_limit >= 0 and month >= monthly_limit then
   return {0, 2, day, month}
 end
 local new_day = redis.call('INCR', KEYS[1])
@@ -58,17 +61,19 @@ impl OAuthQuotaStore {
     pub async fn consume(&self, client_id: &str) -> Result<QuotaConsumeResult, OAuthQuotaError> {
         self.consume_with_limits(
             client_id,
-            DAILY_AUTHORIZATION_LIMIT,
-            MONTHLY_AUTHORIZATION_LIMIT,
+            Some(DAILY_AUTHORIZATION_LIMIT),
+            Some(MONTHLY_AUTHORIZATION_LIMIT),
         )
         .await
     }
 
-    async fn consume_with_limits(
+    /// 按套餐限额消费授权配额。`None` 表示该维度不限（对应套餐里
+    /// `monthly_auth_limit` 为 `NULL` 的语义）。
+    pub async fn consume_with_limits(
         &self,
         client_id: &str,
-        daily_limit: u64,
-        monthly_limit: u64,
+        daily_limit: Option<u64>,
+        monthly_limit: Option<u64>,
     ) -> Result<QuotaConsumeResult, OAuthQuotaError> {
         let now = OffsetDateTime::now_utc();
         let (day_key, month_key, next_day, next_month) = period_keys(client_id, now)?;
@@ -76,8 +81,8 @@ impl OAuthQuotaStore {
         let result: Vec<i64> = Script::new(CONSUME_SCRIPT)
             .key(day_key)
             .key(month_key)
-            .arg(daily_limit)
-            .arg(monthly_limit)
+            .arg(daily_limit.map(|limit| limit as i64).unwrap_or(-1))
+            .arg(monthly_limit.map(|limit| limit as i64).unwrap_or(-1))
             .arg(next_day)
             .arg(next_month)
             .invoke_async(&mut connection)
@@ -161,21 +166,21 @@ mod tests {
         let daily_client = format!("quota-daily-{}", Uuid::new_v4().simple());
         assert_eq!(
             store
-                .consume_with_limits(&daily_client, 2, 10)
+                .consume_with_limits(&daily_client, Some(2), Some(10))
                 .await
                 .expect("first quota use"),
             QuotaConsumeResult::Allowed
         );
         assert_eq!(
             store
-                .consume_with_limits(&daily_client, 2, 10)
+                .consume_with_limits(&daily_client, Some(2), Some(10))
                 .await
                 .expect("second quota use"),
             QuotaConsumeResult::Allowed
         );
         assert_eq!(
             store
-                .consume_with_limits(&daily_client, 2, 10)
+                .consume_with_limits(&daily_client, Some(2), Some(10))
                 .await
                 .expect("daily quota rejection"),
             QuotaConsumeResult::DailyExceeded
@@ -184,21 +189,21 @@ mod tests {
         let monthly_client = format!("quota-monthly-{}", Uuid::new_v4().simple());
         assert_eq!(
             store
-                .consume_with_limits(&monthly_client, 10, 2)
+                .consume_with_limits(&monthly_client, Some(10), Some(2))
                 .await
                 .expect("first monthly use"),
             QuotaConsumeResult::Allowed
         );
         assert_eq!(
             store
-                .consume_with_limits(&monthly_client, 10, 2)
+                .consume_with_limits(&monthly_client, Some(10), Some(2))
                 .await
                 .expect("second monthly use"),
             QuotaConsumeResult::Allowed
         );
         assert_eq!(
             store
-                .consume_with_limits(&monthly_client, 10, 2)
+                .consume_with_limits(&monthly_client, Some(10), Some(2))
                 .await
                 .expect("monthly quota rejection"),
             QuotaConsumeResult::MonthlyExceeded
@@ -206,13 +211,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn null_monthly_limit_never_rejects_monthly() {
+        let store = store();
+        let client_id = format!("quota-unlimited-monthly-{}", Uuid::new_v4().simple());
+        for _ in 0..5 {
+            assert_eq!(
+                store
+                    .consume_with_limits(&client_id, Some(10), None)
+                    .await
+                    .expect("monthly use is unlimited"),
+                QuotaConsumeResult::Allowed
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn concurrent_consumers_cannot_cross_daily_limit() {
         let store = store();
         let client_id = format!("quota-concurrent-{}", Uuid::new_v4().simple());
         let (first, second, third) = tokio::join!(
-            store.consume_with_limits(&client_id, 2, 10),
-            store.consume_with_limits(&client_id, 2, 10),
-            store.consume_with_limits(&client_id, 2, 10),
+            store.consume_with_limits(&client_id, Some(2), Some(10)),
+            store.consume_with_limits(&client_id, Some(2), Some(10)),
+            store.consume_with_limits(&client_id, Some(2), Some(10)),
         );
         let results = [
             first.expect("first"),
