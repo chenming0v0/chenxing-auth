@@ -271,7 +271,9 @@ async fn spa_json_oauth_flow_issues_authorization_code_and_reuses_consent() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/oauth/authorize/requests/{request_id}/bind"))
+                .uri(format!(
+                    "/api/v1/oauth/authorize/requests/{request_id}/bind"
+                ))
                 .header("cookie", &session_cookies)
                 .header("x-csrf-token", &csrf)
                 .body(Body::empty())
@@ -309,7 +311,9 @@ async fn spa_json_oauth_flow_issues_authorization_code_and_reuses_consent() {
                 .header("cookie", &session_cookies)
                 .header("x-csrf-token", &csrf)
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::json!({"decision": "approve"}).to_string()))
+                .body(Body::from(
+                    serde_json::json!({"decision": "approve"}).to_string(),
+                ))
                 .expect("decide request"),
         )
         .await

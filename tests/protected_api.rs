@@ -46,34 +46,33 @@ async fn userinfo_requires_bearer_token() {
 }
 
 #[tokio::test]
-async fn admin_login_redirects_to_unified_login_and_dashboard_requires_session() {
+async fn admin_routes_forward_to_the_react_spa() {
     let router = test_router();
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/admin/login")
-                .body(Body::empty())
-                .expect("valid request"),
-        )
-        .await
-        .expect("login page response");
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(
-        response.headers()[axum::http::header::LOCATION],
-        "/auth/login"
-    );
-
-    let response = router
-        .oneshot(
-            Request::builder()
-                .uri("/admin")
-                .body(Body::empty())
-                .expect("valid request"),
-        )
-        .await
-        .expect("dashboard response");
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    for (uri, expected) in [
+        ("/admin/login", "/auth/login"),
+        ("/admin", "/console"),
+        ("/admin/users", "/console/users"),
+        ("/admin/clients", "/console/developer"),
+        ("/admin/audit", "/console/overview"),
+        ("/admin/settings/oauth", "/console/settings"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("admin page response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER, "{uri}");
+        assert_eq!(
+            response.headers()[axum::http::header::LOCATION],
+            expected,
+            "{uri}"
+        );
+    }
 }
 
 #[tokio::test]

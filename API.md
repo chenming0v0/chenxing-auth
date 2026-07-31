@@ -269,7 +269,7 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 
 ### 自定义 OAuth 提供商管理
 
-管理员可以在 `GET /admin/settings/oauth` 打开设置页，也可以直接使用以下 API。提供商默认停用，确认配置无误后再启用。
+管理界面在 React 控制台的 `/console/settings`（原 `GET /admin/settings/oauth` 仅转发到该页面），也可以直接使用以下 API。提供商默认停用，确认配置无误后再启用。
 
 - `POST /api/v1/admin/oauth/providers`：创建提供商。必须填写名称、唯一小写 `slug`、授权/Token/UserInfo 地址、Client ID/Secret、Scopes；Secret 只在请求中出现，服务端使用 `KEY_DIRECTORY/oauth-provider-secret.key` 以 AES-256-GCM 加密保存。
 - `GET /api/v1/admin/oauth/providers`：列出提供商摘要，包含 `callback_uri` 和 `client_secret_configured`，不返回 Secret 或密文。

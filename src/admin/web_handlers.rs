@@ -1,37 +1,31 @@
-use super::{authorization::current_admin_permission, domain::AdminPermission};
-use crate::{state::AppState, web};
-use axum::{
-    extract::State,
-    http::HeaderMap,
-    response::{Html, IntoResponse, Redirect, Response},
-};
-pub async fn dashboard(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ReadAudit).await
-    {
-        return response;
-    }
-    Html(web::page(
-        "管理后台",
-        "<main><h1>辰星认证中枢管理后台</h1><p>请使用管理 API 执行具体操作。</p></main>",
-    ))
-    .into_response()
+use axum::response::{IntoResponse, Redirect, Response};
+
+/// All `/admin/*` pages now live in the React SPA. Rust only forwards so the
+/// legacy bookmarks and automation keep working while the UI renders in React.
+pub async fn dashboard() -> Response {
+    redirect_to("/console")
 }
+
 pub async fn login_page() -> Response {
-    Redirect::to("/auth/login").into_response()
+    redirect_to("/auth/login")
 }
+
 pub async fn login_submit() -> Response {
-    Redirect::to("/auth/login").into_response()
+    redirect_to("/auth/login")
 }
-pub async fn protected_placeholder(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ReadAudit).await
-    {
-        return response;
-    }
-    Html(web::page(
-        "管理后台",
-        "<main><h1>管理后台</h1><p>请使用对应的 JSON 管理接口。</p></main>",
-    ))
-    .into_response()
+
+pub async fn users_page() -> Response {
+    redirect_to("/console/users")
+}
+
+pub async fn clients_page() -> Response {
+    redirect_to("/console/developer")
+}
+
+pub async fn audit_page() -> Response {
+    redirect_to("/console/overview")
+}
+
+fn redirect_to(target: &'static str) -> Response {
+    Redirect::to(target).into_response()
 }

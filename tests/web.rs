@@ -1,17 +1,9 @@
 use axum::{body::Body, http::Request};
-use chenxing_auth::{api, state::AppState, web::escape_html};
+use chenxing_auth::{api, state::AppState};
 use tower::ServiceExt;
 
-#[test]
-fn browser_html_escapes_untrusted_values() {
-    assert_eq!(
-        escape_html("<script>alert(\"x\")</script>"),
-        "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;"
-    );
-}
-
 #[tokio::test]
-async fn rust_serves_compiled_web_at_root_and_spa_paths() {
+async fn rust_forwards_root_and_spa_paths_to_the_compiled_react_app() {
     let response = api::router(AppState::for_test())
         .oneshot(
             Request::builder()

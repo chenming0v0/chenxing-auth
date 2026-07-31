@@ -1016,12 +1016,13 @@ paths:
   /admin/settings/oauth:
     get:
       tags: [Admin OAuth Providers]
-      summary: 自定义 OAuth 提供商设置页
+      summary: 自定义 OAuth 提供商设置页（转发到 React 控制台）
       operationId: oauthProviderSettingsPage
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
       responses:
-        '200': { description: HTML 设置页面, content: { text/html: { schema: { type: string } } } }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '303':
+          description: 重定向到 React SPA 的 /console/settings
+          headers:
+            Location: { schema: { type: string } }
   /api/v1/admin/keys/rotate:
     post:
       tags: [Admin Operations]

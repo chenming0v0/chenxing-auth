@@ -1,6 +1,6 @@
 import { ReactNode, useEffect } from "react";
 import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
-import { Code2, FlaskConical, LayoutDashboard, LogOut, Mail, Plug, UserRound } from "lucide-react";
+import { Code2, FlaskConical, LayoutDashboard, LogOut, Plug, Settings2, UserRound, UsersRound } from "lucide-react";
 import { Avatar, Logo } from "../../components/ui";
 import { BRAND } from "../../data/constants";
 import { useStore } from "../../store";
@@ -21,7 +21,8 @@ const NAV: NavItem[] = [
   { to: "/console/connections", icon: <Plug size={16} />, label: "已授权应用", group: "账户" },
   { to: "/console/developer", icon: <Code2 size={16} />, label: "接入应用", group: "开发者" },
   { to: "/console/playground", icon: <FlaskConical size={16} />, label: "授权测试", group: "开发者" },
-  { to: "/console/settings", icon: <Mail size={16} />, label: "邮件设置", group: "系统管理", adminOnly: true },
+  { to: "/console/settings", icon: <Settings2 size={16} />, label: "系统设置", group: "系统管理", adminOnly: true },
+  { to: "/console/users", icon: <UsersRound size={16} />, label: "用户管理", group: "系统管理", adminOnly: true },
 ];
 
 export default function ConsoleLayout() {

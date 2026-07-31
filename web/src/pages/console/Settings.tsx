@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Check, Loader2, Mail, Save, ShieldAlert } from "lucide-react";
 import { api, errorMessage } from "../../api";
+import OAuthProvidersPanel from "../../components/OAuthProvidersPanel";
 import { Field, GlowButton, Notice, PageFade, PageHeader, Section } from "../../components/ui";
 import { useStore } from "../../store";
 
@@ -57,7 +58,7 @@ export default function Settings() {
 
   return (
     <PageFade>
-      <PageHeader title="邮件设置" description="配置注册流程使用的发件人地址。" />
+      <PageHeader title="系统设置" description="管理员配置项：注册邮件发件地址与外部 OAuth 提供商。" />
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
         <Section
@@ -96,6 +97,10 @@ export default function Settings() {
             这里只保存发件人地址。SMTP 服务、发送凭据和邮件模板会在邮件服务接入时单独配置。
           </p>
         </Section>
+      </div>
+
+      <div className="mt-6">
+        <OAuthProvidersPanel />
       </div>
     </PageFade>
   );

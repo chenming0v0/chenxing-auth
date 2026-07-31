@@ -14,6 +14,7 @@ import Connections from "./pages/console/Connections";
 import Developer from "./pages/console/Developer";
 import Playground from "./pages/console/Playground";
 import Settings from "./pages/console/Settings";
+import Users from "./pages/console/Users";
 import OAuthConsent from "./pages/OAuthConsent";
 
 export default function App() {
@@ -57,6 +58,7 @@ function BootstrapGate() {
       <Route path="developer" element={<Developer />} />
       <Route path="playground" element={<Playground />} />
       <Route path="settings" element={<Settings />} />
+      <Route path="users" element={<Users />} />
     </Route>
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>;

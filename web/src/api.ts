@@ -110,6 +110,43 @@ export interface AdminUser {
   created_at: unknown;
 }
 
+export type ClientAuthMethod = "basic" | "request_body";
+
+export interface OAuthProvider {
+  id: number;
+  name: string;
+  slug: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+  userinfo_endpoint: string;
+  client_id: string;
+  scopes: string[];
+  subject_claim: string;
+  email_claim: string;
+  name_claim: string | null;
+  email_verified_claim: string | null;
+  client_auth_method: ClientAuthMethod;
+  status: "active" | "disabled" | string;
+  client_secret_configured: boolean;
+  callback_uri: string;
+}
+
+export interface ProviderInput {
+  name: string;
+  slug: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+  userinfo_endpoint: string;
+  client_id: string;
+  client_secret: string | null;
+  scopes: string[];
+  subject_claim: string;
+  email_claim: string;
+  name_claim: string | null;
+  email_verified_claim: string | null;
+  client_auth_method: ClientAuthMethod;
+}
+
 interface PageResponse<T> {
   items: T[];
   page: number;
@@ -202,6 +239,13 @@ export const api = {
     request<void>(`/api/v1/admin/users/${encodeURIComponent(id)}/${status}`, mutation({ method: "POST" })),
   adminSetUserRole: (id: number, role: "user" | "admin" | "owner") =>
     request<void>(`/api/v1/admin/users/${encodeURIComponent(id)}/role`, mutation({ method: "POST", body: JSON.stringify({ role }) })),
+  adminProviders: () => request<OAuthProvider[]>("/api/v1/admin/oauth/providers"),
+  createAdminProvider: (input: ProviderInput) =>
+    request<OAuthProvider>("/api/v1/admin/oauth/providers", mutation({ method: "POST", body: JSON.stringify(input) })),
+  updateAdminProvider: (slug: string, input: ProviderInput) =>
+    request<void>(`/api/v1/admin/oauth/providers/${encodeURIComponent(slug)}`, mutation({ method: "PUT", body: JSON.stringify(input) })),
+  setAdminProviderStatus: (slug: string, status: "enable" | "disable") =>
+    request<void>(`/api/v1/admin/oauth/providers/${encodeURIComponent(slug)}/${status}`, mutation({ method: "POST" })),
 };
 
 export function errorMessage(error: unknown) {

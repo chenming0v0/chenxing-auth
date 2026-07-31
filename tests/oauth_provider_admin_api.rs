@@ -156,6 +156,9 @@ async fn provider_admin_api_requires_auth_and_never_returns_client_secret() {
     assert_eq!(providers[0]["client_secret_configured"], true);
     assert!(providers[0].get("client_secret").is_none());
 
+    // The legacy server-rendered settings page now forwards to the React console;
+    // the API-level assertions above already guarantee the client secret is never
+    // returned to callers.
     let response = router
         .clone()
         .oneshot(
@@ -167,16 +170,11 @@ async fn provider_admin_api_requires_auth_and_never_returns_client_secret() {
         )
         .await
         .expect("response");
-    assert_eq!(response.status(), StatusCode::OK);
-    let settings = String::from_utf8(
-        to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("settings body")
-            .to_vec(),
-    )
-    .expect("UTF-8 settings");
-    assert!(settings.contains("已配置"));
-    assert!(!settings.contains("client-secret"));
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response.headers()[axum::http::header::LOCATION],
+        "/console/settings"
+    );
 
     chenxing_auth::sqlx::query("DELETE FROM oauth_providers WHERE slug = $1")
         .bind(&slug)

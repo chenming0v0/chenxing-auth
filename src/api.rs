@@ -26,7 +26,9 @@ use crate::{
     admin::provider_web_handlers::oauth_settings,
     admin::settings_handlers::{get_registration_email, update_registration_email},
     admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
-    admin::web_handlers::{dashboard, login_page, login_submit, protected_placeholder},
+    admin::web_handlers::{
+        audit_page, clients_page, dashboard, login_page, login_submit, users_page,
+    },
     auth_factors::handlers::{
         confirm_totp_setup, finish_passkey_authentication, finish_passkey_registration, login_totp,
         start_passkey_authentication, start_passkey_registration, start_totp_setup,
@@ -140,11 +142,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/admin", get(dashboard))
         .route("/admin/login", get(login_page).post(login_submit))
-        .route("/admin/users", get(protected_placeholder))
-        .route("/admin/clients", get(protected_placeholder))
-        .route("/admin/audit", get(protected_placeholder))
+        .route("/admin/users", get(users_page))
+        .route("/admin/clients", get(clients_page))
+        .route("/admin/audit", get(audit_page))
         .route("/admin/settings/oauth", get(oauth_settings))
-        .route("/api/v1/auth/external-providers", get(list_public_providers))
+        .route(
+            "/api/v1/auth/external-providers",
+            get(list_public_providers),
+        )
         .route("/auth/external/{slug}", get(start_external_login))
         .route("/auth/external/{slug}/callback", get(external_callback))
         .route(

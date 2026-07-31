@@ -1,10 +1,10 @@
 use crate::{
     audit::AuditEvent,
     error,
+    oauth::consent::pending_request_exists,
     oauth::providers::{service::ExternalOAuthError, state_store::ExternalLoginState},
     sessions::{cookies, domain::Session},
     state::AppState,
-    web::helpers::pending_request_exists,
 };
 use axum::{
     extract::{Path, Query, State},

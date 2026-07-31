@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::state::AppState;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsentDecision {
     Approve,
@@ -32,4 +34,19 @@ pub struct PendingAuthorization {
     pub code_challenge: String,
     pub code_challenge_method: String,
     pub session_id: Option<String>,
+}
+
+/// Returns whether a pending authorization request still exists in the store.
+///
+/// External identity provider login checks this before starting an OAuth dance so
+/// that a stale `request_id` query parameter is rejected instead of silently
+/// losing the pending authorization.
+pub async fn pending_request_exists(state: &AppState, request_id: &str) -> bool {
+    state
+        .authorization_requests
+        .find(request_id)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
 }
