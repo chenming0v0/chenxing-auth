@@ -10,28 +10,9 @@
 - Redis
 - OAuth 2.0 / OpenID Connect
 - JWK / JWKS 密钥管理
-
-当前仓库处于后端能力建设和部署自动化阶段，已有 Rust/Cargo 配置和可编译的 Axum 服务。健康检查、账号注册/登录、浏览器登录与授权确认、Redis Session、HttpOnly Cookie/CSRF、Client 生命周期、OIDC Discovery、JWKS 多版本轮换、PKCE、带 nonce 的授权码、Access Token、ID Token、Refresh Token、UserInfo、Token 撤销、审计、统一用户角色与管理 API、Docker 生产部署和 GitHub Actions 多平台构建流程已经实现；完整视觉化管理后台和广泛第三方互操作仍未完成。实现新功能前，先确认目标是否已经落入现有架构和数据边界；不要把规划文档中的能力当作已实现能力。
-
-认证中枢独立于天穹辰星的其他子项目平台，专门负责账号、登录认证、OAuth/OIDC 授权、会话和身份信息服务。天穹辰星其他子项目是认证平台的接入方，应通过 Client 接入，不应把各自的业务功能或业务数据直接并入认证平台。
-
-辰星通行证账号在本平台创建后，可用于注册和登录已接入的天穹辰星子项目。接入方负责自己的业务账号绑定、角色、权限、资料和业务数据；认证平台负责用户身份事实和协议授权边界。不要假设认证平台可以直接读取或管理接入方的业务状态。
+- React / Vite（前端，源码位于 `web/src`，开发端口固定为 5175）
 
 ## 设计原则
-
-### 标准优先，业务适配其次
-
-OAuth 2.0、OIDC、JWT、JWK/JWKS 和密码学相关能力优先使用成熟的 Rust 库。不要自行实现密码学算法、令牌签名、协议解析或安全敏感的编码逻辑，除非有经过评审的明确理由。
-
-业务代码负责：
-
-- 用户生命周期和凭据策略
-- OAuth Client 生命周期和接入策略
-- 登录与授权确认交互
-- Session 生命周期和撤销
-- 管理员权限、审计和业务扩展
-
-子项目接入通过 OAuth 2.0 / OIDC Client 完成。新增接入能力时，优先设计标准协议和明确 Claims，不为单个子项目硬编码业务逻辑；确有业务扩展需求时，放入隔离的扩展接口，并明确数据所有权和权限边界。
 
 ### 清晰的分层
 
@@ -86,6 +67,13 @@ OAuth 2.0、OIDC、JWT、JWK/JWKS 和密码学相关能力优先使用成熟的 
 - 签名密钥轮换必须共享 AppState 克隆的密钥状态，按 JWT `kid` 选择验证公钥；管理员响应不得包含私钥材料。
 - 浏览器 Cookie 会话的状态变更必须校验 HttpOnly Session Cookie、CSRF Cookie 和 `X-CSRF-Token` 三者绑定；开发期请求头兼容逻辑不能成为生产浏览器认证方案。
 - 管理角色必须通过 `AdminPermission` 校验；管理 Session 的写操作必须校验普通 HttpOnly Session Cookie、CSRF Cookie 和 `X-CSRF-Token`。
+
+### 前端与端口约定
+
+- 前端统一使用 React，源码位于 `web/src`，构建由 `web` 下的 Vite 完成；新增或修改页面只改动 `web/src` 下的 React 代码。
+- 禁止在 Rust 中生成或渲染 HTML 页面（包括服务端模板、字符串拼接 HTML 等）；所有页面、路由和交互一律由 React 实现。
+- 后端仅允许静态托管 React 构建产物（`web/dist`）用于单二进制部署，不得输出自定义 HTML 页面或服务端渲染内容；修改前端后必须重新构建 `web/dist` 以同步内嵌产物。
+- 前端开发统一使用 Vite 开发服务器，端口固定为 `5175`，不允许漂移到其他端口；后端 API 端口由 `APP_PORT` 配置决定（默认 `3000`），Vite 通过 `/api` 和 `/health` 代理访问后端。
 
 ## 测试要求
 
