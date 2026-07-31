@@ -7,8 +7,8 @@
       "version": 1,
       "createdAt": 1785490508418,
       "canvasData": {
-        "x": 24,
-        "y": -53.999999999999886,
+        "x": 12,
+        "y": -516,
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
@@ -52,8 +52,8 @@
       "version": 1,
       "createdAt": 1785490508418,
       "canvasData": {
-        "x": 1920,
-        "y": 59.999999999999986,
+        "x": 1800,
+        "y": -516,
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
@@ -93,8 +93,8 @@
       "version": 1,
       "createdAt": 1785490508418,
       "canvasData": {
-        "x": 1284,
-        "y": 741.4999999999998,
+        "x": 2352,
+        "y": -516,
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
@@ -134,8 +134,8 @@
       "version": 1,
       "createdAt": 1785490508418,
       "canvasData": {
-        "x": 636,
-        "y": 711.4999999999998,
+        "x": 600,
+        "y": -516,
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
@@ -163,8 +163,8 @@
       "version": 1,
       "createdAt": 1785490508418,
       "canvasData": {
-        "x": 24,
-        "y": 1380,
+        "x": 12,
+        "y": 288,
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
@@ -186,8 +186,8 @@
       "version": 1,
       "createdAt": 1785490508418,
       "canvasData": {
-        "x": 24,
-        "y": 729.0000000000001,
+        "x": 600,
+        "y": 276,
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
@@ -221,8 +221,8 @@
       "version": 1,
       "createdAt": 1785490508418,
       "canvasData": {
-        "x": 612,
-        "y": 59.999999999999986,
+        "x": 1176,
+        "y": 264,
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
@@ -244,8 +244,8 @@
       "version": 1,
       "createdAt": 1785490508418,
       "canvasData": {
-        "x": 1260,
-        "y": 53,
+        "x": 1176,
+        "y": -516,
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
