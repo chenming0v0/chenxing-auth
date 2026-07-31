@@ -23,6 +23,11 @@
   50% { opacity: 1; }
 }
 
+@keyframes twinkle {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
 html { scroll-behavior: smooth; }
 
 body {

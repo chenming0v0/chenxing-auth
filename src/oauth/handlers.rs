@@ -34,7 +34,11 @@ pub async fn authorize(
             tracing::error!(error = %store_error, "failed to store browser authorization request");
             return error::internal();
         }
-        return Redirect::to(&format!("/auth/login?request_id={request_id}")).into_response();
+        // Hand off to the React SPA login page. It logs in over JSON, binds the
+        // session to this pending request, then continues to the consent screen.
+        // (`/oauth/authorize` itself is owned by this backend handler, so we must
+        // redirect to an SPA-served path instead.)
+        return Redirect::to(&format!("/login?request_id={request_id}")).into_response();
     }
 
     let Some(client) = (match state.clients.find_registered(&request.client_id).await {
@@ -91,7 +95,7 @@ pub async fn authorize(
                     tracing::error!(error = %store_error, "failed to store consent request");
                     return error::internal();
                 }
-                return Redirect::to(&format!("/oauth/authorize/consent?request_id={request_id}"))
+                return Redirect::to(&format!("/oauth/consent?request_id={request_id}"))
                     .into_response();
             }
             Ok(false) => {

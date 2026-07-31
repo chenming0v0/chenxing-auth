@@ -10,7 +10,7 @@ use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
 use redis::AsyncCommands;
 use serde_json::Value;
-use totp_rs::{Secret, TOTP};
+use totp_rs::TOTP;
 use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
@@ -96,22 +96,6 @@ fn request_id(location: &str) -> String {
         .expect("request id")
 }
 
-fn html_value(body: &str, name: &str) -> String {
-    body.split(&format!("name=\"{name}\" value=\""))
-        .nth(1)
-        .and_then(|value| value.split('"').next())
-        .expect("HTML form value")
-        .to_owned()
-}
-
-fn html_data_attribute(body: &str, name: &str) -> String {
-    body.split(&format!("data-{name}=\""))
-        .nth(1)
-        .and_then(|value| value.split('"').next())
-        .expect("HTML data attribute")
-        .to_owned()
-}
-
 #[tokio::test]
 async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
     let (router, database, key_directory) = setup().await;
@@ -174,60 +158,85 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
     let login_location = location(&response);
     let request_id = request_id(&login_location);
 
+    // SPA logs in over JSON: password → pending factor ticket → TOTP enrollment → session.
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/auth/login")
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(format!(
-                    "request_id={request_id}&email={email}&password={password}"
-                )))
-                .expect("browser login request"),
+                .uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"identifier": username, "password": password}).to_string(),
+                ))
+                .expect("login request"),
         )
         .await
-        .expect("browser login response");
+        .expect("login response");
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let pending_login = json(response).await;
+    let ticket = pending_login["login_ticket"]
+        .as_str()
+        .expect("login ticket")
+        .to_owned();
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/totp/setup")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::json!({"login_ticket": ticket}).to_string()))
+                .expect("totp setup request"),
+        )
+        .await
+        .expect("totp setup response");
     assert_eq!(response.status(), StatusCode::OK);
-    let setup_body = body(response).await;
-    let ticket = html_value(&setup_body, "login_ticket");
-    assert!(setup_body.contains("<svg"));
-    assert!(setup_body.contains("无法扫描"));
-    assert!(!setup_body.contains("otpauth://"));
-    let secret = html_data_attribute(&setup_body, "totp-secret");
-    let totp = TOTP::new(
-        totp_rs::Algorithm::SHA1,
-        6,
-        1,
-        30,
-        Secret::Encoded(secret).to_bytes().expect("TOTP secret"),
-        None,
-        String::new(),
-    )
-    .expect("TOTP");
+    let setup = json(response).await;
+    let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("otpauth url")).expect("TOTP");
+
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/auth/login/totp")
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(format!(
-                    "request_id={request_id}&login_ticket={ticket}&code={}",
-                    totp.generate_current().expect("TOTP code")
-                )))
-                .expect("browser TOTP request"),
+                .uri("/api/v1/auth/totp/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "login_ticket": ticket,
+                        "code": totp.generate_current().expect("TOTP code")
+                    })
+                    .to_string(),
+                ))
+                .expect("totp login request"),
         )
         .await
-        .expect("browser TOTP response");
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        .expect("totp login response");
+    assert_eq!(response.status(), StatusCode::OK);
     let session_cookies = cookies(&response);
-    assert!(location(&response).contains("/oauth/authorize/consent"));
     let csrf = session_cookies
         .split(';')
         .find_map(|part| part.trim().strip_prefix("chenxing_csrf="))
         .expect("csrf cookie")
         .to_owned();
+
+    // Bind the session to the pending authorization request created by /oauth/authorize.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/oauth/authorize/requests/{request_id}/bind"))
+                .header("cookie", &session_cookies)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .expect("bind request"),
+        )
+        .await
+        .expect("bind response");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     let response = router
         .clone()

@@ -89,6 +89,17 @@ export interface TotpSetupResponse {
   otpauth_url: string;
 }
 
+/** WebAuthn options straight from webauthn-rs — the `publicKey` member of the
+ *  argument to navigator.credentials.create()/get(), with base64url-encoded buffers. */
+export interface WebAuthnOptions {
+  publicKey: Record<string, unknown>;
+}
+
+export interface ExternalProvider {
+  slug: string;
+  name: string;
+}
+
 export interface AdminUser {
   id: number;
   username: string;
@@ -150,6 +161,17 @@ export const api = {
     request<TotpSetupResponse>("/api/v1/auth/totp/setup", { method: "POST", body: JSON.stringify({ login_ticket }) }),
   totpLogin: (login_ticket: string, code: string) =>
     request<LoginResponse>("/api/v1/auth/totp/login", { method: "POST", body: JSON.stringify({ login_ticket, code }) }),
+  passkeyRegisterStart: (login_ticket: string) =>
+    request<WebAuthnOptions>("/api/v1/auth/passkeys/register/start", { method: "POST", body: JSON.stringify({ login_ticket }) }),
+  passkeyRegisterFinish: (login_ticket: string, credential: unknown) =>
+    request<LoginResponse>("/api/v1/auth/passkeys/register/finish", { method: "POST", body: JSON.stringify({ login_ticket, credential }) }),
+  passkeyLoginStart: (login_ticket: string) =>
+    request<WebAuthnOptions>("/api/v1/auth/passkeys/authentication/start", { method: "POST", body: JSON.stringify({ login_ticket }) }),
+  passkeyLoginFinish: (login_ticket: string, credential: unknown) =>
+    request<LoginResponse>("/api/v1/auth/passkeys/authentication/finish", { method: "POST", body: JSON.stringify({ login_ticket, credential }) }),
+  externalProviders: () => request<ExternalProvider[]>("/api/v1/auth/external-providers"),
+  bindAuthorization: (id: string) =>
+    request<void>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(id)}/bind`, mutation({ method: "POST" })),
   logout: () => request<void>("/api/v1/auth/session", mutation({ method: "DELETE" })),
   me: () => request<UserProfile>("/api/v1/auth/me"),
   updateProfile: (display_name: string) =>
