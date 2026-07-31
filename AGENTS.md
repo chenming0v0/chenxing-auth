@@ -75,6 +75,11 @@
 - 后端仅允许静态托管 React 构建产物（`web/dist`）用于单二进制部署，不得输出自定义 HTML 页面或服务端渲染内容；修改前端后必须重新构建 `web/dist` 以同步内嵌产物。
 - 前端开发统一使用 Vite 开发服务器，端口固定为 `5175`，不允许漂移到其他端口；后端 API 端口由 `APP_PORT` 配置决定（默认 `3000`），Vite 通过 `/api` 和 `/health` 代理访问后端。
 
+### 设计稿与 Web UI 修改
+
+- 涉及 `design-auth-chengming/` 下的设计稿、页面视觉、卡片/容器或 Web UI 修改时，必须先加载 `design-auth-chengming/DESIGN.md`，并遵循其中的公共容器要求。
+- 新增或修改任何卡片、玻璃容器、表单面板等 UI 时，必须使用项目级 `chenxing-hud-panel` skill 指定的公共容器 `.chenxing-hud-panel`，禁止另建玻璃卡片样式或复用旧的 `chenxing-glass-strong chenxing-hud-frame` 组合。
+
 ## 测试要求
 
 按风险选择测试层级：

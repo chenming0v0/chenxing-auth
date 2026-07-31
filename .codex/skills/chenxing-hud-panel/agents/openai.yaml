@@ -1,0 +1,4 @@
+interface:
+  display_name: "辰星 HUD 玻璃容器"
+  short_description: "所有 UI 卡片统一使用辰星公共玻璃容器，禁止另建玻璃卡片样式"
+  default_prompt: "Use $chenxing-hud-panel to build UI cards with the shared Chenxing HUD glass panel."
