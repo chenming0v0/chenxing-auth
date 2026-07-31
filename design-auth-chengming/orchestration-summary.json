@@ -1,0 +1,242 @@
+{
+  "skillProvenance": {
+    "name": "solo-design",
+    "version": "2026.07.06.8",
+    "version_source": "skill-version.json",
+    "runtime_skill_dir": "C:/Users/HEI/.claude/skills/solo-design",
+    "recorded_at": "2026-07-31T00:00:00+08:00"
+  },
+  "project": {
+    "name": "辰星认证中枢 · 设计稿",
+    "path": "C:/Users/HEI/Desktop/辰林编译/chenxing-auth/design-auth-chengming",
+    "operation": "create",
+    "deviceType": "desktop",
+    "language": "zh-CN",
+    "dashboardMode": false,
+    "intentProfile": {
+      "caseFamily": "free_exploration",
+      "graphicStrategy": null,
+      "sourceType": null,
+      "routingReason": "OAuth 授权流拆为独立三页（选择账号 / 授权确认 / 授权跳转），采用 Google 式左右分栏深色对话框布局，保留辰星科幻 token。"
+    },
+    "replicationMode": null,
+    "sourceUrl": null,
+    "styleContinuityAnchors": {
+      "colorSystem": "深空底色 #04060d，单一主色相天蓝 #38bdf8，信息青 #67e8f9 仅用于 HUD 遥测与状态，禁止紫色",
+      "shapeSystem": "8/12/16px 圆角刻度，磨砂玻璃面板 + HUD 角标框",
+      "typographySystem": "Orbitron 展示 / Exo 2 正文 / Share Tech Mono 遥测读数，中文回退 Noto Sans SC",
+      "spacingSystem": "4/8px 节奏，卡片内边距 p-4~p-8",
+      "componentLanguage": "chenxing- 前缀玻璃组件：glass/glass-strong/hud-frame/hud-panel/btn-primary/btn-ghost/field/chip/badge/link",
+      "surfaceAndDepth": "backdrop-blur 22-28px + saturate，内高光 + 浮动阴影，禁止实色扁平面板",
+      "imageryAndIconography": "Lucide 图标，星野 canvas 星尘、极光光斑、网格底纹，禁止 emoji 图标",
+      "interactionTone": "150-300ms 缓动，按钮悬停上浮 + 辉光，减少运动偏好需可降级"
+    },
+    "cssPreflightEvidence": {
+      "applies": true,
+      "status": "passed",
+      "command": "node C:/Users/HEI/.claude/skills/solo-design/script/fill-html-head.mjs <css-path> <page.html> --title=... --lang=zh-CN --prefix=chenxing --theme=dark",
+      "brandPrefix": "chenxing",
+      "checks": {
+        "themeVars": "present",
+        "semanticTokenFallback": "present",
+        "themeInline": "present",
+        "tailwindCdn": "present",
+        "htmlClass": "present"
+      },
+      "retryCount": 0,
+      "blockingReason": null
+    },
+    "repairEntryEvidence": [
+      {
+        "repairPolicyRead": true,
+        "renderBlockingErrorPresent": true,
+        "softWarningOnly": false,
+        "ownerClassified": true,
+        "postValidationMutationDetected": false,
+        "validationErrorClasses": [
+          "design-file: unregistered page",
+          "design-file: missing domId in html"
+        ],
+        "repairBudget": {
+          "validationRunsSoFar": 1,
+          "maxValidationRuns": 3
+        },
+        "recorded_at": "2026-07-31T00:00:00+08:00"
+      }
+    ],
+    "generationTree": {
+      "sharedFragments": [
+        "partials/hud-panel.html"
+      ],
+      "root": {
+        "nodeId": "gen-chenxing-hud",
+        "kind": "project-shell",
+        "pageIds": [
+          "page-landing",
+          "page-login",
+          "page-register",
+          "page-bootstrap",
+          "page-oauth-account",
+          "page-oauth-consent",
+          "page-oauth-redirect",
+          "page-console-overview"
+        ],
+        "output": "partials/hud-panel.html",
+        "sharedRegions": [
+          "hud glass panel container"
+        ],
+        "privateRegions": [],
+        "mutableSlots": [
+          "hudPanelContent"
+        ],
+        "status": "generated",
+        "children": [
+          {
+            "nodeId": "gen-page-landing",
+            "kind": "page-leaf",
+            "pageIds": ["page-landing"],
+            "output": "pages/landing.html",
+            "sharedRegions": [],
+            "privateRegions": ["landing page body"],
+            "mutableSlots": [],
+            "status": "generated",
+            "children": []
+          },
+          {
+            "nodeId": "gen-page-login",
+            "kind": "page-leaf",
+            "pageIds": ["page-login"],
+            "output": "pages/login.html",
+            "sharedRegions": [],
+            "privateRegions": ["login page body"],
+            "mutableSlots": [],
+            "status": "generated",
+            "children": []
+          },
+          {
+            "nodeId": "gen-page-register",
+            "kind": "page-leaf",
+            "pageIds": ["page-register"],
+            "output": "pages/register.html",
+            "sharedRegions": [],
+            "privateRegions": ["register page body"],
+            "mutableSlots": [],
+            "status": "generated",
+            "children": []
+          },
+          {
+            "nodeId": "gen-page-bootstrap",
+            "kind": "page-leaf",
+            "pageIds": ["page-bootstrap"],
+            "output": "pages/bootstrap.html",
+            "sharedRegions": [],
+            "privateRegions": ["bootstrap page body"],
+            "mutableSlots": [],
+            "status": "generated",
+            "children": []
+          },
+          {
+            "nodeId": "gen-page-oauth-account",
+            "kind": "page-leaf",
+            "pageIds": ["page-oauth-account"],
+            "output": "pages/oauth-account.html",
+            "sharedRegions": [],
+            "privateRegions": ["oauth account page body"],
+            "mutableSlots": [],
+            "status": "generated",
+            "children": []
+          },
+          {
+            "nodeId": "gen-page-oauth-consent",
+            "kind": "page-leaf",
+            "pageIds": ["page-oauth-consent"],
+            "output": "pages/oauth-consent.html",
+            "sharedRegions": [],
+            "privateRegions": ["oauth consent page body"],
+            "mutableSlots": [],
+            "status": "generated",
+            "children": []
+          },
+          {
+            "nodeId": "gen-page-oauth-redirect",
+            "kind": "page-leaf",
+            "pageIds": ["page-oauth-redirect"],
+            "output": "pages/oauth-redirect.html",
+            "sharedRegions": [],
+            "privateRegions": ["oauth redirect page body"],
+            "mutableSlots": [],
+            "status": "generated",
+            "children": []
+          },
+          {
+            "nodeId": "gen-page-console-overview",
+            "kind": "page-leaf",
+            "pageIds": ["page-console-overview"],
+            "output": "pages/console-overview.html",
+            "sharedRegions": [],
+            "privateRegions": ["console overview page body"],
+            "mutableSlots": [],
+            "status": "generated",
+            "children": []
+          }
+        ]
+      }
+    }
+  },
+  "designSource": {
+    "operatingMode": "free-explore",
+    "libraryIdentity": null,
+    "iconAssets": null,
+    "componentPlan": []
+  },
+  "pages": [
+    {
+      "htmlSrc": "pages/landing.html",
+      "miniProgramStyle": false,
+      "nodeId": "page-landing",
+      "title": "首页 · 辰星认证中枢"
+    },
+    {
+      "htmlSrc": "pages/login.html",
+      "miniProgramStyle": false,
+      "nodeId": "page-login",
+      "title": "统一登录"
+    },
+    {
+      "htmlSrc": "pages/register.html",
+      "miniProgramStyle": false,
+      "nodeId": "page-register",
+      "title": "创建通行证"
+    },
+    {
+      "htmlSrc": "pages/bootstrap.html",
+      "miniProgramStyle": false,
+      "nodeId": "page-bootstrap",
+      "title": "初始化 Owner"
+    },
+    {
+      "htmlSrc": "pages/oauth-account.html",
+      "miniProgramStyle": false,
+      "nodeId": "page-oauth-account",
+      "title": "OAuth 选择账号"
+    },
+    {
+      "htmlSrc": "pages/oauth-consent.html",
+      "miniProgramStyle": false,
+      "nodeId": "page-oauth-consent",
+      "title": "OAuth 授权确认"
+    },
+    {
+      "htmlSrc": "pages/oauth-redirect.html",
+      "miniProgramStyle": false,
+      "nodeId": "page-oauth-redirect",
+      "title": "授权跳转中"
+    },
+    {
+      "htmlSrc": "pages/console-overview.html",
+      "miniProgramStyle": false,
+      "nodeId": "page-console-overview",
+      "title": "控制台概览"
+    }
+  ]
+}

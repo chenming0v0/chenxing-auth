@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>控制台概览 · 辰星认证中枢</title>
+    <style id="theme-vars">
+@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700;800&family=Exo+2:wght@300;400;500;600;700&family=Share+Tech+Mono&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap");
+
+/* ============================================================
+   chenxing-auth · 辰星认证中枢 — brand token & type system
+   科幻未来风 + 磨砂玻璃 (glassmorphism) · 主色调：天蓝
+   ============================================================ */
+
+:root {
+  /* surfaces */
+  --chenxing-background: #04060d;
+  --chenxing-foreground: #eaf4ff;
+  --chenxing-card: rgba(125, 185, 255, 0.06);
+  --chenxing-card-foreground: #eaf4ff;
+  --chenxing-muted: rgba(255, 255, 255, 0.05);
+  --chenxing-muted-foreground: #93a7c7;
+  --chenxing-popover: rgba(12, 20, 36, 0.92);
+  --chenxing-popover-foreground: #eaf4ff;
+
+  /* single primary hue: sky blue */
+  --chenxing-primary: #38bdf8;
+  --chenxing-primary-foreground: #04121f;
+  --chenxing-primary-soft: rgba(56, 189, 248, 0.16);
+  --chenxing-ring: #38bdf8;
+
+  /* informational ice-cyan (HUD telemetry accent) */
+  --chenxing-cyan: #67e8f9;
+  --chenxing-cyan-soft: rgba(103, 232, 249, 0.13);
+  --chenxing-ice: #d9f4ff;
+
+  /* semantic states */
+  --chenxing-success: #34d399;
+  --chenxing-warning: #fbbf24;
+  --chenxing-error: #ff6b7a;
+  --chenxing-error-soft: rgba(255, 107, 122, 0.14);
+  --chenxing-info: #67e8f9;
+
+  /* lines */
+  --chenxing-border: rgba(147, 197, 253, 0.18);
+  --chenxing-border-strong: rgba(147, 197, 253, 0.36);
+  --chenxing-input: rgba(255, 255, 255, 0.08);
+
+  /* radius — restrained 8/12/16px scale */
+  --chenxing-radius-sm: 8px;
+  --chenxing-radius-md: 12px;
+  --chenxing-radius-lg: 16px;
+  --chenxing-radius-xl: 16px;
+  --chenxing-radius-full: 9999px;
+  --chenxing-radius-pill: 9999px;
+
+  /* shadows — static layers stay subtle; deep/glow layers use floating names */
+  --chenxing-shadow-xs: 0 1px 2px rgba(255, 255, 255, 0.03);
+  --chenxing-shadow-card: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --chenxing-shadow-float: 0 16px 48px rgba(1, 4, 12, 0.55);
+  --chenxing-shadow-overlay: 0 24px 80px rgba(0, 2, 10, 0.65);
+  --chenxing-shadow-glow-float: 0 0 24px rgba(56, 189, 248, 0.35), 0 0 64px rgba(56, 189, 248, 0.18);
+  --chenxing-shadow-cyan-float: 0 0 20px rgba(103, 232, 249, 0.25);
+
+  /* type */
+  --chenxing-font-display: "Orbitron", "Noto Sans SC", system-ui, sans-serif;
+  --chenxing-font-body: "Exo 2", "Noto Sans SC", system-ui, sans-serif;
+  --chenxing-font-mono: "Share Tech Mono", "JetBrains Mono", ui-monospace, monospace;
+}
+
+/* ---------- canvas-safe page shell ---------- */
+html {
+  min-height: 100%;
+  background: var(--chenxing-background);
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  overflow-x: hidden;
+  background: var(--chenxing-background);
+  color: var(--chenxing-foreground);
+}
+
+main {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+  background: var(--chenxing-background);
+  isolation: isolate;
+}
+
+.chenxing-auth-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.chenxing-auth-layout > aside {
+  display: none;
+}
+
+.chenxing-auth-layout > section {
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+@media (min-width: 1024px) {
+  .chenxing-auth-layout {
+    flex-direction: row;
+  }
+
+  .chenxing-auth-layout > aside {
+    display: flex;
+    width: 46%;
+    flex-shrink: 0;
+    flex-direction: column;
+    justify-content: space-between;
+    box-sizing: border-box;
+  }
+
+  .chenxing-auth-layout > section {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+/* ---------- typography ---------- */
+.chenxing-display { font-family: var(--chenxing-font-display); letter-spacing: 0.03em; }
+.chenxing-h1 { font-family: var(--chenxing-font-display); font-weight: 700; font-size: 2rem; line-height: 1.2; letter-spacing: 0.02em; color: var(--chenxing-foreground); }
+.chenxing-h2 { font-family: var(--chenxing-font-display); font-weight: 600; font-size: 1.25rem; line-height: 1.3; letter-spacing: 0.02em; color: var(--chenxing-foreground); }
+.chenxing-h3 { font-family: var(--chenxing-font-display); font-weight: 600; font-size: 1rem; letter-spacing: 0.02em; color: var(--chenxing-foreground); }
+.chenxing-body { font-family: var(--chenxing-font-body); font-size: 0.9375rem; line-height: 1.65; color: var(--chenxing-foreground); }
+.chenxing-caption { font-family: var(--chenxing-font-body); font-size: 0.8125rem; line-height: 1.5; color: var(--chenxing-muted-foreground); }
+.chenxing-mono { font-family: var(--chenxing-font-mono); }
+
+.text-aurora {
+  background: linear-gradient(94deg, #e8f9ff 0%, #7dd3fc 34%, #38bdf8 62%, #67e8f9 84%, #eafdff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ---------- glass panels ---------- */
+.chenxing-glass {
+  position: relative;
+  background: linear-gradient(160deg, rgba(125, 185, 255, 0.10), rgba(255, 255, 255, 0.028) 55%, rgba(103, 232, 249, 0.05));
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-lg);
+  box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
+}
+
+.chenxing-glass-strong {
+  position: relative;
+  background: linear-gradient(165deg, rgba(18, 30, 52, 0.72), rgba(7, 11, 22, 0.66));
+  backdrop-filter: blur(28px) saturate(1.6);
+  -webkit-backdrop-filter: blur(28px) saturate(1.6);
+  border: 1px solid rgba(147, 197, 253, 0.24);
+  border-radius: var(--chenxing-radius-lg);
+  box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
+}
+
+/* HUD corner brackets */
+.chenxing-hud-frame { position: relative; }
+.chenxing-hud-frame::before,
+.chenxing-hud-frame::after {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+  opacity: 0.9;
+}
+.chenxing-hud-frame::before {
+  top: -1px; left: -1px;
+  border-top: 1px solid var(--chenxing-cyan);
+  border-left: 1px solid var(--chenxing-cyan);
+  border-top-left-radius: var(--chenxing-radius-md);
+}
+.chenxing-hud-frame::after {
+  bottom: -1px; right: -1px;
+  border-bottom: 1px solid var(--chenxing-cyan);
+  border-right: 1px solid var(--chenxing-cyan);
+  border-bottom-right-radius: var(--chenxing-radius-md);
+}
+
+/* Shared two-corner HUD glass panel */
+.chenxing-hud-panel {
+  position: relative;
+  padding: 2rem;
+  background: linear-gradient(165deg, rgba(18, 30, 52, 0.72), rgba(7, 11, 22, 0.66));
+  backdrop-filter: blur(28px) saturate(1.6);
+  -webkit-backdrop-filter: blur(28px) saturate(1.6);
+  border: 1px solid rgba(147, 197, 253, 0.24);
+  border-radius: var(--chenxing-radius-lg);
+  box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
+}
+.chenxing-hud-panel::before,
+.chenxing-hud-panel::after {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+  opacity: 0.9;
+}
+.chenxing-hud-panel::before {
+  top: -1px; left: -1px;
+  border-top: 1px solid var(--chenxing-cyan);
+  border-left: 1px solid var(--chenxing-cyan);
+  border-top-left-radius: var(--chenxing-radius-md);
+}
+.chenxing-hud-panel::after {
+  bottom: -1px; right: -1px;
+  border-bottom: 1px solid var(--chenxing-cyan);
+  border-right: 1px solid var(--chenxing-cyan);
+  border-bottom-right-radius: var(--chenxing-radius-md);
+}
+
+/* scanning beam */
+.chenxing-beam {
+  position: absolute;
+  left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--chenxing-cyan), transparent);
+  opacity: 0;
+  animation: chenxing-scan 7s linear infinite;
+}
+
+/* ---------- buttons ---------- */
+.chenxing-btn-primary {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: var(--chenxing-font-body);
+  font-weight: 600;
+  font-size: 0.9375rem;
+  color: var(--chenxing-primary-foreground);
+  background: linear-gradient(120deg, #36b0fa, #1d8ff0 52%, #58d2ff);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: var(--chenxing-radius-md);
+  box-shadow: var(--chenxing-shadow-glow-float), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s, filter 0.25s;
+  cursor: pointer;
+}
+.chenxing-btn-primary:hover { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 0 34px rgba(56, 189, 248, 0.55), 0 0 80px rgba(56, 189, 248, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.35); }
+.chenxing-btn-primary:active { transform: translateY(0) scale(0.985); }
+.chenxing-btn-primary:disabled { opacity: 0.55; cursor: not-allowed; filter: saturate(0.6); }
+
+.chenxing-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: var(--chenxing-font-body);
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: var(--chenxing-foreground);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-md);
+  transition: background 0.2s, border-color 0.2s, transform 0.15s;
+  cursor: pointer;
+}
+.chenxing-btn-ghost:hover { background: rgba(255, 255, 255, 0.08); border-color: var(--chenxing-border-strong); }
+.chenxing-btn-ghost:active { transform: scale(0.985); }
+
+.chenxing-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  color: var(--chenxing-muted-foreground);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-md);
+  transition: color 0.2s, background 0.2s, border-color 0.2s;
+  cursor: pointer;
+}
+.chenxing-icon-btn:hover { color: var(--chenxing-foreground); background: rgba(255, 255, 255, 0.08); }
+
+/* ---------- form fields ---------- */
+.chenxing-field {
+  width: 100%;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.9375rem;
+  color: var(--chenxing-foreground);
+  background: rgba(4, 8, 16, 0.6);
+  border: 1px solid var(--chenxing-input);
+  border-radius: var(--chenxing-radius-md);
+  padding: 0.8rem 1rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.chenxing-field::placeholder { color: rgba(147, 167, 199, 0.55); }
+.chenxing-field:focus {
+  outline: none;
+  border-color: var(--chenxing-primary);
+  box-shadow: 0 0 0 3px var(--chenxing-primary-soft), 0 0 18px rgba(56, 189, 248, 0.18);
+}
+.chenxing-field.chenxing-field-error { border-color: var(--chenxing-error); box-shadow: 0 0 0 3px var(--chenxing-error-soft); }
+
+.chenxing-label {
+  display: block;
+  font-family: var(--chenxing-font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--chenxing-muted-foreground);
+  margin-bottom: 0.5rem;
+}
+
+/* ---------- chips / badges / links / dividers ---------- */
+.chenxing-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--chenxing-font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  color: var(--chenxing-cyan);
+  background: var(--chenxing-cyan-soft);
+  border: 1px solid rgba(103, 232, 249, 0.24);
+  border-radius: var(--chenxing-radius-pill);
+  padding: 0.3rem 0.7rem;
+}
+.chenxing-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--chenxing-font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  color: var(--chenxing-muted-foreground);
+  background: var(--chenxing-muted);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-pill);
+  padding: 0.28rem 0.65rem;
+}
+.chenxing-badge-success { color: var(--chenxing-success); border-color: rgba(52, 211, 153, 0.32); background: rgba(52, 211, 153, 0.08); }
+.chenxing-badge-warning { color: var(--chenxing-warning); border-color: rgba(251, 191, 36, 0.32); background: rgba(251, 191, 36, 0.08); }
+
+.chenxing-link {
+  font-family: var(--chenxing-font-body);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--chenxing-cyan);
+  transition: color 0.2s;
+  cursor: pointer;
+}
+.chenxing-link:hover { color: #bff3ff; }
+
+.chenxing-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--chenxing-border-strong), transparent);
+}
+
+/* ---------- background layers ---------- */
+.chenxing-nebula {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(110px);
+  pointer-events: none;
+}
+.chenxing-grid {
+  background-image:
+    linear-gradient(rgba(125, 211, 252, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(125, 211, 252, 0.05) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(ellipse 90% 70% at 50% 35%, black 25%, transparent 78%);
+  mask-image: radial-gradient(ellipse 90% 70% at 50% 35%, black 25%, transparent 78%);
+}
+.chenxing-vignette {
+  background: radial-gradient(ellipse 120% 90% at 50% 0%, transparent 55%, rgba(1, 3, 8, 0.6) 100%);
+}
+
+/* pulsing beacon dot */
+.chenxing-dot { position: relative; display: inline-flex; }
+.chenxing-dot::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: 0.35;
+  animation: chenxing-ping 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+/* ---------- keyframes ---------- */
+@keyframes chenxing-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+@keyframes chenxing-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+@keyframes chenxing-ping { 0% { transform: scale(1); opacity: 0.4; } 80%, 100% { transform: scale(2.2); opacity: 0; } }
+@keyframes chenxing-spin-slow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes chenxing-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+@keyframes chenxing-scan { 0%, 12% { top: 6%; opacity: 0; } 18% { opacity: 0.9; } 82% { opacity: 0.9; } 88%, 100% { top: 94%; opacity: 0; } }
+@keyframes chenxing-shoot {
+  0% { transform: translate(0, 0) rotate(215deg); opacity: 0; }
+  6% { opacity: 1; }
+  22% { transform: translate(-46vw, 30vh) rotate(215deg); opacity: 0; }
+  100% { transform: translate(-46vw, 30vh) rotate(215deg); opacity: 0; }
+}
+
+/* subtle scrollbar */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: #04060d; }
+::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #1e4b8a, #0f2b52); border-radius: 99px; border: 2px solid #04060d; }
+::-webkit-scrollbar-thumb:hover { background: #2a6bb8; }
+::selection { background: rgba(56, 189, 248, 0.4); color: #fff; }
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--chenxing-background);
+    --color-foreground: var(--chenxing-foreground);
+    --color-card: var(--chenxing-card);
+    --color-card-foreground: var(--chenxing-card-foreground);
+    --color-popover: var(--chenxing-popover);
+    --color-popover-foreground: var(--chenxing-popover-foreground);
+    --color-primary: var(--chenxing-primary);
+    --color-primary-foreground: var(--chenxing-primary-foreground);
+    --color-muted: var(--chenxing-muted);
+    --color-muted-foreground: var(--chenxing-muted-foreground);
+    --color-border: var(--chenxing-border);
+    --color-input: var(--chenxing-input);
+    --color-ring: var(--chenxing-ring);
+    --radius-sm: var(--chenxing-radius-sm);
+    --radius-md: var(--chenxing-radius-md);
+    --radius-lg: var(--chenxing-radius-lg);
+    --radius-xl: var(--chenxing-radius-xl);
+  }
+  @layer base {
+    body { background: var(--chenxing-background); color: var(--chenxing-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--chenxing-background); }
+      .text-background { color: var(--chenxing-background); }
+      .border-background { border-color: var(--chenxing-background); }
+      .ring-background { --tw-ring-color: var(--chenxing-background); }
+      .bg-foreground { background-color: var(--chenxing-foreground); }
+      .text-foreground { color: var(--chenxing-foreground); }
+      .border-foreground { border-color: var(--chenxing-foreground); }
+      .ring-foreground { --tw-ring-color: var(--chenxing-foreground); }
+      .bg-card { background-color: var(--chenxing-card); }
+      .text-card { color: var(--chenxing-card); }
+      .border-card { border-color: var(--chenxing-card); }
+      .ring-card { --tw-ring-color: var(--chenxing-card); }
+      .bg-card-foreground { background-color: var(--chenxing-card-foreground); }
+      .text-card-foreground { color: var(--chenxing-card-foreground); }
+      .border-card-foreground { border-color: var(--chenxing-card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--chenxing-card-foreground); }
+      .bg-popover { background-color: var(--chenxing-popover); }
+      .text-popover { color: var(--chenxing-popover); }
+      .border-popover { border-color: var(--chenxing-popover); }
+      .ring-popover { --tw-ring-color: var(--chenxing-popover); }
+      .bg-popover-foreground { background-color: var(--chenxing-popover-foreground); }
+      .text-popover-foreground { color: var(--chenxing-popover-foreground); }
+      .border-popover-foreground { border-color: var(--chenxing-popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--chenxing-popover-foreground); }
+      .bg-primary { background-color: var(--chenxing-primary); }
+      .text-primary { color: var(--chenxing-primary); }
+      .border-primary { border-color: var(--chenxing-primary); }
+      .ring-primary { --tw-ring-color: var(--chenxing-primary); }
+      .bg-primary-foreground { background-color: var(--chenxing-primary-foreground); }
+      .text-primary-foreground { color: var(--chenxing-primary-foreground); }
+      .border-primary-foreground { border-color: var(--chenxing-primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--chenxing-primary-foreground); }
+      .bg-muted { background-color: var(--chenxing-muted); }
+      .text-muted { color: var(--chenxing-muted); }
+      .border-muted { border-color: var(--chenxing-muted); }
+      .ring-muted { --tw-ring-color: var(--chenxing-muted); }
+      .bg-muted-foreground { background-color: var(--chenxing-muted-foreground); }
+      .text-muted-foreground { color: var(--chenxing-muted-foreground); }
+      .border-muted-foreground { border-color: var(--chenxing-muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--chenxing-muted-foreground); }
+      .bg-border { background-color: var(--chenxing-border); }
+      .text-border { color: var(--chenxing-border); }
+      .border-border { border-color: var(--chenxing-border); }
+      .ring-border { --tw-ring-color: var(--chenxing-border); }
+      .bg-input { background-color: var(--chenxing-input); }
+      .text-input { color: var(--chenxing-input); }
+      .border-input { border-color: var(--chenxing-input); }
+      .ring-input { --tw-ring-color: var(--chenxing-input); }
+      .bg-ring { background-color: var(--chenxing-ring); }
+      .text-ring { color: var(--chenxing-ring); }
+      .border-ring { border-color: var(--chenxing-ring); }
+      .ring-ring { --tw-ring-color: var(--chenxing-ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body class="min-h-screen font-sans antialiased">
+    <main>
+      <!-- deep space layers -->
+      <div class="chenxing-nebula left-[-14%] top-[-18%] h-[560px] w-[560px] bg-[var(--chenxing-primary)] opacity-15"></div>
+      <div class="chenxing-nebula right-[-12%] top-[30%] h-[480px] w-[480px] bg-[var(--chenxing-cyan)] opacity-10"></div>
+      <canvas id="starfield" class="absolute inset-0 h-full w-full opacity-40"></canvas>
+      <div class="chenxing-grid absolute inset-0"></div>
+      <div class="chenxing-vignette absolute inset-0"></div>
+
+      <div class="relative z-10 flex min-h-screen">
+        <!-- sidebar -->
+        <aside class="hidden w-60 shrink-0 flex-col border-r border-[var(--chenxing-border)] bg-[rgba(4,6,13,0.55)] p-5 backdrop-blur-xl lg:flex">
+          <a href="landing.html" class="flex items-center gap-3" data-dom-id="dom-console-home">
+            <span class="relative flex h-9 w-9 items-center justify-center">
+              <span class="absolute inset-0 animate-[chenxing-spin-slow_18s_linear_infinite] rounded-full border border-dashed border-[var(--chenxing-border-strong)]"></span>
+              <i data-lucide="sparkles" class="h-3.5 w-3.5 text-[var(--chenxing-cyan)]"></i>
+            </span>
+            <span>
+              <span class="chenxing-h3 block text-sm">辰星认证中枢</span>
+              <span class="chenxing-mono block text-[9px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">Console</span>
+            </span>
+          </a>
+
+          <nav class="mt-8 space-y-1">
+            <a href="#" class="flex items-center gap-3 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border-strong)] bg-[var(--chenxing-card)] px-3.5 py-2.5 text-sm font-medium text-[var(--chenxing-foreground)]">
+              <i data-lucide="gauge" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>
+              概览
+            </a>
+            <a href="#" class="flex items-center gap-3 rounded-[var(--chenxing-radius-md)] px-3.5 py-2.5 text-sm text-[var(--chenxing-muted-foreground)] transition-colors hover:bg-[var(--chenxing-muted)] hover:text-[var(--chenxing-foreground)]">
+              <i data-lucide="users" class="h-4 w-4"></i>
+              用户
+            </a>
+            <a href="#" class="flex items-center gap-3 rounded-[var(--chenxing-radius-md)] px-3.5 py-2.5 text-sm text-[var(--chenxing-muted-foreground)] transition-colors hover:bg-[var(--chenxing-muted)] hover:text-[var(--chenxing-foreground)]">
+              <i data-lucide="code-2" class="h-4 w-4"></i>
+              开发者
+            </a>
+            <a href="#" class="flex items-center gap-3 rounded-[var(--chenxing-radius-md)] px-3.5 py-2.5 text-sm text-[var(--chenxing-muted-foreground)] transition-colors hover:bg-[var(--chenxing-muted)] hover:text-[var(--chenxing-foreground)]">
+              <i data-lucide="link-2" class="h-4 w-4"></i>
+              授权连接
+            </a>
+            <a href="#" class="flex items-center gap-3 rounded-[var(--chenxing-radius-md)] px-3.5 py-2.5 text-sm text-[var(--chenxing-muted-foreground)] transition-colors hover:bg-[var(--chenxing-muted)] hover:text-[var(--chenxing-foreground)]">
+              <i data-lucide="award" class="h-4 w-4"></i>
+              权益
+            </a>
+            <a href="#" class="flex items-center gap-3 rounded-[var(--chenxing-radius-md)] px-3.5 py-2.5 text-sm text-[var(--chenxing-muted-foreground)] transition-colors hover:bg-[var(--chenxing-muted)] hover:text-[var(--chenxing-foreground)]">
+              <i data-lucide="flask-conical" class="h-4 w-4"></i>
+              Playground
+            </a>
+            <a href="#" class="flex items-center gap-3 rounded-[var(--chenxing-radius-md)] px-3.5 py-2.5 text-sm text-[var(--chenxing-muted-foreground)] transition-colors hover:bg-[var(--chenxing-muted)] hover:text-[var(--chenxing-foreground)]">
+              <i data-lucide="settings" class="h-4 w-4"></i>
+              设置
+            </a>
+          </nav>
+
+          <div class="chenxing-glass mt-auto flex items-center gap-3 p-3.5">
+            <span class="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--chenxing-primary-soft)] text-sm font-semibold text-[var(--chenxing-cyan)]">O</span>
+            <span class="min-w-0 flex-1">
+              <span class="chenxing-body block truncate text-sm">Owner</span>
+              <span class="chenxing-caption block truncate">owner@chenxing.star</span>
+            </span>
+            <i data-lucide="log-out" class="h-4 w-4 text-[var(--chenxing-muted-foreground)]"></i>
+          </div>
+        </aside>
+
+        <!-- main -->
+        <div class="flex-1">
+          <!-- topbar -->
+          <header class="flex items-center justify-between gap-4 border-b border-[var(--chenxing-border)] bg-[rgba(4,6,13,0.4)] px-6 py-4 backdrop-blur-xl">
+            <div class="flex items-center gap-3 lg:hidden">
+              <span class="relative flex h-9 w-9 items-center justify-center">
+                <span class="absolute inset-0 animate-[chenxing-spin-slow_18s_linear_infinite] rounded-full border border-dashed border-[var(--chenxing-border-strong)]"></span>
+                <i data-lucide="sparkles" class="h-3.5 w-3.5 text-[var(--chenxing-cyan)]"></i>
+              </span>
+              <span class="chenxing-h3 text-sm">辰星认证中枢</span>
+            </div>
+            <div class="relative hidden w-full max-w-sm sm:block">
+              <i data-lucide="search" class="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--chenxing-muted-foreground)]"></i>
+              <input type="search" placeholder="搜索用户 / 客户端 / 事件" class="chenxing-field py-2.5 pl-10 text-sm" />
+            </div>
+            <div class="flex items-center gap-3">
+              <span class="chenxing-chip"><span class="chenxing-dot h-1.5 w-1.5 rounded-full bg-[var(--chenxing-success)]"></span>星门在线</span>
+              <button type="button" class="chenxing-icon-btn" aria-label="通知">
+                <i data-lucide="bell" class="h-4 w-4"></i>
+              </button>
+              <span class="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--chenxing-primary-soft)] text-sm font-semibold text-[var(--chenxing-cyan)]">O</span>
+            </div>
+          </header>
+
+          <div class="p-6 lg:p-8">
+            <div class="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <p class="chenxing-mono text-[10px] uppercase tracking-[0.3em] text-[var(--chenxing-cyan)]">// Command Center</p>
+                <h1 class="chenxing-h1 mt-2">午安，Owner</h1>
+                <p class="chenxing-caption mt-1">天穹辰星认证中枢 · 2026-07-31 · 全部系统运行正常</p>
+              </div>
+              <button type="button" class="chenxing-btn-primary px-5 py-2.5 text-sm">
+                <i data-lucide="plus" class="h-4 w-4"></i>
+                新建应用
+              </button>
+            </div>
+
+            <!-- stats -->
+            <div class="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div class="chenxing-glass chenxing-hud-frame p-5">
+                <div class="flex items-center justify-between">
+                  <span class="chenxing-caption">活跃会话</span>
+                  <i data-lucide="radio" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>
+                </div>
+                <p class="chenxing-display mt-3 text-2xl font-bold text-[var(--chenxing-foreground)]">12,847</p>
+                <p class="chenxing-mono mt-2 text-xs text-[var(--chenxing-success)]">▲ 8.2% · 较昨日</p>
+              </div>
+              <div class="chenxing-glass p-5">
+                <div class="flex items-center justify-between">
+                  <span class="chenxing-caption">今日授权</span>
+                  <i data-lucide="shield-check" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>
+                </div>
+                <p class="chenxing-display mt-3 text-2xl font-bold text-[var(--chenxing-foreground)]">1,284</p>
+                <p class="chenxing-mono mt-2 text-xs text-[var(--chenxing-success)]">▲ 4.6% · 较昨日</p>
+              </div>
+              <div class="chenxing-glass p-5">
+                <div class="flex items-center justify-between">
+                  <span class="chenxing-caption">客户端应用</span>
+                  <i data-lucide="layers" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>
+                </div>
+                <p class="chenxing-display mt-3 text-2xl font-bold text-[var(--chenxing-foreground)]">36</p>
+                <p class="chenxing-mono mt-2 text-xs text-[var(--chenxing-warning)]">2 个待审核</p>
+              </div>
+              <div class="chenxing-glass p-5">
+                <div class="flex items-center justify-between">
+                  <span class="chenxing-caption">密钥环</span>
+                  <i data-lucide="key-round" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>
+                </div>
+                <p class="chenxing-display mt-3 text-2xl font-bold text-[var(--chenxing-foreground)]">3 <span class="text-base text-[var(--chenxing-muted-foreground)]">/ 7</span></p>
+                <p class="chenxing-mono mt-2 text-xs text-[var(--chenxing-cyan)]">下次轮换 · 28 天后</p>
+              </div>
+            </div>
+
+            <div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-5">
+              <!-- chart -->
+              <div class="chenxing-glass p-6 xl:col-span-3">
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h2 class="chenxing-h2 text-base">授权趋势</h2>
+                    <p class="chenxing-caption mt-0.5">近 12 小时授权流量</p>
+                  </div>
+                  <span class="chenxing-badge"><span class="chenxing-dot h-1.5 w-1.5 rounded-full bg-[var(--chenxing-cyan)]"></span>实时</span>
+                </div>
+                <div class="mt-6 flex h-44 items-end gap-3">
+                  <div class="flex flex-1 flex-col items-center gap-2">
+                    <div class="w-full rounded-t-[6px] bg-gradient-to-t from-[var(--chenxing-primary)] to-[var(--chenxing-cyan)] opacity-70" style="height: 32%"></div>
+                    <span class="chenxing-mono text-[10px] text-[var(--chenxing-muted-foreground)]">09</span>
+                  </div>
+                  <div class="flex flex-1 flex-col items-center gap-2">
+                    <div class="w-full rounded-t-[6px] bg-gradient-to-t from-[var(--chenxing-primary)] to-[var(--chenxing-cyan)] opacity-80" style="height: 48%"></div>
+                    <span class="chenxing-mono text-[10px] text-[var(--chenxing-muted-foreground)]">10</span>
+                  </div>
+                  <div class="flex flex-1 flex-col items-center gap-2">
+                    <div class="w-full rounded-t-[6px] bg-gradient-to-t from-[var(--chenxing-primary)] to-[var(--chenxing-cyan)] opacity-60" style="height: 40%"></div>
+                    <span class="chenxing-mono text-[10px] text-[var(--chenxing-muted-foreground)]">11</span>
+                  </div>
+                  <div class="flex flex-1 flex-col items-center gap-2">
+                    <div class="w-full rounded-t-[6px] bg-gradient-to-t from-[var(--chenxing-primary)] to-[var(--chenxing-cyan)] opacity-90" style="height: 64%"></div>
+                    <span class="chenxing-mono text-[10px] text-[var(--chenxing-muted-foreground)]">12</span>
+                  </div>
+                  <div class="flex flex-1 flex-col items-center gap-2">
+                    <div class="w-full rounded-t-[6px] bg-gradient-to-t from-[var(--chenxing-primary)] to-[var(--chenxing-cyan)] opacity-75" style="height: 56%"></div>
+                    <span class="chenxing-mono text-[10px] text-[var(--chenxing-muted-foreground)]">13</span>
+                  </div>
+                  <div class="flex flex-1 flex-col items-center gap-2">
+                    <div class="w-full rounded-t-[6px] bg-gradient-to-t from-[var(--chenxing-primary)] to-[var(--chenxing-cyan)]" style="height: 88%"></div>
+                    <span class="chenxing-mono text-[10px] text-[var(--chenxing-muted-foreground)]">14</span>
+                  </div>
+                  <div class="flex flex-1 flex-col items-center gap-2">
+                    <div class="w-full rounded-t-[6px] bg-gradient-to-t from-[var(--chenxing-primary)] to-[var(--chenxing-cyan)] opacity-85" style="height: 72%"></div>
+                    <span class="chenxing-mono text-[10px] text-[var(--chenxing-muted-foreground)]">15</span>
+                  </div>
+                  <div class="flex flex-1 flex-col items-center gap-2">
+                    <div class="w-full rounded-t-[6px] bg-gradient-to-t from-[var(--chenxing-primary)] to-[var(--chenxing-cyan)] opacity-65" style="height: 52%"></div>
+                    <span class="chenxing-mono text-[10px] text-[var(--chenxing-muted-foreground)]">16</span>
+                  </div>
+                  <div class="flex flex-1 flex-col items-center gap-2">
+                    <div class="w-full rounded-t-[6px] bg-gradient-to-t from-[var(--chenxing-primary)] to-[var(--chenxing-cyan)] opacity-90" style="height: 76%"></div>
+                    <span class="chenxing-mono text-[10px] text-[var(--chenxing-muted-foreground)]">17</span>
+                  </div>
+                  <div class="flex flex-1 flex-col items-center gap-2">
+                    <div class="w-full rounded-t-[6px] bg-gradient-to-t from-[var(--chenxing-primary)] to-[var(--chenxing-cyan)] opacity-70" style="height: 44%"></div>
+                    <span class="chenxing-mono text-[10px] text-[var(--chenxing-muted-foreground)]">18</span>
+                  </div>
+                  <div class="flex flex-1 flex-col items-center gap-2">
+                    <div class="w-full rounded-t-[6px] bg-gradient-to-t from-[var(--chenxing-primary)] to-[var(--chenxing-cyan)] opacity-80" style="height: 60%"></div>
+                    <span class="chenxing-mono text-[10px] text-[var(--chenxing-muted-foreground)]">19</span>
+                  </div>
+                  <div class="flex flex-1 flex-col items-center gap-2">
+                    <div class="w-full rounded-t-[6px] bg-gradient-to-t from-[var(--chenxing-primary)] to-[var(--chenxing-cyan)] opacity-75" style="height: 50%"></div>
+                    <span class="chenxing-mono text-[10px] text-[var(--chenxing-muted-foreground)]">20</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- security alerts -->
+              <div class="chenxing-glass p-6 xl:col-span-2">
+                <h2 class="chenxing-h2 text-base">安全事件</h2>
+                <p class="chenxing-caption mt-0.5">需要关注的动态</p>
+                <div class="mt-5 space-y-3">
+                  <div class="flex items-start gap-3 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-card)] px-4 py-3.5">
+                    <i data-lucide="alert-triangle" class="mt-0.5 h-4 w-4 shrink-0 text-[var(--chenxing-warning)]"></i>
+                    <div class="min-w-0 flex-1">
+                      <p class="chenxing-body text-sm text-[var(--chenxing-foreground)]">连续失败登录被限流</p>
+                      <p class="chenxing-caption mt-0.5">IP 172.16.4.21 · 5 分钟前</p>
+                    </div>
+                    <span class="chenxing-badge chenxing-badge-warning">限流</span>
+                  </div>
+                  <div class="flex items-start gap-3 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-card)] px-4 py-3.5">
+                    <i data-lucide="key-round" class="mt-0.5 h-4 w-4 shrink-0 text-[var(--chenxing-cyan)]"></i>
+                    <div class="min-w-0 flex-1">
+                      <p class="chenxing-body text-sm text-[var(--chenxing-foreground)]">密钥轮换完成</p>
+                      <p class="chenxing-caption mt-0.5">新 kid：cx-2026-07 · 12 分钟前</p>
+                    </div>
+                    <span class="chenxing-badge">轮换</span>
+                  </div>
+                  <div class="flex items-start gap-3 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-card)] px-4 py-3.5">
+                    <i data-lucide="user-plus" class="mt-0.5 h-4 w-4 shrink-0 text-[var(--chenxing-success)]"></i>
+                    <div class="min-w-0 flex-1">
+                      <p class="chenxing-body text-sm text-[var(--chenxing-foreground)]">新客户端应用上线</p>
+                      <p class="chenxing-caption mt-0.5">星尘控制台 · 32 分钟前</p>
+                    </div>
+                    <span class="chenxing-badge chenxing-badge-success">已通过</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- activity table -->
+            <div class="chenxing-glass mt-4 overflow-hidden">
+              <div class="flex items-center justify-between px-6 pt-6">
+                <h2 class="chenxing-h2 text-base">最近活动</h2>
+                <a href="#" class="chenxing-link text-sm">查看全部</a>
+              </div>
+              <div class="mt-4 overflow-x-auto">
+                <table class="w-full min-w-[640px] text-left text-sm">
+                  <thead>
+                    <tr class="border-b border-[var(--chenxing-border)]">
+                      <th class="chenxing-mono px-6 py-3 text-[10px] uppercase tracking-[0.16em] text-[var(--chenxing-muted-foreground)]">时间</th>
+                      <th class="chenxing-mono px-6 py-3 text-[10px] uppercase tracking-[0.16em] text-[var(--chenxing-muted-foreground)]">用户</th>
+                      <th class="chenxing-mono px-6 py-3 text-[10px] uppercase tracking-[0.16em] text-[var(--chenxing-muted-foreground)]">事件</th>
+                      <th class="chenxing-mono px-6 py-3 text-[10px] uppercase tracking-[0.16em] text-[var(--chenxing-muted-foreground)]">状态</th>
+                    </tr>
+                  </thead>
+                  <tbody class="divide-y divide-[var(--chenxing-border)]">
+                    <tr class="transition-colors hover:bg-[var(--chenxing-muted)]">
+                      <td class="chenxing-mono px-6 py-4 text-xs text-[var(--chenxing-muted-foreground)]">14:32:07</td>
+                      <td class="chenxing-body px-6 py-4 text-sm">nova@chenxing.star</td>
+                      <td class="chenxing-body px-6 py-4 text-sm">OAuth 授权 · 星尘控制台</td>
+                      <td class="px-6 py-4"><span class="chenxing-badge chenxing-badge-success">成功</span></td>
+                    </tr>
+                    <tr class="transition-colors hover:bg-[var(--chenxing-muted)]">
+                      <td class="chenxing-mono px-6 py-4 text-xs text-[var(--chenxing-muted-foreground)]">14:28:51</td>
+                      <td class="chenxing-body px-6 py-4 text-sm">orion@chenxing.star</td>
+                      <td class="chenxing-body px-6 py-4 text-sm">刷新令牌轮换</td>
+                      <td class="px-6 py-4"><span class="chenxing-badge chenxing-badge-success">成功</span></td>
+                    </tr>
+                    <tr class="transition-colors hover:bg-[var(--chenxing-muted)]">
+                      <td class="chenxing-mono px-6 py-4 text-xs text-[var(--chenxing-muted-foreground)]">14:21:09</td>
+                      <td class="chenxing-body px-6 py-4 text-sm">Unknown</td>
+                      <td class="chenxing-body px-6 py-4 text-sm">授权码重复使用被拒绝</td>
+                      <td class="px-6 py-4"><span class="chenxing-badge chenxing-badge-warning">已拒绝</span></td>
+                    </tr>
+                    <tr class="transition-colors hover:bg-[var(--chenxing-muted)]">
+                      <td class="chenxing-mono px-6 py-4 text-xs text-[var(--chenxing-muted-foreground)]">14:05:33</td>
+                      <td class="chenxing-body px-6 py-4 text-sm">lyra@chenxing.star</td>
+                      <td class="chenxing-body px-6 py-4 text-sm">TOTP 绑定成功</td>
+                      <td class="px-6 py-4"><span class="chenxing-badge chenxing-badge-success">成功</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+    <script>
+      (function () {
+        var c = document.getElementById("starfield"); if (!c) return;
+        var x = c.getContext("2d"); var w, h, stars = [], t = 0;
+        function rs() {
+          w = c.width = c.offsetWidth * devicePixelRatio; h = c.height = c.offsetHeight * devicePixelRatio;
+          stars = []; var n = Math.floor(w * h / 11000);
+          for (var i = 0; i < n; i++) stars.push({ x: Math.random() * w, y: Math.random() * h, z: Math.random(), r: Math.random() * 1.2 + 0.3, tw: Math.random() * 6.28, sp: Math.random() * 0.04 + 0.006 });
+        }
+        rs(); window.addEventListener("resize", rs);
+        function draw() {
+          t += 0.016; x.clearRect(0, 0, w, h);
+          for (var i = 0; i < stars.length; i++) {
+            var s = stars[i]; s.y -= s.sp * (0.4 + s.z) * devicePixelRatio;
+            if (s.y < -4) { s.y = h + 4; s.x = Math.random() * w; }
+            var a = 0.25 + 0.75 * Math.abs(Math.sin(t * (0.5 + s.z) + s.tw));
+            var hue = s.z > 0.7 ? "178,230,255" : s.z > 0.35 ? "196,220,253" : "255,255,255";
+            x.beginPath(); x.arc(s.x, s.y, s.r * devicePixelRatio, 0, 6.283);
+            x.fillStyle = "rgba(" + hue + "," + (a * (0.3 + s.z * 0.7)) + ")"; x.fill();
+          }
+          requestAnimationFrame(draw);
+        }
+        requestAnimationFrame(draw);
+      })();
+    </script>
+
+    <script>lucide.createIcons();</script>
+</body>
+</html>

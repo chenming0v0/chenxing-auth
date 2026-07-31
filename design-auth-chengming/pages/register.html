@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>创建辰星通行证</title>
+    <style id="theme-vars">
+@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700;800&family=Exo+2:wght@300;400;500;600;700&family=Share+Tech+Mono&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap");
+
+/* ============================================================
+   chenxing-auth · 辰星认证中枢 — brand token & type system
+   科幻未来风 + 磨砂玻璃 (glassmorphism) · 主色调：天蓝
+   ============================================================ */
+
+:root {
+  /* surfaces */
+  --chenxing-background: #04060d;
+  --chenxing-foreground: #eaf4ff;
+  --chenxing-card: rgba(125, 185, 255, 0.06);
+  --chenxing-card-foreground: #eaf4ff;
+  --chenxing-muted: rgba(255, 255, 255, 0.05);
+  --chenxing-muted-foreground: #93a7c7;
+  --chenxing-popover: rgba(12, 20, 36, 0.92);
+  --chenxing-popover-foreground: #eaf4ff;
+
+  /* single primary hue: sky blue */
+  --chenxing-primary: #38bdf8;
+  --chenxing-primary-foreground: #04121f;
+  --chenxing-primary-soft: rgba(56, 189, 248, 0.16);
+  --chenxing-ring: #38bdf8;
+
+  /* informational ice-cyan (HUD telemetry accent) */
+  --chenxing-cyan: #67e8f9;
+  --chenxing-cyan-soft: rgba(103, 232, 249, 0.13);
+  --chenxing-ice: #d9f4ff;
+
+  /* semantic states */
+  --chenxing-success: #34d399;
+  --chenxing-warning: #fbbf24;
+  --chenxing-error: #ff6b7a;
+  --chenxing-error-soft: rgba(255, 107, 122, 0.14);
+  --chenxing-info: #67e8f9;
+
+  /* lines */
+  --chenxing-border: rgba(147, 197, 253, 0.18);
+  --chenxing-border-strong: rgba(147, 197, 253, 0.36);
+  --chenxing-input: rgba(255, 255, 255, 0.08);
+
+  /* radius — restrained 8/12/16px scale */
+  --chenxing-radius-sm: 8px;
+  --chenxing-radius-md: 12px;
+  --chenxing-radius-lg: 16px;
+  --chenxing-radius-xl: 16px;
+  --chenxing-radius-full: 9999px;
+  --chenxing-radius-pill: 9999px;
+
+  /* shadows — static layers stay subtle; deep/glow layers use floating names */
+  --chenxing-shadow-xs: 0 1px 2px rgba(255, 255, 255, 0.03);
+  --chenxing-shadow-card: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --chenxing-shadow-float: 0 16px 48px rgba(1, 4, 12, 0.55);
+  --chenxing-shadow-overlay: 0 24px 80px rgba(0, 2, 10, 0.65);
+  --chenxing-shadow-glow-float: 0 0 24px rgba(56, 189, 248, 0.35), 0 0 64px rgba(56, 189, 248, 0.18);
+  --chenxing-shadow-cyan-float: 0 0 20px rgba(103, 232, 249, 0.25);
+
+  /* type */
+  --chenxing-font-display: "Orbitron", "Noto Sans SC", system-ui, sans-serif;
+  --chenxing-font-body: "Exo 2", "Noto Sans SC", system-ui, sans-serif;
+  --chenxing-font-mono: "Share Tech Mono", "JetBrains Mono", ui-monospace, monospace;
+}
+
+/* ---------- canvas-safe page shell ---------- */
+html {
+  min-height: 100%;
+  background: var(--chenxing-background);
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  overflow-x: hidden;
+  background: var(--chenxing-background);
+  color: var(--chenxing-foreground);
+}
+
+main {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+  background: var(--chenxing-background);
+  isolation: isolate;
+}
+
+.chenxing-auth-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.chenxing-auth-layout > aside {
+  display: none;
+}
+
+.chenxing-auth-layout > section {
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+@media (min-width: 1024px) {
+  .chenxing-auth-layout {
+    flex-direction: row;
+  }
+
+  .chenxing-auth-layout > aside {
+    display: flex;
+    width: 46%;
+    flex-shrink: 0;
+    flex-direction: column;
+    justify-content: space-between;
+    box-sizing: border-box;
+  }
+
+  .chenxing-auth-layout > section {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+/* ---------- typography ---------- */
+.chenxing-display { font-family: var(--chenxing-font-display); letter-spacing: 0.03em; }
+.chenxing-h1 { font-family: var(--chenxing-font-display); font-weight: 700; font-size: 2rem; line-height: 1.2; letter-spacing: 0.02em; color: var(--chenxing-foreground); }
+.chenxing-h2 { font-family: var(--chenxing-font-display); font-weight: 600; font-size: 1.25rem; line-height: 1.3; letter-spacing: 0.02em; color: var(--chenxing-foreground); }
+.chenxing-h3 { font-family: var(--chenxing-font-display); font-weight: 600; font-size: 1rem; letter-spacing: 0.02em; color: var(--chenxing-foreground); }
+.chenxing-body { font-family: var(--chenxing-font-body); font-size: 0.9375rem; line-height: 1.65; color: var(--chenxing-foreground); }
+.chenxing-caption { font-family: var(--chenxing-font-body); font-size: 0.8125rem; line-height: 1.5; color: var(--chenxing-muted-foreground); }
+.chenxing-mono { font-family: var(--chenxing-font-mono); }
+
+.text-aurora {
+  background: linear-gradient(94deg, #e8f9ff 0%, #7dd3fc 34%, #38bdf8 62%, #67e8f9 84%, #eafdff 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ---------- glass panels ---------- */
+.chenxing-glass {
+  position: relative;
+  background: linear-gradient(160deg, rgba(125, 185, 255, 0.10), rgba(255, 255, 255, 0.028) 55%, rgba(103, 232, 249, 0.05));
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-lg);
+  box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
+}
+
+.chenxing-glass-strong {
+  position: relative;
+  background: linear-gradient(165deg, rgba(18, 30, 52, 0.72), rgba(7, 11, 22, 0.66));
+  backdrop-filter: blur(28px) saturate(1.6);
+  -webkit-backdrop-filter: blur(28px) saturate(1.6);
+  border: 1px solid rgba(147, 197, 253, 0.24);
+  border-radius: var(--chenxing-radius-lg);
+  box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
+}
+
+/* HUD corner brackets */
+.chenxing-hud-frame { position: relative; }
+.chenxing-hud-frame::before,
+.chenxing-hud-frame::after {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+  opacity: 0.9;
+}
+.chenxing-hud-frame::before {
+  top: -1px; left: -1px;
+  border-top: 1px solid var(--chenxing-cyan);
+  border-left: 1px solid var(--chenxing-cyan);
+  border-top-left-radius: var(--chenxing-radius-md);
+}
+.chenxing-hud-frame::after {
+  bottom: -1px; right: -1px;
+  border-bottom: 1px solid var(--chenxing-cyan);
+  border-right: 1px solid var(--chenxing-cyan);
+  border-bottom-right-radius: var(--chenxing-radius-md);
+}
+
+/* Shared two-corner HUD glass panel */
+.chenxing-hud-panel {
+  position: relative;
+  padding: 2rem;
+  background: linear-gradient(165deg, rgba(18, 30, 52, 0.72), rgba(7, 11, 22, 0.66));
+  backdrop-filter: blur(28px) saturate(1.6);
+  -webkit-backdrop-filter: blur(28px) saturate(1.6);
+  border: 1px solid rgba(147, 197, 253, 0.24);
+  border-radius: var(--chenxing-radius-lg);
+  box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
+}
+.chenxing-hud-panel::before,
+.chenxing-hud-panel::after {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+  opacity: 0.9;
+}
+.chenxing-hud-panel::before {
+  top: -1px; left: -1px;
+  border-top: 1px solid var(--chenxing-cyan);
+  border-left: 1px solid var(--chenxing-cyan);
+  border-top-left-radius: var(--chenxing-radius-md);
+}
+.chenxing-hud-panel::after {
+  bottom: -1px; right: -1px;
+  border-bottom: 1px solid var(--chenxing-cyan);
+  border-right: 1px solid var(--chenxing-cyan);
+  border-bottom-right-radius: var(--chenxing-radius-md);
+}
+
+/* scanning beam */
+.chenxing-beam {
+  position: absolute;
+  left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--chenxing-cyan), transparent);
+  opacity: 0;
+  animation: chenxing-scan 7s linear infinite;
+}
+
+/* ---------- buttons ---------- */
+.chenxing-btn-primary {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: var(--chenxing-font-body);
+  font-weight: 600;
+  font-size: 0.9375rem;
+  color: var(--chenxing-primary-foreground);
+  background: linear-gradient(120deg, #36b0fa, #1d8ff0 52%, #58d2ff);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: var(--chenxing-radius-md);
+  box-shadow: var(--chenxing-shadow-glow-float), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s, filter 0.25s;
+  cursor: pointer;
+}
+.chenxing-btn-primary:hover { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 0 34px rgba(56, 189, 248, 0.55), 0 0 80px rgba(56, 189, 248, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.35); }
+.chenxing-btn-primary:active { transform: translateY(0) scale(0.985); }
+.chenxing-btn-primary:disabled { opacity: 0.55; cursor: not-allowed; filter: saturate(0.6); }
+
+.chenxing-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: var(--chenxing-font-body);
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: var(--chenxing-foreground);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-md);
+  transition: background 0.2s, border-color 0.2s, transform 0.15s;
+  cursor: pointer;
+}
+.chenxing-btn-ghost:hover { background: rgba(255, 255, 255, 0.08); border-color: var(--chenxing-border-strong); }
+.chenxing-btn-ghost:active { transform: scale(0.985); }
+
+.chenxing-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  color: var(--chenxing-muted-foreground);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-md);
+  transition: color 0.2s, background 0.2s, border-color 0.2s;
+  cursor: pointer;
+}
+.chenxing-icon-btn:hover { color: var(--chenxing-foreground); background: rgba(255, 255, 255, 0.08); }
+
+/* ---------- form fields ---------- */
+.chenxing-field {
+  width: 100%;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.9375rem;
+  color: var(--chenxing-foreground);
+  background: rgba(4, 8, 16, 0.6);
+  border: 1px solid var(--chenxing-input);
+  border-radius: var(--chenxing-radius-md);
+  padding: 0.8rem 1rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.chenxing-field::placeholder { color: rgba(147, 167, 199, 0.55); }
+.chenxing-field:focus {
+  outline: none;
+  border-color: var(--chenxing-primary);
+  box-shadow: 0 0 0 3px var(--chenxing-primary-soft), 0 0 18px rgba(56, 189, 248, 0.18);
+}
+.chenxing-field.chenxing-field-error { border-color: var(--chenxing-error); box-shadow: 0 0 0 3px var(--chenxing-error-soft); }
+
+.chenxing-label {
+  display: block;
+  font-family: var(--chenxing-font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--chenxing-muted-foreground);
+  margin-bottom: 0.5rem;
+}
+
+/* ---------- chips / badges / links / dividers ---------- */
+.chenxing-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--chenxing-font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  color: var(--chenxing-cyan);
+  background: var(--chenxing-cyan-soft);
+  border: 1px solid rgba(103, 232, 249, 0.24);
+  border-radius: var(--chenxing-radius-pill);
+  padding: 0.3rem 0.7rem;
+}
+.chenxing-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--chenxing-font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  color: var(--chenxing-muted-foreground);
+  background: var(--chenxing-muted);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-pill);
+  padding: 0.28rem 0.65rem;
+}
+.chenxing-badge-success { color: var(--chenxing-success); border-color: rgba(52, 211, 153, 0.32); background: rgba(52, 211, 153, 0.08); }
+.chenxing-badge-warning { color: var(--chenxing-warning); border-color: rgba(251, 191, 36, 0.32); background: rgba(251, 191, 36, 0.08); }
+
+.chenxing-link {
+  font-family: var(--chenxing-font-body);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--chenxing-cyan);
+  transition: color 0.2s;
+  cursor: pointer;
+}
+.chenxing-link:hover { color: #bff3ff; }
+
+.chenxing-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--chenxing-border-strong), transparent);
+}
+
+/* ---------- background layers ---------- */
+.chenxing-nebula {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(110px);
+  pointer-events: none;
+}
+.chenxing-grid {
+  background-image:
+    linear-gradient(rgba(125, 211, 252, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(125, 211, 252, 0.05) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(ellipse 90% 70% at 50% 35%, black 25%, transparent 78%);
+  mask-image: radial-gradient(ellipse 90% 70% at 50% 35%, black 25%, transparent 78%);
+}
+.chenxing-vignette {
+  background: radial-gradient(ellipse 120% 90% at 50% 0%, transparent 55%, rgba(1, 3, 8, 0.6) 100%);
+}
+
+/* pulsing beacon dot */
+.chenxing-dot { position: relative; display: inline-flex; }
+.chenxing-dot::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: 0.35;
+  animation: chenxing-ping 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+/* ---------- keyframes ---------- */
+@keyframes chenxing-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+@keyframes chenxing-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+@keyframes chenxing-ping { 0% { transform: scale(1); opacity: 0.4; } 80%, 100% { transform: scale(2.2); opacity: 0; } }
+@keyframes chenxing-spin-slow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes chenxing-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+@keyframes chenxing-scan { 0%, 12% { top: 6%; opacity: 0; } 18% { opacity: 0.9; } 82% { opacity: 0.9; } 88%, 100% { top: 94%; opacity: 0; } }
+@keyframes chenxing-shoot {
+  0% { transform: translate(0, 0) rotate(215deg); opacity: 0; }
+  6% { opacity: 1; }
+  22% { transform: translate(-46vw, 30vh) rotate(215deg); opacity: 0; }
+  100% { transform: translate(-46vw, 30vh) rotate(215deg); opacity: 0; }
+}
+
+/* subtle scrollbar */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: #04060d; }
+::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #1e4b8a, #0f2b52); border-radius: 99px; border: 2px solid #04060d; }
+::-webkit-scrollbar-thumb:hover { background: #2a6bb8; }
+::selection { background: rgba(56, 189, 248, 0.4); color: #fff; }
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--chenxing-background);
+    --color-foreground: var(--chenxing-foreground);
+    --color-card: var(--chenxing-card);
+    --color-card-foreground: var(--chenxing-card-foreground);
+    --color-popover: var(--chenxing-popover);
+    --color-popover-foreground: var(--chenxing-popover-foreground);
+    --color-primary: var(--chenxing-primary);
+    --color-primary-foreground: var(--chenxing-primary-foreground);
+    --color-muted: var(--chenxing-muted);
+    --color-muted-foreground: var(--chenxing-muted-foreground);
+    --color-border: var(--chenxing-border);
+    --color-input: var(--chenxing-input);
+    --color-ring: var(--chenxing-ring);
+    --radius-sm: var(--chenxing-radius-sm);
+    --radius-md: var(--chenxing-radius-md);
+    --radius-lg: var(--chenxing-radius-lg);
+    --radius-xl: var(--chenxing-radius-xl);
+  }
+  @layer base {
+    body { background: var(--chenxing-background); color: var(--chenxing-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--chenxing-background); }
+      .text-background { color: var(--chenxing-background); }
+      .border-background { border-color: var(--chenxing-background); }
+      .ring-background { --tw-ring-color: var(--chenxing-background); }
+      .bg-foreground { background-color: var(--chenxing-foreground); }
+      .text-foreground { color: var(--chenxing-foreground); }
+      .border-foreground { border-color: var(--chenxing-foreground); }
+      .ring-foreground { --tw-ring-color: var(--chenxing-foreground); }
+      .bg-card { background-color: var(--chenxing-card); }
+      .text-card { color: var(--chenxing-card); }
+      .border-card { border-color: var(--chenxing-card); }
+      .ring-card { --tw-ring-color: var(--chenxing-card); }
+      .bg-card-foreground { background-color: var(--chenxing-card-foreground); }
+      .text-card-foreground { color: var(--chenxing-card-foreground); }
+      .border-card-foreground { border-color: var(--chenxing-card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--chenxing-card-foreground); }
+      .bg-popover { background-color: var(--chenxing-popover); }
+      .text-popover { color: var(--chenxing-popover); }
+      .border-popover { border-color: var(--chenxing-popover); }
+      .ring-popover { --tw-ring-color: var(--chenxing-popover); }
+      .bg-popover-foreground { background-color: var(--chenxing-popover-foreground); }
+      .text-popover-foreground { color: var(--chenxing-popover-foreground); }
+      .border-popover-foreground { border-color: var(--chenxing-popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--chenxing-popover-foreground); }
+      .bg-primary { background-color: var(--chenxing-primary); }
+      .text-primary { color: var(--chenxing-primary); }
+      .border-primary { border-color: var(--chenxing-primary); }
+      .ring-primary { --tw-ring-color: var(--chenxing-primary); }
+      .bg-primary-foreground { background-color: var(--chenxing-primary-foreground); }
+      .text-primary-foreground { color: var(--chenxing-primary-foreground); }
+      .border-primary-foreground { border-color: var(--chenxing-primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--chenxing-primary-foreground); }
+      .bg-muted { background-color: var(--chenxing-muted); }
+      .text-muted { color: var(--chenxing-muted); }
+      .border-muted { border-color: var(--chenxing-muted); }
+      .ring-muted { --tw-ring-color: var(--chenxing-muted); }
+      .bg-muted-foreground { background-color: var(--chenxing-muted-foreground); }
+      .text-muted-foreground { color: var(--chenxing-muted-foreground); }
+      .border-muted-foreground { border-color: var(--chenxing-muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--chenxing-muted-foreground); }
+      .bg-border { background-color: var(--chenxing-border); }
+      .text-border { color: var(--chenxing-border); }
+      .border-border { border-color: var(--chenxing-border); }
+      .ring-border { --tw-ring-color: var(--chenxing-border); }
+      .bg-input { background-color: var(--chenxing-input); }
+      .text-input { color: var(--chenxing-input); }
+      .border-input { border-color: var(--chenxing-input); }
+      .ring-input { --tw-ring-color: var(--chenxing-input); }
+      .bg-ring { background-color: var(--chenxing-ring); }
+      .text-ring { color: var(--chenxing-ring); }
+      .border-ring { border-color: var(--chenxing-ring); }
+      .ring-ring { --tw-ring-color: var(--chenxing-ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body class="min-h-screen font-sans antialiased">
+    <main class="chenxing-auth-layout">
+      <!-- deep space layers -->
+      <div class="chenxing-nebula left-[-16%] top-[-12%] h-[560px] w-[560px] bg-[var(--chenxing-primary)] opacity-25"></div>
+      <div class="chenxing-nebula right-[-14%] bottom-[-16%] h-[520px] w-[520px] bg-[var(--chenxing-cyan)] opacity-15"></div>
+      <canvas id="starfield" class="absolute inset-0 h-full w-full opacity-70"></canvas>
+      <div class="chenxing-grid absolute inset-0"></div>
+      <div class="chenxing-vignette absolute inset-0"></div>
+
+      <!-- left brand / HUD panel -->
+      <aside class="relative z-10 hidden w-[46%] flex-col justify-between border-r border-[var(--chenxing-border)] p-12 lg:flex">
+        <div>
+          <a href="landing.html" class="flex items-center gap-3" data-dom-id="dom-register-home">
+            <span class="relative flex h-11 w-11 items-center justify-center">
+              <span class="absolute inset-0 animate-[chenxing-spin-slow_18s_linear_infinite] rounded-full border border-dashed border-[var(--chenxing-border-strong)]"></span>
+              <span class="absolute inset-[7px] rounded-full border border-[var(--chenxing-cyan)] opacity-70"></span>
+              <i data-lucide="sparkles" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>
+            </span>
+            <span>
+              <span class="chenxing-h3 block">辰星认证中枢</span>
+              <span class="chenxing-mono text-[10px] uppercase tracking-[0.22em] text-[var(--chenxing-muted-foreground)]">Chenxing Passport</span>
+            </span>
+          </a>
+
+          <div class="chenxing-hud-frame chenxing-glass-strong mt-14 max-w-md p-6">
+            <span class="chenxing-beam"></span>
+            <p class="chenxing-mono text-[10px] uppercase tracking-[0.3em] text-[var(--chenxing-cyan)]">// Registration · Identity Minting</p>
+            <h1 class="chenxing-h1 mt-4 leading-snug">铸造属于你的<br><span class="text-aurora">辰星信标</span></h1>
+            <p class="chenxing-caption mt-4">生成唯一辰星 ID 与安全密钥环。</p>
+
+            <div class="mt-8 space-y-5">
+              <div class="flex items-center gap-4">
+                <span class="chenxing-mono flex h-8 w-8 items-center justify-center rounded-full border border-[var(--chenxing-cyan)] text-xs text-[var(--chenxing-cyan)]">01</span>
+                <span>
+                  <span class="chenxing-h3 block text-sm">建立身份</span>
+                  <span class="chenxing-caption block">填写昵称与邮箱</span>
+                </span>
+              </div>
+              <div class="flex items-center gap-4">
+                <span class="chenxing-mono flex h-8 w-8 items-center justify-center rounded-full border border-[var(--chenxing-border-strong)] text-xs text-[var(--chenxing-muted-foreground)]">02</span>
+                <span>
+                  <span class="chenxing-h3 block text-sm">设置凭证</span>
+                  <span class="chenxing-caption block">创建安全密码</span>
+                </span>
+              </div>
+              <div class="flex items-center gap-4">
+                <span class="chenxing-mono flex h-8 w-8 items-center justify-center rounded-full border border-[var(--chenxing-border-strong)] text-xs text-[var(--chenxing-muted-foreground)]">03</span>
+                <span>
+                  <span class="chenxing-h3 block text-sm">完成铸造</span>
+                  <span class="chenxing-caption block">签发通行证信标</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </aside>
+
+      <!-- right auth card -->
+      <section class="relative z-10 flex flex-1 items-center justify-center px-6 py-14 lg:px-12">
+        <div class="w-full max-w-md">
+          <div class="mb-8 flex items-center gap-3 lg:hidden">
+            <span class="relative flex h-10 w-10 items-center justify-center">
+              <span class="absolute inset-0 animate-[chenxing-spin-slow_18s_linear_infinite] rounded-full border border-dashed border-[var(--chenxing-border-strong)]"></span>
+              <i data-lucide="sparkles" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>
+            </span>
+            <span class="chenxing-h3">辰星认证中枢</span>
+          </div>
+
+          <div class="chenxing-hud-panel">
+            <div class="flex items-center justify-between">
+              <div>
+                <h2 class="chenxing-h2">创建辰星通行证</h2>
+                <p class="chenxing-caption mt-1">铸造你的辰星信标</p>
+              </div>
+            </div>
+
+            <form class="mt-5 space-y-4" novalidate>
+              <div>
+                <label for="reg-name" class="chenxing-label">昵称</label>
+                <div class="chenxing-field-shell">
+                  <i data-lucide="user" class="chenxing-field-icon h-4 w-4"></i>
+                  <input id="reg-name" type="text" placeholder="你的星际代号" />
+                </div>
+              </div>
+              <div>
+                <label for="reg-email" class="chenxing-label">邮箱</label>
+                <div class="chenxing-field-shell">
+                  <i data-lucide="mail" class="chenxing-field-icon h-4 w-4"></i>
+                  <input id="reg-email" type="email" placeholder="you@chenxing.star" />
+                </div>
+              </div>
+              <div class="grid grid-cols-1 gap-4">
+                <div>
+                  <label for="reg-password" class="chenxing-label">密码</label>
+                  <div class="chenxing-field-shell">
+                    <i data-lucide="lock-keyhole" class="chenxing-field-icon h-4 w-4"></i>
+                    <input id="reg-password" type="password" placeholder="至少 10 位" />
+                  </div>
+                </div>
+                <div>
+                  <label for="reg-password2" class="chenxing-label">确认密码</label>
+                  <div class="chenxing-field-shell">
+                    <i data-lucide="lock-keyhole" class="chenxing-field-icon h-4 w-4"></i>
+                    <input id="reg-password2" type="password" placeholder="再次输入" />
+                  </div>
+                </div>
+              </div>
+
+              <label class="flex cursor-pointer items-start gap-2 text-[0.8125rem] leading-relaxed text-[var(--chenxing-muted-foreground)]">
+                <input type="checkbox" checked class="mt-1 h-4 w-4 rounded accent-[var(--chenxing-primary)]" />
+                <span>我已阅读并同意《辰星通行证服务条款》与《隐私政策》</span>
+              </label>
+
+              <button type="submit" class="chenxing-btn-primary w-full py-3" data-dom-id="dom-register-submit">
+                创建通行证
+                <i data-lucide="arrow-right" class="h-4 w-4"></i>
+              </button>
+            </form>
+
+
+            <p class="chenxing-caption mt-6 text-center">
+              已有通行证？
+              <a href="login.html" class="chenxing-link font-medium" data-dom-id="dom-register-login">直接登录</a>
+            </p>
+          </div>
+
+          <p class="chenxing-mono mt-6 text-center text-[10px] uppercase tracking-[0.24em] text-[var(--chenxing-muted-foreground)]">Encrypted Gateway · 天穹辰星</p>
+        </div>
+      </section>
+    </main>
+    <script>
+      (function () {
+        var c = document.getElementById("starfield"); if (!c) return;
+        var x = c.getContext("2d"); var w, h, stars = [], t = 0;
+        function rs() {
+          w = c.width = c.offsetWidth * devicePixelRatio; h = c.height = c.offsetHeight * devicePixelRatio;
+          stars = []; var n = Math.floor(w * h / 8500);
+          for (var i = 0; i < n; i++) stars.push({ x: Math.random() * w, y: Math.random() * h, z: Math.random(), r: Math.random() * 1.3 + 0.3, tw: Math.random() * 6.28, sp: Math.random() * 0.05 + 0.008 });
+        }
+        rs(); window.addEventListener("resize", rs);
+        function draw() {
+          t += 0.016; x.clearRect(0, 0, w, h);
+          for (var i = 0; i < stars.length; i++) {
+            var s = stars[i]; s.y -= s.sp * (0.4 + s.z) * devicePixelRatio;
+            if (s.y < -4) { s.y = h + 4; s.x = Math.random() * w; }
+            var a = 0.25 + 0.75 * Math.abs(Math.sin(t * (0.5 + s.z) + s.tw));
+            var hue = s.z > 0.7 ? "178,230,255" : s.z > 0.35 ? "196,220,253" : "255,255,255";
+            x.beginPath(); x.arc(s.x, s.y, s.r * devicePixelRatio, 0, 6.283);
+            x.fillStyle = "rgba(" + hue + "," + (a * (0.3 + s.z * 0.7)) + ")"; x.fill();
+          }
+          requestAnimationFrame(draw);
+        }
+        requestAnimationFrame(draw);
+      })();
+    </script>
+
+    <script>lucide.createIcons();</script>
+</body>
+</html>

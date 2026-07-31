@@ -1,0 +1,35 @@
+{
+  "success": true,
+  "skillProvenance": {
+    "name": "solo-design",
+    "version": "2026.07.06.8",
+    "version_source": "skill-version.json",
+    "runtime_skill_dir": "C:/Users/HEI/.claude/skills/solo-design",
+    "recorded_at": "2026-07-31T00:00:00+08:00",
+    "read_status": "ok"
+  },
+  "operatingMode": "free-explore",
+  "renderBlockingErrorCount": 0,
+  "softWarningCount": 4,
+  "renderBlockingErrors": [],
+  "softWarnings": [
+    "[html-quality] oauth-account.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference.",
+    "[html-quality] oauth-consent.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference.",
+    "[html-quality] oauth-redirect.html: Tailwind named color utilities are forbidden (bg-emerald-500, text-emerald-400). Use brand CSS variables instead.",
+    "[html-quality] oauth-redirect.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference."
+  ],
+  "repairPlanHints": [],
+  "errorCount": 0,
+  "warningCount": 4,
+  "errors": [],
+  "warnings": [
+    "[html-quality] oauth-account.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference.",
+    "[html-quality] oauth-consent.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference.",
+    "[html-quality] oauth-redirect.html: Tailwind named color utilities are forbidden (bg-emerald-500, text-emerald-400). Use brand CSS variables instead.",
+    "[html-quality] oauth-redirect.html: hardcoded colors are forbidden outside <style id=\"theme-vars\">. Use brand CSS variables from the token reference."
+  ],
+  "designDir": "C:\\Users\\HEI\\Desktop\\辰林编译\\chenxing-auth\\design-auth-chengming",
+  "expectedPages": null,
+  "requireInteractions": null,
+  "checkedAt": "2026-07-31T14:48:19.462Z"
+}

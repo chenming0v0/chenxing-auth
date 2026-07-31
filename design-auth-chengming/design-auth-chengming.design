@@ -1,0 +1,277 @@
+{
+  "data": [
+    {
+      "id": "page-landing",
+      "title": "首页 · 辰星认证中枢",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785490508418,
+      "canvasData": {
+        "x": 24,
+        "y": -53.999999999999886,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 2189,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-bd99f6f7",
+          "measuredAt": 1785495436794
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/landing.html",
+        "interactions": [
+          {
+            "domId": "dom-landing-login",
+            "targetPageId": "page-login"
+          },
+          {
+            "domId": "dom-landing-register",
+            "targetPageId": "page-register"
+          },
+          {
+            "domId": "dom-landing-console",
+            "targetPageId": "page-console-overview",
+            "transitionLabel": "进入控制台"
+          },
+          {
+            "domId": "dom-landing-cta-register",
+            "targetPageId": "page-register"
+          },
+          {
+            "domId": "dom-landing-cta-login",
+            "targetPageId": "page-login"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-login",
+      "title": "统一登录",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785490508418,
+      "canvasData": {
+        "x": 1920,
+        "y": 59.999999999999986,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1062,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-382ee327",
+          "measuredAt": 1785495436794
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/login.html",
+        "interactions": [
+          {
+            "domId": "dom-login-home",
+            "targetPageId": "page-landing",
+            "hideEdge": true,
+            "transitionLabel": "返回首页"
+          },
+          {
+            "domId": "dom-login-register",
+            "targetPageId": "page-register",
+            "hideEdge": true,
+            "transitionLabel": "创建通行证"
+          },
+          {
+            "domId": "dom-login-submit",
+            "targetPageId": "page-console-overview",
+            "transitionLabel": "登录成功"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-register",
+      "title": "创建通行证",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785490508418,
+      "canvasData": {
+        "x": 1284,
+        "y": 741.4999999999998,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1044,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-037bfa0d",
+          "measuredAt": 1785495436794
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/register.html",
+        "interactions": [
+          {
+            "domId": "dom-register-home",
+            "targetPageId": "page-landing",
+            "hideEdge": true,
+            "transitionLabel": "返回首页"
+          },
+          {
+            "domId": "dom-register-login",
+            "targetPageId": "page-login",
+            "hideEdge": true,
+            "transitionLabel": "已有账号"
+          },
+          {
+            "domId": "dom-register-submit",
+            "targetPageId": "page-console-overview",
+            "transitionLabel": "创建成功"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-bootstrap",
+      "title": "初始化 Owner",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785490508418,
+      "canvasData": {
+        "x": 636,
+        "y": 711.4999999999998,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1263,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-95712744",
+          "measuredAt": 1785492461078
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/bootstrap.html",
+        "interactions": [
+          {
+            "domId": "dom-bootstrap-submit",
+            "targetPageId": "page-login",
+            "transitionLabel": "初始化成功，前往登录"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-oauth-account",
+      "title": "OAuth 选择账号",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785490508418,
+      "canvasData": {
+        "x": 24,
+        "y": 1380,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1093,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-oauth-account",
+          "measuredAt": 1785495436794
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/oauth-account.html",
+        "interactions": []
+      }
+    },
+    {
+      "id": "page-oauth-consent",
+      "title": "OAuth 授权确认",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785490508418,
+      "canvasData": {
+        "x": 24,
+        "y": 729.0000000000001,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1093,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-ccfb2b15",
+          "measuredAt": 1785492461078
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/oauth-consent.html",
+        "interactions": [
+          {
+            "domId": "dom-consent-allow",
+            "targetPageId": "page-oauth-redirect",
+            "transitionLabel": "授权通过，正在跳转"
+          },
+          {
+            "domId": "dom-consent-deny",
+            "targetPageId": "page-login",
+            "hideEdge": true,
+            "transitionLabel": "拒绝授权"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-oauth-redirect",
+      "title": "授权跳转中",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785490508418,
+      "canvasData": {
+        "x": 612,
+        "y": 59.999999999999986,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1116,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-740905bb",
+          "measuredAt": 1785492461078
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/oauth-redirect.html",
+        "interactions": []
+      }
+    },
+    {
+      "id": "page-console-overview",
+      "title": "控制台概览",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785490508418,
+      "canvasData": {
+        "x": 1260,
+        "y": 53,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1140,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-f9a5999b",
+          "measuredAt": 1785492461078
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/console-overview.html",
+        "interactions": [
+          {
+            "domId": "dom-console-home",
+            "targetPageId": "page-landing",
+            "hideEdge": true,
+            "transitionLabel": "返回首页"
+          }
+        ]
+      }
+    }
+  ],
+  "config": {
+    "autoLayout": false,
+    "deviceType": "desktop",
+    "projectName": "辰星认证中枢 · 设计稿",
+    "designLibrary": null
+  }
+}
