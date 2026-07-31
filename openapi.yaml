@@ -15,10 +15,12 @@ tags:
   - name: User Auth/MFA
   - name: User Auth/Sessions
   - name: User Auth/OAuth Clients
+  - name: User Entitlements
   - name: User Auth/Browser Login
   - name: OAuth/OIDC
   - name: Admin Auth
   - name: Admin Users
+  - name: Admin Plans
   - name: Admin Clients
   - name: Admin OAuth Providers
   - name: Admin Operations
@@ -317,6 +319,19 @@ paths:
         '204': { description: 密码已修改并撤销所有用户 Session }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/entitlements:
+    get:
+      tags: [User Entitlements]
+      summary: 查询当前用户套餐与权益用量
+      operationId: currentUserEntitlements
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 当前生效套餐摘要与各权益用量；limit 为 null 表示无限，缺失表示数值无上限概念
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EntitlementsResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/sessions:
     get:
       tags: [User Auth/Sessions]
@@ -586,6 +601,7 @@ paths:
                 $ref: '#/components/schemas/TokenResponse'
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /oauth/userinfo:
     get:
       tags: [OAuth/OIDC]
@@ -716,6 +732,119 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/users/{user_id}/plan:
+    post:
+      tags: [Admin Users]
+      summary: 为用户分配套餐
+      operationId: assignPlanToUser
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssignPlanInput' }
+      responses:
+        '204': { description: 分配成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/plans:
+    get:
+      tags: [Admin Plans]
+      summary: 套餐列表
+      operationId: listPlans
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      responses:
+        '200':
+          description: 全部套餐（含已归档），包含已分配用户数
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Plan' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin Plans]
+      summary: 创建套餐
+      operationId: createPlan
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlanInput' }
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/plans/{id}:
+    put:
+      tags: [Admin Plans]
+      summary: 更新套餐
+      operationId: updatePlan
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PlanInput' }
+      responses:
+        '200':
+          description: 更新后的套餐
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Plan' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/plans/{id}/archive:
+    post:
+      tags: [Admin Plans]
+      summary: 归档套餐
+      operationId: archivePlan
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: 归档成功；默认套餐不可归档 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/plans/{id}/restore:
+    post:
+      tags: [Admin Plans]
+      summary: 恢复套餐
+      operationId: restorePlan
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: 恢复成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/admin/clients:
     get:
       tags: [Admin Clients]
@@ -1062,7 +1191,7 @@ components:
     Forbidden: { description: 无权限, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Conflict: { description: 资源冲突, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     NotFound: { description: 资源不存在, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-    TooManyRequests: { description: OAuth 配额已耗尽, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    TooManyRequests: { description: OAuth 配额已耗尽或 QPS 限流触发, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   schemas:
     ErrorResponse:
       type: object
@@ -1435,3 +1564,62 @@ components:
       properties:
         client_id: { type: string }
         client_secret: { type: string, format: password }
+    Plan:
+      type: object
+      description: 套餐定义；monthly_auth_limit / max_qps 为 null 表示无限 / 不限
+      required: [id, code, name, oauth_clients_limit, daily_auth_limit, monthly_auth_limit, max_qps, is_default, status, created_at, updated_at, assigned_users]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        code: { type: string, maxLength: 64, description: 小写字母、数字、下划线或连字符，服务端自动归一化 }
+        name: { type: string, maxLength: 128 }
+        description: { type: string, nullable: true, maxLength: 512 }
+        oauth_clients_limit: { type: integer, format: int32, minimum: 0 }
+        daily_auth_limit: { type: integer, format: int64, minimum: 0 }
+        monthly_auth_limit: { type: integer, format: int64, nullable: true, minimum: 0 }
+        max_qps: { type: integer, format: int32, nullable: true, minimum: 1 }
+        is_default: { type: boolean }
+        status: { type: string, enum: [active, archived] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        assigned_users: { type: integer, format: int64, minimum: 0, description: 当前已分配用户数（管理端响应包含） }
+    PlanInput:
+      type: object
+      description: 创建 / 更新套餐的输入
+      required: [code, name, oauth_clients_limit, daily_auth_limit, is_default]
+      properties:
+        code: { type: string, maxLength: 64 }
+        name: { type: string, maxLength: 128 }
+        description: { type: string, nullable: true, maxLength: 512 }
+        oauth_clients_limit: { type: integer, format: int32, minimum: 0 }
+        daily_auth_limit: { type: integer, format: int64, minimum: 0 }
+        monthly_auth_limit: { type: integer, format: int64, nullable: true, minimum: 0 }
+        max_qps: { type: integer, format: int32, nullable: true, minimum: 1 }
+        is_default: { type: boolean }
+    AssignPlanInput:
+      type: object
+      required: [plan_id]
+      properties:
+        plan_id: { type: integer, format: int64, minimum: 1 }
+        expires_at: { type: string, format: date-time, nullable: true, description: null 表示永久有效；也接受 time crate 的 tuple 数组形式 }
+    EntitlementsResponse:
+      type: object
+      required: [plan, entitlements]
+      properties:
+        plan:
+          type: object
+          required: [code, name, validity]
+          properties:
+            code: { type: string }
+            name: { type: string }
+            description: { type: string, nullable: true }
+            validity: { type: string, description: permanent 或 RFC3339 到期时间 }
+        entitlements:
+          type: array
+          items:
+            type: object
+            required: [key, label, used]
+            properties:
+              key: { type: string }
+              label: { type: string }
+              used: { type: integer, format: int64, minimum: 0 }
+              limit: { type: integer, format: int64, nullable: true, description: 有上限时存在；null 表示无限；缺失表示无上限概念（如 QPS） }

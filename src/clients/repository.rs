@@ -95,6 +95,7 @@ pub async fn insert_owned_client(
     registration: ValidatedClientRegistration,
     client_id: String,
     client_secret_hash: String,
+    oauth_clients_limit: i64,
 ) -> Result<NewClient, ClientInsertError> {
     let mut transaction = pool.begin().await?;
     crate::sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
@@ -106,7 +107,7 @@ pub async fn insert_owned_client(
             .bind(owner_user_id)
             .fetch_one(&mut *transaction)
             .await?;
-    if count >= super::service::USER_OAUTH_CLIENT_QUOTA as i64 {
+    if count >= oauth_clients_limit {
         transaction.rollback().await?;
         return Err(ClientInsertError::QuotaExceeded);
     }

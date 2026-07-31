@@ -20,8 +20,6 @@ pub struct ClientService {
     pool: PgPool,
 }
 
-pub const USER_OAUTH_CLIENT_QUOTA: usize = 2;
-
 #[derive(Debug)]
 pub struct RegisteredClientSecret {
     pub id: i64,
@@ -102,6 +100,7 @@ impl ClientService {
         &self,
         owner_user_id: UserId,
         input: ClientRegistrationInput,
+        oauth_clients_limit: i64,
     ) -> Result<RegisteredClientSecret, ClientServiceError> {
         let registration = validate_client_registration(input)?;
         let client_id = format!("cx_{}", Uuid::new_v4().simple());
@@ -117,6 +116,7 @@ impl ClientService {
             registration,
             client_id,
             client_secret_hash,
+            oauth_clients_limit,
         )
         .await
         .map_err(|error| match error {

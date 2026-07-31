@@ -65,9 +65,20 @@ pub async fn create_owned_client(
     let Ok(context) = mutation_user(&state, &headers).await else {
         return mutation_error(&state, &headers).await;
     };
+    let effective = match state.plans.effective_plan_for_user(context.user_id).await {
+        Ok(effective) => effective,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load plan for OAuth client quota");
+            return error::internal();
+        }
+    };
     match state
         .clients
-        .register_for_user(context.user_id, input)
+        .register_for_user(
+            context.user_id,
+            input,
+            effective.plan.oauth_clients_limit as i64,
+        )
         .await
     {
         Ok(client) => match owned_registered_response(&state, client).await {
@@ -79,7 +90,7 @@ pub async fn create_owned_client(
         }
         Err(ClientServiceError::QuotaExceeded) => error::conflict(
             "oauth_client_quota_exceeded",
-            "a normal user may own at most two OAuth projects",
+            "the current plan's OAuth application quota has been exceeded",
         ),
         Err(ClientServiceError::Database(database_error)) => {
             tracing::error!(error = %database_error, "failed to create owned OAuth client");

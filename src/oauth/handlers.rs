@@ -148,10 +148,22 @@ pub async fn issue_authorization_code_result(
     else {
         return Err(error::bad_request("invalid_client", "client is invalid"));
     };
-    if client.owner_user_id.is_some() {
+    if let Some(owner_user_id) = client.owner_user_id {
+        let effective = match state.plans.effective_plan_for_user(owner_user_id).await {
+            Ok(effective) => effective,
+            Err(error_value) => {
+                tracing::error!(error = %error_value, "failed to load plan for OAuth authorization quota");
+                return Err(error::internal());
+            }
+        };
+        let daily_limit = effective.plan.daily_auth_limit.max(0) as u64;
+        let monthly_limit = effective
+            .plan
+            .monthly_auth_limit
+            .map(|limit| limit.max(0) as u64);
         match state
             .oauth_quotas
-            .consume(&validated.client_id)
+            .consume_with_limits(&validated.client_id, Some(daily_limit), monthly_limit)
             .await
             .map_err(|error_value| {
                 tracing::error!(error = %error_value, "failed to consume OAuth authorization quota");

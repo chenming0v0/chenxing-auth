@@ -9,6 +9,7 @@ import { Login, Register } from "./pages/Auth";
 import OAuthFlow from "./pages/OAuthFlow";
 import ConsoleLayout from "./pages/console/ConsoleLayout";
 import Overview from "./pages/console/Overview";
+import Entitlements from "./pages/console/Entitlements";
 import Profile from "./pages/console/Profile";
 import Connections from "./pages/console/Connections";
 import Developer from "./pages/console/Developer";
@@ -53,6 +54,7 @@ function BootstrapGate() {
     <Route path="/oauth/consent" element={<OAuthConsent />} />
     <Route path="/console" element={<ConsoleLayout />}>
       <Route index element={<Overview />} />
+      <Route path="entitlements" element={<Entitlements />} />
       <Route path="profile" element={<Profile />} />
       <Route path="connections" element={<Connections />} />
       <Route path="developer" element={<Developer />} />

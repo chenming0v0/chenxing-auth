@@ -45,8 +45,11 @@ pub async fn token(
             return error::unauthorized("invalid_client", "client credentials are required");
         }
     };
-    request.client_id = Some(credentials.client_id);
+    request.client_id = Some(credentials.client_id.clone());
     request.client_secret = Some(credentials.client_secret);
+    if let Some(response) = enforce_qps(&state, &credentials.client_id).await {
+        return response;
+    }
     match request.grant_type.as_str() {
         "authorization_code" => exchange_authorization_code(state, request).await,
         "refresh_token" => exchange_refresh_token(state, request).await,
@@ -210,6 +213,39 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
         refresh.nonce.as_deref(),
     )
     .await
+}
+
+/// 按 Client 所属用户的套餐 `max_qps` 做 1 秒窗口限流；不限、无主 Client 或
+/// 查询失败时放行（限流是尽力而为的可用性保护，不作为数据正确性依赖）。
+async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Response> {
+    let client = match state.clients.find_registered(client_id).await {
+        Ok(Some(client)) => client,
+        Ok(None) => return None,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load OAuth client for QPS limit");
+            return None;
+        }
+    };
+    let owner_user_id = client.owner_user_id?;
+    let effective = match state.plans.effective_plan_for_user(owner_user_id).await {
+        Ok(effective) => effective,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load plan for QPS limit");
+            return None;
+        }
+    };
+    let max_qps = effective.plan.max_qps?;
+    match state.qps.allow(client_id, max_qps.max(1) as u32).await {
+        Ok(true) => None,
+        Ok(false) => Some(error::too_many_requests(
+            "qps_exceeded",
+            "request rate limit exceeded",
+        )),
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "QPS rate limit check failed");
+            None
+        }
+    }
 }
 
 async fn verify_client_credentials(state: &AppState, request: &TokenRequest) -> Option<Response> {
