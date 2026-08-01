@@ -2,7 +2,7 @@ use axum::{
     Json, Router,
     extract::State,
     http::{
-        HeaderMap, StatusCode,
+        HeaderMap, Method, StatusCode,
         header::{ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_TYPE, ORIGIN, VARY},
     },
     response::{IntoResponse, Response},
@@ -215,16 +215,40 @@ pub fn router(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http())
 }
 
-async fn web_app(request: axum::extract::Request) -> impl IntoResponse {
-    if request.method() != axum::http::Method::GET {
+async fn web_app(request: axum::extract::Request) -> Response {
+    if request.method() != Method::GET && request.method() != Method::HEAD {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
+
+    let path = request.uri().path();
+    if is_protocol_path(path) || has_file_extension(path) {
+        return crate::error::not_found("not_found", "not found");
+    }
+
     (
         StatusCode::OK,
         [(CONTENT_TYPE, "text/html; charset=utf-8")],
         include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/web/dist/index.html")),
     )
         .into_response()
+}
+
+fn is_protocol_path(path: &str) -> bool {
+    path == "/api"
+        || path.starts_with("/api/")
+        || path == "/oauth"
+        || path.starts_with("/oauth/")
+        || path == "/.well-known"
+        || path.starts_with("/.well-known/")
+        || path.starts_with("/health/")
+}
+
+fn has_file_extension(path: &str) -> bool {
+    path.rsplit('/').next().is_some_and(|segment| {
+        segment
+            .rsplit_once('.')
+            .is_some_and(|(_, extension)| !extension.is_empty())
+    })
 }
 
 #[derive(Debug, Serialize)]

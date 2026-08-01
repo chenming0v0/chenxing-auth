@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode},
+    http::{Request, StatusCode, header::CONTENT_TYPE},
 };
 use chenxing_auth::{api, state::AppState};
 use tower::ServiceExt;
@@ -119,4 +119,78 @@ async fn login_endpoint_rejects_invalid_identifier_without_database_call() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn unknown_protocol_paths_return_json_not_found_instead_of_spa_html() {
+    for path in [
+        "/api/v1/does-not-exist",
+        "/.well-known/does-not-exist",
+        "/oauth/does-not-exist",
+        "/health/does-not-exist",
+    ] {
+        let response = test_router()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("response from router");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.split(';').next().unwrap_or(value)),
+            Some("application/json"),
+            "{path} content type"
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let error: serde_json::Value = serde_json::from_slice(&body).expect("JSON error");
+        assert_eq!(error["code"], "not_found", "{path} error code");
+    }
+}
+
+#[tokio::test]
+async fn unknown_static_asset_path_returns_not_found() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .uri("/assets/does-not-exist.js")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn unknown_frontend_route_returns_spa_html() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .uri("/some-frontend-route")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/html; charset=utf-8")
+    );
 }
