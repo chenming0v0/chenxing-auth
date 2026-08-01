@@ -88,8 +88,50 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(|value| {
+            let (scheme, credentials) =
+                value.split_once(|character: char| character.is_ascii_whitespace())?;
+            scheme
+                .eq_ignore_ascii_case("bearer")
+                .then_some(credentials.trim_start())
+        })
         .filter(|token| !token.is_empty())
 }
 
 use axum::response::IntoResponse;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    #[test]
+    fn bearer_token_accepts_case_insensitive_bearer_scheme() {
+        for authorization in ["Bearer token", "bearer token", "BEARER token"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(AUTHORIZATION, HeaderValue::from_static(authorization));
+
+            assert_eq!(bearer_token(&headers), Some("token"), "{authorization}");
+        }
+    }
+
+    #[test]
+    fn bearer_token_rejects_missing_or_empty_credentials() {
+        assert_eq!(bearer_token(&HeaderMap::new()), None);
+
+        for authorization in ["Bearer", "Bearer ", "Bearer   ", ""] {
+            let mut headers = HeaderMap::new();
+            headers.insert(AUTHORIZATION, HeaderValue::from_static(authorization));
+
+            assert_eq!(bearer_token(&headers), None, "{authorization:?}");
+        }
+    }
+
+    #[test]
+    fn bearer_token_rejects_other_authentication_schemes() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Basic token"));
+
+        assert_eq!(bearer_token(&headers), None);
+    }
+}
