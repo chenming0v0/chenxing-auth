@@ -2,11 +2,14 @@ use axum::http::{
     HeaderMap,
     header::{COOKIE, SET_COOKIE},
 };
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use cookie::{Cookie, SameSite};
+use sha2::{Digest, Sha256};
 
 pub const SESSION_COOKIE: &str = "chenxing_session";
 pub const CSRF_COOKIE: &str = "chenxing_csrf";
-pub const EXTERNAL_STATE_COOKIE: &str = "chenxing_external_oauth_state";
+pub const EXTERNAL_STATE_COOKIE_PREFIX: &str = "chenxing_external_oauth_state_";
+const EXTERNAL_STATE_COOKIE_ID_BYTES: usize = 12;
 
 pub fn append_login_cookies(
     headers: &mut HeaderMap,
@@ -17,13 +20,20 @@ pub fn append_login_cookies(
 ) {
     headers.append(
         SET_COOKIE,
-        build_cookie(SESSION_COOKIE, session_token, max_age_seconds, secure, true)
-            .parse()
-            .expect("session cookie is valid ASCII"),
+        build_cookie(
+            SESSION_COOKIE,
+            session_token,
+            max_age_seconds,
+            secure,
+            true,
+            "/",
+        )
+        .parse()
+        .expect("session cookie is valid ASCII"),
     );
     headers.append(
         SET_COOKIE,
-        build_cookie(CSRF_COOKIE, csrf_token, max_age_seconds, secure, false)
+        build_cookie(CSRF_COOKIE, csrf_token, max_age_seconds, secure, false, "/")
             .parse()
             .expect("CSRF cookie is valid ASCII"),
     );
@@ -33,7 +43,7 @@ pub fn append_clear_cookies(headers: &mut HeaderMap, secure: bool) {
     for name in [SESSION_COOKIE, CSRF_COOKIE] {
         headers.append(
             SET_COOKIE,
-            build_cookie(name, "", 0, secure, name == SESSION_COOKIE)
+            build_cookie(name, "", 0, secure, name == SESSION_COOKIE, "/")
                 .parse()
                 .expect("clear cookie is valid ASCII"),
         );
@@ -45,19 +55,27 @@ pub fn append_external_state_cookie(
     state: &str,
     max_age_seconds: u64,
     secure: bool,
+    path: &str,
 ) {
+    let name = external_state_cookie_name(state);
     headers.append(
         SET_COOKIE,
-        build_cookie(EXTERNAL_STATE_COOKIE, state, max_age_seconds, secure, true)
+        build_cookie(&name, state, max_age_seconds, secure, true, path)
             .parse()
             .expect("external OAuth state cookie is valid ASCII"),
     );
 }
 
-pub fn append_clear_external_state_cookie(headers: &mut HeaderMap, secure: bool) {
+pub fn append_clear_external_state_cookie(
+    headers: &mut HeaderMap,
+    state: &str,
+    secure: bool,
+    path: &str,
+) {
+    let name = external_state_cookie_name(state);
     headers.append(
         SET_COOKIE,
-        build_cookie(EXTERNAL_STATE_COOKIE, "", 0, secure, true)
+        build_cookie(&name, "", 0, secure, true, path)
             .parse()
             .expect("external OAuth state cookie is valid ASCII"),
     );
@@ -82,8 +100,17 @@ pub fn csrf_cookie(headers: &HeaderMap) -> Option<String> {
     cookie_value(headers, CSRF_COOKIE)
 }
 
-pub fn external_state(headers: &HeaderMap) -> Option<String> {
-    cookie_value(headers, EXTERNAL_STATE_COOKIE)
+pub fn external_state(headers: &HeaderMap, state: &str) -> Option<String> {
+    let name = external_state_cookie_name(state);
+    cookie_value(headers, &name)
+}
+
+pub fn external_state_cookie_name(state: &str) -> String {
+    let digest = Sha256::digest(state.as_bytes());
+    format!(
+        "{EXTERNAL_STATE_COOKIE_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(&digest[..EXTERNAL_STATE_COOKIE_ID_BYTES])
+    )
 }
 
 pub fn cookie_value_by_name(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -101,13 +128,20 @@ pub fn append_named_login_cookies(
 ) {
     headers.append(
         SET_COOKIE,
-        build_cookie(session_name, session_token, max_age_seconds, secure, true)
-            .parse()
-            .expect("session cookie is valid ASCII"),
+        build_cookie(
+            session_name,
+            session_token,
+            max_age_seconds,
+            secure,
+            true,
+            "/",
+        )
+        .parse()
+        .expect("session cookie is valid ASCII"),
     );
     headers.append(
         SET_COOKIE,
-        build_cookie(csrf_name, csrf_token, max_age_seconds, secure, false)
+        build_cookie(csrf_name, csrf_token, max_age_seconds, secure, false, "/")
             .parse()
             .expect("CSRF cookie is valid ASCII"),
     );
@@ -122,7 +156,7 @@ pub fn append_named_clear_cookies(
     for name in [session_name, csrf_name] {
         headers.append(
             SET_COOKIE,
-            build_cookie(name, "", 0, secure, name == session_name)
+            build_cookie(name, "", 0, secure, name == session_name, "/")
                 .parse()
                 .expect("clear cookie is valid ASCII"),
         );
@@ -143,9 +177,10 @@ fn build_cookie(
     max_age_seconds: u64,
     secure: bool,
     http_only: bool,
+    path: &str,
 ) -> String {
     let mut cookie = Cookie::build((name, value))
-        .path("/")
+        .path(path)
         .same_site(SameSite::Lax)
         .max_age(cookie::time::Duration::seconds(
             max_age_seconds.min(i64::MAX as u64) as i64,

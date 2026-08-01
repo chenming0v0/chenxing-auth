@@ -2,7 +2,7 @@ use redis::{AsyncCommands, Client};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const STATE_TTL_SECONDS: u64 = 600;
+pub const EXTERNAL_LOGIN_STATE_TTL_SECONDS: u64 = 600;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalLoginState {
@@ -36,7 +36,11 @@ impl ExternalLoginStateStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload = serde_json::to_string(value)?;
         let _: () = connection
-            .set_ex(Self::key(&value.state), payload, STATE_TTL_SECONDS)
+            .set_ex(
+                Self::key(&value.state),
+                payload,
+                EXTERNAL_LOGIN_STATE_TTL_SECONDS,
+            )
             .await?;
         Ok(())
     }
