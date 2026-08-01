@@ -10,7 +10,7 @@ use super::{
     code::AuthorizationCode,
     pkce::verify_s256,
     refresh::RefreshToken,
-    response::issue_token_response,
+    response::{self, issue_token_response},
     session::active_user_id,
 };
 use crate::{error, state::AppState};
@@ -30,8 +30,12 @@ pub struct TokenRequest {
 pub async fn token(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Form(mut request): Form<TokenRequest>,
+    Form(request): Form<TokenRequest>,
 ) -> Response {
+    response::with_no_store_headers(token_inner(state, headers, request).await)
+}
+
+async fn token_inner(state: AppState, headers: HeaderMap, mut request: TokenRequest) -> Response {
     let credentials = match resolve_client_credentials(
         &headers,
         request.client_id.as_deref(),

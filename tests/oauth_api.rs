@@ -1,7 +1,10 @@
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode},
+    http::{
+        Request, StatusCode,
+        header::{CACHE_CONTROL, PRAGMA},
+    },
 };
 use chenxing_auth::{api, state::AppState};
 use tower::ServiceExt;
@@ -11,7 +14,7 @@ fn test_router() -> Router {
 }
 
 #[tokio::test]
-async fn token_endpoint_rejects_unsupported_grant_type() {
+async fn token_endpoint_rejects_unsupported_grant_type_without_caching() {
     let response = test_router()
         .oneshot(
             Request::builder()
@@ -27,6 +30,20 @@ async fn token_endpoint_rejects_unsupported_grant_type() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(PRAGMA)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-cache")
+    );
 }
 
 #[tokio::test]
