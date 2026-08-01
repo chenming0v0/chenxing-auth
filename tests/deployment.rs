@@ -62,8 +62,14 @@ fn deployment_files_are_present_at_repository_root() {
 fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("unified identity baseline"));
     assert!(DB_MODULE.contains("plans and entitlements"));
+    assert!(DB_MODULE.contains("session outbox consistency"));
+    assert!(DB_MODULE.contains("session outbox deleted target cleanup"));
+    assert!(DB_MODULE.contains("session outbox event user retention"));
     assert!(DB_MODULE.contains("include_str!(\"../migrations/0001_initial.sql\")"));
     assert!(DB_MODULE.contains("include_str!(\"../migrations/0002_plans.sql\")"));
+    assert!(DB_MODULE.contains("0003_session_outbox.sql"));
+    assert!(DB_MODULE.contains("0004_relax_deleted_session_outbox_target.sql"));
+    assert!(DB_MODULE.contains("0005_session_outbox_event_user.sql"));
     let migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -75,6 +81,9 @@ fn database_uses_explicit_unified_baseline_migrations() {
         vec![
             std::ffi::OsString::from("0001_initial.sql"),
             std::ffi::OsString::from("0002_plans.sql"),
+            std::ffi::OsString::from("0003_session_outbox.sql"),
+            std::ffi::OsString::from("0004_relax_deleted_session_outbox_target.sql"),
+            std::ffi::OsString::from("0005_session_outbox_event_user.sql"),
         ]
     );
 }

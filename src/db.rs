@@ -42,6 +42,31 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0002_plans.sql")),
             false,
         ),
+        Migration::new(
+            3,
+            Cow::Borrowed("session outbox consistency"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0003_session_outbox.sql")),
+            false,
+        ),
+        Migration::new(
+            4,
+            Cow::Borrowed("session outbox deleted target cleanup"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!(
+                "../migrations/0004_relax_deleted_session_outbox_target.sql"
+            )),
+            false,
+        ),
+        Migration::new(
+            5,
+            Cow::Borrowed("session outbox event user retention"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!(
+                "../migrations/0005_session_outbox_event_user.sql"
+            )),
+            false,
+        ),
     ];
 
     Migrator {

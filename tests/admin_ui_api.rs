@@ -96,13 +96,14 @@ async fn browser_session(
     user_id: i64,
 ) -> (String, String, String) {
     let redis = redis::Client::open(redis_url).expect("Redis");
-    let store = SessionStore::with_metadata(
+    let store = SessionStore::with_metadata_and_key(
         redis,
         chenxing_auth::sqlx::PgPoolOptions::new()
             .max_connections(2)
             .connect(database_url)
             .await
             .expect("session PostgreSQL"),
+        [0; 32],
     );
     let mut session = Session::new(user_id.to_string(), std::time::Duration::from_secs(3600))
         .expect("browser session");

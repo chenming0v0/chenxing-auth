@@ -69,7 +69,11 @@ impl AppState {
     pub fn new(config: Config) -> Result<Self, StateError> {
         let database = crate::db::connect(&config)?;
         let redis = redis::Client::open(config.redis_url.as_str())?;
-        let sessions = SessionStore::with_metadata(redis.clone(), database.clone());
+        let sessions = SessionStore::with_metadata_and_key(
+            redis.clone(),
+            database.clone(),
+            *config.auth_encryption_key.as_bytes(),
+        );
         let settings = SettingsService::new(database.clone());
         let users = UserService::new(database.clone());
         let factors = AuthFactorService::new(

@@ -17,6 +17,7 @@ use chenxing_auth::{
     },
 };
 use redis::AsyncCommands;
+use serial_test::serial;
 use sha2::Digest;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -430,6 +431,7 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
 }
 
 #[tokio::test]
+#[serial(session_outbox)]
 async fn session_revocation_generation_rejects_restored_old_payloads() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -445,7 +447,7 @@ async fn session_revocation_generation_rejects_restored_old_payloads() {
     .await
     .expect("insert generation user");
     let client = redis_client();
-    let sessions = SessionStore::with_metadata(client.clone(), pool.clone());
+    let sessions = SessionStore::with_metadata_and_key(client.clone(), pool.clone(), [0x42; 32]);
     let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
     sessions
         .save(&mut session, Duration::from_secs(60))
@@ -488,6 +490,7 @@ async fn session_revocation_generation_rejects_restored_old_payloads() {
 }
 
 #[tokio::test]
+#[serial(session_outbox)]
 async fn session_find_rejects_metadata_revocation_even_when_redis_payload_exists() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -503,7 +506,7 @@ async fn session_find_rejects_metadata_revocation_even_when_redis_payload_exists
     .await
     .expect("insert metadata revoke user");
     let client = redis_client();
-    let sessions = SessionStore::with_metadata(client, pool.clone());
+    let sessions = SessionStore::with_metadata_and_key(client, pool.clone(), [0x42; 32]);
     let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
     sessions
         .save(&mut session, Duration::from_secs(60))
@@ -531,6 +534,7 @@ async fn session_find_rejects_metadata_revocation_even_when_redis_payload_exists
 }
 
 #[tokio::test]
+#[serial(session_outbox)]
 async fn session_find_uses_database_identity_for_cached_payloads() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -558,7 +562,7 @@ async fn session_find_uses_database_identity_for_cached_payloads() {
     .await
     .expect("insert metadata other user");
     let client = redis_client();
-    let sessions = SessionStore::with_metadata(client, pool.clone());
+    let sessions = SessionStore::with_metadata_and_key(client, pool.clone(), [0x42; 32]);
     let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
     sessions
         .save(&mut session, Duration::from_secs(60))
@@ -582,7 +586,8 @@ async fn session_find_uses_database_identity_for_cached_payloads() {
 }
 
 #[tokio::test]
-async fn session_save_cleans_metadata_when_redis_connection_fails() {
+#[serial(session_outbox)]
+async fn session_save_keeps_metadata_pending_when_redis_connection_fails() {
     let pool = database().await;
     let user = user_repository::insert_user(
         &pool,
@@ -607,15 +612,13 @@ async fn session_save_cleans_metadata_when_redis_connection_fails() {
         .port();
     drop(listener);
     let redis = redis::Client::open(format!("redis://127.0.0.1:{port}/")).expect("Redis URL");
-    let sessions = SessionStore::with_metadata(redis, pool.clone());
+    let sessions = SessionStore::with_metadata_and_key(redis, pool.clone(), [0x42; 32]);
     let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
 
-    assert!(
-        sessions
-            .save(&mut session, Duration::from_secs(60))
-            .await
-            .is_err()
-    );
+    sessions
+        .save(&mut session, Duration::from_secs(60))
+        .await
+        .expect("database save must not depend on Redis availability");
     assert!(
         session.id > 0,
         "database insert must happen before Redis access"
@@ -627,8 +630,19 @@ async fn session_save_cleans_metadata_when_redis_connection_fails() {
         .bind(session.id)
         .fetch_one(&pool)
         .await
-        .expect("count orphaned session metadata"),
-        0
+        .expect("count durable session metadata"),
+        1
+    );
+    assert_eq!(
+        chenxing_auth::sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM session_outbox
+             WHERE session_id = $1 AND operation = 'sync_session' AND processed_at IS NULL",
+        )
+        .bind(session.id)
+        .fetch_one(&pool)
+        .await
+        .expect("count pending save outbox"),
+        1
     );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
@@ -636,4 +650,504 @@ async fn session_save_cleans_metadata_when_redis_connection_fails() {
         .execute(&pool)
         .await
         .expect("cleanup metadata connection failure user");
+}
+
+fn session_store_key() -> [u8; 32] {
+    [0x42; 32]
+}
+
+fn unavailable_redis_client() -> redis::Client {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve Redis port");
+    let port = listener
+        .local_addr()
+        .expect("reserved Redis address")
+        .port();
+    drop(listener);
+    redis::Client::open(format!("redis://127.0.0.1:{port}/")).expect("Redis URL")
+}
+
+#[tokio::test]
+#[serial(session_outbox)]
+async fn session_save_commits_metadata_and_replays_redis_after_connection_failure() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("outbox-save-{}", Uuid::new_v4().simple()),
+            email: format!("outbox-save-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert outbox save user");
+    let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
+    let unavailable = SessionStore::with_metadata_and_key(
+        unavailable_redis_client(),
+        pool.clone(),
+        session_store_key(),
+    );
+
+    unavailable
+        .save(&mut session, Duration::from_secs(60))
+        .await
+        .expect("database save must not depend on Redis availability");
+    assert!(
+        unavailable
+            .find(&session.token)
+            .await
+            .expect("find from PostgreSQL authority")
+            .is_some()
+    );
+    assert_eq!(
+        chenxing_auth::sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM session_outbox
+             WHERE operation = 'sync_session' AND session_id = $1 AND processed_at IS NULL",
+        )
+        .bind(session.id)
+        .fetch_one(&pool)
+        .await
+        .expect("pending save outbox"),
+        1
+    );
+    assert_eq!(
+        unavailable
+            .process_pending_outbox()
+            .await
+            .expect("record failed Redis delivery"),
+        0
+    );
+    let (attempts, has_error): (i32, bool) = chenxing_auth::sqlx::query_as(
+        "SELECT attempts, last_error IS NOT NULL
+         FROM session_outbox
+         WHERE operation = 'sync_session' AND session_id = $1 AND processed_at IS NULL",
+    )
+    .bind(session.id)
+    .fetch_one(&pool)
+    .await
+    .expect("observable failed save outbox");
+    assert_eq!(attempts, 1);
+    assert!(has_error);
+    chenxing_auth::sqlx::query(
+        "UPDATE session_outbox SET available_at = NOW()
+         WHERE operation = 'sync_session' AND session_id = $1 AND processed_at IS NULL",
+    )
+    .bind(session.id)
+    .execute(&pool)
+    .await
+    .expect("make save outbox immediately retryable");
+
+    let available =
+        SessionStore::with_metadata_and_key(redis_client(), pool.clone(), session_store_key());
+    assert!(
+        available
+            .process_pending_outbox()
+            .await
+            .expect("replay save outbox")
+            > 0
+    );
+    assert!(
+        available
+            .find(&session.token)
+            .await
+            .expect("find replayed session")
+            .is_some()
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup outbox save user");
+}
+
+#[tokio::test]
+#[serial(session_outbox)]
+async fn session_sync_projection_does_not_resurrect_a_concurrently_revoked_row() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("outbox-race-{}", Uuid::new_v4().simple()),
+            email: format!("outbox-race-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert outbox race user");
+    let available =
+        SessionStore::with_metadata_and_key(redis_client(), pool.clone(), session_store_key());
+    let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
+    available
+        .save(&mut session, Duration::from_secs(60))
+        .await
+        .expect("save session");
+
+    let mut lock = pool.begin().await.expect("session row lock transaction");
+    chenxing_auth::sqlx::query("SELECT id FROM user_sessions WHERE id = $1 FOR UPDATE")
+        .bind(session.id)
+        .fetch_one(&mut *lock)
+        .await
+        .expect("lock session row");
+    let worker = tokio::spawn({
+        let available = available.clone();
+        async move { available.process_pending_outbox().await }
+    });
+    for _ in 0..50 {
+        let attempts: i32 = chenxing_auth::sqlx::query_scalar(
+            "SELECT attempts FROM session_outbox WHERE session_id = $1 AND operation = 'sync_session'",
+        )
+        .bind(session.id)
+        .fetch_one(&pool)
+        .await
+        .expect("observe claimed sync outbox");
+        if attempts > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    chenxing_auth::sqlx::query("UPDATE user_sessions SET revoked_at = NOW() WHERE id = $1")
+        .bind(session.id)
+        .execute(&mut *lock)
+        .await
+        .expect("revoke locked session row");
+    lock.commit().await.expect("commit concurrent revocation");
+    worker
+        .await
+        .expect("join projection worker")
+        .expect("process projection outbox");
+
+    let mut connection = redis_client()
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let redis_key = format!(
+        "chenxing:session:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(sha2::Sha256::digest(session.token.as_bytes()))
+    );
+    assert!(
+        !connection
+            .exists::<_, bool>(&redis_key)
+            .await
+            .expect("revoked Redis session")
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup outbox race user");
+}
+
+#[tokio::test]
+#[serial(session_outbox)]
+async fn session_revoke_keeps_database_authoritative_until_redis_recovers() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("outbox-revoke-{}", Uuid::new_v4().simple()),
+            email: format!("outbox-revoke-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert outbox revoke user");
+    let key = session_store_key();
+    let available = SessionStore::with_metadata_and_key(redis_client(), pool.clone(), key);
+    let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
+    available
+        .save(&mut session, Duration::from_secs(60))
+        .await
+        .expect("save session");
+    available
+        .process_pending_outbox()
+        .await
+        .expect("flush save outbox");
+
+    let unavailable =
+        SessionStore::with_metadata_and_key(unavailable_redis_client(), pool.clone(), key);
+    unavailable
+        .revoke(&session.token)
+        .await
+        .expect("database revoke must not depend on Redis availability");
+    assert!(
+        unavailable
+            .find(&session.token)
+            .await
+            .expect("find revoked session")
+            .is_none()
+    );
+    assert_eq!(
+        chenxing_auth::sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM session_outbox
+             WHERE operation = 'revoke_session' AND token_hash = $1 AND processed_at IS NULL",
+        )
+        .bind(sha2::Sha256::digest(session.token.as_bytes()).to_vec())
+        .fetch_one(&pool)
+        .await
+        .expect("pending revoke outbox"),
+        1
+    );
+
+    let mut connection = redis_client()
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let redis_key = format!(
+        "chenxing:session:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(sha2::Sha256::digest(session.token.as_bytes()))
+    );
+    assert!(
+        connection
+            .exists::<_, bool>(&redis_key)
+            .await
+            .expect("stale Redis session")
+    );
+    available
+        .process_pending_outbox()
+        .await
+        .expect("replay revoke outbox");
+    assert!(
+        !connection
+            .exists::<_, bool>(&redis_key)
+            .await
+            .expect("revoked Redis session")
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup outbox revoke user");
+}
+
+#[tokio::test]
+#[serial(session_outbox)]
+async fn session_revoke_for_user_commits_revocation_before_redis_delivery() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("outbox-single-{}", Uuid::new_v4().simple()),
+            email: format!("outbox-single-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert outbox single revoke user");
+    let key = session_store_key();
+    let available = SessionStore::with_metadata_and_key(redis_client(), pool.clone(), key);
+    let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
+    available
+        .save(&mut session, Duration::from_secs(60))
+        .await
+        .expect("save session");
+    available
+        .process_pending_outbox()
+        .await
+        .expect("flush save outbox");
+
+    let unavailable =
+        SessionStore::with_metadata_and_key(unavailable_redis_client(), pool.clone(), key);
+    assert!(
+        unavailable
+            .revoke_for_user(user.id, session.id)
+            .await
+            .expect("database single revoke")
+    );
+    assert!(
+        unavailable
+            .find(&session.token)
+            .await
+            .expect("find revoked single session")
+            .is_none()
+    );
+    assert_eq!(
+        chenxing_auth::sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM session_outbox
+             WHERE operation = 'revoke_session' AND session_id = $1 AND processed_at IS NULL",
+        )
+        .bind(session.id)
+        .fetch_one(&pool)
+        .await
+        .expect("pending single revoke outbox"),
+        1
+    );
+    available
+        .process_pending_outbox()
+        .await
+        .expect("replay single revoke outbox");
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup outbox single revoke user");
+}
+
+#[tokio::test]
+#[serial(session_outbox)]
+async fn session_revoke_all_commits_all_rows_before_redis_delivery() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("outbox-all-{}", Uuid::new_v4().simple()),
+            email: format!("outbox-all-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert outbox all revoke user");
+    let key = session_store_key();
+    let available = SessionStore::with_metadata_and_key(redis_client(), pool.clone(), key);
+    let mut first =
+        Session::new(user.id.to_string(), Duration::from_secs(60)).expect("first session");
+    let mut second =
+        Session::new(user.id.to_string(), Duration::from_secs(60)).expect("second session");
+    available
+        .save(&mut first, Duration::from_secs(60))
+        .await
+        .expect("save first session");
+    available
+        .save(&mut second, Duration::from_secs(60))
+        .await
+        .expect("save second session");
+    available
+        .process_pending_outbox()
+        .await
+        .expect("flush save outbox");
+
+    let unavailable =
+        SessionStore::with_metadata_and_key(unavailable_redis_client(), pool.clone(), key);
+    unavailable
+        .revoke_all_for_user(user.id)
+        .await
+        .expect("database batch revoke");
+    assert_eq!(
+        chenxing_auth::sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM user_sessions
+             WHERE user_id = $1 AND revoked_at IS NOT NULL",
+        )
+        .bind(user.id)
+        .fetch_one(&pool)
+        .await
+        .expect("revoked session metadata"),
+        2
+    );
+    assert_eq!(
+        chenxing_auth::sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM session_outbox
+             WHERE operation = 'revoke_user' AND user_id = $1 AND processed_at IS NULL",
+        )
+        .bind(user.id)
+        .fetch_one(&pool)
+        .await
+        .expect("pending batch revoke outbox"),
+        1
+    );
+    assert!(
+        unavailable
+            .find(&first.token)
+            .await
+            .expect("find first revoked session")
+            .is_none()
+    );
+    assert!(
+        unavailable
+            .find(&second.token)
+            .await
+            .expect("find second revoked session")
+            .is_none()
+    );
+    available
+        .process_pending_outbox()
+        .await
+        .expect("replay batch revoke outbox");
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup outbox all revoke user");
+}
+
+#[tokio::test]
+#[serial(session_outbox)]
+async fn session_revoke_all_outbox_cleans_redis_after_user_deletion() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("outbox-delete-{}", Uuid::new_v4().simple()),
+            email: format!("outbox-delete-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert outbox deletion user");
+    let key = session_store_key();
+    let available = SessionStore::with_metadata_and_key(redis_client(), pool.clone(), key);
+    let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
+    available
+        .save(&mut session, Duration::from_secs(60))
+        .await
+        .expect("save session");
+    available
+        .process_pending_outbox()
+        .await
+        .expect("flush save outbox");
+
+    let unavailable =
+        SessionStore::with_metadata_and_key(unavailable_redis_client(), pool.clone(), key);
+    unavailable
+        .revoke_all_for_user(user.id)
+        .await
+        .expect("database batch revoke");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("delete user with pending revoke outbox");
+
+    let mut connection = redis_client()
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let redis_key = format!(
+        "chenxing:session:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(sha2::Sha256::digest(session.token.as_bytes()))
+    );
+    assert!(
+        connection
+            .exists::<_, bool>(&redis_key)
+            .await
+            .expect("stale Redis session")
+    );
+
+    available
+        .process_pending_outbox()
+        .await
+        .expect("replay deletion revoke outbox");
+    assert!(
+        !connection
+            .exists::<_, bool>(&redis_key)
+            .await
+            .expect("deleted Redis session")
+    );
 }
