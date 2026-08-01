@@ -3,6 +3,8 @@ use thiserror::Error;
 
 use super::refresh::RefreshToken;
 
+const REFRESH_TOKEN_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
+
 #[derive(Clone)]
 pub struct RefreshTokenStore {
     client: Client,
@@ -25,7 +27,7 @@ impl RefreshTokenStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload = serde_json::to_string(token)?;
         let _: () = connection
-            .set_ex(Self::key(&token.value), payload, 30 * 24 * 60 * 60)
+            .set_ex(Self::key(&token.value), payload, REFRESH_TOKEN_TTL_SECONDS)
             .await?;
         Ok(())
     }
@@ -73,6 +75,34 @@ impl RefreshTokenStore {
         .invoke_async(&mut connection)
         .await?;
         Ok(deleted == 1)
+    }
+
+    pub async fn rotate_if_matches(
+        &self,
+        value: &str,
+        token: &RefreshToken,
+        replacement: &RefreshToken,
+    ) -> Result<bool, RefreshTokenStoreError> {
+        let expected = serde_json::to_string(token)?;
+        let replacement_payload = serde_json::to_string(replacement)?;
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let rotated: i32 = Script::new(
+            r#"local current = redis.call('GET', KEYS[1])
+               if current ~= ARGV[1] then
+                   return 0
+               end
+               redis.call('SETEX', KEYS[2], ARGV[3], ARGV[2])
+               redis.call('DEL', KEYS[1])
+               return 1"#,
+        )
+        .key(Self::key(value))
+        .key(Self::key(&replacement.value))
+        .arg(expected)
+        .arg(replacement_payload)
+        .arg(REFRESH_TOKEN_TTL_SECONDS)
+        .invoke_async(&mut connection)
+        .await?;
+        Ok(rotated == 1)
     }
 
     fn key(value: &str) -> String {
