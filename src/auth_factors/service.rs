@@ -13,6 +13,7 @@ use crate::{config::AuthEncryptionKey, sqlx::PgPool};
 use super::{
     crypto::{SecretCryptoError, decrypt_totp_secret},
     domain::{FactorMethod, LoginTicket},
+    persistence::persist_then_consume,
     repository,
     store::{LoginTicketStore, LoginTicketStoreError},
     totp::{TotpEnrollment, verify_totp_code_current},
@@ -213,15 +214,16 @@ impl AuthFactorService {
         if !valid {
             return Ok(TotpConfirmation::InvalidCode);
         }
-        if self.tickets.take(ticket_id).await?.is_none() {
-            return Ok(TotpConfirmation::InvalidTicket);
-        }
-        repository::insert_totp_factor(&self.pool, ticket.user_id, &pending.encrypted_secret)
-            .await?;
+        let confirmation = persist_then_consume(
+            ticket.user_id,
+            repository::insert_totp_factor(&self.pool, ticket.user_id, &pending.encrypted_secret),
+            self.tickets.take(ticket_id),
+        )
+        .await?;
         self.tickets
             .delete(&Self::totp_setup_key(ticket_id))
             .await?;
-        Ok(TotpConfirmation::Completed(ticket.user_id))
+        Ok(confirmation)
     }
 
     pub async fn start_passkey_registration(
