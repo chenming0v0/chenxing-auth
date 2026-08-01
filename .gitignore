@@ -8,5 +8,6 @@ coverage/
 .idea/
 .vscode/
 .codex/
+/.claude/
 web/node_modules/
 web/dist/
