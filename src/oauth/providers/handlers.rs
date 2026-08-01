@@ -248,6 +248,21 @@ pub async fn external_callback(
         tracing::error!(error = %error_value, "failed to save external OAuth session");
         return error::internal();
     }
+    let request_id = stored_state
+        .request_id
+        .as_deref()
+        .filter(|value| !value.is_empty());
+    if let Some(request_id) = request_id
+        && let Err(binding_error) = bind_pending_request(&state, request_id, &session.token).await
+    {
+        let error_code = match binding_error {
+            PendingRequestBindingError::Expired => "oauth_request_expired",
+            PendingRequestBindingError::Invalid | PendingRequestBindingError::Storage => {
+                "oauth_request_binding_failed"
+            }
+        };
+        return external_error_with_session(&state, &slug, request_id, error_code, &session).await;
+    }
     state
         .audit
         .record(AuditEvent::new(
@@ -259,9 +274,9 @@ pub async fn external_callback(
             serde_json::json!({"result": "success", "channel": "external_oauth", "provider": slug}),
         ))
         .await;
-    // Session is already bound to the pending request here, so hand straight to
-    // the SPA consent screen; otherwise land on the SPA login page.
-    let mut response = if let Some(request_id) = stored_state.request_id {
+    // Session is bound to the pending request above before handing control to the
+    // SPA consent screen; otherwise land on the SPA login page.
+    let mut response = if let Some(request_id) = request_id {
         Redirect::to(&format!("/oauth/consent?request_id={request_id}")).into_response()
     } else {
         Redirect::to("/login?external=success").into_response()
@@ -275,6 +290,53 @@ pub async fn external_callback(
     );
     cookies::append_clear_external_state_cookie(response.headers_mut(), state.config.cookie_secure);
     response
+}
+
+enum PendingRequestBindingError {
+    Expired,
+    Invalid,
+    Storage,
+}
+
+async fn bind_pending_request(
+    state: &AppState,
+    request_id: &str,
+    session_token: &str,
+) -> Result<(), PendingRequestBindingError> {
+    let Some(mut pending) = state
+        .authorization_requests
+        .find(request_id)
+        .await
+        .map_err(|error_value| {
+            tracing::error!(
+                error = %error_value,
+                "failed to load pending authorization request for external login"
+            );
+            PendingRequestBindingError::Storage
+        })?
+    else {
+        return Err(PendingRequestBindingError::Expired);
+    };
+    if pending.request_id != request_id {
+        return Err(PendingRequestBindingError::Invalid);
+    }
+    match pending.session_id.as_deref() {
+        None => {}
+        Some(existing) if existing == session_token => return Ok(()),
+        Some(_) => return Err(PendingRequestBindingError::Invalid),
+    }
+    pending.session_id = Some(session_token.to_owned());
+    state
+        .authorization_requests
+        .save(&pending)
+        .await
+        .map_err(|error_value| {
+            tracing::error!(
+                error = %error_value,
+                "failed to bind pending authorization request after external login"
+            );
+            PendingRequestBindingError::Storage
+        })
 }
 
 async fn external_error(state: &AppState, slug: &str, code: &str) -> Response {
@@ -294,6 +356,24 @@ async fn external_error_with_request(
     };
     let mut response = Redirect::to(&location).into_response();
     cookies::append_clear_external_state_cookie(response.headers_mut(), state.config.cookie_secure);
+    response
+}
+
+async fn external_error_with_session(
+    state: &AppState,
+    slug: &str,
+    request_id: &str,
+    code: &str,
+    session: &Session,
+) -> Response {
+    let mut response = external_error_with_request(state, slug, Some(request_id), code).await;
+    cookies::append_login_cookies(
+        response.headers_mut(),
+        &session.token,
+        &session.csrf_token,
+        state.config.session_ttl_seconds,
+        state.config.cookie_secure,
+    );
     response
 }
 
