@@ -1,5 +1,6 @@
-//! Session and short-lived authorization state boundary backed by Redis.
+//! Session lifecycle boundary with PostgreSQL authority and a Redis projection.
 
 pub mod cookies;
 pub mod domain;
+mod outbox;
 pub mod store;

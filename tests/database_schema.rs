@@ -139,6 +139,19 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     assert_identity(&pool, "oauth_clients", "id").await;
     assert_column(&pool, "oauth_providers", "id", "bigint", false).await;
     assert_identity(&pool, "oauth_providers", "id").await;
+    assert_column(&pool, "user_sessions", "session_payload", "bytea", true).await;
+    assert_column(&pool, "session_outbox", "id", "bigint", false).await;
+    assert_identity(&pool, "session_outbox", "id").await;
+    assert_column(
+        &pool,
+        "session_outbox",
+        "available_at",
+        "timestamp with time zone",
+        false,
+    )
+    .await;
+    assert_column(&pool, "session_outbox", "attempts", "integer", false).await;
+    assert_fk(&pool, "session_outbox", "session_id", "user_sessions", "id").await;
 
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let ids: Vec<i64> = chenxing_auth::sqlx::query_scalar(

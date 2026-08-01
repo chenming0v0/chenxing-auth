@@ -1,18 +1,28 @@
 use std::time::Duration;
 
+use aes_gcm::{
+    Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
+};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use rand::RngCore;
 use redis::{AsyncCommands, Client};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use time::OffsetDateTime;
 
 use super::domain::Session;
 use crate::users::domain::UserId;
 
+const PAYLOAD_NONCE_LENGTH: usize = 12;
+
+type SessionMetadataRow = (i64, UserId, OffsetDateTime, OffsetDateTime, Option<Vec<u8>>);
 #[derive(Clone)]
 pub struct SessionStore {
-    client: Client,
-    key_prefix: String,
-    metadata: Option<crate::sqlx::PgPool>,
+    pub(super) client: Client,
+    pub(super) key_prefix: String,
+    pub(super) metadata: Option<crate::sqlx::PgPool>,
+    pub(super) encryption_key: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Error)]
@@ -21,8 +31,16 @@ pub enum SessionStoreError {
     Redis(#[from] redis::RedisError),
     #[error("session serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
+    #[error("session payload encryption failed")]
+    PayloadEncryption,
+    #[error("session payload decryption failed")]
+    PayloadDecryption,
+    #[error("session payload encoding failed")]
+    PayloadEncoding,
     #[error("session metadata is unavailable")]
     MetadataUnavailable,
+    #[error("session outbox record is invalid")]
+    InvalidOutbox,
     #[error("session user id is invalid")]
     InvalidUserId,
     #[error("database operation failed: {0}")]
@@ -35,14 +53,20 @@ impl SessionStore {
             client,
             key_prefix: "chenxing:session:".to_owned(),
             metadata: None,
+            encryption_key: None,
         }
     }
 
-    pub fn with_metadata(client: Client, metadata: crate::sqlx::PgPool) -> Self {
+    pub fn with_metadata_and_key(
+        client: Client,
+        metadata: crate::sqlx::PgPool,
+        encryption_key: [u8; 32],
+    ) -> Self {
         Self {
             client,
             key_prefix: "chenxing:session:".to_owned(),
             metadata: Some(metadata),
+            encryption_key: Some(encryption_key),
         }
     }
 
@@ -51,86 +75,96 @@ impl SessionStore {
         session: &mut Session,
         ttl: Duration,
     ) -> Result<(), SessionStoreError> {
-        serde_json::to_string(session)?;
-        let metadata_id = if let Some(pool) = &self.metadata {
-            let user_id = session
-                .user_id
-                .parse::<UserId>()
-                .map_err(|_| SessionStoreError::InvalidUserId)?;
-            let token_hash = Sha256::digest(session.token.as_bytes()).to_vec();
-            let id = crate::sqlx::query_scalar(
-                "INSERT INTO user_sessions (token_hash, user_id, created_at, expires_at)
-                 VALUES ($1, $2, $3, $4) RETURNING id",
-            )
-            .bind(&token_hash)
-            .bind(user_id)
-            .bind(session.created_at)
-            .bind(session.expires_at)
-            .fetch_one(pool)
-            .await?;
-            session.id = id;
-            Some(id)
-        } else {
-            None
-        };
-        let payload = match serde_json::to_string(session) {
-            Ok(payload) => payload,
-            Err(error) => {
-                self.delete_metadata(metadata_id).await;
-                return Err(error.into());
-            }
-        };
-        let mut connection = match self.client.get_multiplexed_async_connection().await {
-            Ok(connection) => connection,
-            Err(error) => {
-                self.delete_metadata(metadata_id).await;
-                return Err(error.into());
-            }
-        };
-        if let Err(error) = connection
-            .set_ex::<_, _, ()>(self.key(&session.token), payload, ttl.as_secs().max(1))
-            .await
-        {
-            self.delete_metadata(metadata_id).await;
-            return Err(error.into());
+        if self.metadata.is_none() {
+            let payload = serde_json::to_string(session)?;
+            let mut connection = self.client.get_multiplexed_async_connection().await?;
+            connection
+                .set_ex::<_, _, ()>(self.key(&session.token), payload, ttl.as_secs().max(1))
+                .await?;
+            return Ok(());
         }
+
+        let pool = self
+            .metadata
+            .as_ref()
+            .ok_or(SessionStoreError::MetadataUnavailable)?;
+        let user_id = session
+            .user_id
+            .parse::<UserId>()
+            .map_err(|_| SessionStoreError::InvalidUserId)?;
+        let token_hash = Sha256::digest(session.token.as_bytes()).to_vec();
+        let mut transaction = pool.begin().await?;
+        let id: i64 = crate::sqlx::query_scalar(
+            "INSERT INTO user_sessions
+                 (token_hash, user_id, created_at, expires_at, session_payload)
+             VALUES ($1, $2, $3, $4, NULL)
+             RETURNING id",
+        )
+        .bind(&token_hash)
+        .bind(user_id)
+        .bind(session.created_at)
+        .bind(session.expires_at)
+        .fetch_one(&mut *transaction)
+        .await?;
+        session.id = id;
+        let encrypted_payload = self.encrypt_payload(&serde_json::to_vec(session)?)?;
+        crate::sqlx::query("UPDATE user_sessions SET session_payload = $1 WHERE id = $2")
+            .bind(encrypted_payload)
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+        crate::sqlx::query(
+            "INSERT INTO session_outbox
+                 (operation, session_id, user_id, token_hash)
+             VALUES ('sync_session', $1, $2, $3)",
+        )
+        .bind(id)
+        .bind(user_id)
+        .bind(&token_hash)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
-    async fn delete_metadata(&self, id: Option<i64>) {
-        if let (Some(pool), Some(id)) = (&self.metadata, id) {
-            let _ = crate::sqlx::query("DELETE FROM user_sessions WHERE id = $1")
-                .bind(id)
-                .execute(pool)
-                .await;
-        }
-    }
-
     pub async fn find(&self, token: &str) -> Result<Option<Session>, SessionStoreError> {
+        if let Some(pool) = &self.metadata {
+            let token_hash = Sha256::digest(token.as_bytes()).to_vec();
+            let metadata: Option<SessionMetadataRow> = crate::sqlx::query_as(
+                "SELECT id, user_id, created_at, expires_at, session_payload
+                 FROM user_sessions
+                 WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > NOW()",
+            )
+            .bind(&token_hash)
+            .fetch_optional(pool)
+            .await?;
+            let Some((id, user_id, created_at, expires_at, payload)) = metadata else {
+                return Ok(None);
+            };
+            let mut session: Session = if let Some(payload) = payload {
+                serde_json::from_slice(&self.decrypt_payload(&payload)?)?
+            } else {
+                let mut connection = self.client.get_multiplexed_async_connection().await?;
+                let Some(payload): Option<String> = connection.get(self.key(token)).await? else {
+                    return Ok(None);
+                };
+                serde_json::from_str(&payload)?
+            };
+            session.id = id;
+            session.token = token.to_owned();
+            session.user_id = user_id.to_string();
+            session.created_at = created_at;
+            session.expires_at = expires_at;
+            session.revoked_at = None;
+            return Ok(Some(session));
+        }
+
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload: Option<String> = connection.get(self.key(token)).await?;
         let Some(payload) = payload else {
             return Ok(None);
         };
-        let mut session: Session = serde_json::from_str(&payload)?;
-        if let Some(pool) = &self.metadata {
-            let token_hash = Sha256::digest(token.as_bytes()).to_vec();
-            let metadata: Option<(i64, UserId, time::OffsetDateTime, time::OffsetDateTime)> =
-                crate::sqlx::query_as(
-                    "SELECT id, user_id, created_at, expires_at FROM user_sessions
-                 WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > NOW()",
-                )
-                .bind(token_hash)
-                .fetch_optional(pool)
-                .await?;
-            let Some((id, user_id, created_at, expires_at)) = metadata else {
-                return Ok(None);
-            };
-            session.id = id;
-            session.user_id = user_id.to_string();
-            session.created_at = created_at;
-            session.expires_at = expires_at;
-        }
+        let session: Session = serde_json::from_str(&payload)?;
         let marker: Option<String> = connection
             .get(self.revocation_key(&session.user_id))
             .await?;
@@ -144,13 +178,29 @@ impl SessionStore {
     }
 
     pub async fn revoke(&self, token: &str) -> Result<(), SessionStoreError> {
-        let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let _: usize = connection.del(self.key(token)).await?;
-        if let Some(pool) = &self.metadata {
-            let hash = Sha256::digest(token.as_bytes()).to_vec();
-            crate::sqlx::query("UPDATE user_sessions SET revoked_at = COALESCE(revoked_at, NOW()) WHERE token_hash = $1")
-                .bind(hash).execute(pool).await?;
-        }
+        let hash = Sha256::digest(token.as_bytes()).to_vec();
+        let Some(pool) = &self.metadata else {
+            let mut connection = self.client.get_multiplexed_async_connection().await?;
+            let _: usize = connection.del(self.key_hash(&hash)).await?;
+            return Ok(());
+        };
+        let mut transaction = pool.begin().await?;
+        crate::sqlx::query(
+            "UPDATE user_sessions
+             SET revoked_at = COALESCE(revoked_at, NOW())
+             WHERE token_hash = $1",
+        )
+        .bind(&hash)
+        .execute(&mut *transaction)
+        .await?;
+        crate::sqlx::query(
+            "INSERT INTO session_outbox (operation, token_hash)
+             VALUES ('revoke_session', $1)",
+        )
+        .bind(&hash)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -162,9 +212,15 @@ impl SessionStore {
             .metadata
             .as_ref()
             .ok_or(SessionStoreError::MetadataUnavailable)?;
-        let rows = crate::sqlx::query_as::<_, (i64, time::OffsetDateTime, time::OffsetDateTime)>(
-            "SELECT id, created_at, expires_at FROM user_sessions WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > NOW() ORDER BY created_at DESC")
-            .bind(user_id).fetch_all(pool).await?;
+        let rows = crate::sqlx::query_as::<_, (i64, OffsetDateTime, OffsetDateTime)>(
+            "SELECT id, created_at, expires_at
+             FROM user_sessions
+             WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > NOW()
+             ORDER BY created_at DESC",
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
         Ok(rows
             .into_iter()
             .map(|(id, created_at, expires_at)| SessionSummary {
@@ -184,19 +240,35 @@ impl SessionStore {
             .metadata
             .as_ref()
             .ok_or(SessionStoreError::MetadataUnavailable)?;
-        let found: Option<(Vec<u8>,)> = crate::sqlx::query_as("SELECT token_hash FROM user_sessions WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > NOW()")
-            .bind(session_id).bind(user_id).fetch_optional(pool).await?;
-        let Some((hash,)) = found else {
-            return Ok(false);
-        };
-        let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let _: usize = connection.del(self.key_hash(&hash)).await?;
-        crate::sqlx::query(
-            "UPDATE user_sessions SET revoked_at = COALESCE(revoked_at, NOW()) WHERE id = $1",
+        let mut transaction = pool.begin().await?;
+        let found: Option<(Vec<u8>,)> = crate::sqlx::query_as(
+            "SELECT token_hash
+             FROM user_sessions
+             WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > NOW()
+             FOR UPDATE",
         )
         .bind(session_id)
-        .execute(pool)
+        .bind(user_id)
+        .fetch_optional(&mut *transaction)
         .await?;
+        let Some((hash,)) = found else {
+            transaction.rollback().await?;
+            return Ok(false);
+        };
+        crate::sqlx::query("UPDATE user_sessions SET revoked_at = NOW() WHERE id = $1")
+            .bind(session_id)
+            .execute(&mut *transaction)
+            .await?;
+        crate::sqlx::query(
+            "INSERT INTO session_outbox (operation, session_id, user_id, token_hash)
+             VALUES ('revoke_session', $1, $2, $3)",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .bind(&hash)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
         Ok(true)
     }
 
@@ -205,33 +277,83 @@ impl SessionStore {
             .metadata
             .as_ref()
             .ok_or(SessionStoreError::MetadataUnavailable)?;
-        let hashes: Vec<(Vec<u8>,)> = crate::sqlx::query_as("SELECT token_hash FROM user_sessions WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > NOW()")
-            .bind(user_id).fetch_all(pool).await?;
-        let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let keys = hashes
-            .iter()
-            .map(|(hash,)| self.key_hash(hash))
-            .collect::<Vec<_>>();
-        if !keys.is_empty() {
-            let _: usize = connection.del(keys).await?;
-        }
-        let before = time::OffsetDateTime::now_utc()
-            .unix_timestamp_nanos()
-            .to_string();
-        let _: () = connection
-            .set(self.revocation_key(&user_id.to_string()), before)
-            .await?;
-        crate::sqlx::query("UPDATE user_sessions SET revoked_at = COALESCE(revoked_at, NOW()) WHERE user_id = $1 AND revoked_at IS NULL").bind(user_id).execute(pool).await?;
+        let revoked_before = OffsetDateTime::now_utc();
+        let mut transaction = pool.begin().await?;
+        crate::sqlx::query(
+            "UPDATE user_sessions
+             SET revoked_at = COALESCE(revoked_at, $2)
+             WHERE user_id = $1 AND revoked_at IS NULL",
+        )
+        .bind(user_id)
+        .bind(revoked_before)
+        .execute(&mut *transaction)
+        .await?;
+        crate::sqlx::query(
+            "INSERT INTO session_outbox (operation, session_id, user_id, token_hash)
+             SELECT 'revoke_session', id, user_id, token_hash
+             FROM user_sessions
+             WHERE user_id = $1 AND revoked_at = $2",
+        )
+        .bind(user_id)
+        .bind(revoked_before)
+        .execute(&mut *transaction)
+        .await?;
+        crate::sqlx::query(
+            "INSERT INTO session_outbox (operation, user_id, created_at)
+             VALUES ('revoke_user', $1, $2)",
+        )
+        .bind(user_id)
+        .bind(revoked_before)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
         Ok(())
+    }
+
+    fn encrypt_payload(&self, payload: &[u8]) -> Result<Vec<u8>, SessionStoreError> {
+        let key = self
+            .encryption_key
+            .as_ref()
+            .ok_or(SessionStoreError::MetadataUnavailable)?;
+        let cipher =
+            Aes256Gcm::new_from_slice(key).map_err(|_| SessionStoreError::PayloadEncryption)?;
+        let mut nonce_bytes = [0_u8; PAYLOAD_NONCE_LENGTH];
+        rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce_bytes), payload)
+            .map_err(|_| SessionStoreError::PayloadEncryption)?;
+        let mut encrypted = nonce_bytes.to_vec();
+        encrypted.extend(ciphertext);
+        Ok(encrypted)
+    }
+
+    pub(super) fn decrypt_payload(&self, encrypted: &[u8]) -> Result<Vec<u8>, SessionStoreError> {
+        if encrypted.len() <= PAYLOAD_NONCE_LENGTH {
+            return Err(SessionStoreError::PayloadDecryption);
+        }
+        let key = self
+            .encryption_key
+            .as_ref()
+            .ok_or(SessionStoreError::MetadataUnavailable)?;
+        let cipher =
+            Aes256Gcm::new_from_slice(key).map_err(|_| SessionStoreError::PayloadDecryption)?;
+        cipher
+            .decrypt(
+                Nonce::from_slice(&encrypted[..PAYLOAD_NONCE_LENGTH]),
+                &encrypted[PAYLOAD_NONCE_LENGTH..],
+            )
+            .map_err(|_| SessionStoreError::PayloadDecryption)
     }
 
     fn key(&self, token: &str) -> String {
         self.key_hash(&Sha256::digest(token.as_bytes()))
     }
-    fn key_hash(&self, hash: &[u8]) -> String {
+
+    pub(super) fn key_hash(&self, hash: &[u8]) -> String {
         format!("{}{}", self.key_prefix, URL_SAFE_NO_PAD.encode(hash))
     }
-    fn revocation_key(&self, user_id: &str) -> String {
+
+    pub(super) fn revocation_key(&self, user_id: &str) -> String {
         format!("{}revoked-before:{user_id}", self.key_prefix)
     }
 }
@@ -239,6 +361,6 @@ impl SessionStore {
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
     pub id: i64,
-    pub created_at: time::OffsetDateTime,
-    pub expires_at: time::OffsetDateTime,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
 }

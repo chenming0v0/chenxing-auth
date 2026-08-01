@@ -63,7 +63,7 @@ async fn session_revoke_audit_uses_internal_id_without_storing_the_cookie_token(
     .expect("insert audit test user");
 
     let redis = redis::Client::open(redis_url.as_str()).expect("Redis");
-    let sessions = SessionStore::with_metadata(redis, database.clone());
+    let sessions = SessionStore::with_metadata_and_key(redis, database.clone(), [0; 32]);
     let mut session =
         Session::new(user.id.to_string(), std::time::Duration::from_secs(60)).expect("session");
     sessions
