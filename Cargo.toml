@@ -41,3 +41,6 @@ qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 [dev-dependencies]
 serial_test = "3"
 tower = { version = "0.5", features = ["util"] }
+
+[build-dependencies]
+sha2 = "0.10"
