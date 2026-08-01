@@ -1,6 +1,9 @@
 use axum::{
     Json,
-    http::StatusCode,
+    http::{
+        HeaderValue, StatusCode,
+        header::{CACHE_CONTROL, PRAGMA},
+    },
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
@@ -25,6 +28,29 @@ struct TokenResponse {
 }
 
 pub async fn issue_token_response(
+    state: &AppState,
+    user_id: &str,
+    client_id: &str,
+    scopes: &[String],
+    refresh_token: Option<String>,
+    nonce: Option<&str>,
+) -> Response {
+    with_no_store_headers(
+        issue_token_response_inner(state, user_id, client_id, scopes, refresh_token, nonce).await,
+    )
+}
+
+pub fn with_no_store_headers(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert(PRAGMA, HeaderValue::from_static("no-cache"));
+    response
+}
+
+async fn issue_token_response_inner(
     state: &AppState,
     user_id: &str,
     client_id: &str,
