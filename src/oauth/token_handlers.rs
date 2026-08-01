@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use super::{
     client_auth::{ClientCredentialError, resolve_client_credentials},
-    code::AuthorizationCode,
+    code::{AUTHORIZATION_CODE_TTL_SECONDS, AuthorizationCode},
     pkce::verify_s256,
     refresh::RefreshToken,
     response::issue_token_response,
@@ -120,17 +120,51 @@ async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> 
     );
     if let Err(store_error) = state.refresh_tokens.save(&refresh).await {
         tracing::error!(error = %store_error, "failed to store refresh token");
+        compensate_authorization_code_exchange(&state, &code, &refresh.value).await;
         return error::internal();
     }
-    issue_token_response(
+    let response = issue_token_response(
         &state,
         &code.user_id,
         client_id,
         &code.scopes,
-        Some(refresh.value),
+        Some(refresh.value.clone()),
         code.nonce.as_deref(),
     )
-    .await
+    .await;
+    if response.status() != StatusCode::OK {
+        compensate_authorization_code_exchange(&state, &code, &refresh.value).await;
+    }
+    response
+}
+
+async fn compensate_authorization_code_exchange(
+    state: &AppState,
+    code: &AuthorizationCode,
+    refresh_value: &str,
+) {
+    if let Err(store_error) = state.refresh_tokens.remove(refresh_value).await {
+        tracing::warn!(
+            error = %store_error,
+            "failed to remove refresh token during OAuth authorization code compensation"
+        );
+    }
+    let ttl_seconds = authorization_code_restore_ttl(code);
+    if let Err(store_error) = state.authorization_codes.restore(code, ttl_seconds).await {
+        tracing::warn!(
+            error = %store_error,
+            "failed to restore OAuth authorization code after token exchange failure"
+        );
+    }
+}
+
+fn authorization_code_restore_ttl(code: &AuthorizationCode) -> u64 {
+    let remaining_seconds = (code.expires_at - time::OffsetDateTime::now_utc()).whole_seconds();
+    if remaining_seconds > 0 {
+        u64::try_from(remaining_seconds).unwrap_or(AUTHORIZATION_CODE_TTL_SECONDS)
+    } else {
+        1
+    }
 }
 
 async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Response {

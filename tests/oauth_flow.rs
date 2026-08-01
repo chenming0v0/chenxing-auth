@@ -19,6 +19,7 @@ use chenxing_auth::{
     sessions::domain::Session,
     state::AppState,
 };
+use redis::AsyncCommands;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use totp_rs::TOTP;
@@ -64,6 +65,31 @@ async fn json_body(response: axum::response::Response) -> Value {
         .await
         .expect("response body");
     serde_json::from_slice(&body).expect("JSON response")
+}
+
+async fn refresh_token_count_for_client(state: &AppState, client_id: &str) -> usize {
+    let mut connection = state
+        .redis
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg("chenxing:oauth:refresh:*")
+        .query_async(&mut connection)
+        .await
+        .expect("refresh token keys");
+    let mut count = 0;
+    for key in keys {
+        let payload: Option<String> = connection.get(key).await.expect("refresh token payload");
+        if payload
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<RefreshToken>(value).ok())
+            .is_some_and(|refresh| refresh.client_id == client_id)
+        {
+            count += 1;
+        }
+    }
+    count
 }
 
 fn cookie_header(response: &axum::response::Response) -> String {
@@ -523,6 +549,109 @@ async fn refresh_token_remains_reusable_when_access_token_issuance_fails() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let duplicate = json_body(response).await;
     assert_eq!(duplicate["code"].as_str(), Some("invalid_grant"));
+
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
+        .bind(client_id)
+        .execute(&database)
+        .await
+        .expect("cleanup client");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn authorization_code_is_restored_when_token_issuance_fails() {
+    let (mut state, database, key_directory) = test_state().await;
+    let setup_router = api::router(state.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    ensure_owner_bootstrapped(&setup_router, &suffix).await;
+    let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
+    let (client_id, client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
+    let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let code = AuthorizationCode::new_with_nonce(
+        client_id.clone(),
+        "https://restore.example/callback".to_owned(),
+        user_id.to_string(),
+        vec!["openid".to_owned(), "profile".to_owned()],
+        challenge,
+        Some("restore-nonce".to_owned()),
+    );
+    state
+        .authorization_codes
+        .save(&code)
+        .await
+        .expect("save authorization code");
+    let basic = STANDARD.encode(format!("{client_id}:{client_secret}"));
+
+    state.config.session_ttl_seconds = u64::MAX;
+    let failing_router = api::router(state.clone());
+    let response = failing_router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Frestore.example%2Fcallback&code_verifier={verifier}",
+                    code.value
+                )))
+                .expect("failed code exchange request"),
+        )
+        .await
+        .expect("failed code exchange response");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        state
+            .authorization_codes
+            .find(&code.value)
+            .await
+            .expect("find restored authorization code")
+            .is_some(),
+        "token issuance failure must restore the consumed authorization code"
+    );
+    assert_eq!(
+        refresh_token_count_for_client(&state, &client_id).await,
+        0,
+        "token issuance failure must not leave an orphan refresh token"
+    );
+
+    state.config.session_ttl_seconds = 3600;
+    let retry_router = api::router(state.clone());
+    let response = retry_router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Frestore.example%2Fcallback&code_verifier={verifier}",
+                    code.value
+                )))
+                .expect("retry code exchange request"),
+        )
+        .await
+        .expect("retry code exchange response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let token = json_body(response).await;
+    assert!(token["access_token"].as_str().is_some());
+    assert!(token["refresh_token"].as_str().is_some());
+    assert_eq!(refresh_token_count_for_client(&state, &client_id).await, 1);
+    assert!(
+        state
+            .authorization_codes
+            .find(&code.value)
+            .await
+            .expect("find consumed authorization code")
+            .is_none(),
+        "successfully retried authorization code must remain consumed"
+    );
 
     chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
         .bind(client_id)

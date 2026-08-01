@@ -386,6 +386,20 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
             .expect("take missing code")
             .is_none()
     );
+    codes
+        .restore(&code, 60)
+        .await
+        .expect("restore authorization code");
+    assert_eq!(
+        codes
+            .find(&code.value)
+            .await
+            .expect("find restored code")
+            .expect("restored authorization code")
+            .value,
+        code.value
+    );
+    codes.take(&code.value).await.expect("remove restored code");
 
     let refreshes = RefreshTokenStore::new(client);
     let refresh = RefreshToken::new(
