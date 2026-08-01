@@ -403,7 +403,6 @@ async fn refresh_token_count_for_client(state: &AppState, client_id: &str) -> us
     count
 }
 
-
 #[tokio::test]
 async fn authorization_code_is_restored_when_token_issuance_fails() {
     let (mut state, database, key_directory) = test_state().await;
@@ -506,4 +505,3 @@ async fn authorization_code_is_restored_when_token_issuance_fails() {
         .expect("cleanup user");
     let _ = std::fs::remove_dir_all(key_directory);
 }
-
