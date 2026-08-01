@@ -90,6 +90,39 @@ jobs:
       # webauthn-rs -> crypto-glue for WebAuthn RSA public-key verification;
       # this application does not use that dependency for RSA private-key
       # decryption/signing. Remove this exception when upstream ships a fix.
+      - name: Report cargo-audit exception status
+        shell: bash
+        run: |
+          set -euo pipefail
+          advisory_id="RUSTSEC-2023-0071"
+          rsa_version="$(awk '
+            $0 == "name = \"rsa\"" { in_rsa = 1; next }
+            in_rsa && /^version = / {
+              gsub(/"/, "", $3)
+              print $3
+              exit
+            }
+            in_rsa && /^name = / { exit 1 }
+          ' Cargo.lock)"
+
+          if [[ -z "$rsa_version" ]]; then
+            printf 'Unable to determine the locked rsa version from Cargo.lock.\n' >&2
+            exit 1
+          fi
+
+          {
+            printf '## cargo-audit exception status\n\n'
+            printf -- '- Advisory: `%s`\n' "$advisory_id"
+            printf -- '- Locked `rsa` version: `%s`\n' "$rsa_version"
+            printf -- '- Dependency chain: `webauthn-rs -> crypto-glue -> rsa`\n'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+          if [[ ! "$rsa_version" =~ ^0\.9\.[0-9]+$ ]]; then
+            printf 'rsa version %s is outside the expected 0.9.x range. 重新评估 RUSTSEC-2023-0071 ignore 是否可以移除。\n' "$rsa_version" >&2
+            exit 1
+          fi
+
+          printf -- '- Status: exception remains active because `rsa` is still on the 0.9.x line.\n' | tee -a "$GITHUB_STEP_SUMMARY"
       - run: cargo audit --ignore RUSTSEC-2023-0071
 
   coverage:
