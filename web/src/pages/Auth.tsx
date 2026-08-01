@@ -6,6 +6,7 @@ import { TotpSetupPanel } from "../components/TotpSetupPanel";
 import { BRAND } from "../data/constants";
 import { api, errorMessage, ExternalProvider, TotpSetupResponse } from "../api";
 import { LoginResult, useStore } from "../store";
+import { protocolUrl } from "../utils/endpoints";
 
 /** Carries request_id through login/register so an interrupted OAuth flow can resume. */
 function requestQuery(requestId: string | null) {
@@ -43,7 +44,7 @@ function ExternalLogins({ requestId }: { requestId: string | null }) {
         {providers.map((provider) => (
           <a
             key={provider.slug}
-            href={`/auth/external/${encodeURIComponent(provider.slug)}${requestQuery(requestId)}`}
+            href={protocolUrl(`/auth/external/${encodeURIComponent(provider.slug)}${requestQuery(requestId)}`)}
             className="flex w-full items-center justify-center gap-2 rounded-lg border border-hairline bg-white/[0.03] px-4 py-2.5 text-sm font-medium text-slate-300 transition-colors hover:border-slate-600 hover:bg-white/[0.06] hover:text-white"
           >
             <KeyRound size={15} /> 使用 {provider.name} 登录

@@ -7,6 +7,7 @@ import { CodeSample, CopyField } from "../../components/CopyField";
 import { SCOPES } from "../../data/constants";
 import { useStore } from "../../store";
 import { cn } from "../../utils/cn";
+import { protocolUrl } from "../../utils/endpoints";
 
 const PKCE_PREFIX = "chenxing:pkce:";
 
@@ -86,7 +87,7 @@ export default function Playground() {
         code_challenge_method: "S256",
       });
       setBuilt({
-        url: `${window.location.origin}/oauth/authorize?${query.toString()}`,
+        url: protocolUrl(`/oauth/authorize?${query.toString()}`),
         state,
         verifier,
         challenge,
