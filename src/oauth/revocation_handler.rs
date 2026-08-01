@@ -55,6 +55,13 @@ pub async fn revoke(
         return error::bad_request("invalid_request", "token is required");
     }
 
+    if !matches!(
+        request.token_type_hint.as_deref(),
+        None | Some("access_token") | Some("refresh_token")
+    ) {
+        return error::bad_request("unsupported_token_type", "token type hint is unsupported");
+    }
+
     let hint = request.token_type_hint.as_deref();
     if matches!(hint, Some("refresh_token") | None) {
         match state.refresh_tokens.find(&request.token).await {
