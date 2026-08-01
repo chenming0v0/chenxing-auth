@@ -1,5 +1,5 @@
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ::redis::{AsyncCommands, Client, Script};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 

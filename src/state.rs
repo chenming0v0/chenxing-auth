@@ -5,8 +5,8 @@ use redis::Client;
 use crate::{
     admin::AdminAuthenticator,
     audit::AuditService,
-    auth_limiter::{AuthFailureLimiter, RedisAuthFailureLimiter},
     auth_factors::service::AuthFactorService,
+    auth_limiter::{AuthFailureLimiter, RedisAuthFailureLimiter},
     clients::service::ClientService,
     config::Config,
     consents::ConsentService,

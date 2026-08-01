@@ -143,20 +143,28 @@ impl UserService {
         let Some(credentials) =
             repository::find_credentials_by_identifier(&self.pool, &login.identifier).await?
         else {
-            self.record_failure(&login.identifier, source_ip).await?;
+            self.record_failure(&login.identifier, source_ip).await;
             return Err(UserServiceError::InvalidCredentials);
         };
         if credentials.status != "active"
             || !credentials.password_login_enabled
             || !verify_password(&login.password, &credentials.password_hash)
         {
-            self.record_failure(&login.identifier, source_ip).await?;
+            self.record_failure(&login.identifier, source_ip).await;
             return Err(UserServiceError::InvalidCredentials);
         }
 
-        self.limiter
+        if let Err(error) = self
+            .limiter
             .clear(FailureDimension::Account, &login.identifier)
-            .await?;
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                dimension = FailureDimension::Account.as_str(),
+                "authentication limiter unavailable; login succeeded without clearing failures"
+            );
+        }
         Ok(credentials.id)
     }
 
@@ -165,24 +173,44 @@ impl UserService {
         dimension: FailureDimension,
         value: &str,
     ) -> Result<(), UserServiceError> {
-        if self.limiter.is_limited(dimension, value).await? {
-            return Err(UserServiceError::RateLimited);
+        match self.limiter.is_limited(dimension, value).await {
+            Ok(true) => Err(UserServiceError::RateLimited),
+            Ok(false) => Ok(()),
+            Err(error) => {
+                // The limiter is an abuse-control aid; Redis outage must not deny valid logins.
+                tracing::warn!(
+                    error = %error,
+                    dimension = dimension.as_str(),
+                    "authentication limiter unavailable; allowing authentication attempt"
+                );
+                Ok(())
+            }
         }
-        Ok(())
     }
 
-    async fn record_failure(
-        &self,
-        identifier: &str,
-        source_ip: &str,
-    ) -> Result<(), UserServiceError> {
-        self.limiter
+    async fn record_failure(&self, identifier: &str, source_ip: &str) {
+        if let Err(error) = self
+            .limiter
             .record_failure(FailureDimension::Account, identifier)
-            .await?;
-        self.limiter
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                dimension = FailureDimension::Account.as_str(),
+                "authentication limiter unavailable; account failure was not recorded"
+            );
+        }
+        if let Err(error) = self
+            .limiter
             .record_failure(FailureDimension::SourceIp, source_ip)
-            .await?;
-        Ok(())
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                dimension = FailureDimension::SourceIp.as_str(),
+                "authentication limiter unavailable; source IP failure was not recorded"
+            );
+        }
     }
 
     pub async fn find_profile(
@@ -280,8 +308,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::auth_limiter::{AuthFailureLimiter, FailureDimension};
     use crate::auth_limiter::domain::LimiterFuture;
+    use crate::auth_limiter::{AuthFailureLimiter, FailureDimension};
 
     struct AlwaysLimited;
 

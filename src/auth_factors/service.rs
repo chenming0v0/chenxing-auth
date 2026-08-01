@@ -141,19 +141,27 @@ impl AuthFactorService {
             .await?;
         let Some(encrypted_secret) = repository::find_totp_secret(&self.pool, user_id).await?
         else {
-            self.record_totp_failure(identifier, source_ip).await?;
+            self.record_totp_failure(identifier, source_ip).await;
             return Ok(false);
         };
         let mut secret = decrypt_totp_secret(self.encryption_key.as_bytes(), &encrypted_secret)?;
         let valid = verify_totp_code_current(&secret, code);
         secret.fill(0);
         if !valid {
-            self.record_totp_failure(identifier, source_ip).await?;
+            self.record_totp_failure(identifier, source_ip).await;
             return Ok(false);
         }
-        self.limiter
+        if let Err(error) = self
+            .limiter
             .clear(FailureDimension::Account, identifier)
-            .await?;
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                dimension = FailureDimension::Account.as_str(),
+                "authentication limiter unavailable; TOTP success did not clear account failures"
+            );
+        }
         Ok(true)
     }
 
@@ -221,10 +229,7 @@ impl AuthFactorService {
         else {
             return Ok(TotpConfirmation::InvalidTicket);
         };
-        if self
-            .ensure_ticket_allowed(ticket_id, source_ip)
-            .await?
-        {
+        if self.ensure_ticket_allowed(ticket_id, source_ip).await {
             self.invalidate_ticket(ticket_id).await?;
             return Ok(TotpConfirmation::RateLimited);
         }
@@ -233,7 +238,7 @@ impl AuthFactorService {
         let valid = verify_totp_code_current(&secret, code);
         secret.fill(0);
         if !valid {
-            if self.record_ticket_failure(ticket_id, source_ip).await? {
+            if self.record_ticket_failure(ticket_id, source_ip).await {
                 self.invalidate_ticket(ticket_id).await?;
                 return Ok(TotpConfirmation::RateLimited);
             }
@@ -249,9 +254,17 @@ impl AuthFactorService {
         self.tickets
             .delete(&Self::totp_setup_key(ticket_id))
             .await?;
-        self.limiter
+        if let Err(error) = self
+            .limiter
             .clear(FailureDimension::Ticket, ticket_id)
-            .await?;
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                dimension = FailureDimension::Ticket.as_str(),
+                "authentication limiter unavailable; TOTP setup success did not clear ticket failures"
+            );
+        }
         Ok(confirmation)
     }
 
@@ -269,17 +282,14 @@ impl AuthFactorService {
         {
             return Ok(TotpConfirmation::InvalidTicket);
         }
-        if self
-            .ensure_ticket_allowed(ticket_id, source_ip)
-            .await?
-        {
+        if self.ensure_ticket_allowed(ticket_id, source_ip).await {
             self.invalidate_ticket(ticket_id).await?;
             return Ok(TotpConfirmation::RateLimited);
         }
         let Some(encrypted_secret) =
             repository::find_totp_secret(&self.pool, ticket.user_id).await?
         else {
-            if self.record_ticket_failure(ticket_id, source_ip).await? {
+            if self.record_ticket_failure(ticket_id, source_ip).await {
                 self.invalidate_ticket(ticket_id).await?;
                 return Ok(TotpConfirmation::RateLimited);
             }
@@ -289,7 +299,7 @@ impl AuthFactorService {
         let valid = verify_totp_code_current(&secret, code);
         secret.fill(0);
         if !valid {
-            if self.record_ticket_failure(ticket_id, source_ip).await? {
+            if self.record_ticket_failure(ticket_id, source_ip).await {
                 self.invalidate_ticket(ticket_id).await?;
                 return Ok(TotpConfirmation::RateLimited);
             }
@@ -298,9 +308,17 @@ impl AuthFactorService {
         if self.tickets.take(ticket_id).await?.is_none() {
             return Ok(TotpConfirmation::InvalidTicket);
         }
-        self.limiter
+        if let Err(error) = self
+            .limiter
             .clear(FailureDimension::Ticket, ticket_id)
-            .await?;
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                dimension = FailureDimension::Ticket.as_str(),
+                "authentication limiter unavailable; TOTP success did not clear ticket failures"
+            );
+        }
         Ok(TotpConfirmation::Completed(ticket.user_id))
     }
 
@@ -309,54 +327,68 @@ impl AuthFactorService {
         dimension: FailureDimension,
         value: &str,
     ) -> Result<(), AuthFactorServiceError> {
-        if self.limiter.is_limited(dimension, value).await? {
-            return Err(AuthFactorServiceError::RateLimited);
+        match self.limiter.is_limited(dimension, value).await {
+            Ok(true) => Err(AuthFactorServiceError::RateLimited),
+            Ok(false) => Ok(()),
+            Err(error) => {
+                // The limiter is an abuse-control aid; Redis outage must not deny valid logins.
+                tracing::warn!(
+                    error = %error,
+                    dimension = dimension.as_str(),
+                    "authentication limiter unavailable; allowing TOTP attempt"
+                );
+                Ok(())
+            }
         }
-        Ok(())
     }
 
-    async fn ensure_ticket_allowed(
-        &self,
-        ticket_id: &str,
-        source_ip: &str,
-    ) -> Result<bool, AuthFactorServiceError> {
-        Ok(self
-            .limiter
-            .is_limited(FailureDimension::Ticket, ticket_id)
-            .await?
-            || self
-                .limiter
-                .is_limited(FailureDimension::SourceIp, source_ip)
-                .await?)
+    async fn ensure_ticket_allowed(&self, ticket_id: &str, source_ip: &str) -> bool {
+        self.is_limited(FailureDimension::Ticket, ticket_id).await
+            || self.is_limited(FailureDimension::SourceIp, source_ip).await
     }
 
-    async fn record_ticket_failure(
-        &self,
-        ticket_id: &str,
-        source_ip: &str,
-    ) -> Result<bool, AuthFactorServiceError> {
+    async fn record_ticket_failure(&self, ticket_id: &str, source_ip: &str) -> bool {
         let reached = self
-            .limiter
-            .record_failure(FailureDimension::Ticket, ticket_id)
-            .await?;
-        self.limiter
-            .record_failure(FailureDimension::SourceIp, source_ip)
-            .await?;
-        Ok(reached)
+            .record_limiter_failure(FailureDimension::Ticket, ticket_id)
+            .await;
+        self.record_limiter_failure(FailureDimension::SourceIp, source_ip)
+            .await;
+        reached
     }
 
-    async fn record_totp_failure(
-        &self,
-        identifier: &str,
-        source_ip: &str,
-    ) -> Result<(), AuthFactorServiceError> {
-        self.limiter
-            .record_failure(FailureDimension::Account, identifier)
-            .await?;
-        self.limiter
-            .record_failure(FailureDimension::SourceIp, source_ip)
-            .await?;
-        Ok(())
+    async fn record_totp_failure(&self, identifier: &str, source_ip: &str) {
+        self.record_limiter_failure(FailureDimension::Account, identifier)
+            .await;
+        self.record_limiter_failure(FailureDimension::SourceIp, source_ip)
+            .await;
+    }
+
+    async fn is_limited(&self, dimension: FailureDimension, value: &str) -> bool {
+        match self.limiter.is_limited(dimension, value).await {
+            Ok(limited) => limited,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    dimension = dimension.as_str(),
+                    "authentication limiter unavailable; allowing TOTP attempt"
+                );
+                false
+            }
+        }
+    }
+
+    async fn record_limiter_failure(&self, dimension: FailureDimension, value: &str) -> bool {
+        match self.limiter.record_failure(dimension, value).await {
+            Ok(reached) => reached,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    dimension = dimension.as_str(),
+                    "authentication limiter unavailable; TOTP failure was not recorded"
+                );
+                false
+            }
+        }
     }
 
     async fn invalidate_ticket(&self, ticket_id: &str) -> Result<(), AuthFactorServiceError> {
@@ -370,5 +402,4 @@ impl AuthFactorService {
     fn totp_setup_key(ticket_id: &str) -> String {
         format!("{TOTP_SETUP_PREFIX}{ticket_id}")
     }
-
 }

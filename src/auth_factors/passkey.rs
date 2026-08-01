@@ -5,9 +5,7 @@ use webauthn_rs::prelude::{
     RequestChallengeResponse,
 };
 
-use super::{
-    AuthFactorService, AuthFactorServiceError, PasskeyConfirmation,
-};
+use super::{AuthFactorService, AuthFactorServiceError, PasskeyConfirmation};
 use crate::auth_factors::{
     domain::{FactorMethod, LoginTicket},
     persistence::persist_then_consume,

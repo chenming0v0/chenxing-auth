@@ -29,8 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     session_outbox_worker.abort();
 
     Ok(())

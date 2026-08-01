@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, Extension, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -90,6 +90,17 @@ pub async fn register_user(
             tracing::error!("invalid credentials reached registration handler");
             error::internal()
         }
+        Err(UserServiceError::RateLimited) => error::unauthorized(
+            "invalid_credentials",
+            "username, email, or password is incorrect",
+        ),
+        Err(UserServiceError::Limiter(limiter_error)) => {
+            tracing::warn!(
+                error = %limiter_error,
+                "authentication limiter unavailable during registration"
+            );
+            error::internal()
+        }
         Err(UserServiceError::LastOwnerRequired) => error::internal(),
         Err(UserServiceError::OwnerBootstrapRequired) => error::conflict(
             "owner_bootstrap_required",
@@ -100,12 +111,12 @@ pub async fn register_user(
 
 pub async fn login_user(
     State(state): State<AppState>,
-    connect_info: Option<ConnectInfo<SocketAddr>>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     Json(input): Json<LoginInput>,
 ) -> Response {
     let totp_code = input.totp_code.clone();
     let identifier = input.identifier.trim().to_ascii_lowercase();
-    let source_ip = crate::api::source_ip(connect_info.map(|ConnectInfo(peer)| peer));
+    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
     let user_id = match state.users.authenticate(input, &source_ip).await {
         Ok(user_id) => user_id,
         Err(UserServiceError::InvalidCredentials) => {
@@ -119,6 +130,13 @@ pub async fn login_user(
                 "invalid_credentials",
                 "username, email, or password is incorrect",
             );
+        }
+        Err(UserServiceError::Limiter(limiter_error)) => {
+            tracing::warn!(
+                error = %limiter_error,
+                "authentication limiter unavailable during login"
+            );
+            return error::internal();
         }
         Err(UserServiceError::Database(database_error)) => {
             tracing::error!(error = %database_error, "failed to authenticate user");
@@ -150,10 +168,7 @@ pub async fn login_user(
         {
             Ok(valid) => valid,
             Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
-                return error::unauthorized(
-                    "invalid_factor",
-                    "authentication factor is invalid",
-                );
+                return error::unauthorized("invalid_factor", "authentication factor is invalid");
             }
             Err(factor_error) => {
                 tracing::error!(error = %factor_error, "failed to verify TOTP");

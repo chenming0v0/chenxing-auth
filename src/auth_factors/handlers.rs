@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, Extension, State},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -101,10 +101,10 @@ pub async fn start_totp_setup(
 
 pub async fn confirm_totp_setup(
     State(state): State<AppState>,
-    connect_info: Option<ConnectInfo<SocketAddr>>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     Json(input): Json<TotpConfirmInput>,
 ) -> Response {
-    let source_ip = crate::api::source_ip(connect_info.map(|ConnectInfo(peer)| peer));
+    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
     match state
         .factors
         .confirm_totp_enrollment(&input.login_ticket, &source_ip, &input.code)
@@ -131,10 +131,10 @@ pub async fn confirm_totp_setup(
 
 pub async fn login_totp(
     State(state): State<AppState>,
-    connect_info: Option<ConnectInfo<SocketAddr>>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     Json(input): Json<TotpLoginInput>,
 ) -> Response {
-    let source_ip = crate::api::source_ip(connect_info.map(|ConnectInfo(peer)| peer));
+    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
     match state
         .factors
         .confirm_totp_enrollment(&input.login_ticket, &source_ip, &input.code)
