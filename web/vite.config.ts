@@ -7,6 +7,7 @@ import { viteSingleFile } from "vite-plugin-singlefile";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const backendOrigin = "http://127.0.0.1:3000";
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -20,8 +21,15 @@ export default defineConfig({
     port: 5175,
     strictPort: true,
     proxy: {
-      "/api": "http://127.0.0.1:3000",
-      "/health": "http://127.0.0.1:3000",
+      "/api": backendOrigin,
+      "/health": backendOrigin,
+      "/.well-known": backendOrigin,
+      // Exact OAuth protocol paths only; /oauth/consent stays on Vite's SPA fallback.
+      "/oauth/authorize": backendOrigin,
+      "/oauth/token": backendOrigin,
+      "/oauth/revoke": backendOrigin,
+      "/oauth/userinfo": backendOrigin,
+      "/auth/external": backendOrigin,
     },
   },
 });
