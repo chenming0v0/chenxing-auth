@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-use url::Url;
+use url::{Host, Url};
 
 const MAX_NAME_LENGTH: usize = 128;
 const MAX_SLUG_LENGTH: usize = 64;
@@ -251,15 +251,36 @@ fn claim_string(claims: &Value, path: &str) -> Option<String> {
 
 fn validate_endpoint(value: &str) -> Result<Url, ProviderValidationError> {
     let url = Url::parse(value.trim()).map_err(|_| ProviderValidationError::InvalidEndpoint)?;
+    validate_endpoint_url(&url)?;
+    Ok(url)
+}
+
+pub fn validate_endpoint_url(url: &Url) -> Result<(), ProviderValidationError> {
+    let host = url.host_str();
+    let allowed_scheme = match url.scheme() {
+        "https" => true,
+        "http" => is_loopback_host(url),
+        _ => false,
+    };
     if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
+        || host.is_none()
+        || !allowed_scheme
         || !url.username().is_empty()
         || url.password().is_some()
         || url.fragment().is_some()
     {
         return Err(ProviderValidationError::InvalidEndpoint);
     }
-    Ok(url)
+    Ok(())
+}
+
+fn is_loopback_host(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    }
 }
 
 fn normalize_scopes(scopes: Vec<String>) -> Result<Vec<String>, ProviderValidationError> {

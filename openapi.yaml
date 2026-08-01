@@ -1489,9 +1489,18 @@ components:
       properties:
         name: { type: string, maxLength: 128 }
         slug: { type: string, pattern: '^[a-z0-9_-]+$', maxLength: 64 }
-        authorization_endpoint: { type: string, format: uri }
-        token_endpoint: { type: string, format: uri }
-        userinfo_endpoint: { type: string, format: uri }
+        authorization_endpoint:
+          type: string
+          format: uri
+          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+        token_endpoint:
+          type: string
+          format: uri
+          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+        userinfo_endpoint:
+          type: string
+          format: uri
+          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
         client_id: { type: string }
         client_secret: { type: string, format: password, writeOnly: true }
         scopes: { type: array, minItems: 1, items: { type: string } }
@@ -1507,9 +1516,18 @@ components:
       properties:
         name: { type: string, maxLength: 128 }
         slug: { type: string, pattern: '^[a-z0-9_-]+$', maxLength: 64 }
-        authorization_endpoint: { type: string, format: uri }
-        token_endpoint: { type: string, format: uri }
-        userinfo_endpoint: { type: string, format: uri }
+        authorization_endpoint:
+          type: string
+          format: uri
+          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+        token_endpoint:
+          type: string
+          format: uri
+          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+        userinfo_endpoint:
+          type: string
+          format: uri
+          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
         client_id: { type: string }
         client_secret: { type: string, format: password, writeOnly: true, nullable: true }
         scopes: { type: array, minItems: 1, items: { type: string } }

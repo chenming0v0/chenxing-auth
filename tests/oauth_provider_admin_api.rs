@@ -69,6 +69,39 @@ fn provider_input(slug: &str) -> Value {
 }
 
 #[tokio::test]
+async fn provider_admin_api_rejects_remote_http_endpoint() {
+    let (router, database, key_directory) = setup().await;
+    let slug = format!("remote-http-{}", Uuid::new_v4().simple());
+    let mut input = provider_input(&slug);
+    input["token_endpoint"] = Value::String("http://sso.example.com/oauth/token".to_owned());
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/oauth/providers")
+                .header("authorization", "Bearer provider-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(input.to_string()))
+                .expect("provider request"),
+        )
+        .await
+        .expect("provider response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let count: (i64,) =
+        chenxing_auth::sqlx::query_as("SELECT COUNT(*) FROM oauth_providers WHERE slug = $1")
+            .bind(&slug)
+            .fetch_one(&database)
+            .await
+            .expect("provider count");
+    assert_eq!(count.0, 0);
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
 async fn provider_admin_api_requires_auth_and_never_returns_client_secret() {
     let (router, database, key_directory) = setup().await;
     let slug = format!("provider-{}", Uuid::new_v4().simple());

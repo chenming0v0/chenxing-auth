@@ -292,6 +292,8 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 - `PUT /api/v1/admin/oauth/providers/{slug}`：更新配置；`client_secret` 省略时保留原 Secret。
 - `POST /api/v1/admin/oauth/providers/{slug}/enable`、`/disable`：启用或停用。
 
+提供商的授权、Token、UserInfo 地址必须使用 HTTPS；仅 `localhost`、IPv4 loopback 或 `[::1]` 可使用 HTTP 进行本机测试。远程 HTTP 地址会在保存时拒绝，运行时也会再次拒绝，避免通过明文链路发送 Client Secret 或 Access Token。
+
 提供商支持 `basic`（Token 请求 HTTP Basic）和 `request_body`（Token 表单）两种 Client 认证方式；Claim 路径支持点分隔对象路径，例如 `profile.email`。浏览器写操作需要普通 CSRF Cookie 与 `X-CSRF-Token`；Bearer Token 是现有自动化兼容方式。
 
 ### `GET /api/v1/admin/audit?limit=50`
