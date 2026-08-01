@@ -7,7 +7,9 @@ use axum::{
     routing::get,
 };
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
-use chenxing_auth::{api, config::Config, db, state::AppState};
+use chenxing_auth::{
+    api, config::Config, db, sessions::cookies::EXTERNAL_STATE_COOKIE_PREFIX, state::AppState,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -16,6 +18,9 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
 use uuid::Uuid;
+
+#[path = "support/oauth_provider_concurrency.rs"]
+mod oauth_provider_concurrency;
 
 #[derive(Clone, Default)]
 struct MockState {
@@ -160,16 +165,32 @@ fn location(response: &axum::response::Response) -> String {
 }
 
 fn set_cookie(response: &axum::response::Response, name: &str) -> String {
+    set_cookie_header(response, name)
+        .split(';')
+        .next()
+        .expect("cookie pair")
+        .to_owned()
+}
+
+fn set_cookie_header(response: &axum::response::Response, name: &str) -> String {
     response
         .headers()
         .get_all("set-cookie")
         .iter()
         .find_map(|value| {
             let value = value.to_str().ok()?;
-            let pair = value.split(';').next()?.to_owned();
-            pair.starts_with(name).then_some(pair)
+            value.starts_with(name).then(|| value.to_owned())
         })
         .expect("cookie")
+}
+
+fn authorization_state(location: &str) -> String {
+    url::Url::parse(location)
+        .expect("authorization URL")
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+        .expect("state")
 }
 
 #[tokio::test]
@@ -189,7 +210,7 @@ async fn custom_provider_registers_reuses_identity_and_rejects_state_replay() {
         .await
         .expect("start response");
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    let state_cookie = set_cookie(&response, "chenxing_external_oauth_state=");
+    let state_cookie = set_cookie(&response, EXTERNAL_STATE_COOKIE_PREFIX);
     let authorize_location = location(&response);
     let authorize_response = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -251,7 +272,7 @@ async fn custom_provider_registers_reuses_identity_and_rejects_state_replay() {
         )
         .await
         .expect("second start response");
-    let second_state_cookie = set_cookie(&response, "chenxing_external_oauth_state=");
+    let second_state_cookie = set_cookie(&response, EXTERNAL_STATE_COOKIE_PREFIX);
     let second_location = location(&response);
     let second_authorize = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -374,7 +395,7 @@ async fn custom_provider_does_not_auto_link_existing_email() {
         )
         .await
         .expect("start response");
-    let state_cookie = set_cookie(&response, "chenxing_external_oauth_state=");
+    let state_cookie = set_cookie(&response, EXTERNAL_STATE_COOKIE_PREFIX);
     let authorize_response = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()

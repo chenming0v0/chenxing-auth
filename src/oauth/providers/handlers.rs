@@ -2,7 +2,10 @@ use crate::{
     audit::AuditEvent,
     error,
     oauth::consent::pending_request_exists,
-    oauth::providers::{service::ExternalOAuthError, state_store::ExternalLoginState},
+    oauth::providers::{
+        service::ExternalOAuthError,
+        state_store::{EXTERNAL_LOGIN_STATE_TTL_SECONDS, ExternalLoginState},
+    },
     sessions::{cookies, domain::Session},
     state::AppState,
 };
@@ -88,7 +91,8 @@ pub async fn start_external_login(
         tracing::error!(error = %store_error, "failed to store external OAuth state");
         return error::internal();
     }
-    let callback = format!("{}/auth/external/{slug}/callback", state.config.issuer_url);
+    let callback_path = external_callback_path(&slug);
+    let callback = format!("{}{}", state.config.issuer_url, callback_path);
     let authorization_url = match state.external_oauth.authorization_url(
         &provider,
         &callback,
@@ -97,15 +101,17 @@ pub async fn start_external_login(
         Ok(url) => url,
         Err(error_value) => {
             tracing::error!(error = %error_value, provider = %slug, "failed to build external OAuth URL");
-            return external_error(&state, &slug, "oauth_login_failed").await;
+            return external_error_with_state(&state, &slug, &state_value, "oauth_login_failed")
+                .await;
         }
     };
     let mut response = Redirect::to(&authorization_url).into_response();
     cookies::append_external_state_cookie(
         response.headers_mut(),
         &state_value,
-        600,
+        EXTERNAL_LOGIN_STATE_TTL_SECONDS,
         state.config.cookie_secure,
+        &callback_path,
     );
     response
 }
@@ -116,19 +122,43 @@ pub async fn external_callback(
     headers: HeaderMap,
     Query(query): Query<ExternalCallbackQuery>,
 ) -> Response {
-    let cookie_state = cookies::external_state(&headers);
+    let callback_path = external_callback_path(&slug);
     let Some(returned_state) = query.state.as_deref().filter(|value| !value.is_empty()) else {
         return external_error(&state, &slug, "oauth_login_failed").await;
     };
+    let cookie_state = cookies::external_state(&headers, returned_state);
     if cookie_state.as_deref() != Some(returned_state) {
-        return external_error(&state, &slug, "oauth_login_failed").await;
+        return external_error_with_request(
+            &state,
+            &slug,
+            None,
+            Some(returned_state),
+            "oauth_login_failed",
+        )
+        .await;
     }
     let stored_state = match state.external_login_states.take(returned_state).await {
         Ok(Some(value)) if value.provider_slug == slug => value,
-        Ok(_) => return external_error(&state, &slug, "oauth_login_failed").await,
+        Ok(_) => {
+            return external_error_with_request(
+                &state,
+                &slug,
+                None,
+                Some(returned_state),
+                "oauth_login_failed",
+            )
+            .await;
+        }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to consume external OAuth state");
-            return external_error(&state, &slug, "oauth_login_failed").await;
+            return external_error_with_request(
+                &state,
+                &slug,
+                None,
+                Some(returned_state),
+                "oauth_login_failed",
+            )
+            .await;
         }
     };
     if query.error.is_some() {
@@ -136,6 +166,7 @@ pub async fn external_callback(
             &state,
             &slug,
             stored_state.request_id.as_deref(),
+            Some(returned_state),
             "oauth_login_failed",
         )
         .await;
@@ -145,6 +176,7 @@ pub async fn external_callback(
             &state,
             &slug,
             stored_state.request_id.as_deref(),
+            Some(returned_state),
             "oauth_login_failed",
         )
         .await;
@@ -156,12 +188,13 @@ pub async fn external_callback(
                 &state,
                 &slug,
                 stored_state.request_id.as_deref(),
+                Some(returned_state),
                 "oauth_provider_not_found",
             )
             .await;
         }
     };
-    let callback = format!("{}/auth/external/{slug}/callback", state.config.issuer_url);
+    let callback = format!("{}{}", state.config.issuer_url, callback_path);
     let token = match state
         .external_oauth
         .exchange_code(&provider, &callback, code)
@@ -174,6 +207,7 @@ pub async fn external_callback(
                 &state,
                 &slug,
                 stored_state.request_id.as_deref(),
+                Some(returned_state),
                 "oauth_login_failed",
             )
             .await;
@@ -187,6 +221,7 @@ pub async fn external_callback(
                 &state,
                 &slug,
                 stored_state.request_id.as_deref(),
+                Some(returned_state),
                 "oauth_login_failed",
             )
             .await;
@@ -203,6 +238,7 @@ pub async fn external_callback(
                 &state,
                 &slug,
                 stored_state.request_id.as_deref(),
+                Some(returned_state),
                 "oauth_account_link_required",
             )
             .await;
@@ -212,6 +248,7 @@ pub async fn external_callback(
                 &state,
                 &slug,
                 stored_state.request_id.as_deref(),
+                Some(returned_state),
                 "oauth_login_failed",
             )
             .await;
@@ -221,6 +258,7 @@ pub async fn external_callback(
                 &state,
                 &slug,
                 stored_state.request_id.as_deref(),
+                Some(returned_state),
                 "owner_bootstrap_required",
             )
             .await;
@@ -231,6 +269,7 @@ pub async fn external_callback(
                 &state,
                 &slug,
                 stored_state.request_id.as_deref(),
+                Some(returned_state),
                 "oauth_login_failed",
             )
             .await;
@@ -241,12 +280,26 @@ pub async fn external_callback(
         Ok(session) => session,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to create external OAuth session");
-            return error::internal();
+            let mut response = error::internal();
+            append_external_state_clear(
+                &mut response,
+                returned_state,
+                &callback_path,
+                state.config.cookie_secure,
+            );
+            return response;
         }
     };
     if let Err(error_value) = state.sessions.save(&mut session, ttl).await {
         tracing::error!(error = %error_value, "failed to save external OAuth session");
-        return error::internal();
+        let mut response = error::internal();
+        append_external_state_clear(
+            &mut response,
+            returned_state,
+            &callback_path,
+            state.config.cookie_secure,
+        );
+        return response;
     }
     state
         .audit
@@ -273,18 +326,33 @@ pub async fn external_callback(
         state.config.session_ttl_seconds,
         state.config.cookie_secure,
     );
-    cookies::append_clear_external_state_cookie(response.headers_mut(), state.config.cookie_secure);
+    append_external_state_clear(
+        &mut response,
+        returned_state,
+        &callback_path,
+        state.config.cookie_secure,
+    );
     response
 }
 
 async fn external_error(state: &AppState, slug: &str, code: &str) -> Response {
-    external_error_with_request(state, slug, None, code).await
+    external_error_with_request(state, slug, None, None, code).await
+}
+
+async fn external_error_with_state(
+    state: &AppState,
+    slug: &str,
+    state_value: &str,
+    code: &str,
+) -> Response {
+    external_error_with_request(state, slug, None, Some(state_value), code).await
 }
 
 async fn external_error_with_request(
     state: &AppState,
     slug: &str,
     request_id: Option<&str>,
+    state_value: Option<&str>,
     code: &str,
 ) -> Response {
     tracing::info!(provider = %slug, error_code = %code, "external OAuth login failed");
@@ -293,8 +361,33 @@ async fn external_error_with_request(
         None => format!("/login?external_error={code}"),
     };
     let mut response = Redirect::to(&location).into_response();
-    cookies::append_clear_external_state_cookie(response.headers_mut(), state.config.cookie_secure);
+    if let Some(state_value) = state_value {
+        append_external_state_clear(
+            &mut response,
+            state_value,
+            &external_callback_path(slug),
+            state.config.cookie_secure,
+        );
+    }
     response
+}
+
+fn append_external_state_clear(
+    response: &mut Response,
+    state_value: &str,
+    callback_path: &str,
+    secure: bool,
+) {
+    cookies::append_clear_external_state_cookie(
+        response.headers_mut(),
+        state_value,
+        secure,
+        callback_path,
+    );
+}
+
+fn external_callback_path(slug: &str) -> String {
+    format!("/auth/external/{slug}/callback")
 }
 
 fn random_state() -> String {
