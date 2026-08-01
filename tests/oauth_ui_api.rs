@@ -315,6 +315,26 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
     );
 
     let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/oauth/authorize/requests/{request_id}"))
+                .header("cookie", &session_cookies)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"decision":"approve"}"#))
+                .expect("replay approval request"),
+        )
+        .await
+        .expect("replay approval response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json(response).await["code"],
+        "authorization_request_expired"
+    );
+
+    let response = router
         .oneshot(
             Request::builder()
                 .uri(format!("/api/v1/oauth/authorize/requests/{request_id}"))

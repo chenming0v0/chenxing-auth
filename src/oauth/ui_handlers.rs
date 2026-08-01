@@ -217,18 +217,6 @@ pub async fn decide_authorization_request(
         Ok(validated) => validated,
         Err(response) => return response,
     };
-    let Some(pending) = state
-        .authorization_requests
-        .take(&request_id)
-        .await
-        .ok()
-        .flatten()
-    else {
-        return error::bad_request(
-            "authorization_request_expired",
-            "authorization request is expired",
-        );
-    };
     if let Err(error_value) = state
         .consents
         .save(context.user_id, &pending.client_id, &validated.scopes)
@@ -238,19 +226,38 @@ pub async fn decide_authorization_request(
         return error::internal();
     }
     match issue_authorization_code_result(&state, context.user_id.to_string(), validated).await {
-        Ok(AuthorizationCodeIssue::Redirect(redirect_to)) => (
-            axum::http::StatusCode::OK,
-            Json(DecisionResponse {
-                decision: "approve",
-                redirect_to,
-            }),
-        )
-            .into_response(),
+        Ok(AuthorizationCodeIssue::Redirect(redirect_to)) => {
+            if let Err(response) = consume_approved_request(&state, &request_id).await {
+                return response;
+            }
+            (
+                axum::http::StatusCode::OK,
+                Json(DecisionResponse {
+                    decision: "approve",
+                    redirect_to,
+                }),
+            )
+                .into_response()
+        }
         Ok(AuthorizationCodeIssue::QuotaExceeded) => error::too_many_requests(
             "oauth_quota_exceeded",
             "OAuth authorization quota has been exhausted",
         ),
         Err(response) => response,
+    }
+}
+
+async fn consume_approved_request(state: &AppState, request_id: &str) -> Result<(), Response> {
+    match state.authorization_requests.take(request_id).await {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(error::bad_request(
+            "authorization_request_processed",
+            "authorization request has already been processed",
+        )),
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to consume approved OAuth request");
+            Err(error::internal())
+        }
     }
 }
 
