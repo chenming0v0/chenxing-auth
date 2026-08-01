@@ -416,6 +416,128 @@ async fn disabled_user_cannot_exchange_oauth_credentials_without_consuming_them(
 }
 
 #[tokio::test]
+async fn refresh_token_remains_reusable_when_access_token_issuance_fails() {
+    let (mut state, database, key_directory) = test_state().await;
+    let setup_router = api::router(state.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    ensure_owner_bootstrapped(&setup_router, &suffix).await;
+    let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
+    let (client_id, client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
+    let refresh = RefreshToken::new(
+        client_id.clone(),
+        user_id.to_string(),
+        vec!["openid".to_owned(), "profile".to_owned()],
+    );
+    state
+        .refresh_tokens
+        .save(&refresh)
+        .await
+        .expect("save refresh token");
+    let basic = STANDARD.encode(format!("{client_id}:{client_secret}"));
+
+    state.config.session_ttl_seconds = u64::MAX;
+    let failing_router = api::router(state.clone());
+    let response = failing_router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=refresh_token&refresh_token={}",
+                    refresh.value
+                )))
+                .expect("failed refresh request"),
+        )
+        .await
+        .expect("failed refresh response");
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        state
+            .refresh_tokens
+            .find(&refresh.value)
+            .await
+            .expect("find refresh after issuance failure")
+            .is_some(),
+        "failed token issuance must not consume the refresh token"
+    );
+
+    state.config.session_ttl_seconds = 3600;
+    let retry_router = api::router(state.clone());
+    let response = retry_router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=refresh_token&refresh_token={}",
+                    refresh.value
+                )))
+                .expect("retry refresh request"),
+        )
+        .await
+        .expect("retry refresh response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let refreshed = json_body(response).await;
+    let next_refresh = refreshed["refresh_token"]
+        .as_str()
+        .expect("rotated refresh token")
+        .to_owned();
+    assert!(
+        state
+            .refresh_tokens
+            .find(&refresh.value)
+            .await
+            .expect("find consumed refresh after retry")
+            .is_none()
+    );
+    assert!(
+        state
+            .refresh_tokens
+            .find(&next_refresh)
+            .await
+            .expect("find rotated refresh after retry")
+            .is_some()
+    );
+
+    let response = retry_router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=refresh_token&refresh_token={}",
+                    refresh.value
+                )))
+                .expect("duplicate refresh request"),
+        )
+        .await
+        .expect("duplicate refresh response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let duplicate = json_body(response).await;
+    assert_eq!(duplicate["code"].as_str(), Some("invalid_grant"));
+
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
+        .bind(client_id)
+        .execute(&database)
+        .await
+        .expect("cleanup client");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
 async fn owner_login_issues_shared_session_and_csrf_cookies() {
     let (state, database, key_directory) = test_state().await;
     let router = api::router(state);

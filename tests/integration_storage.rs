@@ -414,6 +414,73 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
             .is_none()
     );
 
+    let rotatable = RefreshToken::new(
+        "storage-client".to_owned(),
+        "storage-user".to_owned(),
+        vec!["openid".to_owned()],
+    );
+    let rotated = RefreshToken::new(
+        rotatable.client_id.clone(),
+        rotatable.user_id.clone(),
+        rotatable.scopes.clone(),
+    );
+    let mismatched = RefreshToken::new(
+        rotatable.client_id.clone(),
+        rotatable.user_id.clone(),
+        vec!["profile".to_owned()],
+    );
+    refreshes
+        .save(&rotatable)
+        .await
+        .expect("save rotatable refresh token");
+    assert!(
+        !refreshes
+            .rotate_if_matches(&rotatable.value, &mismatched, &rotated)
+            .await
+            .expect("mismatched refresh rotation")
+    );
+    assert!(
+        refreshes
+            .find(&rotatable.value)
+            .await
+            .expect("find refresh after mismatched rotation")
+            .is_some()
+    );
+    assert!(
+        refreshes
+            .rotate_if_matches(&rotatable.value, &rotatable, &rotated)
+            .await
+            .expect("matching refresh rotation")
+    );
+    assert!(
+        refreshes
+            .find(&rotatable.value)
+            .await
+            .expect("find consumed refresh")
+            .is_none()
+    );
+    assert!(
+        refreshes
+            .find(&rotated.value)
+            .await
+            .expect("find rotated refresh")
+            .is_some()
+    );
+    assert!(
+        !refreshes
+            .rotate_if_matches(
+                &rotatable.value,
+                &rotatable,
+                &RefreshToken::new(
+                    rotatable.client_id.clone(),
+                    rotatable.user_id.clone(),
+                    rotatable.scopes.clone(),
+                )
+            )
+            .await
+            .expect("duplicate refresh rotation")
+    );
+
     let session_key = format!(
         "chenxing:session:{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -424,6 +491,8 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
             session_key,
             format!("chenxing:oauth:code:{}", code.value),
             format!("chenxing:oauth:refresh:{}", refresh.value),
+            format!("chenxing:oauth:refresh:{}", rotatable.value),
+            format!("chenxing:oauth:refresh:{}", rotated.value),
         ])
         .await
         .expect("cleanup Redis keys");

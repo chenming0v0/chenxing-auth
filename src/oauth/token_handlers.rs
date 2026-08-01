@@ -1,6 +1,6 @@
 use axum::{
     extract::{Form, State},
-    http::HeaderMap,
+    http::{HeaderMap, StatusCode},
     response::Response,
 };
 use serde::Deserialize;
@@ -182,37 +182,36 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
         }
         None => refresh.scopes.clone(),
     };
-    match state
-        .refresh_tokens
-        .take_if_matches(refresh_value, &refresh)
-        .await
-    {
-        Ok(true) => {}
-        Ok(false) => return error::bad_request("invalid_grant", "refresh token is invalid"),
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to consume refresh token");
-            return error::internal();
-        }
-    }
     let next_refresh = RefreshToken::new_with_nonce(
         client_id.to_owned(),
         refresh.user_id.clone(),
         scopes.clone(),
         refresh.nonce.clone(),
     );
-    if let Err(store_error) = state.refresh_tokens.save(&next_refresh).await {
-        tracing::error!(error = %store_error, "failed to rotate refresh token");
-        return error::internal();
-    }
-    issue_token_response(
+    let response = issue_token_response(
         &state,
         &refresh.user_id,
         client_id,
         &scopes,
-        Some(next_refresh.value),
+        Some(next_refresh.value.clone()),
         refresh.nonce.as_deref(),
     )
-    .await
+    .await;
+    if response.status() != StatusCode::OK {
+        return response;
+    }
+    match state
+        .refresh_tokens
+        .rotate_if_matches(refresh_value, &refresh, &next_refresh)
+        .await
+    {
+        Ok(true) => response,
+        Ok(false) => error::bad_request("invalid_grant", "refresh token is invalid"),
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to atomically rotate refresh token");
+            error::internal()
+        }
+    }
 }
 
 /// 按 Client 所属用户的套餐 `max_qps` 做 1 秒窗口限流；不限、无主 Client 或
