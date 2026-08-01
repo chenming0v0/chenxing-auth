@@ -1,14 +1,16 @@
-use crate::users::domain::UserId;
+use std::sync::Arc;
+
 use redis::Client;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use uuid::Uuid;
-use webauthn_rs::prelude::{
-    PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential, RegisterPublicKeyCredential,
-    RequestChallengeResponse, Webauthn, WebauthnBuilder, WebauthnError,
-};
+use webauthn_rs::prelude::{Webauthn, WebauthnBuilder, WebauthnError};
 
-use crate::{config::AuthEncryptionKey, sqlx::PgPool};
+use crate::{
+    auth_limiter::{AuthFailureLimiter, FailureDimension},
+    config::AuthEncryptionKey,
+    sqlx::PgPool,
+    users::domain::UserId,
+};
 
 use super::{
     crypto::{SecretCryptoError, decrypt_totp_secret},
@@ -20,8 +22,6 @@ use super::{
 };
 
 const TOTP_SETUP_PREFIX: &str = "chenxing:auth:totp-setup:";
-const PASSKEY_REGISTRATION_PREFIX: &str = "chenxing:auth:passkey-registration:";
-const PASSKEY_AUTHENTICATION_PREFIX: &str = "chenxing:auth:passkey-authentication:";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PendingTotpSetup {
@@ -29,22 +29,14 @@ struct PendingTotpSetup {
     encrypted_secret: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PendingPasskeyRegistration {
-    user_id: UserId,
-    state: PasskeyRegistration,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PendingPasskeyAuthentication {
-    user_id: UserId,
-    state: PasskeyAuthentication,
-}
+#[path = "passkey.rs"]
+mod passkey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TotpConfirmation {
     InvalidTicket,
     InvalidCode,
+    RateLimited,
     Completed(UserId),
 }
 
@@ -59,6 +51,7 @@ pub enum PasskeyConfirmation {
 pub struct AuthFactorService {
     pool: PgPool,
     tickets: LoginTicketStore,
+    limiter: Arc<dyn AuthFailureLimiter>,
     encryption_key: AuthEncryptionKey,
     webauthn: Webauthn,
 }
@@ -71,6 +64,10 @@ pub enum AuthFactorServiceError {
     Ticket(#[from] LoginTicketStoreError),
     #[error("secret operation failed: {0}")]
     Secret(#[from] SecretCryptoError),
+    #[error("authentication rate limit reached")]
+    RateLimited,
+    #[error("authentication limiter failed: {0}")]
+    Limiter(#[from] crate::auth_limiter::domain::AuthLimiterError),
     #[error("TOTP enrollment operation failed: {0}")]
     Totp(#[from] totp_rs::TotpUrlError),
     #[error("WebAuthn operation failed: {0}")]
@@ -81,6 +78,7 @@ impl AuthFactorService {
     pub fn new(
         pool: PgPool,
         redis: Client,
+        limiter: Arc<dyn AuthFailureLimiter>,
         encryption_key: AuthEncryptionKey,
         rp_id: &str,
         origin: &str,
@@ -90,6 +88,7 @@ impl AuthFactorService {
         Ok(Self {
             pool,
             tickets: LoginTicketStore::new(redis),
+            limiter,
             encryption_key,
             webauthn,
         })
@@ -132,16 +131,38 @@ impl AuthFactorService {
     pub async fn verify_totp(
         &self,
         user_id: UserId,
+        identifier: &str,
+        source_ip: &str,
         code: &str,
     ) -> Result<bool, AuthFactorServiceError> {
+        self.ensure_allowed(FailureDimension::Account, identifier)
+            .await?;
+        self.ensure_allowed(FailureDimension::SourceIp, source_ip)
+            .await?;
         let Some(encrypted_secret) = repository::find_totp_secret(&self.pool, user_id).await?
         else {
+            self.record_totp_failure(identifier, source_ip).await;
             return Ok(false);
         };
         let mut secret = decrypt_totp_secret(self.encryption_key.as_bytes(), &encrypted_secret)?;
         let valid = verify_totp_code_current(&secret, code);
         secret.fill(0);
-        Ok(valid)
+        if !valid {
+            self.record_totp_failure(identifier, source_ip).await;
+            return Ok(false);
+        }
+        if let Err(error) = self
+            .limiter
+            .clear(FailureDimension::Account, identifier)
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                dimension = FailureDimension::Account.as_str(),
+                "authentication limiter unavailable; TOTP success did not clear account failures"
+            );
+        }
+        Ok(true)
     }
 
     pub async fn start_totp_enrollment(
@@ -190,6 +211,7 @@ impl AuthFactorService {
     pub async fn confirm_totp_enrollment(
         &self,
         ticket_id: &str,
+        source_ip: &str,
         code: &str,
     ) -> Result<TotpConfirmation, AuthFactorServiceError> {
         let Some(ticket) = self.tickets.find(ticket_id).await? else {
@@ -207,11 +229,19 @@ impl AuthFactorService {
         else {
             return Ok(TotpConfirmation::InvalidTicket);
         };
+        if self.ensure_ticket_allowed(ticket_id, source_ip).await {
+            self.invalidate_ticket(ticket_id).await?;
+            return Ok(TotpConfirmation::RateLimited);
+        }
         let mut secret =
             decrypt_totp_secret(self.encryption_key.as_bytes(), &pending.encrypted_secret)?;
         let valid = verify_totp_code_current(&secret, code);
         secret.fill(0);
         if !valid {
+            if self.record_ticket_failure(ticket_id, source_ip).await {
+                self.invalidate_ticket(ticket_id).await?;
+                return Ok(TotpConfirmation::RateLimited);
+            }
             return Ok(TotpConfirmation::InvalidCode);
         }
         let confirmation = persist_then_consume(
@@ -224,56 +254,24 @@ impl AuthFactorService {
         self.tickets
             .delete(&Self::totp_setup_key(ticket_id))
             .await?;
-        Ok(confirmation)
-    }
-
-    pub async fn start_passkey_registration(
-        &self,
-        ticket_id: &str,
-        user_name: &str,
-        display_name: &str,
-    ) -> Result<Option<webauthn_rs::prelude::CreationChallengeResponse>, AuthFactorServiceError>
-    {
-        let Some(ticket) = self.tickets.find(ticket_id).await? else {
-            return Ok(None);
-        };
-        if !ticket.is_active_at(time::OffsetDateTime::now_utc())
-            || !ticket.supports(FactorMethod::Passkey)
-            || !repository::list_factor_methods(&self.pool, ticket.user_id)
-                .await?
-                .is_empty()
+        if let Err(error) = self
+            .limiter
+            .clear(FailureDimension::Ticket, ticket_id)
+            .await
         {
-            return Ok(None);
+            tracing::warn!(
+                error = %error,
+                dimension = FailureDimension::Ticket.as_str(),
+                "authentication limiter unavailable; TOTP setup success did not clear ticket failures"
+            );
         }
-        let existing = repository::list_passkeys(&self.pool, ticket.user_id).await?;
-        let exclude = Some(
-            existing
-                .iter()
-                .map(|passkey| passkey.cred_id().clone())
-                .collect(),
-        );
-        let (challenge, state) = self.webauthn.start_passkey_registration(
-            Uuid::from_u128(ticket.user_id as u128),
-            user_name,
-            display_name,
-            exclude,
-        )?;
-        self.tickets
-            .save_json(
-                &Self::passkey_registration_key(ticket_id),
-                &PendingPasskeyRegistration {
-                    user_id: ticket.user_id,
-                    state,
-                },
-                LoginTicket::TTL.whole_seconds() as u64,
-            )
-            .await?;
-        Ok(Some(challenge))
+        Ok(confirmation)
     }
 
     pub async fn verify_totp_login(
         &self,
         ticket_id: &str,
+        source_ip: &str,
         code: &str,
     ) -> Result<TotpConfirmation, AuthFactorServiceError> {
         let Some(ticket) = self.tickets.find(ticket_id).await? else {
@@ -284,161 +282,124 @@ impl AuthFactorService {
         {
             return Ok(TotpConfirmation::InvalidTicket);
         }
+        if self.ensure_ticket_allowed(ticket_id, source_ip).await {
+            self.invalidate_ticket(ticket_id).await?;
+            return Ok(TotpConfirmation::RateLimited);
+        }
         let Some(encrypted_secret) =
             repository::find_totp_secret(&self.pool, ticket.user_id).await?
         else {
+            if self.record_ticket_failure(ticket_id, source_ip).await {
+                self.invalidate_ticket(ticket_id).await?;
+                return Ok(TotpConfirmation::RateLimited);
+            }
             return Ok(TotpConfirmation::InvalidTicket);
         };
         let mut secret = decrypt_totp_secret(self.encryption_key.as_bytes(), &encrypted_secret)?;
         let valid = verify_totp_code_current(&secret, code);
         secret.fill(0);
         if !valid {
+            if self.record_ticket_failure(ticket_id, source_ip).await {
+                self.invalidate_ticket(ticket_id).await?;
+                return Ok(TotpConfirmation::RateLimited);
+            }
             return Ok(TotpConfirmation::InvalidCode);
         }
         if self.tickets.take(ticket_id).await?.is_none() {
             return Ok(TotpConfirmation::InvalidTicket);
         }
+        if let Err(error) = self
+            .limiter
+            .clear(FailureDimension::Ticket, ticket_id)
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                dimension = FailureDimension::Ticket.as_str(),
+                "authentication limiter unavailable; TOTP success did not clear ticket failures"
+            );
+        }
         Ok(TotpConfirmation::Completed(ticket.user_id))
     }
 
-    pub async fn finish_passkey_registration(
+    async fn ensure_allowed(
         &self,
-        ticket_id: &str,
-        credential: &RegisterPublicKeyCredential,
-    ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
-        let Some(ticket) = self.tickets.find(ticket_id).await? else {
-            return Ok(PasskeyConfirmation::InvalidTicket);
-        };
-        if !ticket.is_active_at(time::OffsetDateTime::now_utc())
-            || !ticket.supports(FactorMethod::Passkey)
-        {
-            return Ok(PasskeyConfirmation::InvalidTicket);
+        dimension: FailureDimension,
+        value: &str,
+    ) -> Result<(), AuthFactorServiceError> {
+        match self.limiter.is_limited(dimension, value).await {
+            Ok(true) => Err(AuthFactorServiceError::RateLimited),
+            Ok(false) => Ok(()),
+            Err(error) => {
+                // The limiter is an abuse-control aid; Redis outage must not deny valid logins.
+                tracing::warn!(
+                    error = %error,
+                    dimension = dimension.as_str(),
+                    "authentication limiter unavailable; allowing TOTP attempt"
+                );
+                Ok(())
+            }
         }
-        let Some(pending) = self
-            .tickets
-            .find_json::<PendingPasskeyRegistration>(&Self::passkey_registration_key(ticket_id))
-            .await?
-        else {
-            return Ok(PasskeyConfirmation::InvalidTicket);
-        };
-        let passkey = match self
-            .webauthn
-            .finish_passkey_registration(credential, &pending.state)
-        {
-            Ok(passkey) => passkey,
-            Err(_) => return Ok(PasskeyConfirmation::InvalidCredential),
-        };
-        if matches!(
-            repository::insert_passkey(&self.pool, ticket.user_id, passkey.cred_id(), &passkey)
-                .await?,
-            repository::PasskeyPersistenceResult::Conflict
-        ) {
-            return Ok(PasskeyConfirmation::InvalidCredential);
-        }
-        if self.tickets.take(ticket_id).await?.is_none() {
-            return Ok(PasskeyConfirmation::InvalidTicket);
-        }
-        self.tickets
-            .delete(&Self::passkey_registration_key(ticket_id))
-            .await?;
-        Ok(PasskeyConfirmation::Completed(ticket.user_id))
     }
 
-    pub async fn start_passkey_authentication(
-        &self,
-        ticket_id: &str,
-    ) -> Result<Option<RequestChallengeResponse>, AuthFactorServiceError> {
-        let Some(ticket) = self.tickets.find(ticket_id).await? else {
-            return Ok(None);
-        };
-        if !ticket.is_active_at(time::OffsetDateTime::now_utc())
-            || !ticket.supports(FactorMethod::Passkey)
-        {
-            return Ok(None);
-        }
-        let passkeys = repository::list_passkeys(&self.pool, ticket.user_id).await?;
-        if passkeys.is_empty() {
-            return Ok(None);
-        }
-        let (challenge, state) = self.webauthn.start_passkey_authentication(&passkeys)?;
-        self.tickets
-            .save_json(
-                &Self::passkey_authentication_key(ticket_id),
-                &PendingPasskeyAuthentication {
-                    user_id: ticket.user_id,
-                    state,
-                },
-                LoginTicket::TTL.whole_seconds() as u64,
-            )
-            .await?;
-        Ok(Some(challenge))
+    async fn ensure_ticket_allowed(&self, ticket_id: &str, source_ip: &str) -> bool {
+        self.is_limited(FailureDimension::Ticket, ticket_id).await
+            || self.is_limited(FailureDimension::SourceIp, source_ip).await
     }
 
-    pub async fn finish_passkey_authentication(
-        &self,
-        ticket_id: &str,
-        credential: &PublicKeyCredential,
-    ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
-        let Some(ticket) = self.tickets.find(ticket_id).await? else {
-            return Ok(PasskeyConfirmation::InvalidTicket);
-        };
-        if !ticket.is_active_at(time::OffsetDateTime::now_utc())
-            || !ticket.supports(FactorMethod::Passkey)
-        {
-            return Ok(PasskeyConfirmation::InvalidTicket);
+    async fn record_ticket_failure(&self, ticket_id: &str, source_ip: &str) -> bool {
+        let reached = self
+            .record_limiter_failure(FailureDimension::Ticket, ticket_id)
+            .await;
+        self.record_limiter_failure(FailureDimension::SourceIp, source_ip)
+            .await;
+        reached
+    }
+
+    async fn record_totp_failure(&self, identifier: &str, source_ip: &str) {
+        self.record_limiter_failure(FailureDimension::Account, identifier)
+            .await;
+        self.record_limiter_failure(FailureDimension::SourceIp, source_ip)
+            .await;
+    }
+
+    async fn is_limited(&self, dimension: FailureDimension, value: &str) -> bool {
+        match self.limiter.is_limited(dimension, value).await {
+            Ok(limited) => limited,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    dimension = dimension.as_str(),
+                    "authentication limiter unavailable; allowing TOTP attempt"
+                );
+                false
+            }
         }
-        let Some(pending) = self
-            .tickets
-            .find_json::<PendingPasskeyAuthentication>(&Self::passkey_authentication_key(ticket_id))
-            .await?
-        else {
-            return Ok(PasskeyConfirmation::InvalidTicket);
-        };
-        let result = match self
-            .webauthn
-            .finish_passkey_authentication(credential, &pending.state)
-        {
-            Ok(result) => result,
-            Err(_) => return Ok(PasskeyConfirmation::InvalidCredential),
-        };
-        let mut passkeys = repository::list_passkeys(&self.pool, ticket.user_id).await?;
-        let Some(passkey) = passkeys
-            .iter_mut()
-            .find(|passkey| passkey.cred_id() == result.cred_id())
-        else {
-            return Ok(PasskeyConfirmation::InvalidCredential);
-        };
-        let confirmation = persist_then_consume(
-            PasskeyConfirmation::Completed(ticket.user_id),
-            PasskeyConfirmation::InvalidTicket,
-            async {
-                if result.needs_update()
-                    && passkey
-                        .update_credential(&result)
-                        .is_some_and(|changed| changed)
-                {
-                    repository::update_passkey(&self.pool, result.cred_id(), passkey).await?;
-                }
-                Ok::<(), AuthFactorServiceError>(())
-            },
-            self.tickets.take(ticket_id),
-        )
-        .await?;
+    }
+
+    async fn record_limiter_failure(&self, dimension: FailureDimension, value: &str) -> bool {
+        match self.limiter.record_failure(dimension, value).await {
+            Ok(reached) => reached,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    dimension = dimension.as_str(),
+                    "authentication limiter unavailable; TOTP failure was not recorded"
+                );
+                false
+            }
+        }
+    }
+
+    async fn invalidate_ticket(&self, ticket_id: &str) -> Result<(), AuthFactorServiceError> {
+        self.tickets.take(ticket_id).await?;
         self.tickets
-            .delete(&Self::passkey_authentication_key(ticket_id))
+            .delete(&Self::totp_setup_key(ticket_id))
             .await?;
-        Ok(confirmation)
+        Ok(())
     }
 
     fn totp_setup_key(ticket_id: &str) -> String {
         format!("{TOTP_SETUP_PREFIX}{ticket_id}")
-    }
-
-    fn passkey_registration_key(ticket_id: &str) -> String {
-        format!("{PASSKEY_REGISTRATION_PREFIX}{ticket_id}")
-    }
-
-    fn passkey_authentication_key(ticket_id: &str) -> String {
-        format!("{PASSKEY_AUTHENTICATION_PREFIX}{ticket_id}")
     }
 }

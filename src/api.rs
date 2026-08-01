@@ -9,6 +9,7 @@ use axum::{
     routing::{any, get, post},
 };
 use serde::Serialize;
+use std::net::SocketAddr;
 use tower_http::trace::TraceLayer;
 
 use crate::{
@@ -213,6 +214,10 @@ pub fn router(state: AppState) -> Router {
         .fallback(any(web_app))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
+}
+
+pub(crate) fn source_ip(peer: Option<SocketAddr>) -> String {
+    peer.map_or_else(|| "unknown".to_owned(), |address| address.ip().to_string())
 }
 
 async fn web_app(request: axum::extract::Request) -> Response {

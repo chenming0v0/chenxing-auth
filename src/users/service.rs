@@ -1,4 +1,5 @@
-use crate::sqlx::PgPool;
+use std::sync::Arc;
+
 use thiserror::Error;
 
 use super::{
@@ -9,10 +10,15 @@ use super::{
     },
     repository,
 };
+use crate::{
+    auth_limiter::{AuthFailureLimiter, FailureDimension},
+    sqlx::PgPool,
+};
 
 #[derive(Clone)]
 pub struct UserService {
     pool: PgPool,
+    limiter: Arc<dyn AuthFailureLimiter>,
 }
 
 #[derive(Debug, Error)]
@@ -25,6 +31,10 @@ pub enum UserServiceError {
     Database(#[from] crate::sqlx::Error),
     #[error("credentials are invalid")]
     InvalidCredentials,
+    #[error("authentication rate limit reached")]
+    RateLimited,
+    #[error("authentication limiter failed: {0}")]
+    Limiter(#[from] crate::auth_limiter::domain::AuthLimiterError),
     #[error("last active owner is required")]
     LastOwnerRequired,
     #[error("owner bootstrap is required before public registration")]
@@ -32,8 +42,8 @@ pub enum UserServiceError {
 }
 
 impl UserService {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool, limiter: Arc<dyn AuthFailureLimiter>) -> Self {
+        Self { pool, limiter }
     }
 
     pub async fn register(&self, input: RegistrationInput) -> Result<PublicUser, UserServiceError> {
@@ -116,25 +126,91 @@ impl UserService {
         Ok(id)
     }
 
-    pub async fn authenticate(&self, input: LoginInput) -> Result<UserId, UserServiceError> {
+    pub async fn authenticate(
+        &self,
+        input: LoginInput,
+        source_ip: &str,
+    ) -> Result<UserId, UserServiceError> {
         let login = validate_login(input).map_err(|error| match error {
             LoginError::InvalidIdentifier | LoginError::EmptyPassword => {
                 UserServiceError::InvalidCredentials
             }
         })?;
+        self.ensure_allowed(FailureDimension::Account, &login.identifier)
+            .await?;
+        self.ensure_allowed(FailureDimension::SourceIp, source_ip)
+            .await?;
         let Some(credentials) =
             repository::find_credentials_by_identifier(&self.pool, &login.identifier).await?
         else {
+            self.record_failure(&login.identifier, source_ip).await;
             return Err(UserServiceError::InvalidCredentials);
         };
         if credentials.status != "active"
             || !credentials.password_login_enabled
             || !verify_password(&login.password, &credentials.password_hash)
         {
+            self.record_failure(&login.identifier, source_ip).await;
             return Err(UserServiceError::InvalidCredentials);
         }
 
+        if let Err(error) = self
+            .limiter
+            .clear(FailureDimension::Account, &login.identifier)
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                dimension = FailureDimension::Account.as_str(),
+                "authentication limiter unavailable; login succeeded without clearing failures"
+            );
+        }
         Ok(credentials.id)
+    }
+
+    async fn ensure_allowed(
+        &self,
+        dimension: FailureDimension,
+        value: &str,
+    ) -> Result<(), UserServiceError> {
+        match self.limiter.is_limited(dimension, value).await {
+            Ok(true) => Err(UserServiceError::RateLimited),
+            Ok(false) => Ok(()),
+            Err(error) => {
+                // The limiter is an abuse-control aid; Redis outage must not deny valid logins.
+                tracing::warn!(
+                    error = %error,
+                    dimension = dimension.as_str(),
+                    "authentication limiter unavailable; allowing authentication attempt"
+                );
+                Ok(())
+            }
+        }
+    }
+
+    async fn record_failure(&self, identifier: &str, source_ip: &str) {
+        if let Err(error) = self
+            .limiter
+            .record_failure(FailureDimension::Account, identifier)
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                dimension = FailureDimension::Account.as_str(),
+                "authentication limiter unavailable; account failure was not recorded"
+            );
+        }
+        if let Err(error) = self
+            .limiter
+            .record_failure(FailureDimension::SourceIp, source_ip)
+            .await
+        {
+            tracing::warn!(
+                error = %error,
+                dimension = FailureDimension::SourceIp.as_str(),
+                "authentication limiter unavailable; source IP failure was not recorded"
+            );
+        }
     }
 
     pub async fn find_profile(
@@ -225,4 +301,60 @@ pub enum BootstrapOwnerResult {
     Created(repository::UserProfile),
     AlreadyConfigured,
     RequiresEmptyDatabase,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::auth_limiter::domain::LimiterFuture;
+    use crate::auth_limiter::{AuthFailureLimiter, FailureDimension};
+
+    struct AlwaysLimited;
+
+    impl AuthFailureLimiter for AlwaysLimited {
+        fn is_limited<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &'a str,
+        ) -> LimiterFuture<'a, bool> {
+            Box::pin(async { Ok(true) })
+        }
+
+        fn record_failure<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &'a str,
+        ) -> LimiterFuture<'a, bool> {
+            Box::pin(async { Ok(false) })
+        }
+
+        fn clear<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &'a str,
+        ) -> LimiterFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn password_authentication_is_rejected_before_password_hash() {
+        let pool = crate::sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://invalid-host/unused")
+            .expect("lazy pool");
+        let service = UserService::new(pool, Arc::new(AlwaysLimited));
+        let result = service
+            .authenticate(
+                LoginInput {
+                    identifier: "user@example.com".to_owned(),
+                    password: "incorrect password".to_owned(),
+                    totp_code: None,
+                },
+                "127.0.0.1",
+            )
+            .await;
+        assert!(matches!(result, Err(UserServiceError::RateLimited)));
+    }
 }

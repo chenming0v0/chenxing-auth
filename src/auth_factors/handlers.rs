@@ -1,9 +1,10 @@
 use axum::{
     Json,
-    extract::State,
+    extract::{ConnectInfo, Extension, State},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
 use super::{
     service::{PasskeyConfirmation, TotpConfirmation},
@@ -100,17 +101,22 @@ pub async fn start_totp_setup(
 
 pub async fn confirm_totp_setup(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     Json(input): Json<TotpConfirmInput>,
 ) -> Response {
+    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
     match state
         .factors
-        .confirm_totp_enrollment(&input.login_ticket, &input.code)
+        .confirm_totp_enrollment(&input.login_ticket, &source_ip, &input.code)
         .await
     {
         Ok(TotpConfirmation::Completed(user_id)) => {
             issue_user_session(&state, user_id, "totp").await
         }
         Ok(TotpConfirmation::InvalidCode) => {
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
+        }
+        Ok(TotpConfirmation::RateLimited) => {
             error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Ok(TotpConfirmation::InvalidTicket) => {
@@ -125,17 +131,22 @@ pub async fn confirm_totp_setup(
 
 pub async fn login_totp(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     Json(input): Json<TotpLoginInput>,
 ) -> Response {
+    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
     match state
         .factors
-        .confirm_totp_enrollment(&input.login_ticket, &input.code)
+        .confirm_totp_enrollment(&input.login_ticket, &source_ip, &input.code)
         .await
     {
         Ok(crate::auth_factors::service::TotpConfirmation::Completed(user_id)) => {
             return issue_user_session(&state, user_id, "totp").await;
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidCode) => {
+            return error::unauthorized("invalid_factor", "authentication factor is invalid");
+        }
+        Ok(crate::auth_factors::service::TotpConfirmation::RateLimited) => {
             return error::unauthorized("invalid_factor", "authentication factor is invalid");
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidTicket) => {}
@@ -146,13 +157,16 @@ pub async fn login_totp(
     }
     match state
         .factors
-        .verify_totp_login(&input.login_ticket, &input.code)
+        .verify_totp_login(&input.login_ticket, &source_ip, &input.code)
         .await
     {
         Ok(crate::auth_factors::service::TotpConfirmation::Completed(user_id)) => {
             issue_user_session(&state, user_id, "totp").await
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidCode) => {
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
+        }
+        Ok(crate::auth_factors::service::TotpConfirmation::RateLimited) => {
             error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidTicket) => {
