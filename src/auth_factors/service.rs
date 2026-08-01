@@ -215,7 +215,8 @@ impl AuthFactorService {
             return Ok(TotpConfirmation::InvalidCode);
         }
         let confirmation = persist_then_consume(
-            ticket.user_id,
+            TotpConfirmation::Completed(ticket.user_id),
+            TotpConfirmation::InvalidTicket,
             repository::insert_totp_factor(&self.pool, ticket.user_id, &pending.encrypted_secret),
             self.tickets.take(ticket_id),
         )
@@ -407,20 +408,26 @@ impl AuthFactorService {
         else {
             return Ok(PasskeyConfirmation::InvalidCredential);
         };
-        if self.tickets.take(ticket_id).await?.is_none() {
-            return Ok(PasskeyConfirmation::InvalidTicket);
-        }
-        if result.needs_update()
-            && passkey
-                .update_credential(&result)
-                .is_some_and(|changed| changed)
-        {
-            repository::update_passkey(&self.pool, result.cred_id(), passkey).await?;
-        }
+        let confirmation = persist_then_consume(
+            PasskeyConfirmation::Completed(ticket.user_id),
+            PasskeyConfirmation::InvalidTicket,
+            async {
+                if result.needs_update()
+                    && passkey
+                        .update_credential(&result)
+                        .is_some_and(|changed| changed)
+                {
+                    repository::update_passkey(&self.pool, result.cred_id(), passkey).await?;
+                }
+                Ok::<(), AuthFactorServiceError>(())
+            },
+            self.tickets.take(ticket_id),
+        )
+        .await?;
         self.tickets
             .delete(&Self::passkey_authentication_key(ticket_id))
             .await?;
-        Ok(PasskeyConfirmation::Completed(ticket.user_id))
+        Ok(confirmation)
     }
 
     fn totp_setup_key(ticket_id: &str) -> String {
