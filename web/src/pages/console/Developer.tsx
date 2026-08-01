@@ -11,19 +11,18 @@ import { CopyField, EndpointRow } from "../../components/CopyField";
 import { SCOPES } from "../../data/constants";
 import { useStore } from "../../store";
 import { cn } from "../../utils/cn";
+import { protocolUrl } from "../../utils/endpoints";
 
 const CLIENT_LIMIT = 2;
 
-/** Endpoints follow the browser origin, which is the issuer for a same-origin console. */
 function endpoints() {
-  const origin = window.location.origin;
   return [
-    { label: "Discovery", method: "GET", url: `${origin}/.well-known/openid-configuration` },
-    { label: "JWKS", method: "GET", url: `${origin}/.well-known/jwks.json` },
-    { label: "Authorization", method: "GET", url: `${origin}/oauth/authorize` },
-    { label: "Token", method: "POST", url: `${origin}/oauth/token` },
-    { label: "UserInfo", method: "GET", url: `${origin}/oauth/userinfo` },
-    { label: "Revocation", method: "POST", url: `${origin}/oauth/revoke` },
+    { label: "Discovery", method: "GET", url: protocolUrl("/.well-known/openid-configuration") },
+    { label: "JWKS", method: "GET", url: protocolUrl("/.well-known/jwks.json") },
+    { label: "Authorization", method: "GET", url: protocolUrl("/oauth/authorize") },
+    { label: "Token", method: "POST", url: protocolUrl("/oauth/token") },
+    { label: "UserInfo", method: "GET", url: protocolUrl("/oauth/userinfo") },
+    { label: "Revocation", method: "POST", url: protocolUrl("/oauth/revoke") },
   ];
 }
 
