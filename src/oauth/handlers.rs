@@ -148,7 +148,7 @@ pub async fn issue_authorization_code_result(
     else {
         return Err(error::bad_request("invalid_client", "client is invalid"));
     };
-    if let Some(owner_user_id) = client.owner_user_id {
+    let quota_consumed = if let Some(owner_user_id) = client.owner_user_id {
         let effective = match state.plans.effective_plan_for_user(owner_user_id).await {
             Ok(effective) => effective,
             Err(error_value) => {
@@ -170,12 +170,15 @@ pub async fn issue_authorization_code_result(
                 error::internal()
             })?
         {
-            QuotaConsumeResult::Allowed => {}
+            QuotaConsumeResult::Allowed => true,
             QuotaConsumeResult::DailyExceeded | QuotaConsumeResult::MonthlyExceeded => {
-                return Ok(AuthorizationCodeIssue::QuotaExceeded);
+                return Ok(AuthorizationCodeIssue::QuotaExceeded)
             }
         }
-    }
+    } else {
+        false
+    };
+    let client_id = validated.client_id.clone();
     let code = AuthorizationCode::new_with_nonce(
         validated.client_id,
         validated.redirect_uri.clone(),
@@ -186,6 +189,7 @@ pub async fn issue_authorization_code_result(
     );
     let state_value = validated.state;
     if let Err(store_error) = state.authorization_codes.save(&code).await {
+        refund_quota_if_consumed(state, &client_id, quota_consumed).await;
         tracing::error!(error = %store_error, "failed to store OAuth authorization code");
         return Err(error::internal());
     }
@@ -204,6 +208,7 @@ pub async fn issue_authorization_code_result(
     let mut redirect_uri = match url::Url::parse(&validated.redirect_uri) {
         Ok(uri) => uri,
         Err(parse_error) => {
+            refund_quota_if_consumed(state, &client_id, quota_consumed).await;
             tracing::error!(error = %parse_error, "validated redirect URI could not be parsed");
             return Err(error::internal());
         }
@@ -214,6 +219,19 @@ pub async fn issue_authorization_code_result(
         .append_pair("state", &state_value);
 
     Ok(AuthorizationCodeIssue::Redirect(redirect_uri.to_string()))
+}
+
+async fn refund_quota_if_consumed(state: &AppState, client_id: &str, consumed: bool) {
+    if !consumed {
+        return;
+    }
+    if let Err(error_value) = state.oauth_quotas.refund(client_id).await {
+        tracing::warn!(
+            client_id = %client_id,
+            error = %error_value,
+            "failed to refund OAuth authorization quota"
+        );
+    }
 }
 
 pub async fn issue_authorization_code(

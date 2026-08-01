@@ -25,6 +25,14 @@ if new_month == 1 then redis.call('EXPIREAT', KEYS[2], ARGV[4]) end
 return {1, 0, new_day, new_month}
 "#;
 
+const REFUND_SCRIPT: &str = r#"
+local day = tonumber(redis.call('GET', KEYS[1]) or '0')
+local month = tonumber(redis.call('GET', KEYS[2]) or '0')
+if day > 0 then redis.call('DECR', KEYS[1]) end
+if month > 0 then redis.call('DECR', KEYS[2]) end
+return 1
+"#;
+
 #[derive(Clone)]
 pub struct OAuthQuotaStore {
     client: Client,
@@ -93,6 +101,18 @@ impl OAuthQuotaStore {
             [0, 2, ..] => Ok(QuotaConsumeResult::MonthlyExceeded),
             _ => Err(OAuthQuotaError::InvalidResponse),
         }
+    }
+
+    pub async fn refund(&self, client_id: &str) -> Result<(), OAuthQuotaError> {
+        let now = OffsetDateTime::now_utc();
+        let (day_key, month_key, _, _) = period_keys(client_id, now)?;
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let _: i64 = Script::new(REFUND_SCRIPT)
+            .key(day_key)
+            .key(month_key)
+            .invoke_async(&mut connection)
+            .await?;
+        Ok(())
     }
 
     pub async fn snapshot(&self, client_id: &str) -> Result<QuotaSnapshot, OAuthQuotaError> {

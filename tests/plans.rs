@@ -12,6 +12,7 @@ use chenxing_auth::{
         authorization::ValidatedAuthorizationRequest,
         handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
         quota::QuotaConsumeResult,
+        store::AuthorizationCodeStore,
     },
     sessions::domain::Session,
     state::AppState,
@@ -406,6 +407,63 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
         .await
         .expect("authorization over daily limit");
     assert!(matches!(result, AuthorizationCodeIssue::QuotaExceeded));
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn authorization_code_save_failure_refunds_consumed_quota() {
+    let (mut state, _database, key_directory) = test_state().await;
+    let router = api::router(state.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&state, user_id).await;
+
+    let mut limits = serde_json::Map::new();
+    limits.insert("oauth_clients_limit".to_owned(), Value::from(1));
+    limits.insert("daily_auth_limit".to_owned(), Value::from(1));
+    limits.insert("monthly_auth_limit".to_owned(), Value::from(5));
+    limits.insert("max_qps".to_owned(), Value::Null);
+    let plan = create_plan(&router, &suffix, limits).await;
+    let plan_id = plan["id"].as_i64().expect("plan id");
+    assert_eq!(
+        assign_plan(&router, user_id, plan_id, None).await,
+        StatusCode::NO_CONTENT
+    );
+
+    let client = create_owned_client(&router, &cookie, &csrf, &suffix).await;
+    let client_id = client["client_id"].as_str().expect("client id").to_owned();
+    let validated = validated_request(&client_id, user_id);
+
+    state.authorization_codes = AuthorizationCodeStore::new(
+        redis::Client::open("redis://127.0.0.1:1").expect("unavailable Redis URL"),
+    );
+    let failed =
+        issue_authorization_code_result(&state, user_id.to_string(), validated.clone()).await;
+    assert!(failed.is_err(), "authorization code persistence must fail");
+
+    let snapshot = state
+        .oauth_quotas
+        .snapshot(&client_id)
+        .await
+        .expect("quota snapshot after refund");
+    assert_eq!(snapshot.daily_used, 0);
+    assert_eq!(snapshot.monthly_used, 0);
+
+    state.authorization_codes = AuthorizationCodeStore::new(state.redis.clone());
+    let retry = issue_authorization_code_result(&state, user_id.to_string(), validated)
+        .await
+        .expect("retry after quota refund");
+    assert!(matches!(retry, AuthorizationCodeIssue::Redirect(_)));
+
+    let snapshot = state
+        .oauth_quotas
+        .snapshot(&client_id)
+        .await
+        .expect("quota snapshot after successful retry");
+    assert_eq!(snapshot.daily_used, 1);
+    assert_eq!(snapshot.monthly_used, 1);
 
     let _ = std::fs::remove_dir_all(key_directory);
 }
