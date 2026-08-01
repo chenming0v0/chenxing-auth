@@ -12,10 +12,10 @@
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
-          "contentHeight": 2189,
+          "contentHeight": 2193,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-bd99f6f7",
-          "measuredAt": 1785495436794
+          "sourceHash": "fnv1a-69eb1105",
+          "measuredAt": 1785519792775
         }
       },
       "devMetadata": {
@@ -59,8 +59,8 @@
           "version": 1,
           "contentHeight": 1062,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-382ee327",
-          "measuredAt": 1785495436794
+          "sourceHash": "fnv1a-0a90bc68",
+          "measuredAt": 1785519792775
         }
       },
       "devMetadata": {
@@ -100,8 +100,8 @@
           "version": 1,
           "contentHeight": 1044,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-037bfa0d",
-          "measuredAt": 1785495436794
+          "sourceHash": "fnv1a-0272e480",
+          "measuredAt": 1785519792775
         }
       },
       "devMetadata": {
@@ -141,8 +141,8 @@
           "version": 1,
           "contentHeight": 1263,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-95712744",
-          "measuredAt": 1785492461078
+          "sourceHash": "fnv1a-b9da190e",
+          "measuredAt": 1785519792775
         }
       },
       "devMetadata": {
@@ -168,10 +168,10 @@
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
-          "contentHeight": 1093,
+          "contentHeight": 1062,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-oauth-account",
-          "measuredAt": 1785495436794
+          "sourceHash": "fnv1a-ba8eeed9",
+          "measuredAt": 1785519792775
         }
       },
       "devMetadata": {
@@ -191,10 +191,10 @@
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
-          "contentHeight": 1093,
+          "contentHeight": 1062,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-ccfb2b15",
-          "measuredAt": 1785492461078
+          "sourceHash": "fnv1a-09de3ca5",
+          "measuredAt": 1785519792775
         }
       },
       "devMetadata": {
@@ -226,10 +226,10 @@
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
-          "contentHeight": 1116,
+          "contentHeight": 1062,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-740905bb",
-          "measuredAt": 1785492461078
+          "sourceHash": "fnv1a-9d093a75",
+          "measuredAt": 1785519792775
         }
       },
       "devMetadata": {
@@ -241,7 +241,7 @@
       "id": "page-console-overview",
       "title": "控制台概览",
       "type": "page",
-      "version": 1,
+      "version": 2,
       "createdAt": 1785490508418,
       "canvasData": {
         "x": 1176,
@@ -249,10 +249,10 @@
         "group": 0,
         "layoutSnapshot": {
           "version": 1,
-          "contentHeight": 1140,
+          "contentHeight": 1172,
           "viewportWidth": 1440,
-          "sourceHash": "fnv1a-f9a5999b",
-          "measuredAt": 1785492461078
+          "sourceHash": "fnv1a-212e2dc9",
+          "measuredAt": 1785519792775
         }
       },
       "devMetadata": {
@@ -263,8 +263,506 @@
             "targetPageId": "page-landing",
             "hideEdge": true,
             "transitionLabel": "返回首页"
+          },
+          {
+            "domId": "dom-console-logout",
+            "targetPageId": "page-login",
+            "hideEdge": true,
+            "transitionLabel": "退出登录"
+          },
+          {
+            "domId": "dom-console-tab-plans",
+            "targetPageId": "page-console-plans"
+          },
+          {
+            "domId": "dom-console-tab-profile",
+            "targetPageId": "page-console-profile"
+          },
+          {
+            "domId": "dom-console-tab-apps",
+            "targetPageId": "page-console-authorized-apps"
+          },
+          {
+            "domId": "dom-console-tab-integrate",
+            "targetPageId": "page-console-integrate"
+          },
+          {
+            "domId": "dom-console-tab-playground",
+            "targetPageId": "page-console-playground"
+          },
+          {
+            "domId": "dom-admin-tab-dashboard",
+            "targetPageId": "page-admin-dashboard"
+          },
+          {
+            "domId": "dom-admin-tab-settings",
+            "targetPageId": "page-admin-settings"
           }
         ]
+      }
+    },
+    {
+      "id": "page-console-plans",
+      "title": "套餐与权益",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785500000000,
+      "canvasData": {
+        "x": 48,
+        "y": 876,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1061,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-b7e59771",
+          "measuredAt": 1785519792775
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/console-plans.html",
+        "interactions": [
+          {
+            "domId": "dom-console-home",
+            "targetPageId": "page-landing",
+            "hideEdge": true,
+            "transitionLabel": "返回首页"
+          },
+          {
+            "domId": "dom-console-logout",
+            "targetPageId": "page-login",
+            "hideEdge": true,
+            "transitionLabel": "退出登录"
+          },
+          {
+            "domId": "dom-console-tab-overview",
+            "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-console-tab-profile",
+            "targetPageId": "page-console-profile"
+          },
+          {
+            "domId": "dom-console-tab-apps",
+            "targetPageId": "page-console-authorized-apps"
+          },
+          {
+            "domId": "dom-console-tab-integrate",
+            "targetPageId": "page-console-integrate"
+          },
+          {
+            "domId": "dom-console-tab-playground",
+            "targetPageId": "page-console-playground"
+          },
+          {
+            "domId": "dom-admin-tab-dashboard",
+            "targetPageId": "page-admin-dashboard"
+          },
+          {
+            "domId": "dom-admin-tab-settings",
+            "targetPageId": "page-admin-settings"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-console-profile",
+      "title": "通行证资料",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785500000000,
+      "canvasData": {
+        "x": 576,
+        "y": 876,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1814,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-027bb4c9",
+          "measuredAt": 1785519792775
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/console-profile.html",
+        "interactions": [
+          {
+            "domId": "dom-console-home",
+            "targetPageId": "page-landing",
+            "hideEdge": true,
+            "transitionLabel": "返回首页"
+          },
+          {
+            "domId": "dom-console-logout",
+            "targetPageId": "page-login",
+            "hideEdge": true,
+            "transitionLabel": "退出登录"
+          },
+          {
+            "domId": "dom-console-tab-overview",
+            "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-console-tab-plans",
+            "targetPageId": "page-console-plans"
+          },
+          {
+            "domId": "dom-console-tab-apps",
+            "targetPageId": "page-console-authorized-apps"
+          },
+          {
+            "domId": "dom-console-tab-integrate",
+            "targetPageId": "page-console-integrate"
+          },
+          {
+            "domId": "dom-console-tab-playground",
+            "targetPageId": "page-console-playground"
+          },
+          {
+            "domId": "dom-admin-tab-dashboard",
+            "targetPageId": "page-admin-dashboard"
+          },
+          {
+            "domId": "dom-admin-tab-settings",
+            "targetPageId": "page-admin-settings"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-console-authorized-apps",
+      "title": "已授权应用",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785500000000,
+      "canvasData": {
+        "x": 1680,
+        "y": 876,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1040,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-2e1b48bd",
+          "measuredAt": 1785519792775
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/console-authorized-apps.html",
+        "interactions": [
+          {
+            "domId": "dom-console-home",
+            "targetPageId": "page-landing",
+            "hideEdge": true,
+            "transitionLabel": "返回首页"
+          },
+          {
+            "domId": "dom-console-logout",
+            "targetPageId": "page-login",
+            "hideEdge": true,
+            "transitionLabel": "退出登录"
+          },
+          {
+            "domId": "dom-console-tab-overview",
+            "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-console-tab-plans",
+            "targetPageId": "page-console-plans"
+          },
+          {
+            "domId": "dom-console-tab-profile",
+            "targetPageId": "page-console-profile"
+          },
+          {
+            "domId": "dom-console-tab-integrate",
+            "targetPageId": "page-console-integrate"
+          },
+          {
+            "domId": "dom-console-tab-playground",
+            "targetPageId": "page-console-playground"
+          },
+          {
+            "domId": "dom-admin-tab-dashboard",
+            "targetPageId": "page-admin-dashboard"
+          },
+          {
+            "domId": "dom-admin-tab-settings",
+            "targetPageId": "page-admin-settings"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-console-integrate",
+      "title": "接入应用",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785500000000,
+      "canvasData": {
+        "x": 5112,
+        "y": 1400,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1966,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-96cc9913",
+          "measuredAt": 1785519792775
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/console-integrate.html",
+        "interactions": [
+          {
+            "domId": "dom-console-home",
+            "targetPageId": "page-landing",
+            "hideEdge": true,
+            "transitionLabel": "返回首页"
+          },
+          {
+            "domId": "dom-console-logout",
+            "targetPageId": "page-login",
+            "hideEdge": true,
+            "transitionLabel": "退出登录"
+          },
+          {
+            "domId": "dom-console-tab-overview",
+            "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-console-tab-plans",
+            "targetPageId": "page-console-plans"
+          },
+          {
+            "domId": "dom-console-tab-profile",
+            "targetPageId": "page-console-profile"
+          },
+          {
+            "domId": "dom-console-tab-apps",
+            "targetPageId": "page-console-authorized-apps"
+          },
+          {
+            "domId": "dom-console-tab-playground",
+            "targetPageId": "page-console-playground"
+          },
+          {
+            "domId": "dom-admin-tab-dashboard",
+            "targetPageId": "page-admin-dashboard"
+          },
+          {
+            "domId": "dom-admin-tab-settings",
+            "targetPageId": "page-admin-settings"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-console-playground",
+      "title": "授权测试",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785500000000,
+      "canvasData": {
+        "x": 6812,
+        "y": 1400,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1811,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-e5ebd56e",
+          "measuredAt": 1785519792775
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/console-playground.html",
+        "interactions": [
+          {
+            "domId": "dom-console-home",
+            "targetPageId": "page-landing",
+            "hideEdge": true,
+            "transitionLabel": "返回首页"
+          },
+          {
+            "domId": "dom-playground-register",
+            "targetPageId": "page-console-integrate",
+            "transitionLabel": "前往接入应用"
+          },
+          {
+            "domId": "dom-console-logout",
+            "targetPageId": "page-login",
+            "hideEdge": true,
+            "transitionLabel": "退出登录"
+          },
+          {
+            "domId": "dom-console-tab-overview",
+            "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-console-tab-plans",
+            "targetPageId": "page-console-plans"
+          },
+          {
+            "domId": "dom-console-tab-profile",
+            "targetPageId": "page-console-profile"
+          },
+          {
+            "domId": "dom-console-tab-apps",
+            "targetPageId": "page-console-authorized-apps"
+          },
+          {
+            "domId": "dom-console-tab-integrate",
+            "targetPageId": "page-console-integrate"
+          },
+          {
+            "domId": "dom-admin-tab-dashboard",
+            "targetPageId": "page-admin-dashboard"
+          },
+          {
+            "domId": "dom-admin-tab-settings",
+            "targetPageId": "page-admin-settings"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-admin-settings",
+      "title": "系统设置 · 后台",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785500000000,
+      "canvasData": {
+        "x": 1152,
+        "y": 876,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 2595,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-39fd161a",
+          "measuredAt": 1785519792775
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/admin-settings.html",
+        "interactions": [
+          {
+            "domId": "dom-console-home",
+            "targetPageId": "page-landing",
+            "hideEdge": true,
+            "transitionLabel": "返回首页"
+          },
+          {
+            "domId": "dom-console-logout",
+            "targetPageId": "page-login",
+            "hideEdge": true,
+            "transitionLabel": "退出登录"
+          },
+          {
+            "domId": "dom-console-tab-overview",
+            "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-console-tab-plans",
+            "targetPageId": "page-console-plans"
+          },
+          {
+            "domId": "dom-console-tab-profile",
+            "targetPageId": "page-console-profile"
+          },
+          {
+            "domId": "dom-console-tab-apps",
+            "targetPageId": "page-console-authorized-apps"
+          },
+          {
+            "domId": "dom-console-tab-integrate",
+            "targetPageId": "page-console-integrate"
+          },
+          {
+            "domId": "dom-console-tab-playground",
+            "targetPageId": "page-console-playground"
+          },
+          {
+            "domId": "dom-admin-tab-dashboard",
+            "targetPageId": "page-admin-dashboard"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-admin-dashboard",
+      "title": "仪表盘 · 后台",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785500000001,
+      "canvasData": {
+        "x": -448,
+        "y": 876,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/admin-dashboard.html",
+        "interactions": [
+          {
+            "domId": "dom-console-home",
+            "targetPageId": "page-landing",
+            "hideEdge": true,
+            "transitionLabel": "返回首页"
+          },
+          {
+            "domId": "dom-console-logout",
+            "targetPageId": "page-login",
+            "hideEdge": true,
+            "transitionLabel": "退出登录"
+          },
+          {
+            "domId": "dom-console-tab-overview",
+            "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-console-tab-plans",
+            "targetPageId": "page-console-plans"
+          },
+          {
+            "domId": "dom-console-tab-profile",
+            "targetPageId": "page-console-profile"
+          },
+          {
+            "domId": "dom-console-tab-apps",
+            "targetPageId": "page-console-authorized-apps"
+          },
+          {
+            "domId": "dom-console-tab-integrate",
+            "targetPageId": "page-console-integrate"
+          },
+          {
+            "domId": "dom-console-tab-playground",
+            "targetPageId": "page-console-playground"
+          },
+          {
+            "domId": "dom-admin-tab-settings",
+            "targetPageId": "page-admin-settings"
+          }
+        ]
+      }
+    },
+    {
+      "id": "image-001",
+      "title": "品牌 Logo · 天穹辰星",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1785500000000,
+      "canvasData": {
+        "x": 2988,
+        "y": -600,
+        "naturalSize": {
+          "width": 512,
+          "height": 512
+        }
+      },
+      "devMetadata": {
+        "imageSrc": "assets/logo.png"
       }
     }
   ],

@@ -1,0 +1,39 @@
+<!--
+  Shared console TOP BAR for 辰星通行证 用户中心.
+
+  Copy verbatim into each console page as the first child of .chenxing-console-main.
+  Per page: set the page title text in [data-topbar-title].
+  On mobile (below lg) the left side shows the logo since the sidebar is hidden.
+  CSS: .chenxing-topbar / .chenxing-menu in colors_and_type.css
+  Requires the [data-menu-toggle] handler from the page tail script.
+-->
+<header class="chenxing-topbar">
+  <!-- left: mobile logo + page title -->
+  <div class="flex items-center gap-3">
+    <a href="landing.html" class="flex items-center gap-2 lg:hidden" data-dom-id="dom-console-home">
+      <img src="../assets/logo.png" alt="天穹辰星" class="h-8 w-8 rounded-[var(--chenxing-radius-md)]" />
+      <span class="chenxing-wordmark text-aurora text-sm">天穹辰星</span>
+    </a>
+    <h1 data-topbar-title class="chenxing-h2 hidden text-base lg:block">总览</h1>
+  </div>
+
+  <!-- right: status + notifications + avatar dropdown -->
+  <div class="flex items-center gap-3">
+    <span class="chenxing-chip hidden sm:inline-flex"><span class="chenxing-dot h-1.5 w-1.5 rounded-full bg-[var(--chenxing-success)]"></span>星门在线</span>
+    <button type="button" class="chenxing-icon-btn" aria-label="通知"><i data-lucide="bell" class="h-4 w-4"></i></button>
+    <div class="relative">
+      <button type="button" data-menu-toggle class="flex items-center gap-2 rounded-full border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)] py-1 pl-1 pr-2 transition-colors hover:border-[var(--chenxing-border-strong)]">
+        <span class="chenxing-avatar h-8 w-8 text-sm">辰</span>
+        <span class="chenxing-body hidden text-sm sm:block">辰林</span>
+        <i data-lucide="chevron-down" class="h-4 w-4 text-[var(--chenxing-muted-foreground)]"></i>
+      </button>
+      <div data-menu class="chenxing-menu absolute right-0 top-full z-50 mt-2 hidden">
+        <a href="console-profile.html" class="chenxing-menu-item"><i data-lucide="settings" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>个人设置</a>
+        <button class="chenxing-menu-item"><i data-lucide="key-round" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>令牌管理</button>
+        <button class="chenxing-menu-item"><i data-lucide="wallet" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>钱包管理</button>
+        <div class="chenxing-divider my-1"></div>
+        <a href="login.html" class="chenxing-menu-item" data-dom-id="dom-console-logout"><i data-lucide="log-out" class="h-4 w-4 text-[var(--chenxing-error)]"></i>退出登录</a>
+      </div>
+    </div>
+  </div>
+</header>

@@ -1,3 +1,10 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>已授权应用 · 辰星认证中枢</title>
+    <style id="theme-vars">
 @import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700;800&family=Exo+2:wght@300;400;500;600;700&family=Share+Tech+Mono&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap");
 
 /* ============================================================
@@ -709,3 +716,358 @@ td.chenxing-label {
 ::-webkit-scrollbar-thumb { background: linear-gradient(180deg, #1e4b8a, #0f2b52); border-radius: 99px; border: 2px solid #04060d; }
 ::-webkit-scrollbar-thumb:hover { background: #2a6bb8; }
 ::selection { background: rgba(56, 189, 248, 0.4); color: #fff; }
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--chenxing-background);
+    --color-foreground: var(--chenxing-foreground);
+    --color-card: var(--chenxing-card);
+    --color-card-foreground: var(--chenxing-card-foreground);
+    --color-popover: var(--chenxing-popover);
+    --color-popover-foreground: var(--chenxing-popover-foreground);
+    --color-primary: var(--chenxing-primary);
+    --color-primary-foreground: var(--chenxing-primary-foreground);
+    --color-muted: var(--chenxing-muted);
+    --color-muted-foreground: var(--chenxing-muted-foreground);
+    --color-border: var(--chenxing-border);
+    --color-input: var(--chenxing-input);
+    --color-ring: var(--chenxing-ring);
+    --radius-sm: var(--chenxing-radius-sm);
+    --radius-md: var(--chenxing-radius-md);
+    --radius-lg: var(--chenxing-radius-lg);
+    --radius-xl: var(--chenxing-radius-xl);
+  }
+  @layer base {
+    body { background: var(--chenxing-background); color: var(--chenxing-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--chenxing-background); }
+      .text-background { color: var(--chenxing-background); }
+      .border-background { border-color: var(--chenxing-background); }
+      .ring-background { --tw-ring-color: var(--chenxing-background); }
+      .bg-foreground { background-color: var(--chenxing-foreground); }
+      .text-foreground { color: var(--chenxing-foreground); }
+      .border-foreground { border-color: var(--chenxing-foreground); }
+      .ring-foreground { --tw-ring-color: var(--chenxing-foreground); }
+      .bg-card { background-color: var(--chenxing-card); }
+      .text-card { color: var(--chenxing-card); }
+      .border-card { border-color: var(--chenxing-card); }
+      .ring-card { --tw-ring-color: var(--chenxing-card); }
+      .bg-card-foreground { background-color: var(--chenxing-card-foreground); }
+      .text-card-foreground { color: var(--chenxing-card-foreground); }
+      .border-card-foreground { border-color: var(--chenxing-card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--chenxing-card-foreground); }
+      .bg-popover { background-color: var(--chenxing-popover); }
+      .text-popover { color: var(--chenxing-popover); }
+      .border-popover { border-color: var(--chenxing-popover); }
+      .ring-popover { --tw-ring-color: var(--chenxing-popover); }
+      .bg-popover-foreground { background-color: var(--chenxing-popover-foreground); }
+      .text-popover-foreground { color: var(--chenxing-popover-foreground); }
+      .border-popover-foreground { border-color: var(--chenxing-popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--chenxing-popover-foreground); }
+      .bg-primary { background-color: var(--chenxing-primary); }
+      .text-primary { color: var(--chenxing-primary); }
+      .border-primary { border-color: var(--chenxing-primary); }
+      .ring-primary { --tw-ring-color: var(--chenxing-primary); }
+      .bg-primary-foreground { background-color: var(--chenxing-primary-foreground); }
+      .text-primary-foreground { color: var(--chenxing-primary-foreground); }
+      .border-primary-foreground { border-color: var(--chenxing-primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--chenxing-primary-foreground); }
+      .bg-muted { background-color: var(--chenxing-muted); }
+      .text-muted { color: var(--chenxing-muted); }
+      .border-muted { border-color: var(--chenxing-muted); }
+      .ring-muted { --tw-ring-color: var(--chenxing-muted); }
+      .bg-muted-foreground { background-color: var(--chenxing-muted-foreground); }
+      .text-muted-foreground { color: var(--chenxing-muted-foreground); }
+      .border-muted-foreground { border-color: var(--chenxing-muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--chenxing-muted-foreground); }
+      .bg-border { background-color: var(--chenxing-border); }
+      .text-border { color: var(--chenxing-border); }
+      .border-border { border-color: var(--chenxing-border); }
+      .ring-border { --tw-ring-color: var(--chenxing-border); }
+      .bg-input { background-color: var(--chenxing-input); }
+      .text-input { color: var(--chenxing-input); }
+      .border-input { border-color: var(--chenxing-input); }
+      .ring-input { --tw-ring-color: var(--chenxing-input); }
+      .bg-ring { background-color: var(--chenxing-ring); }
+      .text-ring { color: var(--chenxing-ring); }
+      .border-ring { border-color: var(--chenxing-ring); }
+      .ring-ring { --tw-ring-color: var(--chenxing-ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body class="min-h-screen font-sans antialiased">
+        <main>
+<!-- deep space layers -->
+<div class="chenxing-nebula left-[-14%] top-[-18%] h-[560px] w-[560px] bg-[var(--chenxing-primary)] opacity-15"></div>
+<div class="chenxing-nebula right-[-12%] top-[30%] h-[480px] w-[480px] bg-[var(--chenxing-cyan)] opacity-10"></div>
+<canvas id="starfield" class="absolute inset-0 h-full w-full opacity-40"></canvas>
+<div class="chenxing-grid absolute inset-0 -z-10"></div>
+<div class="chenxing-vignette absolute inset-0 -z-10"></div>
+<!--
+  Shared console LEFT SIDEBAR (New API style) for 辰星通行证 用户中心.
+
+  Copy verbatim into each console page's layout as the first flex child, then:
+  - set aria-current="page" on the active .chenxing-nav-item;
+  - keep data-dom-id="dom-console-tab-<key>" for .design interaction edges.
+
+  Tab keys: overview / plans / profile / apps / integrate / playground
+  Desktop only (hidden below lg). CSS: .chenxing-sidebar / .chenxing-nav-item in colors_and_type.css
+-->
+<aside class="chenxing-sidebar flex">
+  <!-- brand: logo.png + aurora wordmark -->
+  <a href="landing.html" class="flex items-center gap-3 px-2" data-dom-id="dom-console-home">
+    <img src="../assets/logo.png" alt="天穹辰星" class="chenxing-brand-logo" />
+    <span>
+      <span class="chenxing-wordmark text-aurora block text-base">天穹辰星</span>
+      <span class="chenxing-mono block text-[9px] uppercase tracking-[0.24em] text-[var(--chenxing-muted-foreground)]">用户中心</span>
+    </span>
+  </a>
+
+  <nav class="chenxing-sidebar-scroll mt-5 no-scrollbar">
+    <p class="chenxing-nav-label">账户</p>
+    <a class="chenxing-nav-item" data-dom-id="dom-console-tab-overview" href="console-overview.html"><i data-lucide="layout-grid" class="h-4 w-4"></i>总览</a>
+    <a class="chenxing-nav-item" data-dom-id="dom-console-tab-plans" href="console-plans.html"><i data-lucide="crown" class="h-4 w-4"></i>套餐与权益</a>
+    <a class="chenxing-nav-item" data-dom-id="dom-console-tab-profile" href="console-profile.html"><i data-lucide="user" class="h-4 w-4"></i>个人信息</a>
+    <a class="chenxing-nav-item" aria-current="page" data-dom-id="dom-console-tab-apps" href="console-authorized-apps.html"><i data-lucide="shield-check" class="h-4 w-4"></i>已授权应用</a>
+
+    <p class="chenxing-nav-label">开发者</p>
+    <a class="chenxing-nav-item" data-dom-id="dom-console-tab-integrate" href="console-integrate.html"><i data-lucide="code-2" class="h-4 w-4"></i>接入应用</a>
+    <a class="chenxing-nav-item" data-dom-id="dom-console-tab-playground" href="console-playground.html"><i data-lucide="flask-conical" class="h-4 w-4"></i>授权测试</a>
+
+    <p class="chenxing-nav-label">管理</p>
+    <a class="chenxing-nav-item" data-dom-id="dom-admin-tab-dashboard" href="admin-dashboard.html"><i data-lucide="gauge" class="h-4 w-4"></i>仪表盘</a>
+    <a class="chenxing-nav-item" href="#"><i data-lucide="users" class="h-4 w-4"></i>用户管理</a>
+    <a class="chenxing-nav-item" href="#"><i data-lucide="layers" class="h-4 w-4"></i>客户端管理</a>
+
+    <p class="chenxing-nav-label">安全</p>
+    <a class="chenxing-nav-item" href="#"><i data-lucide="key-round" class="h-4 w-4"></i>密钥环</a>
+    <a class="chenxing-nav-item" href="#"><i data-lucide="scroll-text" class="h-4 w-4"></i>审计日志</a>
+
+    <p class="chenxing-nav-label">系统</p>
+    <a class="chenxing-nav-item" data-dom-id="dom-admin-tab-settings" href="admin-settings.html"><i data-lucide="settings" class="h-4 w-4"></i>系统设置</a>
+  </nav>
+</aside>
+
+<div class="chenxing-console-main relative z-10 flex min-h-screen flex-col">
+<!--
+  Shared console TOP BAR for 辰星通行证 用户中心.
+
+  Copy verbatim into each console page as the first child of .chenxing-console-main.
+  Per page: set the page title text in [data-topbar-title].
+  On mobile (below lg) the left side shows the logo since the sidebar is hidden.
+  CSS: .chenxing-topbar / .chenxing-menu in colors_and_type.css
+  Requires the [data-menu-toggle] handler from the page tail script.
+-->
+<header class="chenxing-topbar">
+  <!-- left: mobile logo + page title -->
+  <div class="flex items-center gap-3">
+    <a href="landing.html" class="flex items-center gap-2 lg:hidden" data-dom-id="dom-console-home">
+      <img src="../assets/logo.png" alt="天穹辰星" class="h-8 w-8 rounded-[var(--chenxing-radius-md)]" />
+      <span class="chenxing-wordmark text-aurora text-sm">天穹辰星</span>
+    </a>
+    <h1 data-topbar-title class="chenxing-h2 hidden text-base lg:block">已授权应用</h1>
+  </div>
+
+  <!-- right: status + notifications + avatar dropdown -->
+  <div class="flex items-center gap-3">
+    <span class="chenxing-chip hidden sm:inline-flex"><span class="chenxing-dot h-1.5 w-1.5 rounded-full bg-[var(--chenxing-success)]"></span>星门在线</span>
+    <button type="button" class="chenxing-icon-btn" aria-label="通知"><i data-lucide="bell" class="h-4 w-4"></i></button>
+    <div class="relative">
+      <button type="button" data-menu-toggle class="flex items-center gap-2 rounded-full border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)] py-1 pl-1 pr-2 transition-colors hover:border-[var(--chenxing-border-strong)]">
+        <span class="chenxing-avatar h-8 w-8 text-sm">辰</span>
+        <span class="chenxing-body hidden text-sm sm:block">辰林</span>
+        <i data-lucide="chevron-down" class="h-4 w-4 text-[var(--chenxing-muted-foreground)]"></i>
+      </button>
+      <div data-menu class="chenxing-menu absolute right-0 top-full z-50 mt-2 hidden">
+        <a href="console-profile.html" class="chenxing-menu-item"><i data-lucide="settings" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>个人设置</a>
+        <button class="chenxing-menu-item"><i data-lucide="key-round" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>令牌管理</button>
+        <button class="chenxing-menu-item"><i data-lucide="wallet" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>钱包管理</button>
+        <div class="chenxing-divider my-1"></div>
+        <a href="login.html" class="chenxing-menu-item" data-dom-id="dom-console-logout"><i data-lucide="log-out" class="h-4 w-4 text-[var(--chenxing-error)]"></i>退出登录</a>
+      </div>
+    </div>
+  </div>
+</header>
+
+  <div class="chenxing-console-content flex-1 px-4 py-6 pb-28 sm:px-6 lg:px-8 lg:pb-10">
+    <!-- heading -->
+    <div class="mb-6">
+      <p class="chenxing-mono text-[11px] uppercase tracking-[0.24em] text-[var(--chenxing-cyan)]">// Connections</p>
+      <h1 class="chenxing-h1 mt-2">已授权应用</h1>
+      <p class="chenxing-caption mt-2 max-w-2xl">管理已通过辰星通行证登录的第三方应用与其权限范围。</p>
+    </div>
+
+    <!-- summary strip -->
+    <div class="mb-6 grid grid-cols-3 gap-3 sm:gap-4">
+      <div class="chenxing-hud-panel !p-4 sm:!p-5">
+        <p class="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">已授权应用</p>
+        <p class="chenxing-display mt-2 text-3xl font-bold text-aurora">3</p>
+      </div>
+      <div class="chenxing-hud-panel !p-4 sm:!p-5">
+        <p class="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">开放权限域</p>
+        <p class="chenxing-display mt-2 text-3xl font-bold text-aurora">6</p>
+      </div>
+      <div class="chenxing-hud-panel !p-4 sm:!p-5">
+        <p class="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">近 30 天登录</p>
+        <p class="chenxing-display mt-2 text-3xl font-bold text-aurora">42</p>
+      </div>
+    </div>
+
+    <!-- authorized app list -->
+    <div class="space-y-4">
+      <!-- app card 1 -->
+      <article class="chenxing-hud-panel !p-5 sm:!p-6">
+        <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+          <div class="min-w-0 flex-1">
+            <div class="flex items-start gap-4">
+              <span class="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[linear-gradient(135deg,var(--chenxing-primary),var(--chenxing-cyan))] text-[var(--chenxing-primary-foreground)] shadow-[var(--chenxing-shadow-cyan-float)]">
+                <i data-lucide="box" class="h-6 w-6"></i>
+              </span>
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <h3 class="chenxing-h3">星尘控制台</h3>
+                  <span class="chenxing-badge chenxing-badge-success"><span class="chenxing-dot text-[var(--chenxing-success)]"><i data-lucide="check" class="h-3 w-3"></i></span>已连接</span>
+                </div>
+                <p class="chenxing-caption mt-1">授权时间 2025-11-04 · 主控运维台</p>
+              </div>
+            </div>
+            <div class="mt-4 flex flex-wrap gap-2">
+              <span class="chenxing-chip"><i data-lucide="fingerprint" class="h-3.5 w-3.5"></i>openid</span>
+              <span class="chenxing-chip"><i data-lucide="id-card" class="h-3.5 w-3.5"></i>profile</span>
+              <span class="chenxing-chip"><i data-lucide="mail" class="h-3.5 w-3.5"></i>email</span>
+              <span class="chenxing-chip"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>offline_access</span>
+            </div>
+            <p class="chenxing-caption mt-3">最近使用 2 小时前 · IP 172.16.4.21</p>
+          </div>
+          <div class="flex shrink-0 items-center gap-4 lg:flex-col lg:items-end lg:gap-3">
+            <button class="chenxing-btn-ghost px-4 py-2"><i data-lucide="eye" class="h-4 w-4"></i>查看详情</button>
+            <a class="chenxing-link inline-flex items-center gap-1.5 text-[var(--chenxing-error)] hover:text-[var(--chenxing-error)]"><i data-lucide="unlink" class="h-4 w-4"></i>撤销授权</a>
+          </div>
+        </div>
+      </article>
+      <!-- app card 2 -->
+      <article class="chenxing-hud-panel !p-5 sm:!p-6">
+        <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+          <div class="min-w-0 flex-1">
+            <div class="flex items-start gap-4">
+              <span class="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[linear-gradient(135deg,var(--chenxing-cyan),var(--chenxing-primary))] text-[var(--chenxing-primary-foreground)] shadow-[var(--chenxing-shadow-cyan-float)]">
+                <i data-lucide="terminal" class="h-6 w-6"></i>
+              </span>
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <h3 class="chenxing-h3">猎户开发板</h3>
+                  <span class="chenxing-badge chenxing-badge-success"><span class="chenxing-dot text-[var(--chenxing-success)]"><i data-lucide="check" class="h-3 w-3"></i></span>已连接</span>
+                </div>
+                <p class="chenxing-caption mt-1">授权时间 2025-09-18 · 开发者沙盒</p>
+              </div>
+            </div>
+            <div class="mt-4 flex flex-wrap gap-2">
+              <span class="chenxing-chip"><i data-lucide="fingerprint" class="h-3.5 w-3.5"></i>openid</span>
+              <span class="chenxing-chip"><i data-lucide="id-card" class="h-3.5 w-3.5"></i>profile</span>
+            </div>
+            <p class="chenxing-caption mt-3">最近使用 3 天前 · IP 10.24.8.7</p>
+          </div>
+          <div class="flex shrink-0 items-center gap-4 lg:flex-col lg:items-end lg:gap-3">
+            <button class="chenxing-btn-ghost px-4 py-2"><i data-lucide="eye" class="h-4 w-4"></i>查看详情</button>
+            <a class="chenxing-link inline-flex items-center gap-1.5 text-[var(--chenxing-error)] hover:text-[var(--chenxing-error)]"><i data-lucide="unlink" class="h-4 w-4"></i>撤销授权</a>
+          </div>
+        </div>
+      </article>
+      <!-- app card 3 -->
+      <article class="chenxing-hud-panel !p-5 sm:!p-6">
+        <div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+          <div class="min-w-0 flex-1">
+            <div class="flex items-start gap-4">
+              <span class="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[linear-gradient(135deg,var(--chenxing-primary),var(--chenxing-cyan))] text-[var(--chenxing-primary-foreground)] shadow-[var(--chenxing-shadow-cyan-float)]">
+                <i data-lucide="gamepad-2" class="h-6 w-6"></i>
+              </span>
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <h3 class="chenxing-h3">织女游戏中心</h3>
+                  <span class="chenxing-badge chenxing-badge-success"><span class="chenxing-dot text-[var(--chenxing-success)]"><i data-lucide="check" class="h-3 w-3"></i></span>已连接</span>
+                </div>
+                <p class="chenxing-caption mt-1">授权时间 2026-01-22 · 星际娱乐平台</p>
+              </div>
+            </div>
+            <div class="mt-4 flex flex-wrap gap-2">
+              <span class="chenxing-chip"><i data-lucide="fingerprint" class="h-3.5 w-3.5"></i>openid</span>
+              <span class="chenxing-chip"><i data-lucide="id-card" class="h-3.5 w-3.5"></i>profile</span>
+              <span class="chenxing-chip"><i data-lucide="mail" class="h-3.5 w-3.5"></i>email</span>
+            </div>
+            <p class="chenxing-caption mt-3">最近使用 12 分钟前 · IP 172.16.4.21</p>
+          </div>
+          <div class="flex shrink-0 items-center gap-4 lg:flex-col lg:items-end lg:gap-3">
+            <button class="chenxing-btn-ghost px-4 py-2"><i data-lucide="eye" class="h-4 w-4"></i>查看详情</button>
+            <a class="chenxing-link inline-flex items-center gap-1.5 text-[var(--chenxing-error)] hover:text-[var(--chenxing-error)]"><i data-lucide="unlink" class="h-4 w-4"></i>撤销授权</a>
+          </div>
+        </div>
+      </article>
+    </div>
+
+    <!-- revoke hint -->
+    <div class="chenxing-hud-panel mt-6 !p-5">
+      <div class="flex items-start gap-3">
+        <span class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--chenxing-cyan-soft)] text-[var(--chenxing-cyan)]">
+          <i data-lucide="shield" class="h-5 w-5"></i>
+        </span>
+        <p class="chenxing-caption leading-relaxed">撤销授权后，该应用将无法再获取你的辰星身份信息，需要重新授权。</p>
+      </div>
+    </div>
+  </div>
+</div>
+    </main>
+    <script>
+      (function () {
+        var c = document.getElementById("starfield"); if (!c) return;
+        var x = c.getContext("2d"); var w, h, stars = [], t = 0;
+        function rs() {
+          w = c.width = c.offsetWidth * devicePixelRatio; h = c.height = c.offsetHeight * devicePixelRatio;
+          stars = []; var n = Math.floor(w * h / 11000);
+          for (var i = 0; i < n; i++) stars.push({ x: Math.random() * w, y: Math.random() * h, z: Math.random(), r: Math.random() * 1.2 + 0.3, tw: Math.random() * 6.28, sp: Math.random() * 0.04 + 0.006 });
+        }
+        rs(); window.addEventListener("resize", rs);
+        function draw() {
+          t += 0.016; x.clearRect(0, 0, w, h);
+          for (var i = 0; i < stars.length; i++) {
+            var s = stars[i]; s.y -= s.sp * (0.4 + s.z) * devicePixelRatio;
+            if (s.y < -4) { s.y = h + 4; s.x = Math.random() * w; }
+            var a = 0.25 + 0.75 * Math.abs(Math.sin(t * (0.5 + s.z) + s.tw));
+            var hue = s.z > 0.7 ? "178,230,255" : s.z > 0.35 ? "196,220,253" : "255,255,255";
+            x.beginPath(); x.arc(s.x, s.y, s.r * devicePixelRatio, 0, 6.283);
+            x.fillStyle = "rgba(" + hue + "," + (a * (0.3 + s.z * 0.7)) + ")"; x.fill();
+          }
+          requestAnimationFrame(draw);
+        }
+        requestAnimationFrame(draw);
+      })();
+      document.querySelectorAll("[data-menu-toggle]").forEach(function (b) {
+        b.addEventListener("click", function () {
+          var m = b.parentElement.querySelector("[data-menu]"); if (m) m.classList.toggle("hidden");
+        });
+      });
+    </script>
+    <script>lucide.createIcons();</script>
+</body>
+</html>

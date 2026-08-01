@@ -248,6 +248,8 @@ main {
   font-weight: 600;
   font-size: 0.9375rem;
   color: var(--chenxing-primary-foreground);
+  padding: 0.65rem 1.25rem;
+  white-space: nowrap;
   background: linear-gradient(120deg, #36b0fa, #1d8ff0 52%, #58d2ff);
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: var(--chenxing-radius-md);
@@ -268,6 +270,8 @@ main {
   font-weight: 500;
   font-size: 0.875rem;
   color: var(--chenxing-foreground);
+  padding: 0.65rem 1.25rem;
+  white-space: nowrap;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--chenxing-border);
   border-radius: var(--chenxing-radius-md);
@@ -312,6 +316,41 @@ main {
 }
 .chenxing-field.chenxing-field-error { border-color: var(--chenxing-error); box-shadow: 0 0 0 3px var(--chenxing-error-soft); }
 
+/* field shell: flex wrapper for icon + bare input (+ optional trailing button) */
+.chenxing-field-shell {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0 0.9rem;
+  background: rgba(4, 8, 16, 0.6);
+  border: 1px solid var(--chenxing-input);
+  border-radius: var(--chenxing-radius-md);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.chenxing-field-shell input,
+.chenxing-field-shell select {
+  flex: 1;
+  min-width: 0;
+  padding: 0.8rem 0;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.9375rem;
+  color: var(--chenxing-foreground);
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+.chenxing-field-shell input::placeholder { color: rgba(147, 167, 199, 0.55); }
+.chenxing-field-shell:focus-within {
+  border-color: var(--chenxing-primary);
+  box-shadow: 0 0 0 3px var(--chenxing-primary-soft), 0 0 18px rgba(56, 189, 248, 0.18);
+}
+.chenxing-field-shell.chenxing-field-error { border-color: var(--chenxing-error); box-shadow: 0 0 0 3px var(--chenxing-error-soft); }
+.chenxing-field-icon {
+  flex-shrink: 0;
+  color: var(--chenxing-muted-foreground);
+  pointer-events: none;
+}
+
 .chenxing-label {
   display: block;
   font-family: var(--chenxing-font-mono);
@@ -320,6 +359,12 @@ main {
   text-transform: uppercase;
   color: var(--chenxing-muted-foreground);
   margin-bottom: 0.5rem;
+}
+/* inside tables the label must stay a real cell, not a block */
+th.chenxing-label,
+td.chenxing-label {
+  display: table-cell;
+  margin-bottom: 0;
 }
 
 /* ---------- chips / badges / links / dividers ---------- */
@@ -330,19 +375,23 @@ main {
   font-family: var(--chenxing-font-mono);
   font-size: 0.6875rem;
   letter-spacing: 0.08em;
+  white-space: nowrap;
   color: var(--chenxing-cyan);
   background: var(--chenxing-cyan-soft);
   border: 1px solid rgba(103, 232, 249, 0.24);
   border-radius: var(--chenxing-radius-pill);
   padding: 0.3rem 0.7rem;
 }
-.chenxing-badge {
+.chenxing-badge,
+.chenxing-badge-success,
+.chenxing-badge-warning {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   font-family: var(--chenxing-font-mono);
   font-size: 0.6875rem;
   letter-spacing: 0.06em;
+  white-space: nowrap;
   color: var(--chenxing-muted-foreground);
   background: var(--chenxing-muted);
   border: 1px solid var(--chenxing-border);
@@ -397,6 +446,255 @@ main {
   opacity: 0.35;
   animation: chenxing-ping 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
 }
+
+/* ---------- console shell: brand lockup ---------- */
+/* logo.png + aurora wordmark used in console topbar and landing header */
+.chenxing-brand-logo {
+  width: 2.5rem;
+  height: 2.5rem;
+  object-fit: contain;
+  border-radius: var(--chenxing-radius-md);
+  filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.45));
+}
+.chenxing-wordmark {
+  font-family: var(--chenxing-font-display);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.05;
+}
+
+/* ---------- console shell: left sidebar (New API style) ---------- */
+.chenxing-sidebar {
+  position: fixed;
+  top: 0; left: 0; bottom: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  width: 15rem;
+  padding: 1.25rem 0.9rem;
+  background: linear-gradient(180deg, rgba(9, 15, 28, 0.92), rgba(5, 8, 17, 0.94));
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  border-right: 1px solid var(--chenxing-border);
+}
+.chenxing-sidebar-scroll { flex: 1; overflow-y: auto; }
+.chenxing-nav-label {
+  padding: 0 0.75rem;
+  margin-top: 1.1rem;
+  margin-bottom: 0.4rem;
+  font-family: var(--chenxing-font-mono);
+  font-size: 0.625rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--chenxing-muted-foreground);
+}
+.chenxing-nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.6rem 0.75rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--chenxing-muted-foreground);
+  border-radius: var(--chenxing-radius-md);
+  transition: color 0.18s, background 0.18s;
+  cursor: pointer;
+}
+.chenxing-nav-item:hover { color: var(--chenxing-foreground); background: var(--chenxing-muted); }
+.chenxing-nav-item[aria-current="page"],
+.chenxing-nav-item.is-active {
+  color: var(--chenxing-foreground);
+  background: var(--chenxing-primary-soft);
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.28);
+}
+.chenxing-nav-item[aria-current="page"]::before,
+.chenxing-nav-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: -0.9rem;
+  top: 50%;
+  height: 1.4rem;
+  width: 3px;
+  transform: translateY(-50%);
+  border-radius: 0 var(--chenxing-radius-pill) var(--chenxing-radius-pill) 0;
+  background: linear-gradient(180deg, var(--chenxing-primary), var(--chenxing-cyan));
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.7);
+}
+.chenxing-nav-item[aria-current="page"] i,
+.chenxing-nav-item.is-active i { color: var(--chenxing-cyan); }
+
+/* ---------- console shell: top bar ---------- */
+.chenxing-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1.5rem;
+  background: rgba(4, 6, 13, 0.55);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border-bottom: 1px solid var(--chenxing-border);
+}
+
+/* content column offset so fixed sidebar doesn't overlap (desktop only) */
+.chenxing-console-main { min-width: 0; }
+@media (min-width: 1024px) {
+  .chenxing-console-main { margin-left: 15rem; }
+}
+
+/* ---------- console shell: avatar + dropdown ---------- */
+.chenxing-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  font-family: var(--chenxing-font-display);
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, #7c5cff, #d24bff 55%, #ff7ac2);
+  box-shadow: 0 0 16px rgba(160, 92, 255, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.chenxing-menu {
+  min-width: 12rem;
+  padding: 0.4rem;
+  background: var(--chenxing-popover);
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  border: 1px solid var(--chenxing-border-strong);
+  border-radius: var(--chenxing-radius-md);
+  box-shadow: var(--chenxing-shadow-overlay);
+}
+.chenxing-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.875rem;
+  color: var(--chenxing-foreground);
+  border-radius: var(--chenxing-radius-sm);
+  transition: background 0.15s;
+  cursor: pointer;
+}
+.chenxing-menu-item:hover { background: var(--chenxing-muted); }
+
+/* ---------- console shell: glowing user chip (mobile) ---------- */
+/* Bottom user card that "泛着光" — animated aurora border glow + logo watermark. */
+.chenxing-userchip-glow {
+  position: relative;
+  overflow: hidden;
+  padding: 1rem 1.1rem;
+  background: linear-gradient(150deg, rgba(24, 38, 66, 0.85), rgba(9, 14, 28, 0.8));
+  border: 1px solid rgba(147, 197, 253, 0.28);
+  border-radius: var(--chenxing-radius-lg);
+  box-shadow: 0 0 26px rgba(56, 189, 248, 0.28), var(--chenxing-shadow-float);
+}
+.chenxing-userchip-glow::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(115deg, rgba(124, 92, 255, 0.7), rgba(56, 189, 248, 0.7) 45%, rgba(103, 232, 249, 0.7) 70%, rgba(210, 75, 255, 0.6));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0.9;
+  animation: chenxing-pulse 3.6s ease-in-out infinite;
+  pointer-events: none;
+}
+.chenxing-userchip-logo {
+  position: absolute;
+  right: -0.4rem;
+  bottom: -0.6rem;
+  width: 5.5rem;
+  height: 5.5rem;
+  object-fit: contain;
+  opacity: 0.16;
+  filter: drop-shadow(0 0 14px rgba(56, 189, 248, 0.5));
+  pointer-events: none;
+}
+
+/* ---------- console shell: mobile bottom tab bar ---------- */
+.chenxing-bottom-nav {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 40;
+  display: flex;
+  gap: 0.15rem;
+  padding: 0.4rem 0.5rem calc(0.4rem + env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, rgba(6, 10, 20, 0.82), rgba(4, 6, 13, 0.96));
+  backdrop-filter: blur(20px) saturate(1.5);
+  -webkit-backdrop-filter: blur(20px) saturate(1.5);
+  border-top: 1px solid var(--chenxing-border);
+}
+.chenxing-bottom-tab {
+  flex: 1;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.45rem 0.2rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.625rem;
+  color: var(--chenxing-muted-foreground);
+  border-radius: var(--chenxing-radius-md);
+  transition: color 0.2s, background 0.2s;
+  cursor: pointer;
+}
+.chenxing-bottom-tab[aria-current="page"],
+.chenxing-bottom-tab.is-active {
+  color: var(--chenxing-cyan);
+  background: var(--chenxing-cyan-soft);
+}
+
+/* ---------- console shell: progress meter ---------- */
+.chenxing-meter {
+  height: 8px;
+  width: 100%;
+  overflow: hidden;
+  background: rgba(4, 8, 16, 0.6);
+  border: 1px solid var(--chenxing-input);
+  border-radius: var(--chenxing-radius-pill);
+}
+.chenxing-meter-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--chenxing-primary), var(--chenxing-cyan));
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.5);
+}
+
+/* ---------- console shell: toggle switch ---------- */
+.chenxing-switch {
+  position: relative;
+  display: inline-flex;
+  width: 3rem;
+  height: 1.6rem;
+  flex-shrink: 0;
+  padding: 0.2rem;
+  background: rgba(4, 8, 16, 0.7);
+  border: 1px solid var(--chenxing-input);
+  border-radius: var(--chenxing-radius-pill);
+  transition: background 0.2s, border-color 0.2s;
+  cursor: pointer;
+}
+.chenxing-switch::after {
+  content: "";
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 9999px;
+  background: var(--chenxing-muted-foreground);
+  transition: transform 0.2s, background 0.2s;
+}
+.chenxing-switch.is-on { border-color: var(--chenxing-primary); background: var(--chenxing-primary-soft); }
+.chenxing-switch.is-on::after { transform: translateX(1.4rem); background: var(--chenxing-cyan); box-shadow: 0 0 10px rgba(103, 232, 249, 0.7); }
 
 /* ---------- keyframes ---------- */
 @keyframes chenxing-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
@@ -576,16 +874,16 @@ main {
             <form class="mt-6 space-y-4" novalidate>
               <div>
                 <label for="boot-name" class="chenxing-label">管理员用户名</label>
-                <div class="relative">
-                  <i data-lucide="user" class="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--chenxing-muted-foreground)]"></i>
-                  <input id="boot-name" type="text" placeholder="owner" class="chenxing-field pl-11" />
+                <div class="chenxing-field-shell">
+                  <i data-lucide="user" class="chenxing-field-icon h-4 w-4"></i>
+                  <input id="boot-name" type="text" placeholder="owner" />
                 </div>
               </div>
               <div>
                 <label for="boot-email" class="chenxing-label">邮箱</label>
-                <div class="relative">
-                  <i data-lucide="mail" class="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--chenxing-muted-foreground)]"></i>
-                  <input id="boot-email" type="email" placeholder="owner@chenxing.star" class="chenxing-field pl-11" />
+                <div class="chenxing-field-shell">
+                  <i data-lucide="mail" class="chenxing-field-icon h-4 w-4"></i>
+                  <input id="boot-email" type="email" placeholder="owner@chenxing.star" />
                 </div>
               </div>
               <div>
