@@ -70,12 +70,13 @@ fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("0003_session_outbox.sql"));
     assert!(DB_MODULE.contains("0004_relax_deleted_session_outbox_target.sql"));
     assert!(DB_MODULE.contains("0005_session_outbox_event_user.sql"));
-    let migrations = std::fs::read_dir("migrations")
+    let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "sql"))
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
+    migrations.sort();
     assert_eq!(
         migrations,
         vec![
