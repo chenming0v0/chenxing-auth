@@ -308,9 +308,6 @@ impl AuthFactorService {
         };
         if !ticket.is_active_at(time::OffsetDateTime::now_utc())
             || !ticket.supports(FactorMethod::Passkey)
-            || !repository::list_factor_methods(&self.pool, ticket.user_id)
-                .await?
-                .is_empty()
         {
             return Ok(PasskeyConfirmation::InvalidTicket);
         }
@@ -328,10 +325,16 @@ impl AuthFactorService {
             Ok(passkey) => passkey,
             Err(_) => return Ok(PasskeyConfirmation::InvalidCredential),
         };
+        if matches!(
+            repository::insert_passkey(&self.pool, ticket.user_id, passkey.cred_id(), &passkey)
+                .await?,
+            repository::PasskeyPersistenceResult::Conflict
+        ) {
+            return Ok(PasskeyConfirmation::InvalidCredential);
+        }
         if self.tickets.take(ticket_id).await?.is_none() {
             return Ok(PasskeyConfirmation::InvalidTicket);
         }
-        repository::insert_passkey(&self.pool, ticket.user_id, passkey.cred_id(), &passkey).await?;
         self.tickets
             .delete(&Self::passkey_registration_key(ticket_id))
             .await?;
