@@ -1,8 +1,11 @@
+use std::sync::Arc;
+
 use redis::Client;
 
 use crate::{
     admin::AdminAuthenticator,
     audit::AuditService,
+    auth_limiter::{AuthFailureLimiter, RedisAuthFailureLimiter},
     auth_factors::service::AuthFactorService,
     clients::service::ClientService,
     config::Config,
@@ -69,16 +72,19 @@ impl AppState {
     pub fn new(config: Config) -> Result<Self, StateError> {
         let database = crate::db::connect(&config)?;
         let redis = redis::Client::open(config.redis_url.as_str())?;
+        let auth_limiter: Arc<dyn AuthFailureLimiter> =
+            Arc::new(RedisAuthFailureLimiter::new(redis.clone()));
         let sessions = SessionStore::with_metadata_and_key(
             redis.clone(),
             database.clone(),
             *config.auth_encryption_key.as_bytes(),
         );
         let settings = SettingsService::new(database.clone());
-        let users = UserService::new(database.clone());
+        let users = UserService::new(database.clone(), auth_limiter.clone());
         let factors = AuthFactorService::new(
             database.clone(),
             redis.clone(),
+            auth_limiter,
             config.auth_encryption_key.clone(),
             &config.webauthn_rp_id,
             &config.webauthn_origin,

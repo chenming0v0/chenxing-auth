@@ -1,4 +1,5 @@
 use chenxing_auth::{api, config::Config, db, state::AppState};
+use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::info;
 
@@ -24,7 +25,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(&address).await?;
 
     info!(address = %address, "辰星认证中枢 started");
-    axum::serve(listener, app)
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     session_outbox_worker.abort();

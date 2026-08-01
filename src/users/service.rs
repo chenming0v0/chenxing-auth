@@ -1,4 +1,5 @@
-use crate::sqlx::PgPool;
+use std::sync::Arc;
+
 use thiserror::Error;
 
 use super::{
@@ -9,10 +10,15 @@ use super::{
     },
     repository,
 };
+use crate::{
+    auth_limiter::{AuthFailureLimiter, FailureDimension},
+    sqlx::PgPool,
+};
 
 #[derive(Clone)]
 pub struct UserService {
     pool: PgPool,
+    limiter: Arc<dyn AuthFailureLimiter>,
 }
 
 #[derive(Debug, Error)]
@@ -25,6 +31,10 @@ pub enum UserServiceError {
     Database(#[from] crate::sqlx::Error),
     #[error("credentials are invalid")]
     InvalidCredentials,
+    #[error("authentication rate limit reached")]
+    RateLimited,
+    #[error("authentication limiter failed: {0}")]
+    Limiter(#[from] crate::auth_limiter::domain::AuthLimiterError),
     #[error("last active owner is required")]
     LastOwnerRequired,
     #[error("owner bootstrap is required before public registration")]
@@ -32,8 +42,8 @@ pub enum UserServiceError {
 }
 
 impl UserService {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool, limiter: Arc<dyn AuthFailureLimiter>) -> Self {
+        Self { pool, limiter }
     }
 
     pub async fn register(&self, input: RegistrationInput) -> Result<PublicUser, UserServiceError> {
@@ -116,25 +126,63 @@ impl UserService {
         Ok(id)
     }
 
-    pub async fn authenticate(&self, input: LoginInput) -> Result<UserId, UserServiceError> {
+    pub async fn authenticate(
+        &self,
+        input: LoginInput,
+        source_ip: &str,
+    ) -> Result<UserId, UserServiceError> {
         let login = validate_login(input).map_err(|error| match error {
             LoginError::InvalidIdentifier | LoginError::EmptyPassword => {
                 UserServiceError::InvalidCredentials
             }
         })?;
+        self.ensure_allowed(FailureDimension::Account, &login.identifier)
+            .await?;
+        self.ensure_allowed(FailureDimension::SourceIp, source_ip)
+            .await?;
         let Some(credentials) =
             repository::find_credentials_by_identifier(&self.pool, &login.identifier).await?
         else {
+            self.record_failure(&login.identifier, source_ip).await?;
             return Err(UserServiceError::InvalidCredentials);
         };
         if credentials.status != "active"
             || !credentials.password_login_enabled
             || !verify_password(&login.password, &credentials.password_hash)
         {
+            self.record_failure(&login.identifier, source_ip).await?;
             return Err(UserServiceError::InvalidCredentials);
         }
 
+        self.limiter
+            .clear(FailureDimension::Account, &login.identifier)
+            .await?;
         Ok(credentials.id)
+    }
+
+    async fn ensure_allowed(
+        &self,
+        dimension: FailureDimension,
+        value: &str,
+    ) -> Result<(), UserServiceError> {
+        if self.limiter.is_limited(dimension, value).await? {
+            return Err(UserServiceError::RateLimited);
+        }
+        Ok(())
+    }
+
+    async fn record_failure(
+        &self,
+        identifier: &str,
+        source_ip: &str,
+    ) -> Result<(), UserServiceError> {
+        self.limiter
+            .record_failure(FailureDimension::Account, identifier)
+            .await?;
+        self.limiter
+            .record_failure(FailureDimension::SourceIp, source_ip)
+            .await?;
+        Ok(())
     }
 
     pub async fn find_profile(
@@ -225,4 +273,60 @@ pub enum BootstrapOwnerResult {
     Created(repository::UserProfile),
     AlreadyConfigured,
     RequiresEmptyDatabase,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::auth_limiter::{AuthFailureLimiter, FailureDimension};
+    use crate::auth_limiter::domain::LimiterFuture;
+
+    struct AlwaysLimited;
+
+    impl AuthFailureLimiter for AlwaysLimited {
+        fn is_limited<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &'a str,
+        ) -> LimiterFuture<'a, bool> {
+            Box::pin(async { Ok(true) })
+        }
+
+        fn record_failure<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &'a str,
+        ) -> LimiterFuture<'a, bool> {
+            Box::pin(async { Ok(false) })
+        }
+
+        fn clear<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &'a str,
+        ) -> LimiterFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn password_authentication_is_rejected_before_password_hash() {
+        let pool = crate::sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://invalid-host/unused")
+            .expect("lazy pool");
+        let service = UserService::new(pool, Arc::new(AlwaysLimited));
+        let result = service
+            .authenticate(
+                LoginInput {
+                    identifier: "user@example.com".to_owned(),
+                    password: "incorrect password".to_owned(),
+                    totp_code: None,
+                },
+                "127.0.0.1",
+            )
+            .await;
+        assert!(matches!(result, Err(UserServiceError::RateLimited)));
+    }
 }

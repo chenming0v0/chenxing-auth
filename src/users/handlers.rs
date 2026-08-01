@@ -1,10 +1,11 @@
 use axum::{
     Json,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
+use std::net::SocketAddr;
 
 use super::{
     domain::{LoginInput, RegistrationError, RegistrationInput},
@@ -97,11 +98,23 @@ pub async fn register_user(
     }
 }
 
-pub async fn login_user(State(state): State<AppState>, Json(input): Json<LoginInput>) -> Response {
+pub async fn login_user(
+    State(state): State<AppState>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    Json(input): Json<LoginInput>,
+) -> Response {
     let totp_code = input.totp_code.clone();
-    let user_id = match state.users.authenticate(input).await {
+    let identifier = input.identifier.trim().to_ascii_lowercase();
+    let source_ip = crate::api::source_ip(connect_info.map(|ConnectInfo(peer)| peer));
+    let user_id = match state.users.authenticate(input, &source_ip).await {
         Ok(user_id) => user_id,
         Err(UserServiceError::InvalidCredentials) => {
+            return error::unauthorized(
+                "invalid_credentials",
+                "username, email, or password is incorrect",
+            );
+        }
+        Err(UserServiceError::RateLimited) => {
             return error::unauthorized(
                 "invalid_credentials",
                 "username, email, or password is incorrect",
@@ -127,10 +140,21 @@ pub async fn login_user(State(state): State<AppState>, Json(input): Json<LoginIn
     if methods.contains(&crate::auth_factors::domain::FactorMethod::Totp) && totp_code.is_some() {
         let valid = match state
             .factors
-            .verify_totp(user_id, totp_code.as_deref().unwrap_or_default())
+            .verify_totp(
+                user_id,
+                &identifier,
+                &source_ip,
+                totp_code.as_deref().unwrap_or_default(),
+            )
             .await
         {
             Ok(valid) => valid,
+            Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
+                return error::unauthorized(
+                    "invalid_factor",
+                    "authentication factor is invalid",
+                );
+            }
             Err(factor_error) => {
                 tracing::error!(error = %factor_error, "failed to verify TOTP");
                 return error::internal();

@@ -215,6 +215,63 @@ async fn totp_login_endpoint_completes_a_pending_factor_ticket() {
 }
 
 #[tokio::test]
+async fn totp_login_ticket_is_invalidated_after_five_failed_codes() {
+    let (router, database, key_directory, email) = setup().await;
+    let username = format!("totp-limit-{}", Uuid::new_v4().simple());
+    let password = "correct horse battery";
+    let response = request(
+        &router,
+        "/api/v1/users",
+        serde_json::json!({"username": username, "email": email, "password": password}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let pending = json_body(
+        request(
+            &router,
+            "/api/v1/auth/login",
+            serde_json::json!({"identifier": username, "password": password}),
+        )
+        .await,
+    )
+    .await;
+    let ticket = pending["login_ticket"].as_str().expect("login ticket");
+    let response = request(
+        &router,
+        "/api/v1/auth/totp/setup",
+        serde_json::json!({"login_ticket": ticket}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    for _ in 0..5 {
+        let response = request(
+            &router,
+            "/api/v1/auth/totp/login",
+            serde_json::json!({"login_ticket": ticket, "code": "000000"}),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    let response = request(
+        &router,
+        "/api/v1/auth/totp/login",
+        serde_json::json!({"login_ticket": ticket, "code": "000000"}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE email = $1")
+        .bind(&email)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
 async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
     let (router, database, key_directory, email) = setup().await;
     let username = format!("totp-{}", Uuid::new_v4().simple());
