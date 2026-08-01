@@ -3,6 +3,8 @@ use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
+pub const AUTHORIZATION_CODE_TTL_SECONDS: u64 = 5 * 60;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthorizationCode {
     pub value: String,
@@ -61,7 +63,7 @@ impl AuthorizationCode {
             code_challenge,
             nonce,
             created_at,
-            expires_at: created_at + Duration::minutes(5),
+            expires_at: created_at + Duration::seconds(AUTHORIZATION_CODE_TTL_SECONDS as i64),
             redeemed_at: None,
         }
     }

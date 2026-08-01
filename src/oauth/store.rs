@@ -1,7 +1,7 @@
 use redis::{AsyncCommands, Client, Script};
 use thiserror::Error;
 
-use super::code::AuthorizationCode;
+use super::code::{AUTHORIZATION_CODE_TTL_SECONDS, AuthorizationCode};
 
 #[derive(Clone)]
 pub struct AuthorizationCodeStore {
@@ -22,10 +22,27 @@ impl AuthorizationCodeStore {
     }
 
     pub async fn save(&self, code: &AuthorizationCode) -> Result<(), AuthorizationCodeStoreError> {
+        self.save_with_ttl(code, AUTHORIZATION_CODE_TTL_SECONDS)
+            .await
+    }
+
+    pub async fn restore(
+        &self,
+        code: &AuthorizationCode,
+        ttl_seconds: u64,
+    ) -> Result<(), AuthorizationCodeStoreError> {
+        self.save_with_ttl(code, ttl_seconds).await
+    }
+
+    async fn save_with_ttl(
+        &self,
+        code: &AuthorizationCode,
+        ttl_seconds: u64,
+    ) -> Result<(), AuthorizationCodeStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload = serde_json::to_string(code)?;
         let _: () = connection
-            .set_ex(Self::key(&code.value), payload, 300)
+            .set_ex(Self::key(&code.value), payload, ttl_seconds.max(1))
             .await?;
         Ok(())
     }
