@@ -3,7 +3,7 @@ use std::time::Duration;
 use super::{
     domain::{
         ClientAuthMethod, ExternalUser, ProviderInput, ProviderRecord, ProviderSummary,
-        ProviderValidationError,
+        ProviderValidationError, validate_endpoint_url,
     },
     repository::{self, CreateIdentityError},
     secrets::{SecretError, SecretManager},
@@ -129,6 +129,7 @@ impl ExternalOAuthService {
         callback_uri: &str,
         state: &str,
     ) -> Result<String, ExternalOAuthError> {
+        validate_endpoint_url(&provider.authorization_endpoint)?;
         let mut url = provider.authorization_endpoint.clone();
         {
             let mut query = url.query_pairs_mut();
@@ -147,6 +148,7 @@ impl ExternalOAuthService {
         callback_uri: &str,
         code: &str,
     ) -> Result<ExternalToken, ExternalOAuthError> {
+        validate_endpoint_url(&provider.token_endpoint)?;
         let secret = self.decrypt_secret(provider)?;
         let mut form = vec![
             ("grant_type", "authorization_code"),
@@ -195,6 +197,7 @@ impl ExternalOAuthService {
         provider: &ProviderRecord,
         token: &ExternalToken,
     ) -> Result<ExternalUser, ExternalOAuthError> {
+        validate_endpoint_url(&provider.userinfo_endpoint)?;
         let response = self
             .http
             .get(provider.userinfo_endpoint.clone())

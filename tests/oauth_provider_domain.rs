@@ -51,6 +51,43 @@ fn provider_input_rejects_unsafe_slug_and_endpoint() {
 }
 
 #[test]
+fn provider_input_rejects_remote_http_but_allows_loopback_http() {
+    let mut input = valid_input();
+    input.authorization_endpoint = "http://sso.example.com/oauth/authorize".to_owned();
+    assert_eq!(
+        input.validate().expect_err("remote HTTP endpoint"),
+        ProviderValidationError::InvalidEndpoint
+    );
+
+    let mut input = valid_input();
+    input.token_endpoint = "http://sso.example.com/oauth/token".to_owned();
+    assert_eq!(
+        input.validate().expect_err("remote HTTP endpoint"),
+        ProviderValidationError::InvalidEndpoint
+    );
+
+    let mut input = valid_input();
+    input.userinfo_endpoint = "http://sso.example.com/oauth/userinfo".to_owned();
+    assert_eq!(
+        input.validate().expect_err("remote HTTP endpoint"),
+        ProviderValidationError::InvalidEndpoint
+    );
+
+    let mut input = valid_input();
+    input.authorization_endpoint = "http://localhost.example.com/oauth/authorize".to_owned();
+    assert_eq!(
+        input.validate().expect_err("non-loopback localhost suffix"),
+        ProviderValidationError::InvalidEndpoint
+    );
+
+    let mut input = valid_input();
+    input.authorization_endpoint = "http://127.0.0.1:8080/oauth/authorize".to_owned();
+    input.token_endpoint = "http://[::1]:8080/oauth/token".to_owned();
+    input.userinfo_endpoint = "http://localhost:8080/oauth/userinfo".to_owned();
+    input.validate().expect("loopback HTTP endpoints");
+}
+
+#[test]
 fn claim_extraction_supports_nested_paths_without_coercing_objects() {
     let value = json!({"profile": {"email": "person@example.com", "name": "Person"}});
 
