@@ -631,10 +631,17 @@ paths:
               required: [token]
               properties:
                 token: { type: string }
-                token_type_hint: { type: string, enum: [access_token, refresh_token] }
+                token_type_hint:
+                  type: string
+                  description: 可省略；仅支持 access_token 或 refresh_token，其他值返回 unsupported_token_type
+                  enum: [access_token, refresh_token]
       responses:
         '200': { description: 撤销完成，无响应体 }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400':
+          description: 请求错误；不支持的 token_type_hint 返回 unsupported_token_type
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/admin/bootstrap:
     post:
