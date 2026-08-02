@@ -14,7 +14,16 @@ export function usePathname() {
 }
 
 export function useNavigate() { return navigate }
-export function useLocation() { return { pathname: usePathname() } }
+export function useLocation() {
+  const pathname = usePathname()
+  const [search, setSearch] = useState(window.location.search)
+  useEffect(() => {
+    const update = () => setSearch(window.location.search)
+    window.addEventListener('popstate', update)
+    return () => window.removeEventListener('popstate', update)
+  }, [])
+  return { pathname, search }
+}
 
 type LinkProps = AnchorHTMLAttributes<HTMLAnchorElement> & { to: string; children?: ReactNode }
 

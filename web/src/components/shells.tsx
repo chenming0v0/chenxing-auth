@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react'
-import { Link, NavLink, useLocation } from '../router'
+import { Link, NavLink, useLocation, useNavigate } from '../router'
 import { navGroups } from '../data'
 import { Background, Brand, Button, Icon } from './ui'
+import { useAuth } from '../auth-state'
 
 export function PublicTopbar({ action, actionTo = '/login' }: { action?: string; actionTo?: string }) {
   const [open, setOpen] = useState(false)
@@ -24,11 +25,13 @@ export function AuthShell({ children, action, actionTo }: { children: ReactNode;
 
 function Sidebar() {
   const location = useLocation()
+  const { user } = useAuth()
+  const visibleGroups = navGroups.filter((group) => group.label !== '管理' && group.label !== '系统' || user?.role !== 'user')
   return (
     <aside className="chenxing-sidebar">
       <Link to="/" className="sidebar-brand"><Brand /></Link>
       <nav className="sidebar-nav">
-        {navGroups.map((group) => <div className="nav-group" key={group.label}>
+        {visibleGroups.map((group) => <div className="nav-group" key={group.label}>
           <p className="chenxing-nav-label">{group.label}</p>
           {group.items.map((item) => <NavLink key={item.path} to={item.path} className="chenxing-nav-item" aria-current={location.pathname === item.path ? 'page' : undefined}><Icon name={item.icon} size={17} />{item.label}</NavLink>)}
         </div>)}
@@ -41,8 +44,11 @@ function Sidebar() {
 function ConsoleTopbar() {
   const [open, setOpen] = useState(false)
   const location = useLocation()
+  const navigate = useNavigate()
+  const { user, logout } = useAuth()
   const current = navGroups.flatMap((group) => group.items).find((item) => item.path === location.pathname)?.label ?? '总览'
-  return <header className="console-topbar"><div className="topbar-current"><span className="chenxing-status-dot" />{location.pathname.startsWith('/admin') ? '管理' : '控制台'} · {current}</div><div className="console-top-actions"><button type="button" className="icon-button" onClick={() => setOpen(!open)} aria-label="打开快捷菜单"><Icon name="menu" /></button><button type="button" className="avatar-button" aria-label="账户菜单">辰</button>{open && <div className="console-menu chenxing-hud-panel"><Link to="/console/profile"><Icon name="user" size={15} />个人设置</Link><Link to="/console/integrate"><Icon name="code-2" size={15} />接入应用</Link><Link to="/login"><Icon name="log-out" size={15} />退出登录</Link></div>}</div></header>
+  const displayName = user?.display_name || user?.username || '账户'
+  return <header className="console-topbar"><div className="topbar-current"><span className="chenxing-status-dot" />{location.pathname.startsWith('/admin') ? '管理' : '控制台'} · {current}</div><div className="console-top-actions"><button type="button" className="icon-button" onClick={() => setOpen(!open)} aria-label="打开快捷菜单"><Icon name="menu" /></button><button type="button" className="avatar-button" aria-label={`${displayName}账户菜单`}>{displayName.slice(0, 1)}</button>{open && <div className="console-menu chenxing-hud-panel"><Link to="/console/profile"><Icon name="user" size={15} />个人设置</Link><Link to="/console/integrate"><Icon name="code-2" size={15} />接入应用</Link><Link to="/login" onClick={(event) => { event.preventDefault(); void logout().then(() => navigate('/')) }}><Icon name="log-out" size={15} />退出登录</Link></div>}</div></header>
 }
 
 export function ConsoleLayout({ children }: { children: ReactNode }) {
