@@ -7,6 +7,8 @@
     <style id="theme-vars">
 @import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700;800&family=Exo+2:wght@300;400;500;600;700&family=Share+Tech+Mono&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap");
 
+@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700;800&family=Exo+2:wght@300;400;500;600;700&family=Share+Tech+Mono&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap");
+
 /* ============================================================
    chenxing-auth · 辰星认证中枢 — brand token & type system
    科幻未来风 + 磨砂玻璃 (glassmorphism) · 主色调：天蓝
@@ -106,35 +108,14 @@ main {
   min-height: 100vh;
 }
 
-.chenxing-auth-layout > aside {
-  display: none;
-}
-
 .chenxing-auth-layout > section {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
   min-width: 0;
   box-sizing: border-box;
-}
-
-@media (min-width: 1024px) {
-  .chenxing-auth-layout {
-    flex-direction: row;
-  }
-
-  .chenxing-auth-layout > aside {
-    display: flex;
-    width: 46%;
-    flex-shrink: 0;
-    flex-direction: column;
-    justify-content: space-between;
-    box-sizing: border-box;
-  }
-
-  .chenxing-auth-layout > section {
-    display: flex;
-    flex: 1;
-    align-items: center;
-    justify-content: center;
-  }
 }
 
 /* ---------- typography ---------- */
@@ -294,6 +275,30 @@ main {
 }
 .chenxing-btn-ghost:hover { background: rgba(255, 255, 255, 0.08); border-color: var(--chenxing-border-strong); }
 .chenxing-btn-ghost:active { transform: scale(0.985); }
+.chenxing-btn-ghost:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+.chenxing-btn-ghost:disabled:hover { background: rgba(255, 255, 255, 0.04); border-color: var(--chenxing-border); }
+
+/* danger ghost: destructive toggle actions (禁用/删除确认) */
+.chenxing-btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: var(--chenxing-font-body);
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: var(--chenxing-error);
+  padding: 0.65rem 1.25rem;
+  white-space: nowrap;
+  background: rgba(255, 107, 122, 0.05);
+  border: 1px solid rgba(255, 107, 122, 0.35);
+  border-radius: var(--chenxing-radius-md);
+  transition: background 0.2s, border-color 0.2s, transform 0.15s;
+  cursor: pointer;
+}
+.chenxing-btn-danger:hover { background: var(--chenxing-error-soft); border-color: rgba(255, 107, 122, 0.6); }
+.chenxing-btn-danger:active { transform: scale(0.985); }
+.chenxing-btn-danger:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .chenxing-icon-btn {
   display: inline-flex;
@@ -496,10 +501,9 @@ td.chenxing-label {
   padding: 0 0.75rem;
   margin-top: 1.1rem;
   margin-bottom: 0.4rem;
-  font-family: var(--chenxing-font-mono);
-  font-size: 0.625rem;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.9375rem;
+  letter-spacing: 0.08em;
   color: var(--chenxing-muted-foreground);
 }
 .chenxing-nav-item {
@@ -817,6 +821,176 @@ td.chenxing-label {
 ::-webkit-scrollbar-thumb:hover { background: #2a6bb8; }
 ::selection { background: rgba(56, 189, 248, 0.4); color: #fff; }
 
+/* ---------- compact rounded-rect tags (content-sized, subtle border + dark fill) ---------- */
+/* Unlike pill chips/badges: small 8px radius; width always hugs the text. */
+.chenxing-tag,
+.chenxing-tag-success,
+.chenxing-tag-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: fit-content;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  padding: 0.3rem 0.65rem;
+  border-radius: var(--chenxing-radius-sm);
+  color: #a5c8ff;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(147, 197, 253, 0.28);
+}
+.chenxing-tag-success { color: #46e0a1; background: rgba(52, 211, 153, 0.1); border-color: rgba(52, 211, 153, 0.32); }
+.chenxing-tag-warning { color: var(--chenxing-warning); background: rgba(251, 191, 36, 0.09); border-color: rgba(251, 191, 36, 0.32); }
+
+/* ---------- integrate: app list (newapi-style table rows) ---------- */
+/* Shared column template so the header row and app rows stay aligned:
+   ID | 名称 | 分组 | 状态 | 操作. Client ID lives in the drawer, not here. */
+.chenxing-app-grid {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr) 7rem 7.5rem minmax(15rem, auto);
+  align-items: center;
+  gap: 1rem;
+}
+.chenxing-app-grid > span { justify-self: start; }
+@media (max-width: 1023px) {
+  .chenxing-app-grid { grid-template-columns: 2rem minmax(0, 1fr) auto; }
+}
+.chenxing-app-row {
+  padding: 0.85rem 1rem;
+  background: rgba(8, 14, 26, 0.45);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-md);
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+  cursor: pointer;
+}
+.chenxing-app-row:hover {
+  background: rgba(14, 24, 44, 0.55);
+  border-color: var(--chenxing-border-strong);
+  box-shadow: 0 0 20px rgba(56, 189, 248, 0.12);
+}
+.chenxing-app-row + .chenxing-app-row { margin-top: 0.65rem; }
+
+/* ---------- drawer: right-side sheet (newapi style) ---------- */
+.chenxing-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(2, 5, 12, 0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+.chenxing-drawer-overlay.is-open { opacity: 1; pointer-events: auto; }
+
+/* Full-height right sheet, flush to the viewport edge.
+   The sheet itself is an OPAQUE dark surface (background layer);
+   content inside .chenxing-drawer-body sits in .chenxing-hud-panel cards. */
+.chenxing-drawer {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  width: min(36.125rem, 100vw);
+  padding: 0;
+  background: linear-gradient(170deg, rgba(13, 21, 39, 0.97), rgba(6, 10, 20, 0.98));
+  backdrop-filter: blur(28px) saturate(1.5);
+  -webkit-backdrop-filter: blur(28px) saturate(1.5);
+  border-left: 1px solid var(--chenxing-border-strong);
+  box-shadow: var(--chenxing-shadow-overlay);
+  transform: translateX(102%);
+  transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chenxing-drawer.is-open { transform: translateX(0); }
+
+.chenxing-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-shrink: 0;
+  padding: 1.1rem 1.5rem;
+  border-bottom: 1px solid var(--chenxing-border);
+}
+.chenxing-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.5rem;
+}
+.chenxing-drawer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  flex-shrink: 0;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--chenxing-border);
+  background: rgba(4, 7, 14, 0.6);
+}
+
+/* ---------- key/value row: mono value + trailing copy (接入信息) ---------- */
+.chenxing-kv {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.6rem 0.55rem 0.6rem 0.85rem;
+  background: rgba(4, 8, 16, 0.6);
+  border: 1px solid var(--chenxing-input);
+  border-radius: var(--chenxing-radius-md);
+}
+.chenxing-kv-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--chenxing-font-mono);
+  font-size: 0.8125rem;
+  color: var(--chenxing-ice);
+}
+.chenxing-kv-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  color: var(--chenxing-muted-foreground);
+  border-radius: var(--chenxing-radius-sm);
+  transition: color 0.18s, background 0.18s;
+  cursor: pointer;
+}
+.chenxing-kv-copy:hover { color: var(--chenxing-cyan); background: var(--chenxing-cyan-soft); }
+
+/* ---------- scope toggle chip (checkbox-like) ---------- */
+.chenxing-scope-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-family: var(--chenxing-font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  color: var(--chenxing-muted-foreground);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-pill);
+  padding: 0.45rem 0.85rem;
+  transition: color 0.18s, background 0.18s, border-color 0.18s;
+  cursor: pointer;
+}
+.chenxing-scope-toggle:hover { border-color: var(--chenxing-border-strong); }
+.chenxing-scope-toggle.is-on {
+  color: var(--chenxing-cyan);
+  background: var(--chenxing-cyan-soft);
+  border-color: rgba(103, 232, 249, 0.4);
+}
+
     </style>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
     <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
@@ -958,12 +1132,7 @@ td.chenxing-label {
 
     <p class="chenxing-nav-label">管理</p>
     <a class="chenxing-nav-item" data-dom-id="dom-admin-tab-dashboard" href="admin-dashboard.html"><i data-lucide="gauge" class="h-4 w-4"></i>仪表盘</a>
-    <a class="chenxing-nav-item" href="#"><i data-lucide="users" class="h-4 w-4"></i>用户管理</a>
-    <a class="chenxing-nav-item" href="#"><i data-lucide="layers" class="h-4 w-4"></i>客户端管理</a>
-
-    <p class="chenxing-nav-label">安全</p>
-    <a class="chenxing-nav-item" href="#"><i data-lucide="key-round" class="h-4 w-4"></i>密钥环</a>
-    <a class="chenxing-nav-item" href="#"><i data-lucide="scroll-text" class="h-4 w-4"></i>审计日志</a>
+    <a class="chenxing-nav-item" data-dom-id="dom-admin-tab-users" href="admin-users.html"><i data-lucide="users" class="h-4 w-4"></i>用户管理</a>
 
     <p class="chenxing-nav-label">系统</p>
     <a class="chenxing-nav-item" data-dom-id="dom-admin-tab-settings" href="admin-settings.html"><i data-lucide="settings" class="h-4 w-4"></i>系统设置</a>
@@ -1031,137 +1200,96 @@ td.chenxing-label {
   </div>
 </header>
 
-  <div class="chenxing-console-content flex-1 px-4 py-6 pb-28 sm:px-6 lg:px-8 lg:pb-10">
-    <!-- heading -->
-    <div>
-      <p class="chenxing-mono text-[11px] uppercase tracking-[0.28em] text-[var(--chenxing-cyan)]">// Developer</p>
-      <h1 class="chenxing-h1 mt-2">接入应用</h1>
-      <p class="chenxing-caption mt-2">将「使用辰星通行证登录」接入你的应用</p>
+  <div class="chenxing-console-content flex-1 space-y-6 px-4 py-6 pb-28 sm:px-6 lg:px-8 lg:pb-10">
+    <!-- heading + primary actions (single action zone, no duplicated CTA) -->
+    <div class="flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <p class="chenxing-mono text-[11px] uppercase tracking-[0.28em] text-[var(--chenxing-cyan)]">// Developer</p>
+        <h1 class="chenxing-h1 mt-2">接入应用</h1>
+        <p class="chenxing-caption mt-2">将「使用辰星通行证登录」接入你的应用，点击应用行查看配置与接入信息</p>
+      </div>
+      <div class="flex flex-wrap items-center gap-3">
+        <a href="#" class="chenxing-btn-ghost"><i data-lucide="book-open" class="h-4 w-4"></i>接入文档</a>
+        <button type="button" class="chenxing-btn-primary" data-drawer-open="create"><i data-lucide="plus" class="h-4 w-4"></i>注册新应用</button>
+      </div>
     </div>
-    <!-- developer CTA -->
-    <section class="chenxing-hud-panel overflow-hidden text-center" style="box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float), 0 0 48px rgba(56,189,248,0.22);">
-      <div class="chenxing-beam"></div>
-      <div class="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-[var(--chenxing-border-strong)] bg-[var(--chenxing-primary-soft)]" style="box-shadow: var(--chenxing-shadow-glow-float);">
-        <i data-lucide="code-2" class="h-7 w-7 text-[var(--chenxing-cyan)]"></i>
-      </div>
-      <h2 class="chenxing-h2 mt-5">成为辰星生态的接入开发者</h2>
-      <p class="chenxing-caption mx-auto mt-3 max-w-md">立即申请 API 权限，为你的用户提供更安全便捷的登录体验。</p>
-      <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
-        <button type="button" class="chenxing-btn-primary px-5 py-2.5"><i data-lucide="plus" class="h-4 w-4"></i>申请 API 接入权限</button>
-        <a href="#" class="chenxing-btn-ghost px-5 py-2.5"><i data-lucide="book-open" class="h-4 w-4"></i>阅读接入文档</a>
-      </div>
-    </section>
-    <!-- my registered apps -->
-    <section class="space-y-5">
+
+    <!-- app list: one row per app -->
+    <section class="chenxing-hud-panel">
       <div class="flex items-center justify-between gap-4">
-        <h2 class="chenxing-h2">我的接入应用</h2>
-        <button type="button" class="chenxing-btn-primary px-4 py-2.5"><i data-lucide="plus" class="h-4 w-4"></i>注册新应用</button>
+        <h2 class="chenxing-h2 flex items-center gap-3">我的接入应用<span class="chenxing-chip">2 个应用</span></h2>
       </div>
 
-      <!-- app card 1: 星尘控制台 -->
-      <article class="chenxing-hud-panel">
-        <div class="flex flex-wrap items-start justify-between gap-3">
-          <div class="flex items-center gap-3">
-            <span class="flex h-10 w-10 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)]"><i data-lucide="satellite-dish" class="h-5 w-5 text-[var(--chenxing-cyan)]"></i></span>
-            <h3 class="chenxing-h3">星尘控制台</h3>
-          </div>
-          <span class="chenxing-badge chenxing-badge-success"><span class="chenxing-dot"><span class="h-1.5 w-1.5 rounded-full bg-[var(--chenxing-success)]"></span></span>已启用</span>
-        </div>
+      <!-- column header -->
+      <div class="chenxing-app-grid mt-5 hidden px-4 pb-2 lg:grid">
+        <span class="chenxing-label !mb-0">ID</span>
+        <span class="chenxing-label !mb-0">名称</span>
+        <span class="chenxing-label !mb-0">分组</span>
+        <span class="chenxing-label !mb-0">状态</span>
+        <span class="chenxing-label !mb-0 text-right">操作</span>
+      </div>
 
-        <div class="mt-5 space-y-4">
-          <div>
-            <p class="chenxing-label">Client ID</p>
-            <div class="flex items-center justify-between gap-3 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-input)] bg-[rgba(4,8,16,0.6)] px-3 py-2.5">
-              <span class="chenxing-mono truncate text-sm text-[var(--chenxing-ice)]">cx_aaeeb134f5054f3cb9d21a7e6c3f</span>
-              <button type="button" class="chenxing-link inline-flex shrink-0 items-center gap-1"><i data-lucide="copy" class="h-4 w-4"></i>复制</button>
-            </div>
-          </div>
-          <div>
-            <p class="chenxing-label">Redirect URI</p>
-            <p class="chenxing-mono chenxing-caption break-all text-[var(--chenxing-muted-foreground)]">https://stardust.clya.top/oauth/callback</p>
-          </div>
-          <div>
-            <p class="chenxing-label">Scopes</p>
-            <div class="flex flex-wrap gap-2">
-              <span class="chenxing-chip">openid</span>
-              <span class="chenxing-chip">profile</span>
-              <span class="chenxing-chip">email</span>
-            </div>
-          </div>
+      <!-- row 1: 星尘控制台（已过审，运行中） -->
+      <article class="chenxing-app-grid chenxing-app-row mt-2 lg:mt-0" data-drawer-open>
+        <span class="chenxing-mono text-sm text-[var(--chenxing-muted-foreground)]">01</span>
+        <div class="min-w-0">
+          <p class="chenxing-body truncate font-semibold leading-tight">星尘控制台</p>
+          <p class="chenxing-mono truncate text-[11px] text-[var(--chenxing-muted-foreground)]">stardust.clya.top</p>
         </div>
-
-        <div class="chenxing-divider my-5"></div>
-        <div class="flex flex-wrap items-center justify-end gap-3">
-          <button type="button" class="chenxing-btn-ghost px-4 py-2"><i data-lucide="pencil" class="h-4 w-4"></i>编辑</button>
-          <button type="button" class="chenxing-link inline-flex items-center gap-1" style="color: var(--chenxing-error);"><i data-lucide="trash-2" class="h-4 w-4"></i>删除</button>
-        </div>
-      </article>
-      <!-- app card 2: 猎户开发板 -->
-      <article class="chenxing-hud-panel">
-        <div class="flex flex-wrap items-start justify-between gap-3">
-          <div class="flex items-center gap-3">
-            <span class="flex h-10 w-10 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)]"><i data-lucide="cpu" class="h-5 w-5 text-[var(--chenxing-cyan)]"></i></span>
-            <h3 class="chenxing-h3">猎户开发板</h3>
-          </div>
-          <span class="chenxing-badge chenxing-badge-warning"><i data-lucide="clock" class="h-3 w-3"></i>待审核</span>
-        </div>
-
-        <div class="mt-5 space-y-4">
-          <div>
-            <p class="chenxing-label">Client ID</p>
-            <div class="flex items-center justify-between gap-3 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-input)] bg-[rgba(4,8,16,0.6)] px-3 py-2.5">
-              <span class="chenxing-mono truncate text-sm text-[var(--chenxing-ice)]">cx_7f30c9a1b6e24d08af5c2e91d4a0</span>
-              <button type="button" class="chenxing-link inline-flex shrink-0 items-center gap-1"><i data-lucide="copy" class="h-4 w-4"></i>复制</button>
-            </div>
-          </div>
-          <div>
-            <p class="chenxing-label">Redirect URI</p>
-            <p class="chenxing-mono chenxing-caption break-all text-[var(--chenxing-muted-foreground)]">https://orion.clya.top/auth/return</p>
-          </div>
-          <div>
-            <p class="chenxing-label">Scopes</p>
-            <div class="flex flex-wrap gap-2">
-              <span class="chenxing-chip">openid</span>
-              <span class="chenxing-chip">profile</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="chenxing-divider my-5"></div>
-        <div class="flex flex-wrap items-center justify-end gap-3">
-          <button type="button" class="chenxing-btn-ghost px-4 py-2"><i data-lucide="pencil" class="h-4 w-4"></i>编辑</button>
-          <button type="button" class="chenxing-link inline-flex items-center gap-1" style="color: var(--chenxing-error);"><i data-lucide="trash-2" class="h-4 w-4"></i>删除</button>
+        <span class="chenxing-tag hidden lg:inline-flex">default</span>
+        <span class="chenxing-tag-success hidden lg:inline-flex">已启用</span>
+        <div class="flex items-center justify-end gap-2">
+          <button type="button" class="chenxing-btn-danger" title="应用运行中，点击禁用" onclick="event.stopPropagation()"><i data-lucide="power" class="h-4 w-4"></i>禁用</button>
+          <button type="button" class="chenxing-btn-ghost" data-drawer-open><i data-lucide="pencil" class="h-4 w-4"></i>编辑</button>
+          <button type="button" class="chenxing-icon-btn" aria-label="删除应用" onclick="event.stopPropagation()"><i data-lucide="trash-2" class="h-4 w-4 text-[var(--chenxing-error)]"></i></button>
         </div>
       </article>
 
-      <p class="chenxing-caption flex items-center gap-2"><i data-lucide="shield-alert" class="h-4 w-4 text-[var(--chenxing-warning)]"></i>Client Secret 仅在创建应用时展示一次，请务必立即妥善保存，遗失后只能重新生成。</p>
+      <!-- row 2: 猎户开发板（待审核，不可启用） -->
+      <article class="chenxing-app-grid chenxing-app-row" data-drawer-open>
+        <span class="chenxing-mono text-sm text-[var(--chenxing-muted-foreground)]">02</span>
+        <div class="min-w-0">
+          <p class="chenxing-body truncate font-semibold leading-tight">猎户开发板</p>
+          <p class="chenxing-mono truncate text-[11px] text-[var(--chenxing-muted-foreground)]">orion.clya.top</p>
+        </div>
+        <span class="chenxing-tag hidden lg:inline-flex">default</span>
+        <span class="chenxing-tag-warning hidden lg:inline-flex">待审核</span>
+        <div class="flex items-center justify-end gap-2">
+          <button type="button" class="chenxing-btn-ghost" disabled title="待审核：审核通过后才能启用" onclick="event.stopPropagation()"><i data-lucide="power" class="h-4 w-4"></i>启用</button>
+          <button type="button" class="chenxing-btn-ghost" data-drawer-open><i data-lucide="pencil" class="h-4 w-4"></i>编辑</button>
+          <button type="button" class="chenxing-icon-btn" aria-label="删除应用" onclick="event.stopPropagation()"><i data-lucide="trash-2" class="h-4 w-4 text-[var(--chenxing-error)]"></i></button>
+        </div>
+      </article>
+
+      <p class="chenxing-caption mt-4 flex items-center gap-2"><i data-lucide="shield-alert" class="h-4 w-4 shrink-0 text-[var(--chenxing-warning)]"></i>Client Secret 仅在创建应用时展示一次，遗失后只能重新生成。</p>
     </section>
+
     <!-- quick start -->
     <section class="chenxing-hud-panel">
       <h3 class="chenxing-h3 flex items-center gap-2"><i data-lucide="rocket" class="h-5 w-5 text-[var(--chenxing-cyan)]"></i>快速接入</h3>
-      <ol class="mt-5 space-y-4">
-        <li class="flex gap-4">
+      <div class="mt-5 grid gap-4 lg:grid-cols-3">
+        <div class="flex gap-3">
           <span class="chenxing-mono flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--chenxing-border-strong)] bg-[var(--chenxing-primary-soft)] text-sm text-[var(--chenxing-cyan)]">01</span>
           <div>
             <p class="chenxing-body font-semibold">注册应用</p>
-            <p class="chenxing-caption mt-0.5">在上方创建应用，获取 Client ID 与仅展示一次的 Client Secret。</p>
+            <p class="chenxing-caption mt-0.5">创建应用，获取 Client ID 与仅展示一次的 Client Secret。</p>
           </div>
-        </li>
-        <li class="flex gap-4">
+        </div>
+        <div class="flex gap-3">
           <span class="chenxing-mono flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--chenxing-border-strong)] bg-[var(--chenxing-primary-soft)] text-sm text-[var(--chenxing-cyan)]">02</span>
           <div>
             <p class="chenxing-body font-semibold">配置回调地址</p>
-            <p class="chenxing-caption mt-0.5">填写并校验 Redirect URI，辰星仅向登记的精确地址回跳授权码。</p>
+            <p class="chenxing-caption mt-0.5">登记 Redirect URI，辰星仅向精确匹配的地址回跳授权码。</p>
           </div>
-        </li>
-        <li class="flex gap-4">
+        </div>
+        <div class="flex gap-3">
           <span class="chenxing-mono flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--chenxing-border-strong)] bg-[var(--chenxing-primary-soft)] text-sm text-[var(--chenxing-cyan)]">03</span>
           <div>
             <p class="chenxing-body font-semibold">发起授权请求</p>
-            <p class="chenxing-caption mt-0.5">携带 PKCE 参数跳转授权端点，用户确认后凭授权码换取令牌。</p>
+            <p class="chenxing-caption mt-0.5">携带 PKCE 参数跳转授权端点，用授权码换取令牌。</p>
           </div>
-        </li>
-      </ol>
+        </div>
+      </div>
 
       <div class="chenxing-divider my-5"></div>
       <p class="chenxing-label">Authorize URL</p>
@@ -1176,6 +1304,125 @@ td.chenxing-label {
     </section>
   </div>
 </div>
+
+<!-- ============ edit drawer (newapi-style right sheet, local JS only) ============ -->
+<div class="chenxing-drawer-overlay" data-drawer-close></div>
+<aside class="chenxing-drawer" role="dialog" aria-modal="true" aria-label="编辑接入应用">
+  <div class="chenxing-drawer-header">
+    <div class="flex min-w-0 items-center gap-3">
+      <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)]"><i data-lucide="satellite-dish" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i></span>
+      <div class="min-w-0">
+        <h3 class="chenxing-h3 truncate" data-drawer-title>编辑应用 · 星尘控制台</h3>
+        <p class="chenxing-caption text-[11px]" data-drawer-sub>修改配置后需保存生效</p>
+      </div>
+    </div>
+    <button type="button" class="chenxing-icon-btn h-9 w-9 shrink-0" data-drawer-close aria-label="关闭"><i data-lucide="x" class="h-4 w-4"></i></button>
+  </div>
+
+  <div class="chenxing-drawer-body space-y-4">
+    <!-- section card: 基本配置 -->
+    <section class="chenxing-hud-panel !p-5 space-y-4">
+      <div class="flex items-center gap-3">
+        <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--chenxing-primary-soft)] border border-[var(--chenxing-border-strong)]"><i data-lucide="settings-2" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i></span>
+        <div>
+          <p class="chenxing-body text-sm font-semibold leading-tight">基本配置</p>
+          <p class="chenxing-caption text-[11px]">应用的名称、回调与授权范围</p>
+        </div>
+      </div>
+      <div>
+        <label class="chenxing-label" for="drawer-app-name">应用名称</label>
+        <input id="drawer-app-name" class="chenxing-field" type="text" value="星尘控制台" />
+      </div>
+      <div>
+        <label class="chenxing-label" for="drawer-app-icon">应用图标 URL</label>
+        <input id="drawer-app-icon" class="chenxing-field chenxing-mono !text-[13px]" type="url" placeholder="https://example.com/logo.png" />
+        <p class="chenxing-caption mt-1.5 text-[11px]">留空则不显示图标</p>
+      </div>
+      <div>
+        <label class="chenxing-label" for="drawer-redirect-uri">Redirect URI</label>
+        <input id="drawer-redirect-uri" class="chenxing-field chenxing-mono !text-[13px]" type="url" value="https://stardust.clya.top/oauth/callback" />
+        <p class="chenxing-caption mt-1.5 text-[11px]">授权码仅回跳到与此处精确匹配的地址</p>
+      </div>
+      <div>
+        <p class="chenxing-label">Scopes</p>
+        <div class="flex flex-wrap gap-2">
+          <button type="button" class="chenxing-scope-toggle is-on"><i data-lucide="check" class="h-3.5 w-3.5"></i>openid</button>
+          <button type="button" class="chenxing-scope-toggle is-on"><i data-lucide="check" class="h-3.5 w-3.5"></i>profile</button>
+          <button type="button" class="chenxing-scope-toggle is-on"><i data-lucide="check" class="h-3.5 w-3.5"></i>email</button>
+        </div>
+      </div>
+      <div class="flex items-center justify-between rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-input)] bg-[rgba(4,8,16,0.5)] px-4 py-3" data-drawer-enable>
+        <div>
+          <p class="chenxing-body text-sm font-semibold">启用应用</p>
+          <p class="chenxing-caption text-[11px]">停用后此应用无法发起授权</p>
+        </div>
+        <button type="button" class="chenxing-switch is-on" role="switch" aria-checked="true" aria-label="启用应用"></button>
+      </div>
+    </section>
+
+    <!-- section card: 接入信息 -->
+    <section class="chenxing-hud-panel !p-5 space-y-3" data-drawer-credentials>
+      <div class="flex items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+          <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--chenxing-primary-soft)] border border-[var(--chenxing-border-strong)]"><i data-lucide="plug-zap" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i></span>
+          <div>
+            <p class="chenxing-body text-sm font-semibold leading-tight">接入信息</p>
+            <p class="chenxing-caption text-[11px]">对接 OAuth / OIDC 所需的凭据与端点</p>
+          </div>
+        </div>
+        <span class="chenxing-badge">只读</span>
+      </div>
+      <div>
+        <p class="chenxing-label">Client ID</p>
+        <div class="chenxing-kv">
+          <span class="chenxing-kv-value">cx_aaeeb134f5054f3cb9d21a7e6c3f</span>
+          <button type="button" class="chenxing-kv-copy" aria-label="复制"><i data-lucide="copy" class="h-4 w-4"></i></button>
+        </div>
+      </div>
+      <div>
+        <p class="chenxing-label">Client Secret</p>
+        <div class="chenxing-kv">
+          <span class="chenxing-kv-value">cxs_••••••••••••••••••••••••</span>
+          <button type="button" class="chenxing-kv-copy" aria-label="重新生成 Client Secret"><i data-lucide="refresh-cw" class="h-4 w-4"></i></button>
+        </div>
+        <p class="chenxing-caption mt-1.5 text-[11px]">仅创建时展示一次，遗失请点击右侧按钮重新生成</p>
+      </div>
+      <div>
+        <p class="chenxing-label">Authorization Endpoint</p>
+        <div class="chenxing-kv">
+          <span class="chenxing-kv-value">https://auth.clya.top/oauth/authorize</span>
+          <button type="button" class="chenxing-kv-copy" aria-label="复制"><i data-lucide="copy" class="h-4 w-4"></i></button>
+        </div>
+      </div>
+      <div>
+        <p class="chenxing-label">Token Endpoint</p>
+        <div class="chenxing-kv">
+          <span class="chenxing-kv-value">https://auth.clya.top/oauth/token</span>
+          <button type="button" class="chenxing-kv-copy" aria-label="复制"><i data-lucide="copy" class="h-4 w-4"></i></button>
+        </div>
+      </div>
+      <div>
+        <p class="chenxing-label">User Endpoint</p>
+        <div class="chenxing-kv">
+          <span class="chenxing-kv-value">https://auth.clya.top/oauth/userinfo</span>
+          <button type="button" class="chenxing-kv-copy" aria-label="复制"><i data-lucide="copy" class="h-4 w-4"></i></button>
+        </div>
+      </div>
+      <div>
+        <p class="chenxing-label">OIDC Discovery</p>
+        <div class="chenxing-kv">
+          <span class="chenxing-kv-value">https://auth.clya.top/.well-known/openid-configuration</span>
+          <button type="button" class="chenxing-kv-copy" aria-label="复制"><i data-lucide="copy" class="h-4 w-4"></i></button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="chenxing-drawer-footer">
+    <button type="button" class="chenxing-btn-ghost" data-drawer-close>取消</button>
+    <button type="button" class="chenxing-btn-primary"><i data-lucide="save" class="h-4 w-4"></i><span data-drawer-submit>保存修改</span></button>
+  </div>
+</aside>
     </main>
     <script>
       (function () {
@@ -1206,6 +1453,51 @@ td.chenxing-label {
           var m = b.parentElement.querySelector("[data-menu]"); if (m) m.classList.toggle("hidden");
         });
       });
+      // edit drawer: local JS only, no .design interaction edges
+      (function () {
+        var overlay = document.querySelector(".chenxing-drawer-overlay");
+        var drawer = document.querySelector(".chenxing-drawer");
+        var title = drawer.querySelector("[data-drawer-title]");
+        var sub = drawer.querySelector("[data-drawer-sub]");
+        var submit = drawer.querySelector("[data-drawer-submit]");
+        var cred = drawer.querySelector("[data-drawer-credentials]");
+        var enable = drawer.querySelector("[data-drawer-enable]");
+        var fName = drawer.querySelector("#drawer-app-name");
+        var fIcon = drawer.querySelector("#drawer-app-icon");
+        var fUri = drawer.querySelector("#drawer-redirect-uri");
+        var scopes = drawer.querySelectorAll(".chenxing-scope-toggle");
+        function setMode(mode) {
+          var create = mode === "create";
+          title.textContent = create ? "注册新应用" : "编辑应用 · 星尘控制台";
+          sub.textContent = create ? "创建后自动生成 Client ID 与 Client Secret" : "修改配置后需保存生效";
+          submit.textContent = create ? "创建应用" : "保存修改";
+          cred.style.display = create ? "none" : "";
+          enable.style.display = create ? "none" : "";
+          fName.value = create ? "" : "星尘控制台";
+          fIcon.value = "";
+          fUri.value = create ? "" : "https://stardust.clya.top/oauth/callback";
+          scopes.forEach(function (s, i) { s.classList.toggle("is-on", create ? i === 0 : true); });
+        }
+        function open(mode) { setMode(mode); overlay.classList.add("is-open"); drawer.classList.add("is-open"); }
+        function close() { overlay.classList.remove("is-open"); drawer.classList.remove("is-open"); }
+        document.querySelectorAll("[data-drawer-open]").forEach(function (el) {
+          el.addEventListener("click", function (e) {
+            e.stopPropagation();
+            open(el.getAttribute("data-drawer-open") === "create" ? "create" : "edit");
+          });
+        });
+        document.querySelectorAll("[data-drawer-close]").forEach(function (el) {
+          el.addEventListener("click", close);
+        });
+        document.addEventListener("keydown", function (e) { if (e.key === "Escape") close(); });
+        drawer.querySelectorAll(".chenxing-scope-toggle").forEach(function (el) {
+          el.addEventListener("click", function () { el.classList.toggle("is-on"); });
+        });
+        drawer.querySelector(".chenxing-switch").addEventListener("click", function () {
+          this.classList.toggle("is-on");
+          this.setAttribute("aria-checked", this.classList.contains("is-on") ? "true" : "false");
+        });
+      })();
     </script>
     <script>lucide.createIcons();</script>
 </body>

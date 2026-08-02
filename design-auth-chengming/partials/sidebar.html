@@ -9,7 +9,7 @@
   Layout rules (see DESIGN.md):
   - NO bottom nav bar, NO glowing user card — the sidebar is the only nav container.
   - 上半部分：用户/账户类入口（账户、开发者分组）。
-  - 下半部分：管理员/系统类入口（管理、安全分组），「系统设置」永远在最下面的「系统」分组。
+  - 下半部分：管理员/系统类入口（管理分组），「系统设置」永远在最下面的「系统」分组。
   CSS: .chenxing-sidebar / .chenxing-nav-item in colors_and_type.css
 -->
 <aside class="chenxing-sidebar flex">
@@ -35,12 +35,7 @@
 
     <p class="chenxing-nav-label">管理</p>
     <a class="chenxing-nav-item" data-dom-id="dom-admin-tab-dashboard" href="admin-dashboard.html"><i data-lucide="gauge" class="h-4 w-4"></i>仪表盘</a>
-    <a class="chenxing-nav-item" href="#"><i data-lucide="users" class="h-4 w-4"></i>用户管理</a>
-    <a class="chenxing-nav-item" href="#"><i data-lucide="layers" class="h-4 w-4"></i>客户端管理</a>
-
-    <p class="chenxing-nav-label">安全</p>
-    <a class="chenxing-nav-item" href="#"><i data-lucide="key-round" class="h-4 w-4"></i>密钥环</a>
-    <a class="chenxing-nav-item" href="#"><i data-lucide="scroll-text" class="h-4 w-4"></i>审计日志</a>
+    <a class="chenxing-nav-item" data-dom-id="dom-admin-tab-users" href="admin-users.html"><i data-lucide="users" class="h-4 w-4"></i>用户管理</a>
 
     <p class="chenxing-nav-label">系统</p>
     <a class="chenxing-nav-item" data-dom-id="dom-admin-tab-settings" href="admin-settings.html"><i data-lucide="settings" class="h-4 w-4"></i>系统设置</a>

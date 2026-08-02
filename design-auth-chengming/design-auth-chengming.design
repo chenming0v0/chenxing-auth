@@ -297,6 +297,10 @@
           {
             "domId": "dom-admin-tab-settings",
             "targetPageId": "page-admin-settings"
+          },
+          {
+            "domId": "dom-admin-tab-users",
+            "targetPageId": "page-admin-users"
           }
         ]
       }
@@ -365,6 +369,10 @@
           {
             "domId": "dom-topbar-console",
             "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-admin-tab-users",
+            "targetPageId": "page-admin-users"
           }
         ]
       }
@@ -433,6 +441,10 @@
           {
             "domId": "dom-topbar-console",
             "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-admin-tab-users",
+            "targetPageId": "page-admin-users"
           }
         ]
       }
@@ -501,6 +513,10 @@
           {
             "domId": "dom-topbar-console",
             "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-admin-tab-users",
+            "targetPageId": "page-admin-users"
           }
         ]
       }
@@ -569,6 +585,10 @@
           {
             "domId": "dom-topbar-console",
             "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-admin-tab-users",
+            "targetPageId": "page-admin-users"
           }
         ]
       }
@@ -642,6 +662,10 @@
           {
             "domId": "dom-topbar-console",
             "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-admin-tab-users",
+            "targetPageId": "page-admin-users"
           }
         ]
       }
@@ -710,6 +734,10 @@
           {
             "domId": "dom-topbar-console",
             "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-admin-tab-users",
+            "targetPageId": "page-admin-users"
           }
         ]
       }
@@ -763,6 +791,75 @@
           {
             "domId": "dom-console-tab-playground",
             "targetPageId": "page-console-playground"
+          },
+          {
+            "domId": "dom-admin-tab-settings",
+            "targetPageId": "page-admin-settings"
+          },
+          {
+            "domId": "dom-topbar-console",
+            "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-admin-tab-users",
+            "targetPageId": "page-admin-users"
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-admin-users",
+      "title": "用户管理 · 后台",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1785681321890,
+      "canvasData": {
+        "x": -1024,
+        "y": 876,
+        "group": 0
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/admin-users.html",
+        "interactions": [
+          {
+            "domId": "dom-console-home",
+            "targetPageId": "page-landing",
+            "hideEdge": true,
+            "transitionLabel": "返回首页"
+          },
+          {
+            "domId": "dom-console-logout",
+            "targetPageId": "page-login",
+            "hideEdge": true,
+            "transitionLabel": "退出登录"
+          },
+          {
+            "domId": "dom-console-tab-overview",
+            "targetPageId": "page-console-overview"
+          },
+          {
+            "domId": "dom-console-tab-plans",
+            "targetPageId": "page-console-plans"
+          },
+          {
+            "domId": "dom-console-tab-profile",
+            "targetPageId": "page-console-profile"
+          },
+          {
+            "domId": "dom-console-tab-apps",
+            "targetPageId": "page-console-authorized-apps"
+          },
+          {
+            "domId": "dom-console-tab-integrate",
+            "targetPageId": "page-console-integrate"
+          },
+          {
+            "domId": "dom-console-tab-playground",
+            "targetPageId": "page-console-playground"
+          },
+          {
+            "domId": "dom-admin-tab-dashboard",
+            "targetPageId": "page-admin-dashboard"
           },
           {
             "domId": "dom-admin-tab-settings",

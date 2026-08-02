@@ -7,6 +7,8 @@
     <style id="theme-vars">
 @import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700;800&family=Exo+2:wght@300;400;500;600;700&family=Share+Tech+Mono&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap");
 
+@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700;800&family=Exo+2:wght@300;400;500;600;700&family=Share+Tech+Mono&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap");
+
 /* ============================================================
    chenxing-auth · 辰星认证中枢 — brand token & type system
    科幻未来风 + 磨砂玻璃 (glassmorphism) · 主色调：天蓝
@@ -106,35 +108,14 @@ main {
   min-height: 100vh;
 }
 
-.chenxing-auth-layout > aside {
-  display: none;
-}
-
 .chenxing-auth-layout > section {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
   min-width: 0;
   box-sizing: border-box;
-}
-
-@media (min-width: 1024px) {
-  .chenxing-auth-layout {
-    flex-direction: row;
-  }
-
-  .chenxing-auth-layout > aside {
-    display: flex;
-    width: 46%;
-    flex-shrink: 0;
-    flex-direction: column;
-    justify-content: space-between;
-    box-sizing: border-box;
-  }
-
-  .chenxing-auth-layout > section {
-    display: flex;
-    flex: 1;
-    align-items: center;
-    justify-content: center;
-  }
 }
 
 /* ---------- typography ---------- */
@@ -294,6 +275,30 @@ main {
 }
 .chenxing-btn-ghost:hover { background: rgba(255, 255, 255, 0.08); border-color: var(--chenxing-border-strong); }
 .chenxing-btn-ghost:active { transform: scale(0.985); }
+.chenxing-btn-ghost:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+.chenxing-btn-ghost:disabled:hover { background: rgba(255, 255, 255, 0.04); border-color: var(--chenxing-border); }
+
+/* danger ghost: destructive toggle actions (禁用/删除确认) */
+.chenxing-btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-family: var(--chenxing-font-body);
+  font-weight: 500;
+  font-size: 0.875rem;
+  color: var(--chenxing-error);
+  padding: 0.65rem 1.25rem;
+  white-space: nowrap;
+  background: rgba(255, 107, 122, 0.05);
+  border: 1px solid rgba(255, 107, 122, 0.35);
+  border-radius: var(--chenxing-radius-md);
+  transition: background 0.2s, border-color 0.2s, transform 0.15s;
+  cursor: pointer;
+}
+.chenxing-btn-danger:hover { background: var(--chenxing-error-soft); border-color: rgba(255, 107, 122, 0.6); }
+.chenxing-btn-danger:active { transform: scale(0.985); }
+.chenxing-btn-danger:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .chenxing-icon-btn {
   display: inline-flex;
@@ -496,10 +501,9 @@ td.chenxing-label {
   padding: 0 0.75rem;
   margin-top: 1.1rem;
   margin-bottom: 0.4rem;
-  font-family: var(--chenxing-font-mono);
-  font-size: 0.625rem;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.9375rem;
+  letter-spacing: 0.08em;
   color: var(--chenxing-muted-foreground);
 }
 .chenxing-nav-item {
@@ -817,6 +821,176 @@ td.chenxing-label {
 ::-webkit-scrollbar-thumb:hover { background: #2a6bb8; }
 ::selection { background: rgba(56, 189, 248, 0.4); color: #fff; }
 
+/* ---------- compact rounded-rect tags (content-sized, subtle border + dark fill) ---------- */
+/* Unlike pill chips/badges: small 8px radius; width always hugs the text. */
+.chenxing-tag,
+.chenxing-tag-success,
+.chenxing-tag-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: fit-content;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  padding: 0.3rem 0.65rem;
+  border-radius: var(--chenxing-radius-sm);
+  color: #a5c8ff;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(147, 197, 253, 0.28);
+}
+.chenxing-tag-success { color: #46e0a1; background: rgba(52, 211, 153, 0.1); border-color: rgba(52, 211, 153, 0.32); }
+.chenxing-tag-warning { color: var(--chenxing-warning); background: rgba(251, 191, 36, 0.09); border-color: rgba(251, 191, 36, 0.32); }
+
+/* ---------- integrate: app list (newapi-style table rows) ---------- */
+/* Shared column template so the header row and app rows stay aligned:
+   ID | 名称 | 分组 | 状态 | 操作. Client ID lives in the drawer, not here. */
+.chenxing-app-grid {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr) 7rem 7.5rem minmax(15rem, auto);
+  align-items: center;
+  gap: 1rem;
+}
+.chenxing-app-grid > span { justify-self: start; }
+@media (max-width: 1023px) {
+  .chenxing-app-grid { grid-template-columns: 2rem minmax(0, 1fr) auto; }
+}
+.chenxing-app-row {
+  padding: 0.85rem 1rem;
+  background: rgba(8, 14, 26, 0.45);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-md);
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+  cursor: pointer;
+}
+.chenxing-app-row:hover {
+  background: rgba(14, 24, 44, 0.55);
+  border-color: var(--chenxing-border-strong);
+  box-shadow: 0 0 20px rgba(56, 189, 248, 0.12);
+}
+.chenxing-app-row + .chenxing-app-row { margin-top: 0.65rem; }
+
+/* ---------- drawer: right-side sheet (newapi style) ---------- */
+.chenxing-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(2, 5, 12, 0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+.chenxing-drawer-overlay.is-open { opacity: 1; pointer-events: auto; }
+
+/* Full-height right sheet, flush to the viewport edge.
+   The sheet itself is an OPAQUE dark surface (background layer);
+   content inside .chenxing-drawer-body sits in .chenxing-hud-panel cards. */
+.chenxing-drawer {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  width: min(36.125rem, 100vw);
+  padding: 0;
+  background: linear-gradient(170deg, rgba(13, 21, 39, 0.97), rgba(6, 10, 20, 0.98));
+  backdrop-filter: blur(28px) saturate(1.5);
+  -webkit-backdrop-filter: blur(28px) saturate(1.5);
+  border-left: 1px solid var(--chenxing-border-strong);
+  box-shadow: var(--chenxing-shadow-overlay);
+  transform: translateX(102%);
+  transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chenxing-drawer.is-open { transform: translateX(0); }
+
+.chenxing-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-shrink: 0;
+  padding: 1.1rem 1.5rem;
+  border-bottom: 1px solid var(--chenxing-border);
+}
+.chenxing-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.5rem;
+}
+.chenxing-drawer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  flex-shrink: 0;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--chenxing-border);
+  background: rgba(4, 7, 14, 0.6);
+}
+
+/* ---------- key/value row: mono value + trailing copy (接入信息) ---------- */
+.chenxing-kv {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.6rem 0.55rem 0.6rem 0.85rem;
+  background: rgba(4, 8, 16, 0.6);
+  border: 1px solid var(--chenxing-input);
+  border-radius: var(--chenxing-radius-md);
+}
+.chenxing-kv-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--chenxing-font-mono);
+  font-size: 0.8125rem;
+  color: var(--chenxing-ice);
+}
+.chenxing-kv-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  color: var(--chenxing-muted-foreground);
+  border-radius: var(--chenxing-radius-sm);
+  transition: color 0.18s, background 0.18s;
+  cursor: pointer;
+}
+.chenxing-kv-copy:hover { color: var(--chenxing-cyan); background: var(--chenxing-cyan-soft); }
+
+/* ---------- scope toggle chip (checkbox-like) ---------- */
+.chenxing-scope-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-family: var(--chenxing-font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  color: var(--chenxing-muted-foreground);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-pill);
+  padding: 0.45rem 0.85rem;
+  transition: color 0.18s, background 0.18s, border-color 0.18s;
+  cursor: pointer;
+}
+.chenxing-scope-toggle:hover { border-color: var(--chenxing-border-strong); }
+.chenxing-scope-toggle.is-on {
+  color: var(--chenxing-cyan);
+  background: var(--chenxing-cyan-soft);
+  border-color: rgba(103, 232, 249, 0.4);
+}
+
     </style>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
     <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
@@ -927,21 +1101,14 @@ td.chenxing-label {
       <section class="oauth-shell">
         <div class="oauth-card chenxing-hud-panel" role="dialog" aria-labelledby="oauth-account-title">
           <div class="oauth-card-head">
-            <span class="relative flex h-7 w-7 shrink-0 items-center justify-center text-[var(--chenxing-cyan)]" aria-hidden="true">✦</span>
+            <img src="../assets/logo.png" alt="天穹辰星" class="h-7 w-7 shrink-0 rounded-[var(--chenxing-radius-md)] object-contain" />
             <span class="chenxing-body text-sm">使用辰星通行证登录</span>
           </div>
           <div class="oauth-card-body">
             <div>
               <div class="oauth-app-mark" aria-hidden="true">A</div>
-              <h1 id="oauth-account-title" class="oauth-title">选择要使用的<br />辰星通行证</h1>
-              <p class="oauth-copy" style="margin-top:18px">
-                「极光相册」请求通过辰星认证中枢获取授权。请选择要继续使用的账号。
-              </p>
-              <p class="oauth-copy">
-                授权前可查看该应用的
-                <a href="#">隐私政策</a> 与
-                <a href="#">服务条款</a>，仅在你信任该应用时继续。
-              </p>
+              <h1 id="oauth-account-title" class="oauth-title">选择账号</h1>
+              <p class="oauth-copy" style="margin-top:16px">以继续使用<span style="color:var(--chenxing-cyan);font-weight:500">「极光相册」</span></p>
             </div>
             <div>
               <ul class="oauth-list" role="listbox" aria-label="可选账号">
@@ -975,8 +1142,8 @@ td.chenxing-label {
                   </button>
                 </li>
               </ul>
-              <p class="chenxing-caption mt-4 px-1">
-                辰星认证中枢只会向接入应用返回你授权的信息，不会把密码交给第三方。
+              <p class="oauth-copy" style="margin-top:18px;font-size:12.5px;padding:0 4px">
+                在使用该应用之前，你可以查看「极光相册」的<a href="#">隐私政策</a>和<a href="#">服务条款</a>。
               </p>
             </div>
           </div>
@@ -1034,26 +1201,47 @@ td.chenxing-label {
       .oauth-card {
         position: relative;
         width: 100%;
-        max-width: 920px;
+        max-width: 1040px;
         border-radius: var(--chenxing-radius-lg);
+        padding: 24px 32px 28px;
+      }
+      /* OAuth 流程三页共用固定外框：account/consent/redirect 跳转时卡片尺寸不允许变化 */
+      @media (min-width: 860px) {
+        .oauth-card {
+          height: min(520px, calc(100vh - 150px));
+          display: flex;
+          flex-direction: column;
+        }
+        .oauth-card-head { flex-shrink: 0; }
+        .oauth-card-body,
+        .oauth-center {
+          flex: 1;
+          min-height: 0;
+          overflow-y: auto;
+          scrollbar-width: thin;
+          scrollbar-color: rgba(125, 211, 252, 0.3) transparent;
+        }
+        /* 固定外框内垂直居中，消除底部死空间；两栏彼此仍顶对齐 */
+        .oauth-card-body { align-content: center; }
+        .oauth-center { justify-content: center; padding-bottom: 12px; }
       }
       .oauth-card-head {
         display: flex;
         align-items: center;
         gap: 12px;
         border-bottom: 1px solid var(--chenxing-border);
-        padding: 0 0 16px;
+        padding: 0 0 12px;
       }
       .oauth-card-body {
         display: grid;
         gap: 28px;
-        padding: 28px 0 0;
+        padding: 18px 0 0;
       }
       @media (min-width: 860px) {
         .oauth-card-body {
           grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
           gap: 40px;
-          padding: 28px 0 0;
+          padding: 18px 0 0;
           align-items: start;
         }
         .oauth-card-body.is-stack {
@@ -1073,11 +1261,11 @@ td.chenxing-label {
       }
       .oauth-copy {
         margin: 0;
-        font-size: 0.92rem;
-        line-height: 1.7;
+        font-size: 0.9rem;
+        line-height: 1.65;
         color: var(--chenxing-muted-foreground);
       }
-      .oauth-copy + .oauth-copy { margin-top: 16px; }
+      .oauth-copy + .oauth-copy { margin-top: 10px; }
       .oauth-copy a {
         color: var(--chenxing-cyan);
         text-decoration: none;
@@ -1087,7 +1275,7 @@ td.chenxing-label {
         display: inline-flex;
         align-items: center;
         gap: 10px;
-        margin-top: 28px;
+        margin-top: 24px;
         max-width: 100%;
         border: 1px solid var(--chenxing-border);
         border-radius: 9999px;
@@ -1120,8 +1308,8 @@ td.chenxing-label {
         flex-wrap: wrap;
         justify-content: flex-end;
         gap: 12px;
-        margin-top: 28px;
-        padding-top: 8px;
+        margin-top: 12px;
+        padding-top: 0;
       }
       .oauth-btn {
         min-width: 112px;
@@ -1163,7 +1351,7 @@ td.chenxing-label {
       .oauth-footer {
         display: flex;
         width: 100%;
-        max-width: 920px;
+        max-width: 1040px;
         align-items: center;
         justify-content: space-between;
         gap: 16px;
@@ -1240,7 +1428,7 @@ td.chenxing-label {
         display: flex;
         gap: 12px;
         align-items: flex-start;
-        padding: 12px 4px;
+        padding: 4px;
       }
       .oauth-scope-icon {
         display: inline-flex;
@@ -1259,7 +1447,7 @@ td.chenxing-label {
         flex-direction: column;
         align-items: center;
         text-align: center;
-        padding: 28px 0 0;
+        padding: 18px 0 0;
       }
       .oauth-transfer {
         display: flex;
