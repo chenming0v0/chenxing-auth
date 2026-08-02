@@ -1,33 +1,23 @@
 {
-  "name": "react-vite-tailwind",
+  "name": "chenxing-passport-web",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "test": "node --test test/endpoints.test.mjs test/vite-proxy.test.mjs",
-    "preview": "vite preview"
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
-    "clsx": "2.1.1",
-    "framer-motion": "^12.42.2",
-    "lucide-react": "^1.27.0",
-    "qrcode.react": "^4.2.0",
-    "react": "19.2.6",
-    "react-dom": "19.2.6",
-    "react-router-dom": "^7.18.1",
-    "tailwind-merge": "3.4.0"
+    "@vitejs/plugin-react": "latest",
+    "lucide-react": "latest",
+    "react": "latest",
+    "react-dom": "latest"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "4.1.17",
-    "@types/node": "22.19.17",
-    "@types/react": "19.2.7",
-    "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "5.1.1",
-    "tailwindcss": "4.1.17",
-    "typescript": "5.9.3",
-    "vite": "7.3.2",
-    "vite-plugin-singlefile": "2.3.0"
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "typescript": "latest",
+    "vite": "latest"
   }
 }

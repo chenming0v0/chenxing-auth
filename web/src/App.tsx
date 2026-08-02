@@ -1,87 +1,21 @@
-import { useEffect, useState } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { api, errorMessage } from "./api";
-import { StoreProvider } from "./store";
-import { GlowButton } from "./components/ui";
-import Bootstrap from "./pages/Bootstrap";
-import Landing from "./pages/Landing";
-import { Login, Register } from "./pages/Auth";
-import OAuthFlow from "./pages/OAuthFlow";
-import ConsoleLayout from "./pages/console/ConsoleLayout";
-import Overview from "./pages/console/Overview";
-import Entitlements from "./pages/console/Entitlements";
-import Profile from "./pages/console/Profile";
-import Connections from "./pages/console/Connections";
-import Developer from "./pages/console/Developer";
-import Playground from "./pages/console/Playground";
-import Settings from "./pages/console/Settings";
-import Users from "./pages/console/Users";
-import OAuthConsent from "./pages/OAuthConsent";
+import type { ReactNode } from 'react'
+import { Navigate, usePathname } from './router'
+import { LandingPage } from './pages/landing'
+import { AuthPage, BootstrapPage } from './pages/auth'
+import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './pages/oauth'
+import { ConsoleOverview, ConsolePlans, ConsoleProfile, AuthorizedApps } from './pages/console/account'
+import { IntegratePage, PlaygroundPage } from './pages/console/developer'
+import { AdminDashboard, AdminUsers, AdminSettings } from './pages/admin'
 
 export default function App() {
-  return (
-    <StoreProvider>
-      <BrowserRouter>
-        <BootstrapGate />
-      </BrowserRouter>
-    </StoreProvider>
-  );
-}
-
-function BootstrapGate() {
-  const [initialized, setInitialized] = useState<boolean | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const checkStatus = () => {
-    setError(null);
-    setInitialized(null);
-    void api.bootstrapStatus()
-      .then((status) => setInitialized(status.initialized))
-      .catch((value) => setError(errorMessage(value)));
-  };
-
-  useEffect(() => { checkStatus(); }, []);
-
-  if (initialized === null && !error) return <GateLoading />;
-  if (error) return <GateError message={error} onRetry={checkStatus} />;
-  if (!initialized) return <Bootstrap onComplete={() => { setInitialized(true); window.location.assign("/login?return_to=%2Fconsole"); }} />;
-
-  return <Routes>
-    <Route path="/" element={<Landing />} />
-    <Route path="/login" element={<Login />} />
-    <Route path="/register" element={<Register />} />
-    <Route path="/oauth/authorize" element={<OAuthFlow />} />
-    <Route path="/oauth/consent" element={<OAuthConsent />} />
-    <Route path="/console" element={<ConsoleLayout />}>
-      <Route index element={<Overview />} />
-      <Route path="entitlements" element={<Entitlements />} />
-      <Route path="profile" element={<Profile />} />
-      <Route path="connections" element={<Connections />} />
-      <Route path="developer" element={<Developer />} />
-      <Route path="playground" element={<Playground />} />
-      <Route path="settings" element={<Settings />} />
-      <Route path="users" element={<Users />} />
-    </Route>
-    <Route path="*" element={<Navigate to="/" replace />} />
-  </Routes>;
-}
-
-function GateLoading() {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-app text-xs text-slate-500">
-      正在准备辰星认证中枢…
-    </div>
-  );
-}
-
-function GateError({ message, onRetry }: { message: string; onRetry: () => void }) {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-app p-6">
-      <div className="panel w-full max-w-md rounded-xl px-6 py-10 text-center">
-        <h1 className="text-base font-semibold text-white">无法检查初始化状态</h1>
-        <p className="mt-2 text-xs leading-relaxed text-slate-500">{message}</p>
-        <GlowButton className="mt-6" onClick={onRetry}>重新检查</GlowButton>
-      </div>
-    </div>
-  );
+  const path = usePathname()
+  const pages: Record<string, ReactNode> = {
+    '/': <LandingPage />, '/login': <AuthPage mode="login" />, '/register': <AuthPage mode="register" />,
+    '/bootstrap': <BootstrapPage />, '/oauth/account': <OAuthAccountPage />, '/oauth/consent': <OAuthConsentPage />,
+    '/oauth/redirect': <OAuthRedirectPage />, '/console': <ConsoleOverview />, '/console/plans': <ConsolePlans />,
+    '/console/profile': <ConsoleProfile />, '/console/apps': <AuthorizedApps />, '/console/integrate': <IntegratePage />,
+    '/console/playground': <PlaygroundPage />, '/admin': <AdminDashboard />, '/admin/users': <AdminUsers />,
+    '/admin/settings': <AdminSettings />,
+  }
+  return pages[path] ?? <Navigate to="/" />
 }

@@ -11,3 +11,5 @@ coverage/
 /.claude/
 web/node_modules/
 web/dist/
+web/*.tsbuildinfo
+.slim/deepwork/
