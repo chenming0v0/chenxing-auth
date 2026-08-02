@@ -264,10 +264,7 @@ impl UserService {
     }
 
     pub async fn set_status(&self, id: UserId, status: &str) -> Result<bool, UserServiceError> {
-        if !matches!(status, "active" | "disabled") {
-            return Ok(false);
-        }
-        Ok(repository::set_user_status(&self.pool, id, status).await?)
+        self.set_status_guarded(id, status).await
     }
 
     pub async fn set_role(&self, id: UserId, role: UserRole) -> Result<bool, UserServiceError> {

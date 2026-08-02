@@ -17,6 +17,7 @@ pub struct Config {
     pub session_ttl_seconds: u64,
     pub log_filter: String,
     pub auth_encryption_key: AuthEncryptionKey,
+    pub auth_encryption_keys: AuthEncryptionKeyRing,
     pub webauthn_rp_id: String,
     pub webauthn_origin: String,
 }
@@ -40,6 +41,76 @@ impl fmt::Debug for AuthEncryptionKey {
     }
 }
 
+#[derive(Clone)]
+pub struct AuthEncryptionKeyRing {
+    active_kid: String,
+    keys: Vec<(String, AuthEncryptionKey)>,
+}
+
+impl AuthEncryptionKeyRing {
+    pub fn single(key: AuthEncryptionKey) -> Self {
+        Self {
+            active_kid: "legacy".to_owned(),
+            keys: vec![("legacy".to_owned(), key)],
+        }
+    }
+
+    pub fn from_entries(
+        active_kid: String,
+        keys: Vec<(String, AuthEncryptionKey)>,
+    ) -> Result<Self, ConfigError> {
+        if keys.is_empty()
+            || active_kid.trim().is_empty()
+            || active_kid.len() > 64
+            || keys.iter().any(|(kid, _)| kid.is_empty() || kid.len() > 64)
+            || keys
+                .iter()
+                .enumerate()
+                .any(|(index, (kid, _))| keys[..index].iter().any(|(known, _)| known == kid))
+            || !keys.iter().any(|(kid, _)| kid == &active_kid)
+        {
+            return Err(ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
+        }
+        Ok(Self::new(active_kid, keys))
+    }
+
+    pub fn active_kid(&self) -> &str {
+        &self.active_kid
+    }
+
+    pub fn active_key(&self) -> &AuthEncryptionKey {
+        self.key(&self.active_kid)
+            .expect("active key must exist in a validated key ring")
+    }
+
+    pub fn key(&self, kid: &str) -> Option<&AuthEncryptionKey> {
+        self.keys
+            .iter()
+            .find_map(|(stored_kid, key)| (stored_kid == kid).then_some(key))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &AuthEncryptionKey)> {
+        self.keys.iter().map(|(kid, key)| (kid.as_str(), key))
+    }
+
+    fn new(active_kid: String, keys: Vec<(String, AuthEncryptionKey)>) -> Self {
+        Self { active_kid, keys }
+    }
+}
+
+impl fmt::Debug for AuthEncryptionKeyRing {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthEncryptionKeyRing")
+            .field("active_kid", &self.active_kid)
+            .field(
+                "kids",
+                &self.keys.iter().map(|(kid, _)| kid).collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
 impl fmt::Debug for Config {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -55,6 +126,7 @@ impl fmt::Debug for Config {
             .field("session_ttl_seconds", &self.session_ttl_seconds)
             .field("log_filter", &self.log_filter)
             .field("auth_encryption_key", &self.auth_encryption_key)
+            .field("auth_encryption_keys", &self.auth_encryption_keys)
             .finish()
     }
 }
@@ -85,6 +157,7 @@ struct ConfigValues {
     session_ttl_seconds: u64,
     log_filter: String,
     auth_encryption_key: AuthEncryptionKey,
+    auth_encryption_keys: AuthEncryptionKeyRing,
     webauthn_rp_id: String,
     webauthn_origin: String,
 }
@@ -99,7 +172,8 @@ impl Config {
         )?;
         let database_url = required_env("DATABASE_URL")?;
         let redis_url = required_env("REDIS_URL")?;
-        let auth_encryption_key = parse_auth_encryption_key(&required_env("AUTH_ENCRYPTION_KEY")?)?;
+        let auth_encryption_keys = parse_auth_encryption_key_ring()?;
+        let auth_encryption_key = auth_encryption_keys.active_key().clone();
         let issuer_url = env::var("APP_ISSUER").unwrap_or_else(|_| format!("http://{host}:{port}"));
         let issuer =
             url::Url::parse(&issuer_url).map_err(|_| ConfigError::InvalidValue("APP_ISSUER"))?;
@@ -134,6 +208,7 @@ impl Config {
             session_ttl_seconds,
             log_filter,
             auth_encryption_key,
+            auth_encryption_keys,
             webauthn_rp_id,
             webauthn_origin,
         })
@@ -177,6 +252,7 @@ impl Config {
             session_ttl_seconds,
             log_filter: "chenxing_auth=debug".to_owned(),
             auth_encryption_key: AuthEncryptionKey::new([0_u8; 32]),
+            auth_encryption_keys: AuthEncryptionKeyRing::single(AuthEncryptionKey::new([0_u8; 32])),
             webauthn_rp_id: "localhost".to_owned(),
             webauthn_origin: format!("http://localhost:{port}"),
         })
@@ -195,6 +271,7 @@ impl Config {
             session_ttl_seconds,
             log_filter,
             auth_encryption_key,
+            auth_encryption_keys,
             webauthn_rp_id,
             webauthn_origin,
         } = values;
@@ -252,6 +329,7 @@ impl Config {
             session_ttl_seconds,
             log_filter,
             auth_encryption_key,
+            auth_encryption_keys,
             webauthn_rp_id,
             webauthn_origin,
         })
@@ -266,6 +344,37 @@ fn parse_auth_encryption_key(value: &str) -> Result<AuthEncryptionKey, ConfigErr
         .try_into()
         .map_err(|_| ConfigError::InvalidValue("AUTH_ENCRYPTION_KEY"))?;
     Ok(AuthEncryptionKey::new(bytes))
+}
+
+fn parse_auth_encryption_key_ring() -> Result<AuthEncryptionKeyRing, ConfigError> {
+    let Ok(value) = env::var("AUTH_ENCRYPTION_KEYS") else {
+        return Ok(AuthEncryptionKeyRing::single(parse_auth_encryption_key(
+            &required_env("AUTH_ENCRYPTION_KEY")?,
+        )?));
+    };
+    if value.trim().is_empty() {
+        return Err(ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
+    }
+
+    let mut keys = Vec::new();
+    for item in value.split(',') {
+        let Some((kid, encoded)) = item.trim().split_once('=') else {
+            return Err(ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
+        };
+        let kid = kid.trim();
+        if kid.is_empty() || kid.len() > 64 || keys.iter().any(|(known, _)| known == kid) {
+            return Err(ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
+        }
+        keys.push((kid.to_owned(), parse_auth_encryption_key(encoded)?));
+    }
+    let active_kid = env::var("AUTH_ENCRYPTION_ACTIVE_KID")
+        .ok()
+        .filter(|kid| !kid.trim().is_empty())
+        .unwrap_or_else(|| keys[0].0.clone());
+    if !keys.iter().any(|(kid, _)| kid == &active_kid) {
+        return Err(ConfigError::InvalidValue("AUTH_ENCRYPTION_ACTIVE_KID"));
+    }
+    AuthEncryptionKeyRing::from_entries(active_kid, keys)
 }
 
 fn required_env(name: &'static str) -> Result<String, ConfigError> {

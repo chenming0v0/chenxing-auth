@@ -225,12 +225,10 @@ pub async fn set_user_status(
     id: UserId,
     status: &str,
 ) -> Result<bool, crate::sqlx::Error> {
-    let result = crate::sqlx::query("UPDATE users SET status = $2 WHERE id = $1")
-        .bind(id)
-        .bind(status)
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected() == 1)
+    Ok(matches!(
+        set_user_status_guarded(pool, id, status).await?,
+        Some("updated")
+    ))
 }
 
 pub async fn update_display_name(
@@ -406,7 +404,11 @@ pub async fn set_user_status_guarded(
     id: UserId,
     status: &str,
 ) -> Result<Option<&'static str>, crate::sqlx::Error> {
+    if !matches!(status, "active" | "disabled") {
+        return Ok(None);
+    }
     let mut transaction = pool.begin().await?;
+    crate::sessions::store::lock_user_session_scope(&mut transaction, id).await?;
     let active_owners: Vec<(UserId,)> = crate::sqlx::query_as(
         "SELECT id FROM users WHERE role = 'owner' AND status = 'active' ORDER BY id FOR UPDATE",
     )
@@ -428,6 +430,9 @@ pub async fn set_user_status_guarded(
     {
         transaction.rollback().await?;
         return Ok(Some("last_owner_required"));
+    }
+    if current_status != status && status == "disabled" {
+        crate::sessions::store::revoke_all_for_user_in_transaction(&mut transaction, id).await?;
     }
     let result =
         crate::sqlx::query("UPDATE users SET status = $2, updated_at = NOW() WHERE id = $1")

@@ -223,7 +223,11 @@ pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -
     };
     let session = match state.sessions.find(&session_token).await {
         Ok(Some(session)) => session,
-        Ok(None) => return error::unauthorized("invalid_session", "session is invalid"),
+        Ok(None) => {
+            let mut response = error::unauthorized("invalid_session", "session is invalid");
+            cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure);
+            return response;
+        }
         Err(session_error) => {
             tracing::error!(error = %session_error, "failed to load session for revocation");
             return error::internal();

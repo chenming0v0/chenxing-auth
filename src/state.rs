@@ -74,10 +74,10 @@ impl AppState {
         let redis = redis::Client::open(config.redis_url.as_str())?;
         let auth_limiter: Arc<dyn AuthFailureLimiter> =
             Arc::new(RedisAuthFailureLimiter::new(redis.clone()));
-        let sessions = SessionStore::with_metadata_and_key(
+        let sessions = SessionStore::with_metadata_and_key_ring(
             redis.clone(),
             database.clone(),
-            *config.auth_encryption_key.as_bytes(),
+            config.auth_encryption_keys.clone(),
         );
         let settings = SettingsService::new(database.clone());
         let users = UserService::new(database.clone(), auth_limiter.clone());

@@ -65,11 +65,13 @@ fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("session outbox consistency"));
     assert!(DB_MODULE.contains("session outbox deleted target cleanup"));
     assert!(DB_MODULE.contains("session outbox event user retention"));
+    assert!(DB_MODULE.contains("session revocation epochs"));
     assert!(DB_MODULE.contains("include_str!(\"../migrations/0001_initial.sql\")"));
     assert!(DB_MODULE.contains("include_str!(\"../migrations/0002_plans.sql\")"));
     assert!(DB_MODULE.contains("0003_session_outbox.sql"));
     assert!(DB_MODULE.contains("0004_relax_deleted_session_outbox_target.sql"));
     assert!(DB_MODULE.contains("0005_session_outbox_event_user.sql"));
+    assert!(DB_MODULE.contains("0006_session_epochs.sql"));
     let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -85,6 +87,7 @@ fn database_uses_explicit_unified_baseline_migrations() {
             std::ffi::OsString::from("0003_session_outbox.sql"),
             std::ffi::OsString::from("0004_relax_deleted_session_outbox_target.sql"),
             std::ffi::OsString::from("0005_session_outbox_event_user.sql"),
+            std::ffi::OsString::from("0006_session_epochs.sql"),
         ]
     );
 }

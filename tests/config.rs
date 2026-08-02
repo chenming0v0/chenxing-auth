@@ -1,4 +1,4 @@
-use chenxing_auth::config::{AuthEncryptionKey, Config, ConfigError};
+use chenxing_auth::config::{AuthEncryptionKey, AuthEncryptionKeyRing, Config, ConfigError};
 
 #[test]
 fn config_accepts_valid_runtime_values() {
@@ -53,6 +53,36 @@ fn config_debug_does_not_expose_authentication_key() {
     let debug = format!("{key:?}");
     assert!(debug.contains("REDACTED"));
     assert!(!debug.contains("7"));
+}
+
+#[test]
+fn encryption_key_ring_selects_active_key_and_keeps_old_keys_readable() {
+    let ring = AuthEncryptionKeyRing::from_entries(
+        "current".to_owned(),
+        vec![
+            ("current".to_owned(), AuthEncryptionKey::new([1_u8; 32])),
+            ("previous".to_owned(), AuthEncryptionKey::new([2_u8; 32])),
+        ],
+    )
+    .expect("valid key ring");
+
+    assert_eq!(ring.active_kid(), "current");
+    assert_eq!(ring.active_key().as_bytes(), &[1_u8; 32]);
+    assert!(ring.key("previous").is_some());
+}
+
+#[test]
+fn encryption_key_ring_rejects_duplicate_key_ids() {
+    let error = AuthEncryptionKeyRing::from_entries(
+        "current".to_owned(),
+        vec![
+            ("current".to_owned(), AuthEncryptionKey::new([1_u8; 32])),
+            ("current".to_owned(), AuthEncryptionKey::new([2_u8; 32])),
+        ],
+    )
+    .expect_err("duplicate key ids must be rejected");
+
+    assert_eq!(error, ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
 }
 
 #[test]
