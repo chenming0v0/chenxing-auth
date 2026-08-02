@@ -361,6 +361,10 @@
           {
             "domId": "dom-admin-tab-settings",
             "targetPageId": "page-admin-settings"
+          },
+          {
+            "domId": "dom-topbar-console",
+            "targetPageId": "page-console-overview"
           }
         ]
       }
@@ -425,6 +429,10 @@
           {
             "domId": "dom-admin-tab-settings",
             "targetPageId": "page-admin-settings"
+          },
+          {
+            "domId": "dom-topbar-console",
+            "targetPageId": "page-console-overview"
           }
         ]
       }
@@ -489,6 +497,10 @@
           {
             "domId": "dom-admin-tab-settings",
             "targetPageId": "page-admin-settings"
+          },
+          {
+            "domId": "dom-topbar-console",
+            "targetPageId": "page-console-overview"
           }
         ]
       }
@@ -553,6 +565,10 @@
           {
             "domId": "dom-admin-tab-settings",
             "targetPageId": "page-admin-settings"
+          },
+          {
+            "domId": "dom-topbar-console",
+            "targetPageId": "page-console-overview"
           }
         ]
       }
@@ -622,6 +638,10 @@
           {
             "domId": "dom-admin-tab-settings",
             "targetPageId": "page-admin-settings"
+          },
+          {
+            "domId": "dom-topbar-console",
+            "targetPageId": "page-console-overview"
           }
         ]
       }
@@ -686,6 +706,10 @@
           {
             "domId": "dom-admin-tab-dashboard",
             "targetPageId": "page-admin-dashboard"
+          },
+          {
+            "domId": "dom-topbar-console",
+            "targetPageId": "page-console-overview"
           }
         ]
       }
@@ -743,6 +767,10 @@
           {
             "domId": "dom-admin-tab-settings",
             "targetPageId": "page-admin-settings"
+          },
+          {
+            "domId": "dom-topbar-console",
+            "targetPageId": "page-console-overview"
           }
         ]
       }

@@ -82,7 +82,12 @@ export function AuthShell({ children, title, subtitle }: { children: ReactNode; 
         </div>
       </div>
 
-      <div className="flex flex-1 items-center justify-center p-6">
+      {/* Top-anchored, not vertically centered: the card's top edge stays fixed when
+          content shrinks (e.g. second-factor step), only the bottom moves.
+          50vh - 157px reproduces the centered top offset of the tallest steady state
+          (login form ≈ 314px tall); max() keeps the old 1.5rem padding floor on
+          short viewports so nothing overflows. */}
+      <div className="flex flex-1 items-start justify-center px-6 pb-6 pt-[max(1.5rem,50vh_-_157px)]">
         <div className="w-full max-w-[380px]">
           <Link to="/" className="mb-7 flex items-center justify-center gap-2 lg:hidden">
             <Logo size={28} />

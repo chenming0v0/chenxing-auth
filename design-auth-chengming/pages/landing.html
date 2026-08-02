@@ -34,6 +34,10 @@
   --chenxing-cyan-soft: rgba(103, 232, 249, 0.13);
   --chenxing-ice: #d9f4ff;
 
+  /* starlight gold (hero shimmer / celebratory accents) */
+  --chenxing-gold: #ffd98a;
+  --chenxing-gold-deep: #f5c76a;
+
   /* semantic states */
   --chenxing-success: #34d399;
   --chenxing-warning: #fbbf24;
@@ -149,23 +153,33 @@ main {
   color: transparent;
 }
 
+/* flowing starlight display text: white -> gold -> ice-cyan sweep (hero titles) */
+.chenxing-text-shimmer {
+  background: linear-gradient(90deg, #fff 0%, var(--chenxing-gold) 25%, var(--chenxing-cyan) 50%, #fff 75%, #fff 100%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: chenxing-shimmer 6s linear infinite;
+}
+
 /* ---------- glass panels ---------- */
 .chenxing-glass {
   position: relative;
-  background: linear-gradient(160deg, rgba(125, 185, 255, 0.10), rgba(255, 255, 255, 0.028) 55%, rgba(103, 232, 249, 0.05));
-  backdrop-filter: blur(22px) saturate(1.5);
-  -webkit-backdrop-filter: blur(22px) saturate(1.5);
-  border: 1px solid var(--chenxing-border);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.015));
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: var(--chenxing-radius-lg);
   box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
 }
 
 .chenxing-glass-strong {
   position: relative;
-  background: linear-gradient(165deg, rgba(18, 30, 52, 0.72), rgba(7, 11, 22, 0.66));
-  backdrop-filter: blur(28px) saturate(1.6);
-  -webkit-backdrop-filter: blur(28px) saturate(1.6);
-  border: 1px solid rgba(147, 197, 253, 0.24);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02));
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: var(--chenxing-radius-lg);
   box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
 }
@@ -194,14 +208,14 @@ main {
   border-bottom-right-radius: var(--chenxing-radius-md);
 }
 
-/* Shared two-corner HUD glass panel */
+/* Shared two-corner HUD glass panel (frosted, keeps cyan corner highlights) */
 .chenxing-hud-panel {
   position: relative;
   padding: 2rem;
-  background: linear-gradient(165deg, rgba(18, 30, 52, 0.72), rgba(7, 11, 22, 0.66));
-  backdrop-filter: blur(28px) saturate(1.6);
-  -webkit-backdrop-filter: blur(28px) saturate(1.6);
-  border: 1px solid rgba(147, 197, 253, 0.24);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.065), rgba(255, 255, 255, 0.02) 55%, rgba(125, 185, 255, 0.035));
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: var(--chenxing-radius-lg);
   box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
 }
@@ -525,21 +539,96 @@ td.chenxing-label {
 .chenxing-nav-item[aria-current="page"] i,
 .chenxing-nav-item.is-active i { color: var(--chenxing-cyan); }
 
-/* ---------- console shell: top bar ---------- */
+/* ---------- global top bar: floating glass capsule ---------- */
+/* Outermost chrome on every page: brand left, live status center,
+   hamburger nav + account (or login button) right. */
 .chenxing-topbar {
   position: sticky;
-  top: 0;
+  top: 0.9rem;
   z-index: 30;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 0.75rem;
+  width: min(100% - 2rem, 36rem);
+  margin: 0.9rem auto 0;
+  padding: 0.5rem 0.6rem 0.5rem 0.85rem;
+  background: rgba(6, 10, 20, 0.42);
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-lg);
+  box-shadow: 0 18px 44px rgba(2, 6, 16, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* top bar center: current interface status with pulsing dot (body font for legibility) */
+.chenxing-topbar-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  justify-self: center;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  color: var(--chenxing-ice);
+}
+.chenxing-status-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  flex-shrink: 0;
+  border-radius: var(--chenxing-radius-full);
+  background: var(--chenxing-success);
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.9);
+}
+
+/* top bar hamburger: three staggered bars, opens the global nav menu */
+.chenxing-hamburger {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 0.28rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0 0.65rem;
+  border: 1px solid transparent;
+  border-radius: var(--chenxing-radius-md);
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s;
+}
+.chenxing-hamburger span {
+  display: block;
+  height: 2px;
+  width: 1.15rem;
+  border-radius: var(--chenxing-radius-full);
+  background: var(--chenxing-foreground);
+  transition: width 0.2s, background 0.2s;
+}
+.chenxing-hamburger span:nth-child(2) { width: 0.75rem; }
+.chenxing-hamburger:hover { background: var(--chenxing-muted); border-color: var(--chenxing-border-strong); }
+.chenxing-hamburger:hover span { width: 1.15rem; background: var(--chenxing-cyan); }
+
+/* large nav rows inside the hamburger menu */
+.chenxing-nav-menu-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  padding: 0.85rem 1.5rem;
-  background: rgba(4, 6, 13, 0.55);
-  backdrop-filter: blur(18px) saturate(1.4);
-  -webkit-backdrop-filter: blur(18px) saturate(1.4);
-  border-bottom: 1px solid var(--chenxing-border);
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.8rem 0.85rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--chenxing-foreground);
+  border-radius: var(--chenxing-radius-sm);
+  transition: background 0.15s;
+  cursor: pointer;
 }
+.chenxing-nav-menu-item:hover { background: var(--chenxing-muted); }
+.chenxing-nav-menu-item i { color: var(--chenxing-muted-foreground); transition: color 0.15s; }
+.chenxing-nav-menu-item:hover i { color: var(--chenxing-cyan); }
 
 /* content column offset so fixed sidebar doesn't overlap (desktop only) */
 .chenxing-console-main { min-width: 0; }
@@ -547,12 +636,14 @@ td.chenxing-label {
   .chenxing-console-main { margin-left: 15rem; }
 }
 
-/* ---------- console shell: avatar + dropdown ---------- */
+/* ---------- console shell: avatar (rounded-rect) + dropdown ---------- */
 .chenxing-avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 9999px;
+  border: none;
+  cursor: pointer;
+  border-radius: var(--chenxing-radius-md);
   font-family: var(--chenxing-font-display);
   font-weight: 700;
   color: #fff;
@@ -697,6 +788,15 @@ td.chenxing-label {
 .chenxing-switch.is-on::after { transform: translateX(1.4rem); background: var(--chenxing-cyan); box-shadow: 0 0 10px rgba(103, 232, 249, 0.7); }
 
 /* ---------- keyframes ---------- */
+/* scroll reveal: [data-reveal-3d] elements fade/rise in when .is-visible is added */
+[data-reveal-3d] {
+  opacity: 0;
+  transform: translateY(26px) scale(0.985);
+  transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1), transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+[data-reveal-3d].is-visible { opacity: 1; transform: none; }
+
 @keyframes chenxing-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
 @keyframes chenxing-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
 @keyframes chenxing-ping { 0% { transform: scale(1); opacity: 0.4; } 80%, 100% { transform: scale(2.2); opacity: 0; } }
@@ -829,123 +929,300 @@ td.chenxing-label {
 
       <div class="relative z-10">
         <!-- nav -->
-        <header class="sticky top-0 z-20 border-b border-[var(--chenxing-border)] bg-[rgba(4,6,13,0.5)] backdrop-blur-xl">
-          <div class="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-            <div class="flex items-center gap-3">
-              <span class="relative flex h-11 w-11 items-center justify-center">
-                <span class="absolute inset-0 animate-[chenxing-spin-slow_18s_linear_infinite] rounded-full border border-dashed border-[var(--chenxing-border-strong)]"></span>
-                <img src="../assets/logo.png" alt="天穹辰星" class="chenxing-brand-logo relative h-8 w-8" />
-              </span>
-              <div>
-                <span class="chenxing-wordmark text-aurora block text-lg">天穹辰星</span>
-                <span class="chenxing-mono block text-[9px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">辰星认证中枢</span>
+        <!-- global top bar (floating glass capsule, logged-out variant) -->
+        <header class="chenxing-topbar">
+          <!-- left: brand -->
+          <a href="landing.html" class="flex items-center gap-2.5 justify-self-start">
+            <img src="../assets/logo.png" alt="天穹辰星" class="h-8 w-8 rounded-[var(--chenxing-radius-md)]" />
+            <span class="hidden sm:block">
+              <span class="chenxing-body block text-sm font-semibold leading-tight">天穹辰星</span>
+              <span class="chenxing-caption block text-[10px] leading-tight tracking-[0.08em]">辰星认证中枢</span>
+            </span>
+          </a>
+
+          <!-- center: current interface status -->
+          <div class="chenxing-topbar-status" data-topbar-status>
+            <span>星门在线</span>
+          </div>
+
+          <!-- right: hamburger nav + login -->
+          <div class="flex items-center gap-2 justify-self-end">
+            <div class="relative">
+              <button type="button" data-menu-toggle class="chenxing-hamburger" aria-label="打开导航菜单">
+                <span></span><span></span><span></span>
+              </button>
+              <div data-menu class="chenxing-menu absolute right-0 top-full z-50 mt-3 hidden w-60">
+                <a href="landing.html" class="chenxing-nav-menu-item">主页<i data-lucide="arrow-up-right" class="h-4 w-4"></i></a>
+                <a href="console-overview.html" class="chenxing-nav-menu-item" data-dom-id="dom-landing-console">控制台<i data-lucide="layout-dashboard" class="h-4 w-4"></i></a>
+                <button type="button" class="chenxing-nav-menu-item">应用广场<i data-lucide="store" class="h-4 w-4"></i></button>
+                <div class="chenxing-divider my-1"></div>
+                <div class="flex items-center justify-between px-3.5 py-2">
+                  <span class="chenxing-caption text-[11px] tracking-[0.06em]">状态</span>
+                  <span class="chenxing-caption inline-flex items-center gap-2 text-[11px] tracking-[0.06em] text-[var(--chenxing-success)]"><span class="chenxing-status-dot"></span>星门在线</span>
+                </div>
+                <div class="chenxing-divider my-1"></div>
+                <a href="register.html" class="chenxing-btn-primary w-full text-sm" data-dom-id="dom-landing-register">创建通行证</a>
               </div>
             </div>
-            <nav class="hidden items-center gap-7 md:flex">
-              <a href="#features" class="chenxing-caption text-[var(--chenxing-foreground)]">能力</a>
-              <a href="#developers" class="chenxing-caption">开发者</a>
-              <a href="console-overview.html" class="chenxing-caption" data-dom-id="dom-landing-console">控制台</a>
-            </nav>
-            <div class="flex items-center gap-3">
-              <a href="login.html" class="chenxing-btn-ghost px-4 py-2 text-sm" data-dom-id="dom-landing-login">登录</a>
-              <a href="register.html" class="chenxing-btn-primary px-4 py-2 text-sm" data-dom-id="dom-landing-register">创建通行证</a>
-            </div>
+            <a href="login.html" class="chenxing-btn-primary text-sm" data-dom-id="dom-landing-login">登录</a>
           </div>
         </header>
 
         <!-- hero -->
-        <section data-scroll-hero class="relative mx-auto max-w-6xl px-6 pb-24 pt-16 text-center md:pt-24">
-          <div class="relative mx-auto mb-10 flex h-28 w-28 items-center justify-center">
-            <span class="absolute -inset-3 animate-[chenxing-spin-slow_18s_linear_infinite] rounded-full border border-dashed border-[var(--chenxing-border-strong)]"></span>
-            <span class="absolute -inset-6 rounded-full border border-[var(--chenxing-border)] opacity-60"></span>
-            <span class="absolute inset-0 rounded-full bg-[var(--chenxing-primary-soft)] blur-2xl"></span>
-            <span class="relative flex h-16 w-16 items-center justify-center rounded-full border border-[var(--chenxing-border-strong)] bg-[var(--chenxing-card)]">
-              <i data-lucide="sparkles" class="h-7 w-7 text-[var(--chenxing-cyan)]"></i>
+        <!-- HERO -->
+        <section data-scroll-hero class="relative mx-auto flex min-h-[88vh] max-w-6xl flex-col items-center justify-center px-6 pb-16 pt-20 text-center">
+          <div class="relative mb-10 flex h-36 w-36 items-center justify-center">
+            <span class="absolute -inset-10 rounded-full border border-[var(--chenxing-border)] opacity-60"></span>
+            <span class="absolute -inset-5 animate-[chenxing-spin-slow_22s_linear_infinite] rounded-full border border-dashed border-[rgba(245,199,106,0.3)]">
+              <span class="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rounded-full bg-[var(--chenxing-gold)] shadow-[0_0_14px_4px_rgba(245,199,106,0.7)]"></span>
             </span>
+            <span class="absolute inset-1 animate-[chenxing-spin-slow_16s_linear_infinite_reverse] rounded-full border border-[rgba(103,232,249,0.18)]">
+              <span class="absolute -bottom-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-[var(--chenxing-cyan)] shadow-[0_0_12px_3px_rgba(103,232,249,0.7)]"></span>
+            </span>
+            <span class="absolute inset-0 rounded-full bg-[var(--chenxing-primary-soft)] blur-2xl"></span>
+            <img src="../assets/logo.png" alt="天穹辰星" class="relative h-28 w-28 animate-[chenxing-float_7s_ease-in-out_infinite] rounded-full drop-shadow-[0_0_28px_rgba(56,189,248,0.55)]" />
           </div>
-          <span class="chenxing-chip"><span class="chenxing-dot h-1.5 w-1.5 rounded-full bg-[var(--chenxing-cyan)]"></span>天穹辰星 · 面向星辰的身份基础设施</span>
-          <h1 class="chenxing-display mx-auto mt-6 max-w-4xl text-4xl font-bold leading-[1.15] text-[var(--chenxing-foreground)] sm:text-5xl md:text-6xl">
-            以一枚<span class="text-aurora">辰星通行证</span><br>连接整个天穹生态
+
+          <span class="chenxing-chip"><span class="h-1.5 w-1.5 rounded-full bg-[var(--chenxing-cyan)]"></span>全星域认证服务运行中</span>
+
+          <h1 class="chenxing-display mt-9 text-[17vw] font-bold leading-[0.92] tracking-[0.06em] sm:text-[92px]">
+            <span class="chenxing-text-shimmer">天穹辰星</span>
           </h1>
-          <p class="chenxing-body mx-auto mt-6 max-w-2xl text-[var(--chenxing-muted-foreground)]">辰星认证中枢提供企业级 OAuth 2.0 / OpenID Connect 身份服务—— 安全登录、细粒度授权、统一账户管理，让每一次连接都值得信赖。</p>
-          <div class="mt-10 flex flex-wrap items-center justify-center gap-4">
-            <a href="register.html" class="chenxing-btn-primary px-8 py-3 text-base" data-dom-id="dom-landing-cta-register">
-              免费创建通行证
-              <i data-lucide="arrow-right" class="h-4 w-4"></i>
-            </a>
-            <a href="oauth-consent.html" class="chenxing-btn-ghost px-8 py-3 text-base">体验授权流程</a>
+          <div class="mt-5 flex items-center justify-center gap-4">
+            <span class="h-px w-12 bg-gradient-to-r from-transparent to-[rgba(245,199,106,0.6)] sm:w-20"></span>
+            <span class="chenxing-body text-sm font-semibold tracking-[0.5em] text-[var(--chenxing-gold)] sm:text-[17px]">辰星认证中枢</span>
+            <span class="h-px w-12 bg-gradient-to-l from-transparent to-[rgba(245,199,106,0.6)] sm:w-20"></span>
+          </div>
+
+          <p class="chenxing-body mx-auto mt-9 max-w-[600px] leading-[1.9] text-[var(--chenxing-muted-foreground)]">一套贯通所有星域的统一身份基座。以 <span class="text-[var(--chenxing-foreground)]">辰星通行证</span> 为核心，为你的每一个应用提供符合 OAuth 2.0 与 OIDC 规范的授权、令牌与风控能力。</p>
+
+          <div class="mt-10 flex flex-wrap items-center justify-center gap-3">
+            <a href="register.html" class="chenxing-btn-primary text-base" data-dom-id="dom-landing-cta-register"><i data-lucide="sparkles" class="h-4 w-4"></i>创建辰星通行证</a>
+            <a href="oauth-consent.html" class="chenxing-btn-ghost text-base"><i data-lucide="zap" class="h-4 w-4"></i>体验授权流程</a>
+            <a href="console-playground.html" class="chenxing-btn-ghost text-base"><i data-lucide="terminal" class="h-4 w-4"></i>OAuth 连接测试</a>
           </div>
         </section>
 
-
-        <hr class="chenxing-section-divider mx-auto mb-20 max-w-5xl" />
-        <!-- features -->
-        <section id="features" class="chenxing-3d-stage mx-auto max-w-6xl px-6 pt-28 pb-20">
-          <div class="text-center">
-            <p data-reveal-3d class="chenxing-mono text-[10px] uppercase tracking-[0.3em] text-[var(--chenxing-cyan)]">// Capabilities</p>
-            <h2 data-reveal-3d class="chenxing-display mt-3 text-3xl font-bold text-[var(--chenxing-foreground)]">为身份而生的星舰引擎</h2>
-          </div>
-          <div class="mt-12 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <div data-reveal-3d class="chenxing-glass chenxing-hud-frame p-6">
-              <span class="flex h-10 w-10 items-center justify-center rounded-[var(--chenxing-radius-md)] bg-[var(--chenxing-primary-soft)]">
-                <i data-lucide="fingerprint" class="h-5 w-5 text-[var(--chenxing-cyan)]"></i>
-              </span>
-              <h3 class="chenxing-h3 mt-5 text-sm">统一身份</h3>
-              <p class="chenxing-caption mt-2">一个通行证，多端互认。OIDC 标准身份声明，天然兼容生态。</p>
+        <!-- stats strip -->
+        <section class="chenxing-3d-stage mx-auto max-w-4xl px-6 pb-24">
+          <div data-reveal-3d class="grid grid-cols-2 gap-px overflow-hidden rounded-[var(--chenxing-radius-lg)] border border-[rgba(255,255,255,0.10)] bg-[rgba(255,255,255,0.06)] sm:grid-cols-4">
+            <div class="bg-[rgba(6,10,20,0.82)] px-4 py-6 backdrop-blur-xl">
+              <div class="chenxing-mono text-2xl font-bold text-[var(--chenxing-foreground)] sm:text-[28px]">12.8M</div>
+              <div class="chenxing-caption mt-1 text-[11px] tracking-wider">已签发通行证</div>
             </div>
-            <div data-reveal-3d class="chenxing-glass p-6">
-              <span class="flex h-10 w-10 items-center justify-center rounded-[var(--chenxing-radius-md)] bg-[var(--chenxing-primary-soft)]">
-                <i data-lucide="key-round" class="h-5 w-5 text-[var(--chenxing-cyan)]"></i>
-              </span>
-              <h3 class="chenxing-h3 mt-5 text-sm">密钥轮换</h3>
-              <p class="chenxing-caption mt-2">JWK 生命周期管理，轮换保留验证窗口，旧钥平滑退役。</p>
+            <div class="bg-[rgba(6,10,20,0.82)] px-4 py-6 backdrop-blur-xl">
+              <div class="chenxing-mono text-2xl font-bold text-[var(--chenxing-foreground)] sm:text-[28px]">3,402</div>
+              <div class="chenxing-caption mt-1 text-[11px] tracking-wider">接入应用</div>
             </div>
-            <div data-reveal-3d class="chenxing-glass p-6">
-              <span class="flex h-10 w-10 items-center justify-center rounded-[var(--chenxing-radius-md)] bg-[var(--chenxing-primary-soft)]">
-                <i data-lucide="scan-line" class="h-5 w-5 text-[var(--chenxing-cyan)]"></i>
-              </span>
-              <h3 class="chenxing-h3 mt-5 text-sm">全链路审计</h3>
-              <p class="chenxing-caption mt-2">认证、授权、管理操作留痕，敏感字段全程脱敏。</p>
+            <div class="bg-[rgba(6,10,20,0.82)] px-4 py-6 backdrop-blur-xl">
+              <div class="chenxing-mono text-2xl font-bold text-[var(--chenxing-foreground)] sm:text-[28px]">99.997%</div>
+              <div class="chenxing-caption mt-1 text-[11px] tracking-wider">认证可用性</div>
             </div>
-            <div data-reveal-3d class="chenxing-glass p-6">
-              <span class="flex h-10 w-10 items-center justify-center rounded-[var(--chenxing-radius-md)] bg-[var(--chenxing-primary-soft)]">
-                <i data-lucide="zap" class="h-5 w-5 text-[var(--chenxing-cyan)]"></i>
-              </span>
-              <h3 class="chenxing-h3 mt-5 text-sm">极速握手</h3>
-              <p class="chenxing-caption mt-2">Redis 状态层 + 原子消费授权码，错误重试不烧凭据。</p>
+            <div class="bg-[rgba(6,10,20,0.82)] px-4 py-6 backdrop-blur-xl">
+              <div class="chenxing-mono text-2xl font-bold text-[var(--chenxing-foreground)] sm:text-[28px]">38ms</div>
+              <div class="chenxing-caption mt-1 text-[11px] tracking-wider">平均签发耗时</div>
             </div>
           </div>
         </section>
 
-        <!-- CTA band -->
-        <section class="mx-auto max-w-6xl px-6 pb-20">
-          <div data-reveal-3d class="chenxing-glass-strong chenxing-hud-frame relative overflow-hidden p-10 text-center sm:p-14">
-            <div class="chenxing-nebula absolute -top-24 left-1/2 h-64 w-96 -translate-x-1/2 bg-[var(--chenxing-primary)] opacity-30 blur-[90px]"></div>
-            <span class="chenxing-beam"></span>
-            <p class="chenxing-mono text-[10px] uppercase tracking-[0.3em] text-[var(--chenxing-cyan)]">// Ready for Launch</p>
-            <h2 class="chenxing-display mt-4 text-3xl font-bold text-[var(--chenxing-foreground)]">准备好接入星门了吗？</h2>
-            <p class="chenxing-caption mx-auto mt-3 max-w-md">创建你的辰星通行证，或作为开发者接入认证中枢，让所有服务共享同一片星空。</p>
-            <div class="mt-8 flex flex-wrap justify-center gap-4">
-              <a href="register.html" class="chenxing-btn-primary px-7 py-3" data-dom-id="dom-landing-cta-register">创建通行证</a>
-              <a href="login.html" class="chenxing-btn-ghost px-7 py-3" data-dom-id="dom-landing-cta-login">已有账号 · 登录</a>
+        <!-- FLOW -->
+        <section class="chenxing-3d-stage mx-auto max-w-6xl px-6 py-20">
+          <div data-reveal-3d>
+            <p class="chenxing-mono text-[10px] uppercase tracking-[0.3em] text-[var(--chenxing-cyan)]">// Authorization Flow</p>
+            <h2 class="chenxing-display mt-3 max-w-xl text-3xl font-bold leading-tight text-[var(--chenxing-foreground)] sm:text-[38px]">四步完成一次<span class="text-[var(--chenxing-gold)]">可信授权</span></h2>
+          </div>
+          <div class="mt-12 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div data-reveal-3d class="chenxing-hud-panel group overflow-hidden">
+              <div class="chenxing-mono absolute right-4 top-2 text-[52px] font-bold text-[rgba(255,255,255,0.05)] transition-colors group-hover:text-[rgba(255,255,255,0.09)]">01</div>
+              <div class="relative">
+                <div class="mb-5 h-8 w-8 rounded-[var(--chenxing-radius-sm)] bg-[linear-gradient(135deg,rgba(56,189,248,0.55),rgba(103,232,249,0.3))] p-px">
+                  <div class="chenxing-mono flex h-full w-full items-center justify-center rounded-[7px] bg-[#0a101f] text-xs font-bold text-[var(--chenxing-cyan)]">1</div>
+                </div>
+                <h3 class="chenxing-h3 text-base">发起授权</h3>
+                <p class="chenxing-caption mt-2.5 leading-relaxed">第三方应用携带 client_id、scope 与 PKCE challenge 跳转至认证中枢</p>
+              </div>
+              <div class="mt-6 h-px w-full bg-gradient-to-r from-[rgba(56,189,248,0.5)] via-[rgba(103,232,249,0.3)] to-transparent"></div>
+            </div>
+            <div data-reveal-3d class="chenxing-hud-panel group overflow-hidden">
+              <div class="chenxing-mono absolute right-4 top-2 text-[52px] font-bold text-[rgba(255,255,255,0.05)] transition-colors group-hover:text-[rgba(255,255,255,0.09)]">02</div>
+              <div class="relative">
+                <div class="mb-5 h-8 w-8 rounded-[var(--chenxing-radius-sm)] bg-[linear-gradient(135deg,rgba(56,189,248,0.55),rgba(103,232,249,0.3))] p-px">
+                  <div class="chenxing-mono flex h-full w-full items-center justify-center rounded-[7px] bg-[#0a101f] text-xs font-bold text-[var(--chenxing-cyan)]">2</div>
+                </div>
+                <h3 class="chenxing-h3 text-base">身份核验</h3>
+                <p class="chenxing-caption mt-2.5 leading-relaxed">用户使用辰星通行证登录，并选择要授权的账户</p>
+              </div>
+              <div class="mt-6 h-px w-full bg-gradient-to-r from-[rgba(56,189,248,0.5)] via-[rgba(103,232,249,0.3)] to-transparent"></div>
+            </div>
+            <div data-reveal-3d class="chenxing-hud-panel group overflow-hidden">
+              <div class="chenxing-mono absolute right-4 top-2 text-[52px] font-bold text-[rgba(255,255,255,0.05)] transition-colors group-hover:text-[rgba(255,255,255,0.09)]">03</div>
+              <div class="relative">
+                <div class="mb-5 h-8 w-8 rounded-[var(--chenxing-radius-sm)] bg-[linear-gradient(135deg,rgba(56,189,248,0.55),rgba(103,232,249,0.3))] p-px">
+                  <div class="chenxing-mono flex h-full w-full items-center justify-center rounded-[7px] bg-[#0a101f] text-xs font-bold text-[var(--chenxing-cyan)]">3</div>
+                </div>
+                <h3 class="chenxing-h3 text-base">授权确认</h3>
+                <p class="chenxing-caption mt-2.5 leading-relaxed">逐项展示权限范围，用户可同意、取消或收窄授权</p>
+              </div>
+              <div class="mt-6 h-px w-full bg-gradient-to-r from-[rgba(56,189,248,0.5)] via-[rgba(103,232,249,0.3)] to-transparent"></div>
+            </div>
+            <div data-reveal-3d class="chenxing-hud-panel group overflow-hidden">
+              <div class="chenxing-mono absolute right-4 top-2 text-[52px] font-bold text-[rgba(255,255,255,0.05)] transition-colors group-hover:text-[rgba(255,255,255,0.09)]">04</div>
+              <div class="relative">
+                <div class="mb-5 h-8 w-8 rounded-[var(--chenxing-radius-sm)] bg-[linear-gradient(135deg,rgba(56,189,248,0.55),rgba(103,232,249,0.3))] p-px">
+                  <div class="chenxing-mono flex h-full w-full items-center justify-center rounded-[7px] bg-[#0a101f] text-xs font-bold text-[var(--chenxing-cyan)]">4</div>
+                </div>
+                <h3 class="chenxing-h3 text-base">令牌签发</h3>
+                <p class="chenxing-caption mt-2.5 leading-relaxed">回调携带 code，应用换取 access_token 与 id_token</p>
+              </div>
+              <div class="mt-6 h-px w-full bg-gradient-to-r from-[rgba(56,189,248,0.5)] via-[rgba(103,232,249,0.3)] to-transparent"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- FEATURES -->
+        <section id="features" class="chenxing-3d-stage mx-auto max-w-6xl px-6 py-16">
+          <div data-reveal-3d>
+            <p class="chenxing-mono text-[10px] uppercase tracking-[0.3em] text-[var(--chenxing-cyan)]">// Capabilities</p>
+            <h2 class="chenxing-display mt-3 max-w-2xl text-3xl font-bold leading-tight text-[var(--chenxing-foreground)] sm:text-[38px]">为严肃业务而生的身份中枢</h2>
+          </div>
+          <div class="mt-12 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+            <div data-reveal-3d class="chenxing-hud-panel group overflow-hidden">
+              <div class="absolute -right-16 -top-16 h-40 w-40 rounded-full opacity-0 blur-3xl transition-opacity duration-500 group-hover:opacity-50" style="background: #38bdf8"></div>
+              <span class="relative mb-6 flex h-11 w-11 items-center justify-center rounded-[var(--chenxing-radius-md)] border" style="border-color: rgba(56,189,248,0.28); background: rgba(56,189,248,0.10); color: #38bdf8"><i data-lucide="fingerprint" class="h-5 w-5"></i></span>
+              <h3 class="chenxing-h3 relative text-base">辰星通行证</h3>
+              <p class="chenxing-caption relative mt-2.5 leading-[1.85]">一张通行证畅行所有天穹应用，统一账户、统一会话、多端互认。</p>
+            </div>
+            <div data-reveal-3d class="chenxing-hud-panel group overflow-hidden">
+              <div class="absolute -right-16 -top-16 h-40 w-40 rounded-full opacity-0 blur-3xl transition-opacity duration-500 group-hover:opacity-50" style="background: #67e8f9"></div>
+              <span class="relative mb-6 flex h-11 w-11 items-center justify-center rounded-[var(--chenxing-radius-md)] border" style="border-color: rgba(103,232,249,0.28); background: rgba(103,232,249,0.10); color: #67e8f9"><i data-lucide="key-round" class="h-5 w-5"></i></span>
+              <h3 class="chenxing-h3 relative text-base">标准 OAuth / OIDC</h3>
+              <p class="chenxing-caption relative mt-2.5 leading-[1.85]">Authorization Code + PKCE 全量支持，Discovery 与 JWKS 开箱即用。</p>
+            </div>
+            <div data-reveal-3d class="chenxing-hud-panel group overflow-hidden">
+              <div class="absolute -right-16 -top-16 h-40 w-40 rounded-full opacity-0 blur-3xl transition-opacity duration-500 group-hover:opacity-50" style="background: #f5c76a"></div>
+              <span class="relative mb-6 flex h-11 w-11 items-center justify-center rounded-[var(--chenxing-radius-md)] border" style="border-color: rgba(245,199,106,0.28); background: rgba(245,199,106,0.10); color: #f5c76a"><i data-lucide="shield-check" class="h-5 w-5"></i></span>
+              <h3 class="chenxing-h3 relative text-base">细粒度授权域</h3>
+              <p class="chenxing-caption relative mt-2.5 leading-[1.85]">Scope 逐项可视、可撤销，敏感权限需要用户单独确认。</p>
+            </div>
+            <div data-reveal-3d class="chenxing-hud-panel group overflow-hidden">
+              <div class="absolute -right-16 -top-16 h-40 w-40 rounded-full opacity-0 blur-3xl transition-opacity duration-500 group-hover:opacity-50" style="background: #7c5cff"></div>
+              <span class="relative mb-6 flex h-11 w-11 items-center justify-center rounded-[var(--chenxing-radius-md)] border" style="border-color: rgba(124,92,255,0.28); background: rgba(124,92,255,0.10); color: #a78bfa"><i data-lucide="refresh-ccw" class="h-5 w-5"></i></span>
+              <h3 class="chenxing-h3 relative text-base">密钥轮换</h3>
+              <p class="chenxing-caption relative mt-2.5 leading-[1.85]">JWK 生命周期管理，轮换保留验证窗口，旧钥平滑退役。</p>
+            </div>
+            <div data-reveal-3d class="chenxing-hud-panel group overflow-hidden">
+              <div class="absolute -right-16 -top-16 h-40 w-40 rounded-full opacity-0 blur-3xl transition-opacity duration-500 group-hover:opacity-50" style="background: #ff7ab8"></div>
+              <span class="relative mb-6 flex h-11 w-11 items-center justify-center rounded-[var(--chenxing-radius-md)] border" style="border-color: rgba(255,122,184,0.28); background: rgba(255,122,184,0.10); color: #ff7ab8"><i data-lucide="scan-line" class="h-5 w-5"></i></span>
+              <h3 class="chenxing-h3 relative text-base">全链路审计</h3>
+              <p class="chenxing-caption relative mt-2.5 leading-[1.85]">认证、授权与管理操作全程留痕，敏感字段脱敏存储。</p>
+            </div>
+            <div data-reveal-3d class="chenxing-hud-panel group overflow-hidden">
+              <div class="absolute -right-16 -top-16 h-40 w-40 rounded-full opacity-0 blur-3xl transition-opacity duration-500 group-hover:opacity-50" style="background: #a3e635"></div>
+              <span class="relative mb-6 flex h-11 w-11 items-center justify-center rounded-[var(--chenxing-radius-md)] border" style="border-color: rgba(163,230,53,0.28); background: rgba(163,230,53,0.10); color: #a3e635"><i data-lucide="zap" class="h-5 w-5"></i></span>
+              <h3 class="chenxing-h3 relative text-base">极速握手</h3>
+              <p class="chenxing-caption relative mt-2.5 leading-[1.85]">Redis 状态层与原子消费授权码，错误重试不烧凭据。</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- ECOSYSTEM -->
+        <section class="chenxing-3d-stage mx-auto max-w-6xl px-6 py-16">
+          <div data-reveal-3d class="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p class="chenxing-mono text-[10px] uppercase tracking-[0.3em] text-[var(--chenxing-cyan)]">// Ecosystem</p>
+              <h2 class="chenxing-display mt-3 text-3xl font-bold text-[var(--chenxing-foreground)] sm:text-[38px]">已接入的星域应用</h2>
+            </div>
+            <a href="console-overview.html" class="chenxing-btn-ghost text-sm">进入控制台<i data-lucide="arrow-right" class="h-4 w-4"></i></a>
+          </div>
+          <div class="mt-10 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <div data-reveal-3d class="chenxing-hud-panel">
+              <div class="flex items-start justify-between">
+                <span class="flex h-12 w-12 items-center justify-center rounded-[var(--chenxing-radius-md)]" style="background: rgba(124,92,255,0.14); color: #a78bfa; box-shadow: inset 0 0 0 1px rgba(124,92,255,0.3)"><i data-lucide="users" class="h-5 w-5"></i></span>
+                <span class="chenxing-badge-success">已上线</span>
+              </div>
+              <h3 class="chenxing-h3 mt-5 text-[15px]">星云协作</h3>
+              <div class="chenxing-caption mt-0.5 text-[11px]">Nebula Works</div>
+              <p class="chenxing-caption mt-3 text-xs leading-relaxed">团队文档与项目协作平台，全员通行证单点登录。</p>
+              <div class="chenxing-mono mt-5 flex items-center justify-between border-t border-[rgba(255,255,255,0.08)] pt-4 text-[11px]">
+                <span class="text-[var(--chenxing-muted-foreground)]">cx-nebula-01</span>
+                <span class="text-[var(--chenxing-foreground)]">52,340 用户</span>
+              </div>
+            </div>
+            <div data-reveal-3d class="chenxing-hud-panel">
+              <div class="flex items-start justify-between">
+                <span class="flex h-12 w-12 items-center justify-center rounded-[var(--chenxing-radius-md)]" style="background: rgba(103,232,249,0.12); color: #67e8f9; box-shadow: inset 0 0 0 1px rgba(103,232,249,0.3)"><i data-lucide="hard-drive" class="h-5 w-5"></i></span>
+                <span class="chenxing-badge-success">已上线</span>
+              </div>
+              <h3 class="chenxing-h3 mt-5 text-[15px]">曜石云盘</h3>
+              <div class="chenxing-caption mt-0.5 text-[11px]">Obsidian Drive</div>
+              <p class="chenxing-caption mt-3 text-xs leading-relaxed">端到端加密的星域存储，Scope 精确到目录级授权。</p>
+              <div class="chenxing-mono mt-5 flex items-center justify-between border-t border-[rgba(255,255,255,0.08)] pt-4 text-[11px]">
+                <span class="text-[var(--chenxing-muted-foreground)]">cx-drive-02</span>
+                <span class="text-[var(--chenxing-foreground)]">38,102 用户</span>
+              </div>
+            </div>
+            <div data-reveal-3d class="chenxing-hud-panel">
+              <div class="flex items-start justify-between">
+                <span class="flex h-12 w-12 items-center justify-center rounded-[var(--chenxing-radius-md)]" style="background: rgba(245,199,106,0.12); color: #f5c76a; box-shadow: inset 0 0 0 1px rgba(245,199,106,0.3)"><i data-lucide="mail" class="h-5 w-5"></i></span>
+                <span class="chenxing-badge-success">已上线</span>
+              </div>
+              <h3 class="chenxing-h3 mt-5 text-[15px]">引力邮箱</h3>
+              <div class="chenxing-caption mt-0.5 text-[11px]">Gravity Mail</div>
+              <p class="chenxing-caption mt-3 text-xs leading-relaxed">星际通信邮局，OIDC 身份声明直连收发件人档案。</p>
+              <div class="chenxing-mono mt-5 flex items-center justify-between border-t border-[rgba(255,255,255,0.08)] pt-4 text-[11px]">
+                <span class="text-[var(--chenxing-muted-foreground)]">cx-mail-03</span>
+                <span class="text-[var(--chenxing-foreground)]">21,776 用户</span>
+              </div>
+            </div>
+            <div data-reveal-3d class="chenxing-hud-panel">
+              <div class="flex items-start justify-between">
+                <span class="flex h-12 w-12 items-center justify-center rounded-[var(--chenxing-radius-md)]" style="background: rgba(255,122,184,0.12); color: #ff7ab8; box-shadow: inset 0 0 0 1px rgba(255,122,184,0.3)"><i data-lucide="terminal" class="h-5 w-5"></i></span>
+                <span class="chenxing-badge-warning">审核中</span>
+              </div>
+              <h3 class="chenxing-h3 mt-5 text-[15px]">折跃终端</h3>
+              <div class="chenxing-caption mt-0.5 text-[11px]">Warp Terminal</div>
+              <p class="chenxing-caption mt-3 text-xs leading-relaxed">面向开发者的云端终端，Device Flow 授权接入中。</p>
+              <div class="chenxing-mono mt-5 flex items-center justify-between border-t border-[rgba(255,255,255,0.08)] pt-4 text-[11px]">
+                <span class="text-[var(--chenxing-muted-foreground)]">cx-warp-04</span>
+                <span class="text-[var(--chenxing-foreground)]">4,209 用户</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- CTA -->
+        <section class="chenxing-3d-stage mx-auto max-w-6xl px-6 py-24">
+          <div data-reveal-3d class="chenxing-hud-panel overflow-hidden text-center">
+            <div class="absolute inset-0 bg-[radial-gradient(70%_120%_at_50%_0%,rgba(56,189,248,0.2),transparent_70%)]"></div>
+            <div class="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-[rgba(255,217,138,0.6)] to-transparent"></div>
+            <div class="relative flex flex-col items-center py-8 sm:py-12">
+              <img src="../assets/logo.png" alt="天穹辰星" class="h-16 w-16 rounded-full drop-shadow-[0_0_20px_rgba(245,199,106,0.5)]" />
+              <h2 class="chenxing-display mt-8 text-[28px] font-bold leading-tight text-[var(--chenxing-foreground)] sm:text-[40px]">让身份，成为你产品的<span class="chenxing-text-shimmer">第一印象</span></h2>
+              <p class="chenxing-caption mx-auto mt-4 max-w-xl leading-[1.9]">注册开发者账号，创建你的第一个 OAuth 客户端，把辰星通行证接入到你的项目里。</p>
+              <div class="mt-9 flex flex-wrap justify-center gap-3">
+                <a href="register.html" class="chenxing-btn-primary"><i data-lucide="lock" class="h-4 w-4"></i>立即创建通行证</a>
+                <a href="login.html" class="chenxing-btn-ghost" data-dom-id="dom-landing-cta-login">已有通行证 · 登录</a>
+              </div>
             </div>
           </div>
         </section>
 
         <!-- footer -->
-        <footer class="border-t border-[var(--chenxing-border)]">
-          <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-6 py-8">
+        <footer class="border-t border-[var(--chenxing-border)] bg-[rgba(4,6,13,0.6)]">
+          <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-6 px-6 py-10">
             <div class="flex items-center gap-3">
-              <span class="relative flex h-8 w-8 items-center justify-center">
-                <span class="absolute inset-0 animate-[chenxing-spin-slow_18s_linear_infinite] rounded-full border border-dashed border-[var(--chenxing-border-strong)]"></span>
-                <i data-lucide="sparkles" class="h-3 w-3 text-[var(--chenxing-cyan)]"></i>
-              </span>
-              <span class="chenxing-caption">© 2026 天穹辰星 · 辰星认证中枢</span>
+              <img src="../assets/logo.png" alt="天穹辰星" class="h-8 w-8 rounded-[var(--chenxing-radius-md)]" />
+              <div class="leading-tight">
+                <div class="chenxing-body text-xs font-semibold tracking-[0.2em]">天穹辰星 · 辰星认证中枢</div>
+                <div class="chenxing-caption mt-1 text-[11px]">© 2026 TianQiong ChenXing. All rights reserved.</div>
+              </div>
             </div>
-            <div class="chenxing-mono flex gap-6 text-[10px] uppercase tracking-[0.18em] text-[var(--chenxing-muted-foreground)]">
-              <a href="#" class="hover:text-[var(--chenxing-foreground)]">服务条款</a>
-              <a href="#" class="hover:text-[var(--chenxing-foreground)]">隐私政策</a>
-              <a href="#" class="hover:text-[var(--chenxing-foreground)]">系统状态</a>
+            <div class="chenxing-caption flex flex-wrap gap-6 text-[11.5px]">
+              <a href="#" class="transition-colors hover:text-[var(--chenxing-gold)]">开发者文档</a>
+              <a href="#" class="transition-colors hover:text-[var(--chenxing-gold)]">服务条款</a>
+              <a href="#" class="transition-colors hover:text-[var(--chenxing-gold)]">隐私政策</a>
+              <a href="#" class="transition-colors hover:text-[var(--chenxing-gold)]">系统状态</a>
+              <a href="#" class="transition-colors hover:text-[var(--chenxing-gold)]">安全公告</a>
             </div>
           </div>
         </footer>
@@ -1026,6 +1303,11 @@ td.chenxing-label {
           reveals.forEach(function (el) { el.classList.add("is-visible"); });
         }
       })();
+      document.querySelectorAll("[data-menu-toggle]").forEach(function (b) {
+        b.addEventListener("click", function () {
+          var m = b.parentElement.querySelector("[data-menu]"); if (m) m.classList.toggle("hidden");
+        });
+      });
     </script>
 
     <script>lucide.createIcons();</script>

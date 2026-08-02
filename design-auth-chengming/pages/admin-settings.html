@@ -34,6 +34,10 @@
   --chenxing-cyan-soft: rgba(103, 232, 249, 0.13);
   --chenxing-ice: #d9f4ff;
 
+  /* starlight gold (hero shimmer / celebratory accents) */
+  --chenxing-gold: #ffd98a;
+  --chenxing-gold-deep: #f5c76a;
+
   /* semantic states */
   --chenxing-success: #34d399;
   --chenxing-warning: #fbbf24;
@@ -149,23 +153,33 @@ main {
   color: transparent;
 }
 
+/* flowing starlight display text: white -> gold -> ice-cyan sweep (hero titles) */
+.chenxing-text-shimmer {
+  background: linear-gradient(90deg, #fff 0%, var(--chenxing-gold) 25%, var(--chenxing-cyan) 50%, #fff 75%, #fff 100%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: chenxing-shimmer 6s linear infinite;
+}
+
 /* ---------- glass panels ---------- */
 .chenxing-glass {
   position: relative;
-  background: linear-gradient(160deg, rgba(125, 185, 255, 0.10), rgba(255, 255, 255, 0.028) 55%, rgba(103, 232, 249, 0.05));
-  backdrop-filter: blur(22px) saturate(1.5);
-  -webkit-backdrop-filter: blur(22px) saturate(1.5);
-  border: 1px solid var(--chenxing-border);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.015));
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: var(--chenxing-radius-lg);
   box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
 }
 
 .chenxing-glass-strong {
   position: relative;
-  background: linear-gradient(165deg, rgba(18, 30, 52, 0.72), rgba(7, 11, 22, 0.66));
-  backdrop-filter: blur(28px) saturate(1.6);
-  -webkit-backdrop-filter: blur(28px) saturate(1.6);
-  border: 1px solid rgba(147, 197, 253, 0.24);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02));
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: var(--chenxing-radius-lg);
   box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
 }
@@ -194,14 +208,14 @@ main {
   border-bottom-right-radius: var(--chenxing-radius-md);
 }
 
-/* Shared two-corner HUD glass panel */
+/* Shared two-corner HUD glass panel (frosted, keeps cyan corner highlights) */
 .chenxing-hud-panel {
   position: relative;
   padding: 2rem;
-  background: linear-gradient(165deg, rgba(18, 30, 52, 0.72), rgba(7, 11, 22, 0.66));
-  backdrop-filter: blur(28px) saturate(1.6);
-  -webkit-backdrop-filter: blur(28px) saturate(1.6);
-  border: 1px solid rgba(147, 197, 253, 0.24);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.065), rgba(255, 255, 255, 0.02) 55%, rgba(125, 185, 255, 0.035));
+  backdrop-filter: blur(24px) saturate(1.5);
+  -webkit-backdrop-filter: blur(24px) saturate(1.5);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: var(--chenxing-radius-lg);
   box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
 }
@@ -525,21 +539,96 @@ td.chenxing-label {
 .chenxing-nav-item[aria-current="page"] i,
 .chenxing-nav-item.is-active i { color: var(--chenxing-cyan); }
 
-/* ---------- console shell: top bar ---------- */
+/* ---------- global top bar: floating glass capsule ---------- */
+/* Outermost chrome on every page: brand left, live status center,
+   hamburger nav + account (or login button) right. */
 .chenxing-topbar {
   position: sticky;
-  top: 0;
+  top: 0.9rem;
   z-index: 30;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 0.75rem;
+  width: min(100% - 2rem, 36rem);
+  margin: 0.9rem auto 0;
+  padding: 0.5rem 0.6rem 0.5rem 0.85rem;
+  background: rgba(6, 10, 20, 0.42);
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-lg);
+  box-shadow: 0 18px 44px rgba(2, 6, 16, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* top bar center: current interface status with pulsing dot (body font for legibility) */
+.chenxing-topbar-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  justify-self: center;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  color: var(--chenxing-ice);
+}
+.chenxing-status-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  flex-shrink: 0;
+  border-radius: var(--chenxing-radius-full);
+  background: var(--chenxing-success);
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.9);
+}
+
+/* top bar hamburger: three staggered bars, opens the global nav menu */
+.chenxing-hamburger {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 0.28rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0 0.65rem;
+  border: 1px solid transparent;
+  border-radius: var(--chenxing-radius-md);
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s;
+}
+.chenxing-hamburger span {
+  display: block;
+  height: 2px;
+  width: 1.15rem;
+  border-radius: var(--chenxing-radius-full);
+  background: var(--chenxing-foreground);
+  transition: width 0.2s, background 0.2s;
+}
+.chenxing-hamburger span:nth-child(2) { width: 0.75rem; }
+.chenxing-hamburger:hover { background: var(--chenxing-muted); border-color: var(--chenxing-border-strong); }
+.chenxing-hamburger:hover span { width: 1.15rem; background: var(--chenxing-cyan); }
+
+/* large nav rows inside the hamburger menu */
+.chenxing-nav-menu-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  padding: 0.85rem 1.5rem;
-  background: rgba(4, 6, 13, 0.55);
-  backdrop-filter: blur(18px) saturate(1.4);
-  -webkit-backdrop-filter: blur(18px) saturate(1.4);
-  border-bottom: 1px solid var(--chenxing-border);
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.8rem 0.85rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--chenxing-foreground);
+  border-radius: var(--chenxing-radius-sm);
+  transition: background 0.15s;
+  cursor: pointer;
 }
+.chenxing-nav-menu-item:hover { background: var(--chenxing-muted); }
+.chenxing-nav-menu-item i { color: var(--chenxing-muted-foreground); transition: color 0.15s; }
+.chenxing-nav-menu-item:hover i { color: var(--chenxing-cyan); }
 
 /* content column offset so fixed sidebar doesn't overlap (desktop only) */
 .chenxing-console-main { min-width: 0; }
@@ -547,12 +636,14 @@ td.chenxing-label {
   .chenxing-console-main { margin-left: 15rem; }
 }
 
-/* ---------- console shell: avatar + dropdown ---------- */
+/* ---------- console shell: avatar (rounded-rect) + dropdown ---------- */
 .chenxing-avatar {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 9999px;
+  border: none;
+  cursor: pointer;
+  border-radius: var(--chenxing-radius-md);
   font-family: var(--chenxing-font-display);
   font-weight: 700;
   color: #fff;
@@ -697,6 +788,15 @@ td.chenxing-label {
 .chenxing-switch.is-on::after { transform: translateX(1.4rem); background: var(--chenxing-cyan); box-shadow: 0 0 10px rgba(103, 232, 249, 0.7); }
 
 /* ---------- keyframes ---------- */
+/* scroll reveal: [data-reveal-3d] elements fade/rise in when .is-visible is added */
+[data-reveal-3d] {
+  opacity: 0;
+  transform: translateY(26px) scale(0.985);
+  transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1), transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: opacity, transform;
+}
+[data-reveal-3d].is-visible { opacity: 1; transform: none; }
+
 @keyframes chenxing-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
 @keyframes chenxing-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
 @keyframes chenxing-ping { 0% { transform: scale(1); opacity: 0.4; } 80%, 100% { transform: scale(2.2); opacity: 0; } }
@@ -860,25 +960,59 @@ td.chenxing-label {
   </nav>
 </aside>
 <div class="chenxing-console-main relative z-10 flex min-h-screen flex-col">
+<!--
+  Shared GLOBAL TOP BAR for 天穹辰星 · 辰星通行证（最外层导航）.
+
+  悬浮居中玻璃胶囊：左侧品牌、中间实时状态、右侧三杠菜单 + 账户。
+  三杠菜单 = 全局导航：主页 / 控制台 / 应用广场 + 状态行。
+  Copy verbatim into each console/admin page as the first child of .chenxing-console-main.
+  已登录：右侧为圆角矩形头像（.chenxing-avatar）+ 账户下拉。
+  未登录（landing 等）：把头像块替换为 chenxing-btn-primary 登录按钮，
+  并在三杠菜单底部追加「创建通行证」按钮（见 pages/landing.html）。
+  CSS: .chenxing-topbar / .chenxing-topbar-status / .chenxing-status-dot /
+       .chenxing-hamburger / .chenxing-nav-menu-item / .chenxing-menu in colors_and_type.css
+  Requires the [data-menu-toggle] handler from the page tail script.
+-->
 <header class="chenxing-topbar">
-  <div class="flex items-center gap-3">
-    <a href="landing.html" class="flex items-center gap-2 lg:hidden" data-dom-id="dom-console-home">
-      <img src="../assets/logo.png" alt="天穹辰星" class="h-8 w-8 rounded-[var(--chenxing-radius-md)]" />
-      <span class="chenxing-wordmark text-aurora text-sm">天穹辰星</span>
-    </a>
-    <h1 class="chenxing-h2 hidden text-base lg:block">系统设置</h1>
+  <!-- left: brand -->
+  <a href="landing.html" class="flex items-center gap-2.5 justify-self-start">
+    <img src="../assets/logo.png" alt="天穹辰星" class="h-8 w-8 rounded-[var(--chenxing-radius-md)]" />
+    <span class="hidden sm:block">
+      <span class="chenxing-body block text-sm font-semibold leading-tight">天穹辰星</span>
+      <span class="chenxing-caption block text-[10px] leading-tight tracking-[0.08em]">辰星认证中枢</span>
+    </span>
+  </a>
+
+  <!-- center: current interface status (per page) -->
+  <div class="chenxing-topbar-status" data-topbar-status>
+    <span>管理 · 系统设置</span>
   </div>
-  <div class="flex items-center gap-3">
-    <span class="chenxing-chip hidden sm:inline-flex"><span class="chenxing-dot h-1.5 w-1.5 rounded-full bg-[var(--chenxing-success)]"></span>认证中枢在线</span>
-    <button type="button" class="chenxing-icon-btn" aria-label="通知"><i data-lucide="bell" class="h-4 w-4"></i></button>
+
+  <!-- right: hamburger nav + account -->
+  <div class="flex items-center gap-2 justify-self-end">
     <div class="relative">
-      <button type="button" data-menu-toggle class="flex items-center gap-2 rounded-full border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)] py-1 pl-1 pr-2 transition-colors hover:border-[var(--chenxing-border-strong)]">
-        <span class="chenxing-avatar h-8 w-8 text-sm">辰</span>
-        <span class="chenxing-body hidden text-sm sm:block">辰林</span>
-        <i data-lucide="chevron-down" class="h-4 w-4 text-[var(--chenxing-muted-foreground)]"></i>
+      <button type="button" data-menu-toggle class="chenxing-hamburger" aria-label="打开导航菜单">
+        <span></span><span></span><span></span>
       </button>
-      <div data-menu class="chenxing-menu absolute right-0 top-full z-50 mt-2 hidden">
-        <button class="chenxing-menu-item"><i data-lucide="settings" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>个人设置</button>
+      <div data-menu class="chenxing-menu absolute right-0 top-full z-50 mt-3 hidden w-60">
+        <a href="landing.html" class="chenxing-nav-menu-item" data-dom-id="dom-console-home">主页<i data-lucide="arrow-up-right" class="h-4 w-4"></i></a>
+        <a href="console-overview.html" class="chenxing-nav-menu-item" data-dom-id="dom-topbar-console">控制台<i data-lucide="layout-dashboard" class="h-4 w-4"></i></a>
+        <button type="button" class="chenxing-nav-menu-item">应用广场<i data-lucide="store" class="h-4 w-4"></i></button>
+        <div class="chenxing-divider my-1"></div>
+        <div class="flex items-center justify-between px-3.5 py-2">
+          <span class="chenxing-caption text-[11px] tracking-[0.06em]">状态</span>
+          <span class="chenxing-caption inline-flex items-center gap-2 text-[11px] tracking-[0.06em] text-[var(--chenxing-success)]"><span class="chenxing-status-dot"></span>星门在线</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- account: rounded-rect avatar dropdown（未登录页面替换为登录按钮） -->
+    <div class="relative">
+      <button type="button" data-menu-toggle class="chenxing-avatar h-9 w-9 text-sm" aria-label="账户菜单">辰</button>
+      <div data-menu class="chenxing-menu absolute right-0 top-full z-50 mt-3 hidden">
+        <a href="console-profile.html" class="chenxing-menu-item"><i data-lucide="settings" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>个人设置</a>
+        <button class="chenxing-menu-item"><i data-lucide="key-round" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>令牌管理</button>
+        <button class="chenxing-menu-item"><i data-lucide="wallet" class="h-4 w-4 text-[var(--chenxing-cyan)]"></i>钱包管理</button>
         <div class="chenxing-divider my-1"></div>
         <a href="login.html" class="chenxing-menu-item" data-dom-id="dom-console-logout"><i data-lucide="log-out" class="h-4 w-4 text-[var(--chenxing-error)]"></i>退出登录</a>
       </div>
