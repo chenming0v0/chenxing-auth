@@ -21,12 +21,15 @@ pub async fn rotate_signing_key(State(state): State<AppState>, headers: HeaderMa
         Err(response) => return response,
     };
 
-    if let Err(key_error) = state.keys.rotate() {
-        tracing::error!(error = %key_error, "failed to rotate signing key");
-        return error::internal();
-    }
-    let key_id = state.keys.key_id();
-    let published_key_count = state.keys.jwks().keys.len();
+    let rotation = match state.keys.rotate().await {
+        Ok(rotation) => rotation,
+        Err(key_error) => {
+            tracing::error!(error = %key_error, "failed to rotate signing key");
+            return error::internal();
+        }
+    };
+    let key_id = rotation.key_id;
+    let published_key_count = rotation.published_key_count;
     state
         .audit
         .record(AuditEvent::new(

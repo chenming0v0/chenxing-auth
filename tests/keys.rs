@@ -36,8 +36,8 @@ fn generated_private_key_uses_aws_lc_rsa_format() {
     );
 }
 
-#[test]
-fn key_rotation_keeps_previous_public_key_for_token_validation() {
+#[tokio::test]
+async fn key_rotation_keeps_previous_public_key_for_token_validation() {
     let manager = KeyManager::generate().expect("signing key");
     let old_key_id = manager.key_id().to_owned();
     let old_token = issue_access_token(
@@ -50,7 +50,7 @@ fn key_rotation_keeps_previous_public_key_for_token_validation() {
     )
     .expect("old access token");
 
-    manager.rotate().expect("rotated signing key");
+    manager.rotate().await.expect("rotated signing key");
 
     assert_ne!(manager.key_id(), old_key_id);
     assert_eq!(manager.jwks().keys.len(), 2);
@@ -65,11 +65,11 @@ fn key_rotation_keeps_previous_public_key_for_token_validation() {
     );
 }
 
-#[test]
-fn key_manager_clones_share_rotated_active_key() {
+#[tokio::test]
+async fn key_manager_clones_share_rotated_active_key() {
     let manager = KeyManager::generate().expect("signing key");
     let clone = manager.clone();
-    manager.rotate().expect("rotated signing key");
+    manager.rotate().await.expect("rotated signing key");
 
     assert_eq!(clone.key_id(), manager.key_id());
     assert_eq!(clone.jwks(), manager.jwks());

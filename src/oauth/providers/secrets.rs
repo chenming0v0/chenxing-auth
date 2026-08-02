@@ -9,6 +9,8 @@ use std::{
 };
 use thiserror::Error;
 
+use crate::key_storage::{atomic_write, ensure_secure_directory, secure_existing_file};
+
 const SECRET_KEY_FILE: &str = "oauth-provider-secret.key";
 const KEY_LENGTH: usize = 32;
 const NONCE_LENGTH: usize = 12;
@@ -34,15 +36,32 @@ pub enum SecretError {
 impl SecretManager {
     pub fn load_or_generate(directory: impl AsRef<Path>) -> Result<Self, SecretError> {
         let directory = directory.as_ref().to_path_buf();
-        fs::create_dir_all(&directory)?;
+        ensure_secure_directory(&directory)?;
         let path = directory.join(SECRET_KEY_FILE);
-        let key = if path.exists() {
-            fs::read(&path)?
-        } else {
-            let mut key = vec![0_u8; KEY_LENGTH];
-            rand::rngs::OsRng.fill_bytes(&mut key);
-            fs::write(&path, &key)?;
-            key
+        let key = match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {
+                secure_existing_file(&path)?;
+                fs::read(&path)?
+            }
+            Ok(_) => {
+                return Err(SecretError::Io(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "invalid secure storage path",
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let mut generated = vec![0_u8; KEY_LENGTH];
+                rand::rngs::OsRng.fill_bytes(&mut generated);
+                match atomic_write(&path, &generated, false) {
+                    Ok(()) => generated,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        secure_existing_file(&path)?;
+                        fs::read(&path)?
+                    }
+                    Err(error) => return Err(SecretError::Io(error)),
+                }
+            }
+            Err(error) => return Err(SecretError::Io(error)),
         };
         let key: [u8; KEY_LENGTH] = key.try_into().map_err(|_| SecretError::InvalidKeyLength)?;
         Ok(Self {

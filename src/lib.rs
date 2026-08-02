@@ -9,6 +9,7 @@ pub mod consents;
 pub mod db;
 pub mod error;
 pub mod extensions;
+mod key_storage;
 pub mod keys;
 pub mod oauth;
 pub mod plans;

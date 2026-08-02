@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use redis::Client;
 
@@ -90,7 +90,10 @@ impl AppState {
             &config.webauthn_origin,
         )?;
         let clients = ClientService::new(database.clone());
-        let keys = KeyManager::load_or_generate(&config.key_directory)?;
+        let keys = KeyManager::load_or_generate_with_retention(
+            &config.key_directory,
+            Duration::from_secs(config.key_rotation_grace_seconds),
+        )?;
         let authorization_codes = AuthorizationCodeStore::new(redis.clone());
         let refresh_tokens = RefreshTokenStore::new(redis.clone());
         let authorization_requests = AuthorizationRequestStore::new(redis.clone());
