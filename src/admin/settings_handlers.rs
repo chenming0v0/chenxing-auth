@@ -73,7 +73,7 @@ pub async fn update_registration_email(
             return error::internal();
         }
     };
-    state
+    if state
         .audit
         .record(AuditEvent::new(
             actor.actor_type().to_owned(),
@@ -83,7 +83,11 @@ pub async fn update_registration_email(
             Some(crate::settings::REGISTRATION_EMAIL_FROM_KEY.to_owned()),
             serde_json::json!({"configured": registration_email_from.is_some()}),
         ))
-        .await;
+        .await
+        .is_err()
+    {
+        return error::internal();
+    }
     (
         StatusCode::OK,
         Json(RegistrationEmailSettingResponse {

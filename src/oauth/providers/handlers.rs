@@ -324,7 +324,7 @@ pub async fn external_callback(
         )
         .await;
     }
-    state
+    if state
         .audit
         .record(AuditEvent::new(
             "user".to_owned(),
@@ -334,7 +334,24 @@ pub async fn external_callback(
             Some(session.id.to_string()),
             serde_json::json!({"result": "success", "channel": "external_oauth", "provider": slug}),
         ))
-        .await;
+        .await
+        .is_err()
+    {
+        if let Err(error_value) = state.sessions.revoke(&session.token).await {
+            tracing::warn!(
+                error = %error_value,
+                "failed to compensate external OAuth session after audit persistence failure"
+            );
+        }
+        let mut response = error::internal();
+        append_external_state_clear(
+            &mut response,
+            returned_state,
+            &callback_path,
+            state.config.cookie_secure,
+        );
+        return response;
+    }
     // Session is bound to the pending request above before handing control to the
     // SPA consent screen; otherwise land on the SPA login page.
     let mut response = if let Some(request_id) = request_id {
@@ -425,6 +442,30 @@ async fn external_error_with_request(
     state_value: Option<&str>,
     code: &str,
 ) -> Response {
+    if state
+        .audit
+        .record(AuditEvent::new(
+            "anonymous".to_owned(),
+            None,
+            "login_failure".to_owned(),
+            "external_oauth".to_owned(),
+            Some(slug.to_owned()),
+            serde_json::json!({"reason": code}),
+        ))
+        .await
+        .is_err()
+    {
+        let mut response = error::internal();
+        if let Some(state_value) = state_value {
+            append_external_state_clear(
+                &mut response,
+                state_value,
+                &external_callback_path(slug),
+                state.config.cookie_secure,
+            );
+        }
+        return response;
+    }
     tracing::info!(provider = %slug, error_code = %code, "external OAuth login failed");
     let location = match request_id.filter(|value| !value.is_empty()) {
         Some(request_id) => format!("/login?request_id={request_id}&external_error={code}"),

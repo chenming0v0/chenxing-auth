@@ -66,7 +66,12 @@ pub async fn create_client(
                 }),
             )
                 .into_response();
-            record_admin_event(&state, actor, "client_create", &client_id).await;
+            if record_admin_event(&state, actor, "client_create", &client_id)
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             response
         }
         Err(ClientServiceError::Validation(validation_error)) => {
@@ -144,7 +149,7 @@ pub async fn update_client(
     match state.clients.update(&client_id, input).await {
         Ok(true) => {
             let (actor_type, actor_id) = actor.audit_fields();
-            state
+            if state
                 .audit
                 .record(AuditEvent::new(
                     actor_type.to_owned(),
@@ -154,7 +159,11 @@ pub async fn update_client(
                     Some(client_id.clone()),
                     serde_json::json!({"result": "success"}),
                 ))
-                .await;
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::bad_request("client_not_found", "client was not found"),
@@ -187,7 +196,7 @@ pub async fn set_client_status(
     match state.clients.set_status(&client_id, status).await {
         Ok(true) => {
             let (actor_type, actor_id) = actor.audit_fields();
-            state
+            if state
                 .audit
                 .record(AuditEvent::new(
                     actor_type.to_owned(),
@@ -197,7 +206,11 @@ pub async fn set_client_status(
                     Some(client_id.clone()),
                     serde_json::json!({"result": "success"}),
                 ))
-                .await;
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::bad_request("client_not_found", "client was not found"),
@@ -244,7 +257,7 @@ pub async fn rotate_secret(
         Ok(secret) => {
             let client_id = secret.client_id.clone();
             let (actor_type, actor_id) = actor.audit_fields();
-            state
+            if state
                 .audit
                 .record(AuditEvent::new(
                     actor_type.to_owned(),
@@ -254,7 +267,11 @@ pub async fn rotate_secret(
                     Some(client_id.clone()),
                     serde_json::json!({"result": "success"}),
                 ))
-                .await;
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             (StatusCode::OK, Json(secret)).into_response()
         }
         Err(ClientServiceError::InvalidData) => {
@@ -275,7 +292,7 @@ async fn record_admin_event(
     actor: super::authorization::AdminActor,
     action: &str,
     client_id: &str,
-) {
+) -> Result<(), crate::audit::AuditError> {
     let (actor_type, actor_id) = actor.audit_fields();
     state
         .audit
@@ -287,7 +304,7 @@ async fn record_admin_event(
             Some(client_id.to_owned()),
             serde_json::json!({"result": "success"}),
         ))
-        .await;
+        .await
 }
 
 pub(crate) fn is_admin_request(state: &AppState, headers: &HeaderMap) -> bool {

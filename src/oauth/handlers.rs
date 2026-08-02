@@ -23,11 +23,30 @@ pub async fn authorize(
     let user_id = session_user_id(&state, &headers).await;
     if user_id.is_none() {
         if !accepts_html(&headers) {
+            if record_authorization_event(&state, None, "authorization_denied", "login_required")
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             return error::unauthorized("login_required", "an authenticated session is required");
         }
         let pending = match pending_from_browser_request(&request) {
             Ok(pending) => pending,
-            Err(message) => return error::bad_request("invalid_request", message),
+            Err(message) => {
+                if record_authorization_event(
+                    &state,
+                    None,
+                    "authorization_denied",
+                    "invalid_request",
+                )
+                .await
+                .is_err()
+                {
+                    return error::internal();
+                }
+                return error::bad_request("invalid_request", message);
+            }
         };
         let request_id = pending.request_id.clone();
         if let Err(store_error) = state.authorization_requests.save(&pending).await {
@@ -55,6 +74,12 @@ pub async fn authorize(
         Ok(request) => request,
         Err(validation_error) => {
             tracing::info!(error = %validation_error, "OAuth authorization request rejected");
+            if record_authorization_event(&state, None, "authorization_denied", "invalid_request")
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             return error::bad_request("invalid_request", "authorization request is invalid");
         }
     };
@@ -99,6 +124,18 @@ pub async fn authorize(
                     .into_response();
             }
             Ok(false) => {
+                let actor_id = user_id.to_string();
+                if record_authorization_event(
+                    &state,
+                    Some(&actor_id),
+                    "authorization_denied",
+                    "consent_required",
+                )
+                .await
+                .is_err()
+                {
+                    return error::internal();
+                }
                 return error::unauthorized(
                     "consent_required",
                     "authorization consent is required",
@@ -127,6 +164,17 @@ pub async fn issue_authorization_code_result(
     match active_user_id(state, &user_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
+            if record_authorization_event(
+                state,
+                Some(&user_id),
+                "authorization_denied",
+                "user_disabled",
+            )
+            .await
+            .is_err()
+            {
+                return Err(error::internal());
+            }
             return Err(error::unauthorized(
                 "user_disabled",
                 "user account is disabled",
@@ -172,6 +220,17 @@ pub async fn issue_authorization_code_result(
         {
             QuotaConsumeResult::Allowed => true,
             QuotaConsumeResult::DailyExceeded | QuotaConsumeResult::MonthlyExceeded => {
+                if record_authorization_event(
+                    state,
+                    Some(&user_id),
+                    "rate_limit_triggered",
+                    "oauth_quota",
+                )
+                .await
+                .is_err()
+                {
+                    return Err(error::internal());
+                }
                 return Ok(AuthorizationCodeIssue::QuotaExceeded)
             }
         }
@@ -193,7 +252,7 @@ pub async fn issue_authorization_code_result(
         tracing::error!(error = %store_error, "failed to store OAuth authorization code");
         return Err(error::internal());
     }
-    state
+    if state
         .audit
         .record(AuditEvent::new(
             "user".to_owned(),
@@ -203,7 +262,18 @@ pub async fn issue_authorization_code_result(
             Some(code.client_id.clone()),
             serde_json::json!({"scopes": code.scopes}),
         ))
-        .await;
+        .await
+        .is_err()
+    {
+        if let Err(error_value) = state.authorization_codes.take(&code.value).await {
+            tracing::warn!(
+                error = %error_value,
+                "failed to compensate authorization code after audit persistence failure"
+            );
+        }
+        refund_quota_if_consumed(state, &client_id, quota_consumed).await;
+        return Err(error::internal());
+    }
 
     let mut redirect_uri = match url::Url::parse(&validated.redirect_uri) {
         Ok(uri) => uri,
@@ -257,6 +327,29 @@ pub async fn issue_authorization_code(
         }
         Err(response) => response,
     }
+}
+
+async fn record_authorization_event(
+    state: &AppState,
+    actor_id: Option<&str>,
+    action: &str,
+    reason: &str,
+) -> Result<(), crate::audit::AuditError> {
+    state
+        .audit
+        .record(AuditEvent::new(
+            if actor_id.is_some() {
+                "user".to_owned()
+            } else {
+                "anonymous".to_owned()
+            },
+            actor_id.map(str::to_owned),
+            action.to_owned(),
+            "oauth_authorization".to_owned(),
+            None,
+            serde_json::json!({"reason": reason}),
+        ))
+        .await
 }
 
 pub fn validated_pending_request(

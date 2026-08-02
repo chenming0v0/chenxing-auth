@@ -78,7 +78,12 @@ pub async fn create_plan(
         };
     match state.plans.create(input).await {
         Ok(plan) => {
-            record_plan_event(&state, actor, "plan_create", &plan.code).await;
+            if record_plan_event(&state, actor, "plan_create", &plan.code)
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             (StatusCode::CREATED, Json(plan_response(plan, 0))).into_response()
         }
         Err(error_value) => plan_error_response(error_value),
@@ -98,7 +103,12 @@ pub async fn update_plan(
         };
     match state.plans.update(id, input).await {
         Ok(plan) => {
-            record_plan_event(&state, actor, "plan_update", &plan.code).await;
+            if record_plan_event(&state, actor, "plan_update", &plan.code)
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             (StatusCode::OK, Json(plan_response(plan, 0))).into_response()
         }
         Err(error_value) => plan_error_response(error_value),
@@ -140,7 +150,12 @@ async fn change_plan_status(
     };
     match result {
         Ok(()) => {
-            record_plan_event(&state, actor, action, &id.to_string()).await;
+            if record_plan_event(&state, actor, action, &id.to_string())
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error_value) => plan_error_response(error_value),
@@ -175,7 +190,12 @@ pub async fn assign_plan(
         .await
     {
         Ok(()) => {
-            record_plan_event(&state, actor, "user_plan_assign", &user_id.to_string()).await;
+            if record_plan_event(&state, actor, "user_plan_assign", &user_id.to_string())
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error_value) => plan_error_response(error_value),
@@ -233,7 +253,7 @@ async fn record_plan_event(
     actor: super::authorization::AdminActor,
     action: &str,
     resource_id: &str,
-) {
+) -> Result<(), crate::audit::AuditError> {
     let (actor_type, actor_id) = actor.audit_fields();
     state
         .audit
@@ -245,5 +265,5 @@ async fn record_plan_event(
             Some(resource_id.to_owned()),
             serde_json::json!({"result": "success"}),
         ))
-        .await;
+        .await
 }

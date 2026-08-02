@@ -12,6 +12,7 @@ use super::{
     handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
 };
 use crate::{
+    audit::AuditEvent,
     error,
     sessions::{cookies, domain::Session},
     state::AppState,
@@ -201,6 +202,21 @@ pub async fn decide_authorization_request(
                 "authorization request is expired",
             );
         };
+        if state
+            .audit
+            .record(AuditEvent::new(
+                "user".to_owned(),
+                Some(context.user_id.to_string()),
+                "authorization_denied".to_owned(),
+                "oauth_authorization".to_owned(),
+                Some(pending.client_id.clone()),
+                serde_json::json!({"reason": "user_denied"}),
+            ))
+            .await
+            .is_err()
+        {
+            return error::internal();
+        }
         return match error_redirect(&pending) {
             Some(redirect_to) => (
                 axum::http::StatusCode::OK,

@@ -1,28 +1,30 @@
 use crate::sqlx::PgPool;
 use time::OffsetDateTime;
 
-use super::AuditEvent;
+use super::{AuditError, AuditEvent};
 
-pub async fn insert(pool: &PgPool, event: &AuditEvent) -> Result<(), crate::sqlx::Error> {
+pub async fn insert(pool: &PgPool, event: &AuditEvent) -> Result<(), AuditError> {
+    event.validate()?;
+    let actor_user_id = event
+        .actor_id
+        .as_deref()
+        .map(|id| id.parse::<i64>().map_err(|_| AuditError::InvalidActorId))
+        .transpose()?;
     crate::sqlx::query(
         "INSERT INTO audit_events
          (actor_type, actor_user_id, action, resource_type, resource_id, metadata, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(&event.actor_type)
-    .bind(
-        event
-            .actor_id
-            .as_deref()
-            .and_then(|id| id.parse::<i64>().ok()),
-    )
+    .bind(actor_user_id)
     .bind(&event.action)
     .bind(&event.resource_type)
     .bind(&event.resource_id)
     .bind(serde_json::Value::Object(event.metadata.clone()))
     .bind(event.created_at)
     .execute(pool)
-    .await?;
+    .await
+    .map_err(AuditError::Database)?;
     Ok(())
 }
 
@@ -81,7 +83,7 @@ pub async fn list_filtered(
                     action,
                     resource_type,
                     resource_id,
-                    metadata: metadata.as_object().cloned().unwrap_or_default(),
+                    metadata: super::redact_metadata(metadata),
                     created_at,
                 },
             )
