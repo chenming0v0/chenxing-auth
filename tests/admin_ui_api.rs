@@ -324,3 +324,179 @@ async fn admin_audit_query_pages_beyond_the_previous_two_hundred_event_limit() {
         .expect("cleanup audit events");
     let _ = std::fs::remove_dir_all(key_directory);
 }
+
+#[tokio::test]
+async fn admin_user_and_client_queries_filter_and_page_in_the_database() {
+    let (router, database, key_directory, _lock) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let active_username = format!("query-active-{suffix}");
+    let disabled_username = format!("query-disabled-{suffix}");
+    let other_username = format!("query-other-{suffix}");
+    for (username, status, role) in [
+        (&active_username, "active", "user"),
+        (&disabled_username, "disabled", "user"),
+        (&other_username, "active", "admin"),
+    ] {
+        chenxing_auth::sqlx::query(
+            "INSERT INTO users
+             (username, email, password_hash, role, status, created_at, updated_at)
+             VALUES ($1, $2, 'test-hash', $3, $4, NOW(), NOW())",
+        )
+        .bind(username)
+        .bind(format!("{username}@example.com"))
+        .bind(role)
+        .bind(status)
+        .execute(&database)
+        .await
+        .expect("insert query user");
+    }
+    let active_client = format!("query-active-client-{suffix}");
+    let disabled_client = format!("query-disabled-client-{suffix}");
+    for (client_id, client_name, status) in [
+        (
+            format!("cx-query-active-{suffix}"),
+            active_client.clone(),
+            "active",
+        ),
+        (
+            format!("cx-query-disabled-{suffix}"),
+            disabled_client.clone(),
+            "disabled",
+        ),
+    ] {
+        chenxing_auth::sqlx::query(
+            "INSERT INTO oauth_clients
+             (client_id, client_name, client_secret_hash, redirect_uris, scopes, status, created_at)
+             VALUES ($1, $2, 'test-hash', $3, $4, $5, NOW())",
+        )
+        .bind(client_id)
+        .bind(client_name)
+        .bind(serde_json::json!(["https://query.example/callback"]))
+        .bind(serde_json::json!(["openid"]))
+        .bind(status)
+        .execute(&database)
+        .await
+        .expect("insert query client");
+    }
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/admin/users/query?page=1&page_size=1&search={active_username}&status=active"
+                ))
+                .header("authorization", "Bearer admin-ui-token")
+                .body(Body::empty())
+                .expect("filtered user query"),
+        )
+        .await
+        .expect("filtered user response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let users = json(response).await;
+    assert_eq!(users["total"], 1);
+    assert_eq!(users["items"].as_array().expect("user items").len(), 1);
+    assert_eq!(users["items"][0]["username"], active_username);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/admin/users/query?page=2&page_size=1&search={active_username}"
+                ))
+                .header("authorization", "Bearer admin-ui-token")
+                .body(Body::empty())
+                .expect("empty user page query"),
+        )
+        .await
+        .expect("empty user page response");
+    let empty_page = json(response).await;
+    assert_eq!(empty_page["page"], 2);
+    assert_eq!(empty_page["page_size"], 1);
+    assert_eq!(empty_page["total"], 1);
+    assert!(
+        empty_page["items"]
+            .as_array()
+            .expect("empty items")
+            .is_empty()
+    );
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/admin/clients/query?page=1&page_size=1&search={disabled_client}&status=disabled"
+                ))
+                .header("authorization", "Bearer admin-ui-token")
+                .body(Body::empty())
+                .expect("filtered client query"),
+        )
+        .await
+        .expect("filtered client response");
+    let clients = json(response).await;
+    assert_eq!(clients["total"], 1);
+    assert_eq!(clients["items"][0]["client_name"], disabled_client);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/clients/query?page=1&page_size=1000")
+                .header("authorization", "Bearer admin-ui-token")
+                .body(Body::empty())
+                .expect("clamped client query"),
+        )
+        .await
+        .expect("clamped client response");
+    let clamped = json(response).await;
+    assert_eq!(clamped["page_size"], 100);
+    assert_eq!(clamped["total"], 2);
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE username LIKE $1")
+        .bind(format!("query-%-{suffix}"))
+        .execute(&database)
+        .await
+        .expect("cleanup query users");
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id LIKE $1")
+        .bind(format!("cx-query-%-{suffix}"))
+        .execute(&database)
+        .await
+        .expect("cleanup query clients");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn admin_client_registration_rejects_bounded_input_with_stable_bad_request() {
+    let (router, database, key_directory, _lock) = setup().await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/clients")
+                .header("authorization", "Bearer admin-ui-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "client_name": "bounded client",
+                        "redirect_uris": (0..11)
+                            .map(|index| format!("https://bounded-{index}.example/callback"))
+                            .collect::<Vec<_>>(),
+                        "scopes": ["openid"]
+                    })
+                    .to_string(),
+                ))
+                .expect("bounded admin client request"),
+        )
+        .await
+        .expect("bounded admin client response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json(response).await["code"], "invalid_client_registration");
+
+    chenxing_auth::sqlx::query("TRUNCATE users RESTART IDENTITY CASCADE")
+        .execute(&database)
+        .await
+        .expect("cleanup bounded client data");
+    let _ = std::fs::remove_dir_all(key_directory);
+}

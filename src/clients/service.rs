@@ -9,7 +9,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::{
-    domain::{ClientRegistrationError, ClientRegistrationInput, validate_client_registration},
+    domain::{
+        ClientRegistrationError, ClientRegistrationInput, ClientRegistrationLimits,
+        validate_client_registration_with_limits,
+    },
     repository::{self, ClientInsertError},
 };
 use crate::oauth::authorization::RegisteredClient as OAuthRegisteredClient;
@@ -18,6 +21,7 @@ use crate::users::credentials::verify_password;
 #[derive(Clone)]
 pub struct ClientService {
     pool: PgPool,
+    limits: ClientRegistrationLimits,
 }
 
 #[derive(Debug)]
@@ -67,14 +71,18 @@ pub fn verify_client_secret(secret: &str, encoded_hash: &str) -> bool {
 
 impl ClientService {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self::with_limits(pool, ClientRegistrationLimits::default())
+    }
+
+    pub fn with_limits(pool: PgPool, limits: ClientRegistrationLimits) -> Self {
+        Self { pool, limits }
     }
 
     pub async fn register(
         &self,
         input: ClientRegistrationInput,
     ) -> Result<RegisteredClientSecret, ClientServiceError> {
-        let registration = validate_client_registration(input)?;
+        let registration = validate_client_registration_with_limits(input, &self.limits)?;
         let client_id = format!("cx_{}", Uuid::new_v4().simple());
         let client_secret = format!("cxs_{}", Uuid::new_v4().simple());
         let salt = SaltString::generate(&mut OsRng);
@@ -102,7 +110,7 @@ impl ClientService {
         input: ClientRegistrationInput,
         oauth_clients_limit: i64,
     ) -> Result<RegisteredClientSecret, ClientServiceError> {
-        let registration = validate_client_registration(input)?;
+        let registration = validate_client_registration_with_limits(input, &self.limits)?;
         let client_id = format!("cx_{}", Uuid::new_v4().simple());
         let client_secret = format!("cxs_{}", Uuid::new_v4().simple());
         let salt = SaltString::generate(&mut OsRng);
@@ -181,6 +189,36 @@ impl ClientService {
             .collect())
     }
 
+    pub async fn query(
+        &self,
+        search: Option<&str>,
+        status: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<ClientSummary>, i64), ClientServiceError> {
+        let (clients, total) =
+            repository::query_clients(&self.pool, search, status, limit, offset).await?;
+        Ok((
+            clients
+                .into_iter()
+                .map(|client| ClientSummary {
+                    id: client.id,
+                    client_id: client.client_id,
+                    client_name: client.client_name,
+                    redirect_uris: client.redirect_uris,
+                    scopes: client.scopes,
+                    status: client.status,
+                    owner_user_id: client.owner_user_id,
+                })
+                .collect(),
+            total,
+        ))
+    }
+
+    pub async fn count(&self) -> Result<i64, ClientServiceError> {
+        Ok(repository::count_clients(&self.pool).await?)
+    }
+
     pub async fn list_for_user(
         &self,
         owner_user_id: UserId,
@@ -207,7 +245,7 @@ impl ClientService {
         client_id: &str,
         input: ClientRegistrationInput,
     ) -> Result<bool, ClientServiceError> {
-        let registration = validate_client_registration(input)?;
+        let registration = validate_client_registration_with_limits(input, &self.limits)?;
         Ok(repository::update_client(
             &self.pool,
             client_id,
@@ -224,7 +262,7 @@ impl ClientService {
         client_id: &str,
         input: ClientRegistrationInput,
     ) -> Result<bool, ClientServiceError> {
-        let registration = validate_client_registration(input)?;
+        let registration = validate_client_registration_with_limits(input, &self.limits)?;
         Ok(repository::update_owned_client(
             &self.pool,
             owner_user_id,

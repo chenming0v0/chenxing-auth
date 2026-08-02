@@ -183,13 +183,12 @@ pub async fn list_admins(State(state): State<AppState>, headers: HeaderMap) -> R
     {
         return response;
     }
-    match state.users.list().await {
+    match state.users.list_administrators().await {
         Ok(users) => (
             StatusCode::OK,
             Json(
                 users
                     .into_iter()
-                    .filter(|user| matches!(user.role, UserRole::Admin | UserRole::Owner))
                     .map(|user| AdminSummary {
                         id: user.id,
                         username: user.username,

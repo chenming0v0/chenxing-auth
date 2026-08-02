@@ -89,7 +89,8 @@ impl AppState {
             &config.webauthn_rp_id,
             &config.webauthn_origin,
         )?;
-        let clients = ClientService::new(database.clone());
+        let clients =
+            ClientService::with_limits(database.clone(), config.client_registration_limits.clone());
         let keys = KeyManager::load_or_generate(&config.key_directory)?;
         let authorization_codes = AuthorizationCodeStore::new(redis.clone());
         let refresh_tokens = RefreshTokenStore::new(redis.clone());

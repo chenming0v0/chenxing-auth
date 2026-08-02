@@ -67,6 +67,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             )),
             false,
         ),
+        Migration::new(
+            6,
+            Cow::Borrowed("admin query indexes"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0006_admin_query_indexes.sql")),
+            false,
+        ),
     ];
 
     Migrator {

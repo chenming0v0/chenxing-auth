@@ -2,6 +2,10 @@ use std::{env, fmt, num::ParseIntError};
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 
+use crate::clients::domain::{
+    ClientRegistrationLimits, DEFAULT_MAX_REDIRECT_URI_LENGTH, DEFAULT_MAX_REDIRECT_URIS,
+    DEFAULT_MAX_SCOPE_LENGTH, DEFAULT_MAX_SCOPES,
+};
 use thiserror::Error;
 
 #[derive(Clone)]
@@ -19,6 +23,7 @@ pub struct Config {
     pub auth_encryption_key: AuthEncryptionKey,
     pub webauthn_rp_id: String,
     pub webauthn_origin: String,
+    pub client_registration_limits: ClientRegistrationLimits,
 }
 
 #[derive(Clone)]
@@ -87,6 +92,7 @@ struct ConfigValues {
     auth_encryption_key: AuthEncryptionKey,
     webauthn_rp_id: String,
     webauthn_origin: String,
+    client_registration_limits: ClientRegistrationLimits,
 }
 
 impl Config {
@@ -106,6 +112,7 @@ impl Config {
         let webauthn_rp_id = env::var("WEBAUTHN_RP_ID")
             .unwrap_or_else(|_| issuer.host_str().unwrap_or_default().to_owned());
         let webauthn_origin = env::var("WEBAUTHN_ORIGIN").unwrap_or_else(|_| issuer_url.clone());
+        let client_registration_limits = client_registration_limits_from_env()?;
         let admin_token = env::var("ADMIN_TOKEN").unwrap_or_default();
         let key_directory = env::var("KEY_DIRECTORY").unwrap_or_else(|_| "data/keys".to_owned());
         let cookie_secure = parse_bool(
@@ -136,6 +143,7 @@ impl Config {
             auth_encryption_key,
             webauthn_rp_id,
             webauthn_origin,
+            client_registration_limits,
         })
     }
 
@@ -179,6 +187,7 @@ impl Config {
             auth_encryption_key: AuthEncryptionKey::new([0_u8; 32]),
             webauthn_rp_id: "localhost".to_owned(),
             webauthn_origin: format!("http://localhost:{port}"),
+            client_registration_limits: ClientRegistrationLimits::default(),
         })
     }
 
@@ -197,6 +206,7 @@ impl Config {
             auth_encryption_key,
             webauthn_rp_id,
             webauthn_origin,
+            client_registration_limits,
         } = values;
         if host.trim().is_empty() {
             return Err(ConfigError::InvalidValue("APP_HOST"));
@@ -254,6 +264,7 @@ impl Config {
             auth_encryption_key,
             webauthn_rp_id,
             webauthn_origin,
+            client_registration_limits,
         })
     }
 }
@@ -286,6 +297,47 @@ fn parse_u64(name: &'static str, value: &str) -> Result<u64, ConfigError> {
     value
         .parse()
         .map_err(|source| ConfigError::InvalidInteger { name, source })
+}
+
+fn parse_usize(name: &'static str, value: &str) -> Result<usize, ConfigError> {
+    value
+        .parse()
+        .map_err(|source| ConfigError::InvalidInteger { name, source })
+}
+
+fn client_registration_limits_from_env() -> Result<ClientRegistrationLimits, ConfigError> {
+    let limits = [
+        (
+            "OAUTH_CLIENT_MAX_REDIRECT_URIS",
+            env::var("OAUTH_CLIENT_MAX_REDIRECT_URIS")
+                .ok()
+                .unwrap_or_else(|| DEFAULT_MAX_REDIRECT_URIS.to_string()),
+        ),
+        (
+            "OAUTH_CLIENT_MAX_REDIRECT_URI_LENGTH",
+            env::var("OAUTH_CLIENT_MAX_REDIRECT_URI_LENGTH")
+                .ok()
+                .unwrap_or_else(|| DEFAULT_MAX_REDIRECT_URI_LENGTH.to_string()),
+        ),
+        (
+            "OAUTH_CLIENT_MAX_SCOPES",
+            env::var("OAUTH_CLIENT_MAX_SCOPES")
+                .ok()
+                .unwrap_or_else(|| DEFAULT_MAX_SCOPES.to_string()),
+        ),
+        (
+            "OAUTH_CLIENT_MAX_SCOPE_LENGTH",
+            env::var("OAUTH_CLIENT_MAX_SCOPE_LENGTH")
+                .ok()
+                .unwrap_or_else(|| DEFAULT_MAX_SCOPE_LENGTH.to_string()),
+        ),
+    ];
+    let values = limits
+        .into_iter()
+        .map(|(name, value)| parse_usize(name, &value))
+        .collect::<Result<Vec<_>, _>>()?;
+    ClientRegistrationLimits::new(values[0], values[1], values[2], values[3])
+        .ok_or(ConfigError::InvalidValue("OAUTH_CLIENT_LIMITS"))
 }
 
 fn parse_bool(name: &'static str, value: &str) -> Result<bool, ConfigError> {

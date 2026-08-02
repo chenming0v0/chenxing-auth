@@ -8,7 +8,7 @@ use super::{
         LoginError, LoginInput, PublicUser, RegistrationError, RegistrationInput, UserId, UserRole,
         validate_display_name, validate_login, validate_registration,
     },
-    repository,
+    query_repository, repository,
 };
 use crate::{
     auth_limiter::{AuthFailureLimiter, FailureDimension},
@@ -261,6 +261,26 @@ impl UserService {
 
     pub async fn list(&self) -> Result<Vec<repository::ListedUser>, UserServiceError> {
         Ok(repository::list_users(&self.pool).await?)
+    }
+
+    pub async fn query(
+        &self,
+        search: Option<&str>,
+        status: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<repository::ListedUser>, i64), UserServiceError> {
+        Ok(query_repository::query_users(&self.pool, search, status, limit, offset).await?)
+    }
+
+    pub async fn counts(&self) -> Result<query_repository::UserCounts, UserServiceError> {
+        Ok(query_repository::count_users(&self.pool).await?)
+    }
+
+    pub async fn list_administrators(
+        &self,
+    ) -> Result<Vec<repository::ListedUser>, UserServiceError> {
+        Ok(query_repository::list_administrators(&self.pool).await?)
     }
 
     pub async fn set_status(&self, id: UserId, status: &str) -> Result<bool, UserServiceError> {

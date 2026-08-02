@@ -1,3 +1,7 @@
+use chenxing_auth::clients::domain::{
+    DEFAULT_MAX_REDIRECT_URI_LENGTH, DEFAULT_MAX_REDIRECT_URIS, DEFAULT_MAX_SCOPE_LENGTH,
+    DEFAULT_MAX_SCOPES,
+};
 use chenxing_auth::config::{AuthEncryptionKey, Config, ConfigError};
 
 #[test]
@@ -14,6 +18,22 @@ fn config_accepts_valid_runtime_values() {
     assert_eq!(config.host, "127.0.0.1");
     assert_eq!(config.port, 3000);
     assert_eq!(config.session_ttl_seconds, 3600);
+    assert_eq!(
+        config.client_registration_limits.max_redirect_uris,
+        DEFAULT_MAX_REDIRECT_URIS
+    );
+    assert_eq!(
+        config.client_registration_limits.max_redirect_uri_length,
+        DEFAULT_MAX_REDIRECT_URI_LENGTH
+    );
+    assert_eq!(
+        config.client_registration_limits.max_scopes,
+        DEFAULT_MAX_SCOPES
+    );
+    assert_eq!(
+        config.client_registration_limits.max_scope_length,
+        DEFAULT_MAX_SCOPE_LENGTH
+    );
 }
 
 #[test]
