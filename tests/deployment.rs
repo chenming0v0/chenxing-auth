@@ -70,6 +70,8 @@ fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("0003_session_outbox.sql"));
     assert!(DB_MODULE.contains("0004_relax_deleted_session_outbox_target.sql"));
     assert!(DB_MODULE.contains("0005_session_outbox_event_user.sql"));
+    assert!(DB_MODULE.contains("plan default invariant"));
+    assert!(DB_MODULE.contains("0006_plan_default_invariant.sql"));
     let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -85,6 +87,7 @@ fn database_uses_explicit_unified_baseline_migrations() {
             std::ffi::OsString::from("0003_session_outbox.sql"),
             std::ffi::OsString::from("0004_relax_deleted_session_outbox_target.sql"),
             std::ffi::OsString::from("0005_session_outbox_event_user.sql"),
+            std::ffi::OsString::from("0006_plan_default_invariant.sql"),
         ]
     );
 }

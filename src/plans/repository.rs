@@ -1,14 +1,35 @@
+use thiserror::Error;
 use time::OffsetDateTime;
 
 use super::{
-    domain::{Plan, ValidatedPlanInput},
+    domain::{
+        Plan, PlanMutationError, ValidatedPlanInput, validate_plan_archive,
+        validate_plan_assignment, validate_plan_restore, validate_plan_update,
+    },
     service::EffectivePlan,
 };
-use crate::sqlx::PgPool;
+use crate::sqlx::{PgPool, Postgres, Transaction};
 use crate::users::domain::UserId;
 
 /// 串行化 `is_default` 切换的 advisory lock，与用户引导锁区分开。
 const DEFAULT_PLAN_LOCK: i64 = 7341929;
+
+#[derive(Debug, Error)]
+pub enum PlanRepositoryError {
+    #[error(transparent)]
+    Database(#[from] crate::sqlx::Error),
+    #[error(transparent)]
+    Mutation(#[from] PlanMutationError),
+    #[error("no active default plan is configured")]
+    NoDefaultPlan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanAssignmentResult {
+    PlanNotFound,
+    UserNotFound,
+    Assigned,
+}
 
 #[derive(Debug)]
 pub struct PlanWithUsers {
@@ -158,12 +179,53 @@ pub async fn find_for_user(
     }))
 }
 
-pub async fn insert(pool: &PgPool, input: &ValidatedPlanInput) -> Result<Plan, crate::sqlx::Error> {
-    let mut transaction = pool.begin().await?;
+async fn lock_default_plan_set(
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<(), crate::sqlx::Error> {
     crate::sqlx::query("SELECT pg_advisory_xact_lock($1)")
         .bind(DEFAULT_PLAN_LOCK)
-        .execute(&mut *transaction)
+        .execute(&mut **transaction)
         .await?;
+    Ok(())
+}
+
+async fn find_for_update(
+    transaction: &mut Transaction<'_, Postgres>,
+    id: i64,
+) -> Result<Option<Plan>, crate::sqlx::Error> {
+    let row: Option<PlanRow> = crate::sqlx::query_as(
+        "SELECT id, code, name, description, oauth_clients_limit, daily_auth_limit,
+                monthly_auth_limit, max_qps, is_default, status, created_at, updated_at
+         FROM plans WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **transaction)
+    .await?;
+    Ok(row.map(row_to_plan))
+}
+
+async fn ensure_active_default(
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<(), PlanRepositoryError> {
+    let has_default: bool = crate::sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM plans WHERE is_default = TRUE AND status = 'active'
+         )",
+    )
+    .fetch_one(&mut **transaction)
+    .await?;
+    if !has_default {
+        return Err(PlanRepositoryError::NoDefaultPlan);
+    }
+    Ok(())
+}
+
+pub async fn insert(
+    pool: &PgPool,
+    input: &ValidatedPlanInput,
+) -> Result<Plan, PlanRepositoryError> {
+    let mut transaction = pool.begin().await?;
+    lock_default_plan_set(&mut transaction).await?;
     if input.is_default {
         crate::sqlx::query("UPDATE plans SET is_default = FALSE WHERE is_default = TRUE")
             .execute(&mut *transaction)
@@ -186,6 +248,7 @@ pub async fn insert(pool: &PgPool, input: &ValidatedPlanInput) -> Result<Plan, c
     .bind(input.is_default)
     .fetch_one(&mut *transaction)
     .await?;
+    ensure_active_default(&mut transaction).await?;
     transaction.commit().await?;
     Ok(row_to_plan(row))
 }
@@ -194,12 +257,14 @@ pub async fn update(
     pool: &PgPool,
     id: i64,
     input: &ValidatedPlanInput,
-) -> Result<bool, crate::sqlx::Error> {
+) -> Result<Option<Plan>, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
-    crate::sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(DEFAULT_PLAN_LOCK)
-        .execute(&mut *transaction)
-        .await?;
+    lock_default_plan_set(&mut transaction).await?;
+    let Some(current) = find_for_update(&mut transaction, id).await? else {
+        transaction.rollback().await?;
+        return Ok(None);
+    };
+    validate_plan_update(&current, input)?;
     if input.is_default {
         crate::sqlx::query(
             "UPDATE plans SET is_default = FALSE WHERE is_default = TRUE AND id <> $1",
@@ -208,11 +273,13 @@ pub async fn update(
         .execute(&mut *transaction)
         .await?;
     }
-    let result = crate::sqlx::query(
+    let row: PlanRow = crate::sqlx::query_as(
         "UPDATE plans SET code = $2, name = $3, description = $4, oauth_clients_limit = $5,
                 daily_auth_limit = $6, monthly_auth_limit = $7, max_qps = $8, is_default = $9,
                 updated_at = NOW()
-         WHERE id = $1",
+         WHERE id = $1
+         RETURNING id, code, name, description, oauth_clients_limit, daily_auth_limit,
+                   monthly_auth_limit, max_qps, is_default, status, created_at, updated_at",
     )
     .bind(id)
     .bind(&input.code)
@@ -223,20 +290,33 @@ pub async fn update(
     .bind(input.monthly_auth_limit)
     .bind(input.max_qps)
     .bind(input.is_default)
-    .execute(&mut *transaction)
+    .fetch_one(&mut *transaction)
     .await?;
+    ensure_active_default(&mut transaction).await?;
     transaction.commit().await?;
-    Ok(result.rows_affected() == 1)
+    Ok(Some(row_to_plan(row)))
 }
 
-pub async fn set_status(pool: &PgPool, id: i64, status: &str) -> Result<bool, crate::sqlx::Error> {
-    let result =
-        crate::sqlx::query("UPDATE plans SET status = $2, updated_at = NOW() WHERE id = $1")
-            .bind(id)
-            .bind(status)
-            .execute(pool)
-            .await?;
-    Ok(result.rows_affected() == 1)
+pub async fn set_status(pool: &PgPool, id: i64, status: &str) -> Result<bool, PlanRepositoryError> {
+    let mut transaction = pool.begin().await?;
+    lock_default_plan_set(&mut transaction).await?;
+    let Some(current) = find_for_update(&mut transaction, id).await? else {
+        transaction.rollback().await?;
+        return Ok(false);
+    };
+    if status == "archived" {
+        validate_plan_archive(&current)?;
+    } else {
+        validate_plan_restore(&current)?;
+    }
+    crate::sqlx::query("UPDATE plans SET status = $2, updated_at = NOW() WHERE id = $1")
+        .bind(id)
+        .bind(status)
+        .execute(&mut *transaction)
+        .await?;
+    ensure_active_default(&mut transaction).await?;
+    transaction.commit().await?;
+    Ok(true)
 }
 
 pub async fn assign_to_user(
@@ -244,14 +324,27 @@ pub async fn assign_to_user(
     user_id: UserId,
     plan_id: i64,
     expires_at: Option<OffsetDateTime>,
-) -> Result<bool, crate::sqlx::Error> {
+) -> Result<PlanAssignmentResult, PlanRepositoryError> {
+    let mut transaction = pool.begin().await?;
+    lock_default_plan_set(&mut transaction).await?;
+    let Some(plan) = find_for_update(&mut transaction, plan_id).await? else {
+        transaction.rollback().await?;
+        return Ok(PlanAssignmentResult::PlanNotFound);
+    };
+    validate_plan_assignment(&plan)?;
     let result = crate::sqlx::query(
         "UPDATE users SET plan_id = $2, plan_expires_at = $3, updated_at = NOW() WHERE id = $1",
     )
     .bind(user_id)
     .bind(plan_id)
     .bind(expires_at)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
-    Ok(result.rows_affected() == 1)
+    if result.rows_affected() != 1 {
+        transaction.rollback().await?;
+        return Ok(PlanAssignmentResult::UserNotFound);
+    }
+    ensure_active_default(&mut transaction).await?;
+    transaction.commit().await?;
+    Ok(PlanAssignmentResult::Assigned)
 }

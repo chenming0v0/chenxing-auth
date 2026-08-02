@@ -3,8 +3,11 @@ use time::OffsetDateTime;
 
 pub use super::repository::PlanWithUsers;
 use super::{
-    domain::{Plan, PlanError, PlanInput, validate_plan_input},
-    repository::{self},
+    domain::{
+        Plan, PlanError, PlanInput, PlanMutationError, validate_plan_archive,
+        validate_plan_assignment, validate_plan_input, validate_plan_restore, validate_plan_update,
+    },
+    repository::{self, PlanAssignmentResult, PlanRepositoryError},
 };
 use crate::sqlx::PgPool;
 use crate::users::domain::UserId;
@@ -24,6 +27,8 @@ pub enum PlanServiceError {
     CodeConflict,
     #[error("the default plan cannot be archived")]
     DefaultPlanProtected,
+    #[error("archived plans cannot be default")]
+    ArchivedPlanCannotBeDefault,
     #[error("archived plans cannot be assigned to users")]
     PlanArchived,
     #[error("user was not found")]
@@ -54,36 +59,52 @@ impl PlanService {
         let input = validate_plan_input(input)?;
         match repository::insert(&self.pool, &input).await {
             Ok(plan) => Ok(plan),
-            Err(error) if is_unique_violation(&error) => Err(PlanServiceError::CodeConflict),
-            Err(error) => Err(PlanServiceError::Database(error)),
+            Err(PlanRepositoryError::Database(error)) if is_unique_violation(&error) => {
+                Err(PlanServiceError::CodeConflict)
+            }
+            Err(error) => Err(map_repository_error(error)),
         }
     }
 
     pub async fn update(&self, id: i64, input: PlanInput) -> Result<Plan, PlanServiceError> {
         let input = validate_plan_input(input)?;
-        if !repository::update(&self.pool, id, &input).await? {
+        let Some(current) = repository::find_by_id(&self.pool, id).await? else {
             return Err(PlanServiceError::NotFound);
+        };
+        validate_plan_update(&current, &input).map_err(map_mutation_error)?;
+        match repository::update(&self.pool, id, &input).await {
+            Ok(Some(plan)) => Ok(plan),
+            Ok(None) => Err(PlanServiceError::NotFound),
+            Err(PlanRepositoryError::Database(error)) if is_unique_violation(&error) => {
+                Err(PlanServiceError::CodeConflict)
+            }
+            Err(error) => Err(map_repository_error(error)),
         }
-        repository::find_by_id(&self.pool, id)
-            .await?
-            .ok_or(PlanServiceError::NotFound)
     }
 
     pub async fn archive(&self, id: i64) -> Result<(), PlanServiceError> {
         let Some(plan) = repository::find_by_id(&self.pool, id).await? else {
             return Err(PlanServiceError::NotFound);
         };
-        if plan.is_default {
-            return Err(PlanServiceError::DefaultPlanProtected);
-        }
-        if !repository::set_status(&self.pool, id, "archived").await? {
+        validate_plan_archive(&plan).map_err(map_mutation_error)?;
+        if !repository::set_status(&self.pool, id, "archived")
+            .await
+            .map_err(map_repository_error)?
+        {
             return Err(PlanServiceError::NotFound);
         }
         Ok(())
     }
 
     pub async fn restore(&self, id: i64) -> Result<(), PlanServiceError> {
-        if !repository::set_status(&self.pool, id, "active").await? {
+        let Some(plan) = repository::find_by_id(&self.pool, id).await? else {
+            return Err(PlanServiceError::NotFound);
+        };
+        validate_plan_restore(&plan).map_err(map_mutation_error)?;
+        if !repository::set_status(&self.pool, id, "active")
+            .await
+            .map_err(map_repository_error)?
+        {
             return Err(PlanServiceError::NotFound);
         }
         Ok(())
@@ -101,11 +122,14 @@ impl PlanService {
         let Some(plan) = repository::find_by_id(&self.pool, plan_id).await? else {
             return Err(PlanServiceError::NotFound);
         };
-        if plan.status != "active" {
-            return Err(PlanServiceError::PlanArchived);
-        }
-        if !repository::assign_to_user(&self.pool, user_id, plan_id, expires_at).await? {
-            return Err(PlanServiceError::UserNotFound);
+        validate_plan_assignment(&plan).map_err(map_mutation_error)?;
+        match repository::assign_to_user(&self.pool, user_id, plan_id, expires_at)
+            .await
+            .map_err(map_repository_error)?
+        {
+            PlanAssignmentResult::PlanNotFound => return Err(PlanServiceError::NotFound),
+            PlanAssignmentResult::UserNotFound => return Err(PlanServiceError::UserNotFound),
+            PlanAssignmentResult::Assigned => {}
         }
         Ok(())
     }
@@ -134,4 +158,22 @@ fn is_unique_violation(error: &crate::sqlx::Error) -> bool {
         .as_database_error()
         .and_then(|database_error| database_error.code())
         .is_some_and(|code| code == "23505")
+}
+
+fn map_mutation_error(error: PlanMutationError) -> PlanServiceError {
+    match error {
+        PlanMutationError::DefaultPlanProtected => PlanServiceError::DefaultPlanProtected,
+        PlanMutationError::ArchivedPlanCannotBeDefault => {
+            PlanServiceError::ArchivedPlanCannotBeDefault
+        }
+        PlanMutationError::PlanArchived => PlanServiceError::PlanArchived,
+    }
+}
+
+fn map_repository_error(error: PlanRepositoryError) -> PlanServiceError {
+    match error {
+        PlanRepositoryError::Database(error) => PlanServiceError::Database(error),
+        PlanRepositoryError::Mutation(error) => map_mutation_error(error),
+        PlanRepositoryError::NoDefaultPlan => PlanServiceError::NoDefaultPlan,
+    }
 }

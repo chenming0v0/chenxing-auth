@@ -65,6 +65,50 @@ pub enum PlanError {
     ExpiryInPast,
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum PlanMutationError {
+    #[error("the active default plan cannot be unset")]
+    DefaultPlanProtected,
+    #[error("archived plans cannot be default")]
+    ArchivedPlanCannotBeDefault,
+    #[error("archived plans cannot be assigned to users")]
+    PlanArchived,
+}
+
+pub fn validate_plan_update(
+    plan: &Plan,
+    input: &ValidatedPlanInput,
+) -> Result<(), PlanMutationError> {
+    if input.is_default && plan.status != "active" {
+        return Err(PlanMutationError::ArchivedPlanCannotBeDefault);
+    }
+    if plan.status == "active" && plan.is_default && !input.is_default {
+        return Err(PlanMutationError::DefaultPlanProtected);
+    }
+    Ok(())
+}
+
+pub fn validate_plan_archive(plan: &Plan) -> Result<(), PlanMutationError> {
+    if plan.is_default {
+        return Err(PlanMutationError::DefaultPlanProtected);
+    }
+    Ok(())
+}
+
+pub fn validate_plan_restore(plan: &Plan) -> Result<(), PlanMutationError> {
+    if plan.status == "archived" && plan.is_default {
+        return Err(PlanMutationError::ArchivedPlanCannotBeDefault);
+    }
+    Ok(())
+}
+
+pub fn validate_plan_assignment(plan: &Plan) -> Result<(), PlanMutationError> {
+    if plan.status != "active" {
+        return Err(PlanMutationError::PlanArchived);
+    }
+    Ok(())
+}
+
 pub fn validate_plan_input(input: PlanInput) -> Result<ValidatedPlanInput, PlanError> {
     let code = input.code.trim().to_ascii_lowercase();
     if code.is_empty()
