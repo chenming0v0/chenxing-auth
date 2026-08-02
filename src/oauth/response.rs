@@ -60,10 +60,12 @@ async fn issue_token_response_inner(
 ) -> Response {
     match active_user_id(state, user_id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return error::unauthorized("user_disabled", "user account is disabled"),
+        Ok(None) => {
+            return error::oauth_bad_request("invalid_grant", "authorization grant is invalid");
+        }
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to load token user");
-            return error::internal();
+            return error::oauth_temporarily_unavailable();
         }
     }
     let token = match issue_access_token(
@@ -77,7 +79,7 @@ async fn issue_token_response_inner(
         Ok(token) => token,
         Err(token_error) => {
             tracing::error!(error = %token_error, "failed to issue OAuth access token");
-            return error::internal();
+            return error::oauth_temporarily_unavailable();
         }
     };
     let id_token = match issue_id_token(state, user_id, client_id, scopes, nonce).await {
@@ -110,14 +112,14 @@ async fn issue_id_token(
     }
     let Ok(subject) = user_id.parse::<crate::users::domain::UserId>() else {
         tracing::error!(user_id, "cannot issue ID token for invalid user id");
-        return Err(error::internal());
+        return Err(error::oauth_temporarily_unavailable());
     };
     let profile = match state.users.find_profile(subject).await {
         Ok(Some(profile)) => profile,
-        Ok(None) => return Err(error::internal()),
+        Ok(None) => return Err(error::oauth_temporarily_unavailable()),
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to load ID token profile");
-            return Err(error::internal());
+            return Err(error::oauth_temporarily_unavailable());
         }
     };
     let id_token = issue_id_token_with_profile(
@@ -142,7 +144,7 @@ async fn issue_id_token(
     .map(Some)
     .map_err(|token_error| {
         tracing::error!(error = %token_error, "failed to issue OIDC ID token");
-        error::internal()
+        error::oauth_temporarily_unavailable()
     })?;
     Ok(id_token)
 }

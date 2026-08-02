@@ -12,6 +12,9 @@ pub struct Config {
     pub admin_token: String,
     pub key_directory: String,
     pub cookie_secure: bool,
+    /// Development-only compatibility for the OAuth session header.
+    /// Production configuration keeps this disabled unless explicitly enabled.
+    pub oauth_session_header_enabled: bool,
     pub database_url: String,
     pub redis_url: String,
     pub session_ttl_seconds: u64,
@@ -50,6 +53,10 @@ impl fmt::Debug for Config {
             .field("admin_token", &"REDACTED")
             .field("key_directory", &self.key_directory)
             .field("cookie_secure", &self.cookie_secure)
+            .field(
+                "oauth_session_header_enabled",
+                &self.oauth_session_header_enabled,
+            )
             .field("database_url", &self.database_url)
             .field("redis_url", &self.redis_url)
             .field("session_ttl_seconds", &self.session_ttl_seconds)
@@ -80,6 +87,7 @@ struct ConfigValues {
     admin_token: String,
     key_directory: String,
     cookie_secure: bool,
+    oauth_session_header_enabled: bool,
     database_url: String,
     redis_url: String,
     session_ttl_seconds: u64,
@@ -112,6 +120,13 @@ impl Config {
             "COOKIE_SECURE",
             env::var("COOKIE_SECURE").ok().as_deref().unwrap_or("true"),
         )?;
+        let oauth_session_header_enabled = parse_bool(
+            "OAUTH_SESSION_HEADER_ENABLED",
+            env::var("OAUTH_SESSION_HEADER_ENABLED")
+                .ok()
+                .as_deref()
+                .unwrap_or("false"),
+        )?;
         let session_ttl_seconds = parse_u64(
             "SESSION_TTL_SECONDS",
             env::var("SESSION_TTL_SECONDS")
@@ -129,6 +144,7 @@ impl Config {
             admin_token,
             key_directory,
             cookie_secure,
+            oauth_session_header_enabled,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -172,6 +188,7 @@ impl Config {
             admin_token: String::new(),
             key_directory: "data/keys".to_owned(),
             cookie_secure: true,
+            oauth_session_header_enabled: true,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -190,6 +207,7 @@ impl Config {
             admin_token,
             key_directory,
             cookie_secure,
+            oauth_session_header_enabled,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -247,6 +265,7 @@ impl Config {
             admin_token,
             key_directory,
             cookie_secure,
+            oauth_session_header_enabled,
             database_url,
             redis_url,
             session_ttl_seconds,

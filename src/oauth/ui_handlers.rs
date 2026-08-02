@@ -10,6 +10,8 @@ use super::{
     authorization::{AuthorizationRequest, validate_authorization_request},
     consent::{ConsentDecision, PendingAuthorization, parse_decision},
     handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
+    request_store::PENDING_REQUEST_TTL_SECONDS,
+    session::session_for_headers,
 };
 use crate::{
     error,
@@ -17,8 +19,6 @@ use crate::{
     state::AppState,
     users::domain::UserId,
 };
-
-const PENDING_REQUEST_TTL_SECONDS: u64 = 600;
 
 #[derive(Debug, Serialize)]
 struct PendingRequestResponse {
@@ -51,20 +51,17 @@ pub async fn inspect_authorization_request(
     headers: HeaderMap,
     Path(request_id): Path<String>,
 ) -> Response {
-    let Ok(context) = current_user(&state, &headers).await else {
-        return error::unauthorized("login_required", "an authenticated session is required");
+    let context = match current_user(&state, &headers).await {
+        Ok(context) => context,
+        Err(response) => return response,
     };
-    let Some(pending) = state
-        .authorization_requests
-        .find(&request_id)
-        .await
-        .ok()
-        .flatten()
-    else {
-        return error::bad_request(
-            "authorization_request_expired",
-            "authorization request is expired",
-        );
+    let pending = match state.authorization_requests.find(&request_id).await {
+        Ok(Some(pending)) => pending,
+        Ok(None) => return pending_expired(),
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to load OAuth authorization request");
+            return error::oauth_temporarily_unavailable();
+        }
     };
     if pending.session_id.as_deref() != Some(context.session.token.as_str()) {
         return error::unauthorized(
@@ -76,13 +73,13 @@ pub async fn inspect_authorization_request(
         Ok(client) => client,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load OAuth UI client");
-            return error::internal();
+            return error::oauth_temporarily_unavailable();
         }
     }) else {
-        return error::bad_request("invalid_client", "client is invalid");
+        return error::oauth_bad_request("invalid_client", "client is invalid");
     };
     let Ok(redirect) = url::Url::parse(&pending.redirect_uri) else {
-        return error::bad_request("invalid_request", "authorization request is invalid");
+        return error::oauth_bad_request("invalid_request", "authorization request is invalid");
     };
     (
         axum::http::StatusCode::OK,
@@ -115,23 +112,21 @@ pub async fn bind_authorization_request(
     headers: HeaderMap,
     Path(request_id): Path<String>,
 ) -> Response {
-    let Ok(context) = current_user(&state, &headers).await else {
-        return error::unauthorized("login_required", "an authenticated session is required");
+    let context = match current_user(&state, &headers).await {
+        Ok(context) => context,
+        Err(response) => return response,
     };
     if !csrf_valid(&headers, &context.session) {
         return error::bad_request("csrf_invalid", "CSRF token is invalid");
     }
-    let Some(mut pending) = state
-        .authorization_requests
-        .find(&request_id)
-        .await
-        .ok()
-        .flatten()
-    else {
-        return error::bad_request(
-            "authorization_request_expired",
-            "authorization request is expired",
-        );
+    let Some(mut pending) = (match state.authorization_requests.find(&request_id).await {
+        Ok(pending) => pending,
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to load OAuth authorization request");
+            return error::oauth_temporarily_unavailable();
+        }
+    }) else {
+        return pending_expired();
     };
     // Only allow binding an unbound request, or re-binding one already owned by
     // this same session (idempotent retry). Refuse to steal another session's request.
@@ -147,10 +142,24 @@ pub async fn bind_authorization_request(
             );
         }
     }
+    let original_pending = pending.clone();
     pending.session_id = Some(context.session.token.clone());
-    if let Err(error_value) = state.authorization_requests.save(&pending).await {
-        tracing::error!(error = %error_value, "failed to bind authorization request to session");
-        return error::internal();
+    match state
+        .authorization_requests
+        .replace_if_matches(&request_id, &original_pending, &pending)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            return error::unauthorized(
+                "invalid_session",
+                "authorization request is bound to another session",
+            );
+        }
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to bind authorization request to session");
+            return error::oauth_temporarily_unavailable();
+        }
     }
     (axum::http::StatusCode::NO_CONTENT, ()).into_response()
 }
@@ -161,8 +170,9 @@ pub async fn decide_authorization_request(
     Path(request_id): Path<String>,
     Json(input): Json<DecisionInput>,
 ) -> Response {
-    let Ok(context) = current_user(&state, &headers).await else {
-        return error::unauthorized("login_required", "an authenticated session is required");
+    let context = match current_user(&state, &headers).await {
+        Ok(context) => context,
+        Err(response) => return response,
     };
     if !csrf_valid(&headers, &context.session) {
         return error::bad_request("csrf_invalid", "CSRF token is invalid");
@@ -170,17 +180,14 @@ pub async fn decide_authorization_request(
     let Some(decision) = parse_decision(&input.decision) else {
         return error::bad_request("invalid_decision", "authorization decision is invalid");
     };
-    let Some(pending) = state
-        .authorization_requests
-        .find(&request_id)
-        .await
-        .ok()
-        .flatten()
-    else {
-        return error::bad_request(
-            "authorization_request_expired",
-            "authorization request is expired",
-        );
+    let Some(pending) = (match state.authorization_requests.find(&request_id).await {
+        Ok(pending) => pending,
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to load OAuth authorization request");
+            return error::oauth_temporarily_unavailable();
+        }
+    }) else {
+        return pending_expired();
     };
     if pending.session_id.as_deref() != Some(context.session.token.as_str()) {
         return error::unauthorized(
@@ -189,17 +196,18 @@ pub async fn decide_authorization_request(
         );
     }
     if matches!(decision, ConsentDecision::Deny) {
-        let Some(pending) = state
+        let Some(pending) = (match state
             .authorization_requests
-            .take(&request_id)
+            .take_if_matches(&request_id, &pending)
             .await
-            .ok()
-            .flatten()
-        else {
-            return error::bad_request(
-                "authorization_request_expired",
-                "authorization request is expired",
-            );
+        {
+            Ok(pending) => pending,
+            Err(store_error) => {
+                tracing::error!(error = %store_error, "failed to consume denied OAuth request");
+                return error::oauth_temporarily_unavailable();
+            }
+        }) else {
+            return pending_expired();
         };
         return match error_redirect(&pending) {
             Some(redirect_to) => (
@@ -217,46 +225,51 @@ pub async fn decide_authorization_request(
         Ok(validated) => validated,
         Err(response) => return response,
     };
+    let Some(consumed) = (match state
+        .authorization_requests
+        .take_if_matches(&request_id, &pending)
+        .await
+    {
+        Ok(consumed) => consumed,
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to consume approved OAuth request");
+            return error::oauth_temporarily_unavailable();
+        }
+    }) else {
+        return pending_expired();
+    };
+    if let Err(response) = session_still_active(&state, &headers, &context.session).await {
+        restore_pending(&state, &consumed).await;
+        return response;
+    }
     if let Err(error_value) = state
         .consents
-        .save(context.user_id, &pending.client_id, &validated.scopes)
+        .save(context.user_id, &consumed.client_id, &validated.scopes)
         .await
     {
         tracing::error!(error = %error_value, "failed to save JSON OAuth consent");
-        return error::internal();
+        restore_pending(&state, &consumed).await;
+        return error::oauth_temporarily_unavailable();
     }
     match issue_authorization_code_result(&state, context.user_id.to_string(), validated).await {
-        Ok(AuthorizationCodeIssue::Redirect(redirect_to)) => {
-            if let Err(response) = consume_approved_request(&state, &request_id).await {
-                return response;
-            }
-            (
-                axum::http::StatusCode::OK,
-                Json(DecisionResponse {
-                    decision: "approve",
-                    redirect_to,
-                }),
+        Ok(AuthorizationCodeIssue::Redirect(redirect_to)) => (
+            axum::http::StatusCode::OK,
+            Json(DecisionResponse {
+                decision: "approve",
+                redirect_to,
+            }),
+        )
+            .into_response(),
+        Ok(AuthorizationCodeIssue::QuotaExceeded) => {
+            restore_pending(&state, &consumed).await;
+            error::oauth_too_many_requests(
+                "temporarily_unavailable",
+                "authorization is temporarily unavailable",
             )
-                .into_response()
         }
-        Ok(AuthorizationCodeIssue::QuotaExceeded) => error::too_many_requests(
-            "oauth_quota_exceeded",
-            "OAuth authorization quota has been exhausted",
-        ),
-        Err(response) => response,
-    }
-}
-
-async fn consume_approved_request(state: &AppState, request_id: &str) -> Result<(), Response> {
-    match state.authorization_requests.take(request_id).await {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => Err(error::bad_request(
-            "authorization_request_processed",
-            "authorization request has already been processed",
-        )),
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to consume approved OAuth request");
-            Err(error::internal())
+        Err(response) => {
+            restore_pending(&state, &consumed).await;
+            response
         }
     }
 }
@@ -269,9 +282,15 @@ async fn validated_pending(
         .clients
         .find_registered(&pending.client_id)
         .await
-        .map_err(|_| error::internal())?
+        .map_err(|error_value| {
+            tracing::error!(error = %error_value, "failed to load OAuth client for consent");
+            error::oauth_temporarily_unavailable()
+        })?
     else {
-        return Err(error::bad_request("invalid_client", "client is invalid"));
+        return Err(error::oauth_bad_request(
+            "invalid_client",
+            "client is invalid",
+        ));
     };
     validate_authorization_request(
         &client,
@@ -286,7 +305,7 @@ async fn validated_pending(
             code_challenge_method: Some(pending.code_challenge_method.clone()),
         },
     )
-    .map_err(|_| error::bad_request("invalid_request", "authorization request is invalid"))
+    .map_err(|_| error::oauth_bad_request("invalid_request", "authorization request is invalid"))
 }
 
 fn error_redirect(pending: &PendingAuthorization) -> Option<String> {
@@ -299,19 +318,55 @@ fn error_redirect(pending: &PendingAuthorization) -> Option<String> {
 }
 
 async fn current_user(state: &AppState, headers: &HeaderMap) -> Result<UserContext, Response> {
-    // Accepts both the browser Session cookie and the X-Chenxing-Session header,
-    // matching every other authenticated endpoint via session_for_headers.
-    let Some(session) = super::session::session_for_headers(state, headers).await else {
-        return Err(error::unauthorized(
-            "login_required",
-            "an authenticated session is required",
-        ));
+    let session = match session_for_headers(state, headers).await {
+        Ok(Some(session)) => session,
+        Ok(None) => {
+            return Err(error::unauthorized(
+                "login_required",
+                "an authenticated session is required",
+            ));
+        }
+        Err(session_error) => {
+            tracing::error!(error = %session_error, "OAuth session lookup failed");
+            return Err(error::oauth_temporarily_unavailable());
+        }
     };
     let user_id = session
         .user_id
         .parse::<UserId>()
         .map_err(|_| error::unauthorized("invalid_session", "user session is invalid"))?;
     Ok(UserContext { user_id, session })
+}
+
+async fn session_still_active(
+    state: &AppState,
+    headers: &HeaderMap,
+    expected: &Session,
+) -> Result<(), Response> {
+    match session_for_headers(state, headers).await {
+        Ok(Some(session)) if session.token == expected.token => Ok(()),
+        Ok(_) => Err(error::unauthorized(
+            "invalid_session",
+            "authorization session is no longer valid",
+        )),
+        Err(session_error) => {
+            tracing::error!(error = %session_error, "OAuth session revalidation failed");
+            Err(error::oauth_temporarily_unavailable())
+        }
+    }
+}
+
+async fn restore_pending(state: &AppState, pending: &PendingAuthorization) {
+    if let Err(store_error) = state.authorization_requests.save(pending).await {
+        tracing::error!(error = %store_error, "failed to restore OAuth authorization request");
+    }
+}
+
+fn pending_expired() -> Response {
+    error::bad_request(
+        "authorization_request_expired",
+        "authorization request is expired",
+    )
 }
 
 fn csrf_valid(headers: &HeaderMap, session: &Session) -> bool {
