@@ -137,7 +137,7 @@ VALUES ('basic', '基础版', '默认套餐', 2, 2500, 50000, NULL, TRUE, 'activ
 - 迁移后种子默认套餐存在、行为与旧硬编码一致（回归）。
 - 分配套餐后 client 数量 / 日月配额按新 limit 生效。
 - `monthly_auth_limit = NULL` 时不拦月度。
-- QPS 限流：1 秒内超过 max_qps 的请求被拒。
+- QPS 限流：1 秒滑动窗口内超过 max_qps 的请求被拒。
 - entitlements 接口按用户正确汇总多个 client 的用量。
 
 ## 交付顺序建议

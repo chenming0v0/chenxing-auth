@@ -193,7 +193,7 @@ grant_type=refresh_token&refresh_token=...
 
 `refresh_token` 会轮换；包含 `openid` Scope 时返回 `id_token`。授权码和刷新 Token 均为一次性消费。
 
-Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒窗口限流，超限返回 `429 qps_exceeded`；套餐未配置 `max_qps`（`null`）时不限流。
+Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限流，超限返回 `429 temporarily_unavailable`；套餐未配置 `max_qps`（`null`）时不限流。
 
 ### `GET /oauth/userinfo`
 

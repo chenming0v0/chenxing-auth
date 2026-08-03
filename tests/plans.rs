@@ -698,12 +698,7 @@ async fn qps_limiter_rejects_requests_over_the_plan_limit() {
             .expect("token request")
     };
 
-    // QPS 固定窗口按整秒翻页；等待到窗口中段，给并发请求留下足够时间，
-    // 避免测试在边界附近跨窗口。
-    let millis_into_second = time::OffsetDateTime::now_utc().millisecond() as u64;
-    let wait_millis = (1_500 - millis_into_second) % 1_000;
-    tokio::time::sleep(Duration::from_millis(wait_millis)).await;
-
+    // QPS 使用 1 秒滑动窗口，不依赖整秒边界；并发三次请求应稳定得到 2 放行 + 1 拒绝。
     let (first, second, third) = tokio::join!(
         router.clone().oneshot(token_request()),
         router.clone().oneshot(token_request()),

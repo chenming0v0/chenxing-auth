@@ -1,16 +1,32 @@
-//! 并发（QPS）限流：按 OAuth Client 的 1 秒固定窗口计数，超限返回 429。
-//! 使用 Redis 脚本原子执行 INCR + 首次设置 TTL，避免并发下重复过期。
+//! 并发（QPS）限流：按 OAuth Client 的 1 秒滑动窗口计数，超限返回 429。
+//! 使用 Redis ZSET + 服务端时间原子清理、写入并判定，避免固定整秒窗口
+//! 在秒边界附近把并发请求拆到不同桶里。
 
-use redis::Client;
+use redis::{Client, Script};
 use thiserror::Error;
-use time::OffsetDateTime;
+use uuid::Uuid;
 
 const QPS_SCRIPT: &str = r#"
-local current = redis.call('INCR', KEYS[1])
-if current == 1 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end
-if current > tonumber(ARGV[1]) then return 0 end
+local key = KEYS[1]
+local window = tonumber(ARGV[1])
+local limit = tonumber(ARGV[2])
+local member = ARGV[3]
+local ttl = tonumber(ARGV[4])
+local time = redis.call('TIME')
+local now = (tonumber(time[1]) * 1000) + math.floor(tonumber(time[2]) / 1000)
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window)
+local current = redis.call('ZCARD', key)
+if current >= limit then
+  redis.call('EXPIRE', key, ttl)
+  return 0
+end
+redis.call('ZADD', key, now, member)
+redis.call('EXPIRE', key, ttl)
 return 1
 "#;
+
+const QPS_WINDOW_MS: i64 = 1_000;
+const QPS_KEY_TTL_SECONDS: i64 = 2;
 
 #[derive(Clone)]
 pub struct QpsRateLimiter {
@@ -30,16 +46,18 @@ impl QpsRateLimiter {
         Self { client }
     }
 
-    /// 对 `client_id` 在当前秒窗口内计数。返回 `true` 表示放行，
+    /// 对 `client_id` 在最近 1 秒滑动窗口内计数。返回 `true` 表示放行，
     /// `false` 表示超过 `max_qps` 应拒绝；`max_qps` 由调用方决定是否为 `None`（不启用）。
     pub async fn allow(&self, client_id: &str, max_qps: u32) -> Result<bool, QpsRateLimitError> {
-        let window = OffsetDateTime::now_utc().unix_timestamp();
-        let key = format!("chenxing:qps:{client_id}:{window}");
+        let key = format!("chenxing:qps:{client_id}");
+        let member = Uuid::new_v4().simple().to_string();
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let allowed: i64 = redis::Script::new(QPS_SCRIPT)
+        let allowed: i64 = Script::new(QPS_SCRIPT)
             .key(key)
+            .arg(QPS_WINDOW_MS)
             .arg(max_qps)
-            .arg(2)
+            .arg(member)
+            .arg(QPS_KEY_TTL_SECONDS)
             .invoke_async(&mut connection)
             .await?;
         match allowed {
@@ -61,11 +79,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fixed_window_rejects_requests_over_the_limit() {
+    async fn sliding_window_rejects_requests_over_the_limit() {
         let limiter = limiter();
         let client_id = format!("qps-test-{}", uuid::Uuid::new_v4().simple());
         assert!(limiter.allow(&client_id, 2).await.expect("first request"));
         assert!(limiter.allow(&client_id, 2).await.expect("second request"));
         assert!(!limiter.allow(&client_id, 2).await.expect("third request"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_requests_share_the_same_window() {
+        let limiter = limiter();
+        let client_id = format!("qps-concurrent-{}", uuid::Uuid::new_v4().simple());
+        let (first, second, third) = tokio::join!(
+            limiter.allow(&client_id, 2),
+            limiter.allow(&client_id, 2),
+            limiter.allow(&client_id, 2),
+        );
+        let mut allowed = [
+            first.expect("first concurrent request"),
+            second.expect("second concurrent request"),
+            third.expect("third concurrent request"),
+        ];
+        allowed.sort_unstable();
+        assert_eq!(allowed, [false, true, true]);
     }
 }
