@@ -1,6 +1,6 @@
 use axum::{
     Router,
-    body::Body,
+    body::{Body, to_bytes},
     http::{
         Request, StatusCode,
         header::{CACHE_CONTROL, PRAGMA},
@@ -11,6 +11,15 @@ use tower::ServiceExt;
 
 fn test_router() -> Router {
     api::router(AppState::for_test())
+}
+
+async fn oauth_error_body(response: axum::response::Response) -> serde_json::Value {
+    serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("OAuth error body"),
+    )
+    .expect("OAuth error JSON")
 }
 
 #[tokio::test]
@@ -47,7 +56,7 @@ async fn token_endpoint_rejects_unsupported_grant_type_without_caching() {
 }
 
 #[tokio::test]
-async fn authorization_endpoint_requires_an_authenticated_session() {
+async fn authorization_endpoint_reports_temporary_unavailability_without_database() {
     let response = test_router()
         .oneshot(
             Request::builder()
@@ -58,11 +67,17 @@ async fn authorization_endpoint_requires_an_authenticated_session() {
         .await
         .expect("response from router");
 
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let error = oauth_error_body(response).await;
+    assert_eq!(error["error"], "temporarily_unavailable");
+    assert_eq!(
+        error["error_description"],
+        "the authorization server is temporarily unable to handle the request"
+    );
 }
 
 #[tokio::test]
-async fn browser_authorization_without_a_session_redirects_to_login() {
+async fn browser_authorization_reports_temporary_unavailability_without_database() {
     let response = test_router()
         .oneshot(
             Request::builder()
@@ -74,12 +89,11 @@ async fn browser_authorization_without_a_session_redirects_to_login() {
         .await
         .expect("response from router");
 
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert!(
-        response
-            .headers()
-            .get("location")
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.starts_with("/login?request_id="))
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let error = oauth_error_body(response).await;
+    assert_eq!(error["error"], "temporarily_unavailable");
+    assert_eq!(
+        error["error_description"],
+        "the authorization server is temporarily unable to handle the request"
     );
 }

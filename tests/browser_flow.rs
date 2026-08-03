@@ -3,7 +3,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{
         Request, StatusCode,
-        header::{LOCATION, SET_COOKIE},
+        header::{LOCATION, SET_COOKIE, WWW_AUTHENTICATE},
     },
 };
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
@@ -103,7 +103,7 @@ fn request_id_from(location: &str) -> String {
 /// (issues session) → bind session to the pending request → inspect → approve →
 /// authorization code. Re-running authorize with a stored consent yields a code directly.
 #[tokio::test]
-async fn spa_json_oauth_flow_issues_authorization_code_and_reuses_consent() {
+async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
     let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
 
@@ -178,6 +178,33 @@ async fn spa_json_oauth_flow_issues_authorization_code_and_reuses_consent() {
 
     let authorize_uri = format!(
         "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Fbrowser.example%2Fcallback&response_type=code&scope=openid%20profile&state=browser-state&nonce=browser-nonce&code_challenge=browser-challenge&code_challenge_method=S256"
+    );
+
+    // A valid client still requires a session for non-browser OAuth requests.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&authorize_uri)
+                .body(Body::empty())
+                .expect("API authorize request"),
+        )
+        .await
+        .expect("API authorize response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        response
+            .headers()
+            .get(WWW_AUTHENTICATE)
+            .and_then(|value| value.to_str().ok()),
+        Some("Session realm=\"oauth\"")
+    );
+    let error: serde_json::Value =
+        serde_json::from_str(&body(response).await).expect("OAuth authorization error JSON");
+    assert_eq!(error["error"], "login_required");
+    assert_eq!(
+        error["error_description"],
+        "an authenticated session is required"
     );
 
     // Unauthenticated browser hit: pending is created, user is sent to the SPA login page.
