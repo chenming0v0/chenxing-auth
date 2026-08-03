@@ -63,8 +63,9 @@ struct NumericEntitlement {
 }
 
 pub async fn current_entitlements(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Ok(context) = current_user(&state, &headers).await else {
-        return error::unauthorized("login_required", "an authenticated session is required");
+    let context = match current_user(&state, &headers).await {
+        Ok(context) => context,
+        Err(response) => return response,
     };
     let effective = match state.plans.effective_plan_for_user(context.user_id).await {
         Ok(effective) => effective,

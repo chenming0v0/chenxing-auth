@@ -47,8 +47,9 @@ struct AuthorizedAppListResponse {
 }
 
 pub async fn list_owned_clients(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Ok(context) = current_user(&state, &headers).await else {
-        return error::unauthorized("login_required", "an authenticated session is required");
+    let context = match current_user(&state, &headers).await {
+        Ok(context) => context,
+        Err(response) => return response,
     };
     let effective = match state.plans.effective_plan_for_user(context.user_id).await {
         Ok(effective) => effective,
@@ -72,8 +73,9 @@ pub async fn list_owned_clients(State(state): State<AppState>, headers: HeaderMa
 }
 
 pub async fn list_authorized_apps(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Ok(context) = current_user(&state, &headers).await else {
-        return error::unauthorized("login_required", "an authenticated session is required");
+    let context = match current_user(&state, &headers).await {
+        Ok(context) => context,
+        Err(response) => return response,
     };
     match state.consents.list_for_user(context.user_id).await {
         Ok(items) => (StatusCode::OK, Json(AuthorizedAppListResponse { items })).into_response(),

@@ -56,8 +56,9 @@ pub async fn auth_status(State(state): State<AppState>, headers: HeaderMap) -> R
 }
 
 pub async fn current_user_profile(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Ok(context) = current_user(&state, &headers).await else {
-        return error::unauthorized("login_required", "an authenticated session is required");
+    let context = match current_user(&state, &headers).await {
+        Ok(context) => context,
+        Err(response) => return response,
     };
     match state.users.find_profile(context.user_id).await {
         Ok(Some(profile)) => profile_response(context, profile),
@@ -130,8 +131,9 @@ pub async fn change_current_user_password(
 }
 
 pub async fn list_user_sessions(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Ok(context) = current_user(&state, &headers).await else {
-        return error::unauthorized("login_required", "an authenticated session is required");
+    let context = match current_user(&state, &headers).await {
+        Ok(context) => context,
+        Err(response) => return response,
     };
     match state.sessions.list_for_user(context.user_id).await {
         Ok(sessions) => (

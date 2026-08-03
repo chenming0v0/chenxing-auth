@@ -258,7 +258,57 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
         .get(LOCATION)
         .and_then(|value| value.to_str().ok())
         .expect("authorization redirect");
-    let redirect = resolve_location(location);
+    let consent_url = resolve_location(location);
+    assert_eq!(consent_url.path(), "/oauth/consent");
+    let request_id = consent_url
+        .query_pairs()
+        .find(|(key, _)| key == "request_id")
+        .map(|(_, value)| value.into_owned())
+        .expect("authorization request id");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/oauth/authorize/requests/{request_id}"))
+                .header("cookie", &session_cookie)
+                .body(Body::empty())
+                .expect("inspect consent request"),
+        )
+        .await
+        .expect("inspect consent response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let consent = json_body(response).await;
+    assert_eq!(consent["request_id"].as_str(), Some(request_id.as_str()));
+    assert_eq!(consent["client_id"].as_str(), Some(client_id.as_str()));
+
+    let csrf = session_cookie
+        .split(';')
+        .find_map(|value| value.trim().strip_prefix("chenxing_csrf="))
+        .expect("CSRF cookie")
+        .to_owned();
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/oauth/authorize/requests/{request_id}"))
+                .header("cookie", &session_cookie)
+                .header("x-csrf-token", &csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"decision":"approve"}"#))
+                .expect("approve consent request"),
+        )
+        .await
+        .expect("approve consent response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let decision = json_body(response).await;
+    assert_eq!(decision["decision"].as_str(), Some("approve"));
+    let redirect = resolve_location(
+        decision["redirect_to"]
+            .as_str()
+            .expect("authorization redirect target"),
+    );
     let code = redirect
         .query_pairs()
         .find(|(key, _)| key == "code")

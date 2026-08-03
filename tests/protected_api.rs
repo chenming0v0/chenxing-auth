@@ -16,14 +16,13 @@ fn test_router() -> Router {
 
 fn admin_router() -> (Router, String, std::path::PathBuf) {
     let directory = std::env::temp_dir().join(format!("chenxing-admin-keys-{}", Uuid::new_v4()));
-    let mut config = Config::from_values(
-        "127.0.0.1".to_owned(),
-        3000,
-        "postgres://localhost/chenxing_auth".to_owned(),
-        "redis://localhost".to_owned(),
-        3600,
-    )
-    .expect("test configuration");
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let mut config =
+        Config::from_values("127.0.0.1".to_owned(), 3000, database_url, redis_url, 3600)
+            .expect("test configuration");
     config.admin_token = "admin-secret".to_owned();
     config.key_directory = directory.to_string_lossy().into_owned();
     let state = AppState::new(config).expect("test state");

@@ -12,6 +12,15 @@ use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
 
+const TEST_ORIGIN: &str = "http://127.0.0.1:3000/";
+
+fn resolve_location(location: &str) -> Url {
+    Url::parse(TEST_ORIGIN)
+        .expect("test origin")
+        .join(location)
+        .expect("valid redirect location")
+}
+
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
@@ -626,9 +635,37 @@ async fn owned_oauth_authorization_consumes_daily_and_monthly_quota() {
         .get("location")
         .and_then(|value| value.to_str().ok())
         .expect("authorization redirect");
+    let consent_url = resolve_location(location);
+    assert_eq!(consent_url.path(), "/oauth/consent");
+    let request_id = consent_url
+        .query_pairs()
+        .find(|(key, _)| key == "request_id")
+        .map(|(_, value)| value.into_owned())
+        .expect("authorization request id");
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/oauth/authorize/requests/{request_id}"))
+                .header("cookie", &cookies)
+                .header("x-csrf-token", csrf(&cookies))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"decision":"approve"}"#))
+                .expect("approve consent request"),
+        )
+        .await
+        .expect("approve consent response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let decision = json(response).await;
+    assert_eq!(decision["decision"].as_str(), Some("approve"));
+    let redirect = resolve_location(
+        decision["redirect_to"]
+            .as_str()
+            .expect("authorization redirect target"),
+    );
     assert!(
-        Url::parse(location)
-            .expect("redirect URL")
+        redirect
             .query_pairs()
             .any(|(key, value)| key == "state" && value == "quota-state")
     );

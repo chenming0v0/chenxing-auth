@@ -1231,7 +1231,17 @@ async fn session_revoke_keeps_database_authoritative_until_redis_recovers() {
     .await
     .expect("insert outbox revoke user");
     let key = session_store_key();
-    let available = SessionStore::with_metadata_and_key(redis_client(), pool.clone(), key);
+    let client = redis_client();
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let revocation_marker = session_revocation_marker(user.id);
+    let _: usize = connection
+        .del(&revocation_marker)
+        .await
+        .expect("clear reused user revocation marker");
+    let available = SessionStore::with_metadata_and_key(client, pool.clone(), key);
     let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
     available
         .save(&mut session, Duration::from_secs(60))
@@ -1267,14 +1277,16 @@ async fn session_revoke_keeps_database_authoritative_until_redis_recovers() {
         1
     );
 
-    let mut connection = redis_client()
-        .get_multiplexed_async_connection()
-        .await
-        .expect("Redis connection");
     let redis_key = format!(
         "chenxing:session:{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(sha2::Sha256::digest(session.token.as_bytes()))
+    );
+    assert!(
+        connection
+            .exists::<_, bool>(&redis_key)
+            .await
+            .expect("initial Redis session projection")
     );
     assert!(
         connection
@@ -1298,6 +1310,10 @@ async fn session_revoke_keeps_database_authoritative_until_redis_recovers() {
         .execute(&pool)
         .await
         .expect("cleanup outbox revoke user");
+    let _: usize = connection
+        .del(&revocation_marker)
+        .await
+        .expect("cleanup session revocation marker");
 }
 
 #[tokio::test]
