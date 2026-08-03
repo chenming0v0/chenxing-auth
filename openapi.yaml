@@ -1399,9 +1399,9 @@ components:
       type: object
       required: [daily_limit, daily_used, monthly_limit, monthly_used]
       properties:
-        daily_limit: { type: integer, format: int64, example: 2500 }
+        daily_limit: { type: integer, format: int64, minimum: 0, description: 当前 owner effective plan 的每日授权上限 }
         daily_used: { type: integer, format: int64 }
-        monthly_limit: { type: integer, format: int64, example: 50000 }
+        monthly_limit: { type: integer, format: int64, minimum: 0, nullable: true, description: 当前 owner effective plan 的每月授权上限；null 表示无限 }
         monthly_used: { type: integer, format: int64 }
     OwnedOAuthClient:
       type: object

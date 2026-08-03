@@ -50,6 +50,14 @@ pub async fn list_owned_clients(State(state): State<AppState>, headers: HeaderMa
     let Ok(context) = current_user(&state, &headers).await else {
         return error::unauthorized("login_required", "an authenticated session is required");
     };
+    let effective = match state.plans.effective_plan_for_user(context.user_id).await {
+        Ok(effective) => effective,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load plan for owned OAuth client quota");
+            return error::internal();
+        }
+    };
+    let quota_limits = effective.plan.auth_quota_limits();
     let clients = match state.clients.list_for_user(context.user_id).await {
         Ok(clients) => clients,
         Err(error_value) => {
@@ -57,7 +65,7 @@ pub async fn list_owned_clients(State(state): State<AppState>, headers: HeaderMa
             return error::internal();
         }
     };
-    match add_quota(&state, clients).await {
+    match add_quota(&state, clients, quota_limits).await {
         Ok(items) => (StatusCode::OK, Json(OwnedClientListResponse { items })).into_response(),
         Err(response) => response,
     }
@@ -131,6 +139,7 @@ pub async fn create_owned_client(
             return error::internal();
         }
     };
+    let quota_limits = effective.plan.auth_quota_limits();
     match state
         .clients
         .register_for_user(
@@ -140,7 +149,7 @@ pub async fn create_owned_client(
         )
         .await
     {
-        Ok(client) => match owned_registered_response(&state, client).await {
+        Ok(client) => match owned_registered_response(&state, client, quota_limits).await {
             Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
             Err(response) => response,
         },
@@ -269,12 +278,13 @@ pub async fn rotate_owned_client_secret(
 async fn add_quota(
     state: &AppState,
     clients: Vec<ClientSummary>,
+    quota_limits: crate::plans::domain::AuthQuotaLimits,
 ) -> Result<Vec<OwnedClientResponse>, Response> {
     let mut items = Vec::with_capacity(clients.len());
     for client in clients {
         let quota = state
             .oauth_quotas
-            .snapshot(&client.client_id)
+            .snapshot(&client.client_id, quota_limits)
             .await
             .map_err(|_| error::internal())?;
         items.push(OwnedClientResponse {
@@ -293,10 +303,11 @@ async fn add_quota(
 async fn owned_registered_response(
     state: &AppState,
     client: RegisteredClientSecret,
+    quota_limits: crate::plans::domain::AuthQuotaLimits,
 ) -> Result<RegisteredOwnedClientResponse, Response> {
     let quota = state
         .oauth_quotas
-        .snapshot(&client.client_id)
+        .snapshot(&client.client_id, quota_limits)
         .await
         .map_err(|_| error::internal())?;
     Ok(RegisteredOwnedClientResponse {

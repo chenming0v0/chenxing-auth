@@ -205,14 +205,10 @@ pub async fn issue_authorization_code_result(
                 return Err(error::oauth_temporarily_unavailable());
             }
         };
-        let daily_limit = effective.plan.daily_auth_limit.max(0) as u64;
-        let monthly_limit = effective
-            .plan
-            .monthly_auth_limit
-            .map(|limit| limit.max(0) as u64);
+        let limits = effective.plan.auth_quota_limits();
         match state
             .oauth_quotas
-            .consume_with_limits(&validated.client_id, Some(daily_limit), monthly_limit)
+            .consume_with_limits(&validated.client_id, limits)
             .await
             .map_err(|error_value| {
                 tracing::error!(error = %error_value, "failed to consume OAuth authorization quota");
@@ -459,62 +455,5 @@ fn session_error_response(error_value: SessionLookupError) -> Response {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::http::{StatusCode, header::LOCATION};
-
-    fn client() -> super::super::authorization::RegisteredClient {
-        super::super::authorization::RegisteredClient {
-            client_id: "client-1".to_owned(),
-            client_name: "Test Client".to_owned(),
-            redirect_uris: vec!["https://client.example/callback".to_owned()],
-            scopes: vec!["openid".to_owned()],
-            owner_user_id: None,
-        }
-    }
-
-    fn request(redirect_uri: &str) -> AuthorizationRequest {
-        AuthorizationRequest {
-            client_id: "client-1".to_owned(),
-            redirect_uri: redirect_uri.to_owned(),
-            response_type: "code".to_owned(),
-            scope: "openid".to_owned(),
-            state: Some("state-1".to_owned()),
-            nonce: None,
-            code_challenge: Some("challenge".to_owned()),
-            code_challenge_method: Some("S256".to_owned()),
-        }
-    }
-
-    #[test]
-    fn authorization_error_never_redirects_to_unregistered_uri() {
-        let response = authorization_error(
-            &request("https://attacker.example/callback"),
-            &client(),
-            AuthorizationRequestError::RedirectUriNotAllowed,
-        );
-
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert!(response.headers().get(LOCATION).is_none());
-    }
-
-    #[test]
-    fn authorization_error_redirects_only_after_exact_uri_verification() {
-        let mut request = request("https://client.example/callback");
-        request.response_type = "token".to_owned();
-        let response = authorization_error(
-            &request,
-            &client(),
-            AuthorizationRequestError::UnsupportedResponseType,
-        );
-
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        let location = response
-            .headers()
-            .get(LOCATION)
-            .and_then(|value| value.to_str().ok())
-            .expect("verified redirect location");
-        assert!(location.contains("error=unsupported_response_type"));
-        assert!(location.contains("state=state-1"));
-    }
-}
+#[path = "handlers_tests.rs"]
+mod tests;

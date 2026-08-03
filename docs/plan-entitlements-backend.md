@@ -111,7 +111,7 @@ VALUES ('basic', '基础版', '默认套餐', 2, 2500, 50000, NULL, TRUE, 'activ
 ## 3. 配额改造（把硬编码换成读套餐）
 
 1. **客户端数量**：`src/clients/repository.rs::insert_owned_client` 里现在写死 `USER_OAUTH_CLIENT_QUOTA`（`src/clients/service.rs:23`）。改成传入 limit 参数——由调用方 `register_for_user` 先查 `plans.effective_plan_for_user`，把 `oauth_clients_limit` 传进来。事务内 `COUNT(*)` 比较不变。
-2. **日/月授权**：`src/oauth/quota.rs` 已经有 `consume_with_limits(client_id, daily, monthly)` 和 `snapshot`。现在 `consume()`（`src/oauth/handlers.rs:154`）用的是常量。改成：先根据 client 的 `owner_user_id` 查 owner 的套餐，拿 `daily_auth_limit`/`monthly_auth_limit`，调用 `consume_with_limits`。`snapshot` 同理要能带上套餐 limit 返回（给权益页显示正确的分母）。
+2. **日/月授权**：`src/oauth/quota.rs` 的消费和 `snapshot` 都接收由 `Plan::auth_quota_limits()` 生成的命名限额值。授权入口先根据 Client 的 `owner_user_id` 查 owner 的 effective plan，再把同一份日/月限额传入消费；Client 列表和权益页也从目标 owner/user 的 effective plan 生成同一份限额传给 `snapshot`，因此快照的 used 只来自 Redis，limit 只来自套餐。
    - 注意：Redis 计数目前是**按 client_id**。用户端权益页要按**用户**汇总，需要遍历该用户所有 client 的 snapshot 求和（见 §4）。`monthly_auth_limit = NULL`（无限）时，跳过月度检查、`entitlements` 返回 `limit: null`。
 3. **并发 QPS（新增）**：目前无限流。新增 `src/oauth/rate_limit.rs`，Redis 固定窗口/令牌桶（1 秒窗口，key=`chenxing:qps:{client_id}` 或按 user）。在 `/oauth/token` 或 `issue_authorization_code_result` 入口检查，超了返 `error::too_many_requests("qps_exceeded", …)`（helper 已存在于 `src/error.rs:69`）。`max_qps = NULL` 时不启用。
 

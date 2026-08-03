@@ -19,6 +19,26 @@ pub struct Plan {
     pub updated_at: OffsetDateTime,
 }
 
+/// OAuth daily/monthly authorization limits used by the quota store.
+///
+/// The database model keeps the daily limit non-null and uses `NULL` only for
+/// an unlimited monthly limit. Keeping that distinction in a named value
+/// avoids accidentally swapping the two dimensions at call sites.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthQuotaLimits {
+    pub daily_auth_limit: u64,
+    pub monthly_auth_limit: Option<u64>,
+}
+
+impl Plan {
+    pub fn auth_quota_limits(&self) -> AuthQuotaLimits {
+        AuthQuotaLimits {
+            daily_auth_limit: self.daily_auth_limit.max(0) as u64,
+            monthly_auth_limit: self.monthly_auth_limit.map(|limit| limit.max(0) as u64),
+        }
+    }
+}
+
 /// 管理员创建 / 更新套餐时提交的原始输入。
 #[derive(Debug, Deserialize)]
 pub struct PlanInput {
@@ -163,7 +183,8 @@ pub fn validate_plan_input(input: PlanInput) -> Result<ValidatedPlanInput, PlanE
 
 #[cfg(test)]
 mod tests {
-    use super::{PlanError, PlanInput, validate_plan_input};
+    use super::{AuthQuotaLimits, Plan, PlanError, PlanInput, validate_plan_input};
+    use time::OffsetDateTime;
 
     fn input() -> PlanInput {
         PlanInput {
@@ -176,6 +197,42 @@ mod tests {
             max_qps: Some(35),
             is_default: false,
         }
+    }
+
+    fn plan_with_auth_limits(daily: i64, monthly: Option<i64>) -> Plan {
+        let now = OffsetDateTime::UNIX_EPOCH;
+        Plan {
+            id: 1,
+            code: "test".to_owned(),
+            name: "Test".to_owned(),
+            description: None,
+            oauth_clients_limit: 1,
+            daily_auth_limit: daily,
+            monthly_auth_limit: monthly,
+            max_qps: None,
+            is_default: false,
+            status: "active".to_owned(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn auth_quota_limits_preserve_zero_and_unlimited_monthly_values() {
+        assert_eq!(
+            plan_with_auth_limits(0, None).auth_quota_limits(),
+            AuthQuotaLimits {
+                daily_auth_limit: 0,
+                monthly_auth_limit: None,
+            }
+        );
+        assert_eq!(
+            plan_with_auth_limits(7, Some(11)).auth_quota_limits(),
+            AuthQuotaLimits {
+                daily_auth_limit: 7,
+                monthly_auth_limit: Some(11),
+            }
+        );
     }
 
     #[test]

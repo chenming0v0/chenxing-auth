@@ -74,6 +74,7 @@ pub async fn current_entitlements(State(state): State<AppState>, headers: Header
         }
     };
     let plan = effective.plan;
+    let quota_limits = plan.auth_quota_limits();
 
     let clients = match state.clients.list_for_user(context.user_id).await {
         Ok(clients) => clients,
@@ -87,7 +88,11 @@ pub async fn current_entitlements(State(state): State<AppState>, headers: Header
     let mut daily_used = 0_u64;
     let mut monthly_used = 0_u64;
     for client in &clients {
-        match state.oauth_quotas.snapshot(&client.client_id).await {
+        match state
+            .oauth_quotas
+            .snapshot(&client.client_id, quota_limits)
+            .await
+        {
             Ok(snapshot) => {
                 daily_used = daily_used.saturating_add(snapshot.daily_used);
                 monthly_used = monthly_used.saturating_add(snapshot.monthly_used);
@@ -110,14 +115,14 @@ pub async fn current_entitlements(State(state): State<AppState>, headers: Header
         key: "daily_auth",
         label: "每日授权调用",
         used: daily_used,
-        limit: plan.daily_auth_limit.max(0) as u64,
+        limit: quota_limits.daily_auth_limit,
     }));
-    match plan.monthly_auth_limit {
+    match quota_limits.monthly_auth_limit {
         Some(limit) => entitlements.push(EntitlementItem::Limited(LimitedEntitlement {
             key: "monthly_auth",
             label: "每月授权调用",
             used: monthly_used,
-            limit: limit.max(0) as u64,
+            limit,
         })),
         None => entitlements.push(EntitlementItem::Unlimited(UnlimitedEntitlement {
             key: "monthly_auth",
