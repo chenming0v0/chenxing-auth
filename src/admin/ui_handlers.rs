@@ -11,7 +11,11 @@ use super::{
     domain::{AdminPermission, AdminRole},
     handlers::is_admin_request,
 };
-use crate::{error, state::AppState, users::domain::UserRole, users::ui_auth::current_user};
+use crate::{
+    error,
+    state::AppState,
+    users::{domain::UserRole, ui_auth::current_user},
+};
 
 #[derive(Debug, Deserialize)]
 pub struct PageQuery {
@@ -32,10 +36,10 @@ struct AdminMeResponse {
 }
 #[derive(Debug, Serialize)]
 struct OverviewResponse {
-    users: usize,
-    oauth_clients: usize,
-    administrators: usize,
-    audit_events: usize,
+    users: i64,
+    oauth_clients: i64,
+    administrators: i64,
+    audit_events: i64,
 }
 #[derive(Debug, Serialize)]
 struct PageResponse<T> {
@@ -93,22 +97,22 @@ pub async fn admin_overview(State(state): State<AppState>, headers: HeaderMap) -
     {
         return response;
     }
-    let users = match state.users.list().await {
+    let user_counts = match state.users.counts().await {
         Ok(value) => value,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to count users");
             return error::internal();
         }
     };
-    let oauth_clients = match state.clients.list().await {
-        Ok(value) => value.len(),
+    let oauth_clients = match state.clients.count().await {
+        Ok(value) => value,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to count clients");
             return error::internal();
         }
     };
     let audit_events = match state.audit.count().await {
-        Ok(value) => value as usize,
+        Ok(value) => value,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to count audit events");
             return error::internal();
@@ -117,12 +121,9 @@ pub async fn admin_overview(State(state): State<AppState>, headers: HeaderMap) -
     (
         axum::http::StatusCode::OK,
         Json(OverviewResponse {
-            users: users.len(),
+            users: user_counts.total,
             oauth_clients,
-            administrators: users
-                .iter()
-                .filter(|user| matches!(user.role, UserRole::Admin | UserRole::Owner))
-                .count(),
+            administrators: user_counts.administrators,
             audit_events,
         }),
     )
@@ -145,33 +146,24 @@ pub async fn query_users(
             "page must be positive and page_size must be between 1 and 100",
         );
     };
-    let mut users = match state.users.list().await {
+    let (users, total) = match state
+        .users
+        .query(
+            query.search.as_deref(),
+            query.status.as_deref(),
+            page_size,
+            offset,
+        )
+        .await
+    {
         Ok(value) => value,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to query users");
             return error::internal();
         }
     };
-    users.retain(|user| {
-        query
-            .status
-            .as_deref()
-            .is_none_or(|status| status == user.status)
-            && query.search.as_deref().is_none_or(|search| {
-                let search = search.to_ascii_lowercase();
-                user.username.to_ascii_lowercase().contains(&search)
-                    || user.email.to_ascii_lowercase().contains(&search)
-                    || user
-                        .display_name
-                        .as_deref()
-                        .is_some_and(|name| name.to_ascii_lowercase().contains(&search))
-            })
-    });
-    let total = users.len() as i64;
     let items = users
         .into_iter()
-        .skip(offset as usize)
-        .take(page_size as usize)
         .map(|user| super::management_handlers::UserSummary {
             id: user.id,
             username: user.username,
@@ -201,28 +193,23 @@ pub async fn query_clients(
             "page must be positive and page_size must be between 1 and 100",
         );
     };
-    let mut clients = match state.clients.list().await {
+    let (clients, total) = match state
+        .clients
+        .query(
+            query.search.as_deref(),
+            query.status.as_deref(),
+            page_size,
+            offset,
+        )
+        .await
+    {
         Ok(value) => value,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to query clients");
             return error::internal();
         }
     };
-    clients.retain(|client| {
-        query
-            .status
-            .as_deref()
-            .is_none_or(|status| status == client.status)
-            && query.search.as_deref().is_none_or(|search| {
-                client.client_id.contains(search) || client.client_name.contains(search)
-            })
-    });
-    let total = clients.len() as i64;
-    let items = clients
-        .into_iter()
-        .skip(offset as usize)
-        .take(page_size as usize)
-        .collect::<Vec<_>>();
+    let items = clients;
     page_response(items, page, page_size, total)
 }
 
@@ -262,11 +249,8 @@ pub async fn query_audit(
 }
 
 fn bounds(query: &PageQuery) -> Option<(i64, i64, i64)> {
-    let page = query.page.unwrap_or(1);
-    let page_size = query.page_size.unwrap_or(20);
-    if page < 1 || !(1..=100).contains(&page_size) {
-        return None;
-    }
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query.page_size.unwrap_or(20).clamp(1, 100);
     Some((page, page_size, (page - 1).checked_mul(page_size)?))
 }
 fn page_response<T: Serialize>(items: Vec<T>, page: i64, page_size: i64, total: i64) -> Response {

@@ -97,7 +97,8 @@ impl AppState {
             &config.webauthn_origin,
             config.missing_source_ip_policy,
         )?;
-        let clients = ClientService::new(database.clone());
+        let clients =
+            ClientService::with_limits(database.clone(), config.client_registration_limits.clone());
         let keys = KeyManager::load_or_generate_with_retention(
             &config.key_directory,
             Duration::from_secs(config.key_rotation_grace_seconds),

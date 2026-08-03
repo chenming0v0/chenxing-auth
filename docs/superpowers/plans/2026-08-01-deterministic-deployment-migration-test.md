@@ -18,7 +18,7 @@
 
 - [ ] **Step 1: Confirm the existing regression evidence**
 
-Use the supplied GitHub Actions output as the red phase. It must show that all five expected migration filenames are present but `database_uses_explicit_unified_baseline_migrations` fails because the Linux directory iterator returns them in this order:
+Use the supplied GitHub Actions output as the red phase. It must show that all six expected migration filenames are present but `database_uses_explicit_unified_baseline_migrations` fails because the Linux directory iterator returns them in this order:
 
 ```text
 0004_relax_deleted_session_outbox_target.sql
@@ -26,6 +26,7 @@ Use the supplied GitHub Actions output as the red phase. It must show that all f
 0001_initial.sql
 0002_plans.sql
 0003_session_outbox.sql
+0008_admin_query_indexes.sql
 ```
 
 Expected: the left and right lists contain identical filenames in different orders.

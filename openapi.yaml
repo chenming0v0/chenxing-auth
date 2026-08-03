@@ -1467,25 +1467,25 @@ components:
       required: [items, page, page_size, total]
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/PublicUser' } }
-        page: { type: integer }
-        page_size: { type: integer }
-        total: { type: integer, format: int64 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, format: int64, minimum: 0 }
     PagedClients:
       type: object
       required: [items, page, page_size, total]
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/ClientSummary' } }
-        page: { type: integer }
-        page_size: { type: integer }
-        total: { type: integer, format: int64 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, format: int64, minimum: 0 }
     PagedAudit:
       type: object
       required: [items, page, page_size, total]
       properties:
         items: { type: array, items: { type: object } }
-        page: { type: integer }
-        page_size: { type: integer }
-        total: { type: integer, format: int64 }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, format: int64, minimum: 0 }
     AdminInput:
       type: object
       required: [username, email, password, role]
@@ -1597,9 +1597,18 @@ components:
       type: object
       required: [client_name, redirect_uris, scopes]
       properties:
-        client_name: { type: string }
-        redirect_uris: { type: array, items: { type: string, format: uri } }
-        scopes: { type: array, items: { type: string } }
+        client_name: { type: string, minLength: 1, maxLength: 128 }
+        redirect_uris:
+          type: array
+          minItems: 1
+          maxItems: 10
+          description: 重复 URI 按首次出现顺序去重；服务端仍严格校验 HTTPS、无 wildcard、fragment 和 userinfo。
+          items: { type: string, format: uri, minLength: 1, maxLength: 2048 }
+        scopes:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items: { type: string, minLength: 1, maxLength: 64 }
     ClientSummary:
       allOf:
         - $ref: '#/components/schemas/ClientInput'

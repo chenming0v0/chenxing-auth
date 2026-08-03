@@ -1,5 +1,9 @@
 use std::{env, fmt, num::ParseIntError};
 
+use crate::clients::domain::{
+    ClientRegistrationLimits, DEFAULT_MAX_REDIRECT_URI_LENGTH, DEFAULT_MAX_REDIRECT_URIS,
+    DEFAULT_MAX_SCOPE_LENGTH, DEFAULT_MAX_SCOPES,
+};
 use thiserror::Error;
 
 #[path = "config_parsing.rs"]
@@ -29,6 +33,7 @@ pub struct Config {
     pub webauthn_origin: String,
     pub auth_limiter_failure_policy: AuthLimiterFailurePolicy,
     pub missing_source_ip_policy: MissingSourceIpPolicy,
+    pub client_registration_limits: ClientRegistrationLimits,
 }
 
 #[derive(Clone)]
@@ -186,6 +191,7 @@ struct ConfigValues {
     webauthn_origin: String,
     auth_limiter_failure_policy: AuthLimiterFailurePolicy,
     missing_source_ip_policy: MissingSourceIpPolicy,
+    client_registration_limits: ClientRegistrationLimits,
 }
 
 impl Config {
@@ -206,6 +212,7 @@ impl Config {
         let webauthn_rp_id = env::var("WEBAUTHN_RP_ID")
             .unwrap_or_else(|_| issuer.host_str().unwrap_or_default().to_owned());
         let webauthn_origin = env::var("WEBAUTHN_ORIGIN").unwrap_or_else(|_| issuer_url.clone());
+        let client_registration_limits = client_registration_limits_from_env()?;
         let admin_token = env::var("ADMIN_TOKEN").unwrap_or_default();
         let key_directory = env::var("KEY_DIRECTORY").unwrap_or_else(|_| "data/keys".to_owned());
         let key_rotation_grace_seconds = parse_u64(
@@ -269,6 +276,7 @@ impl Config {
             webauthn_origin,
             auth_limiter_failure_policy,
             missing_source_ip_policy,
+            client_registration_limits,
         })
     }
 
@@ -317,6 +325,7 @@ impl Config {
             webauthn_origin: format!("http://localhost:{port}"),
             auth_limiter_failure_policy: AuthLimiterFailurePolicy::FailClosed,
             missing_source_ip_policy: MissingSourceIpPolicy::Skip,
+            client_registration_limits: ClientRegistrationLimits::default(),
         })
     }
 
@@ -340,6 +349,7 @@ impl Config {
             webauthn_origin,
             auth_limiter_failure_policy,
             missing_source_ip_policy,
+            client_registration_limits,
         } = values;
         if host.trim().is_empty() {
             return Err(ConfigError::InvalidValue("APP_HOST"));
@@ -402,6 +412,7 @@ impl Config {
             webauthn_origin,
             auth_limiter_failure_policy,
             missing_source_ip_policy,
+            client_registration_limits,
         })
     }
 }
@@ -518,4 +529,45 @@ fn parse_missing_source_ip_policy(
         "reject" | "fail-closed" => Ok(MissingSourceIpPolicy::Reject),
         _ => Err(ConfigError::InvalidValue(name)),
     }
+}
+
+fn parse_usize(name: &'static str, value: &str) -> Result<usize, ConfigError> {
+    value
+        .parse()
+        .map_err(|source| ConfigError::InvalidInteger { name, source })
+}
+
+fn client_registration_limits_from_env() -> Result<ClientRegistrationLimits, ConfigError> {
+    let limits = [
+        (
+            "OAUTH_CLIENT_MAX_REDIRECT_URIS",
+            env::var("OAUTH_CLIENT_MAX_REDIRECT_URIS")
+                .ok()
+                .unwrap_or_else(|| DEFAULT_MAX_REDIRECT_URIS.to_string()),
+        ),
+        (
+            "OAUTH_CLIENT_MAX_REDIRECT_URI_LENGTH",
+            env::var("OAUTH_CLIENT_MAX_REDIRECT_URI_LENGTH")
+                .ok()
+                .unwrap_or_else(|| DEFAULT_MAX_REDIRECT_URI_LENGTH.to_string()),
+        ),
+        (
+            "OAUTH_CLIENT_MAX_SCOPES",
+            env::var("OAUTH_CLIENT_MAX_SCOPES")
+                .ok()
+                .unwrap_or_else(|| DEFAULT_MAX_SCOPES.to_string()),
+        ),
+        (
+            "OAUTH_CLIENT_MAX_SCOPE_LENGTH",
+            env::var("OAUTH_CLIENT_MAX_SCOPE_LENGTH")
+                .ok()
+                .unwrap_or_else(|| DEFAULT_MAX_SCOPE_LENGTH.to_string()),
+        ),
+    ];
+    let values = limits
+        .into_iter()
+        .map(|(name, value)| parse_usize(name, &value))
+        .collect::<Result<Vec<_>, _>>()?;
+    ClientRegistrationLimits::new(values[0], values[1], values[2], values[3])
+        .ok_or(ConfigError::InvalidValue("OAUTH_CLIENT_LIMITS"))
 }

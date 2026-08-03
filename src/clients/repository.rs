@@ -261,6 +261,79 @@ pub async fn list_clients_for_owner(
     })
 }
 
+pub async fn query_clients(
+    pool: &PgPool,
+    search: Option<&str>,
+    status: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<ListedClient>, i64), crate::sqlx::Error> {
+    let search_pattern = search.map(|value| {
+        format!(
+            "%{}%",
+            value
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        )
+    });
+    let total = crate::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM oauth_clients
+         WHERE ($1::text IS NULL OR status = $1)
+           AND ($2::text IS NULL OR client_id LIKE $2 ESCAPE E'\\\\'
+                OR client_name LIKE $2 ESCAPE E'\\\\')",
+    )
+    .bind(status)
+    .bind(search_pattern.as_deref())
+    .fetch_one(pool)
+    .await?;
+    let rows = crate::sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            String,
+            Json<Vec<String>>,
+            Json<Vec<String>>,
+            String,
+            Option<UserId>,
+        ),
+    >(
+        "SELECT id, client_id, client_name, redirect_uris, scopes, status, owner_user_id
+         FROM oauth_clients
+         WHERE ($1::text IS NULL OR status = $1)
+           AND ($2::text IS NULL OR client_id LIKE $2 ESCAPE E'\\\\'
+                OR client_name LIKE $2 ESCAPE E'\\\\')
+         ORDER BY created_at DESC, id DESC LIMIT $3 OFFSET $4",
+    )
+    .bind(status)
+    .bind(search_pattern.as_deref())
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .map(
+        |(id, client_id, client_name, redirect_uris, scopes, status, owner_user_id)| ListedClient {
+            id,
+            client_id,
+            client_name,
+            redirect_uris: redirect_uris.0,
+            scopes: scopes.0,
+            status,
+            owner_user_id,
+        },
+    )
+    .collect();
+    Ok((rows, total))
+}
+
+pub async fn count_clients(pool: &PgPool) -> Result<i64, crate::sqlx::Error> {
+    crate::sqlx::query_scalar("SELECT COUNT(*) FROM oauth_clients")
+        .fetch_one(pool)
+        .await
+}
+
 pub async fn update_client(
     pool: &PgPool,
     client_id: &str,
