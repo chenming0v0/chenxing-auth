@@ -57,21 +57,11 @@ impl Default for PasskeySetting {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct EmailPolicySetting {
     pub whitelist_enabled: bool,
     pub alias_restriction_enabled: bool,
     pub allowed_domains: Vec<String>,
-}
-
-impl Default for EmailPolicySetting {
-    fn default() -> Self {
-        Self {
-            whitelist_enabled: false,
-            alias_restriction_enabled: false,
-            allowed_domains: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,5 +1,4 @@
 use chenxing_auth::keys::KeyManager;
-use chenxing_auth::oauth::providers::secrets::SecretManager;
 use chenxing_auth::oauth::token::{decode_access_token, issue_access_token};
 use std::fs;
 use std::time::Duration;
@@ -159,6 +158,7 @@ fn signing_key_storage_permissions_are_restricted_and_repaired() {
 #[cfg(unix)]
 #[test]
 fn provider_secret_storage_permissions_are_restricted_and_repaired() {
+    use chenxing_auth::oauth::providers::secrets::SecretManager;
     use std::os::unix::fs::PermissionsExt;
 
     let directory = std::env::temp_dir().join(format!("chenxing-secrets-{}", Uuid::new_v4()));

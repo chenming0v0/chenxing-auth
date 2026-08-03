@@ -321,13 +321,18 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
 async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Response> {
     let client = match state.clients.find_registered(client_id).await {
         Ok(Some(client)) => client,
+        // Unknown clients are rejected later by credential checks; there is no plan to enforce yet.
         Ok(None) => return None,
         Err(error_value) => {
+            // Fail closed: a DB blip must not disable QPS for an otherwise valid client.
             tracing::error!(error = %error_value, "failed to load OAuth client for QPS limit");
-            return None;
+            return Some(error::oauth_temporarily_unavailable());
         }
     };
-    let owner_user_id = client.owner_user_id?;
+    let Some(owner_user_id) = client.owner_user_id else {
+        // Admin-created clients without an owner are not bound to user plan QPS.
+        return None;
+    };
     let effective = match state.plans.effective_plan_for_user(owner_user_id).await {
         Ok(effective) => effective,
         Err(error_value) => {
@@ -339,7 +344,8 @@ async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Response> {
     match state.qps.allow(client_id, max_qps.max(1) as u32).await {
         Ok(true) => None,
         Ok(false) => {
-            if record_token_event(
+            // Rate-limit denials should not depend on audit durability; log and still 429.
+            if let Err(error_value) = record_token_event(
                 state,
                 None,
                 "rate_limit_triggered",
@@ -347,9 +353,11 @@ async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Response> {
                 "oauth_qps",
             )
             .await
-            .is_err()
             {
-                return Some(error::internal());
+                tracing::warn!(
+                    error = %error_value,
+                    "failed to record OAuth QPS rate limit audit event"
+                );
             }
             Some(error::oauth_too_many_requests(
                 "temporarily_unavailable",

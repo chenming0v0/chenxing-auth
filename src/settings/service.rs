@@ -61,10 +61,10 @@ impl SettingsService {
 
     pub async fn registration_email_from(&self) -> Result<Option<String>, SettingsServiceError> {
         let smtp = self.smtp().await?;
-        if !smtp.from_address.is_empty() {
-            if let Some(email) = extract_email(&smtp.from_address) {
-                return Ok(Some(email));
-            }
+        if !smtp.from_address.is_empty()
+            && let Some(email) = extract_email(&smtp.from_address)
+        {
+            return Ok(Some(email));
         }
         Ok(repository::get_registration_email_from(&self.pool).await?)
     }

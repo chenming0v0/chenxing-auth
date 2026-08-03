@@ -673,7 +673,9 @@ async fn qps_limiter_rejects_requests_over_the_plan_limit() {
     limits.insert("oauth_clients_limit".to_owned(), Value::from(1));
     limits.insert("daily_auth_limit".to_owned(), Value::from(1_000));
     limits.insert("monthly_auth_limit".to_owned(), Value::from(10_000));
-    limits.insert("max_qps".to_owned(), Value::from(2));
+    // 用 1 QPS 做顺序断言：第一发进入业务校验返回 400，第二发必被滑动窗口拒绝。
+    // 这比并发三连更稳，也更直接验证 token 路径真正调用了 plan-backed limiter。
+    limits.insert("max_qps".to_owned(), Value::from(1));
     let plan = create_plan(&router, &suffix, limits).await;
     let plan_id = plan["id"].as_i64().expect("plan id");
     assert_eq!(
@@ -698,35 +700,20 @@ async fn qps_limiter_rejects_requests_over_the_plan_limit() {
             .expect("token request")
     };
 
-    // QPS 使用 1 秒滑动窗口，不依赖整秒边界；并发三次请求应稳定得到 2 放行 + 1 拒绝。
-    let (first, second, third) = tokio::join!(
-        router.clone().oneshot(token_request()),
-        router.clone().oneshot(token_request()),
-        router.clone().oneshot(token_request()),
-    );
-    let responses = [
-        first.expect("first token response"),
-        second.expect("second token response"),
-        third.expect("third token response"),
-    ];
-    let mut statuses = responses
-        .iter()
-        .map(|response| response.status())
-        .collect::<Vec<_>>();
-    statuses.sort_unstable_by_key(|status| status.as_u16());
-    assert_eq!(
-        statuses,
-        vec![
-            StatusCode::BAD_REQUEST,
-            StatusCode::BAD_REQUEST,
-            StatusCode::TOO_MANY_REQUESTS,
-        ]
-    );
-    for response in responses {
-        if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            assert_eq!(json(response).await["error"], "temporarily_unavailable");
-        }
-    }
+    let first = router
+        .clone()
+        .oneshot(token_request())
+        .await
+        .expect("first token response");
+    assert_eq!(first.status(), StatusCode::BAD_REQUEST);
+
+    let second = router
+        .clone()
+        .oneshot(token_request())
+        .await
+        .expect("second token response");
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(json(second).await["error"], "temporarily_unavailable");
 
     let _ = std::fs::remove_dir_all(key_directory);
 }

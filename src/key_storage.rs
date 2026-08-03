@@ -73,7 +73,7 @@ fn write_temporary(
     Ok(())
 }
 
-fn sync_directory(path: Option<&Path>) {
+fn sync_directory(_path: Option<&Path>) {
     #[cfg(unix)]
     if let Some(path) = path
         && let Ok(directory) = File::open(path)
