@@ -15,6 +15,7 @@ tags:
   - name: User Auth/MFA
   - name: User Auth/Sessions
   - name: User Auth/OAuth Clients
+  - name: User Auth/Authorized Apps
   - name: User Entitlements
   - name: User Auth/Browser Login
   - name: OAuth/OIDC
@@ -392,6 +393,32 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/auth/authorized-apps:
+    get:
+      tags: [User Auth/Authorized Apps]
+      summary: 查询当前用户已授权的 OAuth 应用
+      operationId: listAuthorizedApps
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 当前用户授权记录的非敏感摘要，不包含 Secret、哈希、重定向地址或 Token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthorizedOAuthAppList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/authorized-apps/{client_id}:
+    delete:
+      tags: [User Auth/Authorized Apps]
+      summary: 撤销当前用户对 OAuth 应用的授权
+      operationId: revokeAuthorizedApp
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: 撤销成功或授权不存在，操作幂等 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/oauth-clients/{client_id}:
     put:
       tags: [User Auth/OAuth Clients]
@@ -1355,6 +1382,19 @@ components:
       required: [items]
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/SessionItem' } }
+    AuthorizedOAuthApp:
+      type: object
+      required: [client_id, client_name, scopes, updated_at]
+      properties:
+        client_id: { type: string }
+        client_name: { type: string, description: OAuth 应用显示名称 }
+        scopes: { type: array, items: { type: string } }
+        updated_at: { type: string, format: date-time }
+    AuthorizedOAuthAppList:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AuthorizedOAuthApp' } }
     QuotaSnapshot:
       type: object
       required: [daily_limit, daily_used, monthly_limit, monthly_used]

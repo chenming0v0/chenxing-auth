@@ -150,6 +150,13 @@ export type OwnedOAuthClientList = { items: OwnedOAuthClient[] }
 export type RegisteredOwnedOAuthClient = OwnedOAuthClient & { client_secret: string }
 export type ClientSecretResponse = { client_id: string; client_secret: string }
 export type ClientInput = { client_name: string; redirect_uris: string[]; scopes: string[] }
+export type AuthorizedOAuthApp = {
+  client_id: string
+  client_name: string
+  scopes: string[]
+  updated_at: string
+}
+export type AuthorizedOAuthAppList = { items: AuthorizedOAuthApp[] }
 
 export type AdminMeResponse = {
   user_id?: number | null

@@ -6,7 +6,7 @@ use axum::{
         header::{ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_TYPE, ORIGIN, VARY},
     },
     response::{IntoResponse, Response},
-    routing::{any, get, post},
+    routing::{any, delete, get, post},
 };
 use serde::Serialize;
 use std::net::SocketAddr;
@@ -49,8 +49,8 @@ use crate::{
     users::entitlements_handlers::current_entitlements,
     users::handlers::{login_user, register_user, revoke_session},
     users::oauth_client_handlers::{
-        create_owned_client, disable_owned_client, enable_owned_client, list_owned_clients,
-        rotate_owned_client_secret, update_owned_client,
+        create_owned_client, disable_owned_client, enable_owned_client, list_authorized_apps,
+        list_owned_clients, revoke_authorized_app, rotate_owned_client_secret, update_owned_client,
     },
     users::ui_handlers::{
         auth_status, change_current_user_password, current_user_profile, list_user_sessions,
@@ -170,6 +170,11 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/auth/oauth-clients",
             axum::routing::get(list_owned_clients).post(create_owned_client),
+        )
+        .route("/api/v1/auth/authorized-apps", get(list_authorized_apps))
+        .route(
+            "/api/v1/auth/authorized-apps/{client_id}",
+            delete(revoke_authorized_app),
         )
         .route(
             "/api/v1/auth/oauth-clients/{client_id}",
