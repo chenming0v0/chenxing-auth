@@ -1,28 +1,49 @@
 use axum::http::HeaderMap;
+use thiserror::Error;
 
 use crate::{
+    sessions::store::SessionStoreError,
     sessions::{cookies, domain::Session},
     state::AppState,
     users::{domain::UserId, service::UserServiceError},
 };
 
-pub async fn session_for_headers(state: &AppState, headers: &HeaderMap) -> Option<Session> {
-    let session_token = session_id_from_headers(headers)?;
-    let session = state.sessions.find(&session_token).await.ok().flatten()?;
-    if !session.is_active() {
-        return None;
-    }
-    active_user_id(state, &session.user_id)
-        .await
-        .ok()
-        .flatten()?;
-    Some(session)
+#[derive(Debug, Error)]
+pub enum SessionLookupError {
+    #[error("session store operation failed: {0}")]
+    Store(#[from] SessionStoreError),
+    #[error("session user lookup failed: {0}")]
+    User(#[from] UserServiceError),
 }
 
-pub async fn session_user_id(state: &AppState, headers: &HeaderMap) -> Option<String> {
+pub async fn session_for_headers(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<Session>, SessionLookupError> {
+    let Some(session_token) =
+        session_id_from_headers(headers, state.config.oauth_session_header_enabled)
+    else {
+        return Ok(None);
+    };
+    let Some(session) = state.sessions.find(&session_token).await? else {
+        return Ok(None);
+    };
+    if !session.is_active() {
+        return Ok(None);
+    }
+    if active_user_id(state, &session.user_id).await?.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(session))
+}
+
+pub async fn session_user_id(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<String>, SessionLookupError> {
     session_for_headers(state, headers)
         .await
-        .map(|session| session.user_id)
+        .map(|session| session.map(|session| session.user_id))
 }
 
 pub async fn active_user_id(
@@ -38,8 +59,13 @@ pub async fn active_user_id(
     Ok((profile.status == "active").then_some(user_id))
 }
 
-fn session_id_from_headers(headers: &HeaderMap) -> Option<String> {
-    cookies::session_id(headers)
+fn session_id_from_headers(headers: &HeaderMap, allow_header: bool) -> Option<String> {
+    let cookie = cookies::session_cookie_id(headers);
+    let header = cookies::session_header_id(headers);
+    if cookie.is_some() && header.is_some() && cookie != header {
+        return None;
+    }
+    cookie.or_else(|| allow_header.then_some(header).flatten())
 }
 
 #[cfg(test)]
@@ -59,8 +85,38 @@ mod tests {
         );
 
         assert_eq!(
-            session_id_from_headers(&headers).as_deref(),
+            session_id_from_headers(&headers, false).as_deref(),
             Some(session_id)
         );
+    }
+
+    #[test]
+    fn authorization_session_header_requires_explicit_compatibility_flag() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-chenxing-session",
+            HeaderValue::from_static("header-session-token"),
+        );
+
+        assert_eq!(session_id_from_headers(&headers, false), None);
+        assert_eq!(
+            session_id_from_headers(&headers, true).as_deref(),
+            Some("header-session-token")
+        );
+    }
+
+    #[test]
+    fn mismatched_cookie_and_header_are_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "cookie",
+            HeaderValue::from_static("chenxing_session=cookie-session-token"),
+        );
+        headers.insert(
+            "x-chenxing-session",
+            HeaderValue::from_static("header-session-token"),
+        );
+
+        assert_eq!(session_id_from_headers(&headers, true), None);
     }
 }

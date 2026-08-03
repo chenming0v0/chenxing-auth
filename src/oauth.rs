@@ -16,6 +16,7 @@ pub mod rate_limit;
 pub mod refresh;
 pub mod refresh_store;
 pub mod request_store;
+mod request_store_scripts;
 pub mod response;
 pub mod revocation;
 pub mod revocation_handler;

@@ -37,37 +37,37 @@ impl UserInfoClaims {
 
 pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(token) = bearer_token(&headers) else {
-        return error::unauthorized("invalid_token", "Bearer access token is required");
+        return error::oauth_invalid_bearer("Bearer access token is required");
     };
     let claims = match decode_userinfo_token(&state.keys, &state.config.issuer_url, token) {
         Ok(claims) => claims,
         Err(token_error) => {
             tracing::info!(error = %token_error, "UserInfo access token rejected");
-            return error::unauthorized("invalid_token", "access token is invalid");
+            return error::oauth_invalid_bearer("access token is invalid");
         }
     };
     match state.revocations.is_revoked(token).await {
-        Ok(true) => return error::unauthorized("invalid_token", "access token is revoked"),
+        Ok(true) => return error::oauth_invalid_bearer("access token is invalid"),
         Ok(false) => {}
         Err(store_error) => {
             tracing::error!(error = %store_error, "failed to check access token revocation");
-            return error::internal();
+            return error::oauth_temporarily_unavailable();
         }
     }
     let Ok(user_id) = claims.sub.parse::<crate::users::domain::UserId>() else {
-        return error::unauthorized("invalid_token", "access token subject is invalid");
+        return error::oauth_invalid_bearer("access token is invalid");
     };
     let Some(profile) = (match state.users.find_profile(user_id).await {
         Ok(profile) => profile,
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to load UserInfo profile");
-            return error::internal();
+            return error::oauth_temporarily_unavailable();
         }
     }) else {
-        return error::unauthorized("invalid_token", "access token subject is unknown");
+        return error::oauth_invalid_bearer("access token is invalid");
     };
     if profile.status != "active" {
-        return error::unauthorized("invalid_token", "user account is not active");
+        return error::oauth_invalid_bearer("access token is invalid");
     }
 
     let scopes = claims

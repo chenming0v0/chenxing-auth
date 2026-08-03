@@ -364,7 +364,7 @@ async fn refresh_token_remains_reusable_when_access_token_issuance_fails() {
         .expect("duplicate refresh response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let duplicate = json_body(response).await;
-    assert_eq!(duplicate["code"].as_str(), Some("invalid_grant"));
+    assert_eq!(duplicate["error"].as_str(), Some("invalid_grant"));
 
     chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
         .bind(client_id)

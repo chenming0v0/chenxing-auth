@@ -528,7 +528,8 @@ paths:
       tags: [OAuth/OIDC]
       summary: OAuth 授权码入口
       operationId: authorize
-      security: [{ sessionCookie: [] }, {}]
+      security: [{ sessionCookie: [] }, { chenxingSession: [] }, {}]
+      description: 未登录浏览器请求仅在 client、redirect_uri、scope、state 和 PKCE 完整校验后创建 pending。X-Chenxing-Session 仅在 OAUTH_SESSION_HEADER_ENABLED=true 的开发兼容配置中接受，不能绕过 Session 绑定、CSRF 或 consent。
       parameters:
         - { $ref: '#/components/parameters/ClientId' }
         - { name: redirect_uri, in: query, required: true, schema: { type: string, format: uri } }
@@ -540,8 +541,10 @@ paths:
         - { name: code_challenge_method, in: query, required: true, schema: { type: string, enum: [S256] } }
       responses:
         '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页 }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '400': { $ref: '#/components/responses/OAuthBadRequest' }
+        '401': { $ref: '#/components/responses/OAuthUnauthorized' }
+        '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
+        '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
   /api/v1/oauth/authorize/requests/{request_id}:
     get:
       tags: [OAuth/OIDC]
@@ -579,7 +582,22 @@ paths:
               schema: { $ref: '#/components/schemas/AuthorizationDecisionResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
+        '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
+  /api/v1/oauth/authorize/requests/{request_id}/bind:
+    post:
+      tags: [OAuth/OIDC]
+      summary: 将登录后的 Session 原子绑定到待授权请求
+      operationId: bindAuthorizationRequest
+      security: [{ sessionCookie: [] }, { chenxingSession: [] }]
+      parameters:
+        - { name: request_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '204': { description: 绑定成功或同一 Session 的幂等重试 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
   /oauth/token:
     post:
       tags: [OAuth/OIDC]
@@ -599,9 +617,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '400': { $ref: '#/components/responses/OAuthBadRequest' }
+        '401': { $ref: '#/components/responses/OAuthUnauthorized' }
+        '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
+        '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
   /oauth/userinfo:
     get:
       tags: [OAuth/OIDC]
@@ -615,7 +634,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UserInfo'
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '401': { $ref: '#/components/responses/OAuthUnauthorized' }
+        '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
   /oauth/revoke:
     post:
       tags: [OAuth/OIDC]
@@ -637,12 +657,9 @@ paths:
                   enum: [access_token, refresh_token]
       responses:
         '200': { description: 撤销完成，无响应体 }
-        '400':
-          description: 请求错误；不支持的 token_type_hint 返回 unsupported_token_type
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '400': { $ref: '#/components/responses/OAuthBadRequest' }
+        '401': { $ref: '#/components/responses/OAuthUnauthorized' }
+        '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
   /api/v1/admin/bootstrap:
     post:
       tags: [Admin Auth]
@@ -1182,7 +1199,7 @@ components:
     adminBearer: { type: http, scheme: bearer }
     basicClientAuth: { type: http, scheme: basic }
     sessionCookie: { type: apiKey, in: cookie, name: chenxing_session }
-    chenxingSession: { type: apiKey, in: header, name: X-Chenxing-Session }
+    chenxingSession: { type: apiKey, in: header, name: X-Chenxing-Session, description: 仅开发兼容配置 OAUTH_SESSION_HEADER_ENABLED=true 时可用；不能替代 pending、Session 绑定、CSRF 或 consent }
   parameters:
     ClientId: { name: client_id, in: query, required: true, schema: { type: string } }
     CsrfHeader: { name: X-CSRF-Token, in: header, required: true, description: 浏览器 Session 写操作必需；ADMIN_TOKEN Bearer 请求不需要, schema: { type: string } }
@@ -1199,6 +1216,14 @@ components:
     Conflict: { description: 资源冲突, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     NotFound: { description: 资源不存在, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     TooManyRequests: { description: OAuth 配额已耗尽或 QPS 限流触发, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    OAuthBadRequest: { description: OAuth 请求错误，响应遵守 RFC 6749/7009, content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } } }
+    OAuthUnauthorized:
+      description: OAuth 客户端或 Bearer 凭据无效
+      headers:
+        WWW-Authenticate: { description: RFC 6749/6750 challenge, schema: { type: string } }
+      content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } }
+    OAuthTooManyRequests: { description: OAuth 限流或容量保护触发, content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } } }
+    OAuthServiceUnavailable: { description: OAuth 依赖暂时不可用, content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } } }
   schemas:
     ErrorResponse:
       type: object
@@ -1206,6 +1231,12 @@ components:
       properties:
         code: { type: string }
         message: { type: string }
+    OAuthErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, description: RFC 6749/6750/7009 error code }
+        error_description: { type: string, description: Human-readable non-sensitive description }
     HealthResponse:
       type: object
       properties:

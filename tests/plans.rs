@@ -595,7 +595,7 @@ async fn qps_limiter_rejects_requests_over_the_plan_limit() {
     );
     for response in responses {
         if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            assert_eq!(json(response).await["code"], "qps_exceeded");
+            assert_eq!(json(response).await["error"], "temporarily_unavailable");
         }
     }
 

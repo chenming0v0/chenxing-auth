@@ -3,6 +3,7 @@ use crate::{
     error,
     oauth::consent::pending_request_exists,
     oauth::providers::{
+        provider_pending::{PendingRequestBindingError, bind_pending_request},
         service::ExternalOAuthError,
         state_store::{EXTERNAL_LOGIN_STATE_TTL_SECONDS, ExternalLoginState},
     },
@@ -306,7 +307,8 @@ pub async fn external_callback(
         .as_deref()
         .filter(|value| !value.is_empty());
     if let Some(request_id) = request_id
-        && let Err(binding_error) = bind_pending_request(&state, request_id, &session.token).await
+        && let Err(binding_error) =
+            bind_pending_request(&state.authorization_requests, request_id, &session.token).await
     {
         let error_code = match binding_error {
             PendingRequestBindingError::Expired => "oauth_request_expired",
@@ -356,53 +358,6 @@ pub async fn external_callback(
         state.config.cookie_secure,
     );
     response
-}
-
-enum PendingRequestBindingError {
-    Expired,
-    Invalid,
-    Storage,
-}
-
-async fn bind_pending_request(
-    state: &AppState,
-    request_id: &str,
-    session_token: &str,
-) -> Result<(), PendingRequestBindingError> {
-    let Some(mut pending) = state
-        .authorization_requests
-        .find(request_id)
-        .await
-        .map_err(|error_value| {
-            tracing::error!(
-                error = %error_value,
-                "failed to load pending authorization request for external login"
-            );
-            PendingRequestBindingError::Storage
-        })?
-    else {
-        return Err(PendingRequestBindingError::Expired);
-    };
-    if pending.request_id != request_id {
-        return Err(PendingRequestBindingError::Invalid);
-    }
-    match pending.session_id.as_deref() {
-        None => {}
-        Some(existing) if existing == session_token => return Ok(()),
-        Some(_) => return Err(PendingRequestBindingError::Invalid),
-    }
-    pending.session_id = Some(session_token.to_owned());
-    state
-        .authorization_requests
-        .save(&pending)
-        .await
-        .map_err(|error_value| {
-            tracing::error!(
-                error = %error_value,
-                "failed to bind pending authorization request after external login"
-            );
-            PendingRequestBindingError::Storage
-        })
 }
 
 async fn external_error(state: &AppState, slug: &str, code: &str) -> Response {

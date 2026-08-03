@@ -89,7 +89,7 @@ async fn revocation_handler_rejects_unknown_hint_and_accepts_supported_hints() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json_body(response).await["code"], "unsupported_token_type");
+    assert_eq!(json_body(response).await["error"], "unsupported_token_type");
 
     for hint in ["access_token", "refresh_token"] {
         let response = revoke(

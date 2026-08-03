@@ -2,7 +2,7 @@ use crate::users::domain::UserId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AuthorizationRequest {
     pub client_id: String,
     pub redirect_uri: String,
@@ -91,7 +91,10 @@ pub fn validate_authorization_request(
         scopes,
         state,
         nonce: request.nonce.filter(|nonce| !nonce.trim().is_empty()),
-        code_challenge: request.code_challenge.expect("checked above"),
+        code_challenge: match request.code_challenge {
+            Some(code_challenge) if !code_challenge.trim().is_empty() => code_challenge,
+            _ => return Err(AuthorizationRequestError::PkceRequired),
+        },
         owner_user_id: Some(client.owner_user_id).flatten(),
     })
 }

@@ -31,10 +31,10 @@ pub async fn revoke(
     ) {
         Ok(credentials) => credentials,
         Err(ClientCredentialError::MultipleMethods | ClientCredentialError::Invalid) => {
-            return error::unauthorized("invalid_client", "client credentials are invalid");
+            return error::oauth_invalid_client();
         }
         Err(ClientCredentialError::Missing) => {
-            return error::unauthorized("invalid_client", "client credentials are required");
+            return error::oauth_invalid_client();
         }
     };
     match state
@@ -44,22 +44,25 @@ pub async fn revoke(
     {
         Ok(true) => {}
         Ok(false) => {
-            return error::unauthorized("invalid_client", "client credentials are invalid");
+            return error::oauth_invalid_client();
         }
         Err(client_error) => {
             tracing::error!(error = %client_error, "failed to verify revocation client credentials");
-            return error::internal();
+            return error::oauth_temporarily_unavailable();
         }
     }
     if request.token.is_empty() {
-        return error::bad_request("invalid_request", "token is required");
+        return error::oauth_bad_request("invalid_request", "token is required");
     }
 
     if !matches!(
         request.token_type_hint.as_deref(),
         None | Some("access_token") | Some("refresh_token")
     ) {
-        return error::bad_request("unsupported_token_type", "token type hint is unsupported");
+        return error::oauth_bad_request(
+            "unsupported_token_type",
+            "token type hint is unsupported",
+        );
     }
 
     let hint = request.token_type_hint.as_deref();
@@ -68,14 +71,14 @@ pub async fn revoke(
             Ok(Some(refresh)) if refresh.client_id == credentials.client_id => {
                 if let Err(store_error) = state.refresh_tokens.remove(&request.token).await {
                     tracing::error!(error = %store_error, "failed to revoke refresh token");
-                    return error::internal();
+                    return error::oauth_temporarily_unavailable();
                 }
                 return ().into_response();
             }
             Ok(_) => {}
             Err(store_error) => {
                 tracing::error!(error = %store_error, "failed to look up refresh token");
-                return error::internal();
+                return error::oauth_temporarily_unavailable();
             }
         }
     }
@@ -95,7 +98,7 @@ pub async fn revoke(
                 && let Err(store_error) = state.revocations.revoke(&request.token, ttl as u64).await
             {
                 tracing::error!(error = %store_error, "failed to revoke access token");
-                return error::internal();
+                return error::oauth_temporarily_unavailable();
             }
         }
     }

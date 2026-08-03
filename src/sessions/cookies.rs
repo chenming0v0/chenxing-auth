@@ -82,11 +82,18 @@ pub fn append_clear_external_state_cookie(
 }
 
 pub fn session_id(headers: &HeaderMap) -> Option<String> {
+    session_header_id(headers).or_else(|| session_cookie_id(headers))
+}
+
+pub fn session_header_id(headers: &HeaderMap) -> Option<String> {
     headers
         .get("x-chenxing-session")
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned)
-        .or_else(|| cookie_value(headers, SESSION_COOKIE))
+}
+
+pub fn session_cookie_id(headers: &HeaderMap) -> Option<String> {
+    cookie_value(headers, SESSION_COOKIE)
 }
 
 pub fn csrf_token(headers: &HeaderMap) -> Option<String> {
