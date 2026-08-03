@@ -244,17 +244,32 @@ pub async fn update_display_name(
     Ok(result.rows_affected() == 1)
 }
 
-pub async fn update_password_hash(
+pub async fn change_password_and_revoke_all(
     pool: &PgPool,
     id: UserId,
     password_hash: &str,
 ) -> Result<bool, crate::sqlx::Error> {
-    let result = crate::sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
-        .bind(id)
-        .bind(password_hash)
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected() == 1)
+    let mut transaction = pool.begin().await?;
+    crate::sessions::store::lock_user_session_scope(&mut transaction, id).await?;
+    let result =
+        crate::sqlx::query("UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1")
+            .bind(id)
+            .bind(password_hash)
+            .execute(&mut *transaction)
+            .await?;
+    if result.rows_affected() != 1 {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    if crate::sessions::store::revoke_all_for_user_in_transaction(&mut transaction, id)
+        .await?
+        .is_none()
+    {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    transaction.commit().await?;
+    Ok(true)
 }
 
 pub async fn insert_user_in_transaction(

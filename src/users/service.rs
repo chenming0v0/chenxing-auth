@@ -253,7 +253,7 @@ impl UserService {
         }
         let password_hash =
             hash_password(new_password).map_err(|_| UserServiceError::PasswordHash)?;
-        if !repository::update_password_hash(&self.pool, id, &password_hash).await? {
+        if !repository::change_password_and_revoke_all(&self.pool, id, &password_hash).await? {
             return Err(UserServiceError::InvalidCredentials);
         }
         Ok(())

@@ -352,24 +352,45 @@ fn parse_auth_encryption_key_ring() -> Result<AuthEncryptionKeyRing, ConfigError
             &required_env("AUTH_ENCRYPTION_KEY")?,
         )?));
     };
+    let active_kid = env::var("AUTH_ENCRYPTION_ACTIVE_KID")
+        .ok()
+        .filter(|kid| !kid.trim().is_empty())
+        .map(|kid| kid.trim().to_owned());
+    parse_auth_encryption_key_ring_value(&value, active_kid.as_deref())
+}
+
+fn parse_auth_encryption_key_ring_value(
+    value: &str,
+    active_kid: Option<&str>,
+) -> Result<AuthEncryptionKeyRing, ConfigError> {
     if value.trim().is_empty() {
         return Err(ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
     }
 
     let mut keys = Vec::new();
     for item in value.split(',') {
-        let Some((kid, encoded)) = item.trim().split_once('=') else {
+        let item = item.trim();
+        let Some(entry) = item.strip_prefix("kid=") else {
+            return Err(ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
+        };
+        let Some((kid, encoded)) = entry.split_once(':') else {
             return Err(ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
         };
         let kid = kid.trim();
-        if kid.is_empty() || kid.len() > 64 || keys.iter().any(|(known, _)| known == kid) {
+        if kid.is_empty()
+            || kid.len() > 64
+            || keys.iter().any(|(known, _)| known == kid)
+            || encoded.trim().is_empty()
+        {
             return Err(ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
         }
-        keys.push((kid.to_owned(), parse_auth_encryption_key(encoded)?));
+        let key = parse_auth_encryption_key(encoded)
+            .map_err(|_| ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"))?;
+        keys.push((kid.to_owned(), key));
     }
-    let active_kid = env::var("AUTH_ENCRYPTION_ACTIVE_KID")
-        .ok()
+    let active_kid = active_kid
         .filter(|kid| !kid.trim().is_empty())
+        .map(str::to_owned)
         .unwrap_or_else(|| keys[0].0.clone());
     if !keys.iter().any(|(kid, _)| kid == &active_kid) {
         return Err(ConfigError::InvalidValue("AUTH_ENCRYPTION_ACTIVE_KID"));
@@ -402,5 +423,46 @@ fn parse_bool(name: &'static str, value: &str) -> Result<bool, ConfigError> {
         "true" | "1" | "yes" => Ok(true),
         "false" | "0" | "no" => Ok(false),
         _ => Err(ConfigError::InvalidValue(name)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    use super::*;
+
+    #[test]
+    fn key_ring_parser_preserves_standard_base64_padding_for_multiple_keys() {
+        let current = STANDARD.encode([1_u8; 32]);
+        let previous = STANDARD.encode([2_u8; 32]);
+        let ring = parse_auth_encryption_key_ring_value(
+            &format!("kid=current:{current},kid=previous:{previous}"),
+            Some("current"),
+        )
+        .expect("valid key ring");
+
+        assert_eq!(ring.active_kid(), "current");
+        assert_eq!(ring.active_key().as_bytes(), &[1_u8; 32]);
+        assert_eq!(
+            ring.key("previous").expect("previous key").as_bytes(),
+            &[2_u8; 32]
+        );
+    }
+
+    #[test]
+    fn key_ring_parser_rejects_malformed_entries_without_exposing_key_material() {
+        for value in [
+            "current=not-a-key",
+            "kid=current=not-a-key",
+            "kid=current:not-a-key",
+            "kid=current:",
+            "kid=current:not-a-key,kid=",
+        ] {
+            let error = parse_auth_encryption_key_ring_value(value, None)
+                .expect_err("malformed key ring must be rejected");
+            assert_eq!(error, ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
+            assert!(!error.to_string().contains("not-a-key"));
+        }
     }
 }
