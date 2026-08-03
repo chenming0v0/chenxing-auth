@@ -1,0 +1,173 @@
+use crate::oauth::request_store::AuthorizationRequestStore;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PendingRequestBindingError {
+    Expired,
+    Invalid,
+    Storage,
+}
+
+pub(crate) async fn bind_pending_request(
+    store: &AuthorizationRequestStore,
+    request_id: &str,
+    session_token: &str,
+) -> Result<(), PendingRequestBindingError> {
+    let Some(mut pending) = store.find(request_id).await.map_err(|error_value| {
+        tracing::error!(
+            error = %error_value,
+            "failed to load pending authorization request for external login"
+        );
+        PendingRequestBindingError::Storage
+    })?
+    else {
+        return Err(PendingRequestBindingError::Expired);
+    };
+    if pending.request_id != request_id {
+        return Err(PendingRequestBindingError::Invalid);
+    }
+    match pending.session_id.as_deref() {
+        None => {}
+        Some(existing) if existing == session_token => return Ok(()),
+        Some(_) => return Err(PendingRequestBindingError::Invalid),
+    }
+    let original_pending = pending.clone();
+    pending.session_id = Some(session_token.to_owned());
+    match store
+        .replace_if_matches(request_id, &original_pending, &pending)
+        .await
+    {
+        Ok(true) => Ok(()),
+        Ok(false) => match store.find(request_id).await {
+            Ok(Some(current))
+                if current.request_id == request_id
+                    && current.session_id.as_deref() == Some(session_token) =>
+            {
+                Ok(())
+            }
+            Ok(Some(_)) => Err(PendingRequestBindingError::Invalid),
+            Ok(None) => Err(PendingRequestBindingError::Expired),
+            Err(error_value) => {
+                tracing::error!(
+                    error = %error_value,
+                    "failed to confirm pending authorization request binding"
+                );
+                Err(PendingRequestBindingError::Storage)
+            }
+        },
+        Err(error_value) => {
+            tracing::error!(
+                error = %error_value,
+                "failed to bind pending authorization request after external login"
+            );
+            Err(PendingRequestBindingError::Storage)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PendingRequestBindingError, bind_pending_request};
+    use crate::oauth::{consent::PendingAuthorization, request_store::AuthorizationRequestStore};
+
+    fn store() -> AuthorizationRequestStore {
+        let url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+        AuthorizationRequestStore::new(redis::Client::open(url).expect("Redis URL"))
+    }
+
+    fn pending(request_id: String, client_id: &str) -> PendingAuthorization {
+        PendingAuthorization {
+            request_id,
+            client_id: client_id.to_owned(),
+            redirect_uri: "https://client.example/callback".to_owned(),
+            scope: "openid".to_owned(),
+            state: "state".to_owned(),
+            nonce: None,
+            code_challenge: "challenge".to_owned(),
+            code_challenge_method: "S256".to_owned(),
+            session_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_bindings_have_one_winner_and_same_session_retry_is_idempotent() {
+        let store = store();
+        let request = pending(
+            format!("provider-bind-{}", uuid::Uuid::new_v4().simple()),
+            &format!("provider-bind-client-{}", uuid::Uuid::new_v4().simple()),
+        );
+        store.save(&request).await.expect("save pending request");
+        let first_store = store.clone();
+        let second_store = store.clone();
+        let first_session = "session-a";
+        let second_session = "session-b";
+        let (first, second) = tokio::join!(
+            bind_pending_request(&first_store, &request.request_id, first_session),
+            bind_pending_request(&second_store, &request.request_id, second_session),
+        );
+        let winners = [first, second]
+            .into_iter()
+            .filter(|result| result.is_ok())
+            .count();
+        assert_eq!(winners, 1);
+        let bound = store
+            .find(&request.request_id)
+            .await
+            .expect("find bound request")
+            .expect("bound request");
+        let winning_session = bound.session_id.expect("winning session");
+        assert!(matches!(
+            winning_session.as_str(),
+            "session-a" | "session-b"
+        ));
+        assert_eq!(
+            bind_pending_request(&store, &request.request_id, &winning_session).await,
+            Ok(())
+        );
+        let losing_session = if winning_session == first_session {
+            second_session
+        } else {
+            first_session
+        };
+        assert_eq!(
+            bind_pending_request(&store, &request.request_id, losing_session).await,
+            Err(PendingRequestBindingError::Invalid)
+        );
+        store
+            .take(&request.request_id)
+            .await
+            .expect("cleanup pending request");
+
+        let same_session_request = pending(
+            format!("provider-bind-same-{}", uuid::Uuid::new_v4().simple()),
+            &format!(
+                "provider-bind-same-client-{}",
+                uuid::Uuid::new_v4().simple()
+            ),
+        );
+        store
+            .save(&same_session_request)
+            .await
+            .expect("save same-session pending request");
+        let first_store = store.clone();
+        let second_store = store.clone();
+        let (first, second) = tokio::join!(
+            bind_pending_request(
+                &first_store,
+                &same_session_request.request_id,
+                "same-session",
+            ),
+            bind_pending_request(
+                &second_store,
+                &same_session_request.request_id,
+                "same-session",
+            ),
+        );
+        assert_eq!(first, Ok(()));
+        assert_eq!(second, Ok(()));
+        store
+            .take(&same_session_request.request_id)
+            .await
+            .expect("cleanup same-session pending request");
+    }
+}

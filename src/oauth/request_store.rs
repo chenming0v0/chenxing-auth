@@ -2,39 +2,14 @@ use redis::{AsyncCommands, Client, Script};
 use thiserror::Error;
 
 use super::consent::PendingAuthorization;
+use super::request_store_scripts::{
+    PENDING_CAPACITY_SCRIPT, PENDING_REPLACE_SCRIPT, PENDING_TAKE_IF_MATCHES_SCRIPT,
+    PENDING_TAKE_SCRIPT,
+};
 
 pub const PENDING_REQUEST_TTL_SECONDS: u64 = 600;
 pub const MAX_PENDING_REQUESTS_PER_CLIENT: u64 = 20;
 pub const MAX_PENDING_REQUESTS_GLOBAL: u64 = 1_000;
-
-const PENDING_CAPACITY_SCRIPT: &str = r#"
-if redis.call('EXISTS', KEYS[1]) == 1 then return -1 end
-local client_count = tonumber(redis.call('GET', KEYS[2]) or '0')
-local global_count = tonumber(redis.call('GET', KEYS[3]) or '0')
-if client_count >= tonumber(ARGV[3]) or global_count >= tonumber(ARGV[4]) then
-    return 0
-end
-redis.call('SETEX', KEYS[1], ARGV[2], ARGV[1])
-redis.call('INCR', KEYS[2])
-redis.call('EXPIRE', KEYS[2], ARGV[2])
-redis.call('INCR', KEYS[3])
-redis.call('EXPIRE', KEYS[3], ARGV[2])
-return 1
-"#;
-
-const PENDING_TAKE_SCRIPT: &str = r#"
-local current = redis.call('GET', KEYS[1])
-if current ~= ARGV[1] then return nil end
-redis.call('DEL', KEYS[1])
-return current
-"#;
-
-const PENDING_REPLACE_SCRIPT: &str = r#"
-local current = redis.call('GET', KEYS[1])
-if current ~= ARGV[1] then return 0 end
-redis.call('SETEX', KEYS[1], ARGV[3], ARGV[2])
-return 1
-"#;
 
 #[derive(Clone)]
 pub struct AuthorizationRequestStore {
@@ -47,6 +22,8 @@ pub enum AuthorizationRequestStoreError {
     Redis(#[from] redis::RedisError),
     #[error("authorization request serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
+    #[error("pending authorization request capacity exceeded")]
+    CapacityExceeded,
 }
 
 impl AuthorizationRequestStore {
@@ -58,16 +35,11 @@ impl AuthorizationRequestStore {
         &self,
         request: &PendingAuthorization,
     ) -> Result<(), AuthorizationRequestStoreError> {
-        let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let payload = serde_json::to_string(request)?;
-        let _: () = connection
-            .set_ex(
-                Self::key(&request.request_id),
-                payload,
-                PENDING_REQUEST_TTL_SECONDS,
-            )
-            .await?;
-        Ok(())
+        if self.save_limited(request).await? {
+            Ok(())
+        } else {
+            Err(AuthorizationRequestStoreError::CapacityExceeded)
+        }
     }
 
     pub async fn save_limited(
@@ -80,10 +52,15 @@ impl AuthorizationRequestStore {
             .key(Self::key(&request.request_id))
             .key(Self::client_capacity_key(&request.client_id))
             .key(Self::global_capacity_key())
+            .key(Self::client_index_key(&request.client_id))
+            .key(Self::global_index_key())
+            .key(Self::global_expiry_key())
             .arg(payload)
             .arg(PENDING_REQUEST_TTL_SECONDS)
             .arg(MAX_PENDING_REQUESTS_PER_CLIENT)
             .arg(MAX_PENDING_REQUESTS_GLOBAL)
+            .arg(&request.client_id)
+            .arg(&request.request_id)
             .invoke_async(&mut connection)
             .await?;
         Ok(result == 1)
@@ -94,7 +71,15 @@ impl AuthorizationRequestStore {
         request_id: &str,
     ) -> Result<Option<PendingAuthorization>, AuthorizationRequestStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let payload: Option<String> = connection.get_del(Self::key(request_id)).await?;
+        let payload: Option<String> = Script::new(PENDING_TAKE_SCRIPT)
+            .key(Self::key(request_id))
+            .key(Self::global_index_key())
+            .key(Self::global_capacity_key())
+            .key(Self::global_expiry_key())
+            .arg(request_id)
+            .arg(PENDING_REQUEST_TTL_SECONDS)
+            .invoke_async(&mut connection)
+            .await?;
         payload
             .map(|payload| serde_json::from_str(&payload))
             .transpose()
@@ -108,9 +93,14 @@ impl AuthorizationRequestStore {
     ) -> Result<Option<PendingAuthorization>, AuthorizationRequestStoreError> {
         let expected = serde_json::to_string(request)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let payload: Option<String> = Script::new(PENDING_TAKE_SCRIPT)
+        let payload: Option<String> = Script::new(PENDING_TAKE_IF_MATCHES_SCRIPT)
             .key(Self::key(request_id))
+            .key(Self::global_index_key())
+            .key(Self::global_capacity_key())
+            .key(Self::global_expiry_key())
             .arg(expected)
+            .arg(request_id)
+            .arg(PENDING_REQUEST_TTL_SECONDS)
             .invoke_async(&mut connection)
             .await?;
         payload
@@ -130,9 +120,15 @@ impl AuthorizationRequestStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let replaced: i64 = Script::new(PENDING_REPLACE_SCRIPT)
             .key(Self::key(request_id))
+            .key(Self::global_index_key())
+            .key(Self::global_capacity_key())
+            .key(Self::global_expiry_key())
             .arg(expected)
             .arg(replacement)
+            .arg(request_id)
             .arg(PENDING_REQUEST_TTL_SECONDS)
+            .arg(MAX_PENDING_REQUESTS_PER_CLIENT)
+            .arg(MAX_PENDING_REQUESTS_GLOBAL)
             .invoke_async(&mut connection)
             .await?;
         Ok(replaced == 1)
@@ -161,11 +157,25 @@ impl AuthorizationRequestStore {
     fn global_capacity_key() -> &'static str {
         "chenxing:oauth:pending:global"
     }
+
+    fn client_index_key(client_id: &str) -> String {
+        format!("chenxing:oauth:pending:client-requests:{client_id}")
+    }
+
+    fn global_index_key() -> &'static str {
+        "chenxing:oauth:pending:index"
+    }
+
+    fn global_expiry_key() -> &'static str {
+        "chenxing:oauth:pending:expiry"
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{AuthorizationRequestStore, MAX_PENDING_REQUESTS_PER_CLIENT, PendingAuthorization};
+    use redis::AsyncCommands;
+    use std::time::Duration;
 
     fn store() -> AuthorizationRequestStore {
         let url =
@@ -192,11 +202,33 @@ mod tests {
         let store = store();
         let client_id = format!("pending-capacity-{}", uuid::Uuid::new_v4().simple());
         for index in 0..MAX_PENDING_REQUESTS_PER_CLIENT {
-            let request = pending(format!("request-{index}"), &client_id);
+            let request = pending(
+                format!("request-{}-{index}", uuid::Uuid::new_v4().simple()),
+                &client_id,
+            );
             assert!(store.save_limited(&request).await.expect("save pending"));
+            store
+                .take(&request.request_id)
+                .await
+                .expect("cleanup pending request");
         }
-        let rejected = pending("request-over-capacity".to_owned(), &client_id);
+        let requests: Vec<_> = (0..MAX_PENDING_REQUESTS_PER_CLIENT)
+            .map(|index| pending(format!("request-full-{index}"), &client_id))
+            .collect();
+        for request in &requests {
+            assert!(store.save_limited(request).await.expect("save pending"));
+        }
+        let rejected = pending(
+            format!("request-over-capacity-{}", uuid::Uuid::new_v4().simple()),
+            &client_id,
+        );
         assert!(!store.save_limited(&rejected).await.expect("capacity check"));
+        for request in requests {
+            store
+                .take(&request.request_id)
+                .await
+                .expect("cleanup pending request");
+        }
     }
 
     #[tokio::test]
@@ -204,7 +236,7 @@ mod tests {
         let store = store();
         let request = pending(
             format!("pending-take-{}", uuid::Uuid::new_v4().simple()),
-            "pending-take-client",
+            &format!("pending-take-client-{}", uuid::Uuid::new_v4().simple()),
         );
         store.save(&request).await.expect("save pending");
         let first_store = store.clone();
@@ -221,5 +253,106 @@ mod tests {
         .filter(|won| *won)
         .count();
         assert_eq!(winners, 1);
+    }
+
+    #[tokio::test]
+    async fn consuming_pending_releases_capacity_once() {
+        let store = store();
+        let client_id = format!("pending-release-{}", uuid::Uuid::new_v4().simple());
+        let requests: Vec<_> = (0..MAX_PENDING_REQUESTS_PER_CLIENT)
+            .map(|index| pending(format!("pending-release-{index}"), &client_id))
+            .collect();
+        for request in &requests {
+            assert!(store.save_limited(request).await.expect("save pending"));
+        }
+        let consumed = store
+            .take_if_matches(&requests[0].request_id, &requests[0])
+            .await
+            .expect("consume pending");
+        assert!(consumed.is_some());
+        assert!(
+            store
+                .take_if_matches(&requests[0].request_id, &requests[0])
+                .await
+                .expect("repeat pending consume")
+                .is_none()
+        );
+
+        let replacement = pending(
+            format!(
+                "pending-release-replacement-{}",
+                uuid::Uuid::new_v4().simple()
+            ),
+            &client_id,
+        );
+        assert!(
+            store
+                .save_limited(&replacement)
+                .await
+                .expect("reuse released capacity")
+        );
+        let rejected = pending(
+            format!("pending-release-rejected-{}", uuid::Uuid::new_v4().simple()),
+            &client_id,
+        );
+        assert!(!store.save_limited(&rejected).await.expect("capacity check"));
+        for request in requests.into_iter().skip(1) {
+            store
+                .take(&request.request_id)
+                .await
+                .expect("cleanup pending request");
+        }
+        store
+            .take(&replacement.request_id)
+            .await
+            .expect("cleanup replacement request");
+    }
+
+    #[tokio::test]
+    async fn expired_pending_request_releases_capacity_when_processed() {
+        let store = store();
+        let client_id = format!("pending-expiry-{}", uuid::Uuid::new_v4().simple());
+        let expired = pending(
+            format!("pending-expired-{}", uuid::Uuid::new_v4().simple()),
+            &client_id,
+        );
+        assert!(store.save_limited(&expired).await.expect("save pending"));
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+        let redis_client = redis::Client::open(redis_url).expect("Redis URL");
+        let mut connection = redis_client
+            .get_multiplexed_async_connection()
+            .await
+            .expect("Redis connection");
+        let _: bool = connection
+            .expire(format!("chenxing:oauth:request:{}", expired.request_id), 1)
+            .await
+            .expect("expire pending request");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(
+            store
+                .take(&expired.request_id)
+                .await
+                .expect("process expired request")
+                .is_none()
+        );
+
+        let replacement = pending(
+            format!(
+                "pending-expiry-replacement-{}",
+                uuid::Uuid::new_v4().simple()
+            ),
+            &client_id,
+        );
+        assert!(
+            store
+                .save_limited(&replacement)
+                .await
+                .expect("reuse expired capacity")
+        );
+        store
+            .take(&replacement.request_id)
+            .await
+            .expect("cleanup replacement request");
     }
 }
