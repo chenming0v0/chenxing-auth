@@ -14,6 +14,7 @@ use chenxing_auth::{
         quota::QuotaConsumeResult,
         store::AuthorizationCodeStore,
     },
+    plans::domain::AuthQuotaLimits,
     sessions::domain::Session,
     state::AppState,
 };
@@ -366,7 +367,56 @@ async fn assigned_plan_controls_client_quota_and_entitlements() {
         StatusCode::NO_CONTENT
     );
 
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/oauth-clients")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .expect("empty client list request"),
+        )
+        .await
+        .expect("empty client list response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        json(response).await["items"]
+            .as_array()
+            .expect("empty client items")
+            .is_empty()
+    );
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/entitlements")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .expect("empty entitlements request"),
+        )
+        .await
+        .expect("empty entitlements response");
+    let empty_entitlements = json(response).await;
+    let empty_items = empty_entitlements["entitlements"]
+        .as_array()
+        .expect("empty entitlements items");
+    let empty_by_key = |key: &str| {
+        empty_items
+            .iter()
+            .find(|item| item["key"] == key)
+            .unwrap_or_else(|| panic!("missing entitlement {key}"))
+    };
+    assert_eq!(empty_by_key("daily_auth")["used"], 0);
+    assert_eq!(empty_by_key("daily_auth")["limit"], 5);
+    assert_eq!(empty_by_key("monthly_auth")["used"], 0);
+    assert_eq!(empty_by_key("monthly_auth")["limit"], 100);
+
     let first = create_owned_client(&router, &cookie, &csrf, &suffix).await;
+    assert_eq!(first["quota"]["daily_limit"], 5);
+    assert_eq!(first["quota"]["daily_used"], 0);
+    assert_eq!(first["quota"]["monthly_limit"], 100);
+    assert_eq!(first["quota"]["monthly_used"], 0);
     let second = router
         .clone()
         .oneshot(
@@ -417,6 +467,21 @@ async fn assigned_plan_controls_client_quota_and_entitlements() {
     assert_eq!(by_key("oauth_clients")["limit"], 1);
     assert_eq!(by_key("daily_auth")["limit"], 5);
     assert_eq!(by_key("monthly_auth")["limit"], 100);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/oauth-clients")
+                .header("cookie", &cookie)
+                .body(Body::empty())
+                .expect("owned client list request"),
+        )
+        .await
+        .expect("owned client list response");
+    let clients = json(response).await;
+    assert_eq!(clients["items"][0]["quota"]["daily_limit"], 5);
+    assert_eq!(clients["items"][0]["quota"]["monthly_limit"], 100);
 
     let _ = first["client_id"].as_str();
     let _ = std::fs::remove_dir_all(key_directory);
@@ -498,7 +563,13 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
 
     let snapshot = state
         .oauth_quotas
-        .snapshot(&client_id)
+        .snapshot(
+            &client_id,
+            AuthQuotaLimits {
+                daily_auth_limit: 1,
+                monthly_auth_limit: Some(5),
+            },
+        )
         .await
         .expect("quota snapshot after refund");
     assert_eq!(snapshot.daily_used, 0);
@@ -512,7 +583,13 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
 
     let snapshot = state
         .oauth_quotas
-        .snapshot(&client_id)
+        .snapshot(
+            &client_id,
+            AuthQuotaLimits {
+                daily_auth_limit: 1,
+                monthly_auth_limit: Some(5),
+            },
+        )
         .await
         .expect("quota snapshot after successful retry");
     assert_eq!(snapshot.daily_used, 1);
@@ -545,6 +622,8 @@ async fn unlimited_monthly_plan_never_rejects_authorizations() {
 
     let client = create_owned_client(&router, &cookie, &csrf, &suffix).await;
     let client_id = client["client_id"].as_str().expect("client id").to_owned();
+    assert_eq!(client["quota"]["daily_limit"], 10);
+    assert!(client["quota"]["monthly_limit"].is_null());
     let validated = validated_request(&client_id, user_id);
 
     for _ in 0..6 {
@@ -694,7 +773,13 @@ async fn entitlements_aggregate_usage_across_multiple_clients() {
         assert_eq!(
             state
                 .oauth_quotas
-                .consume_with_limits(&first_id, Some(100), Some(1_000))
+                .consume_with_limits(
+                    &first_id,
+                    AuthQuotaLimits {
+                        daily_auth_limit: 100,
+                        monthly_auth_limit: Some(1_000),
+                    },
+                )
                 .await
                 .expect("first client quota"),
             QuotaConsumeResult::Allowed
@@ -703,7 +788,13 @@ async fn entitlements_aggregate_usage_across_multiple_clients() {
     assert_eq!(
         state
             .oauth_quotas
-            .consume_with_limits(&second_id, Some(100), Some(1_000))
+            .consume_with_limits(
+                &second_id,
+                AuthQuotaLimits {
+                    daily_auth_limit: 100,
+                    monthly_auth_limit: Some(1_000),
+                },
+            )
             .await
             .expect("second client quota"),
         QuotaConsumeResult::Allowed

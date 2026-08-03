@@ -132,7 +132,7 @@ export type EntitlementsResponse = {
 export type QuotaSnapshot = {
   daily_limit: number
   daily_used: number
-  monthly_limit: number
+  monthly_limit: number | null
   monthly_used: number
 }
 

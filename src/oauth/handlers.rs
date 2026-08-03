@@ -205,14 +205,10 @@ pub async fn issue_authorization_code_result(
                 return Err(error::oauth_temporarily_unavailable());
             }
         };
-        let daily_limit = effective.plan.daily_auth_limit.max(0) as u64;
-        let monthly_limit = effective
-            .plan
-            .monthly_auth_limit
-            .map(|limit| limit.max(0) as u64);
+        let limits = effective.plan.auth_quota_limits();
         match state
             .oauth_quotas
-            .consume_with_limits(&validated.client_id, Some(daily_limit), monthly_limit)
+            .consume_with_limits(&validated.client_id, limits)
             .await
             .map_err(|error_value| {
                 tracing::error!(error = %error_value, "failed to consume OAuth authorization quota");
