@@ -1090,6 +1090,138 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/admin/settings/passkey:
+    get:
+      tags: [Admin]
+      summary: 获取 Passkey / WebAuthn 设置
+      operationId: getPasskeySetting
+      security:
+        - AdminBearer: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: Passkey 设置
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeySetting' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      tags: [Admin]
+      summary: 更新 Passkey / WebAuthn 设置
+      operationId: updatePasskeySetting
+      security:
+        - AdminBearer: []
+        - SessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PasskeySetting' }
+      responses:
+        '200':
+          description: 已更新的 Passkey 设置
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeySetting' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v1/admin/settings/email-policy:
+    get:
+      tags: [Admin]
+      summary: 获取邮箱域名白名单设置
+      operationId: getEmailPolicySetting
+      security:
+        - AdminBearer: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: 邮箱域名策略
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailPolicySetting' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      tags: [Admin]
+      summary: 更新邮箱域名白名单设置
+      operationId: updateEmailPolicySetting
+      security:
+        - AdminBearer: []
+        - SessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmailPolicySetting' }
+      responses:
+        '200':
+          description: 已更新的邮箱域名策略
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailPolicySetting' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/v1/admin/settings/smtp:
+    get:
+      tags: [Admin]
+      summary: 获取 SMTP 设置
+      operationId: getSmtpSetting
+      security:
+        - AdminBearer: []
+        - SessionCookie: []
+      responses:
+        '200':
+          description: SMTP 设置；password 永不回显
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SmtpSetting' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      tags: [Admin]
+      summary: 更新 SMTP 设置
+      operationId: updateSmtpSetting
+      security:
+        - AdminBearer: []
+        - SessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SmtpSettingUpdate' }
+      responses:
+        '200':
+          description: 已更新的 SMTP 设置；password 永不回显
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SmtpSetting' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v1/admin/oauth/providers:
     get:
       tags: [Admin OAuth Providers]
@@ -1539,6 +1671,52 @@ components:
       required: [initialized]
       properties:
         initialized: { type: boolean }
+    PasskeySetting:
+      type: object
+      required: [enabled, rp_name, rp_id, user_verification, authenticator_attachment, allow_insecure_origin, allowed_origins]
+      properties:
+        enabled: { type: boolean }
+        rp_name: { type: string, maxLength: 128 }
+        rp_id: { type: string, maxLength: 253 }
+        user_verification: { type: string, enum: [preferred, required, discouraged] }
+        authenticator_attachment: { type: string, enum: [any, platform, cross_platform] }
+        allow_insecure_origin: { type: boolean }
+        allowed_origins:
+          type: array
+          maxItems: 32
+          items: { type: string, format: uri }
+    EmailPolicySetting:
+      type: object
+      required: [whitelist_enabled, alias_restriction_enabled, allowed_domains]
+      properties:
+        whitelist_enabled: { type: boolean }
+        alias_restriction_enabled: { type: boolean }
+        allowed_domains:
+          type: array
+          maxItems: 128
+          items: { type: string, maxLength: 253 }
+    SmtpSetting:
+      type: object
+      required: [host, port, username, from_address, ssl_enabled, force_auth_login, password_configured]
+      properties:
+        host: { type: string }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        username: { type: string }
+        from_address: { type: string }
+        ssl_enabled: { type: boolean }
+        force_auth_login: { type: boolean }
+        password_configured: { type: boolean }
+    SmtpSettingUpdate:
+      type: object
+      required: [host, port, username, from_address, ssl_enabled, force_auth_login]
+      properties:
+        host: { type: string }
+        port: { type: integer, minimum: 1, maximum: 65535 }
+        username: { type: string }
+        from_address: { type: string }
+        ssl_enabled: { type: boolean }
+        force_auth_login: { type: boolean }
+        password: { type: string, format: password, nullable: true, writeOnly: true }
     AdminSummary:
       type: object
       properties:

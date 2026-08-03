@@ -1,17 +1,25 @@
 import { useEffect, useState } from 'react'
-import { ArrowRight, Check, ExternalLink, ShieldCheck } from 'lucide-react'
 import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
-import { apiFetch, type PendingAuthorization, type AuthorizationDecisionResponse } from '../api'
-import { AuthPanel, AuthShell } from '../components/shells'
-import { Button, Icon, Notice } from '../components/ui'
+import { apiFetch, type AuthorizationDecisionResponse, type PendingAuthorization } from '../api'
+import { OAuthShell } from '../components/shells'
+import { BrandMark, Icon, Notice } from '../components/ui'
+import { initialOf } from '../data'
 
 function useRequestId(): string | null {
   return new URLSearchParams(useLocation().search).get('request_id')
 }
 
-function LoadingState({ message }: { message: string }) {
-  return <div className="empty-state"><ShieldCheck size={24} /><strong>{message}</strong></div>
+function appMark(name?: string) {
+  return (name || 'A').trim().slice(0, 1).toUpperCase()
+}
+
+function scopeMeta(scope: string): { title: string; desc: string } {
+  if (scope === 'openid') return { title: '身份标识', desc: '获取你的唯一辰星 ID，用于识别账户身份' }
+  if (scope === 'profile') return { title: '基本资料', desc: '查看你的昵称、头像与公开个人信息' }
+  if (scope === 'email') return { title: '电子邮箱', desc: '读取与你账号关联的邮箱地址' }
+  if (scope === 'offline_access') return { title: '离线访问', desc: '在你离线时刷新访问令牌' }
+  return { title: scope, desc: '应用请求的额外权限范围' }
 }
 
 export function OAuthAccountPage() {
@@ -20,30 +28,89 @@ export function OAuthAccountPage() {
   const { user } = useAuth()
   const [pending, setPending] = useState<PendingAuthorization | null>(null)
   const [message, setMessage] = useState('')
+
   useEffect(() => {
-    if (!requestId) { setMessage('授权请求缺少 request_id，请重新发起。'); return }
+    if (!requestId) {
+      setMessage('授权请求缺少 request_id，请重新发起。')
+      return
+    }
     let active = true
-    void apiFetch<PendingAuthorization>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}`).then((value) => { if (active) setPending(value) }).catch((reason: unknown) => { if (active) setMessage(reason instanceof Error ? reason.message : '授权请求已失效。') })
+    void apiFetch<PendingAuthorization>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}`)
+      .then((value) => { if (active) setPending(value) })
+      .catch((reason: unknown) => { if (active) setMessage(reason instanceof Error ? reason.message : '授权请求已失效。') })
     return () => { active = false }
   }, [requestId])
-  return <AuthShell action="取消" actionTo="/console"><AuthPanel>
-    <header><span className="eyebrow">AUTHORIZATION · 05</span><h1 className="chenxing-h1">选择一个账号</h1><p>确认当前浏览器会话是否继续处理此授权请求。</p></header>
-    {message && <Notice tone="warning">{message}</Notice>}
-    {!message && !pending && <LoadingState message="正在读取授权请求…" />}
-    {pending && <><div className="consent-app"><span className="app-mark"><ExternalLink size={23} /></span><div><strong>{pending.client_name}</strong><small>{pending.redirect_host}</small></div><span className="chenxing-badge-success">服务端已校验</span></div><div className="list-stack"><button className="account-choice" onClick={() => navigate(`/oauth/consent?request_id=${encodeURIComponent(pending.request_id)}`)}><span className="avatar-button">{(user?.display_name || user?.username || '辰').slice(0, 1)}</span><span><strong>{user?.display_name || user?.username}</strong><small>{user?.email}</small></span><ArrowRight size={17} /></button><Link className="account-choice" to="/login"><span className="account-add"><Icon name="user" size={17} /></span><span><strong>使用其他账号</strong><small>退出当前会话并使用其他身份</small></span><ArrowRight size={17} /></Link></div></>}
-    <footer className="auth-footer"><ShieldCheck size={14} />授权请求由当前 Session 绑定</footer>
-  </AuthPanel></AuthShell>
+
+  return (
+    <OAuthShell>
+      <div className="oauth-card chenxing-hud-panel" role="dialog" aria-labelledby="oauth-account-title">
+        <div className="oauth-card-head">
+          <BrandMark className="h-7 w-7 shrink-0 rounded-[var(--chenxing-radius-md)] object-contain" />
+          <span className="chenxing-body text-sm">使用辰星通行证登录</span>
+        </div>
+        <div className="oauth-card-body">
+          <div>
+            <div className="oauth-app-mark" aria-hidden="true">{appMark(pending?.client_name)}</div>
+            <h1 id="oauth-account-title" className="oauth-title">选择账号</h1>
+            <p className="oauth-copy" style={{ marginTop: 16 }}>
+              以继续使用
+              <span style={{ color: 'var(--chenxing-cyan)', fontWeight: 500 }}>「{pending?.client_name || '接入应用'}」</span>
+            </p>
+          </div>
+          <div>
+            {message ? <Notice tone="warning">{message}</Notice> : null}
+            {!message && !pending ? <Notice tone="info">正在读取授权请求…</Notice> : null}
+            {pending ? (
+              <>
+                <ul className="oauth-list" role="listbox" aria-label="可选账号">
+                  <li>
+                    <button type="button" role="option" onClick={() => navigate(`/oauth/consent?request_id=${encodeURIComponent(pending.request_id)}`)}>
+                      <span className="oauth-avatar">{initialOf(user?.display_name || user?.username)}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-[var(--chenxing-foreground)]">{user?.display_name || user?.username}</span>
+                        <span className="chenxing-mono block truncate text-[12px] text-[var(--chenxing-muted-foreground)]">{user?.email} · {user?.role || 'User'}</span>
+                      </span>
+                      <Icon name="arrow-right" className="text-[var(--chenxing-muted-foreground)]" size={16} />
+                    </button>
+                  </li>
+                  <li>
+                    <Link to="/login" role="option" className="flex w-full items-center gap-3.5 border-0 bg-transparent px-4 py-3.5 text-left">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-dashed border-[var(--chenxing-border-strong)] text-[var(--chenxing-muted-foreground)]">+</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium text-[var(--chenxing-foreground)]">使用其他辰星通行证</span>
+                        <span className="block text-[12px] text-[var(--chenxing-muted-foreground)]">登录另一个账号继续授权</span>
+                      </span>
+                    </Link>
+                  </li>
+                </ul>
+                <p className="oauth-copy" style={{ marginTop: 18, fontSize: 12.5, padding: '0 4px' }}>
+                  在使用该应用之前，你可以查看「{pending.client_name}」的<a href="#">隐私政策</a>和<a href="#">服务条款</a>。
+                </p>
+              </>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </OAuthShell>
+  )
 }
 
 export function OAuthConsentPage() {
   const requestId = useRequestId()
+  const { user } = useAuth()
   const [pending, setPending] = useState<PendingAuthorization | null>(null)
   const [message, setMessage] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
   useEffect(() => {
-    if (!requestId) { setMessage('授权请求缺少 request_id，请重新发起。'); return }
+    if (!requestId) {
+      setMessage('授权请求缺少 request_id，请重新发起。')
+      return
+    }
     let active = true
-    void apiFetch<PendingAuthorization>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}`).then((value) => { if (active) setPending(value) }).catch((reason: unknown) => { if (active) setMessage(reason instanceof Error ? reason.message : '授权请求已失效。') })
+    void apiFetch<PendingAuthorization>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}`)
+      .then((value) => { if (active) setPending(value) })
+      .catch((reason: unknown) => { if (active) setMessage(reason instanceof Error ? reason.message : '授权请求已失效。') })
     return () => { active = false }
   }, [requestId])
 
@@ -52,9 +119,10 @@ export function OAuthConsentPage() {
     setMessage('')
     setSubmitting(true)
     try {
-      const response = await apiFetch<AuthorizationDecisionResponse>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}`, { method: 'POST', body: JSON.stringify({ decision }) })
-      // The redirect URI and state were validated by the backend. Do not render its query,
-      // because an approval redirect contains a one-time authorization code.
+      const response = await apiFetch<AuthorizationDecisionResponse>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}`, {
+        method: 'POST',
+        body: JSON.stringify({ decision }),
+      })
       window.location.assign(response.redirect_to)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '授权请求处理失败。')
@@ -62,16 +130,99 @@ export function OAuthConsentPage() {
     }
   }
 
-  return <AuthShell action="取消" actionTo="/console"><AuthPanel className="consent-panel">
-    <header><span className="eyebrow">CONSENT · 06</span><h1 className="chenxing-h1">授权应用访问</h1><p>只展示后端返回的应用信息和权限范围。</p></header>
-    {message && <div className="auth-feedback"><Notice tone="warning">{message}</Notice></div>}
-    {!message && !pending && <LoadingState message="正在读取授权摘要…" />}
-    {pending && <><div className="consent-app"><span className="app-mark"><ExternalLink size={23} /></span><div><strong>{pending.client_name}</strong><small>{pending.redirect_host}</small></div><span className="chenxing-badge-success">已验证</span></div><div className="consent-scopes"><span className="chenxing-label">请求的权限</span>{pending.scopes.map((scope) => <div className="scope-row" key={scope}><Check size={15} />{scope}</div>)}</div><Notice tone="info">本次请求将在 {pending.expires_in} 秒内失效，且只绑定当前 Session。</Notice><div className="panel-actions consent-actions"><Button onClick={() => void decide('approve')} icon="check" disabled={submitting}>允许访问</Button><Button variant="ghost" onClick={() => void decide('deny')} icon="x" disabled={submitting}>拒绝</Button></div><p className="consent-footnote">批准或拒绝后，页面只跳转到后端返回的已校验地址。</p></>}
-  </AuthPanel></AuthShell>
+  return (
+    <OAuthShell>
+      <div className="oauth-card chenxing-hud-panel" role="dialog" aria-labelledby="oauth-consent-title">
+        <div className="oauth-card-head">
+          <BrandMark className="h-7 w-7 shrink-0 rounded-[var(--chenxing-radius-md)] object-contain" />
+          <span className="chenxing-body text-sm">使用辰星通行证登录</span>
+        </div>
+        <div className="oauth-card-body">
+          <div>
+            <div className="oauth-app-mark" aria-hidden="true">{appMark(pending?.client_name)}</div>
+            <h1 id="oauth-consent-title" className="oauth-title">
+              「{pending?.client_name || '接入应用'}」想要访问<br />你的辰星通行证
+            </h1>
+            <Link className="oauth-account" to={requestId ? `/oauth/account?request_id=${encodeURIComponent(requestId)}` : '/oauth/account'} aria-label={`切换账号：${user?.email || ''}`}>
+              <span className="oauth-avatar">{initialOf(user?.display_name || user?.username)}</span>
+              <span className="truncate text-[13px]">{user?.email || '当前会话'}</span>
+              <Icon name="chevron-down" className="opacity-60" size={14} />
+            </Link>
+          </div>
+          <div>
+            {message ? <div className="mb-4"><Notice tone="warning">{message}</Notice></div> : null}
+            {!message && !pending ? <Notice tone="info">正在读取授权摘要…</Notice> : null}
+            {pending ? (
+              <>
+                <p className="oauth-copy">除非你确定「{pending.client_name}」是你信任的接入应用，否则请勿继续授权。</p>
+                <p className="oauth-copy">如果该应用最近更新过权限范围，可能会再次要求你确认授权。</p>
+                <p className="oauth-copy">本次请求将在 {pending.expires_in} 秒内失效，且只绑定当前 Session。</p>
+                <div className="mt-5">
+                  <div className="mb-2 text-[13px] font-medium text-[var(--chenxing-muted-foreground)]">授权后将获得以下权限</div>
+                  {pending.scopes.map((scope) => {
+                    const meta = scopeMeta(scope)
+                    return (
+                      <div className="oauth-scope" key={scope}>
+                        <span className="oauth-scope-icon" aria-hidden="true"><Icon name="check" size={12} /></span>
+                        <span>
+                          <span className="block text-[13.5px] font-medium text-[var(--chenxing-foreground)]">
+                            {meta.title} <span className="chenxing-mono text-[11px] text-[var(--chenxing-muted-foreground)]">{scope}</span>
+                          </span>
+                          <span className="mt-0.5 block text-xs leading-relaxed text-[var(--chenxing-muted-foreground)]">{meta.desc}</span>
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="oauth-actions">
+                  <button type="button" className="oauth-btn" disabled={submitting} onClick={() => void decide('deny')}>取消</button>
+                  <button type="button" className="oauth-btn oauth-btn-primary" disabled={submitting} onClick={() => void decide('approve')}>允许</button>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </OAuthShell>
+  )
 }
 
 export function OAuthRedirectPage() {
   const query = new URLSearchParams(useLocation().search)
   const hasError = query.has('error')
-  return <AuthShell><AuthPanel className="redirect-panel"><div className="redirect-icon"><ShieldCheck size={34} /></div><span className="eyebrow">AUTHORIZATION · 07</span><h1 className="chenxing-h1">OAuth 回调已收到</h1><p>{hasError ? '授权请求被拒绝或未完成，请返回发起方重试。' : '回调参数已交给发起方处理，辰星不会在此页面展示授权码或 Token。'}</p>{hasError ? <Notice tone="warning">授权没有完成。</Notice> : <Notice tone="success">处理完成。</Notice>}<Link className="auth-footer" to="/console">返回控制台</Link></AuthPanel></AuthShell>
+  return (
+    <OAuthShell>
+      <div className="oauth-card chenxing-hud-panel" role="status" aria-live="polite" aria-labelledby="oauth-redirect-title">
+        <div className="oauth-card-head">
+          <BrandMark className="h-7 w-7 shrink-0 rounded-[var(--chenxing-radius-md)] object-contain" />
+          <span className="chenxing-body text-sm">{hasError ? '授权未完成' : '授权完成 · 正在返回接入应用'}</span>
+        </div>
+        <div className="oauth-center">
+          <div className="oauth-transfer" aria-hidden="true">
+            <span className="oauth-transfer-mark">
+              <BrandMark className="h-9 w-9 rounded-[10px] object-contain" />
+            </span>
+            <span className="oauth-beam" />
+            <span className="oauth-transfer-mark" style={{ background: 'linear-gradient(145deg,rgba(56,189,248,0.28),rgba(14,165,233,0.12))', borderColor: 'rgba(125,211,252,0.4)' }}>A</span>
+          </div>
+          {hasError ? (
+            <>
+              <h1 id="oauth-redirect-title" className="oauth-title" style={{ fontSize: '1.55rem' }}>授权没有完成</h1>
+              <p className="oauth-copy" style={{ marginTop: 12 }}>授权请求被拒绝或未完成。辰星不会在此页面展示授权码或 Token。</p>
+              <div className="mt-6"><Link to="/console" className="oauth-btn oauth-btn-primary">返回控制台</Link></div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-center gap-2 text-sm font-medium text-[var(--chenxing-foreground)]">
+                <Icon name="refresh-cw" className="oauth-spin text-[var(--chenxing-cyan)]" size={15} />
+                授权回调已收到
+              </div>
+              <p className="oauth-copy" style={{ marginTop: 10 }}>回调参数已交给发起方处理，不会在浏览器中长期保留。</p>
+              <div className="mt-6"><Link to="/console" className="chenxing-link">返回控制台</Link></div>
+            </>
+          )}
+        </div>
+      </div>
+    </OAuthShell>
+  )
 }

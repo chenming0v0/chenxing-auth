@@ -179,7 +179,7 @@ pub fn validate_username(username: &str) -> Option<String> {
     Some(username)
 }
 
-pub(crate) fn is_valid_email(email: &str) -> bool {
+pub fn is_valid_email(email: &str) -> bool {
     let mut parts = email.split('@');
     let Some(local) = parts.next() else {
         return false;
@@ -204,3 +204,4 @@ pub struct PublicUser {
     pub role: UserRole,
     pub created_at: time::OffsetDateTime,
 }
+

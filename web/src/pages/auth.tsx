@@ -1,10 +1,10 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import QRCode from 'qrcode'
+import { useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
 import { apiFetch, type LoginResponse, type PendingLoginResponse, type TotpSetupResponse } from '../api'
 import { AuthPanel, AuthShell } from '../components/shells'
-import { Button, CopyValue, Field, Notice } from '../components/ui'
+import { Button, CopyValue, Field, Icon, Notice } from '../components/ui'
+import { PendingFactorStep } from './auth-factors'
 
 type AuthMode = 'login' | 'register'
 
@@ -29,6 +29,10 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const [displayName, setDisplayName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [keepLogin, setKeepLogin] = useState(true)
+  const [agree, setAgree] = useState(true)
+  const [authTab, setAuthTab] = useState<'account' | 'auth'>('account')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [pending, setPending] = useState<PendingLoginResponse | null>(null)
@@ -66,6 +70,10 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
       setMessage('密码至少需要 10 位字符。')
       return
     }
+    if (!isLogin && !agree) {
+      setMessage('请先同意服务条款与隐私政策。')
+      return
+    }
     setBusy(true)
     try {
       if (!isLogin) {
@@ -94,297 +102,104 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
     }
   }
 
-  return <AuthShell action={isLogin ? '创建通行证' : '返回登录'} actionTo={isLogin ? '/register' : '/login'}>
-    <AuthPanel>
-      <header><span className="eyebrow">{isLogin ? 'SIGN IN · 02' : 'CREATE ID · 03'}</span><h1 className="chenxing-h1">{isLogin ? '欢迎回到辰星' : '创建你的通行证'}</h1><p>{isLogin ? '使用已注册的身份进入辰星认证中枢。' : '从一个安全、清晰的身份开始连接你的应用。'}</p></header>
-      {query.get('registered') && <div className="auth-feedback"><Notice tone="success">注册成功，请使用新账号登录。</Notice></div>}
-      {message && <div className="auth-feedback"><Notice tone="warning">{message}</Notice></div>}
-      {pending ? <PendingFactorStep pending={pending} setup={totpSetup} busy={busy} onSetup={setTotpSetup} onComplete={completeLogin} onBusy={setBusy} onMessage={setMessage} /> : <form className="auth-form" onSubmit={submit}>
-        {!isLogin && <Field label="用户名" placeholder="chenxing_user" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required />}
-        <Field label={isLogin ? '邮箱或用户名' : '邮箱地址'} type={isLogin ? 'text' : 'email'} placeholder={isLogin ? 'name@example.com' : 'name@example.com'} autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} />
-        {!isLogin && <Field label="显示名称" placeholder="可选" autoComplete="nickname" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />}
-        <Field label="密码" type="password" placeholder="至少 10 位字符" autoComplete={isLogin ? 'current-password' : 'new-password'} value={password} onChange={(event) => setPassword(event.target.value)} hint={!isLogin ? '请使用高强度密码保护账号。' : undefined} />
-        {isLogin && <div className="form-options"><label className="check-row"><input type="checkbox" />保持登录</label><span className="field-hint">需要帮助请联系管理员</span></div>}
-        <Button type="submit" icon={isLogin ? 'log-in' : 'rocket'} disabled={busy}>{busy ? '处理中…' : isLogin ? '进入控制台' : '创建通行证'}</Button>
-      </form>}
-      {!pending && <footer className="auth-footer">{isLogin ? '还没有通行证？' : '已经拥有通行证？'}<Link to={isLogin ? '/register' : '/login'}>{isLogin ? '立即创建' : '前往登录'}</Link></footer>}
-    </AuthPanel>
-  </AuthShell>
-}
-
-function PendingFactorStep({
-  pending,
-  setup,
-  busy,
-  onSetup,
-  onComplete,
-  onBusy,
-  onMessage,
-}: {
-  pending: PendingLoginResponse
-  setup: TotpSetupResponse | null
-  busy: boolean
-  onSetup: (value: TotpSetupResponse) => void
-  onComplete: () => Promise<void>
-  onBusy: (value: boolean) => void
-  onMessage: (value: string) => void
-}) {
-  const hasTotp = pending.methods.includes('totp')
-  const hasPasskey = pending.methods.includes('passkey')
-  if (hasPasskey && !hasTotp) {
-    return <PasskeyStep pending={pending} busy={busy} onComplete={onComplete} onBusy={onBusy} onMessage={onMessage} />
-  }
-  if (hasTotp) {
-    return <TotpStep pending={pending} setup={setup} busy={busy} onSetup={onSetup} onComplete={onComplete} onBusy={onBusy} onMessage={onMessage} />
-  }
-  return <Notice tone="warning">当前账号没有可用的认证因子，请重新登录。</Notice>
-}
-
-function TotpStep({
-  pending,
-  setup,
-  busy,
-  onSetup,
-  onComplete,
-  onBusy,
-  onMessage,
-}: {
-  pending: PendingLoginResponse
-  setup: TotpSetupResponse | null
-  busy: boolean
-  onSetup: (value: TotpSetupResponse) => void
-  onComplete: () => Promise<void>
-  onBusy: (value: boolean) => void
-  onMessage: (value: string) => void
-}) {
-  const [code, setCode] = useState('')
-  const setupRequired = pending.status === 'factor_setup_required'
-
-  async function startSetup() {
-    onMessage('')
-    onBusy(true)
-    try {
-      onSetup(await apiFetch<TotpSetupResponse>('/api/v1/auth/totp/setup', {
-        method: 'POST',
-        redirectOn401: false,
-        body: JSON.stringify({ login_ticket: pending.login_ticket }),
-      }))
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : '无法开始验证器绑定。')
-    } finally {
-      onBusy(false)
-    }
-  }
-
-  async function submitCode(event: FormEvent) {
-    event.preventDefault()
-    if (!/^\d{6}$/.test(code)) {
-      onMessage('请输入 6 位验证码。')
-      return
-    }
-    onMessage('')
-    onBusy(true)
-    try {
-      await apiFetch<LoginResponse>(setupRequired ? '/api/v1/auth/totp/setup/confirm' : '/api/v1/auth/totp/login', {
-        method: 'POST',
-        redirectOn401: false,
-        body: JSON.stringify({ login_ticket: pending.login_ticket, code }),
-      })
-      await onComplete()
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : '验证码校验失败。')
-    } finally {
-      onBusy(false)
-    }
-  }
-
-  return <div className="auth-form">
-    <Notice tone="info">{setupRequired ? '首次登录需要绑定验证器。' : '请输入验证器中的 6 位验证码。'}</Notice>
-    {setupRequired && !setup && <Button type="button" icon="shield-check" onClick={startSetup} disabled={busy}>开始绑定验证器</Button>}
-    {setup && (
-        <div className="space-stack">
-          <TotpSetupQr otpauthUrl={setup.otpauth_url} />
+  return (
+    <AuthShell
+      status={isLogin ? '统一登录' : '创建通行证'}
+      action={isLogin ? '创建通行证' : '登录'}
+      actionTo={isLogin ? '/register' : '/login'}
+    >
+      <AuthPanel>
+        <div className="flex items-center justify-between">
           <div>
-            <span className="chenxing-label">验证器密钥</span>
-            <CopyValue value={setup.secret_base32} />
-            <small className="chenxing-caption">无法扫码时，可在验证器中手动输入该密钥。</small>
+            <h2 className="chenxing-h2">{isLogin ? '统一登录' : '创建辰星通行证'}</h2>
+            <p className="chenxing-caption mt-1">{isLogin ? '使用辰星通行证身份进入服务' : '铸造你的辰星信标'}</p>
           </div>
         </div>
-      )}
-    {(!setupRequired || setup) && <form className="auth-form" onSubmit={submitCode}><Field label="一次性验证码" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))} /><Button type="submit" icon="check" disabled={busy}>{busy ? '验证中…' : '完成验证'}</Button></form>}
-  </div>
-}
 
-
-function TotpSetupQr({ otpauthUrl }: { otpauthUrl: string }) {
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
-  const [failed, setFailed] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-    setQrDataUrl(null)
-    setFailed(false)
-    void QRCode.toDataURL(otpauthUrl, {
-      errorCorrectionLevel: 'M',
-      margin: 1,
-      width: 220,
-      color: { dark: '#06101f', light: '#f8fbff' },
-    })
-      .then((value) => { if (!cancelled) setQrDataUrl(value) })
-      .catch(() => { if (!cancelled) setFailed(true) })
-    return () => { cancelled = true }
-  }, [otpauthUrl])
-
-  return (
-    <div className="totp-setup-qr-block">
-      <span className="chenxing-label">扫码绑定</span>
-      <div className="cx-totp-qr">
-        {qrDataUrl ? (
-          <img src={qrDataUrl} alt="TOTP 绑定二维码" className="cx-totp-qr-image" />
-        ) : (
-          <div className="cx-totp-qr-placeholder">
-            {failed ? '二维码生成失败，请使用下方密钥手动添加。' : '正在生成二维码…'}
+        {isLogin ? (
+          <div className="cx-auth-tabs mt-6">
+            <button type="button" className={`cx-auth-tab${authTab === 'account' ? ' is-active' : ''}`} onClick={() => setAuthTab('account')}>账号登录</button>
+            <button type="button" className={`cx-auth-tab${authTab === 'auth' ? ' is-active' : ''}`} onClick={() => setAuthTab('auth')}>Auth 登录</button>
           </div>
+        ) : null}
+
+        {query.get('registered') ? <div className="mt-5"><Notice tone="success">注册成功，请使用新账号登录。</Notice></div> : null}
+        {message ? <div className="mt-5"><Notice tone="warning">{message}</Notice></div> : null}
+
+        {pending ? (
+          <div className="mt-5">
+            <PendingFactorStep pending={pending} setup={totpSetup} busy={busy} onSetup={setTotpSetup} onComplete={completeLogin} onBusy={setBusy} onMessage={setMessage} />
+          </div>
+        ) : isLogin && authTab === 'auth' ? (
+          <div className="mt-5 grid grid-cols-2 gap-3">
+            <button type="button" className="chenxing-btn-ghost py-2.5" disabled title="外部身份源尚未接入"><Icon name="github" size={16} />GitHub</button>
+            <button type="button" className="chenxing-btn-ghost py-2.5" disabled title="外部身份源尚未接入"><Icon name="globe" size={16} />Google</button>
+          </div>
+        ) : (
+          <form className="mt-5 space-y-4" onSubmit={submit} noValidate>
+            {!isLogin ? (
+              <Field label="昵称" icon="user" placeholder="你的星际代号" autoComplete="nickname" value={displayName || username} onChange={(event) => { setDisplayName(event.target.value); if (!username) setUsername(event.target.value) }} />
+            ) : null}
+            {!isLogin ? (
+              <Field label="用户名" icon="user" placeholder="chenxing_user" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required />
+            ) : null}
+            <Field
+              label={isLogin ? '邮箱或用户名' : '邮箱'}
+              icon="mail"
+              type={isLogin ? 'text' : 'email'}
+              placeholder={isLogin ? 'you@chenxing.star' : 'you@chenxing.star'}
+              autoComplete="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+            />
+            <Field
+              label="密码"
+              icon="lock-keyhole"
+              type={showPassword ? 'text' : 'password'}
+              placeholder={isLogin ? '输入通行凭证' : '至少 10 位'}
+              autoComplete={isLogin ? 'current-password' : 'new-password'}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              trailing={isLogin ? (
+                <button type="button" className="chenxing-icon-btn !h-8 !w-8 !border-0 !bg-transparent" aria-label="显示密码" onClick={() => setShowPassword((value) => !value)}>
+                  <Icon name="eye" size={16} />
+                </button>
+              ) : undefined}
+            />
+            {!isLogin ? (
+              <label className="flex cursor-pointer items-start gap-2 text-[0.8125rem] leading-relaxed text-[var(--chenxing-muted-foreground)]">
+                <input type="checkbox" checked={agree} onChange={(event) => setAgree(event.target.checked)} className="mt-1 h-4 w-4 rounded accent-[var(--chenxing-primary)]" />
+                <span>我已阅读并同意《辰星通行证服务条款》与《隐私政策》</span>
+              </label>
+            ) : (
+              <div className="flex items-center justify-between">
+                <label className="cx-check">
+                  <input type="checkbox" checked={keepLogin} onChange={(event) => setKeepLogin(event.target.checked)} />
+                  在此设备保持登录
+                </label>
+                <a className="chenxing-link" href="#">忘记密码？</a>
+              </div>
+            )}
+            <Button type="submit" variant="primary" className="w-full py-3" disabled={busy}>
+              {busy ? '处理中…' : isLogin ? '登录 · 进入星门' : '创建通行证'}
+              <Icon name="arrow-right" size={16} />
+            </Button>
+          </form>
         )}
-      </div>
-      <small className="chenxing-caption">使用 Google Authenticator、Microsoft Authenticator 或其他 TOTP 应用扫码。</small>
-    </div>
+
+        {!pending ? (
+          <p className="chenxing-caption mt-6 text-center">
+            {isLogin ? '还没有通行证？' : '已有通行证？'}
+            <Link to={isLogin ? '/register' : '/login'} className="chenxing-link ml-1 font-medium">
+              {isLogin ? '创建辰星通行证' : '直接登录'}
+            </Link>
+          </p>
+        ) : null}
+      </AuthPanel>
+    </AuthShell>
   )
 }
 
-type PasskeyAuthenticationStartResponse = {
-  publicKey?: Record<string, unknown>
-}
-
-function PasskeyStep({
-  pending,
-  busy,
-  onComplete,
-  onBusy,
-  onMessage,
-}: {
-  pending: PendingLoginResponse
-  busy: boolean
-  onComplete: () => Promise<void>
-  onBusy: (value: boolean) => void
-  onMessage: (value: string) => void
-}) {
-  async function authenticate() {
-    onMessage('')
-    if (!supportsWebAuthn()) {
-      onMessage('当前浏览器不支持 Passkey，请使用支持 WebAuthn 的浏览器。')
-      return
-    }
-    onBusy(true)
-    try {
-      const options = await apiFetch<PasskeyAuthenticationStartResponse>('/api/v1/auth/passkeys/authentication/start', {
-        method: 'POST',
-        redirectOn401: false,
-        body: JSON.stringify({ login_ticket: pending.login_ticket }),
-      })
-      const publicKey = decodeRequestOptions(options)
-      const credential = await navigator.credentials.get({ publicKey })
-      if (!credential || credential.type !== 'public-key') {
-        throw new Error('Passkey assertion is unavailable')
-      }
-      await apiFetch<LoginResponse>('/api/v1/auth/passkeys/authentication/finish', {
-        method: 'POST',
-        redirectOn401: false,
-        body: JSON.stringify({
-          login_ticket: pending.login_ticket,
-          credential: serializeAssertion(credential as PublicKeyCredential),
-        }),
-      })
-      await onComplete()
-    } catch (error) {
-      onMessage(passkeyErrorMessage(error))
-    } finally {
-      onBusy(false)
-    }
-  }
-
-  return <div className="auth-form">
-    <Notice tone="info">请使用已绑定的 Passkey 完成登录。</Notice>
-    <Button type="button" icon="key-round" onClick={() => void authenticate()} disabled={busy}>{busy ? '验证中…' : '使用 Passkey 登录'}</Button>
-  </div>
-}
-
-function supportsWebAuthn(): boolean {
-  return typeof window !== 'undefined'
-    && 'PublicKeyCredential' in window
-    && typeof navigator.credentials?.get === 'function'
-}
-
-function decodeRequestOptions(options: PasskeyAuthenticationStartResponse): PublicKeyCredentialRequestOptions {
-  if (!options.publicKey) throw new Error('Passkey challenge is invalid')
-  const raw = options.publicKey
-  const challenge = decodeBase64Url(raw.challenge)
-  const allowCredentials = Array.isArray(raw.allowCredentials)
-    ? raw.allowCredentials.map((value) => {
-      if (!value || typeof value !== 'object') throw new Error('Passkey credential options are invalid')
-      const descriptor = value as Record<string, unknown>
-      return {
-        type: 'public-key' as const,
-        id: decodeBase64Url(descriptor.id),
-      }
-    })
-    : undefined
-  const userVerification = raw.userVerification
-  return {
-    challenge,
-    ...(typeof raw.timeout === 'number' ? { timeout: raw.timeout } : {}),
-    ...(typeof raw.rpId === 'string' ? { rpId: raw.rpId } : {}),
-    ...(allowCredentials ? { allowCredentials } : {}),
-    ...(['required', 'preferred', 'discouraged'].includes(String(userVerification))
-      ? { userVerification: userVerification as UserVerificationRequirement }
-      : {}),
-  }
-}
-
-function decodeBase64Url(value: unknown): ArrayBuffer {
-  if (typeof value !== 'string') throw new Error('Passkey challenge is invalid')
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
-  if (normalized.length % 4 === 1) throw new Error('Passkey challenge is invalid')
-  try {
-    const binary = atob(normalized.padEnd(normalized.length + ((4 - normalized.length % 4) % 4), '='))
-    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
-    return bytes.buffer
-  } catch {
-    throw new Error('Passkey challenge is invalid')
-  }
-}
-
-function encodeBase64Url(value: ArrayBuffer): string {
-  const bytes = new Uint8Array(value)
-  let binary = ''
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-
-function serializeAssertion(credential: PublicKeyCredential) {
-  const response = credential.response as AuthenticatorAssertionResponse
-  return {
-    id: credential.id,
-    rawId: encodeBase64Url(credential.rawId),
-    response: {
-      authenticatorData: encodeBase64Url(response.authenticatorData),
-      clientDataJSON: encodeBase64Url(response.clientDataJSON),
-      signature: encodeBase64Url(response.signature),
-      userHandle: response.userHandle ? encodeBase64Url(response.userHandle) : null,
-    },
-    type: credential.type,
-  }
-}
-
-function passkeyErrorMessage(error: unknown): string {
-  if (typeof DOMException !== 'undefined' && error instanceof DOMException && (error.name === 'AbortError' || error.name === 'NotAllowedError')) {
-    return 'Passkey 验证已取消，请重试。'
-  }
-  if (error instanceof Error && error.message === 'Passkey challenge is invalid') {
-    return '服务返回的 Passkey challenge 无效，请重新登录。'
-  }
-  return error instanceof Error ? error.message : 'Passkey 验证失败，请重试。'
-}
 
 export function BootstrapPage() {
   const navigate = useNavigate()
@@ -392,16 +207,19 @@ export function BootstrapPage() {
   const [done, setDone] = useState(false)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
+  const [username, setUsername] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+
+  async function submit(event: FormEvent) {
     event.preventDefault()
-    const form = new FormData(event.currentTarget)
     setMessage('')
     setBusy(true)
     try {
       await apiFetch('/api/v1/admin/bootstrap', {
         method: 'POST',
         redirectOn401: false,
-        body: JSON.stringify({ username: form.get('username'), email: form.get('email'), password: form.get('password') }),
+        body: JSON.stringify({ username, email, password }),
       })
       await refreshBootstrap()
       setDone(true)
@@ -411,10 +229,57 @@ export function BootstrapPage() {
       setBusy(false)
     }
   }
-  return <AuthShell action="返回登录" actionTo="/login"><AuthPanel>
-    <header><span className="eyebrow">SYSTEM BOOTSTRAP · 04</span><h1 className="chenxing-h1">初始化 Owner</h1><p>这是部署后的首次初始化入口。完成后，管理接口将进入受保护状态。</p></header>
-    {message && <div className="auth-feedback"><Notice tone="warning">{message}</Notice></div>}
-    {done ? <><Notice tone="success">Owner 初始化成功，请使用新账号登录。</Notice><Button type="button" icon="log-in" onClick={() => navigate('/login')}>前往登录</Button></> : <form className="auth-form" onSubmit={submit}><Field label="用户名" name="username" autoComplete="username" required /><Field label="Owner 邮箱" name="email" type="email" autoComplete="email" required /><Field label="初始密码" name="password" type="password" autoComplete="new-password" hint="至少 10 位字符。" required /><Button type="submit" icon="shield-check" disabled={busy}>{busy ? '初始化中…' : '确认初始化'}</Button></form>}
-    <footer className="auth-footer"><Link to="/login">返回统一登录</Link></footer>
-  </AuthPanel></AuthShell>
+
+  return (
+    <AuthShell status="系统初始化" action="返回登录" actionTo="/login" className="">
+      <section className="relative z-10 flex min-h-screen items-center justify-center px-6 py-14">
+        <div className="w-full max-w-lg">
+          <div className="chenxing-hud-panel">
+            <div className="text-center">
+              <p className="chenxing-mono text-[10px] uppercase tracking-[0.3em] text-[var(--chenxing-cyan)]">// System Not Initialized</p>
+              <h1 className="chenxing-h1 mt-3">点亮首座星门</h1>
+              <p className="chenxing-caption mt-2">创建唯一的 Owner 账户（ID 固定为 1）。此操作仅允许执行一次，并发请求由数据库 advisory lock 保证最多成功一次。</p>
+            </div>
+            <div className="mt-6 space-y-2.5">
+              {[
+                ['database', 'PostgreSQL 迁移与连接'],
+                ['zap', 'Redis 短期状态层'],
+                ['key-round', 'JWK 密钥环初始化'],
+              ].map(([icon, label]) => (
+                <div key={label} className="flex items-center justify-between rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)] px-4 py-3">
+                  <span className="flex items-center gap-2.5">
+                    <Icon name={icon} className="h-4 w-4 text-[var(--chenxing-cyan)]" size={16} />
+                    <span className="chenxing-caption text-[var(--chenxing-foreground)]">{label}</span>
+                  </span>
+                  <span className="chenxing-badge-success"><Icon name="check" size={12} />READY</span>
+                </div>
+              ))}
+            </div>
+            {message ? <div className="mt-5"><Notice tone="warning">{message}</Notice></div> : null}
+            {done ? (
+              <div className="mt-6 space-y-4">
+                <Notice tone="success">Owner 初始化成功，请使用新账号登录。</Notice>
+                <Button type="button" className="w-full py-3" icon="log-in" onClick={() => navigate('/login')}>前往登录</Button>
+              </div>
+            ) : (
+              <form className="mt-6 space-y-4" onSubmit={submit} noValidate>
+                <Field label="管理员用户名" icon="user" placeholder="owner" value={username} onChange={(event) => setUsername(event.target.value)} required />
+                <Field label="邮箱" icon="mail" type="email" placeholder="owner@chenxing.star" value={email} onChange={(event) => setEmail(event.target.value)} required />
+                <Field label="密码" type="password" placeholder="至少 12 位，含字母与数字" value={password} onChange={(event) => setPassword(event.target.value)} required />
+                <div className="flex items-start gap-3 rounded-[var(--chenxing-radius-md)] border border-[rgba(255,107,122,0.35)] bg-[rgba(255,107,122,0.08)] px-4 py-3">
+                  <Icon name="alert-triangle" className="mt-0.5 h-4 w-4 shrink-0 text-[var(--chenxing-error)]" size={16} />
+                  <p className="chenxing-caption text-[var(--chenxing-foreground)]">初始化成功后将跳转至统一登录页，不会自动创建会话。需要重新初始化时，请由维护人员清理数据库后重试。</p>
+                </div>
+                <Button type="submit" className="w-full py-3" disabled={busy}>
+                  {busy ? '初始化中…' : '初始化并创建 Owner'}
+                  <Icon name="arrow-right" size={16} />
+                </Button>
+              </form>
+            )}
+          </div>
+          <p className="chenxing-mono mt-6 text-center text-[10px] uppercase tracking-[0.24em] text-[var(--chenxing-muted-foreground)]">First Light Sequence · 天穹辰星</p>
+        </div>
+      </section>
+    </AuthShell>
+  )
 }

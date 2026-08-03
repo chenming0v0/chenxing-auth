@@ -1,0 +1,226 @@
+import { useEffect, useState, type FormEvent } from 'react'
+import { Link } from '../../router'
+import { apiFetch, type ClientInput, type OwnedOAuthClient, type RegisteredOwnedOAuthClient } from '../../api'
+import { ConsoleLayout } from '../../components/shells'
+import { Badge, Button, Chip, CopyValue, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, SelectField, TextAreaField } from '../../components/ui'
+
+function splitValues(value: string): string[] {
+  return value.split(/[\n, ]+/).map((item) => item.trim()).filter(Boolean)
+}
+
+function formatQuota(client: OwnedOAuthClient): string {
+  return `今日 ${client.quota.daily_used}/${client.quota.daily_limit} · 本月 ${client.quota.monthly_used}/${client.quota.monthly_limit ?? '∞'}`
+}
+
+export function IntegratePage() {
+  const [clients, setClients] = useState<OwnedOAuthClient[]>([])
+  const [secret, setSecret] = useState<{ clientId: string; value: string } | null>(null)
+  const [message, setMessage] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const [editing, setEditing] = useState<OwnedOAuthClient | null>(null)
+  const [name, setName] = useState('')
+  const [redirectUris, setRedirectUris] = useState('')
+  const [scopes, setScopes] = useState('openid profile')
+
+  const load = () => {
+    void apiFetch<{ items: OwnedOAuthClient[] }>('/api/v1/auth/oauth-clients')
+      .then((response) => setClients(response.items))
+      .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。'))
+  }
+  useEffect(() => { load() }, [])
+
+  function openCreate() {
+    setEditing(null)
+    setName('')
+    setRedirectUris('')
+    setScopes('openid profile')
+    setDrawerOpen(true)
+  }
+
+  function openEdit(client: OwnedOAuthClient) {
+    setEditing(client)
+    setName(client.client_name)
+    setRedirectUris(client.redirect_uris.join('\n'))
+    setScopes(client.scopes.join(' '))
+    setDrawerOpen(true)
+  }
+
+  async function save(event: FormEvent) {
+    event.preventDefault()
+    setMessage('')
+    const input: ClientInput = { client_name: name.trim(), redirect_uris: splitValues(redirectUris), scopes: splitValues(scopes) }
+    if (!input.client_name || !input.redirect_uris.length || !input.scopes.length) {
+      setMessage('请填写应用名称、至少一个 Redirect URI 和 Scope。')
+      return
+    }
+    setBusy(true)
+    try {
+      if (editing) {
+        await apiFetch<void>(`/api/v1/auth/oauth-clients/${encodeURIComponent(editing.client_id)}`, {
+          method: 'PUT', body: JSON.stringify(input),
+        })
+      } else {
+        const response = await apiFetch<RegisteredOwnedOAuthClient>('/api/v1/auth/oauth-clients', {
+          method: 'POST', body: JSON.stringify(input),
+        })
+        setSecret({ clientId: response.client_id, value: response.client_secret })
+      }
+      setDrawerOpen(false)
+      load()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '应用保存失败。')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function rotate(clientId: string) {
+    if (!window.confirm('轮换后旧 Secret 将失效，且新 Secret 只显示这一次，继续吗？')) return
+    setMessage('')
+    try {
+      const response = await apiFetch<{ client_id: string; client_secret: string }>(`/api/v1/auth/oauth-clients/${encodeURIComponent(clientId)}/rotate-secret`, { method: 'POST' })
+      setSecret({ clientId: response.client_id, value: response.client_secret })
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Secret 轮换失败。')
+    }
+  }
+
+  async function setStatus(client: OwnedOAuthClient) {
+    const next = client.status === 'active' ? '禁用' : '启用'
+    if (!window.confirm(`确认${next}“${client.client_name}”吗？`)) return
+    setMessage('')
+    try {
+      await apiFetch<void>(`/api/v1/auth/oauth-clients/${encodeURIComponent(client.client_id)}/${client.status === 'active' ? 'disable' : 'enable'}`, { method: 'POST' })
+      load()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '应用状态更新失败。')
+    }
+  }
+
+  return (
+    <ConsoleLayout>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="chenxing-mono text-[11px] uppercase tracking-[0.28em] text-[var(--chenxing-cyan)]">// Developer</p>
+          <h1 className="chenxing-h1 mt-2">接入应用</h1>
+          <p className="chenxing-caption mt-2">将「使用辰星通行证登录」接入你的应用，点击应用行查看配置与接入信息</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <a href="#" className="chenxing-btn-ghost"><Icon name="book-open" size={16} />接入文档</a>
+          <Button icon="plus" onClick={openCreate}>注册新应用</Button>
+        </div>
+      </div>
+
+      {message ? <div className="mt-5"><Notice tone="warning">{message}</Notice></div> : null}
+      {secret ? (
+        <HudPanel className="mt-5">
+          <div className="mb-4 flex items-center justify-between gap-4">
+            <div>
+              <h2 className="chenxing-h2">一次性 Client Secret</h2>
+              <p className="chenxing-caption mt-1">只保存在当前页面内存，刷新或离开页面后无法恢复。</p>
+            </div>
+            <Icon name="key-round" className="text-[var(--chenxing-cyan)]" size={18} />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div><span className="chenxing-label">Client ID</span><CopyValue value={secret.clientId} /></div>
+            <div><span className="chenxing-label">Client Secret</span><CopyValue value={secret.value} /></div>
+          </div>
+          <div className="mt-4"><Notice tone="warning">Secret 不会再次从列表接口返回，请立即保存到受保护的服务端配置中。</Notice></div>
+        </HudPanel>
+      ) : null}
+
+      <section className="chenxing-hud-panel mt-6">
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="chenxing-h2 flex items-center gap-3">我的接入应用<span className="chenxing-chip">{clients.length} 个应用</span></h2>
+        </div>
+        <div className="chenxing-app-grid mt-5 hidden px-4 pb-2 lg:grid">
+          <span className="chenxing-label !mb-0">ID</span>
+          <span className="chenxing-label !mb-0">名称</span>
+          <span className="chenxing-label !mb-0">分组</span>
+          <span className="chenxing-label !mb-0">状态</span>
+          <span className="chenxing-label !mb-0 text-right">操作</span>
+        </div>
+        {clients.map((client, index) => (
+          <article key={client.client_id} className="chenxing-app-grid chenxing-app-row mt-2 lg:mt-0" onClick={() => openEdit(client)}>
+            <span className="chenxing-mono text-sm text-[var(--chenxing-muted-foreground)]">{String(index + 1).padStart(2, '0')}</span>
+            <div className="min-w-0">
+              <p className="chenxing-body truncate font-semibold leading-tight">{client.client_name}</p>
+              <p className="chenxing-mono truncate text-[11px] text-[var(--chenxing-muted-foreground)]">{client.client_id}</p>
+              <p className="chenxing-caption mt-1 hidden sm:block">{formatQuota(client)}</p>
+            </div>
+            <span className="chenxing-tag hidden lg:inline-flex">default</span>
+            <span className={`${client.status === 'active' ? 'chenxing-tag-success' : 'chenxing-tag-warning'} hidden lg:inline-flex`}>
+              {client.status === 'active' ? '已启用' : client.status}
+            </span>
+            <div className="flex items-center justify-end gap-2" onClick={(event) => event.stopPropagation()}>
+              <Button
+                variant={client.status === 'active' ? 'danger' : 'ghost'}
+                icon="power"
+                onClick={() => void setStatus(client)}
+              >
+                {client.status === 'active' ? '禁用' : '启用'}
+              </Button>
+              <Button variant="ghost" icon="pencil" onClick={() => openEdit(client)}>编辑</Button>
+              <Button variant="ghost" icon="refresh-cw" onClick={() => void rotate(client.client_id)}>轮换</Button>
+            </div>
+          </article>
+        ))}
+        {!clients.length ? (
+          <div className="mt-6">
+            <EmptyState icon="code-2" title="暂无 OAuth 项目" description="创建第一个项目后会显示在这里。" action={<Button className="mt-2" icon="plus" onClick={openCreate}>注册新应用</Button>} />
+          </div>
+        ) : null}
+        <p className="chenxing-caption mt-4 flex items-center gap-2">
+          <Icon name="shield-alert" className="shrink-0 text-[var(--chenxing-warning)]" size={16} />
+          Client Secret 仅在创建应用时展示一次，遗失后只能重新生成。
+        </p>
+      </section>
+
+      <section className="chenxing-hud-panel mt-6">
+        <h3 className="chenxing-h3 flex items-center gap-2"><Icon name="rocket" className="text-[var(--chenxing-cyan)]" size={18} />快速接入</h3>
+        <div className="mt-5 grid gap-4 lg:grid-cols-3">
+          {[
+            ['01', '注册应用', '创建应用，获取 Client ID 与仅展示一次的 Client Secret。'],
+            ['02', '配置回调地址', '登记 Redirect URI，辰星仅向精确匹配的地址回跳授权码。'],
+            ['03', '发起授权请求', '携带 PKCE 参数跳转授权端点，用授权码换取令牌。'],
+          ].map(([n, title, copy]) => (
+            <div className="flex gap-3" key={n}>
+              <span className="chenxing-mono flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--chenxing-border-strong)] bg-[var(--chenxing-primary-soft)] text-sm text-[var(--chenxing-cyan)]">{n}</span>
+              <div>
+                <p className="chenxing-body font-semibold">{title}</p>
+                <p className="chenxing-caption mt-0.5">{copy}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {drawerOpen ? (
+        <div className="chenxing-drawer-overlay is-open" onClick={() => setDrawerOpen(false)}>
+          <div className="chenxing-drawer is-open" onClick={(event) => event.stopPropagation()}>
+            <div className="chenxing-drawer-header">
+              <div>
+                <h2 className="chenxing-h2">{editing ? '编辑应用' : '注册新应用'}</h2>
+                <p className="chenxing-caption mt-1">服务端负责校验 Redirect URI、Scope 和配额。</p>
+              </div>
+              <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={() => setDrawerOpen(false)}><Icon name="x" size={16} /></button>
+            </div>
+            <form className="chenxing-drawer-body space-y-4" onSubmit={save}>
+              <div className="chenxing-hud-panel space-y-4 !p-5">
+                <Field label="应用名称" placeholder="例如：星尘控制台" value={name} onChange={(event) => setName(event.target.value)} required />
+                <TextAreaField label="Redirect URI" placeholder="每行一个严格匹配的 URI" value={redirectUris} onChange={(event) => setRedirectUris(event.target.value)} required hint="服务端会严格校验 URI，不使用通配符。" />
+                <TextAreaField label="Scope" value={scopes} onChange={(event) => setScopes(event.target.value)} required hint="用空格、逗号或换行分隔。" />
+              </div>
+              <div className="chenxing-drawer-footer">
+                <Button type="button" variant="ghost" onClick={() => setDrawerOpen(false)}>取消</Button>
+                <Button type="submit" icon="save" disabled={busy}>{busy ? '保存中…' : editing ? '保存更新' : '创建应用'}</Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+    </ConsoleLayout>
+  )
+}
+

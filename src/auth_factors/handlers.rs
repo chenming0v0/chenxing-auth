@@ -242,6 +242,9 @@ pub async fn start_passkey_registration(
     {
         Ok(Some(challenge)) => (axum::http::StatusCode::OK, Json(challenge)).into_response(),
         Ok(None) => error::bad_request("invalid_login_ticket", "login ticket is invalid"),
+        Err(crate::auth_factors::service::AuthFactorServiceError::PasskeyDisabled) => {
+            error::bad_request("passkey_disabled", "passkey authentication is disabled")
+        }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to start passkey registration");
             error::internal()
@@ -271,6 +274,9 @@ pub async fn finish_passkey_registration(
         Ok(PasskeyConfirmation::InvalidTicket) => {
             error::bad_request("invalid_login_ticket", "login ticket is invalid")
         }
+        Err(crate::auth_factors::service::AuthFactorServiceError::PasskeyDisabled) => {
+            error::bad_request("passkey_disabled", "passkey authentication is disabled")
+        }
         Err(factor_error) => {
             if matches!(
                 &factor_error,
@@ -296,6 +302,9 @@ pub async fn start_passkey_authentication(
     {
         Ok(Some(challenge)) => (axum::http::StatusCode::OK, Json(challenge)).into_response(),
         Ok(None) => error::bad_request("invalid_login_ticket", "login ticket is invalid"),
+        Err(crate::auth_factors::service::AuthFactorServiceError::PasskeyDisabled) => {
+            error::bad_request("passkey_disabled", "passkey authentication is disabled")
+        }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to start passkey authentication");
             error::internal()
@@ -325,6 +334,9 @@ pub async fn finish_passkey_authentication(
         Ok(PasskeyConfirmation::InvalidTicket) => {
             error::bad_request("invalid_login_ticket", "login ticket is invalid")
         }
+        Err(crate::auth_factors::service::AuthFactorServiceError::PasskeyDisabled) => {
+            error::bad_request("passkey_disabled", "passkey authentication is disabled")
+        }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to finish passkey authentication");
             error::internal()
@@ -345,3 +357,4 @@ async fn record_mfa_event(state: &AppState, reason: &str) -> Result<(), crate::a
         ))
         .await
 }
+

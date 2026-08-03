@@ -77,6 +77,8 @@ pub enum AuthFactorServiceError {
     SourceIpUnavailable,
     #[error("passkey credential conflicts with an existing credential")]
     PasskeyConflict,
+    #[error("passkey authentication is disabled")]
+    PasskeyDisabled,
 }
 
 impl AuthFactorService {
@@ -405,3 +407,4 @@ impl AuthFactorService {
         format!("{TOTP_SETUP_PREFIX}{ticket_id}")
     }
 }
+

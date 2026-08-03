@@ -82,7 +82,13 @@ impl AppState {
             database.clone(),
             config.auth_encryption_keys.clone(),
         );
-        let settings = SettingsService::new(database.clone());
+        let secret_manager = SecretManager::load_or_generate(&config.key_directory)?;
+        let settings = SettingsService::new(
+            database.clone(),
+            secret_manager.clone(),
+            &config.webauthn_rp_id,
+            &config.webauthn_origin,
+        );
         let users = UserService::with_source_ip_policy(
             database.clone(),
             auth_limiter.clone(),
@@ -155,3 +161,5 @@ impl AppState {
         Self::new(config).expect("test state")
     }
 }
+
+

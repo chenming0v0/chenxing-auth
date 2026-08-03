@@ -5,6 +5,7 @@ pub mod handlers;
 pub mod oauth_client_handlers;
 pub mod query_repository;
 pub mod repository;
+mod email_policy;
 pub mod service;
 pub mod ui_auth;
 pub mod ui_handlers;

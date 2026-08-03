@@ -1,5 +1,5 @@
-type NavItem = { label: string; path: string; icon: string }
-type NavGroup = { label: string; items: NavItem[] }
+export type NavItem = { label: string; path: string; icon: string }
+export type NavGroup = { label: string; items: NavItem[] }
 
 export const navGroups: NavGroup[] = [
   {
@@ -30,3 +30,45 @@ export const navGroups: NavGroup[] = [
     items: [{ label: '系统设置', path: '/admin/settings', icon: 'settings' }],
   },
 ]
+
+export const pageStatus: Record<string, string> = {
+  '/': '星门在线',
+  '/login': '统一登录',
+  '/register': '创建通行证',
+  '/bootstrap': '系统初始化',
+  '/oauth/account': 'OAuth · 选择账号',
+  '/oauth/consent': 'OAuth · 授权确认',
+  '/oauth/redirect': 'OAuth · 回调',
+  '/console': '控制台 · 总览',
+  '/console/plans': '控制台 · 套餐与权益',
+  '/console/profile': '控制台 · 个人信息',
+  '/console/apps': '控制台 · 已授权应用',
+  '/console/integrate': '控制台 · 接入应用',
+  '/console/playground': '控制台 · 授权测试',
+  '/admin': '管理 · 仪表盘',
+  '/admin/users': '管理 · 用户管理',
+  '/admin/clients': '管理 · 客户端',
+  '/admin/audit': '管理 · 审计',
+  '/admin/settings': '管理 · 系统设置',
+}
+
+export function formatDate(value?: string | null): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.valueOf())
+    ? '—'
+    : date.toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+export function greeting(): string {
+  const hour = new Date().getHours()
+  if (hour < 6) return '夜深了'
+  if (hour < 12) return '上午好'
+  if (hour < 18) return '午安'
+  return '晚上好'
+}
+
+export function initialOf(name?: string | null): string {
+  const value = (name || '辰').trim()
+  return value.slice(0, 1).toUpperCase()
+}

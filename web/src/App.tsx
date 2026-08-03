@@ -19,9 +19,9 @@ function AppContent() {
 
   if (bootstrap === 'loading' || (status === 'loading' && (protectedPath || adminPath))) {
     return (
-      <AuthShell>
+      <AuthShell status={bootstrap === 'loading' ? '检查系统状态' : '校验会话'}>
         <AuthPanel>
-          <Notice>
+          <Notice tone="info">
             {bootstrap === 'loading' ? '正在检查系统初始化状态，请稍候。' : '正在检查登录状态，请稍候。'}
           </Notice>
         </AuthPanel>
@@ -43,18 +43,39 @@ function AppContent() {
     const returnTo = `${window.location.pathname}${window.location.search}`
     return <Navigate to={`/login?returnTo=${encodeURIComponent(returnTo)}`} />
   }
-  if (adminPath && status === 'authenticated' && user?.role === 'user') return <Navigate to="/console" />
-  const pages: Record<string, ReactNode> = {
-    '/': <LandingPage />, '/login': <AuthPage mode="login" />, '/register': <AuthPage mode="register" />,
-    '/bootstrap': <BootstrapPage />, '/oauth/account': <OAuthAccountPage />, '/oauth/consent': <OAuthConsentPage />,
-    '/oauth/redirect': <OAuthRedirectPage />, '/console': <ConsoleOverview />, '/console/plans': <ConsolePlans />,
-    '/console/profile': <ConsoleProfile />, '/console/apps': <AuthorizedApps />, '/console/integrate': <IntegratePage />,
-    '/console/playground': <PlaygroundPage />, '/admin': <AdminDashboard />, '/admin/users': <AdminUsers />,
-    '/admin/clients': <AdminClients />, '/admin/audit': <AdminAudit />, '/admin/settings': <AdminSettings />,
+
+  if (adminPath && status === 'authenticated' && user?.role === 'user') {
+    return <Navigate to="/console" />
   }
+
+  const pages: Record<string, ReactNode> = {
+    '/': <LandingPage />,
+    '/login': <AuthPage mode="login" />,
+    '/register': <AuthPage mode="register" />,
+    '/bootstrap': <BootstrapPage />,
+    '/oauth/account': <OAuthAccountPage />,
+    '/oauth/consent': <OAuthConsentPage />,
+    '/oauth/redirect': <OAuthRedirectPage />,
+    '/console': <ConsoleOverview />,
+    '/console/plans': <ConsolePlans />,
+    '/console/profile': <ConsoleProfile />,
+    '/console/apps': <AuthorizedApps />,
+    '/console/integrate': <IntegratePage />,
+    '/console/playground': <PlaygroundPage />,
+    '/admin': <AdminDashboard />,
+    '/admin/users': <AdminUsers />,
+    '/admin/clients': <AdminClients />,
+    '/admin/audit': <AdminAudit />,
+    '/admin/settings': <AdminSettings />,
+  }
+
   return pages[path] ?? <Navigate to="/" />
 }
 
 export default function App() {
-  return <AuthProvider><AppContent /></AuthProvider>
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  )
 }

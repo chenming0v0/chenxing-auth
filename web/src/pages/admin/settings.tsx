@@ -1,0 +1,100 @@
+import { useState } from 'react'
+import { apiFetch, type KeyRotationResponse } from '../../api'
+import { ConsoleLayout } from '../../components/shells'
+import { Button, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { AdminGate, useAdminAccess, type AdminAccess } from './shared'
+import { EmailPolicyPanel } from './settings/email-policy-panel'
+import { OAuthProvidersPanel } from './settings/oauth-providers-panel'
+import { PasskeyPanel } from './settings/passkey-panel'
+import { SmtpPanel } from './settings/smtp-panel'
+
+export function AdminSettings() {
+  const access = useAdminAccess()
+  return (
+    <ConsoleLayout>
+      <PageIntro
+        eyebrow="// Admin · System"
+        title="系统设置"
+        description="配置辰星认证中枢的登录、邮件与身份提供商。"
+      />
+      <p className="chenxing-caption mb-6 flex items-center gap-1.5 text-[var(--chenxing-warning)]">
+        <Icon name="lock" size={14} />
+        敏感凭证为只写字段，保存后不会回显；日志与列表均不返回明文或哈希。
+      </p>
+      <AdminGate access={access} permission="manage_settings">
+        <SettingsWorkspace access={access} />
+      </AdminGate>
+    </ConsoleLayout>
+  )
+}
+
+function SettingsWorkspace({ access }: { access: AdminAccess }) {
+  const [message, setMessage] = useState('')
+  const [tone, setTone] = useState<'success' | 'warning'>('success')
+  const [keyResult, setKeyResult] = useState<KeyRotationResponse | null>(null)
+  const [busy, setBusy] = useState(false)
+  const canManageProviders = Boolean(access.data?.permissions.includes('manage_identity_providers'))
+  const canRotateKeys = Boolean(access.data?.permissions.includes('rotate_keys'))
+
+  function flash(next: string, nextTone: 'success' | 'warning' = 'success') {
+    setMessage(next)
+    setTone(nextTone)
+  }
+
+  async function rotateKey() {
+    if (!canRotateKeys || !window.confirm('确认轮换签名密钥吗？')) return
+    setBusy(true)
+    try {
+      setKeyResult(await apiFetch<KeyRotationResponse>('/api/v1/admin/keys/rotate', { method: 'POST' }))
+      flash('签名密钥已轮换。')
+    } catch (reason) {
+      flash(reason instanceof Error ? reason.message : '签名密钥轮换失败。', 'warning')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      {message ? <Notice tone={tone}>{message}</Notice> : null}
+      <PasskeyPanel onMessage={flash} />
+      <EmailPolicyPanel onMessage={flash} />
+      <SmtpPanel onMessage={flash} />
+      {canManageProviders ? (
+        <OAuthProvidersPanel onMessage={flash} />
+      ) : (
+        <HudPanel>
+          <h2 className="chenxing-h2 flex items-center gap-2">
+            <Icon name="link" className="text-[var(--chenxing-cyan)]" size={18} />
+            自定义 OAuth 提供商
+          </h2>
+          <p className="chenxing-caption mt-1.5">需要 `manage_identity_providers` 权限后才能管理外部身份提供商。</p>
+        </HudPanel>
+      )}
+      <HudPanel>
+        <h2 className="chenxing-h2 flex items-center gap-2">
+          <Icon name="key-round" className="text-[var(--chenxing-cyan)]" size={18} />
+          签名密钥
+        </h2>
+        <p className="chenxing-caption mt-1.5">响应只返回 kid 和已发布公钥数量，不包含私钥材料。</p>
+        {keyResult ? (
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.4)] px-4 py-3">
+              <p className="chenxing-label mb-1">当前 key_id</p>
+              <p className="chenxing-mono text-sm text-[var(--chenxing-ice)]">{keyResult.key_id}</p>
+            </div>
+            <div className="rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.4)] px-4 py-3">
+              <p className="chenxing-label mb-1">已发布公钥数量</p>
+              <p className="chenxing-display text-2xl">{keyResult.published_key_count}</p>
+            </div>
+          </div>
+        ) : null}
+        <div className="mt-5">
+          <Button variant="danger" icon="refresh-cw" disabled={!canRotateKeys || busy} onClick={() => void rotateKey()}>
+            {canRotateKeys ? '轮换签名密钥' : '缺少 rotate_keys 权限'}
+          </Button>
+        </div>
+      </HudPanel>
+    </div>
+  )
+}

@@ -28,6 +28,26 @@ struct PendingPasskeyAuthentication {
 }
 
 impl AuthFactorService {
+    async fn ensure_passkey_enabled(&self) -> Result<(), AuthFactorServiceError> {
+        let raw = crate::sqlx::query_as::<_, (Option<String>,)>(
+            "SELECT setting_value FROM app_settings WHERE setting_key = 'passkey'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let enabled = match raw.and_then(|(value,)| value) {
+            Some(value) if !value.trim().is_empty() => serde_json::from_str::<serde_json::Value>(&value)
+                .ok()
+                .and_then(|json| json.get("enabled").and_then(|item| item.as_bool()))
+                .unwrap_or(true),
+            _ => true,
+        };
+        if enabled {
+            Ok(())
+        } else {
+            Err(AuthFactorServiceError::PasskeyDisabled)
+        }
+    }
+
     pub async fn start_passkey_registration(
         &self,
         ticket_id: &str,
@@ -35,6 +55,7 @@ impl AuthFactorService {
         display_name: &str,
     ) -> Result<Option<webauthn_rs::prelude::CreationChallengeResponse>, AuthFactorServiceError>
     {
+        self.ensure_passkey_enabled().await?;
         let Some(ticket) = self.tickets.find(ticket_id).await? else {
             return Ok(None);
         };
@@ -77,6 +98,7 @@ impl AuthFactorService {
         ticket_id: &str,
         credential: &RegisterPublicKeyCredential,
     ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
+        self.ensure_passkey_enabled().await?;
         let Some(ticket) = self.tickets.find(ticket_id).await? else {
             return Ok(PasskeyConfirmation::InvalidTicket);
         };
@@ -134,6 +156,7 @@ impl AuthFactorService {
         &self,
         ticket_id: &str,
     ) -> Result<Option<RequestChallengeResponse>, AuthFactorServiceError> {
+        self.ensure_passkey_enabled().await?;
         let Some(ticket) = self.tickets.find(ticket_id).await? else {
             return Ok(None);
         };
@@ -165,6 +188,7 @@ impl AuthFactorService {
         ticket_id: &str,
         credential: &PublicKeyCredential,
     ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
+        self.ensure_passkey_enabled().await?;
         let Some(ticket) = self.tickets.find(ticket_id).await? else {
             return Ok(PasskeyConfirmation::InvalidTicket);
         };
@@ -228,3 +252,4 @@ impl AuthFactorService {
         format!("{PASSKEY_AUTHENTICATION_PREFIX}{ticket_id}")
     }
 }
+

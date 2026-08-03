@@ -70,7 +70,6 @@ impl SecretManager {
         })
     }
 
-    #[cfg(test)]
     pub fn from_key(key: [u8; KEY_LENGTH]) -> Self {
         Self { key, path: None }
     }
@@ -134,3 +133,4 @@ mod tests {
         assert!(manager.decrypt(b"invalid").is_err());
     }
 }
+

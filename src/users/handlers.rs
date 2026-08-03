@@ -54,6 +54,9 @@ pub async fn register_user(
         Err(UserServiceError::Validation(RegistrationError::InvalidEmail)) => {
             error::bad_request("invalid_email", "email is invalid")
         }
+        Err(UserServiceError::EmailDomainNotAllowed) => {
+            error::bad_request("email_domain_not_allowed", "email domain is not allowed")
+        }
         Err(UserServiceError::Validation(RegistrationError::InvalidUsername)) => {
             error::bad_request("invalid_username", "username is invalid")
         }
@@ -339,3 +342,5 @@ async fn record_security_event(
         ))
         .await
 }
+
+

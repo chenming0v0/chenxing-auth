@@ -44,6 +44,8 @@ pub enum UserServiceError {
     LastOwnerRequired,
     #[error("owner bootstrap is required before public registration")]
     OwnerBootstrapRequired,
+    #[error("email domain is not allowed by policy")]
+    EmailDomainNotAllowed,
 }
 
 impl UserService {
@@ -65,6 +67,7 @@ impl UserService {
 
     pub async fn register(&self, input: RegistrationInput) -> Result<PublicUser, UserServiceError> {
         let registration = validate_registration(input)?;
+        self.ensure_email_policy_allows(&registration.email).await?;
         let password_hash =
             hash_password(&registration.password).map_err(|_| UserServiceError::PasswordHash)?;
         let Some(user) =
@@ -141,6 +144,10 @@ impl UserService {
             return Err(UserServiceError::OwnerBootstrapRequired);
         };
         Ok(id)
+    }
+
+    async fn ensure_email_policy_allows(&self, email: &str) -> Result<(), UserServiceError> {
+        super::email_policy::ensure_email_policy_allows(&self.pool, email).await
     }
 
     pub async fn authenticate(
@@ -479,3 +486,5 @@ mod tests {
         assert!(matches!(result, Err(UserServiceError::RateLimited)));
     }
 }
+
+

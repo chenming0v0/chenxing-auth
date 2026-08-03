@@ -31,6 +31,8 @@ const safeMessages: Record<string, string> = {
   invalid_factor: '验证码不正确，请重试。',
   invalid_login_ticket: '验证流程已失效，请重新登录。',
   email_already_registered: '注册信息无法使用，请检查后重试。',
+  email_domain_not_allowed: '当前邮箱域名不允许注册。',
+  passkey_disabled: 'Passkey 登录尚未启用。',
   username_already_registered: '注册信息无法使用，请检查后重试。',
   oauth_client_quota_exceeded: '当前套餐的 OAuth 应用额度已用尽。',
   oauth_quota_exceeded: '当前 OAuth 授权额度已用尽。',
@@ -184,6 +186,73 @@ export type AuditEvent = {
   created_at?: string
 }
 export type RegistrationEmailSetting = { registration_email_from: string | null }
+export type PasskeyUserVerification = 'preferred' | 'required' | 'discouraged'
+export type PasskeyAuthenticatorAttachment = 'any' | 'platform' | 'cross_platform'
+export type PasskeySetting = {
+  enabled: boolean
+  rp_name: string
+  rp_id: string
+  user_verification: PasskeyUserVerification
+  authenticator_attachment: PasskeyAuthenticatorAttachment
+  allow_insecure_origin: boolean
+  allowed_origins: string[]
+}
+export type EmailPolicySetting = {
+  whitelist_enabled: boolean
+  alias_restriction_enabled: boolean
+  allowed_domains: string[]
+}
+export type SmtpSetting = {
+  host: string
+  port: number
+  username: string
+  from_address: string
+  ssl_enabled: boolean
+  force_auth_login: boolean
+  password_configured: boolean
+}
+export type SmtpSettingUpdate = {
+  host: string
+  port: number
+  username: string
+  from_address: string
+  ssl_enabled: boolean
+  force_auth_login: boolean
+  password?: string | null
+}
+export type OAuthProviderSummary = {
+  id: number
+  name: string
+  slug: string
+  callback_uri?: string
+  authorization_endpoint: string
+  token_endpoint: string
+  userinfo_endpoint: string
+  client_id: string
+  scopes: string[]
+  subject_claim: string
+  email_claim: string
+  name_claim?: string | null
+  email_verified_claim?: string | null
+  client_auth_method: 'basic' | 'request_body'
+  status: 'active' | 'disabled' | string
+  client_secret_configured: boolean
+}
+export type OAuthProviderInput = {
+  name: string
+  slug: string
+  authorization_endpoint: string
+  token_endpoint: string
+  userinfo_endpoint: string
+  client_id: string
+  client_secret?: string | null
+  scopes: string[]
+  subject_claim?: string
+  email_claim?: string
+  name_claim?: string | null
+  email_verified_claim?: string | null
+  client_auth_method?: 'basic' | 'request_body'
+}
 export type KeyRotationResponse = { key_id: string; published_key_count: number }
 export type PendingAuthorization = {
   request_id: string
