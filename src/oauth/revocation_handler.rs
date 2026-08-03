@@ -9,7 +9,7 @@ use super::{
     client_auth::{ClientCredentialError, resolve_client_credentials},
     token::decode_access_token,
 };
-use crate::{error, state::AppState};
+use crate::{audit::AuditEvent, error, state::AppState};
 
 #[derive(Debug, Deserialize)]
 pub struct RevocationRequest {
@@ -73,6 +73,23 @@ pub async fn revoke(
                     tracing::error!(error = %store_error, "failed to revoke refresh token");
                     return error::oauth_temporarily_unavailable();
                 }
+                if record_revocation_event(
+                    &state,
+                    Some(&refresh.user_id),
+                    &credentials.client_id,
+                    "refresh_token",
+                )
+                .await
+                .is_err()
+                {
+                    if let Err(error_value) = state.refresh_tokens.save(&refresh).await {
+                        tracing::warn!(
+                            error = %error_value,
+                            "failed to restore refresh token after audit persistence failure"
+                        );
+                    }
+                    return error::internal();
+                }
                 return ().into_response();
             }
             Ok(_) => {}
@@ -100,8 +117,49 @@ pub async fn revoke(
                 tracing::error!(error = %store_error, "failed to revoke access token");
                 return error::oauth_temporarily_unavailable();
             }
+            if ttl > 0
+                && record_revocation_event(
+                    &state,
+                    Some(&claims.sub),
+                    &credentials.client_id,
+                    "access_token",
+                )
+                .await
+                .is_err()
+            {
+                if let Err(error_value) = state.revocations.remove(&request.token).await {
+                    tracing::warn!(
+                        error = %error_value,
+                        "failed to compensate access token revocation after audit persistence failure"
+                    );
+                }
+                return error::internal();
+            }
         }
     }
 
     ().into_response()
+}
+
+async fn record_revocation_event(
+    state: &AppState,
+    actor_id: Option<&str>,
+    client_id: &str,
+    token_type: &str,
+) -> Result<(), crate::audit::AuditError> {
+    state
+        .audit
+        .record(AuditEvent::new(
+            if actor_id.is_some() {
+                "user".to_owned()
+            } else {
+                "oauth_client".to_owned()
+            },
+            actor_id.map(str::to_owned),
+            "token_revoke".to_owned(),
+            "oauth_token".to_owned(),
+            Some(client_id.to_owned()),
+            serde_json::json!({"token_type": token_type, "result": "success"}),
+        ))
+        .await
 }

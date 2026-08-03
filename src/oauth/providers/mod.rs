@@ -1,4 +1,5 @@
 pub mod domain;
+mod error_helpers;
 pub mod handlers;
 pub(crate) mod provider_pending;
 pub mod repository;

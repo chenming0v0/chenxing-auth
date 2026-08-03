@@ -60,7 +60,7 @@ pub async fn bootstrap_admin(
     };
     match state.users.bootstrap_owner(registration).await {
         Ok(crate::users::service::BootstrapOwnerResult::Created(profile)) => {
-            state
+            if state
                 .audit
                 .record(AuditEvent::new(
                     "bootstrap".to_owned(),
@@ -70,7 +70,11 @@ pub async fn bootstrap_admin(
                     Some(profile.id.to_string()),
                     serde_json::json!({"role": "owner"}),
                 ))
-                .await;
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             (StatusCode::CREATED, Json(serde_json::json!({
                 "id": profile.id, "username": profile.username, "email": profile.email, "role": "owner"
             }))).into_response()
@@ -148,7 +152,7 @@ pub async fn create_admin(
     match state.users.create_privileged(registration, role).await {
         Ok(id) => {
             let (actor_type, actor_id) = actor.audit_fields();
-            state
+            if state
                 .audit
                 .record(AuditEvent::new(
                     actor_type.to_owned(),
@@ -158,7 +162,11 @@ pub async fn create_admin(
                     Some(id.to_string()),
                     serde_json::json!({"role": role.as_str()}),
                 ))
-                .await;
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             (
                 StatusCode::CREATED,
                 Json(serde_json::json!({"id": id, "role": role.as_str()})),

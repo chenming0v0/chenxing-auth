@@ -10,7 +10,7 @@ use super::{
     service::{PasskeyConfirmation, TotpConfirmation},
     session::issue_user_session,
 };
-use crate::{error, state::AppState};
+use crate::{audit::AuditEvent, error, state::AppState};
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 #[derive(Debug, Deserialize)]
@@ -114,9 +114,15 @@ pub async fn confirm_totp_setup(
             issue_user_session(&state, user_id, "totp").await
         }
         Ok(TotpConfirmation::InvalidCode) => {
+            if record_mfa_event(&state, "totp_invalid").await.is_err() {
+                return error::internal();
+            }
             error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Ok(TotpConfirmation::RateLimited) => {
+            if record_mfa_event(&state, "totp_rate_limited").await.is_err() {
+                return error::internal();
+            }
             error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Ok(TotpConfirmation::InvalidTicket) => {
@@ -147,9 +153,15 @@ pub async fn login_totp(
             return issue_user_session(&state, user_id, "totp").await;
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidCode) => {
+            if record_mfa_event(&state, "totp_invalid").await.is_err() {
+                return error::internal();
+            }
             return error::unauthorized("invalid_factor", "authentication factor is invalid");
         }
         Ok(crate::auth_factors::service::TotpConfirmation::RateLimited) => {
+            if record_mfa_event(&state, "totp_rate_limited").await.is_err() {
+                return error::internal();
+            }
             return error::unauthorized("invalid_factor", "authentication factor is invalid");
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidTicket) => {}
@@ -170,9 +182,15 @@ pub async fn login_totp(
             issue_user_session(&state, user_id, "totp").await
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidCode) => {
+            if record_mfa_event(&state, "totp_invalid").await.is_err() {
+                return error::internal();
+            }
             error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Ok(crate::auth_factors::service::TotpConfirmation::RateLimited) => {
+            if record_mfa_event(&state, "totp_rate_limited").await.is_err() {
+                return error::internal();
+            }
             error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidTicket) => {
@@ -241,6 +259,9 @@ pub async fn finish_passkey_registration(
             issue_user_session(&state, user_id, "passkey").await
         }
         Ok(PasskeyConfirmation::InvalidCredential) => {
+            if record_mfa_event(&state, "passkey_invalid").await.is_err() {
+                return error::internal();
+            }
             error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Ok(PasskeyConfirmation::InvalidTicket) => {
@@ -291,6 +312,9 @@ pub async fn finish_passkey_authentication(
             issue_user_session(&state, user_id, "passkey").await
         }
         Ok(PasskeyConfirmation::InvalidCredential) => {
+            if record_mfa_event(&state, "passkey_invalid").await.is_err() {
+                return error::internal();
+            }
             error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Ok(PasskeyConfirmation::InvalidTicket) => {
@@ -301,4 +325,18 @@ pub async fn finish_passkey_authentication(
             error::internal()
         }
     }
+}
+
+async fn record_mfa_event(state: &AppState, reason: &str) -> Result<(), crate::audit::AuditError> {
+    state
+        .audit
+        .record(AuditEvent::new(
+            "anonymous".to_owned(),
+            None,
+            "mfa_failure".to_owned(),
+            "authentication_factor".to_owned(),
+            None,
+            serde_json::json!({"reason": reason}),
+        ))
+        .await
 }

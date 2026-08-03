@@ -30,7 +30,7 @@ pub async fn rotate_signing_key(State(state): State<AppState>, headers: HeaderMa
     };
     let key_id = rotation.key_id;
     let published_key_count = rotation.published_key_count;
-    state
+    if state
         .audit
         .record(AuditEvent::new(
             actor.actor_type().to_owned(),
@@ -40,7 +40,11 @@ pub async fn rotate_signing_key(State(state): State<AppState>, headers: HeaderMa
             Some(key_id.clone()),
             serde_json::json!({"published_key_count": published_key_count}),
         ))
-        .await;
+        .await
+        .is_err()
+    {
+        return error::internal();
+    }
 
     (
         StatusCode::OK,

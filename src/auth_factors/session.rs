@@ -51,7 +51,7 @@ pub async fn issue_user_session(state: &AppState, user_id: UserId, factor: &str)
         tracing::error!(error = %session_error, "failed to persist session");
         return error::internal();
     }
-    state
+    if state
         .audit
         .record(AuditEvent::new(
             "user".to_owned(),
@@ -61,7 +61,17 @@ pub async fn issue_user_session(state: &AppState, user_id: UserId, factor: &str)
             Some(session.id.to_string()),
             serde_json::json!({"result": "success", "factor": factor}),
         ))
-        .await;
+        .await
+        .is_err()
+    {
+        if let Err(error_value) = state.sessions.revoke(&session.token).await {
+            tracing::warn!(
+                error = %error_value,
+                "failed to compensate session after audit persistence failure"
+            );
+        }
+        return error::internal();
+    }
     let mut response = (
         StatusCode::OK,
         Json(LoginResponse {

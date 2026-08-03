@@ -161,6 +161,17 @@ pub async fn issue_authorization_code_result(
     match active_user_id(state, &user_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
+            if record_authorization_event(
+                state,
+                Some(&user_id),
+                "authorization_denied",
+                "user_disabled",
+            )
+            .await
+            .is_err()
+            {
+                return Err(error::internal());
+            }
             return Err(error::oauth_unauthorized(
                 "invalid_session",
                 "the authenticated session is no longer valid",
@@ -210,6 +221,17 @@ pub async fn issue_authorization_code_result(
         {
             QuotaConsumeResult::Allowed => true,
             QuotaConsumeResult::DailyExceeded | QuotaConsumeResult::MonthlyExceeded => {
+                if record_authorization_event(
+                    state,
+                    Some(&user_id),
+                    "rate_limit_triggered",
+                    "oauth_quota",
+                )
+                .await
+                .is_err()
+                {
+                    return Err(error::internal());
+                }
                 return Ok(AuthorizationCodeIssue::QuotaExceeded);
             }
         }
@@ -231,7 +253,7 @@ pub async fn issue_authorization_code_result(
         tracing::error!(error = %store_error, "failed to store OAuth authorization code");
         return Err(error::oauth_temporarily_unavailable());
     }
-    state
+    if state
         .audit
         .record(AuditEvent::new(
             "user".to_owned(),
@@ -241,7 +263,18 @@ pub async fn issue_authorization_code_result(
             Some(code.client_id.clone()),
             serde_json::json!({"scopes": code.scopes}),
         ))
-        .await;
+        .await
+        .is_err()
+    {
+        if let Err(error_value) = state.authorization_codes.take(&code.value).await {
+            tracing::warn!(
+                error = %error_value,
+                "failed to compensate authorization code after audit persistence failure"
+            );
+        }
+        refund_quota_if_consumed(state, &client_id, quota_consumed).await;
+        return Err(error::internal());
+    }
 
     let mut redirect_uri = match url::Url::parse(&validated.redirect_uri) {
         Ok(uri) => uri,
@@ -293,6 +326,29 @@ pub async fn issue_authorization_code(
         Ok(AuthorizationCodeIssue::QuotaExceeded) => authorization_quota_redirect(&pending),
         Err(response) => response,
     }
+}
+
+async fn record_authorization_event(
+    state: &AppState,
+    actor_id: Option<&str>,
+    action: &str,
+    reason: &str,
+) -> Result<(), crate::audit::AuditError> {
+    state
+        .audit
+        .record(AuditEvent::new(
+            if actor_id.is_some() {
+                "user".to_owned()
+            } else {
+                "anonymous".to_owned()
+            },
+            actor_id.map(str::to_owned),
+            action.to_owned(),
+            "oauth_authorization".to_owned(),
+            None,
+            serde_json::json!({"reason": reason}),
+        ))
+        .await
 }
 
 pub fn validated_pending_request(pending: PendingAuthorization) -> ValidatedAuthorizationRequest {

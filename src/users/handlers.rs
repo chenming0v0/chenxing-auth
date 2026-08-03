@@ -34,7 +34,7 @@ pub async fn register_user(
 ) -> Response {
     match state.users.register(input).await {
         Ok(user) => {
-            state
+            if state
                 .audit
                 .record(AuditEvent::new(
                     "system".to_owned(),
@@ -44,7 +44,11 @@ pub async fn register_user(
                     Some(user.id.to_string()),
                     serde_json::json!({"result": "success"}),
                 ))
-                .await;
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             (StatusCode::CREATED, Json(CreatedUserResponse { user })).into_response()
         }
         Err(UserServiceError::Validation(RegistrationError::InvalidEmail)) => {
@@ -121,12 +125,24 @@ pub async fn login_user(
     let user_id = match state.users.authenticate(input, source_ip.as_deref()).await {
         Ok(user_id) => user_id,
         Err(UserServiceError::InvalidCredentials) => {
+            if record_security_event(&state, "login_failure", None, "invalid_credentials")
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             return error::unauthorized(
                 "invalid_credentials",
                 "username, email, or password is incorrect",
             );
         }
         Err(UserServiceError::RateLimited) => {
+            if record_security_event(&state, "rate_limit_triggered", None, "login")
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             return error::unauthorized(
                 "invalid_credentials",
                 "username, email, or password is incorrect",
@@ -169,6 +185,12 @@ pub async fn login_user(
         {
             Ok(valid) => valid,
             Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
+                if record_security_event(&state, "mfa_failure", Some(user_id), "totp_rate_limited")
+                    .await
+                    .is_err()
+                {
+                    return error::internal();
+                }
                 return error::unauthorized("invalid_factor", "authentication factor is invalid");
             }
             Err(factor_error) => {
@@ -177,6 +199,12 @@ pub async fn login_user(
             }
         };
         if !valid {
+            if record_security_event(&state, "mfa_failure", Some(user_id), "totp_invalid")
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             return error::unauthorized("invalid_factor", "authentication factor is invalid");
         }
         return issue_user_session(&state, user_id, "totp").await;
@@ -252,7 +280,7 @@ pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -
 
     match state.sessions.revoke(&session_token).await {
         Ok(()) => {
-            state
+            if state
                 .audit
                 .record(AuditEvent::new(
                     "user".to_owned(),
@@ -262,7 +290,11 @@ pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -
                     Some(session.id.to_string()),
                     serde_json::json!({"result": "success"}),
                 ))
-                .await;
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
             let mut response = StatusCode::NO_CONTENT.into_response();
             cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure);
             response
@@ -272,4 +304,27 @@ pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -
             error::internal()
         }
     }
+}
+
+async fn record_security_event(
+    state: &AppState,
+    action: &str,
+    actor_id: Option<crate::users::domain::UserId>,
+    reason: &str,
+) -> Result<(), crate::audit::AuditError> {
+    state
+        .audit
+        .record(AuditEvent::new(
+            if actor_id.is_some() {
+                "user".to_owned()
+            } else {
+                "anonymous".to_owned()
+            },
+            actor_id.map(|id| id.to_string()),
+            action.to_owned(),
+            "authentication".to_owned(),
+            None,
+            serde_json::json!({"reason": reason}),
+        ))
+        .await
 }

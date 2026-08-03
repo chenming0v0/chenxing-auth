@@ -4,8 +4,8 @@ use thiserror::Error;
 
 #[path = "config_parsing.rs"]
 mod config_parsing;
-use config_parsing::{parse_auth_encryption_key, parse_bool, parse_u16, parse_u64, required_env};
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
+use config_parsing::{parse_auth_encryption_key, parse_bool, parse_u16, parse_u64, required_env};
 
 #[derive(Clone)]
 pub struct Config {

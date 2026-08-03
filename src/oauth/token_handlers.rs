@@ -13,7 +13,7 @@ use super::{
     response::{self, issue_token_response},
     session::active_user_id,
 };
-use crate::{error, state::AppState};
+use crate::{audit::AuditEvent, error, state::AppState};
 
 #[derive(Debug, Deserialize)]
 pub struct TokenRequest {
@@ -181,7 +181,21 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
     };
     let refresh = match state.refresh_tokens.find(refresh_value).await {
         Ok(Some(refresh)) => refresh,
-        Ok(None) => return error::oauth_bad_request("invalid_grant", "refresh token is invalid"),
+        Ok(None) => {
+            if record_token_event(
+                &state,
+                None,
+                "token_refresh_failure",
+                Some(client_id),
+                "invalid_token",
+            )
+            .await
+            .is_err()
+            {
+                return error::internal();
+            }
+            return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
+        }
         Err(store_error) => {
             tracing::error!(error = %store_error, "failed to retrieve refresh token");
             return error::oauth_temporarily_unavailable();
@@ -191,6 +205,18 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
         .validate(client_id, time::OffsetDateTime::now_utc())
         .is_err()
     {
+        if record_token_event(
+            &state,
+            Some(&refresh.user_id),
+            "token_refresh_failure",
+            Some(client_id),
+            "invalid_token",
+        )
+        .await
+        .is_err()
+        {
+            return error::internal();
+        }
         return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
     }
     match active_user_id(&state, &refresh.user_id).await {
@@ -243,8 +269,48 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
         .rotate_if_matches(refresh_value, &refresh, &next_refresh)
         .await
     {
-        Ok(true) => response,
-        Ok(false) => error::oauth_bad_request("invalid_grant", "refresh token is invalid"),
+        Ok(true) => {
+            if record_token_event(
+                &state,
+                Some(&refresh.user_id),
+                "token_refresh",
+                Some(client_id),
+                "success",
+            )
+            .await
+            .is_err()
+            {
+                if let Err(error_value) = state.refresh_tokens.remove(&next_refresh.value).await {
+                    tracing::warn!(
+                        error = %error_value,
+                        "failed to compensate refresh token after audit persistence failure"
+                    );
+                }
+                if let Err(error_value) = state.refresh_tokens.save(&refresh).await {
+                    tracing::warn!(
+                        error = %error_value,
+                        "failed to restore previous refresh token after audit persistence failure"
+                    );
+                }
+                return error::internal();
+            }
+            response
+        }
+        Ok(false) => {
+            if record_token_event(
+                &state,
+                Some(&refresh.user_id),
+                "token_refresh_failure",
+                Some(client_id),
+                "token_race",
+            )
+            .await
+            .is_err()
+            {
+                return error::internal();
+            }
+            error::oauth_bad_request("invalid_grant", "refresh token is invalid")
+        }
         Err(store_error) => {
             tracing::error!(error = %store_error, "failed to atomically rotate refresh token");
             error::oauth_temporarily_unavailable()
@@ -272,10 +338,24 @@ async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Response> {
     let max_qps = effective.plan.max_qps?;
     match state.qps.allow(client_id, max_qps.max(1) as u32).await {
         Ok(true) => None,
-        Ok(false) => Some(error::oauth_too_many_requests(
-            "temporarily_unavailable",
-            "request rate limit exceeded",
-        )),
+        Ok(false) => {
+            if record_token_event(
+                state,
+                None,
+                "rate_limit_triggered",
+                Some(client_id),
+                "oauth_qps",
+            )
+            .await
+            .is_err()
+            {
+                return Some(error::internal());
+            }
+            Some(error::oauth_too_many_requests(
+                "temporarily_unavailable",
+                "request rate limit exceeded",
+            ))
+        }
         Err(error_value) => {
             tracing::error!(error = %error_value, "QPS rate limit check failed");
             Some(error::oauth_temporarily_unavailable())
@@ -308,4 +388,28 @@ fn verify_code_is_redeemable(code: &AuthorizationCode) -> Result<(), ()> {
     let mut code = code.clone();
     code.redeem_at(time::OffsetDateTime::now_utc())
         .map_err(|_| ())
+}
+
+async fn record_token_event(
+    state: &AppState,
+    actor_id: Option<&str>,
+    action: &str,
+    client_id: Option<&str>,
+    reason: &str,
+) -> Result<(), crate::audit::AuditError> {
+    state
+        .audit
+        .record(AuditEvent::new(
+            if actor_id.is_some() {
+                "user".to_owned()
+            } else {
+                "oauth_client".to_owned()
+            },
+            actor_id.map(str::to_owned),
+            action.to_owned(),
+            "oauth_token".to_owned(),
+            client_id.map(str::to_owned),
+            serde_json::json!({"reason": reason}),
+        ))
+        .await
 }
