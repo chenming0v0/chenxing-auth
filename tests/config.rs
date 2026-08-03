@@ -14,6 +14,7 @@ fn config_accepts_valid_runtime_values() {
     assert_eq!(config.host, "127.0.0.1");
     assert_eq!(config.port, 3000);
     assert_eq!(config.session_ttl_seconds, 3600);
+    assert_eq!(config.key_rotation_grace_seconds, 604800);
 }
 
 #[test]

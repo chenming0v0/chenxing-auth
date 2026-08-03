@@ -1,6 +1,8 @@
 use chenxing_auth::keys::KeyManager;
+use chenxing_auth::oauth::providers::secrets::SecretManager;
 use chenxing_auth::oauth::token::{decode_access_token, issue_access_token};
 use std::fs;
+use std::time::Duration;
 use uuid::Uuid;
 
 #[test]
@@ -15,8 +17,8 @@ fn key_manager_reloads_the_same_active_key() {
     let _ = fs::remove_dir_all(directory);
 }
 
-#[test]
-fn reloaded_key_manager_keeps_rotated_key_for_old_token_validation() {
+#[tokio::test]
+async fn reloaded_key_manager_keeps_rotated_key_for_old_token_validation() {
     let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
     let first = KeyManager::load_or_generate(&directory).expect("initial key");
     let old_token = issue_access_token(
@@ -28,7 +30,7 @@ fn reloaded_key_manager_keeps_rotated_key_for_old_token_validation() {
         3600,
     )
     .expect("old access token");
-    first.rotate().expect("rotated signing key");
+    first.rotate().await.expect("rotated signing key");
 
     let second = KeyManager::load_or_generate(&directory).expect("reloaded key manager");
     assert!(
@@ -40,6 +42,177 @@ fn reloaded_key_manager_keeps_rotated_key_for_old_token_validation() {
         )
         .is_ok()
     );
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[tokio::test]
+async fn zero_retention_reclaims_old_private_key_after_rotation() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let manager = KeyManager::load_or_generate_with_retention(&directory, Duration::ZERO)
+        .expect("initial key");
+    let old_key_id = manager.key_id();
+    let old_key_path = directory.join(format!("rs256-{old_key_id}.pkcs1.der"));
+
+    manager.rotate().await.expect("rotated signing key");
+
+    assert!(!old_key_path.exists());
+    assert_eq!(manager.jwks().keys.len(), 1);
+    let reloaded =
+        KeyManager::load_or_generate_with_retention(&directory, Duration::ZERO).expect("reload");
+    assert_eq!(reloaded.jwks().keys.len(), 1);
+    assert!(reloaded.decoding_key_for(&old_key_id).is_err());
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[tokio::test]
+async fn failed_active_key_persist_keeps_in_memory_key_unchanged() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let manager = KeyManager::load_or_generate(&directory).expect("initial key");
+    let old_key_id = manager.key_id();
+    let active_path = directory.join("active-rs256.kid");
+    fs::remove_file(&active_path).expect("remove active id");
+    fs::create_dir(&active_path).expect("block active id replacement");
+
+    assert!(manager.rotate().await.is_err());
+    assert_eq!(manager.key_id(), old_key_id);
+    assert_eq!(manager.jwks().keys.len(), 1);
+    assert_eq!(fs::read_dir(&directory).expect("key directory").count(), 2);
+
+    fs::remove_dir(&active_path).expect("remove blocker");
+    fs::write(&active_path, &old_key_id).expect("restore active id");
+    let reloaded = KeyManager::load_or_generate(&directory).expect("reload after failure");
+    assert_eq!(reloaded.key_id(), old_key_id);
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[test]
+fn legacy_private_key_is_migrated_and_removed() {
+    let source_directory =
+        std::env::temp_dir().join(format!("chenxing-key-source-{}", Uuid::new_v4()));
+    let source = KeyManager::load_or_generate(&source_directory).expect("source key");
+    let key_id = source.key_id();
+    let key_path = source_directory.join(format!("rs256-{key_id}.pkcs1.der"));
+    let der = fs::read(key_path).expect("source private key");
+
+    let directory = std::env::temp_dir().join(format!("chenxing-legacy-{}", Uuid::new_v4()));
+    fs::create_dir_all(&directory).expect("legacy directory");
+    fs::write(directory.join("active-rs256.pkcs1.der"), der).expect("legacy private key");
+    fs::write(directory.join("active-rs256.kid"), &key_id).expect("legacy active id");
+
+    let manager = KeyManager::load_or_generate(&directory).expect("migrate legacy key");
+    assert_eq!(manager.key_id(), key_id);
+    assert!(!directory.join("active-rs256.pkcs1.der").exists());
+    assert!(directory.join(format!("rs256-{key_id}.pkcs1.der")).exists());
+
+    let _ = fs::remove_dir_all(source_directory);
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[cfg(unix)]
+#[test]
+fn signing_key_storage_permissions_are_restricted_and_repaired() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    fs::create_dir_all(&directory).expect("directory");
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).expect("directory mode");
+    let key_path = directory.join("rs256-cx-existing.pkcs1.der");
+    let active_path = directory.join("active-rs256.kid");
+    fs::write(&key_path, b"invalid-key-material").expect("key file");
+    fs::write(&active_path, "cx-existing").expect("active key");
+    fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644)).expect("key mode");
+    fs::set_permissions(&active_path, fs::Permissions::from_mode(0o644)).expect("active mode");
+
+    let result = KeyManager::load_or_generate(&directory);
+    assert!(result.is_err());
+    assert_eq!(
+        fs::metadata(&directory)
+            .expect("directory metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    assert_eq!(
+        fs::metadata(&key_path)
+            .expect("key metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(&active_path)
+            .expect("active metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[cfg(unix)]
+#[test]
+fn provider_secret_storage_permissions_are_restricted_and_repaired() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = std::env::temp_dir().join(format!("chenxing-secrets-{}", Uuid::new_v4()));
+    let manager = SecretManager::load_or_generate(&directory).expect("provider secret");
+    let path = manager.path().expect("provider secret path");
+    assert_eq!(
+        fs::metadata(&directory)
+            .expect("directory metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    assert_eq!(
+        fs::metadata(path)
+            .expect("secret metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o644)).expect("secret mode");
+    let reloaded = SecretManager::load_or_generate(&directory).expect("reloaded provider secret");
+    assert_eq!(
+        fs::metadata(reloaded.path().expect("reloaded path"))
+            .expect("reloaded metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[tokio::test]
+async fn concurrent_rotations_are_serialized_without_losing_keys() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let manager = KeyManager::load_or_generate(&directory).expect("initial key");
+    let mut tasks = Vec::new();
+    for _ in 0..4 {
+        let manager = manager.clone();
+        tasks.push(tokio::spawn(async move { manager.rotate().await }));
+    }
+
+    let mut key_ids = Vec::new();
+    for task in tasks {
+        key_ids.push(task.await.expect("rotation task").expect("rotation"));
+    }
+    key_ids.sort_by(|left, right| left.key_id.cmp(&right.key_id));
+    key_ids.dedup_by(|left, right| left.key_id == right.key_id);
+    assert_eq!(key_ids.len(), 4);
+    assert_eq!(manager.jwks().keys.len(), 5);
 
     let _ = fs::remove_dir_all(directory);
 }

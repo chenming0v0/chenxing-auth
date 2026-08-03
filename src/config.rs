@@ -1,8 +1,10 @@
 use std::{env, fmt, num::ParseIntError};
 
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-
 use thiserror::Error;
+
+#[path = "config_parsing.rs"]
+mod config_parsing;
+use config_parsing::{parse_auth_encryption_key, parse_bool, parse_u16, parse_u64, required_env};
 
 #[derive(Clone)]
 pub struct Config {
@@ -11,6 +13,7 @@ pub struct Config {
     pub issuer_url: String,
     pub admin_token: String,
     pub key_directory: String,
+    pub key_rotation_grace_seconds: u64,
     pub cookie_secure: bool,
     pub database_url: String,
     pub redis_url: String,
@@ -49,6 +52,10 @@ impl fmt::Debug for Config {
             .field("issuer_url", &self.issuer_url)
             .field("admin_token", &"REDACTED")
             .field("key_directory", &self.key_directory)
+            .field(
+                "key_rotation_grace_seconds",
+                &self.key_rotation_grace_seconds,
+            )
             .field("cookie_secure", &self.cookie_secure)
             .field("database_url", &self.database_url)
             .field("redis_url", &self.redis_url)
@@ -79,6 +86,7 @@ struct ConfigValues {
     issuer_url: String,
     admin_token: String,
     key_directory: String,
+    key_rotation_grace_seconds: u64,
     cookie_secure: bool,
     database_url: String,
     redis_url: String,
@@ -108,6 +116,13 @@ impl Config {
         let webauthn_origin = env::var("WEBAUTHN_ORIGIN").unwrap_or_else(|_| issuer_url.clone());
         let admin_token = env::var("ADMIN_TOKEN").unwrap_or_default();
         let key_directory = env::var("KEY_DIRECTORY").unwrap_or_else(|_| "data/keys".to_owned());
+        let key_rotation_grace_seconds = parse_u64(
+            "KEY_ROTATION_GRACE_SECONDS",
+            env::var("KEY_ROTATION_GRACE_SECONDS")
+                .ok()
+                .as_deref()
+                .unwrap_or("604800"),
+        )?;
         let cookie_secure = parse_bool(
             "COOKIE_SECURE",
             env::var("COOKIE_SECURE").ok().as_deref().unwrap_or("true"),
@@ -128,6 +143,7 @@ impl Config {
             issuer_url: issuer_url.clone(),
             admin_token,
             key_directory,
+            key_rotation_grace_seconds,
             cookie_secure,
             database_url,
             redis_url,
@@ -171,6 +187,7 @@ impl Config {
             issuer_url: issuer_url.clone(),
             admin_token: String::new(),
             key_directory: "data/keys".to_owned(),
+            key_rotation_grace_seconds: 604_800,
             cookie_secure: true,
             database_url,
             redis_url,
@@ -189,6 +206,7 @@ impl Config {
             issuer_url,
             admin_token,
             key_directory,
+            key_rotation_grace_seconds,
             cookie_secure,
             database_url,
             redis_url,
@@ -246,6 +264,7 @@ impl Config {
             issuer_url,
             admin_token,
             key_directory,
+            key_rotation_grace_seconds,
             cookie_secure,
             database_url,
             redis_url,
@@ -255,43 +274,5 @@ impl Config {
             webauthn_rp_id,
             webauthn_origin,
         })
-    }
-}
-
-fn parse_auth_encryption_key(value: &str) -> Result<AuthEncryptionKey, ConfigError> {
-    let decoded = BASE64
-        .decode(value.trim())
-        .map_err(|_| ConfigError::InvalidValue("AUTH_ENCRYPTION_KEY"))?;
-    let bytes: [u8; 32] = decoded
-        .try_into()
-        .map_err(|_| ConfigError::InvalidValue("AUTH_ENCRYPTION_KEY"))?;
-    Ok(AuthEncryptionKey::new(bytes))
-}
-
-fn required_env(name: &'static str) -> Result<String, ConfigError> {
-    let value = env::var(name).map_err(|_| ConfigError::MissingValue(name))?;
-    if value.trim().is_empty() {
-        return Err(ConfigError::MissingValue(name));
-    }
-    Ok(value)
-}
-
-fn parse_u16(name: &'static str, value: &str) -> Result<u16, ConfigError> {
-    value
-        .parse()
-        .map_err(|source| ConfigError::InvalidInteger { name, source })
-}
-
-fn parse_u64(name: &'static str, value: &str) -> Result<u64, ConfigError> {
-    value
-        .parse()
-        .map_err(|source| ConfigError::InvalidInteger { name, source })
-}
-
-fn parse_bool(name: &'static str, value: &str) -> Result<bool, ConfigError> {
-    match value.to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" => Ok(true),
-        "false" | "0" | "no" => Ok(false),
-        _ => Err(ConfigError::InvalidValue(name)),
     }
 }
