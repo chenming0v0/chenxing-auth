@@ -101,6 +101,7 @@ pub async fn register_user(
             );
             error::internal()
         }
+        Err(UserServiceError::SourceIpUnavailable) => error::internal(),
         Err(UserServiceError::LastOwnerRequired) => error::internal(),
         Err(UserServiceError::OwnerBootstrapRequired) => error::conflict(
             "owner_bootstrap_required",
@@ -117,7 +118,7 @@ pub async fn login_user(
     let totp_code = input.totp_code.clone();
     let identifier = input.identifier.trim().to_ascii_lowercase();
     let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
-    let user_id = match state.users.authenticate(input, &source_ip).await {
+    let user_id = match state.users.authenticate(input, source_ip.as_deref()).await {
         Ok(user_id) => user_id,
         Err(UserServiceError::InvalidCredentials) => {
             return error::unauthorized(
@@ -161,7 +162,7 @@ pub async fn login_user(
             .verify_totp(
                 user_id,
                 &identifier,
-                &source_ip,
+                source_ip.as_deref(),
                 totp_code.as_deref().unwrap_or_default(),
             )
             .await

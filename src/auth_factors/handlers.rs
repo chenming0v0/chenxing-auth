@@ -107,7 +107,7 @@ pub async fn confirm_totp_setup(
     let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
     match state
         .factors
-        .confirm_totp_enrollment(&input.login_ticket, &source_ip, &input.code)
+        .confirm_totp_enrollment(&input.login_ticket, source_ip.as_deref(), &input.code)
         .await
     {
         Ok(TotpConfirmation::Completed(user_id)) => {
@@ -121,6 +121,9 @@ pub async fn confirm_totp_setup(
         }
         Ok(TotpConfirmation::InvalidTicket) => {
             error::bad_request("invalid_login_ticket", "login ticket is invalid")
+        }
+        Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to confirm TOTP enrollment");
@@ -137,7 +140,7 @@ pub async fn login_totp(
     let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
     match state
         .factors
-        .confirm_totp_enrollment(&input.login_ticket, &source_ip, &input.code)
+        .confirm_totp_enrollment(&input.login_ticket, source_ip.as_deref(), &input.code)
         .await
     {
         Ok(crate::auth_factors::service::TotpConfirmation::Completed(user_id)) => {
@@ -150,6 +153,9 @@ pub async fn login_totp(
             return error::unauthorized("invalid_factor", "authentication factor is invalid");
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidTicket) => {}
+        Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
+            return error::unauthorized("invalid_factor", "authentication factor is invalid");
+        }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to confirm TOTP enrollment login");
             return error::internal();
@@ -157,7 +163,7 @@ pub async fn login_totp(
     }
     match state
         .factors
-        .verify_totp_login(&input.login_ticket, &source_ip, &input.code)
+        .verify_totp_login(&input.login_ticket, source_ip.as_deref(), &input.code)
         .await
     {
         Ok(crate::auth_factors::service::TotpConfirmation::Completed(user_id)) => {
@@ -171,6 +177,9 @@ pub async fn login_totp(
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidTicket) => {
             error::bad_request("invalid_login_ticket", "login ticket is invalid")
+        }
+        Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to verify TOTP login");
@@ -238,6 +247,13 @@ pub async fn finish_passkey_registration(
             error::bad_request("invalid_login_ticket", "login ticket is invalid")
         }
         Err(factor_error) => {
+            if matches!(
+                &factor_error,
+                crate::auth_factors::service::AuthFactorServiceError::RateLimited
+                    | crate::auth_factors::service::AuthFactorServiceError::PasskeyConflict
+            ) {
+                return error::unauthorized("invalid_factor", "authentication factor is invalid");
+            }
             tracing::error!(error = %factor_error, "failed to finish passkey registration");
             error::internal()
         }

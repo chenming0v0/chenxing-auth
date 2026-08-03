@@ -12,6 +12,36 @@ pub const IP_FAILURE_LIMIT: i64 = 30;
 pub const TOTP_TICKET_FAILURE_LIMIT: i64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthLimiterFailurePolicy {
+    FailOpen,
+    FailClosed,
+}
+
+impl AuthLimiterFailurePolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FailOpen => "fail-open",
+            Self::FailClosed => "fail-closed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingSourceIpPolicy {
+    Skip,
+    Reject,
+}
+
+impl MissingSourceIpPolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Skip => "skip",
+            Self::Reject => "reject",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureDimension {
     Account,
     SourceIp,
@@ -42,6 +72,19 @@ pub enum AuthLimiterError {
     Storage,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureRecord {
+    pub reached: Vec<FailureDimension>,
+}
+
+impl FailureRecord {
+    pub fn reached(&self, dimension: FailureDimension) -> bool {
+        self.reached.contains(&dimension)
+    }
+}
+
+pub type LimiterDimension = (FailureDimension, String);
+
 pub type LimiterFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, AuthLimiterError>> + Send + 'a>>;
 
@@ -50,15 +93,46 @@ pub trait AuthFailureLimiter: Send + Sync {
     fn is_limited<'a>(
         &'a self,
         dimension: FailureDimension,
-        value: &'a str,
+        value: &str,
     ) -> LimiterFuture<'a, bool>;
 
     /// Returns true when this failure reaches the dimension's limit.
     fn record_failure<'a>(
         &'a self,
         dimension: FailureDimension,
-        value: &'a str,
+        value: &str,
     ) -> LimiterFuture<'a, bool>;
 
-    fn clear<'a>(&'a self, dimension: FailureDimension, value: &'a str) -> LimiterFuture<'a, ()>;
+    fn clear<'a>(&'a self, dimension: FailureDimension, value: &str) -> LimiterFuture<'a, ()>;
+
+    /// Checks all dimensions in one logical operation. Implementations backed by
+    /// Redis override this with one Lua invocation; the default keeps test
+    /// doubles and other storage adapters source-compatible.
+    fn any_limited<'a>(&'a self, dimensions: Vec<LimiterDimension>) -> LimiterFuture<'a, bool> {
+        Box::pin(async move {
+            for (dimension, value) in dimensions {
+                if self.is_limited(dimension, &value).await? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+    }
+
+    /// Records one failed authentication against all applicable dimensions and
+    /// returns the dimensions that reached their threshold.
+    fn record_failures<'a>(
+        &'a self,
+        dimensions: Vec<LimiterDimension>,
+    ) -> LimiterFuture<'a, FailureRecord> {
+        Box::pin(async move {
+            let mut reached = Vec::new();
+            for (dimension, value) in dimensions {
+                if self.record_failure(dimension, &value).await? {
+                    reached.push(dimension);
+                }
+            }
+            Ok(FailureRecord { reached })
+        })
+    }
 }
