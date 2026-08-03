@@ -468,47 +468,6 @@ fn parse_auth_encryption_key_ring_value(
     AuthEncryptionKeyRing::from_entries(active_kid, keys)
 }
 
-#[cfg(test)]
-mod tests {
-    use base64::{Engine, engine::general_purpose::STANDARD};
-
-    use super::*;
-
-    #[test]
-    fn key_ring_parser_preserves_standard_base64_padding_for_multiple_keys() {
-        let current = STANDARD.encode([1_u8; 32]);
-        let previous = STANDARD.encode([2_u8; 32]);
-        let ring = parse_auth_encryption_key_ring_value(
-            &format!("kid=current:{current},kid=previous:{previous}"),
-            Some("current"),
-        )
-        .expect("valid key ring");
-
-        assert_eq!(ring.active_kid(), "current");
-        assert_eq!(ring.active_key().as_bytes(), &[1_u8; 32]);
-        assert_eq!(
-            ring.key("previous").expect("previous key").as_bytes(),
-            &[2_u8; 32]
-        );
-    }
-
-    #[test]
-    fn key_ring_parser_rejects_malformed_entries_without_exposing_key_material() {
-        for value in [
-            "current=not-a-key",
-            "kid=current=not-a-key",
-            "kid=current:not-a-key",
-            "kid=current:",
-            "kid=current:not-a-key,kid=",
-        ] {
-            let error = parse_auth_encryption_key_ring_value(value, None)
-                .expect_err("malformed key ring must be rejected");
-            assert_eq!(error, ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
-            assert!(!error.to_string().contains("not-a-key"));
-        }
-    }
-}
-
 fn parse_auth_limiter_failure_policy(
     name: &'static str,
     value: &str,
@@ -570,4 +529,45 @@ fn client_registration_limits_from_env() -> Result<ClientRegistrationLimits, Con
         .collect::<Result<Vec<_>, _>>()?;
     ClientRegistrationLimits::new(values[0], values[1], values[2], values[3])
         .ok_or(ConfigError::InvalidValue("OAUTH_CLIENT_LIMITS"))
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    use super::*;
+
+    #[test]
+    fn key_ring_parser_preserves_standard_base64_padding_for_multiple_keys() {
+        let current = STANDARD.encode([1_u8; 32]);
+        let previous = STANDARD.encode([2_u8; 32]);
+        let ring = parse_auth_encryption_key_ring_value(
+            &format!("kid=current:{current},kid=previous:{previous}"),
+            Some("current"),
+        )
+        .expect("valid key ring");
+
+        assert_eq!(ring.active_kid(), "current");
+        assert_eq!(ring.active_key().as_bytes(), &[1_u8; 32]);
+        assert_eq!(
+            ring.key("previous").expect("previous key").as_bytes(),
+            &[2_u8; 32]
+        );
+    }
+
+    #[test]
+    fn key_ring_parser_rejects_malformed_entries_without_exposing_key_material() {
+        for value in [
+            "current=not-a-key",
+            "kid=current=not-a-key",
+            "kid=current:not-a-key",
+            "kid=current:",
+            "kid=current:not-a-key,kid=",
+        ] {
+            let error = parse_auth_encryption_key_ring_value(value, None)
+                .expect_err("malformed key ring must be rejected");
+            assert_eq!(error, ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
+            assert!(!error.to_string().contains("not-a-key"));
+        }
+    }
 }

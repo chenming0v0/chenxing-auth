@@ -206,7 +206,7 @@ async fn provider_admin_api_requires_auth_and_never_returns_client_secret() {
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(
         response.headers()[axum::http::header::LOCATION],
-        "/console/settings"
+        "/admin/settings"
     );
 
     chenxing_auth::sqlx::query("DELETE FROM oauth_providers WHERE slug = $1")
