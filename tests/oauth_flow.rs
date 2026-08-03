@@ -295,7 +295,7 @@ async fn refresh_token_remains_reusable_when_access_token_issuance_fails() {
         )
         .await
         .expect("failed refresh response");
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(
         state
             .refresh_tokens
@@ -445,7 +445,7 @@ async fn authorization_code_is_restored_when_token_issuance_fails() {
         )
         .await
         .expect("failed code exchange response");
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert!(
         state
             .authorization_codes
