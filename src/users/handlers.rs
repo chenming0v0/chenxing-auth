@@ -90,6 +90,10 @@ pub async fn register_user(
             tracing::error!("failed to hash user password");
             error::internal()
         }
+        Err(UserServiceError::InvalidLoginInput) => {
+            tracing::error!("login input validation reached registration handler");
+            error::internal()
+        }
         Err(UserServiceError::InvalidCredentials) => {
             tracing::error!("invalid credentials reached registration handler");
             error::internal()
@@ -132,6 +136,12 @@ pub async fn login_user(
             {
                 return error::internal();
             }
+            return error::unauthorized(
+                "invalid_credentials",
+                "username, email, or password is incorrect",
+            );
+        }
+        Err(UserServiceError::InvalidLoginInput) => {
             return error::unauthorized(
                 "invalid_credentials",
                 "username, email, or password is incorrect",
