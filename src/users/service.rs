@@ -253,7 +253,7 @@ impl UserService {
         }
         let password_hash =
             hash_password(new_password).map_err(|_| UserServiceError::PasswordHash)?;
-        if !repository::update_password_hash(&self.pool, id, &password_hash).await? {
+        if !repository::change_password_and_revoke_all(&self.pool, id, &password_hash).await? {
             return Err(UserServiceError::InvalidCredentials);
         }
         Ok(())
@@ -264,10 +264,7 @@ impl UserService {
     }
 
     pub async fn set_status(&self, id: UserId, status: &str) -> Result<bool, UserServiceError> {
-        if !matches!(status, "active" | "disabled") {
-            return Ok(false);
-        }
-        Ok(repository::set_user_status(&self.pool, id, status).await?)
+        self.set_status_guarded(id, status).await
     }
 
     pub async fn set_role(&self, id: UserId, role: UserRole) -> Result<bool, UserServiceError> {

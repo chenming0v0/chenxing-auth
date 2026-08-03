@@ -67,6 +67,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             )),
             false,
         ),
+        Migration::new(
+            6,
+            Cow::Borrowed("session revocation epochs"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0006_session_epochs.sql")),
+            false,
+        ),
     ];
 
     Migrator {

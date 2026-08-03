@@ -483,16 +483,45 @@ async fn disabled_user_cannot_use_an_existing_browser_session() {
         .expect("disable user response");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     let response = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/v1/auth/oauth-clients")
-                .header("cookie", cookies)
+                .header("cookie", &cookies)
                 .body(Body::empty())
                 .expect("disabled user request"),
         )
         .await
         .expect("disabled user response");
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/admin/users/{user_id}/active"))
+                .header("authorization", "Bearer user-ui-admin-token")
+                .body(Body::empty())
+                .expect("enable user request"),
+        )
+        .await
+        .expect("enable user response");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/oauth-clients")
+                .header("cookie", &cookies)
+                .body(Body::empty())
+                .expect("old session after re-enable request"),
+        )
+        .await
+        .expect("old session after re-enable response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    assert_eq!(response.headers().get_all(SET_COOKIE).iter().count(), 2);
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)

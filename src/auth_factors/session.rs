@@ -42,6 +42,12 @@ pub async fn issue_user_session(state: &AppState, user_id: UserId, factor: &str)
         }
     };
     if let Err(session_error) = state.sessions.save(&mut session, ttl).await {
+        if matches!(
+            &session_error,
+            crate::sessions::store::SessionStoreError::UserDisabled
+        ) {
+            return error::unauthorized("user_disabled", "user account is disabled");
+        }
         tracing::error!(error = %session_error, "failed to persist session");
         return error::internal();
     }

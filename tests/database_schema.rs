@@ -140,6 +140,8 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     assert_column(&pool, "oauth_providers", "id", "bigint", false).await;
     assert_identity(&pool, "oauth_providers", "id").await;
     assert_column(&pool, "user_sessions", "session_payload", "bytea", true).await;
+    assert_column(&pool, "users", "session_epoch", "bigint", false).await;
+    assert_column(&pool, "user_sessions", "session_epoch", "bigint", false).await;
     assert_column(&pool, "session_outbox", "id", "bigint", false).await;
     assert_identity(&pool, "session_outbox", "id").await;
     assert_column(
@@ -151,6 +153,7 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     )
     .await;
     assert_column(&pool, "session_outbox", "attempts", "integer", false).await;
+    assert_column(&pool, "session_outbox", "generation", "bigint", false).await;
     assert_fk(&pool, "session_outbox", "session_id", "user_sessions", "id").await;
 
     let suffix = uuid::Uuid::new_v4().simple().to_string();

@@ -4,6 +4,7 @@ use base64::Engine;
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{
     clients::{domain::ValidatedClientRegistration, repository as client_repository},
+    config::{AuthEncryptionKey, AuthEncryptionKeyRing},
     db,
     oauth::{
         code::AuthorizationCode, refresh::RefreshToken, refresh_store::RefreshTokenStore,
@@ -168,6 +169,186 @@ async fn postgres_transaction_user_insert_and_missing_client_paths_work() {
 }
 
 #[tokio::test]
+async fn password_change_commits_password_and_session_revocation_together() {
+    let pool = database().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let old_password = "correct horse battery";
+    let new_password = "new correct password";
+    let email = format!("password-commit-{suffix}@example.com");
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("password-commit-{suffix}"),
+            email,
+            password: old_password.to_owned(),
+            display_name: None,
+        },
+        hash_password(old_password).expect("old password hash"),
+    )
+    .await
+    .expect("insert user");
+    let token_hash = sha2::Sha256::digest(format!("session-{suffix}").as_bytes()).to_vec();
+    let created_at = OffsetDateTime::now_utc();
+    let session_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO user_sessions (token_hash, user_id, created_at, expires_at)
+         VALUES ($1, $2, $3, $4) RETURNING id",
+    )
+    .bind(&token_hash)
+    .bind(user.id)
+    .bind(created_at)
+    .bind(created_at + time::Duration::hours(1))
+    .fetch_one(&pool)
+    .await
+    .expect("insert session");
+
+    assert!(
+        user_repository::change_password_and_revoke_all(
+            &pool,
+            user.id,
+            &hash_password(new_password).expect("new password hash"),
+        )
+        .await
+        .expect("change password")
+    );
+
+    let (stored_hash,): (String,) =
+        chenxing_auth::sqlx::query_as("SELECT password_hash FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_one(&pool)
+            .await
+            .expect("stored password hash");
+    assert!(chenxing_auth::users::credentials::verify_password(
+        new_password,
+        &stored_hash
+    ));
+    assert!(!chenxing_auth::users::credentials::verify_password(
+        old_password,
+        &stored_hash
+    ));
+
+    let (epoch,): (i64,) =
+        chenxing_auth::sqlx::query_as("SELECT session_epoch FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_one(&pool)
+            .await
+            .expect("session epoch");
+    assert_eq!(epoch, 1);
+    let (revoked_at,): (Option<OffsetDateTime>,) =
+        chenxing_auth::sqlx::query_as("SELECT revoked_at FROM user_sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_one(&pool)
+            .await
+            .expect("revoked session");
+    assert!(revoked_at.is_some());
+    let outbox: Vec<(String, i64)> = chenxing_auth::sqlx::query_as(
+        "SELECT operation, generation FROM session_outbox
+         WHERE user_id = $1 ORDER BY id",
+    )
+    .bind(user.id)
+    .fetch_all(&pool)
+    .await
+    .expect("session outbox");
+    assert_eq!(
+        outbox,
+        vec![
+            ("revoke_session".to_owned(), 1),
+            ("revoke_user".to_owned(), 1)
+        ]
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup password commit user");
+}
+
+#[tokio::test]
+async fn password_change_rolls_back_when_session_epoch_update_fails() {
+    let pool = database().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let old_password = "correct horse battery";
+    let new_password = "new correct password";
+    let email = format!("password-rollback-{suffix}@example.com");
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("password-rollback-{suffix}"),
+            email,
+            password: old_password.to_owned(),
+            display_name: None,
+        },
+        hash_password(old_password).expect("old password hash"),
+    )
+    .await
+    .expect("insert user");
+    let token_hash = sha2::Sha256::digest(format!("rollback-session-{suffix}").as_bytes()).to_vec();
+    let created_at = OffsetDateTime::now_utc();
+    let session_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO user_sessions (token_hash, user_id, created_at, expires_at)
+         VALUES ($1, $2, $3, $4) RETURNING id",
+    )
+    .bind(&token_hash)
+    .bind(user.id)
+    .bind(created_at)
+    .bind(created_at + time::Duration::hours(1))
+    .fetch_one(&pool)
+    .await
+    .expect("insert session");
+    chenxing_auth::sqlx::query("UPDATE users SET session_epoch = $2 WHERE id = $1")
+        .bind(user.id)
+        .bind(i64::MAX)
+        .execute(&pool)
+        .await
+        .expect("set epoch overflow fixture");
+
+    let result = user_repository::change_password_and_revoke_all(
+        &pool,
+        user.id,
+        &hash_password(new_password).expect("new password hash"),
+    )
+    .await;
+    assert!(result.is_err(), "epoch overflow must fail the transaction");
+
+    let (stored_hash, epoch): (String, i64) = chenxing_auth::sqlx::query_as(
+        "SELECT password_hash, session_epoch FROM users WHERE id = $1",
+    )
+    .bind(user.id)
+    .fetch_one(&pool)
+    .await
+    .expect("rolled back user state");
+    assert!(chenxing_auth::users::credentials::verify_password(
+        old_password,
+        &stored_hash
+    ));
+    assert!(!chenxing_auth::users::credentials::verify_password(
+        new_password,
+        &stored_hash
+    ));
+    assert_eq!(epoch, i64::MAX);
+    let (revoked_at,): (Option<OffsetDateTime>,) =
+        chenxing_auth::sqlx::query_as("SELECT revoked_at FROM user_sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_one(&pool)
+            .await
+            .expect("rolled back session state");
+    assert!(revoked_at.is_none());
+    let (outbox_count,): (i64,) =
+        chenxing_auth::sqlx::query_as("SELECT COUNT(*) FROM session_outbox WHERE user_id = $1")
+            .bind(user.id)
+            .fetch_one(&pool)
+            .await
+            .expect("rolled back outbox state");
+    assert_eq!(outbox_count, 0);
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup password rollback user");
+}
+
+#[tokio::test]
 async fn owned_clients_are_isolated_and_limited_to_two_projects() {
     let pool = database().await;
     let owner = user_repository::insert_user(
@@ -322,7 +503,7 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
         .await
         .expect("Redis connection");
 
-    let sessions = SessionStore::new(client.clone());
+    let sessions = SessionStore::with_redis_key(client.clone(), [0; 32]);
     let mut session =
         Session::new("storage-user".to_owned(), Duration::from_secs(60)).expect("session");
     sessions
@@ -1233,4 +1414,188 @@ async fn session_revoke_all_outbox_cleans_redis_after_user_deletion() {
             .await
             .expect("deleted Redis session")
     );
+}
+
+#[tokio::test]
+#[serial(session_outbox)]
+async fn concurrent_save_and_revoke_all_keep_the_epoch_boundary_monotonic() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("epoch-race-{}", Uuid::new_v4().simple()),
+            email: format!("epoch-race-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert epoch race user");
+    let store = SessionStore::with_metadata_and_key(redis_client(), pool.clone(), [0x42; 32]);
+    let mut concurrent =
+        Session::new(user.id.to_string(), Duration::from_secs(60)).expect("concurrent session");
+
+    let (save_result, revoke_result) = tokio::join!(
+        store.save(&mut concurrent, Duration::from_secs(60)),
+        store.revoke_all_for_user(user.id),
+    );
+    save_result.expect("concurrent save");
+    revoke_result.expect("concurrent revoke all");
+
+    let sync_id: Option<(i64,)> = chenxing_auth::sqlx::query_as(
+        "SELECT id FROM session_outbox
+         WHERE session_id = $1 AND operation = 'sync_session'
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(concurrent.id)
+    .fetch_optional(&pool)
+    .await
+    .expect("find concurrent sync event");
+    if let Some((sync_id,)) = sync_id {
+        chenxing_auth::sqlx::query(
+            "UPDATE session_outbox
+             SET available_at = NOW() + INTERVAL '1 hour'
+             WHERE id = $1",
+        )
+        .bind(sync_id)
+        .execute(&pool)
+        .await
+        .expect("delay sync event");
+    }
+    store
+        .process_pending_outbox()
+        .await
+        .expect("apply revoke events first");
+    if let Some((sync_id,)) = sync_id {
+        chenxing_auth::sqlx::query("UPDATE session_outbox SET available_at = NOW() WHERE id = $1")
+            .bind(sync_id)
+            .execute(&pool)
+            .await
+            .expect("release delayed sync event");
+        store
+            .process_pending_outbox()
+            .await
+            .expect("apply delayed sync event");
+    }
+
+    let state: Option<(bool, i64, i64)> = chenxing_auth::sqlx::query_as(
+        "SELECT sessions.revoked_at IS NULL, sessions.session_epoch, users.session_epoch
+         FROM user_sessions AS sessions
+         JOIN users ON users.id = sessions.user_id
+         WHERE sessions.id = $1",
+    )
+    .bind(concurrent.id)
+    .fetch_optional(&pool)
+    .await
+    .expect("read concurrent session state");
+    let Some((active, session_epoch, user_epoch)) = state else {
+        panic!("concurrent session row missing");
+    };
+    if active {
+        assert!(session_epoch >= user_epoch);
+        assert!(
+            store
+                .find(&concurrent.token)
+                .await
+                .expect("find current session")
+                .is_some()
+        );
+    } else {
+        assert!(
+            store
+                .find(&concurrent.token)
+                .await
+                .expect("find revoked session")
+                .is_none()
+        );
+    }
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup epoch race user");
+}
+
+#[tokio::test]
+#[serial(session_outbox)]
+async fn session_projection_is_encrypted_and_old_key_remains_readable() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("key-ring-{}", Uuid::new_v4().simple()),
+            email: format!("key-ring-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert key ring user");
+    let client = redis_client();
+    let old_store = SessionStore::with_metadata_and_key(client.clone(), pool.clone(), [2; 32]);
+    let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
+    old_store
+        .save(&mut session, Duration::from_secs(60))
+        .await
+        .expect("save old-key session");
+
+    let ring = AuthEncryptionKeyRing::from_entries(
+        "current".to_owned(),
+        vec![
+            ("current".to_owned(), AuthEncryptionKey::new([1; 32])),
+            ("previous".to_owned(), AuthEncryptionKey::new([2; 32])),
+        ],
+    )
+    .expect("rotation ring");
+    let rotated = SessionStore::with_metadata_and_key_ring(client.clone(), pool.clone(), ring);
+    assert!(
+        rotated
+            .find(&session.token)
+            .await
+            .expect("read old key")
+            .is_some()
+    );
+    rotated
+        .process_pending_outbox()
+        .await
+        .expect("project encrypted session");
+
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let redis_key = format!(
+        "chenxing:session:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(sha2::Sha256::digest(session.token.as_bytes()))
+    );
+    let projected: Vec<u8> = connection.get(&redis_key).await.expect("projected payload");
+    assert!(
+        !projected
+            .windows(session.token.len())
+            .any(|window| window == session.token.as_bytes())
+    );
+    assert!(
+        !projected
+            .windows(session.csrf_token.len())
+            .any(|window| window == session.csrf_token.as_bytes())
+    );
+
+    let invalid_key = SessionStore::with_metadata_and_key(client, pool.clone(), [3; 32]);
+    assert!(
+        invalid_key
+            .find(&session.token)
+            .await
+            .expect("invalid key must be controlled")
+            .is_none()
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup key ring user");
 }

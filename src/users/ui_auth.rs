@@ -31,43 +31,42 @@ pub(crate) async fn current_user(
         .await
         .map_err(|_| error::internal())?
     else {
-        return Err(error::unauthorized(
-            "invalid_session",
-            "user session is invalid",
-        ));
+        return Err(invalid_session_response(state, "invalid_session"));
     };
     if !session.is_active() {
-        return Err(error::unauthorized(
-            "invalid_session",
-            "user session is invalid",
-        ));
+        return Err(invalid_session_response(state, "invalid_session"));
     }
     let user_id = session
         .user_id
         .parse::<UserId>()
-        .map_err(|_| error::unauthorized("invalid_session", "user session is invalid"))?;
+        .map_err(|_| invalid_session_response(state, "invalid_session"))?;
     let Some(profile) = state
         .users
         .find_profile(user_id)
         .await
         .map_err(|_| error::internal())?
     else {
-        return Err(error::unauthorized(
-            "invalid_session",
-            "user account is invalid",
-        ));
+        return Err(invalid_session_response(state, "invalid_session"));
     };
     if profile.status != "active" {
-        return Err(error::unauthorized(
-            "user_disabled",
-            "user account is disabled",
-        ));
+        return Err(invalid_session_response(state, "user_disabled"));
     }
     Ok(UserContext {
         user_id,
         session,
         role: profile.role,
     })
+}
+
+fn invalid_session_response(state: &AppState, code: &'static str) -> Response {
+    let message = if code == "user_disabled" {
+        "user account is disabled"
+    } else {
+        "user session is invalid"
+    };
+    let mut response = error::unauthorized(code, message);
+    cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure);
+    response
 }
 
 pub(crate) async fn mutation_user(

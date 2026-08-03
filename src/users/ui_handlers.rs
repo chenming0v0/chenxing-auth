@@ -112,10 +112,6 @@ pub async fn change_current_user_password(
         .await
     {
         Ok(()) => {
-            if let Err(error_value) = state.sessions.revoke_all_for_user(context.user_id).await {
-                tracing::error!(error = %error_value, "failed to revoke sessions after password change");
-                return error::internal();
-            }
             let mut response = StatusCode::NO_CONTENT.into_response();
             cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure);
             response
