@@ -90,6 +90,21 @@ async fn assert_table_missing(pool: &chenxing_auth::sqlx::PgPool, table: &str) {
     assert!(!exists, "legacy table still exists: {table}");
 }
 
+async fn assert_index(pool: &chenxing_auth::sqlx::PgPool, index: &str) {
+    let exists: bool = chenxing_auth::sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+             FROM pg_indexes
+             WHERE schemaname = current_schema() AND indexname = $1
+         )",
+    )
+    .bind(index)
+    .fetch_one(pool)
+    .await
+    .expect("index metadata query");
+    assert!(exists, "missing index: {index}");
+}
+
 async fn assert_fk(
     pool: &chenxing_auth::sqlx::PgPool,
     table: &str,
@@ -152,6 +167,14 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     .await;
     assert_column(&pool, "session_outbox", "attempts", "integer", false).await;
     assert_fk(&pool, "session_outbox", "session_id", "user_sessions", "id").await;
+    for index in [
+        "users_admin_query_order_idx",
+        "users_admin_query_status_idx",
+        "oauth_clients_admin_query_order_idx",
+        "oauth_clients_admin_query_status_idx",
+    ] {
+        assert_index(&pool, index).await;
+    }
 
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let ids: Vec<i64> = chenxing_auth::sqlx::query_scalar(
