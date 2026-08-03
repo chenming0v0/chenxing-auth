@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use super::ui_auth::{current_user, mutation_error, mutation_user};
 use crate::{
+    audit::AuditEvent,
     clients::{
         domain::ClientRegistrationInput,
         service::{ClientServiceError, ClientSummary, RegisteredClientSecret},
@@ -40,6 +41,11 @@ struct OwnedClientListResponse {
     items: Vec<OwnedClientResponse>,
 }
 
+#[derive(Debug, Serialize)]
+struct AuthorizedAppListResponse {
+    items: Vec<crate::consents::AuthorizedApp>,
+}
+
 pub async fn list_owned_clients(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Ok(context) = current_user(&state, &headers).await else {
         return error::unauthorized("login_required", "an authenticated session is required");
@@ -55,6 +61,59 @@ pub async fn list_owned_clients(State(state): State<AppState>, headers: HeaderMa
         Ok(items) => (StatusCode::OK, Json(OwnedClientListResponse { items })).into_response(),
         Err(response) => response,
     }
+}
+
+pub async fn list_authorized_apps(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let Ok(context) = current_user(&state, &headers).await else {
+        return error::unauthorized("login_required", "an authenticated session is required");
+    };
+    match state.consents.list_for_user(context.user_id).await {
+        Ok(items) => (StatusCode::OK, Json(AuthorizedAppListResponse { items })).into_response(),
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to list authorized OAuth apps");
+            error::internal()
+        }
+    }
+}
+
+pub async fn revoke_authorized_app(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(client_id): Path<String>,
+) -> Response {
+    let Ok(context) = mutation_user(&state, &headers).await else {
+        return mutation_error(&state, &headers).await;
+    };
+    let revoked = match state
+        .consents
+        .revoke_for_user(context.user_id, &client_id)
+        .await
+    {
+        Ok(revoked) => revoked,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to revoke OAuth consent");
+            return error::internal();
+        }
+    };
+    if !revoked {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    if let Err(error_value) = state
+        .audit
+        .record(AuditEvent::new(
+            "user".to_owned(),
+            Some(context.user_id.to_string()),
+            "consent_revoke".to_owned(),
+            "oauth_consent".to_owned(),
+            Some(client_id),
+            serde_json::json!({"result": "success"}),
+        ))
+        .await
+    {
+        tracing::error!(error = %error_value, "failed to audit OAuth consent revocation");
+        return error::internal();
+    }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 pub async fn create_owned_client(

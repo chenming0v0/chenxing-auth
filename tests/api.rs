@@ -26,6 +26,21 @@ async fn health_endpoint_reports_service_status() {
 }
 
 #[tokio::test]
+async fn authorized_apps_endpoint_requires_a_session() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/authorized-apps")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn openid_configuration_publishes_standard_endpoints() {
     let response = test_router()
         .oneshot(

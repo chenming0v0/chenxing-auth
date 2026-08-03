@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { Activity, ArrowUpRight, Check, Cloud, LockKeyhole, ShieldCheck, UserRound } from 'lucide-react'
 import { Link, useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
-import { apiFetch, getEntitlements, type EntitlementItem, type EntitlementsResponse, type OwnedOAuthClient, type SessionItem, type UserMe } from '../../api'
+import { apiFetch, getEntitlements, type AuthorizedOAuthApp, type EntitlementItem, type EntitlementsResponse, type OwnedOAuthClient, type SessionItem, type UserMe } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, CopyValue, Field, HudPanel, Notice, PageHeader } from '../../components/ui'
 
@@ -126,8 +126,41 @@ export function ConsoleProfile() {
 }
 
 export function AuthorizedApps() {
-  const [clients, setClients] = useState<OwnedOAuthClient[]>([])
+  const [apps, setApps] = useState<AuthorizedOAuthApp[]>([])
   const [message, setMessage] = useState('')
-  useEffect(() => { void apiFetch<{ items: OwnedOAuthClient[] }>('/api/v1/auth/oauth-clients').then((response) => setClients(response.items)).catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。')) }, [])
-  return <ConsoleLayout><PageHeader eyebrow="ACCOUNT / AUTHORIZED APPS" title="已授权应用" description="当前 API 提供的是账号拥有的 OAuth 项目列表；授权撤销需要后端提供对应的用户授权撤销路由。" action={<Link className="chenxing-btn-ghost" to="/console/integrate">接入应用</Link>} />{message && <div className="auth-feedback"><Notice tone="warning">{message}</Notice></div>}<HudPanel><div className="panel-heading"><div><h2>OAuth 项目</h2><p>{clients.length} 个服务端项目</p></div><ShieldCheck size={18} color="var(--chenxing-cyan)" /></div>{clients.length ? <div className="list-stack">{clients.map((client) => <div className="list-row app-list-row" key={client.client_id}><div className="app-list-main"><span className="app-mark"><ShieldCheck size={19} /></span><span><strong>{client.client_name}</strong><small>{client.redirect_uris.join(' · ')}</small><small className="code-text">{client.scopes.join(' · ')}</small></span></div><Badge tone={client.status === 'active' ? 'success' : 'warning'}>{client.status}</Badge></div>)}</div> : <div className="empty-state"><ShieldCheck size={24} /><strong>暂无 OAuth 项目</strong><span>从接入应用开始创建你的第一个项目。</span></div>}<div className="auth-feedback"><Notice tone="info">当前 OpenAPI 没有用户授权撤销端点，因此不会把“禁用项目”误当成“撤销授权”。</Notice></div></HudPanel></ConsoleLayout>
+  const [busyClientId, setBusyClientId] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  async function loadApps(): Promise<boolean> {
+    setLoading(true)
+    setMessage('')
+    try {
+      const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
+      setApps(response.items)
+      return true
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。')
+      return false
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { void loadApps() }, [])
+
+  async function revokeApp(app: AuthorizedOAuthApp) {
+    if (!window.confirm(`确认撤销“${app.client_name}”的授权吗？`)) return
+    setBusyClientId(app.client_id)
+    setMessage('')
+    try {
+      await apiFetch<void>(`/api/v1/auth/authorized-apps/${encodeURIComponent(app.client_id)}`, { method: 'DELETE' })
+      if (await loadApps()) setMessage('应用授权已撤销。')
+    } catch (reason) {
+      setMessage(reason instanceof Error ? reason.message : '应用授权撤销失败。')
+    } finally {
+      setBusyClientId(null)
+    }
+  }
+
+  return <ConsoleLayout><PageHeader eyebrow="ACCOUNT / AUTHORIZED APPS" title="已授权应用" description="查看通过辰星通行证授予访问权限的 OAuth 应用。" action={<Link className="chenxing-btn-ghost" to="/console/integrate">接入应用</Link>} />{message && <div className="auth-feedback"><Notice tone={message.includes('已撤销') ? 'success' : 'warning'}>{message}</Notice></div>}<HudPanel><div className="panel-heading"><div><h2>OAuth 应用</h2><p>{loading ? '正在加载授权记录。' : `${apps.length} 个已授权应用`}</p></div><ShieldCheck size={18} color="var(--chenxing-cyan)" /></div>{apps.length ? <div className="list-stack">{apps.map((app) => <div className="list-row app-list-row" key={app.client_id}><div className="app-list-main"><span className="app-mark"><ShieldCheck size={19} /></span><span><strong>{app.client_name}</strong><small className="code-text">{app.client_id}</small><small>{app.scopes.join(' · ')}</small><small>最近授权：{formatDate(app.updated_at)}</small></span></div><Button type="button" variant="danger" icon="x" disabled={busyClientId !== null} onClick={() => void revokeApp(app)}>撤销授权</Button></div>)}</div> : <div className="empty-state"><ShieldCheck size={24} /><strong>暂无已授权应用</strong><span>完成 OAuth 授权后，应用会显示在这里。</span></div>}</HudPanel></ConsoleLayout>
 }

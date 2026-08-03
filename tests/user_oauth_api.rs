@@ -380,6 +380,210 @@ async fn owned_client_mutations_require_user_csrf() {
 }
 
 #[tokio::test]
+async fn authorized_apps_are_user_scoped_and_consent_revoke_is_audited() {
+    let (router, database, key_directory) = setup().await;
+    let owner_suffix = Uuid::new_v4().simple().to_string();
+    let (owner_cookies, owner_csrf) = register_and_login(&router, &owner_suffix).await;
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/clients")
+                .header("authorization", "Bearer user-ui-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "client_name": "Authorized Example",
+                        "redirect_uris": ["https://authorized.example/callback"],
+                        "scopes": ["openid", "profile"]
+                    })
+                    .to_string(),
+                ))
+                .expect("client request"),
+        )
+        .await
+        .expect("client response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let client_id = json(response).await["client_id"]
+        .as_str()
+        .expect("client id")
+        .to_owned();
+
+    let other_suffix = Uuid::new_v4().simple().to_string();
+    let (other_cookies, _) = register_and_login(&router, &other_suffix).await;
+    let owner_id: i64 =
+        chenxing_auth::sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+            .bind(format!("ui-{owner_suffix}"))
+            .fetch_one(&database)
+            .await
+            .expect("owner id");
+    let other_id: i64 =
+        chenxing_auth::sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+            .bind(format!("ui-{other_suffix}"))
+            .fetch_one(&database)
+            .await
+            .expect("other id");
+    for user_id in [owner_id, other_id] {
+        chenxing_auth::sqlx::query(
+            "INSERT INTO user_consents (user_id, client_id, scopes, updated_at)
+             SELECT $1, id, $3, $4 FROM oauth_clients WHERE client_id = $2",
+        )
+        .bind(user_id)
+        .bind(&client_id)
+        .bind(serde_json::json!(["openid", "profile"]))
+        .bind(time::OffsetDateTime::now_utc())
+        .execute(&database)
+        .await
+        .expect("consent insert");
+    }
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/authorized-apps")
+                .header("cookie", &owner_cookies)
+                .body(Body::empty())
+                .expect("authorized apps request"),
+        )
+        .await
+        .expect("authorized apps response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let apps = json(response).await;
+    assert_eq!(apps["items"].as_array().expect("authorized items").len(), 1);
+    let app = &apps["items"][0];
+    assert_eq!(app["client_id"], client_id);
+    assert_eq!(app["client_name"], "Authorized Example");
+    assert_eq!(app["scopes"], serde_json::json!(["openid", "profile"]));
+    assert!(app.get("client_secret").is_none());
+    assert!(app.get("client_secret_hash").is_none());
+    assert!(app.get("redirect_uris").is_none());
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/auth/authorized-apps/{client_id}"))
+                .header("cookie", &owner_cookies)
+                .body(Body::empty())
+                .expect("missing csrf revoke request"),
+        )
+        .await
+        .expect("missing csrf revoke response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json(response).await["code"], "csrf_invalid");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/auth/authorized-apps/{client_id}"))
+                .header("cookie", &owner_cookies)
+                .header("x-csrf-token", &owner_csrf)
+                .body(Body::empty())
+                .expect("revoke request"),
+        )
+        .await
+        .expect("revoke response");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let remaining: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_consents c JOIN oauth_clients oc ON oc.id = c.client_id
+         WHERE oc.client_id = $1 AND c.user_id = $2",
+    )
+    .bind(&client_id)
+    .bind(owner_id)
+    .fetch_one(&database)
+    .await
+    .expect("owner consent count");
+    assert_eq!(remaining, 0);
+    let other_remaining: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_consents c JOIN oauth_clients oc ON oc.id = c.client_id
+         WHERE oc.client_id = $1 AND c.user_id = $2",
+    )
+    .bind(&client_id)
+    .bind(other_id)
+    .fetch_one(&database)
+    .await
+    .expect("other consent count");
+    assert_eq!(other_remaining, 1);
+    let audit: (Option<i64>, String, String, Option<String>) = chenxing_auth::sqlx::query_as(
+        "SELECT actor_user_id, action, resource_type, resource_id FROM audit_events
+         WHERE action = 'consent_revoke' AND resource_id = $1",
+    )
+    .bind(&client_id)
+    .fetch_one(&database)
+    .await
+    .expect("consent audit");
+    assert_eq!(
+        audit,
+        (
+            Some(owner_id),
+            "consent_revoke".to_owned(),
+            "oauth_consent".to_owned(),
+            Some(client_id.clone()),
+        )
+    );
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/auth/authorized-apps/{client_id}"))
+                .header("cookie", &owner_cookies)
+                .header("x-csrf-token", &owner_csrf)
+                .body(Body::empty())
+                .expect("idempotent revoke request"),
+        )
+        .await
+        .expect("idempotent revoke response");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/authorized-apps")
+                .header("cookie", &other_cookies)
+                .body(Body::empty())
+                .expect("other authorized apps request"),
+        )
+        .await
+        .expect("other authorized apps response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json(response).await["items"]
+            .as_array()
+            .expect("other items")
+            .len(),
+        1
+    );
+
+    chenxing_auth::sqlx::query(
+        "DELETE FROM audit_events WHERE action = 'consent_revoke' AND resource_id = $1",
+    )
+    .bind(&client_id)
+    .execute(&database)
+    .await
+    .expect("cleanup audit");
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
+        .bind(&client_id)
+        .execute(&database)
+        .await
+        .expect("cleanup client");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE username IN ($1, $2)")
+        .bind(format!("ui-{owner_suffix}"))
+        .bind(format!("ui-{other_suffix}"))
+        .execute(&database)
+        .await
+        .expect("cleanup users");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
 async fn owned_oauth_authorization_consumes_daily_and_monthly_quota() {
     let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
