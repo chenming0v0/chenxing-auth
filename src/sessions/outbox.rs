@@ -40,9 +40,8 @@ impl SessionStore {
         let Some(pool) = &self.metadata else {
             return Ok(0);
         };
-        let ready_before = OffsetDateTime::now_utc();
         let mut processed = 0;
-        while let Some(entry) = self.claim_outbox(pool, ready_before).await? {
+        while let Some(entry) = self.claim_outbox(pool).await? {
             match self.apply_outbox(pool, &entry).await {
                 Ok(()) => {
                     crate::sqlx::query(
@@ -59,15 +58,13 @@ impl SessionStore {
                     let delay_seconds = 2_i64
                         .saturating_pow(entry.attempts.saturating_sub(1) as u32)
                         .min(300);
-                    let available_at =
-                        OffsetDateTime::now_utc() + time::Duration::seconds(delay_seconds);
                     crate::sqlx::query(
                         "UPDATE session_outbox
-                         SET available_at = $2, last_error = $3
+                         SET available_at = NOW() + $2, last_error = $3
                          WHERE id = $1",
                     )
                     .bind(entry.id)
-                    .bind(available_at)
+                    .bind(time::Duration::seconds(delay_seconds))
                     .bind(error_value.to_string())
                     .execute(pool)
                     .await?;
@@ -96,27 +93,25 @@ impl SessionStore {
     async fn claim_outbox(
         &self,
         pool: &crate::sqlx::PgPool,
-        ready_before: OffsetDateTime,
     ) -> Result<Option<OutboxEntry>, SessionStoreError> {
         let mut transaction = pool.begin().await?;
         let row: Option<ClaimedOutboxRow> = crate::sqlx::query_as(
             "WITH next AS (
                  SELECT id
                  FROM session_outbox
-                 WHERE processed_at IS NULL AND available_at <= $1
+                 WHERE processed_at IS NULL AND available_at <= NOW()
                  ORDER BY id
                  LIMIT 1
                  FOR UPDATE SKIP LOCKED
              )
              UPDATE session_outbox AS outbox
              SET attempts = outbox.attempts + 1,
-                 available_at = NOW() + $2
+                 available_at = NOW() + $1
              FROM next
              WHERE outbox.id = next.id
              RETURNING outbox.id, outbox.operation, outbox.session_id, outbox.user_id,
                        outbox.token_hash, outbox.attempts, outbox.generation",
         )
-        .bind(ready_before)
         .bind(OUTBOX_LEASE)
         .fetch_optional(&mut *transaction)
         .await?;
