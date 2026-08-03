@@ -920,6 +920,10 @@ fn session_store_key() -> [u8; 32] {
     [0x42; 32]
 }
 
+fn session_revocation_marker(user_id: i64) -> String {
+    format!("chenxing:session:revoked-epoch:{user_id}")
+}
+
 fn unavailable_redis_client() -> redis::Client {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve Redis port");
     let port = listener
@@ -1468,7 +1472,17 @@ async fn session_revoke_all_outbox_cleans_redis_after_user_deletion() {
     .await
     .expect("insert outbox deletion user");
     let key = session_store_key();
-    let available = SessionStore::with_metadata_and_key(redis_client(), pool.clone(), key);
+    let client = redis_client();
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let revocation_marker = session_revocation_marker(user.id);
+    let _: usize = connection
+        .del(&revocation_marker)
+        .await
+        .expect("clear reused user revocation marker");
+    let available = SessionStore::with_metadata_and_key(client, pool.clone(), key);
     let mut session = Session::new(user.id.to_string(), Duration::from_secs(60)).expect("session");
     available
         .save(&mut session, Duration::from_secs(60))
@@ -1478,6 +1492,23 @@ async fn session_revoke_all_outbox_cleans_redis_after_user_deletion() {
         .process_pending_outbox()
         .await
         .expect("flush save outbox");
+    let redis_key = format!(
+        "chenxing:session:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(sha2::Sha256::digest(session.token.as_bytes()))
+    );
+    assert!(
+        connection
+            .exists::<_, bool>(&redis_key)
+            .await
+            .expect("initial Redis session projection")
+    );
+    assert!(
+        !connection
+            .exists::<_, bool>(&revocation_marker)
+            .await
+            .expect("initial session revocation marker")
+    );
 
     let unavailable =
         SessionStore::with_metadata_and_key(unavailable_redis_client(), pool.clone(), key);
@@ -1491,15 +1522,6 @@ async fn session_revoke_all_outbox_cleans_redis_after_user_deletion() {
         .await
         .expect("delete user with pending revoke outbox");
 
-    let mut connection = redis_client()
-        .get_multiplexed_async_connection()
-        .await
-        .expect("Redis connection");
-    let redis_key = format!(
-        "chenxing:session:{}",
-        base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(sha2::Sha256::digest(session.token.as_bytes()))
-    );
     assert!(
         connection
             .exists::<_, bool>(&redis_key)
@@ -1511,11 +1533,17 @@ async fn session_revoke_all_outbox_cleans_redis_after_user_deletion() {
         .process_pending_outbox()
         .await
         .expect("replay deletion revoke outbox");
+    let deleted = !connection
+        .exists::<_, bool>(&redis_key)
+        .await
+        .expect("deleted Redis session");
+    let _: usize = connection
+        .del(&revocation_marker)
+        .await
+        .expect("cleanup session revocation marker");
     assert!(
-        !connection
-            .exists::<_, bool>(&redis_key)
-            .await
-            .expect("deleted Redis session")
+        deleted,
+        "pending revoke outbox must delete the Redis session projection"
     );
 }
 
