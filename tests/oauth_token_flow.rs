@@ -20,6 +20,15 @@ mod support;
 
 use support::{ensure_owner_bootstrapped, json_body, test_router};
 
+const TEST_ORIGIN: &str = "http://127.0.0.1:3000/";
+
+fn resolve_location(location: &str) -> Url {
+    Url::parse(TEST_ORIGIN)
+        .expect("test origin")
+        .join(location)
+        .expect("valid redirect location")
+}
+
 fn assert_token_cache_headers(response: &axum::response::Response) {
     assert_eq!(
         response
@@ -249,7 +258,7 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
         .get(LOCATION)
         .and_then(|value| value.to_str().ok())
         .expect("authorization redirect");
-    let redirect = Url::parse(location).expect("redirect URL");
+    let redirect = resolve_location(location);
     let code = redirect
         .query_pairs()
         .find(|(key, _)| key == "code")
