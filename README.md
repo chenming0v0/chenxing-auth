@@ -95,7 +95,7 @@ src/
 - OIDC nonce 绑定和 RS256 ID Token 签发
 - Refresh Token Redis 存储和轮换
 - OIDC UserInfo Bearer Token 校验与按 Scope 返回 Claims
-- 管理员 Bearer Token 保护的 Client 创建与列表 API
+- 管理员 Bearer Token 或普通 Session 保护的 Client 创建与列表 API（浏览器写操作需要 `X-CSRF-Token`）
 - Client 更新、启用、禁用和 Secret 轮换 API
 - 签名私钥和 `kid` 的本地持久化加载
 - HttpOnly Session Cookie、CSRF Cookie 和双提交校验基础
@@ -104,8 +104,8 @@ src/
 - 授权码和 Refresh Token 在绑定、过期和 PKCE 检查通过后使用 Redis 原子消费
 - 管理员密钥轮换 API：`POST /api/v1/admin/keys/rotate`，只返回新的 `key_id` 和公开 JWK 数量
 - 用户、Client、OAuth/OIDC、Session、JWK 和业务扩展模块边界
-- `/auth/login` 辰星通行证浏览器登录页
-- `/oauth/authorize/consent` 授权确认页、拒绝回调和 `user_consents` 持久化
+- `/login` 辰星通行证 React 浏览器登录页，登录请求使用 `POST /api/v1/auth/login`
+- `/oauth/consent` React 授权确认页、拒绝回调和 `user_consents` 持久化
 - Owner bootstrap、统一用户登录、注销、HttpOnly Session/CSRF Cookie
 - 统一用户管理 Web 控制台与 PostgreSQL 持久化的注册邮件发件地址设置
 - `user`、`admin`、`owner` 层级角色与最小权限矩阵

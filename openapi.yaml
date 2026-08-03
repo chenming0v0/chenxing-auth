@@ -251,26 +251,6 @@ paths:
               schema: { $ref: '#/components/schemas/LoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-  /auth/login/totp:
-    post:
-      tags: [User Auth/MFA]
-      summary: 浏览器 OAuth 登录的 TOTP 完成步骤
-      operationId: browserTotpLogin
-      requestBody:
-        required: true
-        content:
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              required: [request_id, login_ticket, code]
-              properties:
-                request_id: { type: string }
-                login_ticket: { type: string }
-                code: { type: string, pattern: '^[0-9]{6}$' }
-      responses:
-        '303': { description: 因子验证成功，重定向到授权确认页 }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/status:
     get:
       tags: [User Auth/Account]
@@ -506,36 +486,19 @@ paths:
         '204': { description: 注销成功 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-  /auth/login:
+  /api/v1/auth/external-providers:
     get:
       tags: [User Auth/Browser Login]
-      summary: 浏览器登录页
-      operationId: browserLoginPage
-      parameters:
-        - { name: request_id, in: query, schema: { type: string } }
-        - { name: external, in: query, schema: { type: string, enum: [success] } }
-        - { name: external_error, in: query, schema: { type: string } }
+      summary: 查询公开的外部登录提供商
+      operationId: listPublicExternalProviders
       responses:
-        '200': { description: HTML 登录页面, content: { text/html: { schema: { type: string } } } }
-    post:
-      tags: [User Auth/Browser Login]
-      summary: 提交浏览器密码登录
-      operationId: browserLogin
-      requestBody:
-        required: true
-        content:
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              required: [request_id, identifier, password]
-              properties:
-                request_id: { type: string }
-                identifier: { type: string, description: 用户名或邮箱 }
-                password: { type: string, format: password }
-      responses:
-        '303': { description: 登录后重定向到授权确认页, headers: { Set-Cookie: { $ref: '#/components/headers/SetCookie' } } }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '200':
+          description: 当前启用的外部登录提供商，仅包含登录页所需的公开信息
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PublicExternalProvider' }
   /auth/external/{slug}:
     get:
       tags: [User Auth/Browser Login]
@@ -626,7 +589,7 @@ paths:
       tags: [OAuth/OIDC]
       summary: 将登录后的 Session 原子绑定到待授权请求
       operationId: bindAuthorizationRequest
-      security: [{ sessionCookie: [] }, { chenxingSession: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: request_id, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
@@ -923,6 +886,7 @@ paths:
       summary: 创建 Client
       operationId: createClient
       security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
       requestBody:
         required: true
         content:
@@ -935,6 +899,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RegisteredClient' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/admin/clients/{client_id}:
     put:
@@ -1361,6 +1327,12 @@ components:
       required: [authenticated]
       properties:
         authenticated: { type: boolean }
+    PublicExternalProvider:
+      type: object
+      required: [slug, name]
+      properties:
+        slug: { type: string }
+        name: { type: string }
     UserMeResponse:
       type: object
       required: [id, username, email, status, role, current_session_expires_at]

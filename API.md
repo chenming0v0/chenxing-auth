@@ -98,7 +98,7 @@
 
 所有 `login_ticket` 和 WebAuthn challenge 默认有效 5 分钟；ticket 是一次性的。WebAuthn 的 RP ID 和 origin 由固定配置 `WEBAUTHN_RP_ID`、`WEBAUTHN_ORIGIN` 控制，不能从请求 Host 推导。
 
-浏览器 OAuth 登录在密码步骤后也必须完成 TOTP；服务端页面会本地生成绑定二维码，并在“无法扫描”区域提供 `secret_base32` 和复制按钮，不直接显示完整 `otpauth://` URI。验证码表单提交到 `POST /auth/login/totp`，成功后才绑定 OAuth 授权请求并跳转到授权确认页。仅有 passkey 的浏览器客户端应使用上述 WebAuthn API 完成因子后再继续授权。
+浏览器 OAuth 登录现在由 React SPA 承接。密码步骤调用 `POST /api/v1/auth/login`，TOTP 绑定和登录分别调用 `POST /api/v1/auth/totp/setup`、`POST /api/v1/auth/totp/setup/confirm` 或 `POST /api/v1/auth/totp/login`；passkey 流程使用上面的 WebAuthn API。因子完成后，SPA 调用授权请求绑定接口并继续授权确认。
 
 ### `DELETE /api/v1/auth/session`
 
@@ -149,15 +149,15 @@
 | `code_challenge_method` | 必须为 `S256` |
 | `nonce` | 使用 OIDC 时建议必填并随机生成 |
 
-未登录的浏览器请求会重定向到 `/auth/login?request_id=...`；非 HTML 请求返回 `401 login_required`。首次授权会进入 `/oauth/authorize/consent?request_id=...`。
+未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`；非 HTML 请求返回 `401 login_required`。首次授权会进入 `/oauth/consent?request_id=...`。
 
 ### `GET /api/v1/oauth/authorize/requests/{request_id}` / `POST ...`
 
 供 JSON 授权确认 UI 使用。请求必须绑定当前浏览器 Session；GET 返回 Client 名称、Redirect 主机、Scope 和剩余有效时间。POST JSON 请求为 `{"decision":"approve"}` 或 `{"decision":"deny"}`，需要用户 CSRF，成功返回经过校验的 `redirect_to`，请求被一次性消费。普通用户项目超过日/月配额时返回 `429 oauth_quota_exceeded`；标准 `/oauth/authorize` 流程返回协议安全的 `temporarily_unavailable` 重定向。
 
-### `GET /auth/login` / `POST /auth/login`
+### React SPA 浏览器登录 `/login`
 
-浏览器登录页面，仅用于 OAuth 浏览器流程。登录表单字段为 `request_id`、`identifier`（用户名或邮箱）、`password`，成功后继续原授权请求。页面会动态显示已启用的自定义 OAuth 提供商。
+浏览器登录页面由 React SPA 提供。登录请求统一使用 `POST /api/v1/auth/login`；页面通过 `GET /api/v1/auth/external-providers` 查询并显示已启用的自定义 OAuth 提供商。
 
 ### `GET /auth/external/{slug}` / `GET /auth/external/{slug}/callback`
 
@@ -165,9 +165,9 @@
 
 外部 UserInfo 必须按配置提供合法 `email` 和唯一 `sub`；可选校验 `email_verified`。首次外部登录在邮箱不存在时创建辰星账号并绑定 `(provider, sub)`；如果邮箱已存在，不会自动接管或合并本地账号，而是返回 `oauth_account_link_required` 页面提示。
 
-### `GET /oauth/authorize/consent` / `POST /oauth/authorize/consent`
+### React SPA 授权确认 `/oauth/consent`
 
-浏览器授权确认页面。表单字段为 `request_id`、`decision`（允许值通常为 `approve` 或 `deny`）。状态变更需要浏览器 Session Cookie、CSRF Cookie 和 `X-CSRF-Token`。
+浏览器授权确认页面调用 `GET /api/v1/oauth/authorize/requests/{request_id}` 查询请求，并以 `POST /api/v1/oauth/authorize/requests/{request_id}` 提交 `decision`（`approve` 或 `deny`）。状态变更需要浏览器 Session Cookie、CSRF Cookie 和 `X-CSRF-Token`。
 
 ### `POST /oauth/token`
 
@@ -274,7 +274,7 @@ Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒窗口限流，�
 {"client_name":"我的应用","redirect_uris":["https://app.example/callback"],"scopes":["openid","email"]}
 ```
 
-- `POST /api/v1/admin/clients`：创建 Client，需要 `ManageClients`。响应包含 `client_secret`，只返回这一次。
+- `POST /api/v1/admin/clients`：创建 Client，需要 `ManageClients`。浏览器 Session 请求必须携带 `X-CSRF-Token`，也可使用有效的 `ADMIN_TOKEN` Bearer 请求而不携带浏览器 CSRF；响应包含 `client_secret`，只返回这一次。
 - `GET /api/v1/admin/clients`：列出 Client，不返回 Secret 或其哈希。
 - `PUT /api/v1/admin/clients/{client_id}`：更新配置，成功 `204`。
 - `POST /api/v1/admin/clients/{client_id}/disable`：禁用，成功 `204`。
