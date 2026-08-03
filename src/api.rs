@@ -216,8 +216,8 @@ pub fn router(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http())
 }
 
-pub(crate) fn source_ip(peer: Option<SocketAddr>) -> String {
-    peer.map_or_else(|| "unknown".to_owned(), |address| address.ip().to_string())
+pub(crate) fn source_ip(peer: Option<SocketAddr>) -> Option<String> {
+    peer.map(|address| address.ip().to_string())
 }
 
 async fn web_app(request: axum::extract::Request) -> Response {

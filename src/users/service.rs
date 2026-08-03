@@ -11,7 +11,7 @@ use super::{
     repository,
 };
 use crate::{
-    auth_limiter::{AuthFailureLimiter, FailureDimension},
+    auth_limiter::{AuthFailureLimiter, FailureDimension, LimiterDimension, MissingSourceIpPolicy},
     sqlx::PgPool,
 };
 
@@ -19,6 +19,7 @@ use crate::{
 pub struct UserService {
     pool: PgPool,
     limiter: Arc<dyn AuthFailureLimiter>,
+    missing_source_ip_policy: MissingSourceIpPolicy,
 }
 
 #[derive(Debug, Error)]
@@ -35,6 +36,8 @@ pub enum UserServiceError {
     RateLimited,
     #[error("authentication limiter failed: {0}")]
     Limiter(#[from] crate::auth_limiter::domain::AuthLimiterError),
+    #[error("trusted source IP is unavailable")]
+    SourceIpUnavailable,
     #[error("last active owner is required")]
     LastOwnerRequired,
     #[error("owner bootstrap is required before public registration")]
@@ -43,7 +46,19 @@ pub enum UserServiceError {
 
 impl UserService {
     pub fn new(pool: PgPool, limiter: Arc<dyn AuthFailureLimiter>) -> Self {
-        Self { pool, limiter }
+        Self::with_source_ip_policy(pool, limiter, MissingSourceIpPolicy::Skip)
+    }
+
+    pub fn with_source_ip_policy(
+        pool: PgPool,
+        limiter: Arc<dyn AuthFailureLimiter>,
+        missing_source_ip_policy: MissingSourceIpPolicy,
+    ) -> Self {
+        Self {
+            pool,
+            limiter,
+            missing_source_ip_policy,
+        }
     }
 
     pub async fn register(&self, input: RegistrationInput) -> Result<PublicUser, UserServiceError> {
@@ -129,88 +144,110 @@ impl UserService {
     pub async fn authenticate(
         &self,
         input: LoginInput,
-        source_ip: &str,
+        source_ip: Option<&str>,
     ) -> Result<UserId, UserServiceError> {
         let login = validate_login(input).map_err(|error| match error {
             LoginError::InvalidIdentifier | LoginError::EmptyPassword => {
                 UserServiceError::InvalidCredentials
             }
         })?;
-        self.ensure_allowed(FailureDimension::Account, &login.identifier)
-            .await?;
-        self.ensure_allowed(FailureDimension::SourceIp, source_ip)
-            .await?;
+        let source_ip = self.source_ip(source_ip)?;
+        self.ensure_allowed(source_ip.as_deref()).await?;
         let Some(credentials) =
             repository::find_credentials_by_identifier(&self.pool, &login.identifier).await?
         else {
-            self.record_failure(&login.identifier, source_ip).await;
+            if self.record_failure(None, source_ip.as_deref()).await? {
+                return Err(UserServiceError::RateLimited);
+            }
             return Err(UserServiceError::InvalidCredentials);
         };
+        let account_key = credentials.id.to_string();
+        self.ensure_account_allowed(&account_key).await?;
         if credentials.status != "active"
             || !credentials.password_login_enabled
             || !verify_password(&login.password, &credentials.password_hash)
         {
-            self.record_failure(&login.identifier, source_ip).await;
+            if self
+                .record_failure(Some(&account_key), source_ip.as_deref())
+                .await?
+            {
+                return Err(UserServiceError::RateLimited);
+            }
             return Err(UserServiceError::InvalidCredentials);
         }
 
-        if let Err(error) = self
-            .limiter
-            .clear(FailureDimension::Account, &login.identifier)
-            .await
-        {
-            tracing::warn!(
-                error = %error,
-                dimension = FailureDimension::Account.as_str(),
-                "authentication limiter unavailable; login succeeded without clearing failures"
-            );
-        }
+        self.limiter
+            .clear(FailureDimension::Account, &account_key)
+            .await?;
         Ok(credentials.id)
     }
 
-    async fn ensure_allowed(
-        &self,
-        dimension: FailureDimension,
-        value: &str,
-    ) -> Result<(), UserServiceError> {
-        match self.limiter.is_limited(dimension, value).await {
-            Ok(true) => Err(UserServiceError::RateLimited),
-            Ok(false) => Ok(()),
-            Err(error) => {
-                // The limiter is an abuse-control aid; Redis outage must not deny valid logins.
+    fn source_ip(&self, source_ip: Option<&str>) -> Result<Option<String>, UserServiceError> {
+        match (source_ip, self.missing_source_ip_policy) {
+            (Some(source_ip), _) => Ok(Some(source_ip.to_owned())),
+            (None, MissingSourceIpPolicy::Skip) => {
                 tracing::warn!(
-                    error = %error,
-                    dimension = dimension.as_str(),
-                    "authentication limiter unavailable; allowing authentication attempt"
+                    event = "auth_limiter.source_ip_unavailable",
+                    policy = MissingSourceIpPolicy::Skip.as_str(),
+                    "authentication attempt is using account-only limiting"
                 );
-                Ok(())
+                Ok(None)
+            }
+            (None, MissingSourceIpPolicy::Reject) => {
+                tracing::error!(
+                    event = "auth_limiter.source_ip_unavailable",
+                    policy = MissingSourceIpPolicy::Reject.as_str(),
+                    "authentication attempt rejected without trusted ConnectInfo"
+                );
+                Err(UserServiceError::SourceIpUnavailable)
             }
         }
     }
 
-    async fn record_failure(&self, identifier: &str, source_ip: &str) {
-        if let Err(error) = self
-            .limiter
-            .record_failure(FailureDimension::Account, identifier)
-            .await
-        {
-            tracing::warn!(
-                error = %error,
-                dimension = FailureDimension::Account.as_str(),
-                "authentication limiter unavailable; account failure was not recorded"
-            );
+    async fn ensure_allowed(&self, source_ip: Option<&str>) -> Result<(), UserServiceError> {
+        if let Some(source_ip) = source_ip {
+            self.ensure_dimensions_allowed(vec![(
+                FailureDimension::SourceIp,
+                source_ip.to_owned(),
+            )])
+            .await?;
         }
-        if let Err(error) = self
-            .limiter
-            .record_failure(FailureDimension::SourceIp, source_ip)
+        Ok(())
+    }
+
+    async fn ensure_account_allowed(&self, account_key: &str) -> Result<(), UserServiceError> {
+        self.ensure_dimensions_allowed(vec![(FailureDimension::Account, account_key.to_owned())])
             .await
-        {
-            tracing::warn!(
-                error = %error,
-                dimension = FailureDimension::SourceIp.as_str(),
-                "authentication limiter unavailable; source IP failure was not recorded"
-            );
+    }
+
+    async fn ensure_dimensions_allowed(
+        &self,
+        dimensions: Vec<LimiterDimension>,
+    ) -> Result<(), UserServiceError> {
+        if self.limiter.any_limited(dimensions).await? {
+            return Err(UserServiceError::RateLimited);
         }
+        Ok(())
+    }
+
+    async fn record_failure(
+        &self,
+        account_key: Option<&str>,
+        source_ip: Option<&str>,
+    ) -> Result<bool, UserServiceError> {
+        let mut dimensions = Vec::with_capacity(2);
+        if let Some(account_key) = account_key {
+            dimensions.push((FailureDimension::Account, account_key.to_owned()));
+        }
+        if let Some(source_ip) = source_ip {
+            dimensions.push((FailureDimension::SourceIp, source_ip.to_owned()));
+        }
+        Ok(!self
+            .limiter
+            .record_failures(dimensions)
+            .await?
+            .reached
+            .is_empty())
     }
 
     pub async fn find_profile(
@@ -314,7 +351,7 @@ mod tests {
         fn is_limited<'a>(
             &'a self,
             _dimension: FailureDimension,
-            _value: &'a str,
+            _value: &str,
         ) -> LimiterFuture<'a, bool> {
             Box::pin(async { Ok(true) })
         }
@@ -322,7 +359,7 @@ mod tests {
         fn record_failure<'a>(
             &'a self,
             _dimension: FailureDimension,
-            _value: &'a str,
+            _value: &str,
         ) -> LimiterFuture<'a, bool> {
             Box::pin(async { Ok(false) })
         }
@@ -330,7 +367,7 @@ mod tests {
         fn clear<'a>(
             &'a self,
             _dimension: FailureDimension,
-            _value: &'a str,
+            _value: &str,
         ) -> LimiterFuture<'a, ()> {
             Box::pin(async { Ok(()) })
         }
@@ -349,7 +386,7 @@ mod tests {
                     password: "incorrect password".to_owned(),
                     totp_code: None,
                 },
-                "127.0.0.1",
+                Some("127.0.0.1"),
             )
             .await;
         assert!(matches!(result, Err(UserServiceError::RateLimited)));

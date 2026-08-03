@@ -73,21 +73,29 @@ impl AppState {
         let database = crate::db::connect(&config)?;
         let redis = redis::Client::open(config.redis_url.as_str())?;
         let auth_limiter: Arc<dyn AuthFailureLimiter> =
-            Arc::new(RedisAuthFailureLimiter::new(redis.clone()));
+            Arc::new(RedisAuthFailureLimiter::with_failure_policy(
+                redis.clone(),
+                config.auth_limiter_failure_policy,
+            ));
         let sessions = SessionStore::with_metadata_and_key_ring(
             redis.clone(),
             database.clone(),
             config.auth_encryption_keys.clone(),
         );
         let settings = SettingsService::new(database.clone());
-        let users = UserService::new(database.clone(), auth_limiter.clone());
-        let factors = AuthFactorService::new(
+        let users = UserService::with_source_ip_policy(
+            database.clone(),
+            auth_limiter.clone(),
+            config.missing_source_ip_policy,
+        );
+        let factors = AuthFactorService::new_with_source_ip_policy(
             database.clone(),
             redis.clone(),
             auth_limiter,
             config.auth_encryption_key.clone(),
             &config.webauthn_rp_id,
             &config.webauthn_origin,
+            config.missing_source_ip_policy,
         )?;
         let clients = ClientService::new(database.clone());
         let keys = KeyManager::load_or_generate_with_retention(

@@ -5,6 +5,7 @@ use thiserror::Error;
 #[path = "config_parsing.rs"]
 mod config_parsing;
 use config_parsing::{parse_auth_encryption_key, parse_bool, parse_u16, parse_u64, required_env};
+use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 
 #[derive(Clone)]
 pub struct Config {
@@ -26,6 +27,8 @@ pub struct Config {
     pub auth_encryption_keys: AuthEncryptionKeyRing,
     pub webauthn_rp_id: String,
     pub webauthn_origin: String,
+    pub auth_limiter_failure_policy: AuthLimiterFailurePolicy,
+    pub missing_source_ip_policy: MissingSourceIpPolicy,
 }
 
 #[derive(Clone)]
@@ -141,6 +144,11 @@ impl fmt::Debug for Config {
             .field("log_filter", &self.log_filter)
             .field("auth_encryption_key", &self.auth_encryption_key)
             .field("auth_encryption_keys", &self.auth_encryption_keys)
+            .field(
+                "auth_limiter_failure_policy",
+                &self.auth_limiter_failure_policy,
+            )
+            .field("missing_source_ip_policy", &self.missing_source_ip_policy)
             .finish()
     }
 }
@@ -176,6 +184,8 @@ struct ConfigValues {
     auth_encryption_keys: AuthEncryptionKeyRing,
     webauthn_rp_id: String,
     webauthn_origin: String,
+    auth_limiter_failure_policy: AuthLimiterFailurePolicy,
+    missing_source_ip_policy: MissingSourceIpPolicy,
 }
 
 impl Config {
@@ -225,6 +235,20 @@ impl Config {
         )?;
         let log_filter = env::var("RUST_LOG")
             .unwrap_or_else(|_| "chenxing_auth=debug,tower_http=debug".to_owned());
+        let auth_limiter_failure_policy = parse_auth_limiter_failure_policy(
+            "AUTH_LIMITER_FAILURE_POLICY",
+            env::var("AUTH_LIMITER_FAILURE_POLICY")
+                .ok()
+                .as_deref()
+                .unwrap_or("fail-closed"),
+        )?;
+        let missing_source_ip_policy = parse_missing_source_ip_policy(
+            "AUTH_LIMITER_MISSING_SOURCE_IP",
+            env::var("AUTH_LIMITER_MISSING_SOURCE_IP")
+                .ok()
+                .as_deref()
+                .unwrap_or("reject"),
+        )?;
 
         Self::from_values_with_log(ConfigValues {
             host,
@@ -243,6 +267,8 @@ impl Config {
             auth_encryption_keys,
             webauthn_rp_id,
             webauthn_origin,
+            auth_limiter_failure_policy,
+            missing_source_ip_policy,
         })
     }
 
@@ -289,6 +315,8 @@ impl Config {
             auth_encryption_keys: AuthEncryptionKeyRing::single(AuthEncryptionKey::new([0_u8; 32])),
             webauthn_rp_id: "localhost".to_owned(),
             webauthn_origin: format!("http://localhost:{port}"),
+            auth_limiter_failure_policy: AuthLimiterFailurePolicy::FailClosed,
+            missing_source_ip_policy: MissingSourceIpPolicy::Skip,
         })
     }
 
@@ -310,6 +338,8 @@ impl Config {
             auth_encryption_keys,
             webauthn_rp_id,
             webauthn_origin,
+            auth_limiter_failure_policy,
+            missing_source_ip_policy,
         } = values;
         if host.trim().is_empty() {
             return Err(ConfigError::InvalidValue("APP_HOST"));
@@ -370,6 +400,8 @@ impl Config {
             auth_encryption_keys,
             webauthn_rp_id,
             webauthn_origin,
+            auth_limiter_failure_policy,
+            missing_source_ip_policy,
         })
     }
 }
@@ -463,5 +495,27 @@ mod tests {
             assert_eq!(error, ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
             assert!(!error.to_string().contains("not-a-key"));
         }
+    }
+}
+
+fn parse_auth_limiter_failure_policy(
+    name: &'static str,
+    value: &str,
+) -> Result<AuthLimiterFailurePolicy, ConfigError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "fail-open" | "open" => Ok(AuthLimiterFailurePolicy::FailOpen),
+        "fail-closed" | "closed" => Ok(AuthLimiterFailurePolicy::FailClosed),
+        _ => Err(ConfigError::InvalidValue(name)),
+    }
+}
+
+fn parse_missing_source_ip_policy(
+    name: &'static str,
+    value: &str,
+) -> Result<MissingSourceIpPolicy, ConfigError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "skip" => Ok(MissingSourceIpPolicy::Skip),
+        "reject" | "fail-closed" => Ok(MissingSourceIpPolicy::Reject),
+        _ => Err(ConfigError::InvalidValue(name)),
     }
 }

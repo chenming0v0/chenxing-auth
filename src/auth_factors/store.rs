@@ -1,6 +1,7 @@
 use redis::{AsyncCommands, Client};
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::domain::{FactorMethod, LoginTicket};
@@ -43,7 +44,7 @@ impl LoginTicketStore {
         ticket: &LoginTicket,
     ) -> Result<(), LoginTicketStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let payload = serde_json::to_string(ticket)?;
+        let payload = serde_json::to_string(&ticket)?;
         let _: () = connection
             .set_ex(
                 Self::key(ticket_id),
@@ -66,6 +67,23 @@ impl LoginTicketStore {
         ticket_id: &str,
     ) -> Result<Option<LoginTicket>, LoginTicketStoreError> {
         self.read(ticket_id, true).await
+    }
+
+    pub async fn restore(
+        &self,
+        ticket_id: &str,
+        ticket: LoginTicket,
+    ) -> Result<(), LoginTicketStoreError> {
+        let ttl = (ticket.expires_at - OffsetDateTime::now_utc()).whole_seconds();
+        if ttl <= 0 {
+            return Ok(());
+        }
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let payload = serde_json::to_string(&ticket)?;
+        let _: () = connection
+            .set_ex(Self::key(ticket_id), payload, ttl as u64)
+            .await?;
+        Ok(())
     }
 
     async fn read(

@@ -8,7 +8,7 @@ use webauthn_rs::prelude::{
 use super::{AuthFactorService, AuthFactorServiceError, PasskeyConfirmation};
 use crate::auth_factors::{
     domain::{FactorMethod, LoginTicket},
-    persistence::persist_then_consume,
+    persistence::consume_then_persist,
     repository,
 };
 
@@ -99,20 +99,35 @@ impl AuthFactorService {
             Ok(passkey) => passkey,
             Err(_) => return Ok(PasskeyConfirmation::InvalidCredential),
         };
-        if matches!(
-            repository::insert_passkey(&self.pool, ticket.user_id, passkey.cred_id(), &passkey)
-                .await?,
-            repository::PasskeyPersistenceResult::Conflict
-        ) {
-            return Ok(PasskeyConfirmation::InvalidCredential);
-        }
-        if self.tickets.take(ticket_id).await?.is_none() {
-            return Ok(PasskeyConfirmation::InvalidTicket);
+        let confirmation = consume_then_persist(
+            PasskeyConfirmation::Completed(ticket.user_id),
+            PasskeyConfirmation::InvalidTicket,
+            self.tickets.take(ticket_id),
+            async {
+                match repository::insert_passkey(
+                    &self.pool,
+                    ticket.user_id,
+                    passkey.cred_id(),
+                    &passkey,
+                )
+                .await?
+                {
+                    repository::PasskeyPersistenceResult::Stored => Ok(()),
+                    repository::PasskeyPersistenceResult::Conflict => {
+                        Err(AuthFactorServiceError::PasskeyConflict)
+                    }
+                }
+            },
+            |ticket| self.tickets.restore(ticket_id, ticket),
+        )
+        .await?;
+        if matches!(confirmation, PasskeyConfirmation::InvalidTicket) {
+            return Ok(confirmation);
         }
         self.tickets
             .delete(&Self::passkey_registration_key(ticket_id))
             .await?;
-        Ok(PasskeyConfirmation::Completed(ticket.user_id))
+        Ok(confirmation)
     }
 
     pub async fn start_passkey_authentication(
@@ -179,9 +194,10 @@ impl AuthFactorService {
         else {
             return Ok(PasskeyConfirmation::InvalidCredential);
         };
-        let confirmation = persist_then_consume(
+        let confirmation = consume_then_persist(
             PasskeyConfirmation::Completed(ticket.user_id),
             PasskeyConfirmation::InvalidTicket,
+            self.tickets.take(ticket_id),
             async {
                 if result.needs_update()
                     && passkey
@@ -192,9 +208,12 @@ impl AuthFactorService {
                 }
                 Ok::<(), AuthFactorServiceError>(())
             },
-            self.tickets.take(ticket_id),
+            |ticket| self.tickets.restore(ticket_id, ticket),
         )
         .await?;
+        if matches!(confirmation, PasskeyConfirmation::InvalidTicket) {
+            return Ok(confirmation);
+        }
         self.tickets
             .delete(&Self::passkey_authentication_key(ticket_id))
             .await?;
