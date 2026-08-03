@@ -1,4 +1,5 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
+import QRCode from 'qrcode'
 import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
 import { apiFetch, type LoginResponse, type PendingLoginResponse, type TotpSetupResponse } from '../api'
@@ -200,9 +201,55 @@ function TotpStep({
   return <div className="auth-form">
     <Notice tone="info">{setupRequired ? '首次登录需要绑定验证器。' : '请输入验证器中的 6 位验证码。'}</Notice>
     {setupRequired && !setup && <Button type="button" icon="shield-check" onClick={startSetup} disabled={busy}>开始绑定验证器</Button>}
-    {setup && <div className="content-grid"><div><span className="chenxing-label">验证器密钥</span><CopyValue value={setup.secret_base32} /></div><div><span className="chenxing-label">手动配置地址</span><CopyValue value={setup.otpauth_url} /></div></div>}
+    {setup && (
+        <div className="space-stack">
+          <TotpSetupQr otpauthUrl={setup.otpauth_url} />
+          <div>
+            <span className="chenxing-label">验证器密钥</span>
+            <CopyValue value={setup.secret_base32} />
+            <small className="chenxing-caption">无法扫码时，可在验证器中手动输入该密钥。</small>
+          </div>
+        </div>
+      )}
     {(!setupRequired || setup) && <form className="auth-form" onSubmit={submitCode}><Field label="一次性验证码" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))} /><Button type="submit" icon="check" disabled={busy}>{busy ? '验证中…' : '完成验证'}</Button></form>}
   </div>
+}
+
+
+function TotpSetupQr({ otpauthUrl }: { otpauthUrl: string }) {
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    setQrDataUrl(null)
+    setFailed(false)
+    void QRCode.toDataURL(otpauthUrl, {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      width: 220,
+      color: { dark: '#06101f', light: '#f8fbff' },
+    })
+      .then((value) => { if (!cancelled) setQrDataUrl(value) })
+      .catch(() => { if (!cancelled) setFailed(true) })
+    return () => { cancelled = true }
+  }, [otpauthUrl])
+
+  return (
+    <div className="totp-setup-qr-block">
+      <span className="chenxing-label">扫码绑定</span>
+      <div className="cx-totp-qr">
+        {qrDataUrl ? (
+          <img src={qrDataUrl} alt="TOTP 绑定二维码" className="cx-totp-qr-image" />
+        ) : (
+          <div className="cx-totp-qr-placeholder">
+            {failed ? '二维码生成失败，请使用下方密钥手动添加。' : '正在生成二维码…'}
+          </div>
+        )}
+      </div>
+      <small className="chenxing-caption">使用 Google Authenticator、Microsoft Authenticator 或其他 TOTP 应用扫码。</small>
+    </div>
+  )
 }
 
 type PasskeyAuthenticationStartResponse = {
@@ -341,6 +388,7 @@ function passkeyErrorMessage(error: unknown): string {
 
 export function BootstrapPage() {
   const navigate = useNavigate()
+  const { refreshBootstrap } = useAuth()
   const [done, setDone] = useState(false)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
@@ -355,6 +403,7 @@ export function BootstrapPage() {
         redirectOn401: false,
         body: JSON.stringify({ username: form.get('username'), email: form.get('email'), password: form.get('password') }),
       })
+      await refreshBootstrap()
       setDone(true)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '初始化未完成，请稍后重试。')

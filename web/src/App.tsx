@@ -12,12 +12,33 @@ import { Notice } from './components/ui'
 
 function AppContent() {
   const path = usePathname()
-  const { status, user } = useAuth()
+  const { status, user, bootstrap } = useAuth()
   const protectedPath = path.startsWith('/console') || path === '/oauth/account' || path === '/oauth/consent'
   const adminPath = path.startsWith('/admin')
-  if (status === 'loading' && (protectedPath || adminPath)) {
-    return <AuthShell><AuthPanel><Notice>正在检查登录状态，请稍候。</Notice></AuthPanel></AuthShell>
+  const bootstrapPath = path === '/bootstrap'
+
+  if (bootstrap === 'loading' || (status === 'loading' && (protectedPath || adminPath))) {
+    return (
+      <AuthShell>
+        <AuthPanel>
+          <Notice>
+            {bootstrap === 'loading' ? '正在检查系统初始化状态，请稍候。' : '正在检查登录状态，请稍候。'}
+          </Notice>
+        </AuthPanel>
+      </AuthShell>
+    )
   }
+
+  // Fresh database / no Owner yet: force the first-light bootstrap window.
+  if (bootstrap === 'required' && !bootstrapPath) {
+    return <Navigate to="/bootstrap" />
+  }
+
+  // Owner already exists: bootstrap page becomes a dead end.
+  if (bootstrap === 'ready' && bootstrapPath) {
+    return <Navigate to="/login" />
+  }
+
   if (protectedPath && status !== 'authenticated') {
     const returnTo = `${window.location.pathname}${window.location.search}`
     return <Navigate to={`/login?returnTo=${encodeURIComponent(returnTo)}`} />
