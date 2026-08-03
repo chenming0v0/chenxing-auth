@@ -97,6 +97,8 @@ VALUES ('basic', '基础版', '默认套餐', 2, 2500, 50000, NULL, TRUE, 'activ
 
 > 决策：用**固定列**存限额（不是 JSONB），因为限额种类是固定的四项，类型安全、SQL 好写。若以后要支持任意 key 的权益，再加一张 `plan_entitlements(plan_id, key, value)` 附表，不影响现有列。
 
+当前合并迁移链中，sessions lane 使用 `migrations/0006_session_epochs.sql`；计划默认值约束使用后续的 `migrations/0007_plan_default_invariant.sql`。两者的迁移版本必须保持唯一且连续，已应用迁移不得通过复用旧版本号改写 checksum。
+
 ## 2. 新模块 `src/plans/`
 
 照 `src/clients/`、`src/oauth/providers/` 的分层写：

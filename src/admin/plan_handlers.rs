@@ -230,8 +230,11 @@ fn plan_error_response(error_value: PlanServiceError) -> Response {
         }
         PlanServiceError::DefaultPlanProtected => error::conflict(
             "default_plan_protected",
-            "the default plan cannot be archived",
+            "the active default plan cannot be unset or archived",
         ),
+        PlanServiceError::ArchivedPlanCannotBeDefault => {
+            error::conflict("archived_plan_default", "archived plans cannot be default")
+        }
         PlanServiceError::PlanArchived => error::bad_request(
             "plan_archived",
             "archived plans cannot be assigned to users",

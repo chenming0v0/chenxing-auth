@@ -18,6 +18,7 @@ use chenxing_auth::{
     state::AppState,
 };
 use serde_json::Value;
+use serial_test::serial;
 use std::time::Duration;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -35,6 +36,19 @@ async fn test_state() -> (AppState, chenxing_auth::sqlx::PgPool, std::path::Path
         .await
         .expect("PostgreSQL is required for plan tests");
     db::migrate(&database).await.expect("database migrations");
+    chenxing_auth::sqlx::query("DELETE FROM plans WHERE code <> 'basic'")
+        .execute(&database)
+        .await
+        .expect("reset custom plans");
+    chenxing_auth::sqlx::query(
+        "UPDATE plans SET code = 'basic', name = '基础版', description = '默认套餐',
+             oauth_clients_limit = 2, daily_auth_limit = 2500, monthly_auth_limit = 50000,
+             max_qps = NULL, status = 'active', is_default = TRUE, updated_at = NOW()
+         WHERE code = 'basic'",
+    )
+    .execute(&database)
+    .await
+    .expect("reset basic plan");
     let key_directory = std::env::temp_dir().join(format!("chenxing-plans-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
@@ -189,6 +203,41 @@ async fn create_plan(
     json(response).await
 }
 
+async fn update_plan(
+    router: &Router,
+    plan_id: i64,
+    code: &str,
+    is_default: bool,
+) -> (StatusCode, Value) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/admin/plans/{plan_id}"))
+                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "code": code,
+                        "name": "Updated plan",
+                        "description": null,
+                        "oauth_clients_limit": 2,
+                        "daily_auth_limit": 2500,
+                        "monthly_auth_limit": 50000,
+                        "max_qps": null,
+                        "is_default": is_default,
+                    })
+                    .to_string(),
+                ))
+                .expect("update plan request"),
+        )
+        .await
+        .expect("update plan response");
+    let status = response.status();
+    (status, json(response).await)
+}
+
 async fn assign_plan(
     router: &Router,
     user_id: i64,
@@ -226,6 +275,7 @@ fn validated_request(client_id: &str, user_id: i64) -> ValidatedAuthorizationReq
 }
 
 #[tokio::test]
+#[serial]
 async fn default_plan_seed_preserves_legacy_hardcoded_limits() {
     let (state, _database, key_directory) = test_state().await;
     let router = api::router(state.clone());
@@ -295,6 +345,7 @@ async fn default_plan_seed_preserves_legacy_hardcoded_limits() {
 }
 
 #[tokio::test]
+#[serial]
 async fn assigned_plan_controls_client_quota_and_entitlements() {
     let (state, _database, key_directory) = test_state().await;
     let router = api::router(state.clone());
@@ -372,6 +423,7 @@ async fn assigned_plan_controls_client_quota_and_entitlements() {
 }
 
 #[tokio::test]
+#[serial]
 async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
     let (state, _database, key_directory) = test_state().await;
     let router = api::router(state.clone());
@@ -412,6 +464,7 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
 }
 
 #[tokio::test]
+#[serial]
 async fn authorization_code_save_failure_refunds_consumed_quota() {
     let (mut state, _database, key_directory) = test_state().await;
     let router = api::router(state.clone());
@@ -469,6 +522,7 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
 }
 
 #[tokio::test]
+#[serial]
 async fn unlimited_monthly_plan_never_rejects_authorizations() {
     let (state, _database, key_directory) = test_state().await;
     let router = api::router(state.clone());
@@ -527,6 +581,7 @@ async fn unlimited_monthly_plan_never_rejects_authorizations() {
 }
 
 #[tokio::test]
+#[serial]
 async fn qps_limiter_rejects_requests_over_the_plan_limit() {
     let (state, _database, key_directory) = test_state().await;
     let router = api::router(state.clone());
@@ -603,6 +658,7 @@ async fn qps_limiter_rejects_requests_over_the_plan_limit() {
 }
 
 #[tokio::test]
+#[serial]
 async fn entitlements_aggregate_usage_across_multiple_clients() {
     let (state, _database, key_directory) = test_state().await;
     let router = api::router(state.clone());
@@ -681,6 +737,7 @@ async fn entitlements_aggregate_usage_across_multiple_clients() {
 }
 
 #[tokio::test]
+#[serial]
 async fn admin_plan_archive_restore_and_default_protection() {
     let (state, _database, key_directory) = test_state().await;
     let router = api::router(state.clone());
@@ -794,6 +851,172 @@ async fn admin_plan_archive_restore_and_default_protection() {
         .expect("created plan");
     assert_eq!(archived["status"], "active");
     assert_eq!(archived["assigned_users"], 1);
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+#[serial]
+async fn update_cannot_unset_the_only_active_default_plan() {
+    let (state, _database, key_directory) = test_state().await;
+    let router = api::router(state);
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+
+    let (status, _) = update_plan(&router, 1, "basic", true).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, error) = update_plan(&router, 1, &format!("updated-{suffix}"), false).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(error["code"], "default_plan_protected");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/plans")
+                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
+                .body(Body::empty())
+                .expect("list plans request"),
+        )
+        .await
+        .expect("list plans response");
+    let plans = json(response).await;
+    let plan = plans
+        .as_array()
+        .expect("plans array")
+        .iter()
+        .find(|entry| entry["id"] == 1)
+        .expect("updated default plan");
+    assert_eq!(plan["status"], "active");
+    assert_eq!(plan["is_default"], true);
+
+    let (status, _) = update_plan(&router, 1, "basic", true).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+#[serial]
+async fn archived_plan_cannot_become_default() {
+    let (state, _database, key_directory) = test_state().await;
+    let router = api::router(state);
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+
+    let mut limits = serde_json::Map::new();
+    limits.insert("oauth_clients_limit".to_owned(), Value::from(2));
+    limits.insert("daily_auth_limit".to_owned(), Value::from(2_500));
+    limits.insert("monthly_auth_limit".to_owned(), Value::from(50_000));
+    limits.insert("max_qps".to_owned(), Value::Null);
+    let plan = create_plan(&router, &suffix, limits).await;
+    let plan_id = plan["id"].as_i64().expect("archived plan id");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/admin/plans/{plan_id}/archive"))
+                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
+                .body(Body::empty())
+                .expect("archive plan request"),
+        )
+        .await
+        .expect("archive plan response");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let (status, error) = update_plan(&router, plan_id, &format!("archived-{suffix}"), true).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(error["code"], "archived_plan_default");
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+#[serial]
+async fn updating_plan_code_conflict_returns_409_business_error() {
+    let (state, _database, key_directory) = test_state().await;
+    let router = api::router(state);
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+
+    let mut first_limits = serde_json::Map::new();
+    first_limits.insert("oauth_clients_limit".to_owned(), Value::from(2));
+    first_limits.insert("daily_auth_limit".to_owned(), Value::from(2_500));
+    first_limits.insert("monthly_auth_limit".to_owned(), Value::from(50_000));
+    first_limits.insert("max_qps".to_owned(), Value::Null);
+    let first = create_plan(&router, &format!("first-{suffix}"), first_limits).await;
+
+    let mut second_limits = serde_json::Map::new();
+    second_limits.insert("oauth_clients_limit".to_owned(), Value::from(2));
+    second_limits.insert("daily_auth_limit".to_owned(), Value::from(2_500));
+    second_limits.insert("monthly_auth_limit".to_owned(), Value::from(50_000));
+    second_limits.insert("max_qps".to_owned(), Value::Null);
+    let second = create_plan(&router, &format!("second-{suffix}"), second_limits).await;
+
+    let first_code = first["code"].as_str().expect("first plan code");
+    let second_id = second["id"].as_i64().expect("second plan id");
+    let (status, error) = update_plan(&router, second_id, first_code, false).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(error["code"], "plan_code_conflict");
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+#[serial]
+async fn concurrent_default_updates_leave_one_active_default() {
+    let (state, _database, key_directory) = test_state().await;
+    let router = api::router(state);
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+
+    let make_limits = || {
+        let mut limits = serde_json::Map::new();
+        limits.insert("oauth_clients_limit".to_owned(), Value::from(2));
+        limits.insert("daily_auth_limit".to_owned(), Value::from(2_500));
+        limits.insert("monthly_auth_limit".to_owned(), Value::from(50_000));
+        limits.insert("max_qps".to_owned(), Value::Null);
+        limits
+    };
+    let first = create_plan(&router, &format!("concurrent-a-{suffix}"), make_limits()).await;
+    let second = create_plan(&router, &format!("concurrent-b-{suffix}"), make_limits()).await;
+    let first_id = first["id"].as_i64().expect("first concurrent plan id");
+    let second_id = second["id"].as_i64().expect("second concurrent plan id");
+
+    let first_code = format!("default-a-{suffix}");
+    let second_code = format!("default-b-{suffix}");
+    let (first_update, second_update) = tokio::join!(
+        update_plan(&router, first_id, &first_code, true),
+        update_plan(&router, second_id, &second_code, true),
+    );
+    assert_eq!(first_update.0, StatusCode::OK);
+    assert_eq!(second_update.0, StatusCode::OK);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/plans")
+                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
+                .body(Body::empty())
+                .expect("list plans request"),
+        )
+        .await
+        .expect("list plans response");
+    let plans = json(response).await;
+    let defaults = plans
+        .as_array()
+        .expect("plans array")
+        .iter()
+        .filter(|plan| plan["status"] == "active" && plan["is_default"] == true)
+        .count();
+    assert_eq!(defaults, 1);
+
+    let (status, _) = update_plan(&router, 1, "basic", true).await;
+    assert_eq!(status, StatusCode::OK);
 
     let _ = std::fs::remove_dir_all(key_directory);
 }
