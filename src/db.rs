@@ -68,11 +68,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             false,
         ),
         Migration::new(
-            6,
+            7,
             Cow::Borrowed("plan default invariant"),
             MigrationType::Simple,
             normalize_migration_sql(include_str!(
-                "../migrations/0006_plan_default_invariant.sql"
+                "../migrations/0007_plan_default_invariant.sql"
             )),
             false,
         ),

@@ -60,7 +60,12 @@ async fn assert_identity(pool: &chenxing_auth::sqlx::PgPool, table: &str, column
     assert_eq!(generated.as_deref(), Some("YES"));
 }
 
-async fn assert_check_contains(pool: &chenxing_auth::sqlx::PgPool, table: &str, name: &str) {
+async fn assert_constraint_contains(
+    pool: &chenxing_auth::sqlx::PgPool,
+    table: &str,
+    name: &str,
+    values: &[&str],
+) {
     let definition: String = chenxing_auth::sqlx::query_scalar(
         "SELECT pg_get_constraintdef(oid)
          FROM pg_constraint
@@ -71,12 +76,16 @@ async fn assert_check_contains(pool: &chenxing_auth::sqlx::PgPool, table: &str, 
     .fetch_one(pool)
     .await
     .expect("check constraint query");
-    for value in ["user", "admin", "owner"] {
+    for &value in values {
         assert!(
             definition.contains(value),
             "{name} does not contain {value}: {definition}"
         );
     }
+}
+
+async fn assert_check_contains(pool: &chenxing_auth::sqlx::PgPool, table: &str, name: &str) {
+    assert_constraint_contains(pool, table, name, &["user", "admin", "owner"]).await;
 }
 
 async fn assert_table_missing(pool: &chenxing_auth::sqlx::PgPool, table: &str) {
@@ -139,6 +148,13 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     assert_identity(&pool, "oauth_clients", "id").await;
     assert_column(&pool, "oauth_providers", "id", "bigint", false).await;
     assert_identity(&pool, "oauth_providers", "id").await;
+    assert_constraint_contains(
+        &pool,
+        "plans",
+        "plans_default_must_be_active",
+        &["status", "is_default"],
+    )
+    .await;
     assert_column(&pool, "user_sessions", "session_payload", "bytea", true).await;
     assert_column(&pool, "session_outbox", "id", "bigint", false).await;
     assert_identity(&pool, "session_outbox", "id").await;
