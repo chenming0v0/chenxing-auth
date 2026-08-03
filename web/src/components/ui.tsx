@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import {
   ArrowRight, ArrowUpRight, Check, Circle, CircleAlert, Code2, Copy, Crown, FlaskConical,
   Download, Gauge, KeyRound, LayoutDashboard, LayoutGrid, LogIn, LogOut, Mail, Menu, MoreHorizontal,
-  Orbit, RadioTower, RefreshCw, Rocket, Save, Send, Settings, ShieldCheck, Sparkles, Store, User,
+  Orbit, RadioTower, RefreshCw, Rocket, Save, Search, Send, Settings, ShieldCheck, Sparkles, Store, User,
   Users, X, type LucideIcon,
 } from 'lucide-react'
 import logoUrl from '../../../design-auth-chengming/assets/logo.png'
@@ -13,7 +13,7 @@ const icons: Record<string, LucideIcon> = {
   download: Download, gauge: Gauge, 'key-round': KeyRound, 'layout-dashboard': LayoutDashboard, 'layout-grid': LayoutGrid,
   'log-in': LogIn, 'log-out': LogOut, mail: Mail, menu: Menu, orbit: Orbit, 'radio-tower': RadioTower,
   'more-horizontal': MoreHorizontal, rocket: Rocket, 'refresh-cw': RefreshCw, save: Save, send: Send,
-  settings: Settings, 'shield-check': ShieldCheck, sparkles: Sparkles,
+  search: Search, settings: Settings, 'shield-check': ShieldCheck, sparkles: Sparkles,
   store: Store, user: User, users: Users, x: X,
 }
 
