@@ -98,7 +98,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
       <header><span className="eyebrow">{isLogin ? 'SIGN IN · 02' : 'CREATE ID · 03'}</span><h1 className="chenxing-h1">{isLogin ? '欢迎回到辰星' : '创建你的通行证'}</h1><p>{isLogin ? '使用已注册的身份进入辰星认证中枢。' : '从一个安全、清晰的身份开始连接你的应用。'}</p></header>
       {query.get('registered') && <div className="auth-feedback"><Notice tone="success">注册成功，请使用新账号登录。</Notice></div>}
       {message && <div className="auth-feedback"><Notice tone="warning">{message}</Notice></div>}
-      {pending ? <TotpStep pending={pending} setup={totpSetup} busy={busy} onSetup={setTotpSetup} onComplete={completeLogin} onBusy={setBusy} onMessage={setMessage} /> : <form className="auth-form" onSubmit={submit}>
+      {pending ? <PendingFactorStep pending={pending} setup={totpSetup} busy={busy} onSetup={setTotpSetup} onComplete={completeLogin} onBusy={setBusy} onMessage={setMessage} /> : <form className="auth-form" onSubmit={submit}>
         {!isLogin && <Field label="用户名" placeholder="chenxing_user" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required />}
         <Field label={isLogin ? '邮箱或用户名' : '邮箱地址'} type={isLogin ? 'text' : 'email'} placeholder={isLogin ? 'name@example.com' : 'name@example.com'} autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} />
         {!isLogin && <Field label="显示名称" placeholder="可选" autoComplete="nickname" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />}
@@ -109,6 +109,34 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
       {!pending && <footer className="auth-footer">{isLogin ? '还没有通行证？' : '已经拥有通行证？'}<Link to={isLogin ? '/register' : '/login'}>{isLogin ? '立即创建' : '前往登录'}</Link></footer>}
     </AuthPanel>
   </AuthShell>
+}
+
+function PendingFactorStep({
+  pending,
+  setup,
+  busy,
+  onSetup,
+  onComplete,
+  onBusy,
+  onMessage,
+}: {
+  pending: PendingLoginResponse
+  setup: TotpSetupResponse | null
+  busy: boolean
+  onSetup: (value: TotpSetupResponse) => void
+  onComplete: () => Promise<void>
+  onBusy: (value: boolean) => void
+  onMessage: (value: string) => void
+}) {
+  const hasTotp = pending.methods.includes('totp')
+  const hasPasskey = pending.methods.includes('passkey')
+  if (hasPasskey && !hasTotp) {
+    return <PasskeyStep pending={pending} busy={busy} onComplete={onComplete} onBusy={onBusy} onMessage={onMessage} />
+  }
+  if (hasTotp) {
+    return <TotpStep pending={pending} setup={setup} busy={busy} onSetup={onSetup} onComplete={onComplete} onBusy={onBusy} onMessage={onMessage} />
+  }
+  return <Notice tone="warning">当前账号没有可用的认证因子，请重新登录。</Notice>
 }
 
 function TotpStep({
@@ -175,6 +203,140 @@ function TotpStep({
     {setup && <div className="content-grid"><div><span className="chenxing-label">验证器密钥</span><CopyValue value={setup.secret_base32} /></div><div><span className="chenxing-label">手动配置地址</span><CopyValue value={setup.otpauth_url} /></div></div>}
     {(!setupRequired || setup) && <form className="auth-form" onSubmit={submitCode}><Field label="一次性验证码" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} autoComplete="one-time-code" value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))} /><Button type="submit" icon="check" disabled={busy}>{busy ? '验证中…' : '完成验证'}</Button></form>}
   </div>
+}
+
+type PasskeyAuthenticationStartResponse = {
+  publicKey?: Record<string, unknown>
+}
+
+function PasskeyStep({
+  pending,
+  busy,
+  onComplete,
+  onBusy,
+  onMessage,
+}: {
+  pending: PendingLoginResponse
+  busy: boolean
+  onComplete: () => Promise<void>
+  onBusy: (value: boolean) => void
+  onMessage: (value: string) => void
+}) {
+  async function authenticate() {
+    onMessage('')
+    if (!supportsWebAuthn()) {
+      onMessage('当前浏览器不支持 Passkey，请使用支持 WebAuthn 的浏览器。')
+      return
+    }
+    onBusy(true)
+    try {
+      const options = await apiFetch<PasskeyAuthenticationStartResponse>('/api/v1/auth/passkeys/authentication/start', {
+        method: 'POST',
+        redirectOn401: false,
+        body: JSON.stringify({ login_ticket: pending.login_ticket }),
+      })
+      const publicKey = decodeRequestOptions(options)
+      const credential = await navigator.credentials.get({ publicKey })
+      if (!credential || credential.type !== 'public-key') {
+        throw new Error('Passkey assertion is unavailable')
+      }
+      await apiFetch<LoginResponse>('/api/v1/auth/passkeys/authentication/finish', {
+        method: 'POST',
+        redirectOn401: false,
+        body: JSON.stringify({
+          login_ticket: pending.login_ticket,
+          credential: serializeAssertion(credential as PublicKeyCredential),
+        }),
+      })
+      await onComplete()
+    } catch (error) {
+      onMessage(passkeyErrorMessage(error))
+    } finally {
+      onBusy(false)
+    }
+  }
+
+  return <div className="auth-form">
+    <Notice tone="info">请使用已绑定的 Passkey 完成登录。</Notice>
+    <Button type="button" icon="key-round" onClick={() => void authenticate()} disabled={busy}>{busy ? '验证中…' : '使用 Passkey 登录'}</Button>
+  </div>
+}
+
+function supportsWebAuthn(): boolean {
+  return typeof window !== 'undefined'
+    && 'PublicKeyCredential' in window
+    && typeof navigator.credentials?.get === 'function'
+}
+
+function decodeRequestOptions(options: PasskeyAuthenticationStartResponse): PublicKeyCredentialRequestOptions {
+  if (!options.publicKey) throw new Error('Passkey challenge is invalid')
+  const raw = options.publicKey
+  const challenge = decodeBase64Url(raw.challenge)
+  const allowCredentials = Array.isArray(raw.allowCredentials)
+    ? raw.allowCredentials.map((value) => {
+      if (!value || typeof value !== 'object') throw new Error('Passkey credential options are invalid')
+      const descriptor = value as Record<string, unknown>
+      return {
+        type: 'public-key' as const,
+        id: decodeBase64Url(descriptor.id),
+      }
+    })
+    : undefined
+  const userVerification = raw.userVerification
+  return {
+    challenge,
+    ...(typeof raw.timeout === 'number' ? { timeout: raw.timeout } : {}),
+    ...(typeof raw.rpId === 'string' ? { rpId: raw.rpId } : {}),
+    ...(allowCredentials ? { allowCredentials } : {}),
+    ...(['required', 'preferred', 'discouraged'].includes(String(userVerification))
+      ? { userVerification: userVerification as UserVerificationRequirement }
+      : {}),
+  }
+}
+
+function decodeBase64Url(value: unknown): ArrayBuffer {
+  if (typeof value !== 'string') throw new Error('Passkey challenge is invalid')
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  if (normalized.length % 4 === 1) throw new Error('Passkey challenge is invalid')
+  try {
+    const binary = atob(normalized.padEnd(normalized.length + ((4 - normalized.length % 4) % 4), '='))
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
+    return bytes.buffer
+  } catch {
+    throw new Error('Passkey challenge is invalid')
+  }
+}
+
+function encodeBase64Url(value: ArrayBuffer): string {
+  const bytes = new Uint8Array(value)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function serializeAssertion(credential: PublicKeyCredential) {
+  const response = credential.response as AuthenticatorAssertionResponse
+  return {
+    id: credential.id,
+    rawId: encodeBase64Url(credential.rawId),
+    response: {
+      authenticatorData: encodeBase64Url(response.authenticatorData),
+      clientDataJSON: encodeBase64Url(response.clientDataJSON),
+      signature: encodeBase64Url(response.signature),
+      userHandle: response.userHandle ? encodeBase64Url(response.userHandle) : null,
+    },
+    type: credential.type,
+  }
+}
+
+function passkeyErrorMessage(error: unknown): string {
+  if (typeof DOMException !== 'undefined' && error instanceof DOMException && (error.name === 'AbortError' || error.name === 'NotAllowedError')) {
+    return 'Passkey 验证已取消，请重试。'
+  }
+  if (error instanceof Error && error.message === 'Passkey challenge is invalid') {
+    return '服务返回的 Passkey challenge 无效，请重新登录。'
+  }
+  return error instanceof Error ? error.message : 'Passkey 验证失败，请重试。'
 }
 
 export function BootstrapPage() {

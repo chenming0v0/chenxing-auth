@@ -1,6 +1,7 @@
 use axum::{
     Json,
     extract::{ConnectInfo, Extension, State},
+    http::HeaderMap,
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -102,6 +103,7 @@ pub async fn start_totp_setup(
 pub async fn confirm_totp_setup(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     Json(input): Json<TotpConfirmInput>,
 ) -> Response {
     let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
@@ -111,7 +113,7 @@ pub async fn confirm_totp_setup(
         .await
     {
         Ok(TotpConfirmation::Completed(user_id)) => {
-            issue_user_session(&state, user_id, "totp").await
+            issue_user_session(&state, user_id, "totp", &headers).await
         }
         Ok(TotpConfirmation::InvalidCode) => {
             if record_mfa_event(&state, "totp_invalid").await.is_err() {
@@ -141,6 +143,7 @@ pub async fn confirm_totp_setup(
 pub async fn login_totp(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     Json(input): Json<TotpLoginInput>,
 ) -> Response {
     let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
@@ -150,7 +153,7 @@ pub async fn login_totp(
         .await
     {
         Ok(crate::auth_factors::service::TotpConfirmation::Completed(user_id)) => {
-            return issue_user_session(&state, user_id, "totp").await;
+            return issue_user_session(&state, user_id, "totp", &headers).await;
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidCode) => {
             if record_mfa_event(&state, "totp_invalid").await.is_err() {
@@ -179,7 +182,7 @@ pub async fn login_totp(
         .await
     {
         Ok(crate::auth_factors::service::TotpConfirmation::Completed(user_id)) => {
-            issue_user_session(&state, user_id, "totp").await
+            issue_user_session(&state, user_id, "totp", &headers).await
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidCode) => {
             if record_mfa_event(&state, "totp_invalid").await.is_err() {
@@ -248,6 +251,7 @@ pub async fn start_passkey_registration(
 
 pub async fn finish_passkey_registration(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(input): Json<PasskeyRegistrationInput>,
 ) -> Response {
     match state
@@ -256,7 +260,7 @@ pub async fn finish_passkey_registration(
         .await
     {
         Ok(PasskeyConfirmation::Completed(user_id)) => {
-            issue_user_session(&state, user_id, "passkey").await
+            issue_user_session(&state, user_id, "passkey", &headers).await
         }
         Ok(PasskeyConfirmation::InvalidCredential) => {
             if record_mfa_event(&state, "passkey_invalid").await.is_err() {
@@ -301,6 +305,7 @@ pub async fn start_passkey_authentication(
 
 pub async fn finish_passkey_authentication(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(input): Json<PasskeyAuthenticationInput>,
 ) -> Response {
     match state
@@ -309,7 +314,7 @@ pub async fn finish_passkey_authentication(
         .await
     {
         Ok(PasskeyConfirmation::Completed(user_id)) => {
-            issue_user_session(&state, user_id, "passkey").await
+            issue_user_session(&state, user_id, "passkey", &headers).await
         }
         Ok(PasskeyConfirmation::InvalidCredential) => {
             if record_mfa_event(&state, "passkey_invalid").await.is_err() {

@@ -327,7 +327,7 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
     assert_eq!(response.status(), StatusCode::OK);
     assert!(response.headers().get("set-cookie").is_some());
     let session_body = json_body(response).await;
-    assert!(session_body["session_id"].as_str().is_some());
+    assert!(session_body["session_id"].is_null());
 
     let response = request(
         &router,

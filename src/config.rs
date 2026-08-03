@@ -1,14 +1,17 @@
 use std::{env, fmt, num::ParseIntError};
 
-use crate::clients::domain::{
-    ClientRegistrationLimits, DEFAULT_MAX_REDIRECT_URI_LENGTH, DEFAULT_MAX_REDIRECT_URIS,
-    DEFAULT_MAX_SCOPE_LENGTH, DEFAULT_MAX_SCOPES,
-};
+use crate::clients::domain::ClientRegistrationLimits;
 use thiserror::Error;
 
+#[path = "config_limits.rs"]
+mod config_limits;
 #[path = "config_parsing.rs"]
 mod config_parsing;
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
+use config_limits::{
+    client_registration_limits_from_env, parse_auth_limiter_failure_policy,
+    parse_missing_source_ip_policy,
+};
 use config_parsing::{parse_auth_encryption_key, parse_bool, parse_u16, parse_u64, required_env};
 
 #[derive(Clone)]
@@ -23,6 +26,9 @@ pub struct Config {
     /// Development-only compatibility for the OAuth session header.
     /// Production configuration keeps this disabled unless explicitly enabled.
     pub oauth_session_header_enabled: bool,
+    /// Allows explicitly opted-in non-browser clients to receive the session token in JSON.
+    /// Production configuration keeps this disabled unless explicitly enabled.
+    pub session_token_response_enabled: bool,
     pub database_url: String,
     pub redis_url: String,
     pub session_ttl_seconds: u64,
@@ -143,6 +149,10 @@ impl fmt::Debug for Config {
                 "oauth_session_header_enabled",
                 &self.oauth_session_header_enabled,
             )
+            .field(
+                "session_token_response_enabled",
+                &self.session_token_response_enabled,
+            )
             .field("database_url", &self.database_url)
             .field("redis_url", &self.redis_url)
             .field("session_ttl_seconds", &self.session_ttl_seconds)
@@ -181,6 +191,7 @@ struct ConfigValues {
     key_rotation_grace_seconds: u64,
     cookie_secure: bool,
     oauth_session_header_enabled: bool,
+    session_token_response_enabled: bool,
     database_url: String,
     redis_url: String,
     session_ttl_seconds: u64,
@@ -233,6 +244,13 @@ impl Config {
                 .as_deref()
                 .unwrap_or("false"),
         )?;
+        let session_token_response_enabled = parse_bool(
+            "SESSION_TOKEN_RESPONSE_ENABLED",
+            env::var("SESSION_TOKEN_RESPONSE_ENABLED")
+                .ok()
+                .as_deref()
+                .unwrap_or("false"),
+        )?;
         let session_ttl_seconds = parse_u64(
             "SESSION_TTL_SECONDS",
             env::var("SESSION_TTL_SECONDS")
@@ -266,6 +284,7 @@ impl Config {
             key_rotation_grace_seconds,
             cookie_secure,
             oauth_session_header_enabled,
+            session_token_response_enabled,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -315,6 +334,7 @@ impl Config {
             key_rotation_grace_seconds: 604_800,
             cookie_secure: true,
             oauth_session_header_enabled: true,
+            session_token_response_enabled: false,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -339,6 +359,7 @@ impl Config {
             key_rotation_grace_seconds,
             cookie_secure,
             oauth_session_header_enabled,
+            session_token_response_enabled,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -402,6 +423,7 @@ impl Config {
             key_rotation_grace_seconds,
             cookie_secure,
             oauth_session_header_enabled,
+            session_token_response_enabled,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -466,108 +488,4 @@ fn parse_auth_encryption_key_ring_value(
         return Err(ConfigError::InvalidValue("AUTH_ENCRYPTION_ACTIVE_KID"));
     }
     AuthEncryptionKeyRing::from_entries(active_kid, keys)
-}
-
-#[cfg(test)]
-mod tests {
-    use base64::{Engine, engine::general_purpose::STANDARD};
-
-    use super::*;
-
-    #[test]
-    fn key_ring_parser_preserves_standard_base64_padding_for_multiple_keys() {
-        let current = STANDARD.encode([1_u8; 32]);
-        let previous = STANDARD.encode([2_u8; 32]);
-        let ring = parse_auth_encryption_key_ring_value(
-            &format!("kid=current:{current},kid=previous:{previous}"),
-            Some("current"),
-        )
-        .expect("valid key ring");
-
-        assert_eq!(ring.active_kid(), "current");
-        assert_eq!(ring.active_key().as_bytes(), &[1_u8; 32]);
-        assert_eq!(
-            ring.key("previous").expect("previous key").as_bytes(),
-            &[2_u8; 32]
-        );
-    }
-
-    #[test]
-    fn key_ring_parser_rejects_malformed_entries_without_exposing_key_material() {
-        for value in [
-            "current=not-a-key",
-            "kid=current=not-a-key",
-            "kid=current:not-a-key",
-            "kid=current:",
-            "kid=current:not-a-key,kid=",
-        ] {
-            let error = parse_auth_encryption_key_ring_value(value, None)
-                .expect_err("malformed key ring must be rejected");
-            assert_eq!(error, ConfigError::InvalidValue("AUTH_ENCRYPTION_KEYS"));
-            assert!(!error.to_string().contains("not-a-key"));
-        }
-    }
-}
-
-fn parse_auth_limiter_failure_policy(
-    name: &'static str,
-    value: &str,
-) -> Result<AuthLimiterFailurePolicy, ConfigError> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "fail-open" | "open" => Ok(AuthLimiterFailurePolicy::FailOpen),
-        "fail-closed" | "closed" => Ok(AuthLimiterFailurePolicy::FailClosed),
-        _ => Err(ConfigError::InvalidValue(name)),
-    }
-}
-
-fn parse_missing_source_ip_policy(
-    name: &'static str,
-    value: &str,
-) -> Result<MissingSourceIpPolicy, ConfigError> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "skip" => Ok(MissingSourceIpPolicy::Skip),
-        "reject" | "fail-closed" => Ok(MissingSourceIpPolicy::Reject),
-        _ => Err(ConfigError::InvalidValue(name)),
-    }
-}
-
-fn parse_usize(name: &'static str, value: &str) -> Result<usize, ConfigError> {
-    value
-        .parse()
-        .map_err(|source| ConfigError::InvalidInteger { name, source })
-}
-
-fn client_registration_limits_from_env() -> Result<ClientRegistrationLimits, ConfigError> {
-    let limits = [
-        (
-            "OAUTH_CLIENT_MAX_REDIRECT_URIS",
-            env::var("OAUTH_CLIENT_MAX_REDIRECT_URIS")
-                .ok()
-                .unwrap_or_else(|| DEFAULT_MAX_REDIRECT_URIS.to_string()),
-        ),
-        (
-            "OAUTH_CLIENT_MAX_REDIRECT_URI_LENGTH",
-            env::var("OAUTH_CLIENT_MAX_REDIRECT_URI_LENGTH")
-                .ok()
-                .unwrap_or_else(|| DEFAULT_MAX_REDIRECT_URI_LENGTH.to_string()),
-        ),
-        (
-            "OAUTH_CLIENT_MAX_SCOPES",
-            env::var("OAUTH_CLIENT_MAX_SCOPES")
-                .ok()
-                .unwrap_or_else(|| DEFAULT_MAX_SCOPES.to_string()),
-        ),
-        (
-            "OAUTH_CLIENT_MAX_SCOPE_LENGTH",
-            env::var("OAUTH_CLIENT_MAX_SCOPE_LENGTH")
-                .ok()
-                .unwrap_or_else(|| DEFAULT_MAX_SCOPE_LENGTH.to_string()),
-        ),
-    ];
-    let values = limits
-        .into_iter()
-        .map(|(name, value)| parse_usize(name, &value))
-        .collect::<Result<Vec<_>, _>>()?;
-    ClientRegistrationLimits::new(values[0], values[1], values[2], values[3])
-        .ok_or(ConfigError::InvalidValue("OAUTH_CLIENT_LIMITS"))
 }

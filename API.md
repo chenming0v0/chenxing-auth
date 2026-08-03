@@ -77,10 +77,10 @@
 因子完成后响应 `200`：
 
 ```json
-{"session_id":"uuid","expires_at":"2026-08-04T00:00:00Z"}
+{"expires_at":"2026-08-04T00:00:00Z"}
 ```
 
-同时设置 HttpOnly Session Cookie 和 CSRF Cookie。浏览器请求应使用 `credentials: "include"`。
+同时设置 HttpOnly Session Cookie 和 CSRF Cookie。浏览器请求应使用 `credentials: "include"`，再通过 `/api/v1/auth/status` 和 `/api/v1/auth/me` 确认登录状态。默认不会将可直接使用的 Session token 放入 JSON；非浏览器兼容调用只有在服务端 `SESSION_TOKEN_RESPONSE_ENABLED=true` 且显式发送 `X-Chenxing-Session-Mode: token` 时才会收到 `session_id`。
 
 ### 首次 TOTP 绑定
 
@@ -92,9 +92,9 @@
 ### Passkey / WebAuthn
 
 - `POST /api/v1/auth/passkeys/register/start`：请求 `login_ticket`，返回 WebAuthn `PublicKeyCredentialCreationOptions`。
-- `POST /api/v1/auth/passkeys/register/finish`：请求 `login_ticket` 和浏览器 `navigator.credentials.create()` 返回的 `credential`，验证通过后保存公开凭据并返回 Session。
+- `POST /api/v1/auth/passkeys/register/finish`：请求 `login_ticket` 和浏览器 `navigator.credentials.create()` 返回的 `credential`，验证通过后保存公开凭据并返回 Session Cookie。
 - `POST /api/v1/auth/passkeys/authentication/start`：请求 `login_ticket`，返回 `PublicKeyCredentialRequestOptions`。
-- `POST /api/v1/auth/passkeys/authentication/finish`：请求 `login_ticket` 和浏览器 `navigator.credentials.get()` 返回的 `credential`，验证通过后更新 credential counter、消费 ticket 并返回 Session。
+- `POST /api/v1/auth/passkeys/authentication/finish`：请求 `login_ticket` 和浏览器 `navigator.credentials.get()` 返回的 `credential`，验证通过后更新 credential counter、消费 ticket 并返回 Session Cookie。
 
 所有 `login_ticket` 和 WebAuthn challenge 默认有效 5 分钟；ticket 是一次性的。WebAuthn 的 RP ID 和 origin 由固定配置 `WEBAUTHN_RP_ID`、`WEBAUTHN_ORIGIN` 控制，不能从请求 Host 推导。
 
