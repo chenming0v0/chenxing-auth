@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
@@ -16,11 +16,20 @@ use crate::{
 
 #[derive(Debug, Serialize)]
 pub struct LoginResponse {
-    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub expires_at: time::OffsetDateTime,
 }
 
-pub async fn issue_user_session(state: &AppState, user_id: UserId, factor: &str) -> Response {
+const SESSION_RESPONSE_MODE_HEADER: &str = "x-chenxing-session-mode";
+const SESSION_RESPONSE_TOKEN_MODE: &str = "token";
+
+pub async fn issue_user_session(
+    state: &AppState,
+    user_id: UserId,
+    factor: &str,
+    headers: &HeaderMap,
+) -> Response {
     let Some(profile) = (match state.users.find_profile(user_id).await {
         Ok(profile) => profile,
         Err(user_error) => {
@@ -75,7 +84,11 @@ pub async fn issue_user_session(state: &AppState, user_id: UserId, factor: &str)
     let mut response = (
         StatusCode::OK,
         Json(LoginResponse {
-            session_id: session.token.clone(),
+            session_id: should_return_session_token(
+                state.config.session_token_response_enabled,
+                headers,
+            )
+            .then(|| session.token.clone()),
             expires_at: session.expires_at,
         }),
     )
@@ -88,4 +101,30 @@ pub async fn issue_user_session(state: &AppState, user_id: UserId, factor: &str)
         state.config.cookie_secure,
     );
     response
+}
+
+fn should_return_session_token(enabled: bool, headers: &HeaderMap) -> bool {
+    enabled
+        && headers
+            .get(SESSION_RESPONSE_MODE_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value == SESSION_RESPONSE_TOKEN_MODE)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::{HeaderMap, HeaderValue};
+
+    use super::should_return_session_token;
+
+    #[test]
+    fn session_token_response_requires_opt_in_configuration_and_header() {
+        let mut headers = HeaderMap::new();
+        assert!(!should_return_session_token(false, &headers));
+        assert!(!should_return_session_token(true, &headers));
+
+        headers.insert("x-chenxing-session-mode", HeaderValue::from_static("token"));
+        assert!(!should_return_session_token(false, &headers));
+        assert!(should_return_session_token(true, &headers));
+    }
 }

@@ -101,7 +101,7 @@ export type UserMe = {
 }
 
 export type AuthStatusResponse = { authenticated: boolean }
-export type LoginResponse = { session_id?: string; expires_at?: string }
+export type LoginResponse = { expires_at?: string }
 export type PendingLoginResponse = {
   status: 'factor_setup_required' | 'factor_required'
   login_ticket: string

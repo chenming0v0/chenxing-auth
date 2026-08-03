@@ -117,6 +117,7 @@ pub async fn register_user(
 pub async fn login_user(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     Json(input): Json<LoginInput>,
 ) -> Response {
     let totp_code = input.totp_code.clone();
@@ -207,7 +208,7 @@ pub async fn login_user(
             }
             return error::unauthorized("invalid_factor", "authentication factor is invalid");
         }
-        return issue_user_session(&state, user_id, "totp").await;
+        return issue_user_session(&state, user_id, "totp", &headers).await;
     }
 
     let setup_required = methods.is_empty();
