@@ -86,8 +86,15 @@ fn decrypt_keyed(
         .get(nonce_end..)
         .filter(|value| !value.is_empty())
         .ok_or(SessionStoreError::PayloadDecryption)?;
-    let key = keys.key(kid).ok_or(SessionStoreError::PayloadDecryption)?;
-    decrypt_with_parts(key.as_bytes(), nonce, ciphertext)
+    let plaintext = if let Some(key) = keys.key(kid) {
+        decrypt_with_parts(key.as_bytes(), nonce, ciphertext).ok()
+    } else {
+        // The compatibility constructor labels its key "legacy". During rotation,
+        // that same key can be retained under a different configured kid.
+        keys.iter()
+            .find_map(|(_, key)| decrypt_with_parts(key.as_bytes(), nonce, ciphertext).ok())
+    };
+    plaintext.ok_or(SessionStoreError::PayloadDecryption)
 }
 
 fn decrypt_with_key(key: &[u8; 32], encrypted: &[u8]) -> Option<Vec<u8>> {
@@ -145,6 +152,18 @@ mod tests {
     }
 
     #[test]
+    fn payload_with_legacy_key_id_is_readable_using_previous_key() {
+        let legacy = AuthEncryptionKeyRing::single(AuthEncryptionKey::new([2; 32]));
+        let encrypted = encrypt(&legacy, b"legacy session payload").expect("encrypt");
+        let current = rotated_ring("current");
+
+        assert_eq!(
+            decrypt(&current, &encrypted).expect("decrypt legacy payload"),
+            b"legacy session payload"
+        );
+    }
+
+    #[test]
     fn unknown_key_id_is_a_controlled_decryption_failure() {
         let current = rotated_ring("current");
         let previous = AuthEncryptionKeyRing::from_entries(
@@ -154,5 +173,22 @@ mod tests {
         .expect("test key ring");
         let encrypted = encrypt(&current, b"session payload").expect("encrypt");
         assert!(decrypt(&previous, &encrypted).is_err());
+    }
+
+    #[test]
+    fn malformed_payload_is_a_controlled_decryption_failure() {
+        let keys = rotated_ring("current");
+        let mut malformed_keyed = b"CHX1".to_vec();
+        malformed_keyed.extend_from_slice(&1_u16.to_be_bytes());
+        malformed_keyed.push(b'x');
+        malformed_keyed.extend_from_slice(&[0; 12]);
+
+        for payload in [
+            b"CHX1".to_vec(),
+            malformed_keyed,
+            [b"CHX1".as_slice(), &[0, 1, 0xff], &[0; 12], &[1]].concat(),
+        ] {
+            assert!(decrypt(&keys, &payload).is_err());
+        }
     }
 }
