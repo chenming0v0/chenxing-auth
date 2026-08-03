@@ -486,5 +486,3 @@ mod tests {
         assert!(matches!(result, Err(UserServiceError::RateLimited)));
     }
 }
-
-

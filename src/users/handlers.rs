@@ -342,5 +342,3 @@ async fn record_security_event(
         ))
         .await
 }
-
-

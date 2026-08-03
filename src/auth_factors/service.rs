@@ -407,4 +407,3 @@ impl AuthFactorService {
         format!("{TOTP_SETUP_PREFIX}{ticket_id}")
     }
 }
-

@@ -1,7 +1,7 @@
 use super::{
     domain::{
-        EmailPolicySetting, PasskeySetting, SettingsValidationError, SmtpSetting, SmtpSettingUpdate,
-        StoredSmtpSetting,
+        EmailPolicySetting, PasskeySetting, SettingsValidationError, SmtpSetting,
+        SmtpSettingUpdate, StoredSmtpSetting,
     },
     repository,
 };
@@ -76,17 +76,18 @@ impl SettingsService {
         let value = normalize_email(value)?;
         repository::set_registration_email_from(&self.pool, value.as_deref()).await?;
         if let Some(email) = value.as_deref() {
-            let mut smtp = repository::get_smtp(&self.pool)
-                .await?
-                .unwrap_or_else(|| StoredSmtpSetting {
-                    host: String::new(),
-                    port: 587,
-                    username: String::new(),
-                    from_address: String::new(),
-                    ssl_enabled: true,
-                    force_auth_login: false,
-                    password_ciphertext: None,
-                });
+            let mut smtp =
+                repository::get_smtp(&self.pool)
+                    .await?
+                    .unwrap_or_else(|| StoredSmtpSetting {
+                        host: String::new(),
+                        port: 587,
+                        username: String::new(),
+                        from_address: String::new(),
+                        ssl_enabled: true,
+                        force_auth_login: false,
+                        password_ciphertext: None,
+                    });
             if smtp.from_address.trim().is_empty() {
                 smtp.from_address = email.to_owned();
                 repository::set_smtp(&self.pool, &smtp).await?;
@@ -210,7 +211,9 @@ fn extract_email(value: &str) -> Option<String> {
     }
     let start = value.find('<')?;
     let end = value[start + 1..].find('>')?;
-    let email = value[start + 1..start + 1 + end].trim().to_ascii_lowercase();
+    let email = value[start + 1..start + 1 + end]
+        .trim()
+        .to_ascii_lowercase();
     crate::users::domain::is_valid_email(&email).then_some(email)
 }
 
@@ -228,4 +231,3 @@ mod tests {
         assert!(normalize_email(Some("invalid".to_owned())).is_err());
     }
 }
-

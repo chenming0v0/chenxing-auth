@@ -204,4 +204,3 @@ pub struct PublicUser {
     pub role: UserRole,
     pub created_at: time::OffsetDateTime,
 }
-

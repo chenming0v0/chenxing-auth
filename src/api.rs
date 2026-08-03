@@ -308,5 +308,3 @@ async fn openid_configuration(State(state): State<AppState>, headers: HeaderMap)
 async fn jwks(State(state): State<AppState>) -> Json<jsonwebtoken::jwk::JwkSet> {
     Json(state.keys.jwks())
 }
-
-

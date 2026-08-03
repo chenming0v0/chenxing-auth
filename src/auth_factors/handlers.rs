@@ -357,4 +357,3 @@ async fn record_mfa_event(state: &AppState, reason: &str) -> Result<(), crate::a
         ))
         .await
 }
-

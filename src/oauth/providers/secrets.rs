@@ -133,4 +133,3 @@ mod tests {
         assert!(manager.decrypt(b"invalid").is_err());
     }
 }
-

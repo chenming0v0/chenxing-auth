@@ -4,10 +4,7 @@ use super::{
 };
 use crate::sqlx::PgPool;
 
-pub async fn get_text(
-    pool: &PgPool,
-    key: &str,
-) -> Result<Option<String>, crate::sqlx::Error> {
+pub async fn get_text(pool: &PgPool, key: &str) -> Result<Option<String>, crate::sqlx::Error> {
     let row = crate::sqlx::query_as::<_, (Option<String>,)>(
         "SELECT setting_value FROM app_settings WHERE setting_key = $1",
     )
@@ -81,7 +78,9 @@ pub async fn set_email_policy(
     set_text(pool, EMAIL_POLICY_KEY, Some(&raw)).await
 }
 
-pub(crate) async fn get_smtp(pool: &PgPool) -> Result<Option<StoredSmtpSetting>, crate::sqlx::Error> {
+pub(crate) async fn get_smtp(
+    pool: &PgPool,
+) -> Result<Option<StoredSmtpSetting>, crate::sqlx::Error> {
     match get_text(pool, SMTP_KEY).await? {
         Some(raw) if !raw.trim().is_empty() => {
             serde_json::from_str(&raw).map(Some).map_err(json_error)
@@ -90,7 +89,10 @@ pub(crate) async fn get_smtp(pool: &PgPool) -> Result<Option<StoredSmtpSetting>,
     }
 }
 
-pub(crate) async fn set_smtp(pool: &PgPool, value: &StoredSmtpSetting) -> Result<(), crate::sqlx::Error> {
+pub(crate) async fn set_smtp(
+    pool: &PgPool,
+    value: &StoredSmtpSetting,
+) -> Result<(), crate::sqlx::Error> {
     let raw = serde_json::to_string(value).map_err(json_error)?;
     set_text(pool, SMTP_KEY, Some(&raw)).await
 }

@@ -35,10 +35,12 @@ impl AuthFactorService {
         .fetch_optional(&self.pool)
         .await?;
         let enabled = match raw.and_then(|(value,)| value) {
-            Some(value) if !value.trim().is_empty() => serde_json::from_str::<serde_json::Value>(&value)
-                .ok()
-                .and_then(|json| json.get("enabled").and_then(|item| item.as_bool()))
-                .unwrap_or(true),
+            Some(value) if !value.trim().is_empty() => {
+                serde_json::from_str::<serde_json::Value>(&value)
+                    .ok()
+                    .and_then(|json| json.get("enabled").and_then(|item| item.as_bool()))
+                    .unwrap_or(true)
+            }
             _ => true,
         };
         if enabled {
@@ -252,4 +254,3 @@ impl AuthFactorService {
         format!("{PASSKEY_AUTHENTICATION_PREFIX}{ticket_id}")
     }
 }
-

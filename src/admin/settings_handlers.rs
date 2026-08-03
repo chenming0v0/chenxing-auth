@@ -14,8 +14,8 @@ use crate::{
     audit::AuditEvent,
     error,
     settings::{
-        EmailPolicySetting, PasskeySetting, SmtpSettingUpdate,
-        SettingsServiceError, REGISTRATION_EMAIL_FROM_KEY,
+        EmailPolicySetting, PasskeySetting, REGISTRATION_EMAIL_FROM_KEY, SettingsServiceError,
+        SmtpSettingUpdate,
     },
     state::AppState,
 };
@@ -295,6 +295,3 @@ async fn record_setting_event(
         ))
         .await
 }
-
-
-

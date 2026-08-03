@@ -120,7 +120,10 @@ async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
         .expect("email policy put response");
     assert_eq!(response.status(), StatusCode::OK);
     let policy = json(response).await;
-    assert_eq!(policy["allowed_domains"], serde_json::json!(["example.com"]));
+    assert_eq!(
+        policy["allowed_domains"],
+        serde_json::json!(["example.com"])
+    );
 
     let response = router
         .clone()

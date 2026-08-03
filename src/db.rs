@@ -90,6 +90,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0008_admin_query_indexes.sql")),
             false,
         ),
+        Migration::new(
+            9,
+            Cow::Borrowed("system settings seeds"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0009_system_settings.sql")),
+            false,
+        ),
     ];
 
     Migrator {
