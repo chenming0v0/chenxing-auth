@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode},
+    http::{Method, Request, StatusCode},
 };
 use chenxing_auth::config::Config;
 use chenxing_auth::{api, state::AppState};
@@ -49,12 +49,12 @@ async fn userinfo_requires_bearer_token() {
 async fn admin_routes_forward_to_the_react_spa() {
     let router = test_router();
     for (uri, expected) in [
-        ("/admin/login", "/auth/login"),
-        ("/admin", "/console"),
-        ("/admin/users", "/console/users"),
-        ("/admin/clients", "/console/developer"),
-        ("/admin/audit", "/console/overview"),
-        ("/admin/settings/oauth", "/console/settings"),
+        ("/admin/login", "/login"),
+        ("/admin", "/admin"),
+        ("/admin/users", "/admin/users"),
+        ("/admin/clients", "/admin/clients"),
+        ("/admin/audit", "/admin/audit"),
+        ("/admin/settings/oauth", "/admin/settings"),
     ] {
         let response = router
             .clone()
@@ -71,6 +71,82 @@ async fn admin_routes_forward_to_the_react_spa() {
             response.headers()[axum::http::header::LOCATION],
             expected,
             "{uri}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn admin_login_post_redirects_to_react_login() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/login?returnTo=%2Fadmin%2Fusers%3Fpage%3D2&state=login-state")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("admin login response");
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        response.headers()[axum::http::header::LOCATION],
+        "/login?returnTo=%2Fadmin%2Fusers%3Fpage%3D2&state=login-state"
+    );
+}
+
+#[tokio::test]
+async fn admin_redirects_preserve_query_parameters() {
+    let router = test_router();
+    for (uri, expected) in [
+        ("/admin?tab=overview", "/admin?tab=overview"),
+        (
+            "/admin/users?search=alice&status=active&page=2",
+            "/admin/users?search=alice&status=active&page=2",
+        ),
+        ("/admin/clients?page=3", "/admin/clients?page=3"),
+        (
+            "/admin/audit?action=login&resource_type=user",
+            "/admin/audit?action=login&resource_type=user",
+        ),
+        (
+            "/admin/settings/oauth?state=provider-state",
+            "/admin/settings?state=provider-state",
+        ),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("valid request"),
+            )
+            .await
+            .expect("admin page response");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER, "{uri}");
+        assert_eq!(
+            response.headers()[axum::http::header::LOCATION],
+            expected,
+            "{uri}"
+        );
+    }
+}
+
+#[test]
+fn admin_redirect_targets_exist_in_react_app() {
+    let app = include_str!("../web/src/App.tsx");
+    for target in [
+        "/login",
+        "/admin",
+        "/admin/users",
+        "/admin/clients",
+        "/admin/audit",
+        "/admin/settings",
+    ] {
+        assert!(
+            app.contains(&format!("'{target}':")),
+            "redirect target {target} must be declared in App.tsx"
         );
     }
 }
