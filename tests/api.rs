@@ -134,6 +134,11 @@ async fn login_endpoint_rejects_invalid_identifier_without_database_call() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    let error: serde_json::Value = serde_json::from_slice(&body).expect("JSON error");
+    assert_eq!(error["code"], "invalid_credentials");
 }
 
 #[tokio::test]

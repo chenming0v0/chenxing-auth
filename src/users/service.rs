@@ -32,6 +32,8 @@ pub enum UserServiceError {
     Database(#[from] crate::sqlx::Error),
     #[error("credentials are invalid")]
     InvalidCredentials,
+    #[error("login input format is invalid")]
+    InvalidLoginInput,
     #[error("authentication rate limit reached")]
     RateLimited,
     #[error("authentication limiter failed: {0}")]
@@ -148,7 +150,7 @@ impl UserService {
     ) -> Result<UserId, UserServiceError> {
         let login = validate_login(input).map_err(|error| match error {
             LoginError::InvalidIdentifier | LoginError::EmptyPassword => {
-                UserServiceError::InvalidCredentials
+                UserServiceError::InvalidLoginInput
             }
         })?;
         let source_ip = self.source_ip(source_ip)?;
@@ -359,13 +361,56 @@ pub enum BootstrapOwnerResult {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, atomic::AtomicUsize};
 
     use super::*;
     use crate::auth_limiter::domain::LimiterFuture;
     use crate::auth_limiter::{AuthFailureLimiter, FailureDimension};
 
     struct AlwaysLimited;
+
+    #[derive(Default)]
+    struct CountingLimiter {
+        calls: AtomicUsize,
+    }
+
+    impl CountingLimiter {
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl AuthFailureLimiter for CountingLimiter {
+        fn is_limited<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &str,
+        ) -> LimiterFuture<'a, bool> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::pin(async { Ok(false) })
+        }
+
+        fn record_failure<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &str,
+        ) -> LimiterFuture<'a, bool> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::pin(async { Ok(false) })
+        }
+
+        fn clear<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &str,
+        ) -> LimiterFuture<'a, ()> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::pin(async { Ok(()) })
+        }
+    }
 
     impl AuthFailureLimiter for AlwaysLimited {
         fn is_limited<'a>(
@@ -394,7 +439,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn password_authentication_is_rejected_before_password_hash() {
+    async fn invalid_login_input_is_rejected_before_limiter_or_database() {
+        let pool = crate::sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://invalid-host/unused")
+            .expect("lazy pool");
+        let limiter = Arc::new(CountingLimiter::default());
+        let service = UserService::new(pool, limiter.clone());
+        let result = service
+            .authenticate(
+                LoginInput {
+                    identifier: "ab".to_owned(),
+                    password: "incorrect password".to_owned(),
+                    totp_code: None,
+                },
+                Some("127.0.0.1"),
+            )
+            .await;
+
+        assert!(matches!(result, Err(UserServiceError::InvalidLoginInput)));
+        assert_eq!(limiter.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn valid_login_input_still_uses_rate_limiter_before_database() {
         let pool = crate::sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://invalid-host/unused")
             .expect("lazy pool");
