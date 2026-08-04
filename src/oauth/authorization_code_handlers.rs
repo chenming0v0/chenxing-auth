@@ -2,11 +2,8 @@ use axum::response::{IntoResponse, Redirect, Response};
 use std::fmt;
 
 use super::{
-    authorization::ValidatedAuthorizationRequest,
-    code::AuthorizationCode,
-    consent::PendingAuthorization,
-    quota::QuotaConsumeResult,
-    session::active_user_id,
+    authorization::ValidatedAuthorizationRequest, code::AuthorizationCode,
+    consent::PendingAuthorization, quota::QuotaConsumeResult, session::active_user_id,
 };
 use crate::audit::AuditEvent;
 use crate::{error, state::AppState};
