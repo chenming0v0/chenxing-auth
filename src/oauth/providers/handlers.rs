@@ -15,13 +15,14 @@ use crate::{
     state::AppState,
 };
 use axum::{
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Extension, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::{RngCore, rngs::OsRng};
 use serde::Deserialize;
+use std::net::SocketAddr;
 
 #[derive(Debug, Deserialize)]
 pub struct ExternalLoginQuery {
@@ -69,6 +70,7 @@ pub async fn start_external_login(
     State(state): State<AppState>,
     Path(slug): Path<String>,
     Query(query): Query<ExternalLoginQuery>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
 ) -> Response {
     let provider = match state.external_oauth.find(&slug).await {
         Ok(provider) if provider.status == "active" => provider,
@@ -83,16 +85,51 @@ pub async fn start_external_login(
     {
         return Redirect::to("/login?external_error=oauth_request_expired").into_response();
     }
+    let source_ip = connect_info
+        .map(|Extension(ConnectInfo(peer))| peer.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
     let state_value = random_state();
     if let Err(store_error) = state
         .external_login_states
-        .save(&ExternalLoginState {
-            state: state_value.clone(),
-            provider_slug: slug.clone(),
-            request_id: query.request_id.clone().filter(|value| !value.is_empty()),
-        })
+        .save_from_source(
+            &ExternalLoginState {
+                state: state_value.clone(),
+                provider_slug: slug.clone(),
+                request_id: query.request_id.clone().filter(|value| !value.is_empty()),
+            },
+            &source_ip,
+        )
         .await
     {
+        if matches!(
+            &store_error,
+            crate::oauth::providers::state_store::ExternalLoginStateStoreError::RateLimited
+                | crate::oauth::providers::state_store::ExternalLoginStateStoreError::CapacityExceeded
+        ) {
+            tracing::warn!(
+                event = "external_oauth.state_admission_denied",
+                provider = %slug,
+                "external OAuth state admission limit reached"
+            );
+            if let Err(audit_error) = state
+                .audit
+                .record(AuditEvent::security_failure(
+                    "login_rate_limited".to_owned(),
+                    "anonymous".to_owned(),
+                    None,
+                    "external_oauth".to_owned(),
+                    Some(slug.clone()),
+                    "state_admission_denied",
+                ))
+                .await
+            {
+                tracing::error!(error = %audit_error, "failed to audit external OAuth rate limit");
+            }
+            return error::too_many_requests(
+                "oauth_login_rate_limited",
+                "too many external login attempts; try again later",
+            );
+        }
         tracing::error!(error = %store_error, "failed to store external OAuth state");
         return error::internal();
     }
