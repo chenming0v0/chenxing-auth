@@ -7,6 +7,7 @@ use chenxing_auth::auth_factors::{crypto::decrypt_totp_secret, repository};
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
 use serde_json::Value;
+use std::time::{SystemTime, UNIX_EPOCH};
 use totp_rs::{Algorithm, TOTP};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -190,6 +191,23 @@ async fn login(router: &Router, identifier: &str, email: &str, password: &str) -
 }
 
 async fn current_totp_code(email: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_secs();
+    totp_code_at(email, now).await
+}
+
+async fn next_totp_code(email: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_secs();
+    let next_timestep = (now / 30 + 1) * 30;
+    totp_code_at(email, next_timestep).await
+}
+
+async fn totp_code_at(email: &str, timestamp: u64) -> String {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let database = PgPoolOptions::new()
@@ -209,8 +227,7 @@ async fn current_totp_code(email: &str) -> String {
     let secret = decrypt_totp_secret(&[0_u8; 32], &encrypted).expect("TOTP secret");
     TOTP::new(Algorithm::SHA1, 6, 1, 30, secret, None, String::new())
         .expect("TOTP")
-        .generate_current()
-        .expect("TOTP code")
+        .generate(timestamp)
 }
 
 #[tokio::test]
@@ -314,7 +331,7 @@ async fn user_can_update_profile_list_sessions_and_rotate_password() {
                     serde_json::json!({
                         "identifier": email,
                         "password": new_password,
-                        "totp_code": current_totp_code(&email).await
+                        "totp_code": next_totp_code(&email).await
                     })
                     .to_string(),
                 ))
