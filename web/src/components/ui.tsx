@@ -7,7 +7,7 @@ import {
   Send, Server, Settings, Settings2, Shield, ShieldAlert, ShieldCheck, Sparkles, Star, Store, Terminal, Trash2, Unlink,
   User, UserPlus, Users, Wallet, X, Zap, type LucideIcon,
 } from 'lucide-react'
-import logoUrl from '../../../design-auth-chengming/assets/logo.png'
+import logoUrl from '../assets/logo.png'
 
 const icons: Record<string, LucideIcon> = {
   activity: Activity, 'alert-triangle': AlertTriangle, 'arrow-right': ArrowRight, 'arrow-up-right': ArrowUpRight,
