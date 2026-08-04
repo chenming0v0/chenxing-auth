@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use axum::{
     Json,
-    extract::{Form, State, rejection::FormRejection},
+    extract::{RawForm, State, rejection::RawFormRejection},
     http::{HeaderMap, header::AUTHORIZATION},
     response::{IntoResponse, Response},
 };
@@ -12,6 +12,8 @@ use crate::{
     oauth::{response::with_no_store_headers, token::decode_userinfo_token},
     state::AppState,
 };
+
+use super::form;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UserInfoClaims {
@@ -51,11 +53,20 @@ pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Resp
 pub async fn userinfo_post(
     State(state): State<AppState>,
     headers: HeaderMap,
-    form: Result<Form<UserInfoRequest>, FormRejection>,
+    form: Result<RawForm, RawFormRejection>,
 ) -> Response {
-    let Form(request) = match form {
+    let RawForm(body) = match form {
         Ok(form) => form,
         Err(_) => {
+            return with_no_store_headers(error::oauth_bad_request(
+                "invalid_request",
+                "request body is invalid",
+            ));
+        }
+    };
+    let request: UserInfoRequest = match form::deserialize(&body) {
+        Some(request) => request,
+        None => {
             return with_no_store_headers(error::oauth_bad_request(
                 "invalid_request",
                 "request body is invalid",

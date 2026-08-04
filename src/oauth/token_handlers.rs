@@ -1,5 +1,5 @@
 use axum::{
-    extract::{ConnectInfo, Extension, Form, State, rejection::FormRejection},
+    extract::{ConnectInfo, Extension, RawForm, State, rejection::RawFormRejection},
     http::{HeaderMap, StatusCode},
     response::Response,
 };
@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 use super::{
     client_auth::{ClientCredentialError, resolve_client_credentials},
     code::{AUTHORIZATION_CODE_TTL_SECONDS, AuthorizationCode},
+    form,
     pkce::verify_s256,
     refresh::RefreshToken,
     response::{self, issue_token_response},
@@ -35,11 +36,20 @@ pub async fn token(
     State(state): State<AppState>,
     headers: HeaderMap,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
-    form: Result<Form<TokenRequest>, FormRejection>,
+    form: Result<RawForm, RawFormRejection>,
 ) -> Response {
-    let Form(request) = match form {
+    let RawForm(body) = match form {
         Ok(form) => form,
         Err(_) => {
+            return response::with_no_store_headers(error::oauth_bad_request(
+                "invalid_request",
+                "request body is invalid",
+            ));
+        }
+    };
+    let request = match form::deserialize(&body) {
+        Some(request) => request,
+        None => {
             return response::with_no_store_headers(error::oauth_bad_request(
                 "invalid_request",
                 "request body is invalid",

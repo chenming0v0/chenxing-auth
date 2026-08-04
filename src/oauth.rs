@@ -8,6 +8,7 @@ pub mod authorization_code_handlers;
 pub mod client_auth;
 pub mod code;
 pub mod consent;
+mod form;
 pub mod handlers;
 pub mod id_token;
 pub mod pkce;
