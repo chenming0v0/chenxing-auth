@@ -66,12 +66,9 @@ pub async fn create_client(
                 }),
             )
                 .into_response();
-            if record_admin_event(&state, actor, "client_create", &client_id)
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
+            // The secret is one-time material. Once the insert succeeds, an
+            // audit outage must not turn a recoverable response into a lost credential.
+            record_admin_event_best_effort(&state, actor, "client_create", &client_id).await;
             response
         }
         Err(ClientServiceError::Validation(validation_error)) => {
@@ -256,23 +253,15 @@ pub async fn rotate_secret(
     match state.clients.rotate_secret(&client_id).await {
         Ok(secret) => {
             let client_id = secret.client_id.clone();
-            let (actor_type, actor_id) = actor.audit_fields();
-            if state
-                .audit
-                .record(AuditEvent::new(
-                    actor_type.to_owned(),
-                    actor_id,
-                    "client_secret_rotate".to_owned(),
-                    "oauth_client".to_owned(),
-                    Some(client_id.clone()),
-                    serde_json::json!({"result": "success"}),
-                ))
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
-            (StatusCode::OK, Json(secret)).into_response()
+            let response = (StatusCode::OK, Json(secret)).into_response();
+            record_admin_event_best_effort(
+                &state,
+                actor,
+                "client_secret_rotate",
+                &client_id,
+            )
+            .await;
+            response
         }
         Err(ClientServiceError::InvalidData) => {
             error::bad_request("client_not_found", "client was not found")
@@ -305,6 +294,22 @@ async fn record_admin_event(
             serde_json::json!({"result": "success"}),
         ))
         .await
+}
+
+async fn record_admin_event_best_effort(
+    state: &AppState,
+    actor: super::authorization::AdminActor,
+    action: &str,
+    client_id: &str,
+) {
+    if let Err(error_value) = record_admin_event(state, actor, action, client_id).await {
+        tracing::error!(
+            event = "audit.persistence_failed_after_client_secret_mutation",
+            action,
+            error = %error_value,
+            "client secret response was returned despite audit persistence failure"
+        );
+    }
 }
 
 pub(crate) fn is_admin_request(state: &AppState, headers: &HeaderMap) -> bool {
