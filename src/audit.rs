@@ -1,9 +1,20 @@
+//! Durable security audit boundary.
+//!
+//! `audit_events` is an append-only record of security-relevant decisions. The
+//! database owns retention and archival policy; application code must not turn
+//! a failed write into a successful security mutation.
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::time::Duration;
 use thiserror::Error;
 use time::OffsetDateTime;
+use tokio::time::sleep;
 
 pub mod repository;
+
+const AUDIT_WRITE_MAX_ATTEMPTS: u32 = 3;
+const AUDIT_RETRY_DELAY: Duration = Duration::from_millis(25);
 
 #[derive(Clone)]
 pub struct AuditService {
@@ -30,11 +41,34 @@ impl AuditService {
             tracing::error!(error = %error, action = %event.action, "rejected audit event");
             return Err(error);
         }
-        if let Err(error) = repository::insert(&self.pool, &event).await {
-            tracing::error!(error = %error, action = %event.action, "failed to persist audit event");
-            return Err(error);
+
+        let mut attempt = 1;
+        loop {
+            match repository::insert(&self.pool, &event).await {
+                Ok(()) => return Ok(()),
+                Err(error) if attempt >= AUDIT_WRITE_MAX_ATTEMPTS => {
+                    tracing::error!(
+                        event = "audit.persistence_failed",
+                        action = %event.action,
+                        attempts = attempt,
+                        error = %error,
+                        "audit event could not be persisted after retries"
+                    );
+                    return Err(error);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        event = "audit.persistence_retry",
+                        action = %event.action,
+                        attempt,
+                        error = %error,
+                        "retrying audit event persistence"
+                    );
+                    sleep(AUDIT_RETRY_DELAY * attempt).await;
+                    attempt += 1;
+                }
+            }
         }
-        Ok(())
     }
 
     pub async fn list(&self, limit: i64) -> Result<Vec<AuditEvent>, crate::sqlx::Error> {
@@ -96,6 +130,24 @@ impl AuditEvent {
             metadata: redact_metadata(metadata),
             created_at: OffsetDateTime::now_utc(),
         }
+    }
+
+    pub fn security_failure(
+        action: String,
+        actor_type: String,
+        actor_id: Option<String>,
+        resource_type: String,
+        resource_id: Option<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self::new(
+            actor_type,
+            actor_id,
+            action,
+            resource_type,
+            resource_id,
+            serde_json::json!({"result": "failure", "reason": reason.into()}),
+        )
     }
 
     pub fn validate(&self) -> Result<(), AuditError> {
