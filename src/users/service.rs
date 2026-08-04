@@ -185,9 +185,6 @@ impl UserService {
             return Err(UserServiceError::InvalidCredentials);
         }
 
-        self.limiter
-            .clear(FailureDimension::Account, &account_key)
-            .await?;
         Ok(credentials.id)
     }
 

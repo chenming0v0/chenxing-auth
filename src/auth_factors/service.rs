@@ -145,6 +145,16 @@ impl AuthFactorService {
         Ok(self.tickets.create(user_id, methods).await?)
     }
 
+    pub async fn clear_account_failures(
+        &self,
+        user_id: UserId,
+    ) -> Result<(), AuthFactorServiceError> {
+        self.limiter
+            .clear(FailureDimension::Account, &user_id.to_string())
+            .await?;
+        Ok(())
+    }
+
     pub async fn user_id_for_ticket(
         &self,
         ticket_id: &str,
@@ -182,9 +192,6 @@ impl AuthFactorService {
             }
             return Ok(false);
         }
-        self.limiter
-            .clear(FailureDimension::Account, &account_key)
-            .await?;
         Ok(true)
     }
 
@@ -273,9 +280,6 @@ impl AuthFactorService {
             return Ok(TotpConfirmation::InvalidCode);
         }
         self.limiter
-            .clear(FailureDimension::Account, &account_key)
-            .await?;
-        self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
         let confirmation = consume_then_persist(
@@ -338,9 +342,6 @@ impl AuthFactorService {
             }
             return Ok(TotpConfirmation::InvalidCode);
         }
-        self.limiter
-            .clear(FailureDimension::Account, &account_key)
-            .await?;
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
