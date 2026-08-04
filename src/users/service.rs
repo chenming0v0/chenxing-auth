@@ -3,7 +3,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use super::{
-    credentials::{hash_password, verify_password},
+    credentials::{hash_password, prepare_dummy_password_hash, verify_login_password, verify_password},
     domain::{
         LoginError, LoginInput, PublicUser, RegistrationError, RegistrationInput, UserId, UserRole,
         validate_display_name, validate_login, validate_registration,
@@ -58,6 +58,7 @@ impl UserService {
         limiter: Arc<dyn AuthFailureLimiter>,
         missing_source_ip_policy: MissingSourceIpPolicy,
     ) -> Self {
+        prepare_dummy_password_hash();
         Self {
             pool,
             limiter,
@@ -181,6 +182,7 @@ impl UserService {
             }
         };
         let Some(credentials) = credentials else {
+            let _ = verify_login_password(&login.password, None);
             if self.record_failure(source_dimensions).await?.reached.is_empty() {
                 return Err(UserServiceError::InvalidCredentials);
             } else {
@@ -195,7 +197,7 @@ impl UserService {
         }
         let mut dimensions = source_dimensions;
         dimensions.extend(account_dimensions);
-        let password_valid = verify_password(&login.password, &credentials.password_hash);
+        let password_valid = verify_login_password(&login.password, Some(&credentials.password_hash));
         if credentials.status != "active"
             || !credentials.password_login_enabled
             || !password_valid
