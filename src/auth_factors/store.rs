@@ -122,7 +122,7 @@ impl LoginTicketStore {
         } else {
             connection.get(Self::key(ticket_id)).await?
         };
-        let ticket = payload
+        let ticket: Option<LoginTicket> = payload
             .map(|value| serde_json::from_str(&value))
             .transpose()
             .map_err(LoginTicketStoreError::from)?;

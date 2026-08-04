@@ -373,7 +373,8 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                 Ok(connection) => connection,
                 Err(_) => return self.unavailable_reservation("reserve", &dimensions),
             };
-            let mut invocation = Script::new(RESERVE_ATTEMPT_SCRIPT).prepare_invoke();
+            let script = Script::new(RESERVE_ATTEMPT_SCRIPT);
+            let mut invocation = script.prepare_invoke();
             for key in failure_keys.into_iter().chain(pending_keys) {
                 invocation.key(key);
             }
@@ -418,7 +419,8 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                 Ok(connection) => connection,
                 Err(_) => return self.unavailable_record("record_reserved", &dimensions),
             };
-            let mut invocation = Script::new(RECORD_RESERVED_FAILURE_SCRIPT).prepare_invoke();
+            let script = Script::new(RECORD_RESERVED_FAILURE_SCRIPT);
+            let mut invocation = script.prepare_invoke();
             for key in failure_keys.into_iter().chain(pending_keys) {
                 invocation.key(key);
             }
@@ -468,7 +470,8 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                     };
                 }
             };
-            let mut invocation = Script::new(RELEASE_ATTEMPT_SCRIPT).prepare_invoke();
+            let script = Script::new(RELEASE_ATTEMPT_SCRIPT);
+            let mut invocation = script.prepare_invoke();
             for key in keys {
                 invocation.key(key);
             }
