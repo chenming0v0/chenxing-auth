@@ -82,6 +82,10 @@ async fn revocation_handler_rejects_unknown_hint_and_accepts_supported_hints() {
         STANDARD.encode(format!("{}:{}", client.client_id, client.client_secret))
     );
 
+    let response = revoke(&router, &authorization, "token=unknown-token%ZZ").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(response).await["error"], "invalid_request");
+
     let response = revoke(
         &router,
         &authorization,

@@ -18,7 +18,7 @@ use uuid::Uuid;
 #[path = "support/oauth_flow.rs"]
 mod support;
 
-use support::{ensure_owner_bootstrapped, json_body, test_router};
+use support::{create_test_client, ensure_owner_bootstrapped, json_body, test_router};
 
 const TEST_ORIGIN: &str = "http://127.0.0.1:3000/";
 
@@ -125,6 +125,15 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
         .as_str()
         .expect("client secret")
         .to_owned();
+    let (form_client_id, form_client_secret) =
+        create_test_client(&router, "flow-admin-token").await;
+    chenxing_auth::sqlx::query(
+        "UPDATE oauth_clients SET auth_method = 'client_secret_post' WHERE client_id = $1",
+    )
+    .bind(&form_client_id)
+    .execute(&database)
+    .await
+    .expect("enable form client authentication");
 
     let basic_credentials = STANDARD.encode(format!("{client_id}:{client_secret}"));
     let response = router
@@ -167,9 +176,14 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
                 .method("POST")
                 .uri("/oauth/revoke")
                 .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(format!(
-                    "token=unknown-token&client_id={client_id}&client_secret={client_secret}"
-                )))
+                .body(Body::from(
+                    serde_urlencoded::to_string([
+                        ("token", "unknown-token"),
+                        ("client_id", form_client_id.as_str()),
+                        ("client_secret", form_client_secret.as_str()),
+                    ])
+                    .expect("form revocation encoding"),
+                ))
                 .expect("form revocation request"),
         )
         .await
@@ -570,6 +584,11 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
         .execute(&database)
         .await
         .expect("cleanup client");
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
+        .bind(form_client_id)
+        .execute(&database)
+        .await
+        .expect("cleanup form client");
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)
         .execute(&database)

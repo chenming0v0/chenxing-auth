@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Form, State, rejection::FormRejection},
+    extract::{RawForm, State, rejection::RawFormRejection},
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use super::{
     client_auth::{ClientCredentialError, resolve_client_credentials},
+    form,
     response::with_no_store_headers,
     token::decode_access_token,
 };
@@ -23,11 +24,20 @@ pub struct RevocationRequest {
 pub async fn revoke(
     State(state): State<AppState>,
     headers: HeaderMap,
-    form: Result<Form<RevocationRequest>, FormRejection>,
+    form: Result<RawForm, RawFormRejection>,
 ) -> Response {
-    let Form(request) = match form {
+    let RawForm(body) = match form {
         Ok(form) => form,
         Err(_) => {
+            return with_no_store_headers(error::oauth_bad_request(
+                "invalid_request",
+                "request body is invalid",
+            ));
+        }
+    };
+    let request = match form::deserialize(&body) {
+        Some(request) => request,
+        None => {
             return with_no_store_headers(error::oauth_bad_request(
                 "invalid_request",
                 "request body is invalid",
