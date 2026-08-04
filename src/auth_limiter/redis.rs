@@ -10,6 +10,7 @@ use super::domain::{
 };
 
 const FAILURE_KEY_PREFIX: &str = "chenxing:auth:failure:";
+const PENDING_KEY_PREFIX: &str = "chenxing:auth:pending:";
 const CHECK_LIMITS_SCRIPT: &str = r#"
 for index, key in ipairs(KEYS) do
     local current = redis.call('GET', key)
@@ -35,6 +36,62 @@ for index, key in ipairs(KEYS) do
     end
 end
 return reached
+"#;
+const RESERVE_ATTEMPT_SCRIPT: &str = r#"
+local count = tonumber(ARGV[1])
+local ttl = tonumber(ARGV[2])
+for index = 1, count do
+    local failures = tonumber(redis.call('GET', KEYS[index]) or '0')
+    local pending = tonumber(redis.call('GET', KEYS[count + index]) or '0')
+    if failures + pending >= tonumber(ARGV[index + 2]) then
+        return 0
+    end
+end
+for index = 1, count do
+    local pending = redis.call('INCR', KEYS[count + index])
+    if pending == 1 then redis.call('EXPIRE', KEYS[count + index], ttl) end
+end
+return 1
+"#;
+const RECORD_RESERVED_FAILURE_SCRIPT: &str = r#"
+local count = tonumber(ARGV[1])
+local ttl = tonumber(ARGV[2])
+local reached = {}
+for index = 1, count do
+    local pending = tonumber(redis.call('GET', KEYS[count + index]) or '0')
+    if pending > 0 then
+        if pending == 1 then
+            redis.call('DEL', KEYS[count + index])
+        else
+            redis.call('DECR', KEYS[count + index])
+        end
+    end
+    local limit = tonumber(ARGV[index + 2])
+    local current = tonumber(redis.call('GET', KEYS[index]) or '0')
+    if current < limit then
+        current = redis.call('INCR', KEYS[index])
+        if current == 1 then redis.call('EXPIRE', KEYS[index], ttl) end
+    end
+    if current >= limit then
+        reached[index] = 1
+    else
+        reached[index] = 0
+    end
+end
+return reached
+"#;
+const RELEASE_ATTEMPT_SCRIPT: &str = r#"
+for index, key in ipairs(KEYS) do
+    local pending = tonumber(redis.call('GET', key) or '0')
+    if pending > 0 then
+        if pending == 1 then
+            redis.call('DEL', key)
+        else
+            redis.call('DECR', key)
+        end
+    end
+end
+return 1
 "#;
 
 static REDIS_ERRORS: AtomicU64 = AtomicU64::new(0);
@@ -93,6 +150,14 @@ impl RedisAuthFailureLimiter {
         )
     }
 
+    fn pending_key(dimension: FailureDimension, value: &str, window: i64) -> String {
+        format!(
+            "{PENDING_KEY_PREFIX}{}:{}:{window}",
+            dimension.as_str(),
+            Self::value_hash(value)
+        )
+    }
+
     fn log_limit(dimension: FailureDimension, value: &str, window: i64) {
         LIMIT_HITS.fetch_add(1, Ordering::Relaxed);
         tracing::warn!(
@@ -141,6 +206,18 @@ impl RedisAuthFailureLimiter {
             AuthLimiterFailurePolicy::FailOpen => Ok(FailureRecord {
                 reached: Vec::new(),
             }),
+            AuthLimiterFailurePolicy::FailClosed => Err(AuthLimiterError::Storage),
+        }
+    }
+
+    fn unavailable_reservation(
+        &self,
+        operation: &str,
+        dimensions: &[LimiterDimension],
+    ) -> Result<bool, AuthLimiterError> {
+        self.log_storage_error(operation, dimensions);
+        match self.failure_policy {
+            AuthLimiterFailurePolicy::FailOpen => Ok(true),
             AuthLimiterFailurePolicy::FailClosed => Err(AuthLimiterError::Storage),
         }
     }
@@ -277,167 +354,136 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             Ok(FailureRecord { reached })
         })
     }
+
+    fn reserve<'a>(&'a self, dimensions: Vec<LimiterDimension>) -> LimiterFuture<'a, bool> {
+        Box::pin(async move {
+            if dimensions.is_empty() {
+                return Ok(true);
+            }
+            let (window, ttl) = Self::window();
+            let failure_keys: Vec<String> = dimensions
+                .iter()
+                .map(|(dimension, value)| Self::key(*dimension, value, window))
+                .collect();
+            let pending_keys: Vec<String> = dimensions
+                .iter()
+                .map(|(dimension, value)| Self::pending_key(*dimension, value, window))
+                .collect();
+            let mut connection = match self.client.get_multiplexed_async_connection().await {
+                Ok(connection) => connection,
+                Err(_) => return self.unavailable_reservation("reserve", &dimensions),
+            };
+            let mut invocation = Script::new(RESERVE_ATTEMPT_SCRIPT).prepare_invoke();
+            for key in failure_keys.into_iter().chain(pending_keys) {
+                invocation.key(key);
+            }
+            invocation.arg(dimensions.len());
+            invocation.arg(ttl);
+            for (dimension, _) in &dimensions {
+                invocation.arg(dimension.limit());
+            }
+            let reserved: i64 = match invocation.invoke_async(&mut connection).await {
+                Ok(reserved) => reserved,
+                Err(_) => return self.unavailable_reservation("reserve", &dimensions),
+            };
+            if reserved == 0 {
+                for (dimension, value) in &dimensions {
+                    Self::log_limit(*dimension, value, window);
+                }
+            }
+            Ok(reserved == 1)
+        })
+    }
+
+    fn record_reserved_failures<'a>(
+        &'a self,
+        dimensions: Vec<LimiterDimension>,
+    ) -> LimiterFuture<'a, FailureRecord> {
+        Box::pin(async move {
+            if dimensions.is_empty() {
+                return Ok(FailureRecord {
+                    reached: Vec::new(),
+                });
+            }
+            let (window, ttl) = Self::window();
+            let failure_keys: Vec<String> = dimensions
+                .iter()
+                .map(|(dimension, value)| Self::key(*dimension, value, window))
+                .collect();
+            let pending_keys: Vec<String> = dimensions
+                .iter()
+                .map(|(dimension, value)| Self::pending_key(*dimension, value, window))
+                .collect();
+            let mut connection = match self.client.get_multiplexed_async_connection().await {
+                Ok(connection) => connection,
+                Err(_) => return self.unavailable_record("record_reserved", &dimensions),
+            };
+            let mut invocation = Script::new(RECORD_RESERVED_FAILURE_SCRIPT).prepare_invoke();
+            for key in failure_keys.into_iter().chain(pending_keys) {
+                invocation.key(key);
+            }
+            invocation.arg(dimensions.len());
+            invocation.arg(ttl);
+            for (dimension, _) in &dimensions {
+                invocation.arg(dimension.limit());
+            }
+            let flags: Vec<i64> = match invocation.invoke_async(&mut connection).await {
+                Ok(flags) => flags,
+                Err(_) => return self.unavailable_record("record_reserved", &dimensions),
+            };
+            FAILURE_RECORDS.fetch_add(dimensions.len() as u64, Ordering::Relaxed);
+            let reached = dimensions
+                .iter()
+                .zip(flags)
+                .filter_map(|((dimension, value), flag)| {
+                    if flag == 1 {
+                        Self::log_limit(*dimension, value, window);
+                        Some(*dimension)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            Ok(FailureRecord { reached })
+        })
+    }
+
+    fn release<'a>(&'a self, dimensions: Vec<LimiterDimension>) -> LimiterFuture<'a, ()> {
+        Box::pin(async move {
+            if dimensions.is_empty() {
+                return Ok(());
+            }
+            let (window, _) = Self::window();
+            let keys: Vec<String> = dimensions
+                .iter()
+                .map(|(dimension, value)| Self::pending_key(*dimension, value, window))
+                .collect();
+            let mut connection = match self.client.get_multiplexed_async_connection().await {
+                Ok(connection) => connection,
+                Err(_) => {
+                    self.log_storage_error("release", &dimensions);
+                    return match self.failure_policy {
+                        AuthLimiterFailurePolicy::FailOpen => Ok(()),
+                        AuthLimiterFailurePolicy::FailClosed => Err(AuthLimiterError::Storage),
+                    };
+                }
+            };
+            let mut invocation = Script::new(RELEASE_ATTEMPT_SCRIPT).prepare_invoke();
+            for key in keys {
+                invocation.key(key);
+            }
+            let result: Result<i64, _> = invocation.invoke_async(&mut connection).await;
+            if result.is_err() {
+                self.log_storage_error("release", &dimensions);
+                if matches!(self.failure_policy, AuthLimiterFailurePolicy::FailClosed) {
+                    return Err(AuthLimiterError::Storage);
+                }
+            }
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use ::redis::AsyncCommands;
-
-    use super::RedisAuthFailureLimiter;
-    use crate::auth_limiter::{AuthFailureLimiter, AuthLimiterFailurePolicy, FailureDimension};
-
-    fn limiter() -> RedisAuthFailureLimiter {
-        let url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-        RedisAuthFailureLimiter::new(::redis::Client::open(url).expect("Redis URL"))
-    }
-
-    fn unique_value(prefix: &str) -> String {
-        format!("{prefix}-{}", uuid::Uuid::new_v4().simple())
-    }
-
-    #[tokio::test]
-    async fn account_failures_are_rejected_after_ten_attempts() {
-        let limiter = limiter();
-        let account = unique_value("account");
-        for attempt in 0..10 {
-            assert_eq!(
-                limiter
-                    .record_failure(FailureDimension::Account, &account)
-                    .await
-                    .expect("record account failure"),
-                attempt == 9
-            );
-        }
-        assert!(
-            limiter
-                .is_limited(FailureDimension::Account, &account)
-                .await
-                .expect("check account limit")
-        );
-    }
-
-    #[tokio::test]
-    async fn successful_login_clears_account_failure_counter() {
-        let limiter = limiter();
-        let account = unique_value("account");
-        limiter
-            .record_failure(FailureDimension::Account, &account)
-            .await
-            .expect("record account failure");
-        limiter
-            .clear(FailureDimension::Account, &account)
-            .await
-            .expect("clear account failure");
-        assert!(
-            !limiter
-                .is_limited(FailureDimension::Account, &account)
-                .await
-                .expect("check account limit")
-        );
-    }
-
-    #[tokio::test]
-    async fn concurrent_account_failures_have_one_atomic_threshold_boundary() {
-        let limiter = Arc::new(limiter());
-        let account = unique_value("concurrent-account");
-        let mut tasks = Vec::new();
-        for _ in 0..10 {
-            let limiter = limiter.clone();
-            let account = account.clone();
-            tasks.push(tokio::spawn(async move {
-                limiter
-                    .record_failure(FailureDimension::Account, &account)
-                    .await
-                    .expect("record concurrent failure")
-            }));
-        }
-        let mut reached = 0;
-        for task in tasks {
-            reached += u8::from(task.await.expect("join concurrent failure"));
-        }
-        assert_eq!(reached, 1);
-    }
-
-    #[tokio::test]
-    async fn batch_failure_uses_account_ticket_and_ip_dimensions_with_window_ttl() {
-        let limiter = limiter();
-        let account = unique_value("batch-account");
-        let ticket = unique_value("batch-ticket");
-        let source_ip = unique_value("batch-ip");
-        for _ in 0..4 {
-            let record = limiter
-                .record_failures(vec![
-                    (FailureDimension::Account, account.clone()),
-                    (FailureDimension::Ticket, ticket.clone()),
-                    (FailureDimension::SourceIp, source_ip.clone()),
-                ])
-                .await
-                .expect("record batch failure");
-            assert!(record.reached.is_empty());
-        }
-        let record = limiter
-            .record_failures(vec![
-                (FailureDimension::Account, account.clone()),
-                (FailureDimension::Ticket, ticket.clone()),
-                (FailureDimension::SourceIp, source_ip.clone()),
-            ])
-            .await
-            .expect("record threshold batch failure");
-        assert!(record.reached(FailureDimension::Ticket));
-        assert!(!record.reached(FailureDimension::Account));
-        assert!(!record.reached(FailureDimension::SourceIp));
-
-        let (window, _) = RedisAuthFailureLimiter::window();
-        let key = RedisAuthFailureLimiter::key(FailureDimension::Ticket, &ticket, window);
-        let mut connection = limiter
-            .client
-            .get_multiplexed_async_connection()
-            .await
-            .expect("Redis connection");
-        let ttl: i64 = connection.ttl(key).await.expect("failure counter TTL");
-        assert!(ttl > 0);
-        assert!(ttl <= super::AUTH_FAILURE_WINDOW_SECONDS);
-    }
-
-    #[tokio::test]
-    async fn redis_failure_policy_is_explicit_and_observable() {
-        let client = ::redis::Client::open("redis://127.0.0.1:1/").expect("Redis URL");
-        let fail_open = RedisAuthFailureLimiter::with_failure_policy(
-            client.clone(),
-            AuthLimiterFailurePolicy::FailOpen,
-        );
-        let fail_closed = RedisAuthFailureLimiter::with_failure_policy(
-            client,
-            AuthLimiterFailurePolicy::FailClosed,
-        );
-        let before = super::metrics().redis_errors;
-        assert!(
-            !fail_open
-                .is_limited(FailureDimension::Account, "failure-policy-open")
-                .await
-                .expect("fail-open check")
-        );
-        assert!(
-            !fail_open
-                .record_failure(FailureDimension::Account, "failure-policy-open")
-                .await
-                .expect("fail-open record")
-        );
-        assert!(
-            fail_closed
-                .is_limited(FailureDimension::Account, "failure-policy-closed")
-                .await
-                .is_err()
-        );
-        assert!(
-            fail_closed
-                .record_failure(FailureDimension::Account, "failure-policy-closed")
-                .await
-                .is_err()
-        );
-        assert!(super::metrics().redis_errors >= before + 4);
-    }
-}
+#[path = "redis_tests.rs"]
+mod tests;

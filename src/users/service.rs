@@ -161,30 +161,53 @@ impl UserService {
             }
         })?;
         let source_ip = self.source_ip(source_ip)?;
-        self.ensure_allowed(source_ip.as_deref()).await?;
-        let Some(credentials) =
-            repository::find_credentials_by_identifier(&self.pool, &login.identifier).await?
-        else {
-            if self.record_failure(None, source_ip.as_deref()).await? {
+        let source_dimensions = source_ip
+            .as_deref()
+            .map(|source_ip| vec![(FailureDimension::SourceIp, source_ip.to_owned())])
+            .unwrap_or_default();
+        if !self.reserve_dimensions(source_dimensions.clone()).await? {
+            return Err(UserServiceError::RateLimited);
+        }
+        let credentials = match repository::find_credentials_by_identifier(
+            &self.pool,
+            &login.identifier,
+        )
+        .await
+        {
+            Ok(credentials) => credentials,
+            Err(error) => {
+                self.release_dimensions(source_dimensions).await?;
+                return Err(UserServiceError::Database(error));
+            }
+        };
+        let Some(credentials) = credentials else {
+            if self.record_failure(source_dimensions).await?.reached.is_empty() {
+                return Err(UserServiceError::InvalidCredentials);
+            } else {
                 return Err(UserServiceError::RateLimited);
             }
-            return Err(UserServiceError::InvalidCredentials);
         };
         let account_key = credentials.id.to_string();
-        self.ensure_account_allowed(&account_key).await?;
+        let account_dimensions = vec![(FailureDimension::Account, account_key)];
+        if !self.reserve_dimensions(account_dimensions.clone()).await? {
+            self.release_dimensions(source_dimensions).await?;
+            return Err(UserServiceError::RateLimited);
+        }
+        let mut dimensions = source_dimensions;
+        dimensions.extend(account_dimensions);
+        let password_valid = verify_password(&login.password, &credentials.password_hash);
         if credentials.status != "active"
             || !credentials.password_login_enabled
-            || !verify_password(&login.password, &credentials.password_hash)
+            || !password_valid
         {
-            if self
-                .record_failure(Some(&account_key), source_ip.as_deref())
-                .await?
-            {
+            if self.record_failure(dimensions).await?.reached.is_empty() {
+                return Err(UserServiceError::InvalidCredentials);
+            } else {
                 return Err(UserServiceError::RateLimited);
             }
-            return Err(UserServiceError::InvalidCredentials);
         }
 
+        self.release_dimensions(dimensions).await?;
         Ok(credentials.id)
     }
 
@@ -210,50 +233,28 @@ impl UserService {
         }
     }
 
-    async fn ensure_allowed(&self, source_ip: Option<&str>) -> Result<(), UserServiceError> {
-        if let Some(source_ip) = source_ip {
-            self.ensure_dimensions_allowed(vec![(
-                FailureDimension::SourceIp,
-                source_ip.to_owned(),
-            )])
-            .await?;
-        }
-        Ok(())
+    async fn reserve_dimensions(
+        &self,
+        dimensions: Vec<LimiterDimension>,
+    ) -> Result<bool, UserServiceError> {
+        Ok(self.limiter.reserve(dimensions).await?)
     }
 
-    async fn ensure_account_allowed(&self, account_key: &str) -> Result<(), UserServiceError> {
-        self.ensure_dimensions_allowed(vec![(FailureDimension::Account, account_key.to_owned())])
-            .await
-    }
-
-    async fn ensure_dimensions_allowed(
+    async fn release_dimensions(
         &self,
         dimensions: Vec<LimiterDimension>,
     ) -> Result<(), UserServiceError> {
-        if self.limiter.any_limited(dimensions).await? {
-            return Err(UserServiceError::RateLimited);
-        }
-        Ok(())
+        Ok(self.limiter.release(dimensions).await?)
     }
 
     async fn record_failure(
         &self,
-        account_key: Option<&str>,
-        source_ip: Option<&str>,
-    ) -> Result<bool, UserServiceError> {
-        let mut dimensions = Vec::with_capacity(2);
-        if let Some(account_key) = account_key {
-            dimensions.push((FailureDimension::Account, account_key.to_owned()));
-        }
-        if let Some(source_ip) = source_ip {
-            dimensions.push((FailureDimension::SourceIp, source_ip.to_owned()));
-        }
-        Ok(!self
+        dimensions: Vec<LimiterDimension>,
+    ) -> Result<crate::auth_limiter::domain::FailureRecord, UserServiceError> {
+        Ok(self
             .limiter
-            .record_failures(dimensions)
-            .await?
-            .reached
-            .is_empty())
+            .record_reserved_failures(dimensions)
+            .await?)
     }
 
     pub async fn find_profile(
