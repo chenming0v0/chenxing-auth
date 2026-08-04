@@ -1,9 +1,10 @@
 use axum::{
-    extract::{Form, State, rejection::FormRejection},
+    extract::{ConnectInfo, Extension, Form, State, rejection::FormRejection},
     http::{HeaderMap, StatusCode},
     response::Response,
 };
 use serde::Deserialize;
+use std::net::SocketAddr;
 
 use super::{
     client_auth::{ClientCredentialError, resolve_client_credentials},
@@ -30,6 +31,7 @@ pub struct TokenRequest {
 pub async fn token(
     State(state): State<AppState>,
     headers: HeaderMap,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     form: Result<Form<TokenRequest>, FormRejection>,
 ) -> Response {
     let Form(request) = match form {
@@ -41,10 +43,21 @@ pub async fn token(
             ));
         }
     };
-    response::with_no_store_headers(token_inner(state, headers, request).await)
+    let source_ip = connect_info.map(|Extension(ConnectInfo(peer))| peer.ip().to_string());
+    response::with_no_store_headers(token_inner(state, headers, source_ip.as_deref(), request).await)
 }
 
-async fn token_inner(state: AppState, headers: HeaderMap, mut request: TokenRequest) -> Response {
+async fn token_inner(
+    state: AppState,
+    headers: HeaderMap,
+    source_ip: Option<&str>,
+    mut request: TokenRequest,
+) -> Response {
+    if let Some(source_ip) = source_ip
+        && let Some(response) = enforce_source_qps(&state, source_ip).await
+    {
+        return response;
+    }
     let credentials = match resolve_client_credentials(
         &headers,
         request.client_id.as_deref(),
@@ -72,6 +85,42 @@ async fn token_inner(state: AppState, headers: HeaderMap, mut request: TokenRequ
         "authorization_code" => exchange_authorization_code(state, request).await,
         "refresh_token" => exchange_refresh_token(state, request).await,
         _ => error::oauth_bad_request("unsupported_grant_type", "grant type is unsupported"),
+    }
+}
+
+const UNAUTHENTICATED_SOURCE_QPS: u32 = 30;
+
+async fn enforce_source_qps(state: &AppState, source_ip: &str) -> Option<Response> {
+    match state
+        .qps
+        .allow_source(source_ip, UNAUTHENTICATED_SOURCE_QPS)
+        .await
+    {
+        Ok(true) => None,
+        Ok(false) => {
+            if let Err(error_value) = record_token_event(
+                state,
+                None,
+                "rate_limit_triggered",
+                None,
+                "oauth_source_qps",
+            )
+            .await
+            {
+                tracing::warn!(
+                    error = %error_value,
+                    "failed to record OAuth source rate limit audit event"
+                );
+            }
+            Some(error::oauth_too_many_requests(
+                "temporarily_unavailable",
+                "request rate limit exceeded",
+            ))
+        }
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "source rate limit check failed");
+            Some(error::oauth_temporarily_unavailable())
+        }
     }
 }
 
