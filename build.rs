@@ -43,9 +43,7 @@ fn main() {
             );
             return;
         }
-        panic!(
-            "CHENXING_USE_PREBUILT_WEB is set but web/dist/index.html is missing"
-        );
+        panic!("CHENXING_USE_PREBUILT_WEB is set but web/dist/index.html is missing");
     }
 
     // Docker's local source builder may only receive a pre-built web/dist and
@@ -140,7 +138,9 @@ impl FrontendInputs {
 /// Whether the explicit frontend config inputs exist. Used to detect the
 /// Docker builder stage, which only mounts a pre-built `web/dist`.
 fn frontend_sources_present(web_dir: &Path) -> bool {
-    INPUT_FILES.iter().all(|relative| web_dir.join(relative).is_file())
+    INPUT_FILES
+        .iter()
+        .all(|relative| web_dir.join(relative).is_file())
 }
 
 /// Collect the files that determine the bundle: the explicit config files plus

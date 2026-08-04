@@ -54,7 +54,9 @@ fn release_workflow_builds_web_once_and_reuses_it() {
         );
     }
 
-    let web_build_steps = BUILD_WORKFLOW.matches("npm ci --prefix web && npm run build --prefix web").count();
+    let web_build_steps = BUILD_WORKFLOW
+        .matches("npm ci --prefix web && npm run build --prefix web")
+        .count();
     assert_eq!(
         web_build_steps, 1,
         "embedded web must be built exactly once in the release workflow"
