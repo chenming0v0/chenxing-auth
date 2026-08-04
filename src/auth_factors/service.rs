@@ -306,7 +306,7 @@ impl AuthFactorService {
         };
         let valid = verify_totp_code_current_timestep(&secret, code);
         secret.fill(0);
-        let Some(timestep) = valid else {
+        let Some(_) = valid else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {
                 self.invalidate_ticket(ticket_id).await?;
@@ -317,12 +317,8 @@ impl AuthFactorService {
             }
             return Ok(TotpConfirmation::InvalidCode);
         };
-        if !self
-            .claim_totp_timestep(ticket.user_id, timestep, dimensions)
-            .await?
-        {
-            return Ok(TotpConfirmation::InvalidCode);
-        }
+        // The setup ticket is one-time; only login verification claims a replay timestep.
+        self.release_dimensions(dimensions).await?;
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
