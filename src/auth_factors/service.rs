@@ -63,6 +63,8 @@ pub enum AuthFactorServiceError {
     Database(#[from] crate::sqlx::Error),
     #[error("login ticket operation failed: {0}")]
     Ticket(#[from] LoginTicketStoreError),
+    #[error("login ticket user was not found")]
+    UserNotFound,
     #[error("secret operation failed: {0}")]
     Secret(#[from] SecretCryptoError),
     #[error("authentication rate limit reached")]
@@ -114,7 +116,7 @@ impl AuthFactorService {
         let webauthn = WebauthnBuilder::new(rp_id, &origin)?.build()?;
         Ok(Self {
             pool,
-            tickets: LoginTicketStore::new(redis),
+            tickets: LoginTicketStore::new_with_pool(redis, pool.clone()),
             limiter,
             missing_source_ip_policy,
             encryption_key,
@@ -142,7 +144,13 @@ impl AuthFactorService {
         user_id: UserId,
         methods: Vec<FactorMethod>,
     ) -> Result<(String, LoginTicket), AuthFactorServiceError> {
-        Ok(self.tickets.create(user_id, methods).await?)
+        let Some(session_epoch) = repository::find_session_epoch(&self.pool, user_id).await? else {
+            return Err(AuthFactorServiceError::UserNotFound);
+        };
+        Ok(self
+            .tickets
+            .create_with_epoch(user_id, methods, session_epoch)
+            .await?)
     }
 
     pub async fn clear_account_failures(

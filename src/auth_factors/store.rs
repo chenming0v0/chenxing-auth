@@ -12,19 +12,32 @@ const LOGIN_TICKET_PREFIX: &str = "chenxing:auth:login-ticket:";
 #[derive(Clone)]
 pub struct LoginTicketStore {
     client: Client,
+    metadata: Option<crate::sqlx::PgPool>,
 }
 
 #[derive(Debug, Error)]
 pub enum LoginTicketStoreError {
     #[error("redis operation failed: {0}")]
     Redis(#[from] redis::RedisError),
+    #[error("database operation failed: {0}")]
+    Database(#[from] crate::sqlx::Error),
     #[error("login ticket serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
 }
 
 impl LoginTicketStore {
     pub fn new(client: Client) -> Self {
-        Self { client }
+        Self {
+            client,
+            metadata: None,
+        }
+    }
+
+    pub fn new_with_pool(client: Client, metadata: crate::sqlx::PgPool) -> Self {
+        Self {
+            client,
+            metadata: Some(metadata),
+        }
     }
 
     pub async fn create(
@@ -32,8 +45,17 @@ impl LoginTicketStore {
         user_id: UserId,
         methods: Vec<FactorMethod>,
     ) -> Result<(String, LoginTicket), LoginTicketStoreError> {
+        self.create_with_epoch(user_id, methods, 0).await
+    }
+
+    pub async fn create_with_epoch(
+        &self,
+        user_id: UserId,
+        methods: Vec<FactorMethod>,
+        session_epoch: i64,
+    ) -> Result<(String, LoginTicket), LoginTicketStoreError> {
         let ticket_id = Uuid::new_v4().to_string();
-        let ticket = LoginTicket::new(user_id, methods);
+        let ticket = LoginTicket::new_with_epoch(user_id, methods, session_epoch);
         self.save(&ticket_id, &ticket).await?;
         Ok((ticket_id, ticket))
     }
@@ -97,10 +119,25 @@ impl LoginTicketStore {
         } else {
             connection.get(Self::key(ticket_id)).await?
         };
-        payload
+        let ticket = payload
             .map(|value| serde_json::from_str(&value))
             .transpose()
-            .map_err(LoginTicketStoreError::from)
+            .map_err(LoginTicketStoreError::from)?;
+        let Some(ticket) = ticket else {
+            return Ok(None);
+        };
+        if let Some(pool) = &self.metadata {
+            let current_epoch: Option<i64> = crate::sqlx::query_scalar(
+                "SELECT session_epoch FROM users WHERE id = $1",
+            )
+            .bind(ticket.user_id)
+            .fetch_optional(pool)
+            .await?;
+            if current_epoch != Some(ticket.session_epoch) {
+                return Ok(None);
+            }
+        }
+        Ok(Some(ticket))
     }
 
     pub fn key(ticket_id: &str) -> String {
