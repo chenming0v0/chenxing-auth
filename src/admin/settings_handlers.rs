@@ -131,6 +131,28 @@ pub async fn update_passkey_setting(
             Ok(actor) => actor,
             Err(response) => return response,
         };
+    if !input.enabled {
+        match state.factors.has_active_passkey_only_accounts().await {
+            Ok(true) => {
+                tracing::warn!(
+                    event = "passkey_setting.disable_blocked",
+                    "passkey disable blocked because an active account has no alternative factor"
+                );
+                return error::conflict(
+                    "passkey_disable_blocked",
+                    "Passkey cannot be disabled while an active account relies on it as its only factor",
+                );
+            }
+            Ok(false) => {}
+            Err(error_value) => {
+                tracing::error!(
+                    error = %error_value,
+                    "failed to check passkey-only accounts before disabling Passkey"
+                );
+                return error::internal();
+            }
+        }
+    }
     match state.settings.set_passkey(input).await {
         Ok(setting) => {
             if record_setting_event(

@@ -15,7 +15,9 @@ use crate::{
 
 use super::{
     crypto::{SecretCryptoError, decrypt_totp_secret_with_ring, encrypt_totp_secret_with_ring},
-    domain::{FactorMethod, LoginTicket},
+    domain::{
+        FactorMethod, LoginTicket, effective_factor_methods, setup_factor_methods,
+    },
     persistence::consume_then_persist,
     repository,
     store::{LoginTicketStore, LoginTicketStoreError},
@@ -131,14 +133,29 @@ impl AuthFactorService {
         user_id: UserId,
     ) -> Result<Vec<FactorMethod>, AuthFactorServiceError> {
         let methods = repository::list_factor_methods(&self.pool, user_id).await?;
-        Ok(methods
-            .into_iter()
-            .filter_map(|method| match method.as_str() {
-                "totp" => Some(FactorMethod::Totp),
-                "passkey" => Some(FactorMethod::Passkey),
-                _ => None,
-            })
-            .collect())
+        let passkey_enabled = self.settings.passkey().await?.enabled;
+        Ok(effective_factor_methods(methods, passkey_enabled))
+    }
+
+    pub async fn available_setup_methods(
+        &self,
+    ) -> Result<Vec<FactorMethod>, AuthFactorServiceError> {
+        let passkey_enabled = self.settings.passkey().await?.enabled;
+        Ok(setup_factor_methods(passkey_enabled))
+    }
+
+    pub async fn has_active_passkey_only_accounts(
+        &self,
+    ) -> Result<bool, AuthFactorServiceError> {
+        Ok(repository::has_active_passkey_only_accounts(&self.pool).await?)
+    }
+
+    pub async fn is_passkey_recovery_required(
+        &self,
+        user_id: UserId,
+    ) -> Result<bool, AuthFactorServiceError> {
+        let methods = repository::list_factor_methods(&self.pool, user_id).await?;
+        self.is_disabled_passkey_only(&methods).await
     }
 
     pub async fn create_login_ticket(
@@ -222,11 +239,12 @@ impl AuthFactorService {
         let Some(ticket) = self.tickets.find(ticket_id).await? else {
             return Ok(None);
         };
+        let factor_methods = repository::list_factor_methods(&self.pool, ticket.user_id).await?;
         if !ticket.is_active_at(time::OffsetDateTime::now_utc())
             || !ticket.supports(FactorMethod::Totp)
-            || !repository::list_factor_methods(&self.pool, ticket.user_id)
+            || !self
+                .can_start_totp_enrollment(&factor_methods)
                 .await?
-                .is_empty()
         {
             return Ok(None);
         }
@@ -277,6 +295,10 @@ impl AuthFactorService {
         else {
             return Ok(TotpConfirmation::InvalidTicket);
         };
+        let factor_methods = repository::list_factor_methods(&self.pool, ticket.user_id).await?;
+        let passkey_recovery = self
+            .is_disabled_passkey_only(&factor_methods)
+            .await?;
         let account_key = ticket.user_id.to_string();
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
         if self.ensure_dimensions_allowed(dimensions.clone()).await? {
@@ -321,13 +343,22 @@ impl AuthFactorService {
             TotpConfirmation::InvalidTicket,
             self.tickets.take(ticket_id),
             async {
-                match repository::insert_totp_factor_if_empty(
-                    &self.pool,
-                    ticket.user_id,
-                    &pending.encrypted_secret,
-                )
-                .await?
-                {
+                let result = if passkey_recovery {
+                    repository::insert_totp_factor_for_passkey_recovery(
+                        &self.pool,
+                        ticket.user_id,
+                        &pending.encrypted_secret,
+                    )
+                    .await?
+                } else {
+                    repository::insert_totp_factor_if_empty(
+                        &self.pool,
+                        ticket.user_id,
+                        &pending.encrypted_secret,
+                    )
+                    .await?
+                };
+                match result {
                     repository::FirstFactorPersistenceResult::Stored => Ok(()),
                     repository::FirstFactorPersistenceResult::AlreadyExists => {
                         Err(AuthFactorServiceError::FirstFactorAlreadyExists)
@@ -431,6 +462,25 @@ impl AuthFactorService {
             return Ok(TotpConfirmation::InvalidTicket);
         }
         Ok(TotpConfirmation::Completed(ticket.user_id))
+    }
+
+    async fn can_start_totp_enrollment(
+        &self,
+        methods: &[String],
+    ) -> Result<bool, AuthFactorServiceError> {
+        if methods.is_empty() {
+            return Ok(true);
+        }
+        self.is_disabled_passkey_only(methods).await
+    }
+
+    async fn is_disabled_passkey_only(
+        &self,
+        methods: &[String],
+    ) -> Result<bool, AuthFactorServiceError> {
+        Ok(methods.len() == 1
+            && methods[0] == "passkey"
+            && !self.settings.passkey().await?.enabled)
     }
 
 }
