@@ -60,8 +60,6 @@ pub enum StateError {
     Redis(#[from] redis::RedisError),
     #[error("key manager initialization failed: {0}")]
     Keys(#[from] KeyManagerError),
-    #[error("authentication factor initialization failed: {0}")]
-    AuthFactors(#[from] webauthn_rs::prelude::WebauthnError),
     #[error("external OAuth initialization failed: {0}")]
     ExternalOAuth(#[from] crate::oauth::providers::service::ExternalOAuthError),
     #[error("external OAuth secret initialization failed: {0}")]
@@ -98,11 +96,10 @@ impl AppState {
             database.clone(),
             redis.clone(),
             auth_limiter,
-            config.auth_encryption_key.clone(),
-            &config.webauthn_rp_id,
-            &config.webauthn_origin,
+            config.auth_encryption_keys.clone(),
+            settings.clone(),
             config.missing_source_ip_policy,
-        )?;
+        );
         let clients =
             ClientService::with_limits(database.clone(), config.client_registration_limits.clone());
         let keys = KeyManager::load_or_generate_with_retention(

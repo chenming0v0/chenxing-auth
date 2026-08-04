@@ -72,7 +72,7 @@
 {"status":"factor_setup_required","login_ticket":"opaque-ticket","methods":["totp","passkey"]}
 ```
 
-已绑定因子时 `status` 为 `factor_required`，`methods` 只包含已绑定方式。TOTP 登录可在本请求中携带当前六位 `totp_code`；passkey 使用下面的 WebAuthn challenge 接口。
+已绑定因子时 `status` 为 `factor_required`，`methods` 只包含当前策略允许的已绑定方式；全局禁用 Passkey 时不会发布 `passkey`。TOTP 登录可在本请求中携带当前六位 `totp_code`；passkey 使用下面的 WebAuthn challenge 接口。没有可用因子时只能进入策略允许的设置流程。
 
 因子完成后响应 `200`：
 
@@ -95,6 +95,8 @@
 - `POST /api/v1/auth/passkeys/register/finish`：请求 `login_ticket` 和浏览器 `navigator.credentials.create()` 返回的 `credential`，验证通过后保存公开凭据并返回 Session Cookie。
 - `POST /api/v1/auth/passkeys/authentication/start`：请求 `login_ticket`，返回 `PublicKeyCredentialRequestOptions`。
 - `POST /api/v1/auth/passkeys/authentication/finish`：请求 `login_ticket` 和浏览器 `navigator.credentials.get()` 返回的 `credential`，验证通过后更新 credential counter、消费 ticket 并返回 Session Cookie。
+
+管理员通过 `PUT /api/v1/admin/settings/passkey` 禁用 Passkey 时，如果存在活跃且唯一绑定 Passkey 的账号，服务端返回 `409 passkey_disable_blocked`，设置不会变更。这样已绑定 Passkey 的账号不会因全局策略被锁定；禁用后新的登录因子响应和首次绑定选项只发布 TOTP。
 
 所有 `login_ticket` 和 WebAuthn challenge 默认有效 5 分钟；ticket 是一次性的。WebAuthn 的 RP ID 和 origin 由固定配置 `WEBAUTHN_RP_ID`、`WEBAUTHN_ORIGIN` 控制，不能从请求 Host 推导。
 

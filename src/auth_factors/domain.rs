@@ -10,6 +10,28 @@ pub enum FactorMethod {
     Passkey,
 }
 
+pub fn effective_factor_methods(
+    methods: impl IntoIterator<Item = String>,
+    passkey_enabled: bool,
+) -> Vec<FactorMethod> {
+    methods
+        .into_iter()
+        .filter_map(|method| match method.as_str() {
+            "totp" => Some(FactorMethod::Totp),
+            "passkey" if passkey_enabled => Some(FactorMethod::Passkey),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn setup_factor_methods(passkey_enabled: bool) -> Vec<FactorMethod> {
+    let mut methods = vec![FactorMethod::Totp];
+    if passkey_enabled {
+        methods.push(FactorMethod::Passkey);
+    }
+    methods
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginTicket {
     pub user_id: UserId,
@@ -65,4 +87,41 @@ pub fn validate_totp_code(code: &str) -> Result<(), TotpCodeError> {
     (code.len() == 6 && code.bytes().all(|byte| byte.is_ascii_digit()))
         .then_some(())
         .ok_or(TotpCodeError::InvalidFormat)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FactorMethod, effective_factor_methods, setup_factor_methods};
+
+    #[test]
+    fn effective_methods_follow_passkey_policy_for_all_factor_sets() {
+        let cases = [
+            (vec!["passkey".to_owned()], vec![], vec![FactorMethod::Passkey]),
+            (
+                vec!["totp".to_owned()],
+                vec![FactorMethod::Totp],
+                vec![FactorMethod::Totp],
+            ),
+            (
+                vec!["totp".to_owned(), "passkey".to_owned()],
+                vec![FactorMethod::Totp],
+                vec![FactorMethod::Totp, FactorMethod::Passkey],
+            ),
+            (Vec::new(), vec![], vec![]),
+        ];
+
+        for (stored, disabled, enabled) in cases {
+            assert_eq!(effective_factor_methods(stored.clone(), false), disabled);
+            assert_eq!(effective_factor_methods(stored, true), enabled);
+        }
+    }
+
+    #[test]
+    fn setup_methods_never_offer_disabled_passkey() {
+        assert_eq!(setup_factor_methods(false), vec![FactorMethod::Totp]);
+        assert_eq!(
+            setup_factor_methods(true),
+            vec![FactorMethod::Totp, FactorMethod::Passkey]
+        );
+    }
 }

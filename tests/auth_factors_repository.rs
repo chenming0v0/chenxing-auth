@@ -81,6 +81,20 @@ async fn totp_factor_round_trip_returns_ciphertext_only() {
             .expect("list factor methods"),
         vec!["totp".to_owned()]
     );
+    assert!(
+        repository::update_totp_factor_if_current(&pool, user_id, &encrypted, &[9, 8, 7])
+            .await
+            .expect("conditional TOTP update")
+    );
+    assert!(!repository::update_totp_factor_if_current(&pool, user_id, &encrypted, &[6, 5, 4])
+        .await
+        .expect("stale conditional TOTP update"));
+    assert_eq!(
+        repository::find_totp_secret(&pool, user_id)
+            .await
+            .expect("find migrated TOTP factor"),
+        Some(vec![9, 8, 7])
+    );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)
@@ -122,6 +136,11 @@ async fn passkey_insert_is_idempotent_and_rejects_cross_user_collisions() {
             .expect("repeat passkey insert"),
         repository::PasskeyPersistenceResult::Stored
     );
+    let stored = repository::list_passkeys(&pool, user_ids[0])
+        .await
+        .expect("list passkeys");
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].cred_id(), &credential_id);
 
     assert_eq!(
         chenxing_auth::sqlx::query_scalar::<_, i64>(
@@ -145,4 +164,56 @@ async fn passkey_insert_is_idempotent_and_rejects_cross_user_collisions() {
         .execute(&pool)
         .await
         .expect("cleanup test users");
+}
+
+#[tokio::test]
+#[serial(auth_factors_repository)]
+async fn first_factor_race_allows_only_one_factor_type_to_win() {
+    let pool = database().await;
+    let suffix = Uuid::new_v4().simple();
+    let user_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO users (username, email, password_hash, status, created_at)
+         VALUES ($1, $2, 'test-hash', 'active', NOW())
+         RETURNING id",
+    )
+    .bind(format!("first-factor-{suffix}"))
+    .bind(format!("first-factor-{suffix}@example.com"))
+    .fetch_one(&pool)
+    .await
+    .expect("insert test user");
+    let credential_id = Uuid::new_v4().into_bytes().to_vec();
+    let passkey = test_passkey(&credential_id);
+
+    let (totp_result, passkey_result) = tokio::join!(
+        repository::insert_totp_factor_if_empty(&pool, user_id, &[1, 2, 3]),
+        repository::insert_passkey_if_empty(&pool, user_id, &credential_id, &passkey),
+    );
+    let totp_result = totp_result.expect("TOTP first-factor write");
+    let passkey_result = passkey_result.expect("Passkey first-factor write");
+    assert!(matches!(
+        (totp_result, passkey_result),
+        (
+            repository::FirstFactorPersistenceResult::Stored,
+            repository::PasskeyPersistenceResult::Conflict
+        ) | (
+            repository::FirstFactorPersistenceResult::AlreadyExists,
+            repository::PasskeyPersistenceResult::Stored
+        )
+    ));
+    assert_eq!(
+        repository::list_factor_methods(&pool, user_id)
+            .await
+            .expect("list first factor"),
+        if matches!(totp_result, repository::FirstFactorPersistenceResult::Stored) {
+            vec!["totp".to_owned()]
+        } else {
+            vec!["passkey".to_owned()]
+        }
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("cleanup test user");
 }

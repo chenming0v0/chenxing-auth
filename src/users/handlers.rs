@@ -225,11 +225,30 @@ pub async fn login_user(
     }
 
     let setup_required = methods.is_empty();
+    if setup_required {
+        let recovery_required = match state.factors.is_passkey_recovery_required(user_id).await {
+            Ok(required) => required,
+            Err(factor_error) => {
+                tracing::error!(error = %factor_error, "failed to check authentication recovery policy");
+                return error::internal();
+            }
+        };
+        if recovery_required
+            && record_security_event(&state, "passkey_recovery_required", Some(user_id), "passkey_disabled")
+                .await
+                .is_err()
+        {
+            return error::internal();
+        }
+    }
     let ticket_methods = if setup_required {
-        vec![
-            crate::auth_factors::domain::FactorMethod::Totp,
-            crate::auth_factors::domain::FactorMethod::Passkey,
-        ]
+        match state.factors.available_setup_methods().await {
+            Ok(methods) => methods,
+            Err(factor_error) => {
+                tracing::error!(error = %factor_error, "failed to load authentication setup policy");
+                return error::internal();
+            }
+        }
     } else {
         methods
     };

@@ -3,18 +3,21 @@ use std::sync::Arc;
 use redis::Client;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use webauthn_rs::prelude::{Webauthn, WebauthnBuilder, WebauthnError};
+use webauthn_rs::prelude::WebauthnError;
 
 use crate::{
-    auth_limiter::{AuthFailureLimiter, FailureDimension, LimiterDimension, MissingSourceIpPolicy},
-    config::AuthEncryptionKey,
+    auth_limiter::{AuthFailureLimiter, FailureDimension, MissingSourceIpPolicy},
+    config::AuthEncryptionKeyRing,
+    settings::{SettingsService, SettingsServiceError},
     sqlx::PgPool,
     users::domain::UserId,
 };
 
 use super::{
-    crypto::{SecretCryptoError, decrypt_totp_secret},
-    domain::{FactorMethod, LoginTicket},
+    crypto::{SecretCryptoError, decrypt_totp_secret_with_ring, encrypt_totp_secret_with_ring},
+    domain::{
+        FactorMethod, LoginTicket, effective_factor_methods, setup_factor_methods,
+    },
     persistence::consume_then_persist,
     repository,
     store::{LoginTicketStore, LoginTicketStoreError},
@@ -31,6 +34,8 @@ struct PendingTotpSetup {
 
 #[path = "passkey.rs"]
 mod passkey;
+#[path = "totp_service.rs"]
+mod totp_service;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TotpConfirmation {
@@ -53,8 +58,8 @@ pub struct AuthFactorService {
     tickets: LoginTicketStore,
     limiter: Arc<dyn AuthFailureLimiter>,
     missing_source_ip_policy: MissingSourceIpPolicy,
-    encryption_key: AuthEncryptionKey,
-    webauthn: Webauthn,
+    encryption_keys: AuthEncryptionKeyRing,
+    settings: SettingsService,
 }
 
 #[derive(Debug, Error)]
@@ -67,6 +72,10 @@ pub enum AuthFactorServiceError {
     UserNotFound,
     #[error("secret operation failed: {0}")]
     Secret(#[from] SecretCryptoError),
+    #[error("passkey setting operation failed: {0}")]
+    Settings(#[from] SettingsServiceError),
+    #[error("passkey credential serialization failed: {0}")]
+    PasskeySerialization(#[from] serde_json::Error),
     #[error("authentication rate limit reached")]
     RateLimited,
     #[error("authentication limiter failed: {0}")]
@@ -79,6 +88,8 @@ pub enum AuthFactorServiceError {
     SourceIpUnavailable,
     #[error("passkey credential conflicts with an existing credential")]
     PasskeyConflict,
+    #[error("account already has an authentication factor")]
+    FirstFactorAlreadyExists,
     #[error("passkey authentication is disabled")]
     PasskeyDisabled,
 }
@@ -88,17 +99,15 @@ impl AuthFactorService {
         pool: PgPool,
         redis: Client,
         limiter: Arc<dyn AuthFailureLimiter>,
-        encryption_key: AuthEncryptionKey,
-        rp_id: &str,
-        origin: &str,
-    ) -> Result<Self, WebauthnError> {
+        encryption_keys: AuthEncryptionKeyRing,
+        settings: SettingsService,
+    ) -> Self {
         Self::new_with_source_ip_policy(
             pool,
             redis,
             limiter,
-            encryption_key,
-            rp_id,
-            origin,
+            encryption_keys,
+            settings,
             MissingSourceIpPolicy::Skip,
         )
     }
@@ -107,21 +116,18 @@ impl AuthFactorService {
         pool: PgPool,
         redis: Client,
         limiter: Arc<dyn AuthFailureLimiter>,
-        encryption_key: AuthEncryptionKey,
-        rp_id: &str,
-        origin: &str,
+        encryption_keys: AuthEncryptionKeyRing,
+        settings: SettingsService,
         missing_source_ip_policy: MissingSourceIpPolicy,
-    ) -> Result<Self, WebauthnError> {
-        let origin = url::Url::parse(origin).map_err(|_| WebauthnError::Configuration)?;
-        let webauthn = WebauthnBuilder::new(rp_id, &origin)?.build()?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             pool,
             tickets: LoginTicketStore::new_with_pool(redis, pool.clone()),
             limiter,
             missing_source_ip_policy,
-            encryption_key,
-            webauthn,
-        })
+            encryption_keys,
+            settings,
+        }
     }
 
     pub async fn available_methods(
@@ -129,14 +135,29 @@ impl AuthFactorService {
         user_id: UserId,
     ) -> Result<Vec<FactorMethod>, AuthFactorServiceError> {
         let methods = repository::list_factor_methods(&self.pool, user_id).await?;
-        Ok(methods
-            .into_iter()
-            .filter_map(|method| match method.as_str() {
-                "totp" => Some(FactorMethod::Totp),
-                "passkey" => Some(FactorMethod::Passkey),
-                _ => None,
-            })
-            .collect())
+        let passkey_enabled = self.settings.passkey().await?.enabled;
+        Ok(effective_factor_methods(methods, passkey_enabled))
+    }
+
+    pub async fn available_setup_methods(
+        &self,
+    ) -> Result<Vec<FactorMethod>, AuthFactorServiceError> {
+        let passkey_enabled = self.settings.passkey().await?.enabled;
+        Ok(setup_factor_methods(passkey_enabled))
+    }
+
+    pub async fn has_active_passkey_only_accounts(
+        &self,
+    ) -> Result<bool, AuthFactorServiceError> {
+        Ok(repository::has_active_passkey_only_accounts(&self.pool).await?)
+    }
+
+    pub async fn is_passkey_recovery_required(
+        &self,
+        user_id: UserId,
+    ) -> Result<bool, AuthFactorServiceError> {
+        let methods = repository::list_factor_methods(&self.pool, user_id).await?;
+        self.is_disabled_passkey_only(&methods).await
     }
 
     pub async fn create_login_ticket(
@@ -199,13 +220,23 @@ impl AuthFactorService {
             }
             return Ok(false);
         };
-        let mut secret = match decrypt_totp_secret(self.encryption_key.as_bytes(), &encrypted_secret) {
-            Ok(secret) => secret,
-            Err(error) => {
-                self.release_dimensions(dimensions).await?;
-                return Err(error.into());
-            }
-        };
+        let decrypted =
+            match decrypt_totp_secret_with_ring(&self.encryption_keys, &encrypted_secret) {
+                Ok(value) => value,
+                Err(SecretCryptoError::UnknownKeyId) => {
+                    self.release_dimensions(dimensions).await?;
+                    tracing::warn!(
+                        event = "auth_factor.totp.decrypt_key_unavailable",
+                        "TOTP secret key is outside the configured retention window"
+                    );
+                    return Ok(false);
+                }
+                Err(error) => {
+                    self.release_dimensions(dimensions).await?;
+                    return Err(error.into());
+                }
+            };
+        let mut secret = decrypted.plaintext.clone();
         let timestep = verify_totp_code_current_timestep(&secret, code);
         secret.fill(0);
         let Some(timestep) = timestep else {
@@ -220,6 +251,16 @@ impl AuthFactorService {
         {
             return Ok(false);
         }
+        if let Err(error) = self
+            .reencrypt_totp_secret_if_needed(user_id, &encrypted_secret, &decrypted)
+            .await
+        {
+            tracing::warn!(
+                event = "auth_factor.totp.lazy_reencryption_failed",
+                error = %error,
+                "TOTP verification succeeded but key rotation migration was deferred"
+            );
+        }
         Ok(true)
     }
 
@@ -232,11 +273,12 @@ impl AuthFactorService {
         let Some(ticket) = self.tickets.find(ticket_id).await? else {
             return Ok(None);
         };
+        let factor_methods = repository::list_factor_methods(&self.pool, ticket.user_id).await?;
         if !ticket.is_active_at(time::OffsetDateTime::now_utc())
             || !ticket.supports(FactorMethod::Totp)
-            || !repository::list_factor_methods(&self.pool, ticket.user_id)
+            || !self
+                .can_start_totp_enrollment(&factor_methods)
                 .await?
-                .is_empty()
         {
             return Ok(None);
         }
@@ -249,8 +291,8 @@ impl AuthFactorService {
             return Ok(None);
         }
         let enrollment = TotpEnrollment::new(account_name, issuer)?;
-        let encrypted_secret = super::crypto::encrypt_totp_secret(
-            self.encryption_key.as_bytes(),
+        let encrypted_secret = encrypt_totp_secret_with_ring(
+            &self.encryption_keys,
             enrollment.secret_bytes(),
         )?;
         self.tickets
@@ -287,21 +329,34 @@ impl AuthFactorService {
         else {
             return Ok(TotpConfirmation::InvalidTicket);
         };
+        let factor_methods = repository::list_factor_methods(&self.pool, ticket.user_id).await?;
+        let passkey_recovery = self
+            .is_disabled_passkey_only(&factor_methods)
+            .await?;
         let account_key = ticket.user_id.to_string();
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
         if self.ensure_dimensions_allowed(dimensions.clone()).await? {
             return Ok(TotpConfirmation::RateLimited);
         }
-        let mut secret = match decrypt_totp_secret(
-            self.encryption_key.as_bytes(),
+        let decrypted = match decrypt_totp_secret_with_ring(
+            &self.encryption_keys,
             &pending.encrypted_secret,
         ) {
-            Ok(secret) => secret,
+            Ok(value) => value,
+            Err(SecretCryptoError::UnknownKeyId) => {
+                self.release_dimensions(dimensions).await?;
+                tracing::warn!(
+                    event = "auth_factor.totp.decrypt_key_unavailable",
+                    "TOTP setup key is outside the configured retention window"
+                );
+                return Ok(TotpConfirmation::InvalidCode);
+            }
             Err(error) => {
                 self.release_dimensions(dimensions).await?;
                 return Err(error.into());
             }
         };
+        let mut secret = decrypted.plaintext.clone();
         let valid = verify_totp_code_current_timestep(&secret, code);
         secret.fill(0);
         let Some(timestep) = valid else {
@@ -324,14 +379,47 @@ impl AuthFactorService {
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
-        let confirmation = consume_then_persist(
+        let confirmation = match consume_then_persist(
             TotpConfirmation::Completed(ticket.user_id),
             TotpConfirmation::InvalidTicket,
             self.tickets.take(ticket_id),
-            repository::insert_totp_factor(&self.pool, ticket.user_id, &pending.encrypted_secret),
+            async {
+                let result = if passkey_recovery {
+                    repository::insert_totp_factor_for_passkey_recovery(
+                        &self.pool,
+                        ticket.user_id,
+                        &pending.encrypted_secret,
+                    )
+                    .await?
+                } else {
+                    repository::insert_totp_factor_if_empty(
+                        &self.pool,
+                        ticket.user_id,
+                        &pending.encrypted_secret,
+                    )
+                    .await?
+                };
+                match result {
+                    repository::FirstFactorPersistenceResult::Stored => Ok(()),
+                    repository::FirstFactorPersistenceResult::AlreadyExists => {
+                        Err(AuthFactorServiceError::FirstFactorAlreadyExists)
+                    }
+                }
+            },
             |ticket| self.tickets.restore(ticket_id, ticket),
         )
-        .await?;
+        .await
+        {
+            Ok(confirmation) => confirmation,
+            Err(AuthFactorServiceError::FirstFactorAlreadyExists) => {
+                let _ = self.tickets.take(ticket_id).await?;
+                self.tickets
+                    .delete(&Self::totp_setup_key(ticket_id))
+                    .await?;
+                return Ok(TotpConfirmation::InvalidTicket);
+            }
+            Err(error) => return Err(error),
+        };
         self.tickets
             .delete(&Self::totp_setup_key(ticket_id))
             .await?;
@@ -375,13 +463,23 @@ impl AuthFactorService {
             }
             return Ok(TotpConfirmation::InvalidTicket);
         };
-        let mut secret = match decrypt_totp_secret(self.encryption_key.as_bytes(), &encrypted_secret) {
-            Ok(secret) => secret,
-            Err(error) => {
-                self.release_dimensions(dimensions).await?;
-                return Err(error.into());
-            }
-        };
+        let decrypted =
+            match decrypt_totp_secret_with_ring(&self.encryption_keys, &encrypted_secret) {
+                Ok(value) => value,
+                Err(SecretCryptoError::UnknownKeyId) => {
+                    self.release_dimensions(dimensions).await?;
+                    tracing::warn!(
+                        event = "auth_factor.totp.decrypt_key_unavailable",
+                        "TOTP secret key is outside the configured retention window"
+                    );
+                    return Ok(TotpConfirmation::InvalidCode);
+                }
+                Err(error) => {
+                    self.release_dimensions(dimensions).await?;
+                    return Err(error.into());
+                }
+            };
+        let mut secret = decrypted.plaintext.clone();
         let valid = verify_totp_code_current_timestep(&secret, code);
         secret.fill(0);
         let Some(timestep) = valid else {
@@ -404,90 +502,38 @@ impl AuthFactorService {
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
+        if let Err(error) = self
+            .reencrypt_totp_secret_if_needed(ticket.user_id, &encrypted_secret, &decrypted)
+            .await
+        {
+            tracing::warn!(
+                event = "auth_factor.totp.lazy_reencryption_failed",
+                error = %error,
+                "TOTP verification succeeded but key rotation migration was deferred"
+            );
+        }
         if self.tickets.take(ticket_id).await?.is_none() {
             return Ok(TotpConfirmation::InvalidTicket);
         }
         Ok(TotpConfirmation::Completed(ticket.user_id))
     }
 
-    fn failure_dimensions(
+    async fn can_start_totp_enrollment(
         &self,
-        account_key: &str,
-        ticket_id: Option<&str>,
-        source_ip: Option<&str>,
-    ) -> Result<Vec<LimiterDimension>, AuthFactorServiceError> {
-        let mut dimensions = vec![(FailureDimension::Account, account_key.to_owned())];
-        if let Some(ticket_id) = ticket_id {
-            dimensions.push((FailureDimension::Ticket, ticket_id.to_owned()));
-        }
-        match (source_ip, self.missing_source_ip_policy) {
-            (Some(source_ip), _) => {
-                dimensions.push((FailureDimension::SourceIp, source_ip.to_owned()))
-            }
-            (None, MissingSourceIpPolicy::Skip) => tracing::warn!(
-                event = "auth_limiter.source_ip_unavailable",
-                policy = MissingSourceIpPolicy::Skip.as_str(),
-                "authentication factor attempt is using non-IP dimensions"
-            ),
-            (None, MissingSourceIpPolicy::Reject) => {
-                tracing::error!(
-                    event = "auth_limiter.source_ip_unavailable",
-                    policy = MissingSourceIpPolicy::Reject.as_str(),
-                    "authentication factor attempt rejected without trusted ConnectInfo"
-                );
-                return Err(AuthFactorServiceError::SourceIpUnavailable);
-            }
-        }
-        Ok(dimensions)
-    }
-
-    async fn ensure_dimensions_allowed(
-        &self,
-        dimensions: Vec<LimiterDimension>,
+        methods: &[String],
     ) -> Result<bool, AuthFactorServiceError> {
-        Ok(!self.limiter.reserve(dimensions).await?)
+        if methods.is_empty() {
+            return Ok(true);
+        }
+        self.is_disabled_passkey_only(methods).await
     }
 
-    async fn record_failure(
+    async fn is_disabled_passkey_only(
         &self,
-        dimensions: Vec<LimiterDimension>,
-    ) -> Result<crate::auth_limiter::domain::FailureRecord, AuthFactorServiceError> {
-        Ok(self.limiter.record_reserved_failures(dimensions).await?)
-    }
-
-    async fn release_dimensions(
-        &self,
-        dimensions: Vec<LimiterDimension>,
-    ) -> Result<(), AuthFactorServiceError> {
-        Ok(self.limiter.release(dimensions).await?)
-    }
-
-    async fn claim_totp_timestep(
-        &self,
-        user_id: UserId,
-        timestep: u64,
-        dimensions: Vec<LimiterDimension>,
+        methods: &[String],
     ) -> Result<bool, AuthFactorServiceError> {
-        let claimed = match self.tickets.claim_totp_timestep(user_id, timestep).await {
-            Ok(claimed) => claimed,
-            Err(error) => {
-                self.release_dimensions(dimensions).await?;
-                return Err(error.into());
-            }
-        };
-        self.release_dimensions(dimensions).await?;
-        Ok(claimed)
-    }
-
-    async fn invalidate_ticket(&self, ticket_id: &str) -> Result<(), AuthFactorServiceError> {
-        self.tickets.take(ticket_id).await?;
-        self.tickets
-            .delete(&Self::totp_setup_key(ticket_id))
-            .await?;
-        Ok(())
-    }
-
-    fn totp_setup_key(ticket_id: &str) -> String {
-        format!("{TOTP_SETUP_PREFIX}{ticket_id}")
+        Ok(methods.len() == 1
+            && methods[0] == "passkey"
+            && !self.settings.passkey().await?.enabled)
     }
 }
