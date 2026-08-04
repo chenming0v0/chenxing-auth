@@ -38,21 +38,22 @@ async fn token_endpoint_rejects_unsupported_grant_type_without_caching() {
         .await
         .expect("response from router");
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(
-        response
-            .headers()
-            .get(CACHE_CONTROL)
-            .and_then(|value| value.to_str().ok()),
-        Some("no-store")
-    );
-    assert_eq!(
-        response
-            .headers()
-            .get(PRAGMA)
-            .and_then(|value| value.to_str().ok()),
-        Some("no-cache")
-    );
+    let status = response.status();
+    let cache_control = response
+        .headers()
+        .get(CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let pragma = response
+        .headers()
+        .get(PRAGMA)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let error = oauth_error_body(response).await;
+    assert_eq!(error["error"], "unsupported_grant_type");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(cache_control.as_deref(), Some("no-store"));
+    assert_eq!(pragma.as_deref(), Some("no-cache"));
 }
 
 #[tokio::test]

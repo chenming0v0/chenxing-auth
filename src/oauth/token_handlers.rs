@@ -47,6 +47,12 @@ async fn token_inner(state: AppState, headers: HeaderMap, mut request: TokenRequ
     };
     request.client_id = Some(credentials.client_id.clone());
     request.client_secret = Some(credentials.client_secret);
+    if !matches!(
+        request.grant_type.as_str(),
+        "authorization_code" | "refresh_token"
+    ) {
+        return error::oauth_bad_request("unsupported_grant_type", "grant type is unsupported");
+    }
     if let Some(response) = enforce_qps(&state, &credentials.client_id).await {
         return response;
     }
