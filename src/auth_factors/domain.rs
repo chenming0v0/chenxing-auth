@@ -14,6 +14,8 @@ pub enum FactorMethod {
 pub struct LoginTicket {
     pub user_id: UserId,
     methods: Vec<FactorMethod>,
+    #[serde(default)]
+    pub session_epoch: i64,
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
 }
@@ -22,10 +24,19 @@ impl LoginTicket {
     pub const TTL: Duration = Duration::minutes(5);
 
     pub fn new(user_id: UserId, methods: Vec<FactorMethod>) -> Self {
+        Self::new_with_epoch(user_id, methods, 0)
+    }
+
+    pub fn new_with_epoch(
+        user_id: UserId,
+        methods: Vec<FactorMethod>,
+        session_epoch: i64,
+    ) -> Self {
         let created_at = OffsetDateTime::now_utc();
         Self {
             user_id,
             methods,
+            session_epoch,
             created_at,
             expires_at: created_at + Self::TTL,
         }

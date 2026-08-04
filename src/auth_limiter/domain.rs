@@ -105,6 +105,34 @@ pub trait AuthFailureLimiter: Send + Sync {
 
     fn clear<'a>(&'a self, dimension: FailureDimension, value: &str) -> LimiterFuture<'a, ()>;
 
+    /// Atomically reserves one authentication attempt across all dimensions.
+    /// The result is false when a dimension is already at its limit.
+    fn reserve<'a>(&'a self, dimensions: Vec<LimiterDimension>) -> LimiterFuture<'a, bool> {
+        Box::pin(async move {
+            if self.any_limited(dimensions).await? {
+                Ok(false)
+            } else {
+                Ok(true)
+            }
+        })
+    }
+
+    /// Commits a previously reserved attempt as a failed authentication.
+    fn record_reserved_failures<'a>(
+        &'a self,
+        dimensions: Vec<LimiterDimension>,
+    ) -> LimiterFuture<'a, FailureRecord> {
+        self.record_failures(dimensions)
+    }
+
+    /// Releases a previously reserved attempt after successful authentication.
+    fn release<'a>(&'a self, dimensions: Vec<LimiterDimension>) -> LimiterFuture<'a, ()> {
+        Box::pin(async move {
+            let _ = dimensions;
+            Ok(())
+        })
+    }
+
     /// Checks all dimensions in one logical operation. Implementations backed by
     /// Redis override this with one Lua invocation; the default keeps test
     /// doubles and other storage adapters source-compatible.

@@ -36,6 +36,16 @@ pub async fn find_totp_secret(
         .await
 }
 
+pub async fn find_session_epoch(
+    pool: &PgPool,
+    user_id: UserId,
+) -> Result<Option<i64>, crate::sqlx::Error> {
+    crate::sqlx::query_scalar("SELECT session_epoch FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+}
+
 pub async fn list_factor_methods(
     pool: &PgPool,
     user_id: UserId,

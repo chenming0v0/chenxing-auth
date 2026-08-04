@@ -81,6 +81,19 @@ pub async fn issue_user_session(
         }
         return error::internal();
     }
+    if let Err(factor_error) = state.factors.clear_account_failures(user_id).await {
+        if let Err(revoke_error) = state.sessions.revoke(&session.token).await {
+            tracing::warn!(
+                error = %revoke_error,
+                "failed to compensate session after account failure cleanup error"
+            );
+        }
+        tracing::error!(
+            error = %factor_error,
+            "failed to clear account authentication failures after session issuance"
+        );
+        return error::internal();
+    }
     let mut response = (
         StatusCode::OK,
         Json(LoginResponse {

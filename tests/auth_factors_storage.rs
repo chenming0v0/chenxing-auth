@@ -3,6 +3,7 @@ use chenxing_auth::auth_factors::{
     store::LoginTicketStore,
 };
 use redis::AsyncCommands;
+use std::sync::Arc;
 
 fn redis_client() -> redis::Client {
     let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
@@ -52,4 +53,45 @@ fn login_ticket_serializes_without_secrets() {
     assert!(json.get("user_id").is_some());
     assert!(json.get("methods").is_some());
     assert!(json.get("secret").is_none());
+}
+
+#[tokio::test]
+async fn one_totp_time_step_can_be_claimed_only_once_across_tickets() {
+    let client = redis_client();
+    let store = Arc::new(LoginTicketStore::new(client.clone()));
+    let user_id = uuid::Uuid::new_v4().as_u128() as i64;
+    let timestep = 56_666_666_u64;
+    let mut tasks = Vec::new();
+    for _ in 0..12 {
+        let store = store.clone();
+        tasks.push(tokio::spawn(async move {
+            store
+                .claim_totp_timestep(user_id, timestep)
+                .await
+                .expect("claim TOTP timestep")
+        }));
+    }
+    let mut claimed = 0;
+    for task in tasks {
+        claimed += u8::from(task.await.expect("join TOTP claim"));
+    }
+    assert_eq!(claimed, 1);
+    assert!(
+        store
+            .claim_totp_timestep(user_id, timestep + 1)
+            .await
+            .expect("claim adjacent TOTP timestep")
+    );
+
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let _: usize = connection
+        .del(vec![
+            LoginTicketStore::totp_replay_key(user_id, timestep),
+            LoginTicketStore::totp_replay_key(user_id, timestep + 1),
+        ])
+        .await
+        .expect("cleanup TOTP claims");
 }

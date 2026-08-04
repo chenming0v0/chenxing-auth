@@ -18,7 +18,7 @@ use super::{
     persistence::consume_then_persist,
     repository,
     store::{LoginTicketStore, LoginTicketStoreError},
-    totp::{TotpEnrollment, verify_totp_code_current},
+    totp::{TotpEnrollment, verify_totp_code_current_timestep},
 };
 
 const TOTP_SETUP_PREFIX: &str = "chenxing:auth:totp-setup:";
@@ -63,6 +63,8 @@ pub enum AuthFactorServiceError {
     Database(#[from] crate::sqlx::Error),
     #[error("login ticket operation failed: {0}")]
     Ticket(#[from] LoginTicketStoreError),
+    #[error("login ticket user was not found")]
+    UserNotFound,
     #[error("secret operation failed: {0}")]
     Secret(#[from] SecretCryptoError),
     #[error("authentication rate limit reached")]
@@ -114,7 +116,7 @@ impl AuthFactorService {
         let webauthn = WebauthnBuilder::new(rp_id, &origin)?.build()?;
         Ok(Self {
             pool,
-            tickets: LoginTicketStore::new(redis),
+            tickets: LoginTicketStore::new_with_pool(redis, pool.clone()),
             limiter,
             missing_source_ip_policy,
             encryption_key,
@@ -142,7 +144,23 @@ impl AuthFactorService {
         user_id: UserId,
         methods: Vec<FactorMethod>,
     ) -> Result<(String, LoginTicket), AuthFactorServiceError> {
-        Ok(self.tickets.create(user_id, methods).await?)
+        let Some(session_epoch) = repository::find_session_epoch(&self.pool, user_id).await? else {
+            return Err(AuthFactorServiceError::UserNotFound);
+        };
+        Ok(self
+            .tickets
+            .create_with_epoch(user_id, methods, session_epoch)
+            .await?)
+    }
+
+    pub async fn clear_account_failures(
+        &self,
+        user_id: UserId,
+    ) -> Result<(), AuthFactorServiceError> {
+        self.limiter
+            .clear(FailureDimension::Account, &user_id.to_string())
+            .await?;
+        Ok(())
     }
 
     pub async fn user_id_for_ticket(
@@ -165,26 +183,43 @@ impl AuthFactorService {
     ) -> Result<bool, AuthFactorServiceError> {
         let account_key = user_id.to_string();
         let dimensions = self.failure_dimensions(&account_key, None, source_ip)?;
-        self.ensure_dimensions_allowed(dimensions.clone()).await?;
-        let Some(encrypted_secret) = repository::find_totp_secret(&self.pool, user_id).await?
-        else {
+        if self.ensure_dimensions_allowed(dimensions.clone()).await? {
+            return Err(AuthFactorServiceError::RateLimited);
+        }
+        let encrypted_secret = match repository::find_totp_secret(&self.pool, user_id).await {
+            Ok(encrypted_secret) => encrypted_secret,
+            Err(error) => {
+                self.release_dimensions(dimensions).await?;
+                return Err(error.into());
+            }
+        };
+        let Some(encrypted_secret) = encrypted_secret else {
             if !self.record_failure(dimensions).await?.reached.is_empty() {
                 return Err(AuthFactorServiceError::RateLimited);
             }
             return Ok(false);
         };
-        let mut secret = decrypt_totp_secret(self.encryption_key.as_bytes(), &encrypted_secret)?;
-        let valid = verify_totp_code_current(&secret, code);
+        let mut secret = match decrypt_totp_secret(self.encryption_key.as_bytes(), &encrypted_secret) {
+            Ok(secret) => secret,
+            Err(error) => {
+                self.release_dimensions(dimensions).await?;
+                return Err(error.into());
+            }
+        };
+        let timestep = verify_totp_code_current_timestep(&secret, code);
         secret.fill(0);
-        if !valid {
+        let Some(timestep) = timestep else {
             if !self.record_failure(dimensions).await?.reached.is_empty() {
                 return Err(AuthFactorServiceError::RateLimited);
             }
             return Ok(false);
+        };
+        if !self
+            .claim_totp_timestep(user_id, timestep, dimensions)
+            .await?
+        {
+            return Ok(false);
         }
-        self.limiter
-            .clear(FailureDimension::Account, &account_key)
-            .await?;
         Ok(true)
     }
 
@@ -257,11 +292,19 @@ impl AuthFactorService {
         if self.ensure_dimensions_allowed(dimensions.clone()).await? {
             return Ok(TotpConfirmation::RateLimited);
         }
-        let mut secret =
-            decrypt_totp_secret(self.encryption_key.as_bytes(), &pending.encrypted_secret)?;
-        let valid = verify_totp_code_current(&secret, code);
+        let mut secret = match decrypt_totp_secret(
+            self.encryption_key.as_bytes(),
+            &pending.encrypted_secret,
+        ) {
+            Ok(secret) => secret,
+            Err(error) => {
+                self.release_dimensions(dimensions).await?;
+                return Err(error.into());
+            }
+        };
+        let valid = verify_totp_code_current_timestep(&secret, code);
         secret.fill(0);
-        if !valid {
+        let Some(timestep) = valid else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {
                 self.invalidate_ticket(ticket_id).await?;
@@ -271,10 +314,13 @@ impl AuthFactorService {
                 return Ok(TotpConfirmation::RateLimited);
             }
             return Ok(TotpConfirmation::InvalidCode);
+        };
+        if !self
+            .claim_totp_timestep(ticket.user_id, timestep, dimensions)
+            .await?
+        {
+            return Ok(TotpConfirmation::InvalidCode);
         }
-        self.limiter
-            .clear(FailureDimension::Account, &account_key)
-            .await?;
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
@@ -311,9 +357,14 @@ impl AuthFactorService {
         if self.ensure_dimensions_allowed(dimensions.clone()).await? {
             return Ok(TotpConfirmation::RateLimited);
         }
-        let Some(encrypted_secret) =
-            repository::find_totp_secret(&self.pool, ticket.user_id).await?
-        else {
+        let encrypted_secret = match repository::find_totp_secret(&self.pool, ticket.user_id).await {
+            Ok(encrypted_secret) => encrypted_secret,
+            Err(error) => {
+                self.release_dimensions(dimensions).await?;
+                return Err(error.into());
+            }
+        };
+        let Some(encrypted_secret) = encrypted_secret else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {
                 self.invalidate_ticket(ticket_id).await?;
@@ -324,10 +375,16 @@ impl AuthFactorService {
             }
             return Ok(TotpConfirmation::InvalidTicket);
         };
-        let mut secret = decrypt_totp_secret(self.encryption_key.as_bytes(), &encrypted_secret)?;
-        let valid = verify_totp_code_current(&secret, code);
+        let mut secret = match decrypt_totp_secret(self.encryption_key.as_bytes(), &encrypted_secret) {
+            Ok(secret) => secret,
+            Err(error) => {
+                self.release_dimensions(dimensions).await?;
+                return Err(error.into());
+            }
+        };
+        let valid = verify_totp_code_current_timestep(&secret, code);
         secret.fill(0);
-        if !valid {
+        let Some(timestep) = valid else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {
                 self.invalidate_ticket(ticket_id).await?;
@@ -337,10 +394,13 @@ impl AuthFactorService {
                 return Ok(TotpConfirmation::RateLimited);
             }
             return Ok(TotpConfirmation::InvalidCode);
+        };
+        if !self
+            .claim_totp_timestep(ticket.user_id, timestep, dimensions)
+            .await?
+        {
+            return Ok(TotpConfirmation::InvalidCode);
         }
-        self.limiter
-            .clear(FailureDimension::Account, &account_key)
-            .await?;
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
@@ -385,14 +445,38 @@ impl AuthFactorService {
         &self,
         dimensions: Vec<LimiterDimension>,
     ) -> Result<bool, AuthFactorServiceError> {
-        Ok(self.limiter.any_limited(dimensions).await?)
+        Ok(!self.limiter.reserve(dimensions).await?)
     }
 
     async fn record_failure(
         &self,
         dimensions: Vec<LimiterDimension>,
     ) -> Result<crate::auth_limiter::domain::FailureRecord, AuthFactorServiceError> {
-        Ok(self.limiter.record_failures(dimensions).await?)
+        Ok(self.limiter.record_reserved_failures(dimensions).await?)
+    }
+
+    async fn release_dimensions(
+        &self,
+        dimensions: Vec<LimiterDimension>,
+    ) -> Result<(), AuthFactorServiceError> {
+        Ok(self.limiter.release(dimensions).await?)
+    }
+
+    async fn claim_totp_timestep(
+        &self,
+        user_id: UserId,
+        timestep: u64,
+        dimensions: Vec<LimiterDimension>,
+    ) -> Result<bool, AuthFactorServiceError> {
+        let claimed = match self.tickets.claim_totp_timestep(user_id, timestep).await {
+            Ok(claimed) => claimed,
+            Err(error) => {
+                self.release_dimensions(dimensions).await?;
+                return Err(error.into());
+            }
+        };
+        self.release_dimensions(dimensions).await?;
+        Ok(claimed)
     }
 
     async fn invalidate_ticket(&self, ticket_id: &str) -> Result<(), AuthFactorServiceError> {
