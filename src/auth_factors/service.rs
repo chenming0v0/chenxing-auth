@@ -114,9 +114,10 @@ impl AuthFactorService {
     ) -> Result<Self, WebauthnError> {
         let origin = url::Url::parse(origin).map_err(|_| WebauthnError::Configuration)?;
         let webauthn = WebauthnBuilder::new(rp_id, &origin)?.build()?;
+        let ticket_pool = pool.clone();
         Ok(Self {
             pool,
-            tickets: LoginTicketStore::new_with_pool(redis, pool.clone()),
+            tickets: LoginTicketStore::new_with_pool(redis, ticket_pool),
             limiter,
             missing_source_ip_policy,
             encryption_key,

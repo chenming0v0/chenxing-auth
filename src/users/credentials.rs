@@ -28,7 +28,14 @@ pub fn prepare_dummy_password_hash() {
 }
 
 pub fn verify_login_password(password: &str, encoded_hash: Option<&str>) -> bool {
-    verify_password(password, encoded_hash.unwrap_or_else(dummy_password_hash))
+    match encoded_hash {
+        Some(hash) => verify_password(password, hash),
+        None => {
+            let dummy_hash = dummy_password_hash();
+            let _ = verify_password(password, dummy_hash);
+            false
+        }
+    }
 }
 
 fn dummy_password_hash() -> &'static str {
@@ -50,7 +57,7 @@ mod tests {
     fn dummy_password_path_uses_a_reusable_argon2_hash() {
         let hash = dummy_password_hash();
         assert!(hash.starts_with("$argon2"));
-        assert!(verify_login_password(DUMMY_PASSWORD, None));
+        assert!(!verify_login_password(DUMMY_PASSWORD, None));
         assert!(!verify_login_password("wrong dummy password", None));
     }
 }
