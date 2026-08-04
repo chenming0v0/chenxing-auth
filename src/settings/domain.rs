@@ -343,7 +343,7 @@ fn origin_key(url: &Url) -> Result<String, SettingsValidationError> {
         .host_str()
         .ok_or(SettingsValidationError::InvalidPasskeyOrigin)?
         .to_ascii_lowercase();
-    Ok(match url.port_or_known_default() {
+    Ok(match url.port() {
         Some(port) => format!("{}://{}:{}", url.scheme(), host, port),
         None => format!("{}://{}", url.scheme(), host),
     })
@@ -391,7 +391,7 @@ mod tests {
         .expect("passkey");
         assert_eq!(
             passkey.allowed_origins,
-            vec!["https://auth.clya.top:443".to_owned()]
+            vec!["https://auth.clya.top".to_owned()]
         );
 
         let policy = EmailPolicySetting {
@@ -405,5 +405,36 @@ mod tests {
         assert!(policy.allows_email("user@gmail.com"));
         assert!(!policy.allows_email("user+tag@gmail.com"));
         assert!(!policy.allows_email("user@tempmail.com"));
+    }
+
+    #[test]
+    fn canonicalizes_default_and_explicit_origin_ports() {
+        let passkey = PasskeySetting {
+            enabled: true,
+            rp_name: "辰星认证中枢".to_owned(),
+            rp_id: "example.com".to_owned(),
+            user_verification: PasskeyUserVerification::Preferred,
+            authenticator_attachment: PasskeyAuthenticatorAttachment::Any,
+            allow_insecure_origin: true,
+            allowed_origins: vec![
+                "https://login.example.com".to_owned(),
+                "https://login.example.com:443".to_owned(),
+                "http://login.example.com:80".to_owned(),
+                "https://login.example.com:8443".to_owned(),
+                "http://login.example.com:8080".to_owned(),
+            ],
+        }
+        .validate()
+        .expect("passkey");
+
+        assert_eq!(
+            passkey.allowed_origins,
+            vec![
+                "https://login.example.com".to_owned(),
+                "http://login.example.com".to_owned(),
+                "https://login.example.com:8443".to_owned(),
+                "http://login.example.com:8080".to_owned(),
+            ]
+        );
     }
 }
