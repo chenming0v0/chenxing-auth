@@ -13,7 +13,8 @@ web/node_modules/
 web/dist/
 web/*.tsbuildinfo
 .slim/deepwork/
+.slim/worktrees/
+.slim/worktrees.json
 
 # CI-staged native binaries for Dockerfile.runtime
 container-binaries/
-
