@@ -81,9 +81,11 @@
 
 ### 设计稿与 Web UI 修改
 
-- `design-auth-chengming/` 是本项目的原型设计文件夹，以 SOLO Design 画布项目（`.design`）形式保存页面原型；创建、编辑其中的画布页面或修改页面交互连线时，必须先加载项目级 `design-canvas-format` skill，并遵循 `.design` 格式与脚本校验约定。
-- 涉及 `design-auth-chengming/` 下的设计稿、页面视觉、卡片/容器或 Web UI 修改时，必须先加载 `design-auth-chengming/DESIGN.md`，并遵循其中的公共容器要求。
-- 新增或修改任何卡片、玻璃容器、表单面板等 UI 时，必须使用项目级 `chenxing-hud-panel` skill 指定的公共容器 `.chenxing-hud-panel`，禁止另建玻璃卡片样式或复用旧的 `chenxing-glass-strong chenxing-hud-frame` 组合。
+- 原型设计稿（`design-auth-chengming/`）和设计稿专用的 `design-canvas-format` skill 只存在于 `design` 分支，不在 `dev` 和 `releases` 中；不要在 `dev` 上重新添加它们。
+- 需要查阅或修改设计稿时，不要切换当前工作区分支，使用独立 worktree：`git worktree add ../chenxing-auth-design design`。
+- 设计稿改动只在 `design` 分支提交；`design` 单向从 `dev` 接收更新，禁止把 `design` 合并或 cherry-pick 回 `dev` / `releases`。
+- 新增或修改任何卡片、玻璃容器、表单面板等 UI 时，必须使用项目级 `chenxing-hud-panel` skill 指定的公共容器 `.chenxing-hud-panel`，并通过 `web/src/components/ui.tsx` 的 `HudPanel` 组件渲染；禁止另建玻璃卡片样式或复用旧的 `chenxing-glass-strong chenxing-hud-frame` 组合。
+- 面板样式的唯一来源是 `web/src/chenxing-design.css`，不要复制到其他 CSS 或组件内联样式。
 
 ## 测试要求
 
@@ -131,6 +133,7 @@ cargo nextest run --all-features --test-threads 32
 
 - 本项目的主要开发分支是 `dev`。用户未明确指定分支、说“主要分支”或要求合并到主线时，默认使用 `dev`，不要自行使用已废弃的 `master`。
 - `releases` 是释放分支，仅在变更已经在 `dev` 验证通过、准备发布或用户明确要求“释放分支”时使用。
+- `design` 是设计稿分支，只保存 `design-auth-chengming/` 和设计稿专用 skill；它单向从 `dev` 接收更新，禁止合并回 `dev` 或 `releases`。
 - 功能分支应从当前明确的目标基线创建；开始工作前必须检查当前分支、工作区状态、远端跟踪关系以及目标分支的祖先关系，确认没有把功能分支误合入 `dev` 或 `releases`。
 - 涉及分支合并、推送、删除或发布时，先向用户确认目标分支语义；“主要分支”表示 `dev`，“释放分支”明确表示 `releases`。
 - 删除或改写分支前必须先确认提交已安全存在于正确的远端分支，并保留必要的恢复引用；禁止未经确认删除远端分支或执行强制推送。

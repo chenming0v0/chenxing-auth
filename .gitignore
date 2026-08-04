@@ -3,12 +3,26 @@
 /.env
 *.log
 lcov.info
+__pycache__/
 coverage/
 .DS_Store
 .idea/
 .vscode/
-.codex/
-/.claude/
+# Agent skill 目录默认忽略（本地安装的通用 skill 不进仓库），
+# 只放行本项目自有的项目级 skill。
+.codex/*
+!.codex/skills/
+.codex/skills/*
+!.codex/skills/chenxing-hud-panel/
+!.codex/skills/sync-openapi/
+/.claude/*
+!/.claude/skills/
+/.claude/skills/*
+!/.claude/skills/chenxing-hud-panel/
+
+# 设计稿资产只存在于 design 分支，用 worktree 查看，不要提交到 dev。
+/design-auth-chengming/
+/.claude/skills/design-canvas-format/
 web/node_modules/
 web/dist/
 web/*.tsbuildinfo
