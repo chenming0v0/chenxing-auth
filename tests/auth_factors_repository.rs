@@ -160,3 +160,55 @@ async fn passkey_insert_is_idempotent_and_rejects_cross_user_collisions() {
         .await
         .expect("cleanup test users");
 }
+
+#[tokio::test]
+#[serial(auth_factors_repository)]
+async fn first_factor_race_allows_only_one_factor_type_to_win() {
+    let pool = database().await;
+    let suffix = Uuid::new_v4().simple();
+    let user_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO users (username, email, password_hash, status, created_at)
+         VALUES ($1, $2, 'test-hash', 'active', NOW())
+         RETURNING id",
+    )
+    .bind(format!("first-factor-{suffix}"))
+    .bind(format!("first-factor-{suffix}@example.com"))
+    .fetch_one(&pool)
+    .await
+    .expect("insert test user");
+    let credential_id = Uuid::new_v4().into_bytes().to_vec();
+    let passkey = test_passkey(&credential_id);
+
+    let (totp_result, passkey_result) = tokio::join!(
+        repository::insert_totp_factor_if_empty(&pool, user_id, &[1, 2, 3]),
+        repository::insert_passkey_if_empty(&pool, user_id, &credential_id, &passkey),
+    );
+    let totp_result = totp_result.expect("TOTP first-factor write");
+    let passkey_result = passkey_result.expect("Passkey first-factor write");
+    assert!(matches!(
+        (totp_result, passkey_result),
+        (
+            repository::FirstFactorPersistenceResult::Stored,
+            repository::PasskeyPersistenceResult::Conflict
+        ) | (
+            repository::FirstFactorPersistenceResult::AlreadyExists,
+            repository::PasskeyPersistenceResult::Stored
+        )
+    ));
+    assert_eq!(
+        repository::list_factor_methods(&pool, user_id)
+            .await
+            .expect("list first factor"),
+        if matches!(totp_result, repository::FirstFactorPersistenceResult::Stored) {
+            vec!["totp".to_owned()]
+        } else {
+            vec!["passkey".to_owned()]
+        }
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("cleanup test user");
+}

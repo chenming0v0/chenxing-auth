@@ -128,7 +128,7 @@ impl AuthFactorService {
             PasskeyConfirmation::InvalidTicket,
             self.tickets.take(ticket_id),
             async {
-                match repository::insert_passkey(
+                match repository::insert_passkey_if_empty(
                     &self.pool,
                     ticket.user_id,
                     passkey.cred_id(),
@@ -138,13 +138,24 @@ impl AuthFactorService {
                 {
                     repository::PasskeyPersistenceResult::Stored => Ok(()),
                     repository::PasskeyPersistenceResult::Conflict => {
-                        Err(AuthFactorServiceError::PasskeyConflict)
+                        Err(AuthFactorServiceError::FirstFactorAlreadyExists)
                     }
                 }
             },
             |ticket| self.tickets.restore(ticket_id, ticket),
         )
-        .await?;
+        .await
+        {
+            Ok(confirmation) => confirmation,
+            Err(AuthFactorServiceError::FirstFactorAlreadyExists) => {
+                let _ = self.tickets.take(ticket_id).await?;
+                self.tickets
+                    .delete(&Self::passkey_registration_key(ticket_id))
+                    .await?;
+                return Ok(PasskeyConfirmation::InvalidTicket);
+            }
+            Err(error) => return Err(error),
+        };
         if matches!(confirmation, PasskeyConfirmation::InvalidTicket) {
             return Ok(confirmation);
         }
