@@ -6,6 +6,7 @@ use axum::{
     http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
 };
+use std::fmt;
 
 use super::{
     authorization::{
@@ -182,6 +183,18 @@ async fn issue_preconsented_request(
 pub enum AuthorizationCodeIssue {
     Redirect(String),
     QuotaExceeded,
+}
+
+impl fmt::Debug for AuthorizationCodeIssue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Redirect(_) => formatter
+                .debug_tuple("AuthorizationCodeIssue::Redirect")
+                .field(&"<redacted>")
+                .finish(),
+            Self::QuotaExceeded => formatter.write_str("AuthorizationCodeIssue::QuotaExceeded"),
+        }
+    }
 }
 
 pub async fn issue_authorization_code_result(
