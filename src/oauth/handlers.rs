@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Query, State, rejection::QueryRejection},
     http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
 };
@@ -20,7 +20,21 @@ use crate::{error, state::AppState};
 pub async fn authorize(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(request): Query<AuthorizationRequest>,
+    request: Result<Query<AuthorizationRequest>, QueryRejection>,
+) -> Response {
+    let Query(request) = match request {
+        Ok(request) => request,
+        Err(_) => {
+            return error::oauth_bad_request("invalid_request", "authorization request is invalid")
+        }
+    };
+    authorize_request(state, headers, request).await
+}
+
+async fn authorize_request(
+    state: AppState,
+    headers: HeaderMap,
+    request: AuthorizationRequest,
 ) -> Response {
     let Some(client) = (match state.clients.find_registered(&request.client_id).await {
         Ok(client) => client,
@@ -170,7 +184,7 @@ pub async fn issue_authorization_code_result(
             .await
             .is_err()
             {
-                return Err(error::internal());
+                return Err(error::oauth_server_error());
             }
             return Err(error::oauth_unauthorized(
                 "invalid_session",
@@ -226,7 +240,7 @@ pub async fn issue_authorization_code_result(
                 .await
                 .is_err()
                 {
-                    return Err(error::internal());
+                    return Err(error::oauth_server_error());
                 }
                 return Ok(AuthorizationCodeIssue::QuotaExceeded);
             }
@@ -269,7 +283,7 @@ pub async fn issue_authorization_code_result(
             );
         }
         refund_quota_if_consumed(state, &client_id, quota_consumed).await;
-        return Err(error::internal());
+        return Err(error::oauth_server_error());
     }
 
     let mut redirect_uri = match url::Url::parse(&validated.redirect_uri) {

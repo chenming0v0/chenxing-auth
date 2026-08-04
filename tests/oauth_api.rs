@@ -98,3 +98,41 @@ async fn browser_authorization_reports_temporary_unavailability_without_database
         "the authorization server is temporarily unable to handle the request"
     );
 }
+
+#[tokio::test]
+async fn malformed_token_form_returns_rfc_oauth_error() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("grant_type=%ZZ"))
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = oauth_error_body(response).await;
+    assert_eq!(error["error"], "invalid_request");
+    assert!(error.get("code").is_none());
+}
+
+#[tokio::test]
+async fn malformed_authorization_query_returns_rfc_oauth_error() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .uri("/oauth/authorize?%ZZ")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = oauth_error_body(response).await;
+    assert_eq!(error["error"], "invalid_request");
+    assert!(error.get("code").is_none());
+}

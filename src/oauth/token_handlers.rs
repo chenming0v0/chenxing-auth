@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Form, State},
+    extract::{Form, State, rejection::FormRejection},
     http::{HeaderMap, StatusCode},
     response::Response,
 };
@@ -30,8 +30,17 @@ pub struct TokenRequest {
 pub async fn token(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Form(request): Form<TokenRequest>,
+    form: Result<Form<TokenRequest>, FormRejection>,
 ) -> Response {
+    let Form(request) = match form {
+        Ok(form) => form,
+        Err(_) => {
+            return response::with_no_store_headers(error::oauth_bad_request(
+                "invalid_request",
+                "request body is invalid",
+            ));
+        }
+    };
     response::with_no_store_headers(token_inner(state, headers, request).await)
 }
 
@@ -198,7 +207,7 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
             .await
             .is_err()
             {
-                return error::internal();
+                return error::oauth_server_error();
             }
             return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
         }
@@ -221,7 +230,7 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
         .await
         .is_err()
         {
-            return error::internal();
+            return error::oauth_server_error();
         }
         return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
     }
@@ -298,7 +307,7 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
                         "failed to restore previous refresh token after audit persistence failure"
                     );
                 }
-                return error::internal();
+                return error::oauth_server_error();
             }
             response
         }
@@ -313,7 +322,7 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
             .await
             .is_err()
             {
-                return error::internal();
+                return error::oauth_server_error();
             }
             error::oauth_bad_request("invalid_grant", "refresh token is invalid")
         }
