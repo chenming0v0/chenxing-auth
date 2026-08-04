@@ -15,9 +15,7 @@ use crate::{
 
 use super::{
     crypto::{SecretCryptoError, decrypt_totp_secret_with_ring, encrypt_totp_secret_with_ring},
-    domain::{
-        FactorMethod, LoginTicket, effective_factor_methods, setup_factor_methods,
-    },
+    domain::{FactorMethod, LoginTicket, effective_factor_methods, setup_factor_methods},
     persistence::consume_then_persist,
     repository,
     store::{LoginTicketStore, LoginTicketStoreError},
@@ -146,9 +144,7 @@ impl AuthFactorService {
         Ok(setup_factor_methods(passkey_enabled))
     }
 
-    pub async fn has_active_passkey_only_accounts(
-        &self,
-    ) -> Result<bool, AuthFactorServiceError> {
+    pub async fn has_active_passkey_only_accounts(&self) -> Result<bool, AuthFactorServiceError> {
         Ok(repository::has_active_passkey_only_accounts(&self.pool).await?)
     }
 
@@ -276,9 +272,7 @@ impl AuthFactorService {
         let factor_methods = repository::list_factor_methods(&self.pool, ticket.user_id).await?;
         if !ticket.is_active_at(time::OffsetDateTime::now_utc())
             || !ticket.supports(FactorMethod::Totp)
-            || !self
-                .can_start_totp_enrollment(&factor_methods)
-                .await?
+            || !self.can_start_totp_enrollment(&factor_methods).await?
         {
             return Ok(None);
         }
@@ -291,10 +285,8 @@ impl AuthFactorService {
             return Ok(None);
         }
         let enrollment = TotpEnrollment::new(account_name, issuer)?;
-        let encrypted_secret = encrypt_totp_secret_with_ring(
-            &self.encryption_keys,
-            enrollment.secret_bytes(),
-        )?;
+        let encrypted_secret =
+            encrypt_totp_secret_with_ring(&self.encryption_keys, enrollment.secret_bytes())?;
         self.tickets
             .save_json(
                 &Self::totp_setup_key(ticket_id),
@@ -330,32 +322,28 @@ impl AuthFactorService {
             return Ok(TotpConfirmation::InvalidTicket);
         };
         let factor_methods = repository::list_factor_methods(&self.pool, ticket.user_id).await?;
-        let passkey_recovery = self
-            .is_disabled_passkey_only(&factor_methods)
-            .await?;
+        let passkey_recovery = self.is_disabled_passkey_only(&factor_methods).await?;
         let account_key = ticket.user_id.to_string();
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
         if self.ensure_dimensions_allowed(dimensions.clone()).await? {
             return Ok(TotpConfirmation::RateLimited);
         }
-        let decrypted = match decrypt_totp_secret_with_ring(
-            &self.encryption_keys,
-            &pending.encrypted_secret,
-        ) {
-            Ok(value) => value,
-            Err(SecretCryptoError::UnknownKeyId) => {
-                self.release_dimensions(dimensions).await?;
-                tracing::warn!(
-                    event = "auth_factor.totp.decrypt_key_unavailable",
-                    "TOTP setup key is outside the configured retention window"
-                );
-                return Ok(TotpConfirmation::InvalidCode);
-            }
-            Err(error) => {
-                self.release_dimensions(dimensions).await?;
-                return Err(error.into());
-            }
-        };
+        let decrypted =
+            match decrypt_totp_secret_with_ring(&self.encryption_keys, &pending.encrypted_secret) {
+                Ok(value) => value,
+                Err(SecretCryptoError::UnknownKeyId) => {
+                    self.release_dimensions(dimensions).await?;
+                    tracing::warn!(
+                        event = "auth_factor.totp.decrypt_key_unavailable",
+                        "TOTP setup key is outside the configured retention window"
+                    );
+                    return Ok(TotpConfirmation::InvalidCode);
+                }
+                Err(error) => {
+                    self.release_dimensions(dimensions).await?;
+                    return Err(error.into());
+                }
+            };
         let mut secret = decrypted.plaintext.clone();
         let valid = verify_totp_code_current_timestep(&secret, code);
         secret.fill(0);
@@ -445,7 +433,8 @@ impl AuthFactorService {
         if self.ensure_dimensions_allowed(dimensions.clone()).await? {
             return Ok(TotpConfirmation::RateLimited);
         }
-        let encrypted_secret = match repository::find_totp_secret(&self.pool, ticket.user_id).await {
+        let encrypted_secret = match repository::find_totp_secret(&self.pool, ticket.user_id).await
+        {
             Ok(encrypted_secret) => encrypted_secret,
             Err(error) => {
                 self.release_dimensions(dimensions).await?;
@@ -532,8 +521,10 @@ impl AuthFactorService {
         &self,
         methods: &[String],
     ) -> Result<bool, AuthFactorServiceError> {
-        Ok(methods.len() == 1
-            && methods[0] == "passkey"
-            && !self.settings.passkey().await?.enabled)
+        Ok(
+            methods.len() == 1
+                && methods[0] == "passkey"
+                && !self.settings.passkey().await?.enabled,
+        )
     }
 }

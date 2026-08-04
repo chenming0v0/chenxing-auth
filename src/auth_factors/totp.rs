@@ -60,11 +60,7 @@ pub fn verify_totp_code_at(secret: &[u8], code: &str, timestamp: u64) -> bool {
     verify_totp_code_at_timestep(secret, code, timestamp).is_some()
 }
 
-pub fn verify_totp_code_at_timestep(
-    secret: &[u8],
-    code: &str,
-    timestamp: u64,
-) -> Option<u64> {
+pub fn verify_totp_code_at_timestep(secret: &[u8], code: &str, timestamp: u64) -> Option<u64> {
     if validate_totp_code(code).is_err() {
         return None;
     }

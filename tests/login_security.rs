@@ -32,7 +32,11 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     .expect("test configuration");
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    (api::router(AppState::new(config).expect("test state")), database, key_directory)
+    (
+        api::router(AppState::new(config).expect("test state")),
+        database,
+        key_directory,
+    )
 }
 
 async fn json(response: axum::response::Response) -> Value {
@@ -95,8 +99,8 @@ async fn password_success_does_not_reset_mfa_account_failures() {
         .await,
     )
     .await;
-    let totp = totp_rs::TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI"))
-        .expect("TOTP");
+    let totp =
+        totp_rs::TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
     let response = request(
         &router,
         "/api/v1/auth/totp/setup/confirm",

@@ -1,9 +1,6 @@
-use chenxing_auth::auth_factors::{
-    domain::FactorMethod,
-    store::LoginTicketStore,
-};
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
+use chenxing_auth::auth_factors::{domain::FactorMethod, store::LoginTicketStore};
 use chenxing_auth::db;
+use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use redis::Client;
 use serial_test::serial;
 use uuid::Uuid;
@@ -51,7 +48,13 @@ async fn password_epoch_change_invalidates_existing_login_ticket() {
         .execute(&pool)
         .await
         .expect("advance session epoch");
-    assert!(store.find(&ticket_id).await.expect("find stale ticket").is_none());
+    assert!(
+        store
+            .find(&ticket_id)
+            .await
+            .expect("find stale ticket")
+            .is_none()
+    );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)

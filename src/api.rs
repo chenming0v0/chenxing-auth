@@ -300,7 +300,10 @@ async fn health(State(state): State<AppState>) -> Response {
 
 async fn health_ready(State(state): State<AppState>) -> Response {
     let (database_result, redis_result) = tokio::join!(
-        tokio::time::timeout(HEALTH_CHECK_TIMEOUT, crate::db::check_ready(&state.database)),
+        tokio::time::timeout(
+            HEALTH_CHECK_TIMEOUT,
+            crate::db::check_ready(&state.database)
+        ),
         tokio::time::timeout(HEALTH_CHECK_TIMEOUT, redis_ready(&state.redis)),
     );
     let database_ready = matches!(database_result, Ok(Ok(())));

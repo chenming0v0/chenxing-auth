@@ -5,8 +5,8 @@ use axum::{
 };
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
-use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
+use std::time::{SystemTime, UNIX_EPOCH};
 use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -34,7 +34,11 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     .expect("test configuration");
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    (api::router(AppState::new(config).expect("test state")), database, key_directory)
+    (
+        api::router(AppState::new(config).expect("test state")),
+        database,
+        key_directory,
+    )
 }
 
 async fn json(response: axum::response::Response) -> Value {

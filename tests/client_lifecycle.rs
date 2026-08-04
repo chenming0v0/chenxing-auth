@@ -30,5 +30,8 @@ fn admin_one_time_secret_paths_do_not_turn_audit_failure_into_a_lost_secret() {
             "one-time secret action must use the best-effort audit path: {action}"
         );
     }
-    assert!(ADMIN_HANDLERS.contains("client secret response was returned despite audit persistence failure"));
+    assert!(
+        ADMIN_HANDLERS
+            .contains("client secret response was returned despite audit persistence failure")
+    );
 }

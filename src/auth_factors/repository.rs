@@ -144,9 +144,7 @@ pub async fn list_factor_methods(
     Ok(rows.into_iter().map(|(method,)| method).collect())
 }
 
-pub async fn has_active_passkey_only_accounts(
-    pool: &PgPool,
-) -> Result<bool, crate::sqlx::Error> {
+pub async fn has_active_passkey_only_accounts(pool: &PgPool) -> Result<bool, crate::sqlx::Error> {
     crate::sqlx::query_scalar(
         "SELECT EXISTS(
              SELECT 1

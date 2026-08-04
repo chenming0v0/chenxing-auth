@@ -254,13 +254,7 @@ pub async fn rotate_secret(
         Ok(secret) => {
             let client_id = secret.client_id.clone();
             let response = (StatusCode::OK, Json(secret)).into_response();
-            record_admin_event_best_effort(
-                &state,
-                actor,
-                "client_secret_rotate",
-                &client_id,
-            )
-            .await;
+            record_admin_event_best_effort(&state, actor, "client_secret_rotate", &client_id).await;
             response
         }
         Err(ClientServiceError::InvalidData) => {

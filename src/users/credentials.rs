@@ -39,14 +39,13 @@ pub fn verify_login_password(password: &str, encoded_hash: Option<&str>) -> bool
 }
 
 fn dummy_password_hash() -> &'static str {
-    DUMMY_PASSWORD_HASH
-        .get_or_init(|| match hash_password(DUMMY_PASSWORD) {
-            Ok(hash) => hash,
-            Err(error) => {
-                tracing::error!(error = %error, "failed to prepare dummy password hash");
-                String::new()
-            }
-        })
+    DUMMY_PASSWORD_HASH.get_or_init(|| match hash_password(DUMMY_PASSWORD) {
+        Ok(hash) => hash,
+        Err(error) => {
+            tracing::error!(error = %error, "failed to prepare dummy password hash");
+            String::new()
+        }
+    })
 }
 
 #[cfg(test)]

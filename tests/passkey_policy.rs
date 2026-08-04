@@ -5,8 +5,8 @@ use axum::{
 };
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, sqlx};
-use serial_test::serial;
 use serde_json::Value;
+use serial_test::serial;
 use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -72,11 +72,7 @@ async fn request(
     }
     router
         .clone()
-        .oneshot(
-            builder
-                .body(Body::from(body.to_string()))
-                .expect("request"),
-        )
+        .oneshot(builder.body(Body::from(body.to_string())).expect("request"))
         .await
         .expect("response")
 }
@@ -256,8 +252,8 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
     .await;
     assert_eq!(setup_response.status(), StatusCode::OK);
     let setup = json(setup_response).await;
-    let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI"))
-        .expect("TOTP setup");
+    let totp =
+        TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP setup");
     let response = request(
         &router,
         "POST",

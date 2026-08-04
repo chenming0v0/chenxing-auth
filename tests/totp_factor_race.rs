@@ -135,12 +135,8 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
         .await,
     )
     .await;
-    let first_totp = TOTP::from_url(
-        first_setup["otpauth_url"]
-            .as_str()
-            .expect("first TOTP URI"),
-    )
-    .expect("first TOTP");
+    let first_totp = TOTP::from_url(first_setup["otpauth_url"].as_str().expect("first TOTP URI"))
+        .expect("first TOTP");
     let second_totp = TOTP::from_url(
         second_setup["otpauth_url"]
             .as_str()

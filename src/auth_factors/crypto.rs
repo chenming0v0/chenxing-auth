@@ -58,9 +58,8 @@ fn encrypt_totp_secret_with_kid(
     less_safe
         .seal_in_place_append_tag(nonce, Aad::empty(), &mut encrypted)
         .map_err(|_| SecretCryptoError::Authentication)?;
-    let mut output = Vec::with_capacity(
-        ENVELOPE_PREFIX_LENGTH + kid.len() + NONCE_LENGTH + encrypted.len(),
-    );
+    let mut output =
+        Vec::with_capacity(ENVELOPE_PREFIX_LENGTH + kid.len() + NONCE_LENGTH + encrypted.len());
     output.extend_from_slice(&ENVELOPE_MAGIC);
     output.push(ENVELOPE_VERSION);
     output.push(kid.len() as u8);
@@ -190,12 +189,12 @@ mod tests {
     #[test]
     fn encrypted_secret_records_kid_and_survives_key_rotation() {
         let old_ring = rotated_ring("old");
-        let encrypted = encrypt_totp_secret_with_ring(&old_ring, b"totp-secret")
-            .expect("encrypt secret");
+        let encrypted =
+            encrypt_totp_secret_with_ring(&old_ring, b"totp-secret").expect("encrypt secret");
 
         let rotated = rotated_ring("new");
-        let decrypted = decrypt_totp_secret_with_ring(&rotated, &encrypted)
-            .expect("decrypt with previous key");
+        let decrypted =
+            decrypt_totp_secret_with_ring(&rotated, &encrypted).expect("decrypt with previous key");
         assert_eq!(decrypted.plaintext, b"totp-secret");
         assert!(decrypted.needs_reencryption);
     }
@@ -212,8 +211,8 @@ mod tests {
 
     #[test]
     fn unknown_kid_is_not_retried_with_another_key() {
-        let encrypted = encrypt_totp_secret_with_ring(&rotated_ring("old"), b"secret")
-            .expect("encrypt secret");
+        let encrypted =
+            encrypt_totp_secret_with_ring(&rotated_ring("old"), b"secret").expect("encrypt secret");
         let keys = AuthEncryptionKeyRing::single(AuthEncryptionKey::new([2; 32]));
 
         assert!(matches!(

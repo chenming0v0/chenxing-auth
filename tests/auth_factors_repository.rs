@@ -86,9 +86,11 @@ async fn totp_factor_round_trip_returns_ciphertext_only() {
             .await
             .expect("conditional TOTP update")
     );
-    assert!(!repository::update_totp_factor_if_current(&pool, user_id, &encrypted, &[6, 5, 4])
-        .await
-        .expect("stale conditional TOTP update"));
+    assert!(
+        !repository::update_totp_factor_if_current(&pool, user_id, &encrypted, &[6, 5, 4])
+            .await
+            .expect("stale conditional TOTP update")
+    );
     assert_eq!(
         repository::find_totp_secret(&pool, user_id)
             .await
@@ -204,7 +206,10 @@ async fn first_factor_race_allows_only_one_factor_type_to_win() {
         repository::list_factor_methods(&pool, user_id)
             .await
             .expect("list first factor"),
-        if matches!(totp_result, repository::FirstFactorPersistenceResult::Stored) {
+        if matches!(
+            totp_result,
+            repository::FirstFactorPersistenceResult::Stored
+        ) {
             vec!["totp".to_owned()]
         } else {
             vec!["passkey".to_owned()]

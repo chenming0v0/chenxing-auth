@@ -87,7 +87,11 @@ async fn reservations_bound_concurrent_attempts_before_password_work() {
         let account = account.clone();
         tasks.push(tokio::spawn(async move {
             let dimensions = vec![(FailureDimension::Account, account)];
-            if !limiter.reserve(dimensions.clone()).await.expect("reserve attempt") {
+            if !limiter
+                .reserve(dimensions.clone())
+                .await
+                .expect("reserve attempt")
+            {
                 return false;
             }
             limiter
@@ -152,10 +156,8 @@ async fn redis_failure_policy_is_explicit_and_observable() {
         client.clone(),
         AuthLimiterFailurePolicy::FailOpen,
     );
-    let fail_closed = RedisAuthFailureLimiter::with_failure_policy(
-        client,
-        AuthLimiterFailurePolicy::FailClosed,
-    );
+    let fail_closed =
+        RedisAuthFailureLimiter::with_failure_policy(client, AuthLimiterFailurePolicy::FailClosed);
     let before = super::metrics().redis_errors;
     assert!(
         !fail_open
@@ -169,13 +171,15 @@ async fn redis_failure_policy_is_explicit_and_observable() {
             .await
             .expect("fail-open record")
     );
-    assert!(fail_open
-        .reserve(vec![(
-            FailureDimension::Account,
-            "failure-policy-open-reserve".to_owned(),
-        )])
-        .await
-        .expect("fail-open reserve"));
+    assert!(
+        fail_open
+            .reserve(vec![(
+                FailureDimension::Account,
+                "failure-policy-open-reserve".to_owned(),
+            )])
+            .await
+            .expect("fail-open reserve")
+    );
     assert!(
         fail_closed
             .is_limited(FailureDimension::Account, "failure-policy-closed")
@@ -188,12 +192,14 @@ async fn redis_failure_policy_is_explicit_and_observable() {
             .await
             .is_err()
     );
-    assert!(fail_closed
-        .reserve(vec![(
-            FailureDimension::Account,
-            "failure-policy-closed-reserve".to_owned(),
-        )])
-        .await
-        .is_err());
+    assert!(
+        fail_closed
+            .reserve(vec![(
+                FailureDimension::Account,
+                "failure-policy-closed-reserve".to_owned(),
+            )])
+            .await
+            .is_err()
+    );
     assert!(super::metrics().redis_errors >= before + 6);
 }

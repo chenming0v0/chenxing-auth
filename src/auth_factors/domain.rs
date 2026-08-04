@@ -49,11 +49,7 @@ impl LoginTicket {
         Self::new_with_epoch(user_id, methods, 0)
     }
 
-    pub fn new_with_epoch(
-        user_id: UserId,
-        methods: Vec<FactorMethod>,
-        session_epoch: i64,
-    ) -> Self {
+    pub fn new_with_epoch(user_id: UserId, methods: Vec<FactorMethod>, session_epoch: i64) -> Self {
         let created_at = OffsetDateTime::now_utc();
         Self {
             user_id,
@@ -96,7 +92,11 @@ mod tests {
     #[test]
     fn effective_methods_follow_passkey_policy_for_all_factor_sets() {
         let cases = [
-            (vec!["passkey".to_owned()], vec![], vec![FactorMethod::Passkey]),
+            (
+                vec!["passkey".to_owned()],
+                vec![],
+                vec![FactorMethod::Passkey],
+            ),
             (
                 vec!["totp".to_owned()],
                 vec![FactorMethod::Totp],

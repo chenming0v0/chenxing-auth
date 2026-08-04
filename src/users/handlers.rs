@@ -234,9 +234,14 @@ pub async fn login_user(
             }
         };
         if recovery_required
-            && record_security_event(&state, "passkey_recovery_required", Some(user_id), "passkey_disabled")
-                .await
-                .is_err()
+            && record_security_event(
+                &state,
+                "passkey_recovery_required",
+                Some(user_id),
+                "passkey_disabled",
+            )
+            .await
+            .is_err()
         {
             return error::internal();
         }

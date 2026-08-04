@@ -10,7 +10,8 @@ use crate::users::domain::UserId;
 const LOGIN_TICKET_PREFIX: &str = "chenxing:auth:login-ticket:";
 const TOTP_REPLAY_PREFIX: &str = "chenxing:auth:totp-used:";
 const TOTP_REPLAY_TTL_SECONDS: u64 = 120;
-const CLAIM_TOTP_STEP_SCRIPT: &str = "if redis.call('SET', KEYS[1], '1', 'NX', 'EX', ARGV[1]) then return 1 else return 0 end";
+const CLAIM_TOTP_STEP_SCRIPT: &str =
+    "if redis.call('SET', KEYS[1], '1', 'NX', 'EX', ARGV[1]) then return 1 else return 0 end";
 
 #[derive(Clone)]
 pub struct LoginTicketStore {
@@ -130,12 +131,11 @@ impl LoginTicketStore {
             return Ok(None);
         };
         if let Some(pool) = &self.metadata {
-            let current_epoch: Option<i64> = crate::sqlx::query_scalar(
-                "SELECT session_epoch FROM users WHERE id = $1",
-            )
-            .bind(ticket.user_id)
-            .fetch_optional(pool)
-            .await?;
+            let current_epoch: Option<i64> =
+                crate::sqlx::query_scalar("SELECT session_epoch FROM users WHERE id = $1")
+                    .bind(ticket.user_id)
+                    .fetch_optional(pool)
+                    .await?;
             if current_epoch != Some(ticket.session_epoch) {
                 return Ok(None);
             }

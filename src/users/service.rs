@@ -3,7 +3,9 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use super::{
-    credentials::{hash_password, prepare_dummy_password_hash, verify_login_password, verify_password},
+    credentials::{
+        hash_password, prepare_dummy_password_hash, verify_login_password, verify_password,
+    },
     domain::{
         LoginError, LoginInput, PublicUser, RegistrationError, RegistrationInput, UserId, UserRole,
         validate_display_name, validate_login, validate_registration,
@@ -169,21 +171,22 @@ impl UserService {
         if !self.reserve_dimensions(source_dimensions.clone()).await? {
             return Err(UserServiceError::RateLimited);
         }
-        let credentials = match repository::find_credentials_by_identifier(
-            &self.pool,
-            &login.identifier,
-        )
-        .await
-        {
-            Ok(credentials) => credentials,
-            Err(error) => {
-                self.release_dimensions(source_dimensions).await?;
-                return Err(UserServiceError::Database(error));
-            }
-        };
+        let credentials =
+            match repository::find_credentials_by_identifier(&self.pool, &login.identifier).await {
+                Ok(credentials) => credentials,
+                Err(error) => {
+                    self.release_dimensions(source_dimensions).await?;
+                    return Err(UserServiceError::Database(error));
+                }
+            };
         let Some(credentials) = credentials else {
             let _ = verify_login_password(&login.password, None);
-            if self.record_failure(source_dimensions).await?.reached.is_empty() {
+            if self
+                .record_failure(source_dimensions)
+                .await?
+                .reached
+                .is_empty()
+            {
                 return Err(UserServiceError::InvalidCredentials);
             } else {
                 return Err(UserServiceError::RateLimited);
@@ -197,10 +200,9 @@ impl UserService {
         }
         let mut dimensions = source_dimensions;
         dimensions.extend(account_dimensions);
-        let password_valid = verify_login_password(&login.password, Some(&credentials.password_hash));
-        if credentials.status != "active"
-            || !credentials.password_login_enabled
-            || !password_valid
+        let password_valid =
+            verify_login_password(&login.password, Some(&credentials.password_hash));
+        if credentials.status != "active" || !credentials.password_login_enabled || !password_valid
         {
             if self.record_failure(dimensions).await?.reached.is_empty() {
                 return Err(UserServiceError::InvalidCredentials);
@@ -253,10 +255,7 @@ impl UserService {
         &self,
         dimensions: Vec<LimiterDimension>,
     ) -> Result<crate::auth_limiter::domain::FailureRecord, UserServiceError> {
-        Ok(self
-            .limiter
-            .record_reserved_failures(dimensions)
-            .await?)
+        Ok(self.limiter.record_reserved_failures(dimensions).await?)
     }
 
     pub async fn find_profile(
