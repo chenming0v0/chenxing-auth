@@ -520,9 +520,10 @@ async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() 
     let response = router
         .oneshot(
             Request::builder()
-                .uri(format!(
+                .uri(
                     "/api/v1/admin/users/query?page=1&page_size=100&search=query-plan-user-"
-                ))
+                        .to_string(),
+                )
                 .header("authorization", "Bearer admin-ui-token")
                 .body(Body::empty())
                 .expect("effective plan query request"),
