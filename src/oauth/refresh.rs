@@ -9,7 +9,6 @@ pub struct RefreshToken {
     pub client_id: String,
     pub user_id: String,
     pub scopes: Vec<String>,
-    pub nonce: Option<String>,
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
     pub revoked_at: Option<OffsetDateTime>,
@@ -27,22 +26,12 @@ pub enum RefreshTokenError {
 
 impl RefreshToken {
     pub fn new(client_id: String, user_id: String, scopes: Vec<String>) -> Self {
-        Self::new_with_nonce(client_id, user_id, scopes, None)
-    }
-
-    pub fn new_with_nonce(
-        client_id: String,
-        user_id: String,
-        scopes: Vec<String>,
-        nonce: Option<String>,
-    ) -> Self {
         let created_at = OffsetDateTime::now_utc();
         Self {
             value: format!("cx-refresh-{}", Uuid::new_v4().simple()),
             client_id,
             user_id,
             scopes,
-            nonce,
             created_at,
             expires_at: created_at + Duration::days(30),
             revoked_at: None,

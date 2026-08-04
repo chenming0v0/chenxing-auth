@@ -38,8 +38,52 @@ impl TokenRevocationStore {
         Ok(())
     }
 
+    pub async fn revoke_consent(
+        &self,
+        user_id: &str,
+        client_id: &str,
+    ) -> Result<(), TokenRevocationError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let _: () = connection
+            .set(Self::consent_key(user_id, client_id), "1")
+            .await?;
+        Ok(())
+    }
+
+    pub async fn is_consent_revoked(
+        &self,
+        user_id: &str,
+        client_id: &str,
+    ) -> Result<bool, TokenRevocationError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        Ok(connection
+            .exists(Self::consent_key(user_id, client_id))
+            .await?)
+    }
+
+    pub async fn clear_consent(
+        &self,
+        user_id: &str,
+        client_id: &str,
+    ) -> Result<(), TokenRevocationError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let _: usize = connection
+            .del(Self::consent_key(user_id, client_id))
+            .await?;
+        Ok(())
+    }
+
     fn key(token: &str) -> String {
         let digest = Sha256::digest(token.as_bytes());
         format!("chenxing:oauth:revoked:{}", URL_SAFE_NO_PAD.encode(digest))
+    }
+
+    fn consent_key(user_id: &str, client_id: &str) -> String {
+        let binding = format!("{user_id}:{client_id}");
+        let digest = Sha256::digest(binding.as_bytes());
+        format!(
+            "chenxing:oauth:consent-revoked:{}",
+            URL_SAFE_NO_PAD.encode(digest)
+        )
     }
 }

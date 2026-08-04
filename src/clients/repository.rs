@@ -29,7 +29,8 @@ pub struct StoredClient {
 
 #[derive(Debug)]
 pub struct StoredClientCredentials {
-    pub client_secret_hash: String,
+    pub client_secret_hash: Option<String>,
+    pub auth_method: String,
     pub status: String,
 }
 
@@ -169,17 +170,20 @@ pub async fn find_client_credentials(
     pool: &PgPool,
     client_id: &str,
 ) -> Result<Option<StoredClientCredentials>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (String, String)>(
-        "SELECT client_secret_hash, status FROM oauth_clients WHERE client_id = $1",
+    crate::sqlx::query_as::<_, (Option<String>, String, String)>(
+        "SELECT client_secret_hash, auth_method, status FROM oauth_clients WHERE client_id = $1",
     )
     .bind(client_id)
     .fetch_optional(pool)
     .await
     .map(|record| {
-        record.map(|(client_secret_hash, status)| StoredClientCredentials {
-            client_secret_hash,
-            status,
-        })
+        record.map(
+            |(client_secret_hash, auth_method, status)| StoredClientCredentials {
+                client_secret_hash,
+                auth_method,
+                status,
+            },
+        )
     })
 }
 

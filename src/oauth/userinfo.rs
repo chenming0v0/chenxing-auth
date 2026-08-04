@@ -1,13 +1,17 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use axum::{
     Json,
-    extract::State,
+    extract::{Form, State, rejection::FormRejection},
     http::{HeaderMap, header::AUTHORIZATION},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 
-use crate::{error, oauth::token::decode_userinfo_token, state::AppState};
+use crate::{
+    error,
+    oauth::{response::with_no_store_headers, token::decode_userinfo_token},
+    state::AppState,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UserInfoClaims {
@@ -16,6 +20,11 @@ pub struct UserInfoClaims {
     pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UserInfoRequest {
+    pub access_token: Option<String>,
 }
 
 impl UserInfoClaims {
@@ -36,17 +45,49 @@ impl UserInfoClaims {
 }
 
 pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Some(token) = bearer_token(&headers) else {
-        return error::oauth_invalid_bearer("Bearer access token is required");
+    with_no_store_headers(userinfo_inner(state, headers, None).await)
+}
+
+pub async fn userinfo_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    form: Result<Form<UserInfoRequest>, FormRejection>,
+) -> Response {
+    let Form(request) = match form {
+        Ok(form) => form,
+        Err(_) => {
+            return with_no_store_headers(error::oauth_bad_request(
+                "invalid_request",
+                "request body is invalid",
+            ));
+        }
     };
-    let claims = match decode_userinfo_token(&state.keys, &state.config.issuer_url, token) {
+    with_no_store_headers(userinfo_inner(state, headers, request.access_token.as_deref()).await)
+}
+
+async fn userinfo_inner(
+    state: AppState,
+    headers: HeaderMap,
+    form_access_token: Option<&str>,
+) -> Response {
+    let token = match access_token(&headers, form_access_token) {
+        Ok(Some(token)) => token,
+        Ok(None) => return error::oauth_invalid_bearer("Bearer access token is required"),
+        Err(()) => {
+            return error::oauth_bad_request(
+                "invalid_request",
+                "access token must not be sent in both header and form",
+            );
+        }
+    };
+    let claims = match decode_userinfo_token(&state.keys, &state.config.issuer_url, &token) {
         Ok(claims) => claims,
         Err(token_error) => {
             tracing::info!(error = %token_error, "UserInfo access token rejected");
             return error::oauth_invalid_bearer("access token is invalid");
         }
     };
-    match state.revocations.is_revoked(token).await {
+    match state.revocations.is_revoked(&token).await {
         Ok(true) => return error::oauth_invalid_bearer("access token is invalid"),
         Ok(false) => {}
         Err(store_error) => {
@@ -57,6 +98,35 @@ pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Resp
     let Ok(user_id) = claims.sub.parse::<crate::users::domain::UserId>() else {
         return error::oauth_invalid_bearer("access token is invalid");
     };
+    match state
+        .revocations
+        .is_consent_revoked(&claims.sub, &claims.aud)
+        .await
+    {
+        Ok(true) => return error::oauth_invalid_bearer("access token is invalid"),
+        Ok(false) => {}
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to check UserInfo consent revocation");
+            return error::oauth_temporarily_unavailable();
+        }
+    }
+    let scopes = claims
+        .scope
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    match state
+        .consents
+        .has_scopes(user_id, &claims.aud, &scopes)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => return error::oauth_invalid_bearer("access token is invalid"),
+        Err(database_error) => {
+            tracing::error!(error = %database_error, "failed to check UserInfo consent");
+            return error::oauth_temporarily_unavailable();
+        }
+    }
     let Some(profile) = (match state.users.find_profile(user_id).await {
         Ok(profile) => profile,
         Err(database_error) => {
@@ -70,11 +140,6 @@ pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Resp
         return error::oauth_invalid_bearer("access token is invalid");
     }
 
-    let scopes = claims
-        .scope
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
     let userinfo = UserInfoClaims::from_profile(
         profile.id.to_string(),
         profile.email,
@@ -82,6 +147,19 @@ pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Resp
         &scopes,
     );
     (axum::http::StatusCode::OK, Json(userinfo)).into_response()
+}
+
+fn access_token(
+    headers: &HeaderMap,
+    form_access_token: Option<&str>,
+) -> Result<Option<String>, ()> {
+    let header_access_token = bearer_token(headers);
+    if header_access_token.is_some() && form_access_token.is_some() {
+        return Err(());
+    }
+    Ok(header_access_token
+        .map(str::to_owned)
+        .or_else(|| form_access_token.map(str::to_owned)))
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
@@ -97,8 +175,6 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         })
         .filter(|token| !token.is_empty())
 }
-
-use axum::response::IntoResponse;
 
 #[cfg(test)]
 mod tests {
@@ -133,5 +209,28 @@ mod tests {
         headers.insert(AUTHORIZATION, HeaderValue::from_static("Basic token"));
 
         assert_eq!(bearer_token(&headers), None);
+    }
+
+    #[test]
+    fn access_token_rejects_header_and_form_conflict() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer header"));
+
+        assert_eq!(access_token(&headers, Some("form")), Err(()));
+    }
+
+    #[test]
+    fn access_token_accepts_either_header_or_form() {
+        let mut headers = HeaderMap::new();
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer header"));
+
+        assert_eq!(
+            access_token(&headers, None).expect("header token"),
+            Some("header".to_owned())
+        );
+        assert_eq!(
+            access_token(&HeaderMap::new(), Some("form")).expect("form token"),
+            Some("form".to_owned())
+        );
     }
 }

@@ -4,6 +4,7 @@
 //! of reimplementing token signing or protocol parsing here.
 
 pub mod authorization;
+pub mod authorization_code_handlers;
 pub mod client_auth;
 pub mod code;
 pub mod consent;
@@ -24,6 +25,7 @@ pub mod session;
 pub mod store;
 pub mod token;
 pub mod token_handlers;
+pub mod token_security;
 pub mod ui_handlers;
 pub mod userinfo;
 
@@ -43,6 +45,7 @@ pub struct OpenIdConfiguration {
     pub scopes_supported: Vec<&'static str>,
     pub claims_supported: Vec<&'static str>,
     pub code_challenge_methods_supported: Vec<&'static str>,
+    pub token_endpoint_auth_methods_supported: Vec<&'static str>,
 }
 
 impl OpenIdConfiguration {
@@ -61,6 +64,11 @@ impl OpenIdConfiguration {
             scopes_supported: vec!["openid", "profile", "email"],
             claims_supported: vec!["sub", "iss", "aud", "exp", "iat", "email", "name"],
             code_challenge_methods_supported: vec!["S256"],
+            token_endpoint_auth_methods_supported: vec![
+                "client_secret_basic",
+                "client_secret_post",
+                "none",
+            ],
         }
     }
 }

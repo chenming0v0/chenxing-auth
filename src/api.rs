@@ -42,13 +42,13 @@ use crate::{
         start_passkey_authentication, start_passkey_registration, start_totp_setup,
     },
     oauth::OpenIdConfiguration,
-    oauth::handlers::{authorize, token},
+    oauth::handlers::{authorize, authorize_post, token},
     oauth::providers::handlers::{external_callback, list_public_providers, start_external_login},
     oauth::revocation_handler::revoke,
     oauth::ui_handlers::{
         bind_authorization_request, decide_authorization_request, inspect_authorization_request,
     },
-    oauth::userinfo::userinfo,
+    oauth::userinfo::{userinfo, userinfo_post},
     state::AppState,
     users::entitlements_handlers::current_entitlements,
     users::handlers::{login_user, register_user, revoke_session},
@@ -72,10 +72,10 @@ pub fn router(state: AppState) -> Router {
             get(openid_configuration),
         )
         .route("/.well-known/jwks.json", get(jwks))
-        .route("/oauth/authorize", get(authorize))
+        .route("/oauth/authorize", get(authorize).post(authorize_post))
         .route("/oauth/token", post(token))
         .route("/oauth/revoke", post(revoke))
-        .route("/oauth/userinfo", get(userinfo))
+        .route("/oauth/userinfo", get(userinfo).post(userinfo_post))
         .route(
             "/api/v1/oauth/authorize/requests/{request_id}",
             get(inspect_authorization_request).post(decide_authorization_request),

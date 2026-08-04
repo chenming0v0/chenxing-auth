@@ -142,7 +142,7 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
     let client = json(response).await;
     let client_id = client["client_id"].as_str().expect("client id");
     let authorize_uri = format!(
-        "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Foauth-ui.example%2Fcallback&response_type=code&scope=openid%20profile&state=oauth-ui-state&nonce=oauth-ui-nonce&code_challenge=oauth-ui-challenge&code_challenge_method=S256"
+        "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Foauth-ui.example%2Fcallback&response_type=code&scope=openid%20profile&state=oauth-ui-state&nonce=oauth-ui-nonce&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
     );
     let response = router
         .clone()

@@ -616,7 +616,7 @@ async fn owned_oauth_authorization_consumes_daily_and_monthly_quota() {
         .expect("client id")
         .to_owned();
     let authorize_uri = format!(
-        "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Fuser-20.example%2Fcallback&response_type=code&scope=openid%20profile&state=quota-state&code_challenge=quota-challenge&code_challenge_method=S256"
+        "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Fuser-20.example%2Fcallback&response_type=code&scope=openid%20profile&state=quota-state&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
     );
     let response = router
         .clone()

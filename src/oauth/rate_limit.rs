@@ -49,7 +49,21 @@ impl QpsRateLimiter {
     /// 对 `client_id` 在最近 1 秒滑动窗口内计数。返回 `true` 表示放行，
     /// `false` 表示超过 `max_qps` 应拒绝；`max_qps` 由调用方决定是否为 `None`（不启用）。
     pub async fn allow(&self, client_id: &str, max_qps: u32) -> Result<bool, QpsRateLimitError> {
-        let key = format!("chenxing:qps:{client_id}");
+        self.allow_key(format!("chenxing:qps:{client_id}"), max_qps)
+            .await
+    }
+
+    /// Limit unauthenticated token attempts independently from any Client plan.
+    pub async fn allow_source(
+        &self,
+        source_ip: &str,
+        max_qps: u32,
+    ) -> Result<bool, QpsRateLimitError> {
+        self.allow_key(format!("chenxing:qps:source:{source_ip}"), max_qps)
+            .await
+    }
+
+    async fn allow_key(&self, key: String, max_qps: u32) -> Result<bool, QpsRateLimitError> {
         let member = Uuid::new_v4().simple().to_string();
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let allowed: i64 = Script::new(QPS_SCRIPT)

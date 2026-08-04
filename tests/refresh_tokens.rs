@@ -29,13 +29,13 @@ fn expired_refresh_token_is_rejected() {
 }
 
 #[test]
-fn refresh_token_preserves_oidc_nonce() {
-    let token = RefreshToken::new_with_nonce(
+fn refresh_token_does_not_store_oidc_nonce() {
+    let token = RefreshToken::new(
         "cx_project".to_owned(),
         "user-1".to_owned(),
         vec!["openid".to_owned()],
-        Some("nonce-value".to_owned()),
     );
 
-    assert_eq!(token.nonce.as_deref(), Some("nonce-value"));
+    let value = serde_json::to_value(token).expect("refresh token serializes");
+    assert!(value.get("nonce").is_none());
 }

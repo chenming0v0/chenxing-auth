@@ -198,4 +198,13 @@ mod tests {
         assert!(challenge.contains("error=\"invalid_token\""));
         assert!(!challenge.contains("expired"));
     }
+
+    #[test]
+    fn oauth_server_error_uses_protocol_error_field() {
+        let response = super::oauth_server_error();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
 }

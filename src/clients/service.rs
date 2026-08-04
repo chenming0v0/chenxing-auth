@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use super::{
     domain::{
-        ClientRegistrationError, ClientRegistrationInput, ClientRegistrationLimits,
-        validate_client_registration_with_limits,
+        ClientAuthMethod, ClientRegistrationError, ClientRegistrationInput,
+        ClientRegistrationLimits, validate_client_registration_with_limits,
     },
     repository::{self, ClientInsertError},
 };
@@ -164,13 +164,28 @@ impl ClientService {
     pub async fn verify_credentials(
         &self,
         client_id: &str,
-        client_secret: &str,
+        auth_method: ClientAuthMethod,
+        client_secret: Option<&str>,
     ) -> Result<bool, ClientServiceError> {
         let Some(client) = repository::find_client_credentials(&self.pool, client_id).await? else {
             return Ok(false);
         };
-        Ok(client.status == "active"
-            && verify_client_secret(client_secret, &client.client_secret_hash))
+        if client.status != "active"
+            || ClientAuthMethod::parse(&client.auth_method) != Some(auth_method)
+        {
+            return Ok(false);
+        }
+        match (
+            auth_method,
+            client_secret,
+            client.client_secret_hash.as_deref(),
+        ) {
+            (ClientAuthMethod::None, None, _) => Ok(true),
+            (ClientAuthMethod::Basic | ClientAuthMethod::Post, Some(secret), Some(hash)) => {
+                Ok(verify_client_secret(secret, hash))
+            }
+            _ => Ok(false),
+        }
     }
 
     pub async fn list(&self) -> Result<Vec<ClientSummary>, ClientServiceError> {

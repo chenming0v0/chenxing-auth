@@ -144,7 +144,7 @@ async fn oauth_ui_approval_failure_keeps_pending_request_for_retry() {
         .expect("client id")
         .to_owned();
     let authorize_uri = format!(
-        "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Foauth-ui-retry.example%2Fcallback&response_type=code&scope=openid%20profile&state=oauth-ui-retry-state&code_challenge=oauth-ui-retry-challenge&code_challenge_method=S256"
+        "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Foauth-ui-retry.example%2Fcallback&response_type=code&scope=openid%20profile&state=oauth-ui-retry-state&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
     );
 
     let response = router

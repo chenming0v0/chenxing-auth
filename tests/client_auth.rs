@@ -1,5 +1,8 @@
 use axum::http::{HeaderMap, HeaderValue};
-use chenxing_auth::oauth::client_auth::{ClientCredentialError, resolve_client_credentials};
+use chenxing_auth::{
+    clients::domain::ClientAuthMethod,
+    oauth::client_auth::{ClientCredentialError, resolve_client_credentials},
+};
 
 #[test]
 fn basic_client_authentication_decodes_client_id_and_secret() {
@@ -9,10 +12,10 @@ fn basic_client_authentication_decodes_client_id_and_secret() {
         HeaderValue::from_static("Basic Y3hfcHJvamVjdDpjbGllbnQtc2VjcmV0"),
     );
 
-    let credentials =
-        resolve_client_credentials(&headers, Some(""), Some("")).expect("basic credentials");
+    let credentials = resolve_client_credentials(&headers, None, None).expect("basic credentials");
     assert_eq!(credentials.client_id, "cx_project");
-    assert_eq!(credentials.client_secret, "client-secret");
+    assert_eq!(credentials.client_secret.as_deref(), Some("client-secret"));
+    assert_eq!(credentials.auth_method, ClientAuthMethod::Basic);
 }
 
 #[test]
@@ -26,6 +29,25 @@ fn basic_authentication_scheme_is_case_insensitive() {
     let credentials = resolve_client_credentials(&headers, None, None)
         .expect("case-insensitive basic credentials");
     assert_eq!(credentials.client_id, "cx_project");
+}
+
+#[test]
+fn form_client_authentication_records_post_method() {
+    let credentials =
+        resolve_client_credentials(&HeaderMap::new(), Some("cx_project"), Some("client-secret"))
+            .expect("form credentials");
+
+    assert_eq!(credentials.auth_method, ClientAuthMethod::Post);
+    assert_eq!(credentials.client_secret.as_deref(), Some("client-secret"));
+}
+
+#[test]
+fn public_client_authentication_records_none_method() {
+    let credentials = resolve_client_credentials(&HeaderMap::new(), Some("cx_public"), None)
+        .expect("public client credentials");
+
+    assert_eq!(credentials.auth_method, ClientAuthMethod::None);
+    assert_eq!(credentials.client_secret, None);
 }
 
 #[test]

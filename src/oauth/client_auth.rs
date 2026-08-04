@@ -2,10 +2,13 @@ use axum::http::{HeaderMap, header::AUTHORIZATION};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use thiserror::Error;
 
+use crate::clients::domain::ClientAuthMethod;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientCredentials {
     pub client_id: String,
-    pub client_secret: String,
+    pub client_secret: Option<String>,
+    pub auth_method: ClientAuthMethod,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -23,8 +26,7 @@ pub fn resolve_client_credentials(
     form_client_id: Option<&str>,
     form_client_secret: Option<&str>,
 ) -> Result<ClientCredentials, ClientCredentialError> {
-    let form_has_credentials = form_client_id.is_some_and(|value| !value.is_empty())
-        || form_client_secret.is_some_and(|value| !value.is_empty());
+    let form_has_credentials = form_client_id.is_some() || form_client_secret.is_some();
     let basic = headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -49,19 +51,22 @@ pub fn resolve_client_credentials(
         }
         return Ok(ClientCredentials {
             client_id: client_id.to_owned(),
-            client_secret: client_secret.to_owned(),
+            client_secret: Some(client_secret.to_owned()),
+            auth_method: ClientAuthMethod::Basic,
         });
     }
 
     match (form_client_id, form_client_secret) {
-        (Some(client_id), Some(client_secret))
-            if !client_id.is_empty() && !client_secret.is_empty() =>
-        {
-            Ok(ClientCredentials {
-                client_id: client_id.to_owned(),
-                client_secret: client_secret.to_owned(),
-            })
-        }
+        (Some(client_id), Some(client_secret)) if !client_id.is_empty() => Ok(ClientCredentials {
+            client_id: client_id.to_owned(),
+            client_secret: Some(client_secret.to_owned()),
+            auth_method: ClientAuthMethod::Post,
+        }),
+        (Some(client_id), None) if !client_id.is_empty() => Ok(ClientCredentials {
+            client_id: client_id.to_owned(),
+            client_secret: None,
+            auth_method: ClientAuthMethod::None,
+        }),
         _ => Err(ClientCredentialError::Missing),
     }
 }

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Form, State},
+    extract::{Form, State, rejection::FormRejection},
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use super::{
     client_auth::{ClientCredentialError, resolve_client_credentials},
+    response::with_no_store_headers,
     token::decode_access_token,
 };
 use crate::{audit::AuditEvent, error, state::AppState};
@@ -22,8 +23,21 @@ pub struct RevocationRequest {
 pub async fn revoke(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Form(request): Form<RevocationRequest>,
+    form: Result<Form<RevocationRequest>, FormRejection>,
 ) -> Response {
+    let Form(request) = match form {
+        Ok(form) => form,
+        Err(_) => {
+            return with_no_store_headers(error::oauth_bad_request(
+                "invalid_request",
+                "request body is invalid",
+            ));
+        }
+    };
+    with_no_store_headers(revoke_inner(state, headers, request).await)
+}
+
+async fn revoke_inner(state: AppState, headers: HeaderMap, request: RevocationRequest) -> Response {
     let credentials = match resolve_client_credentials(
         &headers,
         request.client_id.as_deref(),
@@ -39,7 +53,11 @@ pub async fn revoke(
     };
     match state
         .clients
-        .verify_credentials(&credentials.client_id, &credentials.client_secret)
+        .verify_credentials(
+            &credentials.client_id,
+            credentials.auth_method,
+            credentials.client_secret.as_deref(),
+        )
         .await
     {
         Ok(true) => {}
@@ -88,7 +106,7 @@ pub async fn revoke(
                             "failed to restore refresh token after audit persistence failure"
                         );
                     }
-                    return error::internal();
+                    return error::oauth_server_error();
                 }
                 return ().into_response();
             }
@@ -133,7 +151,7 @@ pub async fn revoke(
                         "failed to compensate access token revocation after audit persistence failure"
                     );
                 }
-                return error::internal();
+                return error::oauth_server_error();
             }
         }
     }

@@ -46,6 +46,14 @@ fn assert_token_cache_headers(response: &axum::response::Response) {
     );
 }
 
+fn jwt_claims(token: &str) -> serde_json::Value {
+    let payload = token.split('.').nth(1).expect("JWT payload");
+    let payload = URL_SAFE_NO_PAD
+        .decode(payload)
+        .expect("JWT payload encoding");
+    serde_json::from_slice(&payload).expect("JWT claims")
+}
+
 fn cookie_header(response: &axum::response::Response) -> String {
     response
         .headers()
@@ -245,6 +253,29 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
         .clone()
         .oneshot(
             Request::builder()
+                .method("POST")
+                .uri("/oauth/authorize")
+                .header("cookie", &session_cookie)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "client_id={client_id}&redirect_uri=https%3A%2F%2Fflow.example%2Fcallback&response_type=code&scope=openid+profile+email&state=flow-post-state&nonce=flow-post-nonce&code_challenge={challenge}&code_challenge_method=S256"
+                )))
+                .expect("POST authorize request"),
+        )
+        .await
+        .expect("POST authorize response");
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("/oauth/consent?request_id="))
+    );
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
                 .uri(authorize_url.as_str())
                 .header("cookie", &session_cookie)
                 .body(Body::empty())
@@ -346,7 +377,8 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
         .as_str()
         .expect("access token")
         .to_owned();
-    assert!(token["id_token"].as_str().is_some());
+    let initial_id_token = token["id_token"].as_str().expect("initial ID token");
+    assert_eq!(jwt_claims(initial_id_token)["nonce"], "flow-nonce");
     let refresh_token = token["refresh_token"]
         .as_str()
         .expect("refresh token")
@@ -368,6 +400,40 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
     let user_id_text = user_id.to_string();
     assert_eq!(userinfo["sub"].as_str(), Some(user_id_text.as_str()));
     assert_eq!(userinfo["email"].as_str(), Some(email.as_str()));
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/userinfo")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("access_token={access_token}")))
+                .expect("form userinfo request"),
+        )
+        .await
+        .expect("form userinfo response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(response).await["sub"].as_str(),
+        Some(user_id_text.as_str())
+    );
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/userinfo")
+                .header("authorization", format!("Bearer {access_token}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("access_token={access_token}")))
+                .expect("conflicting userinfo request"),
+        )
+        .await
+        .expect("conflicting userinfo response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(response).await["error"], "invalid_request");
 
     let refresh_form = format!(
         "grant_type=refresh_token&refresh_token={}&client_id={}&client_secret={}",
@@ -393,7 +459,63 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
     assert_token_cache_headers(&response);
     let refreshed = json_body(response).await;
     assert!(refreshed["access_token"].as_str().is_some());
-    assert!(refreshed["refresh_token"].as_str().is_some());
+    let refreshed_id_token = refreshed["id_token"].as_str().expect("refreshed ID token");
+    assert!(jwt_claims(refreshed_id_token).get("nonce").is_none());
+    let rotated_refresh_token = refreshed["refresh_token"]
+        .as_str()
+        .expect("rotated refresh token")
+        .to_owned();
+
+    let csrf = session_cookie
+        .split(';')
+        .find_map(|value| value.trim().strip_prefix("chenxing_csrf="))
+        .expect("CSRF cookie")
+        .to_owned();
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/auth/authorized-apps/{client_id}"))
+                .header("cookie", &session_cookie)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .expect("consent revoke request"),
+        )
+        .await
+        .expect("consent revoke response");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic_credentials}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=refresh_token&refresh_token={rotated_refresh_token}"
+                )))
+                .expect("revoked refresh request"),
+        )
+        .await
+        .expect("revoked refresh response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(response).await["error"], "invalid_grant");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/oauth/userinfo")
+                .header("authorization", format!("Bearer {access_token}"))
+                .body(Body::empty())
+                .expect("revoked consent userinfo request"),
+        )
+        .await
+        .expect("revoked consent userinfo response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     let response = router
         .clone()

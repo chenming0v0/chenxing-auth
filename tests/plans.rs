@@ -700,6 +700,22 @@ async fn qps_limiter_rejects_requests_over_the_plan_limit() {
             .expect("token request")
     };
 
+    let invalid = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=authorization_code&client_id={client_id}&client_secret=wrong-secret"
+                )))
+                .expect("invalid credential request"),
+        )
+        .await
+        .expect("invalid credential response");
+    assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
+
     let first = router
         .clone()
         .oneshot(token_request())

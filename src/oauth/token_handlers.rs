@@ -1,9 +1,10 @@
 use axum::{
-    extract::{Form, State},
+    extract::{ConnectInfo, Extension, Form, State, rejection::FormRejection},
     http::{HeaderMap, StatusCode},
     response::Response,
 };
 use serde::Deserialize;
+use std::net::SocketAddr;
 
 use super::{
     client_auth::{ClientCredentialError, resolve_client_credentials},
@@ -12,8 +13,11 @@ use super::{
     refresh::RefreshToken,
     response::{self, issue_token_response},
     session::active_user_id,
+    token_security::{
+        enforce_qps, enforce_source_qps, record_token_event, verify_client_credentials,
+    },
 };
-use crate::{audit::AuditEvent, error, state::AppState};
+use crate::{error, state::AppState};
 
 #[derive(Debug, Deserialize)]
 pub struct TokenRequest {
@@ -30,12 +34,35 @@ pub struct TokenRequest {
 pub async fn token(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Form(request): Form<TokenRequest>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    form: Result<Form<TokenRequest>, FormRejection>,
 ) -> Response {
-    response::with_no_store_headers(token_inner(state, headers, request).await)
+    let Form(request) = match form {
+        Ok(form) => form,
+        Err(_) => {
+            return response::with_no_store_headers(error::oauth_bad_request(
+                "invalid_request",
+                "request body is invalid",
+            ));
+        }
+    };
+    let source_ip = connect_info.map(|Extension(ConnectInfo(peer))| peer.ip().to_string());
+    response::with_no_store_headers(
+        token_inner(state, headers, source_ip.as_deref(), request).await,
+    )
 }
 
-async fn token_inner(state: AppState, headers: HeaderMap, mut request: TokenRequest) -> Response {
+async fn token_inner(
+    state: AppState,
+    headers: HeaderMap,
+    source_ip: Option<&str>,
+    mut request: TokenRequest,
+) -> Response {
+    if let Some(source_ip) = source_ip
+        && let Some(response) = enforce_source_qps(&state, source_ip).await
+    {
+        return response;
+    }
     let credentials = match resolve_client_credentials(
         &headers,
         request.client_id.as_deref(),
@@ -46,12 +73,15 @@ async fn token_inner(state: AppState, headers: HeaderMap, mut request: TokenRequ
         | Err(ClientCredentialError::Missing) => return error::oauth_invalid_client(),
     };
     request.client_id = Some(credentials.client_id.clone());
-    request.client_secret = Some(credentials.client_secret);
+    request.client_secret = credentials.client_secret.clone();
     if !matches!(
         request.grant_type.as_str(),
         "authorization_code" | "refresh_token"
     ) {
         return error::oauth_bad_request("unsupported_grant_type", "grant type is unsupported");
+    }
+    if let Some(response) = verify_client_credentials(&state, &credentials).await {
+        return response;
     }
     if let Some(response) = enforce_qps(&state, &credentials.client_id).await {
         return response;
@@ -64,9 +94,6 @@ async fn token_inner(state: AppState, headers: HeaderMap, mut request: TokenRequ
 }
 
 async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> Response {
-    if let Some(response) = verify_client_credentials(&state, &request).await {
-        return response;
-    }
     let Some(code_value) = request.code.as_deref() else {
         return error::oauth_bad_request("invalid_request", "code is required");
     };
@@ -123,11 +150,10 @@ async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> 
             return error::oauth_temporarily_unavailable();
         }
     }
-    let refresh = RefreshToken::new_with_nonce(
+    let refresh = RefreshToken::new(
         client_id.to_owned(),
         code.user_id.clone(),
         code.scopes.clone(),
-        code.nonce.clone(),
     );
     if let Err(store_error) = state.refresh_tokens.save(&refresh).await {
         tracing::error!(error = %store_error, "failed to store refresh token");
@@ -176,9 +202,6 @@ fn authorization_code_restore_ttl(code: &AuthorizationCode) -> u64 {
 }
 
 async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Response {
-    if let Some(response) = verify_client_credentials(&state, &request).await {
-        return response;
-    }
     let Some(refresh_value) = request.refresh_token.as_deref() else {
         return error::oauth_bad_request("invalid_request", "refresh_token is required");
     };
@@ -198,7 +221,7 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
             .await
             .is_err()
             {
-                return error::internal();
+                return error::oauth_server_error();
             }
             return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
         }
@@ -221,9 +244,38 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
         .await
         .is_err()
         {
-            return error::internal();
+            return error::oauth_server_error();
         }
         return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
+    }
+    match state
+        .revocations
+        .is_consent_revoked(&refresh.user_id, client_id)
+        .await
+    {
+        Ok(true) => {
+            return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
+        }
+        Ok(false) => {}
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to check OAuth consent revocation");
+            return error::oauth_temporarily_unavailable();
+        }
+    }
+    let Ok(user_id) = refresh.user_id.parse::<crate::users::domain::UserId>() else {
+        return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
+    };
+    match state
+        .consents
+        .has_scopes(user_id, client_id, &refresh.scopes)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => return error::oauth_bad_request("invalid_grant", "refresh token is invalid"),
+        Err(database_error) => {
+            tracing::error!(error = %database_error, "failed to check refresh token consent");
+            return error::oauth_temporarily_unavailable();
+        }
     }
     match active_user_id(&state, &refresh.user_id).await {
         Ok(Some(_)) => {}
@@ -252,11 +304,10 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
         }
         None => refresh.scopes.clone(),
     };
-    let next_refresh = RefreshToken::new_with_nonce(
+    let next_refresh = RefreshToken::new(
         client_id.to_owned(),
         refresh.user_id.clone(),
         scopes.clone(),
-        refresh.nonce.clone(),
     );
     let response = issue_token_response(
         &state,
@@ -264,7 +315,7 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
         client_id,
         &scopes,
         Some(next_refresh.value.clone()),
-        refresh.nonce.as_deref(),
+        None,
     )
     .await;
     if response.status() != StatusCode::OK {
@@ -298,7 +349,7 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
                         "failed to restore previous refresh token after audit persistence failure"
                     );
                 }
-                return error::internal();
+                return error::oauth_server_error();
             }
             response
         }
@@ -313,7 +364,7 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
             .await
             .is_err()
             {
-                return error::internal();
+                return error::oauth_server_error();
             }
             error::oauth_bad_request("invalid_grant", "refresh token is invalid")
         }
@@ -324,106 +375,8 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
     }
 }
 
-async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Response> {
-    let client = match state.clients.find_registered(client_id).await {
-        Ok(Some(client)) => client,
-        // Unknown clients are rejected later by credential checks; there is no plan to enforce yet.
-        Ok(None) => return None,
-        Err(error_value) => {
-            // Fail closed: a DB blip must not disable QPS for an otherwise valid client.
-            tracing::error!(error = %error_value, "failed to load OAuth client for QPS limit");
-            return Some(error::oauth_temporarily_unavailable());
-        }
-    };
-    let Some(owner_user_id) = client.owner_user_id else {
-        // Admin-created clients without an owner are not bound to user plan QPS.
-        return None;
-    };
-    let effective = match state.plans.effective_plan_for_user(owner_user_id).await {
-        Ok(effective) => effective,
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to load plan for QPS limit");
-            return Some(error::oauth_temporarily_unavailable());
-        }
-    };
-    let max_qps = effective.plan.max_qps?;
-    match state.qps.allow(client_id, max_qps.max(1) as u32).await {
-        Ok(true) => None,
-        Ok(false) => {
-            // Rate-limit denials should not depend on audit durability; log and still 429.
-            if let Err(error_value) = record_token_event(
-                state,
-                None,
-                "rate_limit_triggered",
-                Some(client_id),
-                "oauth_qps",
-            )
-            .await
-            {
-                tracing::warn!(
-                    error = %error_value,
-                    "failed to record OAuth QPS rate limit audit event"
-                );
-            }
-            Some(error::oauth_too_many_requests(
-                "temporarily_unavailable",
-                "request rate limit exceeded",
-            ))
-        }
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "QPS rate limit check failed");
-            Some(error::oauth_temporarily_unavailable())
-        }
-    }
-}
-
-async fn verify_client_credentials(state: &AppState, request: &TokenRequest) -> Option<Response> {
-    let (Some(client_id), Some(client_secret)) = (
-        request.client_id.as_deref(),
-        request.client_secret.as_deref(),
-    ) else {
-        return Some(error::oauth_invalid_client());
-    };
-    match state
-        .clients
-        .verify_credentials(client_id, client_secret)
-        .await
-    {
-        Ok(true) => None,
-        Ok(false) => Some(error::oauth_invalid_client()),
-        Err(client_error) => {
-            tracing::error!(error = %client_error, "failed to verify OAuth client credentials");
-            Some(error::oauth_temporarily_unavailable())
-        }
-    }
-}
-
 fn verify_code_is_redeemable(code: &AuthorizationCode) -> Result<(), ()> {
     let mut code = code.clone();
     code.redeem_at(time::OffsetDateTime::now_utc())
         .map_err(|_| ())
-}
-
-async fn record_token_event(
-    state: &AppState,
-    actor_id: Option<&str>,
-    action: &str,
-    client_id: Option<&str>,
-    reason: &str,
-) -> Result<(), crate::audit::AuditError> {
-    state
-        .audit
-        .record(AuditEvent::new(
-            if actor_id.is_some() {
-                "user".to_owned()
-            } else {
-                "oauth_client".to_owned()
-            },
-            actor_id.map(str::to_owned),
-            action.to_owned(),
-            "oauth_token".to_owned(),
-            client_id.map(str::to_owned),
-            serde_json::json!({"reason": reason}),
-        ))
-        .await
 }

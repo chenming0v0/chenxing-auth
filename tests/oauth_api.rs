@@ -61,7 +61,7 @@ async fn authorization_endpoint_reports_temporary_unavailability_without_databas
     let response = test_router()
         .oneshot(
             Request::builder()
-                .uri("/oauth/authorize?client_id=cx_project&redirect_uri=https%3A%2F%2Fproject.example%2Fcallback&response_type=code&scope=openid&state=state&code_challenge=challenge&code_challenge_method=S256")
+                .uri("/oauth/authorize?client_id=cx_project&redirect_uri=https%3A%2F%2Fproject.example%2Fcallback&response_type=code&scope=openid&state=state&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256")
                 .body(Body::empty())
                 .expect("valid request"),
         )
@@ -82,7 +82,7 @@ async fn browser_authorization_reports_temporary_unavailability_without_database
     let response = test_router()
         .oneshot(
             Request::builder()
-                .uri("/oauth/authorize?client_id=cx_project&redirect_uri=https%3A%2F%2Fproject.example%2Fcallback&response_type=code&scope=openid&state=state&code_challenge=challenge&code_challenge_method=S256")
+                .uri("/oauth/authorize?client_id=cx_project&redirect_uri=https%3A%2F%2Fproject.example%2Fcallback&response_type=code&scope=openid&state=state&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256")
                 .header("accept", "text/html")
                 .body(Body::empty())
                 .expect("valid request"),
@@ -97,4 +97,82 @@ async fn browser_authorization_reports_temporary_unavailability_without_database
         error["error_description"],
         "the authorization server is temporarily unable to handle the request"
     );
+}
+
+#[tokio::test]
+async fn malformed_token_form_returns_rfc_oauth_error() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("grant_type=%ZZ"))
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = oauth_error_body(response).await;
+    assert_eq!(error["error"], "invalid_request");
+    assert!(error.get("code").is_none());
+}
+
+#[tokio::test]
+async fn malformed_authorization_query_returns_rfc_oauth_error() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .uri("/oauth/authorize?%ZZ")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = oauth_error_body(response).await;
+    assert_eq!(error["error"], "invalid_request");
+    assert!(error.get("code").is_none());
+}
+
+#[tokio::test]
+async fn malformed_authorization_form_returns_rfc_oauth_error() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/authorize")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("client_id=%ZZ"))
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = oauth_error_body(response).await;
+    assert_eq!(error["error"], "invalid_request");
+    assert!(error.get("code").is_none());
+}
+
+#[tokio::test]
+async fn malformed_userinfo_form_returns_rfc_oauth_error() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/userinfo")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("access_token=%ZZ"))
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = oauth_error_body(response).await;
+    assert_eq!(error["error"], "invalid_request");
+    assert!(error.get("code").is_none());
 }

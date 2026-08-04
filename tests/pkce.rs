@@ -1,4 +1,4 @@
-use chenxing_auth::oauth::pkce::{PkceError, verify_s256};
+use chenxing_auth::oauth::pkce::{PkceError, validate_s256_challenge, verify_s256};
 
 #[test]
 fn pkce_s256_accepts_matching_verifier() {
@@ -32,4 +32,27 @@ fn pkce_s256_rejects_verifier_with_disallowed_characters() {
         .expect_err("PKCE verifier must use the RFC 7636 character set");
 
     assert_eq!(error, PkceError::InvalidCharacters);
+}
+
+#[test]
+fn pkce_s256_challenge_accepts_standard_base64url_digest() {
+    assert!(validate_s256_challenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM").is_ok());
+}
+
+#[test]
+fn pkce_s256_challenge_rejects_invalid_length_and_characters() {
+    let challenges = vec![
+        "x".to_owned(),
+        "a".repeat(129),
+        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-c=".to_owned(),
+        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw cM".to_owned(),
+        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-中".to_owned(),
+        "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw!cM".to_owned(),
+    ];
+    for challenge in challenges {
+        assert!(
+            validate_s256_challenge(&challenge).is_err(),
+            "{challenge:?}"
+        );
+    }
 }
