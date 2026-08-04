@@ -97,7 +97,7 @@ impl SettingsService {
     }
 
     pub async fn passkey(&self) -> Result<PasskeySetting, SettingsServiceError> {
-        Ok(repository::get_passkey(&self.pool)
+        repository::get_passkey(&self.pool)
             .await?
             .unwrap_or_else(|| self.default_passkey.clone())
             .with_runtime_defaults(
@@ -107,7 +107,9 @@ impl SettingsService {
                     .first()
                     .map(String::as_str)
                     .unwrap_or_default(),
-            ))
+            )
+            .validate()
+            .map_err(SettingsServiceError::from)
     }
 
     pub async fn set_passkey(

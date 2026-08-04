@@ -3,11 +3,12 @@ use std::sync::Arc;
 use redis::Client;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use webauthn_rs::prelude::{Webauthn, WebauthnBuilder, WebauthnError};
+use webauthn_rs::prelude::WebauthnError;
 
 use crate::{
     auth_limiter::{AuthFailureLimiter, FailureDimension, MissingSourceIpPolicy},
     config::AuthEncryptionKeyRing,
+    settings::{SettingsService, SettingsServiceError},
     sqlx::PgPool,
     users::domain::UserId,
 };
@@ -56,7 +57,7 @@ pub struct AuthFactorService {
     limiter: Arc<dyn AuthFailureLimiter>,
     missing_source_ip_policy: MissingSourceIpPolicy,
     encryption_keys: AuthEncryptionKeyRing,
-    webauthn: Webauthn,
+    settings: SettingsService,
 }
 
 #[derive(Debug, Error)]
@@ -67,6 +68,10 @@ pub enum AuthFactorServiceError {
     Ticket(#[from] LoginTicketStoreError),
     #[error("secret operation failed: {0}")]
     Secret(#[from] SecretCryptoError),
+    #[error("passkey setting operation failed: {0}")]
+    Settings(#[from] SettingsServiceError),
+    #[error("passkey credential serialization failed: {0}")]
+    PasskeySerialization(#[from] serde_json::Error),
     #[error("authentication rate limit reached")]
     RateLimited,
     #[error("authentication limiter failed: {0}")]
@@ -91,16 +96,14 @@ impl AuthFactorService {
         redis: Client,
         limiter: Arc<dyn AuthFailureLimiter>,
         encryption_keys: AuthEncryptionKeyRing,
-        rp_id: &str,
-        origin: &str,
-    ) -> Result<Self, WebauthnError> {
+        settings: SettingsService,
+    ) -> Self {
         Self::new_with_source_ip_policy(
             pool,
             redis,
             limiter,
             encryption_keys,
-            rp_id,
-            origin,
+            settings,
             MissingSourceIpPolicy::Skip,
         )
     }
@@ -110,20 +113,17 @@ impl AuthFactorService {
         redis: Client,
         limiter: Arc<dyn AuthFailureLimiter>,
         encryption_keys: AuthEncryptionKeyRing,
-        rp_id: &str,
-        origin: &str,
+        settings: SettingsService,
         missing_source_ip_policy: MissingSourceIpPolicy,
-    ) -> Result<Self, WebauthnError> {
-        let origin = url::Url::parse(origin).map_err(|_| WebauthnError::Configuration)?;
-        let webauthn = WebauthnBuilder::new(rp_id, &origin)?.build()?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             pool,
             tickets: LoginTicketStore::new(redis),
             limiter,
             missing_source_ip_policy,
             encryption_keys,
-            webauthn,
-        })
+            settings,
+        }
     }
 
     pub async fn available_methods(

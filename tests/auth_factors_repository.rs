@@ -136,6 +136,11 @@ async fn passkey_insert_is_idempotent_and_rejects_cross_user_collisions() {
             .expect("repeat passkey insert"),
         repository::PasskeyPersistenceResult::Stored
     );
+    let stored = repository::list_passkeys(&pool, user_ids[0])
+        .await
+        .expect("list passkeys");
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].cred_id(), &credential_id);
 
     assert_eq!(
         chenxing_auth::sqlx::query_scalar::<_, i64>(

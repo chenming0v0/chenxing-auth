@@ -34,6 +34,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2"
 webauthn-rs = { version = "0.6.1-dev", default-features = false, features = ["danger-allow-state-serialisation"] }
+webauthn-rs-core = "=0.6.1-dev"
 uuid = { version = "1", features = ["serde", "v4"] }
 pkcs8 = { version = "0.10", features = ["std"] }
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
