@@ -121,8 +121,8 @@ impl AuthFactorService {
         missing_source_ip_policy: MissingSourceIpPolicy,
     ) -> Self {
         Self {
-            pool,
             tickets: LoginTicketStore::new_with_pool(redis, pool.clone()),
+            pool,
             limiter,
             missing_source_ip_policy,
             encryption_keys,
