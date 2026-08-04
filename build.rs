@@ -32,6 +32,22 @@ fn main() {
     // in via include!().
     println!("cargo:rerun-if-changed=build_logic.rs");
 
+    // Docker's Rust builder stage only receives a pre-built web/dist and does
+    // not copy frontend sources or install npm. In that environment we must
+    // embed the artifact as-is instead of panicking on missing package.json.
+    if !frontend_sources_present(&web_dir) {
+        if dist_entry.exists() {
+            println!(
+                "cargo:warning=frontend sources not present; embedding the pre-built web/dist"
+            );
+            return;
+        }
+        panic!(
+            "web/dist/index.html is missing and frontend sources are unavailable; \
+             cannot embed the web console"
+        );
+    }
+
     let inputs = frontend_inputs(&web_dir);
     let input_refs: Vec<(&str, &[u8])> = inputs
         .entries
@@ -104,6 +120,12 @@ impl FrontendInputs {
         }
         self.entries.push((relative, content));
     }
+}
+
+/// Whether the explicit frontend config inputs exist. Used to detect the
+/// Docker builder stage, which only mounts a pre-built `web/dist`.
+fn frontend_sources_present(web_dir: &Path) -> bool {
+    INPUT_FILES.iter().all(|relative| web_dir.join(relative).is_file())
 }
 
 /// Collect the files that determine the bundle: the explicit config files plus

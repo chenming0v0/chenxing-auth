@@ -10,7 +10,7 @@ FROM rust:1.94-bookworm AS builder
 
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
-COPY build.rs ./
+COPY build.rs build_logic.rs ./
 COPY src ./src
 COPY migrations ./migrations
 COPY --from=web-builder /build/web/dist ./web/dist
