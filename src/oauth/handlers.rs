@@ -409,6 +409,9 @@ fn authorization_error(
         AuthorizationRequestError::ScopeNotAllowed => ("invalid_scope", "scope is invalid"),
         AuthorizationRequestError::MissingState => ("invalid_request", "state is required"),
         AuthorizationRequestError::PkceRequired => ("invalid_request", "PKCE S256 is required"),
+        AuthorizationRequestError::InvalidCodeChallenge => {
+            ("invalid_request", "code_challenge is invalid")
+        }
     };
     if client
         .redirect_uris

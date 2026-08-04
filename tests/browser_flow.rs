@@ -177,7 +177,7 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
     let client_id = client["client_id"].as_str().expect("client id").to_owned();
 
     let authorize_uri = format!(
-        "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Fbrowser.example%2Fcallback&response_type=code&scope=openid%20profile&state=browser-state&nonce=browser-nonce&code_challenge=browser-challenge&code_challenge_method=S256"
+        "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Fbrowser.example%2Fcallback&response_type=code&scope=openid%20profile&state=browser-state&nonce=browser-nonce&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
     );
 
     // A valid client still requires a session for non-browser OAuth requests.

@@ -208,7 +208,7 @@ async fn create_pending_request(router: &Router) -> (String, String) {
         .oneshot(
             Request::builder()
                 .uri(format!(
-                    "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Fpending.example%2Fcallback&response_type=code&scope=openid%20profile&state=pending-state&nonce=pending-nonce&code_challenge=pending-challenge&code_challenge_method=S256"
+                    "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Fpending.example%2Fcallback&response_type=code&scope=openid%20profile&state=pending-state&nonce=pending-nonce&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
                 ))
                 .header("accept", "text/html")
                 .body(Body::empty())

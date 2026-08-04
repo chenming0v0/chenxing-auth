@@ -1,4 +1,5 @@
 use crate::users::domain::UserId;
+use super::pkce::validate_s256_challenge;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -48,6 +49,8 @@ pub enum AuthorizationRequestError {
     MissingState,
     #[error("PKCE S256 is required")]
     PkceRequired,
+    #[error("PKCE S256 challenge is invalid")]
+    InvalidCodeChallenge,
 }
 
 pub fn validate_authorization_request(
@@ -79,10 +82,14 @@ pub fn validate_authorization_request(
         .state
         .filter(|state| !state.trim().is_empty())
         .ok_or(AuthorizationRequestError::MissingState)?;
-    if request.code_challenge_method.as_deref() != Some("S256")
-        || request.code_challenge.as_deref().is_none_or(str::is_empty)
-    {
+    if request.code_challenge_method.as_deref() != Some("S256") {
         return Err(AuthorizationRequestError::PkceRequired);
+    }
+    let Some(code_challenge) = request.code_challenge.as_deref() else {
+        return Err(AuthorizationRequestError::PkceRequired);
+    };
+    if validate_s256_challenge(code_challenge).is_err() {
+        return Err(AuthorizationRequestError::InvalidCodeChallenge);
     }
 
     Ok(ValidatedAuthorizationRequest {
@@ -91,10 +98,7 @@ pub fn validate_authorization_request(
         scopes,
         state,
         nonce: request.nonce.filter(|nonce| !nonce.trim().is_empty()),
-        code_challenge: match request.code_challenge {
-            Some(code_challenge) if !code_challenge.trim().is_empty() => code_challenge,
-            _ => return Err(AuthorizationRequestError::PkceRequired),
-        },
+        code_challenge: code_challenge.to_owned(),
         owner_user_id: Some(client.owner_user_id).flatten(),
     })
 }

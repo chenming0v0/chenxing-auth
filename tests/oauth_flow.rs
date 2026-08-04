@@ -43,7 +43,7 @@ async fn disabled_user_session_cannot_authorize_or_submit_consent() {
         .expect("persist session");
     let cookie = session_cookie(&session);
     let authorize_uri = format!(
-        "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Fdisabled.example%2Fcallback&response_type=code&scope=openid%20profile&state=disabled-state&nonce=disabled-nonce&code_challenge=disabled-challenge&code_challenge_method=S256"
+        "/oauth/authorize?client_id={client_id}&redirect_uri=https%3A%2F%2Fdisabled.example%2Fcallback&response_type=code&scope=openid%20profile&state=disabled-state&nonce=disabled-nonce&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256"
     );
 
     let response = router
