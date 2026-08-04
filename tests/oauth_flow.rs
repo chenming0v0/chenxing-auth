@@ -9,7 +9,13 @@ use base64::{
 use chenxing_auth::sessions::domain::Session;
 use chenxing_auth::{
     api,
-    oauth::{code::AuthorizationCode, refresh::RefreshToken},
+    oauth::{
+        authorization::ValidatedAuthorizationRequest,
+        code::AuthorizationCode,
+        handlers::issue_authorization_code_result,
+        refresh::RefreshToken,
+        store::AuthorizationCodeStore,
+    },
     state::AppState,
 };
 use redis::AsyncCommands;
@@ -492,6 +498,76 @@ async fn authorization_code_is_restored_when_token_issuance_fails() {
             .is_none(),
         "successfully retried authorization code must remain consumed"
     );
+
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
+        .bind(client_id)
+        .execute(&database)
+        .await
+        .expect("cleanup client");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
+    let (mut state, database, key_directory) = test_state().await;
+    let setup_router = api::router(state.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    ensure_owner_bootstrapped(&setup_router, &suffix).await;
+    let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
+    let (client_id, _client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
+    chenxing_auth::sqlx::query(
+        "UPDATE oauth_clients SET owner_user_id = $1 WHERE client_id = $2",
+    )
+    .bind(user_id)
+    .bind(&client_id)
+    .execute(&database)
+    .await
+    .expect("bind client owner");
+
+    let effective = state
+        .plans
+        .effective_plan_for_user(user_id)
+        .await
+        .expect("effective plan");
+    let limits = effective.plan.auth_quota_limits();
+    let before = state
+        .oauth_quotas
+        .snapshot(&client_id, limits)
+        .await
+        .expect("quota before failed authorization");
+
+    state.authorization_codes = AuthorizationCodeStore::new(
+        redis::Client::open("redis://127.0.0.1:1").expect("invalid Redis endpoint is parseable"),
+    );
+    let result = issue_authorization_code_result(
+        &state,
+        user_id.to_string(),
+        ValidatedAuthorizationRequest {
+            client_id: client_id.clone(),
+            redirect_uri: "https://flow.example/callback".to_owned(),
+            scopes: vec!["openid".to_owned()],
+            state: "quota-failure-state".to_owned(),
+            nonce: None,
+            code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned(),
+            owner_user_id: Some(user_id.into()),
+        },
+    )
+    .await
+    .expect_err("authorization code persistence failure");
+    assert_eq!(result.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let after = state
+        .oauth_quotas
+        .snapshot(&client_id, limits)
+        .await
+        .expect("quota after failed authorization");
+    assert_eq!(after.daily_used, before.daily_used);
+    assert_eq!(after.monthly_used, before.monthly_used);
 
     chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
         .bind(client_id)

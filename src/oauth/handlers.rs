@@ -211,26 +211,47 @@ pub async fn issue_authorization_code_result(
             "client is invalid",
         ));
     };
+    let client_id = validated.client_id.clone();
+    let code = AuthorizationCode::new_with_nonce(
+        validated.client_id,
+        validated.redirect_uri.clone(),
+        user_id.clone(),
+        validated.scopes,
+        validated.code_challenge,
+        validated.nonce,
+    );
+    let state_value = validated.state;
+    if let Err(store_error) = state.authorization_codes.save(&code).await {
+        tracing::error!(error = %store_error, "failed to store OAuth authorization code");
+        return Err(error::oauth_temporarily_unavailable());
+    }
+
     let quota_consumed = if let Some(owner_user_id) = client.owner_user_id {
         let effective = match state.plans.effective_plan_for_user(owner_user_id).await {
             Ok(effective) => effective,
             Err(error_value) => {
                 tracing::error!(error = %error_value, "failed to load plan for OAuth authorization quota");
+                remove_authorization_code_after_failure(state, &code, &client_id, false).await;
                 return Err(error::oauth_temporarily_unavailable());
             }
         };
         let limits = effective.plan.auth_quota_limits();
-        match state
+        let consume_result = match state
             .oauth_quotas
-            .consume_with_limits(&validated.client_id, limits)
+            .consume_with_limits(&client_id, limits)
             .await
-            .map_err(|error_value| {
-                tracing::error!(error = %error_value, "failed to consume OAuth authorization quota");
-                error::oauth_temporarily_unavailable()
-            })?
         {
+            Ok(result) => result,
+            Err(error_value) => {
+                tracing::error!(error = %error_value, "failed to consume OAuth authorization quota");
+                remove_authorization_code_after_failure(state, &code, &client_id, false).await;
+                return Err(error::oauth_temporarily_unavailable());
+            }
+        };
+        match consume_result {
             QuotaConsumeResult::Allowed => true,
             QuotaConsumeResult::DailyExceeded | QuotaConsumeResult::MonthlyExceeded => {
+                remove_authorization_code_after_failure(state, &code, &client_id, false).await;
                 if record_authorization_event(
                     state,
                     Some(&user_id),
@@ -248,21 +269,6 @@ pub async fn issue_authorization_code_result(
     } else {
         false
     };
-    let client_id = validated.client_id.clone();
-    let code = AuthorizationCode::new_with_nonce(
-        validated.client_id,
-        validated.redirect_uri.clone(),
-        user_id,
-        validated.scopes,
-        validated.code_challenge,
-        validated.nonce,
-    );
-    let state_value = validated.state;
-    if let Err(store_error) = state.authorization_codes.save(&code).await {
-        refund_quota_if_consumed(state, &client_id, quota_consumed).await;
-        tracing::error!(error = %store_error, "failed to store OAuth authorization code");
-        return Err(error::oauth_temporarily_unavailable());
-    }
     if state
         .audit
         .record(AuditEvent::new(
@@ -276,20 +282,14 @@ pub async fn issue_authorization_code_result(
         .await
         .is_err()
     {
-        if let Err(error_value) = state.authorization_codes.take(&code.value).await {
-            tracing::warn!(
-                error = %error_value,
-                "failed to compensate authorization code after audit persistence failure"
-            );
-        }
-        refund_quota_if_consumed(state, &client_id, quota_consumed).await;
+        remove_authorization_code_after_failure(state, &code, &client_id, quota_consumed).await;
         return Err(error::oauth_server_error());
     }
 
     let mut redirect_uri = match url::Url::parse(&validated.redirect_uri) {
         Ok(uri) => uri,
         Err(parse_error) => {
-            refund_quota_if_consumed(state, &client_id, quota_consumed).await;
+            remove_authorization_code_after_failure(state, &code, &client_id, quota_consumed).await;
             tracing::error!(error = %parse_error, "validated redirect URI could not be parsed");
             return Err(error::oauth_server_error());
         }
@@ -300,6 +300,21 @@ pub async fn issue_authorization_code_result(
         .append_pair("state", &state_value);
 
     Ok(AuthorizationCodeIssue::Redirect(redirect_uri.to_string()))
+}
+
+async fn remove_authorization_code_after_failure(
+    state: &AppState,
+    code: &AuthorizationCode,
+    client_id: &str,
+    quota_consumed: bool,
+) {
+    if let Err(error_value) = state.authorization_codes.take(&code.value).await {
+        tracing::warn!(
+            error = %error_value,
+            "failed to compensate authorization code after authorization failure"
+        );
+    }
+    refund_quota_if_consumed(state, client_id, quota_consumed).await;
 }
 
 async fn refund_quota_if_consumed(state: &AppState, client_id: &str, consumed: bool) {
