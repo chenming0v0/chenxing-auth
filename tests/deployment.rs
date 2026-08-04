@@ -167,7 +167,11 @@ fn installer_rejects_implicit_localhost_and_checks_discovery_contract() {
         );
     }
     assert!(!INSTALL_SCRIPT.contains("http://localhost:3000"));
-    assert!(!INSTALL_SCRIPT.contains("COOKIE_SECURE=true\n"));
+    assert!(
+        !INSTALL_SCRIPT
+            .lines()
+            .any(|line| line == "COOKIE_SECURE=true")
+    );
 }
 
 #[test]
