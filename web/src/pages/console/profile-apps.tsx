@@ -3,7 +3,7 @@ import { Link, useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
 import { apiFetch, type AuthorizedOAuthApp, type SessionItem, type UserMe } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, logoUrl } from '../../components/ui'
+import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, PasswordField, logoUrl } from '../../components/ui'
 import { formatDate, initialOf } from '../../data'
 
 export function ConsoleProfile() {
@@ -14,6 +14,7 @@ export function ConsoleProfile() {
   const [showPassword, setShowPassword] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -42,6 +43,7 @@ export function ConsoleProfile() {
     event.preventDefault()
     setMessage('')
     if (newPassword.length < 10) { setMessage('新密码至少需要 10 位字符。'); return }
+    if (newPassword !== confirmPassword) { setMessage('两次输入的新密码不一致。'); return }
     setBusy(true)
     try {
       await apiFetch<void>('/api/v1/auth/password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) })
@@ -118,8 +120,9 @@ export function ConsoleProfile() {
             </div>
             {showPassword ? (
               <form className="space-y-4" onSubmit={updatePassword}>
-                <Field label="当前密码" type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required />
-                <Field label="新密码" type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required hint="至少 10 位字符。" />
+                <PasswordField label="当前密码" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required />
+                <PasswordField label="新密码" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required hint="至少 10 位字符。" />
+                <PasswordField label="确认新密码" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required error={confirmPassword.length > 0 && confirmPassword !== newPassword} hint={confirmPassword.length > 0 && confirmPassword !== newPassword ? '两次输入的新密码不一致。' : '再次输入新密码以确认。'} />
                 <div className="flex flex-wrap gap-3">
                   <Button type="submit" icon="key-round" disabled={busy}>确认修改</Button>
                   <Button type="button" variant="ghost" onClick={() => setShowPassword(false)}>取消</Button>

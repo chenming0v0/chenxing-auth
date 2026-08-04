@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { apiFetch, type SmtpSetting } from '../../../api'
-import { Button, Field, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
+import { Button, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '../../../components/ui'
 
 export function SmtpPanel({ onMessage }: { onMessage: (message: string, tone?: 'success' | 'warning') => void }) {
   const [setting, setSetting] = useState<SmtpSetting | null>(null)
@@ -61,9 +61,8 @@ export function SmtpPanel({ onMessage }: { onMessage: (message: string, tone?: '
             <Field label="SMTP 账户" value={setting.username} onChange={(event) => setSetting({ ...setting, username: event.target.value })} placeholder="noreply@auth.clya.top" />
             <Field label="SMTP 发送者邮箱" value={setting.from_address} onChange={(event) => setSetting({ ...setting, from_address: event.target.value })} placeholder="辰星认证中枢 <noreply@auth.clya.top>" />
             <div className="sm:col-span-2">
-              <Field
+              <PasswordField
                 label="SMTP 访问凭证"
-                type="password"
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 placeholder={setting.password_configured ? '已配置，留空则保持不变' : '敏感信息不会回显到前端'}

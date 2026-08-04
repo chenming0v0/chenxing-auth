@@ -1,7 +1,8 @@
+import { useState } from 'react'
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react'
 import {
   Activity, AlertTriangle, ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Box, CalendarClock, Check, ChevronDown,
-  ChevronsUpDown, Circle, CircleAlert, Code2, Copy, Crown, Database, Download, ExternalLink, Eye, Fingerprint,
+  ChevronsUpDown, Circle, CircleAlert, Code2, Copy, Crown, Database, Download, ExternalLink, Eye, EyeOff, Fingerprint,
   FlaskConical, Gauge, Globe, Info, KeyRound, LayoutDashboard, LayoutGrid, Layers, Link2, Lock, LockKeyhole,
   LogIn, LogOut, Mail, Menu, MoreHorizontal, Pencil, Plus, Power, Receipt, RefreshCw, Rocket, RotateCcw, Save, Search,
   Send, Server, Settings, Settings2, Shield, ShieldAlert, ShieldCheck, Sparkles, Star, Store, Terminal, Trash2, Unlink,
@@ -14,7 +15,7 @@ const icons: Record<string, LucideIcon> = {
   'badge-check': BadgeCheck, 'book-open': BookOpen, box: Box, 'calendar-clock': CalendarClock, check: Check,
   'chevron-down': ChevronDown, 'chevrons-up-down': ChevronsUpDown, circle: Circle, 'circle-alert': CircleAlert,
   'code-2': Code2, copy: Copy, crown: Crown, database: Database, download: Download, 'external-link': ExternalLink,
-  eye: Eye, fingerprint: Fingerprint, 'flask-conical': FlaskConical, gauge: Gauge, github: Code2, globe: Globe,
+  eye: Eye, 'eye-off': EyeOff, fingerprint: Fingerprint, 'flask-conical': FlaskConical, gauge: Gauge, github: Code2, globe: Globe,
   info: Info, 'key-round': KeyRound, 'layout-dashboard': LayoutDashboard, 'layout-grid': LayoutGrid, layers: Layers,
   link: Link2, lock: Lock, 'lock-keyhole': LockKeyhole, 'log-in': LogIn, 'log-out': LogOut, mail: Mail, menu: Menu,
   'more-horizontal': MoreHorizontal, pencil: Pencil, plus: Plus, power: Power, receipt: Receipt, 'refresh-cw': RefreshCw,
@@ -164,6 +165,31 @@ export function Field({ label, icon, hint, error, trailing, className = '', ...p
       )}
       {hint ? <small className="chenxing-caption mt-1.5 block">{hint}</small> : null}
     </label>
+  )
+}
+
+export function PasswordField({ label, icon, hint, error, className = '', ...props }: Omit<FieldProps, 'type' | 'trailing'>) {
+  const [visible, setVisible] = useState(false)
+  return (
+    <Field
+      label={label}
+      icon={icon}
+      hint={hint}
+      error={error}
+      className={className}
+      {...props}
+      type={visible ? 'text' : 'password'}
+      trailing={
+        <button
+          type="button"
+          className="chenxing-icon-btn !h-8 !w-8 shrink-0 !border-0 !bg-transparent"
+          aria-label={visible ? '隐藏密码' : '显示密码'}
+          onClick={() => setVisible((value) => !value)}
+        >
+          <Icon name={visible ? 'eye-off' : 'eye'} size={16} />
+        </button>
+      }
+    />
   )
 }
 

@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
 import { apiFetch, type LoginResponse, type PendingLoginResponse, type TotpSetupResponse } from '../api'
 import { AuthPanel, AuthShell } from '../components/shells'
-import { Button, CopyValue, Field, Icon, Notice } from '../components/ui'
+import { Button, CopyValue, Field, Icon, Notice, PasswordField } from '../components/ui'
 import { PendingFactorStep } from './auth-factors'
 
 type AuthMode = 'login' | 'register'
@@ -29,7 +29,6 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const [displayName, setDisplayName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
   const [keepLogin, setKeepLogin] = useState(true)
   const [agree, setAgree] = useState(true)
   const [authTab, setAuthTab] = useState<'account' | 'auth'>('account')
@@ -152,19 +151,13 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
               value={email}
               onChange={(event) => setEmail(event.target.value)}
             />
-            <Field
+            <PasswordField
               label="密码"
               icon="lock-keyhole"
-              type={showPassword ? 'text' : 'password'}
               placeholder={isLogin ? '输入通行凭证' : '至少 10 位'}
               autoComplete={isLogin ? 'current-password' : 'new-password'}
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              trailing={isLogin ? (
-                <button type="button" className="chenxing-icon-btn !h-8 !w-8 !border-0 !bg-transparent" aria-label="显示密码" onClick={() => setShowPassword((value) => !value)}>
-                  <Icon name="eye" size={16} />
-                </button>
-              ) : undefined}
             />
             {!isLogin ? (
               <label className="flex cursor-pointer items-start gap-2 text-[0.8125rem] leading-relaxed text-[var(--chenxing-muted-foreground)]">
@@ -265,7 +258,7 @@ export function BootstrapPage() {
               <form className="mt-6 space-y-4" onSubmit={submit} noValidate>
                 <Field label="管理员用户名" icon="user" placeholder="owner" value={username} onChange={(event) => setUsername(event.target.value)} required />
                 <Field label="邮箱" icon="mail" type="email" placeholder="owner@chenxing.star" value={email} onChange={(event) => setEmail(event.target.value)} required />
-                <Field label="密码" type="password" placeholder="至少 12 位，含字母与数字" value={password} onChange={(event) => setPassword(event.target.value)} required />
+                <PasswordField label="密码" icon="lock-keyhole" placeholder="至少 12 位，含字母与数字" value={password} onChange={(event) => setPassword(event.target.value)} required />
                 <div className="flex items-start gap-3 rounded-[var(--chenxing-radius-md)] border border-[rgba(255,107,122,0.35)] bg-[rgba(255,107,122,0.08)] px-4 py-3">
                   <Icon name="alert-triangle" className="mt-0.5 h-4 w-4 shrink-0 text-[var(--chenxing-error)]" size={16} />
                   <p className="chenxing-caption text-[var(--chenxing-foreground)]">初始化成功后将跳转至统一登录页，不会自动创建会话。需要重新初始化时，请由维护人员清理数据库后重试。</p>

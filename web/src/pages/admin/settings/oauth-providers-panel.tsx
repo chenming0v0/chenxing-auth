@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { apiFetch, type OAuthProviderInput, type OAuthProviderSummary } from '../../../api'
-import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, SelectField, ToggleRow } from '../../../components/ui'
+import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PasswordField, SelectField, ToggleRow } from '../../../components/ui'
 
 type ProviderForm = {
   name: string
@@ -312,7 +312,7 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
                 <Field label="Slug *" value={form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value })} placeholder="例如: gitlab" required disabled={Boolean(editing)} />
               </div>
               <Field label="Client ID *" value={form.client_id} onChange={(event) => setForm({ ...form, client_id: event.target.value })} placeholder="从提供商控制台复制" required />
-              <Field label={editing ? 'Client Secret（留空保留原值）' : 'Client Secret *'} type="password" value={form.client_secret} onChange={(event) => setForm({ ...form, client_secret: event.target.value })} placeholder="仅保存时使用，保存后不再回显" required={!editing} />
+              <PasswordField label={editing ? 'Client Secret（留空保留原值）' : 'Client Secret *'} value={form.client_secret} onChange={(event) => setForm({ ...form, client_secret: event.target.value })} placeholder="仅保存时使用，保存后不再回显" required={!editing} />
               <Field label="Authorization Endpoint *" value={form.authorization_endpoint} onChange={(event) => setForm({ ...form, authorization_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/authorize" required />
               <Field label="Token Endpoint *" value={form.token_endpoint} onChange={(event) => setForm({ ...form, token_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/token" required />
               <Field label="UserInfo Endpoint *" value={form.userinfo_endpoint} onChange={(event) => setForm({ ...form, userinfo_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/userinfo" required />
