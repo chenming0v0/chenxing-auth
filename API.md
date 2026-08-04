@@ -312,7 +312,26 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 
 - `GET /api/v1/admin/auth/me`：从普通用户 Session 返回当前管理用户的统一 `user_id`、角色、权限和身份摘要；Bearer Token 自动化请求的 `user_id` 为 `null`。Owner 是最高级角色，拥有全部权限。
 - `GET /api/v1/admin/overview`：返回全局用户、OAuth Client、管理员和审计计数。
-- `GET /api/v1/admin/users/query?page=1&page_size=20&search=...&status=active`：分页筛选用户，需要 `ManageUsers`。
+- `GET /api/v1/admin/users/query?page=1&page_size=20&search=...&status=active`：分页筛选用户，需要 `ManageUsers`。每个 `items` 条目包含当前生效套餐 `plan`（`id`、`code`、`name`、`expires_at`）；未显式挂载套餐或挂载已到期时返回 active 默认套餐，`expires_at: null` 表示永久有效。
+- 用户查询响应条目示例：
+
+  ```json
+  {
+    "id": 42,
+    "username": "alice",
+    "email": "alice@example.com",
+    "display_name": "Alice",
+    "status": "active",
+    "role": "user",
+    "created_at": "2026-08-01T00:00:00Z",
+    "plan": {
+      "id": 3,
+      "code": "pro-max",
+      "name": "专业版",
+      "expires_at": "2026-09-01T00:00:00Z"
+    }
+  }
+  ```
 - `GET /api/v1/admin/clients/query?page=1&page_size=20&search=...&status=active`：分页筛选全局 Client，需要 `ManageClients`，返回 owner ID 但不返回 Secret。
 - `GET /api/v1/admin/audit/query?page=1&page_size=20&action=...&resource_type=...`：分页筛选审计，需要 `ReadAudit`。
 

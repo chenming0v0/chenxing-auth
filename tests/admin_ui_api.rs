@@ -468,6 +468,107 @@ async fn admin_user_and_client_queries_filter_and_page_in_the_database() {
 }
 
 #[tokio::test]
+async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() {
+    let (router, database, key_directory, _lock) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let plan_code = format!("query-plan-{suffix}");
+    let plan_name = format!("Query Plan {suffix}");
+    let plan_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO plans (code, name, is_default, status)
+         VALUES ($1, $2, FALSE, 'active')
+         RETURNING id",
+    )
+    .bind(&plan_code)
+    .bind(&plan_name)
+    .fetch_one(&database)
+    .await
+    .expect("insert query plan");
+    let default_username = format!("query-plan-user-default-{suffix}");
+    let assigned_username = format!("query-plan-user-assigned-{suffix}");
+    let expired_username = format!("query-plan-user-expired-{suffix}");
+
+    chenxing_auth::sqlx::query(
+        "INSERT INTO users (username, email, password_hash)
+         VALUES ($1, $2, 'test-hash')",
+    )
+    .bind(&default_username)
+    .bind(format!("{default_username}@example.com"))
+    .execute(&database)
+    .await
+    .expect("insert default query user");
+    chenxing_auth::sqlx::query(
+        "INSERT INTO users (username, email, password_hash, plan_id, plan_expires_at)
+         VALUES ($1, $2, $3, NOW() + INTERVAL '1 day')",
+    )
+    .bind(&assigned_username)
+    .bind(format!("{assigned_username}@example.com"))
+    .bind(plan_id)
+    .execute(&database)
+    .await
+    .expect("insert assigned query user");
+    chenxing_auth::sqlx::query(
+        "INSERT INTO users (username, email, password_hash, plan_id, plan_expires_at)
+         VALUES ($1, $2, $3, NOW() - INTERVAL '1 minute')",
+    )
+    .bind(&expired_username)
+    .bind(format!("{expired_username}@example.com"))
+    .bind(plan_id)
+    .execute(&database)
+    .await
+    .expect("insert expired query user");
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/v1/admin/users/query?page=1&page_size=100&search=query-plan-user-{suffix}"
+                ))
+                .header("authorization", "Bearer admin-ui-token")
+                .body(Body::empty())
+                .expect("effective plan query request"),
+        )
+        .await
+        .expect("effective plan query response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json(response).await;
+    let items = body["items"].as_array().expect("query items");
+    let user = |username: &str| {
+        items
+            .iter()
+            .find(|item| item["username"] == username)
+            .unwrap_or_else(|| panic!("missing user {username}"))
+    };
+
+    let default_plan = &user(&default_username)["plan"];
+    assert!(default_plan["id"].is_i64());
+    assert_eq!(default_plan["code"], "basic");
+    assert!(default_plan["name"].is_string());
+    assert_eq!(default_plan["expires_at"], Value::Null);
+
+    let assigned_plan = &user(&assigned_username)["plan"];
+    assert_eq!(assigned_plan["id"], plan_id);
+    assert_eq!(assigned_plan["code"], plan_code);
+    assert_eq!(assigned_plan["name"], plan_name);
+    assert!(assigned_plan["expires_at"].is_string());
+
+    let expired_plan = &user(&expired_username)["plan"];
+    assert_eq!(expired_plan["code"], "basic");
+    assert_eq!(expired_plan["expires_at"], Value::Null);
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE username LIKE $1")
+        .bind(format!("query-plan-user-%-{suffix}"))
+        .execute(&database)
+        .await
+        .expect("cleanup query plan users");
+    chenxing_auth::sqlx::query("DELETE FROM plans WHERE id = $1")
+        .bind(plan_id)
+        .execute(&database)
+        .await
+        .expect("cleanup query plan");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
 async fn admin_client_registration_rejects_bounded_input_with_stable_bad_request() {
     let (router, database, key_directory, _lock) = setup().await;
     let response = router

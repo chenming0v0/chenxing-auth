@@ -1447,6 +1447,21 @@ components:
         status: { type: string }
         role: { type: string, enum: [user, admin, owner] }
         created_at: { type: string, format: date-time }
+    AdminUserPlan:
+      type: object
+      required: [id, code, name, expires_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        code: { type: string }
+        name: { type: string }
+        expires_at: { type: string, format: date-time, nullable: true, description: null 表示永久有效 }
+    AdminUserQueryItem:
+      allOf:
+        - $ref: '#/components/schemas/PublicUser'
+        - type: object
+          required: [plan]
+          properties:
+            plan: { $ref: '#/components/schemas/AdminUserPlan' }
     LoginResponse:
       type: object
       required: [expires_at]
@@ -1623,7 +1638,7 @@ components:
       type: object
       required: [items, page, page_size, total]
       properties:
-        items: { type: array, items: { $ref: '#/components/schemas/PublicUser' } }
+        items: { type: array, items: { $ref: '#/components/schemas/AdminUserQueryItem' } }
         page: { type: integer, minimum: 1 }
         page_size: { type: integer, minimum: 1, maximum: 100 }
         total: { type: integer, format: int64, minimum: 0 }

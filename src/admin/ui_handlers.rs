@@ -49,6 +49,26 @@ struct PageResponse<T> {
     total: i64,
 }
 
+#[derive(Debug, Serialize)]
+struct AdminUserQueryPlan {
+    id: i64,
+    code: String,
+    name: String,
+    expires_at: Option<time::OffsetDateTime>,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminUserQueryItem {
+    id: crate::users::domain::UserId,
+    username: String,
+    email: String,
+    display_name: Option<String>,
+    status: String,
+    role: UserRole,
+    created_at: time::OffsetDateTime,
+    plan: Option<AdminUserQueryPlan>,
+}
+
 pub async fn admin_me(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if is_admin_request(&state, &headers) {
         return (
@@ -164,7 +184,7 @@ pub async fn query_users(
     };
     let items = users
         .into_iter()
-        .map(|user| super::management_handlers::UserSummary {
+        .map(|user| AdminUserQueryItem {
             id: user.id,
             username: user.username,
             email: user.email,
@@ -172,6 +192,12 @@ pub async fn query_users(
             status: user.status,
             role: user.role,
             created_at: user.created_at,
+            plan: user.plan.map(|plan| AdminUserQueryPlan {
+                id: plan.id,
+                code: plan.code,
+                name: plan.name,
+                expires_at: plan.expires_at,
+            }),
         })
         .collect();
     page_response(items, page, page_size, total)
