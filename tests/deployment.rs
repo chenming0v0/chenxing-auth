@@ -3,6 +3,8 @@ use std::path::Path;
 const BUILD_WORKFLOW: &str = include_str!("../.github/workflows/build.yml");
 const INSTALL_SCRIPT: &str = include_str!("../deploy/install.sh");
 const DB_MODULE: &str = include_str!("../src/db.rs");
+const DOCKERFILE: &str = include_str!("../Dockerfile");
+const RUNTIME_DOCKERFILE: &str = include_str!("../Dockerfile.runtime");
 
 #[test]
 fn release_workflow_publishes_versioned_archives_and_checksums() {
@@ -37,6 +39,94 @@ fn release_workflow_keeps_all_supported_targets() {
 }
 
 #[test]
+fn release_workflow_builds_web_once_and_reuses_it() {
+    for marker in [
+        "name: Build embedded web",
+        "name: web-dist",
+        "needs: web",
+        "path: web/dist",
+        "CHENXING_USE_PREBUILT_WEB",
+        "Accept prebuilt embedded web",
+    ] {
+        assert!(
+            BUILD_WORKFLOW.contains(marker),
+            "release workflow is missing web reuse marker: {marker}"
+        );
+    }
+
+    let web_build_steps = BUILD_WORKFLOW.matches("npm ci --prefix web && npm run build --prefix web").count();
+    assert_eq!(
+        web_build_steps, 1,
+        "embedded web must be built exactly once in the release workflow"
+    );
+}
+
+#[test]
+fn release_workflow_builds_linux_arm_natively_and_packages_containers() {
+    for marker in [
+        "ubuntu-24.04-arm",
+        "Dockerfile.runtime",
+        "container-binaries/amd64",
+        "container-binaries/arm64",
+        "binary-x86_64-unknown-linux-gnu",
+        "binary-aarch64-unknown-linux-gnu",
+        "platforms: linux/amd64,linux/arm64",
+    ] {
+        assert!(
+            BUILD_WORKFLOW.contains(marker),
+            "release workflow is missing container packaging marker: {marker}"
+        );
+    }
+
+    assert!(
+        !BUILD_WORKFLOW.contains("builder: cross"),
+        "Linux arm64 must build natively instead of through cross/QEMU cargo"
+    );
+    assert!(
+        BUILD_WORKFLOW.contains("file: Dockerfile.runtime"),
+        "container job must package with Dockerfile.runtime"
+    );
+}
+
+#[test]
+fn runtime_dockerfile_only_packages_prebuilt_binaries() {
+    for marker in [
+        "COPY container-binaries/${TARGETARCH}/chenxing-auth /usr/local/bin/chenxing-auth",
+        "ARG TARGETARCH",
+        "ENTRYPOINT [\"/usr/local/bin/chenxing-auth\"]",
+    ] {
+        assert!(
+            RUNTIME_DOCKERFILE.contains(marker),
+            "runtime Dockerfile is missing marker: {marker}"
+        );
+    }
+    assert!(
+        !RUNTIME_DOCKERFILE.contains("cargo build"),
+        "runtime Dockerfile must not compile Rust"
+    );
+    assert!(
+        !RUNTIME_DOCKERFILE.contains("npm "),
+        "runtime Dockerfile must not build the frontend"
+    );
+}
+
+#[test]
+fn source_dockerfile_still_supports_local_compose_builds() {
+    for marker in [
+        "FROM node:22-bookworm-slim AS web-builder",
+        "FROM rust:1.94-bookworm AS builder",
+        "COPY build.rs build_logic.rs ./",
+        "RUN cargo build --release --locked",
+        "COPY --from=builder /build/target/release/chenxing-auth /usr/local/bin/chenxing-auth",
+    ] {
+        assert!(
+            DOCKERFILE.contains(marker),
+            "source Dockerfile is missing marker: {marker}"
+        );
+    }
+}
+
+#[test]
 fn installer_validates_compose_and_reports_application_logs() {
     for marker in [
         "docker compose --env-file .env -f docker-compose.prod.yml config",
@@ -56,6 +146,8 @@ fn deployment_files_are_present_at_repository_root() {
     assert!(Path::new(".github/workflows/build.yml").is_file());
     assert!(Path::new("deploy/install.sh").is_file());
     assert!(Path::new("docker-compose.prod.yml").is_file());
+    assert!(Path::new("Dockerfile").is_file());
+    assert!(Path::new("Dockerfile.runtime").is_file());
 }
 
 #[test]

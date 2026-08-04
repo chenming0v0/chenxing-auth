@@ -13,3 +13,7 @@ web/node_modules/
 web/dist/
 web/*.tsbuildinfo
 .slim/deepwork/
+
+# CI-staged native binaries for Dockerfile.runtime
+container-binaries/
+

@@ -32,9 +32,24 @@ fn main() {
     // in via include!().
     println!("cargo:rerun-if-changed=build_logic.rs");
 
-    // Docker's Rust builder stage only receives a pre-built web/dist and does
-    // not copy frontend sources or install npm. In that environment we must
-    // embed the artifact as-is instead of panicking on missing package.json.
+    // CI can hand us a freshly built web/dist artifact while still checking out
+    // the full frontend sources. Honour an explicit prebuilt marker so the
+    // matrix jobs never re-enter npm just because artifact mtimes look stale.
+    if env::var_os("CHENXING_USE_PREBUILT_WEB").is_some() {
+        if dist_entry.exists() {
+            println!("cargo:rerun-if-env-changed=CHENXING_USE_PREBUILT_WEB");
+            println!(
+                "cargo:warning=CHENXING_USE_PREBUILT_WEB set; embedding the provided web/dist"
+            );
+            return;
+        }
+        panic!(
+            "CHENXING_USE_PREBUILT_WEB is set but web/dist/index.html is missing"
+        );
+    }
+
+    // Docker's local source builder may only receive a pre-built web/dist and
+    // not the frontend sources or npm. Embed the artifact as-is in that case.
     if !frontend_sources_present(&web_dir) {
         if dist_entry.exists() {
             println!(

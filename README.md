@@ -137,7 +137,7 @@ src/
 
 本次统一身份数据库重构使用新的单一基线迁移，不支持保留旧开发数据滚动升级。旧数据库中的 `_sqlx_migrations` 记录也不能被这条新基线自动转换；生产环境部署遇到迁移失败时必须先备份并执行经过批准的数据迁移或重建方案。首次在本地切换到该版本时，请确认 Compose 项目为本仓库的 `chenxing-auth` 后执行 `docker compose down -v`，再运行 `docker compose up -d postgres redis`；该操作会删除本地 PostgreSQL/Redis 开发数据，生产环境不得照此操作。
 
-`cargo build`/`cargo run` 在缺少 `web/dist/index.html` 时会通过 Cargo build script 自动安装并构建 Web。生产 Docker 和 GitHub Actions 会在 Rust 编译前显式完成同样的步骤。启动后访问 `http://127.0.0.1:3000/` 即可同时使用 Web 和 API。
+`cargo build`/`cargo run` 在缺少 `web/dist/index.html` 时会通过 Cargo build script 自动安装并构建 Web。GitHub Actions 发布流水线会先构建一次前端产物，再在各目标平台复用；推送到 GHCR 的多架构镜像只打包已经编好的 Linux 二进制，不再在容器里二次 `cargo build`。本地 `docker compose` 仍使用源码版 `Dockerfile` 现场编译。启动后访问 `http://127.0.0.1:3000/` 即可同时使用 Web 和 API。
 
 ## API 文档
 
