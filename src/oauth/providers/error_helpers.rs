@@ -28,13 +28,13 @@ pub(super) async fn external_error_with_request(
 ) -> Response {
     if state
         .audit
-        .record(AuditEvent::new(
+        .record(AuditEvent::security_failure(
+            "login_failure".to_owned(),
             "anonymous".to_owned(),
             None,
-            "login_failure".to_owned(),
             "external_oauth".to_owned(),
             Some(slug.to_owned()),
-            serde_json::json!({"reason": code}),
+            code,
         ))
         .await
         .is_err()

@@ -58,6 +58,22 @@ fn audit_event_redacts_nested_and_variant_sensitive_values() {
 }
 
 #[test]
+fn security_failure_event_has_a_stable_failure_contract() {
+    let event = AuditEvent::security_failure(
+        "login_failure".to_owned(),
+        "anonymous".to_owned(),
+        None,
+        "external_oauth".to_owned(),
+        Some("example".to_owned()),
+        "provider_unavailable",
+    );
+
+    assert_eq!(event.action, "login_failure");
+    assert_eq!(event.metadata["result"], "failure");
+    assert_eq!(event.metadata["reason"], "provider_unavailable");
+}
+
+#[test]
 fn invalid_actor_id_is_rejected_instead_of_becoming_null() {
     let event = AuditEvent::new(
         "user".to_owned(),

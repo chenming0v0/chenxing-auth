@@ -11,11 +11,11 @@ fn test_router() -> Router {
 }
 
 #[tokio::test]
-async fn health_endpoint_reports_service_status() {
+async fn liveness_endpoint_reports_process_status_without_dependencies() {
     let response = test_router()
         .oneshot(
             Request::builder()
-                .uri("/health")
+                .uri("/health/live")
                 .body(Body::empty())
                 .expect("valid request"),
         )
@@ -23,6 +23,31 @@ async fn health_endpoint_reports_service_status() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn readiness_endpoint_returns_a_dependency_agnostic_failure_body() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .uri("/health/ready")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert!(matches!(
+        response.status(),
+        StatusCode::OK | StatusCode::SERVICE_UNAVAILABLE
+    ));
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("readiness body");
+    let body = String::from_utf8(body.to_vec()).expect("UTF-8 readiness body");
+    assert!(!body.contains("postgres"));
+    assert!(!body.contains("redis://"));
+    assert!(!body.contains("127.0.0.1"));
 }
 
 #[tokio::test]
