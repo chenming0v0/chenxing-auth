@@ -181,12 +181,7 @@ async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> 
             return error::oauth_temporarily_unavailable();
         }
     }
-    let refresh = RefreshToken::new_with_nonce(
-        client_id.to_owned(),
-        code.user_id.clone(),
-        code.scopes.clone(),
-        code.nonce.clone(),
-    );
+    let refresh = RefreshToken::new(client_id.to_owned(), code.user_id.clone(), code.scopes.clone());
     if let Err(store_error) = state.refresh_tokens.save(&refresh).await {
         tracing::error!(error = %store_error, "failed to store refresh token");
         compensate_authorization_code_exchange(&state, &code, &refresh.value).await;
@@ -321,19 +316,15 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
         }
         None => refresh.scopes.clone(),
     };
-    let next_refresh = RefreshToken::new_with_nonce(
-        client_id.to_owned(),
-        refresh.user_id.clone(),
-        scopes.clone(),
-        refresh.nonce.clone(),
-    );
+    let next_refresh =
+        RefreshToken::new(client_id.to_owned(), refresh.user_id.clone(), scopes.clone());
     let response = issue_token_response(
         &state,
         &refresh.user_id,
         client_id,
         &scopes,
         Some(next_refresh.value.clone()),
-        refresh.nonce.as_deref(),
+        None,
     )
     .await;
     if response.status() != StatusCode::OK {

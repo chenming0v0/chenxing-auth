@@ -46,6 +46,12 @@ fn assert_token_cache_headers(response: &axum::response::Response) {
     );
 }
 
+fn jwt_claims(token: &str) -> serde_json::Value {
+    let payload = token.split('.').nth(1).expect("JWT payload");
+    let payload = URL_SAFE_NO_PAD.decode(payload).expect("JWT payload encoding");
+    serde_json::from_slice(&payload).expect("JWT claims")
+}
+
 fn cookie_header(response: &axum::response::Response) -> String {
     response
         .headers()
@@ -346,7 +352,8 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
         .as_str()
         .expect("access token")
         .to_owned();
-    assert!(token["id_token"].as_str().is_some());
+    let initial_id_token = token["id_token"].as_str().expect("initial ID token");
+    assert_eq!(jwt_claims(initial_id_token)["nonce"], "flow-nonce");
     let refresh_token = token["refresh_token"]
         .as_str()
         .expect("refresh token")
@@ -393,6 +400,8 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
     assert_token_cache_headers(&response);
     let refreshed = json_body(response).await;
     assert!(refreshed["access_token"].as_str().is_some());
+    let refreshed_id_token = refreshed["id_token"].as_str().expect("refreshed ID token");
+    assert!(jwt_claims(refreshed_id_token).get("nonce").is_none());
     let rotated_refresh_token = refreshed["refresh_token"]
         .as_str()
         .expect("rotated refresh token")

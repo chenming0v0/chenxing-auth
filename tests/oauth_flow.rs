@@ -166,11 +166,10 @@ async fn disabled_user_cannot_exchange_oauth_credentials_without_consuming_them(
         challenge,
         Some("disabled-nonce".to_owned()),
     );
-    let refresh = RefreshToken::new_with_nonce(
+    let refresh = RefreshToken::new(
         client_id.clone(),
         user_id.to_string(),
         vec!["openid".to_owned(), "profile".to_owned()],
-        Some("disabled-nonce".to_owned()),
     );
     state
         .authorization_codes
