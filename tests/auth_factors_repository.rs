@@ -73,7 +73,7 @@ async fn totp_factor_round_trip_returns_ciphertext_only() {
         repository::find_totp_secret(&pool, user_id)
             .await
             .expect("find TOTP factor"),
-        Some(encrypted)
+        Some(encrypted.clone())
     );
     assert_eq!(
         repository::list_factor_methods(&pool, user_id)

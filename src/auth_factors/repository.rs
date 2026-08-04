@@ -70,7 +70,7 @@ pub async fn insert_totp_factor_for_passkey_recovery(
          )",
     )
     .bind(user_id)
-    .fetch_one(&mut **transaction)
+    .fetch_one(&mut *transaction)
     .await?;
     if !passkey_only {
         transaction.commit().await?;
