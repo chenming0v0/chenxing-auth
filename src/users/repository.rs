@@ -33,6 +33,14 @@ pub struct UserProfile {
 }
 
 #[derive(Debug)]
+pub struct UserPlanSummary {
+    pub id: i64,
+    pub code: String,
+    pub name: String,
+    pub expires_at: Option<OffsetDateTime>,
+}
+
+#[derive(Debug)]
 pub struct ListedUser {
     pub id: UserId,
     pub username: String,
@@ -41,6 +49,7 @@ pub struct ListedUser {
     pub status: String,
     pub role: UserRole,
     pub created_at: OffsetDateTime,
+    pub plan: Option<UserPlanSummary>,
 }
 
 pub async fn insert_user(
@@ -215,6 +224,7 @@ pub async fn list_users(pool: &crate::sqlx::PgPool) -> Result<Vec<ListedUser>, c
                 status,
                 role: UserRole::parse(&role).unwrap_or(UserRole::User),
                 created_at,
+                plan: None,
             })
             .collect()
     })
