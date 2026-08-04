@@ -53,7 +53,11 @@ async fn revoke_inner(state: AppState, headers: HeaderMap, request: RevocationRe
     };
     match state
         .clients
-        .verify_credentials(&credentials.client_id, &credentials.client_secret)
+        .verify_credentials(
+            &credentials.client_id,
+            credentials.auth_method,
+            credentials.client_secret.as_deref(),
+        )
         .await
     {
         Ok(true) => {}

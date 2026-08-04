@@ -55,12 +55,15 @@ async fn token_inner(state: AppState, headers: HeaderMap, mut request: TokenRequ
         | Err(ClientCredentialError::Missing) => return error::oauth_invalid_client(),
     };
     request.client_id = Some(credentials.client_id.clone());
-    request.client_secret = Some(credentials.client_secret);
+    request.client_secret = credentials.client_secret.clone();
     if !matches!(
         request.grant_type.as_str(),
         "authorization_code" | "refresh_token"
     ) {
         return error::oauth_bad_request("unsupported_grant_type", "grant type is unsupported");
+    }
+    if let Some(response) = verify_client_credentials(&state, &credentials).await {
+        return response;
     }
     if let Some(response) = enforce_qps(&state, &credentials.client_id).await {
         return response;
@@ -73,9 +76,6 @@ async fn token_inner(state: AppState, headers: HeaderMap, mut request: TokenRequ
 }
 
 async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> Response {
-    if let Some(response) = verify_client_credentials(&state, &request).await {
-        return response;
-    }
     let Some(code_value) = request.code.as_deref() else {
         return error::oauth_bad_request("invalid_request", "code is required");
     };
@@ -185,9 +185,6 @@ fn authorization_code_restore_ttl(code: &AuthorizationCode) -> u64 {
 }
 
 async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Response {
-    if let Some(response) = verify_client_credentials(&state, &request).await {
-        return response;
-    }
     let Some(refresh_value) = request.refresh_token.as_deref() else {
         return error::oauth_bad_request("invalid_request", "refresh_token is required");
     };
@@ -386,16 +383,17 @@ async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Response> {
     }
 }
 
-async fn verify_client_credentials(state: &AppState, request: &TokenRequest) -> Option<Response> {
-    let (Some(client_id), Some(client_secret)) = (
-        request.client_id.as_deref(),
-        request.client_secret.as_deref(),
-    ) else {
-        return Some(error::oauth_invalid_client());
-    };
+async fn verify_client_credentials(
+    state: &AppState,
+    credentials: &super::client_auth::ClientCredentials,
+) -> Option<Response> {
     match state
         .clients
-        .verify_credentials(client_id, client_secret)
+        .verify_credentials(
+            &credentials.client_id,
+            credentials.auth_method,
+            credentials.client_secret.as_deref(),
+        )
         .await
     {
         Ok(true) => None,

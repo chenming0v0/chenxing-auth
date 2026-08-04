@@ -61,6 +61,10 @@ async fn openid_configuration_publishes_standard_endpoints() {
         configuration["revocation_endpoint"],
         "http://127.0.0.1:3000/oauth/revoke"
     );
+    assert_eq!(
+        configuration["token_endpoint_auth_methods_supported"],
+        serde_json::json!(["client_secret_basic", "client_secret_post", "none"])
+    );
 }
 
 #[tokio::test]

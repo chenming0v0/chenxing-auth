@@ -11,6 +11,32 @@ pub const ABSOLUTE_MAX_REDIRECT_URI_LENGTH: usize = 8_192;
 pub const ABSOLUTE_MAX_SCOPES: usize = 100;
 pub const ABSOLUTE_MAX_SCOPE_LENGTH: usize = 256;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientAuthMethod {
+    Basic,
+    Post,
+    None,
+}
+
+impl ClientAuthMethod {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "client_secret_basic" => Some(Self::Basic),
+            "client_secret_post" => Some(Self::Post),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Basic => "client_secret_basic",
+            Self::Post => "client_secret_post",
+            Self::None => "none",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientRegistrationLimits {
     pub max_redirect_uris: usize,

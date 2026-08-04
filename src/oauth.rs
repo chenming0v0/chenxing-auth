@@ -43,6 +43,7 @@ pub struct OpenIdConfiguration {
     pub scopes_supported: Vec<&'static str>,
     pub claims_supported: Vec<&'static str>,
     pub code_challenge_methods_supported: Vec<&'static str>,
+    pub token_endpoint_auth_methods_supported: Vec<&'static str>,
 }
 
 impl OpenIdConfiguration {
@@ -61,6 +62,11 @@ impl OpenIdConfiguration {
             scopes_supported: vec!["openid", "profile", "email"],
             claims_supported: vec!["sub", "iss", "aud", "exp", "iat", "email", "name"],
             code_challenge_methods_supported: vec!["S256"],
+            token_endpoint_auth_methods_supported: vec![
+                "client_secret_basic",
+                "client_secret_post",
+                "none",
+            ],
         }
     }
 }
