@@ -72,7 +72,7 @@ if [[ -z "$HOST_PORT" ]]; then
 fi
 
 for attempt in $(seq 1 30); do
-    if curl --fail --silent "http://127.0.0.1:${HOST_PORT}/health" >/dev/null 2>&1; then
+    if curl --fail --silent "http://127.0.0.1:${HOST_PORT}/health/ready" >/dev/null 2>&1; then
         printf '辰星认证中枢 is ready on port %s\n' "$HOST_PORT"
         exit 0
     fi

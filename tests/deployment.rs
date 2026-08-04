@@ -2,6 +2,7 @@ use std::path::Path;
 
 const BUILD_WORKFLOW: &str = include_str!("../.github/workflows/build.yml");
 const INSTALL_SCRIPT: &str = include_str!("../deploy/install.sh");
+const PRODUCTION_COMPOSE: &str = include_str!("../docker-compose.prod.yml");
 const DB_MODULE: &str = include_str!("../src/db.rs");
 const DOCKERFILE: &str = include_str!("../Dockerfile");
 const RUNTIME_DOCKERFILE: &str = include_str!("../Dockerfile.runtime");
@@ -141,6 +142,14 @@ fn installer_validates_compose_and_reports_application_logs() {
             "installer is missing marker: {marker}"
         );
     }
+}
+
+#[test]
+fn production_probes_use_readiness_and_keep_liveness_separate() {
+    assert!(PRODUCTION_COMPOSE.contains("/health/ready"));
+    assert!(!PRODUCTION_COMPOSE.contains("http://127.0.0.1:3000/health\"]"));
+    assert!(INSTALL_SCRIPT.contains("/health/ready"));
+    assert!(!INSTALL_SCRIPT.contains("/health/live"));
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::sqlx::{PgPool, PgPoolOptions};
+use crate::sqlx::{Executor, PgPool, PgPoolOptions};
 
 use crate::config::Config;
 
@@ -18,6 +18,13 @@ pub fn connect(config: &Config) -> Result<Database, crate::sqlx::Error> {
     PgPoolOptions::new()
         .max_connections(10)
         .connect_lazy(&config.database_url)
+}
+
+pub async fn check_ready(database: &Database) -> Result<(), crate::sqlx::Error> {
+    crate::sqlx::query("SELECT 1")
+        .execute(database)
+        .await
+        .map(|_| ())
 }
 
 pub async fn migrate(database: &Database) -> Result<(), crate::sqlx::migrate::MigrateError> {

@@ -9,7 +9,7 @@ use axum::{
     routing::{any, delete, get, post},
 };
 use serde::Serialize;
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 use tower_http::trace::TraceLayer;
 
 use crate::{
@@ -65,6 +65,8 @@ use crate::{
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/health/live", get(health_live))
+        .route("/health/ready", get(health_ready))
         .route(
             "/.well-known/openid-configuration",
             get(openid_configuration),
@@ -283,11 +285,57 @@ struct HealthResponse {
     service: &'static str,
 }
 
-async fn health() -> Json<HealthResponse> {
+const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
+
+async fn health_live() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
         service: crate::SERVICE_NAME,
     })
+}
+
+async fn health(State(state): State<AppState>) -> Response {
+    health_ready(State(state)).await
+}
+
+async fn health_ready(State(state): State<AppState>) -> Response {
+    let (database_result, redis_result) = tokio::join!(
+        tokio::time::timeout(HEALTH_CHECK_TIMEOUT, crate::db::check_ready(&state.database)),
+        tokio::time::timeout(HEALTH_CHECK_TIMEOUT, redis_ready(&state.redis)),
+    );
+    let database_ready = matches!(database_result, Ok(Ok(())));
+    let redis_ready = matches!(redis_result, Ok(Ok(())));
+    if database_ready && redis_ready {
+        return (
+            StatusCode::OK,
+            Json(HealthResponse {
+                status: "ok",
+                service: crate::SERVICE_NAME,
+            }),
+        )
+            .into_response();
+    }
+
+    tracing::warn!(
+        event = "readiness_check_failed",
+        database = database_ready,
+        redis = redis_ready,
+        "application dependencies are not ready"
+    );
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(HealthResponse {
+            status: "unavailable",
+            service: crate::SERVICE_NAME,
+        }),
+    )
+        .into_response()
+}
+
+async fn redis_ready(client: &redis::Client) -> Result<(), redis::RedisError> {
+    let mut connection = client.get_multiplexed_async_connection().await?;
+    let _: String = redis::cmd("PING").query_async(&mut connection).await?;
+    Ok(())
 }
 
 async fn openid_configuration(State(state): State<AppState>, headers: HeaderMap) -> Response {
