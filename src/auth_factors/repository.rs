@@ -26,6 +26,25 @@ pub async fn insert_totp_factor(
     Ok(())
 }
 
+pub async fn update_totp_factor_if_current(
+    pool: &PgPool,
+    user_id: UserId,
+    current_ciphertext: &[u8],
+    replacement_ciphertext: &[u8],
+) -> Result<bool, crate::sqlx::Error> {
+    let result = crate::sqlx::query(
+        "UPDATE user_totp_factors
+         SET encrypted_secret = $3, updated_at = NOW()
+         WHERE user_id = $1 AND encrypted_secret = $2",
+    )
+    .bind(user_id)
+    .bind(current_ciphertext)
+    .bind(replacement_ciphertext)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 pub async fn find_totp_secret(
     pool: &PgPool,
     user_id: UserId,

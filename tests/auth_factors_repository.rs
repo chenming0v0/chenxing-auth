@@ -81,6 +81,20 @@ async fn totp_factor_round_trip_returns_ciphertext_only() {
             .expect("list factor methods"),
         vec!["totp".to_owned()]
     );
+    assert!(
+        repository::update_totp_factor_if_current(&pool, user_id, &encrypted, &[9, 8, 7])
+            .await
+            .expect("conditional TOTP update")
+    );
+    assert!(!repository::update_totp_factor_if_current(&pool, user_id, &encrypted, &[6, 5, 4])
+        .await
+        .expect("stale conditional TOTP update"));
+    assert_eq!(
+        repository::find_totp_secret(&pool, user_id)
+            .await
+            .expect("find migrated TOTP factor"),
+        Some(vec![9, 8, 7])
+    );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)

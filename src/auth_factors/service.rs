@@ -7,13 +7,13 @@ use webauthn_rs::prelude::{Webauthn, WebauthnBuilder, WebauthnError};
 
 use crate::{
     auth_limiter::{AuthFailureLimiter, FailureDimension, LimiterDimension, MissingSourceIpPolicy},
-    config::AuthEncryptionKey,
+    config::AuthEncryptionKeyRing,
     sqlx::PgPool,
     users::domain::UserId,
 };
 
 use super::{
-    crypto::{SecretCryptoError, decrypt_totp_secret},
+    crypto::{SecretCryptoError, decrypt_totp_secret_with_ring, encrypt_totp_secret_with_ring},
     domain::{FactorMethod, LoginTicket},
     persistence::consume_then_persist,
     repository,
@@ -53,7 +53,7 @@ pub struct AuthFactorService {
     tickets: LoginTicketStore,
     limiter: Arc<dyn AuthFailureLimiter>,
     missing_source_ip_policy: MissingSourceIpPolicy,
-    encryption_key: AuthEncryptionKey,
+    encryption_keys: AuthEncryptionKeyRing,
     webauthn: Webauthn,
 }
 
@@ -86,7 +86,7 @@ impl AuthFactorService {
         pool: PgPool,
         redis: Client,
         limiter: Arc<dyn AuthFailureLimiter>,
-        encryption_key: AuthEncryptionKey,
+        encryption_keys: AuthEncryptionKeyRing,
         rp_id: &str,
         origin: &str,
     ) -> Result<Self, WebauthnError> {
@@ -94,7 +94,7 @@ impl AuthFactorService {
             pool,
             redis,
             limiter,
-            encryption_key,
+            encryption_keys,
             rp_id,
             origin,
             MissingSourceIpPolicy::Skip,
@@ -105,7 +105,7 @@ impl AuthFactorService {
         pool: PgPool,
         redis: Client,
         limiter: Arc<dyn AuthFailureLimiter>,
-        encryption_key: AuthEncryptionKey,
+        encryption_keys: AuthEncryptionKeyRing,
         rp_id: &str,
         origin: &str,
         missing_source_ip_policy: MissingSourceIpPolicy,
@@ -117,7 +117,7 @@ impl AuthFactorService {
             tickets: LoginTicketStore::new(redis),
             limiter,
             missing_source_ip_policy,
-            encryption_key,
+            encryption_keys,
             webauthn,
         })
     }
@@ -173,7 +173,18 @@ impl AuthFactorService {
             }
             return Ok(false);
         };
-        let mut secret = decrypt_totp_secret(self.encryption_key.as_bytes(), &encrypted_secret)?;
+        let decrypted = match decrypt_totp_secret_with_ring(&self.encryption_keys, &encrypted_secret) {
+            Ok(value) => value,
+            Err(SecretCryptoError::UnknownKeyId) => {
+                tracing::warn!(
+                    event = "auth_factor.totp.decrypt_key_unavailable",
+                    "TOTP secret key is outside the configured retention window"
+                );
+                return Ok(false);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut secret = decrypted.plaintext.clone();
         let valid = verify_totp_code_current(&secret, code);
         secret.fill(0);
         if !valid {
@@ -185,6 +196,16 @@ impl AuthFactorService {
         self.limiter
             .clear(FailureDimension::Account, &account_key)
             .await?;
+        if let Err(error) = self
+            .reencrypt_totp_secret_if_needed(user_id, &encrypted_secret, &decrypted)
+            .await
+        {
+            tracing::warn!(
+                event = "auth_factor.totp.lazy_reencryption_failed",
+                error = %error,
+                "TOTP verification succeeded but key rotation migration was deferred"
+            );
+        }
         Ok(true)
     }
 
@@ -214,8 +235,8 @@ impl AuthFactorService {
             return Ok(None);
         }
         let enrollment = TotpEnrollment::new(account_name, issuer)?;
-        let encrypted_secret = super::crypto::encrypt_totp_secret(
-            self.encryption_key.as_bytes(),
+        let encrypted_secret = encrypt_totp_secret_with_ring(
+            &self.encryption_keys,
             enrollment.secret_bytes(),
         )?;
         self.tickets
@@ -257,8 +278,21 @@ impl AuthFactorService {
         if self.ensure_dimensions_allowed(dimensions.clone()).await? {
             return Ok(TotpConfirmation::RateLimited);
         }
-        let mut secret =
-            decrypt_totp_secret(self.encryption_key.as_bytes(), &pending.encrypted_secret)?;
+        let decrypted = match decrypt_totp_secret_with_ring(
+            &self.encryption_keys,
+            &pending.encrypted_secret,
+        ) {
+            Ok(value) => value,
+            Err(SecretCryptoError::UnknownKeyId) => {
+                tracing::warn!(
+                    event = "auth_factor.totp.decrypt_key_unavailable",
+                    "TOTP setup key is outside the configured retention window"
+                );
+                return Ok(TotpConfirmation::InvalidCode);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut secret = decrypted.plaintext.clone();
         let valid = verify_totp_code_current(&secret, code);
         secret.fill(0);
         if !valid {
@@ -324,7 +358,18 @@ impl AuthFactorService {
             }
             return Ok(TotpConfirmation::InvalidTicket);
         };
-        let mut secret = decrypt_totp_secret(self.encryption_key.as_bytes(), &encrypted_secret)?;
+        let decrypted = match decrypt_totp_secret_with_ring(&self.encryption_keys, &encrypted_secret) {
+            Ok(value) => value,
+            Err(SecretCryptoError::UnknownKeyId) => {
+                tracing::warn!(
+                    event = "auth_factor.totp.decrypt_key_unavailable",
+                    "TOTP secret key is outside the configured retention window"
+                );
+                return Ok(TotpConfirmation::InvalidCode);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut secret = decrypted.plaintext.clone();
         let valid = verify_totp_code_current(&secret, code);
         secret.fill(0);
         if !valid {
@@ -344,6 +389,16 @@ impl AuthFactorService {
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
+        if let Err(error) = self
+            .reencrypt_totp_secret_if_needed(ticket.user_id, &encrypted_secret, &decrypted)
+            .await
+        {
+            tracing::warn!(
+                event = "auth_factor.totp.lazy_reencryption_failed",
+                error = %error,
+                "TOTP verification succeeded but key rotation migration was deferred"
+            );
+        }
         if self.tickets.take(ticket_id).await?.is_none() {
             return Ok(TotpConfirmation::InvalidTicket);
         }
@@ -405,5 +460,25 @@ impl AuthFactorService {
 
     fn totp_setup_key(ticket_id: &str) -> String {
         format!("{TOTP_SETUP_PREFIX}{ticket_id}")
+    }
+
+    async fn reencrypt_totp_secret_if_needed(
+        &self,
+        user_id: UserId,
+        current_ciphertext: &[u8],
+        decrypted: &super::crypto::DecryptedTotpSecret,
+    ) -> Result<(), AuthFactorServiceError> {
+        if !decrypted.needs_reencryption {
+            return Ok(());
+        }
+        let replacement = encrypt_totp_secret_with_ring(&self.encryption_keys, &decrypted.plaintext)?;
+        repository::update_totp_factor_if_current(
+            &self.pool,
+            user_id,
+            current_ciphertext,
+            &replacement,
+        )
+        .await?;
+        Ok(())
     }
 }

@@ -98,7 +98,7 @@ impl AppState {
             database.clone(),
             redis.clone(),
             auth_limiter,
-            config.auth_encryption_key.clone(),
+            config.auth_encryption_keys.clone(),
             &config.webauthn_rp_id,
             &config.webauthn_origin,
             config.missing_source_ip_policy,
