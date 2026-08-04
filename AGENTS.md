@@ -81,6 +81,9 @@
 
 ### 设计稿与 Web UI 修改
 
+- 设计稿资产只存在于 `design` 分支：`design-auth-chengming/` 与设计稿专用的 `design-canvas-format` skill 以本分支为唯一归属地，不进入 `dev` 和 `releases`。
+- 本分支保留完整代码树，方便对照真实实现调整设计稿；但只在本分支提交设计稿相关改动，代码改动回到 `dev` 做。
+- `design` 只单向接收 `dev` 的更新（在 `design` 上执行 `git merge dev`），禁止把 `design` 合并或 cherry-pick 进 `dev` / `releases`。
 - `design-auth-chengming/` 是本项目的原型设计文件夹，以 SOLO Design 画布项目（`.design`）形式保存页面原型；创建、编辑其中的画布页面或修改页面交互连线时，必须先加载项目级 `design-canvas-format` skill，并遵循 `.design` 格式与脚本校验约定。
 - 涉及 `design-auth-chengming/` 下的设计稿、页面视觉、卡片/容器或 Web UI 修改时，必须先加载 `design-auth-chengming/DESIGN.md`，并遵循其中的公共容器要求。
 - 新增或修改任何卡片、玻璃容器、表单面板等 UI 时，必须使用项目级 `chenxing-hud-panel` skill 指定的公共容器 `.chenxing-hud-panel`，禁止另建玻璃卡片样式或复用旧的 `chenxing-glass-strong chenxing-hud-frame` 组合。
@@ -131,6 +134,7 @@ cargo nextest run --all-features --test-threads 32
 
 - 本项目的主要开发分支是 `dev`。用户未明确指定分支、说“主要分支”或要求合并到主线时，默认使用 `dev`，不要自行使用已废弃的 `master`。
 - `releases` 是释放分支，仅在变更已经在 `dev` 验证通过、准备发布或用户明确要求“释放分支”时使用。
+- `design` 是设计稿分支，保存 `design-auth-chengming/` 和设计稿专用 skill；它只从 `dev` 单向接收更新，禁止合并回 `dev` 或 `releases`。
 - 功能分支应从当前明确的目标基线创建；开始工作前必须检查当前分支、工作区状态、远端跟踪关系以及目标分支的祖先关系，确认没有把功能分支误合入 `dev` 或 `releases`。
 - 涉及分支合并、推送、删除或发布时，先向用户确认目标分支语义；“主要分支”表示 `dev`，“释放分支”明确表示 `releases`。
 - 删除或改写分支前必须先确认提交已安全存在于正确的远端分支，并保留必要的恢复引用；禁止未经确认删除远端分支或执行强制推送。
