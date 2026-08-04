@@ -16,6 +16,7 @@ pub struct NewUser {
 #[derive(Debug)]
 pub struct UserCredentials {
     pub id: UserId,
+    pub email: String,
     pub password_hash: String,
     pub password_login_enabled: bool,
     pub status: String,
@@ -125,8 +126,8 @@ pub async fn find_credentials_by_identifier(
     pool: &PgPool,
     identifier: &str,
 ) -> Result<Option<UserCredentials>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (UserId, String, bool, String, String)>(
-        "SELECT id, password_hash, password_login_enabled, status, role FROM users
+    crate::sqlx::query_as::<_, (UserId, String, String, bool, String, String)>(
+        "SELECT id, email, password_hash, password_login_enabled, status, role FROM users
          WHERE email = $1 OR username = $1",
     )
     .bind(identifier)
@@ -134,8 +135,9 @@ pub async fn find_credentials_by_identifier(
     .await
     .map(|record| {
         record.map(
-            |(id, password_hash, password_login_enabled, status, role)| UserCredentials {
+            |(id, email, password_hash, password_login_enabled, status, role)| UserCredentials {
                 id,
+                email,
                 password_hash,
                 password_login_enabled,
                 status,
@@ -156,16 +158,17 @@ pub async fn find_credentials_by_id(
     pool: &PgPool,
     id: UserId,
 ) -> Result<Option<UserCredentials>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (UserId, String, bool, String, String)>(
-        "SELECT id, password_hash, password_login_enabled, status, role FROM users WHERE id = $1",
+    crate::sqlx::query_as::<_, (UserId, String, String, bool, String, String)>(
+        "SELECT id, email, password_hash, password_login_enabled, status, role FROM users WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
     .await
     .map(|record| {
         record.map(
-            |(id, password_hash, password_login_enabled, status, role)| UserCredentials {
+            |(id, email, password_hash, password_login_enabled, status, role)| UserCredentials {
                 id,
+                email,
                 password_hash,
                 password_login_enabled,
                 status,

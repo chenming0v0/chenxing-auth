@@ -158,8 +158,9 @@ impl AuthFactorService {
         &self,
         user_id: UserId,
     ) -> Result<(), AuthFactorServiceError> {
+        let account_key = self.account_key(user_id).await?;
         self.limiter
-            .clear(FailureDimension::Account, &user_id.to_string())
+            .clear(FailureDimension::Account, &account_key)
             .await?;
         Ok(())
     }
@@ -182,7 +183,7 @@ impl AuthFactorService {
         source_ip: Option<&str>,
         code: &str,
     ) -> Result<bool, AuthFactorServiceError> {
-        let account_key = user_id.to_string();
+        let account_key = self.account_key(user_id).await?;
         let dimensions = self.failure_dimensions(&account_key, None, source_ip)?;
         if self.ensure_dimensions_allowed(dimensions.clone()).await? {
             return Err(AuthFactorServiceError::RateLimited);
@@ -288,7 +289,7 @@ impl AuthFactorService {
         else {
             return Ok(TotpConfirmation::InvalidTicket);
         };
-        let account_key = ticket.user_id.to_string();
+        let account_key = self.account_key(ticket.user_id).await?;
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
         if self.ensure_dimensions_allowed(dimensions.clone()).await? {
             return Ok(TotpConfirmation::RateLimited);
@@ -353,7 +354,7 @@ impl AuthFactorService {
         {
             return Ok(TotpConfirmation::InvalidTicket);
         }
-        let account_key = ticket.user_id.to_string();
+        let account_key = self.account_key(ticket.user_id).await?;
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
         if self.ensure_dimensions_allowed(dimensions.clone()).await? {
             return Ok(TotpConfirmation::RateLimited);
@@ -461,6 +462,12 @@ impl AuthFactorService {
         dimensions: Vec<LimiterDimension>,
     ) -> Result<(), AuthFactorServiceError> {
         Ok(self.limiter.release(dimensions).await?)
+    }
+
+    async fn account_key(&self, user_id: UserId) -> Result<String, AuthFactorServiceError> {
+        repository::find_user_email(&self.pool, user_id)
+            .await?
+            .ok_or(AuthFactorServiceError::UserNotFound)
     }
 
     async fn claim_totp_timestep(
