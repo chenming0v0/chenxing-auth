@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::sqlx::{Executor, PgPool, PgPoolOptions};
+use crate::sqlx::{PgPool, PgPoolOptions};
 
 use crate::config::Config;
 
