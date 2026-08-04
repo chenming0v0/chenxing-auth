@@ -1,5 +1,8 @@
 use axum::{
-    extract::{Query, State, rejection::QueryRejection},
+    extract::{
+        Form, Query, State,
+        rejection::{FormRejection, QueryRejection},
+    },
     http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
 };
@@ -25,7 +28,21 @@ pub async fn authorize(
     let Query(request) = match request {
         Ok(request) => request,
         Err(_) => {
-            return error::oauth_bad_request("invalid_request", "authorization request is invalid")
+            return error::oauth_bad_request("invalid_request", "authorization request is invalid");
+        }
+    };
+    authorize_request(state, headers, request).await
+}
+
+pub async fn authorize_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    form: Result<Form<AuthorizationRequest>, FormRejection>,
+) -> Response {
+    let Form(request) = match form {
+        Ok(form) => form,
+        Err(_) => {
+            return error::oauth_bad_request("invalid_request", "authorization request is invalid");
         }
     };
     authorize_request(state, headers, request).await
@@ -339,29 +356,6 @@ async fn refund_quota_if_consumed(state: &AppState, client_id: &str, consumed: b
     }
 }
 
-pub async fn issue_authorization_code(
-    state: &AppState,
-    user_id: String,
-    validated: ValidatedAuthorizationRequest,
-) -> Response {
-    let pending = PendingAuthorization {
-        request_id: uuid::Uuid::new_v4().to_string(),
-        client_id: validated.client_id.clone(),
-        redirect_uri: validated.redirect_uri.clone(),
-        scope: validated.scopes.join(" "),
-        state: validated.state.clone(),
-        nonce: validated.nonce.clone(),
-        code_challenge: validated.code_challenge.clone(),
-        code_challenge_method: "S256".to_owned(),
-        session_id: None,
-    };
-    match issue_authorization_code_result(state, user_id, validated).await {
-        Ok(AuthorizationCodeIssue::Redirect(redirect)) => Redirect::to(&redirect).into_response(),
-        Ok(AuthorizationCodeIssue::QuotaExceeded) => authorization_quota_redirect(&pending),
-        Err(response) => response,
-    }
-}
-
 async fn record_authorization_event(
     state: &AppState,
     actor_id: Option<&str>,
@@ -401,7 +395,7 @@ pub fn validated_pending_request(pending: PendingAuthorization) -> ValidatedAuth
     }
 }
 
-pub use super::token_handlers::token;
+pub use super::{authorization_code_handlers::issue_authorization_code, token_handlers::token};
 
 fn accepts_html(headers: &HeaderMap) -> bool {
     headers
@@ -469,7 +463,7 @@ fn authorization_error(
     error::oauth_bad_request(code, description)
 }
 
-fn authorization_quota_redirect(pending: &PendingAuthorization) -> Response {
+pub(crate) fn authorization_quota_redirect(pending: &PendingAuthorization) -> Response {
     let Some(mut redirect) = url::Url::parse(&pending.redirect_uri).ok() else {
         return error::oauth_server_error();
     };

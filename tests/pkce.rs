@@ -50,6 +50,9 @@ fn pkce_s256_challenge_rejects_invalid_length_and_characters() {
         "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw!cM".to_owned(),
     ];
     for challenge in challenges {
-        assert!(validate_s256_challenge(&challenge).is_err(), "{challenge:?}");
+        assert!(
+            validate_s256_challenge(&challenge).is_err(),
+            "{challenge:?}"
+        );
     }
 }

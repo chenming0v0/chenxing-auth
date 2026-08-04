@@ -11,8 +11,7 @@ use uuid::Uuid;
 use super::{
     domain::{
         ClientAuthMethod, ClientRegistrationError, ClientRegistrationInput,
-        ClientRegistrationLimits,
-        validate_client_registration_with_limits,
+        ClientRegistrationLimits, validate_client_registration_with_limits,
     },
     repository::{self, ClientInsertError},
 };
@@ -176,7 +175,11 @@ impl ClientService {
         {
             return Ok(false);
         }
-        match (auth_method, client_secret, client.client_secret_hash.as_deref()) {
+        match (
+            auth_method,
+            client_secret,
+            client.client_secret_hash.as_deref(),
+        ) {
             (ClientAuthMethod::None, None, _) => Ok(true),
             (ClientAuthMethod::Basic | ClientAuthMethod::Post, Some(secret), Some(hash)) => {
                 Ok(verify_client_secret(secret, hash))

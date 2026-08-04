@@ -136,3 +136,43 @@ async fn malformed_authorization_query_returns_rfc_oauth_error() {
     assert_eq!(error["error"], "invalid_request");
     assert!(error.get("code").is_none());
 }
+
+#[tokio::test]
+async fn malformed_authorization_form_returns_rfc_oauth_error() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/authorize")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("client_id=%ZZ"))
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = oauth_error_body(response).await;
+    assert_eq!(error["error"], "invalid_request");
+    assert!(error.get("code").is_none());
+}
+
+#[tokio::test]
+async fn malformed_userinfo_form_returns_rfc_oauth_error() {
+    let response = test_router()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/userinfo")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("access_token=%ZZ"))
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = oauth_error_body(response).await;
+    assert_eq!(error["error"], "invalid_request");
+    assert!(error.get("code").is_none());
+}

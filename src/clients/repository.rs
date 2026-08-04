@@ -177,11 +177,13 @@ pub async fn find_client_credentials(
     .fetch_optional(pool)
     .await
     .map(|record| {
-        record.map(|(client_secret_hash, auth_method, status)| StoredClientCredentials {
-            client_secret_hash,
-            auth_method,
-            status,
-        })
+        record.map(
+            |(client_secret_hash, auth_method, status)| StoredClientCredentials {
+                client_secret_hash,
+                auth_method,
+                status,
+            },
+        )
     })
 }
 

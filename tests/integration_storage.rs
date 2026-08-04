@@ -97,7 +97,10 @@ async fn postgres_repositories_round_trip_users_and_clients() {
         .await
         .expect("find client credentials")
         .expect("stored client credentials");
-    assert_eq!(credentials.client_secret_hash.as_deref(), Some("client-secret-hash"));
+    assert_eq!(
+        credentials.client_secret_hash.as_deref(),
+        Some("client-secret-hash")
+    );
     assert_eq!(credentials.auth_method, "client_secret_basic");
     assert!(
         !client_repository::list_clients(&pool)

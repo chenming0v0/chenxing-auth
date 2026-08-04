@@ -1,5 +1,5 @@
-use crate::users::domain::UserId;
 use super::pkce::validate_s256_challenge;
+use crate::users::domain::UserId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

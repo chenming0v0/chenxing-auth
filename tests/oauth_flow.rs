@@ -10,10 +10,8 @@ use chenxing_auth::sessions::domain::Session;
 use chenxing_auth::{
     api,
     oauth::{
-        authorization::ValidatedAuthorizationRequest,
-        code::AuthorizationCode,
-        handlers::issue_authorization_code_result,
-        refresh::RefreshToken,
+        authorization::ValidatedAuthorizationRequest, code::AuthorizationCode,
+        handlers::issue_authorization_code_result, refresh::RefreshToken,
         store::AuthorizationCodeStore,
     },
     state::AppState,
@@ -280,6 +278,18 @@ async fn refresh_token_remains_reusable_when_access_token_issuance_fails() {
         .save(&refresh)
         .await
         .expect("save refresh token");
+    chenxing_auth::sqlx::query(
+        "INSERT INTO user_consents (user_id, client_id, scopes, updated_at)
+         SELECT $1, id, $3, $4 FROM oauth_clients WHERE client_id = $2
+         ON CONFLICT (user_id, client_id) DO UPDATE SET scopes = EXCLUDED.scopes, updated_at = EXCLUDED.updated_at",
+    )
+    .bind(user_id)
+    .bind(&client_id)
+    .bind(serde_json::json!(["openid", "profile"]))
+    .bind(time::OffsetDateTime::now_utc())
+    .execute(&database)
+    .await
+    .expect("save refresh token consent");
     let basic = STANDARD.encode(format!("{client_id}:{client_secret}"));
 
     state.config.session_ttl_seconds = u64::MAX;
@@ -519,14 +529,12 @@ async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
     ensure_owner_bootstrapped(&setup_router, &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
     let (client_id, _client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
-    chenxing_auth::sqlx::query(
-        "UPDATE oauth_clients SET owner_user_id = $1 WHERE client_id = $2",
-    )
-    .bind(user_id)
-    .bind(&client_id)
-    .execute(&database)
-    .await
-    .expect("bind client owner");
+    chenxing_auth::sqlx::query("UPDATE oauth_clients SET owner_user_id = $1 WHERE client_id = $2")
+        .bind(user_id)
+        .bind(&client_id)
+        .execute(&database)
+        .await
+        .expect("bind client owner");
 
     let effective = state
         .plans

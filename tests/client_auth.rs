@@ -12,8 +12,7 @@ fn basic_client_authentication_decodes_client_id_and_secret() {
         HeaderValue::from_static("Basic Y3hfcHJvamVjdDpjbGllbnQtc2VjcmV0"),
     );
 
-    let credentials =
-        resolve_client_credentials(&headers, Some(""), Some("")).expect("basic credentials");
+    let credentials = resolve_client_credentials(&headers, None, None).expect("basic credentials");
     assert_eq!(credentials.client_id, "cx_project");
     assert_eq!(credentials.client_secret.as_deref(), Some("client-secret"));
     assert_eq!(credentials.auth_method, ClientAuthMethod::Basic);
@@ -34,12 +33,9 @@ fn basic_authentication_scheme_is_case_insensitive() {
 
 #[test]
 fn form_client_authentication_records_post_method() {
-    let credentials = resolve_client_credentials(
-        &HeaderMap::new(),
-        Some("cx_project"),
-        Some("client-secret"),
-    )
-    .expect("form credentials");
+    let credentials =
+        resolve_client_credentials(&HeaderMap::new(), Some("cx_project"), Some("client-secret"))
+            .expect("form credentials");
 
     assert_eq!(credentials.auth_method, ClientAuthMethod::Post);
     assert_eq!(credentials.client_secret.as_deref(), Some("client-secret"));

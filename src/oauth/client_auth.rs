@@ -26,8 +26,7 @@ pub fn resolve_client_credentials(
     form_client_id: Option<&str>,
     form_client_secret: Option<&str>,
 ) -> Result<ClientCredentials, ClientCredentialError> {
-    let form_has_credentials = form_client_id.is_some_and(|value| !value.is_empty())
-        || form_client_secret.is_some_and(|value| !value.is_empty());
+    let form_has_credentials = form_client_id.is_some() || form_client_secret.is_some();
     let basic = headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -58,13 +57,11 @@ pub fn resolve_client_credentials(
     }
 
     match (form_client_id, form_client_secret) {
-        (Some(client_id), Some(client_secret)) if !client_id.is_empty() => {
-            Ok(ClientCredentials {
-                client_id: client_id.to_owned(),
-                client_secret: Some(client_secret.to_owned()),
-                auth_method: ClientAuthMethod::Post,
-            })
-        }
+        (Some(client_id), Some(client_secret)) if !client_id.is_empty() => Ok(ClientCredentials {
+            client_id: client_id.to_owned(),
+            client_secret: Some(client_secret.to_owned()),
+            auth_method: ClientAuthMethod::Post,
+        }),
         (Some(client_id), None) if !client_id.is_empty() => Ok(ClientCredentials {
             client_id: client_id.to_owned(),
             client_secret: None,
