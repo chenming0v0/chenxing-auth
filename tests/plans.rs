@@ -3,6 +3,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{
     api,
@@ -689,27 +690,30 @@ async fn qps_limiter_rejects_requests_over_the_plan_limit() {
         .as_str()
         .expect("client secret")
         .to_owned();
+    let basic_credentials = STANDARD.encode(format!("{client_id}:{client_secret}"));
     let token_request = || {
         Request::builder()
             .method("POST")
             .uri("/oauth/token")
+            .header("authorization", format!("Basic {basic_credentials}"))
             .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from(format!(
-                "grant_type=authorization_code&client_id={client_id}&client_secret={client_secret}"
-            )))
+            .body(Body::from("grant_type=authorization_code"))
             .expect("token request")
     };
 
+    let invalid_basic_credentials = STANDARD.encode(format!("{client_id}:wrong-secret"));
     let invalid = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/oauth/token")
+                .header(
+                    "authorization",
+                    format!("Basic {invalid_basic_credentials}"),
+                )
                 .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(format!(
-                    "grant_type=authorization_code&client_id={client_id}&client_secret=wrong-secret"
-                )))
+                .body(Body::from("grant_type=authorization_code"))
                 .expect("invalid credential request"),
         )
         .await
