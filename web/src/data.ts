@@ -23,6 +23,7 @@ export const navGroups: NavGroup[] = [
     items: [
       { label: '仪表盘', path: '/admin', icon: 'gauge' },
       { label: '用户管理', path: '/admin/users', icon: 'users' },
+      { label: '套餐管理', path: '/admin/plans', icon: 'crown' },
     ],
   },
   {
@@ -47,6 +48,7 @@ export const pageStatus: Record<string, string> = {
   '/console/playground': '控制台 · 授权测试',
   '/admin': '管理 · 仪表盘',
   '/admin/users': '管理 · 用户管理',
+  '/admin/plans': '管理 · 套餐管理',
   '/admin/clients': '管理 · 客户端',
   '/admin/audit': '管理 · 审计',
   '/admin/settings': '管理 · 系统设置',

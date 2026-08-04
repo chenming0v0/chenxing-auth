@@ -1,13 +1,13 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from '../../router'
 import {
-  apiFetch, type AdminOverview, type AuditEvent, type ClientSummary,
-  type KeyRotationResponse, type Paged, type PublicUser, type RegistrationEmailSetting,
+  apiFetch, type Paged, type PublicUser,
 } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { Badge, Button, EmptyState, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { formatDate, initialOf } from '../../data'
 import { AdminGate, useAdminAccess, type AdminAccess } from './shared'
+import { AssignPlanForm } from './plan-assign'
 
 export function AdminUsers() {
   const access = useAdminAccess()
@@ -30,6 +30,7 @@ function UsersTable({ access }: { access: AdminAccess }) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState<number | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [assignTarget, setAssignTarget] = useState<number | null>(null)
   const pageSize = 20
 
   useEffect(() => {
@@ -124,13 +125,15 @@ function UsersTable({ access }: { access: AdminAccess }) {
               <th className="chenxing-label px-4 py-3">用户名</th>
               <th className="chenxing-label px-4 py-3">状态</th>
               <th className="chenxing-label px-4 py-3">角色</th>
+              <th className="chenxing-label px-4 py-3">套餐</th>
               <th className="chenxing-label px-4 py-3">创建时间</th>
               <th className="chenxing-label px-4 py-3 text-right">操作</th>
             </tr>
           </thead>
           <tbody>
             {result?.items.map((user) => (
-              <tr key={user.id} className="border-t border-[var(--chenxing-border)]">
+              <Fragment key={user.id}>
+                <tr className="border-t border-[var(--chenxing-border)]">
                 <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{user.id}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-3">
@@ -159,6 +162,18 @@ function UsersTable({ access }: { access: AdminAccess }) {
                     <option value="owner">Owner</option>
                   </select>
                 </td>
+                <td className="px-4 py-3">
+                  <button
+                    type="button"
+                    className="chenxing-link inline-flex items-center gap-1.5"
+                    disabled={!access.data?.permissions.includes('manage_settings')}
+                    title={access.data?.permissions.includes('manage_settings') ? undefined : '套餐分配需要 manage_settings 权限'}
+                    onClick={() => setAssignTarget(assignTarget === user.id ? null : user.id)}
+                  >
+                    <Icon name="crown" size={13} />
+                    {assignTarget === user.id ? '收起' : '分配套餐'}
+                  </button>
+                </td>
                 <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(user.created_at)}</td>
                 <td className="px-4 py-3 text-right">
                   <button
@@ -170,7 +185,20 @@ function UsersTable({ access }: { access: AdminAccess }) {
                     {user.status === 'active' ? '禁用' : '启用'}
                   </button>
                 </td>
-              </tr>
+                </tr>
+                {assignTarget === user.id ? (
+                  <tr className="border-t border-[var(--chenxing-border)]">
+                    <td colSpan={7} className="px-4 py-4">
+                      <AssignPlanForm
+                        userId={user.id}
+                        userName={user.display_name || user.username}
+                        onAssigned={() => setRefreshKey((value) => value + 1)}
+                        onClose={() => setAssignTarget(null)}
+                      />
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
             ))}
           </tbody>
         </table>

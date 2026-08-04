@@ -6,7 +6,7 @@ import { AuthPage, BootstrapPage } from './pages/auth'
 import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './pages/oauth'
 import { ConsoleOverview, ConsolePlans, ConsoleProfile, AuthorizedApps } from './pages/console/account'
 import { IntegratePage, PlaygroundPage } from './pages/console/developer'
-import { AdminAudit, AdminClients, AdminDashboard, AdminUsers, AdminSettings } from './pages/admin'
+import { AdminAudit, AdminClients, AdminDashboard, AdminPlans, AdminUsers, AdminSettings } from './pages/admin'
 import { AuthPanel, AuthShell } from './components/shells'
 import { Notice } from './components/ui'
 
@@ -64,6 +64,7 @@ function AppContent() {
     '/console/playground': <PlaygroundPage />,
     '/admin': <AdminDashboard />,
     '/admin/users': <AdminUsers />,
+    '/admin/plans': <AdminPlans />,
     '/admin/clients': <AdminClients />,
     '/admin/audit': <AdminAudit />,
     '/admin/settings': <AdminSettings />,

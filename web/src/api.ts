@@ -40,6 +40,13 @@ const safeMessages: Record<string, string> = {
   authorization_request_processed: '授权请求已经处理过。',
   csrf_invalid: '请求校验失败，请刷新页面后重试。',
   csrf_required: '请求校验失败，请刷新页面后重试。',
+  invalid_plan: '套餐参数不正确，请检查输入。',
+  plan_not_found: '套餐不存在或已失效。',
+  plan_code_conflict: '套餐代码已被占用，请更换。',
+  default_plan_protected: '默认套餐不能取消默认标记或归档。',
+  archived_plan_default: '已归档的套餐不能设为默认。',
+  plan_archived: '已归档的套餐不能分配给用户。',
+  invalid_expiration: '到期时间格式不正确，请重新选择。',
 }
 
 function safeErrorMessage(status: number, code?: string): string {
@@ -253,6 +260,32 @@ export type OAuthProviderInput = {
   email_verified_claim?: string | null
   client_auth_method?: 'basic' | 'request_body'
 }
+export type AdminPlan = {
+  id: number
+  code: string
+  name: string
+  description: string | null
+  oauth_clients_limit: number
+  daily_auth_limit: number
+  /** null 表示无限额度 */
+  monthly_auth_limit: number | null
+  /** null 表示不限并发 */
+  max_qps: number | null
+  is_default: boolean
+  status: 'active' | 'archived' | string
+  assigned_users: number
+}
+export type AdminPlanInput = {
+  code: string
+  name: string
+  description: string | null
+  oauth_clients_limit: number
+  daily_auth_limit: number
+  monthly_auth_limit: number | null
+  max_qps: number | null
+  is_default: boolean
+}
+export type AssignPlanInput = { plan_id: number; expires_at: string | null }
 export type KeyRotationResponse = { key_id: string; published_key_count: number }
 export type PendingAuthorization = {
   request_id: string

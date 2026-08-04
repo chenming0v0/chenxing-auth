@@ -206,11 +206,13 @@ export function IntegratePage() {
               </div>
               <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={() => setDrawerOpen(false)}><Icon name="x" size={16} /></button>
             </div>
-            <form className="chenxing-drawer-body space-y-4" onSubmit={save}>
-              <div className="chenxing-hud-panel space-y-4 !p-5">
+            <form className="flex min-h-0 flex-1 flex-col" onSubmit={save}>
+              <div className="chenxing-drawer-body space-y-4">
+                <div className="chenxing-hud-panel space-y-4 !p-5">
                 <Field label="应用名称" placeholder="例如：星尘控制台" value={name} onChange={(event) => setName(event.target.value)} required />
                 <TextAreaField label="Redirect URI" placeholder="每行一个严格匹配的 URI" value={redirectUris} onChange={(event) => setRedirectUris(event.target.value)} required hint="服务端会严格校验 URI，不使用通配符。" />
                 <TextAreaField label="Scope" value={scopes} onChange={(event) => setScopes(event.target.value)} required hint="用空格、逗号或换行分隔。" />
+                </div>
               </div>
               <div className="chenxing-drawer-footer">
                 <Button type="button" variant="ghost" onClick={() => setDrawerOpen(false)}>取消</Button>
