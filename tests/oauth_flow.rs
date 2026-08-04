@@ -561,7 +561,7 @@ async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
             state: "quota-failure-state".to_owned(),
             nonce: None,
             code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned(),
-            owner_user_id: Some(user_id.into()),
+            owner_user_id: Some(user_id),
         },
     )
     .await
