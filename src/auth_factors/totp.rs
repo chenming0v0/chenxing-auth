@@ -5,8 +5,8 @@ use totp_rs::{Algorithm, Secret, TOTP};
 use super::domain::validate_totp_code;
 
 const TOTP_DIGITS: usize = 6;
-const TOTP_SKEW: u8 = 1;
-const TOTP_STEP_SECONDS: u64 = 30;
+pub(crate) const TOTP_SKEW: u8 = 1;
+pub(crate) const TOTP_STEP_SECONDS: u64 = 30;
 
 #[derive(Debug, Clone)]
 pub struct TotpEnrollment {
@@ -57,19 +57,37 @@ impl TotpEnrollment {
 }
 
 pub fn verify_totp_code_at(secret: &[u8], code: &str, timestamp: u64) -> bool {
+    verify_totp_code_at_timestep(secret, code, timestamp).is_some()
+}
+
+pub fn verify_totp_code_at_timestep(
+    secret: &[u8],
+    code: &str,
+    timestamp: u64,
+) -> Option<u64> {
     if validate_totp_code(code).is_err() {
-        return false;
+        return None;
     }
-    build_totp(secret.to_vec(), "", "")
-        .map(|totp| totp.check(code, timestamp))
-        .unwrap_or(false)
+    let totp = build_totp(secret.to_vec(), "", "").ok()?;
+    let current_step = timestamp / TOTP_STEP_SECONDS;
+    for offset in -(TOTP_SKEW as i64)..=(TOTP_SKEW as i64) {
+        let step = current_step as i64 + offset;
+        if step >= 0 && totp.generate((step as u64) * TOTP_STEP_SECONDS) == code {
+            return Some(step as u64);
+        }
+    }
+    None
 }
 
 pub fn verify_totp_code_current(secret: &[u8], code: &str) -> bool {
+    verify_totp_code_current_timestep(secret, code).is_some()
+}
+
+pub fn verify_totp_code_current_timestep(secret: &[u8], code: &str) -> Option<u64> {
     let Ok(timestamp) = SystemTime::now().duration_since(UNIX_EPOCH) else {
-        return false;
+        return None;
     };
-    verify_totp_code_at(secret, code, timestamp.as_secs())
+    verify_totp_code_at_timestep(secret, code, timestamp.as_secs())
 }
 
 fn build_totp(

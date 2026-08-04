@@ -18,7 +18,7 @@ use super::{
     persistence::consume_then_persist,
     repository,
     store::{LoginTicketStore, LoginTicketStoreError},
-    totp::{TotpEnrollment, verify_totp_code_current},
+    totp::{TotpEnrollment, verify_totp_code_current_timestep},
 };
 
 const TOTP_SETUP_PREFIX: &str = "chenxing:auth:totp-setup:";
@@ -206,15 +206,20 @@ impl AuthFactorService {
                 return Err(error.into());
             }
         };
-        let valid = verify_totp_code_current(&secret, code);
+        let timestep = verify_totp_code_current_timestep(&secret, code);
         secret.fill(0);
-        if !valid {
+        let Some(timestep) = timestep else {
             if !self.record_failure(dimensions).await?.reached.is_empty() {
                 return Err(AuthFactorServiceError::RateLimited);
             }
             return Ok(false);
+        };
+        if !self
+            .claim_totp_timestep(user_id, timestep, dimensions)
+            .await?
+        {
+            return Ok(false);
         }
-        self.release_dimensions(dimensions).await?;
         Ok(true)
     }
 
@@ -297,9 +302,9 @@ impl AuthFactorService {
                 return Err(error.into());
             }
         };
-        let valid = verify_totp_code_current(&secret, code);
+        let valid = verify_totp_code_current_timestep(&secret, code);
         secret.fill(0);
-        if !valid {
+        let Some(timestep) = valid else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {
                 self.invalidate_ticket(ticket_id).await?;
@@ -309,8 +314,13 @@ impl AuthFactorService {
                 return Ok(TotpConfirmation::RateLimited);
             }
             return Ok(TotpConfirmation::InvalidCode);
+        };
+        if !self
+            .claim_totp_timestep(ticket.user_id, timestep, dimensions)
+            .await?
+        {
+            return Ok(TotpConfirmation::InvalidCode);
         }
-        self.release_dimensions(dimensions).await?;
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
@@ -372,9 +382,9 @@ impl AuthFactorService {
                 return Err(error.into());
             }
         };
-        let valid = verify_totp_code_current(&secret, code);
+        let valid = verify_totp_code_current_timestep(&secret, code);
         secret.fill(0);
-        if !valid {
+        let Some(timestep) = valid else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {
                 self.invalidate_ticket(ticket_id).await?;
@@ -384,8 +394,13 @@ impl AuthFactorService {
                 return Ok(TotpConfirmation::RateLimited);
             }
             return Ok(TotpConfirmation::InvalidCode);
+        };
+        if !self
+            .claim_totp_timestep(ticket.user_id, timestep, dimensions)
+            .await?
+        {
+            return Ok(TotpConfirmation::InvalidCode);
         }
-        self.release_dimensions(dimensions).await?;
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
@@ -445,6 +460,23 @@ impl AuthFactorService {
         dimensions: Vec<LimiterDimension>,
     ) -> Result<(), AuthFactorServiceError> {
         Ok(self.limiter.release(dimensions).await?)
+    }
+
+    async fn claim_totp_timestep(
+        &self,
+        user_id: UserId,
+        timestep: u64,
+        dimensions: Vec<LimiterDimension>,
+    ) -> Result<bool, AuthFactorServiceError> {
+        let claimed = match self.tickets.claim_totp_timestep(user_id, timestep).await {
+            Ok(claimed) => claimed,
+            Err(error) => {
+                self.release_dimensions(dimensions).await?;
+                return Err(error.into());
+            }
+        };
+        self.release_dimensions(dimensions).await?;
+        Ok(claimed)
     }
 
     async fn invalidate_ticket(&self, ticket_id: &str) -> Result<(), AuthFactorServiceError> {

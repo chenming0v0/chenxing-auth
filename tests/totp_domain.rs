@@ -1,4 +1,6 @@
-use chenxing_auth::auth_factors::totp::{TotpEnrollment, verify_totp_code_at};
+use chenxing_auth::auth_factors::totp::{
+    TotpEnrollment, verify_totp_code_at, verify_totp_code_at_timestep,
+};
 use std::time::Duration;
 
 #[test]
@@ -33,4 +35,20 @@ fn totp_allows_only_the_one_step_clock_skew() {
         &enrollment.code_at(now - 60 - Duration::from_secs(1).as_secs()),
         now
     ));
+}
+
+#[test]
+fn totp_validation_returns_the_accepted_time_step() {
+    let enrollment = TotpEnrollment::new("user@example.com", "Chenxing Pass").expect("enrollment");
+    let now = 1_700_000_000_u64;
+    let code = enrollment.code_at(now - 30);
+
+    assert_eq!(
+        verify_totp_code_at_timestep(enrollment.secret_bytes(), &code, now),
+        Some((now - 30) / 30)
+    );
+    assert_eq!(
+        verify_totp_code_at_timestep(enrollment.secret_bytes(), "000000", now),
+        None
+    );
 }

@@ -1,4 +1,4 @@
-use redis::{AsyncCommands, Client};
+use redis::{AsyncCommands, Client, Script};
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -8,6 +8,9 @@ use super::domain::{FactorMethod, LoginTicket};
 use crate::users::domain::UserId;
 
 const LOGIN_TICKET_PREFIX: &str = "chenxing:auth:login-ticket:";
+const TOTP_REPLAY_PREFIX: &str = "chenxing:auth:totp-used:";
+const TOTP_REPLAY_TTL_SECONDS: u64 = 120;
+const CLAIM_TOTP_STEP_SCRIPT: &str = "if redis.call('SET', KEYS[1], '1', 'NX', 'EX', ARGV[1]) then return 1 else return 0 end";
 
 #[derive(Clone)]
 pub struct LoginTicketStore {
@@ -184,5 +187,23 @@ impl LoginTicketStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let _: usize = connection.del(key).await?;
         Ok(())
+    }
+
+    pub async fn claim_totp_timestep(
+        &self,
+        user_id: UserId,
+        timestep: u64,
+    ) -> Result<bool, LoginTicketStoreError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let claimed: i64 = Script::new(CLAIM_TOTP_STEP_SCRIPT)
+            .key(Self::totp_replay_key(user_id, timestep))
+            .arg(TOTP_REPLAY_TTL_SECONDS)
+            .invoke_async(&mut connection)
+            .await?;
+        Ok(claimed == 1)
+    }
+
+    pub fn totp_replay_key(user_id: UserId, timestep: u64) -> String {
+        format!("{TOTP_REPLAY_PREFIX}{user_id}:{timestep}")
     }
 }
