@@ -153,6 +153,24 @@ fn production_probes_use_readiness_and_keep_liveness_separate() {
 }
 
 #[test]
+fn installer_rejects_implicit_localhost_and_checks_discovery_contract() {
+    for marker in [
+        "CHENXING_ISSUER is required",
+        "CHENXING_ALLOW_LOOPBACK_HTTP",
+        "EXPECTED_COOKIE_SECURE",
+        "OpenID discovery does not match APP_ISSUER",
+        ".well-known/openid-configuration",
+    ] {
+        assert!(
+            INSTALL_SCRIPT.contains(marker),
+            "installer is missing issuer safety marker: {marker}"
+        );
+    }
+    assert!(!INSTALL_SCRIPT.contains("http://localhost:3000"));
+    assert!(!INSTALL_SCRIPT.contains("COOKIE_SECURE=true\n"));
+}
+
+#[test]
 fn deployment_files_are_present_at_repository_root() {
     assert!(Path::new(".github/workflows/build.yml").is_file());
     assert!(Path::new("deploy/install.sh").is_file());

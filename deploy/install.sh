@@ -17,21 +17,65 @@ if ! command -v curl >/dev/null 2>&1; then
     exit 1
 fi
 
+read_env_value() {
+    local key="$1"
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'\r'}"
+        if [[ "$line" == "${key}="* ]]; then
+            printf '%s' "${line#*=}"
+            return 0
+        fi
+    done < .env
+    return 0
+}
+
+validate_issuer() {
+    if [[ "$APP_ISSUER" =~ ^https://[^/[:space:]?#@]+$ ]]; then
+        EXPECTED_COOKIE_SECURE=true
+        return 0
+    fi
+    if [[ "${CHENXING_ALLOW_LOOPBACK_HTTP:-false}" == "true" \
+        && "$APP_ISSUER" =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?$ ]]; then
+        EXPECTED_COOKIE_SECURE=false
+        return 0
+    fi
+    printf '%s\n' 'APP_ISSUER must be a public HTTPS URL; only explicitly enabled loopback HTTP is allowed.' >&2
+    exit 1
+}
+
 if [[ -f .env ]]; then
     printf '%s\n' 'Using existing .env; secrets will not be replaced.'
+    APP_ISSUER="$(read_env_value APP_ISSUER)"
+    COOKIE_SECURE="$(read_env_value COOKIE_SECURE)"
+    if [[ -z "$APP_ISSUER" ]]; then
+        printf '%s\n' 'Existing .env must define APP_ISSUER. Set the public HTTPS issuer and retry.' >&2
+        exit 1
+    fi
 else
+    if [[ -z "${CHENXING_ISSUER:-}" ]]; then
+        printf '%s\n' 'CHENXING_ISSUER is required for a new production install (for example, https://auth.example.com).' >&2
+        exit 1
+    fi
+    APP_ISSUER="$CHENXING_ISSUER"
+    validate_issuer
+
     if ! command -v openssl >/dev/null 2>&1; then
         printf '%s\n' 'openssl is required to generate deployment secrets.' >&2
         exit 1
     fi
 
-    APP_ISSUER="${CHENXING_ISSUER:-http://localhost:3000}"
     APP_PORT="${CHENXING_PORT:-3000}"
     POSTGRES_DB="${POSTGRES_DB:-chenxing_auth}"
     POSTGRES_USER="${POSTGRES_USER:-chenxing}"
     POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 32)}"
     ADMIN_TOKEN="${ADMIN_TOKEN:-$(openssl rand -hex 32)}"
     AUTH_ENCRYPTION_KEY="${AUTH_ENCRYPTION_KEY:-$(openssl rand -base64 32)}"
+    COOKIE_SECURE="${COOKIE_SECURE:-$EXPECTED_COOKIE_SECURE}"
+    if [[ "$COOKIE_SECURE" != "$EXPECTED_COOKIE_SECURE" ]]; then
+        printf 'COOKIE_SECURE must be %s for issuer %s.\n' "$EXPECTED_COOKIE_SECURE" "$APP_ISSUER" >&2
+        exit 1
+    fi
 
     umask 077
     cat > .env <<EOF
@@ -42,7 +86,7 @@ ADMIN_TOKEN=${ADMIN_TOKEN}
 AUTH_ENCRYPTION_KEY=${AUTH_ENCRYPTION_KEY}
 KEY_DIRECTORY=/var/lib/chenxing-auth/keys
 KEY_ROTATION_GRACE_SECONDS=${KEY_ROTATION_GRACE_SECONDS:-604800}
-COOKIE_SECURE=true
+COOKIE_SECURE=${COOKIE_SECURE}
 POSTGRES_DB=${POSTGRES_DB}
 POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -50,6 +94,12 @@ SESSION_TTL_SECONDS=${SESSION_TTL_SECONDS:-604800}
 RUST_LOG=${RUST_LOG:-chenxing_auth=info,tower_http=info}
 EOF
     printf '%s\n' 'Created .env with generated secrets. Keep this file private.'
+fi
+
+validate_issuer
+if [[ "$COOKIE_SECURE" != "$EXPECTED_COOKIE_SECURE" ]]; then
+    printf 'COOKIE_SECURE must be %s for issuer %s.\n' "$EXPECTED_COOKIE_SECURE" "$APP_ISSUER" >&2
+    exit 1
 fi
 
 if ! docker compose --env-file .env -f docker-compose.prod.yml config >/dev/null; then
@@ -71,15 +121,36 @@ if [[ -z "$HOST_PORT" ]]; then
     exit 1
 fi
 
+ready=false
 for attempt in $(seq 1 30); do
-    if curl --fail --silent "http://127.0.0.1:${HOST_PORT}/health/ready" >/dev/null 2>&1; then
+    if curl --fail --silent --max-time 5 "http://127.0.0.1:${HOST_PORT}/health/ready" >/dev/null 2>&1; then
         printf '辰星认证中枢 is ready on port %s\n' "$HOST_PORT"
-        exit 0
+        ready=true
+        break
     fi
     sleep 2
 done
 
-docker compose --env-file .env -f docker-compose.prod.yml ps
-docker compose --env-file .env -f docker-compose.prod.yml logs app
-printf '%s\n' 'Deployment started but the health check did not become ready in time.' >&2
-exit 1
+if [[ "$ready" != true ]]; then
+    docker compose --env-file .env -f docker-compose.prod.yml ps
+    docker compose --env-file .env -f docker-compose.prod.yml logs app
+    printf '%s\n' 'Deployment started but the readiness check did not become ready in time.' >&2
+    exit 1
+fi
+
+DISCOVERY_JSON="$(curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${HOST_PORT}/.well-known/openid-configuration")" || {
+    printf '%s\n' 'Readiness succeeded but OpenID Connect discovery could not be fetched.' >&2
+    exit 1
+}
+for marker in \
+    "\"issuer\":\"${APP_ISSUER}\"" \
+    "\"authorization_endpoint\":\"${APP_ISSUER}/oauth/authorize\"" \
+    "\"token_endpoint\":\"${APP_ISSUER}/oauth/token\"" \
+    "\"jwks_uri\":\"${APP_ISSUER}/.well-known/jwks.json\""; do
+    if [[ "$DISCOVERY_JSON" != *"$marker"* ]]; then
+        printf 'OpenID discovery does not match APP_ISSUER: %s\n' "$APP_ISSUER" >&2
+        exit 1
+    fi
+done
+printf '%s\n' 'OpenID Connect discovery matches the configured issuer.'
+exit 0
