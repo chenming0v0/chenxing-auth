@@ -225,6 +225,15 @@ pub async fn issue_authorization_code_result(
         tracing::error!(error = %store_error, "failed to store OAuth authorization code");
         return Err(error::oauth_temporarily_unavailable());
     }
+    if let Err(error_value) = state
+        .revocations
+        .clear_consent(&code.user_id, &code.client_id)
+        .await
+    {
+        tracing::error!(error = %error_value, "failed to clear OAuth consent revocation marker");
+        remove_authorization_code_after_failure(state, &code, &client_id, false).await;
+        return Err(error::oauth_temporarily_unavailable());
+    }
 
     let quota_consumed = if let Some(owner_user_id) = client.owner_user_id {
         let effective = match state.plans.effective_plan_for_user(owner_user_id).await {

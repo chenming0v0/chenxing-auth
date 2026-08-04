@@ -94,6 +94,14 @@ pub async fn revoke_authorized_app(
     let Ok(context) = mutation_user(&state, &headers).await else {
         return mutation_error(&state, &headers).await;
     };
+    if let Err(error_value) = state
+        .revocations
+        .revoke_consent(&context.user_id.to_string(), &client_id)
+        .await
+    {
+        tracing::error!(error = %error_value, "failed to revoke OAuth consent marker");
+        return error::internal();
+    }
     let revoked = match state
         .consents
         .revoke_for_user(context.user_id, &client_id)

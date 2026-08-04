@@ -393,7 +393,61 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
     assert_token_cache_headers(&response);
     let refreshed = json_body(response).await;
     assert!(refreshed["access_token"].as_str().is_some());
-    assert!(refreshed["refresh_token"].as_str().is_some());
+    let rotated_refresh_token = refreshed["refresh_token"]
+        .as_str()
+        .expect("rotated refresh token")
+        .to_owned();
+
+    let csrf = session_cookie
+        .split(';')
+        .find_map(|value| value.trim().strip_prefix("chenxing_csrf="))
+        .expect("CSRF cookie")
+        .to_owned();
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/auth/authorized-apps/{client_id}"))
+                .header("cookie", &session_cookie)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .expect("consent revoke request"),
+        )
+        .await
+        .expect("consent revoke response");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic_credentials}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=refresh_token&refresh_token={rotated_refresh_token}"
+                )))
+                .expect("revoked refresh request"),
+        )
+        .await
+        .expect("revoked refresh response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(response).await["error"], "invalid_grant");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/oauth/userinfo")
+                .header("authorization", format!("Bearer {access_token}"))
+                .body(Body::empty())
+                .expect("revoked consent userinfo request"),
+        )
+        .await
+        .expect("revoked consent userinfo response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     let response = router
         .clone()

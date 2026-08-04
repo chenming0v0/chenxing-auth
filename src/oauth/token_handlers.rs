@@ -280,6 +280,20 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
         }
         return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
     }
+    match state
+        .revocations
+        .is_consent_revoked(&refresh.user_id, client_id)
+        .await
+    {
+        Ok(true) => {
+            return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
+        }
+        Ok(false) => {}
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to check OAuth consent revocation");
+            return error::oauth_temporarily_unavailable();
+        }
+    }
     match active_user_id(&state, &refresh.user_id).await {
         Ok(Some(_)) => {}
         Ok(None) => return error::oauth_bad_request("invalid_grant", "refresh token is invalid"),

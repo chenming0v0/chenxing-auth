@@ -57,6 +57,35 @@ pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Resp
     let Ok(user_id) = claims.sub.parse::<crate::users::domain::UserId>() else {
         return error::oauth_invalid_bearer("access token is invalid");
     };
+    match state
+        .revocations
+        .is_consent_revoked(&claims.sub, &claims.aud)
+        .await
+    {
+        Ok(true) => return error::oauth_invalid_bearer("access token is invalid"),
+        Ok(false) => {}
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to check UserInfo consent revocation");
+            return error::oauth_temporarily_unavailable();
+        }
+    }
+    let scopes = claims
+        .scope
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    match state
+        .consents
+        .has_scopes(user_id, &claims.aud, &scopes)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => return error::oauth_invalid_bearer("access token is invalid"),
+        Err(database_error) => {
+            tracing::error!(error = %database_error, "failed to check UserInfo consent");
+            return error::oauth_temporarily_unavailable();
+        }
+    }
     let Some(profile) = (match state.users.find_profile(user_id).await {
         Ok(profile) => profile,
         Err(database_error) => {
@@ -70,11 +99,6 @@ pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Resp
         return error::oauth_invalid_bearer("access token is invalid");
     }
 
-    let scopes = claims
-        .scope
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
     let userinfo = UserInfoClaims::from_profile(
         profile.id.to_string(),
         profile.email,
