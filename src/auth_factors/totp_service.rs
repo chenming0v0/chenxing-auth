@@ -9,6 +9,15 @@ use crate::{
 };
 
 impl AuthFactorService {
+    pub(super) async fn account_key(
+        &self,
+        user_id: UserId,
+    ) -> Result<String, AuthFactorServiceError> {
+        repository::find_user_email(&self.pool, user_id)
+            .await?
+            .ok_or(AuthFactorServiceError::UserNotFound)
+    }
+
     pub(super) fn failure_dimensions(
         &self,
         account_key: &str,

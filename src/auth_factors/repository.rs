@@ -127,6 +127,16 @@ pub async fn find_session_epoch(
         .await
 }
 
+pub async fn find_user_email(
+    pool: &PgPool,
+    user_id: UserId,
+) -> Result<Option<String>, crate::sqlx::Error> {
+    crate::sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_optional(pool)
+        .await
+}
+
 pub async fn list_factor_methods(
     pool: &PgPool,
     user_id: UserId,

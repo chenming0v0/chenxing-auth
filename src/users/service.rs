@@ -192,7 +192,7 @@ impl UserService {
                 return Err(UserServiceError::RateLimited);
             }
         };
-        let account_key = credentials.id.to_string();
+        let account_key = credentials.email.clone();
         let account_dimensions = vec![(FailureDimension::Account, account_key)];
         if !self.reserve_dimensions(account_dimensions.clone()).await? {
             self.release_dimensions(source_dimensions).await?;
