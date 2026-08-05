@@ -737,7 +737,10 @@ async fn session_revocation_generation_rejects_restored_old_payloads() {
                 base64::engine::general_purpose::URL_SAFE_NO_PAD
                     .encode(sha2::Sha256::digest(session.token.as_bytes()))
             ),
-            serde_json::to_string(&session).expect("session JSON"),
+            serde_json::to_string(&chenxing_auth::sessions::domain::SessionPayload::from(
+                &session,
+            ))
+            .expect("session JSON"),
             60,
         )
         .await
