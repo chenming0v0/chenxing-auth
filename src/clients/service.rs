@@ -7,8 +7,8 @@ use thiserror::Error;
 use super::{
     credentials::{credentials_match, generate_client_secret, issue_client_credential},
     domain::{
-        ClientAuthMethod, ClientRegistrationError, ClientRegistrationLimits,
-        validate_client_registration_with_limits,
+        ClientAuthMethod, ClientRegistrationError, ClientRegistrationInput,
+        ClientRegistrationLimits, validate_client_registration_with_limits,
     },
     repository::{self, ClientInsertError},
 };
