@@ -227,13 +227,13 @@ describe('apiFetch', () => {
   it('ignores a non-string code and an unparsable error body', async () => {
     // code 只接受字符串，对象或缺失都退回状态码文案，避免把结构化数据渲染到界面。
     fetchMock.mockResolvedValue(stubResponse({ status: 409, body: { code: { evil: true } } }))
-    const objectCode = await apiFetch('/api/v1/plans', { method: 'POST' }).catch((value: unknown) => value as ApiError)
+    const objectCode = await apiFetch('/api/v1/plans', { method: 'POST' }).catch((value: unknown) => value) as ApiError
     expect(objectCode.status).toBe(409)
     expect(objectCode.code).toBeUndefined()
     expect(objectCode.message).toBe('请求与当前数据冲突，请刷新后重试。')
 
     fetchMock.mockResolvedValue(stubResponse({ status: 500, jsonThrows: true }))
-    const noBody = await apiFetch('/api/v1/plans', { method: 'POST' }).catch((value: unknown) => value as ApiError)
+    const noBody = await apiFetch('/api/v1/plans', { method: 'POST' }).catch((value: unknown) => value) as ApiError
     expect(noBody.status).toBe(500)
     expect(noBody.code).toBeUndefined()
     expect(noBody.message).toBe('服务暂时不可用，请稍后重试。')
