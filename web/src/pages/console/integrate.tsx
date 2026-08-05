@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link } from '../../router'
 import { apiFetch, type ClientInput, type OwnedOAuthClient, type RegisteredOwnedOAuthClient } from '../../api'
+import { Drawer } from '../../components/drawer'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Chip, CopyValue, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, TextAreaField } from '../../components/ui'
 
@@ -197,30 +198,24 @@ export function IntegratePage() {
       </section>
 
       {drawerOpen ? (
-        <div className="chenxing-drawer-overlay is-open" onClick={() => setDrawerOpen(false)}>
-          <div className="chenxing-drawer is-open" onClick={(event) => event.stopPropagation()}>
-            <div className="chenxing-drawer-header">
-              <div>
-                <h2 className="chenxing-h2">{editing ? '编辑应用' : '注册新应用'}</h2>
-                <p className="chenxing-caption mt-1">服务端负责校验 Redirect URI、Scope 和配额。</p>
-              </div>
-              <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={() => setDrawerOpen(false)}><Icon name="x" size={16} /></button>
-            </div>
-            <form className="flex min-h-0 flex-1 flex-col" onSubmit={save}>
-              <div className="chenxing-drawer-body space-y-4">
-                <div className="chenxing-hud-panel space-y-4 !p-5">
-                <Field label="应用名称" placeholder="例如：星尘控制台" value={name} onChange={(event) => setName(event.target.value)} required />
-                <TextAreaField label="Redirect URI" placeholder="每行一个严格匹配的 URI" value={redirectUris} onChange={(event) => setRedirectUris(event.target.value)} required hint="服务端会严格校验 URI，不使用通配符。" />
-                <TextAreaField label="Scope" value={scopes} onChange={(event) => setScopes(event.target.value)} required hint="用空格、逗号或换行分隔。" />
-                </div>
-              </div>
-              <div className="chenxing-drawer-footer">
-                <Button type="button" variant="ghost" onClick={() => setDrawerOpen(false)}>取消</Button>
-                <Button type="submit" icon="save" disabled={busy}>{busy ? '保存中…' : editing ? '保存更新' : '创建应用'}</Button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <Drawer
+          title={editing ? '编辑应用' : '注册新应用'}
+          description="服务端负责校验 Redirect URI、Scope 和配额。"
+          onClose={() => setDrawerOpen(false)}
+          onSubmit={save}
+          footer={
+            <>
+              <Button type="button" variant="ghost" onClick={() => setDrawerOpen(false)}>取消</Button>
+              <Button type="submit" icon="save" disabled={busy}>{busy ? '保存中…' : editing ? '保存更新' : '创建应用'}</Button>
+            </>
+          }
+        >
+          <HudPanel className="space-y-4 !p-5">
+            <Field label="应用名称" placeholder="例如：星尘控制台" value={name} onChange={(event) => setName(event.target.value)} required />
+            <TextAreaField label="Redirect URI" placeholder="每行一个严格匹配的 URI" value={redirectUris} onChange={(event) => setRedirectUris(event.target.value)} required hint="服务端会严格校验 URI，不使用通配符。" />
+            <TextAreaField label="Scope" value={scopes} onChange={(event) => setScopes(event.target.value)} required hint="用空格、逗号或换行分隔。" />
+          </HudPanel>
+        </Drawer>
       ) : null}
     </ConsoleLayout>
   )
