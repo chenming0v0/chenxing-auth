@@ -1,16 +1,13 @@
 use axum::{
-    Json, Router,
-    extract::State,
-    http::{
-        HeaderMap, Method, StatusCode,
-        header::{ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_TYPE, ORIGIN, VARY},
-    },
-    response::{IntoResponse, Response},
-    routing::{any, delete, get, post},
+    Router,
+    routing::{delete, get, post},
 };
-use serde::Serialize;
-use std::{net::SocketAddr, time::Duration};
+use std::net::SocketAddr;
 use tower_http::trace::TraceLayer;
+
+mod discovery;
+mod health;
+mod static_files;
 
 use crate::{
     admin::auth_handlers::{bootstrap_admin, bootstrap_status, create_admin},
@@ -41,7 +38,6 @@ use crate::{
         confirm_totp_setup, finish_passkey_authentication, finish_passkey_registration, login_totp,
         start_passkey_authentication, start_passkey_registration, start_totp_setup,
     },
-    oauth::OpenIdConfiguration,
     oauth::handlers::{authorize, authorize_post, token},
     oauth::providers::handlers::{external_callback, list_public_providers, start_external_login},
     oauth::revocation_handler::revoke,
@@ -61,6 +57,9 @@ use crate::{
         revoke_user_session, update_current_user_profile,
     },
 };
+
+use discovery::{jwks, openid_configuration};
+use health::{health, health_live, health_ready};
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -234,7 +233,9 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/admin/keys/rotate",
             axum::routing::post(rotate_signing_key),
         )
-        .fallback(any(web_app))
+        // 静态资源与 SPA 回退挂在 fallback 上：fallback_service 只在上面所有
+        // 路由都不匹配时才生效，所以 /api/*、/health 等不会被静态服务抢走。
+        .fallback_service(static_files::static_service())
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
@@ -243,119 +244,111 @@ pub(crate) fn source_ip(peer: Option<SocketAddr>) -> Option<String> {
     peer.map(|address| address.ip().to_string())
 }
 
-async fn web_app(request: axum::extract::Request) -> Response {
-    if request.method() != Method::GET && request.method() != Method::HEAD {
-        return (StatusCode::NOT_FOUND, "not found").into_response();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Method, Request, StatusCode, header::CONTENT_TYPE},
+        response::Response,
+    };
+    use tower::ServiceExt;
+
+    /// 构造完整 Router 并发送一次请求。
+    ///
+    /// 这些断言在有无 `web/dist` 的环境下都成立：`web/dist` 被 gitignore，
+    /// 测试不能依赖真实构建产物是否存在。
+    async fn send_request(uri: &str, method: Method) -> Response {
+        let request = Request::builder()
+            .uri(uri)
+            .method(method)
+            .body(Body::empty())
+            .expect("valid request");
+
+        router(AppState::for_test().await)
+            .oneshot(request)
+            .await
+            .expect("router response")
     }
 
-    let path = request.uri().path();
-    if is_protocol_path(path) || has_file_extension(path) {
-        return crate::error::not_found("not_found", "not found");
-    }
-
-    (
-        StatusCode::OK,
-        [(CONTENT_TYPE, "text/html; charset=utf-8")],
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/web/dist/index.html")),
-    )
-        .into_response()
-}
-
-fn is_protocol_path(path: &str) -> bool {
-    path == "/api"
-        || path.starts_with("/api/")
-        || path == "/oauth"
-        || path.starts_with("/oauth/")
-        || path == "/.well-known"
-        || path.starts_with("/.well-known/")
-        || path.starts_with("/health/")
-}
-
-fn has_file_extension(path: &str) -> bool {
-    path.rsplit('/').next().is_some_and(|segment| {
-        segment
-            .rsplit_once('.')
-            .is_some_and(|(_, extension)| !extension.is_empty())
-    })
-}
-
-#[derive(Debug, Serialize)]
-struct HealthResponse {
-    status: &'static str,
-    service: &'static str,
-}
-
-const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
-
-async fn health_live() -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: "ok",
-        service: crate::SERVICE_NAME,
-    })
-}
-
-async fn health(State(state): State<AppState>) -> Response {
-    health_ready(State(state)).await
-}
-
-async fn health_ready(State(state): State<AppState>) -> Response {
-    let (database_result, redis_result) = tokio::join!(
-        tokio::time::timeout(
-            HEALTH_CHECK_TIMEOUT,
-            crate::db::check_ready(&state.database)
-        ),
-        tokio::time::timeout(HEALTH_CHECK_TIMEOUT, redis_ready(&state.redis)),
-    );
-    let database_ready = matches!(database_result, Ok(Ok(())));
-    let redis_ready = matches!(redis_result, Ok(Ok(())));
-    if database_ready && redis_ready {
-        return (
-            StatusCode::OK,
-            Json(HealthResponse {
-                status: "ok",
-                service: crate::SERVICE_NAME,
-            }),
-        )
-            .into_response();
-    }
-
-    tracing::warn!(
-        event = "readiness_check_failed",
-        database = database_ready,
-        redis = redis_ready,
-        "application dependencies are not ready"
-    );
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(HealthResponse {
-            status: "unavailable",
-            service: crate::SERVICE_NAME,
-        }),
-    )
-        .into_response()
-}
-
-async fn redis_ready(client: &redis::Client) -> Result<(), redis::RedisError> {
-    let mut connection = client.get_multiplexed_async_connection().await?;
-    let _: String = redis::cmd("PING").query_async(&mut connection).await?;
-    Ok(())
-}
-
-async fn openid_configuration(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let mut response =
-        Json(OpenIdConfiguration::for_issuer(&state.config.issuer_url)).into_response();
-    if headers.contains_key(ORIGIN) {
-        response.headers_mut().insert(
-            ACCESS_CONTROL_ALLOW_ORIGIN,
-            axum::http::HeaderValue::from_static("*"),
-        );
+    /// 只取 content-type 的 MIME 部分，忽略 charset 等参数。
+    fn content_type(response: &Response) -> Option<&str> {
         response
-            .headers_mut()
-            .insert(VARY, axum::http::HeaderValue::from_static("Origin"));
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.split(';').next().unwrap_or(value))
     }
-    response
-}
 
-async fn jwks(State(state): State<AppState>) -> Json<jsonwebtoken::jwk::JwkSet> {
-    Json(state.keys.jwks())
+    #[tokio::test]
+    async fn spa_routes_serve_the_embedded_index_html() {
+        // 客户端路由（React Router）必须拿到 index.html 而不是 404，
+        // 且该行为不依赖 web/dist 是否存在，因为 index.html 是编译期内嵌的。
+        let response = send_request("/console/developer", Method::GET).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(content_type(&response), Some("text/html"));
+    }
+
+    #[tokio::test]
+    async fn root_path_serves_the_embedded_shell_with_an_explicit_charset() {
+        // 根路径必须始终由内嵌 shell 处理，而不是 ServeDir 的目录索引：
+        // ServeDir 走 mime_guess，只会给出不带 charset 的 `text/html`，
+        // 而调用方（含 tests/web.rs）依赖 `text/html; charset=utf-8`。
+        // 这条断言同时锁定“目录索引已关闭”这一配置。
+        let response = send_request("/", Method::GET).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("text/html; charset=utf-8")
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_api_paths_return_json_not_the_spa_shell() {
+        // /api 下的未知路径返回 JSON 404，避免客户端把 HTML 当 JSON 解析
+        let response = send_request("/api/v1/does-not-exist", Method::GET).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(content_type(&response), Some("application/json"));
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let error: serde_json::Value = serde_json::from_slice(&body).expect("JSON error");
+        assert_eq!(error["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn registered_api_routes_are_not_shadowed_by_the_static_service() {
+        // 回归保护：静态服务挂在 fallback 上，不能抢走已注册的 API 路由。
+        // 该端点要求会话，返回 401 说明请求到达了处理器而不是文件服务。
+        let response = send_request("/api/v1/auth/authorized-apps", Method::GET).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_is_not_shadowed_by_the_static_service() {
+        let response = send_request("/health/live", Method::GET).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(content_type(&response), Some("application/json"));
+    }
+
+    #[tokio::test]
+    async fn missing_static_assets_return_json_not_found() {
+        // 缺失的资源路径（带扩展名）返回 JSON 404，而不是 200 + HTML。
+        // 否则浏览器会把 index.html 当作 JS 执行并报 MIME 类型错误。
+        let response = send_request("/assets/missing-chunk.js", Method::GET).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(content_type(&response), Some("application/json"));
+    }
+
+    #[tokio::test]
+    async fn post_to_unknown_path_returns_not_found_not_method_not_allowed() {
+        // 验证 call_fallback_on_method_not_allowed(true) 生效：
+        // 缺少该配置时 ServeDir 会直接返回 405，绕过统一的 404 语义。
+        let response = send_request("/unknown-path", Method::POST).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }
