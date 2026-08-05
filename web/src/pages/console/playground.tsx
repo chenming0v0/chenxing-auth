@@ -80,7 +80,7 @@ export function PlaygroundPage() {
           />
         </HudPanel>
       ) : (
-        <section className="chenxing-hud-panel">
+        <HudPanel as="section">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h3 className="chenxing-h3">授权请求配置</h3>
@@ -142,7 +142,7 @@ export function PlaygroundPage() {
               <Button icon="send" onClick={() => void generate()}>生成授权 URL</Button>
             </div>
           )}
-        </section>
+        </HudPanel>
       )}
     </ConsoleLayout>
   )

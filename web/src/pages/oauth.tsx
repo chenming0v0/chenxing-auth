@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
 import { apiFetch, type AuthorizationDecisionResponse, type PendingAuthorization } from '../api'
 import { OAuthShell } from '../components/shells'
-import { BrandMark, Icon, Notice } from '../components/ui'
+import { BrandMark, HudPanel, Icon, Notice } from '../components/ui'
 import { initialOf } from '../data'
 
 function useRequestId(): string | null {
@@ -59,7 +59,7 @@ export function OAuthAccountPage() {
   return (
     <OAuthShell>
       {/* 页面主内容区：外层 OAuthShell 已提供唯一的 <main>，此处只能是 region */}
-      <div className="oauth-card chenxing-hud-panel" role="region" aria-label="选择辰星通行证账号">
+      <HudPanel className="oauth-card" role="region" aria-label="选择辰星通行证账号">
         <div className="oauth-card-head">
           <BrandMark className="h-7 w-7 shrink-0 rounded-[var(--chenxing-radius-md)] object-contain" />
           <span className="chenxing-body text-sm">使用辰星通行证登录</span>
@@ -108,7 +108,7 @@ export function OAuthAccountPage() {
             ) : null}
           </div>
         </div>
-      </div>
+      </HudPanel>
     </OAuthShell>
   )
 }
@@ -157,7 +157,7 @@ export function OAuthConsentPage() {
   return (
     <OAuthShell>
       {/* 页面主内容区：外层 OAuthShell 已提供唯一的 <main>，此处只能是 region */}
-      <div className="oauth-card chenxing-hud-panel" role="region" aria-label="辰星通行证授权确认">
+      <HudPanel className="oauth-card" role="region" aria-label="辰星通行证授权确认">
         <div className="oauth-card-head">
           <BrandMark className="h-7 w-7 shrink-0 rounded-[var(--chenxing-radius-md)] object-contain" />
           <span className="chenxing-body text-sm">使用辰星通行证登录</span>
@@ -207,7 +207,7 @@ export function OAuthConsentPage() {
             ) : null}
           </div>
         </div>
-      </div>
+      </HudPanel>
     </OAuthShell>
   )
 }
@@ -219,7 +219,7 @@ export function OAuthRedirectPage() {
     <OAuthShell>
       {/* 页面主内容区：外层 OAuthShell 已提供唯一的 <main>，此处只能是 region。
           保留 aria-live 以便 SPA 内跳转到本页时播报授权结果 */}
-      <div className="oauth-card chenxing-hud-panel" role="region" aria-live="polite" aria-label="辰星通行证授权结果">
+      <HudPanel className="oauth-card" role="region" aria-live="polite" aria-label="辰星通行证授权结果">
         <div className="oauth-card-head">
           <BrandMark className="h-7 w-7 shrink-0 rounded-[var(--chenxing-radius-md)] object-contain" />
           <span className="chenxing-body text-sm">{hasError ? '授权未完成' : '授权完成 · 正在返回接入应用'}</span>
@@ -249,7 +249,7 @@ export function OAuthRedirectPage() {
             </>
           )}
         </div>
-      </div>
+      </HudPanel>
     </OAuthShell>
   )
 }

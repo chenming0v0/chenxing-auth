@@ -285,7 +285,7 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
 
       {open ? (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[rgba(2,4,10,0.72)] px-4 py-8 backdrop-blur-md">
-          <form className="chenxing-hud-panel w-full max-w-lg max-h-[90vh] overflow-y-auto" onSubmit={save}>
+          <HudPanel as="form" className="w-full max-w-lg max-h-[90vh] overflow-y-auto" onSubmit={save}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="chenxing-h2 flex items-center gap-2">
@@ -348,7 +348,7 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
                 <Button type="submit" icon="save" disabled={busy}>保存</Button>
               </div>
             </div>
-          </form>
+          </HudPanel>
         </div>
       ) : null}
     </>

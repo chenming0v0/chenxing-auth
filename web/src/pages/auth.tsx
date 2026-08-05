@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
 import { apiFetch, externalLoginErrorMessage, type LoginResponse, type PendingLoginResponse } from '../api'
 import { AuthPanel, AuthShell } from '../components/shells'
-import { Button, Field, Icon, Notice, PasswordField } from '../components/ui'
+import { Button, Field, HudPanel, Icon, Notice, PasswordField } from '../components/ui'
 import { FactorOrchestrator } from './auth/factor-orchestrator'
 import { ExternalProviders } from './auth/external-providers'
 
@@ -228,7 +228,7 @@ export function BootstrapPage() {
     <AuthShell status="系统初始化" action="返回登录" actionTo="/login" className="">
       <section className="relative z-10 flex min-h-screen items-center justify-center px-6 py-14">
         <div className="w-full max-w-lg">
-          <div className="chenxing-hud-panel">
+          <HudPanel>
             <div className="text-center">
               <p className="chenxing-mono text-[10px] uppercase tracking-[0.3em] text-[var(--chenxing-cyan)]">// System Not Initialized</p>
               <h1 className="chenxing-h1 mt-3">点亮首座星门</h1>
@@ -270,7 +270,7 @@ export function BootstrapPage() {
                 </Button>
               </form>
             )}
-          </div>
+          </HudPanel>
           <p className="chenxing-mono mt-6 text-center text-[10px] uppercase tracking-[0.24em] text-[var(--chenxing-muted-foreground)]">First Light Sequence · 天穹辰星</p>
         </div>
       </section>
