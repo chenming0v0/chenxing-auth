@@ -13,9 +13,23 @@ use super::{
 };
 use crate::{error, state::AppState};
 
+/// list_users 默认返回条数（未提供 limit 查询参数时）。
+const DEFAULT_USER_LIST_LIMIT: i64 = 50;
+/// list_users 最大返回条数，与 AuditService::list 保持一致。
+const MAX_USER_LIST_LIMIT: i64 = 200;
+
 #[derive(Debug, Deserialize)]
 pub struct LimitQuery {
     pub limit: Option<i64>,
+}
+
+/// list_users 专用查询参数，支持可选分页。
+#[derive(Debug, Deserialize)]
+pub struct UserListQuery {
+    /// 返回条数，默认 50，最大 200，超限自动 clamp。
+    pub limit: Option<i64>,
+    /// 跳过条数，默认 0，用于手动翻页。
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,14 +56,26 @@ pub struct AdminSummary {
     pub status: String,
 }
 
-pub async fn list_users(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub async fn list_users(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<UserListQuery>,
+) -> Response {
     if let Err(response) =
         current_admin_permission(&state, &headers, AdminPermission::ManageUsers).await
     {
         return response;
     }
-    match state.users.list().await {
-        Ok(users) => (
+    // 无上限列表会把整张用户表（含 email）在单次响应里倾倒出去，
+    // 因此在数据库层强制 LIMIT/OFFSET；上限与 AuditService::list 保持一致。
+    let limit = query
+        .limit
+        .unwrap_or(DEFAULT_USER_LIST_LIMIT)
+        .clamp(1, MAX_USER_LIST_LIMIT);
+    let offset = query.offset.unwrap_or(0).max(0);
+    // 复用已分页的 query 用例，避免给无上限的 list 路径继续打补丁。
+    match state.users.query(None, None, limit, offset).await {
+        Ok((users, _total)) => (
             StatusCode::OK,
             Json(
                 users

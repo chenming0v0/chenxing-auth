@@ -242,10 +242,10 @@ Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限�
 
 ### 用户管理
 
-- `GET /api/v1/admin/users`：列出用户，需要 `ManageUsers`。
+- `GET /api/v1/admin/users?limit=50&offset=0`：列出用户，需要 `ManageUsers`。响应是用户数组。服务端强制分页：`limit` 默认 `50`，取值被 clamp 到 `[1, 200]`（与审计列表一致），`offset` 默认 `0`，负值按 `0` 处理。需要 `total` 和分页信封时用 `GET /api/v1/admin/users/query`。
 - `POST /api/v1/admin/users/{user_id}/{status}`：设置用户状态，需要 `ManageUsers`。状态由后端支持值决定，常用为 `active`、`disabled`；成功 `204`。
 
-用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`role`、`created_at`。
+用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`role`、`created_at`。按 `created_at DESC, id DESC` 排序。
 
 ### 特权用户管理
 
