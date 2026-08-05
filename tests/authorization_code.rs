@@ -27,9 +27,35 @@ fn authorization_code_preserves_oidc_nonce() {
         vec!["openid".to_owned()],
         "challenge".to_owned(),
         Some("nonce-value".to_owned()),
+        None,
     );
 
     assert_eq!(code.nonce.as_deref(), Some("nonce-value"));
+}
+
+/// 授权码必须携带签发时的会话绑定（AGENTS.md：授权码绑定 Client、
+/// Redirect URI 和用户会话）；`AuthorizationCode::new` 是无会话的降级构造。
+#[test]
+fn authorization_code_binds_the_issuing_session() {
+    let bound = AuthorizationCode::new_with_nonce(
+        "cx_project".to_owned(),
+        "https://project.example/callback".to_owned(),
+        "user-1".to_owned(),
+        vec!["openid".to_owned()],
+        "challenge".to_owned(),
+        None,
+        Some("session-token".to_owned()),
+    );
+    assert_eq!(bound.session_id.as_deref(), Some("session-token"));
+
+    let unbound = AuthorizationCode::new(
+        "cx_project".to_owned(),
+        "https://project.example/callback".to_owned(),
+        "user-1".to_owned(),
+        vec!["openid".to_owned()],
+        "challenge".to_owned(),
+    );
+    assert!(unbound.session_id.is_none());
 }
 
 #[test]

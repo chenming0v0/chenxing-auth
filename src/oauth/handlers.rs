@@ -66,7 +66,7 @@ async fn authorize_request(
         return error::oauth_bad_request("invalid_client", "client is invalid");
     };
 
-    let validated = match validate_authorization_request(&client, request.clone()) {
+    let mut validated = match validate_authorization_request(&client, request.clone()) {
         Ok(request) => request,
         Err(validation_error) => {
             tracing::info!(error = %validation_error, "OAuth authorization request rejected");
@@ -86,7 +86,8 @@ async fn authorize_request(
                 "Session realm=\"oauth\"",
             );
         }
-        let pending = pending_from_validated(&validated, None);
+        // 还没有会话，pending 以未绑定状态落盘；登录后由绑定接口补上会话。
+        let pending = pending_from_validated(&validated);
         return save_and_redirect_to_login(&state, &pending).await;
     };
 
@@ -100,7 +101,10 @@ async fn authorize_request(
             );
         }
     };
-    let pending = pending_from_validated(&validated, Some(session.token.clone()));
+    // 会话绑定挂到 validated 上：pending 和后续签发的授权码都从这里取值，
+    // 已授权直通路径（issue_preconsented_request）才不会丢掉绑定。
+    validated.session_id = Some(session.token.clone());
+    let pending = pending_from_validated(&validated);
 
     match state
         .consents

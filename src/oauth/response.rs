@@ -27,6 +27,8 @@ struct TokenResponse {
     id_token: Option<String>,
 }
 
+/// `auth_time` 是终端用户完成认证的时刻（会话建立时间），`None` 表示无会话
+/// 上下文，ID Token 将省略该 Claim。见 `id_token::IdTokenClaims::auth_time`。
 pub async fn issue_token_response(
     state: &AppState,
     user_id: &str,
@@ -34,9 +36,19 @@ pub async fn issue_token_response(
     scopes: &[String],
     refresh_token: Option<String>,
     nonce: Option<&str>,
+    auth_time: Option<i64>,
 ) -> Response {
     with_no_store_headers(
-        issue_token_response_inner(state, user_id, client_id, scopes, refresh_token, nonce).await,
+        issue_token_response_inner(
+            state,
+            user_id,
+            client_id,
+            scopes,
+            refresh_token,
+            nonce,
+            auth_time,
+        )
+        .await,
     )
 }
 
@@ -57,6 +69,7 @@ async fn issue_token_response_inner(
     scopes: &[String],
     refresh_token: Option<String>,
     nonce: Option<&str>,
+    auth_time: Option<i64>,
 ) -> Response {
     match active_user_id(state, user_id).await {
         Ok(Some(_)) => {}
@@ -82,7 +95,7 @@ async fn issue_token_response_inner(
             return error::oauth_temporarily_unavailable();
         }
     };
-    let id_token = match issue_id_token(state, user_id, client_id, scopes, nonce).await {
+    let id_token = match issue_id_token(state, user_id, client_id, scopes, nonce, auth_time).await {
         Ok(token) => token,
         Err(response) => return response,
     };
@@ -106,6 +119,7 @@ async fn issue_id_token(
     client_id: &str,
     scopes: &[String],
     nonce: Option<&str>,
+    auth_time: Option<i64>,
 ) -> Result<Option<String>, Response> {
     if !scopes.iter().any(|scope| scope == "openid") {
         return Ok(None);
@@ -138,6 +152,7 @@ async fn issue_id_token(
                 .any(|scope| scope == "profile")
                 .then_some(profile.display_name.as_deref())
                 .flatten(),
+            auth_time,
         },
         state.config.session_ttl_seconds,
     )

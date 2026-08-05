@@ -323,7 +323,7 @@ async fn validated_pending(
             "client is invalid",
         ));
     };
-    validate_authorization_request(
+    let mut validated = validate_authorization_request(
         &client,
         AuthorizationRequest {
             client_id: pending.client_id.clone(),
@@ -336,7 +336,11 @@ async fn validated_pending(
             code_challenge_method: Some(pending.code_challenge_method.clone()),
         },
     )
-    .map_err(|_| error::oauth_bad_request("invalid_request", "authorization request is invalid"))
+    .map_err(|_| error::oauth_bad_request("invalid_request", "authorization request is invalid"))?;
+    // 调用方已校验 pending 绑定的会话就是当前会话，授权码必须继承该绑定，
+    // 否则用户登出后授权码在 TTL 内仍能兑换 token。
+    validated.session_id = pending.session_id.clone();
+    Ok(validated)
 }
 
 fn error_redirect(pending: &PendingAuthorization) -> Option<String> {

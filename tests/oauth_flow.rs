@@ -163,6 +163,7 @@ async fn disabled_user_cannot_exchange_oauth_credentials_without_consuming_them(
         vec!["openid".to_owned(), "profile".to_owned()],
         challenge,
         Some("disabled-nonce".to_owned()),
+        None,
     );
     let refresh = RefreshToken::new(
         client_id.clone(),
@@ -243,6 +244,7 @@ async fn disabled_user_cannot_exchange_oauth_credentials_without_consuming_them(
         &["openid".to_owned(), "profile".to_owned()],
         None,
         Some("disabled-nonce"),
+        None,
     )
     .await;
     assert_ne!(response.status(), StatusCode::OK);
@@ -435,6 +437,7 @@ async fn authorization_code_is_restored_when_token_issuance_fails() {
         vec!["openid".to_owned(), "profile".to_owned()],
         challenge,
         Some("restore-nonce".to_owned()),
+        None,
     );
     state
         .authorization_codes
@@ -562,6 +565,7 @@ async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
             nonce: None,
             code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned(),
             owner_user_id: Some(user_id),
+            session_id: None,
         },
     )
     .await

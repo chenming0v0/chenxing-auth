@@ -11,6 +11,17 @@ pub struct IdTokenClaims {
     pub aud: String,
     pub exp: usize,
     pub iat: usize,
+    /// 终端用户完成认证的时刻（OIDC Core 1.0 §2）。
+    ///
+    /// 取值是会话建立时间，不是 `iat`：`iat` 是 ID Token 签发时刻，二者在
+    /// 「登录后一段时间才授权」的场景相差可以很大，混用会让依赖 `max_age`
+    /// 的 RP 判断错误。
+    ///
+    /// 无会话上下文时（授权码降级路径、刷新令牌流程）省略该键而不是写 `null`：
+    /// OIDC Core 5.1 规定「不返回的 Claim 应当省略」，`null` 会让严格的 RP
+    /// 客户端库解析失败。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_time: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -24,6 +35,8 @@ pub struct IdTokenProfile<'a> {
     pub nonce: Option<&'a str>,
     pub email: Option<&'a str>,
     pub name: Option<&'a str>,
+    /// 会话建立时间的 Unix 秒，`None` 表示没有会话上下文，`auth_time` 将被省略。
+    pub auth_time: Option<i64>,
 }
 
 #[derive(Debug, Error)]
@@ -75,6 +88,9 @@ pub fn issue_id_token_with_profile(
         aud: audience.to_owned(),
         exp,
         iat: now,
+        // 负数或超范围的时间戳只可能来自损坏数据；这种情况省略该 Claim，
+        // 不要签出一个错误的 auth_time。
+        auth_time: profile.auth_time.and_then(|value| usize::try_from(value).ok()),
         nonce: profile.nonce.map(str::to_owned),
         email: profile.email.map(str::to_owned),
         name: profile.name.map(str::to_owned),

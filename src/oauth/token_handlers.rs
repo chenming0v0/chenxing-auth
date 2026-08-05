@@ -146,6 +146,12 @@ async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> 
             return error::oauth_temporarily_unavailable();
         }
     }
+    // 会话绑定校验必须在 take_if_matches 之前：AGENTS.md 要求授权码在绑定、
+    // 过期和 PKCE 检查全部通过后才原子消费，否则一次失败请求就烧掉有效凭据。
+    let auth_time = match authorization_code_session_auth_time(&state, &code).await {
+        Ok(auth_time) => auth_time,
+        Err(response) => return response,
+    };
     match state
         .authorization_codes
         .take_if_matches(code_value, &code)
@@ -177,12 +183,49 @@ async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> 
         &code.scopes,
         Some(refresh.value.clone()),
         code.nonce.as_deref(),
+        auth_time,
     )
     .await;
     if response.status() != StatusCode::OK {
         compensate_authorization_code_exchange(&state, &code, &refresh.value).await;
     }
     response
+}
+
+/// 校验授权码绑定的会话仍然有效，并返回该会话的认证时刻。
+///
+/// 返回的时间戳是会话建立时间，用作 ID Token 的 `auth_time`
+/// （OIDC Core 1.0 §2：`auth_time` 是终端用户完成认证的时刻，不是令牌签发时刻，
+/// 所以不能用 `iat` 顶替）。
+///
+/// `session_id` 为 `None` 时返回 `Ok(None)`：授权码不是浏览器会话签发的降级路径，
+/// 不做会话校验，`auth_time` 也不声明，避免填入错误值。
+async fn authorization_code_session_auth_time(
+    state: &AppState,
+    code: &AuthorizationCode,
+) -> Result<Option<i64>, Response> {
+    let Some(session_token) = code.session_id.as_deref() else {
+        return Ok(None);
+    };
+    match state.sessions.find(session_token).await {
+        Ok(Some(session)) if session.is_active() => Ok(Some(session.created_at.unix_timestamp())),
+        Ok(_) => {
+            // 会话已撤销或过期（典型场景：用户授权后立刻登出）。
+            // 不记录会话令牌，它是凭据。
+            tracing::info!(
+                client_id = %code.client_id,
+                "OAuth authorization code rejected: issuing session is no longer active"
+            );
+            Err(error::oauth_bad_request(
+                "invalid_grant",
+                "authorization code is invalid",
+            ))
+        }
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to load authorization code session");
+            Err(error::oauth_temporarily_unavailable())
+        }
+    }
 }
 
 async fn compensate_authorization_code_exchange(
@@ -325,6 +368,8 @@ async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Respo
         client_id,
         &scopes,
         Some(next_refresh.value.clone()),
+        None,
+        // 刷新流程没有会话上下文，`auth_time` 未知就省略，不填错的值。
         None,
     )
     .await;

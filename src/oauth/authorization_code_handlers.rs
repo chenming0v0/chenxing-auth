@@ -77,6 +77,8 @@ pub async fn issue_authorization_code_result(
         validated.scopes,
         validated.code_challenge,
         validated.nonce,
+        // 授权码绑定签发时的会话：会话撤销后 Token 端点会拒绝兑换。
+        validated.session_id,
     );
     let state_value = validated.state;
     if let Err(store_error) = state.authorization_codes.save(&code).await {
@@ -233,6 +235,8 @@ pub fn validated_pending_request(pending: PendingAuthorization) -> ValidatedAuth
         nonce: pending.nonce,
         code_challenge: pending.code_challenge,
         owner_user_id: None,
+        // Pending 请求已经绑定了会话，必须原样带下去，否则授权码丢失会话绑定。
+        session_id: pending.session_id,
     }
 }
 
@@ -251,9 +255,11 @@ pub(crate) fn authorization_quota_redirect(pending: &PendingAuthorization) -> Re
     Redirect::to(redirect.as_str()).into_response()
 }
 
+/// `validated_pending_request` 的反向路径：会话绑定统一从
+/// `ValidatedAuthorizationRequest::session_id` 读取，不再另开参数，
+/// 避免两个来源不一致时静默丢掉绑定。
 pub(crate) fn pending_from_validated(
     request: &ValidatedAuthorizationRequest,
-    session_id: Option<String>,
 ) -> PendingAuthorization {
     PendingAuthorization {
         request_id: uuid::Uuid::new_v4().to_string(),
@@ -264,7 +270,7 @@ pub(crate) fn pending_from_validated(
         nonce: request.nonce.clone(),
         code_challenge: request.code_challenge.clone(),
         code_challenge_method: "S256".to_owned(),
-        session_id,
+        session_id: request.session_id.clone(),
     }
 }
 
@@ -282,7 +288,7 @@ pub async fn issue_authorization_code(
     user_id: String,
     validated: ValidatedAuthorizationRequest,
 ) -> Response {
-    let pending = pending_from_validated(&validated, None);
+    let pending = pending_from_validated(&validated);
     match issue_authorization_code_result(state, user_id, validated).await {
         Ok(AuthorizationCodeIssue::Redirect(redirect)) => Redirect::to(&redirect).into_response(),
         Ok(AuthorizationCodeIssue::QuotaExceeded) => authorization_quota_redirect(&pending),
