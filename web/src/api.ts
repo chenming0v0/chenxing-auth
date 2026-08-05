@@ -11,9 +11,9 @@ export class ApiError extends Error {
 
 export type ApiRequestInit = RequestInit & { redirectOn401?: boolean }
 
-function csrfToken(): string | undefined {
-  if (typeof document === 'undefined') return undefined
-  const value = document.cookie
+/** 从 cookie 字符串中解析 CSRF token；接受字符串入参以便脱离 document 单测。 */
+export function parseCsrfToken(cookieString: string): string | undefined {
+  const value = cookieString
     .split(';')
     .map((cookie) => cookie.trim())
     .find((cookie) => cookie.startsWith('chenxing_csrf='))
@@ -26,37 +26,45 @@ function csrfToken(): string | undefined {
   }
 }
 
-const safeMessages: Record<string, string> = {
-  invalid_credentials: '账号或密码不正确。',
-  invalid_factor: '验证码不正确，请重试。',
-  invalid_login_ticket: '验证流程已失效，请重新登录。',
-  email_already_registered: '注册信息无法使用，请检查后重试。',
-  email_domain_not_allowed: '当前邮箱域名不允许注册。',
-  passkey_disabled: 'Passkey 登录尚未启用。',
-  username_already_registered: '注册信息无法使用，请检查后重试。',
-  oauth_client_quota_exceeded: '当前套餐的 OAuth 应用额度已用尽。',
-  oauth_quota_exceeded: '当前 OAuth 授权额度已用尽。',
-  authorization_request_expired: '授权请求已过期，请重新发起。',
-  authorization_request_processed: '授权请求已经处理过。',
-  csrf_invalid: '请求校验失败，请刷新页面后重试。',
-  csrf_required: '请求校验失败，请刷新页面后重试。',
-  invalid_plan: '套餐参数不正确，请检查输入。',
-  plan_not_found: '套餐不存在或已失效。',
-  plan_code_conflict: '套餐代码已被占用，请更换。',
-  default_plan_protected: '默认套餐不能取消默认标记或归档。',
-  archived_plan_default: '已归档的套餐不能设为默认。',
-  plan_archived: '已归档的套餐不能分配给用户。',
-  invalid_expiration: '到期时间格式不正确，请重新选择。',
-  oauth_provider_not_found: '该外部身份源不可用或已被停用。',
-  oauth_login_failed: '外部身份源登录未完成，请重试。',
-  oauth_login_rate_limited: '外部登录尝试过于频繁，请稍后重试。',
-  oauth_request_expired: '授权请求已过期，请重新发起。',
-  oauth_request_binding_failed: '授权请求绑定失败，请重新开始。',
-  oauth_account_link_required: '该外部账号尚未绑定辰星通行证，请先登录后在账号设置中绑定。',
+function csrfToken(): string | undefined {
+  if (typeof document === 'undefined') return undefined
+  return parseCsrfToken(document.cookie)
 }
 
-function safeErrorMessage(status: number, code?: string): string {
-  if (code && safeMessages[code]) return safeMessages[code]
+/** 安全错误码文案映射，使用 Map 避免原型链污染（Object 字面量索引可访问 constructor 等原型属性）。 */
+const safeMessages = new Map<string, string>([
+  ['invalid_credentials', '账号或密码不正确。'],
+  ['invalid_factor', '验证码不正确，请重试。'],
+  ['invalid_login_ticket', '验证流程已失效，请重新登录。'],
+  ['email_already_registered', '注册信息无法使用，请检查后重试。'],
+  ['email_domain_not_allowed', '当前邮箱域名不允许注册。'],
+  ['passkey_disabled', 'Passkey 登录尚未启用。'],
+  ['username_already_registered', '注册信息无法使用，请检查后重试。'],
+  ['oauth_client_quota_exceeded', '当前套餐的 OAuth 应用额度已用尽。'],
+  ['oauth_quota_exceeded', '当前 OAuth 授权额度已用尽。'],
+  ['authorization_request_expired', '授权请求已过期，请重新发起。'],
+  ['authorization_request_processed', '授权请求已经处理过。'],
+  ['csrf_invalid', '请求校验失败，请刷新页面后重试。'],
+  ['csrf_required', '请求校验失败，请刷新页面后重试。'],
+  ['invalid_plan', '套餐参数不正确，请检查输入。'],
+  ['plan_not_found', '套餐不存在或已失效。'],
+  ['plan_code_conflict', '套餐代码已被占用，请更换。'],
+  ['default_plan_protected', '默认套餐不能取消默认标记或归档。'],
+  ['archived_plan_default', '已归档的套餐不能设为默认。'],
+  ['plan_archived', '已归档的套餐不能分配给用户。'],
+  ['invalid_expiration', '到期时间格式不正确，请重新选择。'],
+  ['oauth_provider_not_found', '该外部身份源不可用或已被停用。'],
+  ['oauth_login_failed', '外部身份源登录未完成，请重试。'],
+  ['oauth_login_rate_limited', '外部登录尝试过于频繁，请稍后重试。'],
+  ['oauth_request_expired', '授权请求已过期，请重新发起。'],
+  ['oauth_request_binding_failed', '授权请求绑定失败，请重新开始。'],
+  ['oauth_account_link_required', '该外部账号尚未绑定辰星通行证，请先登录后在账号设置中绑定。'],
+])
+
+/** 把 HTTP 状态码和后端错误码映射为用户可见文案；返回值恒为 string，不泄露内部细节。 */
+export function safeErrorMessage(status: number, code?: string): string {
+  const mapped = code ? safeMessages.get(code) : undefined
+  if (mapped) return mapped
   if (status === 400) return '请求参数不正确，请检查输入。'
   if (status === 401) return '登录状态已失效，请重新登录。'
   if (status === 403) return '当前账号没有执行此操作的权限。'
@@ -127,9 +135,13 @@ export type TotpSetupResponse = { secret_base32: string; otpauth_url: string }
 /** 登录页可见的外部身份源，仅包含渲染入口所需的公开字段。 */
 export type PublicExternalProvider = { slug: string; name: string }
 
-/** 外部登录失败时后端回跳 /login?external_error=<code>，此处复用统一文案表。 */
+/**
+ * 外部登录失败时后端回跳 /login?external_error=<code>，此处复用统一文案表。
+ * code 直接来自 URL 查询参数，必须经 Map 查表，避免命中 Object.prototype 上的
+ * constructor / toString 等成员导致 React 渲染函数子节点而整页崩溃。
+ */
 export function externalLoginErrorMessage(code: string): string {
-  return safeMessages[code] ?? '外部身份源登录未完成，请重试。'
+  return safeMessages.get(code) ?? '外部身份源登录未完成，请重试。'
 }
 
 export type SessionItem = {
@@ -313,19 +325,34 @@ export type AuthorizationDecisionResponse = { decision: 'approve' | 'deny'; redi
 
 let entitlementCache: EntitlementsResponse | null = null
 let entitlementRequest: Promise<EntitlementsResponse> | null = null
+/**
+ * 缓存版本计数器。clearApiCache()（注销时调用）递增它，使注销前发出的 in-flight 请求
+ * 在 resolve 后无法把上一个用户的权益数据写回缓存，避免跨用户泄露。
+ */
+let cacheGeneration = 0
 
 export function getEntitlements(force = false): Promise<EntitlementsResponse> {
   if (force) entitlementCache = null
   if (entitlementCache) return Promise.resolve(entitlementCache)
   if (!entitlementRequest) {
+    // 在发起请求时锁定版本，回调里比对以识别期间是否发生过注销
+    const generation = cacheGeneration
     entitlementRequest = apiFetch<EntitlementsResponse>('/api/v1/auth/entitlements')
-      .then((value) => { entitlementCache = value; return value })
-      .finally(() => { entitlementRequest = null })
+      .then((value) => {
+        // 版本不匹配说明缓存已被清理：数据照常返回给当次调用者，但不写入缓存
+        if (generation === cacheGeneration) entitlementCache = value
+        return value
+      })
+      .finally(() => {
+        // 无条件清理 in-flight 引用，避免注销后的新请求复用上一个会话的 Promise
+        entitlementRequest = null
+      })
   }
   return entitlementRequest
 }
 
 export function clearApiCache(): void {
+  cacheGeneration += 1
   entitlementCache = null
   entitlementRequest = null
 }
