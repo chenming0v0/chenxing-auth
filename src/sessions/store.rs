@@ -6,7 +6,10 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use time::OffsetDateTime;
 
-use super::{crypto, domain::Session};
+use super::{
+    crypto,
+    domain::{Session, SessionPayload},
+};
 use crate::{
     config::AuthEncryptionKeyRing,
     sqlx::{Postgres, Transaction},
@@ -105,11 +108,14 @@ impl SessionStore {
         ttl: Duration,
     ) -> Result<(), SessionStoreError> {
         if self.metadata.is_none() {
+            // 只序列化 SessionPayload：明文会话令牌不进入持久化载荷，
+            // Redis 键本身已经由令牌的 SHA-256 派生，读取时由调用方补回 token。
+            let stored_payload = SessionPayload::from(&*session);
             let payload = crypto::encrypt(
                 self.encryption_keys
                     .as_ref()
                     .ok_or(SessionStoreError::MetadataUnavailable)?,
-                &serde_json::to_vec(session)?,
+                &serde_json::to_vec(&stored_payload)?,
             )?;
             let mut connection = self.client.get_multiplexed_async_connection().await?;
             let created_at = timestamp_watermark(session.created_at);
@@ -164,7 +170,9 @@ impl SessionStore {
         .fetch_one(&mut *transaction)
         .await?;
         session.id = id;
-        let encrypted_payload = self.encrypt_payload(&serde_json::to_vec(session)?)?;
+        // 载荷不含明文令牌：token_hash 列已足够定位记录，find() 也用请求令牌覆盖该字段。
+        let stored_payload = SessionPayload::from(&*session);
+        let encrypted_payload = self.encrypt_payload(&serde_json::to_vec(&stored_payload)?)?;
         crate::sqlx::query("UPDATE user_sessions SET session_payload = $1 WHERE id = $2")
             .bind(encrypted_payload)
             .bind(id)
@@ -205,34 +213,21 @@ impl SessionStore {
             let Some((id, user_id, created_at, expires_at, payload)) = metadata else {
                 return Ok(None);
             };
-            let decoded_session: Option<Session> = if let Some(payload) = payload {
-                crypto::decrypt(
-                    self.encryption_keys
-                        .as_ref()
-                        .ok_or(SessionStoreError::MetadataUnavailable)?,
-                    &payload,
-                )
-                .ok()
-                .and_then(|payload| serde_json::from_slice(&payload).ok())
+            let decoded_payload = if let Some(payload) = payload {
+                self.decode_payload(&payload)?
             } else {
                 let mut connection = self.client.get_multiplexed_async_connection().await?;
                 let Some(payload): Option<Vec<u8>> = connection.get(self.key(token)).await? else {
                     return Ok(None);
                 };
-                crypto::decrypt(
-                    self.encryption_keys
-                        .as_ref()
-                        .ok_or(SessionStoreError::MetadataUnavailable)?,
-                    &payload,
-                )
-                .ok()
-                .and_then(|payload| serde_json::from_slice(&payload).ok())
+                self.decode_payload(&payload)?
             };
-            let Some(mut session) = decoded_session else {
+            let Some(stored_payload) = decoded_payload else {
                 return Ok(None);
             };
+            // 令牌只来自请求，不来自存储。
+            let mut session = stored_payload.into_session(token.to_owned());
             session.id = id;
-            session.token = token.to_owned();
             session.user_id = user_id.to_string();
             session.created_at = created_at;
             session.expires_at = expires_at;
@@ -245,17 +240,11 @@ impl SessionStore {
         let Some(payload) = payload else {
             return Ok(None);
         };
-        let decoded_session: Option<Session> = crypto::decrypt(
-            self.encryption_keys
-                .as_ref()
-                .ok_or(SessionStoreError::MetadataUnavailable)?,
-            &payload,
-        )
-        .ok()
-        .and_then(|payload| serde_json::from_slice(&payload).ok());
-        let Some(session) = decoded_session else {
+        let Some(stored_payload) = self.decode_payload(&payload)? else {
             return Ok(None);
         };
+        // Redis 键由令牌哈希派生，能读到这条记录就说明调用方持有该令牌。
+        let session = stored_payload.into_session(token.to_owned());
         let marker: Option<String> = connection
             .get(self.redis_only_revocation_key(&session.user_id))
             .await?;
@@ -397,6 +386,26 @@ impl SessionStore {
             .as_ref()
             .ok_or(SessionStoreError::MetadataUnavailable)?;
         crypto::encrypt(keys, payload)
+    }
+
+    /// 解密并解析持久化载荷。
+    ///
+    /// 解密或解析失败返回 `Ok(None)`，由调用方按“会话不存在”处理，避免把密钥配置
+    /// 问题和损坏数据变成可探测的错误差异。缺少密钥环属于配置错误，仍然返回 `Err`。
+    ///
+    /// 升级前写入的载荷含有 `token` 字段；`SessionPayload` 未标注
+    /// `deny_unknown_fields`，serde 会忽略这个多余字段，因此历史数据继续可读。
+    pub(super) fn decode_payload(
+        &self,
+        payload: &[u8],
+    ) -> Result<Option<SessionPayload>, SessionStoreError> {
+        let keys = self
+            .encryption_keys
+            .as_ref()
+            .ok_or(SessionStoreError::MetadataUnavailable)?;
+        Ok(crypto::decrypt(keys, payload)
+            .ok()
+            .and_then(|payload| serde_json::from_slice(&payload).ok()))
     }
 
     fn key(&self, token: &str) -> String {
