@@ -142,6 +142,7 @@ async fn cleanup(fixture: &RevokeFixture) {
 #[tokio::test]
 async fn session_revoke_requires_valid_session_cookie() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method("DELETE")
@@ -159,6 +160,7 @@ async fn session_revoke_requires_valid_session_cookie() {
 async fn session_revoke_rejects_session_header_without_cookie() {
     // 即使提供 x-chenxing-session 请求头，只要缺失 Session Cookie，必须拒绝。
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method("DELETE")
