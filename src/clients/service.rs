@@ -1,5 +1,6 @@
 use crate::sqlx::PgPool;
 use crate::users::domain::UserId;
+use uuid::Uuid;
 use serde::Serialize;
 use thiserror::Error;
 
