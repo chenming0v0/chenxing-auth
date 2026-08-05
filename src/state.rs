@@ -145,10 +145,13 @@ impl AppState {
             settings.clone(),
             config.missing_source_ip_policy,
         );
-        let clients =
-            ClientService::with_limits(database.clone(), config.client_registration_limits.clone());
         let authorization_codes = AuthorizationCodeStore::new(redis.clone());
         let refresh_tokens = RefreshTokenStore::new(redis.clone());
+        // Issue #62：Secret 轮换必须能撤销该 Client 已签发的 Refresh Token，
+        // 否则轮换只换掉哈希，攻击者手里的 token 依然能换出新 Access Token。
+        let clients =
+            ClientService::with_limits(database.clone(), config.client_registration_limits.clone())
+                .with_refresh_tokens(refresh_tokens.clone());
         let authorization_requests = AuthorizationRequestStore::new(redis.clone());
         let consents = ConsentService::new(database.clone());
         let revocations = TokenRevocationStore::new_with_pool(redis.clone(), database.clone());
