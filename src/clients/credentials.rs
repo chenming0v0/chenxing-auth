@@ -109,7 +109,10 @@ pub fn verify_client_credentials_constant_time(
     } else {
         None
     };
-    let hash_for_verify: &str = stored_hash_str.or_else(dummy_client_secret_hash).unwrap_or("");
+    let hash_for_verify: &str = match stored_hash_str {
+        Some(h) => h,
+        None => dummy_client_secret_hash().unwrap_or(""),
+    };
 
     // 选取探针：请求携带 secret 则用请求值；否则用探针常量（不能通过任何真实 hash 的验证）。
     let secret_for_verify: &str = client_secret.unwrap_or(DUMMY_SECRET_PROBE);
