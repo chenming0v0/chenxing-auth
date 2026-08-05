@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { Link } from '../../router'
 import { apiFetch, type ClientInput, type OwnedOAuthClient, type RegisteredOwnedOAuthClient } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, Chip, CopyValue, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, SelectField, TextAreaField } from '../../components/ui'
+import { Badge, Button, Chip, CopyValue, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, TextAreaField } from '../../components/ui'
 
 function splitValues(value: string): string[] {
   return value.split(/[\n, ]+/).map((item) => item.trim()).filter(Boolean)

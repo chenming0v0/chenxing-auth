@@ -18,6 +18,21 @@ function useClickAway(open: boolean, onClose: () => void) {
   return ref
 }
 
+/* Expanded at page top, condensed once the user scrolls; sentinel keeps it
+   scroll-container agnostic (works for window scroll and inner scrollers). */
+function useTopbarExpanded() {
+  const [expanded, setExpanded] = useState(true)
+  const sentinelRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const sentinel = sentinelRef.current
+    if (!sentinel || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(([entry]) => setExpanded(entry.isIntersecting))
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [])
+  return { expanded, sentinelRef }
+}
+
 function NavMenu({ extra }: { extra?: ReactNode }) {
   return (
     <div data-menu className="chenxing-menu absolute right-0 top-full z-50 mt-3 w-60">
@@ -55,32 +70,54 @@ function AccountMenu() {
   const navigate = useNavigate()
   const { user, logout } = useAuth()
   const name = user?.display_name || user?.username || '辰'
+  const memberId = user?.id != null ? `NO.${String(user.id).padStart(6, '0')}` : 'NO.000000'
+  const handle = user?.username ? `@${user.username}` : '@user'
   return (
     <div className="relative" ref={ref}>
       <button type="button" className="chenxing-avatar h-9 w-9 text-sm" aria-label="账户菜单" onClick={() => setOpen((value) => !value)}>
         {initialOf(name)}
       </button>
       {open ? (
-        <div className="chenxing-menu absolute right-0 top-full z-50 mt-3">
-          <Link to="/console/profile" className="chenxing-menu-item" onClick={() => setOpen(false)}>
-            <Icon name="settings" className="text-[var(--chenxing-cyan)]" size={16} />个人设置
-          </Link>
-          <button type="button" className="chenxing-menu-item">
-            <Icon name="key-round" className="text-[var(--chenxing-cyan)]" size={16} />令牌管理
-          </button>
-          <button type="button" className="chenxing-menu-item">
-            <Icon name="wallet" className="text-[var(--chenxing-cyan)]" size={16} />钱包管理
-          </button>
-          <div className="chenxing-divider my-1" />
-          <button
-            type="button"
-            className="chenxing-menu-item"
-            onClick={() => {
-              void logout().then(() => navigate('/login'))
-            }}
-          >
-            <Icon name="log-out" className="text-[var(--chenxing-error)]" size={16} />退出登录
-          </button>
+        <div className="chenxing-menu absolute right-0 top-full z-50 mt-3 w-64 p-0 overflow-hidden">
+          {/* ── 用户信息头 ── */}
+          <div className="chenxing-account-header">
+            <div className="chenxing-avatar h-14 w-14 text-lg pointer-events-none">
+              {initialOf(name)}
+            </div>
+            <h3 className="mt-2 text-sm font-semibold text-[var(--chenxing-foreground)]">{name}</h3>
+            <div className="mt-2 grid grid-cols-2 gap-x-6 text-center text-[11px]">
+              <div>
+                <p className="chenxing-caption uppercase tracking-[0.1em]">会员序列</p>
+                <p className="chenxing-mono mt-0.5 text-[var(--chenxing-foreground)]">{memberId}</p>
+              </div>
+              <div>
+                <p className="chenxing-caption uppercase tracking-[0.1em]">@ Handle</p>
+                <p className="chenxing-mono mt-0.5 text-[var(--chenxing-cyan)]">{handle}</p>
+              </div>
+            </div>
+          </div>
+          {/* ── 菜单项 ── */}
+          <div className="p-1">
+            <Link to="/console/profile" className="chenxing-menu-item" onClick={() => setOpen(false)}>
+              <Icon name="user" className="text-[var(--chenxing-cyan)]" size={16} />账户设置
+            </Link>
+            <Link to="/console/plans" className="chenxing-menu-item" onClick={() => setOpen(false)}>
+              <Icon name="receipt" className="text-[var(--chenxing-cyan)]" size={16} />套餐订阅
+            </Link>
+            <button type="button" className="chenxing-menu-item">
+              <Icon name="book-open" className="text-[var(--chenxing-cyan)]" size={16} />文档中心
+            </button>
+            <div className="chenxing-divider my-1" />
+            <button
+              type="button"
+              className="chenxing-menu-item"
+              onClick={() => {
+                void logout().then(() => navigate('/login'))
+              }}
+            >
+              <Icon name="log-out" className="text-[var(--chenxing-error)]" size={16} />退出
+            </button>
+          </div>
         </div>
       ) : null}
     </div>
@@ -101,21 +138,25 @@ export function GlobalTopbar({
   loggedIn?: boolean
   menuExtra?: ReactNode
 }) {
+  const { expanded, sentinelRef } = useTopbarExpanded()
   return (
-    <header className="chenxing-topbar">
-      <Link to="/" className="flex items-center gap-2.5 justify-self-start">
-        <BrandLockup />
-      </Link>
-      <div className="chenxing-topbar-status" data-topbar-status>
-        <span>{status}</span>
-      </div>
-      <div className="flex items-center gap-2 justify-self-end">
-        <HamburgerMenu extra={menuExtra} />
-        {loggedIn ? <AccountMenu /> : action && actionTo ? (
-          <Link to={actionTo} className="chenxing-btn-primary text-sm">{action}</Link>
-        ) : null}
-      </div>
-    </header>
+    <>
+      <div ref={sentinelRef} aria-hidden="true" className="chenxing-topbar-sentinel" />
+      <header className="chenxing-topbar" data-expanded={expanded || undefined}>
+        <Link to="/" className="chenxing-topbar-brand flex items-center gap-2.5 justify-self-start">
+          <BrandLockup />
+        </Link>
+        <div className="chenxing-topbar-status" data-topbar-status>
+          <span>{status}</span>
+        </div>
+        <div className="flex items-center gap-2 justify-self-end">
+          <HamburgerMenu extra={menuExtra} />
+          {loggedIn ? <AccountMenu /> : action && actionTo ? (
+            <Link to={actionTo} className="chenxing-btn-primary text-sm">{action}</Link>
+          ) : null}
+        </div>
+      </header>
+    </>
   )
 }
 

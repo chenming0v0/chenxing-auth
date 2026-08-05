@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { apiFetch, type OAuthProviderInput, type OAuthProviderSummary } from '../../../api'
-import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PasswordField, SelectField, ToggleRow } from '../../../components/ui'
+import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '../../../components/ui'
+import { SelectField } from '../../../components/select'
 
 type ProviderForm = {
   name: string
@@ -299,13 +300,18 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
             </div>
             <div className="mt-5 grid gap-4">
               {!editing ? (
-                <SelectField label="预设模板" value={template} onChange={(event) => applyTemplate(event.target.value)}>
-                  <option value="custom">自定义</option>
-                  <option value="github_enterprise">GitHub Enterprise</option>
-                  <option value="gitlab">GitLab</option>
-                  <option value="gitea">Gitea</option>
-                  <option value="keycloak">Keycloak</option>
-                </SelectField>
+                <SelectField
+                  label="预设模板"
+                  value={template}
+                  onChange={applyTemplate}
+                  options={[
+                    { value: 'custom', label: '自定义' },
+                    { value: 'github_enterprise', label: 'GitHub Enterprise' },
+                    { value: 'gitlab', label: 'GitLab' },
+                    { value: 'gitea', label: 'Gitea' },
+                    { value: 'keycloak', label: 'Keycloak' },
+                  ]}
+                />
               ) : null}
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="显示名称 *" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如: 企业 GitLab" required />
@@ -323,10 +329,15 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
                 <Field label="Name Claim" value={form.name_claim} onChange={(event) => setForm({ ...form, name_claim: event.target.value })} />
                 <Field label="Email Verified Claim" value={form.email_verified_claim} onChange={(event) => setForm({ ...form, email_verified_claim: event.target.value })} />
               </div>
-              <SelectField label="Client Auth Method" value={form.client_auth_method} onChange={(event) => setForm({ ...form, client_auth_method: event.target.value as 'basic' | 'request_body' })}>
-                <option value="basic">basic</option>
-                <option value="request_body">request_body</option>
-              </SelectField>
+              <SelectField
+                label="Client Auth Method"
+                value={form.client_auth_method}
+                onChange={(value) => setForm({ ...form, client_auth_method: value as 'basic' | 'request_body' })}
+                options={[
+                  { value: 'basic', label: 'basic' },
+                  { value: 'request_body', label: 'request_body' },
+                ]}
+              />
               {editing?.callback_uri ? <Field label="Callback URI" value={editing.callback_uri} readOnly /> : null}
             </div>
             <div className="chenxing-divider my-5" />

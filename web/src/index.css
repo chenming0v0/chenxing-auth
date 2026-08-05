@@ -71,7 +71,9 @@
 .cx-space-root {
   position: relative;
   min-height: 100vh;
-  overflow: hidden;
+  /* clip (not hidden): hidden creates a scroll container and breaks the
+     sticky topbar; clip still crops nebula/starfield overflow */
+  overflow: clip;
   background: var(--chenxing-background);
   isolation: isolate;
 }

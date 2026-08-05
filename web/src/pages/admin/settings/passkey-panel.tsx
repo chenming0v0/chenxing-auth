@@ -5,7 +5,8 @@ import {
   type PasskeySetting,
   type PasskeyUserVerification,
 } from '../../../api'
-import { Button, Field, HudPanel, Icon, Notice, SelectField, ToggleRow } from '../../../components/ui'
+import { Button, Field, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
+import { SelectField } from '../../../components/select'
 
 function splitOrigins(value: string): string[] {
   return value.replace(/,/g, ' ').split(/\s+/).map((item) => item.trim()).filter(Boolean)
@@ -86,21 +87,23 @@ export function PasskeyPanel({ onMessage }: { onMessage: (message: string, tone?
             <SelectField
               label="安全验证级别"
               value={setting.user_verification}
-              onChange={(event) => setSetting({ ...setting, user_verification: event.target.value as PasskeyUserVerification })}
-            >
-              <option value="preferred">推荐使用（用户可选）</option>
-              <option value="required">必须验证用户身份</option>
-              <option value="discouraged">不要求用户验证</option>
-            </SelectField>
+              onChange={(value) => setSetting({ ...setting, user_verification: value as PasskeyUserVerification })}
+              options={[
+                { value: 'preferred', label: '推荐使用（用户可选）' },
+                { value: 'required', label: '必须验证用户身份' },
+                { value: 'discouraged', label: '不要求用户验证' },
+              ]}
+            />
             <SelectField
               label="设备类型偏好"
               value={setting.authenticator_attachment}
-              onChange={(event) => setSetting({ ...setting, authenticator_attachment: event.target.value as PasskeyAuthenticatorAttachment })}
-            >
-              <option value="any">不限制</option>
-              <option value="platform">仅平台认证器</option>
-              <option value="cross_platform">仅跨平台安全密钥</option>
-            </SelectField>
+              onChange={(value) => setSetting({ ...setting, authenticator_attachment: value as PasskeyAuthenticatorAttachment })}
+              options={[
+                { value: 'any', label: '不限制' },
+                { value: 'platform', label: '仅平台认证器' },
+                { value: 'cross_platform', label: '仅跨平台安全密钥' },
+              ]}
+            />
           </div>
           <ToggleRow
             title="允许不安全的 Origin (HTTP)"

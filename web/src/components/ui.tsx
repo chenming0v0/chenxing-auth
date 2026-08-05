@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react'
+import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
 import {
   Activity, AlertTriangle, ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Box, CalendarClock, Check, ChevronDown,
   ChevronsUpDown, Circle, CircleAlert, Code2, Copy, Crown, Database, Download, ExternalLink, Eye, EyeOff, Fingerprint,
@@ -190,26 +190,6 @@ export function PasswordField({ label, icon, hint, error, className = '', ...pro
         </button>
       }
     />
-  )
-}
-
-type SelectFieldProps = SelectHTMLAttributes<HTMLSelectElement> & { label: string; icon?: string }
-
-export function SelectField({ label, icon, children, className = '', ...props }: SelectFieldProps) {
-  return (
-    <label className="block">
-      <span className="chenxing-label">{label}</span>
-      {icon ? (
-        <FieldShell icon={icon}>
-          <select className={className} {...props}>{children}</select>
-        </FieldShell>
-      ) : (
-        <div className="relative">
-          <select className={`chenxing-field appearance-none pr-10 ${className}`} {...props}>{children}</select>
-          <Icon name="chevron-down" className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--chenxing-muted-foreground)]" size={16} />
-        </div>
-      )}
-    </label>
   )
 }
 

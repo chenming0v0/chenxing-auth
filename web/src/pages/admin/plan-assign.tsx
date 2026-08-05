@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { apiFetch, type AdminPlan, type AssignPlanInput } from '../../api'
-import { Button, Notice, SelectField } from '../../components/ui'
+import { Button, Notice } from '../../components/ui'
+import { SelectField } from '../../components/select'
 
 let planCache: AdminPlan[] | null = null
 
@@ -57,12 +58,17 @@ export function AssignPlanForm({ userId, userName, onAssigned, onClose }: {
       {error ? <div className="mt-3"><Notice tone="warning">{error}</Notice></div> : null}
       {done ? <div className="mt-3"><Notice tone="success">套餐已分配。</Notice></div> : null}
       <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <SelectField label="目标套餐" icon="crown" value={planId} onChange={(event) => setPlanId(event.target.value)}>
-          <option value="">{plans ? '选择套餐' : '正在加载套餐…'}</option>
-          {activePlans.map((plan) => (
-            <option key={plan.id} value={plan.id}>{plan.name} · {plan.code}{plan.is_default ? '（默认）' : ''}</option>
-          ))}
-        </SelectField>
+        <SelectField
+          label="目标套餐"
+          icon="crown"
+          value={planId}
+          onChange={setPlanId}
+          placeholder={plans ? '选择套餐' : '正在加载套餐…'}
+          options={activePlans.map((plan) => ({
+            value: String(plan.id),
+            label: `${plan.name} · ${plan.code}${plan.is_default ? '（默认）' : ''}`,
+          }))}
+        />
         <label className="block">
           <span className="chenxing-label">到期时间（可选）</span>
           <input className="chenxing-field" type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} />

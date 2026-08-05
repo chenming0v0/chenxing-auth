@@ -5,9 +5,22 @@ import {
 } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, EmptyState, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { Select, type SelectOption } from '../../components/select'
 import { formatDate, initialOf } from '../../data'
 import { AdminGate, useAdminAccess, type AdminAccess } from './shared'
 import { AssignPlanForm } from './plan-assign'
+
+const ROLE_OPTIONS: SelectOption[] = [
+  { value: 'user', label: '普通用户' },
+  { value: 'admin', label: '管理员' },
+  { value: 'owner', label: 'Owner' },
+]
+
+const STATUS_FILTER_OPTIONS: SelectOption[] = [
+  { value: '', label: '全部状态' },
+  { value: 'active', label: '已启用' },
+  { value: 'disabled', label: '已禁用' },
+]
 
 export function AdminUsers() {
   const access = useAdminAccess()
@@ -106,11 +119,7 @@ function UsersTable({ access }: { access: AdminAccess }) {
           </div>
           <div className="chenxing-field-shell w-36">
             <Icon name="activity" className="chenxing-field-icon h-4 w-4" size={16} />
-            <select value={status} onChange={(event) => setStatus(event.target.value)}>
-              <option value="">全部状态</option>
-              <option value="active">已启用</option>
-              <option value="disabled">已禁用</option>
-            </select>
+            <Select value={status} onChange={setStatus} options={STATUS_FILTER_OPTIONS} />
           </div>
           <Button variant="ghost" icon="search" onClick={() => updateQuery(1)}>查询</Button>
           <Button variant="ghost" icon="rotate-ccw" onClick={() => { setSearch(''); setStatus(''); navigate('/admin/users?page=1') }}>重置</Button>
@@ -151,16 +160,14 @@ function UsersTable({ access }: { access: AdminAccess }) {
                   </Badge>
                 </td>
                 <td className="px-4 py-3">
-                  <select
-                    className="chenxing-field !py-2 !text-sm"
+                  <Select
+                    className="!text-sm"
                     value={user.role}
                     disabled={!access.data?.permissions.includes('manage_roles') || busy === user.id}
-                    onChange={(event) => void setRole(user, event.target.value)}
-                  >
-                    <option value="user">普通用户</option>
-                    <option value="admin">管理员</option>
-                    <option value="owner">Owner</option>
-                  </select>
+                    onChange={(role) => void setRole(user, role)}
+                    options={ROLE_OPTIONS}
+                    aria-label="用户角色"
+                  />
                 </td>
                 <td className="px-4 py-3">
                   <button

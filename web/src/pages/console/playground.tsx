@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link } from '../../router'
 import { apiFetch, type OwnedOAuthClient } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, SelectField } from '../../components/ui'
+import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { SelectField } from '../../components/select'
 
 export function PlaygroundPage() {
   const [clients, setClients] = useState<OwnedOAuthClient[]>([])
@@ -88,9 +89,12 @@ export function PlaygroundPage() {
             <Badge tone="success"><span className="chenxing-status-dot" />应用在线</Badge>
           </div>
           <div className="mt-6 grid gap-5 sm:grid-cols-2">
-            <SelectField label="选择应用" value={selectedId} onChange={(event) => selectClient(event.target.value)}>
-              {clients.map((client) => <option key={client.client_id} value={client.client_id}>{client.client_name}</option>)}
-            </SelectField>
+            <SelectField
+              label="选择应用"
+              value={selectedId}
+              onChange={selectClient}
+              options={clients.map((client) => ({ value: client.client_id, label: client.client_name }))}
+            />
             <Field label="Client ID" className="chenxing-mono text-sm" readOnly value={selectedId} />
             <Field label="Redirect URI" className="chenxing-mono text-sm" value={redirectUri} onChange={(event) => setRedirectUri(event.target.value)} />
             <Field label="Scope" value={scope} onChange={(event) => setScope(event.target.value)} />

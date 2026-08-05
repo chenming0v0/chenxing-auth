@@ -86,7 +86,9 @@ body {
 main {
   position: relative;
   min-height: 100vh;
-  overflow: hidden;
+  /* clip (not hidden): hidden would make this a scroll container and break
+     position: sticky on the topbar; clip crops nebula overflow without that */
+  overflow: clip;
   background: var(--chenxing-background);
   isolation: isolate;
 }
@@ -543,7 +545,8 @@ td.chenxing-label {
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 0.75rem;
-  width: min(100% - 2rem, 36rem);
+  width: calc(100% - 2rem);
+  max-width: 36rem;
   margin: 0.9rem auto 0;
   padding: 0.5rem 0.6rem 0.5rem 0.85rem;
   background: rgba(6, 10, 20, 0.42);
@@ -552,6 +555,46 @@ td.chenxing-label {
   border: 1px solid var(--chenxing-border);
   border-radius: var(--chenxing-radius-lg);
   box-shadow: 0 18px 44px rgba(2, 6, 16, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  transition:
+    max-width 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+    padding 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 0.35s ease,
+    border-color 0.35s ease,
+    backdrop-filter 0.35s ease,
+    box-shadow 0.35s ease;
+}
+
+/* at page top the chrome melts away: borderless full-width bar that reads as
+   part of the page (New API style); scrolling condenses it into the capsule */
+.chenxing-topbar[data-expanded] {
+  max-width: 100%;
+  padding: 0.7rem 0.25rem;
+  background: transparent;
+  backdrop-filter: blur(0px) saturate(1);
+  -webkit-backdrop-filter: blur(0px) saturate(1);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* brand lockup belongs to the condensed capsule only; at page top it fades out
+   (kept in layout so the centered status stays centered) */
+.chenxing-topbar-brand {
+  transition: opacity 0.3s ease;
+}
+.chenxing-topbar[data-expanded] .chenxing-topbar-brand {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* invisible marker at container top driving the expand/condense observer */
+.chenxing-topbar-sentinel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 2.25rem;
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* top bar center: current interface status with pulsing dot (body font for legibility) */
@@ -667,6 +710,16 @@ td.chenxing-label {
   cursor: pointer;
 }
 .chenxing-menu-item:hover { background: var(--chenxing-muted); }
+
+/* Account menu user info header */
+.chenxing-account-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 1.25rem 1rem;
+  border-bottom: 1px solid var(--chenxing-border);
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.08), rgba(255, 122, 194, 0.06));
+}
 
 /* ---------- console shell: glowing user chip (mobile) ---------- */
 /* Bottom user card that "泛着光" — animated aurora border glow + logo watermark. */
@@ -955,6 +1008,97 @@ td.chenxing-label {
   cursor: pointer;
 }
 .chenxing-kv-copy:hover { color: var(--chenxing-cyan); background: var(--chenxing-cyan-soft); }
+
+/* ---------- select / listbox ---------- */
+/* Native <select> renders its option list through the OS, so <option> can never
+   be themed. These classes back the custom listbox in components/select.tsx:
+   the trigger mirrors .chenxing-field, the popup follows .chenxing-menu. */
+.chenxing-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.8rem 1rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.9375rem;
+  text-align: left;
+  color: var(--chenxing-foreground);
+  background: rgba(4, 8, 16, 0.6);
+  border: 1px solid var(--chenxing-input);
+  border-radius: var(--chenxing-radius-md);
+  transition: border-color 0.2s, box-shadow 0.2s;
+  cursor: pointer;
+}
+.chenxing-select-trigger:focus-visible,
+.chenxing-select-trigger[aria-expanded="true"] {
+  outline: none;
+  border-color: var(--chenxing-primary);
+  box-shadow: 0 0 0 3px var(--chenxing-primary-soft), 0 0 18px rgba(56, 189, 248, 0.18);
+}
+.chenxing-select-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
+.chenxing-select-trigger.chenxing-field-error { border-color: var(--chenxing-error); box-shadow: 0 0 0 3px var(--chenxing-error-soft); }
+
+/* inside a field shell the wrapper owns the border, so the trigger goes bare */
+.chenxing-field-shell .chenxing-select-trigger {
+  flex: 1;
+  min-width: 0;
+  padding: 0.8rem 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.chenxing-select-placeholder { color: rgba(147, 167, 199, 0.55); }
+.chenxing-select-caret { flex-shrink: 0; color: var(--chenxing-muted-foreground); transition: color 0.2s, transform 0.2s; }
+.chenxing-select-trigger[aria-expanded="true"] .chenxing-select-caret { color: var(--chenxing-cyan); }
+
+.chenxing-select-popup {
+  position: fixed;
+  z-index: 80;
+  max-height: 18rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.35rem;
+  background: var(--chenxing-popover);
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  border: 1px solid var(--chenxing-border-strong);
+  border-radius: var(--chenxing-radius-md);
+  box-shadow: var(--chenxing-shadow-overlay);
+  animation: chenxing-select-in 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.chenxing-select-option {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.875rem;
+  text-align: left;
+  color: var(--chenxing-foreground);
+  border-radius: var(--chenxing-radius-sm);
+  transition: background 0.15s, color 0.15s;
+  cursor: pointer;
+}
+.chenxing-select-option-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* keyboard cursor and hover share one resting highlight */
+.chenxing-select-option.is-active { background: var(--chenxing-muted); }
+.chenxing-select-option.is-selected { color: var(--chenxing-cyan); background: var(--chenxing-cyan-soft); }
+.chenxing-select-option.is-selected.is-active { background: rgba(103, 232, 249, 0.22); }
+.chenxing-select-option[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; background: transparent; }
+.chenxing-select-check { flex-shrink: 0; color: var(--chenxing-cyan); }
+
+@keyframes chenxing-select-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chenxing-select-popup { animation: none; }
+}
 
 /* ---------- scope toggle chip (checkbox-like) ---------- */
 .chenxing-scope-toggle {
