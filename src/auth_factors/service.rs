@@ -21,6 +21,8 @@ use super::{
 
 #[path = "passkey.rs"]
 mod passkey;
+#[path = "passkey_core.rs"]
+mod passkey_core;
 #[path = "totp_service.rs"]
 mod totp_service;
 
@@ -35,7 +37,8 @@ pub enum TotpConfirmation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasskeyConfirmation {
     InvalidTicket,
-    InvalidCredential,
+    InvalidCredential(UserId),
+    RateLimited(UserId),
     Completed(UserId),
 }
 
