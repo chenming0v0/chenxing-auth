@@ -66,9 +66,10 @@ impl AuthFactorService {
                     return Err(error.into());
                 }
             };
-        let mut secret = decrypted.plaintext.clone();
-        let timestep = verify_totp_code_current_timestep(&secret, code);
-        secret.fill(0);
+        // 直接借用 decrypted.plaintext：它是 Zeroizing<Vec<u8>>，drop 时自动清零。
+        // 旧写法 clone + fill(0) 只擦除了克隆副本，原始明文缓冲区反而活得更久
+        // （后面还要传给 reencrypt_totp_secret_if_needed），等于没有真正擦除。
+        let timestep = verify_totp_code_current_timestep(&decrypted.plaintext, code);
         let Some(timestep) = timestep else {
             if !self.record_failure(dimensions).await?.reached.is_empty() {
                 return Err(AuthFactorServiceError::RateLimited);
@@ -178,9 +179,7 @@ impl AuthFactorService {
                     return Err(error.into());
                 }
             };
-        let mut secret = decrypted.plaintext.clone();
-        let valid = verify_totp_code_current_timestep(&secret, code);
-        secret.fill(0);
+        let valid = verify_totp_code_current_timestep(&decrypted.plaintext, code);
         let Some(_) = valid else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {
@@ -298,9 +297,7 @@ impl AuthFactorService {
                     return Err(error.into());
                 }
             };
-        let mut secret = decrypted.plaintext.clone();
-        let valid = verify_totp_code_current_timestep(&secret, code);
-        secret.fill(0);
+        let valid = verify_totp_code_current_timestep(&decrypted.plaintext, code);
         let Some(timestep) = valid else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {
