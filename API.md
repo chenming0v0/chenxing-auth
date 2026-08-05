@@ -266,7 +266,7 @@ Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限�
 - `POST /api/v1/admin/plans/{id}/restore`：恢复套餐。
 - `POST /api/v1/admin/users/{user_id}/plan`：为用户分配套餐，提交 `{"plan_id":1,"expires_at":"2026-12-31T00:00:00Z"}`；`expires_at` 传 `null` 或省略表示永久有效，归档套餐不可分配。
 
-套餐写入需要 `ManageSettings` 权限（Owner 和 admin 角色均具备），并记录审计事件。
+套餐 CRUD（create/update/archive/restore）需要 `ManageSettings` 权限；为用户分配套餐（`POST .../users/{user_id}/plan`）影响用户权益，需要 `ManageUsers` 权限。两种操作均记录审计事件。
 
 ### Client 管理
 

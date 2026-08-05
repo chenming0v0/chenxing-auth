@@ -9,7 +9,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 
 use super::{
-    authorization::{current_admin_mutation, current_admin_permission},
+    authorization::{AdminActor, current_admin_mutation, current_admin_permission},
     domain::AdminPermission,
 };
 use crate::{
@@ -84,6 +84,7 @@ pub async fn create_plan(
             {
                 return error::internal();
             }
+            // 新建套餐尚无分配用户，直接返回 0
             (StatusCode::CREATED, Json(plan_response(plan, 0))).into_response()
         }
         Err(error_value) => plan_error_response(error_value),
@@ -102,14 +103,16 @@ pub async fn update_plan(
             Err(response) => return response,
         };
     match state.plans.update(id, input).await {
-        Ok(plan) => {
-            if record_plan_event(&state, actor, "plan_update", &plan.code)
+        Ok(updated) => {
+            if record_plan_event(&state, actor, "plan_update", &updated.plan.code)
                 .await
                 .is_err()
             {
                 return error::internal();
             }
-            (StatusCode::OK, Json(plan_response(plan, 0))).into_response()
+            // assigned_users 由 repository.update 在同一事务中统计，与 list_plans 行为一致
+            let response = plan_response(updated.plan, updated.assigned_users);
+            (StatusCode::OK, Json(response)).into_response()
         }
         Err(error_value) => plan_error_response(error_value),
     }
@@ -120,7 +123,14 @@ pub async fn archive_plan(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Response {
-    change_plan_status(state, headers, id, "plan_archive", "archive").await
+    let actor =
+        match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
+            Ok(actor) => actor,
+            Err(response) => return response,
+        };
+    // 直接调用 archive，不经字符串分发；操作语义由调用点决定，而非运行时字符串比较
+    let result = state.plans.archive(id).await;
+    finish_plan_status_change(&state, actor, result, "plan_archive", &id.to_string()).await
 }
 
 pub async fn restore_plan(
@@ -128,29 +138,28 @@ pub async fn restore_plan(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Response {
-    change_plan_status(state, headers, id, "plan_restore", "restore").await
-}
-
-async fn change_plan_status(
-    state: AppState,
-    headers: HeaderMap,
-    id: i64,
-    action: &'static str,
-    operation: &'static str,
-) -> Response {
     let actor =
         match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
             Ok(actor) => actor,
             Err(response) => return response,
         };
-    let result = if operation == "archive" {
-        state.plans.archive(id).await
-    } else {
-        state.plans.restore(id).await
-    };
+    // 直接调用 restore，与 archive_plan 对称；不存在 silent fallthrough 的分支
+    let result = state.plans.restore(id).await;
+    finish_plan_status_change(&state, actor, result, "plan_restore", &id.to_string()).await
+}
+
+/// 套餐状态变更的公共后处理：审计记录 + 响应。
+/// 接收已确定的操作结果，消除字符串选择操作的分发模式。
+async fn finish_plan_status_change(
+    state: &AppState,
+    actor: AdminActor,
+    result: Result<(), PlanServiceError>,
+    action: &str,
+    resource_id: &str,
+) -> Response {
     match result {
         Ok(()) => {
-            if record_plan_event(&state, actor, action, &id.to_string())
+            if record_plan_event(state, actor, action, resource_id)
                 .await
                 .is_err()
             {
@@ -175,11 +184,12 @@ pub async fn assign_plan(
     Path(user_id): Path<UserId>,
     Json(input): Json<AssignPlanInput>,
 ) -> Response {
-    let actor =
-        match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
-            Ok(actor) => actor,
-            Err(response) => return response,
-        };
+    // 分配套餐直接改写用户权益（entitlements），语义属于用户管理而非系统设置；
+    // 用 ManageUsers 把守，避免仅有 ManageSettings 的角色修改任意用户的套餐
+    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageUsers).await {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     let expires_at = match parse_expiry(input.expires_at) {
         Ok(expires_at) => expires_at,
         Err(message) => return error::bad_request("invalid_expiration", message),
@@ -253,7 +263,7 @@ fn plan_error_response(error_value: PlanServiceError) -> Response {
 
 async fn record_plan_event(
     state: &AppState,
-    actor: super::authorization::AdminActor,
+    actor: AdminActor,
     action: &str,
     resource_id: &str,
 ) -> Result<(), crate::audit::AuditError> {
