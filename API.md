@@ -195,7 +195,27 @@ grant_type=refresh_token&refresh_token=...
 
 `refresh_token` 会轮换；包含 `openid` Scope 时返回 `id_token`。授权码和刷新 Token 均为一次性消费。
 
+授权码除 Client 和 Redirect URI 外还绑定签发时的浏览器会话。会话被撤销（用户登出）或过期后，授权码即使仍在 TTL 内也不能兑换，返回 `invalid_grant`；被拒绝的授权码不会被消费，可在会话恢复有效后重试。
+
 Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限流，超限返回 `429 temporarily_unavailable`；套餐未配置 `max_qps`（`null`）时不限流。
+
+#### ID Token Claims
+
+`id_token` 是 RS256 签名的 JWT，Header 携带 `kid`；公钥从 `/.well-known/jwks.json` 获取。Payload Claims：
+
+| Claim | 是否总是出现 | 说明 |
+| --- | --- | --- |
+| `iss` | 是 | 签发者，等于 `APP_ISSUER` 配置值 |
+| `sub` | 是 | 用户主体标识符 |
+| `aud` | 是 | 接收方 `client_id` |
+| `exp` | 是 | 过期时间（Unix 秒） |
+| `iat` | 是 | 签发时间（Unix 秒） |
+| `auth_time` | 否 | 终端用户完成认证的时刻（会话建立时间，Unix 秒，OIDC Core 1.0 §2）。授权码流程有会话绑定时签发；刷新令牌流程和无会话降级路径**省略该键**，不写 `null` |
+| `nonce` | 否 | 授权请求携带 `nonce` 时原样回填（OIDC Core §3.1.3.7） |
+| `email` | 否 | Scope 含 `email` 时签发 |
+| `name` | 否 | Scope 含 `profile` 且用户设置了显示名称时签发 |
+
+Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`aud`、`exp`、`iat`、`email`、`name`、`nonce`、`auth_time`。`azp` 属于单 audience 场景可省略的 Claim（OIDC Core §2），本服务不签发也不在 `claims_supported` 中声明。
 
 ### `GET /oauth/userinfo`
 
