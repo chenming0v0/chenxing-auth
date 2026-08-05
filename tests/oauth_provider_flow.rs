@@ -185,12 +185,23 @@ fn set_cookie_header(response: &axum::response::Response, name: &str) -> String 
 }
 
 fn authorization_state(location: &str) -> String {
+    authorization_query(location, "state").expect("state")
+}
+
+/// 从发往外部 IdP 的授权 URL 中取出指定 query 参数。
+fn authorization_query(location: &str, key: &str) -> Option<String> {
     url::Url::parse(location)
         .expect("authorization URL")
         .query_pairs()
-        .find(|(key, _)| key == "state")
+        .find(|(name, _)| name == key)
         .map(|(_, value)| value.into_owned())
-        .expect("state")
+}
+
+/// RFC 7636 §4.2: code_challenge = BASE64URL-ENCODE(SHA256(ASCII(code_verifier)))
+fn s256_challenge(verifier: &str) -> String {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use sha2::{Digest, Sha256};
+    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
 #[tokio::test]
@@ -278,7 +289,7 @@ async fn custom_provider_registers_reuses_identity_and_rejects_state_replay() {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("mock client")
-        .get(second_location)
+        .get(&second_location)
         .send()
         .await
         .expect("second authorize");
@@ -330,6 +341,36 @@ async fn custom_provider_registers_reuses_identity_and_rejects_state_replay() {
         .await
         .clone()
         .expect("token form");
+    // RFC 7636 §4.5：token 请求必须带上 code_verifier，把授权码绑定到本次授权会话。
+    // verifier 是随机值，先取出后单独校验，再比对其余字段的精确集合。
+    let code_verifier = token_form
+        .get("code_verifier")
+        .expect("token 请求必须包含 code_verifier")
+        .clone();
+    assert!(
+        (43..=128).contains(&code_verifier.len()),
+        "code_verifier 长度必须符合 RFC 7636 §4.1: {}",
+        code_verifier.len()
+    );
+    assert!(
+        code_verifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-._~".contains(&byte)),
+        "code_verifier 必须只含 RFC 7636 unreserved 字符: {code_verifier}"
+    );
+    // 授权请求里发出的 challenge 必须等于 S256(verifier)。
+    let sent_challenge = authorization_query(&second_location, "code_challenge")
+        .expect("授权请求必须包含 code_challenge");
+    assert_eq!(
+        authorization_query(&second_location, "code_challenge_method").as_deref(),
+        Some("S256"),
+        "code_challenge_method 必须是 S256"
+    );
+    assert_eq!(
+        sent_challenge,
+        s256_challenge(&code_verifier),
+        "code_challenge 必须等于 BASE64URL(SHA256(code_verifier))"
+    );
     let expected_form = HashMap::from([
         ("grant_type".to_owned(), "authorization_code".to_owned()),
         ("code".to_owned(), "mock-code".to_owned()),
@@ -339,6 +380,7 @@ async fn custom_provider_registers_reuses_identity_and_rejects_state_replay() {
         ),
         ("client_id".to_owned(), "mock-client".to_owned()),
         ("client_secret".to_owned(), "mock-secret".to_owned()),
+        ("code_verifier".to_owned(), code_verifier),
     ]);
     assert_eq!(token_form, expected_form);
 

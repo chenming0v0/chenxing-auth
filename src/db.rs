@@ -242,6 +242,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0010_consent_revoked_at.sql")),
             false,
         ),
+        Migration::new(
+            11,
+            Cow::Borrowed("external provider PKCE toggle"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0011_oauth_provider_pkce.sql")),
+            false,
+        ),
     ];
 
     Migrator {

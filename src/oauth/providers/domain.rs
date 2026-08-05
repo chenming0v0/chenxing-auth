@@ -33,6 +33,10 @@ pub struct ProviderInput {
     pub email_verified_claim: Option<String>,
     #[serde(default)]
     pub client_auth_method: ClientAuthMethod,
+    /// 是否对该外部 IdP 使用 PKCE（RFC 9700 §2.1.1 要求所有授权码流程都用 PKCE）。
+    /// 默认开启；只有确认外部 IdP 不支持 PKCE 时才显式关闭，不做全局禁用。
+    #[serde(default = "default_pkce_enabled")]
+    pub pkce_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,6 +54,7 @@ pub struct ProviderSummary {
     pub name_claim: Option<String>,
     pub email_verified_claim: Option<String>,
     pub client_auth_method: ClientAuthMethod,
+    pub pkce_enabled: bool,
     pub status: String,
     pub client_secret_configured: bool,
 }
@@ -69,6 +74,7 @@ pub struct ValidatedProviderInput {
     pub name_claim: Option<String>,
     pub email_verified_claim: Option<String>,
     pub client_auth_method: ClientAuthMethod,
+    pub pkce_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +93,7 @@ pub struct ProviderRecord {
     pub name_claim: Option<String>,
     pub email_verified_claim: Option<String>,
     pub client_auth_method: ClientAuthMethod,
+    pub pkce_enabled: bool,
     pub status: String,
 }
 
@@ -141,6 +148,7 @@ impl ProviderInput {
             name_claim,
             email_verified_claim,
             client_auth_method: self.client_auth_method,
+            pkce_enabled: self.pkce_enabled,
         })
     }
 }
@@ -161,6 +169,7 @@ impl ProviderRecord {
             name_claim: self.name_claim.clone(),
             email_verified_claim: self.email_verified_claim.clone(),
             client_auth_method: self.client_auth_method,
+            pkce_enabled: self.pkce_enabled,
             status: self.status.clone(),
             client_secret_configured: !self.client_secret_ciphertext.is_empty(),
         }
@@ -337,4 +346,10 @@ fn default_subject_claim() -> String {
 }
 fn default_email_claim() -> String {
     "email".to_owned()
+}
+
+/// PKCE 默认开启：RFC 9700 §2.1.1 要求所有授权码流程都使用 PKCE。
+/// 未显式提供该字段的旧请求体自动获得安全默认值。
+fn default_pkce_enabled() -> bool {
+    true
 }

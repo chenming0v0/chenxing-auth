@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use super::{
+    client_pkce::s256_code_challenge,
     domain::{
         ClientAuthMethod, ExternalUser, ProviderInput, ProviderRecord, ProviderSummary,
         ProviderValidationError, validate_endpoint_url,
@@ -123,11 +124,19 @@ impl ExternalOAuthService {
         Ok(repository::set_status(&self.pool, slug, status).await?)
     }
 
+    /// 构造发往外部 IdP 的授权请求 URL。
+    ///
+    /// `code_verifier` 为空串时不追加 PKCE 参数，覆盖两种情况：
+    /// 1. provider 显式关闭了 PKCE（`pkce_enabled = false`，外部 IdP 不支持）。
+    /// 2. 滚动升级期间从 Redis 取出的旧 state 没有 verifier。
+    ///
+    /// 其余情况按 RFC 9700 §2.1.1 一律附带 S256 challenge。
     pub fn authorization_url(
         &self,
         provider: &ProviderRecord,
         callback_uri: &str,
         state: &str,
+        code_verifier: &str,
     ) -> Result<String, ExternalOAuthError> {
         validate_endpoint_url(&provider.authorization_endpoint)?;
         let mut url = provider.authorization_endpoint.clone();
@@ -138,15 +147,25 @@ impl ExternalOAuthService {
             query.append_pair("redirect_uri", callback_uri);
             query.append_pair("scope", &provider.scopes.join(" "));
             query.append_pair("state", state);
+            if !code_verifier.is_empty() {
+                // RFC 7636 §4.3：challenge 随授权请求发送，verifier 留在本地。
+                query.append_pair("code_challenge", &s256_code_challenge(code_verifier));
+                query.append_pair("code_challenge_method", "S256");
+            }
         }
         Ok(url.to_string())
     }
 
+    /// 用授权码向外部 IdP 换取 access token。
+    ///
+    /// `code_verifier` 非空时按 RFC 7636 §4.5 附带 `code_verifier`，把授权码绑定到
+    /// 发起授权请求的这一次会话；泄露的 `code` 在没有 verifier 的情况下无法被重放。
     pub async fn exchange_code(
         &self,
         provider: &ProviderRecord,
         callback_uri: &str,
         code: &str,
+        code_verifier: &str,
     ) -> Result<ExternalToken, ExternalOAuthError> {
         validate_endpoint_url(&provider.token_endpoint)?;
         let secret = self.decrypt_secret(provider)?;
@@ -155,6 +174,9 @@ impl ExternalOAuthService {
             ("code", code),
             ("redirect_uri", callback_uri),
         ];
+        if !code_verifier.is_empty() {
+            form.push(("code_verifier", code_verifier));
+        }
         let request = match provider.client_auth_method {
             ClientAuthMethod::Basic => self
                 .http
@@ -226,6 +248,7 @@ impl ExternalOAuthService {
             name_claim: provider.name_claim.clone(),
             email_verified_claim: provider.email_verified_claim.clone(),
             client_auth_method: provider.client_auth_method,
+            pkce_enabled: provider.pkce_enabled,
         }
         .validate()?;
         ExternalUser::from_claims(&claims, &validated)
@@ -296,4 +319,115 @@ fn unusable_password_hash() -> Result<String, argon2::password_hash::Error> {
             &salt,
         )
         .map(|hash| hash.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::oauth::providers::client_pkce::generate_code_verifier;
+    use url::Url;
+
+    /// 构造仅用于 URL 拼装测试的 service：`connect_lazy` 不会真正连接数据库，
+    /// 而 `authorization_url` 是纯函数，不触碰连接池。
+    fn service() -> ExternalOAuthService {
+        let pool = crate::sqlx::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .expect("lazy pool");
+        ExternalOAuthService::new(pool, SecretManager::from_key([7_u8; 32])).expect("service")
+    }
+
+    fn provider(pkce_enabled: bool) -> ProviderRecord {
+        ProviderRecord {
+            id: 1,
+            name: "Mock".to_owned(),
+            slug: "mock".to_owned(),
+            authorization_endpoint: Url::parse("https://idp.example.com/authorize")
+                .expect("authorize URL"),
+            token_endpoint: Url::parse("https://idp.example.com/token").expect("token URL"),
+            userinfo_endpoint: Url::parse("https://idp.example.com/userinfo")
+                .expect("userinfo URL"),
+            client_id: "mock-client".to_owned(),
+            client_secret_ciphertext: vec![1, 2, 3],
+            scopes: vec!["openid".to_owned(), "email".to_owned()],
+            subject_claim: "sub".to_owned(),
+            email_claim: "email".to_owned(),
+            name_claim: None,
+            email_verified_claim: None,
+            client_auth_method: ClientAuthMethod::Basic,
+            pkce_enabled,
+            status: "active".to_owned(),
+        }
+    }
+
+    fn query_value(url: &str, key: &str) -> Option<String> {
+        Url::parse(url)
+            .expect("authorization URL")
+            .query_pairs()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.into_owned())
+    }
+
+    /// RFC 9700 §2.1.1 / RFC 7636 §4.3：授权请求必须带 S256 challenge。
+    #[test]
+    fn authorization_url_appends_s256_challenge() {
+        let verifier = generate_code_verifier();
+        let url = service()
+            .authorization_url(
+                &provider(true),
+                "https://auth.example.com/auth/external/mock/callback",
+                "state-value",
+                &verifier,
+            )
+            .expect("authorization URL");
+        assert_eq!(
+            query_value(&url, "code_challenge_method").as_deref(),
+            Some("S256")
+        );
+        assert_eq!(
+            query_value(&url, "code_challenge"),
+            Some(s256_code_challenge(&verifier)),
+            "challenge 必须是 BASE64URL(SHA256(verifier))"
+        );
+        // state 是独立的 CSRF 机制，不受 PKCE 影响。
+        assert_eq!(query_value(&url, "state").as_deref(), Some("state-value"));
+        assert_eq!(query_value(&url, "response_type").as_deref(), Some("code"));
+        assert!(
+            !url.contains(verifier.as_str()),
+            "verifier 绝不能出现在授权 URL 中"
+        );
+    }
+
+    /// RFC 7636 附录 B 的官方测试向量，端到端校验 URL 中的 challenge 取值。
+    #[test]
+    fn authorization_url_uses_rfc_7636_appendix_b_vector() {
+        let url = service()
+            .authorization_url(
+                &provider(true),
+                "https://auth.example.com/auth/external/mock/callback",
+                "state-value",
+                "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+            )
+            .expect("authorization URL");
+        assert_eq!(
+            query_value(&url, "code_challenge").as_deref(),
+            Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
+        );
+    }
+
+    /// provider 关闭 PKCE 时（外部 IdP 不支持 RFC 7636），不得附加 PKCE 参数。
+    /// 空 verifier 同样覆盖升级期间取出的旧 state。
+    #[test]
+    fn authorization_url_omits_pkce_when_verifier_is_empty() {
+        let url = service()
+            .authorization_url(
+                &provider(false),
+                "https://auth.example.com/auth/external/mock/callback",
+                "state-value",
+                "",
+            )
+            .expect("authorization URL");
+        assert_eq!(query_value(&url, "code_challenge"), None);
+        assert_eq!(query_value(&url, "code_challenge_method"), None);
+        assert_eq!(query_value(&url, "state").as_deref(), Some("state-value"));
+    }
 }
