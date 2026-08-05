@@ -87,7 +87,7 @@ async fn issue_token_response_inner(
         user_id,
         client_id,
         scopes,
-        state.config.session_ttl_seconds,
+        state.config.access_token_ttl_seconds,
     ) {
         Ok(token) => token,
         Err(token_error) => {
@@ -104,7 +104,7 @@ async fn issue_token_response_inner(
         Json(TokenResponse {
             access_token: token,
             token_type: "Bearer",
-            expires_in: state.config.session_ttl_seconds,
+            expires_in: state.config.access_token_ttl_seconds,
             scope: scopes.join(" "),
             refresh_token,
             id_token,
@@ -154,7 +154,7 @@ async fn issue_id_token(
                 .flatten(),
             auth_time,
         },
-        state.config.session_ttl_seconds,
+        state.config.id_token_ttl_seconds,
     )
     .map(Some)
     .map_err(|token_error| {

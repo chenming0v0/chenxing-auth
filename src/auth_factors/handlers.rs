@@ -106,7 +106,11 @@ pub async fn confirm_totp_setup(
     headers: HeaderMap,
     Json(input): Json<TotpConfirmInput>,
 ) -> Response {
-    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
     match state
         .factors
         .confirm_totp_enrollment(&input.login_ticket, source_ip.as_deref(), &input.code)
@@ -131,7 +135,11 @@ pub async fn login_totp(
     headers: HeaderMap,
     Json(input): Json<TotpLoginInput>,
 ) -> Response {
-    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
     let confirmation = match state
         .factors
         .confirm_totp_enrollment(&input.login_ticket, source_ip.as_deref(), &input.code)
@@ -156,9 +164,14 @@ pub async fn login_totp(
 pub async fn start_passkey_registration(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     Json(input): Json<PasskeyTicketInput>,
 ) -> Response {
-    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
     let Some(user_id) = (match state.factors.user_id_for_ticket(&input.login_ticket).await {
         Ok(user_id) => user_id,
         Err(factor_error) => {
@@ -208,7 +221,11 @@ pub async fn finish_passkey_registration(
     headers: HeaderMap,
     Json(input): Json<PasskeyRegistrationInput>,
 ) -> Response {
-    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
     match state
         .factors
         .finish_passkey_registration(&input.login_ticket, source_ip.as_deref(), &input.credential)
@@ -232,9 +249,14 @@ pub async fn finish_passkey_registration(
 pub async fn start_passkey_authentication(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     Json(input): Json<PasskeyTicketInput>,
 ) -> Response {
-    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
     match state
         .factors
         .start_passkey_authentication(&input.login_ticket, source_ip.as_deref())
@@ -261,7 +283,11 @@ pub async fn finish_passkey_authentication(
     headers: HeaderMap,
     Json(input): Json<PasskeyAuthenticationInput>,
 ) -> Response {
-    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
     match state
         .factors
         .finish_passkey_authentication(&input.login_ticket, source_ip.as_deref(), &input.credential)

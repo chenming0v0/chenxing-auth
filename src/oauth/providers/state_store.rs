@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+/// 外部 OAuth 登录 state 的默认有效期（秒）。可通过 `EXTERNAL_LOGIN_STATE_TTL_SECONDS` 覆盖。
 pub const EXTERNAL_LOGIN_STATE_TTL_SECONDS: u64 = 600;
 pub const EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS: u64 = 60;
 pub const EXTERNAL_LOGIN_STATE_RATE_LIMIT: i64 = 30;
@@ -69,6 +70,10 @@ pub struct ExternalLoginStateStore {
     prefix: String,
     source_rate_limit: i64,
     max_pending: i64,
+    /// 运行期 TTL，来自配置（#121），默认与常量一致。
+    ttl_seconds: u64,
+    /// 运行期限流窗口，来自配置（#121），默认与常量一致。
+    rate_window_seconds: u64,
 }
 
 #[derive(Debug, Error)]
@@ -92,6 +97,26 @@ impl ExternalLoginStateStore {
             STATE_KEY_PREFIX.to_owned(),
             EXTERNAL_LOGIN_STATE_RATE_LIMIT,
             EXTERNAL_LOGIN_STATE_MAX_PENDING,
+            EXTERNAL_LOGIN_STATE_TTL_SECONDS,
+            EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
+        )
+    }
+
+    /// 构造带运行期配置的实例（#121）。
+    pub fn new_with_config(
+        client: Client,
+        ttl_seconds: u64,
+        rate_window_seconds: u64,
+        rate_limit: i64,
+        max_pending: i64,
+    ) -> Self {
+        Self::new_with_limits(
+            client,
+            STATE_KEY_PREFIX.to_owned(),
+            rate_limit,
+            max_pending,
+            ttl_seconds,
+            rate_window_seconds,
         )
     }
 
@@ -113,10 +138,10 @@ impl ExternalLoginStateStore {
             .key(self.pending_key())
             .key(self.rate_key(source_ip))
             .key(self.state_key(&value.state))
-            .arg(EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS)
+            .arg(self.rate_window_seconds)
             .arg(self.source_rate_limit)
             .arg(self.max_pending)
-            .arg(EXTERNAL_LOGIN_STATE_TTL_SECONDS)
+            .arg(self.ttl_seconds)
             .arg(&value.state)
             .arg(payload)
             .invoke_async(&mut connection)
@@ -151,12 +176,16 @@ impl ExternalLoginStateStore {
         prefix: String,
         source_rate_limit: i64,
         max_pending: i64,
+        ttl_seconds: u64,
+        rate_window_seconds: u64,
     ) -> Self {
         Self {
             client,
             prefix,
             source_rate_limit,
             max_pending,
+            ttl_seconds,
+            rate_window_seconds,
         }
     }
 
@@ -227,6 +256,8 @@ mod tests {
             prefix,
             100,
             4,
+            EXTERNAL_LOGIN_STATE_TTL_SECONDS,
+            EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
         ));
         let source_ip = "198.51.100.7";
         let mut tasks = Vec::new();
@@ -273,7 +304,14 @@ mod tests {
     async fn source_rate_limit_rejects_without_creating_an_extra_state() {
         let client = redis_client();
         let prefix = format!("chenxing:test:external-state:{}", Uuid::new_v4().simple());
-        let store = ExternalLoginStateStore::new_with_limits(client.clone(), prefix, 2, 10);
+        let store = ExternalLoginStateStore::new_with_limits(
+            client.clone(),
+            prefix,
+            2,
+            10,
+            EXTERNAL_LOGIN_STATE_TTL_SECONDS,
+            EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
+        );
         for index in 0..2 {
             store
                 .save_from_source(

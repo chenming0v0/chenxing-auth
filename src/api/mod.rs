@@ -1,9 +1,12 @@
 use axum::{
     Router,
+    http::HeaderMap,
     routing::{delete, get, post},
 };
 use std::net::SocketAddr;
 use tower_http::trace::TraceLayer;
+
+use crate::config::TrustedProxies;
 
 mod discovery;
 mod health;
@@ -240,8 +243,20 @@ pub fn router(state: AppState) -> Router {
         .layer(TraceLayer::new_for_http())
 }
 
-pub(crate) fn source_ip(peer: Option<SocketAddr>) -> Option<String> {
-    peer.map(|address| address.ip().to_string())
+/// 从请求对端地址和头部解析真实客户端 IP。
+///
+/// **安全规则**（#111）：
+/// - 未配置可信代理或对端不可信 → 用对端地址，忽略 XFF（防伪造）
+/// - 对端可信且有 XFF → 从右往左扫描，第一个不可信的 IP 是客户端
+///
+/// 此函数收敛了项目中所有的源 IP 解析逻辑。OAuth `/token`、TOTP、Passkey
+/// 和登录端点都调用它。未配置 `trusted_proxies` 时启动阶段已告警。
+pub(crate) fn source_ip(
+    peer: Option<SocketAddr>,
+    headers: &HeaderMap,
+    trusted_proxies: &TrustedProxies,
+) -> Option<String> {
+    trusted_proxies.resolve_client_ip(peer, headers)
 }
 
 #[cfg(test)]

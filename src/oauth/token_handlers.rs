@@ -56,7 +56,12 @@ pub async fn token(
             ));
         }
     };
-    let source_ip = connect_info.map(|Extension(ConnectInfo(peer))| peer.ip().to_string());
+    // #111：通过可信代理列表解析真实客户端 IP，而不是直取 TCP 对端地址。
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
     response::with_no_store_headers(
         token_inner(state, headers, source_ip.as_deref(), request).await,
     )

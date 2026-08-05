@@ -3,6 +3,8 @@ use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
+/// 授权码默认有效期（秒）。可通过 `AUTHORIZATION_CODE_TTL_SECONDS` 配置覆盖（#121）。
+/// 保留此常量作为向后兼容的回退值（token_handlers.rs 补偿路径使用它）。
 pub const AUTHORIZATION_CODE_TTL_SECONDS: u64 = 5 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +75,32 @@ impl AuthorizationCode {
         nonce: Option<String>,
         session_id: Option<String>,
     ) -> Self {
+        Self::new_with_nonce_and_ttl(
+            client_id,
+            redirect_uri,
+            user_id,
+            scopes,
+            code_challenge,
+            nonce,
+            session_id,
+            AUTHORIZATION_CODE_TTL_SECONDS,
+        )
+    }
+
+    /// 与 `new_with_nonce` 相同，但允许指定 TTL（#121：来自 `AppConfig::security_limits`）。
+    // 授权码的元数据字段多，打包成结构体带来的名义上的"清晰度"不抵消每次调用
+    // 都要构造临时结构体的冗余；客户端只有 authorization_code_handlers 一处，故维持现状。
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_nonce_and_ttl(
+        client_id: String,
+        redirect_uri: String,
+        user_id: String,
+        scopes: Vec<String>,
+        code_challenge: String,
+        nonce: Option<String>,
+        session_id: Option<String>,
+        ttl_seconds: u64,
+    ) -> Self {
         let created_at = OffsetDateTime::now_utc();
         Self {
             value: format!("cx-code-{}", Uuid::new_v4().simple()),
@@ -84,7 +112,7 @@ impl AuthorizationCode {
             code_challenge,
             nonce,
             created_at,
-            expires_at: created_at + Duration::seconds(AUTHORIZATION_CODE_TTL_SECONDS as i64),
+            expires_at: created_at + Duration::seconds(ttl_seconds as i64),
             redeemed_at: None,
         }
     }

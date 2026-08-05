@@ -130,7 +130,11 @@ pub async fn login_user(
 ) -> Response {
     let totp_code = input.totp_code.clone();
     let identifier = input.identifier.trim().to_ascii_lowercase();
-    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
     let user_id = match state.users.authenticate(input, source_ip.as_deref()).await {
         Ok(user_id) => user_id,
         Err(UserServiceError::InvalidCredentials) => {
