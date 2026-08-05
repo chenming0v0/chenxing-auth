@@ -143,7 +143,7 @@ impl AppState {
         let refresh_tokens = RefreshTokenStore::new(redis.clone());
         let authorization_requests = AuthorizationRequestStore::new(redis.clone());
         let consents = ConsentService::new(database.clone());
-        let revocations = TokenRevocationStore::new(redis.clone());
+        let revocations = TokenRevocationStore::new_with_pool(redis.clone(), database.clone());
         let oauth_quotas = OAuthQuotaStore::new(redis.clone());
         let qps = QpsRateLimiter::new(redis.clone());
         let plans = PlanService::new(database.clone());
