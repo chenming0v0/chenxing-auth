@@ -69,6 +69,8 @@
         letter-spacing: -0.01em;
         color: var(--chenxing-foreground);
       }
+      /* 回调页标题：文案更短，用固定小字号替代 clamp() 以保持视觉重心 */
+      .oauth-title.is-compact { font-size: 1.55rem; }
       .oauth-copy {
         margin: 0;
         font-size: 0.9rem;
@@ -76,11 +78,30 @@
         color: var(--chenxing-muted-foreground);
       }
       .oauth-copy + .oauth-copy { margin-top: 10px; }
+      /* 段落节奏变体：oauth.css 未包裹 @layer，优先级高于 Tailwind 的 @layer utilities，
+         因此 mt-* 工具类无法覆盖 .oauth-copy 的 margin: 0，间距在此以语义类表达 */
+      /* 标题下方的引导语（选择账号页） */
+      .oauth-copy.is-lead { margin-top: 16px; }
+      /* 账号列表下方的隐私政策/服务条款说明 */
+      .oauth-copy.is-legal {
+        margin-top: 18px;
+        padding: 0 4px;
+        font-size: 12.5px;
+      }
+      /* 回调页错误分支的说明文本 */
+      .oauth-copy.is-notice { margin-top: 12px; }
+      /* 回调页成功分支的次要提示 */
+      .oauth-copy.is-hint { margin-top: 10px; }
       .oauth-copy a {
         color: var(--chenxing-cyan);
         text-decoration: none;
       }
       .oauth-copy a:hover { text-decoration: underline; }
+      /* 正文中被强调的接入应用名 */
+      .oauth-client-name {
+        color: var(--chenxing-cyan);
+        font-weight: 500;
+      }
       .oauth-account {
         display: inline-flex;
         align-items: center;
@@ -278,6 +299,18 @@
         box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
         color: #7dd3fc;
         font-size: 22px;
+      }
+      /* 传输动画右端的接入应用标记：比左端辰星标记多一层天蓝渐变。
+         这三个 alpha 档位在 chenxing-design.css 里没有对应 token
+         （最近的是 --chenxing-primary / --chenxing-primary-soft 0.16 /
+         --chenxing-border-strong 0.36，透明度和色相都不同），按“不新造 token”
+         的约束保留字面值，与同文件 .oauth-app-mark 的写法一致。
+         另：这里不能用 color-mix(var(--chenxing-primary))，它算出的是
+         非 legacy 的 color(srgb …)，会把渐变默认插值空间从 sRGB 切到 oklab，
+         中间过渡带会变色，不满足“视觉不变”。 */
+      .oauth-transfer-mark.is-client {
+        background: linear-gradient(145deg, rgba(56,189,248,0.28), rgba(14,165,233,0.12));
+        border-color: rgba(125,211,252,0.4);
       }
       .oauth-beam {
         position: relative;
