@@ -15,6 +15,7 @@ use super::{
 };
 use crate::{
     audit::AuditEvent,
+    consents::ConsentServiceError,
     error,
     sessions::{cookies, domain::Session},
     state::AppState,
@@ -263,9 +264,23 @@ pub async fn decide_authorization_request(
         .save(context.user_id, &consumed.client_id, &validated.scopes)
         .await
     {
-        tracing::error!(error = %error_value, "failed to save JSON OAuth consent");
+        // ClientNotFound 是内部一致性错误：validated_pending 已确认过 client 存在
+        let response = match error_value {
+            ConsentServiceError::ClientNotFound => {
+                tracing::error!(
+                    client_id = %consumed.client_id,
+                    user_id = %context.user_id,
+                    "consent save rejected: OAuth client no longer exists"
+                );
+                error::oauth_server_error()
+            }
+            ConsentServiceError::Database(database_error) => {
+                tracing::error!(error = %database_error, "failed to save JSON OAuth consent");
+                error::oauth_temporarily_unavailable()
+            }
+        };
         restore_pending(&state, &consumed).await;
-        return error::oauth_temporarily_unavailable();
+        return response;
     }
     match issue_authorization_code_result(&state, context.user_id.to_string(), validated).await {
         Ok(AuthorizationCodeIssue::Redirect(redirect_to)) => (

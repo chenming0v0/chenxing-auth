@@ -1,7 +1,20 @@
 use crate::sqlx::{PgPool, types::Json};
 use crate::users::domain::UserId;
 use serde::Serialize;
+use thiserror::Error;
 use time::OffsetDateTime;
+
+/// ConsentService 的错误类型
+#[derive(Debug, Error)]
+pub enum ConsentServiceError {
+    /// 数据库操作失败
+    #[error("database operation failed: {0}")]
+    Database(#[from] crate::sqlx::Error),
+
+    /// 保存同意记录时对应的 OAuth Client 不存在
+    #[error("OAuth client not found")]
+    ClientNotFound,
+}
 
 #[derive(Clone)]
 pub struct ConsentService {
@@ -40,13 +53,19 @@ impl ConsentService {
         Ok(scopes.iter().all(|scope| stored.0.contains(scope)))
     }
 
+    /// 保存用户对某个 OAuth Client 的授权同意
+    ///
+    /// # 错误
+    ///
+    /// - `ClientNotFound`: 指定的 `client_id` 在数据库中不存在
+    /// - `Database`: 数据库操作失败
     pub async fn save(
         &self,
         user_id: UserId,
         client_id: &str,
         scopes: &[String],
-    ) -> Result<(), crate::sqlx::Error> {
-        crate::sqlx::query(
+    ) -> Result<(), ConsentServiceError> {
+        let result = crate::sqlx::query(
             "INSERT INTO user_consents (user_id, client_id, scopes, updated_at)
              SELECT $1, id, $3, $4 FROM oauth_clients WHERE client_id = $2
              ON CONFLICT (user_id, client_id) DO UPDATE SET scopes = EXCLUDED.scopes, updated_at = EXCLUDED.updated_at",
@@ -57,6 +76,11 @@ impl ConsentService {
         .bind(OffsetDateTime::now_utc())
         .execute(&self.pool)
         .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(ConsentServiceError::ClientNotFound);
+        }
+
         Ok(())
     }
 
@@ -107,7 +131,27 @@ impl ConsentService {
 
 #[cfg(test)]
 mod tests {
-    use super::AuthorizedApp;
+    use super::{AuthorizedApp, ConsentServiceError};
+
+    #[test]
+    fn client_not_found_error_does_not_leak_internal_details() {
+        let message = ConsentServiceError::ClientNotFound.to_string();
+
+        assert_eq!(message, "OAuth client not found");
+        // 错误信息面向调用方，不得暴露 SQL 语句或表结构
+        assert!(!message.contains("INSERT"));
+        assert!(!message.contains("user_consents"));
+        assert!(!message.contains("oauth_clients"));
+    }
+
+    #[test]
+    fn sqlx_error_converts_into_database_variant() {
+        let error = ConsentServiceError::from(crate::sqlx::Error::RowNotFound);
+
+        // 基础设施错误必须落在 Database 变体上，不能被误判成业务信号 ClientNotFound
+        assert!(matches!(error, ConsentServiceError::Database(_)));
+        assert!(error.to_string().starts_with("database operation failed:"));
+    }
 
     #[test]
     fn authorized_app_response_contains_only_non_sensitive_fields() {
