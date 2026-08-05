@@ -65,3 +65,60 @@ fn registration_requires_a_valid_username() {
 
     assert_eq!(error, RegistrationError::InvalidUsername);
 }
+
+// ── Issue #122：口令长度上界 ──────────────────────────────────────────────
+
+/// 129 字符口令必须被拒绝。
+///
+/// Argon2 的成本随口令长度增长，无上界时单个请求可以提交数 MB 明文，把一次哈希
+/// 从 50 ms 放大到数秒。限流按请求数计，拦不住单请求的计算量。
+#[test]
+fn registration_rejects_password_longer_than_the_upper_bound() {
+    let error = validate_registration(RegistrationInput {
+        username: "long-password-user".to_owned(),
+        email: "user@example.com".to_owned(),
+        password: "a".repeat(129),
+        display_name: None,
+    })
+    .expect_err("129-character password must be rejected");
+
+    assert_eq!(error, RegistrationError::PasswordTooLong);
+}
+
+/// 边界必须闭合：128 字符恰好通过，129 才拒绝。
+#[test]
+fn registration_accepts_password_at_the_upper_bound() {
+    let result = validate_registration(RegistrationInput {
+        username: "boundary-password-user".to_owned(),
+        email: "user@example.com".to_owned(),
+        password: "a".repeat(128),
+        display_name: None,
+    });
+
+    assert!(result.is_ok(), "128-character password must be accepted");
+}
+
+/// 长度按字符数而不是字节数计：129 个中文字符（387 字节）同样按 129 判定。
+#[test]
+fn password_length_counts_characters_not_bytes() {
+    let error = validate_registration(RegistrationInput {
+        username: "multibyte-user".to_owned(),
+        email: "user@example.com".to_owned(),
+        password: "辰".repeat(129),
+        display_name: None,
+    })
+    .expect_err("129 multibyte characters must be rejected");
+    assert_eq!(error, RegistrationError::PasswordTooLong);
+
+    // 128 个中文字符是 384 字节，若按字节判定会被误拒。
+    assert!(
+        validate_registration(RegistrationInput {
+            username: "multibyte-ok-user".to_owned(),
+            email: "user@example.com".to_owned(),
+            password: "辰".repeat(128),
+            display_name: None,
+        })
+        .is_ok(),
+        "128 multibyte characters must be accepted"
+    );
+}

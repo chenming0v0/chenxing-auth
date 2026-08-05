@@ -96,6 +96,10 @@ pub async fn bootstrap_admin(
         Err(crate::users::service::UserServiceError::Validation(
             RegistrationError::PasswordTooShort,
         )) => error::bad_request("password_too_short", "password is too short"),
+        // #122：超长口令是客户端输入问题，必须落到 400，不能被兜底分支翻成 500。
+        Err(crate::users::service::UserServiceError::Validation(
+            RegistrationError::PasswordTooLong,
+        )) => error::bad_request("password_too_long", "password must be at most 128 characters"),
         Err(crate::users::service::UserServiceError::OwnerBootstrapRequired) => error::conflict(
             "owner_bootstrap_required",
             "owner bootstrap must be completed before creating privileged users",
@@ -182,6 +186,9 @@ pub async fn create_admin(
         Err(crate::users::service::UserServiceError::Validation(
             RegistrationError::PasswordTooShort,
         )) => error::bad_request("password_too_short", "password is too short"),
+        Err(crate::users::service::UserServiceError::Validation(
+            RegistrationError::PasswordTooLong,
+        )) => error::bad_request("password_too_long", "password must be at most 128 characters"),
         Err(crate::users::service::UserServiceError::Database(error_value))
             if error_value
                 .as_database_error()

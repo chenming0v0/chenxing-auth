@@ -13,7 +13,6 @@ use super::{
     repository::{ClientCredential, StoredClientCredentials},
     service::ClientServiceError,
 };
-use crate::users::credentials::verify_password;
 
 // ── 计时侧信道防护（Issue #63）──────────────────────────────────────────────
 
@@ -229,8 +228,22 @@ pub fn issue_client_credential(
     }
 }
 
+/// 校验 Client Secret 与存储哈希是否匹配。
+///
+/// 保持同步：本模块的常量时间校验（`verify_client_credentials_constant_time`）依赖
+/// 无条件执行一次 Argon2，函数本身不是 async，无法 await。原先复用
+/// `users::credentials::verify_password`，该函数在 Issue #122 中改为 async，
+/// 这里改为直接使用同一套 `Argon2::default()` 参数，行为不变。
+///
+/// 遗留阻塞面：本函数仍在 async 调用栈内同步执行 Argon2。Client 认证路径的
+/// spawn_blocking 隔离不在 Issue #122 范围内，需要单独处理。
 pub fn verify_client_secret(secret: &str, encoded_hash: &str) -> bool {
-    verify_password(secret, encoded_hash)
+    let Ok(parsed) = PasswordHash::new(encoded_hash) else {
+        return false;
+    };
+    Argon2::default()
+        .verify_password(secret.as_bytes(), &parsed)
+        .is_ok()
 }
 
 /// 校验 Client 凭据是否匹配（Issue #63 #66 合并重构）。
