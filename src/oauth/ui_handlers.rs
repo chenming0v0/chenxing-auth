@@ -109,6 +109,10 @@ pub async fn inspect_authorization_request(
 /// pending request is tied to the freshly-issued session — after which `inspect`
 /// and `decide` accept it. Mirrors the binding the server-rendered
 /// `complete_browser_login` used to perform.
+///
+/// 绑定前必须通过授权请求持有者 Cookie 校验（#115）：仅凭有效会话 + `request_id`
+/// 不足以认领一条 pending 请求，否则拿到泄露 `request_id` 的攻击者可以把受害者
+/// 的授权请求绑到自己的会话上并批准，使受害者登录进攻击者账号。
 pub async fn bind_authorization_request(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -130,6 +134,21 @@ pub async fn bind_authorization_request(
     }) else {
         return pending_expired();
     };
+    // 持有者校验放在会话检查之前：包括幂等重试在内的每一次绑定调用都必须证明
+    // 自己就是发起授权的那个浏览器。这是叠加在 CSRF 校验之上的一层，
+    // 两者都必须通过。Cookie 值不进日志。
+    if !authz_holder_valid(&headers, &pending) {
+        tracing::warn!(
+            event = "oauth.authz_holder_rejected",
+            request_id = %request_id,
+            user_id = %context.user_id,
+            "rejected authorization request binding with missing or mismatched holder cookie"
+        );
+        return error::forbidden(
+            "authorization_holder_invalid",
+            "authorization request was not initiated by this browser",
+        );
+    }
     // Only allow binding an unbound request, or re-binding one already owned by
     // this same session (idempotent retry). Refuse to steal another session's request.
     match pending.session_id.as_deref() {
@@ -412,4 +431,22 @@ fn csrf_valid(headers: &HeaderMap, session: &Session) -> bool {
         return false;
     };
     cookie == header && session.validates_csrf(&header)
+}
+
+/// 校验授权请求持有者 Cookie（#115）：
+/// - Cookie 存在 且 SHA-256(cookie值) == pending 中存储的哈希 → 通过
+/// - Cookie 不存在 或 pending 中无 holder_hash（旧记录）→ 拒绝（fail-secure）
+///
+/// 旧记录无 holder_hash 意味着升级前创建的授权请求：拒绝是有意为之，
+/// 用户重新发起授权即可获得完整保护。不留「无 holder 即放行」的绕过窗口。
+fn authz_holder_valid(headers: &HeaderMap, pending: &PendingAuthorization) -> bool {
+    match (
+        cookies::extract_authz_holder_cookie(headers).as_deref(),
+        pending.holder_hash.as_deref(),
+    ) {
+        (Some(cookie_value), Some(stored_hash)) => {
+            cookies::authz_holder_hash(cookie_value) == stored_hash
+        }
+        _ => false,
+    }
 }

@@ -4,12 +4,17 @@ use axum::http::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use cookie::{Cookie, SameSite};
+use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
 
 pub const SESSION_COOKIE: &str = "chenxing_session";
 pub const CSRF_COOKIE: &str = "chenxing_csrf";
 pub const EXTERNAL_STATE_COOKIE_PREFIX: &str = "chenxing_external_oauth_state_";
 const EXTERNAL_STATE_COOKIE_ID_BYTES: usize = 12;
+/// 授权请求持有者 Cookie：证明调用绑定端点的浏览器就是发起 `/oauth/authorize`
+/// 的那一个（#115）。只在服务端与 pending 记录中的摘要比对，值本身不进日志。
+pub const AUTHZ_HOLDER_COOKIE: &str = "chenxing_authz_holder";
+const AUTHZ_HOLDER_BYTES: usize = 32;
 
 pub fn append_login_cookies(
     headers: &mut HeaderMap,
@@ -79,6 +84,52 @@ pub fn append_clear_external_state_cookie(
             .parse()
             .expect("external OAuth state cookie is valid ASCII"),
     );
+}
+
+/// 生成一个随机的授权持有者值（32 字节，base64url 编码，不含填充）。
+/// 该值只通过 HttpOnly Cookie 下发，不写入日志或 pending 记录。
+pub fn new_authz_holder() -> String {
+    let mut bytes = [0_u8; AUTHZ_HOLDER_BYTES];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// 计算 holder 值的 SHA-256 摘要（base64url 无填充），用于存入 pending 记录。
+/// 只暴露摘要，原值不离开调用方。
+pub fn authz_holder_hash(holder: &str) -> String {
+    let digest = Sha256::digest(holder.as_bytes());
+    URL_SAFE_NO_PAD.encode(digest)
+}
+
+/// 下发授权请求持有者 Cookie（HttpOnly, SameSite=Lax, path="/"）。
+///
+/// 路径设 `/` 而非 `/oauth/`：bind 端点位于 `/api/v1/...`，受限路径会导致
+/// bind 调用收不到此 Cookie。HttpOnly 阻止脚本读取，Lax 允许从外部 IdP
+/// 跳回时携带（top-level cross-site GET 携带 Lax Cookie）。
+pub fn append_authz_holder_cookie(
+    headers: &mut HeaderMap,
+    holder: &str,
+    max_age_seconds: u64,
+    secure: bool,
+) {
+    headers.append(
+        SET_COOKIE,
+        build_cookie(
+            AUTHZ_HOLDER_COOKIE,
+            holder,
+            max_age_seconds,
+            secure,
+            true, // http_only
+            "/",
+        )
+        .parse()
+        .expect("authz holder cookie is valid ASCII"),
+    );
+}
+
+/// 从请求 Cookie 头中提取授权持有者值（如存在）。
+pub fn extract_authz_holder_cookie(headers: &HeaderMap) -> Option<String> {
+    cookie_value(headers, AUTHZ_HOLDER_COOKIE)
 }
 
 pub fn session_id(headers: &HeaderMap) -> Option<String> {
@@ -199,4 +250,48 @@ fn build_cookie(
         cookie = cookie.http_only(true);
     }
     cookie.build().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{authz_holder_hash, new_authz_holder};
+
+    /// 回归 #115：holder 值生成应足够随机且长度合理。
+    #[test]
+    fn authz_holder_is_random_and_sufficiently_long() {
+        let holder1 = new_authz_holder();
+        let holder2 = new_authz_holder();
+        assert_ne!(holder1, holder2, "consecutive holders must differ");
+        assert!(
+            holder1.len() > 40,
+            "base64url(32 bytes) should be ~43 chars, got {}",
+            holder1.len()
+        );
+    }
+
+    /// 回归 #115：holder 哈希计算应稳定且不可逆。
+    #[test]
+    fn authz_holder_hash_is_stable() {
+        let holder = "test_holder_value";
+        let hash1 = authz_holder_hash(holder);
+        let hash2 = authz_holder_hash(holder);
+        assert_eq!(hash1, hash2, "same input must produce same hash");
+        assert_ne!(
+            hash1, holder,
+            "hash must not be the original holder value"
+        );
+        assert!(
+            hash1.len() > 40,
+            "base64url(SHA-256) should be ~43 chars, got {}",
+            hash1.len()
+        );
+    }
+
+    /// 回归 #115：不同的 holder 值产生不同的哈希。
+    #[test]
+    fn different_holders_produce_different_hashes() {
+        let hash1 = authz_holder_hash("holder_a");
+        let hash2 = authz_holder_hash("holder_b");
+        assert_ne!(hash1, hash2);
+    }
 }

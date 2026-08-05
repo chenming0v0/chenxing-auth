@@ -151,7 +151,27 @@
 | `code_challenge_method` | 必须为 `S256` |
 | `nonce` | 使用 OIDC 时建议必填并随机生成 |
 
-未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`；非 HTML 请求返回 `401 login_required`。首次授权会进入 `/oauth/consent?request_id=...`。
+未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`，同时下发 `chenxing_authz_holder` HttpOnly Cookie（防御 OAuth login CSRF，见下文 bind 端点说明）；非 HTML 请求返回 `401 login_required`。首次授权会进入 `/oauth/consent?request_id=...`。
+
+### `POST /api/v1/oauth/authorize/requests/{request_id}/bind`
+
+将 SPA 登录后签发的 Session 绑定到 pending 授权请求。绑定完成后才能调用 inspect（GET）和 decide（POST）。
+
+调用方必须同时提供：
+
+| 凭据 | 来源 | 说明 |
+| --- | --- | --- |
+| Session Cookie `chenxing_session` | TOTP / 密码登录响应 | 身份认证 |
+| CSRF Cookie `chenxing_csrf` + `X-CSRF-Token` | 同上 | 防 CSRF |
+| 持有者 Cookie `chenxing_authz_holder` | `/oauth/authorize` 重定向响应 | **防 OAuth login CSRF（#115）** |
+
+**`chenxing_authz_holder` Cookie 说明**：`request_id` 通过 URL 查询参数传递，可能通过 Referer、浏览器历史或分享链接泄露。没有持有者绑定，任何拿到 `request_id` 的已登录攻击者都可以把受害者的 pending 请求绑到自己的会话上并批准，使受害者登录进攻击者账号（OAuth login CSRF / 请求固定攻击）。
+
+`/oauth/authorize` 在创建未绑定 pending 请求时下发该 Cookie（`HttpOnly; SameSite=Lax; Path=/`），其 SHA-256 摘要存入 Redis。bind 端点比对 Cookie 值与摘要，不匹配返回 `403 authorization_holder_invalid`。
+
+升级前创建的旧 pending 记录无摘要，绑定时被拒绝（fail-secure），用户需重新发起授权流程。
+
+幂等：同一 Session + 同一持有者 Cookie 重复调用返回 `204`。
 
 ### `GET /api/v1/oauth/authorize/requests/{request_id}` / `POST ...`
 

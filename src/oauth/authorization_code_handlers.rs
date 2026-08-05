@@ -273,6 +273,10 @@ pub(crate) fn pending_from_validated(
         code_challenge: request.code_challenge.clone(),
         code_challenge_method: "S256".to_owned(),
         session_id: request.session_id.clone(),
+        // 持有者绑定只在未登录路径上有意义：已有会话的请求直接进入授权确认
+        // 或预授权直通，不经过绑定端点。未登录路径由 `save_and_redirect_to_login`
+        // 生成 holder 并回填这个字段（#115）。
+        holder_hash: None,
     }
 }
 
