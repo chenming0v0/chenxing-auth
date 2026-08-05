@@ -131,18 +131,24 @@ export function GlobalTopbar({
   actionTo,
   loggedIn = false,
   menuExtra,
+  hideBrandWhenExpanded = false,
 }: {
   status: string
   action?: string
   actionTo?: string
   loggedIn?: boolean
   menuExtra?: ReactNode
+  hideBrandWhenExpanded?: boolean
 }) {
   const { expanded, sentinelRef } = useTopbarExpanded()
   return (
     <>
       <div ref={sentinelRef} aria-hidden="true" className="chenxing-topbar-sentinel" />
-      <header className="chenxing-topbar" data-expanded={expanded || undefined}>
+      <header
+        className="chenxing-topbar"
+        data-expanded={expanded || undefined}
+        data-hide-brand-when-expanded={hideBrandWhenExpanded || undefined}
+      >
         <Link to="/" className="chenxing-topbar-brand flex items-center gap-2.5 justify-self-start">
           <BrandLockup />
         </Link>
@@ -234,7 +240,9 @@ export function ConsoleLayout({ children }: { children: ReactNode }) {
     <SpaceBackdrop className="console-shell" opacity={0.4} dense>
       <Sidebar />
       <div className="chenxing-console-main relative z-10 flex min-h-screen flex-col">
-        <GlobalTopbar status={status} loggedIn />
+        {/* sidebar already carries the brand lockup, so the topbar brand only
+            appears once the bar condenses into its capsule */}
+        <GlobalTopbar status={status} loggedIn hideBrandWhenExpanded />
         <div className="chenxing-console-content flex-1 px-4 py-6 pb-10 sm:px-6 lg:px-8">
           {children}
         </div>

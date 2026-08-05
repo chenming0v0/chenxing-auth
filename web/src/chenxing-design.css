@@ -576,12 +576,33 @@ td.chenxing-label {
   box-shadow: none;
 }
 
-/* brand lockup belongs to the condensed capsule only; at page top it fades out
-   (kept in layout so the centered status stays centered) */
+/* brand lockup stays readable at every scroll position: on landing and auth pages
+   the topbar is the only chrome carrying the brand, so it doubles as the home
+   affordance. At page top it steps back a little so it does not compete with the
+   hero lockup, then settles to full strength on hover/focus or once the bar
+   condenses into its capsule. Scale shares the capsule's easing so both read as
+   one motion instead of two. */
 .chenxing-topbar-brand {
-  transition: opacity 0.3s ease;
+  opacity: 1;
+  transform: scale(1);
+  transform-origin: left center;
+  transition:
+    opacity 0.35s ease,
+    transform 0.55s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .chenxing-topbar[data-expanded] .chenxing-topbar-brand {
+  opacity: 0.62;
+  transform: scale(0.96);
+}
+.chenxing-topbar[data-expanded] .chenxing-topbar-brand:hover,
+.chenxing-topbar[data-expanded] .chenxing-topbar-brand:focus-visible {
+  opacity: 1;
+}
+
+/* console shells already show the brand in the sidebar, so there the topbar copy
+   belongs to the condensed capsule only and fades out at page top (kept in layout
+   so the centered status stays centered) */
+.chenxing-topbar[data-expanded][data-hide-brand-when-expanded] .chenxing-topbar-brand {
   opacity: 0;
   pointer-events: none;
 }
