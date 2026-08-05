@@ -11,7 +11,10 @@ use std::env;
 
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{
-    clients::{domain::ValidatedClientRegistration, repository as client_repository},
+    clients::{
+        domain::ValidatedClientRegistration,
+        repository::{self as client_repository, ClientCredential},
+    },
     consents::ConsentService,
     db,
     oauth::revocation::TokenRevocationStore,
@@ -66,7 +69,7 @@ async fn seed_user_and_client(
             scopes: vec!["openid".to_owned(), "profile".to_owned()],
         },
         client_id.clone(),
-        "client-secret-hash".to_owned(),
+        ClientCredential::SecretBasic("client-secret-hash".to_owned()),
     )
     .await
     .expect("insert client");
