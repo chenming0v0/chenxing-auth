@@ -54,7 +54,33 @@ pub async fn create_client(
     match state.clients.register(input).await {
         Ok(client) => {
             let client_id = client.client_id.clone();
-            let response = (
+            let (actor_type, actor_id) = actor.audit_fields();
+            // 必须先写审计，审计成功后才把凭据返回给调用者。
+            // 若审计失败：client 记录已在数据库提交，但调用者拿不到 secret，
+            // 攻击者无法利用未被记录的凭据；运维可凭结构化日志人工补账。
+            if let Err(audit_err) = state
+                .audit
+                .record(AuditEvent::new(
+                    actor_type.to_owned(),
+                    actor_id.clone(),
+                    "client_create".to_owned(),
+                    "oauth_client".to_owned(),
+                    Some(client_id.clone()),
+                    serde_json::json!({"result": "success"}),
+                ))
+                .await
+            {
+                tracing::error!(
+                    event = "audit.block_on_failure",
+                    action = "client_create",
+                    client_id = %client_id,
+                    actor_id = ?actor_id,
+                    error = %audit_err,
+                    "审计写入失败；client 已创建但 secret 未返回，可凭 client_id 人工补账"
+                );
+                return error::internal();
+            }
+            (
                 axum::http::StatusCode::CREATED,
                 Json(RegisteredClientResponse {
                     id: client.id,
@@ -65,11 +91,7 @@ pub async fn create_client(
                     scopes: client.scopes,
                 }),
             )
-                .into_response();
-            // The secret is one-time material. Once the insert succeeds, an
-            // audit outage must not turn a recoverable response into a lost credential.
-            record_admin_event_best_effort(&state, actor, "client_create", &client_id).await;
-            response
+                .into_response()
         }
         Err(ClientServiceError::Validation(validation_error)) => {
             error::bad_request("invalid_client_registration", validation_error.to_string())
@@ -253,9 +275,33 @@ pub async fn rotate_secret(
     match state.clients.rotate_secret(&client_id).await {
         Ok(secret) => {
             let client_id = secret.client_id.clone();
-            let response = (StatusCode::OK, Json(secret)).into_response();
-            record_admin_event_best_effort(&state, actor, "client_secret_rotate", &client_id).await;
-            response
+            let (actor_type, actor_id) = actor.audit_fields();
+            // 与 create_client 一致：先写审计，审计成功后才返回新 secret。
+            // 若审计失败：旧 secret 已在数据库失效，但调用者拿不到新 secret，
+            // 该 client 暂时无法认证；运维可凭结构化日志人工补账或再次轮换。
+            if let Err(audit_err) = state
+                .audit
+                .record(AuditEvent::new(
+                    actor_type.to_owned(),
+                    actor_id.clone(),
+                    "client_secret_rotate".to_owned(),
+                    "oauth_client".to_owned(),
+                    Some(client_id.clone()),
+                    serde_json::json!({"result": "success"}),
+                ))
+                .await
+            {
+                tracing::error!(
+                    event = "audit.block_on_failure",
+                    action = "client_secret_rotate",
+                    client_id = %client_id,
+                    actor_id = ?actor_id,
+                    error = %audit_err,
+                    "审计写入失败；secret 已轮换但新 secret 未返回，可凭 client_id 人工补账"
+                );
+                return error::internal();
+            }
+            (StatusCode::OK, Json(secret)).into_response()
         }
         Err(ClientServiceError::InvalidData) => {
             error::bad_request("client_not_found", "client was not found")
@@ -267,42 +313,6 @@ pub async fn rotate_secret(
         Err(ClientServiceError::SecretHash) => error::internal(),
         Err(ClientServiceError::Validation(_)) => error::internal(),
         Err(ClientServiceError::QuotaExceeded) => error::internal(),
-    }
-}
-
-async fn record_admin_event(
-    state: &AppState,
-    actor: super::authorization::AdminActor,
-    action: &str,
-    client_id: &str,
-) -> Result<(), crate::audit::AuditError> {
-    let (actor_type, actor_id) = actor.audit_fields();
-    state
-        .audit
-        .record(AuditEvent::new(
-            actor_type.to_owned(),
-            actor_id,
-            action.to_owned(),
-            "oauth_client".to_owned(),
-            Some(client_id.to_owned()),
-            serde_json::json!({"result": "success"}),
-        ))
-        .await
-}
-
-async fn record_admin_event_best_effort(
-    state: &AppState,
-    actor: super::authorization::AdminActor,
-    action: &str,
-    client_id: &str,
-) {
-    if let Err(error_value) = record_admin_event(state, actor, action, client_id).await {
-        tracing::error!(
-            event = "audit.persistence_failed_after_client_secret_mutation",
-            action,
-            error = %error_value,
-            "client secret response was returned despite audit persistence failure"
-        );
     }
 }
 
