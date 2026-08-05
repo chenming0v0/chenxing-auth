@@ -13,6 +13,7 @@ axum = { version = "0.8", features = ["macros"] }
 base64 = "0.22"
 cookie = "0.18"
 dotenvy = "0.15"
+hmac = "0.12"
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 oxide-auth-axum = "0.6"
@@ -30,13 +31,14 @@ thiserror = "2"
 time = { version = "0.3", features = ["serde"] }
 totp-rs = { version = "5.7.2", default-features = false, features = ["gen_secret", "otpauth", "zeroize"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2"
 webauthn-rs = { version = "0.6.1-dev", default-features = false, features = ["danger-allow-state-serialisation"] }
 webauthn-rs-core = "=0.6.1-dev"
 uuid = { version = "1", features = ["serde", "v4"] }
+zeroize = { version = "1", features = ["derive"] }
 pkcs8 = { version = "0.10", features = ["std"] }
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 
