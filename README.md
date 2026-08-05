@@ -132,6 +132,16 @@ src/
 
 复制 `.env.example` 为 `.env`，按本地环境修改连接地址。正常服务启动不会修改数据库结构；需要执行迁移时运行 `cargo run -- migrate`，生产 Docker 部署脚本会在启动应用前显式执行同一迁移命令。
 
+#### 快速启动
+
+项目根目录提供三份开发脚本：
+
+- `./dev.sh` — 一键启动完整开发环境（Docker 基础设施 + 前后端），`Ctrl+C` 只停止前后端，Docker 容器保持运行
+- `./dev-docker.sh` — 仅启动 PostgreSQL 和 Redis（分离模式），脚本退出后容器继续运行
+- `./dev-services.sh` — 仅启动前后端（需要先启动 Docker 基础设施），`Ctrl+C` 停止前后端
+
+日常开发推荐工作流：每日首次启动运行 `./dev.sh`，后续代码修改后只需 `Ctrl+C` 停止前后端再重新运行 `./dev-services.sh`，无需反复重启数据库容器。停止 Docker 服务使用 `docker compose down`。
+
 认证失败限流由 Redis Lua 脚本在单次原子操作中完成计数、窗口 TTL 和阈值判定。生产默认使用 `AUTH_LIMITER_FAILURE_POLICY=fail-closed`：Redis 不可用时认证请求不会被放行，并记录结构化 `auth_limiter.redis_unavailable` 事件；只有在明确接受降级风险时才使用 `fail-open`。`AUTH_LIMITER_MISSING_SOURCE_IP=reject` 是生产默认值，防止没有可信 `ConnectInfo` 的请求共用全局 `unknown` 桶；`skip` 只跳过 IP 维度，仍保留 account、ticket 限流，并应仅用于明确配置的测试或受控入口。限流日志只记录维度、窗口和不可逆 key hash，不记录账户、ticket、IP 原文或认证凭据。
 迁移编号在合并时必须保持唯一且连续：sessions lane 使用 `0006_session_epochs.sql`，plans lane 使用 `0007_plan_default_invariant.sql`，本 lane 的管理员查询索引使用 `0008_admin_query_indexes.sql`。不要复用已占用的编号或修改已有迁移的 SQL 内容。
 
