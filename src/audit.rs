@@ -3,6 +3,25 @@
 //! `audit_events` is an append-only record of security-relevant decisions. The
 //! database owns retention and archival policy; application code must not turn
 //! a failed write into a successful security mutation.
+//!
+//! # 凭据签发与"DB 已提交但审计失败"窗口
+//!
+//! `client_create` 和 `client_secret_rotate` 遵循**阻断式审计**策略：
+//! 先写审计，审计成功后才将 secret 返回给调用者。若审计写入失败（含重试），
+//! 处理器返回 500，调用者收不到任何凭据。
+//!
+//! 这意味着仍存在一个窄窗口——底层 DB 变更（client 行/secret hash）已提交，
+//! 但 `audit_events` 写入失败。与"静默签发"相比，这种取舍更安全：
+//!
+//! - **攻击者拿不到可用凭据**：500 响应中不含 secret，无法直接利用。
+//! - **可观测、可追溯**：处理器在 `tracing::error!` 里记录了 `client_id`、
+//!   `actor_id` 和操作类型，运维可根据日志人工补录审计记录或撤销 client。
+//! - **可重试**：调用方收到 500 后可通过管理 API 查询 client 状态再决策；
+//!   相比之下，静默签发的凭据一旦落到攻击者手里无法撤回。
+//!
+//! 若需完全消除此窗口，须将 client DB 写入与 `audit_events` 写入放在同一
+//! 数据库事务中（事务回滚 = 凭据未签发），这需要修改 `ClientService` 签名，
+//! 留待后续迭代。
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
