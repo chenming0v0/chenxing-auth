@@ -4,11 +4,25 @@
  * 认证两条链路共用同一套解析规则，避免任一侧出现宽松解码。
  */
 
+import { ApiError } from './api'
+
 export type PasskeyChallenge = { publicKey?: Record<string, unknown> }
 
 const INVALID_CHALLENGE = 'Passkey challenge is invalid'
+const UNAVAILABLE_CREDENTIAL = 'Passkey credential is unavailable'
+const PASSKEY_FAILED = 'Passkey 操作失败，请重试。'
 const USER_VERIFICATION = ['required', 'preferred', 'discouraged']
 const ATTESTATION = ['none', 'indirect', 'direct', 'enterprise']
+
+/**
+ * 本模块自身抛出的哨兵消息到用户文案的映射。只有这些由代码写死的消息才允许
+ * 参与文案决策，浏览器或其他来源的 message 一律走兜底。使用 Map 而非对象字面量，
+ * 避免 constructor / __proto__ 之类的键命中 Object.prototype 上的成员。
+ */
+const INTERNAL_MESSAGES = new Map<string, string>([
+  [INVALID_CHALLENGE, '服务返回的 Passkey challenge 无效，请重新登录。'],
+  [UNAVAILABLE_CREDENTIAL, '当前设备没有可用的 Passkey 凭据，请重试或改用其他方式登录。'],
+])
 
 export function supportsWebAuthnGet(): boolean {
   return hasCredentialApi() && typeof navigator.credentials?.get === 'function'
@@ -156,17 +170,27 @@ export function serializeAttestation(credential: PublicKeyCredential) {
 }
 
 export function assertPublicKeyCredential(credential: Credential | null): PublicKeyCredential {
-  if (!credential || credential.type !== 'public-key') throw new Error('Passkey credential is unavailable')
+  if (!credential || credential.type !== 'public-key') throw new Error(UNAVAILABLE_CREDENTIAL)
   return credential as PublicKeyCredential
 }
 
+/**
+ * 把 Passkey 链路上的任意异常映射为用户可见文案。
+ *
+ * 浏览器 DOMException 的 message 会包含 RP ID、origin 和认证器细节，例如
+ * "The relying party ID 'auth.example.com' is not a registrable domain suffix..."，
+ * 直接展示等于把部署拓扑写到登录页上。因此除了 AbortError / NotAllowedError /
+ * InvalidStateError 三个需要区分引导语的类型，其余 DOMException 一律兜底；
+ * 其他 Error 只在消息属于本模块哨兵或已经过 safeErrorMessage 清洗的 ApiError 时透传。
+ */
 export function passkeyErrorMessage(error: unknown): string {
   if (typeof DOMException !== 'undefined' && error instanceof DOMException) {
     if (error.name === 'AbortError' || error.name === 'NotAllowedError') return 'Passkey 操作已取消，请重试。'
     if (error.name === 'InvalidStateError') return '该设备已经绑定过 Passkey，请直接使用它登录。'
+    return PASSKEY_FAILED
   }
-  if (error instanceof Error && error.message === INVALID_CHALLENGE) {
-    return '服务返回的 Passkey challenge 无效，请重新登录。'
-  }
-  return error instanceof Error ? error.message : 'Passkey 操作失败，请重试。'
+  // ApiError 的 message 由 api.ts 的 safeErrorMessage 生成，本身不含内部细节。
+  if (error instanceof ApiError) return error.message
+  if (error instanceof Error) return INTERNAL_MESSAGES.get(error.message) ?? PASSKEY_FAILED
+  return PASSKEY_FAILED
 }
