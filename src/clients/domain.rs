@@ -269,7 +269,10 @@ mod tests {
     #[test]
     fn redirect_uri_normalizes_bare_origin_adds_trailing_slash() {
         // https://example.com 没有显式路径，归一化补全 trailing slash
-        assert_eq!(validate_uri("https://example.com").unwrap(), "https://example.com/");
+        assert_eq!(
+            validate_uri("https://example.com").unwrap(),
+            "https://example.com/"
+        );
     }
 
     #[test]
@@ -313,7 +316,10 @@ mod tests {
     #[test]
     fn redirect_uri_accepts_any_loopback_ipv4() {
         // 整个 127.0.0.0/8 段均为回环，is_loopback() 正确处理
-        assert_eq!(validate_uri("http://127.0.0.2/cb").unwrap(), "http://127.0.0.2/cb");
+        assert_eq!(
+            validate_uri("http://127.0.0.2/cb").unwrap(),
+            "http://127.0.0.2/cb"
+        );
         assert_eq!(
             validate_uri("http://127.255.255.255/cb").unwrap(),
             "http://127.255.255.255/cb"

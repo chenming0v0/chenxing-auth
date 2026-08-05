@@ -11,7 +11,9 @@ use crate::{
     audit::AuditEvent,
     clients::{
         domain::ClientRegistrationInput,
-        service::{ClientServiceError, ClientSummary, RegisteredClientSecret},
+        service::{
+            ClientRegistrationRequest, ClientServiceError, ClientSummary, RegisteredClientSecret,
+        },
     },
     error,
     oauth::quota::QuotaSnapshot,
@@ -33,7 +35,11 @@ struct OwnedClientResponse {
 struct RegisteredOwnedClientResponse {
     #[serde(flatten)]
     client: OwnedClientResponse,
-    client_secret: String,
+    /// Client 认证方式；`none` 表示公开客户端，响应不含 client_secret。
+    auth_method: &'static str,
+    /// 公开客户端（SPA / 移动端）不签发 secret，此时该字段整体省略（Issue #66）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_secret: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -150,7 +156,7 @@ pub async fn revoke_authorized_app(
 pub async fn create_owned_client(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(input): Json<ClientRegistrationInput>,
+    Json(input): Json<ClientRegistrationRequest>,
 ) -> Response {
     let Ok(context) = mutation_user(&state, &headers).await else {
         return mutation_error(&state, &headers).await;
@@ -343,6 +349,7 @@ async fn owned_registered_response(
             status: "active".to_owned(),
             quota,
         },
+        auth_method: client.auth_method.as_str(),
         client_secret: client.client_secret,
     })
 }

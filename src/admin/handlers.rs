@@ -1,11 +1,12 @@
 use axum::{
     Json,
     extract::Path,
+    extract::Query,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     admin::{
@@ -13,20 +14,36 @@ use crate::{
         domain::AdminPermission,
     },
     audit::AuditEvent,
-    clients::{domain::ClientRegistrationInput, service::ClientServiceError},
+    clients::{
+        domain::ClientRegistrationInput,
+        service::{ClientRegistrationRequest, ClientServiceError},
+    },
     error,
     state::AppState,
     users::domain::UserId,
 };
 
+/// list_clients 专用查询参数，支持可选分页（Issue #67）。
+#[derive(Debug, Deserialize)]
+pub struct ClientListQuery {
+    /// 返回条数，默认 50，最大 200，超限自动 clamp。
+    pub limit: Option<i64>,
+    /// 跳过条数，默认 0，用于手动翻页。
+    pub offset: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 struct RegisteredClientResponse {
     id: i64,
     client_id: String,
-    client_secret: String,
     client_name: String,
     redirect_uris: Vec<String>,
     scopes: Vec<String>,
+    /// Client 认证方式；`none` 表示公开客户端，响应不含 client_secret。
+    auth_method: &'static str,
+    /// 公开客户端不签发 secret，此时该字段整体省略（Issue #66）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_secret: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -43,7 +60,7 @@ struct ClientSummary {
 pub async fn create_client(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(input): Json<ClientRegistrationInput>,
+    Json(input): Json<ClientRegistrationRequest>,
 ) -> Response {
     let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
     {
@@ -85,10 +102,11 @@ pub async fn create_client(
                 Json(RegisteredClientResponse {
                     id: client.id,
                     client_id: client.client_id,
-                    client_secret: client.client_secret,
                     client_name: client.client_name,
                     redirect_uris: client.redirect_uris,
                     scopes: client.scopes,
+                    auth_method: client.auth_method.as_str(),
+                    client_secret: client.client_secret,
                 }),
             )
                 .into_response()
@@ -122,13 +140,19 @@ pub async fn create_client(
     }
 }
 
-pub async fn list_clients(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub async fn list_clients(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ClientListQuery>,
+) -> Response {
     if let Err(response) =
         current_admin_permission(&state, &headers, AdminPermission::ManageClients).await
     {
         return response;
     }
-    match state.clients.list().await {
+    // 无上限列表会把整张 Client 表在单次响应里倾倒出去，
+    // 因此在数据库层强制 LIMIT/OFFSET；上限与 list_users 保持一致（Issue #67）。
+    match state.clients.list(query.limit, query.offset).await {
         Ok(clients) => (
             axum::http::StatusCode::OK,
             Json(

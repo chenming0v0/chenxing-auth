@@ -79,7 +79,11 @@ async fn revocation_handler_rejects_unknown_hint_and_accepts_supported_hints() {
         .expect("test client");
     let authorization = format!(
         "Basic {}",
-        STANDARD.encode(format!("{}:{}", client.client_id, client.client_secret))
+        STANDARD.encode(format!(
+            "{}:{}",
+            client.client_id,
+            client.client_secret.expect("confidential client secret")
+        ))
     );
 
     let response = revoke(&router, &authorization, "token=unknown-token%ZZ").await;

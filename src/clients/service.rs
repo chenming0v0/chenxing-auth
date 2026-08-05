@@ -1,22 +1,24 @@
 use crate::sqlx::PgPool;
 use crate::users::domain::UserId;
-use argon2::{
-    Argon2,
-    password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
-};
 use serde::Serialize;
 use thiserror::Error;
-use uuid::Uuid;
 
 use super::{
+    credentials::{credentials_match, generate_client_secret, issue_client_credential},
     domain::{
-        ClientAuthMethod, ClientRegistrationError, ClientRegistrationInput,
-        ClientRegistrationLimits, validate_client_registration_with_limits,
+        ClientAuthMethod, ClientRegistrationError, ClientRegistrationLimits,
+        validate_client_registration_with_limits,
     },
     repository::{self, ClientInsertError},
 };
 use crate::oauth::authorization::RegisteredClient as OAuthRegisteredClient;
-use crate::users::credentials::verify_password;
+
+// 凭据签发/校验拆到 credentials.rs（src-line-limit），此处保持既有公开路径不变。
+pub use super::credentials::{ClientRegistrationRequest, verify_client_secret};
+
+/// 管理端 Client 列表的默认与最大返回条数，与 User 列表保持一致。
+const DEFAULT_CLIENT_LIST_LIMIT: i64 = 50;
+const MAX_CLIENT_LIST_LIMIT: i64 = 200;
 
 #[derive(Clone)]
 pub struct ClientService {
@@ -28,10 +30,12 @@ pub struct ClientService {
 pub struct RegisteredClientSecret {
     pub id: i64,
     pub client_id: String,
-    pub client_secret: String,
+    /// 明文 secret；若为公开客户端（`auth_method = none`）则为 `None`。
+    pub client_secret: Option<String>,
     pub client_name: String,
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
+    pub auth_method: ClientAuthMethod,
 }
 
 #[derive(Debug, Serialize)]
@@ -65,10 +69,6 @@ pub enum ClientServiceError {
     InvalidData,
 }
 
-pub fn verify_client_secret(secret: &str, encoded_hash: &str) -> bool {
-    verify_password(secret, encoded_hash)
-}
-
 impl ClientService {
     pub fn new(pool: PgPool) -> Self {
         Self::with_limits(pool, ClientRegistrationLimits::default())
@@ -80,19 +80,16 @@ impl ClientService {
 
     pub async fn register(
         &self,
-        input: ClientRegistrationInput,
+        input: impl Into<ClientRegistrationRequest>,
     ) -> Result<RegisteredClientSecret, ClientServiceError> {
-        let registration = validate_client_registration_with_limits(input, &self.limits)?;
+        let request = input.into();
+        let auth_method = request.auth_method;
+        let registration =
+            validate_client_registration_with_limits(request.registration, &self.limits)?;
         let client_id = format!("cx_{}", Uuid::new_v4().simple());
-        let client_secret = format!("cxs_{}", Uuid::new_v4().simple());
-        let salt = SaltString::generate(&mut OsRng);
-        let client_secret_hash = Argon2::default()
-            .hash_password(client_secret.as_bytes(), &salt)
-            .map_err(|_| ClientServiceError::SecretHash)?
-            .to_string();
+        let (credential, client_secret) = issue_client_credential(auth_method)?;
         let client =
-            repository::insert_client(&self.pool, registration, client_id, client_secret_hash)
-                .await?;
+            repository::insert_client(&self.pool, registration, client_id, credential).await?;
 
         Ok(RegisteredClientSecret {
             id: client.id,
@@ -101,29 +98,28 @@ impl ClientService {
             client_name: client.client_name,
             redirect_uris: client.redirect_uris,
             scopes: client.scopes,
+            auth_method: client.auth_method,
         })
     }
 
     pub async fn register_for_user(
         &self,
         owner_user_id: UserId,
-        input: ClientRegistrationInput,
+        input: impl Into<ClientRegistrationRequest>,
         oauth_clients_limit: i64,
     ) -> Result<RegisteredClientSecret, ClientServiceError> {
-        let registration = validate_client_registration_with_limits(input, &self.limits)?;
+        let request = input.into();
+        let auth_method = request.auth_method;
+        let registration =
+            validate_client_registration_with_limits(request.registration, &self.limits)?;
         let client_id = format!("cx_{}", Uuid::new_v4().simple());
-        let client_secret = format!("cxs_{}", Uuid::new_v4().simple());
-        let salt = SaltString::generate(&mut OsRng);
-        let client_secret_hash = Argon2::default()
-            .hash_password(client_secret.as_bytes(), &salt)
-            .map_err(|_| ClientServiceError::SecretHash)?
-            .to_string();
+        let (credential, client_secret) = issue_client_credential(auth_method)?;
         let client = repository::insert_owned_client(
             &self.pool,
             owner_user_id,
             registration,
             client_id,
-            client_secret_hash,
+            credential,
             oauth_clients_limit,
         )
         .await
@@ -139,6 +135,7 @@ impl ClientService {
             client_name: client.client_name,
             redirect_uris: client.redirect_uris,
             scopes: client.scopes,
+            auth_method: client.auth_method,
         })
     }
 
@@ -175,21 +172,27 @@ impl ClientService {
         {
             return Ok(false);
         }
-        match (
+        Ok(credentials_match(
             auth_method,
             client_secret,
             client.client_secret_hash.as_deref(),
-        ) {
-            (ClientAuthMethod::None, None, _) => Ok(true),
-            (ClientAuthMethod::Basic | ClientAuthMethod::Post, Some(secret), Some(hash)) => {
-                Ok(verify_client_secret(secret, hash))
-            }
-            _ => Ok(false),
-        }
+        ))
     }
 
-    pub async fn list(&self) -> Result<Vec<ClientSummary>, ClientServiceError> {
-        Ok(repository::list_clients(&self.pool)
+    /// 列出 Client（管理端），支持分页。
+    ///
+    /// `limit` / `offset` 默认行为与 `AuditService::list` / `UserService::query` 保持一致，
+    /// 避免无上限列表在单次响应里倾倒全表（Issue #67）。
+    pub async fn list(
+        &self,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> Result<Vec<ClientSummary>, ClientServiceError> {
+        let limit = limit
+            .unwrap_or(DEFAULT_CLIENT_LIST_LIMIT)
+            .clamp(1, MAX_CLIENT_LIST_LIMIT);
+        let offset = offset.unwrap_or(0).max(0);
+        Ok(repository::list_clients(&self.pool, None, limit, offset)
             .await?
             .into_iter()
             .map(|client| ClientSummary {
@@ -234,12 +237,16 @@ impl ClientService {
         Ok(repository::count_clients(&self.pool).await?)
     }
 
+    /// 列出当前用户拥有的 Client。
+    ///
+    /// 尽管用户套餐的 `oauth_clients_limit` 通常较小，
+    /// 仍用 `MAX_CLIENT_LIST_LIMIT` 作上限以避免静默截断。
     pub async fn list_for_user(
         &self,
         owner_user_id: UserId,
     ) -> Result<Vec<ClientSummary>, ClientServiceError> {
         Ok(
-            repository::list_clients_for_owner(&self.pool, owner_user_id)
+            repository::list_clients(&self.pool, Some(owner_user_id), MAX_CLIENT_LIST_LIMIT, 0)
                 .await?
                 .into_iter()
                 .map(|client| ClientSummary {
@@ -263,6 +270,7 @@ impl ClientService {
         let registration = validate_client_registration_with_limits(input, &self.limits)?;
         Ok(repository::update_client(
             &self.pool,
+            None,
             client_id,
             &registration.client_name,
             &registration.redirect_uris,
@@ -278,9 +286,9 @@ impl ClientService {
         input: ClientRegistrationInput,
     ) -> Result<bool, ClientServiceError> {
         let registration = validate_client_registration_with_limits(input, &self.limits)?;
-        Ok(repository::update_owned_client(
+        Ok(repository::update_client(
             &self.pool,
-            owner_user_id,
+            Some(owner_user_id),
             client_id,
             &registration.client_name,
             &registration.redirect_uris,
@@ -297,7 +305,7 @@ impl ClientService {
         if !matches!(status, "active" | "disabled") {
             return Err(ClientServiceError::InvalidData);
         }
-        Ok(repository::set_client_status(&self.pool, client_id, status).await?)
+        Ok(repository::set_client_status(&self.pool, None, client_id, status).await?)
     }
 
     pub async fn set_status_for_user(
@@ -310,7 +318,7 @@ impl ClientService {
             return Err(ClientServiceError::InvalidData);
         }
         Ok(
-            repository::set_owned_client_status(&self.pool, owner_user_id, client_id, status)
+            repository::set_client_status(&self.pool, Some(owner_user_id), client_id, status)
                 .await?,
         )
     }
@@ -319,13 +327,8 @@ impl ClientService {
         &self,
         client_id: &str,
     ) -> Result<RotatedClientSecret, ClientServiceError> {
-        let client_secret = format!("cxs_{}", Uuid::new_v4().simple());
-        let salt = SaltString::generate(&mut OsRng);
-        let hash = Argon2::default()
-            .hash_password(client_secret.as_bytes(), &salt)
-            .map_err(|_| ClientServiceError::SecretHash)?
-            .to_string();
-        if !repository::update_client_secret(&self.pool, client_id, &hash).await? {
+        let (client_secret, hash) = generate_client_secret()?;
+        if !repository::update_client_secret(&self.pool, None, client_id, &hash).await? {
             return Err(ClientServiceError::InvalidData);
         }
         Ok(RotatedClientSecret {
@@ -339,13 +342,8 @@ impl ClientService {
         owner_user_id: UserId,
         client_id: &str,
     ) -> Result<RotatedClientSecret, ClientServiceError> {
-        let client_secret = format!("cxs_{}", Uuid::new_v4().simple());
-        let salt = SaltString::generate(&mut OsRng);
-        let hash = Argon2::default()
-            .hash_password(client_secret.as_bytes(), &salt)
-            .map_err(|_| ClientServiceError::SecretHash)?
-            .to_string();
-        if !repository::update_owned_client_secret(&self.pool, owner_user_id, client_id, &hash)
+        let (client_secret, hash) = generate_client_secret()?;
+        if !repository::update_client_secret(&self.pool, Some(owner_user_id), client_id, &hash)
             .await?
         {
             return Err(ClientServiceError::InvalidData);
@@ -354,5 +352,39 @@ impl ClientService {
             client_id: client_id.to_owned(),
             client_secret,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 列表上限 clamp 逻辑独立于数据库（Issue #67）
+    #[test]
+    fn list_limit_clamps_to_max() {
+        // 超过 MAX_CLIENT_LIST_LIMIT 被 clamp 到 200
+        assert_eq!(
+            i64::MAX.clamp(1, MAX_CLIENT_LIST_LIMIT),
+            MAX_CLIENT_LIST_LIMIT
+        );
+        // 小于 1（含负数）被 clamp 到 1，SQL 的 LIMIT 不会收到非法值
+        assert_eq!(0_i64.clamp(1, MAX_CLIENT_LIST_LIMIT), 1);
+        assert_eq!((-10_i64).clamp(1, MAX_CLIENT_LIST_LIMIT), 1);
+        // 区间内的值原样透传
+        assert_eq!(20_i64.clamp(1, MAX_CLIENT_LIST_LIMIT), 20);
+    }
+
+    #[test]
+    fn default_list_limit_is_within_max() {
+        assert_eq!(DEFAULT_CLIENT_LIST_LIMIT, 50);
+        assert!(DEFAULT_CLIENT_LIST_LIMIT <= MAX_CLIENT_LIST_LIMIT);
+    }
+
+    /// offset 负值被抬到 0，避免 SQL OFFSET 报错
+    #[test]
+    fn negative_offset_floors_to_zero() {
+        assert_eq!((-5_i64).max(0), 0);
+        assert_eq!(0_i64.max(0), 0);
+        assert_eq!(120_i64.max(0), 120);
     }
 }
