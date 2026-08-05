@@ -3,10 +3,7 @@ use std::time::Duration;
 use redis::{AsyncCommands, Script};
 use time::OffsetDateTime;
 
-use super::{
-    crypto,
-    store::{SessionStore, SessionStoreError},
-};
+use super::store::{SessionStore, SessionStoreError};
 use crate::users::domain::UserId;
 
 const OUTBOX_LEASE: time::Duration = time::Duration::minutes(5);
@@ -175,16 +172,14 @@ impl SessionStore {
                     transaction.commit().await?;
                     return Ok(());
                 };
-                // Always re-encrypt the projection. This keeps legacy payloads readable
-                // during migration without ever placing their plaintext in Redis.
-                let Some(payload) = crypto::decrypt(
-                    self.encryption_keys
-                        .as_ref()
-                        .ok_or(SessionStoreError::MetadataUnavailable)?,
-                    &payload,
-                )
-                .ok()
-                .and_then(|payload| self.encrypt_payload(&payload).ok()) else {
+                // 始终重新加密投影：旧密钥写入的载荷在迁移期仍可读，且明文不落入 Redis。
+                // 这里额外经过 SessionPayload 归一化——升级前写入的载荷含明文 token 字段，
+                // 解析后重新序列化会把它剥离，否则历史会话会继续在 Redis 留下可用令牌。
+                let Some(payload) = self
+                    .decode_payload(&payload)?
+                    .and_then(|stored| serde_json::to_vec(&stored).ok())
+                    .and_then(|payload| self.encrypt_payload(&payload).ok())
+                else {
                     let _: usize = connection.del(self.key_hash(token_hash)).await?;
                     transaction.commit().await?;
                     return Ok(());
