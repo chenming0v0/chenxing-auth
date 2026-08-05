@@ -187,15 +187,20 @@ pub async fn find_credentials_by_id(
     })
 }
 
-pub async fn find_profile_by_id(
-    pool: &PgPool,
+/// 泛型 executor 让同一份 profile 映射逻辑既能用连接池，也能在事务内复用。
+/// 事务内读取可以看到本事务尚未提交的写入，从而避免"提交后换连接回查"带来的可见性假设。
+pub async fn find_profile_by_id<'e, E>(
+    executor: E,
     id: UserId,
-) -> Result<Option<UserProfile>, crate::sqlx::Error> {
+) -> Result<Option<UserProfile>, crate::sqlx::Error>
+where
+    E: crate::sqlx::Executor<'e, Database = Postgres> + 'e,
+{
     crate::sqlx::query_as::<_, (UserId, String, String, Option<String>, String, String)>(
         "SELECT id, username, email, display_name, status, role FROM users WHERE id = $1",
     )
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
     .map(|record| {
         record.map(
@@ -340,12 +345,15 @@ pub async fn bootstrap_owner(
     .bind(password_hash)
     .fetch_one(&mut *transaction)
     .await?;
+    // 在同一事务内回查：事务必然看到自己刚插入的行，不依赖"提交后对新连接立即可见"这一假设，
+    // 因此读写分离、只读副本路由或复制延迟都不会让这里读空。
+    // 仍然显式处理 None 而不是 expect：Owner 初始化是一次性高价值路径，
+    // 宁可返回明确的数据库错误，也不要在 handler 调用栈里 panic。
+    let profile = find_profile_by_id(&mut *transaction, id)
+        .await?
+        .ok_or(crate::sqlx::Error::RowNotFound)?;
     transaction.commit().await?;
-    Ok(BootstrapOwnerOutcome::Created(
-        find_profile_by_id(pool, id)
-            .await?
-            .expect("inserted owner must exist"),
-    ))
+    Ok(BootstrapOwnerOutcome::Created(profile))
 }
 
 #[derive(Debug)]

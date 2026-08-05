@@ -138,6 +138,74 @@ async fn public_registration_cannot_consume_id_before_owner_bootstrap() {
 }
 
 #[tokio::test]
+async fn owner_bootstrap_returns_the_inserted_profile_and_rejects_repeat_calls() {
+    let (router, database, key_directory, _lock) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let username = format!("owner-{suffix}");
+    let email = format!("owner-{suffix}@example.com");
+
+    let bootstrap_request = || {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/bootstrap")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "username": username,
+                    "email": email,
+                    "password": "1234567890"
+                })
+                .to_string(),
+            ))
+            .expect("bootstrap request")
+    };
+
+    // 首次初始化必须返回事务内回查到的完整 Owner profile，而不是 panic 或空响应。
+    let response = router
+        .clone()
+        .oneshot(bootstrap_request())
+        .await
+        .expect("bootstrap response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json(response).await;
+    assert_eq!(body["id"], 1);
+    assert_eq!(body["username"], username);
+    assert_eq!(body["email"], email);
+    assert_eq!(body["role"], "owner");
+
+    // 回查发生在事务内，因此这里返回的 profile 必须与库中持久化的行一致。
+    let (stored_username, stored_status, stored_role): (String, String, String) =
+        chenxing_auth::sqlx::query_as("SELECT username, status, role FROM users WHERE id = 1")
+            .fetch_one(&database)
+            .await
+            .expect("stored owner row");
+    assert_eq!(stored_username, username);
+    assert_eq!(stored_status, "active");
+    assert_eq!(stored_role, "owner");
+
+    // 重复调用仍然被 Owner 唯一性不变量拒绝。
+    let response = router
+        .oneshot(bootstrap_request())
+        .await
+        .expect("repeat bootstrap response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(json(response).await["code"], "bootstrap_already_completed");
+
+    let owner_count: i64 =
+        chenxing_auth::sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE role = 'owner'")
+            .fetch_one(&database)
+            .await
+            .expect("owner count");
+    assert_eq!(owner_count, 1);
+
+    chenxing_auth::sqlx::query("DELETE FROM users")
+        .execute(&database)
+        .await
+        .expect("cleanup users");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
 async fn owner_bootstrap_rejects_a_non_empty_database_without_an_owner() {
     let (router, database, key_directory, _lock) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
