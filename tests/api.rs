@@ -6,13 +6,14 @@ use axum::{
 use chenxing_auth::{api, state::AppState};
 use tower::ServiceExt;
 
-fn test_router() -> Router {
-    api::router(AppState::for_test())
+async fn test_router() -> Router {
+    api::router(AppState::for_test().await)
 }
 
 #[tokio::test]
 async fn liveness_endpoint_reports_process_status_without_dependencies() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/health/live")
@@ -28,6 +29,7 @@ async fn liveness_endpoint_reports_process_status_without_dependencies() {
 #[tokio::test]
 async fn readiness_endpoint_returns_a_dependency_agnostic_failure_body() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/health/ready")
@@ -53,6 +55,7 @@ async fn readiness_endpoint_returns_a_dependency_agnostic_failure_body() {
 #[tokio::test]
 async fn authorized_apps_endpoint_requires_a_session() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/api/v1/auth/authorized-apps")
@@ -68,6 +71,7 @@ async fn authorized_apps_endpoint_requires_a_session() {
 #[tokio::test]
 async fn openid_configuration_publishes_standard_endpoints() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/.well-known/openid-configuration")
@@ -95,6 +99,7 @@ async fn openid_configuration_publishes_standard_endpoints() {
 #[tokio::test]
 async fn openid_configuration_allows_newapi_origin() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/.well-known/openid-configuration")
@@ -117,6 +122,7 @@ async fn openid_configuration_allows_newapi_origin() {
 #[tokio::test]
 async fn jwks_endpoint_returns_a_key_set_document() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/.well-known/jwks.json")
@@ -132,6 +138,7 @@ async fn jwks_endpoint_returns_a_key_set_document() {
 #[tokio::test]
 async fn registration_endpoint_rejects_invalid_email_without_database_call() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -151,6 +158,7 @@ async fn registration_endpoint_rejects_invalid_email_without_database_call() {
 #[tokio::test]
 async fn login_endpoint_rejects_invalid_identifier_without_database_call() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -179,6 +187,7 @@ async fn unknown_protocol_paths_return_json_not_found_instead_of_spa_html() {
         "/health/does-not-exist",
     ] {
         let response = test_router()
+            .await
             .oneshot(
                 Request::builder()
                     .uri(path)
@@ -210,6 +219,7 @@ async fn unknown_protocol_paths_return_json_not_found_instead_of_spa_html() {
 #[tokio::test]
 async fn unknown_static_asset_path_returns_not_found() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/assets/does-not-exist.js")
@@ -225,6 +235,7 @@ async fn unknown_static_asset_path_returns_not_found() {
 #[tokio::test]
 async fn unknown_frontend_route_returns_spa_html() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/some-frontend-route")

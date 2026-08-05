@@ -38,7 +38,7 @@ async fn setup() -> (
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let owner_suffix = Uuid::new_v4().simple().to_string();
-    let state = AppState::new(config).expect("test state");
+    let state = AppState::new(config).await.expect("test state");
     let router = api::router(state);
     let bootstrap = router
         .clone()

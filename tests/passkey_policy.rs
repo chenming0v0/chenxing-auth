@@ -4,7 +4,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
-use chenxing_auth::{api, config::Config, db, sqlx};
+use chenxing_auth::{api, config::Config, db, sqlx, state::AppState};
 use serde_json::Value;
 use serial_test::serial;
 use totp_rs::TOTP;
@@ -41,7 +41,7 @@ async fn setup() -> (Router, sqlx::PgPool, std::path::PathBuf) {
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
-        api::router(chenxing_auth::state::AppState::new(config).expect("state")),
+        api::router(AppState::new(config).await.expect("state")),
         database,
         key_directory,
     )

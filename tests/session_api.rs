@@ -15,13 +15,14 @@ use chenxing_auth::{
 use tower::ServiceExt;
 use uuid::Uuid;
 
-fn test_router() -> Router {
-    api::router(AppState::for_test())
+async fn test_router() -> Router {
+    api::router(AppState::for_test().await)
 }
 
 #[tokio::test]
 async fn session_revoke_requires_a_valid_session_header() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method("DELETE")
@@ -83,7 +84,7 @@ async fn session_revoke_audit_uses_internal_id_without_storing_the_cookie_token(
     .expect("config");
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let router = api::router(AppState::new(config).expect("state"));
+    let router = api::router(AppState::new(config).await.expect("state"));
     let cookie = format!(
         "{}={}; {}={}",
         cookies::SESSION_COOKIE,

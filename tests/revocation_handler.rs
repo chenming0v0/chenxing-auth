@@ -37,7 +37,7 @@ async fn test_state() -> (AppState, chenxing_auth::sqlx::PgPool, std::path::Path
     config.admin_token = "revocation-test-admin-token".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new(config).expect("test state");
+    let state = AppState::new(config).await.expect("test state");
     (state, database, key_directory)
 }
 

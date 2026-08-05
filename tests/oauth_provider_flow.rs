@@ -114,7 +114,7 @@ async fn setup(
     config.admin_token = "provider-flow-admin".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let router = api::router(AppState::new(config).expect("state"));
+    let router = api::router(AppState::new(config).await.expect("state"));
     let slug = format!("mock-{}", Uuid::new_v4().simple());
     let input = serde_json::json!({
         "name":"Mock Provider", "slug":slug,

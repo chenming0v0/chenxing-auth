@@ -38,7 +38,7 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
-        api::router(AppState::new(config).expect("test state")),
+        api::router(AppState::new(config).await.expect("test state")),
         database,
         key_directory,
     )

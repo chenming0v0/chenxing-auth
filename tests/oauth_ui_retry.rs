@@ -42,7 +42,7 @@ async fn setup() -> (
     config.admin_token = "oauth-ui-retry-admin-token".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new(config).expect("state");
+    let state = AppState::new(config).await.expect("state");
     (api::router(state.clone()), state, database, key_directory)
 }
 
