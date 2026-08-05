@@ -368,8 +368,8 @@ mod tests {
     }
 
     /// RFC 9700 §2.1.1 / RFC 7636 §4.3：授权请求必须带 S256 challenge。
-    #[test]
-    fn authorization_url_appends_s256_challenge() {
+    #[tokio::test]
+    async fn authorization_url_appends_s256_challenge() {
         let verifier = generate_code_verifier();
         let url = service()
             .authorization_url(
@@ -398,8 +398,8 @@ mod tests {
     }
 
     /// RFC 7636 附录 B 的官方测试向量，端到端校验 URL 中的 challenge 取值。
-    #[test]
-    fn authorization_url_uses_rfc_7636_appendix_b_vector() {
+    #[tokio::test]
+    async fn authorization_url_uses_rfc_7636_appendix_b_vector() {
         let url = service()
             .authorization_url(
                 &provider(true),
@@ -416,8 +416,8 @@ mod tests {
 
     /// provider 关闭 PKCE 时（外部 IdP 不支持 RFC 7636），不得附加 PKCE 参数。
     /// 空 verifier 同样覆盖升级期间取出的旧 state。
-    #[test]
-    fn authorization_url_omits_pkce_when_verifier_is_empty() {
+    #[tokio::test]
+    async fn authorization_url_omits_pkce_when_verifier_is_empty() {
         let url = service()
             .authorization_url(
                 &provider(false),

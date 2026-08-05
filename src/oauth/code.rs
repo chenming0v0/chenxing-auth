@@ -206,9 +206,14 @@ mod tests {
         let restored: AuthorizationCode =
             serde_json::from_str(&legacy_json).expect("legacy code payload");
 
+        // serde 的字段顺序按结构体声明顺序输出，而测试数据是按字母序构造的，
+        // 所以按结构比较而不是按字节比较：语义等价才是补偿路径需要的不变量。
         assert_eq!(
-            serde_json::to_string(&restored).expect("reserialize legacy code"),
-            legacy_json
+            serde_json::from_str::<serde_json::Value>(
+                &serde_json::to_string(&restored).expect("reserialize legacy code")
+            )
+            .expect("reserialized value"),
+            serde_json::from_str::<serde_json::Value>(&legacy_json).expect("legacy value")
         );
     }
 
