@@ -2,6 +2,7 @@ use axum::http::HeaderMap;
 
 use super::{domain::AdminPermission, handlers::is_admin_request};
 use crate::{
+    audit::AuditEvent,
     error,
     state::AppState,
     users::domain::UserId,
@@ -34,6 +35,46 @@ impl AdminActor {
     }
 }
 
+/// 以 best-effort 方式将授权失败写入审计日志。
+///
+/// 这是**拒绝路径**——请求已经被拒，不签发任何凭据。
+/// 若审计写入失败，仍然返回 403/400，不将写入失败暴露给调用方：
+/// - 把写入错误改成 500 会向探测者透露额外信息，且无助于安全决策。
+/// - 写入失败时通过 `tracing::error!` 保留可检索的结构化上下文，
+///   供运维人工补录或告警。
+///
+/// 凭据签发路径（client_create / client_secret_rotate）使用阻断式审计——
+/// 两种策略的选择依据见 `audit` 模块文档。
+async fn record_authz_denial(
+    state: &AppState,
+    user_id: UserId,
+    permission: AdminPermission,
+    reason: &'static str,
+) {
+    // AdminPermission 无 as_str()，Debug 输出（如 `ManageUsers`）作为稳定的可检索标识。
+    let permission = format!("{permission:?}");
+    let event = AuditEvent::security_failure(
+        "admin_authorization_denied".to_owned(),
+        // 走到这里说明 current_user 已认证成功，actor_type 固定为 "user"
+        "user".to_owned(),
+        Some(user_id.to_string()),
+        "admin_permission".to_owned(),
+        Some(permission.clone()),
+        reason,
+    );
+    if let Err(error) = state.audit.record(event).await {
+        // 不上升为 500；审计写入失败不改变已经确定的拒绝结果
+        tracing::error!(
+            event = "audit.authorization_denial_unrecorded",
+            actor_id = %user_id,
+            permission = %permission,
+            reason,
+            error = %error,
+            "best-effort 授权失败审计写入失败，事件未入库"
+        );
+    }
+}
+
 pub async fn current_admin_permission(
     state: &AppState,
     headers: &HeaderMap,
@@ -44,6 +85,8 @@ pub async fn current_admin_permission(
     }
     let context = current_user(state, headers).await?;
     if !context.role.allows(permission) {
+        // 已认证用户权限不足：先留痕，再返回 403。响应体不透露缺少哪个权限。
+        record_authz_denial(state, context.user_id, permission, "insufficient_role").await;
         return Err(error::forbidden(
             "admin_forbidden",
             "administrator permission is insufficient",
@@ -61,10 +104,13 @@ pub async fn current_admin_mutation(
         return Ok(AdminActor::SystemToken);
     }
     let context = current_user(state, headers).await?;
+    // CSRF 校验失败同样是安全失败：可能是跨站伪造或会话重放，必须可检索。
     if !user_csrf_valid(headers, &context.session) {
+        record_authz_denial(state, context.user_id, permission, "csrf_invalid").await;
         return Err(error::bad_request("csrf_invalid", "CSRF token is invalid"));
     }
     if !context.role.allows(permission) {
+        record_authz_denial(state, context.user_id, permission, "insufficient_role").await;
         return Err(error::forbidden(
             "admin_forbidden",
             "administrator permission is insufficient",
