@@ -1,7 +1,120 @@
-@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700;800&family=Exo+2:wght@300;400;500;600;700&family=Share+Tech+Mono&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap");
 @import "tailwindcss";
 @import "./chenxing-design.css";
 @import "./oauth.css";
+
+/* ============================================================
+   自托管字体（不得改回 Google Fonts CDN）
+
+   认证页面向第三方 CDN 发请求会泄露用户 IP 和 User-Agent，并且在
+   Google 服务受限的网络里会让字体请求超时。因此三个拉丁字体的 woff2
+   直接托管在 web/public/fonts/（Vite 原样拷进 web/dist/，按 /fonts/ 前缀
+   访问），页面不再依赖任何外部域名，CSP 也无需放开 fonts.googleapis.com。
+
+   中文（CJK）刻意不自托管：Noto Sans SC 的完整字符集被切成 101 个
+   unicode-range 分片 × 5 个字重 = 505 个 woff2，数 MB 级别，不适合入库。
+   中文改走系统字体栈（见 chenxing-design.css 的 --chenxing-font-* ），
+   这是国内站点的通行做法。
+
+   字重、unicode-range 和 font-display 与 Google 原始 CSS 保持一致，
+   分片按需下载的行为不变。更新字体时重新拉取 Google 的 css2 响应并按
+   同样规则落盘，不要手工改这些 unicode-range。
+   ============================================================ */
+
+/* ---- Orbitron ---- */
+@font-face { font-family: "Orbitron"; font-style: normal; font-weight: 500; font-display: swap;
+  src: url("/fonts/orbitron-500-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Orbitron"; font-style: normal; font-weight: 600; font-display: swap;
+  src: url("/fonts/orbitron-600-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Orbitron"; font-style: normal; font-weight: 700; font-display: swap;
+  src: url("/fonts/orbitron-700-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Orbitron"; font-style: normal; font-weight: 800; font-display: swap;
+  src: url("/fonts/orbitron-800-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+
+/* ---- Exo 2 ---- */
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 300; font-display: swap;
+  src: url("/fonts/exo2-300-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 300; font-display: swap;
+  src: url("/fonts/exo2-300-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 300; font-display: swap;
+  src: url("/fonts/exo2-300-vietnamese.woff2") format("woff2");
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 300; font-display: swap;
+  src: url("/fonts/exo2-300-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 300; font-display: swap;
+  src: url("/fonts/exo2-300-cyrillic-ext.woff2") format("woff2");
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("/fonts/exo2-400-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("/fonts/exo2-400-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("/fonts/exo2-400-vietnamese.woff2") format("woff2");
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("/fonts/exo2-400-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("/fonts/exo2-400-cyrillic-ext.woff2") format("woff2");
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 500; font-display: swap;
+  src: url("/fonts/exo2-500-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 500; font-display: swap;
+  src: url("/fonts/exo2-500-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 500; font-display: swap;
+  src: url("/fonts/exo2-500-vietnamese.woff2") format("woff2");
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 500; font-display: swap;
+  src: url("/fonts/exo2-500-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 500; font-display: swap;
+  src: url("/fonts/exo2-500-cyrillic-ext.woff2") format("woff2");
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 600; font-display: swap;
+  src: url("/fonts/exo2-600-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 600; font-display: swap;
+  src: url("/fonts/exo2-600-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 600; font-display: swap;
+  src: url("/fonts/exo2-600-vietnamese.woff2") format("woff2");
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 600; font-display: swap;
+  src: url("/fonts/exo2-600-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 600; font-display: swap;
+  src: url("/fonts/exo2-600-cyrillic-ext.woff2") format("woff2");
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 700; font-display: swap;
+  src: url("/fonts/exo2-700-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 700; font-display: swap;
+  src: url("/fonts/exo2-700-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 700; font-display: swap;
+  src: url("/fonts/exo2-700-vietnamese.woff2") format("woff2");
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 700; font-display: swap;
+  src: url("/fonts/exo2-700-cyrillic.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "Exo 2"; font-style: normal; font-weight: 700; font-display: swap;
+  src: url("/fonts/exo2-700-cyrillic-ext.woff2") format("woff2");
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F; }
+
+/* ---- Share Tech Mono ---- */
+@font-face { font-family: "Share Tech Mono"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url("/fonts/share-tech-mono-400-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
 
 @theme inline {
   --color-background: var(--chenxing-background);
@@ -48,22 +161,8 @@
     outline: 2px solid var(--chenxing-cyan);
     outline-offset: 3px;
   }
-  .chenxing-field-shell input,
-  .chenxing-field-shell select,
-  .chenxing-field-shell textarea {
-    flex: 1;
-    min-width: 0;
-    width: 100%;
-    border: 0;
-    outline: none;
-    background: transparent;
-    color: var(--chenxing-foreground);
-    padding: 0.85rem 0;
-  }
-  .chenxing-field-shell input::placeholder,
-  .chenxing-field-shell textarea::placeholder {
-    color: rgba(147, 167, 199, 0.55);
-  }
+  /* .chenxing-field-shell 内裸控件的样式只在 chenxing-design.css 里定义：
+     无 @layer 的规则优先级高于任何 @layer，这里重复一份永远不会生效。 */
   .no-scrollbar::-webkit-scrollbar { display: none; }
   .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 }

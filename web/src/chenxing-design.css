@@ -57,9 +57,18 @@
   --chenxing-shadow-glow-float: 0 0 24px rgba(56, 189, 248, 0.35), 0 0 64px rgba(56, 189, 248, 0.18);
   --chenxing-shadow-cyan-float: 0 0 20px rgba(103, 232, 249, 0.25);
 
-  /* type */
-  --chenxing-font-display: "Orbitron", "Noto Sans SC", system-ui, sans-serif;
-  --chenxing-font-body: "Exo 2", "Noto Sans SC", system-ui, sans-serif;
+  /* type
+     拉丁字形来自 index.css 里自托管的 Orbitron / Exo 2 / Share Tech Mono；
+     中文走系统字体栈，不再下载 Noto Sans SC（完整 CJK 字符集有 505 个 woff2
+     分片，数 MB，不适合入库，且从 CDN 拉取会泄露用户 IP）。
+     CJK 家族必须排在 system-ui 之前：system-ui 在各平台对汉字的覆盖不一致，
+     显式列出 PingFang SC / 微软雅黑 / Noto Sans CJK 才能得到确定的结果；
+     末尾保留 "Noto Sans SC" 供本地已安装该字体的用户命中（零网络请求）。 */
+  --chenxing-cjk-stack: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "WenQuanYi Micro Hei";
+  --chenxing-font-display: "Orbitron", var(--chenxing-cjk-stack), system-ui, sans-serif;
+  --chenxing-font-body: "Exo 2", var(--chenxing-cjk-stack), system-ui, sans-serif;
+  /* mono 栈原本就不含 Noto Sans SC，这里保持不动：等宽语境下的汉字继续走系统
+     等宽回退，避免引入本次修复范围之外的字形变化。 */
   --chenxing-font-mono: "Share Tech Mono", "JetBrains Mono", ui-monospace, monospace;
 }
 
@@ -136,49 +145,9 @@ main {
 }
 
 /* ---------- glass panels ---------- */
-.chenxing-glass {
-  position: relative;
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.015));
-  backdrop-filter: blur(18px) saturate(1.4);
-  -webkit-backdrop-filter: blur(18px) saturate(1.4);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: var(--chenxing-radius-lg);
-  box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
-}
-
-.chenxing-glass-strong {
-  position: relative;
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02));
-  backdrop-filter: blur(24px) saturate(1.5);
-  -webkit-backdrop-filter: blur(24px) saturate(1.5);
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  border-radius: var(--chenxing-radius-lg);
-  box-shadow: var(--chenxing-shadow-card), var(--chenxing-shadow-float);
-}
-
-/* HUD corner brackets */
-.chenxing-hud-frame { position: relative; }
-.chenxing-hud-frame::before,
-.chenxing-hud-frame::after {
-  content: "";
-  position: absolute;
-  width: 18px;
-  height: 18px;
-  pointer-events: none;
-  opacity: 0.9;
-}
-.chenxing-hud-frame::before {
-  top: -1px; left: -1px;
-  border-top: 1px solid var(--chenxing-cyan);
-  border-left: 1px solid var(--chenxing-cyan);
-  border-top-left-radius: var(--chenxing-radius-md);
-}
-.chenxing-hud-frame::after {
-  bottom: -1px; right: -1px;
-  border-bottom: 1px solid var(--chenxing-cyan);
-  border-right: 1px solid var(--chenxing-cyan);
-  border-bottom-right-radius: var(--chenxing-radius-md);
-}
+/* 玻璃容器只有 .chenxing-hud-panel 一个入口（通过 ui.tsx 的 HudPanel 渲染）。
+   已废弃的 .chenxing-glass / .chenxing-glass-strong / .chenxing-hud-frame 已删除，
+   不要再加回来，也不要另建玻璃卡片样式。 */
 
 /* Shared two-corner HUD glass panel (frosted, keeps cyan corner highlights) */
 .chenxing-hud-panel {
@@ -337,10 +306,15 @@ main {
   border-radius: var(--chenxing-radius-md);
   transition: border-color 0.2s, box-shadow 0.2s;
 }
+/* 壳内的裸控件：边框和内边距由外层 shell 提供，控件本身只负责纵向 padding。
+   这是该规则的唯一定义处，index.css 里不要再写一份（无 @layer 的规则优先级
+   高于 @layer base，重复定义只会变成永远不生效的死代码）。 */
 .chenxing-field-shell input,
-.chenxing-field-shell select {
+.chenxing-field-shell select,
+.chenxing-field-shell textarea {
   flex: 1;
   min-width: 0;
+  width: 100%;
   padding: 0.8rem 0;
   font-family: var(--chenxing-font-body);
   font-size: 0.9375rem;
@@ -349,7 +323,8 @@ main {
   border: 0;
   outline: none;
 }
-.chenxing-field-shell input::placeholder { color: rgba(147, 167, 199, 0.55); }
+.chenxing-field-shell input::placeholder,
+.chenxing-field-shell textarea::placeholder { color: rgba(147, 167, 199, 0.55); }
 .chenxing-field-shell:focus-within {
   border-color: var(--chenxing-primary);
   box-shadow: 0 0 0 3px var(--chenxing-primary-soft), 0 0 18px rgba(56, 189, 248, 0.18);
