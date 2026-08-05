@@ -220,3 +220,31 @@
   font-size: 0.8125rem;
   line-height: 1.6;
 }
+
+.cx-factor-option {
+  display: flex;
+  align-items: start;
+  gap: 0.75rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-md);
+  background: rgba(255, 255, 255, 0.02);
+  transition: background 0.2s, border-color 0.2s, transform 0.15s;
+  cursor: pointer;
+}
+.cx-factor-option:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--chenxing-border-strong);
+}
+.cx-factor-option:active { transform: scale(0.985); }
+.cx-factor-option:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+.cx-factor-option:disabled:hover {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: var(--chenxing-border);
+}

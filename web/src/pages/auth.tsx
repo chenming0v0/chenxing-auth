@@ -1,10 +1,11 @@
 import { useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
-import { apiFetch, type LoginResponse, type PendingLoginResponse, type TotpSetupResponse } from '../api'
+import { apiFetch, externalLoginErrorMessage, type LoginResponse, type PendingLoginResponse } from '../api'
 import { AuthPanel, AuthShell } from '../components/shells'
-import { Button, CopyValue, Field, Icon, Notice, PasswordField } from '../components/ui'
-import { PendingFactorStep } from './auth-factors'
+import { Button, Field, Icon, Notice, PasswordField } from '../components/ui'
+import { FactorOrchestrator } from './auth/factor-orchestrator'
+import { ExternalProviders } from './auth/external-providers'
 
 type AuthMode = 'login' | 'register'
 
@@ -35,8 +36,8 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [pending, setPending] = useState<PendingLoginResponse | null>(null)
-  const [totpSetup, setTotpSetup] = useState<TotpSetupResponse | null>(null)
   const isLogin = mode === 'login'
+  const externalError = query.get('external_error')
 
   async function completeLogin() {
     const profile = await refresh()
@@ -123,16 +124,16 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
         ) : null}
 
         {query.get('registered') ? <div className="mt-5"><Notice tone="success">注册成功，请使用新账号登录。</Notice></div> : null}
+        {externalError ? <div className="mt-5"><Notice tone="warning">{externalLoginErrorMessage(externalError)}</Notice></div> : null}
         {message ? <div className="mt-5"><Notice tone="warning">{message}</Notice></div> : null}
 
         {pending ? (
           <div className="mt-5">
-            <PendingFactorStep pending={pending} setup={totpSetup} busy={busy} onSetup={setTotpSetup} onComplete={completeLogin} onBusy={setBusy} onMessage={setMessage} />
+            <FactorOrchestrator pending={pending} busy={busy} onComplete={completeLogin} onBusy={setBusy} onMessage={setMessage} />
           </div>
         ) : isLogin && authTab === 'auth' ? (
-          <div className="mt-5 grid grid-cols-2 gap-3">
-            <button type="button" className="chenxing-btn-ghost py-2.5" disabled title="外部身份源尚未接入"><Icon name="github" size={16} />GitHub</button>
-            <button type="button" className="chenxing-btn-ghost py-2.5" disabled title="外部身份源尚未接入"><Icon name="globe" size={16} />Google</button>
+          <div className="mt-5">
+            <ExternalProviders requestId={requestId} />
           </div>
         ) : (
           <form className="mt-5 space-y-4" onSubmit={submit} noValidate>

@@ -47,6 +47,12 @@ const safeMessages: Record<string, string> = {
   archived_plan_default: '已归档的套餐不能设为默认。',
   plan_archived: '已归档的套餐不能分配给用户。',
   invalid_expiration: '到期时间格式不正确，请重新选择。',
+  oauth_provider_not_found: '该外部身份源不可用或已被停用。',
+  oauth_login_failed: '外部身份源登录未完成，请重试。',
+  oauth_login_rate_limited: '外部登录尝试过于频繁，请稍后重试。',
+  oauth_request_expired: '授权请求已过期，请重新发起。',
+  oauth_request_binding_failed: '授权请求绑定失败，请重新开始。',
+  oauth_account_link_required: '该外部账号尚未绑定辰星通行证，请先登录后在账号设置中绑定。',
 }
 
 function safeErrorMessage(status: number, code?: string): string {
@@ -117,6 +123,14 @@ export type PendingLoginResponse = {
   methods: Array<'totp' | 'passkey' | string>
 }
 export type TotpSetupResponse = { secret_base32: string; otpauth_url: string }
+
+/** 登录页可见的外部身份源，仅包含渲染入口所需的公开字段。 */
+export type PublicExternalProvider = { slug: string; name: string }
+
+/** 外部登录失败时后端回跳 /login?external_error=<code>，此处复用统一文案表。 */
+export function externalLoginErrorMessage(code: string): string {
+  return safeMessages[code] ?? '外部身份源登录未完成，请重试。'
+}
 
 export type SessionItem = {
   id: number

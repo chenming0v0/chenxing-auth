@@ -57,6 +57,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Validate web build
         run: npm ci --prefix web && npm run build --prefix web
+      - name: Run web tests
+        run: npm test --prefix web
       - name: Validate OpenAPI
         run: python .codex/skills/sync-openapi/scripts/validate_openapi.py
       - name: Validate deployment files
