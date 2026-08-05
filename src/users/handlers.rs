@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use super::{
     domain::{LoginInput, RegistrationError, RegistrationInput},
     service::UserServiceError,
+    ui_auth::{mutation_error, mutation_user},
 };
 use crate::{
     audit::AuditEvent, auth_factors::session::issue_user_session, error, sessions::cookies,
@@ -284,37 +285,20 @@ pub async fn login_user(
         .into_response()
 }
 
+/// 撤销当前浏览器会话（自注销）。
+///
+/// 身份只从 HttpOnly Session Cookie 读取，并复用 `mutation_user` 无条件校验
+/// Session Cookie、CSRF Cookie 与 `X-CSRF-Token` 三者绑定。撤销是状态变更，
+/// 校验一旦以「请求是否带 Cookie 头」为条件，攻击者只要改走开发期兼容的
+/// `x-chenxing-session` 请求头（不发 Cookie 头）就能完整跳过 CSRF 防护。
 pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Some(session_token) = cookies::session_id(&headers) else {
-        return error::unauthorized("invalid_session", "session is invalid");
+    let Ok(context) = mutation_user(&state, &headers).await else {
+        return mutation_error(&state, &headers).await;
     };
-    let session = match state.sessions.find(&session_token).await {
-        Ok(Some(session)) => session,
-        Ok(None) => {
-            let mut response = error::unauthorized("invalid_session", "session is invalid");
-            cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure);
-            return response;
-        }
-        Err(session_error) => {
-            tracing::error!(error = %session_error, "failed to load session for revocation");
-            return error::internal();
-        }
-    };
-
-    if headers.get("cookie").is_some() {
-        let Some(csrf) = cookies::csrf_token(&headers) else {
-            return error::bad_request("csrf_required", "CSRF token is required");
-        };
-        let Some(csrf_cookie) = cookies::csrf_cookie(&headers) else {
-            return error::bad_request("csrf_required", "CSRF cookie is required");
-        };
-        if csrf != csrf_cookie {
-            return error::bad_request("csrf_invalid", "CSRF token is invalid");
-        }
-        if !session.validates_csrf(&csrf) {
-            return error::bad_request("csrf_invalid", "CSRF token is invalid");
-        }
-    }
+    // 撤销目标就是调用者自身的 Cookie 会话，令牌只来自已校验的会话上下文
+    let user_id = context.session.user_id;
+    let session_id = context.session.id;
+    let session_token = context.session.token;
 
     match state.sessions.revoke(&session_token).await {
         Ok(()) => {
@@ -322,10 +306,10 @@ pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -
                 .audit
                 .record(AuditEvent::new(
                     "user".to_owned(),
-                    Some(session.user_id),
+                    Some(user_id),
                     "session_revoke".to_owned(),
                     "session".to_owned(),
-                    Some(session.id.to_string()),
+                    Some(session_id.to_string()),
                     serde_json::json!({"result": "success"}),
                 ))
                 .await

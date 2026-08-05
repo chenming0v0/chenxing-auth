@@ -479,7 +479,7 @@ paths:
       tags: [User Auth/Sessions]
       summary: 注销当前 Session
       operationId: revokeSession
-      security: [{ sessionCookie: [] }, { chenxingSession: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       responses:

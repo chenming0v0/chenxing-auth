@@ -104,9 +104,9 @@
 
 ### `DELETE /api/v1/auth/session`
 
-撤销当前用户 Session，响应 `204` 并清理 Cookie。开发期也支持 `X-Chenxing-Session: <session_id>`；浏览器应使用 Cookie。
+撤销当前用户 Session，响应 `204` 并清理 Cookie。身份只从 HttpOnly Session Cookie 读取，`X-Chenxing-Session` 请求头不再被该端点接受。
 
-使用 Cookie 时必须同时发送：
+撤销是状态变更，必须无条件同时发送：
 
 - Session HttpOnly Cookie
 - CSRF Cookie
