@@ -22,6 +22,7 @@ fn valid_input() -> ProviderInput {
         name_claim: Some("name".to_owned()),
         email_verified_claim: Some("email_verified".to_owned()),
         client_auth_method: ClientAuthMethod::Basic,
+        pkce_enabled: true,
     }
 }
 
@@ -31,6 +32,34 @@ fn provider_input_accepts_standard_https_configuration() {
 
     assert_eq!(provider.slug, "enterprise-sso");
     assert_eq!(provider.client_auth_method, ClientAuthMethod::Basic);
+    assert!(provider.pkce_enabled);
+}
+
+/// RFC 9700 §2.1.1：PKCE 是默认行为。请求体未提供 `pkce_enabled` 时必须为 true，
+/// 否则存量管理脚本会静默地把外部登录降级成无 PKCE 的流程。
+#[test]
+fn provider_input_defaults_pkce_to_enabled() {
+    let input: ProviderInput = serde_json::from_value(json!({
+        "name": "企业 SSO",
+        "slug": "enterprise-sso",
+        "authorization_endpoint": "https://sso.example.com/oauth/authorize",
+        "token_endpoint": "https://sso.example.com/oauth/token",
+        "userinfo_endpoint": "https://sso.example.com/oauth/userinfo",
+        "client_id": "client-id",
+        "client_secret": "client-secret",
+        "scopes": ["openid"]
+    }))
+    .expect("provider input without pkce_enabled");
+    assert!(input.pkce_enabled);
+    assert!(input.validate().expect("valid provider").pkce_enabled);
+}
+
+/// 个别外部 IdP 不支持 RFC 7636，必须能显式关闭，而不是全局禁用 PKCE。
+#[test]
+fn provider_input_allows_explicitly_disabling_pkce() {
+    let mut input = valid_input();
+    input.pkce_enabled = false;
+    assert!(!input.validate().expect("valid provider").pkce_enabled);
 }
 
 #[test]

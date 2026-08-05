@@ -50,6 +50,17 @@ pub struct ExternalLoginState {
     pub state: String,
     pub provider_slug: String,
     pub request_id: Option<String>,
+    /// 发往外部 IdP 的 PKCE `code_verifier`（RFC 7636 §4.1）。
+    ///
+    /// **一次性凭据，禁止写入日志。** 该结构体不派生 `Display`，且不得整体传入
+    /// `tracing` 宏；需要记录上下文时只记录 `state` 与 `provider_slug`。
+    ///
+    /// `#[serde(default)]` 是升级兼容契约：滚动升级期间 Redis 里已存在的旧 state
+    /// payload 没有该字段，缺失时反序列化为空串而不是整体失败，否则所有进行中的
+    /// 外部登录都会被打断。空串表示「本次登录未使用 PKCE」，`exchange_code`
+    /// 会相应地不发送 `code_verifier`。
+    #[serde(default)]
+    pub code_verifier: String,
 }
 
 #[derive(Clone)]
@@ -178,6 +189,35 @@ mod tests {
         redis::Client::open(url).expect("Redis URL")
     }
 
+    /// 兼容性回归：滚动升级期间 Redis 里的旧 payload 没有 `code_verifier` 字段，
+    /// 必须能反序列化为空串，否则所有进行中的外部登录都会失败。
+    #[test]
+    fn legacy_state_without_code_verifier_deserializes() {
+        let legacy = r#"{"state":"legacy-state","provider_slug":"example","request_id":null}"#;
+        let restored: ExternalLoginState =
+            serde_json::from_str(legacy).expect("旧 payload 必须仍可反序列化");
+        assert_eq!(restored.state, "legacy-state");
+        assert_eq!(restored.provider_slug, "example");
+        assert_eq!(restored.request_id, None);
+        assert_eq!(
+            restored.code_verifier, "",
+            "缺失的 code_verifier 应回退为空串（表示本次登录未使用 PKCE）"
+        );
+    }
+
+    #[test]
+    fn state_with_code_verifier_round_trips() {
+        let original = ExternalLoginState {
+            state: "state-value".to_owned(),
+            provider_slug: "example".to_owned(),
+            request_id: Some("request-value".to_owned()),
+            code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".to_owned(),
+        };
+        let payload = serde_json::to_string(&original).expect("序列化");
+        let restored: ExternalLoginState = serde_json::from_str(&payload).expect("反序列化");
+        assert_eq!(restored, original);
+    }
+
     #[tokio::test]
     async fn concurrent_admission_never_exceeds_pending_capacity() {
         let client = redis_client();
@@ -199,6 +239,7 @@ mod tests {
                             state: format!("state-{index}"),
                             provider_slug: "example".to_owned(),
                             request_id: None,
+                            code_verifier: String::new(),
                         },
                         source_ip,
                     )
@@ -240,6 +281,7 @@ mod tests {
                         state: format!("state-{index}"),
                         provider_slug: "example".to_owned(),
                         request_id: None,
+                        code_verifier: String::new(),
                     },
                     "198.51.100.8",
                 )
@@ -253,6 +295,7 @@ mod tests {
                         state: "state-third".to_owned(),
                         provider_slug: "example".to_owned(),
                         request_id: None,
+                        code_verifier: String::new(),
                     },
                     "198.51.100.8",
                 )

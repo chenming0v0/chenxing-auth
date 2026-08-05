@@ -3,6 +3,7 @@ use crate::{
     error,
     oauth::consent::pending_request_exists,
     oauth::providers::{
+        client_pkce::generate_code_verifier,
         error_helpers::{
             append_external_state_clear, external_callback_path, external_error,
             external_error_with_request, external_error_with_session, external_error_with_state,
@@ -89,6 +90,14 @@ pub async fn start_external_login(
         .map(|Extension(ConnectInfo(peer))| peer.ip().to_string())
         .unwrap_or_else(|| "unknown".to_owned());
     let state_value = random_state();
+    // RFC 9700 §2.1.1：本系统作为 OAuth 客户端访问外部 IdP 时也必须使用 PKCE。
+    // verifier 只存在于 Redis 中的 state payload 里，不进入重定向 URL、日志或审计。
+    // provider 显式关闭 PKCE 时用空串，authorization_url / exchange_code 会跳过 PKCE 参数。
+    let code_verifier = if provider.pkce_enabled {
+        generate_code_verifier()
+    } else {
+        String::new()
+    };
     if let Err(store_error) = state
         .external_login_states
         .save_from_source(
@@ -96,6 +105,7 @@ pub async fn start_external_login(
                 state: state_value.clone(),
                 provider_slug: slug.clone(),
                 request_id: query.request_id.clone().filter(|value| !value.is_empty()),
+                code_verifier: code_verifier.clone(),
             },
             &source_ip,
         )
@@ -139,6 +149,7 @@ pub async fn start_external_login(
         &provider,
         &callback,
         &state_value,
+        &code_verifier,
     ) {
         Ok(url) => url,
         Err(error_value) => {
@@ -237,9 +248,11 @@ pub async fn external_callback(
         }
     };
     let callback = format!("{}{}", state.config.issuer_url, callback_path);
+    // 用发起授权时存入 state 的 verifier 兑换授权码（RFC 7636 §4.5）。
+    // 空串表示本次登录未使用 PKCE：provider 关闭了开关，或这是升级前签发的旧 state。
     let token = match state
         .external_oauth
-        .exchange_code(&provider, &callback, code)
+        .exchange_code(&provider, &callback, code, &stored_state.code_verifier)
         .await
     {
         Ok(token) => token,
