@@ -707,14 +707,27 @@ paths:
     get:
       tags: [Admin Users]
       summary: 用户列表
+      description: 返回用户数组。服务端强制分页上限，超出范围的 limit 会被 clamp 到 [1, 200]；需要完整分页信封时使用 /api/v1/admin/users/query。
       operationId: listUsers
       security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: 返回条数，默认 50；超出 [1, 200] 时自动 clamp。
+          schema: { type: integer, format: int64, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          description: 跳过条数，默认 0；负值按 0 处理。
+          schema: { type: integer, format: int64, default: 0 }
       responses:
         '200':
           description: 用户列表
           content:
             application/json:
               schema: { type: array, items: { $ref: '#/components/schemas/PublicUser' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
   /api/v1/admin/users/{user_id}/{status}:
