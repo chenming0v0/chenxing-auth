@@ -235,6 +235,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0009_system_settings.sql")),
             false,
         ),
+        Migration::new(
+            10,
+            Cow::Borrowed("durable consent revocation"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0010_consent_revoked_at.sql")),
+            false,
+        ),
     ];
 
     Migrator {

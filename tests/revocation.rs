@@ -28,6 +28,10 @@ async fn revoked_access_token_is_rejected_until_its_expiry() {
         .expect("cleanup revocation");
 }
 
+/// 缓存键的绑定语义：一对「用户 × Client」互不影响。
+///
+/// 这里用仅缓存模式（`new`），只覆盖 Redis 侧的键隔离。
+/// 撤销的持久性和权威回源由 `tests/consent_revocation_durability.rs` 覆盖。
 #[tokio::test]
 async fn consent_revocation_is_bound_to_one_user_and_client() {
     let client = redis::Client::open("redis://127.0.0.1:6379").expect("Redis URL");
