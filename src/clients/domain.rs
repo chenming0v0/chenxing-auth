@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use thiserror::Error;
-use url::Url;
+use url::{Host, Url};
 
 pub const DEFAULT_MAX_REDIRECT_URIS: usize = 10;
 pub const DEFAULT_MAX_REDIRECT_URI_LENGTH: usize = 2_048;
@@ -109,7 +109,7 @@ pub enum ClientRegistrationError {
     TooManyRedirectUris,
     #[error("redirect URI is too long")]
     RedirectUriTooLong,
-    #[error("redirect URI must use HTTPS")]
+    #[error("redirect URI must use HTTPS, or HTTP with a loopback IP (127.0.0.1 / [::1])")]
     InsecureRedirectUri,
     #[error("wildcard redirect URI is not allowed")]
     WildcardRedirectUri,
@@ -196,16 +196,54 @@ fn validate_redirect_uri(
         return Err(ClientRegistrationError::WildcardRedirectUri);
     }
     let url = Url::parse(&value).map_err(|_| ClientRegistrationError::InvalidRedirectUri)?;
-    if url.scheme() != "https" {
-        return Err(ClientRegistrationError::InsecureRedirectUri);
+
+    // Scheme 校验（Issue #69）：
+    // - https：允许任意 host，是 Web 机密客户端的标准路径。
+    // - http：仅允许字面回环 IP（RFC 8252 §7.3，用于原生/CLI 客户端）：
+    //     * IPv4：整个 127.0.0.0/8 段（is_loopback() 语义正确）
+    //     * IPv6：::1（唯一回环地址）
+    //   明确排除 localhost 域名：localhost 可被 DNS 劫持或解析到非回环地址
+    //   （RFC 8252 §8.3 建议使用字面 IP 而非 localhost）。
+    // - 其他 scheme（javascript:、data:、自定义 scheme）一律拒绝，防止 XSS/开放重定向。
+    match url.scheme() {
+        "https" => {}
+        "http" => {
+            let is_loopback = match url.host() {
+                // 整个 127.0.0.0/8 段均为回环，is_loopback() 语义正确
+                Some(Host::Ipv4(ip)) => ip.is_loopback(),
+                // ::1 是 IPv6 唯一回环地址
+                Some(Host::Ipv6(ip)) => ip.is_loopback(),
+                // Domain 类型涵盖 localhost 及其他域名，均不视为安全的回环标识
+                _ => false,
+            };
+            if !is_loopback {
+                return Err(ClientRegistrationError::InsecureRedirectUri);
+            }
+        }
+        _ => return Err(ClientRegistrationError::InsecureRedirectUri),
     }
-    if url.host_str().is_none() || url.fragment().is_some() {
+
+    // RFC 6749 §3.1.2：redirect_uri 不得含 fragment。
+    // fragment 必须显式拒绝，不能依赖归一化静默丢弃（会掩盖客户端配置错误）。
+    if url.fragment().is_some() {
+        return Err(ClientRegistrationError::InvalidRedirectUri);
+    }
+    if url.host_str().is_none() {
         return Err(ClientRegistrationError::InvalidRedirectUri);
     }
     if url.username() != "" || url.password().is_some() {
         return Err(ClientRegistrationError::InvalidRedirectUri);
     }
-    Ok(value)
+
+    // Issue #68: 归一化后落库，防止等价 URI 在授权侧严格 == 比对时失败。
+    // url::Url::to_string() 按 WHATWG URL 规范归一化：
+    // - 去除默认端口（https:443、http:80）
+    // - 补全根路径 trailing slash（https://example.com → https://example.com/）
+    //
+    // 注意兼容性影响：存量 redirect_uris 可能是非归一化形式（例如带 :443 或缺
+    // trailing slash）。升级后这些 client 若按归一化形式发起授权请求，会因授权侧
+    // 严格 == 比对失败而返回 RedirectUriNotAllowed，需人工或迁移脚本归一化存量数据。
+    Ok(url.to_string())
 }
 
 fn deduplicate(values: Vec<String>) -> Vec<String> {
@@ -215,4 +253,146 @@ fn deduplicate(values: Vec<String>) -> Vec<String> {
         }
         unique
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 辅助函数：直接校验单个 redirect URI，返回归一化后的结果
+    fn validate_uri(uri: &str) -> Result<String, ClientRegistrationError> {
+        validate_redirect_uri(uri.to_owned(), &ClientRegistrationLimits::default())
+    }
+
+    // ========== Issue #68: URL 归一化 ==========
+
+    #[test]
+    fn redirect_uri_normalizes_bare_origin_adds_trailing_slash() {
+        // https://example.com 没有显式路径，归一化补全 trailing slash
+        assert_eq!(validate_uri("https://example.com").unwrap(), "https://example.com/");
+    }
+
+    #[test]
+    fn redirect_uri_normalizes_removes_default_https_port() {
+        // https:443 是默认端口，归一化时去除
+        assert_eq!(
+            validate_uri("https://example.com:443/cb").unwrap(),
+            "https://example.com/cb"
+        );
+    }
+
+    #[test]
+    fn redirect_uri_with_explicit_path_unchanged() {
+        // 显式路径的 URI 归一化后保持不变
+        assert_eq!(
+            validate_uri("https://example.com/oauth/callback").unwrap(),
+            "https://example.com/oauth/callback"
+        );
+    }
+
+    // ========== Issue #69: RFC 8252 回环地址放开 ==========
+
+    #[test]
+    fn redirect_uri_accepts_loopback_ipv4_http() {
+        // RFC 8252 §7.3：原生/CLI 客户端可使用回环 HTTP
+        assert_eq!(
+            validate_uri("http://127.0.0.1:8080/cb").unwrap(),
+            "http://127.0.0.1:8080/cb"
+        );
+    }
+
+    #[test]
+    fn redirect_uri_accepts_loopback_ipv6_http() {
+        // IPv6 回环地址 ::1
+        assert_eq!(
+            validate_uri("http://[::1]:8080/cb").unwrap(),
+            "http://[::1]:8080/cb"
+        );
+    }
+
+    #[test]
+    fn redirect_uri_accepts_any_loopback_ipv4() {
+        // 整个 127.0.0.0/8 段均为回环，is_loopback() 正确处理
+        assert_eq!(validate_uri("http://127.0.0.2/cb").unwrap(), "http://127.0.0.2/cb");
+        assert_eq!(
+            validate_uri("http://127.255.255.255/cb").unwrap(),
+            "http://127.255.255.255/cb"
+        );
+    }
+
+    #[test]
+    fn redirect_uri_rejects_localhost_domain_http() {
+        // RFC 8252 §8.3：明确排除 localhost 域名，只接受字面 IP
+        // localhost 可能被 DNS 劫持或解析到非回环地址
+        assert_eq!(
+            validate_uri("http://localhost:8080/cb").unwrap_err(),
+            ClientRegistrationError::InsecureRedirectUri,
+        );
+    }
+
+    #[test]
+    fn redirect_uri_rejects_non_loopback_http() {
+        // 非回环地址的 HTTP 一律拒绝
+        assert_eq!(
+            validate_uri("http://example.com/cb").unwrap_err(),
+            ClientRegistrationError::InsecureRedirectUri,
+        );
+    }
+
+    #[test]
+    fn redirect_uri_rejects_non_loopback_ipv4_http() {
+        // 10.0.0.1 是私有地址但不是回环
+        assert_eq!(
+            validate_uri("http://10.0.0.1/cb").unwrap_err(),
+            ClientRegistrationError::InsecureRedirectUri,
+        );
+    }
+
+    // ========== 危险 scheme 拒绝 ==========
+
+    #[test]
+    fn redirect_uri_rejects_javascript_scheme() {
+        // javascript: 会被 url crate 解析成功，但 scheme 非 https/http → InsecureRedirectUri
+        assert_eq!(
+            validate_uri("javascript:alert(1)").unwrap_err(),
+            ClientRegistrationError::InsecureRedirectUri,
+        );
+    }
+
+    #[test]
+    fn redirect_uri_rejects_data_scheme() {
+        assert_eq!(
+            validate_uri("data:text/html,<script>alert(1)</script>").unwrap_err(),
+            ClientRegistrationError::InsecureRedirectUri,
+        );
+    }
+
+    #[test]
+    fn redirect_uri_rejects_custom_scheme() {
+        // 自定义 scheme（如移动端 Deep Link）暂不支持
+        assert_eq!(
+            validate_uri("myapp://callback").unwrap_err(),
+            ClientRegistrationError::InsecureRedirectUri,
+        );
+    }
+
+    // ========== OAuth 2.0 协议约束 ==========
+
+    #[test]
+    fn redirect_uri_rejects_fragment() {
+        // RFC 6749 §3.1.2：redirect_uri 不得含 fragment
+        assert_eq!(
+            validate_uri("https://example.com/cb#section").unwrap_err(),
+            ClientRegistrationError::InvalidRedirectUri,
+        );
+    }
+
+    #[test]
+    fn redirect_uri_rejects_userinfo() {
+        // 已有测试覆盖 (tests/client_domain.rs)，此处确保回归
+        assert_eq!(
+            validate_uri("https://user:pass@example.com/cb").unwrap_err(),
+            ClientRegistrationError::InvalidRedirectUri,
+        );
+    }
 }
