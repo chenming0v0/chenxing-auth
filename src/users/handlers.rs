@@ -64,6 +64,9 @@ pub async fn register_user(
         Err(UserServiceError::Validation(RegistrationError::PasswordTooShort)) => {
             error::bad_request("password_too_short", "password is too short")
         }
+        Err(UserServiceError::Validation(RegistrationError::PasswordTooLong)) => {
+            error::bad_request("password_too_long", "password must be at most 128 characters")
+        }
         Err(UserServiceError::Validation(RegistrationError::DisplayNameTooLong)) => {
             error::bad_request("display_name_too_long", "display name is too long")
         }

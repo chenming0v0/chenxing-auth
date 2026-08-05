@@ -56,7 +56,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
             password: "correct horse battery".to_owned(),
             display_name: Some("Storage User".to_owned()),
         },
-        hash_password("correct horse battery").expect("password hash"),
+        hash_password("correct horse battery".to_owned()).await.expect("password hash"),
     )
     .await
     .expect("insert user");
@@ -191,7 +191,7 @@ async fn password_change_commits_password_and_session_revocation_together() {
             password: old_password.to_owned(),
             display_name: None,
         },
-        hash_password(old_password).expect("old password hash"),
+        hash_password(old_password.to_owned()).await.expect("old password hash"),
     )
     .await
     .expect("insert user");
@@ -213,7 +213,7 @@ async fn password_change_commits_password_and_session_revocation_together() {
         user_repository::change_password_and_revoke_all(
             &pool,
             user.id,
-            &hash_password(new_password).expect("new password hash"),
+            &hash_password(new_password.to_owned()).await.expect("new password hash"),
         )
         .await
         .expect("change password")
@@ -225,14 +225,20 @@ async fn password_change_commits_password_and_session_revocation_together() {
             .fetch_one(&pool)
             .await
             .expect("stored password hash");
-    assert!(chenxing_auth::users::credentials::verify_password(
-        new_password,
-        &stored_hash
-    ));
-    assert!(!chenxing_auth::users::credentials::verify_password(
-        old_password,
-        &stored_hash
-    ));
+    assert!(
+        chenxing_auth::users::credentials::verify_password(
+            new_password.to_owned(),
+            stored_hash.clone()
+        )
+        .await
+    );
+    assert!(
+        !chenxing_auth::users::credentials::verify_password(
+            old_password.to_owned(),
+            stored_hash.clone()
+        )
+        .await
+    );
 
     let (epoch,): (i64,) =
         chenxing_auth::sqlx::query_as("SELECT session_epoch FROM users WHERE id = $1")
@@ -286,7 +292,7 @@ async fn password_change_rolls_back_when_session_epoch_update_fails() {
             password: old_password.to_owned(),
             display_name: None,
         },
-        hash_password(old_password).expect("old password hash"),
+        hash_password(old_password.to_owned()).await.expect("old password hash"),
     )
     .await
     .expect("insert user");
@@ -313,7 +319,7 @@ async fn password_change_rolls_back_when_session_epoch_update_fails() {
     let result = user_repository::change_password_and_revoke_all(
         &pool,
         user.id,
-        &hash_password(new_password).expect("new password hash"),
+        &hash_password(new_password.to_owned()).await.expect("new password hash"),
     )
     .await;
     assert!(result.is_err(), "epoch overflow must fail the transaction");
@@ -325,14 +331,20 @@ async fn password_change_rolls_back_when_session_epoch_update_fails() {
     .fetch_one(&pool)
     .await
     .expect("rolled back user state");
-    assert!(chenxing_auth::users::credentials::verify_password(
-        old_password,
-        &stored_hash
-    ));
-    assert!(!chenxing_auth::users::credentials::verify_password(
-        new_password,
-        &stored_hash
-    ));
+    assert!(
+        chenxing_auth::users::credentials::verify_password(
+            old_password.to_owned(),
+            stored_hash.clone()
+        )
+        .await
+    );
+    assert!(
+        !chenxing_auth::users::credentials::verify_password(
+            new_password.to_owned(),
+            stored_hash.clone()
+        )
+        .await
+    );
     assert_eq!(epoch, i64::MAX);
     let (revoked_at,): (Option<OffsetDateTime>,) =
         chenxing_auth::sqlx::query_as("SELECT revoked_at FROM user_sessions WHERE id = $1")

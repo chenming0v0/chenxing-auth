@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::credentials::MAX_PASSWORD_LENGTH;
+
 pub const MIN_PASSWORD_LENGTH: usize = 10;
 pub type UserId = i64;
 
@@ -110,6 +112,13 @@ pub enum RegistrationError {
     InvalidEmail,
     #[error("password must be at least {MIN_PASSWORD_LENGTH} characters")]
     PasswordTooShort,
+    /// Issue #122：口令长度上界。
+    ///
+    /// Argon2 的开销随口令长度增长，无上界时单个请求可以提交数 MB 明文，
+    /// 把一次哈希从 50 ms 放大到数秒。限流按请求计数，拦不住单请求的计算量，
+    /// 所以必须在校验阶段直接拒绝。
+    #[error("password must be at most {MAX_PASSWORD_LENGTH} characters")]
+    PasswordTooLong,
     #[error("display name is too long")]
     DisplayNameTooLong,
 }
@@ -121,9 +130,7 @@ pub fn validate_registration(
     if !is_valid_email(&email) {
         return Err(RegistrationError::InvalidEmail);
     }
-    if input.password.chars().count() < MIN_PASSWORD_LENGTH {
-        return Err(RegistrationError::PasswordTooShort);
-    }
+    validate_password_length(&input.password)?;
 
     let display_name = validate_display_name(input.display_name)?;
     let username = validate_username(&input.username).ok_or(RegistrationError::InvalidUsername)?;
@@ -134,6 +141,23 @@ pub fn validate_registration(
         password: input.password,
         display_name,
     })
+}
+
+/// 口令长度双向校验（Issue #122）。
+///
+/// 按字符数而不是字节数计：UTF-8 下一个中文字符占 3 字节，用字节数会让中文口令
+/// 的实际长度要求与 ASCII 口令不一致。
+///
+/// 注册与改密共用这一个入口，两条路径的上下界不允许出现漂移。
+pub fn validate_password_length(password: &str) -> Result<(), RegistrationError> {
+    let length = password.chars().count();
+    if length < MIN_PASSWORD_LENGTH {
+        return Err(RegistrationError::PasswordTooShort);
+    }
+    if length > MAX_PASSWORD_LENGTH {
+        return Err(RegistrationError::PasswordTooLong);
+    }
+    Ok(())
 }
 
 pub fn validate_display_name(
