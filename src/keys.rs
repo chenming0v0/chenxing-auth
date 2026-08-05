@@ -15,6 +15,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 use thiserror::Error;
+use zeroize::Zeroizing;
 
 use crate::key_storage::{
     atomic_write, ensure_secure_directory, modified_time, secure_existing_file,
@@ -41,10 +42,30 @@ struct KeyState {
     jwks: JwkSet,
 }
 
+/// RSA 私钥的 PKCS#1 DER 字节。
+///
+/// Rust 的 drop 只归还内存、不保证擦除内容：`Vec<u8>` 丢弃后私钥字节仍留在堆上，直到被分配器
+/// 复用覆盖，期间 coredump、swap 落盘或同进程内存扫描都可能还原出完整私钥。`Zeroizing` 在
+/// drop 时原地清零以消除该窗口，所有流经内存的私钥字节都必须用它包装。
+type PrivateKeyDer = Zeroizing<Vec<u8>>;
+
 #[derive(Clone)]
 struct KeyMaterial {
-    der: Vec<u8>,
+    /// `Zeroizing` 的 clone 仍带清零语义，轮换时克隆的旧材料副本也会被擦除。
+    der: PrivateKeyDer,
     created_at: SystemTime,
+}
+
+/// 手写 `Debug`：派生实现会整段打印私钥 DER，一旦 `KeyMaterial` 被记进日志或断言失败信息，
+/// 就等于泄漏签名私钥。（`Zeroizing` 本身也未实现 `Debug`，无法派生。）
+impl std::fmt::Debug for KeyMaterial {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("KeyMaterial")
+            .field("der", &"<redacted>")
+            .field("created_at", &self.created_at)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,7 +227,7 @@ impl KeyManager {
     fn from_key_material(
         directory: Option<PathBuf>,
         active_key_id: String,
-        materials: impl IntoIterator<Item = (String, Vec<u8>)>,
+        materials: impl IntoIterator<Item = (String, PrivateKeyDer)>,
     ) -> Result<Self, KeyManagerError> {
         let materials = materials
             .into_iter()
@@ -286,11 +307,11 @@ fn build_key_state(
     })
 }
 
-fn generate_rsa_key() -> Result<(String, Vec<u8>), KeyManagerError> {
+fn generate_rsa_key() -> Result<(String, PrivateKeyDer), KeyManagerError> {
     let key_pair = KeyPair::generate(KeySize::Rsa2048).map_err(|_| KeyManagerError::Generation)?;
     let pkcs8 = key_pair.as_der().map_err(|_| KeyManagerError::Encoding)?;
     let private_key_info = PrivateKeyInfo::try_from(pkcs8.as_ref())?;
-    let der = private_key_info.private_key.to_vec();
+    let der = Zeroizing::new(private_key_info.private_key.to_vec());
     Ok((format!("cx-{}", uuid::Uuid::new_v4().simple()), der))
 }
 
@@ -311,7 +332,9 @@ fn discover_key_files(directory: &Path) -> Result<BTreeMap<String, KeyMaterial>,
             .to_owned();
         validate_key_id(&key_id)?;
         let created_at = modified_time(&path)?;
-        keys.insert(key_id, key_material(fs::read(path)?, created_at));
+        // 从磁盘读入的私钥字节一进内存就包装成清零类型，避免中途留下裸 Vec 副本。
+        let der = Zeroizing::new(fs::read(path)?);
+        keys.insert(key_id, key_material(der, created_at));
     }
     Ok(keys)
 }
@@ -366,7 +389,7 @@ fn migrate_legacy_key(
         None => format!("cx-{}", uuid::Uuid::new_v4().simple()),
     };
     validate_key_id(&key_id)?;
-    let der = fs::read(&legacy_path)?;
+    let der = Zeroizing::new(fs::read(&legacy_path)?);
     persist_key(directory, &key_id, &der)?;
     persist_active_key_id(directory, &key_id)?;
     fs::remove_file(&legacy_path)?;
@@ -431,7 +454,7 @@ fn newest_key_id(key_files: &BTreeMap<String, KeyMaterial>) -> Option<String> {
         .map(|(key_id, _)| key_id.clone())
 }
 
-fn key_material(der: Vec<u8>, created_at: SystemTime) -> KeyMaterial {
+fn key_material(der: PrivateKeyDer, created_at: SystemTime) -> KeyMaterial {
     KeyMaterial { der, created_at }
 }
 
@@ -469,3 +492,7 @@ fn validate_key_id(key_id: &str) -> Result<(), KeyManagerError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "keys_tests.rs"]
+mod tests;
