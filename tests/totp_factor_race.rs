@@ -39,7 +39,7 @@ async fn setup() -> (
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let email = format!("totp-race-{}@example.com", Uuid::new_v4().simple());
     (
-        api::router(AppState::new(config).expect("test state")),
+        api::router(AppState::new(config).await.expect("test state")),
         database,
         key_directory,
         email,

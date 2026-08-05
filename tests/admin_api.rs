@@ -101,7 +101,7 @@ async fn setup() -> (
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
-        api::router(AppState::new(config).expect("state")),
+        api::router(AppState::new(config).await.expect("state")),
         database,
         key_directory,
         lock,

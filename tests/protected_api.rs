@@ -10,11 +10,11 @@ use std::fs;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-fn test_router() -> Router {
-    api::router(AppState::for_test())
+async fn test_router() -> Router {
+    api::router(AppState::for_test().await)
 }
 
-fn admin_router() -> (Router, String, std::path::PathBuf) {
+async fn admin_router() -> (Router, String, std::path::PathBuf) {
     let directory = std::env::temp_dir().join(format!("chenxing-admin-keys-{}", Uuid::new_v4()));
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
@@ -25,13 +25,14 @@ fn admin_router() -> (Router, String, std::path::PathBuf) {
             .expect("test configuration");
     config.admin_token = "admin-secret".to_owned();
     config.key_directory = directory.to_string_lossy().into_owned();
-    let state = AppState::new(config).expect("test state");
+    let state = AppState::new(config).await.expect("test state");
     (api::router(state), "admin-secret".to_owned(), directory)
 }
 
 #[tokio::test]
 async fn userinfo_requires_bearer_token() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/oauth/userinfo")
@@ -46,7 +47,7 @@ async fn userinfo_requires_bearer_token() {
 
 #[tokio::test]
 async fn admin_routes_forward_to_the_react_spa() {
-    let router = test_router();
+    let router = test_router().await;
     for (uri, expected) in [
         ("/admin/login", "/login"),
         ("/admin", "/admin"),
@@ -77,6 +78,7 @@ async fn admin_routes_forward_to_the_react_spa() {
 #[tokio::test]
 async fn admin_login_post_redirects_to_react_login() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -96,7 +98,7 @@ async fn admin_login_post_redirects_to_react_login() {
 
 #[tokio::test]
 async fn admin_redirects_preserve_query_parameters() {
-    let router = test_router();
+    let router = test_router().await;
     for (uri, expected) in [
         ("/admin?tab=overview", "/admin?tab=overview"),
         (
@@ -153,6 +155,7 @@ fn admin_redirect_targets_exist_in_react_app() {
 #[tokio::test]
 async fn client_management_requires_admin_bearer_token() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -172,6 +175,7 @@ async fn client_management_requires_admin_bearer_token() {
 #[tokio::test]
 async fn signing_key_rotation_requires_admin_bearer_token() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -187,7 +191,7 @@ async fn signing_key_rotation_requires_admin_bearer_token() {
 
 #[tokio::test]
 async fn signing_key_rotation_returns_public_key_metadata_for_admin() {
-    let (router, admin_token, directory) = admin_router();
+    let (router, admin_token, directory) = admin_router().await;
     let response = router
         .oneshot(
             Request::builder()

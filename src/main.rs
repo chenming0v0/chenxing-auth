@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let state = AppState::new(config.clone())?;
+    let state = AppState::new(config.clone()).await?;
     let session_outbox_worker = tokio::spawn(state.sessions.clone().run_outbox_worker());
     let app = api::router(state);
     let address = format!("{}:{}", config.host, config.port);
