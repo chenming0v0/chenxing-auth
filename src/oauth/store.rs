@@ -1,7 +1,7 @@
 use redis::{AsyncCommands, Client, Script};
 use thiserror::Error;
 
-use super::code::{AUTHORIZATION_CODE_TTL_SECONDS, AuthorizationCode};
+use super::code::AuthorizationCode;
 
 #[derive(Clone)]
 pub struct AuthorizationCodeStore {
@@ -22,8 +22,15 @@ impl AuthorizationCodeStore {
     }
 
     pub async fn save(&self, code: &AuthorizationCode) -> Result<(), AuthorizationCodeStoreError> {
-        self.save_with_ttl(code, AUTHORIZATION_CODE_TTL_SECONDS)
-            .await
+        // TTL 来自授权码本身的 expires_at，与配置的 security_limits.authorization_code_ttl_seconds
+        // 保持一致（#121）。remaining_seconds 不足1时强制设为1而不是0（Redis 不接受0）。
+        let remaining = (code.expires_at - time::OffsetDateTime::now_utc()).whole_seconds();
+        let ttl = if remaining > 0 {
+            remaining as u64
+        } else {
+            1
+        };
+        self.save_with_ttl(code, ttl).await
     }
 
     pub async fn restore(

@@ -6,7 +6,7 @@ use crate::{
     admin::AdminAuthenticator,
     audit::AuditService,
     auth_factors::service::AuthFactorService,
-    auth_limiter::{AuthFailureLimiter, RedisAuthFailureLimiter},
+    auth_limiter::{AuthFailureLimiter, AuthFailureLimits, RedisAuthFailureLimiter},
     clients::service::ClientService,
     config::Config,
     consents::ConsentService,
@@ -108,11 +108,19 @@ impl AppState {
         })
         .await??;
 
-        let auth_limiter: Arc<dyn AuthFailureLimiter> =
-            Arc::new(RedisAuthFailureLimiter::with_failure_policy(
+        // #121：认证失败阈值与窗口来自配置，不再是编译期常量。
+        let auth_limiter: Arc<dyn AuthFailureLimiter> = Arc::new(
+            RedisAuthFailureLimiter::with_limits(
                 redis.clone(),
                 config.auth_limiter_failure_policy,
-            ));
+                AuthFailureLimits {
+                    window_seconds: config.security_limits.auth_failure_window_seconds,
+                    account_limit: config.security_limits.account_failure_limit,
+                    ip_limit: config.security_limits.ip_failure_limit,
+                    ticket_limit: config.security_limits.totp_ticket_failure_limit,
+                },
+            ),
+        );
         let sessions = SessionStore::with_metadata_and_key_ring(
             redis.clone(),
             database.clone(),
@@ -151,7 +159,14 @@ impl AppState {
         let audit = AuditService::new(database.clone());
         // 复用已加载的 secret_manager，避免第二次 load_or_generate 创建独立副本。
         let external_oauth = ExternalOAuthService::new(database.clone(), secret_manager)?;
-        let external_login_states = ExternalLoginStateStore::new(redis.clone());
+        // #121：外部登录 state 的 TTL 和限流阈值来自配置，不再硬编码。
+        let external_login_states = ExternalLoginStateStore::new_with_config(
+            redis.clone(),
+            config.security_limits.external_login_state_ttl_seconds,
+            config.security_limits.external_login_state_rate_window_seconds,
+            config.security_limits.external_login_state_rate_limit,
+            config.security_limits.external_login_state_max_pending,
+        );
 
         Ok(Self {
             config,
