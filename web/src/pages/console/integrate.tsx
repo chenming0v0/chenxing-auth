@@ -131,7 +131,7 @@ export function IntegratePage() {
         </HudPanel>
       ) : null}
 
-      <section className="chenxing-hud-panel mt-6">
+      <HudPanel as="section" className="mt-6">
         <div className="flex items-center justify-between gap-4">
           <h2 className="chenxing-h2 flex items-center gap-3">我的接入应用<span className="chenxing-chip">{clients.length} 个应用</span></h2>
         </div>
@@ -176,9 +176,9 @@ export function IntegratePage() {
           <Icon name="shield-alert" className="shrink-0 text-[var(--chenxing-warning)]" size={16} />
           Client Secret 仅在创建应用时展示一次，遗失后只能重新生成。
         </p>
-      </section>
+      </HudPanel>
 
-      <section className="chenxing-hud-panel mt-6">
+      <HudPanel as="section" className="mt-6">
         <h3 className="chenxing-h3 flex items-center gap-2"><Icon name="rocket" className="text-[var(--chenxing-cyan)]" size={18} />快速接入</h3>
         <div className="mt-5 grid gap-4 lg:grid-cols-3">
           {[
@@ -195,7 +195,7 @@ export function IntegratePage() {
             </div>
           ))}
         </div>
-      </section>
+      </HudPanel>
 
       {drawerOpen ? (
         <Drawer

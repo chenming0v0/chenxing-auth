@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
+import { createElement, useState } from 'react'
+import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
 import {
   Activity, AlertTriangle, ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Box, CalendarClock, Check, ChevronDown,
   ChevronsUpDown, Circle, CircleAlert, Code2, Copy, Crown, Database, Download, ExternalLink, Eye, EyeOff, Fingerprint,
@@ -46,8 +46,22 @@ export function BrandLockup({ subtitle = '辰星认证中枢', compact = false }
   )
 }
 
-export function HudPanel({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <div className={`chenxing-hud-panel ${className}`}>{children}</div>
+/** 玻璃容器允许的根元素：默认 div，语义场景按无障碍需要选择对应标签 */
+type HudPanelElement = 'div' | 'section' | 'article' | 'aside' | 'form'
+
+type HudPanelProps = HTMLAttributes<HTMLElement> & {
+  /** 渲染成哪种标签。页面需要语义标签时传 section / article / aside / form，不要自己写玻璃容器类 */
+  as?: HudPanelElement
+  children: ReactNode
+}
+
+/**
+ * 玻璃容器唯一入口：`.chenxing-hud-panel` 的类名契约只在这里出现一次。
+ * 页面不得直接写该类名，否则容器结构变更时无法统一跟随。
+ */
+export function HudPanel({ as = 'div', children, className = '', ...rest }: HudPanelProps) {
+  // 用 createElement 承载多态标签，避免为一个受限联合类型引入完整的多态组件泛型
+  return createElement(as, { className: `chenxing-hud-panel ${className}`, ...rest }, children)
 }
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
