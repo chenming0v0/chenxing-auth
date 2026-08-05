@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { apiFetch, type AdminPlan, type AdminPlanInput } from '../../api'
+import { Drawer } from '../../components/drawer'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Field, HudPanel, Icon, Notice, PageIntro, TextAreaField, ToggleRow } from '../../components/ui'
 import { AdminGate, useAdminAccess } from './shared'
@@ -165,7 +166,7 @@ function StatCard({ label, icon, value, caption, mono = false }: { label: string
 
 const CODE_PATTERN = /^[a-z0-9_-]{1,64}$/
 
-/** 与「接入应用」注册抽屉同构的右侧编辑抽屉。 */
+/** 复用共享 Drawer 的右侧编辑抽屉，焦点管理与「接入应用」抽屉一致。 */
 function PlanEditorDrawer({ initial, onSaved, onCancel }: { initial: AdminPlan | null; onSaved: () => void; onCancel: () => void }) {
   const [code, setCode] = useState(initial?.code ?? '')
   const [name, setName] = useState(initial?.name ?? '')
@@ -227,45 +228,39 @@ function PlanEditorDrawer({ initial, onSaved, onCancel }: { initial: AdminPlan |
   }
 
   return (
-    <div className="chenxing-drawer-overlay is-open" onClick={onCancel}>
-      <div className="chenxing-drawer is-open" onClick={(event) => event.stopPropagation()}>
-        <div className="chenxing-drawer-header">
-          <div>
-            <h2 className="chenxing-h2">{initial ? '编辑套餐' : '新建套餐'}</h2>
-            <p className="chenxing-caption mt-1">额度字段留空表示无限制；保存后立即作用于配额检查。</p>
-          </div>
-          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel}><Icon name="x" size={16} /></button>
+    <Drawer
+      title={initial ? '编辑套餐' : '新建套餐'}
+      description="额度字段留空表示无限制；保存后立即作用于配额检查。"
+      onClose={onCancel}
+      onSubmit={(event) => void submit(event)}
+      footer={
+        <>
+          <Button type="button" variant="ghost" onClick={onCancel}>取消</Button>
+          <Button type="submit" icon="save" disabled={saving}>{saving ? '保存中…' : initial ? '保存更新' : '创建套餐'}</Button>
+        </>
+      }
+    >
+      {error ? <Notice tone="warning">{error}</Notice> : null}
+      <HudPanel className="space-y-4 !p-5">
+        <Field label="套餐代码" icon="terminal" value={code} onChange={(event) => setCode(event.target.value)} placeholder="例如 pro-max" hint="1-64 位小写字母、数字、_ 或 -，作为套餐唯一标识" required />
+        <Field label="套餐名称" icon="crown" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 专业版" required />
+        <TextAreaField label="套餐描述（可选）" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="展示给用户的一句话说明，最多 512 字。" />
+      </HudPanel>
+      <HudPanel className="space-y-4 !p-5">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="OAuth 应用数上限" type="number" min={0} step={1} value={oauthClients} onChange={(event) => setOauthClients(event.target.value)} required />
+          <Field label="每日授权调用上限" type="number" min={0} step={1} value={dailyAuth} onChange={(event) => setDailyAuth(event.target.value)} required />
+          <Field label="每月授权调用上限" type="number" min={0} step={1} value={monthlyAuth} onChange={(event) => setMonthlyAuth(event.target.value)} placeholder="∞" hint="留空表示无限" />
+          <Field label="QPS 上限" type="number" min={1} step={1} value={maxQps} onChange={(event) => setMaxQps(event.target.value)} placeholder="∞" hint="留空表示不限并发" />
         </div>
-        <form className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => void submit(event)}>
-          <div className="chenxing-drawer-body space-y-4">
-            {error ? <Notice tone="warning">{error}</Notice> : null}
-          <div className="chenxing-hud-panel space-y-4 !p-5">
-            <Field label="套餐代码" icon="terminal" value={code} onChange={(event) => setCode(event.target.value)} placeholder="例如 pro-max" hint="1-64 位小写字母、数字、_ 或 -，作为套餐唯一标识" required />
-            <Field label="套餐名称" icon="crown" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 专业版" required />
-            <TextAreaField label="套餐描述（可选）" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="展示给用户的一句话说明，最多 512 字。" />
-          </div>
-          <div className="chenxing-hud-panel space-y-4 !p-5">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="OAuth 应用数上限" type="number" min={0} step={1} value={oauthClients} onChange={(event) => setOauthClients(event.target.value)} required />
-              <Field label="每日授权调用上限" type="number" min={0} step={1} value={dailyAuth} onChange={(event) => setDailyAuth(event.target.value)} required />
-              <Field label="每月授权调用上限" type="number" min={0} step={1} value={monthlyAuth} onChange={(event) => setMonthlyAuth(event.target.value)} placeholder="∞" hint="留空表示无限" />
-              <Field label="QPS 上限" type="number" min={1} step={1} value={maxQps} onChange={(event) => setMaxQps(event.target.value)} placeholder="∞" hint="留空表示不限并发" />
-            </div>
-            <ToggleRow
-              title="设为默认套餐"
-              description={defaultLocked ? '当前默认套餐受保护；要更换默认，请把另一个套餐设为默认来接替。' : '未挂载或套餐到期的用户将回退到默认套餐。设定后会替换现有默认。'}
-              checked={isDefault}
-              onChange={setIsDefault}
-              disabled={defaultLocked}
-            />
-          </div>
-          </div>
-          <div className="chenxing-drawer-footer">
-            <Button type="button" variant="ghost" onClick={onCancel}>取消</Button>
-            <Button type="submit" icon="save" disabled={saving}>{saving ? '保存中…' : initial ? '保存更新' : '创建套餐'}</Button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <ToggleRow
+          title="设为默认套餐"
+          description={defaultLocked ? '当前默认套餐受保护；要更换默认，请把另一个套餐设为默认来接替。' : '未挂载或套餐到期的用户将回退到默认套餐。设定后会替换现有默认。'}
+          checked={isDefault}
+          onChange={setIsDefault}
+          disabled={defaultLocked}
+        />
+      </HudPanel>
+    </Drawer>
   )
 }
