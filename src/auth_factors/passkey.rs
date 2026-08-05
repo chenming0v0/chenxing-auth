@@ -1,46 +1,33 @@
-use serde::{Deserialize, Serialize};
-use std::time::Duration;
+//! Passkey 注册与认证的用例流程：ticket 校验、失败限流、challenge 状态存取和
+//! 凭据持久化。WebAuthn 协议与配置翻译放在 `passkey_core`。
+
 use uuid::Uuid;
-use webauthn_rs::prelude::{Passkey, PublicKeyCredential, RegisterPublicKeyCredential};
-use webauthn_rs_core::{
-    WebauthnCore,
-    proto::{
-        AttestationConveyancePreference, AuthenticationState, AuthenticatorAttachment,
-        COSEAlgorithm, CreationChallengeResponse, CredProtect, Credential,
-        CredentialProtectionPolicy, RegistrationState, RequestChallengeResponse,
-        RequestRegistrationExtensions, UserVerificationPolicy,
-    },
+use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
+use webauthn_rs_core::proto::{
+    AttestationConveyancePreference, COSEAlgorithm, CreationChallengeResponse,
+    RequestChallengeResponse,
 };
 
-use super::{AuthFactorService, AuthFactorServiceError, PasskeyConfirmation};
-use crate::auth_factors::{
-    domain::{FactorMethod, LoginTicket},
-    persistence::consume_then_persist,
-    repository,
+use super::{
+    AuthFactorService, AuthFactorServiceError, PasskeyConfirmation,
+    passkey_core::{
+        PendingPasskeyAuthentication, PendingPasskeyRegistration, authenticator_attachment,
+        build_core, core_credential, passkey_from_credential, passkey_registration_extensions,
+        user_verification_policy,
+    },
+};
+use crate::{
+    auth_factors::{
+        domain::{FactorMethod, LoginTicket},
+        persistence::consume_then_persist,
+        repository,
+    },
+    auth_limiter::{FailureDimension, LimiterDimension},
+    users::domain::UserId,
 };
 
 const PASSKEY_REGISTRATION_PREFIX: &str = "chenxing:auth:passkey-registration:";
 const PASSKEY_AUTHENTICATION_PREFIX: &str = "chenxing:auth:passkey-authentication:";
-const AUTHENTICATOR_TIMEOUT: Duration = Duration::from_secs(300);
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PendingPasskeyRegistration {
-    user_id: i64,
-    state: RegistrationState,
-    settings: crate::settings::PasskeySetting,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PendingPasskeyAuthentication {
-    user_id: i64,
-    state: AuthenticationState,
-    settings: crate::settings::PasskeySetting,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PasskeyEnvelope {
-    cred: Credential,
-}
 
 impl AuthFactorService {
     async fn enabled_passkey_settings(
@@ -57,6 +44,7 @@ impl AuthFactorService {
     pub async fn start_passkey_registration(
         &self,
         ticket_id: &str,
+        source_ip: Option<&str>,
         user_name: &str,
         display_name: &str,
     ) -> Result<Option<CreationChallengeResponse>, AuthFactorServiceError> {
@@ -66,9 +54,16 @@ impl AuthFactorService {
         };
         if !ticket.is_active_at(time::OffsetDateTime::now_utc())
             || !ticket.supports(FactorMethod::Passkey)
-            || !repository::list_factor_methods(&self.pool, ticket.user_id)
-                .await?
-                .is_empty()
+        {
+            return Ok(None);
+        }
+        // 限流检查必须在 list_factor_methods / list_passkeys 之前：challenge 端点用同一个
+        // ticket 可以在 TTL 内无限重放，先查库会让攻击者用廉价请求放大数据库负载。
+        self.ensure_passkey_attempt_allowed(ticket.user_id, ticket_id, source_ip)
+            .await?;
+        if !repository::list_factor_methods(&self.pool, ticket.user_id)
+            .await?
+            .is_empty()
         {
             return Ok(None);
         }
@@ -113,6 +108,7 @@ impl AuthFactorService {
     pub async fn finish_passkey_registration(
         &self,
         ticket_id: &str,
+        source_ip: Option<&str>,
         credential: &RegisterPublicKeyCredential,
     ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
         self.enabled_passkey_settings().await?;
@@ -134,12 +130,45 @@ impl AuthFactorService {
         if pending.user_id != ticket.user_id {
             return Ok(PasskeyConfirmation::InvalidTicket);
         }
-        let core = build_core(&pending.settings)?;
+        // 预留额度必须在 WebAuthn 验签和写库之前完成，否则伪造 credential 可以在 ticket TTL
+        // 内反复触发证明解析与数据库写入，限流也就防不住计算放大。
+        let account_key = self.account_key(ticket.user_id).await?;
+        let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
+        if self.ensure_dimensions_allowed(dimensions.clone()).await? {
+            return Ok(PasskeyConfirmation::RateLimited(ticket.user_id));
+        }
+        let core = match build_core(&pending.settings) {
+            Ok(core) => core,
+            Err(error) => {
+                self.release_dimensions(dimensions).await?;
+                return Err(error);
+            }
+        };
         let credential = match core.register_credential(credential, &pending.state, None) {
             Ok(credential) => credential,
-            Err(_) => return Ok(PasskeyConfirmation::InvalidCredential),
+            Err(_) => {
+                return self
+                    .record_passkey_failure(
+                        ticket_id,
+                        ticket.user_id,
+                        &Self::passkey_registration_key(ticket_id),
+                        dimensions,
+                    )
+                    .await;
+            }
         };
-        let passkey = passkey_from_credential(credential)?;
+        let passkey = match passkey_from_credential(credential) {
+            Ok(passkey) => passkey,
+            Err(error) => {
+                self.release_dimensions(dimensions).await?;
+                return Err(error);
+            }
+        };
+        // 验签通过即视为一次成功尝试，先归还预留额度再消费 ticket，避免额度悬挂。
+        self.release_dimensions(dimensions).await?;
+        self.limiter
+            .clear(FailureDimension::Ticket, ticket_id)
+            .await?;
         let confirmation = match consume_then_persist(
             PasskeyConfirmation::Completed(ticket.user_id),
             PasskeyConfirmation::InvalidTicket,
@@ -185,6 +214,7 @@ impl AuthFactorService {
     pub async fn start_passkey_authentication(
         &self,
         ticket_id: &str,
+        source_ip: Option<&str>,
     ) -> Result<Option<RequestChallengeResponse>, AuthFactorServiceError> {
         let settings = self.enabled_passkey_settings().await?;
         let Some(ticket) = self.tickets.find(ticket_id).await? else {
@@ -195,6 +225,9 @@ impl AuthFactorService {
         {
             return Ok(None);
         }
+        // 同一个 ticket 可以反复请求 challenge，限流检查必须挡在 list_passkeys 之前。
+        self.ensure_passkey_attempt_allowed(ticket.user_id, ticket_id, source_ip)
+            .await?;
         let passkeys = repository::list_passkeys(&self.pool, ticket.user_id).await?;
         if passkeys.is_empty() {
             return Ok(None);
@@ -230,6 +263,7 @@ impl AuthFactorService {
     pub async fn finish_passkey_authentication(
         &self,
         ticket_id: &str,
+        source_ip: Option<&str>,
         credential: &PublicKeyCredential,
     ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
         self.enabled_passkey_settings().await?;
@@ -251,18 +285,59 @@ impl AuthFactorService {
         if pending.user_id != ticket.user_id {
             return Ok(PasskeyConfirmation::InvalidTicket);
         }
-        let core = build_core(&pending.settings)?;
+        // 预留额度必须在 authenticate_credential 验签和 list_passkeys 查询之前：challenge 是
+        // 一次性的，但同一个 ticket 在 5 分钟 TTL 内可以反复提交伪造 credential，每次都会付出
+        // 一轮验签与数据库查询的代价。
+        let account_key = self.account_key(ticket.user_id).await?;
+        let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
+        if self.ensure_dimensions_allowed(dimensions.clone()).await? {
+            return Ok(PasskeyConfirmation::RateLimited(ticket.user_id));
+        }
+        let core = match build_core(&pending.settings) {
+            Ok(core) => core,
+            Err(error) => {
+                self.release_dimensions(dimensions).await?;
+                return Err(error);
+            }
+        };
         let result = match core.authenticate_credential(credential, &pending.state) {
             Ok(result) => result,
-            Err(_) => return Ok(PasskeyConfirmation::InvalidCredential),
+            Err(_) => {
+                return self
+                    .record_passkey_failure(
+                        ticket_id,
+                        ticket.user_id,
+                        &Self::passkey_authentication_key(ticket_id),
+                        dimensions,
+                    )
+                    .await;
+            }
         };
-        let mut passkeys = repository::list_passkeys(&self.pool, ticket.user_id).await?;
+        let mut passkeys = match repository::list_passkeys(&self.pool, ticket.user_id).await {
+            Ok(passkeys) => passkeys,
+            Err(error) => {
+                self.release_dimensions(dimensions).await?;
+                return Err(error.into());
+            }
+        };
         let Some(passkey) = passkeys
             .iter_mut()
             .find(|passkey| passkey.cred_id() == result.cred_id())
         else {
-            return Ok(PasskeyConfirmation::InvalidCredential);
+            return self
+                .record_passkey_failure(
+                    ticket_id,
+                    ticket.user_id,
+                    &Self::passkey_authentication_key(ticket_id),
+                    dimensions,
+                )
+                .await;
         };
+        // 验签与凭据匹配都通过，先归还预留额度并清空 ticket 维度计数，再消费 ticket。
+        self.release_dimensions(dimensions).await?;
+        self.limiter
+            .clear(FailureDimension::Ticket, ticket_id)
+            .await?;
         let confirmation = consume_then_persist(
             PasskeyConfirmation::Completed(ticket.user_id),
             PasskeyConfirmation::InvalidTicket,
@@ -289,200 +364,48 @@ impl AuthFactorService {
         Ok(confirmation)
     }
 
+    /// Challenge 端点不提交凭据，因此只做无副作用的额度检查，不预留也不记失败；
+    /// 预留会在这些不返回结果的路径上悬挂 pending 计数，直到窗口过期。
+    async fn ensure_passkey_attempt_allowed(
+        &self,
+        user_id: UserId,
+        ticket_id: &str,
+        source_ip: Option<&str>,
+    ) -> Result<(), AuthFactorServiceError> {
+        let account_key = self.account_key(user_id).await?;
+        let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
+        if self.limiter.any_limited(dimensions).await? {
+            return Err(AuthFactorServiceError::RateLimited);
+        }
+        Ok(())
+    }
+
+    /// 记录一次 Passkey 失败尝试。ticket 维度达阈值时立即失效 ticket 和挂起的
+    /// challenge 状态，让被爆破的登录流程无法继续复用。
+    async fn record_passkey_failure(
+        &self,
+        ticket_id: &str,
+        user_id: UserId,
+        pending_key: &str,
+        dimensions: Vec<LimiterDimension>,
+    ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
+        let record = self.record_failure(dimensions).await?;
+        if record.reached(FailureDimension::Ticket) {
+            self.invalidate_ticket(ticket_id).await?;
+            self.tickets.delete(pending_key).await?;
+            return Ok(PasskeyConfirmation::RateLimited(user_id));
+        }
+        if !record.reached.is_empty() {
+            return Ok(PasskeyConfirmation::RateLimited(user_id));
+        }
+        Ok(PasskeyConfirmation::InvalidCredential(user_id))
+    }
+
     fn passkey_registration_key(ticket_id: &str) -> String {
         format!("{PASSKEY_REGISTRATION_PREFIX}{ticket_id}")
     }
 
     fn passkey_authentication_key(ticket_id: &str) -> String {
         format!("{PASSKEY_AUTHENTICATION_PREFIX}{ticket_id}")
-    }
-}
-
-fn build_core(
-    settings: &crate::settings::PasskeySetting,
-) -> Result<WebauthnCore, AuthFactorServiceError> {
-    let settings = settings
-        .clone()
-        .validate()
-        .map_err(|_| webauthn_rs::prelude::WebauthnError::Configuration)?;
-    let allowed_origins = settings
-        .allowed_origins
-        .iter()
-        .map(|origin| {
-            url::Url::parse(origin).map_err(|_| webauthn_rs::prelude::WebauthnError::Configuration)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(WebauthnCore::new_unsafe_experts_only(
-        &settings.rp_name,
-        &settings.rp_id,
-        allowed_origins,
-        AUTHENTICATOR_TIMEOUT,
-        Some(false),
-        Some(false),
-    ))
-}
-
-fn user_verification_policy(settings: &crate::settings::PasskeySetting) -> UserVerificationPolicy {
-    match settings.user_verification {
-        crate::settings::PasskeyUserVerification::Preferred => UserVerificationPolicy::Preferred,
-        crate::settings::PasskeyUserVerification::Required => UserVerificationPolicy::Required,
-        crate::settings::PasskeyUserVerification::Discouraged => {
-            UserVerificationPolicy::Discouraged_DO_NOT_USE
-        }
-    }
-}
-
-fn authenticator_attachment(
-    settings: &crate::settings::PasskeySetting,
-) -> Option<AuthenticatorAttachment> {
-    match settings.authenticator_attachment {
-        crate::settings::PasskeyAuthenticatorAttachment::Any => None,
-        crate::settings::PasskeyAuthenticatorAttachment::Platform => {
-            Some(AuthenticatorAttachment::Platform)
-        }
-        crate::settings::PasskeyAuthenticatorAttachment::CrossPlatform => {
-            Some(AuthenticatorAttachment::CrossPlatform)
-        }
-    }
-}
-
-fn passkey_registration_extensions() -> RequestRegistrationExtensions {
-    RequestRegistrationExtensions {
-        cred_protect: Some(CredProtect {
-            credential_protection_policy: CredentialProtectionPolicy::UserVerificationRequired,
-            enforce_credential_protection_policy: Some(false),
-        }),
-        uvm: Some(true),
-        cred_props: Some(true),
-        min_pin_length: None,
-        hmac_create_secret: None,
-    }
-}
-
-fn core_credential(passkey: &Passkey) -> Result<Credential, AuthFactorServiceError> {
-    Ok(serde_json::from_value::<PasskeyEnvelope>(serde_json::to_value(passkey)?)?.cred)
-}
-
-fn passkey_from_credential(credential: Credential) -> Result<Passkey, AuthFactorServiceError> {
-    Ok(serde_json::from_value(serde_json::to_value(
-        PasskeyEnvelope { cred: credential },
-    )?)?)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::settings::{
-        PasskeyAuthenticatorAttachment, PasskeySetting, PasskeyUserVerification,
-    };
-
-    fn settings(
-        user_verification: PasskeyUserVerification,
-        authenticator_attachment: PasskeyAuthenticatorAttachment,
-    ) -> PasskeySetting {
-        PasskeySetting {
-            enabled: true,
-            rp_name: "Configured RP".to_owned(),
-            rp_id: "example.com".to_owned(),
-            user_verification,
-            authenticator_attachment,
-            allow_insecure_origin: false,
-            allowed_origins: vec!["https://login.example.com".to_owned()],
-        }
-    }
-
-    #[test]
-    fn core_challenge_uses_runtime_rp_uv_attachment_and_origins() {
-        let settings = settings(
-            PasskeyUserVerification::Preferred,
-            PasskeyAuthenticatorAttachment::Platform,
-        );
-        let core = build_core(&settings).expect("valid passkey core");
-        assert_eq!(
-            core.get_allowed_origins(),
-            &[url::Url::parse("https://login.example.com").expect("origin")]
-        );
-
-        let builder = core
-            .new_challenge_register_builder(b"user", "user", "User")
-            .expect("register builder")
-            .authenticator_attachment(authenticator_attachment(&settings))
-            .user_verification_policy(user_verification_policy(&settings));
-        let (challenge, state) = core
-            .generate_challenge_register(builder)
-            .expect("register challenge");
-        let json = serde_json::to_value(challenge).expect("challenge JSON");
-        assert_eq!(json["publicKey"]["rp"]["name"], "Configured RP");
-        assert_eq!(json["publicKey"]["rp"]["id"], "example.com");
-        assert_eq!(
-            json["publicKey"]["authenticatorSelection"]["userVerification"],
-            "preferred"
-        );
-        assert_eq!(
-            json["publicKey"]["authenticatorSelection"]["authenticatorAttachment"],
-            "platform"
-        );
-
-        let pending = PendingPasskeyRegistration {
-            user_id: 7,
-            state,
-            settings,
-        };
-        let pending_json = serde_json::to_value(pending).expect("pending JSON");
-        assert_eq!(pending_json["settings"]["rp_name"], "Configured RP");
-        assert_eq!(
-            pending_json["settings"]["allowed_origins"],
-            serde_json::json!(["https://login.example.com"])
-        );
-    }
-
-    #[test]
-    fn core_authentication_challenge_uses_runtime_user_verification() {
-        let settings = settings(
-            PasskeyUserVerification::Discouraged,
-            PasskeyAuthenticatorAttachment::CrossPlatform,
-        );
-        let core = build_core(&settings).expect("valid passkey core");
-        let credential: Credential = serde_json::from_value(serde_json::json!({
-            "cred_id": "AQ",
-            "cred": {
-                "type_": "ES256",
-                "key": {
-                    "EC_EC2": {
-                        "curve": "SECP256R1",
-                        "x": "BA",
-                        "y": "BQ"
-                    }
-                }
-            },
-            "counter": 0,
-            "transports": null,
-            "user_verified": false,
-            "backup_eligible": false,
-            "backup_state": false,
-            "registration_policy": "preferred",
-            "extensions": {},
-            "attestation": {"data": "None", "metadata": "None"},
-            "attestation_format": "none"
-        }))
-        .expect("credential");
-        let passkey = passkey_from_credential(credential.clone()).expect("passkey envelope");
-        assert_eq!(
-            serde_json::to_value(core_credential(&passkey).expect("core credential"))
-                .expect("credential JSON"),
-            serde_json::to_value(&credential).expect("credential JSON")
-        );
-        let builder = core
-            .new_challenge_authenticate_builder(
-                vec![credential],
-                Some(user_verification_policy(&settings)),
-            )
-            .expect("authentication builder");
-        let (challenge, _) = core
-            .generate_challenge_authenticate(builder)
-            .expect("authentication challenge");
-        let json = serde_json::to_value(challenge).expect("challenge JSON");
-        assert_eq!(json["publicKey"]["rpId"], "example.com");
-        assert_eq!(json["publicKey"]["userVerification"], "discouraged");
     }
 }

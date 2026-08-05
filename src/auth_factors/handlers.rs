@@ -116,13 +116,19 @@ pub async fn confirm_totp_setup(
             issue_user_session(&state, user_id, "totp", &headers).await
         }
         Ok(TotpConfirmation::InvalidCode) => {
-            if record_mfa_event(&state, "totp_invalid").await.is_err() {
+            if record_mfa_event(&state, None, "totp_invalid")
+                .await
+                .is_err()
+            {
                 return error::internal();
             }
             error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Ok(TotpConfirmation::RateLimited) => {
-            if record_mfa_event(&state, "totp_rate_limited").await.is_err() {
+            if record_mfa_event(&state, None, "totp_rate_limited")
+                .await
+                .is_err()
+            {
                 return error::internal();
             }
             error::unauthorized("invalid_factor", "authentication factor is invalid")
@@ -156,13 +162,19 @@ pub async fn login_totp(
             return issue_user_session(&state, user_id, "totp", &headers).await;
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidCode) => {
-            if record_mfa_event(&state, "totp_invalid").await.is_err() {
+            if record_mfa_event(&state, None, "totp_invalid")
+                .await
+                .is_err()
+            {
                 return error::internal();
             }
             return error::unauthorized("invalid_factor", "authentication factor is invalid");
         }
         Ok(crate::auth_factors::service::TotpConfirmation::RateLimited) => {
-            if record_mfa_event(&state, "totp_rate_limited").await.is_err() {
+            if record_mfa_event(&state, None, "totp_rate_limited")
+                .await
+                .is_err()
+            {
                 return error::internal();
             }
             return error::unauthorized("invalid_factor", "authentication factor is invalid");
@@ -185,13 +197,19 @@ pub async fn login_totp(
             issue_user_session(&state, user_id, "totp", &headers).await
         }
         Ok(crate::auth_factors::service::TotpConfirmation::InvalidCode) => {
-            if record_mfa_event(&state, "totp_invalid").await.is_err() {
+            if record_mfa_event(&state, None, "totp_invalid")
+                .await
+                .is_err()
+            {
                 return error::internal();
             }
             error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Ok(crate::auth_factors::service::TotpConfirmation::RateLimited) => {
-            if record_mfa_event(&state, "totp_rate_limited").await.is_err() {
+            if record_mfa_event(&state, None, "totp_rate_limited")
+                .await
+                .is_err()
+            {
                 return error::internal();
             }
             error::unauthorized("invalid_factor", "authentication factor is invalid")
@@ -211,8 +229,10 @@ pub async fn login_totp(
 
 pub async fn start_passkey_registration(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     Json(input): Json<PasskeyTicketInput>,
 ) -> Response {
+    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
     let Some(user_id) = (match state.factors.user_id_for_ticket(&input.login_ticket).await {
         Ok(user_id) => user_id,
         Err(factor_error) => {
@@ -235,6 +255,7 @@ pub async fn start_passkey_registration(
         .factors
         .start_passkey_registration(
             &input.login_ticket,
+            source_ip.as_deref(),
             &profile.email,
             profile.display_name.as_deref().unwrap_or(&profile.username),
         )
@@ -245,6 +266,15 @@ pub async fn start_passkey_registration(
         Err(crate::auth_factors::service::AuthFactorServiceError::PasskeyDisabled) => {
             error::bad_request("passkey_disabled", "passkey authentication is disabled")
         }
+        Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
+            if record_mfa_event(&state, Some(user_id), "passkey_rate_limited")
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
+        }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to start passkey registration");
             error::internal()
@@ -254,19 +284,33 @@ pub async fn start_passkey_registration(
 
 pub async fn finish_passkey_registration(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     Json(input): Json<PasskeyRegistrationInput>,
 ) -> Response {
+    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
     match state
         .factors
-        .finish_passkey_registration(&input.login_ticket, &input.credential)
+        .finish_passkey_registration(&input.login_ticket, source_ip.as_deref(), &input.credential)
         .await
     {
         Ok(PasskeyConfirmation::Completed(user_id)) => {
             issue_user_session(&state, user_id, "passkey", &headers).await
         }
-        Ok(PasskeyConfirmation::InvalidCredential) => {
-            if record_mfa_event(&state, "passkey_invalid").await.is_err() {
+        Ok(PasskeyConfirmation::InvalidCredential(user_id)) => {
+            if record_mfa_event(&state, Some(user_id), "passkey_invalid")
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
+        }
+        Ok(PasskeyConfirmation::RateLimited(user_id)) => {
+            if record_mfa_event(&state, Some(user_id), "passkey_rate_limited")
+                .await
+                .is_err()
+            {
                 return error::internal();
             }
             error::unauthorized("invalid_factor", "authentication factor is invalid")
@@ -293,17 +337,22 @@ pub async fn finish_passkey_registration(
 
 pub async fn start_passkey_authentication(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     Json(input): Json<PasskeyTicketInput>,
 ) -> Response {
+    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
     match state
         .factors
-        .start_passkey_authentication(&input.login_ticket)
+        .start_passkey_authentication(&input.login_ticket, source_ip.as_deref())
         .await
     {
         Ok(Some(challenge)) => (axum::http::StatusCode::OK, Json(challenge)).into_response(),
         Ok(None) => error::bad_request("invalid_login_ticket", "login ticket is invalid"),
         Err(crate::auth_factors::service::AuthFactorServiceError::PasskeyDisabled) => {
             error::bad_request("passkey_disabled", "passkey authentication is disabled")
+        }
+        Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to start passkey authentication");
@@ -314,19 +363,33 @@ pub async fn start_passkey_authentication(
 
 pub async fn finish_passkey_authentication(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     Json(input): Json<PasskeyAuthenticationInput>,
 ) -> Response {
+    let source_ip = crate::api::source_ip(connect_info.map(|Extension(ConnectInfo(peer))| peer));
     match state
         .factors
-        .finish_passkey_authentication(&input.login_ticket, &input.credential)
+        .finish_passkey_authentication(&input.login_ticket, source_ip.as_deref(), &input.credential)
         .await
     {
         Ok(PasskeyConfirmation::Completed(user_id)) => {
             issue_user_session(&state, user_id, "passkey", &headers).await
         }
-        Ok(PasskeyConfirmation::InvalidCredential) => {
-            if record_mfa_event(&state, "passkey_invalid").await.is_err() {
+        Ok(PasskeyConfirmation::InvalidCredential(user_id)) => {
+            if record_mfa_event(&state, Some(user_id), "passkey_invalid")
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
+        }
+        Ok(PasskeyConfirmation::RateLimited(user_id)) => {
+            if record_mfa_event(&state, Some(user_id), "passkey_rate_limited")
+                .await
+                .is_err()
+            {
                 return error::internal();
             }
             error::unauthorized("invalid_factor", "authentication factor is invalid")
@@ -337,6 +400,9 @@ pub async fn finish_passkey_authentication(
         Err(crate::auth_factors::service::AuthFactorServiceError::PasskeyDisabled) => {
             error::bad_request("passkey_disabled", "passkey authentication is disabled")
         }
+        Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
+        }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to finish passkey authentication");
             error::internal()
@@ -344,12 +410,22 @@ pub async fn finish_passkey_authentication(
     }
 }
 
-async fn record_mfa_event(state: &AppState, reason: &str) -> Result<(), crate::audit::AuditError> {
+/// 认证失败审计事件。限流路径已经从 login ticket 解析出用户，因此可以记录真实
+/// actor_id；ticket 值和凭据字节属于凭据材料，不写入审计。
+async fn record_mfa_event(
+    state: &AppState,
+    actor_id: Option<crate::users::domain::UserId>,
+    reason: &str,
+) -> Result<(), crate::audit::AuditError> {
     state
         .audit
         .record(AuditEvent::new(
-            "anonymous".to_owned(),
-            None,
+            if actor_id.is_some() {
+                "user".to_owned()
+            } else {
+                "anonymous".to_owned()
+            },
+            actor_id.map(|id| id.to_string()),
             "mfa_failure".to_owned(),
             "authentication_factor".to_owned(),
             None,

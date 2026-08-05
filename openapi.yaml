@@ -190,6 +190,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/WebAuthnOptions' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/passkeys/register/finish:
     post:
       tags: [User Auth/MFA]
@@ -229,6 +230,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/WebAuthnOptions' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/passkeys/authentication/finish:
     post:
       tags: [User Auth/MFA]
