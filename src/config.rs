@@ -217,7 +217,9 @@ impl Config {
         let redis_url = required_env("REDIS_URL")?;
         let auth_encryption_keys = parse_auth_encryption_key_ring()?;
         let auth_encryption_key = auth_encryption_keys.active_key().clone();
-        let issuer_url = env::var("APP_ISSUER").unwrap_or_else(|_| format!("http://{host}:{port}"));
+        // APP_ISSUER 会写入 JWT iss claim 和 Discovery 文档；回退到 http://host:port 会让生产
+        // 环境对外发布回环地址，且只在客户端验签失败时才暴露，因此缺失时选择启动即失败。
+        let issuer_url = required_env("APP_ISSUER")?;
         let issuer =
             url::Url::parse(&issuer_url).map_err(|_| ConfigError::InvalidValue("APP_ISSUER"))?;
         let webauthn_rp_id = env::var("WEBAUTHN_RP_ID")
@@ -412,6 +414,12 @@ impl Config {
             || origin.fragment().is_some()
         {
             return Err(ConfigError::InvalidValue("WEBAUTHN_ORIGIN"));
+        }
+
+        // ADMIN_TOKEN 为空时 is_valid 拒绝所有 Bearer 管理请求（bootstrap 接口除外）。拒绝本身
+        // 安全，但无输出时运维无法感知。条件与 is_valid 一致（is_empty），且不记录值或长度。
+        if admin_token.is_empty() {
+            tracing::warn!("ADMIN_TOKEN not set: all admin APIs are disabled until configured");
         }
 
         Ok(Self {
