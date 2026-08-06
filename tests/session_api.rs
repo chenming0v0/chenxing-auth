@@ -16,8 +16,32 @@ use uuid::Uuid;
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
 
-async fn test_router() -> Router {
-    api::router(AppState::for_test().await)
+async fn test_router() -> (Router, std::path::PathBuf) {
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let database = db_isolation::isolated_pool("session_api", &database_url).await;
+    let key_directory = std::env::temp_dir().join(format!("chenxing-session-{}", Uuid::new_v4()));
+    let mut config = Config::from_values_with_issuer(
+        "127.0.0.1".to_owned(),
+        3000,
+        "http://127.0.0.1:3000".to_owned(),
+        database_url,
+        redis_url,
+        3600,
+    )
+    .expect("config");
+    config.cookie_secure = false;
+    config.key_directory = key_directory.to_string_lossy().into_owned();
+    (
+        api::router(
+            AppState::new_with_pool(config, database)
+                .await
+                .expect("state"),
+        ),
+        key_directory,
+    )
 }
 
 struct RevokeFixture {
@@ -141,8 +165,8 @@ async fn cleanup(fixture: &RevokeFixture) {
 
 #[tokio::test]
 async fn session_revoke_requires_valid_session_cookie() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .method("DELETE")
@@ -154,13 +178,14 @@ async fn session_revoke_requires_valid_session_cookie() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn session_revoke_rejects_session_header_without_cookie() {
     // 即使提供 x-chenxing-session 请求头，只要缺失 Session Cookie，必须拒绝。
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .method("DELETE")
@@ -173,6 +198,7 @@ async fn session_revoke_rejects_session_header_without_cookie() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 /// #123 的安全回归测试：撤销端点的 CSRF 三者绑定校验必须无条件执行。

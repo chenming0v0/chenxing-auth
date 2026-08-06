@@ -268,12 +268,83 @@ pub(crate) fn source_ip(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        config::Config,
+        sqlx::{Connection, PgConnection},
+    };
     use axum::{
         body::Body,
         http::{Method, Request, StatusCode, header::CONTENT_TYPE},
         response::Response,
     };
+    use sha2::{Digest, Sha256};
     use tower::ServiceExt;
+    use uuid::Uuid;
+
+    fn test_schema_name(binary_name: &str) -> String {
+        let test_identity = std::env::var("NEXTEST_TEST_NAME")
+            .ok()
+            .filter(|name| !name.is_empty())
+            .or_else(|| {
+                std::thread::current()
+                    .name()
+                    .map(str::to_owned)
+                    .filter(|name| !name.is_empty())
+            })
+            .unwrap_or_else(|| format!("{:?}", std::thread::current().id()));
+        let readable: String = format!("ctest_{binary_name}_{test_identity}")
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let digest = Sha256::digest(format!("{binary_name}\0{test_identity}").as_bytes());
+        let hash: String = digest[..8]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let prefix_length = 63 - hash.len() - 1;
+        format!(
+            "{}_{}",
+            readable.chars().take(prefix_length).collect::<String>(),
+            hash
+        )
+    }
+
+    async fn isolated_pool(binary_name: &str, database_url: &str) -> crate::sqlx::PgPool {
+        let schema = test_schema_name(binary_name);
+        let mut bootstrap = PgConnection::connect(database_url)
+            .await
+            .expect("db_isolation: bootstrap connection");
+        crate::sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
+            .execute(&mut bootstrap)
+            .await
+            .expect("db_isolation: drop schema");
+        crate::sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&mut bootstrap)
+            .await
+            .expect("db_isolation: create schema");
+        drop(bootstrap);
+
+        let schema_for_pool = schema;
+        let pool = crate::sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .after_connect(move |connection, _meta| {
+                let schema = schema_for_pool.clone();
+                Box::pin(async move {
+                    crate::sqlx::query(&format!("SET search_path TO {schema}"))
+                        .execute(connection)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(database_url)
+            .await
+            .expect("db_isolation: pool connect");
+
+        crate::db::migrate(&pool)
+            .await
+            .expect("db_isolation: migrate");
+        pool
+    }
 
     /// 构造完整 Router 并发送一次请求。
     ///
@@ -286,10 +357,35 @@ mod tests {
             .body(Body::empty())
             .expect("valid request");
 
-        router(AppState::for_test().await)
-            .oneshot(request)
-            .await
-            .expect("router response")
+        let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned()
+        });
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+        let database = isolated_pool("api_mod", &database_url).await;
+        let key_directory =
+            std::env::temp_dir().join(format!("chenxing-api-mod-{}", Uuid::new_v4()));
+        let mut config = Config::from_values_with_issuer(
+            "127.0.0.1".to_owned(),
+            3000,
+            "http://127.0.0.1:3000".to_owned(),
+            database_url,
+            redis_url,
+            3600,
+        )
+        .expect("config");
+        config.cookie_secure = false;
+        config.key_directory = key_directory.to_string_lossy().into_owned();
+        let response = router(
+            AppState::new_with_pool(config, database)
+                .await
+                .expect("state"),
+        )
+        .oneshot(request)
+        .await
+        .expect("router response");
+        let _ = std::fs::remove_dir_all(key_directory);
+        response
     }
 
     /// 只取 content-type 的 MIME 部分，忽略 charset 等参数。
