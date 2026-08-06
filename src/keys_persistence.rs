@@ -9,7 +9,7 @@ use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
 use crate::key_storage::{
-    atomic_write, ensure_secure_directory, modified_time, secure_existing_file,
+    atomic_write, ensure_secure_directory, modified_time, remove_secure_file, secure_existing_file,
 };
 
 use super::{
@@ -186,6 +186,12 @@ pub(super) fn persist_key(
 ) -> Result<(), KeyManagerError> {
     validate_key_id(key_id)?;
     atomic_write(&directory.join(key_file_name(key_id)), der, false)?;
+    Ok(())
+}
+
+pub(super) fn remove_key(directory: &Path, key_id: &str) -> Result<(), KeyManagerError> {
+    validate_key_id(key_id)?;
+    remove_secure_file(&directory.join(key_file_name(key_id)))?;
     Ok(())
 }
 

@@ -20,7 +20,7 @@ use crate::{
     admin::handlers::{
         create_client, disable_client, enable_client, list_clients, rotate_secret, update_client,
     },
-    admin::key_handlers::rotate_signing_key,
+    admin::key_handlers::{revoke_signing_key, rotate_signing_key},
     admin::management_handlers::{
         list_admins, list_audit, list_users, set_user_role, set_user_status,
     },
@@ -255,6 +255,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/admin/keys/rotate",
             axum::routing::post(rotate_signing_key),
+        )
+        .route(
+            "/api/v1/admin/keys/{key_id}/revoke",
+            axum::routing::post(revoke_signing_key),
         )
         // 静态资源与 SPA 回退挂在 fallback 上：fallback_service 只在上面所有
         // 路由都不匹配时才生效，所以 /api/*、/health 等不会被静态服务抢走。

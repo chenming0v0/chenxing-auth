@@ -46,6 +46,58 @@ async fn reloaded_key_manager_keeps_rotated_key_for_old_token_validation() {
 }
 
 #[tokio::test]
+async fn revoking_a_persisted_key_removes_its_file_and_published_key() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let manager = KeyManager::load_or_generate(&directory).expect("initial key");
+    let revoked_key_id = manager.key_id();
+    let revoked_key_path = directory.join(format!("rs256-{revoked_key_id}.pkcs1.der"));
+    manager.rotate().await.expect("rotated signing key");
+
+    manager
+        .revoke(&revoked_key_id)
+        .await
+        .expect("revoked persisted key");
+
+    assert!(!revoked_key_path.exists());
+    assert!(manager.verification_key_for(&revoked_key_id).is_err());
+    assert_eq!(manager.jwks().keys.len(), 1);
+    let reloaded = KeyManager::load_or_generate(&directory).expect("reloaded key manager");
+    assert!(reloaded.verification_key_for(&revoked_key_id).is_err());
+    assert_eq!(reloaded.jwks().keys.len(), 1);
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[tokio::test]
+async fn revoking_a_persisted_active_key_switches_before_removing_it() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let manager = KeyManager::load_or_generate(&directory).expect("initial key");
+    let previous_key_id = manager.key_id();
+    manager.rotate().await.expect("rotated signing key");
+    let active_key_id = manager.key_id();
+    let active_key_path = directory.join(format!("rs256-{active_key_id}.pkcs1.der"));
+
+    let revocation = manager
+        .revoke(&active_key_id)
+        .await
+        .expect("revoked active persisted key");
+
+    assert_eq!(revocation.active_key_id, previous_key_id);
+    assert_eq!(manager.key_id(), previous_key_id);
+    assert!(!active_key_path.exists());
+    assert_eq!(
+        fs::read_to_string(directory.join("active-rs256.kid")).expect("active key id"),
+        previous_key_id
+    );
+
+    let reloaded = KeyManager::load_or_generate(&directory).expect("reloaded key manager");
+    assert_eq!(reloaded.key_id(), previous_key_id);
+    assert!(reloaded.verification_key_for(&active_key_id).is_err());
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[tokio::test]
 async fn zero_retention_reclaims_old_private_key_after_rotation() {
     let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
     let manager = KeyManager::load_or_generate_with_retention(&directory, Duration::ZERO)
