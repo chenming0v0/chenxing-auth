@@ -84,6 +84,7 @@ paths:
                   user: { $ref: '#/components/schemas/PublicUser' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/auth/login:
     post:
       tags: [User Auth/Account]
@@ -1463,7 +1464,7 @@ components:
     Forbidden: { description: 无权限, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Conflict: { description: 资源冲突（包括套餐 code 冲突、已归档套餐不能设为默认和 Passkey 禁用保护）, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     NotFound: { description: 资源不存在, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-    TooManyRequests: { description: OAuth 配额已耗尽或 QPS 限流触发, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    TooManyRequests: { description: 认证、OAuth 配额或 QPS 限流触发, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     OAuthBadRequest: { description: OAuth 请求错误，响应遵守 RFC 6749/7009, content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } } }
     OAuthUnauthorized:
       description: OAuth 客户端或 Bearer 凭据无效

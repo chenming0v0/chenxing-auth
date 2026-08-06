@@ -31,9 +31,20 @@ struct PendingLoginResponse {
 
 pub async fn register_user(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     Json(input): Json<RegistrationInput>,
 ) -> Response {
-    match state.users.register(input).await {
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    match state
+        .users
+        .register(input, source_ip.as_deref())
+        .await
+    {
         Ok(user) => {
             if state
                 .audit
@@ -108,9 +119,9 @@ pub async fn register_user(
             tracing::error!("invalid credentials reached registration handler");
             error::internal()
         }
-        Err(UserServiceError::RateLimited) => error::unauthorized(
-            "invalid_credentials",
-            "username, email, or password is incorrect",
+        Err(UserServiceError::RateLimited) => error::too_many_requests(
+            "registration_rate_limited",
+            "too many registration attempts; try again later",
         ),
         Err(UserServiceError::Limiter(limiter_error)) => {
             tracing::warn!(

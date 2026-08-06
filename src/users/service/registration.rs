@@ -5,27 +5,106 @@
 //! 落库的 (role, status) 以及返回语义。
 
 use super::{BootstrapOwnerResult, UserService, UserServiceError};
-use crate::users::{
-    credentials::hash_password,
-    domain::{
-        PublicUser, RegistrationInput, UserCreation, UserId, UserRole, UserStatus,
-        validate_registration,
+use crate::{
+    auth_limiter::{FailureDimension, LimiterDimension, MissingSourceIpPolicy},
+    users::{
+        credentials::hash_password,
+        domain::{
+            PublicUser, RegistrationInput, UserCreation, UserId, UserRole, UserStatus,
+            validate_registration,
+        },
+        repository::{self, NewUser},
     },
-    repository::{self, NewUser},
 };
 
 impl UserService {
-    pub async fn register(&self, input: RegistrationInput) -> Result<PublicUser, UserServiceError> {
+    pub async fn register(
+        &self,
+        input: RegistrationInput,
+        source_ip: Option<&str>,
+    ) -> Result<PublicUser, UserServiceError> {
         let registration = validate_registration(input)?;
-        self.ensure_email_policy_allows(&registration.email).await?;
+        let dimensions = self.registration_dimensions(source_ip)?;
+        // Reserve before policy/database work so Argon2 cannot be reached without admission.
+        if !self.limiter.reserve(dimensions.clone()).await? {
+            return Err(UserServiceError::RateLimited);
+        }
+        if let Err(error) = self.ensure_email_policy_allows(&registration.email).await {
+            self.limiter.release(dimensions).await?;
+            return Err(error);
+        }
         let user = self
             .insert_after_owner(UserCreation {
                 registration,
                 role: UserRole::User,
                 status: UserStatus::Active,
             })
-            .await?;
-        Ok(public_user(user))
+            .await;
+        match user {
+            Ok(user) => {
+                self.limiter.release(dimensions).await?;
+                Ok(public_user(user))
+            }
+            Err(error) => {
+                self.record_registration_failure(dimensions).await?;
+                // Keep the original registration error. In particular, a unique
+                // constraint must remain a 409 even when this failure reaches the
+                // source-IP threshold; the next attempt is rejected by reserve().
+                Err(error)
+            }
+        }
+    }
+
+    fn registration_dimensions(
+        &self,
+        source_ip: Option<&str>,
+    ) -> Result<Vec<LimiterDimension>, UserServiceError> {
+        match (source_ip, self.missing_source_ip_policy) {
+            (Some(source_ip), _) => Ok(vec![(
+                FailureDimension::SourceIp,
+                source_ip.to_owned(),
+            )]),
+            (None, MissingSourceIpPolicy::Skip) => {
+                tracing::warn!(
+                    event = "auth_limiter.source_ip_unavailable",
+                    policy = MissingSourceIpPolicy::Skip.as_str(),
+                    "registration attempt is using no source-IP limiter dimension"
+                );
+                Ok(Vec::new())
+            }
+            (None, MissingSourceIpPolicy::Reject) => {
+                tracing::error!(
+                    event = "auth_limiter.source_ip_unavailable",
+                    policy = MissingSourceIpPolicy::Reject.as_str(),
+                    "registration attempt rejected without trusted ConnectInfo"
+                );
+                Err(UserServiceError::SourceIpUnavailable)
+            }
+        }
+    }
+
+    async fn record_registration_failure(
+        &self,
+        dimensions: Vec<LimiterDimension>,
+    ) -> Result<(), UserServiceError> {
+        match self
+            .limiter
+            .record_reserved_failures(dimensions.clone())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                if let Err(release_error) = self.limiter.release(dimensions).await {
+                    tracing::error!(
+                        event = "auth_limiter.reservation_release_failed",
+                        operation = "registration_record_reserved_failures",
+                        error = %release_error,
+                        "reserved registration quota was not released after limiter failure"
+                    );
+                }
+                Err(UserServiceError::Limiter(error))
+            }
+        }
     }
 
     /// 管理侧创建用户（Issue #133）。
