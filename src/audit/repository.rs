@@ -52,8 +52,15 @@ pub async fn list_filtered(
             OffsetDateTime,
         ),
     >(
-        "SELECT id, actor_type, actor_user_id, action, resource_type, resource_id, metadata, created_at
-         FROM audit_events
+        "WITH event_rows AS (
+             SELECT id, actor_type, actor_user_id, action, resource_type, resource_id, metadata, created_at
+             FROM audit_events
+             UNION ALL
+             SELECT id, actor_type, actor_user_id, action, resource_type, resource_id, metadata, created_at
+             FROM audit_events_archive
+         )
+         SELECT id, actor_type, actor_user_id, action, resource_type, resource_id, metadata, created_at
+         FROM event_rows
          WHERE ($1::text IS NULL OR action = $1)
            AND ($2::text IS NULL OR resource_type = $2)
          ORDER BY created_at DESC, id DESC LIMIT $3 OFFSET $4",
@@ -97,7 +104,12 @@ pub async fn count_filtered(
     resource_type: Option<&str>,
 ) -> Result<i64, crate::sqlx::Error> {
     crate::sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_events
+        "WITH event_rows AS (
+             SELECT action, resource_type FROM audit_events
+             UNION ALL
+             SELECT action, resource_type FROM audit_events_archive
+         )
+         SELECT COUNT(*) FROM event_rows
          WHERE ($1::text IS NULL OR action = $1)
            AND ($2::text IS NULL OR resource_type = $2)",
     )
@@ -105,4 +117,16 @@ pub async fn count_filtered(
     .bind(resource_type)
     .fetch_one(pool)
     .await
+}
+
+pub async fn archive_expired(
+    pool: &PgPool,
+    retention_days: i32,
+) -> Result<i64, crate::sqlx::Error> {
+    let archived: i32 = crate::sqlx::query_scalar("SELECT archive_audit_events($1, $2)")
+        .bind(retention_days)
+        .bind(super::AUDIT_ARCHIVE_BATCH_SIZE)
+        .fetch_one(pool)
+        .await?;
+    Ok(i64::from(archived))
 }

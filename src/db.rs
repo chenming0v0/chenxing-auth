@@ -256,6 +256,15 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0012_restore_basic_plan.sql")),
             false,
         ),
+        Migration::new(
+            13,
+            Cow::Borrowed("audit append-only retention"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!(
+                "../migrations/0013_audit_append_only_retention.sql"
+            )),
+            false,
+        ),
     ];
 
     Migrator {

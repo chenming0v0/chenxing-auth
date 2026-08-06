@@ -1,4 +1,4 @@
-use chenxing_auth::{api, config::Config, db, state::AppState};
+use chenxing_auth::{api, audit::AuditService, config::Config, db, state::AppState};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -11,11 +11,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_target(false)
         .init();
 
-    if std::env::args().nth(1).as_deref() == Some("migrate") {
-        let database = db::connect(&config)?;
-        db::migrate(&database).await?;
-        info!("database migrations completed");
-        return Ok(());
+    match std::env::args().nth(1).as_deref() {
+        Some("migrate") => {
+            let database = db::connect(&config)?;
+            db::migrate(&database).await?;
+            info!("database migrations completed");
+            return Ok(());
+        }
+        Some("audit-archive") => {
+            if !config.audit_retention.enabled {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "AUDIT_ARCHIVE_ENABLED must be true before scheduling audit-archive",
+                )
+                .into());
+            }
+            let database = db::connect(&config)?;
+            let archived = AuditService::new(database)
+                .archive_expired(config.audit_retention.retention_days)
+                .await?;
+            info!(
+                archived,
+                retention_days = config.audit_retention.retention_days,
+                "audit archive batch completed"
+            );
+            return Ok(());
+        }
+        _ => {}
     }
 
     let state = AppState::new(config.clone()).await?;

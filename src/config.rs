@@ -6,6 +6,8 @@ use crate::clients::domain::ClientRegistrationLimits;
 
 #[path = "config_limits.rs"]
 mod config_limits;
+#[path = "config_audit.rs"]
+mod config_audit;
 #[path = "config_parsing.rs"]
 mod config_parsing;
 #[path = "config_proxy.rs"]
@@ -16,12 +18,14 @@ use config_limits::{
     client_registration_limits_from_env, parse_auth_limiter_failure_policy,
     parse_missing_source_ip_policy, security_limits_from_env,
 };
+use config_audit::audit_retention_from_env;
 use config_parsing::{
     optional_u64, parse_auth_encryption_key_ring, parse_bool, parse_u16, parse_u64, required_env,
 };
 use config_proxy::trusted_proxies_from_env;
 
 pub use config_limits::SecurityLimits;
+pub use config_audit::AuditRetentionConfig;
 pub use config_parsing::{AuthEncryptionKey, AuthEncryptionKeyRing};
 pub use config_proxy::TrustedProxies;
 
@@ -75,6 +79,8 @@ pub struct Config {
     pub trusted_proxies: TrustedProxies,
     /// 可配置安全阈值和 TTL（#121）。
     pub security_limits: SecurityLimits,
+    /// 审计热表保留和显式归档维护命令配置（#159）。
+    pub audit_retention: AuditRetentionConfig,
 }
 
 impl fmt::Debug for Config {
@@ -113,6 +119,7 @@ impl fmt::Debug for Config {
             .field("missing_source_ip_policy", &self.missing_source_ip_policy)
             .field("trusted_proxies", &self.trusted_proxies)
             .field("security_limits", &self.security_limits)
+            .field("audit_retention", &self.audit_retention)
             .finish()
     }
 }
@@ -142,6 +149,7 @@ struct ConfigValues {
     client_registration_limits: ClientRegistrationLimits,
     trusted_proxies: TrustedProxies,
     security_limits: SecurityLimits,
+    audit_retention: AuditRetentionConfig,
 }
 
 impl Config {
@@ -219,6 +227,7 @@ impl Config {
         )?;
         let trusted_proxies = trusted_proxies_from_env()?;
         let security_limits = security_limits_from_env()?;
+        let audit_retention = audit_retention_from_env()?;
 
         Self::from_values_with_log(ConfigValues {
             host,
@@ -245,6 +254,7 @@ impl Config {
             client_registration_limits,
             trusted_proxies,
             security_limits,
+            audit_retention,
         })
     }
 
@@ -299,6 +309,7 @@ impl Config {
             client_registration_limits: ClientRegistrationLimits::default(),
             trusted_proxies: TrustedProxies::none(),
             security_limits: SecurityLimits::default(),
+            audit_retention: AuditRetentionConfig::default(),
         })
     }
 
@@ -328,6 +339,7 @@ impl Config {
             client_registration_limits,
             trusted_proxies,
             security_limits,
+            audit_retention,
         } = values;
         if host.trim().is_empty() {
             return Err(ConfigError::InvalidValue("APP_HOST"));
@@ -418,6 +430,7 @@ impl Config {
             client_registration_limits,
             trusted_proxies,
             security_limits,
+            audit_retention,
         })
     }
 }

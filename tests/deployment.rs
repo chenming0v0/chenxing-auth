@@ -207,6 +207,10 @@ fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("0010_consent_revoked_at.sql"));
     assert!(DB_MODULE.contains("external provider PKCE toggle"));
     assert!(DB_MODULE.contains("0011_oauth_provider_pkce.sql"));
+    assert!(DB_MODULE.contains("restore basic plan seed"));
+    assert!(DB_MODULE.contains("0012_restore_basic_plan.sql"));
+    assert!(DB_MODULE.contains("audit append-only retention"));
+    assert!(DB_MODULE.contains("0013_audit_append_only_retention.sql"));
     let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -229,6 +233,7 @@ fn database_uses_explicit_unified_baseline_migrations() {
             std::ffi::OsString::from("0010_consent_revoked_at.sql"),
             std::ffi::OsString::from("0011_oauth_provider_pkce.sql"),
             std::ffi::OsString::from("0012_restore_basic_plan.sql"),
+            std::ffi::OsString::from("0013_audit_append_only_retention.sql"),
         ]
     );
 }
