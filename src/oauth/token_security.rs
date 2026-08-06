@@ -1,7 +1,40 @@
 use axum::response::Response;
 
 use super::client_auth::ClientCredentials;
-use crate::{audit::AuditEvent, error, state::AppState};
+use crate::{
+    audit::AuditEvent,
+    auth_limiter::MissingSourceIpPolicy,
+    error,
+    state::AppState,
+};
+
+pub(crate) async fn enforce_source_qps_with_policy(
+    state: &AppState,
+    source_ip: Option<&str>,
+) -> Option<Response> {
+    let Some(source_ip) = source_ip else {
+        return match state.config.missing_source_ip_policy {
+            MissingSourceIpPolicy::Skip => {
+                tracing::warn!(
+                    event = "auth_limiter.source_ip_unavailable",
+                    policy = MissingSourceIpPolicy::Skip.as_str(),
+                    "OAuth request is using no source-IP QPS dimension"
+                );
+                None
+            }
+            MissingSourceIpPolicy::Reject => {
+                tracing::error!(
+                    event = "auth_limiter.source_ip_unavailable",
+                    policy = MissingSourceIpPolicy::Reject.as_str(),
+                    "OAuth request rejected without trusted ConnectInfo"
+                );
+                Some(error::oauth_temporarily_unavailable())
+            }
+        };
+    };
+
+    enforce_source_qps(state, source_ip).await
+}
 
 pub(crate) async fn enforce_source_qps(state: &AppState, source_ip: &str) -> Option<Response> {
     // #121：QPS 阈值从配置读取，不再硬编码。默认值30保持向后兼容。

@@ -1,15 +1,17 @@
 use axum::{
-    extract::{RawForm, State, rejection::RawFormRejection},
+    extract::{ConnectInfo, Extension, RawForm, State, rejection::RawFormRejection},
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use std::net::SocketAddr;
 
 use super::{
     client_auth::{ClientCredentialError, resolve_client_credentials},
     form,
     response::with_no_store_headers,
     token::decode_access_token,
+    token_security::enforce_source_qps_with_policy,
 };
 use crate::{audit::AuditEvent, error, state::AppState};
 
@@ -24,8 +26,18 @@ pub struct RevocationRequest {
 pub async fn revoke(
     State(state): State<AppState>,
     headers: HeaderMap,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     form: Result<RawForm, RawFormRejection>,
 ) -> Response {
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    if let Some(response) = enforce_source_qps_with_policy(&state, source_ip.as_deref()).await {
+        return with_no_store_headers(response);
+    }
+
     let RawForm(body) = match form {
         Ok(form) => form,
         Err(_) => {

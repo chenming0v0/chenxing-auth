@@ -2,14 +2,19 @@ use serde::{Deserialize, Serialize};
 
 use axum::{
     Json,
-    extract::{RawForm, State, rejection::RawFormRejection},
+    extract::{ConnectInfo, Extension, RawForm, State, rejection::RawFormRejection},
     http::{HeaderMap, header::AUTHORIZATION},
     response::{IntoResponse, Response},
 };
+use std::net::SocketAddr;
 
 use crate::{
     error,
-    oauth::{response::with_no_store_headers, token::decode_userinfo_token},
+    oauth::{
+        response::with_no_store_headers,
+        token::decode_userinfo_token,
+        token_security::enforce_source_qps_with_policy,
+    },
     state::AppState,
 };
 
@@ -46,15 +51,38 @@ impl UserInfoClaims {
     }
 }
 
-pub async fn userinfo(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub async fn userinfo(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+) -> Response {
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    if let Some(response) = enforce_source_qps_with_policy(&state, source_ip.as_deref()).await {
+        return with_no_store_headers(response);
+    }
+
     with_no_store_headers(userinfo_inner(state, headers, None).await)
 }
 
 pub async fn userinfo_post(
     State(state): State<AppState>,
     headers: HeaderMap,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     form: Result<RawForm, RawFormRejection>,
 ) -> Response {
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    if let Some(response) = enforce_source_qps_with_policy(&state, source_ip.as_deref()).await {
+        return with_no_store_headers(response);
+    }
+
     let RawForm(body) = match form {
         Ok(form) => form,
         Err(_) => {
