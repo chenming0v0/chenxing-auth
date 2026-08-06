@@ -74,15 +74,15 @@ pub async fn issue_authorization_code_result(
         error::oauth_temporarily_unavailable()
     })?;
     let client_id = validated.client_id.clone();
-    let code = AuthorizationCode::new_with_nonce_and_ttl(
+    let code = AuthorizationCode::new_with_nonce_and_ttl_with_session_hash(
         validated.client_id,
         validated.redirect_uri.clone(),
         user_id.clone(),
         validated.scopes,
         validated.code_challenge,
         validated.nonce,
-        // 授权码绑定签发时的会话：会话撤销后 Token 端点会拒绝兑换。
-        validated.session_id,
+        // 授权码绑定签发时的会话摘要：会话撤销后 Token 端点会拒绝兑换。
+        validated.session_token_hash,
         limits.authorization_code_ttl_seconds,
     );
     let state_value = validated.state;
@@ -245,8 +245,8 @@ pub fn validated_pending_request(pending: PendingAuthorization) -> ValidatedAuth
         nonce: pending.nonce,
         code_challenge: pending.code_challenge,
         owner_user_id: None,
-        // Pending 请求已经绑定了会话，必须原样带下去，否则授权码丢失会话绑定。
-        session_id: pending.session_id,
+        // Pending 请求已经绑定了会话摘要，必须原样带下去，否则授权码丢失会话绑定。
+        session_token_hash: pending.session_token_hash,
     }
 }
 
@@ -266,7 +266,7 @@ pub(crate) fn authorization_quota_redirect(pending: &PendingAuthorization) -> Re
 }
 
 /// `validated_pending_request` 的反向路径：会话绑定统一从
-/// `ValidatedAuthorizationRequest::session_id` 读取，不再另开参数，
+/// `ValidatedAuthorizationRequest::session_token_hash` 读取，不再另开参数，
 /// 避免两个来源不一致时静默丢掉绑定。
 pub(crate) fn pending_from_validated(
     request: &ValidatedAuthorizationRequest,
@@ -280,7 +280,7 @@ pub(crate) fn pending_from_validated(
         nonce: request.nonce.clone(),
         code_challenge: request.code_challenge.clone(),
         code_challenge_method: "S256".to_owned(),
-        session_id: request.session_id.clone(),
+        session_token_hash: request.session_token_hash.clone(),
         // 持有者绑定只在未登录路径上有意义：已有会话的请求直接进入授权确认
         // 或预授权直通，不经过绑定端点。未登录路径由 `save_and_redirect_to_login`
         // 生成 holder 并回填这个字段（#115）。

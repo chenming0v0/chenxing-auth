@@ -19,7 +19,7 @@ use super::{
 };
 use crate::{
     error,
-    sessions::cookies,
+    sessions::{cookies, domain::session_token_hash},
     settings::SecurityLimitsSetting,
     state::AppState,
 };
@@ -108,7 +108,7 @@ async fn authorize_request(
     };
     // 会话绑定挂到 validated 上：pending 和后续签发的授权码都从这里取值，
     // 已授权直通路径（issue_preconsented_request）才不会丢掉绑定。
-    validated.session_id = Some(session.token.clone());
+    validated.session_token_hash = Some(session_token_hash(&session.token));
     let pending = pending_from_validated(&validated);
 
     match state

@@ -447,7 +447,7 @@ pub fn validated_request_with_challenge(
         nonce: None,
         code_challenge: code_challenge.to_owned(),
         owner_user_id: Some(user_id),
-        session_id: None,
+        session_token_hash: None,
     }
 }
 

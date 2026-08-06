@@ -11,6 +11,7 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
+use redis::AsyncCommands;
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -28,7 +29,7 @@ use support::{
 
 /// 完整的端到端流程：登录 → 授权 → 确认授权 → 撤销会话 → 兑换失败 → 授权码未消费。
 ///
-/// 当 `session_id` 字段缺失（降级路径）时，Token 端点不做会话校验，此处单独
+/// 当会话摘要字段缺失（降级路径）时，Token 端点不做会话校验，此处单独
 /// 用 `AuthorizationCode::new` 做该回归（见 `code.rs` 里的单元测试）。
 #[tokio::test]
 async fn authorization_code_rejected_after_session_revocation_and_code_not_consumed() {
@@ -119,6 +120,20 @@ async fn authorization_code_rejected_after_session_revocation_and_code_not_consu
         .find(|(k, _)| k == "code")
         .map(|(_, v)| v.into_owned())
         .expect("authorization code in redirect");
+
+    let mut redis = state
+        .redis
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let code_key = format!(
+        "chenxing:oauth:code:{}",
+        URL_SAFE_NO_PAD.encode(Sha256::digest(code.as_bytes()))
+    );
+    let payload: String = redis.get(&code_key).await.expect("authorization code payload");
+    let session_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(session.token.as_bytes()));
+    assert!(payload.contains(&session_hash));
+    assert!(!payload.contains(&session.token));
 
     // 撤销会话（模拟用户登出）。
     state

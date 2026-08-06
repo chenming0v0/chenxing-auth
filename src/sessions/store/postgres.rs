@@ -7,12 +7,13 @@
 use std::time::Duration;
 
 use redis::AsyncCommands;
-use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use super::{SessionStore, SessionStoreError, SessionSummary};
 use crate::{
-    sessions::domain::{Session, SessionPayload},
+    sessions::domain::{
+        Session, SessionLookup, SessionPayload, session_token_hash_bytes,
+    },
     sqlx::{Postgres, Transaction},
     users::domain::UserId,
 };
@@ -32,7 +33,7 @@ pub(super) async fn save_with_metadata(
         .user_id
         .parse::<UserId>()
         .map_err(|_| SessionStoreError::InvalidUserId)?;
-    let token_hash = Sha256::digest(session.token.as_bytes()).to_vec();
+    let token_hash = session_token_hash_bytes(&session.token).to_vec();
     let mut transaction = pool.begin().await?;
     lock_user_session_scope(&mut transaction, user_id).await?;
     let user_state: Option<(i64, String)> =
@@ -91,7 +92,7 @@ pub(super) async fn find_with_metadata(
         .metadata
         .as_ref()
         .ok_or(SessionStoreError::MetadataUnavailable)?;
-    let token_hash = Sha256::digest(token.as_bytes()).to_vec();
+    let token_hash = session_token_hash_bytes(token).to_vec();
     let metadata: Option<SessionMetadataRow> = crate::sqlx::query_as(
         "SELECT sessions.id, sessions.user_id, sessions.created_at,
                 sessions.expires_at, sessions.session_payload
@@ -131,6 +132,40 @@ pub(super) async fn find_with_metadata(
     session.expires_at = expires_at;
     session.revoked_at = None;
     Ok(Some(session))
+}
+
+pub(super) async fn find_with_metadata_by_token_hash(
+    store: &SessionStore,
+    token_hash: &[u8],
+) -> Result<Option<SessionLookup>, SessionStoreError> {
+    let pool = store
+        .metadata
+        .as_ref()
+        .ok_or(SessionStoreError::MetadataUnavailable)?;
+    let metadata: Option<(i64, UserId, OffsetDateTime, OffsetDateTime)> =
+        crate::sqlx::query_as(
+            "SELECT sessions.id, sessions.user_id, sessions.created_at,
+                    sessions.expires_at
+             FROM user_sessions AS sessions
+             JOIN users ON users.id = sessions.user_id
+             WHERE sessions.token_hash = $1
+               AND sessions.revoked_at IS NULL
+               AND sessions.expires_at > NOW()
+               AND sessions.session_epoch >= users.session_epoch
+               AND users.status = 'active'",
+        )
+        .bind(token_hash.to_vec())
+        .fetch_optional(pool)
+        .await?;
+    Ok(metadata.map(
+        |(id, user_id, created_at, expires_at)| SessionLookup {
+            id,
+            user_id: user_id.to_string(),
+            created_at,
+            expires_at,
+            revoked_at: None,
+        },
+    ))
 }
 
 /// 按令牌哈希撤销单条会话。

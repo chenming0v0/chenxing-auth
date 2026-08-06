@@ -1,4 +1,7 @@
-use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+use serde::de::Error as DeError;
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::state::AppState;
 
@@ -23,7 +26,7 @@ pub struct ConsentForm {
     pub csrf_token: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PendingAuthorization {
     pub request_id: String,
     pub client_id: String,
@@ -33,18 +36,20 @@ pub struct PendingAuthorization {
     pub nonce: Option<String>,
     pub code_challenge: String,
     pub code_challenge_method: String,
-    pub session_id: Option<String>,
+    /// The issuing browser session token's SHA-256 digest, never the token itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_token_hash: Option<String>,
     /// 发起本次授权的浏览器持有者凭据的 SHA-256 摘要（#115）。
     ///
     /// 防的是 OAuth login CSRF / 请求固定攻击：`request_id` 走 URL 查询参数，
     /// 可能通过 Referer、浏览器历史或分享链接泄露。没有这个字段时，任何持有
-    /// `request_id` 的已登录攻击者都能把 `session_id = None` 的 pending 请求绑到
+    /// `request_id` 的已登录攻击者都能把 `session_token_hash = None` 的 pending 请求绑到
     /// 自己的会话上并批准，把受害者登录进攻击者账号。
     ///
     /// 只存摘要，不存原值：Redis 泄露不足以伪造 holder Cookie。原值仅存在于
     /// 浏览器的 HttpOnly Cookie 中，不写日志、不写审计、不进任何响应体。
     ///
-    /// `#[serde(default)]` + `skip_serializing_if` 是 Redis 兼容性要求，不可删除：
+    /// 反序列化 helper 的 `#[serde(default)]` + `skip_serializing_if` 是 Redis 兼容性要求，不可删除：
     /// - `default`：升级期间在途的旧 pending JSON 没有这个键，缺了它反序列化会
     ///   直接失败，所有在途授权请求全部作废。
     /// - `skip_serializing_if`：`take_if_matches` / `replace_if_matches` 用「重新
@@ -54,8 +59,54 @@ pub struct PendingAuthorization {
     ///
     /// 缺失该字段的旧记录在绑定端点上 fail-secure：直接拒绝，不留「无 holder
     /// 即放行」的绕过窗口。代价是升级瞬间在途的授权请求需要重新发起。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub holder_hash: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PendingAuthorizationPayload {
+    request_id: String,
+    client_id: String,
+    redirect_uri: String,
+    scope: String,
+    state: String,
+    nonce: Option<String>,
+    code_challenge: String,
+    code_challenge_method: String,
+    #[serde(default)]
+    session_token_hash: Option<String>,
+    #[serde(default)]
+    holder_hash: Option<String>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for PendingAuthorization {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let payload = PendingAuthorizationPayload::deserialize(deserializer)?;
+        // Pending requests used the same plaintext field before the hash migration.
+        // Reject them before bind/decide can rewrite or consume the payload.
+        if payload.extra.contains_key("session_id") {
+            return Err(DeError::custom(
+                "authorization request contains an unsupported legacy session binding",
+            ));
+        }
+        Ok(Self {
+            request_id: payload.request_id,
+            client_id: payload.client_id,
+            redirect_uri: payload.redirect_uri,
+            scope: payload.scope,
+            state: payload.state,
+            nonce: payload.nonce,
+            code_challenge: payload.code_challenge,
+            code_challenge_method: payload.code_challenge_method,
+            session_token_hash: payload.session_token_hash,
+            holder_hash: payload.holder_hash,
+        })
+    }
 }
 
 /// Returns whether a pending authorization request still exists in the store.
@@ -89,12 +140,29 @@ mod tests {
             "state": "state-legacy",
             "nonce": null,
             "code_challenge": "challenge",
-            "code_challenge_method": "S256",
-            "session_id": null
+            "code_challenge_method": "S256"
         }"#;
         let restored: PendingAuthorization =
             serde_json::from_str(legacy_json).expect("legacy pending must deserialize");
         assert!(restored.holder_hash.is_none());
+    }
+
+    #[test]
+    fn legacy_plaintext_session_binding_is_rejected() {
+        let legacy_json = r#"{
+            "request_id": "req-legacy",
+            "client_id": "client-1",
+            "redirect_uri": "https://client.example/callback",
+            "scope": "openid",
+            "state": "state-legacy",
+            "nonce": null,
+            "code_challenge": "challenge",
+            "code_challenge_method": "S256",
+            "session_id": "session-token"
+        }"#;
+        let error = serde_json::from_str::<PendingAuthorization>(legacy_json)
+            .expect_err("legacy plaintext session binding must be rejected");
+        assert!(!error.to_string().contains("session-token"));
     }
 
     /// 回归 #115：`holder_hash: None` 重新序列化后应完全不含该键
@@ -111,7 +179,7 @@ mod tests {
             nonce: None,
             code_challenge: "challenge".to_owned(),
             code_challenge_method: "S256".to_owned(),
-            session_id: None,
+            session_token_hash: None,
             holder_hash: None,
         };
         let serialized = serde_json::to_string(&pending).expect("serialize pending");
@@ -132,7 +200,7 @@ mod tests {
             nonce: None,
             code_challenge: "challenge".to_owned(),
             code_challenge_method: "S256".to_owned(),
-            session_id: None,
+            session_token_hash: None,
             holder_hash: Some("abc123hash".to_owned()),
         };
         let serialized = serde_json::to_string(&pending).expect("serialize");

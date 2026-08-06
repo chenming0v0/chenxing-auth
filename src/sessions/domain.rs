@@ -54,6 +54,27 @@ pub struct SessionPayload {
     pub revoked_at: Option<OffsetDateTime>,
 }
 
+/// Hash-only session metadata returned when the caller has a token digest but
+/// deliberately does not have the plaintext token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionLookup {
+    pub id: i64,
+    pub user_id: String,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
+    pub revoked_at: Option<OffsetDateTime>,
+}
+
+impl SessionLookup {
+    pub fn is_active_at(&self, now: OffsetDateTime) -> bool {
+        self.revoked_at.is_none() && now < self.expires_at
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.is_active_at(SystemClock.now())
+    }
+}
+
 impl From<&Session> for SessionPayload {
     fn from(session: &Session) -> Self {
         Self {
@@ -80,6 +101,16 @@ impl SessionPayload {
             created_at: self.created_at,
             expires_at: self.expires_at,
             csrf_token: self.csrf_token,
+            revoked_at: self.revoked_at,
+        }
+    }
+
+    pub fn into_lookup(self) -> SessionLookup {
+        SessionLookup {
+            id: self.id,
+            user_id: self.user_id,
+            created_at: self.created_at,
+            expires_at: self.expires_at,
             revoked_at: self.revoked_at,
         }
     }
@@ -169,13 +200,30 @@ pub fn generate_credential() -> SessionCredential {
     let mut bytes = [0_u8; 32];
     OsRng.fill_bytes(&mut bytes);
     let token = URL_SAFE_NO_PAD.encode(bytes);
-    let token_hash = Sha256::digest(token.as_bytes()).into();
+    let token_hash = session_token_hash_bytes(&token);
     SessionCredential { token, token_hash }
+}
+
+pub fn session_token_hash_bytes(token: &str) -> [u8; 32] {
+    Sha256::digest(token.as_bytes()).into()
+}
+
+/// Base64url encoding used in OAuth payloads for the irreversible token digest.
+pub fn session_token_hash(token: &str) -> String {
+    URL_SAFE_NO_PAD.encode(session_token_hash_bytes(token))
+}
+
+pub fn decode_session_token_hash(value: &str) -> Option<[u8; 32]> {
+    let decoded = URL_SAFE_NO_PAD.decode(value).ok()?;
+    decoded.try_into().ok()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Session, SessionPayload, generate_credential};
+    use super::{
+        Session, SessionPayload, decode_session_token_hash, generate_credential,
+        session_token_hash, session_token_hash_bytes,
+    };
     use std::time::Duration;
     use time::OffsetDateTime;
 
@@ -186,6 +234,19 @@ mod tests {
         assert_ne!(first.token, second.token);
         assert_eq!(first.token.len(), 43);
         assert_ne!(first.token_hash, [0; 32]);
+    }
+
+    #[test]
+    fn session_token_hash_uses_a_fixed_digest_encoding() {
+        let token = "session-token";
+        let encoded = session_token_hash(token);
+
+        assert_ne!(encoded, token);
+        assert_eq!(encoded.len(), 43);
+        assert_eq!(
+            decode_session_token_hash(&encoded),
+            Some(session_token_hash_bytes(token))
+        );
     }
 
     #[test]

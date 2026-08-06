@@ -16,7 +16,10 @@ use crate::{
     audit::AuditEvent,
     consents::ConsentServiceError,
     error,
-    sessions::{cookies, domain::Session},
+    sessions::{
+        cookies,
+        domain::{Session, session_token_hash},
+    },
     state::AppState,
     users::domain::UserId,
 };
@@ -64,7 +67,8 @@ pub async fn inspect_authorization_request(
             return error::oauth_temporarily_unavailable();
         }
     };
-    if pending.session_id.as_deref() != Some(context.session.token.as_str()) {
+    let current_session_hash = session_token_hash(&context.session.token);
+    if pending.session_token_hash.as_deref() != Some(current_session_hash.as_str()) {
         return error::unauthorized(
             "invalid_session",
             "authorization request is not bound to this session",
@@ -110,7 +114,7 @@ pub async fn inspect_authorization_request(
 /// Bind a pending authorization request to the caller's session.
 ///
 /// The browser hits `/oauth/authorize` before any session exists, so the pending
-/// request is created with `session_id: None` and the user is sent to the SPA
+/// request is created with `session_token_hash: None` and the user is sent to the SPA
 /// login page. Once the SPA logs in over JSON, it calls this endpoint so the
 /// pending request is tied to the freshly-issued session — after which `inspect`
 /// and `decide` accept it. Mirrors the binding the server-rendered
@@ -157,9 +161,10 @@ pub async fn bind_authorization_request(
     }
     // Only allow binding an unbound request, or re-binding one already owned by
     // this same session (idempotent retry). Refuse to steal another session's request.
-    match pending.session_id.as_deref() {
+    let current_session_hash = session_token_hash(&context.session.token);
+    match pending.session_token_hash.as_deref() {
         None => {}
-        Some(existing) if existing == context.session.token => {
+        Some(existing) if existing == current_session_hash => {
             return (axum::http::StatusCode::NO_CONTENT, ()).into_response();
         }
         Some(_) => {
@@ -170,7 +175,7 @@ pub async fn bind_authorization_request(
         }
     }
     let original_pending = pending.clone();
-    pending.session_id = Some(context.session.token.clone());
+    pending.session_token_hash = Some(current_session_hash);
     match state
         .authorization_requests
         .replace_if_matches(&request_id, &original_pending, &pending)
@@ -216,7 +221,8 @@ pub async fn decide_authorization_request(
     }) else {
         return pending_expired();
     };
-    if pending.session_id.as_deref() != Some(context.session.token.as_str()) {
+    let current_session_hash = session_token_hash(&context.session.token);
+    if pending.session_token_hash.as_deref() != Some(current_session_hash.as_str()) {
         return error::unauthorized(
             "invalid_session",
             "authorization request is not bound to this session",
@@ -364,7 +370,7 @@ async fn validated_pending(
     .map_err(|_| error::oauth_bad_request("invalid_request", "authorization request is invalid"))?;
     // 调用方已校验 pending 绑定的会话就是当前会话，授权码必须继承该绑定，
     // 否则用户登出后授权码在 TTL 内仍能兑换 token。
-    validated.session_id = pending.session_id.clone();
+    validated.session_token_hash = pending.session_token_hash.clone();
     Ok(validated)
 }
 

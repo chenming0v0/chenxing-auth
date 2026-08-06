@@ -1,44 +1,97 @@
-use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+use serde::de::Error as DeError;
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
-use crate::clock::{Clock, SystemClock};
+use crate::{
+    clock::{Clock, SystemClock},
+    sessions::domain::session_token_hash,
+};
 
 /// 授权码默认有效期（秒）。运行时优先使用管理设置或启动配置覆盖。
 /// 保留此常量作为无状态构造和补偿路径的向后兼容回退值。
 pub const AUTHORIZATION_CODE_TTL_SECONDS: u64 = 5 * 60;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AuthorizationCode {
     pub value: String,
     pub client_id: String,
     pub redirect_uri: String,
     pub user_id: String,
-    /// 签发该授权码时所依赖的浏览器会话令牌。
+    /// 签发该授权码时所依赖的浏览器会话令牌 SHA-256 摘要。
     ///
     /// OIDC Core 3.1.3.2 与 AGENTS.md 都要求授权码绑定 Client、Redirect URI 和
     /// 用户会话：会话被撤销（用户登出）后，授权码必须立即失去兑换能力，否则
     /// 登出只是清了 Cookie，5 分钟 TTL 内的授权码仍能换出 access/refresh token。
     ///
-    /// `None` 表示降级路径：授权码不是由浏览器会话签发的（例如直接构造的
+    /// 摘要使用 base64url 无填充编码。`None` 表示降级路径：授权码不是由浏览器会话签发的（例如直接构造的
     /// 测试代码，或升级前写入 Redis 的历史授权码），此时 Token 端点不做会话
     /// 校验，只保留原有的 Client / Redirect URI / PKCE / 用户状态检查。
     ///
-    /// `#[serde(default)]` + `skip_serializing_if` 是 Redis 兼容性要求，不可删除：
+    /// 反序列化 helper 的 `#[serde(default)]` + `skip_serializing_if` 是 Redis 兼容性要求，不可删除：
     /// - `default`：升级期间在途的旧授权码 JSON 没有这个键，缺了它反序列化会
     ///   直接失败，所有在途授权码全部作废。
     /// - `skip_serializing_if`：`take_if_matches` 用「重新序列化后与 Redis 中的
     ///   字符串逐字节相等」做原子消费判定。旧载荷解析出 `None` 后如果被写成
-    ///   `"session_id":null`，就永远匹配不上原始载荷，旧授权码将无法被消费。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
+    ///   `"session_token_hash":null`，就永远匹配不上原始载荷，旧授权码将无法被消费。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_token_hash: Option<String>,
     pub scopes: Vec<String>,
     pub code_challenge: String,
     pub nonce: Option<String>,
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
     pub redeemed_at: Option<OffsetDateTime>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthorizationCodePayload {
+    value: String,
+    client_id: String,
+    redirect_uri: String,
+    user_id: String,
+    #[serde(default)]
+    session_token_hash: Option<String>,
+    scopes: Vec<String>,
+    code_challenge: String,
+    nonce: Option<String>,
+    created_at: OffsetDateTime,
+    expires_at: OffsetDateTime,
+    redeemed_at: Option<OffsetDateTime>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for AuthorizationCode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let payload = AuthorizationCodePayload::deserialize(deserializer)?;
+        // The old field held a plaintext session token. Reject it before any
+        // store caller can reserialize the payload through CAS or restore.
+        if payload.extra.contains_key("session_id") {
+            return Err(DeError::custom(
+                "authorization code contains an unsupported legacy session binding",
+            ));
+        }
+        Ok(Self {
+            value: payload.value,
+            client_id: payload.client_id,
+            redirect_uri: payload.redirect_uri,
+            user_id: payload.user_id,
+            session_token_hash: payload.session_token_hash,
+            scopes: payload.scopes,
+            code_challenge: payload.code_challenge,
+            nonce: payload.nonce,
+            created_at: payload.created_at,
+            expires_at: payload.expires_at,
+            redeemed_at: payload.redeemed_at,
+        })
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -87,6 +140,7 @@ impl AuthorizationCode {
         )
     }
 
+    /// Hashes the optional runtime session token before constructing the payload.
     pub fn new_with_nonce(
         client_id: String,
         redirect_uri: String,
@@ -94,7 +148,7 @@ impl AuthorizationCode {
         scopes: Vec<String>,
         code_challenge: String,
         nonce: Option<String>,
-        session_id: Option<String>,
+        session_token: Option<String>,
     ) -> Self {
         Self::new_with_nonce_at(
             client_id,
@@ -103,7 +157,7 @@ impl AuthorizationCode {
             scopes,
             code_challenge,
             nonce,
-            session_id,
+            session_token,
             SystemClock.now(),
         )
     }
@@ -116,7 +170,7 @@ impl AuthorizationCode {
         scopes: Vec<String>,
         code_challenge: String,
         nonce: Option<String>,
-        session_id: Option<String>,
+        session_token: Option<String>,
         now: OffsetDateTime,
     ) -> Self {
         Self::new_with_nonce_and_ttl_at(
@@ -126,7 +180,7 @@ impl AuthorizationCode {
             scopes,
             code_challenge,
             nonce,
-            session_id,
+            session_token,
             AUTHORIZATION_CODE_TTL_SECONDS,
             now,
         )
@@ -143,7 +197,7 @@ impl AuthorizationCode {
         scopes: Vec<String>,
         code_challenge: String,
         nonce: Option<String>,
-        session_id: Option<String>,
+        session_token: Option<String>,
         ttl_seconds: u64,
     ) -> Self {
         Self::new_with_nonce_and_ttl_at(
@@ -153,7 +207,7 @@ impl AuthorizationCode {
             scopes,
             code_challenge,
             nonce,
-            session_id,
+            session_token,
             ttl_seconds,
             SystemClock.now(),
         )
@@ -168,7 +222,57 @@ impl AuthorizationCode {
         scopes: Vec<String>,
         code_challenge: String,
         nonce: Option<String>,
-        session_id: Option<String>,
+        session_token: Option<String>,
+        ttl_seconds: u64,
+        now: OffsetDateTime,
+    ) -> Self {
+        Self::new_with_nonce_and_ttl_at_hashed(
+            client_id,
+            redirect_uri,
+            user_id,
+            scopes,
+            code_challenge,
+            nonce,
+            session_token.map(|token| session_token_hash(&token)),
+            ttl_seconds,
+            now,
+        )
+    }
+
+    /// Construct from a digest already carried by the validated OAuth request.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_nonce_and_ttl_with_session_hash(
+        client_id: String,
+        redirect_uri: String,
+        user_id: String,
+        scopes: Vec<String>,
+        code_challenge: String,
+        nonce: Option<String>,
+        session_token_hash: Option<String>,
+        ttl_seconds: u64,
+    ) -> Self {
+        Self::new_with_nonce_and_ttl_at_hashed(
+            client_id,
+            redirect_uri,
+            user_id,
+            scopes,
+            code_challenge,
+            nonce,
+            session_token_hash,
+            ttl_seconds,
+            SystemClock.now(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_nonce_and_ttl_at_hashed(
+        client_id: String,
+        redirect_uri: String,
+        user_id: String,
+        scopes: Vec<String>,
+        code_challenge: String,
+        nonce: Option<String>,
+        session_token_hash: Option<String>,
         ttl_seconds: u64,
         now: OffsetDateTime,
     ) -> Self {
@@ -177,7 +281,7 @@ impl AuthorizationCode {
             client_id,
             redirect_uri,
             user_id,
-            session_id,
+            session_token_hash,
             scopes,
             code_challenge,
             nonce,
@@ -202,9 +306,10 @@ impl AuthorizationCode {
 #[cfg(test)]
 mod tests {
     use super::AuthorizationCode;
+    use crate::sessions::domain::session_token_hash;
     use time::{Duration, OffsetDateTime};
 
-    fn code_with_session(session_id: Option<String>) -> AuthorizationCode {
+    fn code_with_session(session_token: Option<&str>) -> AuthorizationCode {
         AuthorizationCode::new_with_nonce(
             "cx_project".to_owned(),
             "https://project.example/callback".to_owned(),
@@ -212,7 +317,7 @@ mod tests {
             vec!["openid".to_owned()],
             "challenge".to_owned(),
             None,
-            session_id,
+            session_token.map(str::to_owned),
         )
     }
 
@@ -235,33 +340,38 @@ mod tests {
         assert_eq!(code.expires_at, created_at + Duration::seconds(60));
     }
 
-    /// 构造升级前的授权码 JSON：把 `session_id` 键从当前载荷里删掉。
+    /// 构造升级前的授权码 JSON：把当前的会话摘要键从载荷里删掉。
     ///
     /// 不写死时间戳字面量——`time` 只启用了 `serde` 特性（没有
     /// `serde-human-readable`），`OffsetDateTime` 的序列化形式不是 RFC 3339
     /// 字符串，硬编码字面量会与实际格式失配。
     fn legacy_code_json(code: &AuthorizationCode) -> String {
-        let mut value = serde_json::to_value(code).expect("code as JSON value");
-        value
-            .as_object_mut()
-            .expect("code serializes to a JSON object")
-            .remove("session_id");
-        value.to_string()
+        let serialized = serde_json::to_string(code).expect("serialize code");
+        let hash = serde_json::to_string(
+            code.session_token_hash
+                .as_ref()
+                .expect("bound code has a session hash"),
+        )
+        .expect("serialize session hash");
+        let field = format!("\"session_token_hash\":{hash}");
+        let legacy = serialized.replace(&format!("{field},"), "");
+        assert_ne!(legacy, serialized, "session hash field must be removed");
+        legacy
     }
 
-    /// 向后兼容回归：升级期间 Redis 里在途的授权码没有 `session_id` 键。
+    /// 向后兼容回归：升级期间 Redis 里在途的授权码没有会话摘要键。
     /// 少了 `#[serde(default)]` 就会反序列化失败，所有在途授权码直接作废。
     #[test]
-    fn legacy_code_without_a_session_id_deserializes_as_none() {
-        let code = code_with_session(Some("session-token".to_owned()));
+    fn legacy_code_without_a_session_hash_deserializes_as_none() {
+        let code = code_with_session(Some("session-token"));
         let legacy_json = legacy_code_json(&code);
         // 前置条件：构造出的旧载荷确实不含该键，否则这个回归测试没有意义。
-        assert!(!legacy_json.contains("session_id"));
+        assert!(!legacy_json.contains("session_token_hash"));
 
         let restored: AuthorizationCode =
             serde_json::from_str(&legacy_json).expect("legacy code must remain readable");
 
-        assert!(restored.session_id.is_none());
+        assert!(restored.session_token_hash.is_none());
         assert_eq!(restored.value, code.value);
         assert_eq!(restored.client_id, code.client_id);
         assert_eq!(restored.redirect_uri, code.redirect_uri);
@@ -275,10 +385,10 @@ mod tests {
     /// `take_if_matches` 靠「重新序列化 == Redis 中的原始字符串」做原子消费。
     /// 无会话的授权码必须省略该键而不是写成 `null`，否则旧授权码永远消费不掉。
     #[test]
-    fn code_without_a_session_id_round_trips_byte_identically() {
+    fn code_without_a_session_hash_round_trips_byte_identically() {
         let code = code_with_session(None);
         let payload = serde_json::to_string(&code).expect("serialize code");
-        assert!(!payload.contains("session_id"));
+        assert!(!payload.contains("session_token_hash"));
 
         let restored: AuthorizationCode = serde_json::from_str(&payload).expect("deserialize code");
 
@@ -288,34 +398,45 @@ mod tests {
         );
     }
 
-    /// 旧载荷解析后重新序列化必须与原始字符串完全一致，
-    /// 否则补偿路径 `restore` 与 `take_if_matches` 会互相错配。
+    /// 旧载荷解析后重新序列化不得带回会话摘要键或任何旧凭据。
     #[test]
-    fn legacy_code_payload_reserializes_to_the_original_bytes() {
-        let legacy_json = legacy_code_json(&code_with_session(Some("session-token".to_owned())));
+    fn legacy_code_payload_reserializes_without_a_session_binding() {
+        let legacy_json = legacy_code_json(&code_with_session(Some("session-token")));
         let restored: AuthorizationCode =
             serde_json::from_str(&legacy_json).expect("legacy code payload");
 
-        // serde 的字段顺序按结构体声明顺序输出，而测试数据是按字母序构造的，
-        // 所以按结构比较而不是按字节比较：语义等价才是补偿路径需要的不变量。
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(
-                &serde_json::to_string(&restored).expect("reserialize legacy code")
-            )
-            .expect("reserialized value"),
-            serde_json::from_str::<serde_json::Value>(&legacy_json).expect("legacy value")
-        );
+        let reserialized = serde_json::to_string(&restored).expect("reserialize legacy code");
+        assert_eq!(reserialized, legacy_json);
+        assert!(!reserialized.contains("session_token_hash"));
+        assert!(!reserialized.contains("session-token"));
     }
 
-    /// 有会话时该键必须真的写进载荷，否则 Token 端点拿不到会话、绑定形同虚设。
     #[test]
-    fn code_with_a_session_id_persists_the_binding() {
-        let code = code_with_session(Some("session-token".to_owned()));
+    fn legacy_plaintext_session_binding_is_rejected() {
+        let mut value = serde_json::to_value(code_with_session(None)).expect("code as JSON value");
+        value
+            .as_object_mut()
+            .expect("code serializes to a JSON object")
+            .insert(
+                "session_id".to_owned(),
+                serde_json::Value::String("session-token".to_owned()),
+            );
+        let error = serde_json::from_value::<AuthorizationCode>(value)
+            .expect_err("legacy plaintext session binding must be rejected");
+        assert!(!error.to_string().contains("session-token"));
+    }
+
+    /// 有会话时摘要键必须真的写进载荷，否则 Token 端点拿不到会话、绑定形同虚设。
+    #[test]
+    fn code_with_a_session_hash_persists_without_plaintext() {
+        let code = code_with_session(Some("session-token"));
         let payload = serde_json::to_string(&code).expect("serialize code");
-        assert!(payload.contains("session-token"));
+        let hash = session_token_hash("session-token");
+        assert!(payload.contains(&hash));
+        assert!(!payload.contains("session-token"));
 
         let restored: AuthorizationCode = serde_json::from_str(&payload).expect("deserialize code");
 
-        assert_eq!(restored.session_id.as_deref(), Some("session-token"));
+        assert_eq!(restored.session_token_hash.as_deref(), Some(hash.as_str()));
     }
 }

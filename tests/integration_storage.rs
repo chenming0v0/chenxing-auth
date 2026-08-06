@@ -14,7 +14,10 @@ use chenxing_auth::{
         code::AuthorizationCode, refresh::RefreshToken, refresh_store::RefreshTokenStore,
         store::AuthorizationCodeStore,
     },
-    sessions::{domain::Session, store::SessionStore},
+    sessions::{
+        domain::{Session, session_token_hash_bytes},
+        store::SessionStore,
+    },
     users::{
         credentials::hash_password,
         domain::{UserRole, UserStatus, ValidatedRegistration},
@@ -546,6 +549,14 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
             .id,
         session.id
     );
+    let session_hash = session_token_hash_bytes(&session.token);
+    let lookup = sessions
+        .find_by_token_hash(&session_hash)
+        .await
+        .expect("find session by hash")
+        .expect("hashed session lookup");
+    assert_eq!(lookup.id, session.id);
+    assert_eq!(lookup.user_id, session.user_id);
     sessions
         .revoke(&session.token)
         .await
@@ -555,6 +566,13 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
             .find(&session.token)
             .await
             .expect("find revoked session")
+            .is_none()
+    );
+    assert!(
+        sessions
+            .find_by_token_hash(&session_hash)
+            .await
+            .expect("find revoked session by hash")
             .is_none()
     );
 
