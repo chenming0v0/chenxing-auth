@@ -2,7 +2,7 @@ use jsonwebtoken::{Algorithm, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::keys::KeyManager;
+use crate::keys::{KeyManager, KeyManagerError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessTokenClaims {
@@ -18,6 +18,8 @@ pub struct AccessTokenClaims {
 pub enum TokenError {
     #[error("token signing failed: {0}")]
     Signing(#[from] jsonwebtoken::errors::Error),
+    #[error("signing key state unavailable: {0}")]
+    KeyState(#[from] KeyManagerError),
     #[error("token lifetime is invalid")]
     InvalidLifetime,
     #[error("token validation failed: {0}")]
@@ -56,9 +58,13 @@ fn decode_with_validation(
     if validate_audience {
         validation.set_audience(&[audience]);
     }
-    let decoding_key = keys
-        .decoding_key_for(key_id)
-        .map_err(TokenError::Validation)?;
+    let decoding_key = match keys.verification_key_for(key_id) {
+        Ok(key) => key,
+        Err(KeyManagerError::UnknownKeyId) => {
+            return Err(TokenError::Validation(invalid_token_error()));
+        }
+        Err(error) => return Err(TokenError::KeyState(error)),
+    };
     let data = decode::<AccessTokenClaims>(token, &decoding_key, &validation)
         .map_err(TokenError::Validation)?;
     Ok(data.claims)
@@ -90,7 +96,7 @@ pub fn issue_access_token(
         scope: scopes.join(" "),
     };
     let mut header = Header::new(Algorithm::RS256);
-    header.kid = Some(keys.key_id().to_owned());
-    let encoding_key = keys.encoding_key();
-    encode(&header, &claims, &encoding_key).map_err(TokenError::from)
+    let signing_key = keys.active_signing_key().map_err(TokenError::KeyState)?;
+    header.kid = Some(signing_key.key_id().to_owned());
+    encode(&header, &claims, signing_key.encoding_key()).map_err(TokenError::from)
 }

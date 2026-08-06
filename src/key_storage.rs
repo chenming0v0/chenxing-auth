@@ -6,6 +6,10 @@ use std::{
 
 use uuid::Uuid;
 
+#[path = "key_lock.rs"]
+mod key_lock;
+pub(crate) use key_lock::KeyStorageLock;
+
 pub(crate) const PRIVATE_FILE_MODE: u32 = 0o600;
 pub(crate) const KEY_DIRECTORY_MODE: u32 = 0o700;
 

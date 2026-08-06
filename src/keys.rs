@@ -18,12 +18,11 @@ use time::{Duration as TimeDuration, OffsetDateTime};
 use zeroize::Zeroizing;
 
 use crate::clock::{Clock, SystemClock};
-use crate::key_storage::{
-    atomic_write, ensure_secure_directory, modified_time, secure_existing_file,
-};
-const ACTIVE_KEY_ID_FILE: &str = "active-rs256.kid";
-const KEY_FILE_PREFIX: &str = "rs256-";
-const KEY_FILE_SUFFIX: &str = ".pkcs1.der";
+use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
+
+#[path = "keys_persistence.rs"]
+mod persistence;
+
 pub const DEFAULT_KEY_RETENTION_SECONDS: u64 = 604_800;
 #[derive(Clone)]
 pub struct KeyManager {
@@ -68,6 +67,27 @@ pub struct KeyRotation {
     pub key_id: String,
     pub published_key_count: usize,
 }
+
+/// 签发一次令牌所需的不可撕裂密钥快照。
+///
+/// `key_id` 和 `encoding_key` 来自同一份 `KeyState` 读取，调用方不得分别从
+/// `KeyManager` 读取它们，否则轮换恰好发生在两次读取之间时会产生错误的 JWT。
+#[derive(Clone)]
+pub struct ActiveSigningKey {
+    key_id: String,
+    encoding_key: EncodingKey,
+}
+
+impl ActiveSigningKey {
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    pub fn encoding_key(&self) -> &EncodingKey {
+        &self.encoding_key
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum KeyManagerError {
     #[error("failed to generate RSA key")]
@@ -82,6 +102,10 @@ pub enum KeyManagerError {
     Io(#[from] std::io::Error),
     #[error("persisted key id is invalid")]
     InvalidKeyId,
+    #[error("requested signing key is not published")]
+    UnknownKeyId,
+    #[error("signing key storage is busy")]
+    StorageBusy,
     #[error("key rotation worker failed")]
     RotationWorker,
 }
@@ -103,44 +127,9 @@ impl KeyManager {
         let now = SystemClock.now();
         let directory = directory.as_ref().to_path_buf();
         ensure_secure_directory(&directory)?;
-        let active_id_path = directory.join(ACTIVE_KEY_ID_FILE);
-        let active_id = read_optional_key_id(&active_id_path)?;
-        cleanup_expired_key_files(&directory, active_id.as_deref(), retention, now)?;
-        let mut key_files = discover_key_files(&directory)?;
-
-        if key_files.is_empty() {
-            migrate_legacy_key(&directory, &active_id_path, &mut key_files, now)?;
-        } else {
-            remove_legacy_key(&directory)?;
-        }
-        if key_files.is_empty() {
-            let (key_id, der) = generate_rsa_key()?;
-            persist_key(&directory, &key_id, &der)?;
-            let created_at = OffsetDateTime::from(modified_time(
-                &directory.join(key_file_name(&key_id)),
-            )?);
-            atomic_write(&active_id_path, key_id.as_bytes(), true)?;
-            key_files.insert(key_id, key_material(der, created_at));
-        }
-
-        let active_key_id = match read_optional_key_id(&active_id_path)? {
-            Some(key_id) if key_files.contains_key(&key_id) => key_id,
-            _ => {
-                let key_id = newest_key_id(&key_files).ok_or(KeyManagerError::InvalidKeyId)?;
-                atomic_write(&active_id_path, key_id.as_bytes(), true)?;
-                key_id
-            }
-        };
-        prune_materials(
-            Some(&directory),
-            &active_key_id,
-            &mut key_files,
-            retention,
-            now,
-        );
-        if !key_files.contains_key(&active_key_id) {
-            return Err(KeyManagerError::InvalidKeyId);
-        }
+        let _storage_lock = KeyStorageLock::acquire(&directory)?;
+        let (active_key_id, key_files) =
+            persistence::load_materials(&directory, retention, now, true)?;
         Self::from_materials(Some(directory), retention, active_key_id, key_files)
     }
     pub async fn rotate(&self) -> Result<KeyRotation, KeyManagerError> {
@@ -153,31 +142,95 @@ impl KeyManager {
             .await
             .map_err(|_| KeyManagerError::RotationWorker)?
     }
+
+    /// 返回当前进程内存中的兼容快照。协议签发必须使用 `active_signing_key`。
     pub fn key_id(&self) -> String {
         self.read_state().active_key_id.clone()
     }
+
+    /// 返回当前进程内存中的兼容快照。协议签发必须使用 `active_signing_key`。
     pub fn encoding_key(&self) -> EncodingKey {
         self.read_state().active_encoding_key.clone()
     }
-    pub fn decoding_key(&self) -> Result<DecodingKey, jsonwebtoken::errors::Error> {
-        let key_id = self.key_id();
-        self.decoding_key_for(&key_id)
+
+    pub fn active_signing_key(&self) -> Result<ActiveSigningKey, KeyManagerError> {
+        self.refresh_from_disk()?;
+        let state = self.read_state();
+        Ok(ActiveSigningKey {
+            key_id: state.active_key_id.clone(),
+            encoding_key: state.active_encoding_key.clone(),
+        })
     }
-    pub fn decoding_key_for(
+
+    /// 在使用验证材料前重新读取共享目录，避免实例永久保留旧的 active/JWKS 快照。
+    pub fn refresh_from_disk(&self) -> Result<(), KeyManagerError> {
+        let (directory, retention) = {
+            let state = self.read_state();
+            (state.directory.clone(), state.retention)
+        };
+        let Some(directory) = directory else {
+            return Ok(());
+        };
+        ensure_secure_directory(&directory)?;
+        let _storage_lock = KeyStorageLock::try_acquire(&directory).map_err(|error| {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::AlreadyExists
+            ) {
+                KeyManagerError::StorageBusy
+            } else {
+                KeyManagerError::Io(error)
+            }
+        })?;
+        let now = SystemClock.now();
+        let (active_key_id, key_files) =
+            persistence::load_materials(&directory, retention, now, false)?;
+        let next_state = build_key_state(Some(directory), retention, active_key_id, key_files)?;
+        *self.write_state() = next_state;
+        Ok(())
+    }
+
+    pub fn verification_key_for(
         &self,
         key_id: &str,
-    ) -> Result<DecodingKey, jsonwebtoken::errors::Error> {
+    ) -> Result<DecodingKey, KeyManagerError> {
+        self.refresh_from_disk()?;
         self.read_state()
             .verification_keys
             .get(key_id)
             .cloned()
-            .ok_or_else(|| {
-                jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidToken)
-            })
+            .ok_or(KeyManagerError::UnknownKeyId)
     }
+
+    pub fn fresh_jwks(&self) -> Result<JwkSet, KeyManagerError> {
+        self.refresh_from_disk()?;
+        Ok(self.read_state().jwks.clone())
+    }
+
+    pub fn decoding_key(&self) -> Result<DecodingKey, jsonwebtoken::errors::Error> {
+        self.refresh_from_disk()
+            .map_err(|_| invalid_decoding_key_error())?;
+        let state = self.read_state();
+        state
+            .verification_keys
+            .get(&state.active_key_id)
+            .cloned()
+            .ok_or_else(invalid_decoding_key_error)
+    }
+
+    pub fn decoding_key_for(
+        &self,
+        key_id: &str,
+    ) -> Result<DecodingKey, jsonwebtoken::errors::Error> {
+        self.verification_key_for(key_id)
+            .map_err(|_| invalid_decoding_key_error())
+    }
+
+    /// 返回当前进程内存中的兼容快照。JWKS HTTP 端点使用 `fresh_jwks`。
     pub fn jwks(&self) -> JwkSet {
         self.read_state().jwks.clone()
     }
+
     fn rotate_blocking_at(&self, now: OffsetDateTime) -> Result<KeyRotation, KeyManagerError> {
         let _rotation_guard = self
             .rotation_lock
@@ -191,16 +244,29 @@ impl KeyManager {
                 state.private_materials.clone(),
             )
         };
+        if let Some(directory) = directory.as_ref() {
+            ensure_secure_directory(directory)?;
+        }
+        let _storage_lock = match directory.as_ref() {
+            Some(directory) => Some(KeyStorageLock::acquire(directory)?),
+            None => None,
+        };
+        if let Some(directory) = directory.as_ref() {
+            let (_, disk_materials) =
+                persistence::load_materials(directory, retention, now, true)?;
+            materials = disk_materials;
+        }
+
         let (key_id, der) = generate_rsa_key()?;
         materials.insert(key_id.clone(), key_material(der.clone(), now));
-        prune_materials(directory.as_ref(), &key_id, &mut materials, retention, now);
+        prune_materials(directory.as_deref(), &key_id, &mut materials, retention, now);
         let next_state = build_key_state(directory.clone(), retention, key_id.clone(), materials)?;
 
         if let Some(directory) = directory.as_ref()
-            && let Err(error) = persist_key(directory, &key_id, &der)
-                .and_then(|_| persist_active_key_id(directory, &key_id))
+            && let Err(error) = persistence::persist_key(directory, &key_id, &der)
+                .and_then(|_| persistence::persist_active_key_id(directory, &key_id))
         {
-            let _ = fs::remove_file(directory.join(key_file_name(&key_id)));
+            let _ = fs::remove_file(directory.join(persistence::key_file_name(&key_id)));
             return Err(error);
         }
 
@@ -211,7 +277,12 @@ impl KeyManager {
         }
 
         if let Some(directory) = directory.as_ref()
-            && let Err(error) = cleanup_expired_key_files(directory, Some(&key_id), retention, now)
+            && let Err(error) = persistence::cleanup_expired_key_files(
+                directory,
+                Some(&key_id),
+                retention,
+                now,
+            )
         {
             tracing::warn!(error = %error, "failed to collect expired signing keys");
         }
@@ -269,13 +340,17 @@ impl KeyManager {
     }
 }
 
+fn invalid_decoding_key_error() -> jsonwebtoken::errors::Error {
+    jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidToken)
+}
+
 fn build_key_state(
     directory: Option<PathBuf>,
     retention: Duration,
     active_key_id: String,
     private_materials: BTreeMap<String, KeyMaterial>,
 ) -> Result<KeyState, KeyManagerError> {
-    validate_key_id(&active_key_id)?;
+    persistence::validate_key_id(&active_key_id)?;
     let active_der = private_materials
         .get(&active_key_id)
         .map(|material| material.der.as_slice())
@@ -284,7 +359,7 @@ fn build_key_state(
     let mut jwks = Vec::new();
 
     for (key_id, material) in &private_materials {
-        validate_key_id(key_id)?;
+        persistence::validate_key_id(key_id)?;
         let encoding_key = EncodingKey::from_rsa_der(&material.der);
         let mut jwk = Jwk::from_encoding_key(&encoding_key, Algorithm::RS256)?;
         jwk.common.key_id = Some(key_id.clone());
@@ -313,149 +388,12 @@ fn generate_rsa_key() -> Result<(String, PrivateKeyDer), KeyManagerError> {
     Ok((format!("cx-{}", uuid::Uuid::new_v4().simple()), der))
 }
 
-fn discover_key_files(directory: &Path) -> Result<BTreeMap<String, KeyMaterial>, KeyManagerError> {
-    let mut keys = BTreeMap::new();
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if !file_name.starts_with(KEY_FILE_PREFIX) || !file_name.ends_with(KEY_FILE_SUFFIX) {
-            continue;
-        }
-        let key_id = file_name
-            .strip_prefix(KEY_FILE_PREFIX)
-            .and_then(|value| value.strip_suffix(KEY_FILE_SUFFIX))
-            .ok_or(KeyManagerError::InvalidKeyId)?
-            .to_owned();
-        validate_key_id(&key_id)?;
-        let created_at = OffsetDateTime::from(modified_time(&path)?);
-        // 从磁盘读入的私钥字节一进内存就包装成清零类型，避免中途留下裸 Vec 副本。
-        let der = Zeroizing::new(fs::read(path)?);
-        keys.insert(key_id, key_material(der, created_at));
-    }
-    Ok(keys)
-}
-fn cleanup_expired_key_files(
-    directory: &Path,
-    active_key_id: Option<&str>,
-    retention: Duration,
-    now: OffsetDateTime,
-) -> Result<(), KeyManagerError> {
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if !file_name.starts_with(KEY_FILE_PREFIX) || !file_name.ends_with(KEY_FILE_SUFFIX) {
-            continue;
-        }
-        let key_id = file_name
-            .strip_prefix(KEY_FILE_PREFIX)
-            .and_then(|value| value.strip_suffix(KEY_FILE_SUFFIX))
-            .ok_or(KeyManagerError::InvalidKeyId)?;
-        validate_key_id(key_id)?;
-        let created_at = OffsetDateTime::from(modified_time(&path)?);
-        if active_key_id != Some(key_id)
-            && !within_retention_at(created_at, retention, now)
-        {
-            fs::remove_file(path)?;
-        }
-    }
-    Ok(())
-}
-fn migrate_legacy_key(
-    directory: &Path,
-    active_id_path: &Path,
-    key_files: &mut BTreeMap<String, KeyMaterial>,
-    now: OffsetDateTime,
-) -> Result<(), KeyManagerError> {
-    let legacy_path = directory.join("active-rs256.pkcs1.der");
-    let metadata = match fs::symlink_metadata(&legacy_path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    if !metadata.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "invalid secure storage path",
-        )
-        .into());
-    }
-    secure_existing_file(&legacy_path)?;
-    let key_id = match read_optional_key_id(active_id_path)? {
-        Some(value) => value,
-        None => format!("cx-{}", uuid::Uuid::new_v4().simple()),
-    };
-    validate_key_id(&key_id)?;
-    let der = Zeroizing::new(fs::read(&legacy_path)?);
-    persist_key(directory, &key_id, &der)?;
-    persist_active_key_id(directory, &key_id)?;
-    fs::remove_file(&legacy_path)?;
-    key_files.insert(key_id, key_material(der, now));
-    Ok(())
-}
-fn remove_legacy_key(directory: &Path) -> Result<(), KeyManagerError> {
-    let legacy_path = directory.join("active-rs256.pkcs1.der");
-    match fs::symlink_metadata(&legacy_path) {
-        Ok(metadata) if metadata.is_file() => {
-            secure_existing_file(&legacy_path)?;
-            fs::remove_file(legacy_path)?;
-        }
-        Ok(_) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "invalid secure storage path",
-            )
-            .into());
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    Ok(())
-}
-fn persist_key(directory: &Path, key_id: &str, der: &[u8]) -> Result<(), KeyManagerError> {
-    validate_key_id(key_id)?;
-    atomic_write(&directory.join(key_file_name(key_id)), der, false)?;
-    Ok(())
-}
-
-fn persist_active_key_id(directory: &Path, key_id: &str) -> Result<(), KeyManagerError> {
-    validate_key_id(key_id)?;
-    atomic_write(&directory.join(ACTIVE_KEY_ID_FILE), key_id.as_bytes(), true)?;
-    Ok(())
-}
-fn read_optional_key_id(path: &Path) -> Result<Option<String>, KeyManagerError> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    if !metadata.is_file() {
-        return Err(KeyManagerError::Io(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "invalid secure storage path",
-        )));
-    }
-    secure_existing_file(path)?;
-    let key_id = fs::read_to_string(path)?.trim().to_owned();
-    validate_key_id(&key_id)?;
-    Ok(Some(key_id))
-}
-fn newest_key_id(key_files: &BTreeMap<String, KeyMaterial>) -> Option<String> {
-    key_files
-        .iter()
-        .max_by_key(|(_, material)| material.created_at)
-        .map(|(key_id, _)| key_id.clone())
-}
-
 fn key_material(der: PrivateKeyDer, created_at: OffsetDateTime) -> KeyMaterial {
     KeyMaterial { der, created_at }
 }
 
 fn prune_materials(
-    directory: Option<&PathBuf>,
+    directory: Option<&Path>,
     active_key_id: &str,
     materials: &mut BTreeMap<String, KeyMaterial>,
     retention: Duration,
@@ -486,21 +424,6 @@ fn within_retention_at(
         return true;
     }
     now - created_at <= retention
-}
-
-fn key_file_name(key_id: &str) -> String {
-    format!("{KEY_FILE_PREFIX}{key_id}{KEY_FILE_SUFFIX}")
-}
-
-fn validate_key_id(key_id: &str) -> Result<(), KeyManagerError> {
-    if key_id.is_empty()
-        || !key_id.chars().all(|character| {
-            character.is_ascii_alphanumeric() || character == '-' || character == '_'
-        })
-    {
-        return Err(KeyManagerError::InvalidKeyId);
-    }
-    Ok(())
 }
 
 #[cfg(test)]
