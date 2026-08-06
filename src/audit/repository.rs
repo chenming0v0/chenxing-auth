@@ -3,7 +3,9 @@ use time::OffsetDateTime;
 
 use super::{AuditError, AuditEvent};
 
-pub async fn insert(pool: &PgPool, event: &AuditEvent) -> Result<(), AuditError> {
+pub(crate) async fn insert(pool: &PgPool, event: &AuditEvent) -> Result<(), AuditError> {
+    let mut event = event.clone();
+    event.redact_metadata_in_place();
     event.validate()?;
     let actor_user_id = event
         .actor_id
