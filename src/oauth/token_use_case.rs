@@ -13,6 +13,12 @@ use crate::{state::AppState, users::domain::UserId};
 
 #[path = "refresh_use_case.rs"]
 mod refresh_use_case;
+#[path = "token_exchange_audit.rs"]
+mod token_exchange_audit;
+use token_exchange_audit::{exchange_failure, record_token_exchange_success};
+
+const TOKEN_EXCHANGE_ACTION: &str = "token_exchange";
+const TOKEN_EXCHANGE_FAILURE_ACTION: &str = "token_exchange_failure";
 
 #[derive(Debug, Deserialize)]
 pub struct TokenRequest {
@@ -49,6 +55,8 @@ pub enum OAuthError {
     InvalidClient,
     #[error("OAuth service is temporarily unavailable")]
     TemporarilyUnavailable,
+    #[error("OAuth server error")]
+    ServerError,
 }
 
 impl OAuthError {
@@ -66,6 +74,10 @@ impl OAuthError {
 
     fn temporarily_unavailable() -> Self {
         Self::TemporarilyUnavailable
+    }
+
+    fn server_error() -> Self {
+        Self::ServerError
     }
 
     fn invalid_refresh_grant() -> Self {
@@ -91,58 +103,149 @@ pub async fn exchange_code(
     request: TokenRequest,
 ) -> Result<TokenResponse, OAuthError> {
     let Some(code_value) = request.code.as_deref() else {
-        return Err(OAuthError::bad_request("invalid_request", "code is required"));
+        return exchange_failure(
+            state,
+            None,
+            request.client_id.as_deref(),
+            "missing_code",
+            OAuthError::bad_request("invalid_request", "code is required"),
+        )
+        .await;
     };
     let Some(redirect_uri) = request.redirect_uri.as_deref() else {
-        return Err(OAuthError::bad_request(
-            "invalid_request",
-            "redirect_uri is required",
-        ));
+        return exchange_failure(
+            state,
+            None,
+            request.client_id.as_deref(),
+            "missing_redirect_uri",
+            OAuthError::bad_request("invalid_request", "redirect_uri is required"),
+        )
+        .await;
     };
     let Some(code_verifier) = request.code_verifier.as_deref() else {
-        return Err(OAuthError::bad_request(
-            "invalid_request",
-            "code_verifier is required",
-        ));
+        return exchange_failure(
+            state,
+            None,
+            request.client_id.as_deref(),
+            "missing_code_verifier",
+            OAuthError::bad_request("invalid_request", "code_verifier is required"),
+        )
+        .await;
     };
     let code = match state.authorization_codes.find(code_value).await {
         Ok(Some(code)) => code,
-        Ok(None) => return Err(OAuthError::invalid_grant()),
+        Ok(None) => {
+            return exchange_failure(
+                state,
+                None,
+                request.client_id.as_deref(),
+                "code_not_found",
+                OAuthError::invalid_grant(),
+            )
+            .await;
+        }
         Err(store_error) => {
             tracing::error!(error = %store_error, "failed to retrieve OAuth authorization code");
-            return Err(OAuthError::temporarily_unavailable());
+            return exchange_failure(
+                state,
+                None,
+                request.client_id.as_deref(),
+                "code_lookup_failed",
+                OAuthError::temporarily_unavailable(),
+            )
+            .await;
         }
     };
     let Some(client_id) = request.client_id.as_deref() else {
-        return Err(OAuthError::InvalidClient);
+        return exchange_failure(
+            state,
+            Some(&code.user_id),
+            None,
+            "missing_client_id",
+            OAuthError::InvalidClient,
+        )
+        .await;
     };
-    validate_code_binding(
+    if let Err(error) = validate_code_binding(
         client_id,
         redirect_uri,
         code_verifier,
         &code,
-    )?;
+    ) {
+        return exchange_failure(
+            state,
+            Some(&code.user_id),
+            Some(client_id),
+            "code_binding_invalid",
+            error,
+        )
+        .await;
+    }
     match active_user_id(state, &code.user_id).await {
         Ok(Some(_)) => {}
-        Ok(None) => return Err(OAuthError::invalid_grant()),
+        Ok(None) => {
+            return exchange_failure(
+                state,
+                Some(&code.user_id),
+                Some(client_id),
+                "user_inactive",
+                OAuthError::invalid_grant(),
+            )
+            .await;
+        }
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to load authorization code user");
-            return Err(OAuthError::temporarily_unavailable());
+            return exchange_failure(
+                state,
+                Some(&code.user_id),
+                Some(client_id),
+                "user_lookup_failed",
+                OAuthError::temporarily_unavailable(),
+            )
+            .await;
         }
     }
     // Session binding is intentionally checked before the authorization-code CAS. A failed
     // request must not burn a valid code before binding, expiry, and PKCE all pass.
-    let auth_time = authorization_code_session_auth_time(state, &code).await?;
+    let auth_time = match authorization_code_session_auth_time(state, &code).await {
+        Ok(auth_time) => auth_time,
+        Err(error) => {
+            return exchange_failure(
+                state,
+                Some(&code.user_id),
+                Some(client_id),
+                "session_validation_failed",
+                error,
+            )
+            .await;
+        }
+    };
     match state
         .authorization_codes
         .take_if_matches(code_value, &code)
         .await
     {
         Ok(true) => {}
-        Ok(false) => return Err(OAuthError::invalid_grant()),
+        Ok(false) => {
+            return exchange_failure(
+                state,
+                Some(&code.user_id),
+                Some(client_id),
+                "code_consumption_race",
+                OAuthError::invalid_grant(),
+            )
+            .await;
+        }
         Err(store_error) => {
             tracing::error!(error = %store_error, "failed to consume OAuth authorization code");
-            return Err(OAuthError::temporarily_unavailable());
+            return exchange_failure(
+                state,
+                Some(&code.user_id),
+                Some(client_id),
+                "code_consume_failed",
+                OAuthError::temporarily_unavailable(),
+            )
+            .await;
         }
     }
     let refresh = RefreshToken::new(
@@ -153,7 +256,14 @@ pub async fn exchange_code(
     if let Err(store_error) = state.refresh_tokens.save(&refresh).await {
         tracing::error!(error = %store_error, "failed to store refresh token");
         compensate_authorization_code_exchange(state, &code, &refresh.value).await;
-        return Err(OAuthError::temporarily_unavailable());
+        return exchange_failure(
+            state,
+            Some(&code.user_id),
+            Some(client_id),
+            "refresh_token_persistence_failed",
+            OAuthError::temporarily_unavailable(),
+        )
+        .await;
     }
     let token = match issue_token_response(
         state,
@@ -169,9 +279,40 @@ pub async fn exchange_code(
         Ok(token) => token,
         Err(error) => {
             compensate_authorization_code_exchange(state, &code, &refresh.value).await;
-            return Err(error);
+            return exchange_failure(
+                state,
+                Some(&code.user_id),
+                Some(client_id),
+                "token_issuance_failed",
+                error,
+            )
+            .await;
         }
     };
+    if let Err(audit_error) = record_token_exchange_success(
+        state,
+        &code.user_id,
+        client_id,
+        &code.scopes,
+    )
+    .await
+    {
+        compensate_authorization_code_exchange(state, &code, &refresh.value).await;
+        tracing::error!(
+            error = %audit_error,
+            client_id = %client_id,
+            user_id = %code.user_id,
+            "failed to record OAuth token exchange audit event"
+        );
+        return exchange_failure(
+            state,
+            Some(&code.user_id),
+            Some(client_id),
+            "success_audit_failed",
+            OAuthError::server_error(),
+        )
+        .await;
+    }
     Ok(token)
 }
 
@@ -353,78 +494,5 @@ fn verify_code_is_redeemable(code: &AuthorizationCode) -> Result<(), ()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use time::Duration;
-
-    const CLIENT_ID: &str = "cx_client";
-    const REDIRECT_URI: &str = "https://client.example/callback";
-    const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-    const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
-
-    fn authorization_code() -> AuthorizationCode {
-        AuthorizationCode::new(
-            CLIENT_ID.to_owned(),
-            REDIRECT_URI.to_owned(),
-            "7".to_owned(),
-            vec!["openid".to_owned()],
-            CHALLENGE.to_owned(),
-        )
-    }
-
-    #[test]
-    fn binding_and_pkce_validation_accepts_a_valid_code_without_consuming_it() {
-        let code = authorization_code();
-
-        assert!(validate_code_binding(CLIENT_ID, REDIRECT_URI, VERIFIER, &code).is_ok());
-        assert!(code.redeemed_at.is_none());
-    }
-
-    #[test]
-    fn redirect_binding_is_rejected_as_invalid_grant() {
-        let code = authorization_code();
-
-        let error = validate_code_binding(
-            CLIENT_ID,
-            "https://attacker.example/callback",
-            VERIFIER,
-            &code,
-        )
-        .expect_err("redirect URI mismatch must reject the code");
-
-        assert_eq!(error, OAuthError::invalid_grant());
-    }
-
-    #[test]
-    fn expired_code_is_rejected_before_pkce_and_remains_unconsumed() {
-        let mut code = authorization_code();
-        code.expires_at = time::OffsetDateTime::now_utc() - Duration::seconds(1);
-
-        let error = validate_code_binding(
-            CLIENT_ID,
-            REDIRECT_URI,
-            "invalid-verifier-that-would-fail-pkce-too",
-            &code,
-        )
-        .expect_err("expired code must reject");
-
-        assert_eq!(error, OAuthError::invalid_grant());
-        assert!(code.redeemed_at.is_none());
-    }
-
-    #[test]
-    fn pkce_mismatch_is_rejected_without_consuming_the_code() {
-        let code = authorization_code();
-
-        let error = validate_code_binding(
-            CLIENT_ID,
-            REDIRECT_URI,
-            "a".repeat(43).as_str(),
-            &code,
-        )
-        .expect_err("PKCE mismatch must reject");
-
-        assert_eq!(error, OAuthError::invalid_grant());
-        assert!(code.redeemed_at.is_none());
-    }
-}
+#[path = "token_use_case_tests.rs"]
+mod tests;

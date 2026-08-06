@@ -157,6 +157,23 @@ pub(crate) async fn record_token_event(
     client_id: Option<&str>,
     reason: &str,
 ) -> Result<(), crate::audit::AuditError> {
+    record_token_event_with_metadata(
+        state,
+        actor_id,
+        action,
+        client_id,
+        serde_json::json!({"reason": reason}),
+    )
+    .await
+}
+
+pub(crate) async fn record_token_event_with_metadata(
+    state: &AppState,
+    actor_id: Option<&str>,
+    action: &str,
+    client_id: Option<&str>,
+    metadata: serde_json::Value,
+) -> Result<(), crate::audit::AuditError> {
     state
         .audit
         .record(AuditEvent::new(
@@ -169,7 +186,7 @@ pub(crate) async fn record_token_event(
             action.to_owned(),
             "oauth_token".to_owned(),
             client_id.map(str::to_owned),
-            serde_json::json!({"reason": reason}),
+            metadata,
         ))
         .await
 }
