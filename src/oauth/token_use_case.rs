@@ -343,10 +343,7 @@ fn authorization_code_restore_ttl(code: &AuthorizationCode) -> u64 {
     if remaining_seconds <= 0 {
         return 1;
     }
-    match u64::try_from(remaining_seconds) {
-        Ok(seconds) => seconds,
-        Err(_) => 1,
-    }
+    u64::try_from(remaining_seconds).unwrap_or(1)
 }
 
 fn verify_code_is_redeemable(code: &AuthorizationCode) -> Result<(), ()> {

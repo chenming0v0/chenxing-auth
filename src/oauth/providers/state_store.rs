@@ -229,11 +229,13 @@ impl ExternalLoginStateStore {
         match &self.settings {
             Some(settings) => Ok(settings.security_limits().await?),
             None => {
-                let mut limits = SecurityLimitsSetting::default();
-                limits.external_login_state_rate_limit = self.source_rate_limit;
-                limits.external_login_state_max_pending = self.max_pending;
-                limits.external_login_state_ttl_seconds = self.ttl_seconds;
-                limits.external_login_state_rate_window_seconds = self.rate_window_seconds;
+                let limits = SecurityLimitsSetting {
+                    external_login_state_rate_limit: self.source_rate_limit,
+                    external_login_state_max_pending: self.max_pending,
+                    external_login_state_ttl_seconds: self.ttl_seconds,
+                    external_login_state_rate_window_seconds: self.rate_window_seconds,
+                    ..SecurityLimitsSetting::default()
+                };
                 Ok(limits)
             }
         }
