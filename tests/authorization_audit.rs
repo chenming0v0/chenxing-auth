@@ -252,6 +252,9 @@ async fn audit_metadata_never_carries_session_or_csrf_credentials() {
             .split_once('=')
             .map(|(_, value)| value)
             .unwrap_or(cookie_part);
-        assert!(!serialized.contains(value), "审计事件不得包含会话 Cookie 值");
+        assert!(
+            !serialized.contains(value),
+            "审计事件不得包含会话 Cookie 值"
+        );
     }
 }

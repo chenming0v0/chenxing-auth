@@ -85,10 +85,19 @@ impl fmt::Debug for Config {
             .field("issuer_url", &self.issuer_url)
             .field("admin_token", &"REDACTED")
             .field("key_directory", &self.key_directory)
-            .field("key_rotation_grace_seconds", &self.key_rotation_grace_seconds)
+            .field(
+                "key_rotation_grace_seconds",
+                &self.key_rotation_grace_seconds,
+            )
             .field("cookie_secure", &self.cookie_secure)
-            .field("oauth_session_header_enabled", &self.oauth_session_header_enabled)
-            .field("session_token_response_enabled", &self.session_token_response_enabled)
+            .field(
+                "oauth_session_header_enabled",
+                &self.oauth_session_header_enabled,
+            )
+            .field(
+                "session_token_response_enabled",
+                &self.session_token_response_enabled,
+            )
             .field("database_url", &self.database_url)
             .field("redis_url", &self.redis_url)
             .field("session_ttl_seconds", &self.session_ttl_seconds)
@@ -97,7 +106,10 @@ impl fmt::Debug for Config {
             .field("log_filter", &self.log_filter)
             .field("auth_encryption_key", &self.auth_encryption_key)
             .field("auth_encryption_keys", &self.auth_encryption_keys)
-            .field("auth_limiter_failure_policy", &self.auth_limiter_failure_policy)
+            .field(
+                "auth_limiter_failure_policy",
+                &self.auth_limiter_failure_policy,
+            )
             .field("missing_source_ip_policy", &self.missing_source_ip_policy)
             .field("trusted_proxies", &self.trusted_proxies)
             .field("security_limits", &self.security_limits)
@@ -244,7 +256,14 @@ impl Config {
         session_ttl_seconds: u64,
     ) -> Result<Self, ConfigError> {
         let issuer_url = format!("http://{host}:{port}");
-        Self::from_values_with_issuer(host, port, issuer_url, database_url, redis_url, session_ttl_seconds)
+        Self::from_values_with_issuer(
+            host,
+            port,
+            issuer_url,
+            database_url,
+            redis_url,
+            session_ttl_seconds,
+        )
     }
 
     pub fn from_values_with_issuer(

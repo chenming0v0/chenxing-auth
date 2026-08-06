@@ -142,7 +142,10 @@ impl SecurityLimits {
                 if self.$field == 0 {
                     tracing::warn!(
                         default = defaults.$field,
-                        concat!($name, " is 0, which disables service; falling back to default")
+                        concat!(
+                            $name,
+                            " is 0, which disables service; falling back to default"
+                        )
                     );
                     self.$field = defaults.$field;
                 }

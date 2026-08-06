@@ -126,7 +126,8 @@ mod tests {
 
     #[test]
     fn rejection_error_does_not_leak_raw_configuration() {
-        let raw = r#"{"whitelist_enabled": "SECRET-MARKER", "allowed_domains": ["internal.example"]}"#;
+        let raw =
+            r#"{"whitelist_enabled": "SECRET-MARKER", "allowed_domains": ["internal.example"]}"#;
         let error = evaluate_email_policy(Some(raw.to_owned()), "user@anywhere.example")
             .expect_err("broken policy configuration must fail closed");
         let rendered = error.to_string();

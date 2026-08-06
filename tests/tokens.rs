@@ -118,11 +118,8 @@ fn id_token_without_session_omits_auth_time_key() {
 
     // 解码 payload 验证 `null` 没有写入 JSON。
     let payload = token.split('.').nth(1).expect("JWT payload");
-    let bytes = base64::Engine::decode(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        payload,
-    )
-    .expect("base64 payload");
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload)
+        .expect("base64 payload");
     let json: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON payload");
     assert!(
         json.get("auth_time").is_none(),

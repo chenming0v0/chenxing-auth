@@ -6,11 +6,7 @@ use crate::{audit::AuditEvent, error, state::AppState};
 pub(crate) async fn enforce_source_qps(state: &AppState, source_ip: &str) -> Option<Response> {
     // #121：QPS 阈值从配置读取，不再硬编码。默认值30保持向后兼容。
     let qps_limit = state.config.security_limits.unauthenticated_source_qps;
-    match state
-        .qps
-        .allow_source(source_ip, qps_limit)
-        .await
-    {
+    match state.qps.allow_source(source_ip, qps_limit).await {
         Ok(true) => None,
         Ok(false) => {
             if let Err(error_value) = record_token_event(

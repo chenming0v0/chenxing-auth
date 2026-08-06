@@ -37,8 +37,7 @@ static DUMMY_PASSWORD_HASH: OnceLock<String> = OnceLock::new();
 ///
 /// **格式必须合法**：若这个串无法被 `PasswordHash::new` 解析，兜底失效、防御归零。
 /// `fallback_dummy_hash_is_a_valid_phc_string` 用编译期常量在测试中锁死这一点。
-const FALLBACK_DUMMY_PASSWORD_HASH: &str =
-    "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const FALLBACK_DUMMY_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 /// 口令最大长度（字符数，Issue #122）。
 ///
@@ -214,7 +213,9 @@ mod tests {
     #[tokio::test]
     async fn async_hash_and_verify_round_trip() {
         let password = "correct horse battery staple".to_owned();
-        let hash = hash_password(password.clone()).await.expect("password hash");
+        let hash = hash_password(password.clone())
+            .await
+            .expect("password hash");
         assert!(hash.starts_with("$argon2"));
         assert!(verify_password(password, hash.clone()).await);
         assert!(!verify_password("wrong password".to_owned(), hash).await);
@@ -230,7 +231,9 @@ mod tests {
     #[tokio::test]
     async fn login_verification_accepts_the_stored_hash() {
         let password = "correct horse battery staple".to_owned();
-        let hash = hash_password(password.clone()).await.expect("password hash");
+        let hash = hash_password(password.clone())
+            .await
+            .expect("password hash");
         assert!(verify_login_password(password, Some(hash.clone())).await);
         assert!(!verify_login_password("wrong password".to_owned(), Some(hash)).await);
     }

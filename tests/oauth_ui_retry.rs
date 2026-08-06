@@ -83,7 +83,9 @@ fn set_cookie_pair(response: &axum::response::Response, name: &str) -> Option<St
         .find_map(|value| {
             let s = value.to_str().ok()?;
             let pair = s.split(';').next()?;
-            pair.trim().starts_with(&format!("{name}=")).then(|| pair.trim().to_owned())
+            pair.trim()
+                .starts_with(&format!("{name}="))
+                .then(|| pair.trim().to_owned())
         })
 }
 

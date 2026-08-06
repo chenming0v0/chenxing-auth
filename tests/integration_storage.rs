@@ -56,7 +56,9 @@ async fn postgres_repositories_round_trip_users_and_clients() {
             password: "correct horse battery".to_owned(),
             display_name: Some("Storage User".to_owned()),
         },
-        hash_password("correct horse battery".to_owned()).await.expect("password hash"),
+        hash_password("correct horse battery".to_owned())
+            .await
+            .expect("password hash"),
     )
     .await
     .expect("insert user");
@@ -193,7 +195,9 @@ async fn password_change_commits_password_and_session_revocation_together() {
             password: old_password.to_owned(),
             display_name: None,
         },
-        hash_password(old_password.to_owned()).await.expect("old password hash"),
+        hash_password(old_password.to_owned())
+            .await
+            .expect("old password hash"),
     )
     .await
     .expect("insert user");
@@ -215,7 +219,9 @@ async fn password_change_commits_password_and_session_revocation_together() {
         user_repository::change_password_and_revoke_all(
             &pool,
             user.id,
-            &hash_password(new_password.to_owned()).await.expect("new password hash"),
+            &hash_password(new_password.to_owned())
+                .await
+                .expect("new password hash"),
         )
         .await
         .expect("change password")
@@ -294,7 +300,9 @@ async fn password_change_rolls_back_when_session_epoch_update_fails() {
             password: old_password.to_owned(),
             display_name: None,
         },
-        hash_password(old_password.to_owned()).await.expect("old password hash"),
+        hash_password(old_password.to_owned())
+            .await
+            .expect("old password hash"),
     )
     .await
     .expect("insert user");
@@ -321,7 +329,9 @@ async fn password_change_rolls_back_when_session_epoch_update_fails() {
     let result = user_repository::change_password_and_revoke_all(
         &pool,
         user.id,
-        &hash_password(new_password.to_owned()).await.expect("new password hash"),
+        &hash_password(new_password.to_owned())
+            .await
+            .expect("new password hash"),
     )
     .await;
     assert!(result.is_err(), "epoch overflow must fail the transaction");

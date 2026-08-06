@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use time::OffsetDateTime;
 
 use super::domain::{
-    AuthFailureLimits, AuthFailureLimiter, AuthLimiterError, AuthLimiterFailurePolicy,
-    FailureDimension, FailureRecord, LimiterDimension, LimiterFuture, AUTH_FAILURE_WINDOW_SECONDS,
+    AUTH_FAILURE_WINDOW_SECONDS, AuthFailureLimiter, AuthFailureLimits, AuthLimiterError,
+    AuthLimiterFailurePolicy, FailureDimension, FailureRecord, LimiterDimension, LimiterFuture,
 };
 
 const FAILURE_KEY_PREFIX: &str = "chenxing:auth:failure:";

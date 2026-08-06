@@ -276,10 +276,7 @@ mod tests {
         let hash1 = authz_holder_hash(holder);
         let hash2 = authz_holder_hash(holder);
         assert_eq!(hash1, hash2, "same input must produce same hash");
-        assert_ne!(
-            hash1, holder,
-            "hash must not be the original holder value"
-        );
+        assert_ne!(hash1, holder, "hash must not be the original holder value");
         assert!(
             hash1.len() > 40,
             "base64url(SHA-256) should be ~43 chars, got {}",

@@ -253,7 +253,7 @@ impl RefreshTokenStore {
             .arg(new_hash)
             .arg(tombstone)
             .arg(TOMBSTONE_TTL_SECONDS)
-            .arg(&token.family_id)      // ARGV[9]
+            .arg(&token.family_id) // ARGV[9]
             .arg(&replacement.family_id) // ARGV[10]
             .invoke_async(&mut connection)
             .await?;

@@ -73,7 +73,8 @@ impl UserService {
         .await;
         // 状态、口令登录开关与口令校验合并判定：三者中任何一项不通过都返回同一个
         // 错误，不让调用方区分"账号被禁用"和"口令错误"。
-        if credentials.status != "active" || !credentials.password_login_enabled || !password_valid {
+        if credentials.status != "active" || !credentials.password_login_enabled || !password_valid
+        {
             if self.record_failure(dimensions).await?.reached.is_empty() {
                 return Err(UserServiceError::InvalidCredentials);
             } else {

@@ -54,7 +54,11 @@ impl TrustedProxies {
     ///
     /// 从右往左跳过所有**已知可信**的条目，第一个不可信的条目就是最后一个不受我们
     /// 控制的节点，也就是真实客户端。攻击者伪造的条目一定落在它左侧，永远不会被选中。
-    pub fn resolve_client_ip(&self, peer: Option<SocketAddr>, headers: &HeaderMap) -> Option<String> {
+    pub fn resolve_client_ip(
+        &self,
+        peer: Option<SocketAddr>,
+        headers: &HeaderMap,
+    ) -> Option<String> {
         let peer_ip = peer?.ip();
         if self.ips.is_empty() || !self.is_trusted(&peer_ip) {
             return Some(peer_ip.to_string());
@@ -178,16 +182,20 @@ mod tests {
     /// 未配置可信代理：XFF 一律忽略（默认安全）。
     #[test]
     fn unconfigured_proxies_ignore_forwarded_header() {
-        let resolved = TrustedProxies::none()
-            .resolve_client_ip(peer("203.0.113.42:443"), &headers_with_forwarded("198.51.100.7"));
+        let resolved = TrustedProxies::none().resolve_client_ip(
+            peer("203.0.113.42:443"),
+            &headers_with_forwarded("198.51.100.7"),
+        );
         assert_eq!(resolved.as_deref(), Some("203.0.113.42"));
     }
 
     /// 伪造防护：对端不在可信列表时，XFF 完全不采信。
     #[test]
     fn untrusted_peer_cannot_spoof_the_forwarded_header() {
-        let resolved = proxies(&["10.0.0.5"])
-            .resolve_client_ip(peer("203.0.113.99:443"), &headers_with_forwarded("198.51.100.7"));
+        let resolved = proxies(&["10.0.0.5"]).resolve_client_ip(
+            peer("203.0.113.99:443"),
+            &headers_with_forwarded("198.51.100.7"),
+        );
         assert_eq!(resolved.as_deref(), Some("203.0.113.99"));
     }
 
@@ -239,7 +247,11 @@ mod tests {
     /// 链路里出现无法解析的条目时整体丢弃，退回对端地址。
     #[test]
     fn malformed_chain_falls_back_to_the_peer() {
-        for value in ["unknown, 10.0.0.5", "not-an-ip", "198.51.100.7:1234, 10.0.0.5"] {
+        for value in [
+            "unknown, 10.0.0.5",
+            "not-an-ip",
+            "198.51.100.7:1234, 10.0.0.5",
+        ] {
             let resolved = proxies(&["10.0.0.5"])
                 .resolve_client_ip(peer("10.0.0.5:443"), &headers_with_forwarded(value));
             assert_eq!(resolved.as_deref(), Some("10.0.0.5"), "value = {value}");

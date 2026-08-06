@@ -205,7 +205,7 @@ impl ExternalLoginStateStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{EXTERNAL_LOGIN_STATE_TTL_SECONDS, EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS};
+    use super::{EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS, EXTERNAL_LOGIN_STATE_TTL_SECONDS};
     use std::sync::Arc;
 
     use redis::AsyncCommands;

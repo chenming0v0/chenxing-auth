@@ -227,9 +227,17 @@ async fn totp_code_at(email: &str, timestamp: u64) -> String {
     let secret = decrypt_totp_secret(&[0_u8; 32], &encrypted).expect("TOTP secret");
     // TOTP::new 按值接收 Vec<u8>，只能交出一份拷贝；
     // totp-rs 开启了 zeroize feature，TOTP 自身会在 drop 时清零该副本。
-    TOTP::new(Algorithm::SHA1, 6, 1, 30, secret.to_vec(), None, String::new())
-        .expect("TOTP")
-        .generate(timestamp)
+    TOTP::new(
+        Algorithm::SHA1,
+        6,
+        1,
+        30,
+        secret.to_vec(),
+        None,
+        String::new(),
+    )
+    .expect("TOTP")
+    .generate(timestamp)
 }
 
 #[tokio::test]

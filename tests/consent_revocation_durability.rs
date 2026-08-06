@@ -55,7 +55,9 @@ async fn seed_user_and_client(
             password: "correct horse battery".to_owned(),
             display_name: Some("Consent User".to_owned()),
         },
-        hash_password("correct horse battery".to_owned()).await.expect("password hash"),
+        hash_password("correct horse battery".to_owned())
+            .await
+            .expect("password hash"),
     )
     .await
     .expect("insert user");

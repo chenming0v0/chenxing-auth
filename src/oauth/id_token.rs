@@ -90,7 +90,9 @@ pub fn issue_id_token_with_profile(
         iat: now,
         // 负数或超范围的时间戳只可能来自损坏数据；这种情况省略该 Claim，
         // 不要签出一个错误的 auth_time。
-        auth_time: profile.auth_time.and_then(|value| usize::try_from(value).ok()),
+        auth_time: profile
+            .auth_time
+            .and_then(|value| usize::try_from(value).ok()),
         nonce: profile.nonce.map(str::to_owned),
         email: profile.email.map(str::to_owned),
         name: profile.name.map(str::to_owned),

@@ -136,7 +136,8 @@ mod tests {
             holder_hash: Some("abc123hash".to_owned()),
         };
         let serialized = serde_json::to_string(&pending).expect("serialize");
-        let restored: PendingAuthorization = serde_json::from_str(&serialized).expect("deserialize");
+        let restored: PendingAuthorization =
+            serde_json::from_str(&serialized).expect("deserialize");
         assert_eq!(restored.holder_hash.as_deref(), Some("abc123hash"));
     }
 }

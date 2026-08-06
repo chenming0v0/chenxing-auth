@@ -109,8 +109,8 @@ impl AppState {
         .await??;
 
         // #121：认证失败阈值与窗口来自配置，不再是编译期常量。
-        let auth_limiter: Arc<dyn AuthFailureLimiter> = Arc::new(
-            RedisAuthFailureLimiter::with_limits(
+        let auth_limiter: Arc<dyn AuthFailureLimiter> =
+            Arc::new(RedisAuthFailureLimiter::with_limits(
                 redis.clone(),
                 config.auth_limiter_failure_policy,
                 AuthFailureLimits {
@@ -119,8 +119,7 @@ impl AppState {
                     ip_limit: config.security_limits.ip_failure_limit,
                     ticket_limit: config.security_limits.totp_ticket_failure_limit,
                 },
-            ),
-        );
+            ));
         let sessions = SessionStore::with_metadata_and_key_ring(
             redis.clone(),
             database.clone(),
@@ -166,7 +165,9 @@ impl AppState {
         let external_login_states = ExternalLoginStateStore::new_with_config(
             redis.clone(),
             config.security_limits.external_login_state_ttl_seconds,
-            config.security_limits.external_login_state_rate_window_seconds,
+            config
+                .security_limits
+                .external_login_state_rate_window_seconds,
             config.security_limits.external_login_state_rate_limit,
             config.security_limits.external_login_state_max_pending,
         );

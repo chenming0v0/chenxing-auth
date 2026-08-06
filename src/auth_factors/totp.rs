@@ -182,7 +182,10 @@ mod tests {
     fn from_secret_round_trips_seed_and_base32() {
         let enrollment = rfc_enrollment();
         assert_eq!(enrollment.secret_bytes(), RFC_SECRET);
-        assert_eq!(enrollment.secret_base32(), "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+        assert_eq!(
+            enrollment.secret_base32(),
+            "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        );
     }
 
     /// 缓存 TOTP 实例后 `code_at` 必须仍然产出 RFC 规定的码：

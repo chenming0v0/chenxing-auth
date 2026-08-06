@@ -431,7 +431,11 @@ mod tests {
     #[test]
     fn constant_time_verify_rejects_gate_failures() {
         // client 不存在
-        assert!(!verify_client_credentials_constant_time(ClientAuthMethod::Basic, Some("s"), None));
+        assert!(!verify_client_credentials_constant_time(
+            ClientAuthMethod::Basic,
+            Some("s"),
+            None
+        ));
         // status disabled
         assert!(!verify_client_credentials_constant_time(
             ClientAuthMethod::Basic,
@@ -476,7 +480,11 @@ mod tests {
         // 生成真实 Argon2 哈希（昂贵操作，覆盖完整路径所必需）
         let (plaintext, hash) = generate_client_secret().expect("generate secret");
         let s = stored("client_secret_basic", "active", Some(&hash));
-        assert!(verify_client_credentials_constant_time(ClientAuthMethod::Basic, Some(&plaintext), Some(&s)));
+        assert!(verify_client_credentials_constant_time(
+            ClientAuthMethod::Basic,
+            Some(&plaintext),
+            Some(&s)
+        ));
     }
 
     #[test]
@@ -484,8 +492,16 @@ mod tests {
         let (_, hash) = generate_client_secret().expect("generate secret");
         let s = stored("client_secret_basic", "active", Some(&hash));
         // 错误 secret
-        assert!(!verify_client_credentials_constant_time(ClientAuthMethod::Basic, Some("cxs_wrong"), Some(&s)));
+        assert!(!verify_client_credentials_constant_time(
+            ClientAuthMethod::Basic,
+            Some("cxs_wrong"),
+            Some(&s)
+        ));
         // 缺少 secret
-        assert!(!verify_client_credentials_constant_time(ClientAuthMethod::Basic, None, Some(&s)));
+        assert!(!verify_client_credentials_constant_time(
+            ClientAuthMethod::Basic,
+            None,
+            Some(&s)
+        ));
     }
 }

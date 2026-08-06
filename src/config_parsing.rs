@@ -82,7 +82,10 @@ impl fmt::Debug for AuthEncryptionKeyRing {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthEncryptionKeyRing")
             .field("active_kid", &self.active_kid)
-            .field("kids", &self.keys.iter().map(|(kid, _)| kid).collect::<Vec<_>>())
+            .field(
+                "kids",
+                &self.keys.iter().map(|(kid, _)| kid).collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -145,11 +148,7 @@ pub(super) fn optional_i64(name: &'static str, default: i64) -> Result<i64, Conf
 
 /// `optional_*` 的纯函数内核。取值作为参数传入而不是自己读进程环境，
 /// 这样单测无需 `env::set_var`——后者在并行测试下是数据竞争（Rust 2024 起需要 `unsafe`）。
-fn parse_optional<T>(
-    name: &'static str,
-    value: Option<&str>,
-    default: T,
-) -> Result<T, ConfigError>
+fn parse_optional<T>(name: &'static str, value: Option<&str>, default: T) -> Result<T, ConfigError>
 where
     T: std::str::FromStr<Err = ParseIntError>,
 {

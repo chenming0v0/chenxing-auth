@@ -35,12 +35,11 @@ pub(super) async fn save_with_metadata(
     let token_hash = Sha256::digest(session.token.as_bytes()).to_vec();
     let mut transaction = pool.begin().await?;
     lock_user_session_scope(&mut transaction, user_id).await?;
-    let user_state: Option<(i64, String)> = crate::sqlx::query_as(
-        "SELECT session_epoch, status FROM users WHERE id = $1 FOR UPDATE",
-    )
-    .bind(user_id)
-    .fetch_optional(&mut *transaction)
-    .await?;
+    let user_state: Option<(i64, String)> =
+        crate::sqlx::query_as("SELECT session_epoch, status FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
     let Some((session_epoch, status)) = user_state else {
         return Err(SessionStoreError::UserNotFound);
     };
