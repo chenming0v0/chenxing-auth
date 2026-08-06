@@ -94,47 +94,22 @@ async fn revoke_inner(state: AppState, headers: HeaderMap, request: RevocationRe
     }
 
     let hint = request.token_type_hint.as_deref();
-    if matches!(hint, Some("refresh_token") | None) {
-        match state.refresh_tokens.find(&request.token).await {
-            Ok(Some(refresh)) if refresh.client_id == credentials.client_id => {
-                if let Err(store_error) = state.refresh_tokens.remove(&request.token).await {
-                    tracing::error!(error = %store_error, "failed to revoke refresh token");
-                    return error::oauth_temporarily_unavailable();
-                }
-                if record_revocation_event(
-                    &state,
-                    Some(&refresh.user_id),
-                    &credentials.client_id,
-                    "refresh_token",
-                )
-                .await
-                .is_err()
-                {
-                    if let Err(error_value) = state.refresh_tokens.save(&refresh).await {
-                        tracing::warn!(
-                            error = %error_value,
-                            "failed to restore refresh token after audit persistence failure"
-                        );
-                    }
-                    return error::oauth_server_error();
-                }
-                return ().into_response();
-            }
-            Ok(_) => {}
-            Err(store_error) => {
-                tracing::error!(error = %store_error, "failed to look up refresh token");
-                return error::oauth_temporarily_unavailable();
-            }
+    // RFC 7009 treats the hint as a lookup preference, not an exclusive type filter.
+    let refresh_first = !matches!(hint, Some("access_token"));
+    if refresh_first {
+        match try_revoke_refresh_token(&state, &request.token, &credentials.client_id).await {
+            Ok(true) => return ().into_response(),
+            Ok(false) => {}
+            Err(response) => return response,
         }
     }
 
-    if matches!(hint, Some("access_token") | None)
-        && let Ok(claims) = decode_access_token(
-            &state.keys,
-            &state.config.issuer_url,
-            &credentials.client_id,
-            &request.token,
-        )
+    let access_token_found = if let Ok(claims) = decode_access_token(
+        &state.keys,
+        &state.config.issuer_url,
+        &credentials.client_id,
+        &request.token,
+    )
     {
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
         if let Ok(expires_at) = i64::try_from(claims.exp) {
@@ -164,9 +139,54 @@ async fn revoke_inner(state: AppState, headers: HeaderMap, request: RevocationRe
                 return error::oauth_server_error();
             }
         }
+        true
+    } else {
+        false
+    };
+
+    if !refresh_first && !access_token_found {
+        match try_revoke_refresh_token(&state, &request.token, &credentials.client_id).await {
+            Ok(true) => return ().into_response(),
+            Ok(false) => {}
+            Err(response) => return response,
+        }
     }
 
     ().into_response()
+}
+
+async fn try_revoke_refresh_token(
+    state: &AppState,
+    token: &str,
+    client_id: &str,
+) -> Result<bool, Response> {
+    let refresh = match state.refresh_tokens.find(token).await {
+        Ok(Some(refresh)) if refresh.client_id == client_id => refresh,
+        Ok(_) => return Ok(false),
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to look up refresh token");
+            return Err(error::oauth_temporarily_unavailable());
+        }
+    };
+
+    if let Err(store_error) = state.refresh_tokens.remove(token).await {
+        tracing::error!(error = %store_error, "failed to revoke refresh token");
+        return Err(error::oauth_temporarily_unavailable());
+    }
+    if record_revocation_event(state, Some(&refresh.user_id), client_id, "refresh_token")
+        .await
+        .is_err()
+    {
+        if let Err(error_value) = state.refresh_tokens.save(&refresh).await {
+            tracing::warn!(
+                error = %error_value,
+                "failed to restore refresh token after audit persistence failure"
+            );
+        }
+        return Err(error::oauth_server_error());
+    }
+
+    Ok(true)
 }
 
 async fn record_revocation_event(
