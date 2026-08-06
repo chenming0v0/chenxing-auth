@@ -37,8 +37,8 @@ pub const REDIRECT_URI: &str = "https://plan.example/callback";
 ///
 /// 套餐前提由 schema 隔离保证（见 `support/db_isolation.rs`）：`plans` 表存在于
 /// 本二进制私有的 schema 中，`clear_all_plans` 只影响自己，不需要跨二进制锁。
-/// `default_plan_id` 是 [`test_state`] 播种的默认套餐 id —— 不再假设它等于 1，
-/// 因为种子删除后 identity 序列会继续增长。
+/// `default_plan_id` 是 [`test_state`] 播种的默认套餐 id，不把 identity 序列值当作
+/// 测试契约。
 pub struct PlanTestEnv {
     pub state: AppState,
     pub database: chenxing_auth::sqlx::PgPool,
@@ -51,15 +51,16 @@ impl PlanTestEnv {
         api::router(self.state.clone())
     }
 
-    /// 删除测试专用的密钥目录。测试结尾调用。
-    pub fn cleanup(&self) {
+    /// 删除测试创建的套餐和专用密钥目录。测试结尾调用。
+    pub async fn cleanup(&self) {
+        clear_all_plans(&self.database).await;
         let _ = std::fs::remove_dir_all(&self.key_directory);
     }
 }
 
 /// 构造测试状态，并把套餐前提重置为「只有一个原种子等价的 active 默认套餐」。
 ///
-/// 迁移不再自带套餐，所以这里显式清空后播种；需要「没有任何套餐」的测试在拿到
+/// 即使迁移提供了种子，这里仍显式清空后播种；需要「没有任何套餐」的测试在拿到
 /// 环境后自己调 [`clear_all_plans`]。
 pub async fn test_state() -> PlanTestEnv {
     let database_url = std::env::var("DATABASE_URL")

@@ -20,3 +20,8 @@ CREATE UNIQUE INDEX plans_single_default_idx ON plans (is_default) WHERE is_defa
 ALTER TABLE users
     ADD COLUMN plan_id BIGINT REFERENCES plans(id) ON DELETE SET NULL,
     ADD COLUMN plan_expires_at TIMESTAMPTZ;   -- NULL = 永久有效
+
+-- Keep the bootstrap plan safe to replay during schema initialization.
+INSERT INTO plans (code, name, description, oauth_clients_limit, daily_auth_limit, monthly_auth_limit, max_qps, is_default, status)
+VALUES ('basic', '基础版', '默认套餐', 2, 2500, 50000, NULL, TRUE, 'active')
+ON CONFLICT (code) DO NOTHING;

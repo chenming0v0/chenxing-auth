@@ -2,9 +2,8 @@
 
 //! 套餐测试前提的共享脚手架。
 //!
-//! `migrations/0002_plans.sql` 不再种子任何套餐，「库里没有套餐」是新的默认
-//! 状态。因此每个需要套餐的测试必须**显式声明自己的前提**，而不是依赖迁移
-//! 或其他测试留下的行。
+//! `migrations/0002_plans.sql` 为部署提供 `basic` 种子，但测试不能把迁移或
+//! 其他测试留下的行当作前提。因此每个需要套餐的测试必须**显式声明自己的状态**。
 //!
 //! 两类前提：
 //! - 全局默认套餐（`seed_default_plan`）：影响所有没有挂载套餐的用户，是当前
@@ -15,10 +14,10 @@
 use chenxing_auth::sqlx::PgPool;
 use uuid::Uuid;
 
-/// 原种子（`migrations/0002_plans.sql` 删除前）的默认套餐 code。
+/// `migrations/0002_plans.sql` 默认套餐种子的 code。
 pub const DEFAULT_PLAN_CODE: &str = "basic";
 
-/// 原种子的限额。删除种子后这组数值只存在于这里，语义没丢。
+/// 默认套餐种子的限额，测试断言也以此为契约。
 pub const DEFAULT_PLAN_OAUTH_CLIENTS_LIMIT: i32 = 2;
 pub const DEFAULT_PLAN_DAILY_AUTH_LIMIT: i64 = 2_500;
 pub const DEFAULT_PLAN_MONTHLY_AUTH_LIMIT: i64 = 50_000;
@@ -32,6 +31,20 @@ pub async fn clear_all_plans(database: &PgPool) {
         .execute(database)
         .await
         .expect("clear all plans");
+}
+
+/// Insert an active, non-default plan for tests that need a shared assignment target.
+pub async fn insert_private_plan(database: &PgPool, code: &str, name: &str) -> i64 {
+    chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO plans (code, name, description, is_default, status)
+         VALUES ($1, $2, NULL, FALSE, 'active')
+         RETURNING id",
+    )
+    .bind(code)
+    .bind(name)
+    .fetch_one(database)
+    .await
+    .expect("insert private plan")
 }
 
 /// 插入原种子等价的 active 默认套餐，返回其 id。
