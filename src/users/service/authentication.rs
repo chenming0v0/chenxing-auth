@@ -87,7 +87,27 @@ impl UserService {
         };
         let account_key = credentials.email.clone();
         let account_dimensions = vec![(FailureDimension::Account, account_key)];
-        if !self.reserve_dimensions(account_dimensions.clone()).await? {
+        let account_reserved = match self.reserve_dimensions(account_dimensions.clone()).await {
+            Ok(reserved) => reserved,
+            Err(error) => {
+                // 账户预留失败不会替 source 预留做回滚，先尽力归还再传播原错误。
+                let dimension_count = source_dimensions.len();
+                if let Err(release_error) = self
+                    .release_dimensions(source_dimensions.clone())
+                    .await
+                {
+                    tracing::error!(
+                        event = "auth_limiter.reservation_release_failed",
+                        operation = "authentication_account_reserve",
+                        dimensions = dimension_count,
+                        error = %release_error,
+                        "reserved source authentication quota was not released after account reservation failure"
+                    );
+                }
+                return Err(error);
+            }
+        };
+        if !account_reserved {
             self.release_dimensions(source_dimensions).await?;
             return self
                 .finish_authentication_failure(&mut password, AuthenticationFailure::RateLimited)
@@ -154,7 +174,27 @@ impl UserService {
         &self,
         dimensions: Vec<LimiterDimension>,
     ) -> Result<crate::auth_limiter::domain::FailureRecord, UserServiceError> {
-        Ok(self.limiter.record_reserved_failures(dimensions).await?)
+        match self
+            .limiter
+            .record_reserved_failures(dimensions.clone())
+            .await
+        {
+            Ok(record) => Ok(record),
+            Err(error) => {
+                // 失败记账未消费 pending 计数，先归还本次所有预留再传播原错误。
+                let dimension_count = dimensions.len();
+                if let Err(release_error) = self.release_dimensions(dimensions).await {
+                    tracing::error!(
+                        event = "auth_limiter.reservation_release_failed",
+                        operation = "authentication_record_reserved_failures",
+                        dimensions = dimension_count,
+                        error = %release_error,
+                        "reserved authentication quota was not released after failure recording error"
+                    );
+                }
+                Err(UserServiceError::Limiter(error))
+            }
+        }
     }
 
     async fn finish_authentication_failure(
@@ -179,10 +219,12 @@ impl UserService {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, atomic::AtomicUsize};
+    use std::sync::{Arc, Mutex, atomic::AtomicUsize};
 
     use super::{UserService, UserServiceError};
-    use crate::auth_limiter::domain::LimiterFuture;
+    use crate::auth_limiter::domain::{
+        AuthLimiterError, FailureRecord, LimiterDimension, LimiterFuture,
+    };
     use crate::auth_limiter::{AuthFailureLimiter, FailureDimension};
     use crate::users::domain::LoginInput;
 
@@ -257,6 +299,74 @@ mod tests {
         }
     }
 
+    struct FailingRecordLimiter {
+        calls: Mutex<Vec<&'static str>>,
+        released_dimensions: Mutex<Vec<LimiterDimension>>,
+    }
+
+    impl FailingRecordLimiter {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                calls: Mutex::new(Vec::new()),
+                released_dimensions: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        fn released_dimensions(&self) -> Vec<LimiterDimension> {
+            self.released_dimensions.lock().unwrap().clone()
+        }
+    }
+
+    impl AuthFailureLimiter for FailingRecordLimiter {
+        fn is_limited<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &str,
+        ) -> LimiterFuture<'a, bool> {
+            Box::pin(async { Ok(false) })
+        }
+
+        fn record_failure<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &str,
+        ) -> LimiterFuture<'a, bool> {
+            Box::pin(async { Ok(false) })
+        }
+
+        fn clear<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &str,
+        ) -> LimiterFuture<'a, ()> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn record_reserved_failures<'a>(
+            &'a self,
+            _dimensions: Vec<LimiterDimension>,
+        ) -> LimiterFuture<'a, FailureRecord> {
+            self.calls.lock().unwrap().push("record");
+            Box::pin(async { Err(AuthLimiterError::Storage) })
+        }
+
+        fn release<'a>(
+            &'a self,
+            dimensions: Vec<LimiterDimension>,
+        ) -> LimiterFuture<'a, ()> {
+            self.calls.lock().unwrap().push("release");
+            self.released_dimensions
+                .lock()
+                .unwrap()
+                .extend(dimensions);
+            Box::pin(async { Err(AuthLimiterError::Storage) })
+        }
+    }
+
     #[tokio::test]
     async fn invalid_login_input_is_rejected_before_limiter_or_database() {
         let pool = crate::sqlx::postgres::PgPoolOptions::new()
@@ -296,5 +406,27 @@ mod tests {
             )
             .await;
         assert!(matches!(result, Err(UserServiceError::RateLimited)));
+    }
+
+    #[tokio::test]
+    async fn record_failure_releases_all_dimensions_and_preserves_limiter_error() {
+        let pool = crate::sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://invalid-host/unused")
+            .expect("lazy pool");
+        let limiter = FailingRecordLimiter::new();
+        let service = UserService::new(pool, limiter.clone());
+        let dimensions = vec![
+            (FailureDimension::SourceIp, "192.0.2.1".to_owned()),
+            (FailureDimension::Account, "user@example.com".to_owned()),
+        ];
+
+        let result = service.record_failure(dimensions.clone()).await;
+
+        assert!(matches!(
+            result,
+            Err(UserServiceError::Limiter(AuthLimiterError::Storage))
+        ));
+        assert_eq!(limiter.calls(), vec!["record", "release"]);
+        assert_eq!(limiter.released_dimensions(), dimensions);
     }
 }
