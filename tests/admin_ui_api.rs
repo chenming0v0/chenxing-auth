@@ -15,7 +15,7 @@ use sha2::Digest;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-// 「默认套餐回退」用例需要一个 active 默认套餐；迁移不再种子它。
+// 「默认套餐回退」用例需要一个 active 默认套餐；测试显式播种它。
 #[path = "support/plan_fixtures.rs"]
 mod plan_fixtures;
 
@@ -432,22 +432,14 @@ async fn admin_user_and_client_queries_filter_and_page_in_the_database() {
 async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() {
     let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
-    // 未挂载 / 已过期的用户回退到 active 默认套餐。迁移不再自带默认套餐，
-    // 所以这里显式播种当前隔离 schema 所需的默认套餐。
+    // 未挂载 / 已过期的用户回退到 active 默认套餐。这里显式重置并播种当前
+    // 隔离 schema 所需的默认套餐，不依赖迁移或其他测试留下的行。
     plan_fixtures::clear_all_plans(&database).await;
     plan_fixtures::seed_default_plan(&database).await;
     let plan_code = format!("query-plan-{suffix}");
     let plan_name = format!("Query Plan {suffix}");
-    let plan_id: i64 = chenxing_auth::sqlx::query_scalar(
-        "INSERT INTO plans (code, name, is_default, status)
-         VALUES ($1, $2, FALSE, 'active')
-         RETURNING id",
-    )
-    .bind(&plan_code)
-    .bind(&plan_name)
-    .fetch_one(&database)
-    .await
-    .expect("insert query plan");
+    let plan_id =
+        plan_fixtures::insert_private_plan(&database, &plan_code, &plan_name).await;
     let default_username = format!("query-plan-user-default-{suffix}");
     let assigned_username = format!("query-plan-user-assigned-{suffix}");
     let expired_username = format!("query-plan-user-expired-{suffix}");
@@ -526,11 +518,7 @@ async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() 
         .execute(&database)
         .await
         .expect("cleanup query plan users");
-    chenxing_auth::sqlx::query("DELETE FROM plans WHERE id = $1")
-        .bind(plan_id)
-        .execute(&database)
-        .await
-        .expect("cleanup query plan");
+    plan_fixtures::clear_all_plans(&database).await;
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

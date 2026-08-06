@@ -104,7 +104,7 @@ async fn assigned_plan_controls_client_quota_and_entitlements() {
     assert_eq!(clients["items"][0]["quota"]["monthly_limit"], 100);
 
     let _ = first["client_id"].as_str();
-    env.cleanup();
+    env.cleanup().await;
 }
 
 #[tokio::test]
@@ -140,7 +140,7 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
         .expect("authorization over daily limit");
     assert!(matches!(result, AuthorizationCodeIssue::QuotaExceeded));
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 #[tokio::test]
@@ -201,7 +201,7 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
     assert_eq!(snapshot.daily_used, 1);
     assert_eq!(snapshot.monthly_used, 1);
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 #[tokio::test]
@@ -246,7 +246,7 @@ async fn unlimited_monthly_plan_never_rejects_authorizations() {
     assert!(monthly["limit"].is_null());
     assert_eq!(monthly["used"], 6);
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 #[tokio::test]
@@ -324,7 +324,7 @@ async fn qps_limiter_rejects_requests_over_the_plan_limit() {
     assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(json(second).await["error"], "temporarily_unavailable");
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 #[tokio::test]
@@ -391,7 +391,7 @@ async fn entitlements_aggregate_usage_across_multiple_clients() {
     assert_eq!(by_key("daily_auth")["used"], 3);
     assert_eq!(by_key("monthly_auth")["used"], 3);
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 /// 归档默认套餐是合法操作：结果是「平台没有生效默认套餐」。
@@ -464,7 +464,7 @@ async fn admin_plan_archive_restore_and_default_clearing() {
     assert_eq!(restored["status"], "active");
     assert_eq!(restored["assigned_users"], 1);
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 /// 取消唯一默认套餐后，自助接入闸门关闭（新建 Client 403），
@@ -522,7 +522,7 @@ async fn unsetting_the_last_default_plan_closes_self_service() {
     .expect("existing client authorization must keep working without a default plan");
     assert!(matches!(result, AuthorizationCodeIssue::Redirect(_)));
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 #[tokio::test]
@@ -544,7 +544,7 @@ async fn archived_plan_cannot_become_default() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(error["code"], "archived_plan_default");
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 #[tokio::test]
@@ -574,7 +574,7 @@ async fn updating_plan_code_conflict_returns_409_business_error() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(error["code"], "plan_code_conflict");
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 /// `plans_single_default_idx` + advisory lock 的不变式：并发把两个套餐设为默认，
@@ -626,7 +626,7 @@ async fn concurrent_default_updates_leave_at_most_one_active_default() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(active_default_plan_count(&env.database).await, 1);
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 /// 没有任何套餐 → 自助接入闸门关闭。
@@ -647,7 +647,7 @@ async fn no_default_plan_refuses_new_client_creation() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(json(response).await["code"], "self_service_disabled");
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 /// 闸门只关新增：套餐清空后，既有用户 Client 的 authorize 和 token 兑换都要成功。
@@ -690,7 +690,7 @@ async fn no_default_plan_keeps_existing_user_clients_working() {
     assert!(token["access_token"].as_str().is_some());
     assert!(token["refresh_token"].as_str().is_some());
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 /// 权益端点描述状态，「没有生效套餐」是状态而不是错误：200 + `plan: null`。
@@ -714,7 +714,7 @@ async fn entitlements_returns_empty_state_when_no_plan() {
         &Vec::<Value>::new()
     );
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 /// 读路径不设闸门：没有套餐时照常列出既有 Client，配额上限留空、用量照报。
@@ -752,7 +752,7 @@ async fn listing_clients_without_plan_reports_null_limits() {
     assert_eq!(item["quota"]["daily_used"], 0);
     assert_eq!(item["quota"]["monthly_used"], 0);
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 /// 管理端创建的 Client（`owner_user_id IS NULL`）不参与套餐计量，
@@ -806,7 +806,7 @@ async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
     );
     assert!(token["access_token"].as_str().is_some());
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 /// 没有默认套餐时管理员仍能分配套餐。
@@ -844,7 +844,7 @@ async fn assigning_a_plan_works_without_a_default_plan() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["plan"]["code"], format!("plan-{suffix}"));
 
-    env.cleanup();
+    env.cleanup().await;
 }
 
 /// 无生效套餐时 `enforce_qps` 里的 `effective?.plan.max_qps?` early-return
@@ -999,5 +999,5 @@ async fn no_plan_skips_plan_qps_limiting_for_existing_clients() {
         "enforce_source_qps must still trigger (429) after clearing plans"
     );
 
-    env.cleanup();
+    env.cleanup().await;
 }
