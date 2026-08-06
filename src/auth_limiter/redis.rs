@@ -68,12 +68,12 @@ impl RedisAuthFailureLimiter {
     }
 
     pub fn with_settings(
-        client: Client,
+        client: impl Into<RedisClient>,
         failure_policy: AuthLimiterFailurePolicy,
         settings: SettingsService,
     ) -> Self {
         Self {
-            client,
+            client: client.into(),
             failure_policy,
             limits: AuthFailureLimits::default(),
             settings: Some(settings),
