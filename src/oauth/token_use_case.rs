@@ -11,6 +11,9 @@ use super::{
 };
 use crate::{state::AppState, users::domain::UserId};
 
+#[path = "refresh_use_case.rs"]
+mod refresh_use_case;
+
 #[derive(Debug, Deserialize)]
 pub struct TokenRequest {
     pub grant_type: String,
@@ -64,6 +67,18 @@ impl OAuthError {
     fn temporarily_unavailable() -> Self {
         Self::TemporarilyUnavailable
     }
+
+    fn invalid_refresh_grant() -> Self {
+        Self::bad_request("invalid_grant", "refresh token is invalid")
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum RefreshExchangeError {
+    #[error(transparent)]
+    OAuth(#[from] OAuthError),
+    #[error("OAuth server error")]
+    ServerError,
 }
 
 /// Exchange an authorization code after the token endpoint has authenticated the client.
@@ -160,6 +175,14 @@ pub async fn exchange_code(
     Ok(token)
 }
 
+/// Exchange a refresh token after the token endpoint has authenticated the client.
+pub async fn exchange_refresh_token(
+    state: &AppState,
+    request: TokenRequest,
+) -> Result<TokenResponse, RefreshExchangeError> {
+    refresh_use_case::exchange_refresh_token(state, request).await
+}
+
 fn validate_code_binding(
     client_id: &str,
     redirect_uri: &str,
@@ -181,7 +204,7 @@ fn validate_code_binding(
 
 /// Issue token data without constructing an HTTP response. This preserves the existing
 /// response helper's order: active user, access token, optional OIDC profile and ID token.
-async fn issue_token_response(
+pub(crate) async fn issue_token_response(
     state: &AppState,
     user_id: &str,
     client_id: &str,
