@@ -29,6 +29,7 @@ pub mod store;
 pub mod token;
 pub mod token_handlers;
 pub mod token_security;
+pub mod token_use_case;
 pub mod ui_handlers;
 pub mod userinfo;
 
