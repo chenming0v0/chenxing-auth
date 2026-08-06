@@ -7,8 +7,9 @@ use thiserror::Error;
 use super::{
     refresh::{REFRESH_TOKEN_ABSOLUTE_TTL_DAYS, REFRESH_TOKEN_SLIDING_TTL_DAYS, RefreshToken},
     refresh_store_scripts::{
-        REMOVE_WITH_TOMBSTONE_SCRIPT, REVOKE_CLIENT_TOKENS_SCRIPT, REVOKE_FAMILY_SCRIPT,
-        ROTATE_WITH_TOMBSTONE_SCRIPT, SAVE_WITH_INDEXES_SCRIPT, TAKE_IF_MATCHES_SCRIPT,
+        REMOVE_WITHOUT_TOMBSTONE_SCRIPT, REMOVE_WITH_TOMBSTONE_SCRIPT,
+        REVOKE_CLIENT_TOKENS_SCRIPT, REVOKE_FAMILY_SCRIPT, ROTATE_WITH_TOMBSTONE_SCRIPT,
+        SAVE_WITH_INDEXES_SCRIPT, TAKE_IF_MATCHES_SCRIPT,
     },
 };
 use crate::redis_client::RedisClient;
@@ -18,6 +19,13 @@ const ABSOLUTE_TTL_SECONDS: u64 = (REFRESH_TOKEN_ABSOLUTE_TTL_DAYS * 24 * 60 * 6
 
 /// 墓碑的 TTL（旧 token 被消费后需要保留一段时间以检测重放）。
 const TOMBSTONE_TTL_SECONDS: u64 = (REFRESH_TOKEN_SLIDING_TTL_DAYS * 24 * 60 * 60) as u64;
+
+/// CAS 失败时允许并发请求共享一次轮换结果的短窗口。
+///
+/// 只有已经读到旧 token、随后在这个窗口内输掉 CAS 的请求使用该宽限；
+/// 缺失 token 的请求仍按真实 replay 处理，避免攻击者靠反复提交旧凭据
+/// 无限延迟 family 撤销。
+pub const REFRESH_ROTATION_CONCURRENCY_GRACE_SECONDS: i64 = 5;
 
 /// 索引 TTL：client / family 索引的过期时间设为绝对上限，防止无界增长。
 const INDEX_TTL_SECONDS: u64 = ABSOLUTE_TTL_SECONDS;
@@ -31,16 +39,67 @@ const FAMILY_IDX_PREFIX: &str = "cx:refresh:family_idx:";
 /// 墓碑前缀（用于重放检测）。
 const TOMBSTONE_PREFIX: &str = "cx:refresh:tombstone:";
 
-/// 墓碑载荷（存入 Redis，供重放检测时校验 client_id）。
+/// 墓碑状态。
+///
+/// `Consumed` 表示 token 被正常单次消费/轮换，是 replay 检测的候选；
+/// `ExplicitRevoke` 表示主动撤销，不应被当成凭据重放；
+/// `FamilyRevoked` 表示 family 已经完成撤销，重复提交不应再次执行撤销脚本。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TombstoneState {
+    Consumed,
+    ExplicitRevoke,
+    FamilyRevoked,
+}
+
+impl Default for TombstoneState {
+    fn default() -> Self {
+        Self::Consumed
+    }
+}
+
+/// 墓碑载荷（存入 Redis，供重放检测时校验 client_id 和消费状态）。
 ///
 /// 墓碑携带 `client_id` 是为了防范跨客户端 DoS：若不校验，
 /// Client A 提交 Client B 已过期的 token，就能触发 B 的 family 撤销，
-/// 把重放防御变成摧毁合法凭据的工具（Issue #110）。
+/// 把重放防御变成摧毁合法凭据的工具（Issue #110）。`recorded_at` 只保存
+/// Unix 秒级时间戳，不保存 refresh token 原值。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tombstone {
     pub family_id: String,
     pub client_id: String,
     pub user_id: String,
+    #[serde(default)]
+    pub state: TombstoneState,
+    #[serde(default)]
+    pub recorded_at: i64,
+}
+
+impl Tombstone {
+    fn for_token(token: &RefreshToken, state: TombstoneState) -> Self {
+        Self {
+            family_id: token.family_id.clone(),
+            client_id: token.client_id.clone(),
+            user_id: token.user_id.clone(),
+            state,
+            recorded_at: time::OffsetDateTime::now_utc().unix_timestamp(),
+        }
+    }
+
+    /// 只有近期的正常消费墓碑才能解释 CAS loser 的并发竞争。
+    pub fn is_recent_consumption(&self, now: time::OffsetDateTime) -> bool {
+        if self.state != TombstoneState::Consumed {
+            return false;
+        }
+        let Some(age) = now.unix_timestamp().checked_sub(self.recorded_at) else {
+            return false;
+        };
+        (0..=REFRESH_ROTATION_CONCURRENCY_GRACE_SECONDS).contains(&age)
+    }
+
+    pub fn is_replay_candidate(&self) -> bool {
+        self.state == TombstoneState::Consumed
+    }
 }
 
 #[derive(Clone)]
@@ -135,11 +194,10 @@ impl RefreshTokenStore {
         };
         let token: RefreshToken = serde_json::from_str(&payload)?;
         let hash = Self::token_hash(value);
-        let tombstone = serde_json::to_string(&Tombstone {
-            family_id: token.family_id.clone(),
-            client_id: token.client_id.clone(),
-            user_id: token.user_id.clone(),
-        })?;
+        let tombstone = serde_json::to_string(&Tombstone::for_token(
+            &token,
+            TombstoneState::Consumed,
+        ))?;
         let _: i32 = Script::new(REMOVE_WITH_TOMBSTONE_SCRIPT)
             .key(&key)
             .key(Self::client_idx_key(&token.client_id))
@@ -172,19 +230,14 @@ impl RefreshTokenStore {
         if let Some(payload) = payload {
             let token: RefreshToken = serde_json::from_str(&payload)?;
             let hash = Self::token_hash(value);
-            let tombstone = serde_json::to_string(&Tombstone {
-                family_id: token.family_id.clone(),
-                client_id: token.client_id.clone(),
-                user_id: token.user_id.clone(),
-            })?;
-            let _: i32 = Script::new(REMOVE_WITH_TOMBSTONE_SCRIPT)
+            // 主动撤销和补偿删除不写 replay tombstone。否则提交一个已经被
+            // 主动撤销的 token 会被误判为重放，进而触发 family DoS。
+            let _: i32 = Script::new(REMOVE_WITHOUT_TOMBSTONE_SCRIPT)
                 .key(&key)
                 .key(Self::client_idx_key(&token.client_id))
                 .key(Self::family_idx_key(&token.family_id))
                 .key(Self::tombstone_key(value))
                 .arg(&hash)
-                .arg(tombstone)
-                .arg(TOMBSTONE_TTL_SECONDS)
                 .arg(INDEX_TTL_SECONDS)
                 .arg(&token.family_id)
                 .invoke_async(&mut connection)
@@ -201,11 +254,10 @@ impl RefreshTokenStore {
         let expected = serde_json::to_string(token)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let hash = Self::token_hash(value);
-        let tombstone = serde_json::to_string(&Tombstone {
-            family_id: token.family_id.clone(),
-            client_id: token.client_id.clone(),
-            user_id: token.user_id.clone(),
-        })?;
+        let tombstone = serde_json::to_string(&Tombstone::for_token(
+            token,
+            TombstoneState::Consumed,
+        ))?;
         // CAS 消费、索引清理和墓碑写入在同一个 Lua 脚本内完成，
         // 避免「已删除但墓碑未写」的中间状态漏掉后续重放检测。
         let deleted: i32 = Script::new(TAKE_IF_MATCHES_SCRIPT)
@@ -235,11 +287,10 @@ impl RefreshTokenStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let old_hash = Self::token_hash(value);
         let new_hash = Self::token_hash(&replacement.value);
-        let tombstone = serde_json::to_string(&Tombstone {
-            family_id: token.family_id.clone(),
-            client_id: token.client_id.clone(),
-            user_id: token.user_id.clone(),
-        })?;
+        let tombstone = serde_json::to_string(&Tombstone::for_token(
+            token,
+            TombstoneState::Consumed,
+        ))?;
         let new_ttl = Self::effective_ttl(replacement);
         let rotated: i32 = Script::new(ROTATE_WITH_TOMBSTONE_SCRIPT)
             .key(Self::token_key(value))
@@ -268,7 +319,8 @@ impl RefreshTokenStore {
     /// 读取墓碑（如果存在）。
     ///
     /// 用于区分「token 不存在因为从未签发」和「token 曾合法存在但已被消费/
-    /// 轮换」两种情况。后者是重放信号，前者是普通无效 token。
+    /// 轮换」两种情况。`Consumed` 是重放候选，`FamilyRevoked` 只表示该
+    /// family 已经处理过；没有墓碑的未知 token 是普通无效 token。
     pub async fn read_tombstone(
         &self,
         value: &str,
@@ -296,12 +348,47 @@ impl RefreshTokenStore {
         client_id: &str,
         user_id: &str,
     ) -> Result<u64, RefreshTokenStoreError> {
+        self.revoke_family_internal(family_id, client_id, user_id, None)
+            .await
+    }
+
+    /// 撤销 family，并把触发 replay 的墓碑原子标记为 `family_revoked`。
+    ///
+    /// `replayed_value` 只用于计算哈希并定位墓碑，不会进入 Redis payload 或日志。
+    /// 标记由同一个 Lua 脚本完成，使并发 replay 中只有第一个请求执行 family
+    /// 撤销；后续请求只得到普通 invalid_grant。
+    pub async fn revoke_family_after_replay(
+        &self,
+        family_id: &str,
+        client_id: &str,
+        user_id: &str,
+        replayed_value: &str,
+    ) -> Result<u64, RefreshTokenStoreError> {
+        self.revoke_family_internal(
+            family_id,
+            client_id,
+            user_id,
+            Some(replayed_value),
+        )
+        .await
+    }
+
+    async fn revoke_family_internal(
+        &self,
+        family_id: &str,
+        client_id: &str,
+        user_id: &str,
+        replayed_value: Option<&str>,
+    ) -> Result<u64, RefreshTokenStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let tombstone_json = serde_json::to_string(&Tombstone {
             family_id: family_id.to_owned(),
             client_id: client_id.to_owned(),
             user_id: user_id.to_owned(),
+            state: TombstoneState::FamilyRevoked,
+            recorded_at: time::OffsetDateTime::now_utc().unix_timestamp(),
         })?;
+        let replayed_hash = replayed_value.map(Self::token_hash).unwrap_or_default();
         let removed: i64 = Script::new(REVOKE_FAMILY_SCRIPT)
             .key(Self::family_idx_key(family_id))
             .key(Self::client_idx_key(client_id))
@@ -309,6 +396,7 @@ impl RefreshTokenStore {
             .arg(TOMBSTONE_PREFIX)
             .arg(tombstone_json)
             .arg(TOMBSTONE_TTL_SECONDS)
+            .arg(replayed_hash)
             .invoke_async(&mut connection)
             .await?;
         Ok(removed.max(0) as u64)
@@ -332,8 +420,28 @@ impl RefreshTokenStore {
             .key(Self::client_idx_key(client_id))
             .arg(TOKEN_KEY_PREFIX)
             .arg(FAMILY_IDX_PREFIX)
+            .arg(TOMBSTONE_PREFIX)
             .invoke_async(&mut connection)
             .await?;
         Ok(removed.max(0) as u64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Tombstone, TombstoneState};
+    use time::{Duration, OffsetDateTime};
+
+    #[test]
+    fn legacy_tombstones_remain_replay_candidates() {
+        let tombstone: Tombstone = serde_json::from_str(
+            r#"{"family_id":"family","client_id":"client","user_id":"user"}"#,
+        )
+        .expect("legacy tombstone should deserialize");
+
+        assert_eq!(tombstone.state, TombstoneState::Consumed);
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(1);
+        assert!(!tombstone.is_recent_consumption(now));
+        assert!(tombstone.is_replay_candidate());
     }
 }

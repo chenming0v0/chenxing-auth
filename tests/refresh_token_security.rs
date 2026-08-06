@@ -1,7 +1,7 @@
 use base64::Engine;
 use chenxing_auth::oauth::{
     refresh::{REFRESH_TOKEN_ABSOLUTE_TTL_DAYS, RefreshToken, RefreshTokenError},
-    refresh_store::RefreshTokenStore,
+    refresh_store::{RefreshTokenStore, TombstoneState},
 };
 use sha2::Digest;
 use time::{Duration, OffsetDateTime};
@@ -142,6 +142,11 @@ async fn replay_old_token_revokes_entire_family() {
     assert!(tombstone.is_some());
     assert_eq!(tombstone.as_ref().unwrap().family_id, family_id);
     assert_eq!(tombstone.as_ref().unwrap().client_id, client_id);
+    assert_eq!(
+        tombstone.as_ref().unwrap().state,
+        TombstoneState::Consumed
+    );
+    assert!(tombstone.as_ref().unwrap().recorded_at > 0);
 
     // 此时 token2 仍然存活
     assert!(
@@ -154,10 +159,26 @@ async fn replay_old_token_revokes_entire_family() {
 
     // 再次提交 token1（重放） → 撤销整个 family
     let revoked = store
-        .revoke_family(&family_id, &client_id, "user-replay")
+        .revoke_family_after_replay(&family_id, &client_id, "user-replay", &token1.value)
         .await
         .expect("revoke family");
     assert_eq!(revoked, 1, "should revoke 1 token (token2)");
+
+    let replay_tombstone = store
+        .read_tombstone(&token1.value)
+        .await
+        .expect("read replay tombstone")
+        .expect("replay tombstone");
+    assert_eq!(replay_tombstone.state, TombstoneState::FamilyRevoked);
+
+    // The same replay is idempotent and must not execute another family revoke.
+    assert_eq!(
+        store
+            .revoke_family_after_replay(&family_id, &client_id, "user-replay", &token1.value)
+            .await
+            .expect("repeat family revoke"),
+        0
+    );
 
     // token2 被撤销了
     assert!(
@@ -188,6 +209,65 @@ async fn replay_old_token_revokes_entire_family() {
         .query_async(&mut conn)
         .await
         .expect("cleanup tombstones");
+}
+
+/// Issue #161：并发轮换只有一个 CAS 胜者，胜者签发的新 token 不应被竞争
+/// 请求误判 replay 而撤销。
+#[tokio::test]
+async fn concurrent_rotation_keeps_the_single_winner_token_alive() {
+    let store = RefreshTokenStore::new(redis_client());
+    let client_id = format!("cx_concurrent_rotation_{}", Uuid::new_v4().simple());
+    let original = RefreshToken::new(
+        client_id.clone(),
+        "user-concurrent".to_owned(),
+        vec!["openid".to_owned()],
+    );
+    let replacement_a = original.rotate(vec!["openid".to_owned()]);
+    let replacement_b = original.rotate(vec!["openid".to_owned()]);
+    let family_id = original.family_id.clone();
+
+    store.save(&original).await.expect("save original token");
+    let (result_a, result_b) = tokio::join!(
+        store.rotate_if_matches(&original.value, &original, &replacement_a),
+        store.rotate_if_matches(&original.value, &original, &replacement_b),
+    );
+    let won_a = result_a.expect("rotation A");
+    let won_b = result_b.expect("rotation B");
+    assert_ne!(won_a, won_b, "exactly one concurrent CAS must win");
+
+    let winner = if won_a { &replacement_a } else { &replacement_b };
+    assert!(
+        store
+            .find(&winner.value)
+            .await
+            .expect("find winning replacement")
+            .is_some(),
+        "the CAS winner must remain usable after a concurrent loser"
+    );
+    let tombstone = store
+        .read_tombstone(&original.value)
+        .await
+        .expect("read concurrent tombstone")
+        .expect("concurrent tombstone");
+    assert_eq!(tombstone.state, TombstoneState::Consumed);
+
+    let client = redis_client();
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis");
+    let _: () = redis::cmd("DEL")
+        .arg(token_key(&winner.value))
+        .arg(format!("cx:refresh:client_idx:{client_id}"))
+        .arg(format!("cx:refresh:family_idx:{family_id}"))
+        .arg(format!(
+            "cx:refresh:tombstone:{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(sha2::Sha256::digest(original.value.as_bytes()))
+        ))
+        .query_async(&mut conn)
+        .await
+        .expect("cleanup concurrent rotation");
 }
 
 /// Issue #110：墓碑 client_id 校验防止跨 client DoS。
@@ -296,6 +376,14 @@ async fn rotate_client_secret_revokes_all_refresh_tokens() {
             .expect("find token2")
             .is_none()
     );
+    assert!(
+        store
+            .read_tombstone(&token1.value)
+            .await
+            .expect("read secret rotation tombstone")
+            .is_none(),
+        "client secret revocation must not create replay tombstones"
+    );
 
     // 清理索引（token 主键已被撤销函数删除）
     let client = redis_client();
@@ -309,6 +397,41 @@ async fn rotate_client_secret_revokes_all_refresh_tokens() {
         .query_async(&mut conn)
         .await
         .expect("cleanup");
+}
+
+/// Issue #161：显式 token revoke 与补偿删除不应留下可触发 family revoke 的墓碑。
+#[tokio::test]
+async fn explicit_refresh_revoke_does_not_create_replay_tombstone() {
+    let store = RefreshTokenStore::new(redis_client());
+    let client_id = format!("cx_explicit_revoke_{}", Uuid::new_v4().simple());
+    let token = RefreshToken::new(
+        client_id.clone(),
+        "user-explicit-revoke".to_owned(),
+        vec!["openid".to_owned()],
+    );
+    let family_id = token.family_id.clone();
+
+    store.save(&token).await.expect("save token");
+    store.remove(&token.value).await.expect("explicitly revoke token");
+    assert!(
+        store
+            .read_tombstone(&token.value)
+            .await
+            .expect("read explicit revoke tombstone")
+            .is_none()
+    );
+
+    let client = redis_client();
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis");
+    let _: () = redis::cmd("DEL")
+        .arg(format!("cx:refresh:client_idx:{client_id}"))
+        .arg(format!("cx:refresh:family_idx:{family_id}"))
+        .query_async(&mut conn)
+        .await
+        .expect("cleanup explicit revoke");
 }
 
 /// 旧格式 token（无 `issued_at` / `family_id`）能反序列化并轮换。
@@ -373,7 +496,7 @@ async fn indexes_and_tombstones_have_ttl() {
     );
     // `RefreshToken::new` 每次都生成新的 family_id，所以 token2 必须由 token1
     // 轮换得到才与它同族 —— 这也是生产里 family 增长的唯一方式。
-    // 用两个独立 new() 会让 token1 成为其 family 的唯一成员，移除后 SREM 清空集合、
+    // 用两个独立 new() 会让 token1 成为其 family 的唯一成员，消费后 SREM 清空集合、
     // Redis 直接删键，family 索引 TTL 变成 -2（键不存在），断言的对象就没了。
     let token2 = token1.rotate(vec!["profile".to_owned()]);
     let family_id = token1.family_id.clone();
@@ -385,11 +508,11 @@ async fn indexes_and_tombstones_have_ttl() {
     // 保存两个 token 以保证索引非空
     store.save(&token1).await.expect("save token1");
     store.save(&token2).await.expect("save token2");
-    // 移除一个并写墓碑
+    // 正常消费一个并写 replay tombstone；显式 remove 不再写 replay marker。
     store
-        .remove(&token1.value)
+        .take_if_matches(&token1.value, &token1)
         .await
-        .expect("remove token1 and write tombstone");
+        .expect("consume token1 and write tombstone");
 
     let client = redis_client();
     let mut conn = client

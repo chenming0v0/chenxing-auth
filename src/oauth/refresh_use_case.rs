@@ -4,7 +4,7 @@ use super::{
 use crate::{state::AppState, users::domain::UserId};
 
 use super::super::{
-    refresh_store::Tombstone,
+    refresh_store::{Tombstone, TombstoneState},
     session::active_user_id,
     token_security::record_token_event,
 };
@@ -131,8 +131,8 @@ pub(super) async fn exchange_refresh_token(
             Ok(token)
         }
         Ok(false) => {
-            // A lost CAS race means another request consumed this token concurrently. The
-            // matching tombstone identifies the family that must be revoked.
+            // A lost CAS race is classified from the matching tombstone: a recent consumed
+            // marker is a bounded concurrency race, while an old one is a replay signal.
             let tombstone = match state.refresh_tokens.read_tombstone(refresh_value).await {
                 Ok(tombstone) => tombstone,
                 Err(store_error) => {
@@ -142,7 +142,36 @@ pub(super) async fn exchange_refresh_token(
             };
             match tombstone {
                 Some(tombstone) if tombstone.client_id == client_id => {
-                    revoke_family_after_replay(state, client_id, &tombstone).await
+                    match classify_tombstone(
+                        &tombstone,
+                        time::OffsetDateTime::now_utc(),
+                        true,
+                    ) {
+                        TombstoneDisposition::ConcurrentRace => record_and_return_invalid(
+                            state,
+                            Some(&refresh.user_id),
+                            client_id,
+                            "token_race",
+                        )
+                        .await,
+                        TombstoneDisposition::Replay => {
+                            revoke_family_after_replay(
+                                state,
+                                client_id,
+                                refresh_value,
+                                &tombstone,
+                            )
+                            .await
+                        }
+                        TombstoneDisposition::ExplicitRevoke
+                        | TombstoneDisposition::FamilyRevoked => record_and_return_invalid(
+                            state,
+                            Some(&refresh.user_id),
+                            client_id,
+                            "token_revoked",
+                        )
+                        .await,
+                    }
                 }
                 _ => {
                     // A missing tombstone is a narrow race in which the family cannot be
@@ -199,9 +228,30 @@ async fn handle_missing_refresh_token(
     client_id: &str,
     refresh_value: &str,
 ) -> Result<TokenResponse, RefreshExchangeError> {
+    // A request that never observed the live token cannot prove it was concurrent;
+    // keep the grace window exclusive to the post-read CAS loser path.
     match state.refresh_tokens.read_tombstone(refresh_value).await {
         Ok(Some(tombstone)) if tombstone.client_id == client_id => {
-            revoke_family_after_replay(state, client_id, &tombstone).await
+            match classify_tombstone(&tombstone, time::OffsetDateTime::now_utc(), false) {
+                TombstoneDisposition::Replay => {
+                    revoke_family_after_replay(state, client_id, refresh_value, &tombstone).await
+                }
+                TombstoneDisposition::ConcurrentRace => record_and_return_invalid(
+                    state,
+                    Some(&tombstone.user_id),
+                    client_id,
+                    "token_race",
+                )
+                .await,
+                TombstoneDisposition::ExplicitRevoke
+                | TombstoneDisposition::FamilyRevoked => record_and_return_invalid(
+                    state,
+                    Some(&tombstone.user_id),
+                    client_id,
+                    "token_revoked",
+                )
+                .await,
+            }
         }
         Ok(Some(_)) => {
             // Do not record the submitted token value; it is a credential.
@@ -221,14 +271,46 @@ async fn handle_missing_refresh_token(
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum TombstoneDisposition {
+    ConcurrentRace,
+    Replay,
+    ExplicitRevoke,
+    FamilyRevoked,
+}
+
+fn classify_tombstone(
+    tombstone: &Tombstone,
+    now: time::OffsetDateTime,
+    allow_concurrency_grace: bool,
+) -> TombstoneDisposition {
+    if tombstone.is_replay_candidate() {
+        if allow_concurrency_grace && tombstone.is_recent_consumption(now) {
+            return TombstoneDisposition::ConcurrentRace;
+        }
+        return TombstoneDisposition::Replay;
+    }
+    match tombstone.state {
+        TombstoneState::ExplicitRevoke => TombstoneDisposition::ExplicitRevoke,
+        TombstoneState::FamilyRevoked => TombstoneDisposition::FamilyRevoked,
+        TombstoneState::Consumed => TombstoneDisposition::Replay,
+    }
+}
+
 async fn revoke_family_after_replay(
     state: &AppState,
     client_id: &str,
+    replayed_value: &str,
     tombstone: &Tombstone,
 ) -> Result<TokenResponse, RefreshExchangeError> {
     match state
         .refresh_tokens
-        .revoke_family(&tombstone.family_id, client_id, &tombstone.user_id)
+        .revoke_family_after_replay(
+            &tombstone.family_id,
+            client_id,
+            &tombstone.user_id,
+            replayed_value,
+        )
         .await
     {
         Ok(revoked) => {
@@ -280,8 +362,9 @@ async fn record_and_return_invalid(
 
 #[cfg(test)]
 mod tests {
-    use super::select_scopes;
+    use super::{TombstoneDisposition, classify_tombstone, select_scopes};
     use crate::oauth::{refresh::RefreshToken, token_use_case::OAuthError};
+    use crate::oauth::refresh_store::{Tombstone, TombstoneState};
     use time::{Duration, OffsetDateTime};
 
     fn refresh_token() -> RefreshToken {
@@ -327,6 +410,64 @@ mod tests {
             select_scopes(Some("profile openid"), &refresh.scopes)
                 .expect("requested scopes are within the grant"),
             vec!["profile".to_owned(), "openid".to_owned()]
+        );
+    }
+
+    fn tombstone(state: TombstoneState, recorded_at: i64) -> Tombstone {
+        Tombstone {
+            family_id: "family".to_owned(),
+            client_id: "cx_client".to_owned(),
+            user_id: "7".to_owned(),
+            state,
+            recorded_at,
+        }
+    }
+
+    #[test]
+    fn recent_cas_loser_is_a_concurrency_race_but_missing_token_is_replay() {
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(10);
+        let consumed = tombstone(TombstoneState::Consumed, now.unix_timestamp() - 1);
+
+        assert_eq!(
+            classify_tombstone(&consumed, now, true),
+            TombstoneDisposition::ConcurrentRace
+        );
+        assert_eq!(
+            classify_tombstone(&consumed, now, false),
+            TombstoneDisposition::Replay
+        );
+    }
+
+    #[test]
+    fn old_consumed_tombstone_is_a_replay() {
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(10);
+        let consumed = tombstone(TombstoneState::Consumed, now.unix_timestamp() - 6);
+
+        assert_eq!(
+            classify_tombstone(&consumed, now, true),
+            TombstoneDisposition::Replay
+        );
+    }
+
+    #[test]
+    fn non_consumption_tombstones_never_trigger_replay_revocation() {
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(10);
+
+        assert_eq!(
+            classify_tombstone(
+                &tombstone(TombstoneState::ExplicitRevoke, now.unix_timestamp()),
+                now,
+                true,
+            ),
+            TombstoneDisposition::ExplicitRevoke
+        );
+        assert_eq!(
+            classify_tombstone(
+                &tombstone(TombstoneState::FamilyRevoked, now.unix_timestamp()),
+                now,
+                true,
+            ),
+            TombstoneDisposition::FamilyRevoked
         );
     }
 }
