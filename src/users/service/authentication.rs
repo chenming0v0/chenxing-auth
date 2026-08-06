@@ -3,8 +3,8 @@
 //! 限流维度的预留、释放与失败记账都在这里：认证是唯一需要"先预留再按结果
 //! 回滚或记账"的用例，把这套协作和登录判定放在一起，避免它散到其他用例里。
 //!
-//! 计时约束：无论标识符是否命中用户，都必须执行一次完整的 Argon2。
-//! `verify_login_password(_, None)` 负责"用户不存在"路径的计时填充（Issue #124）。
+//! 计时约束：进入有效登录认证流程后，所有最终认证失败或限流结果都必须完成一次
+//! Argon2；已经做过真实口令校验的失败复用那次校验，尚未校验的路径使用哑校验填充。
 
 use super::{UserService, UserServiceError};
 use crate::{
@@ -15,6 +15,37 @@ use crate::{
         repository,
     },
 };
+
+enum AuthenticationFailure {
+    RateLimited,
+    RecordFailure(Vec<LimiterDimension>),
+}
+
+/// 保证一次登录尝试最多只消耗一次 Argon2 校验。
+///
+/// 预留限流在口令校验之前命中时，`fill_if_unverified` 使用哑哈希补齐计时；
+/// 已经校验过真实口令时则不再重复计算。
+struct LoginPassword {
+    value: Option<String>,
+}
+impl LoginPassword {
+    fn new(value: String) -> Self {
+        Self { value: Some(value) }
+    }
+
+    async fn verify_against(&mut self, password_hash: String) -> bool {
+        let Some(value) = self.value.take() else {
+            return false;
+        };
+        verify_login_password(value, Some(password_hash)).await
+    }
+
+    async fn fill_if_unverified(&mut self) {
+        if let Some(value) = self.value.take() {
+            let _ = verify_login_password(value, None).await;
+        }
+    }
+}
 
 impl UserService {
     pub async fn authenticate(
@@ -27,13 +58,16 @@ impl UserService {
                 UserServiceError::InvalidLoginInput
             }
         })?;
+        let mut password = LoginPassword::new(login.password);
         let source_ip = self.source_ip(source_ip)?;
         let source_dimensions = source_ip
             .as_deref()
             .map(|source_ip| vec![(FailureDimension::SourceIp, source_ip.to_owned())])
             .unwrap_or_default();
         if !self.reserve_dimensions(source_dimensions.clone()).await? {
-            return Err(UserServiceError::RateLimited);
+            return self
+                .finish_authentication_failure(&mut password, AuthenticationFailure::RateLimited)
+                .await;
         }
         let credentials =
             match repository::find_credentials_by_identifier(&self.pool, &login.identifier).await {
@@ -44,42 +78,36 @@ impl UserService {
                 }
             };
         let Some(credentials) = credentials else {
-            // 计时填充：标识符没命中用户时仍然跑完一次 Argon2，否则"用户不存在"
-            // 会比"口令错误"快约 50 ms 返回，可用于枚举已注册账号。
-            let _ = verify_login_password(login.password.clone(), None).await;
-            if self
-                .record_failure(source_dimensions)
-                .await?
-                .reached
-                .is_empty()
-            {
-                return Err(UserServiceError::InvalidCredentials);
-            } else {
-                return Err(UserServiceError::RateLimited);
-            }
+            return self
+                .finish_authentication_failure(
+                    &mut password,
+                    AuthenticationFailure::RecordFailure(source_dimensions),
+                )
+                .await;
         };
         let account_key = credentials.email.clone();
         let account_dimensions = vec![(FailureDimension::Account, account_key)];
         if !self.reserve_dimensions(account_dimensions.clone()).await? {
             self.release_dimensions(source_dimensions).await?;
-            return Err(UserServiceError::RateLimited);
+            return self
+                .finish_authentication_failure(&mut password, AuthenticationFailure::RateLimited)
+                .await;
         }
         let mut dimensions = source_dimensions;
         dimensions.extend(account_dimensions);
-        let password_valid = verify_login_password(
-            login.password.clone(),
-            Some(credentials.password_hash.clone()),
-        )
-        .await;
+        let password_valid = password
+            .verify_against(credentials.password_hash)
+            .await;
         // 状态、口令登录开关与口令校验合并判定：三者中任何一项不通过都返回同一个
         // 错误，不让调用方区分"账号被禁用"和"口令错误"。
         if credentials.status != "active" || !credentials.password_login_enabled || !password_valid
         {
-            if self.record_failure(dimensions).await?.reached.is_empty() {
-                return Err(UserServiceError::InvalidCredentials);
-            } else {
-                return Err(UserServiceError::RateLimited);
-            }
+            return self
+                .finish_authentication_failure(
+                    &mut password,
+                    AuthenticationFailure::RecordFailure(dimensions),
+                )
+                .await;
         }
 
         self.release_dimensions(dimensions).await?;
@@ -127,6 +155,25 @@ impl UserService {
         dimensions: Vec<LimiterDimension>,
     ) -> Result<crate::auth_limiter::domain::FailureRecord, UserServiceError> {
         Ok(self.limiter.record_reserved_failures(dimensions).await?)
+    }
+
+    async fn finish_authentication_failure(
+        &self,
+        password: &mut LoginPassword,
+        failure: AuthenticationFailure,
+    ) -> Result<UserId, UserServiceError> {
+        password.fill_if_unverified().await;
+        let error = match failure {
+            AuthenticationFailure::RateLimited => UserServiceError::RateLimited,
+            AuthenticationFailure::RecordFailure(dimensions) => {
+                if self.record_failure(dimensions).await?.reached.is_empty() {
+                    UserServiceError::InvalidCredentials
+                } else {
+                    UserServiceError::RateLimited
+                }
+            }
+        };
+        Err(error)
     }
 }
 
