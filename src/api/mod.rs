@@ -29,8 +29,9 @@ use crate::{
     },
     admin::provider_web_handlers::oauth_settings,
     admin::settings_handlers::{
-        get_email_policy_setting, get_passkey_setting, get_registration_email, get_smtp_setting,
-        update_email_policy_setting, update_passkey_setting, update_registration_email,
+        get_email_policy_setting, get_passkey_setting, get_registration_email,
+        get_security_limits_setting, get_smtp_setting, update_email_policy_setting,
+        update_passkey_setting, update_registration_email, update_security_limits_setting,
         update_smtp_setting,
     },
     admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
@@ -155,6 +156,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/admin/settings/smtp",
             get(get_smtp_setting).put(update_smtp_setting),
+        )
+        .route(
+            "/api/v1/admin/settings/security-limits",
+            get(get_security_limits_setting).put(update_security_limits_setting),
         )
         .route(
             "/api/v1/admin/oauth/providers",

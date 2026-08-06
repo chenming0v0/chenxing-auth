@@ -6,6 +6,7 @@ import { AdminGate, useAdminAccess, type AdminAccess } from './shared'
 import { EmailPolicyPanel } from './settings/email-policy-panel'
 import { OAuthProvidersPanel } from './settings/oauth-providers-panel'
 import { PasskeyPanel } from './settings/passkey-panel'
+import { SecurityLimitsPanel } from './settings/security-limits-panel'
 import { SmtpPanel } from './settings/smtp-panel'
 
 export function AdminSettings() {
@@ -60,6 +61,7 @@ function SettingsWorkspace({ access }: { access: AdminAccess }) {
       <PasskeyPanel onMessage={flash} />
       <EmailPolicyPanel onMessage={flash} />
       <SmtpPanel onMessage={flash} />
+      <SecurityLimitsPanel onMessage={flash} />
       {canManageProviders ? (
         <OAuthProvidersPanel onMessage={flash} />
       ) : (

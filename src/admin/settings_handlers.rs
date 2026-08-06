@@ -14,8 +14,8 @@ use crate::{
     audit::AuditEvent,
     error,
     settings::{
-        EmailPolicySetting, PasskeySetting, REGISTRATION_EMAIL_FROM_KEY, SettingsServiceError,
-        SmtpSettingUpdate,
+        EmailPolicySetting, PasskeySetting, REGISTRATION_EMAIL_FROM_KEY, SECURITY_LIMITS_KEY,
+        SecurityLimitsSetting, SettingsServiceError, SmtpSettingUpdate,
     },
     state::AppState,
 };
@@ -293,6 +293,75 @@ pub async fn update_smtp_setting(
         }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update smtp setting");
+            error::internal()
+        }
+    }
+}
+
+pub async fn get_security_limits_setting(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(response) =
+        current_admin_permission(&state, &headers, AdminPermission::ManageSettings).await
+    {
+        return response;
+    }
+    match state.settings.security_limits().await {
+        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load security limits setting");
+            error::internal()
+        }
+    }
+}
+
+pub async fn update_security_limits_setting(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<SecurityLimitsSetting>,
+) -> Response {
+    let actor =
+        match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
+            Ok(actor) => actor,
+            Err(response) => return response,
+        };
+    match state.settings.set_security_limits(input).await {
+        Ok(setting) => {
+            // 阈值数值本身不是凭据，完整记录便于事后追查是谁放宽了限流。
+            if record_setting_event(
+                &state,
+                actor,
+                "security_limits_update",
+                SECURITY_LIMITS_KEY,
+                serde_json::json!({
+                    "unauthenticated_source_qps": setting.unauthenticated_source_qps,
+                    "authorization_code_ttl_seconds": setting.authorization_code_ttl_seconds,
+                    "pending_request_ttl_seconds": setting.pending_request_ttl_seconds,
+                    "max_pending_requests_per_client": setting.max_pending_requests_per_client,
+                    "max_pending_requests_global": setting.max_pending_requests_global,
+                    "auth_failure_window_seconds": setting.auth_failure_window_seconds,
+                    "account_failure_limit": setting.account_failure_limit,
+                    "ip_failure_limit": setting.ip_failure_limit,
+                    "totp_ticket_failure_limit": setting.totp_ticket_failure_limit,
+                    "external_login_state_ttl_seconds": setting.external_login_state_ttl_seconds,
+                    "external_login_state_rate_window_seconds": setting.external_login_state_rate_window_seconds,
+                    "external_login_state_rate_limit": setting.external_login_state_rate_limit,
+                    "external_login_state_max_pending": setting.external_login_state_max_pending,
+                }),
+            )
+            .await
+            .is_err()
+            {
+                return error::internal();
+            }
+            (StatusCode::OK, Json(setting)).into_response()
+        }
+        Err(SettingsServiceError::Validation(error_value)) => {
+            error::bad_request("invalid_security_limits", error_value.to_string())
+        }
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to update security limits setting");
             error::internal()
         }
     }

@@ -276,6 +276,21 @@ export type SmtpSettingUpdate = {
   force_auth_login: boolean
   password?: string | null
 }
+export type SecurityLimitsSetting = {
+  unauthenticated_source_qps: number
+  authorization_code_ttl_seconds: number
+  pending_request_ttl_seconds: number
+  max_pending_requests_per_client: number
+  max_pending_requests_global: number
+  auth_failure_window_seconds: number
+  account_failure_limit: number
+  ip_failure_limit: number
+  totp_ticket_failure_limit: number
+  external_login_state_ttl_seconds: number
+  external_login_state_rate_window_seconds: number
+  external_login_state_rate_limit: number
+  external_login_state_max_pending: number
+}
 export type OAuthProviderSummary = {
   id: number
   name: string

@@ -1,5 +1,6 @@
 use super::{
-    EMAIL_POLICY_KEY, PASSKEY_KEY, REGISTRATION_EMAIL_FROM_KEY, SMTP_KEY,
+    EMAIL_POLICY_KEY, PASSKEY_KEY, REGISTRATION_EMAIL_FROM_KEY, SECURITY_LIMITS_KEY, SMTP_KEY,
+    SecurityLimitsSetting,
     domain::{EmailPolicySetting, PasskeySetting, StoredSmtpSetting},
 };
 use crate::sqlx::PgPool;
@@ -76,6 +77,25 @@ pub async fn set_email_policy(
 ) -> Result<(), crate::sqlx::Error> {
     let raw = serde_json::to_string(value).map_err(json_error)?;
     set_text(pool, EMAIL_POLICY_KEY, Some(&raw)).await
+}
+
+pub async fn get_security_limits(
+    pool: &PgPool,
+) -> Result<Option<SecurityLimitsSetting>, crate::sqlx::Error> {
+    match get_text(pool, SECURITY_LIMITS_KEY).await? {
+        Some(raw) if !raw.trim().is_empty() => {
+            serde_json::from_str(&raw).map(Some).map_err(json_error)
+        }
+        _ => Ok(None),
+    }
+}
+
+pub async fn set_security_limits(
+    pool: &PgPool,
+    value: &SecurityLimitsSetting,
+) -> Result<(), crate::sqlx::Error> {
+    let raw = serde_json::to_string(value).map_err(json_error)?;
+    set_text(pool, SECURITY_LIMITS_KEY, Some(&raw)).await
 }
 
 pub(crate) async fn get_smtp(

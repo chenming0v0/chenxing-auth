@@ -195,3 +195,194 @@ async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
     let _ = database;
     let _ = std::fs::remove_dir_all(key_directory);
 }
+
+#[tokio::test]
+#[serial(system_settings)]
+async fn owner_can_manage_security_limits_with_validation() {
+    let (router, database, key_directory) = setup().await;
+
+    // 1. 读取默认值
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/settings/security-limits")
+                .header("authorization", "Bearer admin-system-settings-token")
+                .body(Body::empty())
+                .expect("security limits get"),
+        )
+        .await
+        .expect("security limits get response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let defaults = json(response).await;
+    assert_eq!(defaults["unauthenticated_source_qps"], 30);
+    assert_eq!(defaults["authorization_code_ttl_seconds"], 300);
+    assert_eq!(defaults["ip_failure_limit"], 30);
+
+    // 2. 合法更新后回读一致
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/settings/security-limits")
+                .header("authorization", "Bearer admin-system-settings-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "unauthenticated_source_qps": 10,
+                        "authorization_code_ttl_seconds": 120,
+                        "pending_request_ttl_seconds": 300,
+                        "max_pending_requests_per_client": 15,
+                        "max_pending_requests_global": 500,
+                        "auth_failure_window_seconds": 600,
+                        "account_failure_limit": 5,
+                        "ip_failure_limit": 20,
+                        "totp_ticket_failure_limit": 3,
+                        "external_login_state_ttl_seconds": 300,
+                        "external_login_state_rate_window_seconds": 30,
+                        "external_login_state_rate_limit": 15,
+                        "external_login_state_max_pending": 5000
+                    })
+                    .to_string(),
+                ))
+                .expect("security limits put"),
+        )
+        .await
+        .expect("security limits put response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let updated = json(response).await;
+    assert_eq!(updated["unauthenticated_source_qps"], 10);
+    assert_eq!(updated["authorization_code_ttl_seconds"], 120);
+    assert_eq!(updated["ip_failure_limit"], 20);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/settings/security-limits")
+                .header("authorization", "Bearer admin-system-settings-token")
+                .body(Body::empty())
+                .expect("security limits get after update"),
+        )
+        .await
+        .expect("security limits get after update response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let refetched = json(response).await;
+    assert_eq!(refetched["unauthenticated_source_qps"], 10);
+    assert_eq!(refetched["ip_failure_limit"], 20);
+
+    // 3. 非法值（0）返回 400
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/settings/security-limits")
+                .header("authorization", "Bearer admin-system-settings-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "unauthenticated_source_qps": 0,
+                        "authorization_code_ttl_seconds": 120,
+                        "pending_request_ttl_seconds": 300,
+                        "max_pending_requests_per_client": 15,
+                        "max_pending_requests_global": 500,
+                        "auth_failure_window_seconds": 600,
+                        "account_failure_limit": 5,
+                        "ip_failure_limit": 20,
+                        "totp_ticket_failure_limit": 3,
+                        "external_login_state_ttl_seconds": 300,
+                        "external_login_state_rate_window_seconds": 30,
+                        "external_login_state_rate_limit": 15,
+                        "external_login_state_max_pending": 5000
+                    })
+                    .to_string(),
+                ))
+                .expect("security limits zero qps"),
+        )
+        .await
+        .expect("security limits zero qps response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = json(response).await;
+    assert_eq!(error["code"], "invalid_security_limits");
+
+    // 4. 非法值（负数）返回 400
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/settings/security-limits")
+                .header("authorization", "Bearer admin-system-settings-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "unauthenticated_source_qps": 10,
+                        "authorization_code_ttl_seconds": 120,
+                        "pending_request_ttl_seconds": 300,
+                        "max_pending_requests_per_client": 15,
+                        "max_pending_requests_global": 500,
+                        "auth_failure_window_seconds": 600,
+                        "account_failure_limit": -1,
+                        "ip_failure_limit": 20,
+                        "totp_ticket_failure_limit": 3,
+                        "external_login_state_ttl_seconds": 300,
+                        "external_login_state_rate_window_seconds": 30,
+                        "external_login_state_rate_limit": 15,
+                        "external_login_state_max_pending": 5000
+                    })
+                    .to_string(),
+                ))
+                .expect("security limits negative limit"),
+        )
+        .await
+        .expect("security limits negative limit response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // 5. 无 authorization 返回 401
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/settings/security-limits")
+                .body(Body::empty())
+                .expect("unauthorized security limits get"),
+        )
+        .await
+        .expect("unauthorized security limits get response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // cleanup: 恢复默认值
+    let _ = router
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/settings/security-limits")
+                .header("authorization", "Bearer admin-system-settings-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "unauthenticated_source_qps": 30,
+                        "authorization_code_ttl_seconds": 300,
+                        "pending_request_ttl_seconds": 600,
+                        "max_pending_requests_per_client": 20,
+                        "max_pending_requests_global": 1000,
+                        "auth_failure_window_seconds": 900,
+                        "account_failure_limit": 10,
+                        "ip_failure_limit": 30,
+                        "totp_ticket_failure_limit": 5,
+                        "external_login_state_ttl_seconds": 600,
+                        "external_login_state_rate_window_seconds": 60,
+                        "external_login_state_rate_limit": 30,
+                        "external_login_state_max_pending": 10000
+                    })
+                    .to_string(),
+                ))
+                .expect("security limits reset"),
+        )
+        .await;
+
+    let _ = database;
+    let _ = std::fs::remove_dir_all(key_directory);
+}

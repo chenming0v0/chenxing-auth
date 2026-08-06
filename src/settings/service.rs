@@ -1,4 +1,5 @@
 use super::{
+    SecurityLimitsSetting,
     domain::{
         EmailPolicySetting, PasskeySetting, SettingsValidationError, SmtpSetting,
         SmtpSettingUpdate, StoredSmtpSetting,
@@ -133,6 +134,21 @@ impl SettingsService {
     ) -> Result<EmailPolicySetting, SettingsServiceError> {
         let value = value.validate()?;
         repository::set_email_policy(&self.pool, &value).await?;
+        Ok(value)
+    }
+
+    pub async fn security_limits(&self) -> Result<SecurityLimitsSetting, SettingsServiceError> {
+        Ok(repository::get_security_limits(&self.pool)
+            .await?
+            .unwrap_or_default())
+    }
+
+    pub async fn set_security_limits(
+        &self,
+        value: SecurityLimitsSetting,
+    ) -> Result<SecurityLimitsSetting, SettingsServiceError> {
+        let value = value.validate()?;
+        repository::set_security_limits(&self.pool, &value).await?;
         Ok(value)
     }
 

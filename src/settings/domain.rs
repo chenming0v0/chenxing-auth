@@ -133,6 +133,8 @@ pub enum SettingsValidationError {
     InvalidSmtpFrom,
     #[error("smtp password is invalid")]
     InvalidSmtpPassword,
+    #[error("security limit field is invalid: {0}")]
+    InvalidSecurityLimit(&'static str),
 }
 
 impl PasskeySetting {

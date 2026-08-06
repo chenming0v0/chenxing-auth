@@ -5,5 +5,6 @@ INSERT INTO app_settings (setting_key, setting_value, updated_at)
 VALUES
   ('passkey', NULL, NOW()),
   ('email_policy', NULL, NOW()),
-  ('smtp', NULL, NOW())
+  ('smtp', NULL, NOW()),
+  ('security_limits', NULL, NOW())
 ON CONFLICT (setting_key) DO NOTHING;

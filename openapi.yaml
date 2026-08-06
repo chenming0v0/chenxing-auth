@@ -1290,6 +1290,50 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v1/admin/settings/security-limits:
+    get:
+      tags: [Admin]
+      summary: 获取安全限流阈值
+      operationId: getSecurityLimitsSetting
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 当前安全限流阈值；无记录时返回默认值
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecurityLimitsSetting' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      tags: [Admin]
+      summary: 更新安全限流阈值
+      operationId: updateSecurityLimitsSetting
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SecurityLimitsSetting' }
+      responses:
+        '200':
+          description: 已更新的安全限流阈值
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecurityLimitsSetting' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v1/admin/oauth/providers:
     get:
       tags: [Admin OAuth Providers]
@@ -1876,6 +1920,104 @@ components:
         ssl_enabled: { type: boolean }
         force_auth_login: { type: boolean }
         password: { type: string, format: password, nullable: true, writeOnly: true }
+    SecurityLimitsSetting:
+      type: object
+      description: >-
+        可配置的安全阈值与 TTL。全部 13 项必填且必须为正整数；0 或负数会被拒绝并返回 400
+        invalid_security_limits。授权码 TTL 超过 600 秒只告警不拒绝（RFC 6749 §4.1.2）。
+      required:
+        - unauthenticated_source_qps
+        - authorization_code_ttl_seconds
+        - pending_request_ttl_seconds
+        - max_pending_requests_per_client
+        - max_pending_requests_global
+        - auth_failure_window_seconds
+        - account_failure_limit
+        - ip_failure_limit
+        - totp_ticket_failure_limit
+        - external_login_state_ttl_seconds
+        - external_login_state_rate_window_seconds
+        - external_login_state_rate_limit
+        - external_login_state_max_pending
+      properties:
+        unauthenticated_source_qps:
+          type: integer
+          format: int32
+          minimum: 1
+          default: 30
+          description: 未认证来源在 OAuth /token 端点的 QPS 上限（次/秒）
+        authorization_code_ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 300
+          description: 授权码有效期（秒）。RFC 6749 §4.1.2 建议不超过 600
+        pending_request_ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 600
+          description: 待决授权请求 TTL（秒），即用户停留在授权确认页的最长时间
+        max_pending_requests_per_client:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 20
+          description: 单个 Client 的待决授权请求容量上限（个）
+        max_pending_requests_global:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 1000
+          description: 全局待决授权请求容量上限（个）
+        auth_failure_window_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 900
+          description: 认证失败计数的固定窗口时长（秒）
+        account_failure_limit:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 10
+          description: 单窗口内账户维度的失败次数上限（次）
+        ip_failure_limit:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 30
+          description: 单窗口内源 IP 维度的失败次数上限（次）
+        totp_ticket_failure_limit:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 5
+          description: 单个 TOTP 登录 ticket 允许的累计失败次数（次）
+        external_login_state_ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 600
+          description: 外部 OAuth 登录 state 有效期（秒）
+        external_login_state_rate_window_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 60
+          description: 外部 OAuth 登录 state 的源 IP 限流窗口（秒）
+        external_login_state_rate_limit:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 30
+          description: 单窗口内单个源 IP 可创建的外部登录 state 数量上限（个）
+        external_login_state_max_pending:
+          type: integer
+          format: int64
+          minimum: 1
+          default: 10000
+          description: 外部 OAuth 登录 state 的全局待决容量上限（个）
     AdminSummary:
       type: object
       properties:
