@@ -38,7 +38,7 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
-        api::router(AppState::new(config).expect("test state")),
+        api::router(AppState::new(config).await.expect("test state")),
         database,
         key_directory,
     )
@@ -226,6 +226,12 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
         "expected SPA login redirect, got {login_location}"
     );
     let request_id = request_id_from(&login_location);
+    // 授权持有者 Cookie 下发于 authorize 响应，必须随 bind 请求一起送回（#115）。
+    let authz_holder_cookie = cookies(&response);
+    assert!(
+        authz_holder_cookie.starts_with("chenxing_authz_holder="),
+        "authorize must issue the authorization holder cookie, got {authz_holder_cookie}"
+    );
 
     // SPA logs in over JSON. First factor: password → pending factor ticket.
     let response = router
@@ -292,7 +298,7 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
     let session_cookies = cookies(&response);
     let csrf = cookie_value(&session_cookies, "chenxing_csrf");
 
-    // Bind the freshly-issued session to the pending authorization request.
+    // 回归（#115）：无持有者 Cookie 的绑定请求必须被拒绝（403）。
     let response = router
         .clone()
         .oneshot(
@@ -304,10 +310,77 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
                 .header("cookie", &session_cookies)
                 .header("x-csrf-token", &csrf)
                 .body(Body::empty())
+                .expect("bind without holder request"),
+        )
+        .await
+        .expect("bind without holder response");
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "bind without holder cookie must return 403"
+    );
+
+    // 回归（#115）：伪造的持有者 Cookie 同样被拒绝（403）。
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/oauth/authorize/requests/{request_id}/bind"
+                ))
+                .header(
+                    "cookie",
+                    format!("{session_cookies}; chenxing_authz_holder=wrong_holder_value"),
+                )
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .expect("bind with wrong holder request"),
+        )
+        .await
+        .expect("bind with wrong holder response");
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "bind with wrong holder cookie must return 403"
+    );
+
+    // Bind the freshly-issued session to the pending authorization request.
+    // 合并持有者 Cookie（来自 authorize）与会话 Cookie（来自 TOTP 登录）。
+    let all_cookies = format!("{session_cookies}; {authz_holder_cookie}");
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/oauth/authorize/requests/{request_id}/bind"
+                ))
+                .header("cookie", &all_cookies)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
                 .expect("bind request"),
         )
         .await
         .expect("bind response");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    // 幂等重试：同一会话 + 同一持有者 Cookie 重复绑定仍返回 204。
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/oauth/authorize/requests/{request_id}/bind"
+                ))
+                .header("cookie", &all_cookies)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .expect("idempotent bind request"),
+        )
+        .await
+        .expect("idempotent bind response");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     // Inspect returns safe consent data for the bound request.

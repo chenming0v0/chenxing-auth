@@ -64,7 +64,7 @@ async fn test_state() -> (AppState, chenxing_auth::sqlx::PgPool, std::path::Path
     config.admin_token = ADMIN_TOKEN.to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new(config).expect("test state");
+    let state = AppState::new(config).await.expect("test state");
     (state, database, key_directory)
 }
 
@@ -273,6 +273,7 @@ fn validated_request(client_id: &str, user_id: i64) -> ValidatedAuthorizationReq
         nonce: None,
         code_challenge: "plan-challenge".to_owned(),
         owner_user_id: Some(user_id),
+        session_id: None,
     }
 }
 

@@ -66,14 +66,19 @@ impl PlanService {
         }
     }
 
-    pub async fn update(&self, id: i64, input: PlanInput) -> Result<Plan, PlanServiceError> {
+    /// 更新套餐，返回更新后的套餐及同一事务中统计的已分配用户数。
+    pub async fn update(
+        &self,
+        id: i64,
+        input: PlanInput,
+    ) -> Result<PlanWithUsers, PlanServiceError> {
         let input = validate_plan_input(input)?;
         let Some(current) = repository::find_by_id(&self.pool, id).await? else {
             return Err(PlanServiceError::NotFound);
         };
         validate_plan_update(&current, &input).map_err(map_mutation_error)?;
         match repository::update(&self.pool, id, &input).await {
-            Ok(Some(plan)) => Ok(plan),
+            Ok(Some(plan_with_users)) => Ok(plan_with_users),
             Ok(None) => Err(PlanServiceError::NotFound),
             Err(PlanRepositoryError::Database(error)) if is_unique_violation(&error) => {
                 Err(PlanServiceError::CodeConflict)

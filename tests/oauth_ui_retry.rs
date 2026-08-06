@@ -1,7 +1,10 @@
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode, header::LOCATION},
+    http::{
+        Request, StatusCode,
+        header::{LOCATION, SET_COOKIE},
+    },
 };
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, sessions::domain::Session, state::AppState};
@@ -42,7 +45,7 @@ async fn setup() -> (
     config.admin_token = "oauth-ui-retry-admin-token".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new(config).expect("state");
+    let state = AppState::new(config).await.expect("state");
     (api::router(state.clone()), state, database, key_directory)
 }
 
@@ -69,6 +72,19 @@ fn request_id(location: &str) -> String {
         .find(|(key, _)| key == "request_id")
         .map(|(_, value)| value.into_owned())
         .expect("request id")
+}
+
+/// Set-Cookie 头中提取 `name=value` 对，用于构造 Cookie 请求头。
+fn set_cookie_pair(response: &axum::response::Response, name: &str) -> Option<String> {
+    response
+        .headers()
+        .get_all(SET_COOKIE)
+        .iter()
+        .find_map(|value| {
+            let s = value.to_str().ok()?;
+            let pair = s.split(';').next()?;
+            pair.trim().starts_with(&format!("{name}=")).then(|| pair.trim().to_owned())
+        })
 }
 
 fn session_cookie(session: &Session) -> String {
@@ -159,6 +175,10 @@ async fn oauth_ui_approval_failure_keeps_pending_request_for_retry() {
         .await
         .expect("authorize response");
     let request_id = request_id(&location(&response));
+    // 授权持有者 Cookie 下发于 authorize 响应，必须随 bind 请求一起送回（#115）。
+    let authz_holder_pair = set_cookie_pair(&response, "chenxing_authz_holder")
+        .expect("authz holder cookie must be present in authorize response");
+    let bind_cookie = format!("{cookie}; {authz_holder_pair}");
 
     let response = router
         .clone()
@@ -168,7 +188,7 @@ async fn oauth_ui_approval_failure_keeps_pending_request_for_retry() {
                 .uri(format!(
                     "/api/v1/oauth/authorize/requests/{request_id}/bind"
                 ))
-                .header("cookie", &cookie)
+                .header("cookie", &bind_cookie)
                 .header("x-csrf-token", &csrf)
                 .body(Body::empty())
                 .expect("bind request"),

@@ -18,9 +18,12 @@ fn totp_secret_encryption_round_trips_with_application_key() {
     let secret = b"JBSWY3DPEHPK3PXP";
     let encrypted = encrypt_totp_secret(&key, secret).expect("encrypt secret");
     assert_ne!(encrypted, secret);
+    // decrypt_totp_secret 现在返回 Zeroizing<Vec<u8>>，比较时取内层切片。
     assert_eq!(
-        decrypt_totp_secret(&key, &encrypted).expect("decrypt secret"),
-        secret
+        decrypt_totp_secret(&key, &encrypted)
+            .expect("decrypt secret")
+            .as_slice(),
+        secret.as_slice()
     );
     assert!(decrypt_totp_secret(&[8_u8; 32], &encrypted).is_err());
 }

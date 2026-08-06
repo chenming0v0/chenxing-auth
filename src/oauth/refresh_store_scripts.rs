@@ -1,0 +1,193 @@
+//! Refresh Token 存储的 Lua 脚本（RFC 9700 §4.14.2：Token Family 撤销）。
+//!
+//! 这些脚本在 Redis 内部拼接部分键名（token 主键、family 索引），与
+//! `request_store_scripts.rs` 的既有做法一致。因此本项目假定单实例/主从
+//! Redis，不支持 Cluster 模式下的跨 slot 访问。
+//!
+//! 索引成员统一使用 `token_hash` 而不是原始 token 值，避免凭据出现在
+//! Redis keyspace 中（与 `sessions::store` 的哈希键约定一致）。
+
+/// 原子保存 Refresh Token 并更新 client / family 索引。
+///
+/// - `KEYS[1]` token 主键
+/// - `KEYS[2]` client 索引键
+/// - `KEYS[3]` family 索引键（`ARGV[5]` 为空时不使用）
+/// - `ARGV[1]` token JSON
+/// - `ARGV[2]` 主键 TTL（秒）
+/// - `ARGV[3]` 索引 TTL（秒）
+/// - `ARGV[4]` token_hash
+/// - `ARGV[5]` family_id，空字符串表示旧格式 token，跳过 family 索引
+pub const SAVE_WITH_INDEXES_SCRIPT: &str = r#"
+redis.call('SETEX', KEYS[1], ARGV[2], ARGV[1])
+redis.call('SADD', KEYS[2], ARGV[4])
+redis.call('EXPIRE', KEYS[2], ARGV[3])
+if ARGV[5] ~= '' then
+    redis.call('SADD', KEYS[3], ARGV[4])
+    redis.call('EXPIRE', KEYS[3], ARGV[3])
+end
+return 1
+"#;
+
+/// 原子轮换 Refresh Token：CAS 校验旧值、写入新值、删除旧值、写墓碑。
+///
+/// 墓碑（tombstone）是重放检测的依据：旧 token 被删除后再次提交时，
+/// `find` 返回 `None`，此时通过墓碑才能知道「这是一个已被正常消费的
+/// token 被重放」，进而撤销整个 family。
+///
+/// - `KEYS[1]` 旧 token 主键
+/// - `KEYS[2]` 新 token 主键
+/// - `KEYS[3]` client 索引键
+/// - `KEYS[4]` 旧 family 索引键
+/// - `KEYS[5]` 新 family 索引键
+/// - `KEYS[6]` 墓碑键
+/// - `ARGV[1]` 预期旧 token JSON（CAS 比较值）
+/// - `ARGV[2]` 新 token JSON
+/// - `ARGV[3]` 新主键 TTL（秒）
+/// - `ARGV[4]` 索引 TTL（秒）
+/// - `ARGV[5]` 旧 token_hash
+/// - `ARGV[6]` 新 token_hash
+/// - `ARGV[7]` 墓碑 JSON
+/// - `ARGV[8]` 墓碑 TTL（秒）
+/// - `ARGV[9]` 旧 family_id，空表示旧格式 token
+/// - `ARGV[10]` 新 family_id，空表示不写 family 索引
+///
+/// 返回 `1` 轮换成功，`0` 表示 CAS 失败（旧 token 已被消费或被并发轮换）。
+pub const ROTATE_WITH_TOMBSTONE_SCRIPT: &str = r#"
+local current = redis.call('GET', KEYS[1])
+if current ~= ARGV[1] then
+    return 0
+end
+redis.call('SETEX', KEYS[2], ARGV[3], ARGV[2])
+redis.call('DEL', KEYS[1])
+redis.call('SREM', KEYS[3], ARGV[5])
+redis.call('SADD', KEYS[3], ARGV[6])
+redis.call('EXPIRE', KEYS[3], ARGV[4])
+if ARGV[9] ~= '' then
+    redis.call('SREM', KEYS[4], ARGV[5])
+    redis.call('EXPIRE', KEYS[4], ARGV[4])
+end
+if ARGV[10] ~= '' then
+    redis.call('SADD', KEYS[5], ARGV[6])
+    redis.call('EXPIRE', KEYS[5], ARGV[4])
+end
+redis.call('SETEX', KEYS[6], ARGV[8], ARGV[7])
+return 1
+"#;
+
+/// 原子删除单个 token、清理索引并写墓碑。
+///
+/// - `KEYS[1]` token 主键
+/// - `KEYS[2]` client 索引键
+/// - `KEYS[3]` family 索引键（`ARGV[5]` 为空时不使用）
+/// - `KEYS[4]` 墓碑键
+/// - `ARGV[1]` token_hash
+/// - `ARGV[2]` 墓碑 JSON
+/// - `ARGV[3]` 墓碑 TTL（秒）
+/// - `ARGV[4]` 索引 TTL（秒）
+/// - `ARGV[5]` family_id，空表示旧格式 token
+pub const REMOVE_WITH_TOMBSTONE_SCRIPT: &str = r#"
+redis.call('DEL', KEYS[1])
+redis.call('SREM', KEYS[2], ARGV[1])
+redis.call('EXPIRE', KEYS[2], ARGV[4])
+if ARGV[5] ~= '' then
+    redis.call('SREM', KEYS[3], ARGV[1])
+    redis.call('EXPIRE', KEYS[3], ARGV[4])
+end
+redis.call('SETEX', KEYS[4], ARGV[3], ARGV[2])
+return 1
+"#;
+
+/// 原子 CAS 删除 token、清理索引并写墓碑（授权码换取路径的单次消费）。
+///
+/// 与 `REMOVE_WITH_TOMBSTONE_SCRIPT` 的区别是先做 CAS 比较：只有当前值
+/// 与预期完全一致时才消费，避免并发请求各自删掉对方刚写入的 token。
+///
+/// - `KEYS[1]` token 主键
+/// - `KEYS[2]` client 索引键
+/// - `KEYS[3]` family 索引键（`ARGV[6]` 为空时不使用）
+/// - `KEYS[4]` 墓碑键
+/// - `ARGV[1]` 预期 token JSON（CAS 比较值）
+/// - `ARGV[2]` token_hash
+/// - `ARGV[3]` 墓碑 JSON
+/// - `ARGV[4]` 墓碑 TTL（秒）
+/// - `ARGV[5]` 索引 TTL（秒）
+/// - `ARGV[6]` family_id，空表示旧格式 token
+///
+/// 返回 `1` 消费成功，`0` 表示 CAS 失败。
+pub const TAKE_IF_MATCHES_SCRIPT: &str = r#"
+local current = redis.call('GET', KEYS[1])
+if current ~= ARGV[1] then
+    return 0
+end
+redis.call('DEL', KEYS[1])
+redis.call('SREM', KEYS[2], ARGV[2])
+redis.call('EXPIRE', KEYS[2], ARGV[5])
+if ARGV[6] ~= '' then
+    redis.call('SREM', KEYS[3], ARGV[2])
+    redis.call('EXPIRE', KEYS[3], ARGV[5])
+end
+redis.call('SETEX', KEYS[4], ARGV[4], ARGV[3])
+return 1
+"#;
+
+/// 撤销整个 Token Family（RFC 9700 §4.14.2 的重放响应）。
+///
+/// 逐个删除 family 索引里的 token 主键，同时给每个成员写墓碑，
+/// 使后续任何成员的重放依然能被识别并记录审计。
+///
+/// - `KEYS[1]` family 索引键
+/// - `KEYS[2]` client 索引键
+/// - `ARGV[1]` token 主键前缀
+/// - `ARGV[2]` 墓碑键前缀
+/// - `ARGV[3]` 墓碑 JSON
+/// - `ARGV[4]` 墓碑 TTL（秒）
+///
+/// 返回被删除的 token 数量。
+pub const REVOKE_FAMILY_SCRIPT: &str = r#"
+local members = redis.call('SMEMBERS', KEYS[1])
+local removed = 0
+for _, token_hash in ipairs(members) do
+    if redis.call('DEL', ARGV[1] .. token_hash) == 1 then
+        removed = removed + 1
+    end
+    redis.call('SREM', KEYS[2], token_hash)
+    redis.call('SETEX', ARGV[2] .. token_hash, ARGV[4], ARGV[3])
+end
+redis.call('DEL', KEYS[1])
+return removed
+"#;
+
+/// 撤销某个 Client 的全部 Refresh Token（Issue #62：Secret 轮换后旧 token 必须失效）。
+///
+/// 读取 client 索引的所有成员，删除 token 主键；顺便从 payload 里取出
+/// `family_id` 清理对应的 family 索引，避免留下悬空索引。
+///
+/// 这里不写墓碑：Secret 轮换是管理员的主动操作，不是凭据泄露信号，
+/// 旧 token 的后续请求应当只是普通的 `invalid_grant`，不应触发
+/// 「检测到重放」的审计噪声。
+///
+/// - `KEYS[1]` client 索引键
+/// - `ARGV[1]` token 主键前缀
+/// - `ARGV[2]` family 索引键前缀
+///
+/// 返回被删除的 token 数量。
+pub const REVOKE_CLIENT_TOKENS_SCRIPT: &str = r#"
+local members = redis.call('SMEMBERS', KEYS[1])
+local removed = 0
+for _, token_hash in ipairs(members) do
+    local token_key = ARGV[1] .. token_hash
+    local payload = redis.call('GET', token_key)
+    if payload then
+        local decoded = cjson.decode(payload)
+        local family_id = decoded['family_id']
+        if family_id and family_id ~= '' then
+            redis.call('SREM', ARGV[2] .. family_id, token_hash)
+        end
+    end
+    if redis.call('DEL', token_key) == 1 then
+        removed = removed + 1
+    end
+end
+redis.call('DEL', KEYS[1])
+return removed
+"#;

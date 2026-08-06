@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
 import { apiFetch, externalLoginErrorMessage, type LoginResponse, type PendingLoginResponse } from '../api'
 import { AuthPanel, AuthShell } from '../components/shells'
-import { Button, Field, Icon, Notice, PasswordField } from '../components/ui'
+import { Button, Field, HudPanel, Icon, Notice, PasswordField } from '../components/ui'
 import { FactorOrchestrator } from './auth/factor-orchestrator'
 import { ExternalProviders } from './auth/external-providers'
 
@@ -30,8 +30,8 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const [displayName, setDisplayName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [keepLogin, setKeepLogin] = useState(true)
-  const [agree, setAgree] = useState(true)
+  // Issue #89：服务条款同意必须是用户主动的肯定性行为，初始值不得预勾选。
+  const [agree, setAgree] = useState(false)
   const [authTab, setAuthTab] = useState<'account' | 'auth'>('account')
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
@@ -166,15 +166,15 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
                 <span>我已阅读并同意《辰星通行证服务条款》与《隐私政策》</span>
               </label>
             ) : (
-              <div className="flex items-center justify-between">
-                <label className="cx-check">
-                  <input type="checkbox" checked={keepLogin} onChange={(event) => setKeepLogin(event.target.checked)} />
-                  在此设备保持登录
-                </label>
+              // Issue #88：后端 LoginInput 只接受 identifier / password / totp_code，
+              // 没有 keep_login 字段，会话有效期完全由服务端配置决定。
+              // 「在此设备保持登录」复选框对实际行为零影响，属于误导性 UI，故移除。
+              <div className="flex items-center justify-end">
                 <a className="chenxing-link" href="#">忘记密码？</a>
               </div>
             )}
-            <Button type="submit" variant="primary" className="w-full py-3" disabled={busy}>
+            {/* 未同意条款时禁用提交按钮，避免出现「无同意记录却完成注册」的情况 */}
+            <Button type="submit" variant="primary" className="w-full py-3" disabled={busy || (!isLogin && !agree)}>
               {busy ? '处理中…' : isLogin ? '登录 · 进入星门' : '创建通行证'}
               <Icon name="arrow-right" size={16} />
             </Button>
@@ -228,7 +228,7 @@ export function BootstrapPage() {
     <AuthShell status="系统初始化" action="返回登录" actionTo="/login" className="">
       <section className="relative z-10 flex min-h-screen items-center justify-center px-6 py-14">
         <div className="w-full max-w-lg">
-          <div className="chenxing-hud-panel">
+          <HudPanel>
             <div className="text-center">
               <p className="chenxing-mono text-[10px] uppercase tracking-[0.3em] text-[var(--chenxing-cyan)]">// System Not Initialized</p>
               <h1 className="chenxing-h1 mt-3">点亮首座星门</h1>
@@ -270,7 +270,7 @@ export function BootstrapPage() {
                 </Button>
               </form>
             )}
-          </div>
+          </HudPanel>
           <p className="chenxing-mono mt-6 text-center text-[10px] uppercase tracking-[0.24em] text-[var(--chenxing-muted-foreground)]">First Light Sequence · 天穹辰星</p>
         </div>
       </section>

@@ -3,7 +3,10 @@ use std::{env, time::Duration};
 use base64::Engine;
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{
-    clients::{domain::ValidatedClientRegistration, repository as client_repository},
+    clients::{
+        domain::ValidatedClientRegistration,
+        repository::{self as client_repository, ClientCredential},
+    },
     config::{AuthEncryptionKey, AuthEncryptionKeyRing},
     db,
     oauth::{
@@ -13,7 +16,7 @@ use chenxing_auth::{
     sessions::{domain::Session, store::SessionStore},
     users::{
         credentials::hash_password,
-        domain::ValidatedRegistration,
+        domain::{UserRole, UserStatus, ValidatedRegistration},
         repository::{self as user_repository, NewUser},
     },
 };
@@ -53,7 +56,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
             password: "correct horse battery".to_owned(),
             display_name: Some("Storage User".to_owned()),
         },
-        hash_password("correct horse battery").expect("password hash"),
+        hash_password("correct horse battery".to_owned()).await.expect("password hash"),
     )
     .await
     .expect("insert user");
@@ -84,7 +87,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
             scopes: vec!["openid".to_owned(), "profile".to_owned()],
         },
         client_id.clone(),
-        "client-secret-hash".to_owned(),
+        ClientCredential::SecretBasic("client-secret-hash".to_owned()),
     )
     .await
     .expect("insert client");
@@ -103,7 +106,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
     );
     assert_eq!(credentials.auth_method, "client_secret_basic");
     assert!(
-        !client_repository::list_clients(&pool)
+        !client_repository::list_clients(&pool, None, 200, 0)
             .await
             .expect("list clients")
             .is_empty()
@@ -111,6 +114,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
     assert!(
         client_repository::update_client(
             &pool,
+            None,
             &client_id,
             "Updated Client",
             &["https://storage.example/new-callback".to_owned()],
@@ -120,12 +124,12 @@ async fn postgres_repositories_round_trip_users_and_clients() {
         .expect("update client")
     );
     assert!(
-        client_repository::set_client_status(&pool, &client_id, "disabled")
+        client_repository::set_client_status(&pool, None, &client_id, "disabled")
             .await
             .expect("disable client")
     );
     assert!(
-        client_repository::update_client_secret(&pool, &client_id, "new-hash")
+        client_repository::update_client_secret(&pool, None, &client_id, "new-hash")
             .await
             .expect("update client secret")
     );
@@ -151,6 +155,8 @@ async fn postgres_transaction_user_insert_and_missing_client_paths_work() {
         email: format!("transaction-{}@example.com", Uuid::new_v4().simple()),
         password_hash: "hash".to_owned(),
         display_name: None,
+        role: UserRole::User,
+        status: UserStatus::Active,
         created_at: OffsetDateTime::now_utc(),
     };
     let mut transaction = pool.begin().await.expect("begin transaction");
@@ -187,7 +193,7 @@ async fn password_change_commits_password_and_session_revocation_together() {
             password: old_password.to_owned(),
             display_name: None,
         },
-        hash_password(old_password).expect("old password hash"),
+        hash_password(old_password.to_owned()).await.expect("old password hash"),
     )
     .await
     .expect("insert user");
@@ -209,7 +215,7 @@ async fn password_change_commits_password_and_session_revocation_together() {
         user_repository::change_password_and_revoke_all(
             &pool,
             user.id,
-            &hash_password(new_password).expect("new password hash"),
+            &hash_password(new_password.to_owned()).await.expect("new password hash"),
         )
         .await
         .expect("change password")
@@ -221,14 +227,20 @@ async fn password_change_commits_password_and_session_revocation_together() {
             .fetch_one(&pool)
             .await
             .expect("stored password hash");
-    assert!(chenxing_auth::users::credentials::verify_password(
-        new_password,
-        &stored_hash
-    ));
-    assert!(!chenxing_auth::users::credentials::verify_password(
-        old_password,
-        &stored_hash
-    ));
+    assert!(
+        chenxing_auth::users::credentials::verify_password(
+            new_password.to_owned(),
+            stored_hash.clone()
+        )
+        .await
+    );
+    assert!(
+        !chenxing_auth::users::credentials::verify_password(
+            old_password.to_owned(),
+            stored_hash.clone()
+        )
+        .await
+    );
 
     let (epoch,): (i64,) =
         chenxing_auth::sqlx::query_as("SELECT session_epoch FROM users WHERE id = $1")
@@ -282,7 +294,7 @@ async fn password_change_rolls_back_when_session_epoch_update_fails() {
             password: old_password.to_owned(),
             display_name: None,
         },
-        hash_password(old_password).expect("old password hash"),
+        hash_password(old_password.to_owned()).await.expect("old password hash"),
     )
     .await
     .expect("insert user");
@@ -309,7 +321,7 @@ async fn password_change_rolls_back_when_session_epoch_update_fails() {
     let result = user_repository::change_password_and_revoke_all(
         &pool,
         user.id,
-        &hash_password(new_password).expect("new password hash"),
+        &hash_password(new_password.to_owned()).await.expect("new password hash"),
     )
     .await;
     assert!(result.is_err(), "epoch overflow must fail the transaction");
@@ -321,14 +333,20 @@ async fn password_change_rolls_back_when_session_epoch_update_fails() {
     .fetch_one(&pool)
     .await
     .expect("rolled back user state");
-    assert!(chenxing_auth::users::credentials::verify_password(
-        old_password,
-        &stored_hash
-    ));
-    assert!(!chenxing_auth::users::credentials::verify_password(
-        new_password,
-        &stored_hash
-    ));
+    assert!(
+        chenxing_auth::users::credentials::verify_password(
+            old_password.to_owned(),
+            stored_hash.clone()
+        )
+        .await
+    );
+    assert!(
+        !chenxing_auth::users::credentials::verify_password(
+            new_password.to_owned(),
+            stored_hash.clone()
+        )
+        .await
+    );
     assert_eq!(epoch, i64::MAX);
     let (revoked_at,): (Option<OffsetDateTime>,) =
         chenxing_auth::sqlx::query_as("SELECT revoked_at FROM user_sessions WHERE id = $1")
@@ -390,7 +408,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         owner.id,
         registration(),
         format!("owned-client-first-{}", Uuid::new_v4().simple()),
-        "hash".to_owned(),
+        ClientCredential::SecretBasic("hash".to_owned()),
         2,
     )
     .await
@@ -401,7 +419,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
             owner.id,
             registration(),
             format!("owned-client-a-{}", Uuid::new_v4().simple()),
-            "hash".to_owned(),
+            ClientCredential::SecretBasic("hash".to_owned()),
             2,
         ),
         client_repository::insert_owned_client(
@@ -409,7 +427,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
             owner.id,
             registration(),
             format!("owned-client-b-{}", Uuid::new_v4().simple()),
-            "hash".to_owned(),
+            ClientCredential::SecretBasic("hash".to_owned()),
             2,
         ),
     );
@@ -432,14 +450,14 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         1
     );
     assert_eq!(
-        client_repository::list_clients_for_owner(&pool, owner.id)
+        client_repository::list_clients(&pool, Some(owner.id), 200, 0)
             .await
             .expect("list owner clients")
             .len(),
         2
     );
     assert!(
-        client_repository::list_clients_for_owner(&pool, other.id)
+        client_repository::list_clients(&pool, Some(other.id), 200, 0)
             .await
             .expect("list other clients")
             .is_empty()
@@ -450,7 +468,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
             owner.id,
             registration(),
             format!("owned-client-third-{}", Uuid::new_v4().simple()),
-            "hash".to_owned(),
+            ClientCredential::SecretBasic("hash".to_owned()),
             2,
         )
         .await,
@@ -474,7 +492,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         orphan_owner.id,
         registration(),
         format!("orphan-client-{}", Uuid::new_v4().simple()),
-        "hash".to_owned(),
+        ClientCredential::SecretBasic("hash".to_owned()),
         2,
     )
     .await
@@ -737,7 +755,10 @@ async fn session_revocation_generation_rejects_restored_old_payloads() {
                 base64::engine::general_purpose::URL_SAFE_NO_PAD
                     .encode(sha2::Sha256::digest(session.token.as_bytes()))
             ),
-            serde_json::to_string(&session).expect("session JSON"),
+            serde_json::to_string(&chenxing_auth::sessions::domain::SessionPayload::from(
+                &session,
+            ))
+            .expect("session JSON"),
             60,
         )
         .await

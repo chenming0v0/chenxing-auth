@@ -3,12 +3,12 @@ use axum::response::Response;
 use super::client_auth::ClientCredentials;
 use crate::{audit::AuditEvent, error, state::AppState};
 
-const UNAUTHENTICATED_SOURCE_QPS: u32 = 30;
-
 pub(crate) async fn enforce_source_qps(state: &AppState, source_ip: &str) -> Option<Response> {
+    // #121：QPS 阈值从配置读取，不再硬编码。默认值30保持向后兼容。
+    let qps_limit = state.config.security_limits.unauthenticated_source_qps;
     match state
         .qps
-        .allow_source(source_ip, UNAUTHENTICATED_SOURCE_QPS)
+        .allow_source(source_ip, qps_limit)
         .await
     {
         Ok(true) => None,

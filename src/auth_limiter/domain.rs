@@ -11,6 +11,53 @@ pub const IP_FAILURE_LIMIT: i64 = 30;
 /// TOTP failures allowed for one pending login ticket before it is invalidated.
 pub const TOTP_TICKET_FAILURE_LIMIT: i64 = 5;
 
+/// 运行期可配置的认证失败阈值（#121）。
+///
+/// 上面的常量保留为默认值，`FailureDimension::limit()` 也保持原语义不变——
+/// 大量集成测试按常量断言限流行为，改签名会连带破坏它们。限流器实例持有本结构体，
+/// 阈值来自 `AppConfig`，因此调整阈值不再需要改代码重发版。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthFailureLimits {
+    /// 固定窗口时长（秒）。账户、IP、ticket 三个维度共用。
+    pub window_seconds: i64,
+    pub account_limit: i64,
+    pub ip_limit: i64,
+    pub ticket_limit: i64,
+}
+
+impl Default for AuthFailureLimits {
+    fn default() -> Self {
+        Self {
+            window_seconds: AUTH_FAILURE_WINDOW_SECONDS,
+            account_limit: ACCOUNT_FAILURE_LIMIT,
+            ip_limit: IP_FAILURE_LIMIT,
+            ticket_limit: TOTP_TICKET_FAILURE_LIMIT,
+        }
+    }
+}
+
+impl AuthFailureLimits {
+    /// 取某个维度的阈值。`<= 0` 的配置会退回默认值：阈值为 0 表示「一次失败就永久
+    /// 锁定」，是纯粹的配置错误而不是有意的安全策略，静默接受会造成全站无法登录。
+    pub fn limit_for(self, dimension: FailureDimension) -> i64 {
+        let (configured, fallback) = match dimension {
+            FailureDimension::Account => (self.account_limit, ACCOUNT_FAILURE_LIMIT),
+            FailureDimension::SourceIp => (self.ip_limit, IP_FAILURE_LIMIT),
+            FailureDimension::Ticket => (self.ticket_limit, TOTP_TICKET_FAILURE_LIMIT),
+        };
+        if configured > 0 { configured } else { fallback }
+    }
+
+    /// 窗口时长，同样拒绝 `<= 0`（会让 Redis key 的 TTL 计算除零或立即过期）。
+    pub fn window(self) -> i64 {
+        if self.window_seconds > 0 {
+            self.window_seconds
+        } else {
+            AUTH_FAILURE_WINDOW_SECONDS
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthLimiterFailurePolicy {
     FailOpen,

@@ -15,9 +15,10 @@ use super::{
         authorization_quota_redirect, pending_from_validated, restore_pending_after_failure,
     },
     consent::PendingAuthorization,
+    request_store::PENDING_REQUEST_TTL_SECONDS,
     session::{SessionLookupError, session_for_headers},
 };
-use crate::{error, state::AppState};
+use crate::{error, sessions::cookies, state::AppState};
 
 pub use super::authorization_code_handlers::{
     AuthorizationCodeIssue, issue_authorization_code_result, validated_pending_request,
@@ -66,7 +67,7 @@ async fn authorize_request(
         return error::oauth_bad_request("invalid_client", "client is invalid");
     };
 
-    let validated = match validate_authorization_request(&client, request.clone()) {
+    let mut validated = match validate_authorization_request(&client, request.clone()) {
         Ok(request) => request,
         Err(validation_error) => {
             tracing::info!(error = %validation_error, "OAuth authorization request rejected");
@@ -86,8 +87,9 @@ async fn authorize_request(
                 "Session realm=\"oauth\"",
             );
         }
-        let pending = pending_from_validated(&validated, None);
-        return save_and_redirect_to_login(&state, &pending).await;
+        // 还没有会话，pending 以未绑定状态落盘；登录后由绑定接口补上会话。
+        let mut pending = pending_from_validated(&validated);
+        return save_and_redirect_to_login(&state, &mut pending).await;
     };
 
     let user_id = match session.user_id.parse::<crate::users::domain::UserId>() {
@@ -100,7 +102,10 @@ async fn authorize_request(
             );
         }
     };
-    let pending = pending_from_validated(&validated, Some(session.token.clone()));
+    // 会话绑定挂到 validated 上：pending 和后续签发的授权码都从这里取值，
+    // 已授权直通路径（issue_preconsented_request）才不会丢掉绑定。
+    validated.session_id = Some(session.token.clone());
+    let pending = pending_from_validated(&validated);
 
     match state
         .consents
@@ -122,11 +127,32 @@ async fn authorize_request(
     }
 }
 
-async fn save_and_redirect_to_login(state: &AppState, pending: &PendingAuthorization) -> Response {
+/// 未登录浏览器命中 `/oauth/authorize`：落盘未绑定的 pending 请求并跳转到 SPA 登录页。
+///
+/// 同时下发授权请求持有者 Cookie，并把它的 SHA-256 摘要写进 pending 记录（#115）。
+/// `request_id` 走 URL 查询参数，可能通过 Referer、浏览器历史或分享链接泄露；
+/// 没有这层绑定，任何拿到 `request_id` 的已登录攻击者都能在绑定端点上把这条
+/// pending 请求认领到自己的会话并批准，把受害者登录进攻击者账号
+/// （OAuth login CSRF / 请求固定）。Cookie 原值只存在于浏览器，服务端只留摘要。
+async fn save_and_redirect_to_login(
+    state: &AppState,
+    pending: &mut PendingAuthorization,
+) -> Response {
+    let holder = cookies::new_authz_holder();
+    pending.holder_hash = Some(cookies::authz_holder_hash(&holder));
     if let Err(response) = save_pending(state, pending).await {
         return response;
     }
-    Redirect::to(&format!("/login?request_id={}", pending.request_id)).into_response()
+    let mut response =
+        Redirect::to(&format!("/login?request_id={}", pending.request_id)).into_response();
+    // Cookie 生命周期与 pending 记录的 Redis TTL 对齐：pending 过期后 Cookie 也失效。
+    cookies::append_authz_holder_cookie(
+        response.headers_mut(),
+        &holder,
+        PENDING_REQUEST_TTL_SECONDS,
+        state.config.cookie_secure,
+    );
+    response
 }
 
 async fn save_pending(state: &AppState, pending: &PendingAuthorization) -> Result<(), Response> {

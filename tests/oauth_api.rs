@@ -9,8 +9,8 @@ use axum::{
 use chenxing_auth::{api, state::AppState};
 use tower::ServiceExt;
 
-fn test_router() -> Router {
-    api::router(AppState::for_test())
+async fn test_router() -> Router {
+    api::router(AppState::for_test().await)
 }
 
 async fn oauth_error_body(response: axum::response::Response) -> serde_json::Value {
@@ -25,6 +25,7 @@ async fn oauth_error_body(response: axum::response::Response) -> serde_json::Val
 #[tokio::test]
 async fn token_endpoint_rejects_unsupported_grant_type_without_caching() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -59,6 +60,7 @@ async fn token_endpoint_rejects_unsupported_grant_type_without_caching() {
 #[tokio::test]
 async fn authorization_endpoint_reports_temporary_unavailability_without_database() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/oauth/authorize?client_id=cx_project&redirect_uri=https%3A%2F%2Fproject.example%2Fcallback&response_type=code&scope=openid&state=state&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256")
@@ -80,6 +82,7 @@ async fn authorization_endpoint_reports_temporary_unavailability_without_databas
 #[tokio::test]
 async fn browser_authorization_reports_temporary_unavailability_without_database() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/oauth/authorize?client_id=cx_project&redirect_uri=https%3A%2F%2Fproject.example%2Fcallback&response_type=code&scope=openid&state=state&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256")
@@ -102,6 +105,7 @@ async fn browser_authorization_reports_temporary_unavailability_without_database
 #[tokio::test]
 async fn malformed_token_form_returns_rfc_oauth_error() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -122,6 +126,7 @@ async fn malformed_token_form_returns_rfc_oauth_error() {
 #[tokio::test]
 async fn malformed_authorization_query_returns_rfc_oauth_error() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/oauth/authorize?%ZZ")
@@ -140,6 +145,7 @@ async fn malformed_authorization_query_returns_rfc_oauth_error() {
 #[tokio::test]
 async fn malformed_authorization_form_returns_rfc_oauth_error() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -160,6 +166,7 @@ async fn malformed_authorization_form_returns_rfc_oauth_error() {
 #[tokio::test]
 async fn malformed_userinfo_form_returns_rfc_oauth_error() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method("POST")

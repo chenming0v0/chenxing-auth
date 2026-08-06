@@ -108,3 +108,48 @@ async fn audit_write_failure_is_returned_to_the_caller() {
         Err(AuditError::Database(_))
     ));
 }
+
+#[test]
+fn authorization_denial_event_captures_actor_and_permission() {
+    // Issue #73: 授权失败审计事件必须记录 actor、尝试访问的权限和失败原因
+    let event = AuditEvent::security_failure(
+        "admin_authorization_denied".to_owned(),
+        "user".to_owned(),
+        Some("42".to_owned()),
+        "admin_permission".to_owned(),
+        Some("ManageUsers".to_owned()),
+        "insufficient_role",
+    );
+
+    assert_eq!(event.action, "admin_authorization_denied");
+    assert_eq!(event.actor_type, "user");
+    assert_eq!(event.actor_id, Some("42".to_owned()));
+    assert_eq!(event.resource_type, "admin_permission");
+    assert_eq!(event.resource_id, Some("ManageUsers".to_owned()));
+    assert_eq!(event.metadata["result"], "failure");
+    assert_eq!(event.metadata["reason"], "insufficient_role");
+}
+
+#[test]
+fn authorization_denial_uses_best_effort_pattern() {
+    // Issue #73: authorization.rs 授权拒绝路径使用 best-effort 审计——
+    // 与 handlers.rs 的阻断式凭据签发策略不同
+    const AUTHORIZATION_RS: &str = include_str!("../src/admin/authorization.rs");
+
+    assert!(
+        AUTHORIZATION_RS.contains("record_authz_denial"),
+        "authorization.rs 必须通过 record_authz_denial 记录授权失败"
+    );
+    assert!(
+        AUTHORIZATION_RS.contains("admin_authorization_denied"),
+        "审计事件 action 必须为 admin_authorization_denied"
+    );
+    assert!(
+        AUTHORIZATION_RS.contains("audit.authorization_denial_unrecorded"),
+        "best-effort 路径必须在写入失败时记录 tracing::error"
+    );
+    assert!(
+        AUTHORIZATION_RS.contains("best-effort"),
+        "模块注释必须说明 best-effort 策略及其选择依据"
+    );
+}

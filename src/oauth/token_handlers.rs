@@ -12,11 +12,10 @@ use super::{
     form,
     pkce::verify_s256,
     refresh::RefreshToken,
+    refresh_grant::exchange_refresh_token,
     response::{self, issue_token_response},
     session::active_user_id,
-    token_security::{
-        enforce_qps, enforce_source_qps, record_token_event, verify_client_credentials,
-    },
+    token_security::{enforce_qps, enforce_source_qps, verify_client_credentials},
 };
 use crate::{error, state::AppState};
 
@@ -56,7 +55,12 @@ pub async fn token(
             ));
         }
     };
-    let source_ip = connect_info.map(|Extension(ConnectInfo(peer))| peer.ip().to_string());
+    // #111：通过可信代理列表解析真实客户端 IP，而不是直取 TCP 对端地址。
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
     response::with_no_store_headers(
         token_inner(state, headers, source_ip.as_deref(), request).await,
     )
@@ -146,6 +150,12 @@ async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> 
             return error::oauth_temporarily_unavailable();
         }
     }
+    // 会话绑定校验必须在 take_if_matches 之前：AGENTS.md 要求授权码在绑定、
+    // 过期和 PKCE 检查全部通过后才原子消费，否则一次失败请求就烧掉有效凭据。
+    let auth_time = match authorization_code_session_auth_time(&state, &code).await {
+        Ok(auth_time) => auth_time,
+        Err(response) => return response,
+    };
     match state
         .authorization_codes
         .take_if_matches(code_value, &code)
@@ -177,12 +187,49 @@ async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> 
         &code.scopes,
         Some(refresh.value.clone()),
         code.nonce.as_deref(),
+        auth_time,
     )
     .await;
     if response.status() != StatusCode::OK {
         compensate_authorization_code_exchange(&state, &code, &refresh.value).await;
     }
     response
+}
+
+/// 校验授权码绑定的会话仍然有效，并返回该会话的认证时刻。
+///
+/// 返回的时间戳是会话建立时间，用作 ID Token 的 `auth_time`
+/// （OIDC Core 1.0 §2：`auth_time` 是终端用户完成认证的时刻，不是令牌签发时刻，
+/// 所以不能用 `iat` 顶替）。
+///
+/// `session_id` 为 `None` 时返回 `Ok(None)`：授权码不是浏览器会话签发的降级路径，
+/// 不做会话校验，`auth_time` 也不声明，避免填入错误值。
+async fn authorization_code_session_auth_time(
+    state: &AppState,
+    code: &AuthorizationCode,
+) -> Result<Option<i64>, Response> {
+    let Some(session_token) = code.session_id.as_deref() else {
+        return Ok(None);
+    };
+    match state.sessions.find(session_token).await {
+        Ok(Some(session)) if session.is_active() => Ok(Some(session.created_at.unix_timestamp())),
+        Ok(_) => {
+            // 会话已撤销或过期（典型场景：用户授权后立刻登出）。
+            // 不记录会话令牌，它是凭据。
+            tracing::info!(
+                client_id = %code.client_id,
+                "OAuth authorization code rejected: issuing session is no longer active"
+            );
+            Err(error::oauth_bad_request(
+                "invalid_grant",
+                "authorization code is invalid",
+            ))
+        }
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to load authorization code session");
+            Err(error::oauth_temporarily_unavailable())
+        }
+    }
 }
 
 async fn compensate_authorization_code_exchange(
@@ -208,180 +255,6 @@ fn authorization_code_restore_ttl(code: &AuthorizationCode) -> u64 {
         }
     } else {
         1
-    }
-}
-
-async fn exchange_refresh_token(state: AppState, request: TokenRequest) -> Response {
-    let Some(refresh_value) = request.refresh_token.as_deref() else {
-        return error::oauth_bad_request("invalid_request", "refresh_token is required");
-    };
-    let Some(client_id) = request.client_id.as_deref() else {
-        return error::oauth_invalid_client();
-    };
-    let refresh = match state.refresh_tokens.find(refresh_value).await {
-        Ok(Some(refresh)) => refresh,
-        Ok(None) => {
-            if record_token_event(
-                &state,
-                None,
-                "token_refresh_failure",
-                Some(client_id),
-                "invalid_token",
-            )
-            .await
-            .is_err()
-            {
-                return error::oauth_server_error();
-            }
-            return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
-        }
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to retrieve refresh token");
-            return error::oauth_temporarily_unavailable();
-        }
-    };
-    if refresh
-        .validate(client_id, time::OffsetDateTime::now_utc())
-        .is_err()
-    {
-        if record_token_event(
-            &state,
-            Some(&refresh.user_id),
-            "token_refresh_failure",
-            Some(client_id),
-            "invalid_token",
-        )
-        .await
-        .is_err()
-        {
-            return error::oauth_server_error();
-        }
-        return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
-    }
-    match state
-        .revocations
-        .is_consent_revoked(&refresh.user_id, client_id)
-        .await
-    {
-        Ok(true) => {
-            return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
-        }
-        Ok(false) => {}
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to check OAuth consent revocation");
-            return error::oauth_temporarily_unavailable();
-        }
-    }
-    let Ok(user_id) = refresh.user_id.parse::<crate::users::domain::UserId>() else {
-        return error::oauth_bad_request("invalid_grant", "refresh token is invalid");
-    };
-    match state
-        .consents
-        .has_scopes(user_id, client_id, &refresh.scopes)
-        .await
-    {
-        Ok(true) => {}
-        Ok(false) => return error::oauth_bad_request("invalid_grant", "refresh token is invalid"),
-        Err(database_error) => {
-            tracing::error!(error = %database_error, "failed to check refresh token consent");
-            return error::oauth_temporarily_unavailable();
-        }
-    }
-    match active_user_id(&state, &refresh.user_id).await {
-        Ok(Some(_)) => {}
-        Ok(None) => return error::oauth_bad_request("invalid_grant", "refresh token is invalid"),
-        Err(database_error) => {
-            tracing::error!(error = %database_error, "failed to load refresh token user");
-            return error::oauth_temporarily_unavailable();
-        }
-    }
-    let scopes = match request.scope.as_deref() {
-        Some(scope) => {
-            let requested = scope
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-            if requested
-                .iter()
-                .any(|scope| !refresh.scopes.contains(scope))
-            {
-                return error::oauth_bad_request(
-                    "invalid_scope",
-                    "requested scope exceeds original grant",
-                );
-            }
-            requested
-        }
-        None => refresh.scopes.clone(),
-    };
-    let next_refresh = RefreshToken::new(
-        client_id.to_owned(),
-        refresh.user_id.clone(),
-        scopes.clone(),
-    );
-    let response = issue_token_response(
-        &state,
-        &refresh.user_id,
-        client_id,
-        &scopes,
-        Some(next_refresh.value.clone()),
-        None,
-    )
-    .await;
-    if response.status() != StatusCode::OK {
-        return response;
-    }
-    match state
-        .refresh_tokens
-        .rotate_if_matches(refresh_value, &refresh, &next_refresh)
-        .await
-    {
-        Ok(true) => {
-            if record_token_event(
-                &state,
-                Some(&refresh.user_id),
-                "token_refresh",
-                Some(client_id),
-                "success",
-            )
-            .await
-            .is_err()
-            {
-                if let Err(error_value) = state.refresh_tokens.remove(&next_refresh.value).await {
-                    tracing::warn!(
-                        error = %error_value,
-                        "failed to compensate refresh token after audit persistence failure"
-                    );
-                }
-                if let Err(error_value) = state.refresh_tokens.save(&refresh).await {
-                    tracing::warn!(
-                        error = %error_value,
-                        "failed to restore previous refresh token after audit persistence failure"
-                    );
-                }
-                return error::oauth_server_error();
-            }
-            response
-        }
-        Ok(false) => {
-            if record_token_event(
-                &state,
-                Some(&refresh.user_id),
-                "token_refresh_failure",
-                Some(client_id),
-                "token_race",
-            )
-            .await
-            .is_err()
-            {
-                return error::oauth_server_error();
-            }
-            error::oauth_bad_request("invalid_grant", "refresh token is invalid")
-        }
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to atomically rotate refresh token");
-            error::oauth_temporarily_unavailable()
-        }
     }
 }
 

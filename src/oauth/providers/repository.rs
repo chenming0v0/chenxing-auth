@@ -26,8 +26,9 @@ pub async fn insert_provider(
         "INSERT INTO oauth_providers
          (name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
           client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
-          name_claim, email_verified_claim, client_auth_method, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'disabled', $14, $14)
+          name_claim, email_verified_claim, client_auth_method, pkce_enabled,
+          status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'disabled', $15, $15)
          RETURNING id",
     )
     .bind(&input.name)
@@ -43,6 +44,7 @@ pub async fn insert_provider(
     .bind(&input.name_claim)
     .bind(&input.email_verified_claim)
     .bind(auth_method_value(input.client_auth_method))
+    .bind(input.pkce_enabled)
     .bind(now)
     .fetch_one(pool)
     .await?;
@@ -55,7 +57,7 @@ pub async fn list_providers(pool: &PgPool) -> Result<Vec<ProviderRecord>, crate:
     let rows = crate::sqlx::query_as::<_, ProviderRow>(
         "SELECT id, name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
                 client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
-                name_claim, email_verified_claim, client_auth_method, status
+                name_claim, email_verified_claim, client_auth_method, pkce_enabled, status
          FROM oauth_providers ORDER BY created_at DESC",
     )
     .fetch_all(pool)
@@ -70,7 +72,7 @@ pub async fn find_by_slug(
     let row = crate::sqlx::query_as::<_, ProviderRow>(
         "SELECT id, name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
                 client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
-                name_claim, email_verified_claim, client_auth_method, status
+                name_claim, email_verified_claim, client_auth_method, pkce_enabled, status
          FROM oauth_providers WHERE slug = $1",
     )
     .bind(slug)
@@ -90,7 +92,8 @@ pub async fn update_provider(
          SET name = $2, authorization_endpoint = $3, token_endpoint = $4,
              userinfo_endpoint = $5, client_id = $6, client_secret_ciphertext = $7,
              scopes = $8, subject_claim = $9, email_claim = $10, name_claim = $11,
-             email_verified_claim = $12, client_auth_method = $13, updated_at = $14
+             email_verified_claim = $12, client_auth_method = $13, pkce_enabled = $14,
+             updated_at = $15
          WHERE slug = $1",
     )
     .bind(slug)
@@ -106,6 +109,7 @@ pub async fn update_provider(
     .bind(&input.name_claim)
     .bind(&input.email_verified_claim)
     .bind(auth_method_value(input.client_auth_method))
+    .bind(input.pkce_enabled)
     .bind(OffsetDateTime::now_utc())
     .execute(pool)
     .await?;
@@ -265,6 +269,7 @@ type ProviderRow = (
     Option<String>,
     Option<String>,
     String,
+    bool,
     String,
 );
 
@@ -284,6 +289,7 @@ fn parse_provider_row(row: ProviderRow) -> Result<ProviderRecord, crate::sqlx::E
         name_claim,
         email_verified_claim,
         client_auth_method,
+        pkce_enabled,
         status,
     ) = row;
     let scopes = serde_json::from_value(scopes)
@@ -318,6 +324,7 @@ fn parse_provider_row(row: ProviderRow) -> Result<ProviderRecord, crate::sqlx::E
         name_claim,
         email_verified_claim,
         client_auth_method,
+        pkce_enabled,
         status,
     })
 }

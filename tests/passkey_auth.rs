@@ -3,6 +3,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
+use chenxing_auth::auth_limiter::FailureDimension;
 use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{api, config::Config, db, state::AppState};
 use redis::AsyncCommands;
@@ -40,7 +41,7 @@ async fn setup() -> (
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let email = format!("passkey-{}@example.com", Uuid::new_v4().simple());
     (
-        api::router(AppState::new(config).expect("test state")),
+        api::router(AppState::new(config).await.expect("test state")),
         database,
         key_directory,
         email,
@@ -67,6 +68,109 @@ async fn post(router: &Router, uri: &str, body: serde_json::Value) -> axum::resp
         )
         .await
         .expect("response")
+}
+
+/// 逐个 ticket 的 Passkey 失败上限直接取自限流域模型，避免测试与实现漂移。
+fn ticket_failure_limit() -> usize {
+    FailureDimension::Ticket.limit() as usize
+}
+
+fn bogus_registration_credential() -> serde_json::Value {
+    serde_json::json!({
+        "id": "",
+        "rawId": "",
+        "response": {"attestationObject": "", "clientDataJSON": ""},
+        "type": "public-key"
+    })
+}
+
+async fn create_user(router: &Router, email: &str) -> String {
+    let username = format!("passkey-limit-{}", Uuid::new_v4().simple());
+    let response = post(
+        router,
+        "/api/v1/users",
+        serde_json::json!({
+            "username": username,
+            "email": email,
+            "password": "correct horse battery"
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    username
+}
+
+async fn login_ticket(router: &Router, username: &str) -> String {
+    let response = post(
+        router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": username, "password": "correct horse battery"}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    json_response(response).await["login_ticket"]
+        .as_str()
+        .expect("login ticket")
+        .to_owned()
+}
+
+/// 在一个 ticket 上耗尽 Passkey 注册失败额度，返回每次尝试的状态码。
+async fn exhaust_ticket_failures(router: &Router, ticket: &str) -> Vec<StatusCode> {
+    let response = post(
+        router,
+        "/api/v1/auth/passkeys/register/start",
+        serde_json::json!({"login_ticket": ticket}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut statuses = Vec::new();
+    for _ in 0..ticket_failure_limit() {
+        let response = post(
+            router,
+            "/api/v1/auth/passkeys/register/finish",
+            serde_json::json!({
+                "login_ticket": ticket,
+                "credential": bogus_registration_credential()
+            }),
+        )
+        .await;
+        statuses.push(response.status());
+    }
+    statuses
+}
+
+async fn mfa_failure_reasons(
+    database: &chenxing_auth::sqlx::PgPool,
+    user_id: i64,
+) -> Vec<(String, String)> {
+    chenxing_auth::sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT actor_type, metadata->>'reason' FROM audit_events
+         WHERE action = 'mfa_failure' AND actor_user_id = $1
+         ORDER BY id ASC",
+    )
+    .bind(user_id)
+    .fetch_all(database)
+    .await
+    .expect("mfa_failure audit events")
+    .into_iter()
+    .map(|(actor_type, reason)| (actor_type, reason.unwrap_or_default()))
+    .collect()
+}
+
+async fn user_id_for_email(database: &chenxing_auth::sqlx::PgPool, email: &str) -> i64 {
+    chenxing_auth::sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(email)
+        .fetch_one(database)
+        .await
+        .expect("user lookup")
+}
+
+async fn cleanup_user(database: &chenxing_auth::sqlx::PgPool, user_id: i64) {
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(database)
+        .await
+        .expect("user cleanup");
 }
 
 #[tokio::test]
@@ -310,5 +414,127 @@ async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
         ))
         .await
         .expect("new snapshot cleanup");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+#[serial(passkey_auth)]
+async fn passkey_finish_failures_are_rate_limited_and_invalidate_the_ticket() {
+    let (router, database, key_directory, email) = setup().await;
+    let username = create_user(&router, &email).await;
+    let user_id = user_id_for_email(&database, &email).await;
+    let ticket = login_ticket(&router, &username).await;
+
+    // 阈值内的失败仍然按“凭据无效”处理，不会被限流提前拒绝。
+    let statuses = exhaust_ticket_failures(&router, &ticket).await;
+    assert!(
+        statuses
+            .iter()
+            .all(|status| *status == StatusCode::UNAUTHORIZED),
+        "expected every in-window failure to stay 401, got {statuses:?}"
+    );
+
+    // ticket 维度达阈值后 ticket 已被失效，后续请求连挂起状态都不复存在。
+    let response = post(
+        &router,
+        "/api/v1/auth/passkeys/register/finish",
+        serde_json::json!({
+            "login_ticket": ticket,
+            "credential": bogus_registration_credential()
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_response(response).await["code"],
+        "invalid_login_ticket"
+    );
+
+    // mfa_failure 审计事件必须带真实 actor_id，而不是写死的 anonymous。
+    let events = mfa_failure_reasons(&database, user_id).await;
+    assert_eq!(events.len(), ticket_failure_limit());
+    assert!(
+        events.iter().all(|(actor_type, _)| actor_type == "user"),
+        "expected user actor_type on every mfa_failure event, got {events:?}"
+    );
+    let reasons: Vec<&str> = events.iter().map(|(_, reason)| reason.as_str()).collect();
+    assert_eq!(
+        reasons.last().copied(),
+        Some("passkey_rate_limited"),
+        "expected the threshold failure to be recorded as rate limited, got {reasons:?}"
+    );
+    assert!(
+        reasons[..ticket_failure_limit() - 1]
+            .iter()
+            .all(|reason| *reason == "passkey_invalid"),
+        "expected sub-threshold failures to stay passkey_invalid, got {reasons:?}"
+    );
+
+    cleanup_user(&database, user_id).await;
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+#[serial(passkey_auth)]
+async fn passkey_start_endpoints_reject_before_touching_passkey_storage() {
+    let (router, database, key_directory, email) = setup().await;
+    let username = create_user(&router, &email).await;
+    let user_id = user_id_for_email(&database, &email).await;
+
+    let other_email = format!("passkey-other-{}@example.com", Uuid::new_v4().simple());
+    let other_username = create_user(&router, &other_email).await;
+    let other_user_id = user_id_for_email(&database, &other_email).await;
+
+    // 账号维度上限高于单个 ticket 上限，需要多个 ticket 才能把账号额度耗尽。
+    // spare_ticket 必须在耗尽之前签发：账号被限流后 /auth/login 自身也会被拒绝。
+    let tickets_to_exhaust_account =
+        (FailureDimension::Account.limit() as usize).div_ceil(ticket_failure_limit());
+    let mut burn_tickets = Vec::new();
+    for _ in 0..tickets_to_exhaust_account {
+        burn_tickets.push(login_ticket(&router, &username).await);
+    }
+    let spare_ticket = login_ticket(&router, &username).await;
+    let other_ticket = login_ticket(&router, &other_username).await;
+
+    for ticket in &burn_tickets {
+        exhaust_ticket_failures(&router, ticket).await;
+    }
+
+    // 账号维度耗尽后，challenge 端点必须在 list_passkeys 之前就拒绝。该账号没有任何
+    // Passkey，若限流检查在数据库查询之后才生效，这里会退化成 400 invalid_login_ticket。
+    let response = post(
+        &router,
+        "/api/v1/auth/passkeys/authentication/start",
+        serde_json::json!({"login_ticket": spare_ticket}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(json_response(response).await["code"], "invalid_factor");
+
+    let response = post(
+        &router,
+        "/api/v1/auth/passkeys/register/start",
+        serde_json::json!({"login_ticket": spare_ticket}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    // 限流按账号隔离：另一个账号的成功路径不受这些失败影响。
+    let response = post(
+        &router,
+        "/api/v1/auth/passkeys/register/start",
+        serde_json::json!({"login_ticket": other_ticket}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        mfa_failure_reasons(&database, other_user_id)
+            .await
+            .is_empty(),
+        "unrelated account must not accumulate mfa_failure events"
+    );
+
+    cleanup_user(&database, user_id).await;
+    cleanup_user(&database, other_user_id).await;
     let _ = std::fs::remove_dir_all(key_directory);
 }

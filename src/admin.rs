@@ -1,3 +1,6 @@
+use hmac::{Hmac, Mac};
+use rand::{RngCore, rngs::OsRng};
+use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
 pub mod auth_handlers;
@@ -11,22 +14,50 @@ pub mod provider_handlers;
 pub mod provider_web_handlers;
 pub mod settings_handlers;
 pub mod ui_handlers;
+pub mod user_creation;
 pub mod web_handlers;
 
+/// ADMIN_TOKEN 验证器。
+///
+/// 通过对双方令牌分别计算 HMAC-SHA256 后比较定长摘要，消除令牌长度差异
+/// 带来的时序侧信道攻击面（修复 #71）。
+/// `mac_key` 在进程启动时随机生成，不对外暴露，不写入日志。
 #[derive(Clone)]
 pub struct AdminAuthenticator {
     token: String,
+    /// 仅用于 is_valid 内部 HMAC 比较的随机 key，不包含任何业务秘密
+    mac_key: [u8; 32],
 }
 
 impl AdminAuthenticator {
     pub fn new(token: String) -> Self {
-        Self { token }
+        let mut mac_key = [0u8; 32];
+        // 使用密码学安全随机源生成内部 MAC key，确保每次进程启动都不同
+        OsRng.fill_bytes(&mut mac_key);
+        Self { token, mac_key }
     }
 
+    /// 将候选令牌和配置令牌分别通过同一内部 key 的 HMAC-SHA256 映射到定长摘要，
+    /// 再执行常量时间比较。无论候选令牌长短，外部观察者无法通过响应时间推断
+    /// 配置令牌的长度。
     pub fn is_valid(&self, candidate: &str) -> bool {
-        !self.token.is_empty()
-            && self.token.len() == candidate.len()
-            && self.token.as_bytes().ct_eq(candidate.as_bytes()).into()
+        // AGENTS.md 硬性要求：ADMIN_TOKEN 为空时必须拒绝所有已初始化的管理 API
+        if self.token.is_empty() {
+            return false;
+        }
+
+        let hmac_of = |input: &str| {
+            // HMAC 接受任意长度的 key，此处 32 字节 key 不会触发 InvalidLength 错误
+            let mut mac = Hmac::<Sha256>::new_from_slice(&self.mac_key)
+                .expect("HMAC 接受任意长度的 key，32 字节 key 不会失败");
+            mac.update(input.as_bytes());
+            mac.finalize().into_bytes()
+        };
+
+        // 两个 HMAC-SHA256 输出长度固定为 32 字节，在 &[u8] 上执行常量时间比较
+        let a = hmac_of(&self.token);
+        let b = hmac_of(candidate);
+        a.as_slice().ct_eq(b.as_slice()).into()
     }
 
     pub fn is_authorization_header_valid(&self, value: &str) -> bool {

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use super::credentials::MAX_PASSWORD_LENGTH;
+
 pub const MIN_PASSWORD_LENGTH: usize = 10;
 pub type UserId = i64;
 
@@ -10,6 +12,35 @@ pub enum UserRole {
     User,
     Admin,
     Owner,
+}
+
+/// 账号状态词表。
+///
+/// 与 `UserRole` 对齐：状态字符串此前散落在 SQL 字面量、`matches!(status, ...)`
+/// 守卫和 handler 参数里，任何一处漂移都不会被编译器发现，只能靠数据库的
+/// `users_status_check` 在运行期兜住。收成枚举后，词表只有这一个来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserStatus {
+    Active,
+    Disabled,
+}
+
+impl UserStatus {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Disabled => "disabled",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +133,19 @@ pub struct ValidatedRegistration {
     pub display_name: Option<String>,
 }
 
+/// 一次用户创建的完整意图。
+///
+/// 公开注册、管理侧创建和特权用户创建三条路径只在 (role, status) 上有差异，
+/// 把它们和已校验的注册信息绑在一起，仓储层就只需要一个插入函数，
+/// 调用方也不再在 SQL 里硬编码 `'active'` 或 `UserRole::User`。
+/// 明文口令不属于本结构的职责：调用方在哈希前 take 走 `registration.password`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserCreation {
+    pub registration: ValidatedRegistration,
+    pub role: UserRole,
+    pub status: UserStatus,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RegistrationError {
     #[error("username is invalid")]
@@ -110,6 +154,13 @@ pub enum RegistrationError {
     InvalidEmail,
     #[error("password must be at least {MIN_PASSWORD_LENGTH} characters")]
     PasswordTooShort,
+    /// Issue #122：口令长度上界。
+    ///
+    /// Argon2 的开销随口令长度增长，无上界时单个请求可以提交数 MB 明文，
+    /// 把一次哈希从 50 ms 放大到数秒。限流按请求计数，拦不住单请求的计算量，
+    /// 所以必须在校验阶段直接拒绝。
+    #[error("password must be at most {MAX_PASSWORD_LENGTH} characters")]
+    PasswordTooLong,
     #[error("display name is too long")]
     DisplayNameTooLong,
 }
@@ -121,9 +172,7 @@ pub fn validate_registration(
     if !is_valid_email(&email) {
         return Err(RegistrationError::InvalidEmail);
     }
-    if input.password.chars().count() < MIN_PASSWORD_LENGTH {
-        return Err(RegistrationError::PasswordTooShort);
-    }
+    validate_password_length(&input.password)?;
 
     let display_name = validate_display_name(input.display_name)?;
     let username = validate_username(&input.username).ok_or(RegistrationError::InvalidUsername)?;
@@ -134,6 +183,23 @@ pub fn validate_registration(
         password: input.password,
         display_name,
     })
+}
+
+/// 口令长度双向校验（Issue #122）。
+///
+/// 按字符数而不是字节数计：UTF-8 下一个中文字符占 3 字节，用字节数会让中文口令
+/// 的实际长度要求与 ASCII 口令不一致。
+///
+/// 注册与改密共用这一个入口，两条路径的上下界不允许出现漂移。
+pub fn validate_password_length(password: &str) -> Result<(), RegistrationError> {
+    let length = password.chars().count();
+    if length < MIN_PASSWORD_LENGTH {
+        return Err(RegistrationError::PasswordTooShort);
+    }
+    if length > MAX_PASSWORD_LENGTH {
+        return Err(RegistrationError::PasswordTooLong);
+    }
+    Ok(())
 }
 
 pub fn validate_display_name(

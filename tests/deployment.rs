@@ -203,6 +203,10 @@ fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("0008_admin_query_indexes.sql"));
     assert!(DB_MODULE.contains("system settings seeds"));
     assert!(DB_MODULE.contains("0009_system_settings.sql"));
+    assert!(DB_MODULE.contains("durable consent revocation"));
+    assert!(DB_MODULE.contains("0010_consent_revoked_at.sql"));
+    assert!(DB_MODULE.contains("external provider PKCE toggle"));
+    assert!(DB_MODULE.contains("0011_oauth_provider_pkce.sql"));
     let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -222,6 +226,8 @@ fn database_uses_explicit_unified_baseline_migrations() {
             std::ffi::OsString::from("0007_plan_default_invariant.sql"),
             std::ffi::OsString::from("0008_admin_query_indexes.sql"),
             std::ffi::OsString::from("0009_system_settings.sql"),
+            std::ffi::OsString::from("0010_consent_revoked_at.sql"),
+            std::ffi::OsString::from("0011_oauth_provider_pkce.sql"),
         ]
     );
 }

@@ -15,6 +15,7 @@ use super::{
 };
 use crate::{
     audit::AuditEvent,
+    consents::ConsentServiceError,
     error,
     sessions::{cookies, domain::Session},
     state::AppState,
@@ -108,6 +109,10 @@ pub async fn inspect_authorization_request(
 /// pending request is tied to the freshly-issued session — after which `inspect`
 /// and `decide` accept it. Mirrors the binding the server-rendered
 /// `complete_browser_login` used to perform.
+///
+/// 绑定前必须通过授权请求持有者 Cookie 校验（#115）：仅凭有效会话 + `request_id`
+/// 不足以认领一条 pending 请求，否则拿到泄露 `request_id` 的攻击者可以把受害者
+/// 的授权请求绑到自己的会话上并批准，使受害者登录进攻击者账号。
 pub async fn bind_authorization_request(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -129,6 +134,21 @@ pub async fn bind_authorization_request(
     }) else {
         return pending_expired();
     };
+    // 持有者校验放在会话检查之前：包括幂等重试在内的每一次绑定调用都必须证明
+    // 自己就是发起授权的那个浏览器。这是叠加在 CSRF 校验之上的一层，
+    // 两者都必须通过。Cookie 值不进日志。
+    if !authz_holder_valid(&headers, &pending) {
+        tracing::warn!(
+            event = "oauth.authz_holder_rejected",
+            request_id = %request_id,
+            user_id = %context.user_id,
+            "rejected authorization request binding with missing or mismatched holder cookie"
+        );
+        return error::forbidden(
+            "authorization_holder_invalid",
+            "authorization request was not initiated by this browser",
+        );
+    }
     // Only allow binding an unbound request, or re-binding one already owned by
     // this same session (idempotent retry). Refuse to steal another session's request.
     match pending.session_id.as_deref() {
@@ -263,9 +283,23 @@ pub async fn decide_authorization_request(
         .save(context.user_id, &consumed.client_id, &validated.scopes)
         .await
     {
-        tracing::error!(error = %error_value, "failed to save JSON OAuth consent");
+        // ClientNotFound 是内部一致性错误：validated_pending 已确认过 client 存在
+        let response = match error_value {
+            ConsentServiceError::ClientNotFound => {
+                tracing::error!(
+                    client_id = %consumed.client_id,
+                    user_id = %context.user_id,
+                    "consent save rejected: OAuth client no longer exists"
+                );
+                error::oauth_server_error()
+            }
+            ConsentServiceError::Database(database_error) => {
+                tracing::error!(error = %database_error, "failed to save JSON OAuth consent");
+                error::oauth_temporarily_unavailable()
+            }
+        };
         restore_pending(&state, &consumed).await;
-        return error::oauth_temporarily_unavailable();
+        return response;
     }
     match issue_authorization_code_result(&state, context.user_id.to_string(), validated).await {
         Ok(AuthorizationCodeIssue::Redirect(redirect_to)) => (
@@ -308,7 +342,7 @@ async fn validated_pending(
             "client is invalid",
         ));
     };
-    validate_authorization_request(
+    let mut validated = validate_authorization_request(
         &client,
         AuthorizationRequest {
             client_id: pending.client_id.clone(),
@@ -321,7 +355,11 @@ async fn validated_pending(
             code_challenge_method: Some(pending.code_challenge_method.clone()),
         },
     )
-    .map_err(|_| error::oauth_bad_request("invalid_request", "authorization request is invalid"))
+    .map_err(|_| error::oauth_bad_request("invalid_request", "authorization request is invalid"))?;
+    // 调用方已校验 pending 绑定的会话就是当前会话，授权码必须继承该绑定，
+    // 否则用户登出后授权码在 TTL 内仍能兑换 token。
+    validated.session_id = pending.session_id.clone();
+    Ok(validated)
 }
 
 fn error_redirect(pending: &PendingAuthorization) -> Option<String> {
@@ -393,4 +431,22 @@ fn csrf_valid(headers: &HeaderMap, session: &Session) -> bool {
         return false;
     };
     cookie == header && session.validates_csrf(&header)
+}
+
+/// 校验授权请求持有者 Cookie（#115）：
+/// - Cookie 存在 且 SHA-256(cookie值) == pending 中存储的哈希 → 通过
+/// - Cookie 不存在 或 pending 中无 holder_hash（旧记录）→ 拒绝（fail-secure）
+///
+/// 旧记录无 holder_hash 意味着升级前创建的授权请求：拒绝是有意为之，
+/// 用户重新发起授权即可获得完整保护。不留「无 holder 即放行」的绕过窗口。
+fn authz_holder_valid(headers: &HeaderMap, pending: &PendingAuthorization) -> bool {
+    match (
+        cookies::extract_authz_holder_cookie(headers).as_deref(),
+        pending.holder_hash.as_deref(),
+    ) {
+        (Some(cookie_value), Some(stored_hash)) => {
+            cookies::authz_holder_hash(cookie_value) == stored_hash
+        }
+        _ => false,
+    }
 }

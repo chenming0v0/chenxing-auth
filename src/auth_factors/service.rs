@@ -19,13 +19,20 @@ use super::{
     store::{LoginTicketStore, LoginTicketStoreError},
 };
 
+#[path = "attempt_limiter.rs"]
+mod attempt_limiter;
 #[path = "passkey.rs"]
 mod passkey;
+#[path = "passkey_core.rs"]
+mod passkey_core;
 #[path = "totp_service.rs"]
 mod totp_service;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TotpConfirmation {
+    /// 待确认的 TOTP 注册不存在，调用方应回落到 `verify_totp_login`。
+    /// 该变体只由 `confirm_totp_enrollment` 产生，`verify_totp_login` 永远不返回它。
+    NoPendingEnrollment,
     InvalidTicket,
     InvalidCode,
     RateLimited,
@@ -35,7 +42,8 @@ pub enum TotpConfirmation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasskeyConfirmation {
     InvalidTicket,
-    InvalidCredential,
+    InvalidCredential(UserId),
+    RateLimited(UserId),
     Completed(UserId),
 }
 

@@ -4,7 +4,7 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn rust_forwards_root_and_spa_paths_to_the_compiled_react_app() {
-    let response = api::router(AppState::for_test())
+    let response = api::router(AppState::for_test().await)
         .oneshot(
             Request::builder()
                 .uri("/")
@@ -19,7 +19,7 @@ async fn rust_forwards_root_and_spa_paths_to_the_compiled_react_app() {
         "text/html; charset=utf-8"
     );
 
-    let response = api::router(AppState::for_test())
+    let response = api::router(AppState::for_test().await)
         .oneshot(
             Request::builder()
                 .uri("/console/developer")

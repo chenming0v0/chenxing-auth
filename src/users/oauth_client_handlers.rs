@@ -11,7 +11,9 @@ use crate::{
     audit::AuditEvent,
     clients::{
         domain::ClientRegistrationInput,
-        service::{ClientServiceError, ClientSummary, RegisteredClientSecret},
+        service::{
+            ClientRegistrationRequest, ClientServiceError, ClientSummary, RegisteredClientSecret,
+        },
     },
     error,
     oauth::quota::QuotaSnapshot,
@@ -33,7 +35,11 @@ struct OwnedClientResponse {
 struct RegisteredOwnedClientResponse {
     #[serde(flatten)]
     client: OwnedClientResponse,
-    client_secret: String,
+    /// Client 认证方式；`none` 表示公开客户端，响应不含 client_secret。
+    auth_method: &'static str,
+    /// 公开客户端（SPA / 移动端）不签发 secret，此时该字段整体省略（Issue #66）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_secret: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -94,14 +100,11 @@ pub async fn revoke_authorized_app(
     let Ok(context) = mutation_user(&state, &headers).await else {
         return mutation_error(&state, &headers).await;
     };
-    if let Err(error_value) = state
-        .revocations
-        .revoke_consent(&context.user_id.to_string(), &client_id)
-        .await
-    {
-        tracing::error!(error = %error_value, "failed to revoke OAuth consent marker");
-        return error::internal();
-    }
+    // Issue #65 原子性修复：将撤销的权威写入（DB）与缓存失效（Redis）顺序调整，
+    // 使 DB 成为单一原子事实，Redis 成为 best-effort 缓存。
+    //
+    // 修复前：先 Redis 再 DB，DB 失败时 Redis 已写入，导致状态分裂。
+    // 修复后：先 DB（原子 UPDATE）再 Redis（best-effort），DB 失败时无副作用。
     let revoked = match state
         .consents
         .revoke_for_user(context.user_id, &client_id)
@@ -109,12 +112,28 @@ pub async fn revoke_authorized_app(
     {
         Ok(revoked) => revoked,
         Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to revoke OAuth consent");
+            tracing::error!(error = %error_value, "failed to revoke OAuth consent in DB");
             return error::internal();
         }
     };
     if !revoked {
+        // 记录不存在或已撤销：幂等返回 204
         return StatusCode::NO_CONTENT.into_response();
+    }
+    // DB 写入成功，尝试失效 Redis 缓存（best-effort）
+    if let Err(error_value) = state
+        .revocations
+        .revoke_consent(&context.user_id.to_string(), &client_id)
+        .await
+    {
+        tracing::warn!(
+            error = %error_value,
+            user_id = %context.user_id,
+            client_id = %client_id,
+            "failed to invalidate OAuth consent revocation cache, will fall back to DB on next check"
+        );
+        // Redis 失效失败不影响正确性（DB 已是权威真相，缓存未命中会回源），
+        // 仅 warn 不返回 500。
     }
     if let Err(error_value) = state
         .audit
@@ -137,7 +156,7 @@ pub async fn revoke_authorized_app(
 pub async fn create_owned_client(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(input): Json<ClientRegistrationInput>,
+    Json(input): Json<ClientRegistrationRequest>,
 ) -> Response {
     let Ok(context) = mutation_user(&state, &headers).await else {
         return mutation_error(&state, &headers).await;
@@ -330,6 +349,7 @@ async fn owned_registered_response(
             status: "active".to_owned(),
             quota,
         },
+        auth_method: client.auth_method.as_str(),
         client_secret: client.client_secret,
     })
 }

@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
 import { apiFetch, type AuthorizationDecisionResponse, type PendingAuthorization } from '../api'
 import { OAuthShell } from '../components/shells'
-import { BrandMark, Icon, Notice } from '../components/ui'
+import { BrandMark, HudPanel, Icon, Notice } from '../components/ui'
 import { initialOf } from '../data'
 
 function useRequestId(): string | null {
@@ -12,6 +12,21 @@ function useRequestId(): string | null {
 
 function appMark(name?: string) {
   return (name || 'A').trim().slice(0, 1).toUpperCase()
+}
+
+/**
+ * 校验后端返回的跳转地址：只允许 http/https。
+ * 后端响应一旦被污染，`javascript:` 之类的伪协议会在用户点「允许」时执行脚本，
+ * 因此这里在导航前强制解析并检查协议；畸形输入让 `new URL` 抛错，统一按无效处理。
+ */
+function safeRedirectTarget(raw: string): string | null {
+  try {
+    const url = new URL(raw, window.location.origin)
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
+    return url.href
+  } catch {
+    return null
+  }
 }
 
 function scopeMeta(scope: string): { title: string; desc: string } {
@@ -43,7 +58,8 @@ export function OAuthAccountPage() {
 
   return (
     <OAuthShell>
-      <div className="oauth-card chenxing-hud-panel" role="dialog" aria-labelledby="oauth-account-title">
+      {/* 页面主内容区：外层 OAuthShell 已提供唯一的 <main>，此处只能是 region */}
+      <HudPanel className="oauth-card" role="region" aria-label="选择辰星通行证账号">
         <div className="oauth-card-head">
           <BrandMark className="h-7 w-7 shrink-0 rounded-[var(--chenxing-radius-md)] object-contain" />
           <span className="chenxing-body text-sm">使用辰星通行证登录</span>
@@ -51,10 +67,10 @@ export function OAuthAccountPage() {
         <div className="oauth-card-body">
           <div>
             <div className="oauth-app-mark" aria-hidden="true">{appMark(pending?.client_name)}</div>
-            <h1 id="oauth-account-title" className="oauth-title">选择账号</h1>
-            <p className="oauth-copy" style={{ marginTop: 16 }}>
+            <h1 className="oauth-title">选择账号</h1>
+            <p className="oauth-copy is-lead">
               以继续使用
-              <span style={{ color: 'var(--chenxing-cyan)', fontWeight: 500 }}>「{pending?.client_name || '接入应用'}」</span>
+              <span className="oauth-client-name">「{pending?.client_name || '接入应用'}」</span>
             </p>
           </div>
           <div>
@@ -62,9 +78,11 @@ export function OAuthAccountPage() {
             {!message && !pending ? <Notice tone="info">正在读取授权请求…</Notice> : null}
             {pending ? (
               <>
-                <ul className="oauth-list" role="listbox" aria-label="可选账号">
+                {/* 保留 ul/li + 原生 button/a 语义：原生控件自带键盘可达性，
+                    不使用 listbox/option（那需要自行实现方向键与 aria-activedescendant） */}
+                <ul className="oauth-list" aria-label="可选账号">
                   <li>
-                    <button type="button" role="option" onClick={() => navigate(`/oauth/consent?request_id=${encodeURIComponent(pending.request_id)}`)}>
+                    <button type="button" onClick={() => navigate(`/oauth/consent?request_id=${encodeURIComponent(pending.request_id)}`)}>
                       <span className="oauth-avatar">{initialOf(user?.display_name || user?.username)}</span>
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium text-[var(--chenxing-foreground)]">{user?.display_name || user?.username}</span>
@@ -74,7 +92,7 @@ export function OAuthAccountPage() {
                     </button>
                   </li>
                   <li>
-                    <Link to="/login" role="option" className="flex w-full items-center gap-3.5 border-0 bg-transparent px-4 py-3.5 text-left">
+                    <Link to="/login" className="flex w-full items-center gap-3.5 border-0 bg-transparent px-4 py-3.5 text-left">
                       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-dashed border-[var(--chenxing-border-strong)] text-[var(--chenxing-muted-foreground)]">+</span>
                       <span className="min-w-0 flex-1">
                         <span className="block text-sm font-medium text-[var(--chenxing-foreground)]">使用其他辰星通行证</span>
@@ -83,14 +101,14 @@ export function OAuthAccountPage() {
                     </Link>
                   </li>
                 </ul>
-                <p className="oauth-copy" style={{ marginTop: 18, fontSize: 12.5, padding: '0 4px' }}>
+                <p className="oauth-copy is-legal">
                   在使用该应用之前，你可以查看「{pending.client_name}」的<a href="#">隐私政策</a>和<a href="#">服务条款</a>。
                 </p>
               </>
             ) : null}
           </div>
         </div>
-      </div>
+      </HudPanel>
     </OAuthShell>
   )
 }
@@ -123,7 +141,13 @@ export function OAuthConsentPage() {
         method: 'POST',
         body: JSON.stringify({ decision }),
       })
-      window.location.assign(response.redirect_to)
+      const target = safeRedirectTarget(response.redirect_to)
+      if (!target) {
+        setMessage('授权跳转地址无效，已阻止本次跳转，请重新发起授权。')
+        setSubmitting(false)
+        return
+      }
+      window.location.assign(target)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '授权请求处理失败。')
       setSubmitting(false)
@@ -132,7 +156,8 @@ export function OAuthConsentPage() {
 
   return (
     <OAuthShell>
-      <div className="oauth-card chenxing-hud-panel" role="dialog" aria-labelledby="oauth-consent-title">
+      {/* 页面主内容区：外层 OAuthShell 已提供唯一的 <main>，此处只能是 region */}
+      <HudPanel className="oauth-card" role="region" aria-label="辰星通行证授权确认">
         <div className="oauth-card-head">
           <BrandMark className="h-7 w-7 shrink-0 rounded-[var(--chenxing-radius-md)] object-contain" />
           <span className="chenxing-body text-sm">使用辰星通行证登录</span>
@@ -140,7 +165,7 @@ export function OAuthConsentPage() {
         <div className="oauth-card-body">
           <div>
             <div className="oauth-app-mark" aria-hidden="true">{appMark(pending?.client_name)}</div>
-            <h1 id="oauth-consent-title" className="oauth-title">
+            <h1 className="oauth-title">
               「{pending?.client_name || '接入应用'}」想要访问<br />你的辰星通行证
             </h1>
             <Link className="oauth-account" to={requestId ? `/oauth/account?request_id=${encodeURIComponent(requestId)}` : '/oauth/account'} aria-label={`切换账号：${user?.email || ''}`}>
@@ -182,7 +207,7 @@ export function OAuthConsentPage() {
             ) : null}
           </div>
         </div>
-      </div>
+      </HudPanel>
     </OAuthShell>
   )
 }
@@ -192,7 +217,9 @@ export function OAuthRedirectPage() {
   const hasError = query.has('error')
   return (
     <OAuthShell>
-      <div className="oauth-card chenxing-hud-panel" role="status" aria-live="polite" aria-labelledby="oauth-redirect-title">
+      {/* 页面主内容区：外层 OAuthShell 已提供唯一的 <main>，此处只能是 region。
+          保留 aria-live 以便 SPA 内跳转到本页时播报授权结果 */}
+      <HudPanel className="oauth-card" role="region" aria-live="polite" aria-label="辰星通行证授权结果">
         <div className="oauth-card-head">
           <BrandMark className="h-7 w-7 shrink-0 rounded-[var(--chenxing-radius-md)] object-contain" />
           <span className="chenxing-body text-sm">{hasError ? '授权未完成' : '授权完成 · 正在返回接入应用'}</span>
@@ -203,12 +230,12 @@ export function OAuthRedirectPage() {
               <BrandMark className="h-9 w-9 rounded-[10px] object-contain" />
             </span>
             <span className="oauth-beam" />
-            <span className="oauth-transfer-mark" style={{ background: 'linear-gradient(145deg,rgba(56,189,248,0.28),rgba(14,165,233,0.12))', borderColor: 'rgba(125,211,252,0.4)' }}>A</span>
+            <span className="oauth-transfer-mark is-client">A</span>
           </div>
           {hasError ? (
             <>
-              <h1 id="oauth-redirect-title" className="oauth-title" style={{ fontSize: '1.55rem' }}>授权没有完成</h1>
-              <p className="oauth-copy" style={{ marginTop: 12 }}>授权请求被拒绝或未完成。辰星不会在此页面展示授权码或 Token。</p>
+              <h1 className="oauth-title is-compact">授权没有完成</h1>
+              <p className="oauth-copy is-notice">授权请求被拒绝或未完成。辰星不会在此页面展示授权码或 Token。</p>
               <div className="mt-6"><Link to="/console" className="oauth-btn oauth-btn-primary">返回控制台</Link></div>
             </>
           ) : (
@@ -217,12 +244,12 @@ export function OAuthRedirectPage() {
                 <Icon name="refresh-cw" className="oauth-spin text-[var(--chenxing-cyan)]" size={15} />
                 授权回调已收到
               </div>
-              <p className="oauth-copy" style={{ marginTop: 10 }}>回调参数已交给发起方处理，不会在浏览器中长期保留。</p>
+              <p className="oauth-copy is-hint">回调参数已交给发起方处理，不会在浏览器中长期保留。</p>
               <div className="mt-6"><Link to="/console" className="chenxing-link">返回控制台</Link></div>
             </>
           )}
         </div>
-      </div>
+      </HudPanel>
     </OAuthShell>
   )
 }

@@ -101,7 +101,7 @@ async fn setup() -> (
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
-        api::router(AppState::new(config).expect("state")),
+        api::router(AppState::new(config).await.expect("state")),
         database,
         key_directory,
         lock,
@@ -536,5 +536,296 @@ async fn owner_role_mutation_is_owner_only_and_updates_existing_sessions() {
 
     let _ = managed_csrf;
     let _ = database;
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+/// `POST /api/v1/admin/users`（Issue #133）。
+///
+/// 覆盖三件事：成功路径返回落库后的 PublicUser 且不含任何凭据材料、
+/// 输入错误落到 400/409 而不是 500、提升角色时权限被抬到 ManageRoles。
+#[tokio::test]
+async fn admin_user_creation_covers_success_validation_and_role_escalation() {
+    let (router, database, key_directory, _lock) = setup().await;
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let suffix = Uuid::new_v4().simple().to_string();
+    let password = "1234567890";
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/bootstrap")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": format!("owner-{suffix}"),
+                        "email": format!("owner-{suffix}@example.com"),
+                        "password": password
+                    })
+                    .to_string(),
+                ))
+                .expect("bootstrap request"),
+        )
+        .await
+        .expect("bootstrap response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let create = |body: serde_json::Value| {
+        router.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("authorization", "Bearer bootstrap-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("create user request"),
+        )
+    };
+
+    // 默认角色与状态：不传 role/status 时必须落成最低权限的活跃账号。
+    let response = create(serde_json::json!({
+        "username": format!("managed-{suffix}"),
+        "email": format!("managed-{suffix}@example.com"),
+        "password": password
+    }))
+    .await
+    .expect("create default user response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created = json(response).await;
+    assert_eq!(created["role"], "user");
+    assert_eq!(created["status"], "active");
+    assert_eq!(created["username"], format!("managed-{suffix}"));
+    // display_name 缺省保持 NULL，不回填 username。
+    assert!(created["display_name"].is_null());
+    assert!(created["id"].as_i64().is_some());
+    // 响应不得包含任何凭据材料。
+    assert!(created.get("password").is_none());
+    assert!(created.get("password_hash").is_none());
+
+    // 显式 disabled 状态必须落库，而不是被忽略成 active。
+    let response = create(serde_json::json!({
+        "username": format!("suspended-{suffix}"),
+        "email": format!("suspended-{suffix}@example.com"),
+        "password": password,
+        "display_name": "  ",
+        "status": "disabled"
+    }))
+    .await
+    .expect("create disabled user response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created = json(response).await;
+    assert_eq!(created["status"], "disabled");
+    // 空白 display_name 被 trim 成 NULL。
+    assert!(created["display_name"].is_null());
+
+    // 输入错误必须是 400，重复用户名/邮箱必须是 409。
+    for (body, status, code) in [
+        (
+            serde_json::json!({
+                "username": format!("badmail-{suffix}"),
+                "email": "invalid",
+                "password": password
+            }),
+            StatusCode::BAD_REQUEST,
+            "invalid_email",
+        ),
+        (
+            serde_json::json!({
+                "username": format!("shortpass-{suffix}"),
+                "email": format!("shortpass-{suffix}@example.com"),
+                "password": "short"
+            }),
+            StatusCode::BAD_REQUEST,
+            "password_too_short",
+        ),
+        (
+            serde_json::json!({
+                "username": "ab",
+                "email": format!("baduser-{suffix}@example.com"),
+                "password": password
+            }),
+            StatusCode::BAD_REQUEST,
+            "invalid_username",
+        ),
+        (
+            serde_json::json!({
+                "username": format!("managed-{suffix}"),
+                "email": format!("duplicate-{suffix}@example.com"),
+                "password": password
+            }),
+            StatusCode::CONFLICT,
+            "username_already_registered",
+        ),
+        (
+            serde_json::json!({
+                "username": format!("duplicate-{suffix}"),
+                "email": format!("managed-{suffix}@example.com"),
+                "password": password
+            }),
+            StatusCode::CONFLICT,
+            "email_already_registered",
+        ),
+    ] {
+        let response = create(body).await.expect("create user error response");
+        assert_eq!(response.status(), status, "{code}");
+        assert_eq!(json(response).await["code"], code);
+    }
+
+    // admin 角色只有 ManageUsers，创建 owner 需要 ManageRoles → 403。
+    let response = create(serde_json::json!({
+        "username": format!("promoted-{suffix}"),
+        "email": format!("promoted-{suffix}@example.com"),
+        "password": password,
+        "role": "admin"
+    }))
+    .await
+    .expect("create admin response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let admin_id = json(response).await["id"].as_i64().expect("admin id");
+    let (admin_cookie, admin_csrf) = browser_session(&database_url, &redis_url, admin_id).await;
+
+    let escalate = |role: &'static str| {
+        router.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("cookie", &admin_cookie)
+                .header("x-csrf-token", &admin_csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": format!("escalated-{role}-{suffix}"),
+                        "email": format!("escalated-{role}-{suffix}@example.com"),
+                        "password": password,
+                        "role": role
+                    })
+                    .to_string(),
+                ))
+                .expect("escalation request"),
+        )
+    };
+    for role in ["admin", "owner"] {
+        let response = escalate(role).await.expect("escalation response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{role}");
+        assert_eq!(json(response).await["code"], "admin_forbidden");
+    }
+
+    // 同一个 admin 会话创建普通用户是允许的：ManageUsers 就够了。
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("cookie", &admin_cookie)
+                .header("x-csrf-token", &admin_csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": format!("by-admin-{suffix}"),
+                        "email": format!("by-admin-{suffix}@example.com"),
+                        "password": password
+                    })
+                    .to_string(),
+                ))
+                .expect("admin session create request"),
+        )
+        .await
+        .expect("admin session create response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    // 缺少 X-CSRF-Token 的 Cookie 会话写操作必须被 CSRF 校验拦下。
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("cookie", &admin_cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": format!("no-csrf-{suffix}"),
+                        "email": format!("no-csrf-{suffix}@example.com"),
+                        "password": password
+                    })
+                    .to_string(),
+                ))
+                .expect("missing CSRF request"),
+        )
+        .await
+        .expect("missing CSRF response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json(response).await["code"], "csrf_invalid");
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE username LIKE '%' || $1::text")
+        .bind(&suffix)
+        .execute(&database)
+        .await
+        .expect("cleanup created users");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn list_users_enforces_server_side_limit() {
+    let (router, database, key_directory, _lock) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+
+    // 直接批量插入，避免 Argon2 哈希让测试变慢；password_hash 不参与本用例校验。
+    chenxing_auth::sqlx::query(
+        "INSERT INTO users (username, email, password_hash, role, status)
+         SELECT 'bulk-' || $1::text || '-' || series.i,
+                'bulk-' || $1::text || '-' || series.i || '@example.com',
+                'unused-hash',
+                'user',
+                'active'
+         FROM generate_series(1, 260) AS series(i)",
+    )
+    .bind(&suffix)
+    .execute(&database)
+    .await
+    .expect("bulk insert users");
+
+    let list = |query: &'static str| {
+        let router = router.clone();
+        async move {
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/v1/admin/users{query}"))
+                        .header("authorization", "Bearer bootstrap-admin-token")
+                        .body(Body::empty())
+                        .expect("list users request"),
+                )
+                .await
+                .expect("list users response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = json(response).await;
+            body.as_array().expect("user array").len()
+        }
+    };
+
+    // 未提供 limit 时使用默认 50，而不是倾倒 260 条。
+    assert_eq!(list("").await, 50);
+    // 超过上限的 limit 被 clamp 到 200，即使表里有 260 条。
+    assert_eq!(list("?limit=300").await, 200);
+    assert_eq!(list("?limit=9223372036854775807").await, 200);
+    // limit 为 0 或负数时被纠正到 1。
+    assert_eq!(list("?limit=0").await, 1);
+    assert_eq!(list("?limit=-5").await, 1);
+    // offset 正常翻页；260 条数据里跳过 255 条只剩 5 条。
+    assert_eq!(list("?limit=10&offset=255").await, 5);
+    // 负 offset 按 0 处理，不报错也不越界。
+    assert_eq!(list("?limit=3&offset=-10").await, 3);
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE username LIKE 'bulk-' || $1::text || '-%'")
+        .bind(&suffix)
+        .execute(&database)
+        .await
+        .expect("cleanup bulk users");
     let _ = std::fs::remove_dir_all(key_directory);
 }

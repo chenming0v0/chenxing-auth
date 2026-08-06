@@ -204,6 +204,17 @@ async fn find_for_update(
     Ok(row.map(row_to_plan))
 }
 
+/// 统计挂载到指定套餐的用户数。在事务内调用，保证与刚写入的套餐处于同一快照。
+async fn count_assigned_users(
+    transaction: &mut Transaction<'_, Postgres>,
+    plan_id: i64,
+) -> Result<i64, crate::sqlx::Error> {
+    crate::sqlx::query_scalar("SELECT COUNT(id) FROM users WHERE plan_id = $1")
+        .bind(plan_id)
+        .fetch_one(&mut **transaction)
+        .await
+}
+
 async fn ensure_active_default(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<(), PlanRepositoryError> {
@@ -257,7 +268,7 @@ pub async fn update(
     pool: &PgPool,
     id: i64,
     input: &ValidatedPlanInput,
-) -> Result<Option<Plan>, PlanRepositoryError> {
+) -> Result<Option<PlanWithUsers>, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
     lock_default_plan_set(&mut transaction).await?;
     let Some(current) = find_for_update(&mut transaction, id).await? else {
@@ -293,8 +304,13 @@ pub async fn update(
     .fetch_one(&mut *transaction)
     .await?;
     ensure_active_default(&mut transaction).await?;
+    // 更新成功后在同一事务中统计挂载用户数；避免提交后再查询时失败导致响应丢失更新结果
+    let assigned_users = count_assigned_users(&mut transaction, id).await?;
     transaction.commit().await?;
-    Ok(Some(row_to_plan(row)))
+    Ok(Some(PlanWithUsers {
+        plan: row_to_plan(row),
+        assigned_users,
+    }))
 }
 
 pub async fn set_status(pool: &PgPool, id: i64, status: &str) -> Result<bool, PlanRepositoryError> {

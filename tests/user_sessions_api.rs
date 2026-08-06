@@ -37,7 +37,7 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
-        api::router(AppState::new(config).expect("state")),
+        api::router(AppState::new(config).await.expect("state")),
         database,
         key_directory,
     )
@@ -225,7 +225,9 @@ async fn totp_code_at(email: &str, timestamp: u64) -> String {
         .expect("TOTP lookup")
         .expect("TOTP factor");
     let secret = decrypt_totp_secret(&[0_u8; 32], &encrypted).expect("TOTP secret");
-    TOTP::new(Algorithm::SHA1, 6, 1, 30, secret, None, String::new())
+    // TOTP::new 按值接收 Vec<u8>，只能交出一份拷贝；
+    // totp-rs 开启了 zeroize feature，TOTP 自身会在 drop 时清零该副本。
+    TOTP::new(Algorithm::SHA1, 6, 1, 30, secret.to_vec(), None, String::new())
         .expect("TOTP")
         .generate(timestamp)
 }

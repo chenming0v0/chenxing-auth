@@ -49,7 +49,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: '#/components/schemas/OpenIdConfiguration'
   /.well-known/jwks.json:
     get:
       tags: [OAuth/OIDC]
@@ -190,6 +190,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/WebAuthnOptions' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/passkeys/register/finish:
     post:
       tags: [User Auth/MFA]
@@ -229,6 +230,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/WebAuthnOptions' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/passkeys/authentication/finish:
     post:
       tags: [User Auth/MFA]
@@ -479,7 +481,7 @@ paths:
       tags: [User Auth/Sessions]
       summary: 注销当前 Session
       operationId: revokeSession
-      security: [{ sessionCookie: [] }, { chenxingSession: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       responses:
@@ -540,7 +542,7 @@ paths:
         - { name: code_challenge, in: query, required: true, schema: { type: string } }
         - { name: code_challenge_method, in: query, required: true, schema: { type: string, enum: [S256] } }
       responses:
-        '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页 }
+        '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页（未登录时附带 chenxing_authz_holder HttpOnly Cookie） }
         '400': { $ref: '#/components/responses/OAuthBadRequest' }
         '401': { $ref: '#/components/responses/OAuthUnauthorized' }
         '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
@@ -590,6 +592,16 @@ paths:
       summary: 将登录后的 Session 原子绑定到待授权请求
       operationId: bindAuthorizationRequest
       security: [{ sessionCookie: [] }]
+      description: |
+        绑定时必须同时满足：
+        1. 有效的 Session Cookie（chenxing_session）
+        2. CSRF 校验通过（chenxing_csrf Cookie + X-CSRF-Token 头）
+        3. 授权持有者 Cookie 与 pending 记录中的摘要匹配（chenxing_authz_holder，防御 OAuth login CSRF / 请求固定攻击 #115）
+        
+        chenxing_authz_holder Cookie 由 `/oauth/authorize` 在创建未绑定 pending 请求时下发（HttpOnly, SameSite=Lax, path=/），
+        SHA-256 摘要存入 Redis 的 pending 记录。缺失该 Cookie 或摘要不匹配返回 403。
+        
+        升级前创建的旧 pending 记录无 holder 摘要，绑定时将被拒绝（fail-secure），用户需重新发起授权流程。
       parameters:
         - { name: request_id, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
@@ -597,6 +609,7 @@ paths:
         '204': { description: 绑定成功或同一 Session 的幂等重试 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
   /oauth/token:
     post:
@@ -707,16 +720,61 @@ paths:
     get:
       tags: [Admin Users]
       summary: 用户列表
+      description: 返回用户数组。服务端强制分页上限，超出范围的 limit 会被 clamp 到 [1, 200]；需要完整分页信封时使用 /api/v1/admin/users/query。
       operationId: listUsers
       security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: 返回条数，默认 50；超出 [1, 200] 时自动 clamp。
+          schema: { type: integer, format: int64, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          description: 跳过条数，默认 0；负值按 0 处理。
+          schema: { type: integer, format: int64, default: 0 }
       responses:
         '200':
           description: 用户列表
           content:
             application/json:
               schema: { type: array, items: { $ref: '#/components/schemas/PublicUser' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin Users]
+      summary: 创建用户
+      description: |
+        管理员创建任意角色和初始状态的用户，是 POST /api/v1/admin/admins 的一般化。
+        响应只包含公开用户字段，永不返回口令、口令哈希或任何凭据材料。
+
+        权限：`manage_users` 为基线；`role` 为 admin 或 owner 时所需权限抬升为 `manage_roles`。
+        浏览器 Session 写操作必须同时携带 HttpOnly Session Cookie、CSRF Cookie 和 X-CSRF-Token。
+
+        错误码：
+        - 400：invalid_role、invalid_status、invalid_username、invalid_email、password_too_short、password_too_long、display_name_too_long、email_domain_not_allowed、csrf_invalid
+        - 403：admin_forbidden
+        - 409：username_already_registered、email_already_registered、owner_bootstrap_required
+      operationId: createUser
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateUserInput' }
+      responses:
+        '201':
+          description: 创建成功，返回公开用户字段（不含凭据材料）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicUser' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/admin/users/{user_id}/{status}:
     post:
       tags: [Admin Users]
@@ -1386,8 +1444,16 @@ components:
       properties:
         username: { type: string, minLength: 3, maxLength: 64 }
         email: { type: string, format: email }
-        password: { type: string, format: password, minLength: 10 }
+        password: { type: string, format: password, minLength: 10, maxLength: 128 }
         display_name: { type: string, nullable: true, maxLength: 128 }
+    CreateUserInput:
+      description: 管理侧创建用户输入。基础字段与注册一致，额外允许指定角色和初始状态。
+      allOf:
+        - $ref: '#/components/schemas/RegistrationInput'
+        - type: object
+          properties:
+            role: { type: string, enum: [user, admin, owner], default: user, description: 缺省为 user；指定 admin 或 owner 时额外要求 manage_roles 权限 }
+            status: { type: string, enum: [active, disabled], default: active }
     LoginInput:
       type: object
       required: [identifier, password]
@@ -1580,7 +1646,64 @@ components:
         expires_in: { type: integer, format: int64 }
         scope: { type: string }
         refresh_token: { type: string }
-        id_token: { type: string }
+        id_token: { type: string, description: "JWT ID Token（scope 含 openid 时返回）" }
+    IdTokenClaims:
+      type: object
+      description: >
+        OIDC ID Token 的 JWT payload 结构（RFC 7519 + OIDC Core 1.0 §2）。
+        azp 在单 audience 场景可省略（OIDC Core §2 允许），不签发也不声明。
+      required: [iss, sub, aud, exp, iat]
+      properties:
+        iss: { type: string, format: uri, description: "令牌签发者（等于 APP_ISSUER）" }
+        sub: { type: string, description: "用户主体标识符" }
+        aud: { type: string, description: "接收方 client_id" }
+        exp: { type: integer, format: int64, description: "过期时间（Unix 秒）" }
+        iat: { type: integer, format: int64, description: "签发时间（Unix 秒）" }
+        auth_time:
+          type: integer
+          format: int64
+          description: >
+            终端用户完成认证的时刻（会话建立时间，Unix 秒）。
+            OIDC Core §2 定义。无会话上下文时（刷新令牌路径、降级路径）省略该键而非 null。
+        nonce:
+          type: string
+          description: "授权请求中携带的 nonce，有值时出现在 ID Token 中（OIDC Core §3.1.3.7）"
+        email:
+          type: string
+          format: email
+          description: "scope 含 email 时签发"
+        name:
+          type: string
+          description: "scope 含 profile 时签发（用户显示名称）"
+    OpenIdConfiguration:
+      type: object
+      description: "OIDC Discovery 元数据（OIDC Discovery 1.0 §3）"
+      required:
+        - issuer
+        - authorization_endpoint
+        - token_endpoint
+        - userinfo_endpoint
+        - jwks_uri
+        - response_types_supported
+        - subject_types_supported
+        - id_token_signing_alg_values_supported
+      properties:
+        issuer: { type: string, format: uri }
+        authorization_endpoint: { type: string, format: uri }
+        token_endpoint: { type: string, format: uri }
+        userinfo_endpoint: { type: string, format: uri }
+        revocation_endpoint: { type: string, format: uri }
+        jwks_uri: { type: string, format: uri }
+        response_types_supported: { type: array, items: { type: string } }
+        subject_types_supported: { type: array, items: { type: string } }
+        id_token_signing_alg_values_supported: { type: array, items: { type: string } }
+        scopes_supported: { type: array, items: { type: string } }
+        claims_supported:
+          type: array
+          items: { type: string }
+          description: "支持的 ID Token Claims，含 sub、iss、aud、exp、iat、email、name、nonce、auth_time"
+        code_challenge_methods_supported: { type: array, items: { type: string } }
+        token_endpoint_auth_methods_supported: { type: array, items: { type: string } }
     UserInfo:
       type: object
       required: [sub]

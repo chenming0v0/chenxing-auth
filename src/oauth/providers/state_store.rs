@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+/// 外部 OAuth 登录 state 的默认有效期（秒）。可通过 `EXTERNAL_LOGIN_STATE_TTL_SECONDS` 覆盖。
 pub const EXTERNAL_LOGIN_STATE_TTL_SECONDS: u64 = 600;
 pub const EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS: u64 = 60;
 pub const EXTERNAL_LOGIN_STATE_RATE_LIMIT: i64 = 30;
@@ -50,6 +51,17 @@ pub struct ExternalLoginState {
     pub state: String,
     pub provider_slug: String,
     pub request_id: Option<String>,
+    /// 发往外部 IdP 的 PKCE `code_verifier`（RFC 7636 §4.1）。
+    ///
+    /// **一次性凭据，禁止写入日志。** 该结构体不派生 `Display`，且不得整体传入
+    /// `tracing` 宏；需要记录上下文时只记录 `state` 与 `provider_slug`。
+    ///
+    /// `#[serde(default)]` 是升级兼容契约：滚动升级期间 Redis 里已存在的旧 state
+    /// payload 没有该字段，缺失时反序列化为空串而不是整体失败，否则所有进行中的
+    /// 外部登录都会被打断。空串表示「本次登录未使用 PKCE」，`exchange_code`
+    /// 会相应地不发送 `code_verifier`。
+    #[serde(default)]
+    pub code_verifier: String,
 }
 
 #[derive(Clone)]
@@ -58,6 +70,10 @@ pub struct ExternalLoginStateStore {
     prefix: String,
     source_rate_limit: i64,
     max_pending: i64,
+    /// 运行期 TTL，来自配置（#121），默认与常量一致。
+    ttl_seconds: u64,
+    /// 运行期限流窗口，来自配置（#121），默认与常量一致。
+    rate_window_seconds: u64,
 }
 
 #[derive(Debug, Error)]
@@ -81,6 +97,26 @@ impl ExternalLoginStateStore {
             STATE_KEY_PREFIX.to_owned(),
             EXTERNAL_LOGIN_STATE_RATE_LIMIT,
             EXTERNAL_LOGIN_STATE_MAX_PENDING,
+            EXTERNAL_LOGIN_STATE_TTL_SECONDS,
+            EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
+        )
+    }
+
+    /// 构造带运行期配置的实例（#121）。
+    pub fn new_with_config(
+        client: Client,
+        ttl_seconds: u64,
+        rate_window_seconds: u64,
+        rate_limit: i64,
+        max_pending: i64,
+    ) -> Self {
+        Self::new_with_limits(
+            client,
+            STATE_KEY_PREFIX.to_owned(),
+            rate_limit,
+            max_pending,
+            ttl_seconds,
+            rate_window_seconds,
         )
     }
 
@@ -102,10 +138,10 @@ impl ExternalLoginStateStore {
             .key(self.pending_key())
             .key(self.rate_key(source_ip))
             .key(self.state_key(&value.state))
-            .arg(EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS)
+            .arg(self.rate_window_seconds)
             .arg(self.source_rate_limit)
             .arg(self.max_pending)
-            .arg(EXTERNAL_LOGIN_STATE_TTL_SECONDS)
+            .arg(self.ttl_seconds)
             .arg(&value.state)
             .arg(payload)
             .invoke_async(&mut connection)
@@ -140,12 +176,16 @@ impl ExternalLoginStateStore {
         prefix: String,
         source_rate_limit: i64,
         max_pending: i64,
+        ttl_seconds: u64,
+        rate_window_seconds: u64,
     ) -> Self {
         Self {
             client,
             prefix,
             source_rate_limit,
             max_pending,
+            ttl_seconds,
+            rate_window_seconds,
         }
     }
 
@@ -165,6 +205,7 @@ impl ExternalLoginStateStore {
 
 #[cfg(test)]
 mod tests {
+    use super::{EXTERNAL_LOGIN_STATE_TTL_SECONDS, EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS};
     use std::sync::Arc;
 
     use redis::AsyncCommands;
@@ -178,6 +219,35 @@ mod tests {
         redis::Client::open(url).expect("Redis URL")
     }
 
+    /// 兼容性回归：滚动升级期间 Redis 里的旧 payload 没有 `code_verifier` 字段，
+    /// 必须能反序列化为空串，否则所有进行中的外部登录都会失败。
+    #[test]
+    fn legacy_state_without_code_verifier_deserializes() {
+        let legacy = r#"{"state":"legacy-state","provider_slug":"example","request_id":null}"#;
+        let restored: ExternalLoginState =
+            serde_json::from_str(legacy).expect("旧 payload 必须仍可反序列化");
+        assert_eq!(restored.state, "legacy-state");
+        assert_eq!(restored.provider_slug, "example");
+        assert_eq!(restored.request_id, None);
+        assert_eq!(
+            restored.code_verifier, "",
+            "缺失的 code_verifier 应回退为空串（表示本次登录未使用 PKCE）"
+        );
+    }
+
+    #[test]
+    fn state_with_code_verifier_round_trips() {
+        let original = ExternalLoginState {
+            state: "state-value".to_owned(),
+            provider_slug: "example".to_owned(),
+            request_id: Some("request-value".to_owned()),
+            code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".to_owned(),
+        };
+        let payload = serde_json::to_string(&original).expect("序列化");
+        let restored: ExternalLoginState = serde_json::from_str(&payload).expect("反序列化");
+        assert_eq!(restored, original);
+    }
+
     #[tokio::test]
     async fn concurrent_admission_never_exceeds_pending_capacity() {
         let client = redis_client();
@@ -187,6 +257,8 @@ mod tests {
             prefix,
             100,
             4,
+            EXTERNAL_LOGIN_STATE_TTL_SECONDS,
+            EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
         ));
         let source_ip = "198.51.100.7";
         let mut tasks = Vec::new();
@@ -199,6 +271,7 @@ mod tests {
                             state: format!("state-{index}"),
                             provider_slug: "example".to_owned(),
                             request_id: None,
+                            code_verifier: String::new(),
                         },
                         source_ip,
                     )
@@ -232,7 +305,14 @@ mod tests {
     async fn source_rate_limit_rejects_without_creating_an_extra_state() {
         let client = redis_client();
         let prefix = format!("chenxing:test:external-state:{}", Uuid::new_v4().simple());
-        let store = ExternalLoginStateStore::new_with_limits(client.clone(), prefix, 2, 10);
+        let store = ExternalLoginStateStore::new_with_limits(
+            client.clone(),
+            prefix,
+            2,
+            10,
+            EXTERNAL_LOGIN_STATE_TTL_SECONDS,
+            EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
+        );
         for index in 0..2 {
             store
                 .save_from_source(
@@ -240,6 +320,7 @@ mod tests {
                         state: format!("state-{index}"),
                         provider_slug: "example".to_owned(),
                         request_id: None,
+                        code_verifier: String::new(),
                     },
                     "198.51.100.8",
                 )
@@ -253,6 +334,7 @@ mod tests {
                         state: "state-third".to_owned(),
                         provider_slug: "example".to_owned(),
                         request_id: None,
+                        code_verifier: String::new(),
                     },
                     "198.51.100.8",
                 )

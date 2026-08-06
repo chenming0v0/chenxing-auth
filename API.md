@@ -104,9 +104,9 @@
 
 ### `DELETE /api/v1/auth/session`
 
-撤销当前用户 Session，响应 `204` 并清理 Cookie。开发期也支持 `X-Chenxing-Session: <session_id>`；浏览器应使用 Cookie。
+撤销当前用户 Session，响应 `204` 并清理 Cookie。身份只从 HttpOnly Session Cookie 读取，`X-Chenxing-Session` 请求头不再被该端点接受。
 
-使用 Cookie 时必须同时发送：
+撤销是状态变更，必须无条件同时发送：
 
 - Session HttpOnly Cookie
 - CSRF Cookie
@@ -151,7 +151,27 @@
 | `code_challenge_method` | 必须为 `S256` |
 | `nonce` | 使用 OIDC 时建议必填并随机生成 |
 
-未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`；非 HTML 请求返回 `401 login_required`。首次授权会进入 `/oauth/consent?request_id=...`。
+未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`，同时下发 `chenxing_authz_holder` HttpOnly Cookie（防御 OAuth login CSRF，见下文 bind 端点说明）；非 HTML 请求返回 `401 login_required`。首次授权会进入 `/oauth/consent?request_id=...`。
+
+### `POST /api/v1/oauth/authorize/requests/{request_id}/bind`
+
+将 SPA 登录后签发的 Session 绑定到 pending 授权请求。绑定完成后才能调用 inspect（GET）和 decide（POST）。
+
+调用方必须同时提供：
+
+| 凭据 | 来源 | 说明 |
+| --- | --- | --- |
+| Session Cookie `chenxing_session` | TOTP / 密码登录响应 | 身份认证 |
+| CSRF Cookie `chenxing_csrf` + `X-CSRF-Token` | 同上 | 防 CSRF |
+| 持有者 Cookie `chenxing_authz_holder` | `/oauth/authorize` 重定向响应 | **防 OAuth login CSRF（#115）** |
+
+**`chenxing_authz_holder` Cookie 说明**：`request_id` 通过 URL 查询参数传递，可能通过 Referer、浏览器历史或分享链接泄露。没有持有者绑定，任何拿到 `request_id` 的已登录攻击者都可以把受害者的 pending 请求绑到自己的会话上并批准，使受害者登录进攻击者账号（OAuth login CSRF / 请求固定攻击）。
+
+`/oauth/authorize` 在创建未绑定 pending 请求时下发该 Cookie（`HttpOnly; SameSite=Lax; Path=/`），其 SHA-256 摘要存入 Redis。bind 端点比对 Cookie 值与摘要，不匹配返回 `403 authorization_holder_invalid`。
+
+升级前创建的旧 pending 记录无摘要，绑定时被拒绝（fail-secure），用户需重新发起授权流程。
+
+幂等：同一 Session + 同一持有者 Cookie 重复调用返回 `204`。
 
 ### `GET /api/v1/oauth/authorize/requests/{request_id}` / `POST ...`
 
@@ -195,7 +215,27 @@ grant_type=refresh_token&refresh_token=...
 
 `refresh_token` 会轮换；包含 `openid` Scope 时返回 `id_token`。授权码和刷新 Token 均为一次性消费。
 
+授权码除 Client 和 Redirect URI 外还绑定签发时的浏览器会话。会话被撤销（用户登出）或过期后，授权码即使仍在 TTL 内也不能兑换，返回 `invalid_grant`；被拒绝的授权码不会被消费，可在会话恢复有效后重试。
+
 Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限流，超限返回 `429 temporarily_unavailable`；套餐未配置 `max_qps`（`null`）时不限流。
+
+#### ID Token Claims
+
+`id_token` 是 RS256 签名的 JWT，Header 携带 `kid`；公钥从 `/.well-known/jwks.json` 获取。Payload Claims：
+
+| Claim | 是否总是出现 | 说明 |
+| --- | --- | --- |
+| `iss` | 是 | 签发者，等于 `APP_ISSUER` 配置值 |
+| `sub` | 是 | 用户主体标识符 |
+| `aud` | 是 | 接收方 `client_id` |
+| `exp` | 是 | 过期时间（Unix 秒） |
+| `iat` | 是 | 签发时间（Unix 秒） |
+| `auth_time` | 否 | 终端用户完成认证的时刻（会话建立时间，Unix 秒，OIDC Core 1.0 §2）。授权码流程有会话绑定时签发；刷新令牌流程和无会话降级路径**省略该键**，不写 `null` |
+| `nonce` | 否 | 授权请求携带 `nonce` 时原样回填（OIDC Core §3.1.3.7） |
+| `email` | 否 | Scope 含 `email` 时签发 |
+| `name` | 否 | Scope 含 `profile` 且用户设置了显示名称时签发 |
+
+Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`aud`、`exp`、`iat`、`email`、`name`、`nonce`、`auth_time`。`azp` 属于单 audience 场景可省略的 Claim（OIDC Core §2），本服务不签发也不在 `claims_supported` 中声明。
 
 ### `GET /oauth/userinfo`
 
@@ -242,10 +282,11 @@ Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限�
 
 ### 用户管理
 
-- `GET /api/v1/admin/users`：列出用户，需要 `ManageUsers`。
+- `GET /api/v1/admin/users?limit=50&offset=0`：列出用户，需要 `ManageUsers`。响应是用户数组。服务端强制分页：`limit` 默认 `50`，取值被 clamp 到 `[1, 200]`（与审计列表一致），`offset` 默认 `0`，负值按 `0` 处理。需要 `total` 和分页信封时用 `GET /api/v1/admin/users/query`。
+- `POST /api/v1/admin/users`：创建用户，提交 `{"username":"alice","email":"alice@example.com","password":"...","display_name":null,"role":"user","status":"active"}`。`display_name`、`role`、`status` 可省略，`role` 缺省 `user`，`status` 缺省 `active`。基线权限 `ManageUsers`；`role` 为 `admin` 或 `owner` 时额外要求 `ManageRoles`。成功 `201`，响应是公开用户字段，不含口令哈希或任何凭据材料。`400` 为 `invalid_role`、`invalid_status`、`invalid_username`、`invalid_email`、`password_too_short`、`password_too_long`、`display_name_too_long`、`email_domain_not_allowed`、`csrf_invalid`；`403` 为 `admin_forbidden`；`409` 为 `username_already_registered`、`email_already_registered`、`owner_bootstrap_required`。
 - `POST /api/v1/admin/users/{user_id}/{status}`：设置用户状态，需要 `ManageUsers`。状态由后端支持值决定，常用为 `active`、`disabled`；成功 `204`。
 
-用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`role`、`created_at`。
+用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`role`、`created_at`。按 `created_at DESC, id DESC` 排序。
 
 ### 特权用户管理
 
@@ -266,7 +307,7 @@ Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限�
 - `POST /api/v1/admin/plans/{id}/restore`：恢复套餐。
 - `POST /api/v1/admin/users/{user_id}/plan`：为用户分配套餐，提交 `{"plan_id":1,"expires_at":"2026-12-31T00:00:00Z"}`；`expires_at` 传 `null` 或省略表示永久有效，归档套餐不可分配。
 
-套餐写入需要 `ManageSettings` 权限（Owner 和 admin 角色均具备），并记录审计事件。
+套餐 CRUD（create/update/archive/restore）需要 `ManageSettings` 权限；为用户分配套餐（`POST .../users/{user_id}/plan`）影响用户权益，需要 `ManageUsers` 权限。两种操作均记录审计事件。
 
 ### Client 管理
 

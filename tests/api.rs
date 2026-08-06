@@ -6,13 +6,14 @@ use axum::{
 use chenxing_auth::{api, state::AppState};
 use tower::ServiceExt;
 
-fn test_router() -> Router {
-    api::router(AppState::for_test())
+async fn test_router() -> Router {
+    api::router(AppState::for_test().await)
 }
 
 #[tokio::test]
 async fn liveness_endpoint_reports_process_status_without_dependencies() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/health/live")
@@ -28,6 +29,7 @@ async fn liveness_endpoint_reports_process_status_without_dependencies() {
 #[tokio::test]
 async fn readiness_endpoint_returns_a_dependency_agnostic_failure_body() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/health/ready")
@@ -53,6 +55,7 @@ async fn readiness_endpoint_returns_a_dependency_agnostic_failure_body() {
 #[tokio::test]
 async fn authorized_apps_endpoint_requires_a_session() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/api/v1/auth/authorized-apps")
@@ -68,6 +71,7 @@ async fn authorized_apps_endpoint_requires_a_session() {
 #[tokio::test]
 async fn openid_configuration_publishes_standard_endpoints() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/.well-known/openid-configuration")
@@ -95,6 +99,7 @@ async fn openid_configuration_publishes_standard_endpoints() {
 #[tokio::test]
 async fn openid_configuration_allows_newapi_origin() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/.well-known/openid-configuration")
@@ -117,6 +122,7 @@ async fn openid_configuration_allows_newapi_origin() {
 #[tokio::test]
 async fn jwks_endpoint_returns_a_key_set_document() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/.well-known/jwks.json")
@@ -132,6 +138,7 @@ async fn jwks_endpoint_returns_a_key_set_document() {
 #[tokio::test]
 async fn registration_endpoint_rejects_invalid_email_without_database_call() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -148,9 +155,73 @@ async fn registration_endpoint_rejects_invalid_email_without_database_call() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+/// POST 到管理侧用户创建端点必须落到处理器上。
+///
+/// 404/405 会说明路由没注册或只挂了 GET；401 才说明请求进了守卫（Issue #133）。
+#[tokio::test]
+async fn admin_user_creation_endpoint_rejects_unauthenticated_requests() {
+    let response = test_router()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery"}"#,
+                ))
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// 角色与状态词表在守卫之前解析，因此非法值不需要数据库即可拒绝。
+#[tokio::test]
+async fn admin_user_creation_rejects_unknown_role_and_status_without_database_call() {
+    for (body, code) in [
+        (
+            r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery","role":"superuser"}"#,
+            "invalid_role",
+        ),
+        (
+            r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery","status":"deleted"}"#,
+            "invalid_status",
+        ),
+        // 大小写变体同样不在词表内，避免 handler 悄悄接受 "ACTIVE"。
+        (
+            r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery","status":"ACTIVE"}"#,
+            "invalid_status",
+        ),
+    ] {
+        let response = test_router()
+            .await
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/admin/users")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("response from router");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{code}");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let error: serde_json::Value = serde_json::from_slice(&body).expect("JSON error");
+        assert_eq!(error["code"], code);
+    }
+}
+
 #[tokio::test]
 async fn login_endpoint_rejects_invalid_identifier_without_database_call() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -179,6 +250,7 @@ async fn unknown_protocol_paths_return_json_not_found_instead_of_spa_html() {
         "/health/does-not-exist",
     ] {
         let response = test_router()
+            .await
             .oneshot(
                 Request::builder()
                     .uri(path)
@@ -210,6 +282,7 @@ async fn unknown_protocol_paths_return_json_not_found_instead_of_spa_html() {
 #[tokio::test]
 async fn unknown_static_asset_path_returns_not_found() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/assets/does-not-exist.js")
@@ -225,6 +298,7 @@ async fn unknown_static_asset_path_returns_not_found() {
 #[tokio::test]
 async fn unknown_frontend_route_returns_spa_html() {
     let response = test_router()
+        .await
         .oneshot(
             Request::builder()
                 .uri("/some-frontend-route")

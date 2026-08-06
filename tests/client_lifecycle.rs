@@ -19,19 +19,23 @@ fn client_update_uses_the_same_strict_registration_rules() {
 }
 
 #[test]
-fn admin_one_time_secret_paths_do_not_turn_audit_failure_into_a_lost_secret() {
+fn admin_one_time_secret_paths_block_on_audit_failure() {
+    // Fix #72: client_create 和 client_secret_rotate 必须使用阻断式审计——
+    // 先写审计，审计成功后才返回 secret。best-effort 路径已被移除。
+    assert!(
+        !ADMIN_HANDLERS.contains("record_admin_event_best_effort"),
+        "凭据签发路径不得使用 best-effort 审计；所有 handler 必须在审计失败时阻断响应"
+    );
+    // 两个操作均须记录 audit.block_on_failure 事件以便运维追查
+    assert!(
+        ADMIN_HANDLERS.contains("audit.block_on_failure"),
+        "handler 必须在审计失败时记录 audit.block_on_failure 结构化事件"
+    );
+    // 确认两个操作的审计 action 名称都在 handler 里
     for action in ["client_create", "client_secret_rotate"] {
         assert!(
-            ADMIN_HANDLERS.contains(&format!(
-                "record_admin_event_best_effort(&state, actor, \"{action}\""
-            )) || ADMIN_HANDLERS.contains(&format!(
-                "record_admin_event_best_effort(\n                &state,\n                actor,\n                \"{action}\""
-            )),
-            "one-time secret action must use the best-effort audit path: {action}"
+            ADMIN_HANDLERS.contains(action),
+            "handler 必须包含操作 {action} 的审计写入"
         );
     }
-    assert!(
-        ADMIN_HANDLERS
-            .contains("client secret response was returned despite audit persistence failure")
-    );
 }

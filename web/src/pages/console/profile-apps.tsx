@@ -217,7 +217,7 @@ export function AuthorizedApps() {
       </div>
       <div className="space-y-4">
         {apps.map((app) => (
-          <article key={app.client_id} className="chenxing-hud-panel !p-5 sm:!p-6">
+          <HudPanel as="article" key={app.client_id} className="!p-5 sm:!p-6">
             <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0 flex-1">
                 <div className="flex items-start gap-4">
@@ -244,7 +244,7 @@ export function AuthorizedApps() {
                 </button>
               </div>
             </div>
-          </article>
+          </HudPanel>
         ))}
         {!loading && !apps.length ? (
           <HudPanel>

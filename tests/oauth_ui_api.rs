@@ -40,7 +40,7 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
-        api::router(AppState::new(config).expect("state")),
+        api::router(AppState::new(config).await.expect("state")),
         database,
         key_directory,
     )
@@ -157,6 +157,7 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
         .expect("authorize response");
     let login_location = location(&response);
     let request_id = request_id(&login_location);
+    let authz_holder_cookie = cookies(&response);
 
     // SPA logs in over JSON: password → pending factor ticket → TOTP enrollment → session.
     let response = router
@@ -225,6 +226,8 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
         .to_owned();
 
     // Bind the session to the pending authorization request created by /oauth/authorize.
+    // 持有者 Cookie 来自 authorize 响应，会话 Cookie 来自 TOTP 登录（#115）。
+    let session_cookies = format!("{session_cookies}; {authz_holder_cookie}");
     let response = router
         .clone()
         .oneshot(

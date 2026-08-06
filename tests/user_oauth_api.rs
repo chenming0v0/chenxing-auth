@@ -46,7 +46,7 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
-        api::router(AppState::new(config).expect("state")),
+        api::router(AppState::new(config).await.expect("state")),
         database,
         key_directory,
     )
@@ -499,25 +499,38 @@ async fn authorized_apps_are_user_scoped_and_consent_revoke_is_audited() {
         .expect("revoke response");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
+    // Issue #64：撤销改为软删除，行保留、`revoked_at` 置位。
+    // 这里断言「生效授权数为 0」而不是「行数为 0」：撤销事实必须留在库中作为
+    // 权威判定依据和审计证据，Redis 丢数据时才能回源。
     let remaining: i64 = chenxing_auth::sqlx::query_scalar(
         "SELECT COUNT(*) FROM user_consents c JOIN oauth_clients oc ON oc.id = c.client_id
-         WHERE oc.client_id = $1 AND c.user_id = $2",
+         WHERE oc.client_id = $1 AND c.user_id = $2 AND c.revoked_at IS NULL",
     )
     .bind(&client_id)
     .bind(owner_id)
     .fetch_one(&database)
     .await
-    .expect("owner consent count");
+    .expect("owner active consent count");
     assert_eq!(remaining, 0);
+    let revoked: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_consents c JOIN oauth_clients oc ON oc.id = c.client_id
+         WHERE oc.client_id = $1 AND c.user_id = $2 AND c.revoked_at IS NOT NULL",
+    )
+    .bind(&client_id)
+    .bind(owner_id)
+    .fetch_one(&database)
+    .await
+    .expect("owner revoked consent count");
+    assert_eq!(revoked, 1, "revocation must be persisted, not deleted");
     let other_remaining: i64 = chenxing_auth::sqlx::query_scalar(
         "SELECT COUNT(*) FROM user_consents c JOIN oauth_clients oc ON oc.id = c.client_id
-         WHERE oc.client_id = $1 AND c.user_id = $2",
+         WHERE oc.client_id = $1 AND c.user_id = $2 AND c.revoked_at IS NULL",
     )
     .bind(&client_id)
     .bind(other_id)
     .fetch_one(&database)
     .await
-    .expect("other consent count");
+    .expect("other active consent count");
     assert_eq!(other_remaining, 1);
     let audit: (Option<i64>, String, String, Option<String>) = chenxing_auth::sqlx::query_as(
         "SELECT actor_user_id, action, resource_type, resource_id FROM audit_events

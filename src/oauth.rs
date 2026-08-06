@@ -16,7 +16,9 @@ pub mod providers;
 pub mod quota;
 pub mod rate_limit;
 pub mod refresh;
+pub mod refresh_grant;
 pub mod refresh_store;
+mod refresh_store_scripts;
 pub mod request_store;
 mod request_store_scripts;
 pub mod response;
@@ -63,7 +65,20 @@ impl OpenIdConfiguration {
             subject_types_supported: vec!["public"],
             id_token_signing_alg_values_supported: vec!["RS256"],
             scopes_supported: vec!["openid", "profile", "email"],
-            claims_supported: vec!["sub", "iss", "aud", "exp", "iat", "email", "name"],
+            // `nonce` 在实际签发的 ID Token 中出现（有会话时）；`auth_time` 同样
+            // 已实现。`azp` 未实现（单 audience 场景可省略，OIDC Core §2 允许），
+            // 故不声明，避免制造新的不一致。
+            claims_supported: vec![
+                "sub",
+                "iss",
+                "aud",
+                "exp",
+                "iat",
+                "email",
+                "name",
+                "nonce",
+                "auth_time",
+            ],
             code_challenge_methods_supported: vec!["S256"],
             token_endpoint_auth_methods_supported: vec![
                 "client_secret_basic",

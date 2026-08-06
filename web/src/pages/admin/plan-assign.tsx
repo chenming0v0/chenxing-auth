@@ -1,11 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { apiFetch, type AdminPlan, type AssignPlanInput } from '../../api'
-import { Button, HudPanel, Icon, Notice } from '../../components/ui'
+import { Button, Field, HudPanel, Notice } from '../../components/ui'
+import { Drawer } from '../../components/drawer'
 import { SelectField } from '../../components/select'
 
 let planCache: AdminPlan[] | null = null
 
-/** 与「注册新应用」同构的右侧抽屉；分配走 POST /admin/users/{id}/plan。 */
+/** 复用共享 Drawer 的套餐分配抽屉；分配走 POST /admin/users/{id}/plan。 */
 export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
   userId: number
   userName: string
@@ -40,6 +41,7 @@ export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
         expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
       }
       await apiFetch<void>(`/api/v1/admin/users/${userId}/plan`, { method: 'POST', body: JSON.stringify(input) })
+      // 分配会改变套餐的占用情况，缓存作废，下次打开重新拉取。
       planCache = null
       onAssigned()
       onClose()
@@ -51,49 +53,43 @@ export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
   }
 
   return (
-    <div className="chenxing-drawer-overlay is-open" onClick={onClose}>
-      <div className="chenxing-drawer is-open" onClick={(event) => event.stopPropagation()}>
-        <div className="chenxing-drawer-header">
-          <div>
-            <h2 className="chenxing-h2">为 {userName} 分配套餐</h2>
-            <p className="chenxing-caption mt-1">到期后自动回退默认套餐；留空表示永久有效。</p>
-          </div>
-          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onClose}>
-            <Icon name="x" size={16} />
-          </button>
-        </div>
-        <form className="flex min-h-0 flex-1 flex-col" onSubmit={(event) => void submit(event)}>
-          <div className="chenxing-drawer-body space-y-4">
-            <HudPanel className="space-y-4 !p-5">
-              {error ? <Notice tone="warning">{error}</Notice> : null}
-              <SelectField
-                label="目标套餐"
-                icon="crown"
-                value={planId}
-                onChange={setPlanId}
-                placeholder={plans ? '选择套餐' : '正在加载套餐…'}
-                options={activePlans.map((plan) => ({
-                  value: String(plan.id),
-                  label: `${plan.name} · ${plan.code}${plan.is_default ? '（默认）' : ''}`,
-                }))}
-              />
-              <label className="block">
-                <span className="chenxing-label">到期时间（可选）</span>
-                <input className="chenxing-field" type="datetime-local" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} />
-                <small className="chenxing-caption mt-1.5 block">留空表示永久有效</small>
-              </label>
-            </HudPanel>
-          </div>
-          <div className="chenxing-drawer-footer">
-            <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>
-              取消
-            </Button>
-            <Button type="submit" icon="crown" disabled={saving || !plans}>
-              {saving ? '分配中…' : '分配套餐'}
-            </Button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Drawer
+      title={`为 ${userName} 分配套餐`}
+      description="到期后自动回退默认套餐；留空到期时间表示永久有效。"
+      onClose={onClose}
+      onSubmit={(event) => void submit(event)}
+      footer={
+        <>
+          <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>取消</Button>
+          <Button type="submit" icon="crown" disabled={saving || !plans}>{saving ? '分配中…' : '分配套餐'}</Button>
+        </>
+      }
+    >
+      {error ? <Notice tone="warning">{error}</Notice> : null}
+
+      <HudPanel className="space-y-4 !p-5">
+        <p className="chenxing-label !mb-0">套餐与有效期</p>
+        <SelectField
+          label="目标套餐"
+          icon="crown"
+          value={planId}
+          onChange={setPlanId}
+          placeholder={plans ? '选择套餐' : '正在加载套餐…'}
+          options={activePlans.map((plan) => ({
+            value: String(plan.id),
+            label: `${plan.name} · ${plan.code}${plan.is_default ? '（默认）' : ''}`,
+          }))}
+          hint="只列出启用中的套餐，已归档套餐不能分配。"
+        />
+        <Field
+          label="到期时间（选填）"
+          icon="calendar-clock"
+          type="datetime-local"
+          value={expiresAt}
+          onChange={(event) => setExpiresAt(event.target.value)}
+          hint="留空表示永久有效，到期后自动回退默认套餐。"
+        />
+      </HudPanel>
+    </Drawer>
   )
 }
