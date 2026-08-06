@@ -107,5 +107,6 @@ fn oauth_error_response(error_value: OAuthError) -> Response {
         }
         OAuthError::InvalidClient => error::oauth_invalid_client(),
         OAuthError::TemporarilyUnavailable => error::oauth_temporarily_unavailable(),
+        OAuthError::ServerError => error::oauth_server_error(),
     }
 }

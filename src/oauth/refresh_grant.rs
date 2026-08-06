@@ -25,6 +25,7 @@ fn oauth_error_response(error_value: RefreshExchangeError) -> Response {
         RefreshExchangeError::OAuth(OAuthError::TemporarilyUnavailable) => {
             error::oauth_temporarily_unavailable()
         }
+        RefreshExchangeError::OAuth(OAuthError::ServerError) => error::oauth_server_error(),
         RefreshExchangeError::ServerError => error::oauth_server_error(),
     }
 }
