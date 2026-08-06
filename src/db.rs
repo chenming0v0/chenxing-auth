@@ -249,6 +249,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0011_oauth_provider_pkce.sql")),
             false,
         ),
+        Migration::new(
+            12,
+            Cow::Borrowed("restore basic plan seed"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0012_restore_basic_plan.sql")),
+            false,
+        ),
     ];
 
     Migrator {
