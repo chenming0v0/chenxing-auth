@@ -2,9 +2,11 @@
 //! 使用 Redis ZSET + 服务端时间原子清理、写入并判定，避免固定整秒窗口
 //! 在秒边界附近把并发请求拆到不同桶里。
 
-use redis::{Client, Script};
+use redis::Script;
 use thiserror::Error;
 use uuid::Uuid;
+
+use crate::redis_client::RedisClient;
 
 const QPS_SCRIPT: &str = r#"
 local key = KEYS[1]
@@ -30,7 +32,7 @@ const QPS_KEY_TTL_SECONDS: i64 = 2;
 
 #[derive(Clone)]
 pub struct QpsRateLimiter {
-    client: Client,
+    client: RedisClient,
 }
 
 #[derive(Debug, Error)]
@@ -42,8 +44,10 @@ pub enum QpsRateLimitError {
 }
 
 impl QpsRateLimiter {
-    pub fn new(client: Client) -> Self {
-        Self { client }
+    pub fn new(client: impl Into<RedisClient>) -> Self {
+        Self {
+            client: client.into(),
+        }
     }
 
     /// 对 `client_id` 在最近 1 秒滑动窗口内计数。返回 `true` 表示放行，

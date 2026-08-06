@@ -12,7 +12,6 @@
 use std::time::Duration;
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use redis::Client;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -21,7 +20,11 @@ use super::{
     crypto,
     domain::{Session, SessionPayload},
 };
-use crate::{config::AuthEncryptionKeyRing, users::domain::UserId};
+use crate::{
+    config::AuthEncryptionKeyRing,
+    redis_client::RedisClient,
+    users::domain::UserId,
+};
 
 mod postgres;
 mod redis_only;
@@ -34,7 +37,7 @@ pub(crate) use postgres::{lock_user_session_scope, revoke_all_for_user_in_transa
 
 #[derive(Clone)]
 pub struct SessionStore {
-    pub(super) client: Client,
+    pub(super) client: RedisClient,
     pub(super) key_prefix: String,
     pub(super) metadata: Option<crate::sqlx::PgPool>,
     pub(super) encryption_keys: Option<AuthEncryptionKeyRing>,
@@ -76,18 +79,18 @@ pub struct SessionSummary {
 }
 
 impl SessionStore {
-    pub fn new(client: Client) -> Self {
+    pub fn new(client: impl Into<RedisClient>) -> Self {
         Self {
-            client,
+            client: client.into(),
             key_prefix: "chenxing:session:".to_owned(),
             metadata: None,
             encryption_keys: None,
         }
     }
 
-    pub fn with_redis_key(client: Client, encryption_key: [u8; 32]) -> Self {
+    pub fn with_redis_key(client: impl Into<RedisClient>, encryption_key: [u8; 32]) -> Self {
         Self {
-            client,
+            client: client.into(),
             key_prefix: "chenxing:session:".to_owned(),
             metadata: None,
             encryption_keys: Some(AuthEncryptionKeyRing::single(
@@ -97,7 +100,7 @@ impl SessionStore {
     }
 
     pub fn with_metadata_and_key(
-        client: Client,
+        client: impl Into<RedisClient>,
         metadata: crate::sqlx::PgPool,
         encryption_key: [u8; 32],
     ) -> Self {
@@ -109,12 +112,12 @@ impl SessionStore {
     }
 
     pub fn with_metadata_and_key_ring(
-        client: Client,
+        client: impl Into<RedisClient>,
         metadata: crate::sqlx::PgPool,
         encryption_keys: AuthEncryptionKeyRing,
     ) -> Self {
         Self {
-            client,
+            client: client.into(),
             key_prefix: "chenxing:session:".to_owned(),
             metadata: Some(metadata),
             encryption_keys: Some(encryption_keys),

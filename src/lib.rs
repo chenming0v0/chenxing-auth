@@ -14,6 +14,7 @@ mod key_storage;
 pub mod keys;
 pub mod oauth;
 pub mod plans;
+pub mod redis_client;
 pub mod sessions;
 pub mod settings;
 pub mod state;

@@ -1,8 +1,10 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use redis::{Client, Script};
+use redis::Script;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+use crate::redis_client::RedisClient;
 
 /// 外部 OAuth 登录 state 的默认有效期（秒）。可通过 `EXTERNAL_LOGIN_STATE_TTL_SECONDS` 覆盖。
 pub const EXTERNAL_LOGIN_STATE_TTL_SECONDS: u64 = 600;
@@ -66,7 +68,7 @@ pub struct ExternalLoginState {
 
 #[derive(Clone)]
 pub struct ExternalLoginStateStore {
-    client: Client,
+    client: RedisClient,
     prefix: String,
     source_rate_limit: i64,
     max_pending: i64,
@@ -91,7 +93,7 @@ pub enum ExternalLoginStateStoreError {
 }
 
 impl ExternalLoginStateStore {
-    pub fn new(client: Client) -> Self {
+    pub fn new(client: impl Into<RedisClient>) -> Self {
         Self::new_with_limits(
             client,
             STATE_KEY_PREFIX.to_owned(),
@@ -104,7 +106,7 @@ impl ExternalLoginStateStore {
 
     /// 构造带运行期配置的实例（#121）。
     pub fn new_with_config(
-        client: Client,
+        client: impl Into<RedisClient>,
         ttl_seconds: u64,
         rate_window_seconds: u64,
         rate_limit: i64,
@@ -172,7 +174,7 @@ impl ExternalLoginStateStore {
     }
 
     fn new_with_limits(
-        client: Client,
+        client: impl Into<RedisClient>,
         prefix: String,
         source_rate_limit: i64,
         max_pending: i64,
@@ -180,7 +182,7 @@ impl ExternalLoginStateStore {
         rate_window_seconds: u64,
     ) -> Self {
         Self {
-            client,
+            client: client.into(),
             prefix,
             source_rate_limit,
             max_pending,

@@ -1,9 +1,10 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use redis::{AsyncCommands, Client};
+use redis::AsyncCommands;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::consents::repository::{ConsentRepository, PgConsentRepository};
+use crate::redis_client::RedisClient;
 use crate::sqlx::PgPool;
 
 /// 同意撤销标记的 TTL（秒）。
@@ -24,7 +25,7 @@ const CONSENT_REVOCATION_TTL_SECONDS: u64 = 90 * 24 * 60 * 60;
 
 #[derive(Clone)]
 pub struct TokenRevocationStore {
-    client: Client,
+    client: RedisClient,
     /// 同意撤销的权威数据源（Issue #64：数据库为真，Redis 为缓存）。
     ///
     /// 依赖 `repository` 而不是 `ConsentService`：撤销存储属于基础设施层，
@@ -52,9 +53,9 @@ impl TokenRevocationStore {
     /// 但同意撤销（`is_consent_revoked`）在这个模式下**没有**数据库回源，
     /// 因此不适用于生产环境；生产环境必须使用
     /// [`TokenRevocationStore::new_with_pool`]。
-    pub fn new(client: Client) -> Self {
+    pub fn new(client: impl Into<RedisClient>) -> Self {
         Self {
-            client,
+            client: client.into(),
             consents: None,
         }
     }
@@ -63,9 +64,9 @@ impl TokenRevocationStore {
     ///
     /// `is_consent_revoked` 在 Redis 缓存未命中时查询
     /// `user_consents.revoked_at` 作为权威判定，并回填缓存。
-    pub fn new_with_pool(client: Client, pool: PgPool) -> Self {
+    pub fn new_with_pool(client: impl Into<RedisClient>, pool: PgPool) -> Self {
         Self {
-            client,
+            client: client.into(),
             consents: Some(PgConsentRepository::new(pool)),
         }
     }

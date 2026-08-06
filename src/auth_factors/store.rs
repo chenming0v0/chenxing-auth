@@ -1,11 +1,11 @@
-use redis::{AsyncCommands, Client, Script};
+use redis::{AsyncCommands, Script};
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::domain::{FactorMethod, LoginTicket};
-use crate::users::domain::UserId;
+use crate::{redis_client::RedisClient, users::domain::UserId};
 
 const LOGIN_TICKET_PREFIX: &str = "chenxing:auth:login-ticket:";
 const TOTP_REPLAY_PREFIX: &str = "chenxing:auth:totp-used:";
@@ -15,7 +15,7 @@ const CLAIM_TOTP_STEP_SCRIPT: &str =
 
 #[derive(Clone)]
 pub struct LoginTicketStore {
-    client: Client,
+    client: RedisClient,
     metadata: Option<crate::sqlx::PgPool>,
 }
 
@@ -30,16 +30,19 @@ pub enum LoginTicketStoreError {
 }
 
 impl LoginTicketStore {
-    pub fn new(client: Client) -> Self {
+    pub fn new(client: impl Into<RedisClient>) -> Self {
         Self {
-            client,
+            client: client.into(),
             metadata: None,
         }
     }
 
-    pub fn new_with_pool(client: Client, metadata: crate::sqlx::PgPool) -> Self {
+    pub fn new_with_pool(
+        client: impl Into<RedisClient>,
+        metadata: crate::sqlx::PgPool,
+    ) -> Self {
         Self {
-            client,
+            client: client.into(),
             metadata: Some(metadata),
         }
     }

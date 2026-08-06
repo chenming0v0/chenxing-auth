@@ -9,7 +9,7 @@ use axum::{
 use serde::Serialize;
 use std::time::Duration;
 
-use crate::state::AppState;
+use crate::{redis_client::RedisClient, state::AppState};
 
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -71,7 +71,7 @@ pub(super) async fn health_ready(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
-async fn redis_ready(client: &redis::Client) -> Result<(), redis::RedisError> {
+async fn redis_ready(client: &RedisClient) -> Result<(), redis::RedisError> {
     let mut connection = client.get_multiplexed_async_connection().await?;
     let _: String = redis::cmd("PING").query_async(&mut connection).await?;
     Ok(())

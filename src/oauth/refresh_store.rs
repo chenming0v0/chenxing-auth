@@ -1,5 +1,5 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use redis::{AsyncCommands, Client, Script};
+use redis::{AsyncCommands, Script};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -11,6 +11,7 @@ use super::{
         ROTATE_WITH_TOMBSTONE_SCRIPT, SAVE_WITH_INDEXES_SCRIPT, TAKE_IF_MATCHES_SCRIPT,
     },
 };
+use crate::redis_client::RedisClient;
 
 /// 绝对生命周期 TTL（从 `refresh.rs` 常量计算，保证单一信源）。
 const ABSOLUTE_TTL_SECONDS: u64 = (REFRESH_TOKEN_ABSOLUTE_TTL_DAYS * 24 * 60 * 60) as u64;
@@ -44,7 +45,7 @@ pub struct Tombstone {
 
 #[derive(Clone)]
 pub struct RefreshTokenStore {
-    client: Client,
+    client: RedisClient,
 }
 
 #[derive(Debug, Error)]
@@ -56,8 +57,10 @@ pub enum RefreshTokenStoreError {
 }
 
 impl RefreshTokenStore {
-    pub fn new(client: Client) -> Self {
-        Self { client }
+    pub fn new(client: impl Into<RedisClient>) -> Self {
+        Self {
+            client: client.into(),
+        }
     }
 
     // ── 计算 token hash（用于主键与索引成员）─────────────────────────────
