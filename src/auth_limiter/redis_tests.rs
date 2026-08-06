@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ::redis::AsyncCommands;
 
 use super::RedisAuthFailureLimiter;
+use crate::auth_limiter::domain::AUTH_FAILURE_WINDOW_SECONDS;
 use crate::auth_limiter::{AuthFailureLimiter, AuthLimiterFailurePolicy, FailureDimension};
 
 fn limiter() -> RedisAuthFailureLimiter {
@@ -52,6 +53,26 @@ async fn successful_login_clears_account_failure_counter() {
             .is_limited(FailureDimension::Account, &account)
             .await
             .expect("check account limit")
+    );
+}
+
+#[tokio::test]
+async fn successful_login_clears_source_ip_failure_counter() {
+    let limiter = limiter();
+    let source_ip = unique_value("source-ip");
+    limiter
+        .record_failure(FailureDimension::SourceIp, &source_ip)
+        .await
+        .expect("record source IP failure");
+    limiter
+        .clear(FailureDimension::SourceIp, &source_ip)
+        .await
+        .expect("clear source IP failure");
+    assert!(
+        !limiter
+            .is_limited(FailureDimension::SourceIp, &source_ip)
+            .await
+            .expect("check source IP limit")
     );
 }
 
@@ -137,16 +158,20 @@ async fn batch_failure_uses_account_ticket_and_ip_dimensions_with_window_ttl() {
     assert!(!record.reached(FailureDimension::Account));
     assert!(!record.reached(FailureDimension::SourceIp));
 
-    let (window, _) = RedisAuthFailureLimiter::window();
-    let key = RedisAuthFailureLimiter::key(FailureDimension::Ticket, &ticket, window);
     let mut connection = limiter
         .client
         .get_multiplexed_async_connection()
         .await
         .expect("Redis connection");
+    let key_prefix = RedisAuthFailureLimiter::base_key(FailureDimension::Ticket, &ticket);
+    let keys: Vec<String> = connection
+        .keys(format!("{key_prefix}:*"))
+        .await
+        .expect("failure counter key");
+    let key = keys.into_iter().next().expect("failure counter key");
     let ttl: i64 = connection.ttl(key).await.expect("failure counter TTL");
     assert!(ttl > 0);
-    assert!(ttl <= super::AUTH_FAILURE_WINDOW_SECONDS);
+    assert!(ttl <= AUTH_FAILURE_WINDOW_SECONDS);
 }
 
 #[tokio::test]

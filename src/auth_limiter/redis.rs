@@ -1,12 +1,11 @@
-use ::redis::{AsyncCommands, Script};
+use ::redis::Script;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
-use time::OffsetDateTime;
 
 use super::domain::{
-    AUTH_FAILURE_WINDOW_SECONDS, AuthFailureLimiter, AuthFailureLimits, AuthLimiterError,
-    AuthLimiterFailurePolicy, FailureDimension, FailureRecord, LimiterDimension, LimiterFuture,
+    AuthFailureLimiter, AuthFailureLimits, AuthLimiterError, AuthLimiterFailurePolicy,
+    FailureDimension, FailureRecord, LimiterDimension, LimiterFuture,
 };
 use crate::settings::SettingsService;
 
@@ -80,22 +79,6 @@ impl RedisAuthFailureLimiter {
         }
     }
 
-    /// 窗口计算（用于测试和向后兼容）。使用默认常量，不代表生产实例的动态配置。
-    pub fn window() -> (i64, i64) {
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        let window = now / AUTH_FAILURE_WINDOW_SECONDS;
-        let ttl = ((window + 1) * AUTH_FAILURE_WINDOW_SECONDS - now).max(1);
-        (window, ttl)
-    }
-
-    fn window_with_limits(limits: AuthFailureLimits) -> (i64, i64) {
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        let window_seconds = limits.window();
-        let window = now / window_seconds;
-        let ttl = ((window + 1) * window_seconds - now).max(1);
-        (window, ttl)
-    }
-
     async fn current_limits(&self) -> Result<AuthFailureLimits, AuthLimiterError> {
         let Some(settings) = &self.settings else {
             return Ok(self.limits);
@@ -119,17 +102,17 @@ impl RedisAuthFailureLimiter {
         URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()))
     }
 
-    fn key(dimension: FailureDimension, value: &str, window: i64) -> String {
+    fn base_key(dimension: FailureDimension, value: &str) -> String {
         format!(
-            "{FAILURE_KEY_PREFIX}{}:{}:{window}",
+            "{FAILURE_KEY_PREFIX}{}:{}",
             dimension.as_str(),
             Self::value_hash(value)
         )
     }
 
-    fn pending_key(dimension: FailureDimension, value: &str, window: i64) -> String {
+    fn base_pending_key(dimension: FailureDimension, value: &str) -> String {
         format!(
-            "{PENDING_KEY_PREFIX}{}:{}:{window}",
+            "{PENDING_KEY_PREFIX}{}:{}",
             dimension.as_str(),
             Self::value_hash(value)
         )
@@ -226,8 +209,6 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
         let value = value.to_owned();
         Box::pin(async move {
             let limits = self.current_limits().await?;
-            let (window, _) = Self::window_with_limits(limits);
-            let key = Self::key(dimension, &value, window);
             let dimensions = [(dimension, value.clone())];
             let mut connection = match self.client.get_multiplexed_async_connection().await {
                 Ok(connection) => connection,
@@ -239,7 +220,12 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                     };
                 }
             };
-            if connection.del::<_, usize>(key).await.is_err() {
+            let script = Script::new(CLEAR_FAILURE_SCRIPT);
+            let mut invocation = script.prepare_invoke();
+            invocation.key(Self::base_key(dimension, &value));
+            invocation.arg(limits.window());
+            let result: Result<i64, _> = invocation.invoke_async(&mut connection).await;
+            if result.is_err() {
                 self.log_storage_error("clear", &dimensions);
                 if matches!(self.failure_policy, AuthLimiterFailurePolicy::FailClosed) {
                     return Err(AuthLimiterError::Storage);
@@ -255,26 +241,26 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                 return Ok(false);
             }
             let limits = self.current_limits().await?;
-            let (window, _) = Self::window_with_limits(limits);
-            let keys: Vec<String> = dimensions
-                .iter()
-                .map(|(dimension, value)| Self::key(*dimension, value, window))
-                .collect();
             let mut connection = match self.client.get_multiplexed_async_connection().await {
                 Ok(connection) => connection,
                 Err(_) => return self.unavailable_bool("check", &dimensions),
             };
             let script = Script::new(CHECK_LIMITS_SCRIPT);
             let mut invocation = script.prepare_invoke();
-            for key in keys {
-                invocation.key(key);
+            for (dimension, value) in &dimensions {
+                invocation.key(Self::base_key(*dimension, value));
             }
+            invocation.arg(limits.window());
             for (dimension, _) in &dimensions {
                 invocation.arg(limits.limit_for(*dimension));
             }
-            let limited: i64 = match invocation.invoke_async(&mut connection).await {
-                Ok(limited) => limited,
+            let result: Vec<i64> = match invocation.invoke_async(&mut connection).await {
+                Ok(result) => result,
                 Err(_) => return self.unavailable_bool("check", &dimensions),
+            };
+            let (limited, window) = match result.as_slice() {
+                [limited, window] => (*limited, *window),
+                _ => return self.unavailable_bool("check", &dimensions),
             };
             if limited == 1 {
                 for (dimension, value) in &dimensions {
@@ -296,32 +282,31 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                 });
             }
             let limits = self.current_limits().await?;
-            let (window, ttl) = Self::window_with_limits(limits);
-            let keys: Vec<String> = dimensions
-                .iter()
-                .map(|(dimension, value)| Self::key(*dimension, value, window))
-                .collect();
             let mut connection = match self.client.get_multiplexed_async_connection().await {
                 Ok(connection) => connection,
                 Err(_) => return self.unavailable_record("record", &dimensions),
             };
             let script = Script::new(RECORD_FAILURE_SCRIPT);
             let mut invocation = script.prepare_invoke();
-            for key in keys {
-                invocation.key(key);
+            for (dimension, value) in &dimensions {
+                invocation.key(Self::base_key(*dimension, value));
             }
-            invocation.arg(ttl);
+            invocation.arg(limits.window());
             for (dimension, _) in &dimensions {
                 invocation.arg(limits.limit_for(*dimension));
             }
-            let flags: Vec<i64> = match invocation.invoke_async(&mut connection).await {
-                Ok(flags) => flags,
+            let result: Vec<i64> = match invocation.invoke_async(&mut connection).await {
+                Ok(result) => result,
                 Err(_) => return self.unavailable_record("record", &dimensions),
+            };
+            let (window, flags) = match result.split_last() {
+                Some((window, flags)) if flags.len() == dimensions.len() => (*window, flags),
+                _ => return self.unavailable_record("record", &dimensions),
             };
             FAILURE_RECORDS.fetch_add(dimensions.len() as u64, Ordering::Relaxed);
             let reached = dimensions
                 .iter()
-                .zip(flags)
+                .zip(flags.iter().copied())
                 .filter_map(|((dimension, value), flag)| {
                     if flag == 1 {
                         Self::log_limit(*dimension, value, window);
@@ -341,32 +326,30 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                 return Ok(true);
             }
             let limits = self.current_limits().await?;
-            let (window, ttl) = Self::window_with_limits(limits);
-            let failure_keys: Vec<String> = dimensions
-                .iter()
-                .map(|(dimension, value)| Self::key(*dimension, value, window))
-                .collect();
-            let pending_keys: Vec<String> = dimensions
-                .iter()
-                .map(|(dimension, value)| Self::pending_key(*dimension, value, window))
-                .collect();
             let mut connection = match self.client.get_multiplexed_async_connection().await {
                 Ok(connection) => connection,
                 Err(_) => return self.unavailable_reservation("reserve", &dimensions),
             };
             let script = Script::new(RESERVE_ATTEMPT_SCRIPT);
             let mut invocation = script.prepare_invoke();
-            for key in failure_keys.into_iter().chain(pending_keys) {
-                invocation.key(key);
+            for (dimension, value) in &dimensions {
+                invocation.key(Self::base_key(*dimension, value));
+            }
+            for (dimension, value) in &dimensions {
+                invocation.key(Self::base_pending_key(*dimension, value));
             }
             invocation.arg(dimensions.len());
-            invocation.arg(ttl);
+            invocation.arg(limits.window());
             for (dimension, _) in &dimensions {
                 invocation.arg(limits.limit_for(*dimension));
             }
-            let reserved: i64 = match invocation.invoke_async(&mut connection).await {
-                Ok(reserved) => reserved,
+            let result: Vec<i64> = match invocation.invoke_async(&mut connection).await {
+                Ok(result) => result,
                 Err(_) => return self.unavailable_reservation("reserve", &dimensions),
+            };
+            let (reserved, window) = match result.as_slice() {
+                [reserved, window] => (*reserved, *window),
+                _ => return self.unavailable_reservation("reserve", &dimensions),
             };
             if reserved == 0 {
                 for (dimension, value) in &dimensions {
@@ -388,37 +371,35 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                 });
             }
             let limits = self.current_limits().await?;
-            let (window, ttl) = Self::window_with_limits(limits);
-            let failure_keys: Vec<String> = dimensions
-                .iter()
-                .map(|(dimension, value)| Self::key(*dimension, value, window))
-                .collect();
-            let pending_keys: Vec<String> = dimensions
-                .iter()
-                .map(|(dimension, value)| Self::pending_key(*dimension, value, window))
-                .collect();
             let mut connection = match self.client.get_multiplexed_async_connection().await {
                 Ok(connection) => connection,
                 Err(_) => return self.unavailable_record("record_reserved", &dimensions),
             };
             let script = Script::new(RECORD_RESERVED_FAILURE_SCRIPT);
             let mut invocation = script.prepare_invoke();
-            for key in failure_keys.into_iter().chain(pending_keys) {
-                invocation.key(key);
+            for (dimension, value) in &dimensions {
+                invocation.key(Self::base_key(*dimension, value));
+            }
+            for (dimension, value) in &dimensions {
+                invocation.key(Self::base_pending_key(*dimension, value));
             }
             invocation.arg(dimensions.len());
-            invocation.arg(ttl);
+            invocation.arg(limits.window());
             for (dimension, _) in &dimensions {
                 invocation.arg(limits.limit_for(*dimension));
             }
-            let flags: Vec<i64> = match invocation.invoke_async(&mut connection).await {
-                Ok(flags) => flags,
+            let result: Vec<i64> = match invocation.invoke_async(&mut connection).await {
+                Ok(result) => result,
                 Err(_) => return self.unavailable_record("record_reserved", &dimensions),
+            };
+            let (window, flags) = match result.split_last() {
+                Some((window, flags)) if flags.len() == dimensions.len() => (*window, flags),
+                _ => return self.unavailable_record("record_reserved", &dimensions),
             };
             FAILURE_RECORDS.fetch_add(dimensions.len() as u64, Ordering::Relaxed);
             let reached = dimensions
                 .iter()
-                .zip(flags)
+                .zip(flags.iter().copied())
                 .filter_map(|((dimension, value), flag)| {
                     if flag == 1 {
                         Self::log_limit(*dimension, value, window);
@@ -438,11 +419,6 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                 return Ok(());
             }
             let limits = self.current_limits().await?;
-            let (window, _) = Self::window_with_limits(limits);
-            let keys: Vec<String> = dimensions
-                .iter()
-                .map(|(dimension, value)| Self::pending_key(*dimension, value, window))
-                .collect();
             let mut connection = match self.client.get_multiplexed_async_connection().await {
                 Ok(connection) => connection,
                 Err(_) => {
@@ -455,9 +431,10 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             };
             let script = Script::new(RELEASE_ATTEMPT_SCRIPT);
             let mut invocation = script.prepare_invoke();
-            for key in keys {
-                invocation.key(key);
+            for (dimension, value) in &dimensions {
+                invocation.key(Self::base_pending_key(*dimension, value));
             }
+            invocation.arg(limits.window());
             let result: Result<i64, _> = invocation.invoke_async(&mut connection).await;
             if result.is_err() {
                 self.log_storage_error("release", &dimensions);
