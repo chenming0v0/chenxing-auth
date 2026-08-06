@@ -320,7 +320,9 @@ paths:
       security: [{ sessionCookie: [] }]
       responses:
         '200':
-          description: 当前生效套餐摘要与各权益用量；limit 为 null 表示无限，缺失表示数值无上限概念
+          description: |
+            当前生效套餐摘要与各权益用量；limit 为 null 表示无限，缺失表示数值无上限概念。
+            没有生效套餐时返回 `{"plan": null, "entitlements": []}`，表示平台未开放自助接入，是合法状态而非错误。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EntitlementsResponse' }
@@ -360,7 +362,9 @@ paths:
       security: [{ sessionCookie: [] }]
       responses:
         '200':
-          description: 只包含当前用户拥有的 OAuth 项目和配额使用量
+          description: |
+            只包含当前用户拥有的 OAuth 项目和配额使用量。
+            没有生效套餐时照常列出既有项目，配额上限为 null，不会因此返回错误。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OwnedOAuthClientList' }
@@ -384,6 +388,11 @@ paths:
               schema: { $ref: '#/components/schemas/RegisteredOwnedOAuthClient' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: 调用者没有生效套餐（未挂载套餐且系统无 active 默认套餐），错误码 self_service_disabled
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
         '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/auth/authorized-apps:
     get:
@@ -906,12 +915,11 @@ paths:
         - { name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
         - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
-        '204': { description: 归档成功；默认套餐不可归档 }
+        '204': { description: 归档成功；默认套餐也可归档，归档时一并清除默认标记，系统随之进入「无生效默认套餐」状态 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/admin/plans/{id}/restore:
     post:
       tags: [Admin Plans]
@@ -1154,8 +1162,8 @@ paths:
       summary: 获取 Passkey / WebAuthn 设置
       operationId: getPasskeySetting
       security:
-        - AdminBearer: []
-        - SessionCookie: []
+        - adminBearer: []
+        - sessionCookie: []
       responses:
         '200':
           description: Passkey 设置
@@ -1171,8 +1179,8 @@ paths:
       summary: 更新 Passkey / WebAuthn 设置
       operationId: updatePasskeySetting
       security:
-        - AdminBearer: []
-        - SessionCookie: []
+        - adminBearer: []
+        - sessionCookie: []
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
@@ -1200,8 +1208,8 @@ paths:
       summary: 获取邮箱域名白名单设置
       operationId: getEmailPolicySetting
       security:
-        - AdminBearer: []
-        - SessionCookie: []
+        - adminBearer: []
+        - sessionCookie: []
       responses:
         '200':
           description: 邮箱域名策略
@@ -1217,8 +1225,8 @@ paths:
       summary: 更新邮箱域名白名单设置
       operationId: updateEmailPolicySetting
       security:
-        - AdminBearer: []
-        - SessionCookie: []
+        - adminBearer: []
+        - sessionCookie: []
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
@@ -1244,8 +1252,8 @@ paths:
       summary: 获取 SMTP 设置
       operationId: getSmtpSetting
       security:
-        - AdminBearer: []
-        - SessionCookie: []
+        - adminBearer: []
+        - sessionCookie: []
       responses:
         '200':
           description: SMTP 设置；password 永不回显
@@ -1261,8 +1269,8 @@ paths:
       summary: 更新 SMTP 设置
       operationId: updateSmtpSetting
       security:
-        - AdminBearer: []
-        - SessionCookie: []
+        - adminBearer: []
+        - sessionCookie: []
       parameters:
         - $ref: '#/components/parameters/CsrfHeader'
       requestBody:
@@ -1409,7 +1417,7 @@ components:
     BadRequest: { description: 请求错误, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Unauthorized: { description: 未认证或凭据无效, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Forbidden: { description: 无权限, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-    Conflict: { description: 资源冲突（包括套餐 code 冲突、默认套餐保护和 Passkey 禁用保护）, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    Conflict: { description: 资源冲突（包括套餐 code 冲突、已归档套餐不能设为默认和 Passkey 禁用保护）, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     NotFound: { description: 资源不存在, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     TooManyRequests: { description: OAuth 配额已耗尽或 QPS 限流触发, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     OAuthBadRequest: { description: OAuth 请求错误，响应遵守 RFC 6749/7009, content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } } }
@@ -1597,11 +1605,15 @@ components:
         items: { type: array, items: { $ref: '#/components/schemas/AuthorizedOAuthApp' } }
     QuotaSnapshot:
       type: object
+      description: |
+        用量始终来自实际计数，上限来自生效套餐。两个 limit 都可能为 null，但含义不同：
+        daily_limit 为 null 表示没有生效套餐（无上限概念，平台未开放自助接入）；
+        monthly_limit 为 null 表示有生效套餐但该维度不限。
       required: [daily_limit, daily_used, monthly_limit, monthly_used]
       properties:
-        daily_limit: { type: integer, format: int64, minimum: 0, description: 当前 owner effective plan 的每日授权上限 }
+        daily_limit: { type: integer, format: int64, minimum: 0, nullable: true, description: 当前 owner effective plan 的每日授权上限；null 表示没有生效套餐 }
         daily_used: { type: integer, format: int64 }
-        monthly_limit: { type: integer, format: int64, minimum: 0, nullable: true, description: 当前 owner effective plan 的每月授权上限；null 表示无限 }
+        monthly_limit: { type: integer, format: int64, minimum: 0, nullable: true, description: 当前 owner effective plan 的每月授权上限；null 表示该维度不限 }
         monthly_used: { type: integer, format: int64 }
     OwnedOAuthClient:
       type: object
@@ -2011,10 +2023,12 @@ components:
         expires_at: { type: string, format: date-time, nullable: true, description: null 表示永久有效；也接受 time crate 的 tuple 数组形式 }
     EntitlementsResponse:
       type: object
-      required: [plan, entitlements]
+      required: [entitlements]
       properties:
         plan:
           type: object
+          nullable: true
+          description: 当前生效套餐；null 表示该账号没有生效套餐（平台未开放自助接入），此时 entitlements 为空数组
           required: [code, name, validity]
           properties:
             code: { type: string }

@@ -371,12 +371,16 @@ async fn indexes_and_tombstones_have_ttl() {
         "user-ttl".to_owned(),
         vec!["openid".to_owned()],
     );
-    let token2 = RefreshToken::new(
-        client_id.clone(),
-        "user-ttl".to_owned(),
-        vec!["profile".to_owned()],
-    );
+    // `RefreshToken::new` 每次都生成新的 family_id，所以 token2 必须由 token1
+    // 轮换得到才与它同族 —— 这也是生产里 family 增长的唯一方式。
+    // 用两个独立 new() 会让 token1 成为其 family 的唯一成员，移除后 SREM 清空集合、
+    // Redis 直接删键，family 索引 TTL 变成 -2（键不存在），断言的对象就没了。
+    let token2 = token1.rotate(vec!["profile".to_owned()]);
     let family_id = token1.family_id.clone();
+    assert_eq!(
+        token2.family_id, family_id,
+        "rotation must keep the token in the same family"
+    );
 
     // 保存两个 token 以保证索引非空
     store.save(&token1).await.expect("save token1");

@@ -37,9 +37,13 @@ pub struct OAuthQuotaStore {
     client: Client,
 }
 
+/// 用量始终来自 Redis；上限来自生效套餐。
+/// `daily_limit = None` 表示没有生效套餐（平台未开放自助接入），
+/// `monthly_limit = None` 表示该维度无限。两者都序列化为 `null`，
+/// 由前端渲染为「—」/「∞」，后端不编造 0。
 #[derive(Debug, Clone, Serialize)]
 pub struct QuotaSnapshot {
-    pub daily_limit: u64,
+    pub daily_limit: Option<u64>,
     pub daily_used: u64,
     pub monthly_limit: Option<u64>,
     pub monthly_used: u64,
@@ -106,10 +110,11 @@ impl OAuthQuotaStore {
     }
 
     /// Read usage from Redis and attach the effective plan's limits.
+    /// `limits = None` 表示没有生效套餐：仍然回报真实用量，但不给出上限。
     pub async fn snapshot(
         &self,
         client_id: &str,
-        limits: AuthQuotaLimits,
+        limits: Option<AuthQuotaLimits>,
     ) -> Result<QuotaSnapshot, OAuthQuotaError> {
         let now = OffsetDateTime::now_utc();
         let (day_key, month_key, _, _) = period_keys(client_id, now)?;
@@ -122,9 +127,9 @@ impl OAuthQuotaStore {
             .query_async(&mut connection)
             .await?;
         Ok(QuotaSnapshot {
-            daily_limit: limits.daily_auth_limit,
+            daily_limit: limits.map(|limits| limits.daily_auth_limit),
             daily_used: daily_used.unwrap_or(0),
-            monthly_limit: limits.monthly_auth_limit,
+            monthly_limit: limits.and_then(|limits| limits.monthly_auth_limit),
             monthly_used: monthly_used.unwrap_or(0),
         })
     }
@@ -300,14 +305,14 @@ mod tests {
         let snapshot = store
             .snapshot(
                 &format!("quota-empty-{}", Uuid::new_v4().simple()),
-                AuthQuotaLimits {
+                Some(AuthQuotaLimits {
                     daily_auth_limit: 7,
                     monthly_auth_limit: Some(11),
-                },
+                }),
             )
             .await
             .expect("empty quota snapshot");
-        assert_eq!(snapshot.daily_limit, 7);
+        assert_eq!(snapshot.daily_limit, Some(7));
         assert_eq!(snapshot.daily_used, 0);
         assert_eq!(snapshot.monthly_limit, Some(11));
         assert_eq!(snapshot.monthly_used, 0);
@@ -328,10 +333,38 @@ mod tests {
                 .expect("quota use"),
             QuotaConsumeResult::Allowed
         );
-        let snapshot = store.snapshot(&client_id, limits).await.expect("snapshot");
-        assert_eq!(snapshot.daily_limit, 3);
+        let snapshot = store
+            .snapshot(&client_id, Some(limits))
+            .await
+            .expect("snapshot");
+        assert_eq!(snapshot.daily_limit, Some(3));
         assert_eq!(snapshot.daily_used, 1);
         assert_eq!(snapshot.monthly_limit, None);
+        assert_eq!(snapshot.monthly_used, 1);
+    }
+
+    /// 没有生效套餐时快照仍然回报真实用量，但两个上限都是 `None`（序列化为 null）。
+    #[tokio::test]
+    async fn snapshot_without_plan_reports_usage_without_limits() {
+        let store = store();
+        let client_id = format!("quota-no-plan-{}", Uuid::new_v4().simple());
+        assert_eq!(
+            store
+                .consume_with_limits(
+                    &client_id,
+                    AuthQuotaLimits {
+                        daily_auth_limit: 5,
+                        monthly_auth_limit: None,
+                    }
+                )
+                .await
+                .expect("quota use"),
+            QuotaConsumeResult::Allowed
+        );
+        let snapshot = store.snapshot(&client_id, None).await.expect("snapshot");
+        assert_eq!(snapshot.daily_limit, None);
+        assert_eq!(snapshot.monthly_limit, None);
+        assert_eq!(snapshot.daily_used, 1);
         assert_eq!(snapshot.monthly_used, 1);
     }
 
@@ -358,10 +391,10 @@ mod tests {
         let result = store
             .snapshot(
                 "quota-error",
-                AuthQuotaLimits {
+                Some(AuthQuotaLimits {
                     daily_auth_limit: 1,
                     monthly_auth_limit: Some(1),
-                },
+                }),
             )
             .await;
         assert!(result.is_err());

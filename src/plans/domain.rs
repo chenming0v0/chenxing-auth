@@ -87,36 +87,19 @@ pub enum PlanError {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PlanMutationError {
-    #[error("the active default plan cannot be unset")]
-    DefaultPlanProtected,
     #[error("archived plans cannot be default")]
     ArchivedPlanCannotBeDefault,
     #[error("archived plans cannot be assigned to users")]
     PlanArchived,
 }
 
+/// 归档套餐不能被设为默认。这里先给出 409，避免依赖
+/// `plans_default_must_be_active` CHECK 抛出数据库错误变成 500。
 pub fn validate_plan_update(
     plan: &Plan,
     input: &ValidatedPlanInput,
 ) -> Result<(), PlanMutationError> {
     if input.is_default && plan.status != "active" {
-        return Err(PlanMutationError::ArchivedPlanCannotBeDefault);
-    }
-    if plan.status == "active" && plan.is_default && !input.is_default {
-        return Err(PlanMutationError::DefaultPlanProtected);
-    }
-    Ok(())
-}
-
-pub fn validate_plan_archive(plan: &Plan) -> Result<(), PlanMutationError> {
-    if plan.is_default {
-        return Err(PlanMutationError::DefaultPlanProtected);
-    }
-    Ok(())
-}
-
-pub fn validate_plan_restore(plan: &Plan) -> Result<(), PlanMutationError> {
-    if plan.status == "archived" && plan.is_default {
         return Err(PlanMutationError::ArchivedPlanCannotBeDefault);
     }
     Ok(())

@@ -4,8 +4,10 @@ import { apiFetch, type OwnedOAuthClient } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { SelectField } from '../../components/select'
+import { entitlementState, useEntitlements } from './shared'
 
 export function PlaygroundPage() {
+  const selfServiceClosed = entitlementState(useEntitlements()).kind === 'closed'
   const [clients, setClients] = useState<OwnedOAuthClient[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [redirectUri, setRedirectUri] = useState('')
@@ -72,12 +74,21 @@ export function PlaygroundPage() {
 
       {!clients.length ? (
         <HudPanel className="flex min-h-[20rem] flex-col items-center justify-center text-center">
-          <EmptyState
-            icon="rocket"
-            title="需要先注册一个应用"
-            description="测试台会使用你应用的 Client ID 和回调地址来构造真实的授权请求。"
-            action={<Link to="/console/integrate" className="chenxing-btn-primary mt-6 px-5 py-2.5"><Icon name="plus" size={16} />前往接入应用</Link>}
-          />
+          {/* 未开放自助接入时不引导用户去一个不能提交的注册入口 */}
+          {selfServiceClosed ? (
+            <EmptyState
+              icon="lock-keyhole"
+              title="没有可用于测试的应用"
+              description="平台未开放自助接入，当前不能自行注册应用。管理员为你分配套餐后即可在这里测试授权流程。"
+            />
+          ) : (
+            <EmptyState
+              icon="rocket"
+              title="需要先注册一个应用"
+              description="测试台会使用你应用的 Client ID 和回调地址来构造真实的授权请求。"
+              action={<Link to="/console/integrate" className="chenxing-btn-primary mt-6 px-5 py-2.5"><Icon name="plus" size={16} />前往接入应用</Link>}
+            />
+          )}
         </HudPanel>
       ) : (
         <HudPanel as="section">

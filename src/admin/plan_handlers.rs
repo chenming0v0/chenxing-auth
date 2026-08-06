@@ -238,10 +238,6 @@ fn plan_error_response(error_value: PlanServiceError) -> Response {
         PlanServiceError::CodeConflict => {
             error::conflict("plan_code_conflict", "plan code is already registered")
         }
-        PlanServiceError::DefaultPlanProtected => error::conflict(
-            "default_plan_protected",
-            "the active default plan cannot be unset or archived",
-        ),
         PlanServiceError::ArchivedPlanCannotBeDefault => {
             error::conflict("archived_plan_default", "archived plans cannot be default")
         }
@@ -250,10 +246,6 @@ fn plan_error_response(error_value: PlanServiceError) -> Response {
             "archived plans cannot be assigned to users",
         ),
         PlanServiceError::UserNotFound => error::not_found("user_not_found", "user was not found"),
-        PlanServiceError::NoDefaultPlan => {
-            tracing::error!("no default plan is configured");
-            error::internal()
-        }
         PlanServiceError::Database(database_error) => {
             tracing::error!(error = %database_error, "plan database operation failed");
             error::internal()

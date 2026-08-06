@@ -4,8 +4,8 @@ use time::OffsetDateTime;
 pub use super::repository::PlanWithUsers;
 use super::{
     domain::{
-        Plan, PlanError, PlanInput, PlanMutationError, validate_plan_archive,
-        validate_plan_assignment, validate_plan_input, validate_plan_restore, validate_plan_update,
+        Plan, PlanError, PlanInput, PlanMutationError, validate_plan_assignment,
+        validate_plan_input, validate_plan_update,
     },
     repository::{self, PlanAssignmentResult, PlanRepositoryError},
 };
@@ -25,16 +25,12 @@ pub enum PlanServiceError {
     NotFound,
     #[error("plan code is already registered")]
     CodeConflict,
-    #[error("the default plan cannot be archived")]
-    DefaultPlanProtected,
     #[error("archived plans cannot be default")]
     ArchivedPlanCannotBeDefault,
     #[error("archived plans cannot be assigned to users")]
     PlanArchived,
     #[error("user was not found")]
     UserNotFound,
-    #[error("no default plan is configured")]
-    NoDefaultPlan,
     #[error("database operation failed: {0}")]
     Database(#[from] crate::sqlx::Error),
 }
@@ -87,32 +83,25 @@ impl PlanService {
         }
     }
 
+    /// 归档套餐。归档默认套餐是允许的：结果是「平台没有生效默认套餐」，
+    /// 语义为未开放自助接入，而不是错误。
     pub async fn archive(&self, id: i64) -> Result<(), PlanServiceError> {
-        let Some(plan) = repository::find_by_id(&self.pool, id).await? else {
-            return Err(PlanServiceError::NotFound);
-        };
-        validate_plan_archive(&plan).map_err(map_mutation_error)?;
-        if !repository::set_status(&self.pool, id, "archived")
-            .await
-            .map_err(map_repository_error)?
-        {
-            return Err(PlanServiceError::NotFound);
-        }
-        Ok(())
+        self.set_status(id, "archived").await
     }
 
     pub async fn restore(&self, id: i64) -> Result<(), PlanServiceError> {
-        let Some(plan) = repository::find_by_id(&self.pool, id).await? else {
-            return Err(PlanServiceError::NotFound);
-        };
-        validate_plan_restore(&plan).map_err(map_mutation_error)?;
-        if !repository::set_status(&self.pool, id, "active")
+        self.set_status(id, "active").await
+    }
+
+    async fn set_status(&self, id: i64, status: &str) -> Result<(), PlanServiceError> {
+        if repository::set_status(&self.pool, id, status)
             .await
             .map_err(map_repository_error)?
         {
-            return Err(PlanServiceError::NotFound);
+            Ok(())
+        } else {
+            Err(PlanServiceError::NotFound)
         }
-        Ok(())
     }
 
     pub async fn assign_to_user(
@@ -139,22 +128,23 @@ impl PlanService {
         Ok(())
     }
 
-    /// 用户的生效套餐：优先返回其挂载且未过期的套餐，否则回退到默认套餐。
+    /// 用户的生效套餐：挂载且未过期的套餐 → active 默认套餐 → `None`。
     /// 过期回退的语义是「到期后按默认套餐继续服务」，不自动改写用户记录。
+    /// `None` 表示平台未开放自助接入，是合法状态而非错误：调用方据此决定
+    /// 拒绝新增（自助接入闸门）还是跳过计量（不打死既有集成）。
     pub async fn effective_plan_for_user(
         &self,
         user_id: UserId,
-    ) -> Result<EffectivePlan, PlanServiceError> {
+    ) -> Result<Option<EffectivePlan>, PlanServiceError> {
         if let Some(effective) = repository::find_for_user(&self.pool, user_id).await? {
-            return Ok(effective);
+            return Ok(Some(effective));
         }
-        let plan = repository::find_default(&self.pool)
+        Ok(repository::find_default(&self.pool)
             .await?
-            .ok_or(PlanServiceError::NoDefaultPlan)?;
-        Ok(EffectivePlan {
-            plan,
-            expires_at: None,
-        })
+            .map(|plan| EffectivePlan {
+                plan,
+                expires_at: None,
+            }))
     }
 }
 
@@ -167,7 +157,6 @@ fn is_unique_violation(error: &crate::sqlx::Error) -> bool {
 
 fn map_mutation_error(error: PlanMutationError) -> PlanServiceError {
     match error {
-        PlanMutationError::DefaultPlanProtected => PlanServiceError::DefaultPlanProtected,
         PlanMutationError::ArchivedPlanCannotBeDefault => {
             PlanServiceError::ArchivedPlanCannotBeDefault
         }
@@ -179,6 +168,5 @@ fn map_repository_error(error: PlanRepositoryError) -> PlanServiceError {
     match error {
         PlanRepositoryError::Database(error) => PlanServiceError::Database(error),
         PlanRepositoryError::Mutation(error) => map_mutation_error(error),
-        PlanRepositoryError::NoDefaultPlan => PlanServiceError::NoDefaultPlan,
     }
 }

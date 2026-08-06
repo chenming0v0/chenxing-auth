@@ -1,405 +1,62 @@
 use axum::{
-    Router,
-    body::{Body, to_bytes},
+    body::Body,
+    extract::ConnectInfo,
     http::{Request, StatusCode},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{
-    api,
-    config::Config,
-    db,
     oauth::{
-        authorization::ValidatedAuthorizationRequest,
         handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
         quota::QuotaConsumeResult,
         store::AuthorizationCodeStore,
     },
     plans::domain::AuthQuotaLimits,
-    sessions::domain::Session,
-    state::AppState,
 };
 use serde_json::Value;
 use serial_test::serial;
-use std::time::Duration;
+use std::net::{IpAddr, SocketAddr};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-const ADMIN_TOKEN: &str = "plans-admin-token";
+#[path = "support/plans.rs"]
+mod support;
 
-async fn test_state() -> (AppState, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL is required for plan tests");
-    db::migrate(&database).await.expect("database migrations");
-    chenxing_auth::sqlx::query("DELETE FROM plans WHERE code <> 'basic'")
-        .execute(&database)
-        .await
-        .expect("reset custom plans");
-    chenxing_auth::sqlx::query(
-        "UPDATE plans SET code = 'basic', name = '基础版', description = '默认套餐',
-             oauth_clients_limit = 2, daily_auth_limit = 2500, monthly_auth_limit = 50000,
-             max_qps = NULL, status = 'active', is_default = TRUE, updated_at = NOW()
-         WHERE code = 'basic'",
-    )
-    .execute(&database)
-    .await
-    .expect("reset basic plan");
-    let key_directory = std::env::temp_dir().join(format!("chenxing-plans-{}", Uuid::new_v4()));
-    let mut config = Config::from_values_with_issuer(
-        "127.0.0.1".to_owned(),
-        3000,
-        "http://127.0.0.1:3000".to_owned(),
-        database_url,
-        redis_url,
-        3600,
-    )
-    .expect("test configuration");
-    config.admin_token = ADMIN_TOKEN.to_owned();
-    config.cookie_secure = false;
-    config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new(config).await.expect("test state");
-    (state, database, key_directory)
-}
-
-async fn json(response: axum::response::Response) -> Value {
-    let body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("response body");
-    serde_json::from_slice(&body).expect("JSON response")
-}
-
-async fn bootstrap_owner(router: &Router, suffix: &str) {
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/admin/bootstrap")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "username": format!("plan-owner-{suffix}"),
-                        "email": format!("plan-owner-{suffix}@example.com"),
-                        "password": "correct horse battery",
-                    })
-                    .to_string(),
-                ))
-                .expect("bootstrap request"),
-        )
-        .await
-        .expect("bootstrap response");
-    assert!(
-        matches!(
-            response.status(),
-            StatusCode::CREATED | StatusCode::CONFLICT
-        ),
-        "unexpected bootstrap status: {}",
-        response.status()
-    );
-}
-
-async fn register_user(router: &Router, suffix: &str) -> i64 {
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/users")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "username": format!("plan-user-{suffix}"),
-                        "email": format!("plan-user-{suffix}@example.com"),
-                        "password": "correct horse battery",
-                    })
-                    .to_string(),
-                ))
-                .expect("registration request"),
-        )
-        .await
-        .expect("registration response");
-    assert_eq!(response.status(), StatusCode::CREATED);
-    json(response).await["user"]["id"]
-        .as_i64()
-        .expect("numeric user id")
-}
-
-async fn user_session(state: &AppState, user_id: i64) -> (String, String) {
-    let mut session =
-        Session::new(user_id.to_string(), Duration::from_secs(3600)).expect("browser session");
-    state
-        .sessions
-        .save(&mut session, Duration::from_secs(3600))
-        .await
-        .expect("persist session");
-    let cookie = format!(
-        "chenxing_session={}; chenxing_csrf={}",
-        session.token, session.csrf_token
-    );
-    (cookie, session.csrf_token)
-}
-
-async fn create_owned_client(router: &Router, cookie: &str, csrf: &str, suffix: &str) -> Value {
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/auth/oauth-clients")
-                .header("cookie", cookie)
-                .header("x-csrf-token", csrf)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "client_name": format!("Plan Client {suffix}"),
-                        "redirect_uris": ["https://plan.example/callback"],
-                        "scopes": ["openid", "profile", "email"],
-                    })
-                    .to_string(),
-                ))
-                .expect("owned client request"),
-        )
-        .await
-        .expect("owned client response");
-    assert_eq!(
-        response.status(),
-        StatusCode::CREATED,
-        "owned client creation: {}",
-        response.status()
-    );
-    json(response).await
-}
-
-async fn create_plan(
-    router: &Router,
-    suffix: &str,
-    limits: serde_json::Map<String, Value>,
-) -> Value {
-    let mut body = serde_json::Map::new();
-    body.insert("code".to_owned(), Value::String(format!("plan-{suffix}")));
-    body.insert("name".to_owned(), Value::String(format!("Plan {suffix}")));
-    body.insert("description".to_owned(), Value::Null);
-    body.insert("is_default".to_owned(), Value::Bool(false));
-    body.extend(limits);
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/admin/plans")
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .header("content-type", "application/json")
-                .body(Body::from(Value::Object(body).to_string()))
-                .expect("create plan request"),
-        )
-        .await
-        .expect("create plan response");
-    assert_eq!(response.status(), StatusCode::CREATED, "create plan");
-    json(response).await
-}
-
-async fn update_plan(
-    router: &Router,
-    plan_id: i64,
-    code: &str,
-    is_default: bool,
-) -> (StatusCode, Value) {
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PUT")
-                .uri(format!("/api/v1/admin/plans/{plan_id}"))
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "code": code,
-                        "name": "Updated plan",
-                        "description": null,
-                        "oauth_clients_limit": 2,
-                        "daily_auth_limit": 2500,
-                        "monthly_auth_limit": 50000,
-                        "max_qps": null,
-                        "is_default": is_default,
-                    })
-                    .to_string(),
-                ))
-                .expect("update plan request"),
-        )
-        .await
-        .expect("update plan response");
-    let status = response.status();
-    (status, json(response).await)
-}
-
-async fn assign_plan(
-    router: &Router,
-    user_id: i64,
-    plan_id: i64,
-    expires_at: Option<Value>,
-) -> StatusCode {
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/admin/users/{user_id}/plan"))
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({ "plan_id": plan_id, "expires_at": expires_at }).to_string(),
-                ))
-                .expect("assign plan request"),
-        )
-        .await
-        .expect("assign plan response");
-    response.status()
-}
-
-fn validated_request(client_id: &str, user_id: i64) -> ValidatedAuthorizationRequest {
-    ValidatedAuthorizationRequest {
-        client_id: client_id.to_owned(),
-        redirect_uri: "https://plan.example/callback".to_owned(),
-        scopes: vec!["openid".to_owned(), "profile".to_owned()],
-        state: "plan-state".to_owned(),
-        nonce: None,
-        code_challenge: "plan-challenge".to_owned(),
-        owner_user_id: Some(user_id),
-        session_id: None,
-    }
-}
-
-#[tokio::test]
-#[serial]
-async fn default_plan_seed_preserves_legacy_hardcoded_limits() {
-    let (state, _database, key_directory) = test_state().await;
-    let router = api::router(state.clone());
-    let suffix = Uuid::new_v4().simple().to_string();
-    bootstrap_owner(&router, &suffix).await;
-    let user_id = register_user(&router, &suffix).await;
-    let (cookie, _csrf) = user_session(&state, user_id).await;
-
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/auth/entitlements")
-                .header("cookie", &cookie)
-                .body(Body::empty())
-                .expect("entitlements request"),
-        )
-        .await
-        .expect("entitlements response");
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = json(response).await;
-    assert_eq!(body["plan"]["code"], "basic");
-    assert_eq!(body["plan"]["name"], "基础版");
-    assert_eq!(body["plan"]["validity"], "permanent");
-    let entitlements = body["entitlements"].as_array().expect("entitlements array");
-    let by_key = |key: &str| {
-        entitlements
-            .iter()
-            .find(|item| item["key"] == key)
-            .unwrap_or_else(|| panic!("missing entitlement {key}"))
-    };
-    assert_eq!(by_key("oauth_clients")["limit"], 2);
-    assert_eq!(by_key("daily_auth")["limit"], 2_500);
-    assert_eq!(by_key("monthly_auth")["limit"], 50_000);
-    assert!(
-        entitlements.iter().all(|item| item["key"] != "max_qps"),
-        "basic plan has no max_qps card"
-    );
-
-    // 管理端列表包含种子默认套餐，限额与旧硬编码一致（回归）。
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/admin/plans")
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .body(Body::empty())
-                .expect("admin plans request"),
-        )
-        .await
-        .expect("admin plans response");
-    assert_eq!(response.status(), StatusCode::OK);
-    let plans = json(response).await;
-    let basic = plans
-        .as_array()
-        .expect("plans array")
-        .iter()
-        .find(|plan| plan["code"] == "basic")
-        .expect("seeded basic plan");
-    assert_eq!(basic["oauth_clients_limit"], 2);
-    assert_eq!(basic["daily_auth_limit"], 2_500);
-    assert_eq!(basic["monthly_auth_limit"], 50_000);
-    assert_eq!(basic["status"], "active");
-    assert!(basic["is_default"].as_bool().unwrap_or(false));
-
-    let _ = std::fs::remove_dir_all(key_directory);
-}
+use support::{
+    ADMIN_TOKEN, DEFAULT_PLAN_CODE, REDIRECT_URI, active_default_plan_count, archive_plan,
+    assign_plan, authorization_code_from_redirect, bootstrap_owner, clear_all_plans,
+    code_challenge_for, create_admin_client, create_owned_client, create_plan,
+    exchange_authorization_code, get_entitlements, json, list_owned_clients, list_plans,
+    plan_limits, plan_status_and_default, post_owned_client, register_user, restore_plan,
+    test_state, update_plan, user_session, validated_request, validated_request_with_challenge,
+};
 
 #[tokio::test]
 #[serial]
 async fn assigned_plan_controls_client_quota_and_entitlements() {
-    let (state, _database, key_directory) = test_state().await;
-    let router = api::router(state.clone());
+    let env = test_state().await;
+    let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
     let user_id = register_user(&router, &suffix).await;
-    let (cookie, csrf) = user_session(&state, user_id).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
 
-    let mut limits = serde_json::Map::new();
-    limits.insert("oauth_clients_limit".to_owned(), Value::from(1));
-    limits.insert("daily_auth_limit".to_owned(), Value::from(5));
-    limits.insert("monthly_auth_limit".to_owned(), Value::from(100));
-    limits.insert("max_qps".to_owned(), Value::Null);
-    let plan = create_plan(&router, &suffix, limits).await;
+    let plan = create_plan(&router, &suffix, plan_limits(1, 5, Some(100), None)).await;
     let plan_id = plan["id"].as_i64().expect("plan id");
     assert_eq!(
         assign_plan(&router, user_id, plan_id, None).await,
         StatusCode::NO_CONTENT
     );
 
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/auth/oauth-clients")
-                .header("cookie", &cookie)
-                .body(Body::empty())
-                .expect("empty client list request"),
-        )
-        .await
-        .expect("empty client list response");
-    assert_eq!(response.status(), StatusCode::OK);
+    let (status, clients) = list_owned_clients(&router, &cookie).await;
+    assert_eq!(status, StatusCode::OK);
     assert!(
-        json(response).await["items"]
+        clients["items"]
             .as_array()
             .expect("empty client items")
             .is_empty()
     );
 
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/auth/entitlements")
-                .header("cookie", &cookie)
-                .body(Body::empty())
-                .expect("empty entitlements request"),
-        )
-        .await
-        .expect("empty entitlements response");
-    let empty_entitlements = json(response).await;
+    let (_, empty_entitlements) = get_entitlements(&router, &cookie).await;
     let empty_items = empty_entitlements["entitlements"]
         .as_array()
         .expect("empty entitlements items");
@@ -419,44 +76,13 @@ async fn assigned_plan_controls_client_quota_and_entitlements() {
     assert_eq!(first["quota"]["daily_used"], 0);
     assert_eq!(first["quota"]["monthly_limit"], 100);
     assert_eq!(first["quota"]["monthly_used"], 0);
-    let second = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/auth/oauth-clients")
-                .header("cookie", &cookie)
-                .header("x-csrf-token", &csrf)
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "client_name": "Second Plan Client",
-                        "redirect_uris": ["https://plan.example/callback"],
-                        "scopes": ["openid", "profile", "email"],
-                    })
-                    .to_string(),
-                ))
-                .expect("second owned client request"),
-        )
-        .await
-        .expect("second owned client response");
+    let second = post_owned_client(&router, &cookie, &csrf, &format!("second-{suffix}")).await;
     assert_eq!(second.status(), StatusCode::CONFLICT);
     let error = json(second).await;
     assert_eq!(error["code"], "oauth_client_quota_exceeded");
 
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/auth/entitlements")
-                .header("cookie", &cookie)
-                .body(Body::empty())
-                .expect("entitlements request"),
-        )
-        .await
-        .expect("entitlements response");
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = json(response).await;
+    let (status, body) = get_entitlements(&router, &cookie).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(body["plan"]["code"], format!("plan-{suffix}"));
     let entitlements = body["entitlements"].as_array().expect("entitlements array");
     let by_key = |key: &str| {
@@ -470,41 +96,25 @@ async fn assigned_plan_controls_client_quota_and_entitlements() {
     assert_eq!(by_key("daily_auth")["limit"], 5);
     assert_eq!(by_key("monthly_auth")["limit"], 100);
 
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/auth/oauth-clients")
-                .header("cookie", &cookie)
-                .body(Body::empty())
-                .expect("owned client list request"),
-        )
-        .await
-        .expect("owned client list response");
-    let clients = json(response).await;
+    let (_, clients) = list_owned_clients(&router, &cookie).await;
     assert_eq!(clients["items"][0]["quota"]["daily_limit"], 5);
     assert_eq!(clients["items"][0]["quota"]["monthly_limit"], 100);
 
     let _ = first["client_id"].as_str();
-    let _ = std::fs::remove_dir_all(key_directory);
+    env.cleanup();
 }
 
 #[tokio::test]
 #[serial]
 async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
-    let (state, _database, key_directory) = test_state().await;
-    let router = api::router(state.clone());
+    let env = test_state().await;
+    let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
     let user_id = register_user(&router, &suffix).await;
-    let (cookie, csrf) = user_session(&state, user_id).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
 
-    let mut limits = serde_json::Map::new();
-    limits.insert("oauth_clients_limit".to_owned(), Value::from(1));
-    limits.insert("daily_auth_limit".to_owned(), Value::from(2));
-    limits.insert("monthly_auth_limit".to_owned(), Value::from(5));
-    limits.insert("max_qps".to_owned(), Value::Null);
-    let plan = create_plan(&router, &suffix, limits).await;
+    let plan = create_plan(&router, &suffix, plan_limits(1, 2, Some(5), None)).await;
     let plan_id = plan["id"].as_i64().expect("plan id");
     assert_eq!(
         assign_plan(&router, user_id, plan_id, None).await,
@@ -517,35 +127,30 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
 
     for _ in 0..2 {
         let result =
-            issue_authorization_code_result(&state, user_id.to_string(), validated.clone())
+            issue_authorization_code_result(&env.state, user_id.to_string(), validated.clone())
                 .await
                 .expect("authorization within daily limit");
         assert!(matches!(result, AuthorizationCodeIssue::Redirect(_)));
     }
-    let result = issue_authorization_code_result(&state, user_id.to_string(), validated)
+    let result = issue_authorization_code_result(&env.state, user_id.to_string(), validated)
         .await
         .expect("authorization over daily limit");
     assert!(matches!(result, AuthorizationCodeIssue::QuotaExceeded));
 
-    let _ = std::fs::remove_dir_all(key_directory);
+    env.cleanup();
 }
 
 #[tokio::test]
 #[serial]
 async fn authorization_code_save_failure_refunds_consumed_quota() {
-    let (mut state, _database, key_directory) = test_state().await;
-    let router = api::router(state.clone());
+    let mut env = test_state().await;
+    let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
     let user_id = register_user(&router, &suffix).await;
-    let (cookie, csrf) = user_session(&state, user_id).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
 
-    let mut limits = serde_json::Map::new();
-    limits.insert("oauth_clients_limit".to_owned(), Value::from(1));
-    limits.insert("daily_auth_limit".to_owned(), Value::from(1));
-    limits.insert("monthly_auth_limit".to_owned(), Value::from(5));
-    limits.insert("max_qps".to_owned(), Value::Null);
-    let plan = create_plan(&router, &suffix, limits).await;
+    let plan = create_plan(&router, &suffix, plan_limits(1, 1, Some(5), None)).await;
     let plan_id = plan["id"].as_i64().expect("plan id");
     assert_eq!(
         assign_plan(&router, user_id, plan_id, None).await,
@@ -556,66 +161,57 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
     let client_id = client["client_id"].as_str().expect("client id").to_owned();
     let validated = validated_request(&client_id, user_id);
 
-    state.authorization_codes = AuthorizationCodeStore::new(
+    env.state.authorization_codes = AuthorizationCodeStore::new(
         redis::Client::open("redis://127.0.0.1:1").expect("unavailable Redis URL"),
     );
     let failed =
-        issue_authorization_code_result(&state, user_id.to_string(), validated.clone()).await;
+        issue_authorization_code_result(&env.state, user_id.to_string(), validated.clone()).await;
     assert!(failed.is_err(), "authorization code persistence must fail");
 
-    let snapshot = state
+    let limits = Some(AuthQuotaLimits {
+        daily_auth_limit: 1,
+        monthly_auth_limit: Some(5),
+    });
+    let snapshot = env
+        .state
         .oauth_quotas
-        .snapshot(
-            &client_id,
-            AuthQuotaLimits {
-                daily_auth_limit: 1,
-                monthly_auth_limit: Some(5),
-            },
-        )
+        .snapshot(&client_id, limits)
         .await
         .expect("quota snapshot after refund");
+    assert_eq!(snapshot.daily_limit, Some(1));
     assert_eq!(snapshot.daily_used, 0);
     assert_eq!(snapshot.monthly_used, 0);
 
-    state.authorization_codes = AuthorizationCodeStore::new(state.redis.clone());
-    let retry = issue_authorization_code_result(&state, user_id.to_string(), validated)
+    env.state.authorization_codes = AuthorizationCodeStore::new(env.state.redis.clone());
+    let retry = issue_authorization_code_result(&env.state, user_id.to_string(), validated)
         .await
         .expect("retry after quota refund");
     assert!(matches!(retry, AuthorizationCodeIssue::Redirect(_)));
 
-    let snapshot = state
+    let snapshot = env
+        .state
         .oauth_quotas
-        .snapshot(
-            &client_id,
-            AuthQuotaLimits {
-                daily_auth_limit: 1,
-                monthly_auth_limit: Some(5),
-            },
-        )
+        .snapshot(&client_id, limits)
         .await
         .expect("quota snapshot after successful retry");
+    assert_eq!(snapshot.daily_limit, Some(1));
     assert_eq!(snapshot.daily_used, 1);
     assert_eq!(snapshot.monthly_used, 1);
 
-    let _ = std::fs::remove_dir_all(key_directory);
+    env.cleanup();
 }
 
 #[tokio::test]
 #[serial]
 async fn unlimited_monthly_plan_never_rejects_authorizations() {
-    let (state, _database, key_directory) = test_state().await;
-    let router = api::router(state.clone());
+    let env = test_state().await;
+    let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
     let user_id = register_user(&router, &suffix).await;
-    let (cookie, csrf) = user_session(&state, user_id).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
 
-    let mut limits = serde_json::Map::new();
-    limits.insert("oauth_clients_limit".to_owned(), Value::from(1));
-    limits.insert("daily_auth_limit".to_owned(), Value::from(10));
-    limits.insert("monthly_auth_limit".to_owned(), Value::Null);
-    limits.insert("max_qps".to_owned(), Value::Null);
-    let plan = create_plan(&router, &suffix, limits).await;
+    let plan = create_plan(&router, &suffix, plan_limits(1, 10, None, None)).await;
     let plan_id = plan["id"].as_i64().expect("plan id");
     assert_eq!(
         assign_plan(&router, user_id, plan_id, None).await,
@@ -630,25 +226,14 @@ async fn unlimited_monthly_plan_never_rejects_authorizations() {
 
     for _ in 0..6 {
         let result =
-            issue_authorization_code_result(&state, user_id.to_string(), validated.clone())
+            issue_authorization_code_result(&env.state, user_id.to_string(), validated.clone())
                 .await
                 .expect("monthly quota is unlimited");
         assert!(matches!(result, AuthorizationCodeIssue::Redirect(_)));
     }
 
     // 权益页把 monthly_auth 的 limit 渲染为 null（前端显示 ∞）。
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/auth/entitlements")
-                .header("cookie", &cookie)
-                .body(Body::empty())
-                .expect("entitlements request"),
-        )
-        .await
-        .expect("entitlements response");
-    let body = json(response).await;
+    let (_, body) = get_entitlements(&router, &cookie).await;
     let monthly = body["entitlements"]
         .as_array()
         .expect("entitlements array")
@@ -658,27 +243,27 @@ async fn unlimited_monthly_plan_never_rejects_authorizations() {
     assert!(monthly["limit"].is_null());
     assert_eq!(monthly["used"], 6);
 
-    let _ = std::fs::remove_dir_all(key_directory);
+    env.cleanup();
 }
 
 #[tokio::test]
 #[serial]
 async fn qps_limiter_rejects_requests_over_the_plan_limit() {
-    let (state, _database, key_directory) = test_state().await;
-    let router = api::router(state.clone());
+    let env = test_state().await;
+    let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
     let user_id = register_user(&router, &suffix).await;
-    let (cookie, csrf) = user_session(&state, user_id).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
 
-    let mut limits = serde_json::Map::new();
-    limits.insert("oauth_clients_limit".to_owned(), Value::from(1));
-    limits.insert("daily_auth_limit".to_owned(), Value::from(1_000));
-    limits.insert("monthly_auth_limit".to_owned(), Value::from(10_000));
     // 用 1 QPS 做顺序断言：第一发进入业务校验返回 400，第二发必被滑动窗口拒绝。
     // 这比并发三连更稳，也更直接验证 token 路径真正调用了 plan-backed limiter。
-    limits.insert("max_qps".to_owned(), Value::from(1));
-    let plan = create_plan(&router, &suffix, limits).await;
+    let plan = create_plan(
+        &router,
+        &suffix,
+        plan_limits(1, 1_000, Some(10_000), Some(1)),
+    )
+    .await;
     let plan_id = plan["id"].as_i64().expect("plan id");
     assert_eq!(
         assign_plan(&router, user_id, plan_id, None).await,
@@ -736,25 +321,20 @@ async fn qps_limiter_rejects_requests_over_the_plan_limit() {
     assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(json(second).await["error"], "temporarily_unavailable");
 
-    let _ = std::fs::remove_dir_all(key_directory);
+    env.cleanup();
 }
 
 #[tokio::test]
 #[serial]
 async fn entitlements_aggregate_usage_across_multiple_clients() {
-    let (state, _database, key_directory) = test_state().await;
-    let router = api::router(state.clone());
+    let env = test_state().await;
+    let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
     let user_id = register_user(&router, &suffix).await;
-    let (cookie, csrf) = user_session(&state, user_id).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
 
-    let mut limits = serde_json::Map::new();
-    limits.insert("oauth_clients_limit".to_owned(), Value::from(2));
-    limits.insert("daily_auth_limit".to_owned(), Value::from(100));
-    limits.insert("monthly_auth_limit".to_owned(), Value::from(1_000));
-    limits.insert("max_qps".to_owned(), Value::Null);
-    let plan = create_plan(&router, &suffix, limits).await;
+    let plan = create_plan(&router, &suffix, plan_limits(2, 100, Some(1_000), None)).await;
     let plan_id = plan["id"].as_i64().expect("plan id");
     assert_eq!(
         assign_plan(&router, user_id, plan_id, None).await,
@@ -772,50 +352,31 @@ async fn entitlements_aggregate_usage_across_multiple_clients() {
         .expect("second client id")
         .to_owned();
 
+    let limits = AuthQuotaLimits {
+        daily_auth_limit: 100,
+        monthly_auth_limit: Some(1_000),
+    };
     for _ in 0..2 {
         assert_eq!(
-            state
+            env.state
                 .oauth_quotas
-                .consume_with_limits(
-                    &first_id,
-                    AuthQuotaLimits {
-                        daily_auth_limit: 100,
-                        monthly_auth_limit: Some(1_000),
-                    },
-                )
+                .consume_with_limits(&first_id, limits)
                 .await
                 .expect("first client quota"),
             QuotaConsumeResult::Allowed
         );
     }
     assert_eq!(
-        state
+        env.state
             .oauth_quotas
-            .consume_with_limits(
-                &second_id,
-                AuthQuotaLimits {
-                    daily_auth_limit: 100,
-                    monthly_auth_limit: Some(1_000),
-                },
-            )
+            .consume_with_limits(&second_id, limits)
             .await
             .expect("second client quota"),
         QuotaConsumeResult::Allowed
     );
 
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/auth/entitlements")
-                .header("cookie", &cookie)
-                .body(Body::empty())
-                .expect("entitlements request"),
-        )
-        .await
-        .expect("entitlements response");
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = json(response).await;
+    let (status, body) = get_entitlements(&router, &cookie).await;
+    assert_eq!(status, StatusCode::OK);
     let entitlements = body["entitlements"].as_array().expect("entitlements array");
     let by_key = |key: &str| {
         entitlements
@@ -827,44 +388,27 @@ async fn entitlements_aggregate_usage_across_multiple_clients() {
     assert_eq!(by_key("daily_auth")["used"], 3);
     assert_eq!(by_key("monthly_auth")["used"], 3);
 
-    let _ = std::fs::remove_dir_all(key_directory);
+    env.cleanup();
 }
 
+/// 归档默认套餐是合法操作：结果是「平台没有生效默认套餐」。
+/// 同一条 UPDATE 顺手清掉 `is_default`，否则 `plans_default_must_be_active`
+/// 会被违反。
 #[tokio::test]
 #[serial]
-async fn admin_plan_archive_restore_and_default_protection() {
-    let (state, _database, key_directory) = test_state().await;
-    let router = api::router(state.clone());
+async fn admin_plan_archive_restore_and_default_clearing() {
+    let env = test_state().await;
+    let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
     let user_id = register_user(&router, &suffix).await;
 
-    let mut limits = serde_json::Map::new();
-    limits.insert("oauth_clients_limit".to_owned(), Value::from(1));
-    limits.insert("daily_auth_limit".to_owned(), Value::from(5));
-    limits.insert("monthly_auth_limit".to_owned(), Value::Null);
-    limits.insert("max_qps".to_owned(), Value::Null);
-    let plan = create_plan(&router, &suffix, limits).await;
+    let plan = create_plan(&router, &suffix, plan_limits(1, 5, None, None)).await;
     let plan_id = plan["id"].as_i64().expect("plan id");
-
-    let archive = |id: i64| {
-        let router = router.clone();
-        async move {
-            router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri(format!("/api/v1/admin/plans/{id}/archive"))
-                        .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                        .body(Body::empty())
-                        .expect("archive request"),
-                )
-                .await
-                .expect("archive response")
-        }
-    };
-    assert_eq!(archive(plan_id).await.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        archive_plan(&router, plan_id).await.status(),
+        StatusCode::NO_CONTENT
+    );
 
     // 归档后的套餐不能再分配给新用户。
     let response = router
@@ -885,170 +429,141 @@ async fn admin_plan_archive_restore_and_default_protection() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(json(response).await["code"], "plan_archived");
 
-    let restore = || {
-        let router = router.clone();
-        async move {
-            router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri(format!("/api/v1/admin/plans/{plan_id}/restore"))
-                        .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                        .body(Body::empty())
-                        .expect("restore request"),
-                )
-                .await
-                .expect("restore response")
-        }
-    };
-    assert_eq!(restore().await.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        restore_plan(&router, plan_id).await.status(),
+        StatusCode::NO_CONTENT
+    );
     assert_eq!(
         assign_plan(&router, user_id, plan_id, None).await,
         StatusCode::NO_CONTENT
     );
 
-    // 默认套餐不能被归档。
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/admin/plans/1/archive")
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .body(Body::empty())
-                .expect("archive default request"),
-        )
-        .await
-        .expect("archive default response");
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(json(response).await["code"], "default_plan_protected");
+    // 归档默认套餐：204，并且 `is_default` 被同一条 UPDATE 顺手清掉。
+    assert_eq!(
+        archive_plan(&router, env.default_plan_id).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        plan_status_and_default(&env.database, env.default_plan_id).await,
+        ("archived".to_owned(), false),
+        "archiving the default plan must also clear the default flag"
+    );
+    assert_eq!(active_default_plan_count(&env.database).await, 0);
 
     // 列表包含归档状态。
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/admin/plans")
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .body(Body::empty())
-                .expect("admin plans request"),
-        )
-        .await
-        .expect("admin plans response");
-    let plans = json(response).await;
-    let archived = plans
+    let plans = list_plans(&router).await;
+    let restored = plans
         .as_array()
         .expect("plans array")
         .iter()
         .find(|entry| entry["id"] == plan_id)
         .expect("created plan");
-    assert_eq!(archived["status"], "active");
-    assert_eq!(archived["assigned_users"], 1);
+    assert_eq!(restored["status"], "active");
+    assert_eq!(restored["assigned_users"], 1);
 
-    let _ = std::fs::remove_dir_all(key_directory);
+    env.cleanup();
 }
 
+/// 取消唯一默认套餐后，自助接入闸门关闭（新建 Client 403），
+/// 但**既有 Client 的授权路径必须继续可用** —— 闸门只关新增，不打死既有集成。
 #[tokio::test]
 #[serial]
-async fn update_cannot_unset_the_only_active_default_plan() {
-    let (state, _database, key_directory) = test_state().await;
-    let router = api::router(state);
+async fn unsetting_the_last_default_plan_closes_self_service() {
+    let env = test_state().await;
+    let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
 
-    let (status, _) = update_plan(&router, 1, "basic", true).await;
+    // 闸门关闭前先建一个 Client，作为「既有集成」。
+    let existing = create_owned_client(&router, &cookie, &csrf, &suffix).await;
+    let existing_client_id = existing["client_id"]
+        .as_str()
+        .expect("existing client id")
+        .to_owned();
+
+    // 取消唯一默认套餐：现在是合法操作（旧语义是 409 default_plan_protected）。
+    let (status, _) = update_plan(
+        &router,
+        env.default_plan_id,
+        &format!("unset-{suffix}"),
+        false,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (status, error) = update_plan(&router, 1, &format!("updated-{suffix}"), false).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(error["code"], "default_plan_protected");
-
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/admin/plans")
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .body(Body::empty())
-                .expect("list plans request"),
-        )
-        .await
-        .expect("list plans response");
-    let plans = json(response).await;
-    let plan = plans
+    let plans = list_plans(&router).await;
+    let active_defaults = plans
         .as_array()
         .expect("plans array")
         .iter()
-        .find(|entry| entry["id"] == 1)
-        .expect("updated default plan");
-    assert_eq!(plan["status"], "active");
-    assert_eq!(plan["is_default"], true);
+        .filter(|plan| plan["status"] == "active" && plan["is_default"] == true)
+        .count();
+    assert_eq!(active_defaults, 0);
+    assert_eq!(active_default_plan_count(&env.database).await, 0);
 
-    let (status, _) = update_plan(&router, 1, "basic", true).await;
-    assert_eq!(status, StatusCode::OK);
+    // 新增被拒。
+    let refused = post_owned_client(&router, &cookie, &csrf, &format!("refused-{suffix}")).await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json(refused).await["code"], "self_service_disabled");
 
-    let _ = std::fs::remove_dir_all(key_directory);
+    // 既有 Client 的授权仍然成功：这是防止「只关新增」被悄悄改成
+    // 「打死既有集成」的机器保障。
+    let result = issue_authorization_code_result(
+        &env.state,
+        user_id.to_string(),
+        validated_request(&existing_client_id, user_id),
+    )
+    .await
+    .expect("existing client authorization must keep working without a default plan");
+    assert!(matches!(result, AuthorizationCodeIssue::Redirect(_)));
+
+    env.cleanup();
 }
 
 #[tokio::test]
 #[serial]
 async fn archived_plan_cannot_become_default() {
-    let (state, _database, key_directory) = test_state().await;
-    let router = api::router(state);
+    let env = test_state().await;
+    let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
 
-    let mut limits = serde_json::Map::new();
-    limits.insert("oauth_clients_limit".to_owned(), Value::from(2));
-    limits.insert("daily_auth_limit".to_owned(), Value::from(2_500));
-    limits.insert("monthly_auth_limit".to_owned(), Value::from(50_000));
-    limits.insert("max_qps".to_owned(), Value::Null);
-    let plan = create_plan(&router, &suffix, limits).await;
+    let plan = create_plan(&router, &suffix, plan_limits(2, 2_500, Some(50_000), None)).await;
     let plan_id = plan["id"].as_i64().expect("archived plan id");
-
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/admin/plans/{plan_id}/archive"))
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .body(Body::empty())
-                .expect("archive plan request"),
-        )
-        .await
-        .expect("archive plan response");
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        archive_plan(&router, plan_id).await.status(),
+        StatusCode::NO_CONTENT
+    );
 
     let (status, error) = update_plan(&router, plan_id, &format!("archived-{suffix}"), true).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(error["code"], "archived_plan_default");
 
-    let _ = std::fs::remove_dir_all(key_directory);
+    env.cleanup();
 }
 
 #[tokio::test]
 #[serial]
 async fn updating_plan_code_conflict_returns_409_business_error() {
-    let (state, _database, key_directory) = test_state().await;
-    let router = api::router(state);
+    let env = test_state().await;
+    let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
 
-    let mut first_limits = serde_json::Map::new();
-    first_limits.insert("oauth_clients_limit".to_owned(), Value::from(2));
-    first_limits.insert("daily_auth_limit".to_owned(), Value::from(2_500));
-    first_limits.insert("monthly_auth_limit".to_owned(), Value::from(50_000));
-    first_limits.insert("max_qps".to_owned(), Value::Null);
-    let first = create_plan(&router, &format!("first-{suffix}"), first_limits).await;
-
-    let mut second_limits = serde_json::Map::new();
-    second_limits.insert("oauth_clients_limit".to_owned(), Value::from(2));
-    second_limits.insert("daily_auth_limit".to_owned(), Value::from(2_500));
-    second_limits.insert("monthly_auth_limit".to_owned(), Value::from(50_000));
-    second_limits.insert("max_qps".to_owned(), Value::Null);
-    let second = create_plan(&router, &format!("second-{suffix}"), second_limits).await;
+    let first = create_plan(
+        &router,
+        &format!("first-{suffix}"),
+        plan_limits(2, 2_500, Some(50_000), None),
+    )
+    .await;
+    let second = create_plan(
+        &router,
+        &format!("second-{suffix}"),
+        plan_limits(2, 2_500, Some(50_000), None),
+    )
+    .await;
 
     let first_code = first["code"].as_str().expect("first plan code");
     let second_id = second["id"].as_i64().expect("second plan id");
@@ -1056,27 +571,31 @@ async fn updating_plan_code_conflict_returns_409_business_error() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(error["code"], "plan_code_conflict");
 
-    let _ = std::fs::remove_dir_all(key_directory);
+    env.cleanup();
 }
 
+/// `plans_single_default_idx` + advisory lock 的不变式：并发把两个套餐设为默认，
+/// 最终 active 默认套餐**至多一个**（新语义下 0 也合法，两个才是 bug）。
 #[tokio::test]
 #[serial]
-async fn concurrent_default_updates_leave_one_active_default() {
-    let (state, _database, key_directory) = test_state().await;
-    let router = api::router(state);
+async fn concurrent_default_updates_leave_at_most_one_active_default() {
+    let env = test_state().await;
+    let router = env.router();
     let suffix = Uuid::new_v4().simple().to_string();
     bootstrap_owner(&router, &suffix).await;
 
-    let make_limits = || {
-        let mut limits = serde_json::Map::new();
-        limits.insert("oauth_clients_limit".to_owned(), Value::from(2));
-        limits.insert("daily_auth_limit".to_owned(), Value::from(2_500));
-        limits.insert("monthly_auth_limit".to_owned(), Value::from(50_000));
-        limits.insert("max_qps".to_owned(), Value::Null);
-        limits
-    };
-    let first = create_plan(&router, &format!("concurrent-a-{suffix}"), make_limits()).await;
-    let second = create_plan(&router, &format!("concurrent-b-{suffix}"), make_limits()).await;
+    let first = create_plan(
+        &router,
+        &format!("concurrent-a-{suffix}"),
+        plan_limits(2, 2_500, Some(50_000), None),
+    )
+    .await;
+    let second = create_plan(
+        &router,
+        &format!("concurrent-b-{suffix}"),
+        plan_limits(2, 2_500, Some(50_000), None),
+    )
+    .await;
     let first_id = first["id"].as_i64().expect("first concurrent plan id");
     let second_id = second["id"].as_i64().expect("second concurrent plan id");
 
@@ -1089,18 +608,7 @@ async fn concurrent_default_updates_leave_one_active_default() {
     assert_eq!(first_update.0, StatusCode::OK);
     assert_eq!(second_update.0, StatusCode::OK);
 
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/admin/plans")
-                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
-                .body(Body::empty())
-                .expect("list plans request"),
-        )
-        .await
-        .expect("list plans response");
-    let plans = json(response).await;
+    let plans = list_plans(&router).await;
     let defaults = plans
         .as_array()
         .expect("plans array")
@@ -1108,9 +616,385 @@ async fn concurrent_default_updates_leave_one_active_default() {
         .filter(|plan| plan["status"] == "active" && plan["is_default"] == true)
         .count();
     assert_eq!(defaults, 1);
+    assert_eq!(active_default_plan_count(&env.database).await, 1);
 
-    let (status, _) = update_plan(&router, 1, "basic", true).await;
+    // 收尾：把默认标记交回播种的套餐，验证新语义下这条路径依然通畅。
+    let (status, _) = update_plan(&router, env.default_plan_id, DEFAULT_PLAN_CODE, true).await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(active_default_plan_count(&env.database).await, 1);
 
-    let _ = std::fs::remove_dir_all(key_directory);
+    env.cleanup();
+}
+
+/// 没有任何套餐 → 自助接入闸门关闭。
+#[tokio::test]
+#[serial]
+async fn no_default_plan_refuses_new_client_creation() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
+
+    clear_all_plans(&env.database).await;
+    assert_eq!(active_default_plan_count(&env.database).await, 0);
+
+    let response = post_owned_client(&router, &cookie, &csrf, &suffix).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json(response).await["code"], "self_service_disabled");
+
+    env.cleanup();
+}
+
+/// 闸门只关新增：套餐清空后，既有用户 Client 的 authorize 和 token 兑换都要成功。
+#[tokio::test]
+#[serial]
+async fn no_default_plan_keeps_existing_user_clients_working() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
+
+    let client = create_owned_client(&router, &cookie, &csrf, &suffix).await;
+    let client_id = client["client_id"].as_str().expect("client id").to_owned();
+    let client_secret = client["client_secret"]
+        .as_str()
+        .expect("client secret")
+        .to_owned();
+
+    clear_all_plans(&env.database).await;
+    assert_eq!(active_default_plan_count(&env.database).await, 0);
+
+    let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let issued = issue_authorization_code_result(
+        &env.state,
+        user_id.to_string(),
+        validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier)),
+    )
+    .await
+    .expect("authorization must succeed without any plan");
+    let AuthorizationCodeIssue::Redirect(redirect) = issued else {
+        panic!("authorization without a plan must not be quota-limited");
+    };
+    let code = authorization_code_from_redirect(&redirect);
+
+    let (status, token) =
+        exchange_authorization_code(&router, &client_id, &client_secret, &code, verifier).await;
+    assert_eq!(status, StatusCode::OK, "token exchange: {token}");
+    assert!(token["access_token"].as_str().is_some());
+    assert!(token["refresh_token"].as_str().is_some());
+
+    env.cleanup();
+}
+
+/// 权益端点描述状态，「没有生效套餐」是状态而不是错误：200 + `plan: null`。
+#[tokio::test]
+#[serial]
+async fn entitlements_returns_empty_state_when_no_plan() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, _csrf) = user_session(&env.state, user_id).await;
+
+    clear_all_plans(&env.database).await;
+
+    let (status, body) = get_entitlements(&router, &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["plan"].is_null(), "plan must serialize as null");
+    assert_eq!(
+        body["entitlements"].as_array().expect("entitlements array"),
+        &Vec::<Value>::new()
+    );
+
+    env.cleanup();
+}
+
+/// 读路径不设闸门：没有套餐时照常列出既有 Client，配额上限留空、用量照报。
+#[tokio::test]
+#[serial]
+async fn listing_clients_without_plan_reports_null_limits() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
+
+    let client = create_owned_client(&router, &cookie, &csrf, &suffix).await;
+    let client_id = client["client_id"].as_str().expect("client id").to_owned();
+
+    clear_all_plans(&env.database).await;
+
+    let (status, clients) = list_owned_clients(&router, &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    let item = clients["items"]
+        .as_array()
+        .expect("client items")
+        .iter()
+        .find(|item| item["client_id"] == client_id.as_str())
+        .expect("existing client stays listed without a plan");
+    assert!(
+        item["quota"]["daily_limit"].is_null(),
+        "daily_limit must be null without a plan"
+    );
+    assert!(
+        item["quota"]["monthly_limit"].is_null(),
+        "monthly_limit must be null without a plan"
+    );
+    assert_eq!(item["quota"]["daily_used"], 0);
+    assert_eq!(item["quota"]["monthly_used"], 0);
+
+    env.cleanup();
+}
+
+/// 管理端创建的 Client（`owner_user_id IS NULL`）不参与套餐计量，
+/// 缺少默认套餐时 authorize / token 全程正常。
+#[tokio::test]
+#[serial]
+async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+
+    let client = create_admin_client(&router, &suffix).await;
+    let client_id = client["client_id"].as_str().expect("client id").to_owned();
+    let client_secret = client["client_secret"]
+        .as_str()
+        .expect("client secret")
+        .to_owned();
+    let owner: Option<i64> = chenxing_auth::sqlx::query_scalar(
+        "SELECT owner_user_id FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(&client_id)
+    .fetch_one(&env.database)
+    .await
+    .expect("admin client owner");
+    assert!(owner.is_none(), "admin client must not have an owner");
+
+    clear_all_plans(&env.database).await;
+
+    let verifier = "M25iVq8lYCr2Wl4nkPdz0oVYtIdYs1JRLmS3xN8sYAo";
+    let issued = issue_authorization_code_result(
+        &env.state,
+        user_id.to_string(),
+        validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier)),
+    )
+    .await
+    .expect("admin client authorization must succeed without any plan");
+    let AuthorizationCodeIssue::Redirect(redirect) = issued else {
+        panic!("admin client authorization must not be quota-limited");
+    };
+    let code = authorization_code_from_redirect(&redirect);
+    assert!(redirect.starts_with(REDIRECT_URI));
+
+    let (status, token) =
+        exchange_authorization_code(&router, &client_id, &client_secret, &code, verifier).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "admin client token exchange: {token}"
+    );
+    assert!(token["access_token"].as_str().is_some());
+
+    env.cleanup();
+}
+
+/// 没有默认套餐时管理员仍能分配套餐。
+/// 回归：`ensure_active_default` 曾让整个分配事务回滚。
+#[tokio::test]
+#[serial]
+async fn assigning_a_plan_works_without_a_default_plan() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
+
+    clear_all_plans(&env.database).await;
+    assert_eq!(active_default_plan_count(&env.database).await, 0);
+
+    let plan = create_plan(&router, &suffix, plan_limits(1, 7, Some(70), None)).await;
+    let plan_id = plan["id"].as_i64().expect("plan id");
+    assert_eq!(plan["is_default"], false);
+    assert_eq!(active_default_plan_count(&env.database).await, 0);
+
+    assert_eq!(
+        assign_plan(&router, user_id, plan_id, None).await,
+        StatusCode::NO_CONTENT,
+        "assigning a plan must not require an active default plan"
+    );
+
+    // 分配生效后该用户重新获得自助接入能力。
+    let created = create_owned_client(&router, &cookie, &csrf, &suffix).await;
+    assert_eq!(created["quota"]["daily_limit"], 7);
+    assert_eq!(created["quota"]["monthly_limit"], 70);
+
+    let (status, body) = get_entitlements(&router, &cookie).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["plan"]["code"], format!("plan-{suffix}"));
+
+    env.cleanup();
+}
+
+/// 无生效套餐时 `enforce_qps` 里的 `effective?.plan.max_qps?` early-return
+/// 路径的专项覆盖。
+///
+/// 这条路径与 `no_default_plan_keeps_existing_user_clients_working`（authorize 路径）
+/// 守同一条不变式，但在 **token 路径**上：「闸门只关新增，不打死既有集成」。
+/// 如果有人把那个 `?` 改成 `unwrap_or(0)` 或返回 503，authorize 那条测试抓不到，
+/// 这条测试会抓到。
+#[tokio::test]
+#[serial]
+async fn no_plan_skips_plan_qps_limiting_for_existing_clients() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
+
+    // Step 1: 创建 max_qps=1 的套餐并分配给用户。
+    let plan = create_plan(
+        &router,
+        &suffix,
+        plan_limits(1, 1_000, Some(10_000), Some(1)),
+    )
+    .await;
+    let plan_id = plan["id"].as_i64().expect("plan id");
+    assert_eq!(
+        assign_plan(&router, user_id, plan_id, None).await,
+        StatusCode::NO_CONTENT
+    );
+
+    // Step 2: 建一个 user client，记录凭据。
+    let client = create_owned_client(&router, &cookie, &csrf, &suffix).await;
+    let client_id = client["client_id"].as_str().expect("client id").to_owned();
+    let client_secret = client["client_secret"]
+        .as_str()
+        .expect("client secret")
+        .to_owned();
+    let basic_credentials = STANDARD.encode(format!("{client_id}:{client_secret}"));
+
+    let token_request = || {
+        Request::builder()
+            .method("POST")
+            .uri("/oauth/token")
+            .header("authorization", format!("Basic {basic_credentials}"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("grant_type=authorization_code"))
+            .expect("token request")
+    };
+
+    // Step 3: 先证明套餐下 QPS 闸门是生效的。
+    // 第一发：凭据正确、套餐 QPS 允许，进入业务校验 → 400 (code 缺失)。
+    // 第二发：滑动窗口 1s 内第二次 → 429。
+    // 这一步是关键：如果套餐 QPS 本来就不生效，第 5 步的「通过」就是假绿。
+    let first = router
+        .clone()
+        .oneshot(token_request())
+        .await
+        .expect("first token response");
+    assert_eq!(
+        first.status(),
+        StatusCode::BAD_REQUEST,
+        "first request under plan must reach business logic (400 = plan QPS allowed)"
+    );
+
+    let second = router
+        .clone()
+        .oneshot(token_request())
+        .await
+        .expect("second token response under plan");
+    assert_eq!(
+        second.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "second request within 1s must be rejected by plan QPS (429)"
+    );
+
+    // Step 4: 清空所有套餐，模拟「平台无生效套餐」场景。
+    clear_all_plans(&env.database).await;
+
+    // Step 5: 连打多发确认按套餐 QPS 已跳过，不再出现 429 或 503。
+    // 不 sleep：让第 3 步的窗口条目可能还活着，这样如果有人把 `?` 改成
+    // `unwrap_or(0)` 导致限流仍然生效，第一发就会 429 并立即失败（强突变检测）。
+    for i in 0..3_u32 {
+        let resp = router
+            .clone()
+            .oneshot(token_request())
+            .await
+            .expect("post-clear token response");
+        let status = resp.status();
+        assert_ne!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "request {i} after clearing plans must NOT be plan-QPS limited (429)"
+        );
+        assert_ne!(
+            status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "request {i} after clearing plans must NOT return 503"
+        );
+        // 应当仍然进入业务校验并因缺少 code 返回 400。
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "request {i} after clearing plans must reach business logic (400)"
+        );
+    }
+
+    // Step 6: 安全边界断言 —— 无套餐不等于全部限流失效。
+    // 按源 IP 的 QPS 滑动窗口（`enforce_source_qps`）独立于套餐，
+    // 清套餐后它必须仍然可以触发，防止有人误改成「无套餐 = 完全放行」。
+    //
+    // 用唯一 IP 的 ConnectInfo 通过 HTTP 路径真实调用 enforce_source_qps，
+    // 预先饱和窗口后发起 HTTP 请求，验证 token_inner 仍然调用 enforce_source_qps。
+    // 如果有人删掉了 enforce_source_qps 调用，此请求会进入业务逻辑返回 400，测试失败。
+    let last_octet = (suffix
+        .bytes()
+        .fold(0_u64, |acc, b| acc.wrapping_add(b as u64))
+        % 254)
+        + 1;
+    let fake_ip_str = format!("203.0.113.{last_octet}");
+    let fake_ip: IpAddr = fake_ip_str.parse().expect("valid test IP");
+
+    // 预先饱和该 IP 的源 QPS 窗口（默认限制 30）。
+    let source_qps_limit = env.state.config.security_limits.unauthenticated_source_qps;
+    for _ in 0..source_qps_limit {
+        env.state
+            .qps
+            .allow_source(&fake_ip_str, source_qps_limit)
+            .await
+            .expect("pre-saturate source window");
+    }
+
+    // 现在用该 IP 发起 HTTP 请求，handler 会调用 enforce_source_qps 发现窗口已满 → 429。
+    let saturated_request = Request::builder()
+        .method("POST")
+        .uri("/oauth/token")
+        .header("authorization", format!("Basic {basic_credentials}"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .extension(ConnectInfo(SocketAddr::new(fake_ip, 12345)))
+        .body(Body::from("grant_type=authorization_code"))
+        .expect("source-ip-saturated token request");
+
+    let source_limited = router
+        .clone()
+        .oneshot(saturated_request)
+        .await
+        .expect("source-limited response");
+    assert_eq!(
+        source_limited.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "enforce_source_qps must still trigger (429) after clearing plans"
+    );
+
+    env.cleanup();
 }

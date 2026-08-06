@@ -216,6 +216,26 @@ main {
 .chenxing-btn-primary:active { transform: translateY(0) scale(0.985); }
 .chenxing-btn-primary:disabled { opacity: 0.55; cursor: not-allowed; filter: saturate(0.6); }
 
+/* aria-disabled 而非 disabled：按钮保持可聚焦，屏幕阅读器能读到禁用原因（aria-describedby），
+   同时不响应点击。适用于「有明确原因、必须说明」的禁用，例如平台未开放自助接入。 */
+.chenxing-btn-primary[aria-disabled='true'],
+.chenxing-btn-ghost[aria-disabled='true'],
+.chenxing-btn-danger[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: saturate(0.6);
+  transform: none;
+  box-shadow: none;
+}
+.chenxing-btn-primary[aria-disabled='true']:hover,
+.chenxing-btn-ghost[aria-disabled='true']:hover,
+.chenxing-btn-danger[aria-disabled='true']:hover {
+  filter: saturate(0.6);
+  transform: none;
+  box-shadow: none;
+}
+.chenxing-btn-ghost[aria-disabled='true']:hover { background: rgba(255, 255, 255, 0.04); border-color: var(--chenxing-border); }
+
 .chenxing-btn-ghost {
   display: inline-flex;
   align-items: center;

@@ -15,11 +15,18 @@ use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
 
+// 迁移不再种子默认套餐：自助创建 Client 的用例必须自己给用户挂套餐。
+#[path = "support/plan_fixtures.rs"]
+mod plan_fixtures;
+
+/// `SharedPlanLock` 必须在整个测试期间存活，避免 `tests/plans.rs` 的
+/// `DELETE FROM plans` 删掉这里挂的私有套餐。
 async fn setup() -> (
     Router,
     AppState,
     chenxing_auth::sqlx::PgPool,
     std::path::PathBuf,
+    plan_fixtures::SharedPlanLock,
 ) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
@@ -31,6 +38,7 @@ async fn setup() -> (
         .await
         .expect("PostgreSQL");
     db::migrate(&database).await.expect("migrations");
+    let plan_lock = plan_fixtures::shared_plan_lock(&database_url).await;
     let key_directory =
         std::env::temp_dir().join(format!("chenxing-oauth-ui-retry-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
@@ -46,7 +54,13 @@ async fn setup() -> (
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let state = AppState::new(config).await.expect("state");
-    (api::router(state.clone()), state, database, key_directory)
+    (
+        api::router(state.clone()),
+        state,
+        database,
+        key_directory,
+        plan_lock,
+    )
 }
 
 async fn json(response: axum::response::Response) -> Value {
@@ -98,7 +112,7 @@ fn session_cookie(session: &Session) -> String {
 
 #[tokio::test]
 async fn oauth_ui_approval_failure_keeps_pending_request_for_retry() {
-    let (router, state, database, key_directory) = setup().await;
+    let (router, state, database, key_directory, _plan_lock) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let email = format!("oauth-ui-retry-{suffix}@example.com");
     let username = format!("oauth-ui-retry-{suffix}");
@@ -125,6 +139,13 @@ async fn oauth_ui_approval_failure_keeps_pending_request_for_retry() {
     let user_id = json(response).await["user"]["id"]
         .as_i64()
         .expect("user id");
+    // 自助创建 Client 需要生效套餐；迁移不再种子默认套餐，这里显式挂一个。
+    plan_fixtures::assign_private_plan(
+        &database,
+        user_id,
+        plan_fixtures::PlanLimits::legacy_default(),
+    )
+    .await;
     let mut session =
         Session::new(user_id.to_string(), std::time::Duration::from_secs(3600)).expect("session");
     state

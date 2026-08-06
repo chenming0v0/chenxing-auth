@@ -23,7 +23,7 @@ export function AdminPlans() {
   )
 }
 
-type EditorState = { mode: 'create' } | { mode: 'edit'; plan: AdminPlan } | null
+type EditorState = { mode: 'create'; asDefault?: boolean } | { mode: 'edit'; plan: AdminPlan } | null
 
 function PlansManager() {
   const [plans, setPlans] = useState<AdminPlan[] | null>(null)
@@ -40,7 +40,9 @@ function PlansManager() {
 
   async function changeStatus(plan: AdminPlan) {
     const operation = plan.status === 'active' ? 'archive' : 'restore'
-    if (operation === 'archive' && !window.confirm(`确认归档套餐「${plan.name}」吗？归档后不能再分配给用户，已挂载的 ${plan.assigned_users} 个用户将在到期或重新分配后回退默认套餐。`)) return
+    // 归档默认套餐会直接关闭全站自助接入，确认文案必须说明这个后果
+    const defaultWarning = plan.is_default ? '这是当前的默认套餐，归档后全站自助接入将关闭，用户无法自行创建 OAuth 应用。' : ''
+    if (operation === 'archive' && !window.confirm(`确认归档套餐「${plan.name}」吗？${defaultWarning}归档后不能再分配给用户，已挂载的 ${plan.assigned_users} 个用户将在到期或重新分配后回退默认套餐。`)) return
     setBusyId(plan.id)
     setError('')
     try {
@@ -54,7 +56,10 @@ function PlansManager() {
   }
 
   const activeCount = plans?.filter((plan) => plan.status === 'active').length ?? null
-  const defaultPlan = plans?.find((plan) => plan.is_default) ?? null
+  // 自助接入的开关就是「有没有一个 active 的默认套餐」：没有它，用户侧 plan 恒为 null
+  const defaultPlan = plans?.find((plan) => plan.is_default && plan.status === 'active') ?? null
+  const archivedDefault = plans?.find((plan) => plan.is_default && plan.status !== 'active') ?? null
+  const selfServiceClosed = plans !== null && defaultPlan === null
 
   return (
     <>
@@ -62,16 +67,51 @@ function PlansManager() {
         <StatCard label="套餐总数" icon="layers" value={plans ? String(plans.length) : '—'} caption="含已归档套餐" />
         <StatCard label="启用中" icon="check" value={activeCount === null ? '—' : String(activeCount)} caption="可分配给用户" />
         <StatCard label="已归档" icon="box" value={plans ? String(plans.length - (activeCount ?? 0)) : '—'} caption="仅保留历史记录" />
-        <StatCard label="默认套餐" icon="crown" value={defaultPlan?.code ?? '—'} caption={defaultPlan ? `${defaultPlan.name} · 未挂载用户的回退项` : '等待服务端数据'} mono />
+        <StatCard
+          label="默认套餐"
+          icon={selfServiceClosed ? 'lock-keyhole' : 'crown'}
+          value={defaultPlan ? defaultPlan.code : selfServiceClosed ? '未设置' : '—'}
+          caption={defaultPlan
+            ? `${defaultPlan.name} · 未挂载用户的回退项`
+            : selfServiceClosed ? '全站自助接入已关闭' : '正在读取套餐列表'}
+          mono={Boolean(defaultPlan)}
+          tone={selfServiceClosed ? 'attention' : 'normal'}
+        />
       </div>
 
       {error ? <div className="mt-5"><Notice tone="warning">{error}</Notice></div> : null}
+
+      {selfServiceClosed ? (
+        <HudPanel as="section" className="mt-5">
+          <div className="flex flex-wrap items-start justify-between gap-5">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[rgba(251,191,36,0.32)] bg-[rgba(251,191,36,0.08)] text-[var(--chenxing-warning)]">
+                <Icon name="lock-keyhole" size={18} />
+              </span>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="chenxing-h2">全站自助接入已关闭</h2>
+                  <Badge tone="warning"><Icon name="circle-alert" size={12} />无 active 默认套餐</Badge>
+                </div>
+                <p className="chenxing-caption mt-1.5">
+                  {archivedDefault
+                    ? `默认套餐「${archivedDefault.name}」已归档，系统当前没有启用中的默认套餐。`
+                    : '系统当前没有设为默认的启用套餐。'}
+                  未挂载套餐的用户在控制台看不到额度，也不能自助创建 OAuth 应用；接口会以 self_service_disabled 拒绝创建请求。
+                </p>
+                <p className="chenxing-caption mt-1.5">恢复方式：新建一个套餐并勾选「设为默认」，或把某个启用中的套餐设为默认，自助接入随即开放。</p>
+              </div>
+            </div>
+            <Button icon="crown" onClick={() => setEditor({ mode: 'create', asDefault: true })}>新建默认套餐</Button>
+          </div>
+        </HudPanel>
+      ) : null}
 
       <HudPanel className="mt-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="chenxing-h2">套餐矩阵</h2>
-            <p className="chenxing-caption mt-1">额度与并发限制实时生效于配额检查；默认套餐受服务端约束保护，不能归档或取消默认。</p>
+            <p className="chenxing-caption mt-1">额度与并发限制实时生效于配额检查；没有启用中的默认套餐时，全站自助接入处于关闭状态。</p>
           </div>
           <Button icon="plus" onClick={() => setEditor({ mode: 'create' })}>新建套餐</Button>
         </div>
@@ -117,11 +157,11 @@ function PlansManager() {
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex items-center gap-3">
                         <button type="button" className="chenxing-link" disabled={busyId === plan.id} onClick={() => setEditor({ mode: 'edit', plan })}>编辑</button>
+                        {/* 默认套餐不再受服务端保护：可以归档，也可以取消默认（代价是关闭自助接入） */}
                         <button
                           type="button"
                           className={`chenxing-link${archived ? '' : ' text-[var(--chenxing-error)]'}`}
-                          disabled={busyId === plan.id || (plan.is_default && !archived)}
-                          title={plan.is_default && !archived ? '默认套餐受保护，不能归档' : undefined}
+                          disabled={busyId === plan.id}
                           onClick={() => void changeStatus(plan)}
                         >
                           {archived ? '恢复' : '归档'}
@@ -146,6 +186,7 @@ function PlansManager() {
         <PlanEditorDrawer
           key={editor.mode === 'edit' ? editor.plan.id : 'create'}
           initial={editor.mode === 'edit' ? editor.plan : null}
+          defaultOn={editor.mode === 'create' && Boolean(editor.asDefault)}
           onSaved={() => { setEditor(null); reload() }}
           onCancel={() => setEditor(null)}
         />
@@ -154,11 +195,23 @@ function PlansManager() {
   )
 }
 
-function StatCard({ label, icon, value, caption, mono = false }: { label: string; icon: string; value: string; caption: string; mono?: boolean }) {
+/** tone='attention' 表示这张卡承载一个需要管理员处理的状态；图标与文案同时表达，不只改颜色。 */
+function StatCard({ label, icon, value, caption, mono = false, tone = 'normal' }: {
+  label: string
+  icon: string
+  value: string
+  caption: string
+  mono?: boolean
+  tone?: 'normal' | 'attention'
+}) {
+  const attention = tone === 'attention'
   return (
     <HudPanel>
-      <div className="flex items-center justify-between"><span className="chenxing-caption">{label}</span><Icon name={icon} className="text-[var(--chenxing-cyan)]" size={16} /></div>
-      <p className={`${mono ? 'chenxing-mono' : 'chenxing-display'} mt-3 truncate text-3xl font-bold`}>{value}</p>
+      <div className="flex items-center justify-between">
+        <span className="chenxing-caption">{label}</span>
+        <Icon name={icon} className={attention ? 'text-[var(--chenxing-warning)]' : 'text-[var(--chenxing-cyan)]'} size={16} />
+      </div>
+      <p className={`${mono ? 'chenxing-mono' : 'chenxing-display'} mt-3 truncate ${attention ? 'text-2xl text-[var(--chenxing-warning)]' : 'text-3xl'} font-bold`}>{value}</p>
       <p className="chenxing-mono mt-2 text-xs text-[var(--chenxing-muted-foreground)]">{caption}</p>
     </HudPanel>
   )
@@ -167,7 +220,13 @@ function StatCard({ label, icon, value, caption, mono = false }: { label: string
 const CODE_PATTERN = /^[a-z0-9_-]{1,64}$/
 
 /** 复用共享 Drawer 的右侧编辑抽屉，焦点管理与「接入应用」抽屉一致。 */
-function PlanEditorDrawer({ initial, onSaved, onCancel }: { initial: AdminPlan | null; onSaved: () => void; onCancel: () => void }) {
+function PlanEditorDrawer({ initial, defaultOn = false, onSaved, onCancel }: {
+  initial: AdminPlan | null
+  /** 从「新建默认套餐」入口进入时预勾选「设为默认」，一步恢复自助接入 */
+  defaultOn?: boolean
+  onSaved: () => void
+  onCancel: () => void
+}) {
   const [code, setCode] = useState(initial?.code ?? '')
   const [name, setName] = useState(initial?.name ?? '')
   const [description, setDescription] = useState(initial?.description ?? '')
@@ -175,11 +234,11 @@ function PlanEditorDrawer({ initial, onSaved, onCancel }: { initial: AdminPlan |
   const [dailyAuth, setDailyAuth] = useState(initial ? String(initial.daily_auth_limit) : '2500')
   const [monthlyAuth, setMonthlyAuth] = useState(initial?.monthly_auth_limit === null || !initial ? (initial ? '' : '50000') : String(initial.monthly_auth_limit))
   const [maxQps, setMaxQps] = useState(initial?.max_qps == null ? '' : String(initial.max_qps))
-  const [isDefault, setIsDefault] = useState(initial?.is_default ?? false)
+  const [isDefault, setIsDefault] = useState(initial?.is_default ?? defaultOn)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
-  // 服务端约束：active 的默认套餐不能取消默认；只能通过把另一个套餐设为默认来接替。
-  const defaultLocked = Boolean(initial?.is_default && initial.status === 'active')
+  // 取消唯一默认套餐会让全站自助接入关闭，这是允许的操作，但必须提前说清后果。
+  const clearingLastDefault = Boolean(initial?.is_default && initial.status === 'active' && !isDefault)
 
   function parseRequired(raw: string, label: string, minimum: number): number {
     const value = Number(raw.trim())
@@ -255,10 +314,11 @@ function PlanEditorDrawer({ initial, onSaved, onCancel }: { initial: AdminPlan |
         </div>
         <ToggleRow
           title="设为默认套餐"
-          description={defaultLocked ? '当前默认套餐受保护；要更换默认，请把另一个套餐设为默认来接替。' : '未挂载或套餐到期的用户将回退到默认套餐。设定后会替换现有默认。'}
+          description={clearingLastDefault
+            ? '取消后系统将没有启用中的默认套餐，全站自助接入会关闭；如需保留，请把另一个套餐设为默认。'
+            : '未挂载或套餐到期的用户将回退到默认套餐。设定后会替换现有默认，并开放自助接入。'}
           checked={isDefault}
           onChange={setIsDefault}
-          disabled={defaultLocked}
         />
       </HudPanel>
     </Drawer>

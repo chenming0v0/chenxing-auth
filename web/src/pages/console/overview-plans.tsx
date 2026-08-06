@@ -5,11 +5,16 @@ import { apiFetch, type AuthorizedOAuthApp, type OwnedOAuthClient, type SessionI
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Chip, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { formatDate, greeting } from '../../data'
-import { entitlementView, Meter, useEntitlements } from './shared'
+import {
+  entitlementState, entitlementView, Meter, SelfServiceClosedBlock,
+  SELF_SERVICE_CLOSED_BODY, SELF_SERVICE_CLOSED_KEPT, SELF_SERVICE_CLOSED_TITLE, useEntitlements,
+} from './shared'
 
 export function ConsoleOverview() {
   const { user } = useAuth()
-  const { data: entitlements, error: entitlementError, loading: entitlementLoading, retry } = useEntitlements()
+  const entitlementQuery = useEntitlements()
+  const { error: entitlementError, retry } = entitlementQuery
+  const plans = entitlementState(entitlementQuery)
   const [clients, setClients] = useState<OwnedOAuthClient[]>([])
   const [sessions, setSessions] = useState<SessionItem[]>([])
   const [apps, setApps] = useState<AuthorizedOAuthApp[]>([])
@@ -44,9 +49,14 @@ export function ConsoleOverview() {
           <h1 className="chenxing-h1 mt-2">{greeting()}，{name}</h1>
           <p className="chenxing-caption mt-1">天穹辰星 · 辰星通行证 · {new Date().toLocaleDateString('zh-CN')} · 你的星际身份状态一切正常</p>
         </div>
-        <Link to="/console/integrate" className="chenxing-btn-primary px-5 py-2.5 text-sm"><Icon name="plus" size={16} />接入新应用</Link>
+        {/* 未开放自助接入时不把用户推向一个不能提交的创建入口，只保留查看已接入应用 */}
+        <Link to="/console/integrate" className="chenxing-btn-primary px-5 py-2.5 text-sm">
+          <Icon name={plans.kind === 'closed' ? 'code-2' : 'plus'} size={16} />
+          {plans.kind === 'closed' ? '查看接入应用' : '接入新应用'}
+        </Link>
       </div>
 
+      {/* 只在真实加载失败时报警；plan 为 null 属于正常状态，不走这里 */}
       {(error || entitlementError) ? (
         <div className="mt-5"><Notice tone="warning">{error || entitlementError}<button className="chenxing-link ml-2" type="button" onClick={retry}>重试</button></Notice></div>
       ) : null}
@@ -68,9 +78,18 @@ export function ConsoleOverview() {
           <p className="chenxing-mono mt-2 text-xs text-[var(--chenxing-muted-foreground)]">服务端当前列表</p>
         </HudPanel>
         <HudPanel>
-          <div className="flex items-center justify-between"><span className="chenxing-caption">当前套餐</span><Icon name="crown" className="text-[var(--chenxing-cyan)]" size={16} /></div>
-          <p className="chenxing-display mt-3 text-3xl font-bold">{entitlementLoading ? '—' : entitlements?.plan.code || '—'}</p>
-          <p className="chenxing-mono mt-2 text-xs text-[var(--chenxing-muted-foreground)]">{entitlements?.plan.name || '等待服务端数据'}</p>
+          <div className="flex items-center justify-between">
+            <span className="chenxing-caption">当前套餐</span>
+            <Icon name={plans.kind === 'closed' ? 'lock-keyhole' : 'crown'} className={plans.kind === 'closed' ? 'text-[var(--chenxing-muted-foreground)]' : 'text-[var(--chenxing-cyan)]'} size={16} />
+          </div>
+          <p className={`mt-3 font-bold ${plans.kind === 'closed' ? 'chenxing-body text-2xl' : 'chenxing-display text-3xl'}`}>
+            {plans.kind === 'ready' ? plans.plan.code : plans.kind === 'closed' ? '未开放' : '—'}
+          </p>
+          <p className="chenxing-mono mt-2 text-xs text-[var(--chenxing-muted-foreground)]">
+            {plans.kind === 'ready' ? plans.plan.name
+              : plans.kind === 'closed' ? '平台未开放自助接入'
+              : plans.kind === 'loading' ? '正在读取套餐数据' : '套餐数据暂不可用'}
+          </p>
         </HudPanel>
       </div>
 
@@ -99,12 +118,19 @@ export function ConsoleOverview() {
         </HudPanel>
         <HudPanel>
           <div className="mb-4 flex items-center justify-between">
-            <div><h2 className="chenxing-h2">当前权益</h2><p className="chenxing-caption mt-1">{entitlements ? `${entitlements.plan.name} · ${entitlements.plan.validity === 'permanent' ? '永久有效' : formatDate(entitlements.plan.validity)}` : '服务端权益数据'}</p></div>
-            <Icon name="crown" className="text-[var(--chenxing-cyan)]" size={18} />
+            <div>
+              <h2 className="chenxing-h2">当前权益</h2>
+              <p className="chenxing-caption mt-1">
+                {plans.kind === 'ready' ? `${plans.plan.name} · ${plans.plan.validity === 'permanent' ? '永久有效' : formatDate(plans.plan.validity)}`
+                  : plans.kind === 'closed' ? '当前没有可用额度'
+                  : '服务端权益数据'}
+              </p>
+            </div>
+            <Icon name={plans.kind === 'closed' ? 'lock-keyhole' : 'crown'} className={plans.kind === 'closed' ? 'text-[var(--chenxing-muted-foreground)]' : 'text-[var(--chenxing-cyan)]'} size={18} />
           </div>
-          {entitlements ? (
+          {plans.kind === 'ready' ? (
             <div className="space-y-4">
-              {entitlements.entitlements.slice(0, 4).map((item) => {
+              {plans.data.entitlements.slice(0, 4).map((item) => {
                 const view = entitlementView(item)
                 return (
                   <div key={item.key}>
@@ -118,7 +144,11 @@ export function ConsoleOverview() {
               })}
               <Link className="chenxing-link inline-flex items-center gap-1.5" to="/console/plans">查看套餐权益 <Icon name="arrow-up-right" size={14} /></Link>
             </div>
-          ) : <Notice>{entitlementLoading ? '正在加载权益数据。' : '暂无权益数据。'}</Notice>}
+          ) : plans.kind === 'closed' ? (
+            <SelfServiceClosedBlock>
+              <Link className="chenxing-link inline-flex items-center gap-1.5" to="/console/plans">查看套餐与权益 <Icon name="arrow-up-right" size={14} /></Link>
+            </SelfServiceClosedBlock>
+          ) : <Notice>{plans.kind === 'loading' ? '正在加载权益数据。' : '权益数据暂不可用，可稍后重试。'}</Notice>}
         </HudPanel>
       </div>
 
@@ -157,13 +187,54 @@ export function ConsoleOverview() {
 }
 
 export function ConsolePlans() {
-  const { data, error, loading, retry } = useEntitlements()
+  const query = useEntitlements()
+  const { error, retry } = query
+  const plans = entitlementState(query)
   return (
     <ConsoleLayout>
-      <PageIntro eyebrow="// Subscription" title="套餐与权益" description="管理你的辰星通行证订阅与资源额度" />
+      <PageIntro
+        eyebrow="// Subscription"
+        title="套餐与权益"
+        description={plans.kind === 'closed' ? '平台尚未开放自助接入，当前没有可用的套餐额度' : '管理你的辰星通行证订阅与资源额度'}
+      />
       {error ? <div className="mb-4"><Notice tone="warning">{error}<button className="chenxing-link ml-2" type="button" onClick={retry}>重试</button></Notice></div> : null}
-      {loading ? <HudPanel><Notice>正在加载服务端权益数据。</Notice></HudPanel> : null}
-      {data ? (
+      {plans.kind === 'loading' ? <HudPanel><Notice>正在加载服务端权益数据。</Notice></HudPanel> : null}
+      {plans.kind === 'closed' ? (
+        <HudPanel className="p-6">
+          <div className="flex flex-wrap items-start justify-between gap-6">
+            <div className="min-w-0">
+              <div className="flex items-center gap-3">
+                <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border-strong)] bg-[var(--chenxing-muted)] text-[var(--chenxing-muted-foreground)]">
+                  <Icon name="lock-keyhole" size={20} />
+                </span>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="chenxing-h2">{SELF_SERVICE_CLOSED_TITLE}</span>
+                    <Chip>无可用套餐</Chip>
+                  </div>
+                  <p className="chenxing-caption mt-1">{SELF_SERVICE_CLOSED_BODY}</p>
+                </div>
+              </div>
+              <ul className="mt-5 space-y-2">
+                {[
+                  '当前账号没有套餐额度，页面不展示配额数字。',
+                  SELF_SERVICE_CLOSED_KEPT,
+                  '管理员为你分配套餐后，这里会显示对应的额度明细。',
+                ].map((line) => (
+                  <li key={line} className="chenxing-caption flex items-start gap-2">
+                    <Icon name="circle" className="mt-1 shrink-0 text-[var(--chenxing-muted-foreground)]" size={9} />
+                    <span>{line}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button variant="ghost" icon="refresh-cw" onClick={retry}>重新检查</Button>
+            </div>
+          </div>
+        </HudPanel>
+      ) : null}
+      {plans.kind === 'ready' ? (
         <>
           <HudPanel className="p-6">
             <div className="flex flex-wrap items-start justify-between gap-6">
@@ -172,17 +243,17 @@ export function ConsolePlans() {
                   <span className="chenxing-avatar h-11 w-11"><Icon name="crown" size={20} /></span>
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="chenxing-h2">{data.plan.name}</span>
+                      <span className="chenxing-h2">{plans.plan.name}</span>
                       <Chip>当前套餐</Chip>
                     </div>
-                    <p className="chenxing-caption mt-1">{data.plan.description || '你正在使用服务端返回的当前套餐。'}</p>
+                    <p className="chenxing-caption mt-1">{plans.plan.description || '你正在使用服务端返回的当前套餐。'}</p>
                   </div>
                 </div>
                 <div className="mt-5 flex flex-wrap items-baseline gap-x-6 gap-y-2">
-                  <span className="chenxing-display text-aurora text-3xl">{data.plan.code}</span>
+                  <span className="chenxing-display text-aurora text-3xl">{plans.plan.code}</span>
                   <span className="chenxing-caption flex items-center gap-1.5">
                     <Icon name="calendar-clock" className="text-[var(--chenxing-cyan)]" size={16} />
-                    {data.plan.validity === 'permanent' ? '永久有效' : `有效至 ${formatDate(data.plan.validity)}`}
+                    {plans.plan.validity === 'permanent' ? '永久有效' : `有效至 ${formatDate(plans.plan.validity)}`}
                   </span>
                 </div>
               </div>
@@ -194,7 +265,7 @@ export function ConsolePlans() {
           </HudPanel>
 
           <div className="mt-4 grid gap-4 sm:grid-cols-3">
-            {data.entitlements.map((item) => {
+            {plans.data.entitlements.map((item) => {
               const view = entitlementView(item)
               return (
                 <HudPanel key={item.key} className="p-5">
@@ -218,7 +289,7 @@ export function ConsolePlans() {
               <p className="chenxing-caption mt-1">额度与限制均来自服务端。升级动作需要产品侧提供对应流程。</p>
             </div>
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {data.entitlements.map((item) => {
+              {plans.data.entitlements.map((item) => {
                 const view = entitlementView(item)
                 return (
                   <HudPanel key={`detail-${item.key}`} className="p-5">

@@ -1,17 +1,10 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { Link } from '../../router'
+import { useEffect, useId, useState, type FormEvent } from 'react'
 import { apiFetch, type ClientInput, type OwnedOAuthClient, type RegisteredOwnedOAuthClient } from '../../api'
 import { Drawer } from '../../components/drawer'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, Chip, CopyValue, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, TextAreaField } from '../../components/ui'
-
-function splitValues(value: string): string[] {
-  return value.split(/[\n, ]+/).map((item) => item.trim()).filter(Boolean)
-}
-
-function formatQuota(client: OwnedOAuthClient): string {
-  return `今日 ${client.quota.daily_used}/${client.quota.daily_limit} · 本月 ${client.quota.monthly_used}/${client.quota.monthly_limit ?? '∞'}`
-}
+import { Button, CopyValue, EmptyState, Field, HudPanel, Icon, Notice, TextAreaField } from '../../components/ui'
+import { formatQuota, splitValues } from './developer-shared'
+import { entitlementState, SelfServiceClosedBlock, useEntitlements } from './shared'
 
 export function IntegratePage() {
   const [clients, setClients] = useState<OwnedOAuthClient[]>([])
@@ -23,6 +16,11 @@ export function IntegratePage() {
   const [name, setName] = useState('')
   const [redirectUris, setRedirectUris] = useState('')
   const [scopes, setScopes] = useState('openid profile')
+  const entitlements = useEntitlements()
+  const plans = entitlementState(entitlements)
+  // plan === null 是唯一判据：平台未开放自助接入，创建入口关闭，已有应用照常管理
+  const selfServiceClosed = plans.kind === 'closed'
+  const gateNoteId = useId()
 
   const load = () => {
     void apiFetch<{ items: OwnedOAuthClient[] }>('/api/v1/auth/oauth-clients')
@@ -32,6 +30,8 @@ export function IntegratePage() {
   useEffect(() => { load() }, [])
 
   function openCreate() {
+    // 兜底：入口已是 aria-disabled，这里再拦一次，避免任何路径把用户送去吃 403
+    if (selfServiceClosed) return
     setEditing(null)
     setName('')
     setRedirectUris('')
@@ -105,15 +105,39 @@ export function IntegratePage() {
         <div>
           <p className="chenxing-mono text-[11px] uppercase tracking-[0.28em] text-[var(--chenxing-cyan)]">// Developer</p>
           <h1 className="chenxing-h1 mt-2">接入应用</h1>
-          <p className="chenxing-caption mt-2">将「使用辰星通行证登录」接入你的应用，点击应用行查看配置与接入信息</p>
+          <p className="chenxing-caption mt-2">
+            {selfServiceClosed
+              ? '平台未开放自助接入，暂不能注册新应用；已有应用仍可查看与管理'
+              : '将「使用辰星通行证登录」接入你的应用，点击应用行查看配置与接入信息'}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <a href="#" className="chenxing-btn-ghost"><Icon name="book-open" size={16} />接入文档</a>
-          <Button icon="plus" onClick={openCreate}>注册新应用</Button>
+          {/* 禁用态用 aria-disabled 保留焦点，并用 aria-describedby 指向下方说明，
+              让键盘和读屏用户拿到「为什么不能点」的原因，而不是只看到按钮变淡 */}
+          <Button
+            icon={selfServiceClosed ? 'lock-keyhole' : 'plus'}
+            onClick={openCreate}
+            aria-disabled={selfServiceClosed || undefined}
+            aria-describedby={selfServiceClosed ? gateNoteId : undefined}
+          >
+            注册新应用
+          </Button>
         </div>
       </div>
 
+      {selfServiceClosed ? (
+        <HudPanel as="section" className="mt-5" aria-labelledby={gateNoteId}>
+          <SelfServiceClosedBlock>
+            <span id={gateNoteId} className="chenxing-caption">
+              「注册新应用」已停用：平台未开放自助接入，创建请求会被服务端拒绝。
+            </span>
+          </SelfServiceClosedBlock>
+        </HudPanel>
+      ) : null}
+
       {message ? <div className="mt-5"><Notice tone="warning">{message}</Notice></div> : null}
+      {entitlements.error ? <div className="mt-5"><Notice tone="warning">{entitlements.error}<button className="chenxing-link ml-2" type="button" onClick={entitlements.retry}>重试</button></Notice></div> : null}
       {secret ? (
         <HudPanel className="mt-5">
           <div className="mb-4 flex items-center justify-between gap-4">
@@ -169,7 +193,15 @@ export function IntegratePage() {
         ))}
         {!clients.length ? (
           <div className="mt-6">
-            <EmptyState icon="code-2" title="暂无 OAuth 项目" description="创建第一个项目后会显示在这里。" action={<Button className="mt-2" icon="plus" onClick={openCreate}>注册新应用</Button>} />
+            {selfServiceClosed ? (
+              <EmptyState
+                icon="lock-keyhole"
+                title="暂无 OAuth 应用"
+                description="平台未开放自助接入，当前不能自行创建应用。管理员为你分配套餐后即可在这里注册。"
+              />
+            ) : (
+              <EmptyState icon="code-2" title="暂无 OAuth 项目" description="创建第一个项目后会显示在这里。" action={<Button className="mt-2" icon="plus" onClick={openCreate}>注册新应用</Button>} />
+            )}
           </div>
         ) : null}
         <p className="chenxing-caption mt-4 flex items-center gap-2">

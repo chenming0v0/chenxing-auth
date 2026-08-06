@@ -3,8 +3,7 @@ use time::OffsetDateTime;
 
 use super::{
     domain::{
-        Plan, PlanMutationError, ValidatedPlanInput, validate_plan_archive,
-        validate_plan_assignment, validate_plan_restore, validate_plan_update,
+        Plan, PlanMutationError, ValidatedPlanInput, validate_plan_assignment, validate_plan_update,
     },
     service::EffectivePlan,
 };
@@ -20,8 +19,6 @@ pub enum PlanRepositoryError {
     Database(#[from] crate::sqlx::Error),
     #[error(transparent)]
     Mutation(#[from] PlanMutationError),
-    #[error("no active default plan is configured")]
-    NoDefaultPlan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,22 +212,6 @@ async fn count_assigned_users(
         .await
 }
 
-async fn ensure_active_default(
-    transaction: &mut Transaction<'_, Postgres>,
-) -> Result<(), PlanRepositoryError> {
-    let has_default: bool = crate::sqlx::query_scalar(
-        "SELECT EXISTS (
-             SELECT 1 FROM plans WHERE is_default = TRUE AND status = 'active'
-         )",
-    )
-    .fetch_one(&mut **transaction)
-    .await?;
-    if !has_default {
-        return Err(PlanRepositoryError::NoDefaultPlan);
-    }
-    Ok(())
-}
-
 pub async fn insert(
     pool: &PgPool,
     input: &ValidatedPlanInput,
@@ -259,7 +240,6 @@ pub async fn insert(
     .bind(input.is_default)
     .fetch_one(&mut *transaction)
     .await?;
-    ensure_active_default(&mut transaction).await?;
     transaction.commit().await?;
     Ok(row_to_plan(row))
 }
@@ -303,7 +283,6 @@ pub async fn update(
     .bind(input.is_default)
     .fetch_one(&mut *transaction)
     .await?;
-    ensure_active_default(&mut transaction).await?;
     // 更新成功后在同一事务中统计挂载用户数；避免提交后再查询时失败导致响应丢失更新结果
     let assigned_users = count_assigned_users(&mut transaction, id).await?;
     transaction.commit().await?;
@@ -313,24 +292,27 @@ pub async fn update(
     }))
 }
 
+/// 归档 / 恢复套餐。归档时同一条 UPDATE 顺手清掉默认标记：默认套餐必须是
+/// active（`plans_default_must_be_active`），而「系统没有默认套餐」是合法状态，
+/// 因此不需要为「被归档的正是默认套餐」单开分支。
+/// 仍然持有 advisory lock，避免与 `insert` / `update` 的 is_default 切换交错，
+/// 让唯一索引和 CHECK 约束不必依赖并发时序。
 pub async fn set_status(pool: &PgPool, id: i64, status: &str) -> Result<bool, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
     lock_default_plan_set(&mut transaction).await?;
-    let Some(current) = find_for_update(&mut transaction, id).await? else {
+    let result = crate::sqlx::query(
+        "UPDATE plans
+         SET status = $2, is_default = (is_default AND $2 = 'active'), updated_at = NOW()
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(status)
+    .execute(&mut *transaction)
+    .await?;
+    if result.rows_affected() != 1 {
         transaction.rollback().await?;
         return Ok(false);
-    };
-    if status == "archived" {
-        validate_plan_archive(&current)?;
-    } else {
-        validate_plan_restore(&current)?;
     }
-    crate::sqlx::query("UPDATE plans SET status = $2, updated_at = NOW() WHERE id = $1")
-        .bind(id)
-        .bind(status)
-        .execute(&mut *transaction)
-        .await?;
-    ensure_active_default(&mut transaction).await?;
     transaction.commit().await?;
     Ok(true)
 }
@@ -360,7 +342,6 @@ pub async fn assign_to_user(
         transaction.rollback().await?;
         return Ok(PlanAssignmentResult::UserNotFound);
     }
-    ensure_active_default(&mut transaction).await?;
     transaction.commit().await?;
     Ok(PlanAssignmentResult::Assigned)
 }

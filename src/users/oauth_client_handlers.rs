@@ -64,7 +64,8 @@ pub async fn list_owned_clients(State(state): State<AppState>, headers: HeaderMa
             return error::internal();
         }
     };
-    let quota_limits = effective.plan.auth_quota_limits();
+    // 读路径不设闸门：没有生效套餐时照常列出既有 Client，配额上限留空。
+    let quota_limits = effective.map(|effective| effective.plan.auth_quota_limits());
     let clients = match state.clients.list_for_user(context.user_id).await {
         Ok(clients) => clients,
         Err(error_value) => {
@@ -162,13 +163,21 @@ pub async fn create_owned_client(
         return mutation_error(&state, &headers).await;
     };
     let effective = match state.plans.effective_plan_for_user(context.user_id).await {
-        Ok(effective) => effective,
+        Ok(Some(effective)) => effective,
+        // 自助接入闸门：没有生效套餐时不允许新建 Client，但既有 Client 的
+        // 授权、令牌和列表路径不受影响。
+        Ok(None) => {
+            return error::forbidden(
+                "self_service_disabled",
+                "平台当前未开放自助接入，请联系管理员。",
+            );
+        }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load plan for OAuth client quota");
             return error::internal();
         }
     };
-    let quota_limits = effective.plan.auth_quota_limits();
+    let quota_limits = Some(effective.plan.auth_quota_limits());
     match state
         .clients
         .register_for_user(
@@ -307,7 +316,7 @@ pub async fn rotate_owned_client_secret(
 async fn add_quota(
     state: &AppState,
     clients: Vec<ClientSummary>,
-    quota_limits: crate::plans::domain::AuthQuotaLimits,
+    quota_limits: Option<crate::plans::domain::AuthQuotaLimits>,
 ) -> Result<Vec<OwnedClientResponse>, Response> {
     let mut items = Vec::with_capacity(clients.len());
     for client in clients {
@@ -332,7 +341,7 @@ async fn add_quota(
 async fn owned_registered_response(
     state: &AppState,
     client: RegisteredClientSecret,
-    quota_limits: crate::plans::domain::AuthQuotaLimits,
+    quota_limits: Option<crate::plans::domain::AuthQuotaLimits>,
 ) -> Result<RegisteredOwnedClientResponse, Response> {
     let quota = state
         .oauth_quotas

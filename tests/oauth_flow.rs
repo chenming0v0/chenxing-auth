@@ -25,6 +25,10 @@ use uuid::Uuid;
 #[path = "support/oauth_flow.rs"]
 mod support;
 
+// 迁移不再种子默认套餐，需要配额计量的用例必须自己播种（见 support/plan_fixtures.rs）。
+#[path = "support/plan_fixtures.rs"]
+mod plan_fixtures;
+
 use support::{
     create_test_client, disable_user, ensure_owner_bootstrapped, json_body, register_test_user,
     session_cookie, test_state,
@@ -294,7 +298,9 @@ async fn refresh_token_remains_reusable_when_access_token_issuance_fails() {
     .expect("save refresh token consent");
     let basic = STANDARD.encode(format!("{client_id}:{client_secret}"));
 
-    state.config.session_ttl_seconds = u64::MAX;
+    // u64::MAX 让 access token 的 `exp` 计算溢出，模拟签发失败（#112 起
+    // 令牌有效期与浏览器会话 TTL 解耦，必须改动 access_token_ttl_seconds）。
+    state.config.access_token_ttl_seconds = u64::MAX;
     let failing_router = api::router(state.clone());
     let response = failing_router
         .clone()
@@ -323,7 +329,7 @@ async fn refresh_token_remains_reusable_when_access_token_issuance_fails() {
         "failed token issuance must not consume the refresh token"
     );
 
-    state.config.session_ttl_seconds = 3600;
+    state.config.access_token_ttl_seconds = 3600;
     let retry_router = api::router(state.clone());
     let response = retry_router
         .clone()
@@ -446,7 +452,8 @@ async fn authorization_code_is_restored_when_token_issuance_fails() {
         .expect("save authorization code");
     let basic = STANDARD.encode(format!("{client_id}:{client_secret}"));
 
-    state.config.session_ttl_seconds = u64::MAX;
+    // 同上：溢出 access token 有效期以触发签发失败。
+    state.config.access_token_ttl_seconds = u64::MAX;
     let failing_router = api::router(state.clone());
     let response = failing_router
         .oneshot(
@@ -479,7 +486,7 @@ async fn authorization_code_is_restored_when_token_issuance_fails() {
         "token issuance failure must not leave an orphan refresh token"
     );
 
-    state.config.session_ttl_seconds = 3600;
+    state.config.access_token_ttl_seconds = 3600;
     let retry_router = api::router(state.clone());
     let response = retry_router
         .oneshot(
@@ -539,17 +546,32 @@ async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
         .await
         .expect("bind client owner");
 
+    // 计量只在存在生效套餐时发生，所以这个用例必须显式挂一个私有套餐；
+    // 否则「授权码写失败不烧配额」根本没有配额可烧，断言会退化成空转。
+    let _plan_lock =
+        plan_fixtures::shared_plan_lock(&std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned()
+        }))
+        .await;
+    plan_fixtures::assign_private_plan(
+        &database,
+        user_id,
+        plan_fixtures::PlanLimits::legacy_default(),
+    )
+    .await;
     let effective = state
         .plans
         .effective_plan_for_user(user_id)
         .await
-        .expect("effective plan");
-    let limits = effective.plan.auth_quota_limits();
+        .expect("effective plan")
+        .expect("the fixture plan must be the effective plan");
+    let limits = Some(effective.plan.auth_quota_limits());
     let before = state
         .oauth_quotas
         .snapshot(&client_id, limits)
         .await
         .expect("quota before failed authorization");
+    assert_eq!(before.daily_limit, Some(2_500));
 
     state.authorization_codes = AuthorizationCodeStore::new(
         redis::Client::open("redis://127.0.0.1:1").expect("invalid Redis endpoint is parseable"),

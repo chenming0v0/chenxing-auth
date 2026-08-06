@@ -29,6 +29,16 @@ export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
   }, [])
 
   const activePlans = plans?.filter((plan) => plan.status === 'active') ?? []
+  /* 「正在加载」和「确实没有可分配套餐」是两件事：
+     plans === null 才是未拿到列表；拿到空数组或全部归档时必须说清系统里没有可选项。 */
+  const listState = plans === null ? (error ? 'failed' : 'loading') : activePlans.length ? 'ready' : 'empty'
+  const selectPlaceholder = listState === 'ready' ? '选择套餐'
+    : listState === 'loading' ? '正在加载套餐…'
+    : listState === 'empty' ? '没有可分配的套餐'
+    : '套餐列表不可用'
+  const selectHint = listState === 'empty'
+    ? '系统里没有启用中的套餐。请先到「套餐管理」新建一个套餐，其中设为默认的套餐同时决定全站自助接入是否开放。'
+    : '只列出启用中的套餐，已归档套餐不能分配。'
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -61,7 +71,7 @@ export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
       footer={
         <>
           <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>取消</Button>
-          <Button type="submit" icon="crown" disabled={saving || !plans}>{saving ? '分配中…' : '分配套餐'}</Button>
+          <Button type="submit" icon="crown" disabled={saving || listState !== 'ready'}>{saving ? '分配中…' : '分配套餐'}</Button>
         </>
       }
     >
@@ -74,12 +84,13 @@ export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
           icon="crown"
           value={planId}
           onChange={setPlanId}
-          placeholder={plans ? '选择套餐' : '正在加载套餐…'}
+          disabled={listState !== 'ready'}
+          placeholder={selectPlaceholder}
           options={activePlans.map((plan) => ({
             value: String(plan.id),
             label: `${plan.name} · ${plan.code}${plan.is_default ? '（默认）' : ''}`,
           }))}
-          hint="只列出启用中的套餐，已归档套餐不能分配。"
+          hint={selectHint}
         />
         <Field
           label="到期时间（选填）"

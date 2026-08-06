@@ -56,8 +56,8 @@ const safeMessages = new Map<string, string>([
   ['invalid_plan', '套餐参数不正确，请检查输入。'],
   ['plan_not_found', '套餐不存在或已失效。'],
   ['plan_code_conflict', '套餐代码已被占用，请更换。'],
-  ['default_plan_protected', '默认套餐不能取消默认标记或归档。'],
   ['archived_plan_default', '已归档的套餐不能设为默认。'],
+  ['self_service_disabled', '平台当前未开放自助接入，请联系管理员。'],
   ['plan_archived', '已归档的套餐不能分配给用户。'],
   ['invalid_expiration', '到期时间格式不正确，请重新选择。'],
   ['oauth_provider_not_found', '该外部身份源不可用或已被停用。'],
@@ -166,13 +166,20 @@ export type EntitlementItem = {
   remaining?: number | null
 }
 
+export type EntitlementPlan = { code: string; name: string; description?: string | null; validity: string }
+
+/**
+ * plan 为 null 是合法状态，语义是「平台未开放自助接入」（系统里没有可回退的默认套餐）。
+ * 此时 entitlements 为空数组，前端以 plan === null 作为该状态的唯一判据，不另设状态字段。
+ */
 export type EntitlementsResponse = {
-  plan: { code: string; name: string; description?: string | null; validity: string }
+  plan: EntitlementPlan | null
   entitlements: EntitlementItem[]
 }
 
 export type QuotaSnapshot = {
-  daily_limit: number
+  /** null 表示没有每日上限概念（无套餐时服务端不给出数值） */
+  daily_limit: number | null
   daily_used: number
   monthly_limit: number | null
   monthly_used: number

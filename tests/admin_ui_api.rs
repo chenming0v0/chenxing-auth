@@ -18,6 +18,10 @@ use sha2::Digest;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+// 「默认套餐回退」用例需要一个 active 默认套餐；迁移不再种子它。
+#[path = "support/plan_fixtures.rs"]
+mod plan_fixtures;
+
 struct SharedDatabaseLock {
     _connection: PgConnection,
 }
@@ -471,6 +475,11 @@ async fn admin_user_and_client_queries_filter_and_page_in_the_database() {
 async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() {
     let (router, database, key_directory, _lock) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
+    // 未挂载 / 已过期的用户回退到 active 默认套餐。迁移不再自带默认套餐，
+    // 所以这里显式播种；`setup()` 已持有 `chenxing-shared-reset` 锁，
+    // 与 `tests/plans.rs` 的套餐重置互斥。
+    plan_fixtures::clear_all_plans(&database).await;
+    plan_fixtures::seed_default_plan(&database).await;
     let plan_code = format!("query-plan-{suffix}");
     let plan_name = format!("Query Plan {suffix}");
     let plan_id: i64 = chenxing_auth::sqlx::query_scalar(
@@ -542,7 +551,7 @@ async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() 
 
     let default_plan = &user(&default_username)["plan"];
     assert!(default_plan["id"].is_i64());
-    assert_eq!(default_plan["code"], "basic");
+    assert_eq!(default_plan["code"], plan_fixtures::DEFAULT_PLAN_CODE);
     assert!(default_plan["name"].is_string());
     assert_eq!(default_plan["expires_at"], Value::Null);
 
@@ -553,7 +562,7 @@ async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() 
     assert!(!assigned_plan["expires_at"].is_null());
 
     let expired_plan = &user(&expired_username)["plan"];
-    assert_eq!(expired_plan["code"], "basic");
+    assert_eq!(expired_plan["code"], plan_fixtures::DEFAULT_PLAN_CODE);
     assert_eq!(expired_plan["expires_at"], Value::Null);
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE username LIKE $1")

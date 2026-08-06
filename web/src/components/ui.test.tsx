@@ -1,7 +1,7 @@
 import { describe, expect, it, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import type { FormEvent } from 'react'
-import { HudPanel } from './ui'
+import { Button, HudPanel } from './ui'
 
 // 多个用例渲染相同文案，不清理会让 getByText 命中多个节点。
 afterEach(cleanup)
@@ -104,5 +104,25 @@ describe('HudPanel', () => {
     const panel = screen.getByText('侧边栏内容')
     expect(panel.tagName).toBe('ASIDE')
     expect(panel.className).toContain('chenxing-hud-panel')
+  })
+})
+
+describe('Button aria-disabled', () => {
+  it('keeps the button focusable and blocks the click handler', () => {
+    let clicks = 0
+    render(<Button aria-disabled onClick={() => { clicks += 1 }}>注册新应用</Button>)
+    const button = screen.getByRole('button', { name: '注册新应用' })
+    // 非 disabled：键盘和读屏能到达按钮，从而读到 aria-describedby 的禁用原因
+    expect(button.hasAttribute('disabled')).toBe(false)
+    expect(button.getAttribute('aria-disabled')).toBe('true')
+    button.click()
+    expect(clicks).toBe(0)
+  })
+
+  it('still fires onClick when not aria-disabled', () => {
+    let clicks = 0
+    render(<Button onClick={() => { clicks += 1 }}>注册新应用</Button>)
+    screen.getByRole('button', { name: '注册新应用' }).click()
+    expect(clicks).toBe(1)
   })
 })

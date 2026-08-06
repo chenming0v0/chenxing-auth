@@ -14,12 +14,14 @@ use crate::{error, state::AppState};
 /// 前端按顺序渲染卡片；后端新增权益项只需向数组追加元素。
 ///
 /// 序列化约定：
+/// - `plan: null` + `entitlements: []` → 没有生效套餐（平台未开放自助接入）。
+///   这是一种状态而不是错误，因此仍返回 200；
 /// - `limit` 为数字 → 有上限；
 /// - `limit: null` → 无限（前端显示 ∞，例如每月授权）；
 /// - 没有 `limit` 字段 → 只是个数值、无上限概念（例如 QPS）。
 #[derive(Debug, Serialize)]
 struct EntitlementsResponse {
-    plan: PlanSummary,
+    plan: Option<PlanSummary>,
     entitlements: Vec<EntitlementItem>,
 }
 
@@ -68,7 +70,18 @@ pub async fn current_entitlements(State(state): State<AppState>, headers: Header
         Err(response) => return response,
     };
     let effective = match state.plans.effective_plan_for_user(context.user_id).await {
-        Ok(effective) => effective,
+        Ok(Some(effective)) => effective,
+        // 本端点的职责是描述当前状态，「没有生效套餐」就是一种状态。
+        Ok(None) => {
+            return (
+                StatusCode::OK,
+                Json(EntitlementsResponse {
+                    plan: None,
+                    entitlements: Vec::new(),
+                }),
+            )
+                .into_response();
+        }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load plan for user entitlements");
             return error::internal();
@@ -91,7 +104,7 @@ pub async fn current_entitlements(State(state): State<AppState>, headers: Header
     for client in &clients {
         match state
             .oauth_quotas
-            .snapshot(&client.client_id, quota_limits)
+            .snapshot(&client.client_id, Some(quota_limits))
             .await
         {
             Ok(snapshot) => {
@@ -145,12 +158,12 @@ pub async fn current_entitlements(State(state): State<AppState>, headers: Header
     (
         StatusCode::OK,
         Json(EntitlementsResponse {
-            plan: PlanSummary {
+            plan: Some(PlanSummary {
                 code: plan.code,
                 name: plan.name,
                 description: plan.description,
                 validity: validity_string(effective.expires_at),
-            },
+            }),
             entitlements,
         }),
     )

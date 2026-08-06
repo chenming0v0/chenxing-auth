@@ -57,7 +57,9 @@ pub(crate) async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Res
             return Some(error::oauth_temporarily_unavailable());
         }
     };
-    let max_qps = effective.plan.max_qps?;
+    // 没有生效套餐（平台未开放自助接入）时跳过按套餐的 QPS 限制：闸门只关新增
+    // Client，已有集成不能因为系统缺套餐而被拒绝。每源 IP 限流仍然独立生效。
+    let max_qps = effective?.plan.max_qps?;
     match state.qps.allow(client_id, max_qps.max(1) as u32).await {
         Ok(true) => None,
         Ok(false) => {

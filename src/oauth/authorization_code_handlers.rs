@@ -97,15 +97,20 @@ pub async fn issue_authorization_code_result(
         return Err(error::oauth_temporarily_unavailable());
     }
 
-    let quota_consumed = if let Some(owner_user_id) = client.owner_user_id {
-        let effective = match state.plans.effective_plan_for_user(owner_user_id).await {
+    // 只有用户自助创建的 Client 计量配额；admin Client（owner_user_id 为空）
+    // 和「没有生效套餐」都直接跳过计量，不改变协议错误语义。
+    let owner_plan = match client.owner_user_id {
+        Some(owner_user_id) => match state.plans.effective_plan_for_user(owner_user_id).await {
             Ok(effective) => effective,
             Err(error_value) => {
                 tracing::error!(error = %error_value, "failed to load plan for OAuth authorization quota");
                 remove_authorization_code_after_failure(state, &code, &client_id, false).await;
                 return Err(error::oauth_temporarily_unavailable());
             }
-        };
+        },
+        None => None,
+    };
+    let quota_consumed = if let Some(effective) = owner_plan {
         let limits = effective.plan.auth_quota_limits();
         let consume_result = match state
             .oauth_quotas

@@ -12,6 +12,11 @@ use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
 
+// 迁移不再种子默认套餐：自助创建 Client 的用例必须自己给用户挂套餐，
+// 否则会被自助接入闸门拒绝（403 self_service_disabled）。
+#[path = "support/plan_fixtures.rs"]
+mod plan_fixtures;
+
 const TEST_ORIGIN: &str = "http://127.0.0.1:3000/";
 
 fn resolve_location(location: &str) -> Url {
@@ -21,7 +26,14 @@ fn resolve_location(location: &str) -> Url {
         .expect("valid redirect location")
 }
 
-async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
+/// 返回的 `SharedPlanLock` 必须在整个测试期间存活：它把 `plans` 表的写入与
+/// `tests/plans.rs` 的 `DELETE FROM plans` 串行化，避免这里挂的私有套餐被删掉。
+async fn setup() -> (
+    Router,
+    chenxing_auth::sqlx::PgPool,
+    std::path::PathBuf,
+    plan_fixtures::SharedPlanLock,
+) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -32,6 +44,7 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
         .await
         .expect("PostgreSQL");
     db::migrate(&database).await.expect("migrations");
+    let plan_lock = plan_fixtures::shared_plan_lock(&database_url).await;
     let key_directory = std::env::temp_dir().join(format!("chenxing-user-ui-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
@@ -49,6 +62,7 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
         api::router(AppState::new(config).await.expect("state")),
         database,
         key_directory,
+        plan_lock,
     )
 }
 
@@ -86,7 +100,24 @@ fn csrf(cookies: &str) -> &str {
         .expect("csrf cookie")
 }
 
-async fn register_and_login(router: &Router, suffix: &str) -> (String, String) {
+/// 注册 + 登录，并给该用户挂一个限额等于原迁移种子（2 / 2500 / 50000）的私有
+/// 套餐。原来这些断言依赖迁移自带的默认套餐，种子删除后必须显式声明前提。
+async fn register_and_login(
+    router: &Router,
+    database: &chenxing_auth::sqlx::PgPool,
+    suffix: &str,
+) -> (String, String) {
+    let credentials = register_and_login_without_plan(router, suffix).await;
+    plan_fixtures::assign_private_plan_by_username(
+        database,
+        &format!("ui-{suffix}"),
+        plan_fixtures::PlanLimits::legacy_default(),
+    )
+    .await;
+    credentials
+}
+
+async fn register_and_login_without_plan(router: &Router, suffix: &str) -> (String, String) {
     let email = format!("ui-{suffix}@example.com");
     let username = format!("ui-{suffix}");
     let password = "correct horse battery";
@@ -177,9 +208,9 @@ fn client_input(index: usize) -> String {
 
 #[tokio::test]
 async fn normal_user_can_create_only_two_owned_oauth_projects() {
-    let (router, database, key_directory) = setup().await;
+    let (router, database, key_directory, _plan_lock) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
-    let (cookies, csrf_token) = register_and_login(&router, &suffix).await;
+    let (cookies, csrf_token) = register_and_login(&router, &database, &suffix).await;
     for index in 0..2 {
         let response = router
             .clone()
@@ -281,9 +312,9 @@ async fn normal_user_can_create_only_two_owned_oauth_projects() {
 
 #[tokio::test]
 async fn normal_user_cannot_read_or_mutate_another_users_oauth_project() {
-    let (router, database, key_directory) = setup().await;
+    let (router, database, key_directory, _plan_lock) = setup().await;
     let owner_suffix = Uuid::new_v4().simple().to_string();
-    let (owner_cookies, owner_csrf) = register_and_login(&router, &owner_suffix).await;
+    let (owner_cookies, owner_csrf) = register_and_login(&router, &database, &owner_suffix).await;
     let response = router
         .clone()
         .oneshot(
@@ -304,7 +335,7 @@ async fn normal_user_cannot_read_or_mutate_another_users_oauth_project() {
         .to_owned();
 
     let other_suffix = Uuid::new_v4().simple().to_string();
-    let (other_cookies, other_csrf) = register_and_login(&router, &other_suffix).await;
+    let (other_cookies, other_csrf) = register_and_login(&router, &database, &other_suffix).await;
     let response = router
         .clone()
         .oneshot(
@@ -362,9 +393,9 @@ async fn normal_user_cannot_read_or_mutate_another_users_oauth_project() {
 
 #[tokio::test]
 async fn owned_client_mutations_require_user_csrf() {
-    let (router, database, key_directory) = setup().await;
+    let (router, database, key_directory, _plan_lock) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
-    let (cookies, _) = register_and_login(&router, &suffix).await;
+    let (cookies, _) = register_and_login(&router, &database, &suffix).await;
     let response = router
         .oneshot(
             Request::builder()
@@ -390,9 +421,9 @@ async fn owned_client_mutations_require_user_csrf() {
 
 #[tokio::test]
 async fn authorized_apps_are_user_scoped_and_consent_revoke_is_audited() {
-    let (router, database, key_directory) = setup().await;
+    let (router, database, key_directory, _plan_lock) = setup().await;
     let owner_suffix = Uuid::new_v4().simple().to_string();
-    let (owner_cookies, owner_csrf) = register_and_login(&router, &owner_suffix).await;
+    let (owner_cookies, owner_csrf) = register_and_login(&router, &database, &owner_suffix).await;
     let response = router
         .clone()
         .oneshot(
@@ -420,7 +451,7 @@ async fn authorized_apps_are_user_scoped_and_consent_revoke_is_audited() {
         .to_owned();
 
     let other_suffix = Uuid::new_v4().simple().to_string();
-    let (other_cookies, _) = register_and_login(&router, &other_suffix).await;
+    let (other_cookies, _) = register_and_login(&router, &database, &other_suffix).await;
     let owner_id: i64 =
         chenxing_auth::sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
             .bind(format!("ui-{owner_suffix}"))
@@ -607,9 +638,9 @@ async fn authorized_apps_are_user_scoped_and_consent_revoke_is_audited() {
 
 #[tokio::test]
 async fn owned_oauth_authorization_consumes_daily_and_monthly_quota() {
-    let (router, database, key_directory) = setup().await;
+    let (router, database, key_directory, _plan_lock) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
-    let (cookies, csrf_token) = register_and_login(&router, &suffix).await;
+    let (cookies, csrf_token) = register_and_login(&router, &database, &suffix).await;
     let response = router
         .clone()
         .oneshot(
@@ -713,10 +744,10 @@ async fn owned_oauth_authorization_consumes_daily_and_monthly_quota() {
 
 #[tokio::test]
 async fn disabled_user_cannot_use_an_existing_browser_session() {
-    let (router, database, key_directory) = setup().await;
+    let (router, database, key_directory, _plan_lock) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let email = format!("ui-{suffix}@example.com");
-    let (cookies, _) = register_and_login(&router, &suffix).await;
+    let (cookies, _) = register_and_login(&router, &database, &suffix).await;
     let (user_id,) =
         chenxing_auth::sqlx::query_as::<_, (i64,)>("SELECT id FROM users WHERE email = $1")
             .bind(&email)
