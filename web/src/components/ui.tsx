@@ -1,4 +1,4 @@
-import { createElement, useState } from 'react'
+import { createElement, useId, useState } from 'react'
 import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
 import {
   Activity, AlertTriangle, ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Box, CalendarClock, Check, ChevronDown,
@@ -164,25 +164,51 @@ export function FieldShell({ icon, trailing, error, children }: { icon?: string;
   )
 }
 
-type FieldProps = InputHTMLAttributes<HTMLInputElement> & { label: string; icon?: string; hint?: string; error?: boolean; trailing?: ReactNode }
+type FieldProps = InputHTMLAttributes<HTMLInputElement> & {
+  label: string
+  icon?: string
+  hint?: string
+  error?: boolean
+  /** 校验失败文案。传入即视为 error 状态，并接管 aria-invalid / aria-describedby。 */
+  errorText?: string
+  trailing?: ReactNode
+}
 
-export function Field({ label, icon, hint, error, trailing, className = '', ...props }: FieldProps) {
+export function Field({ label, icon, hint, error, errorText, trailing, className = '', ...props }: FieldProps) {
+  const autoId = useId()
+  const inputId = props.id ?? autoId
+  const messageId = `${inputId}-message`
+  const invalid = Boolean(errorText) || error
+  /* label 与 input 用 htmlFor 显式关联，提示和校验文案留在 label 之外：
+     包在 label 里会被算进无障碍名称，控件会被读成「用户名 3-64 个字符…」，
+     再经 aria-describedby 重复一遍。名称只留标签，说明走 describedby。
+     依据 WCAG 2.1 SC 3.3.2（标签或说明）与 SC 3.3.1（错误标识）。 */
+  const describedBy = [props['aria-describedby'], errorText || hint ? messageId : undefined]
+    .filter(Boolean).join(' ') || undefined
+  const inputProps = { ...props, id: inputId, 'aria-describedby': describedBy, 'aria-invalid': invalid || undefined }
   return (
-    <label className="block">
-      <span className="chenxing-label">{label}</span>
+    <div>
+      <label className="chenxing-label" htmlFor={inputId}>{label}</label>
       {icon || trailing ? (
-        <FieldShell icon={icon} trailing={trailing} error={error}>
-          <input className={className} {...props} />
+        <FieldShell icon={icon} trailing={trailing} error={invalid}>
+          <input className={className} {...inputProps} />
         </FieldShell>
       ) : (
-        <input className={`chenxing-field ${error ? 'chenxing-field-error' : ''} ${className}`} {...props} />
+        <input className={`chenxing-field ${invalid ? 'chenxing-field-error' : ''} ${className}`} {...inputProps} />
       )}
-      {hint ? <small className="chenxing-caption mt-1.5 block">{hint}</small> : null}
-    </label>
+      {errorText ? (
+        <small className="chenxing-field-message" id={messageId}>
+          <Icon name="circle-alert" size={13} className="shrink-0" />
+          {errorText}
+        </small>
+      ) : hint ? (
+        <small className="chenxing-caption mt-1.5 block" id={messageId}>{hint}</small>
+      ) : null}
+    </div>
   )
 }
 
-export function PasswordField({ label, icon, hint, error, className = '', ...props }: Omit<FieldProps, 'type' | 'trailing'>) {
+export function PasswordField({ label, icon, hint, error, errorText, className = '', ...props }: Omit<FieldProps, 'type' | 'trailing'>) {
   const [visible, setVisible] = useState(false)
   return (
     <Field
@@ -190,6 +216,7 @@ export function PasswordField({ label, icon, hint, error, className = '', ...pro
       icon={icon}
       hint={hint}
       error={error}
+      errorText={errorText}
       className={className}
       {...props}
       type={visible ? 'text' : 'password'}
@@ -210,12 +237,17 @@ export function PasswordField({ label, icon, hint, error, className = '', ...pro
 type TextAreaFieldProps = TextareaHTMLAttributes<HTMLTextAreaElement> & { label: string; hint?: string }
 
 export function TextAreaField({ label, hint, className = '', ...props }: TextAreaFieldProps) {
+  const autoId = useId()
+  const inputId = props.id ?? autoId
+  const messageId = `${inputId}-message`
+  // 与 Field 同一套关联方式：提示不进无障碍名称，只作为 describedby 说明。
+  const describedBy = [props['aria-describedby'], hint ? messageId : undefined].filter(Boolean).join(' ') || undefined
   return (
-    <label className="block">
-      <span className="chenxing-label">{label}</span>
-      <textarea className={`chenxing-field min-h-28 resize-y ${className}`} {...props} />
-      {hint ? <small className="chenxing-caption mt-1.5 block">{hint}</small> : null}
-    </label>
+    <div>
+      <label className="chenxing-label" htmlFor={inputId}>{label}</label>
+      <textarea className={`chenxing-field min-h-28 resize-y ${className}`} {...props} id={inputId} aria-describedby={describedBy} />
+      {hint ? <small className="chenxing-caption mt-1.5 block" id={messageId}>{hint}</small> : null}
+    </div>
   )
 }
 

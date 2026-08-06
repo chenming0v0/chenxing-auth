@@ -9,6 +9,7 @@ import { Select, type SelectOption } from '../../components/select'
 import { formatDate, initialOf } from '../../data'
 import { AdminGate, useAdminAccess, type AdminAccess } from './shared'
 import { AssignPlanForm } from './plan-assign'
+import { UserCreateDrawer } from './user-create-drawer'
 
 const ROLE_OPTIONS: SelectOption[] = [
   { value: 'user', label: '普通用户' },
@@ -44,6 +45,8 @@ function UsersTable({ access }: { access: AdminAccess }) {
   const [busy, setBusy] = useState<number | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [assignTarget, setAssignTarget] = useState<number | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [created, setCreated] = useState<PublicUser | null>(null)
   const pageSize = 20
 
   useEffect(() => {
@@ -54,6 +57,8 @@ function UsersTable({ access }: { access: AdminAccess }) {
   }, [location.search])
 
   const updateQuery = (nextPage = page) => {
+    // 换页或改查询条件后，建号成功提示指向的行可能已不在当前结果里，先收掉。
+    setCreated(null)
     const next = new URLSearchParams()
     if (search) next.set('search', search)
     if (status) next.set('status', status)
@@ -110,8 +115,13 @@ function UsersTable({ access }: { access: AdminAccess }) {
   return (
     <HudPanel>
       {error ? <div className="mb-4"><Notice tone="warning">{error}</Notice></div> : null}
+      {created ? (
+        <div className="mb-4">
+          <Notice tone="success">已创建用户 {created.username}（{created.email}），请把初始密码通过安全渠道转交本人。</Notice>
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Button icon="user-plus" disabled title="创建用户接口尚未接入前端">添加用户</Button>
+        <Button icon="user-plus" onClick={() => { setCreated(null); setCreateOpen(true) }}>添加用户</Button>
         <div className="flex flex-wrap items-center gap-3">
           <div className="chenxing-field-shell w-full sm:w-72">
             <Icon name="search" className="chenxing-field-icon h-4 w-4" size={16} />
@@ -216,6 +226,17 @@ function UsersTable({ access }: { access: AdminAccess }) {
         <span className="chenxing-caption">第 {page} / {totalPages} 页 · 共 {result?.total ?? '—'} 条</span>
         <Button variant="ghost" disabled={page >= totalPages} onClick={() => updateQuery(page + 1)}>下一页</Button>
       </div>
+      {createOpen ? (
+        <UserCreateDrawer
+          canManageRoles={Boolean(access.data?.permissions.includes('manage_roles'))}
+          onClose={() => setCreateOpen(false)}
+          onCreated={(user) => {
+            setCreated(user)
+            setCreateOpen(false)
+            setRefreshKey((value) => value + 1)
+          }}
+        />
+      ) : null}
     </HudPanel>
   )
 }

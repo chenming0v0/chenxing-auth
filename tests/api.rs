@@ -155,6 +155,69 @@ async fn registration_endpoint_rejects_invalid_email_without_database_call() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+/// POST 到管理侧用户创建端点必须落到处理器上。
+///
+/// 404/405 会说明路由没注册或只挂了 GET；401 才说明请求进了守卫（Issue #133）。
+#[tokio::test]
+async fn admin_user_creation_endpoint_rejects_unauthenticated_requests() {
+    let response = test_router()
+        .await
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery"}"#,
+                ))
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// 角色与状态词表在守卫之前解析，因此非法值不需要数据库即可拒绝。
+#[tokio::test]
+async fn admin_user_creation_rejects_unknown_role_and_status_without_database_call() {
+    for (body, code) in [
+        (
+            r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery","role":"superuser"}"#,
+            "invalid_role",
+        ),
+        (
+            r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery","status":"deleted"}"#,
+            "invalid_status",
+        ),
+        // 大小写变体同样不在词表内，避免 handler 悄悄接受 "ACTIVE"。
+        (
+            r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery","status":"ACTIVE"}"#,
+            "invalid_status",
+        ),
+    ] {
+        let response = test_router()
+            .await
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/admin/users")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("valid request"),
+            )
+            .await
+            .expect("response from router");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{code}");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let error: serde_json::Value = serde_json::from_slice(&body).expect("JSON error");
+        assert_eq!(error["code"], code);
+    }
+}
+
 #[tokio::test]
 async fn login_endpoint_rejects_invalid_identifier_without_database_call() {
     let response = test_router()

@@ -10,7 +10,7 @@
 
 use crate::sqlx::PgPool;
 
-use crate::users::domain::{UserId, UserRole};
+use crate::users::domain::{UserId, UserRole, UserStatus};
 
 /// 角色变更的业务结果。
 ///
@@ -93,7 +93,10 @@ pub async fn set_user_status_guarded(
     id: UserId,
     status: &str,
 ) -> Result<Option<&'static str>, crate::sqlx::Error> {
-    if !matches!(status, "active" | "disabled") {
+    // 状态词表只有 `UserStatus` 一个来源：这里曾经内联 `matches!(status, "active" | "disabled")`，
+    // 与领域枚举和数据库 CHECK 约束构成第三份副本。返回语义保持不变——
+    // 非法状态仍然按"未找到"处理（调用方翻成 400 user_not_found）。
+    if UserStatus::parse(status).is_none() {
         return Ok(None);
     }
     let mut transaction = pool.begin().await?;

@@ -1,14 +1,15 @@
 //! Owner 引导与受 Owner 前提约束的用户创建。
 //!
-//! 三个函数都检查 Owner 是否已存在，逻辑集中在这一层：
+//! 两个函数都检查 Owner 是否已存在，逻辑集中在这一层：
 //! - `bootstrap_owner`：不存在时创建首个 Owner，否则拒绝。
-//! - `insert_user_after_owner`：已存在时允许注册，否则拒绝（公开注册前提）。
-//! - `insert_user_with_role`：已存在时允许特权用户创建，否则拒绝（管理接口前提）。
+//! - `insert_user_after_owner`：已存在时按 `UserCreation` 的角色与状态创建，
+//!   否则拒绝。公开注册、管理侧创建和特权用户创建共用它，差异只在传入的
+//!   (role, status)，不再各自维护一份带 Owner 前提的插入 SQL。
 
 use crate::sqlx::{PgPool, Postgres};
 use time::OffsetDateTime;
 
-use crate::users::domain::{UserId, UserRole, ValidatedRegistration};
+use crate::users::domain::{UserCreation, UserId};
 
 use super::{NewUser, UserProfile};
 
@@ -40,9 +41,14 @@ where
         .await
 }
 
+/// 在 Owner 已存在的前提下创建用户。
+///
+/// 返回 `Ok(None)` 表示尚未完成 Owner 引导：advisory lock 与引导事务用同一个
+/// key，因此"判定 Owner 存在"与"插入新用户"之间不存在竞态窗口，
+/// 引导中途不会有用户被插进一个还没有 Owner 的库。
 pub async fn insert_user_after_owner(
     pool: &PgPool,
-    registration: ValidatedRegistration,
+    creation: UserCreation,
     password_hash: String,
 ) -> Result<Option<NewUser>, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
@@ -54,19 +60,26 @@ pub async fn insert_user_after_owner(
         return Ok(None);
     }
 
+    let UserCreation {
+        registration,
+        role,
+        status,
+    } = creation;
     let username = registration.username;
     let email = registration.email;
     let display_name = registration.display_name;
     let created_at = OffsetDateTime::now_utc();
     let id: UserId = crate::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, display_name, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'active', $5, $5)
+        "INSERT INTO users (username, email, password_hash, display_name, role, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
          RETURNING id",
     )
     .bind(&username)
     .bind(&email)
     .bind(&password_hash)
     .bind(&display_name)
+    .bind(role.as_str())
+    .bind(status.as_str())
     .bind(created_at)
     .fetch_one(&mut *transaction)
     .await?;
@@ -78,6 +91,8 @@ pub async fn insert_user_after_owner(
         email,
         password_hash,
         display_name,
+        role,
+        status,
         created_at,
     }))
 }
@@ -128,33 +143,4 @@ pub enum BootstrapOwnerOutcome {
     Created(UserProfile),
     AlreadyConfigured,
     RequiresEmptyDatabase,
-}
-
-pub async fn insert_user_with_role(
-    pool: &PgPool,
-    username: &str,
-    email: &str,
-    password_hash: &str,
-    role: UserRole,
-) -> Result<Option<UserId>, crate::sqlx::Error> {
-    let mut transaction = pool.begin().await?;
-    crate::sqlx::query("SELECT pg_advisory_xact_lock(7341928)")
-        .execute(&mut *transaction)
-        .await?;
-    if !owner_exists(&mut *transaction).await? {
-        transaction.rollback().await?;
-        return Ok(None);
-    }
-    let id: UserId = crate::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, role, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'active', NOW(), NOW()) RETURNING id",
-    )
-    .bind(username)
-    .bind(email)
-    .bind(password_hash)
-    .bind(role.as_str())
-    .fetch_one(&mut *transaction)
-    .await?;
-    transaction.commit().await?;
-    Ok(Some(id))
 }

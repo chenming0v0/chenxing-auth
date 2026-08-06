@@ -743,6 +743,38 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin Users]
+      summary: 创建用户
+      description: |
+        管理员创建任意角色和初始状态的用户，是 POST /api/v1/admin/admins 的一般化。
+        响应只包含公开用户字段，永不返回口令、口令哈希或任何凭据材料。
+
+        权限：`manage_users` 为基线；`role` 为 admin 或 owner 时所需权限抬升为 `manage_roles`。
+        浏览器 Session 写操作必须同时携带 HttpOnly Session Cookie、CSRF Cookie 和 X-CSRF-Token。
+
+        错误码：
+        - 400：invalid_role、invalid_status、invalid_username、invalid_email、password_too_short、password_too_long、display_name_too_long、email_domain_not_allowed、csrf_invalid
+        - 403：admin_forbidden
+        - 409：username_already_registered、email_already_registered、owner_bootstrap_required
+      operationId: createUser
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateUserInput' }
+      responses:
+        '201':
+          description: 创建成功，返回公开用户字段（不含凭据材料）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicUser' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/admin/users/{user_id}/{status}:
     post:
       tags: [Admin Users]
@@ -1412,8 +1444,16 @@ components:
       properties:
         username: { type: string, minLength: 3, maxLength: 64 }
         email: { type: string, format: email }
-        password: { type: string, format: password, minLength: 10 }
+        password: { type: string, format: password, minLength: 10, maxLength: 128 }
         display_name: { type: string, nullable: true, maxLength: 128 }
+    CreateUserInput:
+      description: 管理侧创建用户输入。基础字段与注册一致，额外允许指定角色和初始状态。
+      allOf:
+        - $ref: '#/components/schemas/RegistrationInput'
+        - type: object
+          properties:
+            role: { type: string, enum: [user, admin, owner], default: user, description: 缺省为 user；指定 admin 或 owner 时额外要求 manage_roles 权限 }
+            status: { type: string, enum: [active, disabled], default: active }
     LoginInput:
       type: object
       required: [identifier, password]

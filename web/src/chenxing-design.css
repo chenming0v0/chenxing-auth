@@ -336,6 +336,19 @@ main {
   pointer-events: none;
 }
 
+/* 字段级校验文案：与 .chenxing-caption 同字号，靠颜色和图标区分，
+   不加背景块，避免表单里出现一排抢眼的警告条。 */
+.chenxing-field-message {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--chenxing-error);
+  margin-top: 0.375rem;
+}
+
 .chenxing-label {
   display: block;
   font-family: var(--chenxing-font-mono);

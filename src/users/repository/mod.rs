@@ -11,7 +11,7 @@
 
 use time::OffsetDateTime;
 
-use super::domain::{UserId, UserRole};
+use super::domain::{UserId, UserRole, UserStatus};
 
 mod lookup;
 mod owner_bootstrap;
@@ -23,14 +23,17 @@ pub use lookup::{
     find_profile_by_id, list_users,
 };
 pub use owner_bootstrap::{
-    BootstrapOwnerOutcome, bootstrap_owner, insert_user_after_owner, insert_user_with_role,
-    owner_exists,
+    BootstrapOwnerOutcome, bootstrap_owner, insert_user_after_owner, owner_exists,
 };
 pub use role_guard::{SetRoleOutcome, set_user_role, set_user_status, set_user_status_guarded};
 pub use write::{
     change_password_and_revoke_all, insert_user, insert_user_in_transaction, update_display_name,
 };
 
+/// 刚写入的用户行。
+///
+/// `role` 与 `status` 是插入时实际落库的值而不是调用方的猜测：服务层据此构造
+/// `PublicUser`，不再在响应里重复写一遍 `"active"` / `UserRole::User` 字面量。
 #[derive(Debug)]
 pub struct NewUser {
     pub id: UserId,
@@ -38,6 +41,8 @@ pub struct NewUser {
     pub email: String,
     pub password_hash: String,
     pub display_name: Option<String>,
+    pub role: UserRole,
+    pub status: UserStatus,
     pub created_at: OffsetDateTime,
 }
 

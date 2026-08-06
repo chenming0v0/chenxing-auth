@@ -14,6 +14,35 @@ pub enum UserRole {
     Owner,
 }
 
+/// 账号状态词表。
+///
+/// 与 `UserRole` 对齐：状态字符串此前散落在 SQL 字面量、`matches!(status, ...)`
+/// 守卫和 handler 参数里，任何一处漂移都不会被编译器发现，只能靠数据库的
+/// `users_status_check` 在运行期兜住。收成枚举后，词表只有这一个来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserStatus {
+    Active,
+    Disabled,
+}
+
+impl UserStatus {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UserPermission {
     ManageUsers,
@@ -102,6 +131,19 @@ pub struct ValidatedRegistration {
     pub email: String,
     pub password: String,
     pub display_name: Option<String>,
+}
+
+/// 一次用户创建的完整意图。
+///
+/// 公开注册、管理侧创建和特权用户创建三条路径只在 (role, status) 上有差异，
+/// 把它们和已校验的注册信息绑在一起，仓储层就只需要一个插入函数，
+/// 调用方也不再在 SQL 里硬编码 `'active'` 或 `UserRole::User`。
+/// 明文口令不属于本结构的职责：调用方在哈希前 take 走 `registration.password`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserCreation {
+    pub registration: ValidatedRegistration,
+    pub role: UserRole,
+    pub status: UserStatus,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

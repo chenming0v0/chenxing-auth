@@ -6,12 +6,15 @@ use axum::{
 };
 use serde::Deserialize;
 
-use super::{authorization::current_admin_mutation, domain::AdminPermission};
+use super::{
+    authorization::current_admin_mutation, domain::AdminPermission,
+    user_creation::user_creation_error_response,
+};
 use crate::{
     audit::AuditEvent,
     error,
     state::AppState,
-    users::domain::{RegistrationError, RegistrationInput, UserRole},
+    users::domain::{RegistrationInput, UserRole},
 };
 
 #[derive(Debug, Deserialize)]
@@ -87,46 +90,9 @@ pub async fn bootstrap_admin(
             "owner_bootstrap_requires_empty_database",
             "owner bootstrap requires an empty users table; clear the database before retrying",
         ),
-        Err(crate::users::service::UserServiceError::Validation(
-            RegistrationError::InvalidEmail,
-        )) => error::bad_request("invalid_email", "email is invalid"),
-        Err(crate::users::service::UserServiceError::Validation(
-            RegistrationError::InvalidUsername,
-        )) => error::bad_request("invalid_username", "username is invalid"),
-        Err(crate::users::service::UserServiceError::Validation(
-            RegistrationError::PasswordTooShort,
-        )) => error::bad_request("password_too_short", "password is too short"),
-        // #122：超长口令是客户端输入问题，必须落到 400，不能被兜底分支翻成 500。
-        Err(crate::users::service::UserServiceError::Validation(
-            RegistrationError::PasswordTooLong,
-        )) => error::bad_request("password_too_long", "password must be at most 128 characters"),
-        Err(crate::users::service::UserServiceError::OwnerBootstrapRequired) => error::conflict(
-            "owner_bootstrap_required",
-            "owner bootstrap must be completed before creating privileged users",
-        ),
-        Err(crate::users::service::UserServiceError::Database(error_value))
-            if error_value
-                .as_database_error()
-                .and_then(|e| e.constraint())
-                .is_some_and(|name| name == "users_username_key") =>
-        {
-            error::conflict(
-                "username_already_registered",
-                "username is already registered",
-            )
-        }
-        Err(crate::users::service::UserServiceError::Database(error_value))
-            if error_value
-                .as_database_error()
-                .and_then(|e| e.constraint())
-                .is_some_and(|name| name == "users_email_key") =>
-        {
-            error::conflict("email_already_registered", "email is already registered")
-        }
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to bootstrap owner");
-            error::internal()
-        }
+        // 引导专属的两个冲突（already_completed / requires_empty_database）是
+        // `BootstrapOwnerResult` 的成功分支，留在上面；其余失败与另外两个创建端点同构。
+        Err(error_value) => user_creation_error_response(error_value),
     }
 }
 
@@ -177,40 +143,6 @@ pub async fn create_admin(
             )
                 .into_response()
         }
-        Err(crate::users::service::UserServiceError::Validation(
-            RegistrationError::InvalidEmail,
-        )) => error::bad_request("invalid_email", "email is invalid"),
-        Err(crate::users::service::UserServiceError::Validation(
-            RegistrationError::InvalidUsername,
-        )) => error::bad_request("invalid_username", "username is invalid"),
-        Err(crate::users::service::UserServiceError::Validation(
-            RegistrationError::PasswordTooShort,
-        )) => error::bad_request("password_too_short", "password is too short"),
-        Err(crate::users::service::UserServiceError::Validation(
-            RegistrationError::PasswordTooLong,
-        )) => error::bad_request("password_too_long", "password must be at most 128 characters"),
-        Err(crate::users::service::UserServiceError::Database(error_value))
-            if error_value
-                .as_database_error()
-                .and_then(|e| e.constraint())
-                .is_some_and(|name| name == "users_username_key") =>
-        {
-            error::conflict(
-                "username_already_registered",
-                "username is already registered",
-            )
-        }
-        Err(crate::users::service::UserServiceError::Database(error_value))
-            if error_value
-                .as_database_error()
-                .and_then(|e| e.constraint())
-                .is_some_and(|name| name == "users_email_key") =>
-        {
-            error::conflict("email_already_registered", "email is already registered")
-        }
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to create privileged user");
-            error::internal()
-        }
+        Err(error_value) => user_creation_error_response(error_value),
     }
 }

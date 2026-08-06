@@ -34,6 +34,7 @@ use crate::{
         update_smtp_setting,
     },
     admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
+    admin::user_creation::create_user,
     admin::web_handlers::{
         audit_page, clients_page, dashboard, login_page, login_submit, users_page,
     },
@@ -123,7 +124,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/admin/bootstrap", post(bootstrap_admin))
         .route("/api/v1/admin/admins", get(list_admins).post(create_admin))
         .route("/api/v1/admin/auth/me", get(admin_me))
-        .route("/api/v1/admin/users", get(list_users))
+        .route("/api/v1/admin/users", get(list_users).post(create_user))
         .route(
             "/api/v1/admin/users/{user_id}/{status}",
             post(set_user_status),

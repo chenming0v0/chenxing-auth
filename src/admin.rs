@@ -14,6 +14,7 @@ pub mod provider_handlers;
 pub mod provider_web_handlers;
 pub mod settings_handlers;
 pub mod ui_handlers;
+pub mod user_creation;
 pub mod web_handlers;
 
 /// ADMIN_TOKEN 验证器。

@@ -6,7 +6,7 @@
 use crate::sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 
-use crate::users::domain::{UserId, ValidatedRegistration};
+use crate::users::domain::{UserId, UserRole, UserStatus, ValidatedRegistration};
 
 use super::NewUser;
 
@@ -32,12 +32,16 @@ pub async fn insert_user(
     .fetch_one(pool)
     .await?;
 
+    // 该 SQL 不写 role 列并硬编码 status='active'，返回值必须与落库结果一致，
+    // 否则调用方读到的 (role, status) 会与数据库分叉。
     Ok(NewUser {
         id,
         username,
         email,
         password_hash,
         display_name,
+        role: UserRole::User,
+        status: UserStatus::Active,
         created_at,
     })
 }

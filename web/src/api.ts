@@ -40,6 +40,13 @@ const safeMessages = new Map<string, string>([
   ['email_domain_not_allowed', '当前邮箱域名不允许注册。'],
   ['passkey_disabled', 'Passkey 登录尚未启用。'],
   ['username_already_registered', '注册信息无法使用，请检查后重试。'],
+  ['invalid_username', '用户名格式不正确，请检查长度和字符。'],
+  ['invalid_email', '邮箱格式不正确，请检查输入。'],
+  ['password_too_short', '密码长度不足，请设置更长的密码。'],
+  ['password_too_long', '密码超出长度上限，请缩短后重试。'],
+  ['display_name_too_long', '显示名称超出长度上限，请缩短后重试。'],
+  ['invalid_role', '角色参数不正确，请重新选择。'],
+  ['invalid_status', '状态参数不正确，请重新选择。'],
   ['oauth_client_quota_exceeded', '当前套餐的 OAuth 应用额度已用尽。'],
   ['oauth_quota_exceeded', '当前 OAuth 授权额度已用尽。'],
   ['authorization_request_expired', '授权请求已过期，请重新发起。'],
@@ -202,6 +209,15 @@ export type AdminMeResponse = {
 }
 export type AdminOverview = { users: number; oauth_clients: number; administrators: number; audit_events: number }
 export type PublicUser = Omit<UserMe, 'current_session_expires_at'> & { created_at: string }
+/** 管理端建号入参；display_name 留空时传 null，role / status 省略时由服务端取默认值。 */
+export type AdminCreateUserInput = {
+  username: string
+  email: string
+  password: string
+  display_name: string | null
+  role: UserRole
+  status: 'active' | 'disabled'
+}
 export type Paged<T> = { items: T[]; page: number; page_size: number; total: number }
 export type ClientSummary = ClientInput & {
   id?: number

@@ -16,7 +16,7 @@ use chenxing_auth::{
     sessions::{domain::Session, store::SessionStore},
     users::{
         credentials::hash_password,
-        domain::ValidatedRegistration,
+        domain::{UserRole, UserStatus, ValidatedRegistration},
         repository::{self as user_repository, NewUser},
     },
 };
@@ -155,6 +155,8 @@ async fn postgres_transaction_user_insert_and_missing_client_paths_work() {
         email: format!("transaction-{}@example.com", Uuid::new_v4().simple()),
         password_hash: "hash".to_owned(),
         display_name: None,
+        role: UserRole::User,
+        status: UserStatus::Active,
         created_at: OffsetDateTime::now_utc(),
     };
     let mut transaction = pool.begin().await.expect("begin transaction");
