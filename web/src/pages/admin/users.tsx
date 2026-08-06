@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from '../../router'
 import {
   apiFetch, type Paged, type PublicUser,
@@ -8,7 +8,8 @@ import { Badge, Button, EmptyState, HudPanel, Icon, Notice, PageIntro } from '..
 import { Select, type SelectOption } from '../../components/select'
 import { formatDate, initialOf } from '../../data'
 import { AdminGate, useAdminAccess, type AdminAccess } from './shared'
-import { AssignPlanForm } from './plan-assign'
+import { AssignPlanDrawer } from './plan-assign'
+import { CreateUserDrawer } from './user-create'
 
 const ROLE_OPTIONS: SelectOption[] = [
   { value: 'user', label: '普通用户' },
@@ -44,6 +45,7 @@ function UsersTable({ access }: { access: AdminAccess }) {
   const [busy, setBusy] = useState<number | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [assignTarget, setAssignTarget] = useState<number | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
   const pageSize = 20
 
   useEffect(() => {
@@ -107,116 +109,121 @@ function UsersTable({ access }: { access: AdminAccess }) {
 
   const totalPages = result ? Math.max(1, Math.ceil(result.total / result.page_size)) : 1
 
-  return (
-    <HudPanel>
-      {error ? <div className="mb-4"><Notice tone="warning">{error}</Notice></div> : null}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <Button icon="user-plus" disabled title="创建用户接口尚未接入前端">添加用户</Button>
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="chenxing-field-shell w-full sm:w-72">
-            <Icon name="search" className="chenxing-field-icon h-4 w-4" size={16} />
-            <input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') updateQuery(1) }} placeholder="搜索用户 ID / 用户名 / 邮箱" />
-          </div>
-          <div className="chenxing-field-shell w-36">
-            <Icon name="activity" className="chenxing-field-icon h-4 w-4" size={16} />
-            <Select value={status} onChange={setStatus} options={STATUS_FILTER_OPTIONS} />
-          </div>
-          <Button variant="ghost" icon="search" onClick={() => updateQuery(1)}>查询</Button>
-          <Button variant="ghost" icon="rotate-ccw" onClick={() => { setSearch(''); setStatus(''); navigate('/admin/users?page=1') }}>重置</Button>
-        </div>
-      </div>
+  const assignUser = assignTarget !== null ? result?.items.find((u) => u.id === assignTarget) : undefined
 
-      <div className="mt-5 overflow-x-auto rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)]">
-        <table className="w-full min-w-[1080px] text-left">
-          <thead>
-            <tr className="border-b border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)]">
-              <th className="chenxing-label px-4 py-3">ID</th>
-              <th className="chenxing-label px-4 py-3">用户名</th>
-              <th className="chenxing-label px-4 py-3">状态</th>
-              <th className="chenxing-label px-4 py-3">角色</th>
-              <th className="chenxing-label px-4 py-3">套餐</th>
-              <th className="chenxing-label px-4 py-3">创建时间</th>
-              <th className="chenxing-label px-4 py-3 text-right">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {result?.items.map((user) => (
-              <Fragment key={user.id}>
-                <tr className="border-t border-[var(--chenxing-border)]">
-                <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{user.id}</td>
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <span className="chenxing-avatar h-9 w-9 text-sm">{initialOf(user.display_name || user.username)}</span>
-                    <div>
-                      <p className="chenxing-body text-sm font-semibold">{user.display_name || user.username}</p>
-                      <p className="chenxing-caption text-xs">{user.email}</p>
+  return (
+    <>
+      <HudPanel>
+        {error ? <div className="mb-4"><Notice tone="warning">{error}</Notice></div> : null}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Button icon="user-plus" onClick={() => setCreateOpen(true)}>添加用户</Button>
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="chenxing-field-shell w-full sm:w-72">
+              <Icon name="search" className="chenxing-field-icon h-4 w-4" size={16} />
+              <input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') updateQuery(1) }} placeholder="搜索用户 ID / 用户名 / 邮箱" />
+            </div>
+            <div className="chenxing-field-shell w-36">
+              <Icon name="activity" className="chenxing-field-icon h-4 w-4" size={16} />
+              <Select value={status} onChange={setStatus} options={STATUS_FILTER_OPTIONS} />
+            </div>
+            <Button variant="ghost" icon="search" onClick={() => updateQuery(1)}>查询</Button>
+            <Button variant="ghost" icon="rotate-ccw" onClick={() => { setSearch(''); setStatus(''); navigate('/admin/users?page=1') }}>重置</Button>
+          </div>
+        </div>
+
+        <div className="mt-5 overflow-x-auto rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)]">
+          <table className="w-full min-w-[1080px] text-left">
+            <thead>
+              <tr className="border-b border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)]">
+                <th className="chenxing-label px-4 py-3">ID</th>
+                <th className="chenxing-label px-4 py-3">用户名</th>
+                <th className="chenxing-label px-4 py-3">状态</th>
+                <th className="chenxing-label px-4 py-3">角色</th>
+                <th className="chenxing-label px-4 py-3">套餐</th>
+                <th className="chenxing-label px-4 py-3">创建时间</th>
+                <th className="chenxing-label px-4 py-3 text-right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {result?.items.map((user) => (
+                <tr key={user.id} className="border-t border-[var(--chenxing-border)]">
+                  <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{user.id}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <span className="chenxing-avatar h-9 w-9 text-sm">{initialOf(user.display_name || user.username)}</span>
+                      <div>
+                        <p className="chenxing-body text-sm font-semibold">{user.display_name || user.username}</p>
+                        <p className="chenxing-caption text-xs">{user.email}</p>
+                      </div>
                     </div>
-                  </div>
-                </td>
-                <td className="px-4 py-3">
-                  <Badge tone={user.status === 'active' ? 'success' : 'warning'}>
-                    <Icon name={user.status === 'active' ? 'check' : 'circle-alert'} size={12} />
-                    {user.status === 'active' ? '已启用' : user.status}
-                  </Badge>
-                </td>
-                <td className="px-4 py-3">
-                  <Select
-                    className="!text-sm"
-                    value={user.role}
-                    disabled={!access.data?.permissions.includes('manage_roles') || busy === user.id}
-                    onChange={(role) => void setRole(user, role)}
-                    options={ROLE_OPTIONS}
-                    aria-label="用户角色"
-                  />
-                </td>
-                <td className="px-4 py-3">
-                  <button
-                    type="button"
-                    className="chenxing-link inline-flex items-center gap-1.5"
-                    disabled={!access.data?.permissions.includes('manage_settings')}
-                    title={access.data?.permissions.includes('manage_settings') ? undefined : '套餐分配需要 manage_settings 权限'}
-                    onClick={() => setAssignTarget(assignTarget === user.id ? null : user.id)}
-                  >
-                    <Icon name="crown" size={13} />
-                    {assignTarget === user.id ? '收起' : '分配套餐'}
-                  </button>
-                </td>
-                <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(user.created_at)}</td>
-                <td className="px-4 py-3 text-right">
-                  <button
-                    type="button"
-                    className={`chenxing-link${user.status === 'active' ? ' text-[var(--chenxing-error)]' : ''}`}
-                    disabled={!access.data?.permissions.includes('manage_users') || busy === user.id}
-                    onClick={() => void setUserStatus(user)}
-                  >
-                    {user.status === 'active' ? '禁用' : '启用'}
-                  </button>
-                </td>
+                  </td>
+                  <td className="px-4 py-3">
+                    <Badge tone={user.status === 'active' ? 'success' : 'warning'}>
+                      <Icon name={user.status === 'active' ? 'check' : 'circle-alert'} size={12} />
+                      {user.status === 'active' ? '已启用' : user.status}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-3">
+                    <Select
+                      className="!text-sm"
+                      value={user.role}
+                      disabled={!access.data?.permissions.includes('manage_roles') || busy === user.id}
+                      onChange={(role) => void setRole(user, role)}
+                      options={ROLE_OPTIONS}
+                      aria-label="用户角色"
+                    />
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      className="chenxing-link inline-flex items-center gap-1.5"
+                      disabled={!access.data?.permissions.includes('manage_settings')}
+                      title={access.data?.permissions.includes('manage_settings') ? undefined : '套餐分配需要 manage_settings 权限'}
+                      onClick={() => setAssignTarget(user.id)}
+                    >
+                      <Icon name="crown" size={13} />
+                      分配套餐
+                    </button>
+                  </td>
+                  <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(user.created_at)}</td>
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      type="button"
+                      className={`chenxing-link${user.status === 'active' ? ' text-[var(--chenxing-error)]' : ''}`}
+                      disabled={!access.data?.permissions.includes('manage_users') || busy === user.id}
+                      onClick={() => void setUserStatus(user)}
+                    >
+                      {user.status === 'active' ? '禁用' : '启用'}
+                    </button>
+                  </td>
                 </tr>
-                {assignTarget === user.id ? (
-                  <tr className="border-t border-[var(--chenxing-border)]">
-                    <td colSpan={7} className="px-4 py-4">
-                      <AssignPlanForm
-                        userId={user.id}
-                        userName={user.display_name || user.username}
-                        onAssigned={() => setRefreshKey((value) => value + 1)}
-                        onClose={() => setAssignTarget(null)}
-                      />
-                    </td>
-                  </tr>
-                ) : null}
-              </Fragment>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {!result?.items.length ? <div className="mt-6"><EmptyState icon="users" title={result ? '没有匹配用户' : '正在加载用户'} /></div> : null}
-      <div className="mt-5 flex items-center justify-between gap-3">
-        <Button variant="ghost" disabled={page <= 1} onClick={() => updateQuery(page - 1)}>上一页</Button>
-        <span className="chenxing-caption">第 {page} / {totalPages} 页 · 共 {result?.total ?? '—'} 条</span>
-        <Button variant="ghost" disabled={page >= totalPages} onClick={() => updateQuery(page + 1)}>下一页</Button>
-      </div>
-    </HudPanel>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {!result?.items.length ? <div className="mt-6"><EmptyState icon="users" title={result ? '没有匹配用户' : '正在加载用户'} /></div> : null}
+        <div className="mt-5 flex items-center justify-between gap-3">
+          <Button variant="ghost" disabled={page <= 1} onClick={() => updateQuery(page - 1)}>上一页</Button>
+          <span className="chenxing-caption">第 {page} / {totalPages} 页 · 共 {result?.total ?? '—'} 条</span>
+          <Button variant="ghost" disabled={page >= totalPages} onClick={() => updateQuery(page + 1)}>下一页</Button>
+        </div>
+      </HudPanel>
+
+      {createOpen ? (
+        <CreateUserDrawer
+          onCreated={() => setRefreshKey((v) => v + 1)}
+          onClose={() => setCreateOpen(false)}
+        />
+      ) : null}
+      {assignTarget !== null && assignUser ? (
+        <AssignPlanDrawer
+          userId={assignTarget}
+          userName={assignUser.display_name || assignUser.username}
+          onAssigned={() => setRefreshKey((v) => v + 1)}
+          onClose={() => setAssignTarget(null)}
+        />
+      ) : null}
+    </>
   )
 }
 
