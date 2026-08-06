@@ -41,6 +41,27 @@ async fn test_router() -> (Router, std::path::PathBuf) {
     )
 }
 
+async fn test_router_no_db() -> (Router, std::path::PathBuf) {
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let key_directory = std::env::temp_dir().join(format!("chenxing-oauth-nodb-{}", Uuid::new_v4()));
+    let mut config = Config::from_values_with_issuer(
+        "127.0.0.1".to_owned(),
+        3000,
+        "http://127.0.0.1:3000".to_owned(),
+        "postgres://127.0.0.1:9999/nonexistent".to_owned(),
+        redis_url,
+        3600,
+    )
+    .expect("config");
+    config.cookie_secure = false;
+    config.key_directory = key_directory.to_string_lossy().into_owned();
+    (
+        api::router(AppState::new(config).await.expect("state")),
+        key_directory,
+    )
+}
+
 async fn oauth_error_body(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(
         &to_bytes(response.into_body(), usize::MAX)
@@ -88,7 +109,7 @@ async fn token_endpoint_rejects_unsupported_grant_type_without_caching() {
 
 #[tokio::test]
 async fn authorization_endpoint_reports_temporary_unavailability_without_database() {
-    let (router, key_directory) = test_router().await;
+    let (router, key_directory) = test_router_no_db().await;
     let response = router
         .oneshot(
             Request::builder()
@@ -111,7 +132,7 @@ async fn authorization_endpoint_reports_temporary_unavailability_without_databas
 
 #[tokio::test]
 async fn browser_authorization_reports_temporary_unavailability_without_database() {
-    let (router, key_directory) = test_router().await;
+    let (router, key_directory) = test_router_no_db().await;
     let response = router
         .oneshot(
             Request::builder()

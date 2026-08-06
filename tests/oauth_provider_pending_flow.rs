@@ -179,7 +179,7 @@ fn set_cookie(response: &axum::response::Response, name: &str) -> String {
         .expect("cookie")
 }
 
-async fn create_pending_request(router: &Router) -> (String, String) {
+async fn create_pending_request(router: &Router) -> (String, String, String) {
     let client_name = format!("Pending External Client {}", Uuid::new_v4().simple());
     let response = router
         .clone()
@@ -221,6 +221,9 @@ async fn create_pending_request(router: &Router) -> (String, String) {
         .await
         .expect("authorize response");
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    // `/oauth/authorize` 在这里签发 authorization holder cookie（src/oauth/handlers.rs:149）。
+    // Issue #135 之后，认领 pending 请求必须出示它，所以测试要一路带到外部回调。
+    let holder_cookie = set_cookie(&response, "chenxing_authz_holder");
     let login_location = location(&response);
     let request_id = url::Url::parse(&format!("http://localhost{login_location}"))
         .expect("login URL")
@@ -228,7 +231,7 @@ async fn create_pending_request(router: &Router) -> (String, String) {
         .find(|(key, _)| key == "request_id")
         .map(|(_, value)| value.into_owned())
         .expect("request id");
-    (request_id, client_id.to_owned())
+    (request_id, client_id.to_owned(), holder_cookie)
 }
 
 async fn begin_external_login(router: &Router, slug: &str, request_id: &str) -> (String, String) {
@@ -272,6 +275,7 @@ async fn complete_external_callback(
     slug: &str,
     state_cookie: &str,
     state: &str,
+    holder_cookie: &str,
 ) -> axum::response::Response {
     router
         .clone()
@@ -280,7 +284,8 @@ async fn complete_external_callback(
                 .uri(format!(
                     "/auth/external/{slug}/callback?code=mock-code&state={state}"
                 ))
-                .header("cookie", state_cookie)
+                // 外部 IdP 回调是顶层导航，SameSite=Lax 的 holder cookie 会随请求发送。
+                .header("cookie", format!("{state_cookie}; {holder_cookie}"))
                 .body(Body::empty())
                 .expect("callback request"),
         )
@@ -292,9 +297,10 @@ async fn complete_external_callback(
 async fn external_callback_binds_pending_request_to_created_session() {
     let mock = mock_server().await;
     let (router, database, key_directory, slug) = setup(mock).await;
-    let (client_request_id, client_id) = create_pending_request(&router).await;
+    let (client_request_id, client_id, holder_cookie) = create_pending_request(&router).await;
     let (state_cookie, state) = begin_external_login(&router, &slug, &client_request_id).await;
-    let response = complete_external_callback(&router, &slug, &state_cookie, &state).await;
+    let response =
+        complete_external_callback(&router, &slug, &state_cookie, &state, &holder_cookie).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(
         location(&response),
@@ -327,7 +333,7 @@ async fn external_callback_binds_pending_request_to_created_session() {
 async fn external_callback_does_not_redirect_to_consent_when_pending_request_expires() {
     let mock = mock_server().await;
     let (router, database, key_directory, slug) = setup(mock).await;
-    let (request_id, client_id) = create_pending_request(&router).await;
+    let (request_id, client_id, holder_cookie) = create_pending_request(&router).await;
     let (state_cookie, state) = begin_external_login(&router, &slug, &request_id).await;
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
@@ -341,7 +347,7 @@ async fn external_callback_does_not_redirect_to_consent_when_pending_request_exp
         .await
         .expect("delete pending request");
 
-    let response = complete_external_callback(&router, &slug, &state_cookie, &state).await;
+    let response = complete_external_callback(&router, &slug, &state_cookie, &state, &holder_cookie).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     let redirect = location(&response);
     assert!(redirect.starts_with(&format!("/login?request_id={request_id}")));
