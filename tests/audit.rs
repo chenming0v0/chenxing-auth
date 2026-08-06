@@ -18,6 +18,22 @@ fn audit_event_redacts_sensitive_values_from_metadata() {
 }
 
 #[test]
+fn token_revoke_keeps_non_secret_token_type_metadata() {
+    let event = AuditEvent::new(
+        "oauth_client".to_owned(),
+        None,
+        "token_revoke".to_owned(),
+        "oauth_token".to_owned(),
+        Some("client-1".to_owned()),
+        serde_json::json!({"token_type": "refresh_token", "result": "success"}),
+    );
+
+    assert_eq!(event.action, "token_revoke");
+    assert_eq!(event.metadata["token_type"], "refresh_token");
+    assert_eq!(event.metadata["result"], "success");
+}
+
+#[test]
 fn audit_event_redacts_nested_and_variant_sensitive_values() {
     let event = AuditEvent::new(
         "user".to_owned(),
@@ -37,7 +53,10 @@ fn audit_event_redacts_nested_and_variant_sensitive_values() {
             "credentials": {"unknown_secret_value": "hidden-credential"},
             "totp_secret": "hidden-totp",
             "refreshToken": "hidden-refresh",
-            "token_count": 3
+            "token_count": 3,
+            "token_type": "Bearer",
+            "token_type_hint": "refresh_token",
+            "password_configured": true
         }),
     );
 
@@ -54,7 +73,112 @@ fn audit_event_redacts_nested_and_variant_sensitive_values() {
     assert_eq!(event.metadata["safe"], "retained");
     assert_eq!(event.metadata["nested"]["details"][0]["visible"], true);
     assert!(event.metadata.get("credentials").is_none());
-    assert!(event.metadata.get("token_count").is_none());
+    assert_eq!(event.metadata["token_count"], 3);
+    assert_eq!(event.metadata["token_type"], "Bearer");
+    assert_eq!(event.metadata["token_type_hint"], "refresh_token");
+    assert_eq!(event.metadata["password_configured"], true);
+}
+
+#[test]
+fn audit_event_redacts_exact_credential_keys_without_substring_false_positives() {
+    let event = AuditEvent::new(
+        "system".to_owned(),
+        None,
+        "metadata_boundary".to_owned(),
+        "audit".to_owned(),
+        None,
+        serde_json::json!({
+            "code": "hidden-code",
+            "state": "hidden-state",
+            "nonce": "hidden-nonce",
+            "session": "hidden-session",
+            "csrf": "hidden-csrf",
+            "otp": "hidden-otp",
+            "jwt": "hidden-jwt",
+            "cookie": "hidden-cookie",
+            "signature": "hidden-signature",
+            "password": "hidden-password",
+            "token": "hidden-token",
+            "secret": "hidden-secret",
+            "credential": "hidden-credential",
+            "private_key": "hidden-private-key",
+            "api_key": "hidden-api-key",
+            "authorization_code": "hidden-authorization-code",
+            "code_challenge": "hidden-code-challenge",
+            "code_verifier": "hidden-code-verifier",
+            "not_a_token": "retained",
+            "password_configured": false,
+            "token_count": 4,
+            "token_type": "Bearer",
+            "token_type_hint": "access_token",
+            "authorization_code_ttl_seconds": 60,
+            "external_login_state_ttl_seconds": 600
+        }),
+    );
+
+    for key in [
+        "code",
+        "state",
+        "nonce",
+        "session",
+        "csrf",
+        "otp",
+        "jwt",
+        "cookie",
+        "signature",
+        "password",
+        "token",
+        "secret",
+        "credential",
+        "private_key",
+        "api_key",
+        "authorization_code",
+        "code_challenge",
+        "code_verifier",
+    ] {
+        assert!(event.metadata.get(key).is_none(), "{key} must be redacted");
+    }
+    assert_eq!(event.metadata["not_a_token"], "retained");
+    assert_eq!(event.metadata["password_configured"], false);
+    assert_eq!(event.metadata["token_count"], 4);
+    assert_eq!(event.metadata["token_type"], "Bearer");
+    assert_eq!(event.metadata["token_type_hint"], "access_token");
+    assert_eq!(event.metadata["authorization_code_ttl_seconds"], 60);
+    assert_eq!(event.metadata["external_login_state_ttl_seconds"], 600);
+}
+
+#[test]
+fn audit_event_replaces_embedded_credential_assignments_as_a_whole() {
+    let event = AuditEvent::new(
+        "system".to_owned(),
+        None,
+        "callback".to_owned(),
+        "oauth".to_owned(),
+        None,
+        serde_json::json!({
+            "redirect": "https://client.example/callback?code=hidden-code&state=hidden-state",
+            "details": "nonce=hidden-nonce token=hidden-token",
+            "safe": "result=success",
+            "token_type": "Bearer",
+            "configured": "password_configured=true"
+        }),
+    );
+
+    assert_eq!(event.metadata["redirect"], "[REDACTED]");
+    assert_eq!(event.metadata["details"], "[REDACTED]");
+    assert_eq!(event.metadata["safe"], "result=success");
+    assert_eq!(event.metadata["token_type"], "Bearer");
+    assert_eq!(event.metadata["configured"], "password_configured=true");
+
+    let serialized = serde_json::to_string(&event.metadata).expect("metadata serializes");
+    for secret in [
+        "hidden-code",
+        "hidden-state",
+        "hidden-nonce",
+        "hidden-token",
+    ] {
+        assert!(!serialized.contains(secret));
+    }
 }
 
 #[test]

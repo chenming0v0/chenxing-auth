@@ -77,7 +77,8 @@ impl AuditService {
         Self { pool }
     }
 
-    pub async fn record(&self, event: AuditEvent) -> Result<(), AuditError> {
+    pub async fn record(&self, mut event: AuditEvent) -> Result<(), AuditError> {
+        event.redact_metadata_in_place();
         if let Err(error) = event.validate() {
             tracing::error!(error = %error, action = %event.action, "rejected audit event");
             return Err(error);
@@ -180,6 +181,11 @@ impl AuditEvent {
         }
     }
 
+    pub(crate) fn redact_metadata_in_place(&mut self) {
+        let metadata = std::mem::take(&mut self.metadata);
+        self.metadata = redact_metadata(Value::Object(metadata));
+    }
+
     pub fn security_failure(
         action: String,
         actor_type: String,
@@ -245,34 +251,120 @@ fn redact_value(value: Value) -> Option<Value> {
         Value::Array(values) => Some(Value::Array(
             values.into_iter().filter_map(redact_value).collect(),
         )),
+        Value::String(value) if contains_sensitive_assignment(&value) => {
+            Some(Value::String("[REDACTED]".to_owned()))
+        }
         value => Some(value),
     }
 }
 
 fn is_sensitive_key(key: &str) -> bool {
-    let normalized = key
-        .bytes()
+    let normalized = normalize_key(key);
+    if SAFE_METADATA_KEYS
+        .iter()
+        .any(|safe_key| normalized == *safe_key)
+    {
+        return false;
+    }
+    SENSITIVE_METADATA_KEYS
+        .iter()
+        .any(|sensitive_key| normalized == *sensitive_key)
+}
+
+fn normalize_key(key: &str) -> String {
+    key.bytes()
         .filter(u8::is_ascii_alphanumeric)
-        .map(|byte| byte.to_ascii_lowercase())
-        .collect::<Vec<_>>();
-    [
-        b"password".as_slice(),
-        b"clientsecret".as_slice(),
-        b"accesstoken".as_slice(),
-        b"refreshtoken".as_slice(),
-        b"authorizationcode".as_slice(),
-        b"codeverifier".as_slice(),
-        b"totpsecret".as_slice(),
-        b"secret".as_slice(),
-        b"token".as_slice(),
-        b"credential".as_slice(),
-        b"privatekey".as_slice(),
-        b"apikey".as_slice(),
-    ]
-    .iter()
-    .any(|marker| {
-        normalized
-            .windows(marker.len())
-            .any(|window| window == *marker)
-    })
+        .map(|byte| byte.to_ascii_lowercase() as char)
+        .collect()
+}
+
+const SAFE_METADATA_KEYS: &[&str] = &[
+    "passwordconfigured",
+    "tokencount",
+    "tokentype",
+    "tokentypehint",
+];
+
+// These are complete metadata keys, rather than fragments. In particular, this keeps
+// protocol facts such as token_type and password_configured available to audit queries.
+const SENSITIVE_METADATA_KEYS: &[&str] = &[
+    "accesstoken",
+    "accesstokenhash",
+    "apikey",
+    "apikeyvalue",
+    "authorization",
+    "authorizationcode",
+    "code",
+    "codechallenge",
+    "codeverifier",
+    "cookie",
+    "cookievalue",
+    "clientsecret",
+    "clientsecrethash",
+    "credential",
+    "credentialid",
+    "credentialvalue",
+    "credentials",
+    "csrf",
+    "csrfcookie",
+    "csrftoken",
+    "idtoken",
+    "jwt",
+    "jwttoken",
+    "nonce",
+    "otp",
+    "otpcode",
+    "otpsecret",
+    "password",
+    "passwordhash",
+    "passwordvalue",
+    "privatekey",
+    "privatekeypem",
+    "refreshtoken",
+    "secret",
+    "secretvalue",
+    "session",
+    "sessioncookie",
+    "sessionid",
+    "sessiontoken",
+    "signature",
+    "signaturevalue",
+    "state",
+    "statetoken",
+    "token",
+    "tokenvalue",
+    "totp",
+    "totpcode",
+    "totpsecret",
+];
+
+fn contains_sensitive_assignment(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    for (equals_index, byte) in bytes.iter().enumerate() {
+        if *byte != b'=' {
+            continue;
+        }
+
+        let mut key_end = equals_index;
+        while key_end > 0 && bytes[key_end - 1].is_ascii_whitespace() {
+            key_end -= 1;
+        }
+        let mut key_start = key_end;
+        while key_start > 0 && is_embedded_key_byte(bytes[key_start - 1]) {
+            key_start -= 1;
+        }
+        if key_start == key_end {
+            continue;
+        }
+        if let Ok(key) = std::str::from_utf8(&bytes[key_start..key_end])
+            && is_sensitive_key(key)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_embedded_key_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
 }
