@@ -3,6 +3,7 @@ use serde::Serialize;
 use thiserror::Error;
 use time::{Date, Month, OffsetDateTime, Time};
 
+use crate::clock::{Clock, SystemClock};
 use crate::plans::domain::AuthQuotaLimits;
 
 const CONSUME_SCRIPT: &str = r#"
@@ -77,7 +78,16 @@ impl OAuthQuotaStore {
         client_id: &str,
         limits: AuthQuotaLimits,
     ) -> Result<QuotaConsumeResult, OAuthQuotaError> {
-        let now = OffsetDateTime::now_utc();
+        self.consume_with_limits_at(client_id, limits, SystemClock.now())
+            .await
+    }
+
+    pub async fn consume_with_limits_at(
+        &self,
+        client_id: &str,
+        limits: AuthQuotaLimits,
+        now: OffsetDateTime,
+    ) -> Result<QuotaConsumeResult, OAuthQuotaError> {
         let (day_key, month_key, next_day, next_month) = period_keys(client_id, now)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let result: Vec<i64> = Script::new(CONSUME_SCRIPT)
@@ -98,7 +108,14 @@ impl OAuthQuotaStore {
     }
 
     pub async fn refund(&self, client_id: &str) -> Result<(), OAuthQuotaError> {
-        let now = OffsetDateTime::now_utc();
+        self.refund_at(client_id, SystemClock.now()).await
+    }
+
+    pub async fn refund_at(
+        &self,
+        client_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<(), OAuthQuotaError> {
         let (day_key, month_key, _, _) = period_keys(client_id, now)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let _: i64 = Script::new(REFUND_SCRIPT)
@@ -116,7 +133,15 @@ impl OAuthQuotaStore {
         client_id: &str,
         limits: Option<AuthQuotaLimits>,
     ) -> Result<QuotaSnapshot, OAuthQuotaError> {
-        let now = OffsetDateTime::now_utc();
+        self.snapshot_at(client_id, limits, SystemClock.now()).await
+    }
+
+    pub async fn snapshot_at(
+        &self,
+        client_id: &str,
+        limits: Option<AuthQuotaLimits>,
+        now: OffsetDateTime,
+    ) -> Result<QuotaSnapshot, OAuthQuotaError> {
         let (day_key, month_key, _, _) = period_keys(client_id, now)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let (daily_used, monthly_used): (Option<u64>, Option<u64>) = redis::pipe()

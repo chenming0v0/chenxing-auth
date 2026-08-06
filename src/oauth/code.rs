@@ -3,6 +3,8 @@ use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
+use crate::clock::{Clock, SystemClock};
+
 /// 授权码默认有效期（秒）。可通过 `AUTHORIZATION_CODE_TTL_SECONDS` 配置覆盖（#121）。
 /// 保留此常量作为向后兼容的回退值（token_handlers.rs 补偿路径使用它）。
 pub const AUTHORIZATION_CODE_TTL_SECONDS: u64 = 5 * 60;
@@ -55,7 +57,25 @@ impl AuthorizationCode {
         scopes: Vec<String>,
         code_challenge: String,
     ) -> Self {
-        Self::new_with_nonce(
+        Self::new_at(
+            client_id,
+            redirect_uri,
+            user_id,
+            scopes,
+            code_challenge,
+            SystemClock.now(),
+        )
+    }
+
+    pub fn new_at(
+        client_id: String,
+        redirect_uri: String,
+        user_id: String,
+        scopes: Vec<String>,
+        code_challenge: String,
+        now: OffsetDateTime,
+    ) -> Self {
+        Self::new_with_nonce_at(
             client_id,
             redirect_uri,
             user_id,
@@ -63,6 +83,7 @@ impl AuthorizationCode {
             code_challenge,
             None,
             None,
+            now,
         )
     }
 
@@ -75,7 +96,30 @@ impl AuthorizationCode {
         nonce: Option<String>,
         session_id: Option<String>,
     ) -> Self {
-        Self::new_with_nonce_and_ttl(
+        Self::new_with_nonce_at(
+            client_id,
+            redirect_uri,
+            user_id,
+            scopes,
+            code_challenge,
+            nonce,
+            session_id,
+            SystemClock.now(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_nonce_at(
+        client_id: String,
+        redirect_uri: String,
+        user_id: String,
+        scopes: Vec<String>,
+        code_challenge: String,
+        nonce: Option<String>,
+        session_id: Option<String>,
+        now: OffsetDateTime,
+    ) -> Self {
+        Self::new_with_nonce_and_ttl_at(
             client_id,
             redirect_uri,
             user_id,
@@ -84,6 +128,7 @@ impl AuthorizationCode {
             nonce,
             session_id,
             AUTHORIZATION_CODE_TTL_SECONDS,
+            now,
         )
     }
 
@@ -101,7 +146,32 @@ impl AuthorizationCode {
         session_id: Option<String>,
         ttl_seconds: u64,
     ) -> Self {
-        let created_at = OffsetDateTime::now_utc();
+        Self::new_with_nonce_and_ttl_at(
+            client_id,
+            redirect_uri,
+            user_id,
+            scopes,
+            code_challenge,
+            nonce,
+            session_id,
+            ttl_seconds,
+            SystemClock.now(),
+        )
+    }
+
+    /// Pure constructor variant with an explicit issuance time.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_nonce_and_ttl_at(
+        client_id: String,
+        redirect_uri: String,
+        user_id: String,
+        scopes: Vec<String>,
+        code_challenge: String,
+        nonce: Option<String>,
+        session_id: Option<String>,
+        ttl_seconds: u64,
+        now: OffsetDateTime,
+    ) -> Self {
         Self {
             value: format!("cx-code-{}", Uuid::new_v4().simple()),
             client_id,
@@ -111,8 +181,8 @@ impl AuthorizationCode {
             scopes,
             code_challenge,
             nonce,
-            created_at,
-            expires_at: created_at + Duration::seconds(ttl_seconds as i64),
+            created_at: now,
+            expires_at: now + Duration::seconds(ttl_seconds as i64),
             redeemed_at: None,
         }
     }
@@ -132,6 +202,7 @@ impl AuthorizationCode {
 #[cfg(test)]
 mod tests {
     use super::AuthorizationCode;
+    use time::{Duration, OffsetDateTime};
 
     fn code_with_session(session_id: Option<String>) -> AuthorizationCode {
         AuthorizationCode::new_with_nonce(
@@ -143,6 +214,25 @@ mod tests {
             None,
             session_id,
         )
+    }
+
+    #[test]
+    fn explicit_time_constructor_sets_creation_and_expiry_times() {
+        let created_at = OffsetDateTime::UNIX_EPOCH + Duration::seconds(123);
+        let code = AuthorizationCode::new_with_nonce_and_ttl_at(
+            "cx_project".to_owned(),
+            "https://project.example/callback".to_owned(),
+            "7".to_owned(),
+            vec!["openid".to_owned()],
+            "challenge".to_owned(),
+            None,
+            None,
+            60,
+            created_at,
+        );
+
+        assert_eq!(code.created_at, created_at);
+        assert_eq!(code.expires_at, created_at + Duration::seconds(60));
     }
 
     /// 构造升级前的授权码 JSON：把 `session_id` 键从当前载荷里删掉。

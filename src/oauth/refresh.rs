@@ -3,6 +3,8 @@ use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
+use crate::clock::{Clock, SystemClock};
+
 /// Refresh Token 的绝对有效期上限（RFC 9700 §4.14.2 建议限制长期凭据的生命周期）。
 ///
 /// 即使客户端在滑动窗口内持续轮换，凭据的总生命周期也不得超过此值，
@@ -47,6 +49,30 @@ pub struct RefreshToken {
     pub family_id: String,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::RefreshToken;
+    use time::{Duration, OffsetDateTime};
+
+    #[test]
+    fn explicit_time_constructor_and_rotation_are_deterministic() {
+        let created_at = OffsetDateTime::UNIX_EPOCH + Duration::days(1);
+        let token = RefreshToken::new_at(
+            "client".to_owned(),
+            "user".to_owned(),
+            vec!["openid".to_owned()],
+            created_at,
+        );
+        let rotated_at = created_at + Duration::days(2);
+        let rotated = token.rotate_at(vec!["profile".to_owned()], rotated_at);
+
+        assert_eq!(token.created_at, created_at);
+        assert_eq!(rotated.created_at, rotated_at);
+        assert_eq!(rotated.issued_at, token.issued_at);
+        assert_eq!(rotated.family_id, token.family_id);
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RefreshTokenError {
     #[error("refresh token is expired")]
@@ -61,7 +87,15 @@ pub enum RefreshTokenError {
 
 impl RefreshToken {
     pub fn new(client_id: String, user_id: String, scopes: Vec<String>) -> Self {
-        let now = OffsetDateTime::now_utc();
+        Self::new_at(client_id, user_id, scopes, SystemClock.now())
+    }
+
+    pub fn new_at(
+        client_id: String,
+        user_id: String,
+        scopes: Vec<String>,
+        now: OffsetDateTime,
+    ) -> Self {
         Self {
             value: format!("cx-refresh-{}", Uuid::new_v4().simple()),
             client_id,
@@ -80,7 +114,10 @@ impl RefreshToken {
     /// 继承 `issued_at` 和 `family_id` 以维持家族关系和绝对生命周期；
     /// 更新 `created_at` / `expires_at` 以重置滑动窗口。
     pub fn rotate(&self, scopes: Vec<String>) -> Self {
-        let now = OffsetDateTime::now_utc();
+        self.rotate_at(scopes, SystemClock.now())
+    }
+
+    pub fn rotate_at(&self, scopes: Vec<String>, now: OffsetDateTime) -> Self {
         let issued_at = self.issued_at();
         let absolute_deadline = self.absolute_deadline();
         let sliding_deadline = now + Duration::days(REFRESH_TOKEN_SLIDING_TTL_DAYS);

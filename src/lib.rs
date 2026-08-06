@@ -4,6 +4,7 @@ pub mod audit;
 pub mod auth_factors;
 pub mod auth_limiter;
 pub mod clients;
+pub mod clock;
 pub mod config;
 pub mod consents;
 pub mod db;
