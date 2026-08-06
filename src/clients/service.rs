@@ -6,7 +6,8 @@ use uuid::Uuid;
 
 use super::{
     credentials::{
-        generate_client_secret, issue_client_credential, verify_client_credentials_constant_time,
+        generate_client_secret, issue_client_credential, prepare_dummy_client_secret_hash,
+        verify_client_credentials_constant_time,
     },
     domain::{
         ClientAuthMethod, ClientRegistrationError, ClientRegistrationInput,
@@ -102,6 +103,9 @@ impl ClientService {
     }
 
     pub fn with_limits(pool: PgPool, limits: ClientRegistrationLimits) -> Self {
+        // 在服务开始接受请求前准备计时填充，避免首个失败认证多执行一次
+        // dummy 哈希生成；请求期的校验仍全部在 spawn_blocking 中运行。
+        prepare_dummy_client_secret_hash();
         Self {
             pool,
             limits,
@@ -221,7 +225,8 @@ impl ClientService {
             auth_method,
             client_secret,
             stored.as_ref(),
-        ))
+        )
+        .await)
     }
 
     /// 列出 Client（管理端），支持分页。

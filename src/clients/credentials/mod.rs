@@ -12,12 +12,13 @@ use uuid::Uuid;
 
 use super::{
     domain::{ClientAuthMethod, ClientRegistrationInput},
-    repository::ClientCredential,
+    repository::{ClientCredential, StoredClientCredentials},
     service::ClientServiceError,
 };
 
 mod constant_time;
 
+pub(crate) use constant_time::prepare_dummy_client_secret_hash;
 pub use constant_time::verify_client_credentials_constant_time;
 
 /// Client 注册请求。
@@ -98,22 +99,35 @@ pub fn issue_client_credential(
     }
 }
 
-/// 校验 Client Secret 与存储哈希是否匹配。
-///
-/// 保持同步：本模块的常量时间校验（`verify_client_credentials_constant_time`）依赖
-/// 无条件执行一次 Argon2，函数本身不是 async，无法 await。原先复用
-/// `users::credentials::verify_password`，该函数在 Issue #122 中改为 async，
-/// 这里改为直接使用同一套 `Argon2::default()` 参数，行为不变。
-///
-/// 遗留阻塞面：本函数仍在 async 调用栈内同步执行 Argon2。Client 认证路径的
-/// spawn_blocking 隔离不在 Issue #122 范围内，需要单独处理。
-pub fn verify_client_secret(secret: &str, encoded_hash: &str) -> bool {
+/// 同步校验实现，只允许在阻塞线程里调用。
+fn verify_client_secret_blocking(secret: &str, encoded_hash: &str) -> bool {
     let Ok(parsed) = PasswordHash::new(encoded_hash) else {
         return false;
     };
     Argon2::default()
         .verify_password(secret.as_bytes(), &parsed)
         .is_ok()
+}
+
+/// 校验 Client Secret 与存储哈希是否匹配。
+///
+/// Argon2 是 CPU 和内存密集型操作，必须完整放在 Tokio 阻塞线程池中执行。
+/// 任务 join 失败时按安全判定处理为 `false`，不能把运行时关闭或任务 panic 当成
+/// 凭据通过。
+pub async fn verify_client_secret(secret: &str, encoded_hash: &str) -> bool {
+    let secret = secret.to_owned();
+    let encoded_hash = encoded_hash.to_owned();
+    match tokio::task::spawn_blocking(move || {
+        verify_client_secret_blocking(&secret, &encoded_hash)
+    })
+    .await
+    {
+        Ok(valid) => valid,
+        Err(error) => {
+            tracing::error!(error = %error, "client secret verification task failed to join");
+            false
+        }
+    }
 }
 
 /// 校验 Client 凭据是否匹配（Issue #63 #66 合并重构）。
@@ -125,22 +139,17 @@ pub fn verify_client_secret(secret: &str, encoded_hash: &str) -> bool {
 ///
 /// 任何不匹配（auth_method 不符、secret 存在性矛盾、哈希校验失败）都返回 `false`，
 /// 避免在认证失败路径上泄露 Client 配置细节（时序攻击防护）。
-pub fn credentials_match(
+pub async fn credentials_match(
     auth_method: ClientAuthMethod,
     client_secret: Option<&str>,
     stored_hash: Option<&str>,
 ) -> bool {
-    match (auth_method, client_secret, stored_hash) {
-        // 公开客户端：请求不带 secret、数据库不存 hash。
-        // 若数据库有 hash 遗留（如配置迁移错误），拒绝认证（fail closed）。
-        (ClientAuthMethod::None, None, None) => true,
-        // 机密客户端：请求带 secret、数据库存 hash，且 Argon2 校验通过。
-        (ClientAuthMethod::Basic | ClientAuthMethod::Post, Some(secret), Some(hash)) => {
-            verify_client_secret(secret, hash)
-        }
-        // 其他组合均为配置错误或攻击尝试，拒绝。
-        _ => false,
-    }
+    let stored = StoredClientCredentials {
+        client_secret_hash: stored_hash.map(str::to_owned),
+        auth_method: auth_method.as_str().to_owned(),
+        status: "active".to_owned(),
+    };
+    verify_client_credentials_constant_time(auth_method, client_secret, Some(&stored)).await
 }
 
 #[cfg(test)]
@@ -218,35 +227,38 @@ mod tests {
         assert!(plaintext.is_none());
     }
 
-    #[test]
-    fn credentials_match_accepts_public_client_without_secret() {
+    #[tokio::test]
+    async fn credentials_match_accepts_public_client_without_secret() {
         // 公开客户端：请求不带 secret、数据库不存 hash（Issue #66）
-        assert!(credentials_match(ClientAuthMethod::None, None, None));
+        assert!(credentials_match(ClientAuthMethod::None, None, None).await);
     }
 
-    #[test]
-    fn credentials_match_rejects_public_client_with_leaked_hash() {
+    #[tokio::test]
+    async fn credentials_match_rejects_public_client_with_leaked_hash() {
         // 若公开客户端在数据库里遗留了 hash（配置迁移错误），拒绝认证（fail closed）
         assert!(!credentials_match(
             ClientAuthMethod::None,
             None,
             Some("leaked-hash")
-        ));
+        )
+        .await);
     }
 
-    #[test]
-    fn credentials_match_rejects_mismatched_secret_presence() {
+    #[tokio::test]
+    async fn credentials_match_rejects_mismatched_secret_presence() {
         // 机密客户端请求带 secret，但数据库没 hash（或反之），都拒绝
         assert!(!credentials_match(
             ClientAuthMethod::Basic,
             Some("secret"),
             None
-        ));
+        )
+        .await);
         assert!(!credentials_match(
             ClientAuthMethod::Basic,
             None,
             Some("hash")
-        ));
+        )
+        .await);
     }
 
     #[test]
