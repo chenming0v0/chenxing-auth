@@ -1,4 +1,5 @@
 use super::*;
+use crate::oauth::code::AuthorizationCode;
 use time::Duration;
 
 const CLIENT_ID: &str = "cx_client";
