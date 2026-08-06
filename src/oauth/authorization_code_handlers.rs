@@ -69,8 +69,11 @@ pub async fn issue_authorization_code_result(
             "client is invalid",
         ));
     };
+    let limits = state.settings.security_limits().await.map_err(|error_value| {
+        tracing::error!(error = %error_value, "failed to load OAuth security limits");
+        error::oauth_temporarily_unavailable()
+    })?;
     let client_id = validated.client_id.clone();
-    // #121：授权码 TTL 来自配置，不再是编译期常量。
     let code = AuthorizationCode::new_with_nonce_and_ttl(
         validated.client_id,
         validated.redirect_uri.clone(),
@@ -80,7 +83,7 @@ pub async fn issue_authorization_code_result(
         validated.nonce,
         // 授权码绑定签发时的会话：会话撤销后 Token 端点会拒绝兑换。
         validated.session_id,
-        state.config.security_limits.authorization_code_ttl_seconds,
+        limits.authorization_code_ttl_seconds,
     );
     let state_value = validated.state;
     if let Err(store_error) = state.authorization_codes.save(&code).await {

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{
-    code::{AUTHORIZATION_CODE_TTL_SECONDS, AuthorizationCode},
+    code::AuthorizationCode,
     id_token::{IdTokenProfile, issue_id_token_with_profile},
     pkce::verify_s256,
     refresh::RefreshToken,
@@ -340,13 +340,12 @@ async fn compensate_authorization_code_exchange(
 
 fn authorization_code_restore_ttl(code: &AuthorizationCode) -> u64 {
     let remaining_seconds = (code.expires_at - time::OffsetDateTime::now_utc()).whole_seconds();
-    if remaining_seconds > 0 {
-        match u64::try_from(remaining_seconds) {
-            Ok(seconds) => seconds,
-            Err(_) => AUTHORIZATION_CODE_TTL_SECONDS,
-        }
-    } else {
-        1
+    if remaining_seconds <= 0 {
+        return 1;
+    }
+    match u64::try_from(remaining_seconds) {
+        Ok(seconds) => seconds,
+        Err(_) => 1,
     }
 }
 

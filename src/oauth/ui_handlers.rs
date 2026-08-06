@@ -10,7 +10,6 @@ use super::{
     authorization::{AuthorizationRequest, validate_authorization_request},
     consent::{ConsentDecision, PendingAuthorization, parse_decision},
     handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
-    request_store::PENDING_REQUEST_TTL_SECONDS,
     session::session_for_headers,
 };
 use crate::{
@@ -83,6 +82,13 @@ pub async fn inspect_authorization_request(
     let Ok(redirect) = url::Url::parse(&pending.redirect_uri) else {
         return error::oauth_bad_request("invalid_request", "authorization request is invalid");
     };
+    let limits = match state.settings.security_limits().await {
+        Ok(limits) => limits,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load OAuth security limits");
+            return error::oauth_temporarily_unavailable();
+        }
+    };
     (
         axum::http::StatusCode::OK,
         Json(PendingRequestResponse {
@@ -95,7 +101,7 @@ pub async fn inspect_authorization_request(
                 .split_whitespace()
                 .map(str::to_owned)
                 .collect(),
-            expires_in: PENDING_REQUEST_TTL_SECONDS,
+            expires_in: limits.pending_request_ttl_seconds,
         }),
     )
         .into_response()

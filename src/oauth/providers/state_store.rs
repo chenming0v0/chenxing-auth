@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-/// 外部 OAuth 登录 state 的默认有效期（秒）。可通过 `EXTERNAL_LOGIN_STATE_TTL_SECONDS` 覆盖。
+use crate::settings::{SecurityLimitsSetting, SettingsService, SettingsServiceError};
+
+/// 外部 OAuth 登录 state 的默认有效期（秒）。运行时优先使用管理设置或启动配置覆盖。
 pub const EXTERNAL_LOGIN_STATE_TTL_SECONDS: u64 = 600;
 pub const EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS: u64 = 60;
 pub const EXTERNAL_LOGIN_STATE_RATE_LIMIT: i64 = 30;
@@ -70,10 +72,11 @@ pub struct ExternalLoginStateStore {
     prefix: String,
     source_rate_limit: i64,
     max_pending: i64,
-    /// 运行期 TTL，来自配置（#121），默认与常量一致。
+    /// Standalone-store fallback TTL; production reads the setting service per admission.
     ttl_seconds: u64,
-    /// 运行期限流窗口，来自配置（#121），默认与常量一致。
+    /// Standalone-store fallback rate window; production reads the setting service per admission.
     rate_window_seconds: u64,
+    settings: Option<SettingsService>,
 }
 
 #[derive(Debug, Error)]
@@ -86,6 +89,8 @@ pub enum ExternalLoginStateStoreError {
     Redis(#[from] redis::RedisError),
     #[error("state serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
+    #[error("security limits setting operation failed: {0}")]
+    Settings(#[from] SettingsServiceError),
     #[error("redis state admission script returned an invalid response")]
     InvalidResponse,
 }
@@ -120,6 +125,19 @@ impl ExternalLoginStateStore {
         )
     }
 
+    pub fn new_with_settings(client: Client, settings: SettingsService) -> Self {
+        let mut store = Self::new_with_limits(
+            client,
+            STATE_KEY_PREFIX.to_owned(),
+            EXTERNAL_LOGIN_STATE_RATE_LIMIT,
+            EXTERNAL_LOGIN_STATE_MAX_PENDING,
+            EXTERNAL_LOGIN_STATE_TTL_SECONDS,
+            EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
+        );
+        store.settings = Some(settings);
+        store
+    }
+
     pub async fn save(
         &self,
         value: &ExternalLoginState,
@@ -132,16 +150,27 @@ impl ExternalLoginStateStore {
         value: &ExternalLoginState,
         source_ip: &str,
     ) -> Result<(), ExternalLoginStateStoreError> {
+        let limits = self.current_limits().await?;
+        self.save_from_source_with_limits(value, source_ip, &limits)
+            .await
+    }
+
+    pub(crate) async fn save_from_source_with_limits(
+        &self,
+        value: &ExternalLoginState,
+        source_ip: &str,
+        limits: &SecurityLimitsSetting,
+    ) -> Result<(), ExternalLoginStateStoreError> {
         let payload = serde_json::to_string(value)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let result: i64 = Script::new(SAVE_STATE_SCRIPT)
             .key(self.pending_key())
             .key(self.rate_key(source_ip))
             .key(self.state_key(&value.state))
-            .arg(self.rate_window_seconds)
-            .arg(self.source_rate_limit)
-            .arg(self.max_pending)
-            .arg(self.ttl_seconds)
+            .arg(limits.external_login_state_rate_window_seconds)
+            .arg(limits.external_login_state_rate_limit)
+            .arg(limits.external_login_state_max_pending)
+            .arg(limits.external_login_state_ttl_seconds)
             .arg(&value.state)
             .arg(payload)
             .invoke_async(&mut connection)
@@ -186,6 +215,21 @@ impl ExternalLoginStateStore {
             max_pending,
             ttl_seconds,
             rate_window_seconds,
+            settings: None,
+        }
+    }
+
+    async fn current_limits(&self) -> Result<SecurityLimitsSetting, ExternalLoginStateStoreError> {
+        match &self.settings {
+            Some(settings) => Ok(settings.security_limits().await?),
+            None => {
+                let mut limits = SecurityLimitsSetting::default();
+                limits.external_login_state_rate_limit = self.source_rate_limit;
+                limits.external_login_state_max_pending = self.max_pending;
+                limits.external_login_state_ttl_seconds = self.ttl_seconds;
+                limits.external_login_state_rate_window_seconds = self.rate_window_seconds;
+                Ok(limits)
+            }
         }
     }
 

@@ -10,7 +10,7 @@ use crate::{
         },
         provider_pending::{PendingRequestBindingError, bind_pending_request},
         service::ExternalOAuthError,
-        state_store::{EXTERNAL_LOGIN_STATE_TTL_SECONDS, ExternalLoginState},
+        state_store::ExternalLoginState,
     },
     sessions::{cookies, domain::Session},
     state::AppState,
@@ -98,9 +98,16 @@ pub async fn start_external_login(
     } else {
         String::new()
     };
+    let limits = match state.settings.security_limits().await {
+        Ok(limits) => limits,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load external OAuth security limits");
+            return error::internal();
+        }
+    };
     if let Err(store_error) = state
         .external_login_states
-        .save_from_source(
+        .save_from_source_with_limits(
             &ExternalLoginState {
                 state: state_value.clone(),
                 provider_slug: slug.clone(),
@@ -108,6 +115,7 @@ pub async fn start_external_login(
                 code_verifier: code_verifier.clone(),
             },
             &source_ip,
+            &limits,
         )
         .await
     {
@@ -162,7 +170,7 @@ pub async fn start_external_login(
     cookies::append_external_state_cookie(
         response.headers_mut(),
         &state_value,
-        EXTERNAL_LOGIN_STATE_TTL_SECONDS,
+        limits.external_login_state_ttl_seconds,
         state.config.cookie_secure,
         &callback_path,
     );

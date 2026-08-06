@@ -4,8 +4,13 @@ use super::client_auth::ClientCredentials;
 use crate::{audit::AuditEvent, error, state::AppState};
 
 pub(crate) async fn enforce_source_qps(state: &AppState, source_ip: &str) -> Option<Response> {
-    // #121：QPS 阈值从配置读取，不再硬编码。默认值30保持向后兼容。
-    let qps_limit = state.config.security_limits.unauthenticated_source_qps;
+    let qps_limit = match state.settings.security_limits().await {
+        Ok(limits) => limits.unauthenticated_source_qps,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load OAuth security limits");
+            return Some(error::oauth_temporarily_unavailable());
+        }
+    };
     match state.qps.allow_source(source_ip, qps_limit).await {
         Ok(true) => None,
         Ok(false) => {

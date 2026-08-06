@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use crate::clock::{Clock, SystemClock};
 
-/// 授权码默认有效期（秒）。可通过 `AUTHORIZATION_CODE_TTL_SECONDS` 配置覆盖（#121）。
-/// 保留此常量作为向后兼容的回退值（token_handlers.rs 补偿路径使用它）。
+/// 授权码默认有效期（秒）。运行时优先使用管理设置或启动配置覆盖。
+/// 保留此常量作为无状态构造和补偿路径的向后兼容回退值。
 pub const AUTHORIZATION_CODE_TTL_SECONDS: u64 = 5 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
