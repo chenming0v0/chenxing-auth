@@ -360,9 +360,18 @@ pub async fn external_callback(
         .request_id
         .as_deref()
         .filter(|value| !value.is_empty());
+    let holder_hash = cookies::extract_authz_holder_cookie(&headers)
+        .as_deref()
+        .map(cookies::authz_holder_hash);
     if let Some(request_id) = request_id
         && let Err(binding_error) =
-            bind_pending_request(&state.authorization_requests, request_id, &session.token).await
+            bind_pending_request(
+                &state.authorization_requests,
+                request_id,
+                &session.token,
+                holder_hash.as_deref(),
+            )
+            .await
     {
         let error_code = match binding_error {
             PendingRequestBindingError::Expired => "oauth_request_expired",

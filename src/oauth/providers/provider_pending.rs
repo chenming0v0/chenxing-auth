@@ -11,6 +11,7 @@ pub(crate) async fn bind_pending_request(
     store: &AuthorizationRequestStore,
     request_id: &str,
     session_token: &str,
+    holder_hash: Option<&str>,
 ) -> Result<(), PendingRequestBindingError> {
     let Some(mut pending) = store.find(request_id).await.map_err(|error_value| {
         tracing::error!(
@@ -24,6 +25,10 @@ pub(crate) async fn bind_pending_request(
     };
     if pending.request_id != request_id {
         return Err(PendingRequestBindingError::Invalid);
+    }
+    match (holder_hash, pending.holder_hash.as_deref()) {
+        (Some(holder_hash), Some(stored_hash)) if holder_hash == stored_hash => {}
+        _ => return Err(PendingRequestBindingError::Invalid),
     }
     match pending.session_id.as_deref() {
         None => {}
@@ -68,6 +73,7 @@ pub(crate) async fn bind_pending_request(
 mod tests {
     use super::{PendingRequestBindingError, bind_pending_request};
     use crate::oauth::{consent::PendingAuthorization, request_store::AuthorizationRequestStore};
+    use crate::sessions::cookies;
 
     fn store() -> AuthorizationRequestStore {
         let url =
@@ -86,7 +92,7 @@ mod tests {
             code_challenge: "challenge".to_owned(),
             code_challenge_method: "S256".to_owned(),
             session_id: None,
-            holder_hash: None,
+            holder_hash: Some(cookies::authz_holder_hash("test-holder")),
         }
     }
 
@@ -102,9 +108,20 @@ mod tests {
         let second_store = store.clone();
         let first_session = "session-a";
         let second_session = "session-b";
+        let holder_hash = cookies::authz_holder_hash("test-holder");
         let (first, second) = tokio::join!(
-            bind_pending_request(&first_store, &request.request_id, first_session),
-            bind_pending_request(&second_store, &request.request_id, second_session),
+            bind_pending_request(
+                &first_store,
+                &request.request_id,
+                first_session,
+                Some(holder_hash.as_str()),
+            ),
+            bind_pending_request(
+                &second_store,
+                &request.request_id,
+                second_session,
+                Some(holder_hash.as_str()),
+            ),
         );
         let winners = [first, second]
             .into_iter()
@@ -122,7 +139,13 @@ mod tests {
             "session-a" | "session-b"
         ));
         assert_eq!(
-            bind_pending_request(&store, &request.request_id, &winning_session).await,
+            bind_pending_request(
+                &store,
+                &request.request_id,
+                &winning_session,
+                Some(holder_hash.as_str()),
+            )
+            .await,
             Ok(())
         );
         let losing_session = if winning_session == first_session {
@@ -131,7 +154,13 @@ mod tests {
             first_session
         };
         assert_eq!(
-            bind_pending_request(&store, &request.request_id, losing_session).await,
+            bind_pending_request(
+                &store,
+                &request.request_id,
+                losing_session,
+                Some(holder_hash.as_str()),
+            )
+            .await,
             Err(PendingRequestBindingError::Invalid)
         );
         store
@@ -157,11 +186,13 @@ mod tests {
                 &first_store,
                 &same_session_request.request_id,
                 "same-session",
+                Some(holder_hash.as_str()),
             ),
             bind_pending_request(
                 &second_store,
                 &same_session_request.request_id,
                 "same-session",
+                Some(holder_hash.as_str()),
             ),
         );
         assert_eq!(first, Ok(()));
@@ -170,5 +201,96 @@ mod tests {
             .take(&same_session_request.request_id)
             .await
             .expect("cleanup same-session pending request");
+    }
+
+    #[tokio::test]
+    async fn binding_without_holder_cookie_is_rejected() {
+        let store = store();
+        let request = pending(
+            format!("provider-bind-no-holder-{}", uuid::Uuid::new_v4().simple()),
+            &format!(
+                "provider-bind-no-holder-client-{}",
+                uuid::Uuid::new_v4().simple()
+            ),
+        );
+        store.save(&request).await.expect("save pending request");
+
+        assert_eq!(
+            bind_pending_request(&store, &request.request_id, "session-a", None).await,
+            Err(PendingRequestBindingError::Invalid)
+        );
+        assert_eq!(
+            store
+                .find(&request.request_id)
+                .await
+                .expect("find pending request")
+                .expect("pending request")
+                .session_id,
+            None
+        );
+        store
+            .take(&request.request_id)
+            .await
+            .expect("cleanup pending request");
+    }
+
+    #[tokio::test]
+    async fn binding_with_mismatched_holder_is_rejected() {
+        let store = store();
+        let mut request = pending(
+            format!("provider-bind-mismatched-holder-{}", uuid::Uuid::new_v4().simple()),
+            &format!(
+                "provider-bind-mismatched-holder-client-{}",
+                uuid::Uuid::new_v4().simple()
+            ),
+        );
+        request.session_id = Some("session-a".to_owned());
+        store.save(&request).await.expect("save pending request");
+        let mismatched_holder_hash = cookies::authz_holder_hash("other-holder");
+
+        assert_eq!(
+            bind_pending_request(
+                &store,
+                &request.request_id,
+                "session-a",
+                Some(mismatched_holder_hash.as_str()),
+            )
+            .await,
+            Err(PendingRequestBindingError::Invalid)
+        );
+        store
+            .take(&request.request_id)
+            .await
+            .expect("cleanup pending request");
+    }
+
+    #[tokio::test]
+    async fn legacy_pending_request_without_holder_hash_is_rejected() {
+        let store = store();
+        let mut request = pending(
+            format!("provider-bind-legacy-{}", uuid::Uuid::new_v4().simple()),
+            &format!(
+                "provider-bind-legacy-client-{}",
+                uuid::Uuid::new_v4().simple()
+            ),
+        );
+        request.holder_hash = None;
+        store.save(&request).await.expect("save pending request");
+        let holder_hash = cookies::authz_holder_hash("test-holder");
+
+        assert_eq!(
+            bind_pending_request(
+                &store,
+                &request.request_id,
+                "session-a",
+                Some(holder_hash.as_str()),
+            )
+            .await,
+            Err(PendingRequestBindingError::Invalid)
+        );
+        store
+            .take(&request.request_id)
+            .await
+            .expect("cleanup pending request");
     }
 }
