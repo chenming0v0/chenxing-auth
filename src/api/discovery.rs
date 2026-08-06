@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::{oauth::OpenIdConfiguration, state::AppState};
+use crate::{error, oauth::OpenIdConfiguration, state::AppState};
 
 /// Discovery 文档。
 ///
@@ -37,6 +37,12 @@ pub(super) async fn openid_configuration(
 }
 
 /// JWKS 只返回公钥部分，私钥材料不得出现在任何 API 响应中。
-pub(super) async fn jwks(State(state): State<AppState>) -> Json<jsonwebtoken::jwk::JwkSet> {
-    Json(state.keys.jwks())
+pub(super) async fn jwks(State(state): State<AppState>) -> Response {
+    match state.keys.fresh_jwks() {
+        Ok(jwks) => Json(jwks).into_response(),
+        Err(key_error) => {
+            tracing::error!(error = %key_error, "failed to refresh signing keys for JWKS");
+            error::internal()
+        }
+    }
 }

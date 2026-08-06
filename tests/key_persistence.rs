@@ -77,7 +77,7 @@ async fn failed_active_key_persist_keeps_in_memory_key_unchanged() {
     assert!(manager.rotate().await.is_err());
     assert_eq!(manager.key_id(), old_key_id);
     assert_eq!(manager.jwks().keys.len(), 1);
-    assert_eq!(fs::read_dir(&directory).expect("key directory").count(), 2);
+    assert_eq!(persisted_key_count(&directory), 1);
 
     fs::remove_dir(&active_path).expect("remove blocker");
     fs::write(&active_path, &old_key_id).expect("restore active id");
@@ -215,4 +215,87 @@ async fn concurrent_rotations_are_serialized_without_losing_keys() {
     assert_eq!(manager.jwks().keys.len(), 5);
 
     let _ = fs::remove_dir_all(directory);
+}
+
+#[tokio::test]
+async fn managers_refresh_shared_active_key_before_signing_and_verifying() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let first = KeyManager::load_or_generate(&directory).expect("initial key");
+    let second = KeyManager::load_or_generate(&directory).expect("second manager");
+
+    let rotation = first.rotate().await.expect("rotate signing key");
+    let signing_key = second
+        .active_signing_key()
+        .expect("refresh active signing key");
+    assert_eq!(signing_key.key_id(), rotation.key_id);
+
+    let token = issue_access_token(
+        &second,
+        "https://auth.example.com",
+        "user-1",
+        "cx_project",
+        &["openid".to_owned()],
+        3600,
+    )
+    .expect("sign with refreshed key");
+    let header = jsonwebtoken::decode_header(&token).expect("token header");
+    assert_eq!(header.kid.as_deref(), Some(rotation.key_id.as_str()));
+    decode_access_token(
+        &second,
+        "https://auth.example.com",
+        "cx_project",
+        &token,
+    )
+    .expect("verify with refreshed key");
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+#[tokio::test]
+async fn concurrent_manager_rotations_converge_on_shared_active_key() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let first = KeyManager::load_or_generate(&directory).expect("initial key");
+    let second = KeyManager::load_or_generate(&directory).expect("second manager");
+
+    let (first_rotation, second_rotation) = tokio::join!(first.rotate(), second.rotate());
+    let first_rotation = first_rotation.expect("first rotation");
+    let second_rotation = second_rotation.expect("second rotation");
+    assert_ne!(first_rotation.key_id, second_rotation.key_id);
+
+    let reloaded = KeyManager::load_or_generate(&directory).expect("reloaded key manager");
+    let active_key_id = reloaded.key_id();
+    assert!(
+        active_key_id == first_rotation.key_id || active_key_id == second_rotation.key_id,
+        "disk active key must be one of the serialized rotations"
+    );
+    assert_eq!(reloaded.jwks().keys.len(), 3);
+    assert_eq!(
+        first
+            .active_signing_key()
+            .expect("first manager refresh")
+            .key_id(),
+        active_key_id.as_str()
+    );
+    assert_eq!(
+        second
+            .active_signing_key()
+            .expect("second manager refresh")
+            .key_id(),
+        active_key_id.as_str()
+    );
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+fn persisted_key_count(directory: &std::path::Path) -> usize {
+    fs::read_dir(directory)
+        .expect("key directory")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("rs256-") && name.ends_with(".pkcs1.der"))
+        })
+        .count()
 }

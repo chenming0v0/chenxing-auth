@@ -2,7 +2,7 @@ use jsonwebtoken::{Algorithm, Header, encode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::keys::KeyManager;
+use crate::keys::{KeyManager, KeyManagerError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdTokenClaims {
@@ -45,6 +45,8 @@ pub enum IdTokenError {
     InvalidLifetime,
     #[error("ID token signing failed: {0}")]
     Signing(#[from] jsonwebtoken::errors::Error),
+    #[error("signing key state unavailable: {0}")]
+    KeyState(#[from] KeyManagerError),
 }
 
 pub fn issue_id_token(
@@ -98,7 +100,9 @@ pub fn issue_id_token_with_profile(
         name: profile.name.map(str::to_owned),
     };
     let mut header = Header::new(Algorithm::RS256);
-    header.kid = Some(keys.key_id().to_owned());
-    let encoding_key = keys.encoding_key();
-    encode(&header, &claims, &encoding_key).map_err(IdTokenError::from)
+    let signing_key = keys
+        .active_signing_key()
+        .map_err(IdTokenError::KeyState)?;
+    header.kid = Some(signing_key.key_id().to_owned());
+    encode(&header, &claims, signing_key.encoding_key()).map_err(IdTokenError::from)
 }
