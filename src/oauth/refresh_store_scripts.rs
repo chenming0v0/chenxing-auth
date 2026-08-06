@@ -97,6 +97,30 @@ redis.call('SETEX', KEYS[4], ARGV[3], ARGV[2])
 return 1
 "#;
 
+/// 原子删除单个 token 并清理索引，但不写 replay tombstone。
+///
+/// 显式 `/oauth/revoke` 和审计失败后的补偿使用这个脚本：主动撤销不是
+/// replay 证据，不能因为攻击者再次提交同一凭据而触发 family 撤销。
+///
+/// - `KEYS[1]` token 主键
+/// - `KEYS[2]` client 索引键
+/// - `KEYS[3]` family 索引键（`ARGV[3]` 为空时不使用）
+/// - `KEYS[4]` 旧 replay tombstone（若存在则一并清理）
+/// - `ARGV[1]` token_hash
+/// - `ARGV[2]` 索引 TTL（秒）
+/// - `ARGV[3]` family_id，空表示旧格式 token
+pub const REMOVE_WITHOUT_TOMBSTONE_SCRIPT: &str = r#"
+redis.call('DEL', KEYS[1])
+redis.call('DEL', KEYS[4])
+redis.call('SREM', KEYS[2], ARGV[1])
+redis.call('EXPIRE', KEYS[2], ARGV[2])
+if ARGV[3] ~= '' then
+    redis.call('SREM', KEYS[3], ARGV[1])
+    redis.call('EXPIRE', KEYS[3], ARGV[2])
+end
+return 1
+"#;
+
 /// 原子 CAS 删除 token、清理索引并写墓碑（授权码换取路径的单次消费）。
 ///
 /// 与 `REMOVE_WITH_TOMBSTONE_SCRIPT` 的区别是先做 CAS 比较：只有当前值
@@ -141,9 +165,19 @@ return 1
 /// - `ARGV[2]` 墓碑键前缀
 /// - `ARGV[3]` 墓碑 JSON
 /// - `ARGV[4]` 墓碑 TTL（秒）
+/// - `ARGV[5]` 触发 replay 的 token_hash，可为空
 ///
 /// 返回被删除的 token 数量。
 pub const REVOKE_FAMILY_SCRIPT: &str = r#"
+if ARGV[5] ~= '' then
+    local replay_tombstone = redis.call('GET', ARGV[2] .. ARGV[5])
+    if replay_tombstone then
+        local decoded = cjson.decode(replay_tombstone)
+        if decoded['state'] == 'family_revoked' or decoded['state'] == 'explicit_revoke' then
+            return 0
+        end
+    end
+end
 local members = redis.call('SMEMBERS', KEYS[1])
 local removed = 0
 for _, token_hash in ipairs(members) do
@@ -154,6 +188,9 @@ for _, token_hash in ipairs(members) do
     redis.call('SETEX', ARGV[2] .. token_hash, ARGV[4], ARGV[3])
 end
 redis.call('DEL', KEYS[1])
+if ARGV[5] ~= '' then
+    redis.call('SETEX', ARGV[2] .. ARGV[5], ARGV[4], ARGV[3])
+end
 return removed
 "#;
 
@@ -169,6 +206,7 @@ return removed
 /// - `KEYS[1]` client 索引键
 /// - `ARGV[1]` token 主键前缀
 /// - `ARGV[2]` family 索引键前缀
+/// - `ARGV[3]` tombstone 键前缀（清理同 token 的旧 marker）
 ///
 /// 返回被删除的 token 数量。
 pub const REVOKE_CLIENT_TOKENS_SCRIPT: &str = r#"
@@ -184,6 +222,7 @@ for _, token_hash in ipairs(members) do
             redis.call('SREM', ARGV[2] .. family_id, token_hash)
         end
     end
+    redis.call('DEL', ARGV[3] .. token_hash)
     if redis.call('DEL', token_key) == 1 then
         removed = removed + 1
     end
