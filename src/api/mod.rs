@@ -255,7 +255,7 @@ pub fn router(state: AppState) -> Router {
 /// - 未配置可信代理或对端不可信 → 用对端地址，忽略 XFF（防伪造）
 /// - 对端可信且有 XFF → 从右往左扫描，第一个不可信的 IP 是客户端
 ///
-/// 此函数收敛了项目中所有的源 IP 解析逻辑。OAuth `/token`、TOTP、Passkey
+/// 此函数收敛了项目中所有的源 IP 解析逻辑。注册、OAuth `/token`、TOTP、Passkey
 /// 和登录端点都调用它。未配置 `trusted_proxies` 时启动阶段已告警。
 pub(crate) fn source_ip(
     peer: Option<SocketAddr>,
