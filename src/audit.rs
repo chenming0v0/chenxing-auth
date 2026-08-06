@@ -1,8 +1,13 @@
 //! Durable security audit boundary.
 //!
 //! `audit_events` is an append-only record of security-relevant decisions. The
-//! database owns retention and archival policy; application code must not turn
-//! a failed write into a successful security mutation.
+//! database triggers reject mutation of both the hot and archive tables. The
+//! explicit `audit-archive` maintenance command moves events older than
+//! `AUDIT_RETENTION_DAYS` in one database transaction; the archive is retained
+//! indefinitely and is included in audit queries.
+//!
+//! The web process never archives or deletes audit rows. Deployments that turn
+//! on `AUDIT_ARCHIVE_ENABLED` must schedule one maintenance command separately.
 //!
 //! # 两种审计策略：阻断式 vs Best-effort
 //!
@@ -48,6 +53,7 @@ use tokio::time::sleep;
 
 pub mod repository;
 
+pub(crate) const AUDIT_ARCHIVE_BATCH_SIZE: i32 = 1_000;
 const AUDIT_WRITE_MAX_ATTEMPTS: u32 = 3;
 const AUDIT_RETRY_DELAY: Duration = Duration::from_millis(25);
 
@@ -131,6 +137,13 @@ impl AuditService {
 
     pub async fn count(&self) -> Result<i64, crate::sqlx::Error> {
         repository::count_filtered(&self.pool, None, None).await
+    }
+
+    pub async fn archive_expired(
+        &self,
+        retention_days: i32,
+    ) -> Result<i64, crate::sqlx::Error> {
+        repository::archive_expired(&self.pool, retention_days).await
     }
 }
 

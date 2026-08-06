@@ -609,13 +609,6 @@ async fn authorized_apps_are_user_scoped_and_consent_revoke_is_audited() {
         1
     );
 
-    chenxing_auth::sqlx::query(
-        "DELETE FROM audit_events WHERE action = 'consent_revoke' AND resource_id = $1",
-    )
-    .bind(&client_id)
-    .execute(&database)
-    .await
-    .expect("cleanup audit");
     chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
         .bind(&client_id)
         .execute(&database)

@@ -148,13 +148,6 @@ async fn session_still_active(fixture: &RevokeFixture) -> bool {
 }
 
 async fn cleanup(fixture: &RevokeFixture) {
-    chenxing_auth::sqlx::query(
-        "DELETE FROM audit_events WHERE action = 'session_revoke' AND resource_id = $1",
-    )
-    .bind(fixture.session.id.to_string())
-    .execute(&fixture.database)
-    .await
-    .expect("cleanup audit event");
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(fixture.user_id)
         .execute(&fixture.database)

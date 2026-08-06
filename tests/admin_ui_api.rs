@@ -278,11 +278,6 @@ async fn admin_audit_query_pages_beyond_the_previous_two_hundred_event_limit() {
     assert_eq!(page["total"], 205);
     assert_eq!(page["items"].as_array().expect("audit items").len(), 5);
 
-    chenxing_auth::sqlx::query("DELETE FROM audit_events WHERE action = $1")
-        .bind(&action)
-        .execute(&database)
-        .await
-        .expect("cleanup audit events");
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
