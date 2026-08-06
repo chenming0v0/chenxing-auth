@@ -1,10 +1,11 @@
-use redis::{Client, Script};
+use redis::Script;
 use serde::Serialize;
 use thiserror::Error;
 use time::{Date, Month, OffsetDateTime, Time};
 
 use crate::clock::{Clock, SystemClock};
 use crate::plans::domain::AuthQuotaLimits;
+use crate::redis_client::RedisClient;
 
 const CONSUME_SCRIPT: &str = r#"
 local day = tonumber(redis.call('GET', KEYS[1]) or '0')
@@ -35,7 +36,7 @@ return 1
 
 #[derive(Clone)]
 pub struct OAuthQuotaStore {
-    client: Client,
+    client: RedisClient,
 }
 
 /// 用量始终来自 Redis；上限来自生效套餐。
@@ -68,8 +69,10 @@ pub enum OAuthQuotaError {
 }
 
 impl OAuthQuotaStore {
-    pub fn new(client: Client) -> Self {
-        Self { client }
+    pub fn new(client: impl Into<RedisClient>) -> Self {
+        Self {
+            client: client.into(),
+        }
     }
 
     /// Consume one authorization using the effective plan's limits.

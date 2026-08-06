@@ -1,7 +1,5 @@
 use std::{sync::Arc, time::Duration};
 
-use redis::Client;
-
 use crate::{
     admin::AdminAuthenticator,
     audit::AuditService,
@@ -22,6 +20,7 @@ use crate::{
     oauth::revocation::TokenRevocationStore,
     oauth::store::AuthorizationCodeStore,
     plans::service::PlanService,
+    redis_client::RedisClient,
     sessions::store::SessionStore,
     settings::SettingsService,
     users::service::UserService,
@@ -31,7 +30,7 @@ use crate::{
 pub struct AppState {
     pub config: Config,
     pub database: Database,
-    pub redis: Client,
+    pub redis: RedisClient,
     pub sessions: SessionStore,
     pub settings: SettingsService,
     pub users: UserService,
@@ -106,7 +105,7 @@ impl AppState {
         config: Config,
         database: crate::db::Database,
     ) -> Result<Self, StateError> {
-        let redis = redis::Client::open(config.redis_url.as_str())?;
+        let redis = RedisClient::open(config.redis_url.as_str())?;
 
         // 密钥目录的读写和 RSA 生成是同步阻塞调用，直接在 async 上下文执行会占住
         // 当前 worker（`current_thread` 调度器下会让整个运行时停摆）。搬到阻塞线程池，

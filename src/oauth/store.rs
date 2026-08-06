@@ -1,11 +1,12 @@
-use redis::{AsyncCommands, Client, Script};
+use redis::{AsyncCommands, Script};
 use thiserror::Error;
 
 use super::code::AuthorizationCode;
+use crate::redis_client::RedisClient;
 
 #[derive(Clone)]
 pub struct AuthorizationCodeStore {
-    client: Client,
+    client: RedisClient,
 }
 
 #[derive(Debug, Error)]
@@ -17,8 +18,10 @@ pub enum AuthorizationCodeStoreError {
 }
 
 impl AuthorizationCodeStore {
-    pub fn new(client: Client) -> Self {
-        Self { client }
+    pub fn new(client: impl Into<RedisClient>) -> Self {
+        Self {
+            client: client.into(),
+        }
     }
 
     pub async fn save(&self, code: &AuthorizationCode) -> Result<(), AuthorizationCodeStoreError> {

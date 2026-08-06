@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use redis::Client;
 use thiserror::Error;
 use webauthn_rs::prelude::WebauthnError;
 
 use crate::{
     auth_limiter::{AuthFailureLimiter, FailureDimension, MissingSourceIpPolicy},
     config::AuthEncryptionKeyRing,
+    redis_client::RedisClient,
     settings::{SettingsService, SettingsServiceError},
     sqlx::PgPool,
     users::domain::UserId,
@@ -92,7 +92,7 @@ pub enum AuthFactorServiceError {
 impl AuthFactorService {
     pub fn new(
         pool: PgPool,
-        redis: Client,
+        redis: impl Into<RedisClient>,
         limiter: Arc<dyn AuthFailureLimiter>,
         encryption_keys: AuthEncryptionKeyRing,
         settings: SettingsService,
@@ -109,7 +109,7 @@ impl AuthFactorService {
 
     pub fn new_with_source_ip_policy(
         pool: PgPool,
-        redis: Client,
+        redis: impl Into<RedisClient>,
         limiter: Arc<dyn AuthFailureLimiter>,
         encryption_keys: AuthEncryptionKeyRing,
         settings: SettingsService,

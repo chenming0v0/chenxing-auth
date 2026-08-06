@@ -1,4 +1,4 @@
-use ::redis::{AsyncCommands, Client, Script};
+use ::redis::{AsyncCommands, Script};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,6 +12,7 @@ use super::domain::{
 const FAILURE_KEY_PREFIX: &str = "chenxing:auth:failure:";
 const PENDING_KEY_PREFIX: &str = "chenxing:auth:pending:";
 use super::redis_scripts::*;
+use crate::redis_client::RedisClient;
 
 static REDIS_ERRORS: AtomicU64 = AtomicU64::new(0);
 static LIMIT_HITS: AtomicU64 = AtomicU64::new(0);
@@ -34,27 +35,30 @@ pub fn metrics() -> AuthLimiterMetrics {
 
 #[derive(Clone)]
 pub struct RedisAuthFailureLimiter {
-    client: Client,
+    client: RedisClient,
     failure_policy: AuthLimiterFailurePolicy,
     limits: AuthFailureLimits,
 }
 
 impl RedisAuthFailureLimiter {
-    pub fn new(client: Client) -> Self {
+    pub fn new(client: impl Into<RedisClient>) -> Self {
         Self::with_failure_policy(client, AuthLimiterFailurePolicy::FailClosed)
     }
 
-    pub fn with_failure_policy(client: Client, failure_policy: AuthLimiterFailurePolicy) -> Self {
+    pub fn with_failure_policy(
+        client: impl Into<RedisClient>,
+        failure_policy: AuthLimiterFailurePolicy,
+    ) -> Self {
         Self::with_limits(client, failure_policy, AuthFailureLimits::default())
     }
 
     pub fn with_limits(
-        client: Client,
+        client: impl Into<RedisClient>,
         failure_policy: AuthLimiterFailurePolicy,
         limits: AuthFailureLimits,
     ) -> Self {
         Self {
-            client,
+            client: client.into(),
             failure_policy,
             limits,
         }

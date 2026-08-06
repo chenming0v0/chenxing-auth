@@ -1,4 +1,4 @@
-use redis::{AsyncCommands, Client, Script};
+use redis::{AsyncCommands, Script};
 use thiserror::Error;
 
 use super::consent::PendingAuthorization;
@@ -6,6 +6,7 @@ use super::request_store_scripts::{
     PENDING_CAPACITY_SCRIPT, PENDING_REPLACE_SCRIPT, PENDING_TAKE_IF_MATCHES_SCRIPT,
     PENDING_TAKE_SCRIPT,
 };
+use crate::redis_client::RedisClient;
 
 pub const PENDING_REQUEST_TTL_SECONDS: u64 = 600;
 pub const MAX_PENDING_REQUESTS_PER_CLIENT: u64 = 20;
@@ -13,7 +14,7 @@ pub const MAX_PENDING_REQUESTS_GLOBAL: u64 = 1_000;
 
 #[derive(Clone)]
 pub struct AuthorizationRequestStore {
-    client: Client,
+    client: RedisClient,
 }
 
 #[derive(Debug, Error)]
@@ -27,8 +28,10 @@ pub enum AuthorizationRequestStoreError {
 }
 
 impl AuthorizationRequestStore {
-    pub fn new(client: Client) -> Self {
-        Self { client }
+    pub fn new(client: impl Into<RedisClient>) -> Self {
+        Self {
+            client: client.into(),
+        }
     }
 
     pub async fn save(
