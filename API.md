@@ -351,6 +351,17 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 {"key_id":"...","published_key_count":2}
 ```
 
+### `POST /api/v1/admin/keys/{key_id}/revoke`
+
+按 `kid` 紧急撤销签名密钥，需要 `RotateKeys`。普通浏览器 Session 请求必须同时提供
+HttpOnly Session Cookie、CSRF Cookie 和匹配的 `X-CSRF-Token`；`ADMIN_TOKEN` Bearer
+请求沿用管理 API 的系统令牌语义。撤销 active key 时，服务会在同一密钥存储锁内切换到
+仍有效的替代 key；不存在替代 key 时返回 `409`，不会改变密钥状态。成功响应：
+
+```json
+{"key_id":"...","active_key_id":"...","published_key_count":1}
+```
+
 ### 管理后台 UI API
 
 - `GET /api/v1/admin/auth/me`：从普通用户 Session 返回当前管理用户的统一 `user_id`、角色、权限和身份摘要；Bearer Token 自动化请求的 `user_id` 为 `null`。Owner 是最高级角色，拥有全部权限。

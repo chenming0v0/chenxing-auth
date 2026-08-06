@@ -1441,6 +1441,35 @@ paths:
                 properties:
                   key_id: { type: string }
                   published_key_count: { type: integer }
+  /api/v1/admin/keys/{key_id}/revoke:
+    post:
+      tags: [Admin Operations]
+      summary: 按 kid 撤销签名密钥
+      operationId: revokeSigningKey
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema: { type: string }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '200':
+          description: 撤销结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [key_id, active_key_id, published_key_count]
+                properties:
+                  key_id: { type: string }
+                  active_key_id: { type: string }
+                  published_key_count: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }

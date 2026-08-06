@@ -1,17 +1,29 @@
 use axum::{
     Json,
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
 
 use super::{authorization::current_admin_mutation, domain::AdminPermission};
-use crate::{audit::AuditEvent, error, state::AppState};
+use crate::{
+    audit::AuditEvent,
+    error,
+    keys::KeyManagerError,
+    state::AppState,
+};
 
 #[derive(Debug, Serialize)]
 pub struct KeyRotationResponse {
     pub key_id: String,
+    pub published_key_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct KeyRevocationResponse {
+    pub key_id: String,
+    pub active_key_id: String,
     pub published_key_count: usize,
 }
 
@@ -50,6 +62,69 @@ pub async fn rotate_signing_key(State(state): State<AppState>, headers: HeaderMa
         StatusCode::OK,
         Json(KeyRotationResponse {
             key_id,
+            published_key_count,
+        }),
+    )
+        .into_response()
+}
+
+pub async fn revoke_signing_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key_id): Path<String>,
+) -> Response {
+    let actor = match current_admin_mutation(&state, &headers, AdminPermission::RotateKeys).await {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
+
+    let revocation = match state.keys.revoke(&key_id).await {
+        Ok(revocation) => revocation,
+        Err(KeyManagerError::InvalidKeyId) => {
+            return error::bad_request("invalid_key_id", "key id is invalid");
+        }
+        Err(KeyManagerError::UnknownKeyId) => {
+            return error::not_found("signing_key_not_found", "signing key was not found");
+        }
+        Err(KeyManagerError::NoActiveKeyReplacement) => {
+            return error::conflict(
+                "active_signing_key_required",
+                "cannot revoke the active signing key without another valid signing key",
+            );
+        }
+        Err(key_error) => {
+            tracing::error!(key_id = %key_id, error = %key_error, "failed to revoke signing key");
+            return error::internal();
+        }
+    };
+
+    let key_id = revocation.key_id.clone();
+    let active_key_id = revocation.active_key_id.clone();
+    let published_key_count = revocation.published_key_count;
+    if state
+        .audit
+        .record(AuditEvent::new(
+            actor.actor_type().to_owned(),
+            actor.user_id().map(|id| id.to_string()),
+            "signing_key_revoke".to_owned(),
+            "signing_key".to_owned(),
+            Some(key_id.clone()),
+            serde_json::json!({
+                "active_key_id": active_key_id.clone(),
+                "published_key_count": published_key_count,
+            }),
+        ))
+        .await
+        .is_err()
+    {
+        return error::internal();
+    }
+
+    (
+        StatusCode::OK,
+        Json(KeyRevocationResponse {
+            key_id,
+            active_key_id,
             published_key_count,
         }),
     )

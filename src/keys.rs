@@ -22,6 +22,8 @@ use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 
 #[path = "keys_persistence.rs"]
 mod persistence;
+#[path = "keys_revocation.rs"]
+mod revocation;
 
 pub const DEFAULT_KEY_RETENTION_SECONDS: u64 = 604_800;
 #[derive(Clone)]
@@ -68,6 +70,13 @@ pub struct KeyRotation {
     pub published_key_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRevocation {
+    pub key_id: String,
+    pub active_key_id: String,
+    pub published_key_count: usize,
+}
+
 /// 签发一次令牌所需的不可撕裂密钥快照。
 ///
 /// `key_id` 和 `encoding_key` 来自同一份 `KeyState` 读取，调用方不得分别从
@@ -108,6 +117,10 @@ pub enum KeyManagerError {
     StorageBusy,
     #[error("key rotation worker failed")]
     RotationWorker,
+    #[error("key operation worker failed")]
+    KeyWorker,
+    #[error("cannot revoke the active signing key without another valid signing key")]
+    NoActiveKeyReplacement,
 }
 impl KeyManager {
     pub fn generate() -> Result<Self, KeyManagerError> {
@@ -141,6 +154,26 @@ impl KeyManager {
         tokio::task::spawn_blocking(move || manager.rotate_blocking_at(now))
             .await
             .map_err(|_| KeyManagerError::RotationWorker)?
+    }
+
+    pub async fn revoke(
+        &self,
+        key_id: impl AsRef<str>,
+    ) -> Result<KeyRevocation, KeyManagerError> {
+        self.revoke_at(key_id.as_ref().to_owned(), SystemClock.now())
+            .await
+    }
+
+    pub async fn revoke_at(
+        &self,
+        key_id: impl Into<String>,
+        now: OffsetDateTime,
+    ) -> Result<KeyRevocation, KeyManagerError> {
+        let manager = self.clone();
+        let key_id = key_id.into();
+        tokio::task::spawn_blocking(move || revocation::revoke_blocking_at(&manager, key_id, now))
+            .await
+            .map_err(|_| KeyManagerError::KeyWorker)?
     }
 
     /// 返回当前进程内存中的兼容快照。协议签发必须使用 `active_signing_key`。

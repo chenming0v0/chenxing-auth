@@ -56,6 +56,13 @@ pub(crate) fn secure_existing_file(path: &Path) -> io::Result<()> {
     set_mode(path, PRIVATE_FILE_MODE)
 }
 
+pub(crate) fn remove_secure_file(path: &Path) -> io::Result<()> {
+    secure_existing_file(path)?;
+    fs::remove_file(path)?;
+    sync_directory(path.parent());
+    Ok(())
+}
+
 pub(crate) fn atomic_write(path: &Path, contents: &[u8], replace_existing: bool) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => secure_existing_file(path)?,
