@@ -1,17 +1,12 @@
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+
 use std::env;
 
-use chenxing_auth::{db, sqlx::postgres::PgPoolOptions};
-
 async fn database() -> chenxing_auth::sqlx::PgPool {
-    let url = env::var("DATABASE_URL")
+    let database_url = env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&url)
-        .await
-        .expect("PostgreSQL is required for schema tests");
-    db::migrate(&pool).await.expect("database migrations");
-    pool
+    db_isolation::isolated_pool("database_schema", &database_url).await
 }
 
 async fn assert_column(
@@ -131,6 +126,8 @@ async fn assert_fk(
          JOIN pg_attribute target_column
            ON target_column.attrelid = c.confrelid AND target_column.attnum = ANY(c.confkey)
          WHERE c.contype = 'f'
+           AND source_table.relnamespace = current_schema()::regnamespace
+           AND target_table.relnamespace = current_schema()::regnamespace
            AND source_table.relname = $1
            AND source_column.attname = $2
            AND target_table.relname = $3

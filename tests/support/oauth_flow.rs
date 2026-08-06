@@ -5,22 +5,29 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header::SET_COOKIE},
 };
-use chenxing_auth::{api, config::Config, db, state::AppState};
+use chenxing_auth::{api, config::Config, state::AppState};
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-pub async fn test_state() -> (AppState, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
+/// `binary_name` 决定 schema 隔离边界，必须传调用方测试二进制自己的名字
+/// （见 `support/db_isolation.rs`）。共享同一个名字的二进制会共享数据库状态。
+///
+/// 调用方必须同时声明 `db_isolation` 模块：
+/// ```rust,ignore
+/// #[path = "support/db_isolation.rs"]
+/// mod db_isolation;
+/// #[path = "support/oauth_flow.rs"]
+/// mod oauth_flow;
+/// ```
+pub async fn test_state(
+    binary_name: &str,
+) -> (AppState, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = chenxing_auth::sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL is required for OAuth flow tests");
-    db::migrate(&database).await.expect("database migrations");
+    let database = crate::db_isolation::isolated_pool(binary_name, &database_url).await;
     let key_directory = std::env::temp_dir().join(format!("chenxing-flow-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
@@ -34,12 +41,16 @@ pub async fn test_state() -> (AppState, chenxing_auth::sqlx::PgPool, std::path::
     config.admin_token = "flow-admin-token".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new(config).await.expect("test state");
+    let state = AppState::new_with_pool(config, database.clone())
+        .await
+        .expect("test state");
     (state, database, key_directory)
 }
 
-pub async fn test_router() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
-    let (state, database, key_directory) = test_state().await;
+pub async fn test_router(
+    binary_name: &str,
+) -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
+    let (state, database, key_directory) = test_state(binary_name).await;
     (api::router(state), database, key_directory)
 }
 

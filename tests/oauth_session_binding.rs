@@ -15,6 +15,9 @@ use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+
 #[path = "support/oauth_flow.rs"]
 mod support;
 
@@ -29,7 +32,7 @@ use support::{
 /// 用 `AuthorizationCode::new` 做该回归（见 `code.rs` 里的单元测试）。
 #[tokio::test]
 async fn authorization_code_rejected_after_session_revocation_and_code_not_consumed() {
-    let (state, database, key_directory) = test_state().await;
+    let (state, database, key_directory) = test_state("oauth_session_binding").await;
     let router = chenxing_auth::api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
     ensure_owner_bootstrapped(&router, &suffix).await;

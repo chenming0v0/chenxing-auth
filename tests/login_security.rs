@@ -3,51 +3,22 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
-use chenxing_auth::sqlx::{Connection, PgConnection};
-use chenxing_auth::{api, config::Config, db, state::AppState};
+use chenxing_auth::{api, config::Config, state::AppState};
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-struct SharedDatabaseLock {
-    _connection: PgConnection,
-}
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+#[path = "support/oauth_flow.rs"]
+mod oauth_flow;
 
-async fn shared_database_lock(database_url: &str) -> SharedDatabaseLock {
-    let mut connection = PgConnection::connect(database_url)
-        .await
-        .expect("database lock connection");
-    chenxing_auth::sqlx::query("BEGIN")
-        .execute(&mut connection)
-        .await
-        .expect("database lock transaction");
-    chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock(hashtext('chenxing-shared-reset'))")
-        .execute(&mut connection)
-        .await
-        .expect("database reset lock");
-    SharedDatabaseLock {
-        _connection: connection,
-    }
-}
-
-async fn setup() -> (
-    Router,
-    chenxing_auth::sqlx::PgPool,
-    std::path::PathBuf,
-    SharedDatabaseLock,
-) {
+async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL is required for login security tests");
-    db::migrate(&database).await.expect("database migrations");
-    let lock = shared_database_lock(&database_url).await;
+    let database = db_isolation::isolated_pool("login_security", &database_url).await;
     let key_directory = std::env::temp_dir().join(format!("chenxing-login-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
@@ -60,12 +31,13 @@ async fn setup() -> (
     .expect("test configuration");
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(AppState::new(config).await.expect("test state")),
-        database,
-        key_directory,
-        lock,
-    )
+    let router = api::router(
+        AppState::new_with_pool(config, database.clone())
+            .await
+            .expect("test state"),
+    );
+    oauth_flow::ensure_owner_bootstrapped(&router, "login-security").await;
+    (router, database, key_directory)
 }
 
 async fn json(response: axum::response::Response) -> Value {
@@ -92,7 +64,7 @@ async fn request(router: &Router, uri: &str, payload: Value) -> axum::response::
 
 #[tokio::test]
 async fn password_success_does_not_reset_mfa_account_failures() {
-    let (router, database, key_directory, _lock) = setup().await;
+    let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let username = format!("security-{suffix}");
     let email = format!("security-{suffix}@example.com");

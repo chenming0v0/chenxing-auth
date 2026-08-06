@@ -7,16 +7,17 @@
 //! 需要 PostgreSQL 和 Redis：连接串取自 `DATABASE_URL` / `REDIS_URL`，
 //! 与 `tests/integration_storage.rs` 保持一致。
 
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+
 use std::env;
 
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{
     clients::{
         domain::ValidatedClientRegistration,
         repository::{self as client_repository, ClientCredential},
     },
     consents::ConsentService,
-    db,
     oauth::revocation::TokenRevocationStore,
     users::{
         credentials::hash_password, domain::ValidatedRegistration, repository as user_repository,
@@ -26,15 +27,9 @@ use redis::AsyncCommands;
 use uuid::Uuid;
 
 async fn database() -> chenxing_auth::sqlx::PgPool {
-    let url = env::var("DATABASE_URL")
+    let database_url = env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&url)
-        .await
-        .expect("PostgreSQL is required for consent revocation tests");
-    db::migrate(&pool).await.expect("database migrations");
-    pool
+    db_isolation::isolated_pool("consent_revocation_durability", &database_url).await
 }
 
 fn redis_client() -> redis::Client {

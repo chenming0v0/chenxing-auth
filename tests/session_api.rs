@@ -3,17 +3,18 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{
     api,
     config::Config,
-    db,
     sessions::{cookies, domain::Session, store::SessionStore},
     state::AppState,
     users::{domain::ValidatedRegistration, repository as user_repository},
 };
 use tower::ServiceExt;
 use uuid::Uuid;
+
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
 
 async fn test_router() -> Router {
     api::router(AppState::for_test().await)
@@ -33,12 +34,7 @@ async fn revoke_fixture(label: &str) -> RevokeFixture {
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = PgPoolOptions::new()
-        .max_connections(3)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL");
-    db::migrate(&database).await.expect("migrations");
+    let database = db_isolation::isolated_pool("session_api", &database_url).await;
 
     let suffix = Uuid::new_v4().simple().to_string();
     let user = user_repository::insert_user(
@@ -77,7 +73,11 @@ async fn revoke_fixture(label: &str) -> RevokeFixture {
     config.key_directory = key_directory.to_string_lossy().into_owned();
 
     RevokeFixture {
-        router: api::router(AppState::new(config).await.expect("state")),
+        router: api::router(
+            AppState::new_with_pool(config, database.clone())
+                .await
+                .expect("state"),
+        ),
         database,
         user_id: user.id,
         session,

@@ -10,6 +10,9 @@ use std::fs;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+
 async fn test_router() -> Router {
     api::router(AppState::for_test().await)
 }
@@ -20,12 +23,15 @@ async fn admin_router() -> (Router, String, std::path::PathBuf) {
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let database = db_isolation::isolated_pool("protected_api", &database_url).await;
     let mut config =
         Config::from_values("127.0.0.1".to_owned(), 3000, database_url, redis_url, 3600)
             .expect("test configuration");
     config.admin_token = "admin-secret".to_owned();
     config.key_directory = directory.to_string_lossy().into_owned();
-    let state = AppState::new(config).await.expect("test state");
+    let state = AppState::new_with_pool(config, database)
+        .await
+        .expect("test state");
     (api::router(state), "admin-secret".to_owned(), directory)
 }
 

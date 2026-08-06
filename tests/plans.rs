@@ -18,6 +18,9 @@ use std::net::{IpAddr, SocketAddr};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+
 #[path = "support/plans.rs"]
 mod support;
 

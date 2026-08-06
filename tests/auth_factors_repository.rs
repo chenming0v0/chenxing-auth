@@ -1,7 +1,8 @@
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+
 use base64::Engine;
 use chenxing_auth::auth_factors::repository;
-use chenxing_auth::db;
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use serial_test::serial;
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
@@ -37,15 +38,9 @@ fn test_passkey(credential_id: &[u8]) -> Passkey {
 }
 
 async fn database() -> chenxing_auth::sqlx::PgPool {
-    let url = std::env::var("DATABASE_URL")
+    let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&url)
-        .await
-        .expect("PostgreSQL is required for factor repository tests");
-    db::migrate(&pool).await.expect("database migrations");
-    pool
+    db_isolation::isolated_pool("auth_factors_repository", &database_url).await
 }
 
 #[tokio::test]

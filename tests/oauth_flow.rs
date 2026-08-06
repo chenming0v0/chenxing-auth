@@ -22,6 +22,9 @@ use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
 
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+
 #[path = "support/oauth_flow.rs"]
 mod support;
 
@@ -36,7 +39,7 @@ use support::{
 
 #[tokio::test]
 async fn disabled_user_session_cannot_authorize_or_submit_consent() {
-    let (state, database, key_directory) = test_state().await;
+    let (state, database, key_directory) = test_state("oauth_flow").await;
     let router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
     ensure_owner_bootstrapped(&router, &suffix).await;
@@ -152,7 +155,7 @@ async fn disabled_user_session_cannot_authorize_or_submit_consent() {
 
 #[tokio::test]
 async fn disabled_user_cannot_exchange_oauth_credentials_without_consuming_them() {
-    let (state, database, key_directory) = test_state().await;
+    let (state, database, key_directory) = test_state("oauth_flow").await;
     let router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
     ensure_owner_bootstrapped(&router, &suffix).await;
@@ -268,7 +271,7 @@ async fn disabled_user_cannot_exchange_oauth_credentials_without_consuming_them(
 
 #[tokio::test]
 async fn refresh_token_remains_reusable_when_access_token_issuance_fails() {
-    let (mut state, database, key_directory) = test_state().await;
+    let (mut state, database, key_directory) = test_state("oauth_flow").await;
     let setup_router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
     ensure_owner_bootstrapped(&setup_router, &suffix).await;
@@ -428,7 +431,7 @@ async fn refresh_token_count_for_client(state: &AppState, client_id: &str) -> us
 
 #[tokio::test]
 async fn authorization_code_is_restored_when_token_issuance_fails() {
-    let (mut state, database, key_directory) = test_state().await;
+    let (mut state, database, key_directory) = test_state("oauth_flow").await;
     let setup_router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
     ensure_owner_bootstrapped(&setup_router, &suffix).await;
@@ -533,7 +536,7 @@ async fn authorization_code_is_restored_when_token_issuance_fails() {
 
 #[tokio::test]
 async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
-    let (mut state, database, key_directory) = test_state().await;
+    let (mut state, database, key_directory) = test_state("oauth_flow").await;
     let setup_router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
     ensure_owner_bootstrapped(&setup_router, &suffix).await;
@@ -548,11 +551,6 @@ async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
 
     // 计量只在存在生效套餐时发生，所以这个用例必须显式挂一个私有套餐；
     // 否则「授权码写失败不烧配额」根本没有配额可烧，断言会退化成空转。
-    let _plan_lock =
-        plan_fixtures::shared_plan_lock(&std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned()
-        }))
-        .await;
     plan_fixtures::assign_private_plan(
         &database,
         user_id,

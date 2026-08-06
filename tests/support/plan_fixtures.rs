@@ -7,14 +7,12 @@
 //! 或其他测试留下的行。
 //!
 //! 两类前提：
-//! - 全局默认套餐（`seed_default_plan`）：影响所有没有挂载套餐的用户，是共享
-//!   状态。`plans` 表上有 `plans_single_default_idx`（唯一的 default），所以
-//!   同一时刻只能有一个测试二进制持有它 —— 用 [`SharedPlanLock`] 串行化。
+//! - 全局默认套餐（`seed_default_plan`）：影响所有没有挂载套餐的用户，是当前
+//!   测试 schema 内的状态。
 //! - 私有套餐（`assign_private_plan`）：只挂到某个用户上，`is_default = FALSE`，
-//!   不参与全局唯一索引。但 `clear_all_plans` 是 `DELETE FROM plans`，会连带
-//!   删除私有套餐，所以任何依赖套餐的二进制同样要持锁。
+//!   不参与全局唯一索引。每个测试用例使用独立 schema，所以清理不会影响其他用例。
 
-use chenxing_auth::sqlx::{Connection, PgConnection, PgPool};
+use chenxing_auth::sqlx::PgPool;
 use uuid::Uuid;
 
 /// 原种子（`migrations/0002_plans.sql` 删除前）的默认套餐 code。
@@ -24,32 +22,6 @@ pub const DEFAULT_PLAN_CODE: &str = "basic";
 pub const DEFAULT_PLAN_OAUTH_CLIENTS_LIMIT: i32 = 2;
 pub const DEFAULT_PLAN_DAILY_AUTH_LIMIT: i64 = 2_500;
 pub const DEFAULT_PLAN_MONTHLY_AUTH_LIMIT: i64 = 50_000;
-
-/// 跨测试二进制串行化 `plans` 表的写入。
-///
-/// 复用 `chenxing-shared-reset` 这一把锁（`admin_api` / `admin_ui_api` /
-/// `login_security` / `bootstrap_invariant` / `authorization_audit` 已在用），
-/// 只有一把锁就不存在获取顺序造成的死锁。持有到 guard 被 drop（事务结束）。
-pub struct SharedPlanLock {
-    _connection: PgConnection,
-}
-
-pub async fn shared_plan_lock(database_url: &str) -> SharedPlanLock {
-    let mut connection = PgConnection::connect(database_url)
-        .await
-        .expect("plan fixture lock connection");
-    chenxing_auth::sqlx::query("BEGIN")
-        .execute(&mut connection)
-        .await
-        .expect("plan fixture lock transaction");
-    chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock(hashtext('chenxing-shared-reset'))")
-        .execute(&mut connection)
-        .await
-        .expect("plan fixture lock");
-    SharedPlanLock {
-        _connection: connection,
-    }
-}
 
 /// 清空所有套餐。
 ///

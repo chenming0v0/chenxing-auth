@@ -1,14 +1,15 @@
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+
 use std::{env, time::Duration};
 
 use base64::Engine;
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{
     clients::{
         domain::ValidatedClientRegistration,
         repository::{self as client_repository, ClientCredential},
     },
     config::{AuthEncryptionKey, AuthEncryptionKeyRing},
-    db,
     oauth::{
         code::AuthorizationCode, refresh::RefreshToken, refresh_store::RefreshTokenStore,
         store::AuthorizationCodeStore,
@@ -27,15 +28,9 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 async fn database() -> chenxing_auth::sqlx::PgPool {
-    let url = env::var("DATABASE_URL")
+    let database_url = env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&url)
-        .await
-        .expect("PostgreSQL is required for integration storage tests");
-    db::migrate(&pool).await.expect("database migrations");
-    pool
+    db_isolation::isolated_pool_with_max_connections("integration_storage", &database_url, 4).await
 }
 
 fn redis_client() -> redis::Client {

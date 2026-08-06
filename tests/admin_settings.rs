@@ -3,8 +3,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
-use chenxing_auth::{api, config::Config, db, state::AppState};
+use chenxing_auth::{api, config::Config, state::AppState};
 use chenxing_auth::{
     sessions::{cookies, domain::Session, store::SessionStore},
     sqlx,
@@ -14,17 +13,15 @@ use serial_test::serial;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL");
-    db::migrate(&database).await.expect("migrations");
+    let database = db_isolation::isolated_pool("admin_settings", &database_url).await;
     let key_directory =
         std::env::temp_dir().join(format!("chenxing-admin-settings-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
@@ -40,7 +37,11 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
-        api::router(AppState::new(config).await.expect("state")),
+        api::router(
+            AppState::new_with_pool(config, database.clone())
+                .await
+                .expect("state"),
+        ),
         database,
         key_directory,
     )
@@ -55,14 +56,13 @@ async fn json(response: axum::response::Response) -> Value {
     .expect("JSON")
 }
 
-async fn browser_session(database_url: &str, redis_url: &str, user_id: i64) -> (String, String) {
-    let database = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(database_url)
-        .await
-        .expect("session PostgreSQL");
+async fn browser_session(
+    database: &chenxing_auth::sqlx::PgPool,
+    redis_url: &str,
+    user_id: i64,
+) -> (String, String) {
     let redis = redis::Client::open(redis_url).expect("session Redis");
-    let store = SessionStore::with_metadata_and_key(redis, database, [0; 32]);
+    let store = SessionStore::with_metadata_and_key(redis, database.clone(), [0; 32]);
     let mut session = Session::new(user_id.to_string(), std::time::Duration::from_secs(3600))
         .expect("browser session");
     store
@@ -186,8 +186,6 @@ async fn owner_can_read_update_and_persist_registration_email_setting() {
 #[serial(registration_email_setting)]
 async fn session_authenticated_setting_mutation_records_user_actor() {
     let (router, database, key_directory) = setup().await;
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
     let username = format!("settings-owner-{}", Uuid::new_v4().simple());
@@ -202,7 +200,7 @@ async fn session_authenticated_setting_mutation_records_user_actor() {
     .fetch_one(&database)
     .await
     .expect("owner user");
-    let (cookie, csrf) = browser_session(&database_url, &redis_url, user_id).await;
+    let (cookie, csrf) = browser_session(&database, &redis_url, user_id).await;
     let registration_email = format!("sender-{}@example.com", Uuid::new_v4().simple());
 
     let response = router

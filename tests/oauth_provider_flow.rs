@@ -6,9 +6,8 @@ use axum::{
     response::Redirect,
     routing::get,
 };
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{
-    api, config::Config, db, sessions::cookies::EXTERNAL_STATE_COOKIE_PREFIX, state::AppState,
+    api, config::Config, sessions::cookies::EXTERNAL_STATE_COOKIE_PREFIX, state::AppState,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -19,8 +18,10 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-#[path = "support/oauth_provider_concurrency.rs"]
-mod oauth_provider_concurrency;
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+#[path = "support/oauth_flow.rs"]
+mod oauth_flow;
 
 #[derive(Clone, Default)]
 struct MockState {
@@ -94,12 +95,7 @@ async fn setup(
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL");
-    db::migrate(&database).await.expect("migrations");
+    let database = db_isolation::isolated_pool("oauth_provider_flow", &database_url).await;
     let key_directory =
         std::env::temp_dir().join(format!("chenxing-provider-flow-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
@@ -114,7 +110,11 @@ async fn setup(
     config.admin_token = "provider-flow-admin".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let router = api::router(AppState::new(config).await.expect("state"));
+    let router = api::router(
+        AppState::new_with_pool(config, database.clone())
+            .await
+            .expect("state"),
+    );
     let slug = format!("mock-{}", Uuid::new_v4().simple());
     let input = serde_json::json!({
         "name":"Mock Provider", "slug":slug,
@@ -152,6 +152,7 @@ async fn setup(
         .await
         .expect("enable response");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    oauth_flow::ensure_owner_bootstrapped(&router, "oauth_provider_flow").await;
     (router, database, key_directory, slug)
 }
 
@@ -182,10 +183,6 @@ fn set_cookie_header(response: &axum::response::Response, name: &str) -> String 
             value.starts_with(name).then(|| value.to_owned())
         })
         .expect("cookie")
-}
-
-fn authorization_state(location: &str) -> String {
-    authorization_query(location, "state").expect("state")
 }
 
 /// 从发往外部 IdP 的授权 URL 中取出指定 query 参数。

@@ -10,13 +10,10 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
-use chenxing_auth::sqlx::{Connection, PgConnection};
 use chenxing_auth::{
     api,
     audit::{AuditEvent, AuditService},
     config::Config,
-    db,
     sessions::{cookies, domain::Session, store::SessionStore},
     state::AppState,
 };
@@ -25,26 +22,8 @@ use uuid::Uuid;
 
 const DENIED_ACTION: &str = "admin_authorization_denied";
 
-struct SharedDatabaseLock {
-    _connection: PgConnection,
-}
-
-async fn shared_database_lock(database_url: &str) -> SharedDatabaseLock {
-    let mut connection = PgConnection::connect(database_url)
-        .await
-        .expect("database lock connection");
-    chenxing_auth::sqlx::query("BEGIN")
-        .execute(&mut connection)
-        .await
-        .expect("database lock transaction");
-    chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock(hashtext('chenxing-shared-reset'))")
-        .execute(&mut connection)
-        .await
-        .expect("database reset lock");
-    SharedDatabaseLock {
-        _connection: connection,
-    }
-}
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
 
 fn database_url() -> String {
     std::env::var("DATABASE_URL")
@@ -55,31 +34,10 @@ fn redis_url() -> String {
     std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned())
 }
 
-async fn setup() -> (
-    Router,
-    chenxing_auth::sqlx::PgPool,
-    std::path::PathBuf,
-    SharedDatabaseLock,
-) {
+async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = database_url();
     let redis_url = redis_url();
-    let database = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL");
-    db::migrate(&database).await.expect("migrations");
-    let lock = shared_database_lock(&database_url).await;
-    chenxing_auth::sqlx::query("TRUNCATE users RESTART IDENTITY CASCADE")
-        .execute(&database)
-        .await
-        .expect("reset identity test database");
-    // 上面的 TRUNCATE ... CASCADE 会连带清空引用 users 的 audit_events，
-    // 这里再显式截断一次，保证断言里的事件计数只来自当前用例。
-    chenxing_auth::sqlx::query("TRUNCATE audit_events RESTART IDENTITY")
-        .execute(&database)
-        .await
-        .expect("reset audit events");
+    let database = db_isolation::isolated_pool("authorization_audit", &database_url).await;
     let key_directory = std::env::temp_dir().join(format!("chenxing-authz-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
@@ -94,25 +52,20 @@ async fn setup() -> (
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
-        api::router(AppState::new(config).await.expect("state")),
+        api::router(
+            AppState::new_with_pool(config, database.clone())
+                .await
+                .expect("state"),
+        ),
         database,
         key_directory,
-        lock,
     )
 }
 
 /// 直接在 Redis/PG 里种一个已认证会话，跳过登录流程。
-async fn browser_session(user_id: i64) -> (String, String) {
+async fn browser_session(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -> (String, String) {
     let redis = redis::Client::open(redis_url()).expect("Redis");
-    let store = SessionStore::with_metadata_and_key(
-        redis,
-        PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&database_url())
-            .await
-            .expect("session PostgreSQL"),
-        [0; 32],
-    );
+    let store = SessionStore::with_metadata_and_key(redis, database.clone(), [0; 32]);
     let mut session = Session::new(user_id.to_string(), std::time::Duration::from_secs(3600))
         .expect("browser session");
     store
@@ -158,10 +111,10 @@ async fn denial_events(database: &chenxing_auth::sqlx::PgPool) -> Vec<AuditEvent
 
 #[tokio::test]
 async fn insufficient_role_denial_is_recorded_in_the_audit_log() {
-    let (router, database, _key_directory, _lock) = setup().await;
+    let (router, database, _key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let user_id = seed_user(&database, &format!("plain-{suffix}"), "user").await;
-    let (cookie, _csrf) = browser_session(user_id).await;
+    let (cookie, _csrf) = browser_session(&database, user_id).await;
 
     // 修复前：这里返回 403 但审计表为空，低权限用户可无痕探测所有 admin 端点。
     let response = router
@@ -191,12 +144,12 @@ async fn insufficient_role_denial_is_recorded_in_the_audit_log() {
 
 #[tokio::test]
 async fn csrf_denial_on_admin_mutation_is_recorded_in_the_audit_log() {
-    let (router, database, _key_directory, _lock) = setup().await;
+    let (router, database, _key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let owner_id = seed_user(&database, &format!("owner-{suffix}"), "owner").await;
     let target_id = seed_user(&database, &format!("target-{suffix}"), "user").await;
     // Owner 权限充足，但故意不带 X-CSRF-Token 头，命中 current_admin_mutation 的 CSRF 分支。
-    let (cookie, _csrf) = browser_session(owner_id).await;
+    let (cookie, _csrf) = browser_session(&database, owner_id).await;
 
     let response = router
         .clone()
@@ -224,10 +177,10 @@ async fn csrf_denial_on_admin_mutation_is_recorded_in_the_audit_log() {
 
 #[tokio::test]
 async fn audit_metadata_never_carries_session_or_csrf_credentials() {
-    let (router, database, _key_directory, _lock) = setup().await;
+    let (router, database, _key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let user_id = seed_user(&database, &format!("probe-{suffix}"), "user").await;
-    let (cookie, csrf) = browser_session(user_id).await;
+    let (cookie, csrf) = browser_session(&database, user_id).await;
 
     let response = router
         .clone()

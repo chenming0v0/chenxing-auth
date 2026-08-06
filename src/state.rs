@@ -93,6 +93,19 @@ impl StartupKeyMaterial {
 impl AppState {
     pub async fn new(config: Config) -> Result<Self, StateError> {
         let database = crate::db::connect(&config)?;
+        Self::new_with_pool(config, database).await
+    }
+
+    /// 使用外部提供的数据库连接池构建 AppState，不再内部调用 `db::connect`。
+    ///
+    /// 主要用途：测试中传入 schema 隔离的 pool（见 `tests/support/db_isolation.rs`），
+    /// 保证应用层与测试层共用同一个 pool（相同的 `search_path` / schema）。
+    ///
+    /// 生产路径使用 `AppState::new`，它调用 `db::connect` 后委托到此方法。
+    pub async fn new_with_pool(
+        config: Config,
+        database: crate::db::Database,
+    ) -> Result<Self, StateError> {
         let redis = redis::Client::open(config.redis_url.as_str())?;
 
         // 密钥目录的读写和 RSA 生成是同步阻塞调用，直接在 async 上下文执行会占住

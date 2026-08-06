@@ -9,11 +9,15 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
-use chenxing_auth::{api, config::Config, db, state::AppState};
+use chenxing_auth::{api, config::Config, state::AppState};
 use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
+
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+#[path = "support/oauth_flow.rs"]
+mod oauth_flow;
 
 async fn setup() -> (
     Router,
@@ -25,12 +29,7 @@ async fn setup() -> (
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL is required for TOTP enrollment fallback tests");
-    db::migrate(&database).await.expect("database migrations");
+    let database = db_isolation::isolated_pool("totp_enrollment_fallback", &database_url).await;
     let key_directory =
         std::env::temp_dir().join(format!("chenxing-totp-fallback-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
@@ -45,12 +44,14 @@ async fn setup() -> (
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let email = format!("totp-fallback-{}@example.com", Uuid::new_v4().simple());
-    (
-        api::router(AppState::new(config).await.expect("test state")),
-        database,
-        key_directory,
-        email,
-    )
+    let router = api::router(
+        AppState::new_with_pool(config, database.clone())
+            .await
+            .expect("test state"),
+    );
+    oauth_flow::ensure_owner_bootstrapped(&router, "totp_enrollment_fallback").await;
+    db_isolation::isolate_user_ids(&database, "totp_enrollment_fallback").await;
+    (router, database, key_directory, email)
 }
 
 async fn json_body(response: axum::response::Response) -> serde_json::Value {

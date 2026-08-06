@@ -4,55 +4,24 @@ use axum::{
 };
 use chenxing_auth::oauth::providers::repository::CreateIdentityError;
 use chenxing_auth::oauth::providers::repository::create_user_with_identity;
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
-use chenxing_auth::sqlx::{Connection, PgConnection};
-use chenxing_auth::{api, config::Config, db, state::AppState};
+use chenxing_auth::{api, config::Config, state::AppState};
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-struct SharedDatabaseLock {
-    _connection: PgConnection,
-}
-
-async fn shared_database_lock(database_url: &str) -> SharedDatabaseLock {
-    let mut connection = PgConnection::connect(database_url)
-        .await
-        .expect("database lock connection");
-    chenxing_auth::sqlx::query("BEGIN")
-        .execute(&mut connection)
-        .await
-        .expect("database lock transaction");
-    chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock(hashtext('chenxing-shared-reset'))")
-        .execute(&mut connection)
-        .await
-        .expect("database reset lock");
-    SharedDatabaseLock {
-        _connection: connection,
-    }
-}
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
 
 async fn setup() -> (
     axum::Router,
     chenxing_auth::sqlx::PgPool,
     std::path::PathBuf,
-    SharedDatabaseLock,
 ) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL");
-    db::migrate(&database).await.expect("migrations");
-    let lock = shared_database_lock(&database_url).await;
-    chenxing_auth::sqlx::query("TRUNCATE users RESTART IDENTITY CASCADE")
-        .execute(&database)
-        .await
-        .expect("empty users");
+    let database = db_isolation::isolated_pool("bootstrap_invariant", &database_url).await;
     let key_directory = std::env::temp_dir().join(format!("chenxing-bootstrap-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
@@ -66,10 +35,13 @@ async fn setup() -> (
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
-        api::router(AppState::new(config).await.expect("state")),
+        api::router(
+            AppState::new_with_pool(config, database.clone())
+                .await
+                .expect("state"),
+        ),
         database,
         key_directory,
-        lock,
     )
 }
 
@@ -84,7 +56,7 @@ async fn json(response: axum::response::Response) -> Value {
 
 #[tokio::test]
 async fn public_registration_cannot_consume_id_before_owner_bootstrap() {
-    let (router, database, key_directory, _lock) = setup().await;
+    let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let response = router
         .clone()
@@ -139,7 +111,7 @@ async fn public_registration_cannot_consume_id_before_owner_bootstrap() {
 
 #[tokio::test]
 async fn owner_bootstrap_returns_the_inserted_profile_and_rejects_repeat_calls() {
-    let (router, database, key_directory, _lock) = setup().await;
+    let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let username = format!("owner-{suffix}");
     let email = format!("owner-{suffix}@example.com");
@@ -207,7 +179,7 @@ async fn owner_bootstrap_returns_the_inserted_profile_and_rejects_repeat_calls()
 
 #[tokio::test]
 async fn owner_bootstrap_rejects_a_non_empty_database_without_an_owner() {
-    let (router, database, key_directory, _lock) = setup().await;
+    let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     chenxing_auth::sqlx::query(
         "INSERT INTO users (username, email, password_hash, created_at, updated_at)
@@ -259,7 +231,7 @@ async fn owner_bootstrap_rejects_a_non_empty_database_without_an_owner() {
 
 #[tokio::test]
 async fn external_identity_creation_cannot_consume_id_before_owner_bootstrap() {
-    let (_, database, key_directory, _lock) = setup().await;
+    let (_, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     chenxing_auth::sqlx::query(
         "INSERT INTO users (username, email, password_hash, created_at, updated_at)
@@ -310,7 +282,7 @@ async fn external_identity_creation_cannot_consume_id_before_owner_bootstrap() {
 
 #[tokio::test]
 async fn concurrent_external_identity_creation_rejects_duplicate_email() {
-    let (_, database, key_directory, _lock) = setup().await;
+    let (_, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let owner_email = format!("owner-{suffix}@example.com");
     chenxing_auth::sqlx::query(
@@ -399,7 +371,7 @@ async fn concurrent_external_identity_creation_rejects_duplicate_email() {
 
 #[tokio::test]
 async fn concurrent_external_identity_creation_reuses_the_same_identity() {
-    let (_, database, key_directory, _lock) = setup().await;
+    let (_, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     chenxing_auth::sqlx::query(
         "INSERT INTO users (id, username, email, password_hash, role, created_at, updated_at)

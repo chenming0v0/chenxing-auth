@@ -6,8 +6,7 @@ use axum::{
         header::{LOCATION, SET_COOKIE},
     },
 };
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
-use chenxing_auth::{api, config::Config, db, sessions::domain::Session, state::AppState};
+use chenxing_auth::{api, config::Config, sessions::domain::Session, state::AppState};
 use redis::AsyncCommands;
 use serde_json::Value;
 use time::OffsetDateTime;
@@ -15,30 +14,26 @@ use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
 
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+#[path = "support/oauth_flow.rs"]
+mod oauth_flow;
+
 // 迁移不再种子默认套餐：自助创建 Client 的用例必须自己给用户挂套餐。
 #[path = "support/plan_fixtures.rs"]
 mod plan_fixtures;
 
-/// `SharedPlanLock` 必须在整个测试期间存活，避免 `tests/plans.rs` 的
-/// `DELETE FROM plans` 删掉这里挂的私有套餐。
 async fn setup() -> (
     Router,
     AppState,
     chenxing_auth::sqlx::PgPool,
     std::path::PathBuf,
-    plan_fixtures::SharedPlanLock,
 ) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL");
-    db::migrate(&database).await.expect("migrations");
-    let plan_lock = plan_fixtures::shared_plan_lock(&database_url).await;
+    let database = db_isolation::isolated_pool("oauth_ui_retry", &database_url).await;
     let key_directory =
         std::env::temp_dir().join(format!("chenxing-oauth-ui-retry-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
@@ -53,14 +48,12 @@ async fn setup() -> (
     config.admin_token = "oauth-ui-retry-admin-token".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new(config).await.expect("state");
-    (
-        api::router(state.clone()),
-        state,
-        database,
-        key_directory,
-        plan_lock,
-    )
+    let state = AppState::new_with_pool(config, database.clone())
+        .await
+        .expect("state");
+    let router = api::router(state.clone());
+    oauth_flow::ensure_owner_bootstrapped(&router, "oauth_ui_retry").await;
+    (router, state, database, key_directory)
 }
 
 async fn json(response: axum::response::Response) -> Value {
@@ -112,7 +105,7 @@ fn session_cookie(session: &Session) -> String {
 
 #[tokio::test]
 async fn oauth_ui_approval_failure_keeps_pending_request_for_retry() {
-    let (router, state, database, key_directory, _plan_lock) = setup().await;
+    let (router, state, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let email = format!("oauth-ui-retry-{suffix}@example.com");
     let username = format!("oauth-ui-retry-{suffix}");

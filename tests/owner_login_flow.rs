@@ -7,6 +7,9 @@ use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+
 #[path = "support/oauth_flow.rs"]
 mod support;
 
@@ -14,7 +17,7 @@ use support::{cookie_header, ensure_owner_bootstrapped, json_body, test_state};
 
 #[tokio::test]
 async fn owner_login_issues_shared_session_and_csrf_cookies() {
-    let (state, database, key_directory) = test_state().await;
+    let (state, database, key_directory) = test_state("owner_login_flow").await;
     let router = api::router(state);
     let suffix = Uuid::new_v4().simple().to_string();
     ensure_owner_bootstrapped(&router, &suffix).await;

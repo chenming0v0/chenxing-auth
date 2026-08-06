@@ -12,9 +12,8 @@ use axum::{
     http::{Request, StatusCode},
 };
 use base64::{Engine, engine::general_purpose::STANDARD, engine::general_purpose::URL_SAFE_NO_PAD};
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use chenxing_auth::{
-    api, config::Config, db, oauth::authorization::ValidatedAuthorizationRequest,
+    api, config::Config, oauth::authorization::ValidatedAuthorizationRequest,
     sessions::domain::Session, state::AppState,
 };
 use serde_json::Value;
@@ -27,8 +26,8 @@ use uuid::Uuid;
 pub mod fixtures;
 
 pub use fixtures::{
-    DEFAULT_PLAN_CODE, SharedPlanLock, active_default_plan_count, clear_all_plans,
-    plan_status_and_default, seed_default_plan,
+    DEFAULT_PLAN_CODE, active_default_plan_count, clear_all_plans, plan_status_and_default,
+    seed_default_plan,
 };
 
 pub const ADMIN_TOKEN: &str = "plans-admin-token";
@@ -36,7 +35,8 @@ pub const REDIRECT_URI: &str = "https://plan.example/callback";
 
 /// 一个套餐测试的运行环境。
 ///
-/// `_plan_lock` 必须随环境一起活着：它把 `plans` 表的写入跨测试二进制串行化。
+/// 套餐前提由 schema 隔离保证（见 `support/db_isolation.rs`）：`plans` 表存在于
+/// 本二进制私有的 schema 中，`clear_all_plans` 只影响自己，不需要跨二进制锁。
 /// `default_plan_id` 是 [`test_state`] 播种的默认套餐 id —— 不再假设它等于 1，
 /// 因为种子删除后 identity 序列会继续增长。
 pub struct PlanTestEnv {
@@ -44,7 +44,6 @@ pub struct PlanTestEnv {
     pub database: chenxing_auth::sqlx::PgPool,
     pub key_directory: std::path::PathBuf,
     pub default_plan_id: i64,
-    _plan_lock: SharedPlanLock,
 }
 
 impl PlanTestEnv {
@@ -67,13 +66,7 @@ pub async fn test_state() -> PlanTestEnv {
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL is required for plan tests");
-    db::migrate(&database).await.expect("database migrations");
-    let plan_lock = fixtures::shared_plan_lock(&database_url).await;
+    let database = crate::db_isolation::isolated_pool("plans", &database_url).await;
     clear_all_plans(&database).await;
     let default_plan_id = seed_default_plan(&database).await;
     let key_directory = std::env::temp_dir().join(format!("chenxing-plans-{}", Uuid::new_v4()));
@@ -89,13 +82,14 @@ pub async fn test_state() -> PlanTestEnv {
     config.admin_token = ADMIN_TOKEN.to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new(config).await.expect("test state");
+    let state = AppState::new_with_pool(config, database.clone())
+        .await
+        .expect("test state");
     PlanTestEnv {
         state,
         database,
         key_directory,
         default_plan_id,
-        _plan_lock: plan_lock,
     }
 }
 

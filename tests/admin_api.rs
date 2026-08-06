@@ -2,12 +2,9 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
-use chenxing_auth::sqlx::{Connection, PgConnection};
 use chenxing_auth::{
     api,
     config::Config,
-    db,
     sessions::{cookies, domain::Session, store::SessionStore},
     state::AppState,
 };
@@ -15,78 +12,19 @@ use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-async fn clear_session_revocation_markers(connection: &mut redis::aio::MultiplexedConnection) {
-    let mut cursor = 0_u64;
-    loop {
-        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-            .arg(cursor)
-            .arg("MATCH")
-            .arg("chenxing:session:revoked-before:*")
-            .arg("COUNT")
-            .arg(100)
-            .query_async(connection)
-            .await
-            .expect("scan session revocation markers");
-        if !keys.is_empty() {
-            let _: usize = redis::AsyncCommands::del(connection, keys)
-                .await
-                .expect("delete session revocation markers");
-        }
-        cursor = next_cursor;
-        if cursor == 0 {
-            break;
-        }
-    }
-}
-
-struct SharedDatabaseLock {
-    _connection: PgConnection,
-}
-
-async fn shared_database_lock(database_url: &str) -> SharedDatabaseLock {
-    let mut connection = PgConnection::connect(database_url)
-        .await
-        .expect("database lock connection");
-    chenxing_auth::sqlx::query("BEGIN")
-        .execute(&mut connection)
-        .await
-        .expect("database lock transaction");
-    chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock(hashtext('chenxing-shared-reset'))")
-        .execute(&mut connection)
-        .await
-        .expect("database reset lock");
-    SharedDatabaseLock {
-        _connection: connection,
-    }
-}
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
 
 async fn setup() -> (
     axum::Router,
     chenxing_auth::sqlx::PgPool,
     std::path::PathBuf,
-    SharedDatabaseLock,
 ) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL");
-    db::migrate(&database).await.expect("migrations");
-    let lock = shared_database_lock(&database_url).await;
-    chenxing_auth::sqlx::query("TRUNCATE users RESTART IDENTITY CASCADE")
-        .execute(&database)
-        .await
-        .expect("reset identity test database");
-    let redis = redis::Client::open(redis_url.as_str()).expect("Redis");
-    let mut redis_connection = redis
-        .get_multiplexed_async_connection()
-        .await
-        .expect("Redis connection");
-    clear_session_revocation_markers(&mut redis_connection).await;
+    let database = db_isolation::isolated_pool("admin_api", &database_url).await;
     let key_directory = std::env::temp_dir().join(format!("chenxing-admin-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
@@ -101,10 +39,13 @@ async fn setup() -> (
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
-        api::router(AppState::new(config).await.expect("state")),
+        api::router(
+            AppState::new_with_pool(config, database.clone())
+                .await
+                .expect("state"),
+        ),
         database,
         key_directory,
-        lock,
     )
 }
 
@@ -117,14 +58,13 @@ async fn json(response: axum::response::Response) -> Value {
     .expect("JSON")
 }
 
-async fn browser_session(database_url: &str, redis_url: &str, user_id: i64) -> (String, String) {
-    let database = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(database_url)
-        .await
-        .expect("session PostgreSQL");
+async fn browser_session(
+    database: &chenxing_auth::sqlx::PgPool,
+    redis_url: &str,
+    user_id: i64,
+) -> (String, String) {
     let redis = redis::Client::open(redis_url).expect("session Redis");
-    let store = SessionStore::with_metadata_and_key(redis, database, [0; 32]);
+    let store = SessionStore::with_metadata_and_key(redis, database.clone(), [0; 32]);
     let mut session = Session::new(user_id.to_string(), std::time::Duration::from_secs(3600))
         .expect("browser session");
     store
@@ -143,7 +83,7 @@ async fn browser_session(database_url: &str, redis_url: &str, user_id: i64) -> (
 
 #[tokio::test]
 async fn bootstrap_admin_can_login_and_use_cookie_session() {
-    let (router, database, key_directory, _lock) = setup().await;
+    let (router, database, key_directory) = setup().await;
     let username = format!("admin-{}", Uuid::new_v4().simple());
     let email = format!("{username}@example.com");
     let password = "1234567890";
@@ -369,9 +309,7 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
 
 #[tokio::test]
 async fn owner_role_mutation_is_owner_only_and_updates_existing_sessions() {
-    let (router, database, key_directory, _lock) = setup().await;
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let (router, database, key_directory) = setup().await;
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
     let suffix = Uuid::new_v4().simple().to_string();
@@ -419,8 +357,7 @@ async fn owner_role_mutation_is_owner_only_and_updates_existing_sessions() {
         .as_i64()
         .expect("managed user id");
 
-    let (managed_cookie, managed_csrf) =
-        browser_session(&database_url, &redis_url, managed_id).await;
+    let (managed_cookie, managed_csrf) = browser_session(&database, &redis_url, managed_id).await;
     let response = router
         .clone()
         .oneshot(
@@ -462,7 +399,7 @@ async fn owner_role_mutation_is_owner_only_and_updates_existing_sessions() {
         .expect("demoted session response");
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 
-    let (owner_cookie, owner_csrf) = browser_session(&database_url, &redis_url, 1).await;
+    let (owner_cookie, owner_csrf) = browser_session(&database, &redis_url, 1).await;
     let response = router
         .clone()
         .oneshot(
@@ -545,9 +482,7 @@ async fn owner_role_mutation_is_owner_only_and_updates_existing_sessions() {
 /// 输入错误落到 400/409 而不是 500、提升角色时权限被抬到 ManageRoles。
 #[tokio::test]
 async fn admin_user_creation_covers_success_validation_and_role_escalation() {
-    let (router, database, key_directory, _lock) = setup().await;
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let (router, database, key_directory) = setup().await;
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
     let suffix = Uuid::new_v4().simple().to_string();
@@ -686,7 +621,7 @@ async fn admin_user_creation_covers_success_validation_and_role_escalation() {
     .expect("create admin response");
     assert_eq!(response.status(), StatusCode::CREATED);
     let admin_id = json(response).await["id"].as_i64().expect("admin id");
-    let (admin_cookie, admin_csrf) = browser_session(&database_url, &redis_url, admin_id).await;
+    let (admin_cookie, admin_csrf) = browser_session(&database, &redis_url, admin_id).await;
 
     let escalate = |role: &'static str| {
         router.clone().oneshot(
@@ -772,7 +707,7 @@ async fn admin_user_creation_covers_success_validation_and_role_escalation() {
 
 #[tokio::test]
 async fn list_users_enforces_server_side_limit() {
-    let (router, database, key_directory, _lock) = setup().await;
+    let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
 
     // 直接批量插入，避免 Argon2 哈希让测试变慢；password_hash 不参与本用例校验。

@@ -4,25 +4,24 @@ use axum::{
     http::{Request, StatusCode, header::SET_COOKIE},
 };
 use chenxing_auth::auth_factors::{crypto::decrypt_totp_secret, repository};
-use chenxing_auth::sqlx::postgres::PgPoolOptions;
-use chenxing_auth::{api, config::Config, db, state::AppState};
+use chenxing_auth::{api, config::Config, state::AppState};
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
 use totp_rs::{Algorithm, TOTP};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+#[path = "support/oauth_flow.rs"]
+mod oauth_flow;
+
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL");
-    db::migrate(&database).await.expect("migrations");
+    let database = db_isolation::isolated_pool("user_sessions_api", &database_url).await;
     let key_directory =
         std::env::temp_dir().join(format!("chenxing-session-ui-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
@@ -36,11 +35,14 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     .expect("config");
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(AppState::new(config).await.expect("state")),
-        database,
-        key_directory,
-    )
+    let router = api::router(
+        AppState::new_with_pool(config, database.clone())
+            .await
+            .expect("state"),
+    );
+    oauth_flow::ensure_owner_bootstrapped(&router, "user_sessions_api").await;
+    db_isolation::isolate_user_ids(&database, "user_sessions_api").await;
+    (router, database, key_directory)
 }
 
 async fn json(response: axum::response::Response) -> Value {
@@ -97,7 +99,13 @@ async fn register(router: &Router, username: &str, email: &str, password: &str) 
     assert_eq!(response.status(), StatusCode::CREATED);
 }
 
-async fn login(router: &Router, identifier: &str, email: &str, password: &str) -> (String, String) {
+async fn login(
+    router: &Router,
+    database: &chenxing_auth::sqlx::PgPool,
+    identifier: &str,
+    email: &str,
+    password: &str,
+) -> (String, String) {
     let response = router
         .clone()
         .oneshot(
@@ -115,7 +123,7 @@ async fn login(router: &Router, identifier: &str, email: &str, password: &str) -
     if response.status() == StatusCode::ACCEPTED {
         let pending = json(response).await;
         if pending["status"] == "factor_required" {
-            let code = current_totp_code(email).await;
+            let code = current_totp_code(database, email).await;
             let response = router
                 .clone()
                 .oneshot(
@@ -190,37 +198,34 @@ async fn login(router: &Router, identifier: &str, email: &str, password: &str) -
     (cookie_header, csrf_token)
 }
 
-async fn current_totp_code(email: &str) -> String {
+async fn current_totp_code(database: &chenxing_auth::sqlx::PgPool, email: &str) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time")
         .as_secs();
-    totp_code_at(email, now).await
+    totp_code_at(database, email, now).await
 }
 
-async fn next_totp_code(email: &str) -> String {
+async fn next_totp_code(database: &chenxing_auth::sqlx::PgPool, email: &str) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time")
         .as_secs();
     let next_timestep = (now / 30 + 1) * 30;
-    totp_code_at(email, next_timestep).await
+    totp_code_at(database, email, next_timestep).await
 }
 
-async fn totp_code_at(email: &str, timestamp: u64) -> String {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    let database = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&database_url)
-        .await
-        .expect("PostgreSQL");
+async fn totp_code_at(
+    database: &chenxing_auth::sqlx::PgPool,
+    email: &str,
+    timestamp: u64,
+) -> String {
     let user_id: (i64,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
         .bind(email)
-        .fetch_one(&database)
+        .fetch_one(database)
         .await
         .expect("user lookup");
-    let encrypted = repository::find_totp_secret(&database, user_id.0)
+    let encrypted = repository::find_totp_secret(database, user_id.0)
         .await
         .expect("TOTP lookup")
         .expect("TOTP factor");
@@ -249,8 +254,9 @@ async fn user_can_update_profile_list_sessions_and_rotate_password() {
     let new_password = "new correct password";
     let username = format!("sessions-{suffix}");
     register(&router, &username, &email, old_password).await;
-    let (first_cookies, first_csrf) = login(&router, &username, &email, old_password).await;
-    let (second_cookies, _) = login(&router, &email, &email, old_password).await;
+    let (first_cookies, first_csrf) =
+        login(&router, &database, &username, &email, old_password).await;
+    let (second_cookies, _) = login(&router, &database, &email, &email, old_password).await;
 
     let response = router
         .clone()
@@ -341,7 +347,7 @@ async fn user_can_update_profile_list_sessions_and_rotate_password() {
                     serde_json::json!({
                         "identifier": email,
                         "password": new_password,
-                        "totp_code": next_totp_code(&email).await
+                        "totp_code": next_totp_code(&database, &email).await
                     })
                     .to_string(),
                 ))
