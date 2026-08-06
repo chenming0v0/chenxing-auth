@@ -3,17 +3,45 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header::CONTENT_TYPE},
 };
-use chenxing_auth::{api, state::AppState};
+use chenxing_auth::{api, config::Config, state::AppState};
 use tower::ServiceExt;
+use uuid::Uuid;
 
-async fn test_router() -> Router {
-    api::router(AppState::for_test().await)
+#[path = "support/db_isolation.rs"]
+mod db_isolation;
+
+async fn test_router() -> (Router, std::path::PathBuf) {
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let database = db_isolation::isolated_pool("api", &database_url).await;
+    let key_directory = std::env::temp_dir().join(format!("chenxing-api-{}", Uuid::new_v4()));
+    let mut config = Config::from_values_with_issuer(
+        "127.0.0.1".to_owned(),
+        3000,
+        "http://127.0.0.1:3000".to_owned(),
+        database_url,
+        redis_url,
+        3600,
+    )
+    .expect("config");
+    config.cookie_secure = false;
+    config.key_directory = key_directory.to_string_lossy().into_owned();
+    (
+        api::router(
+            AppState::new_with_pool(config, database)
+                .await
+                .expect("state"),
+        ),
+        key_directory,
+    )
 }
 
 #[tokio::test]
 async fn liveness_endpoint_reports_process_status_without_dependencies() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .uri("/health/live")
@@ -24,12 +52,13 @@ async fn liveness_endpoint_reports_process_status_without_dependencies() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn readiness_endpoint_returns_a_dependency_agnostic_failure_body() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .uri("/health/ready")
@@ -50,12 +79,13 @@ async fn readiness_endpoint_returns_a_dependency_agnostic_failure_body() {
     assert!(!body.contains("postgres"));
     assert!(!body.contains("redis://"));
     assert!(!body.contains("127.0.0.1"));
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn authorized_apps_endpoint_requires_a_session() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .uri("/api/v1/auth/authorized-apps")
@@ -66,12 +96,13 @@ async fn authorized_apps_endpoint_requires_a_session() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn openid_configuration_publishes_standard_endpoints() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .uri("/.well-known/openid-configuration")
@@ -94,12 +125,13 @@ async fn openid_configuration_publishes_standard_endpoints() {
         configuration["token_endpoint_auth_methods_supported"],
         serde_json::json!(["client_secret_basic", "client_secret_post", "none"])
     );
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn openid_configuration_allows_newapi_origin() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .uri("/.well-known/openid-configuration")
@@ -117,12 +149,13 @@ async fn openid_configuration_allows_newapi_origin() {
             .and_then(|value| value.to_str().ok()),
         Some("*")
     );
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn jwks_endpoint_returns_a_key_set_document() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .uri("/.well-known/jwks.json")
@@ -133,12 +166,13 @@ async fn jwks_endpoint_returns_a_key_set_document() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn registration_endpoint_rejects_invalid_email_without_database_call() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -153,6 +187,7 @@ async fn registration_endpoint_rejects_invalid_email_without_database_call() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 /// POST 到管理侧用户创建端点必须落到处理器上。
@@ -160,8 +195,8 @@ async fn registration_endpoint_rejects_invalid_email_without_database_call() {
 /// 404/405 会说明路由没注册或只挂了 GET；401 才说明请求进了守卫（Issue #133）。
 #[tokio::test]
 async fn admin_user_creation_endpoint_rejects_unauthenticated_requests() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -176,11 +211,13 @@ async fn admin_user_creation_endpoint_rejects_unauthenticated_requests() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 /// 角色与状态词表在守卫之前解析，因此非法值不需要数据库即可拒绝。
 #[tokio::test]
 async fn admin_user_creation_rejects_unknown_role_and_status_without_database_call() {
+    let (router, key_directory) = test_router().await;
     for (body, code) in [
         (
             r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery","role":"superuser"}"#,
@@ -196,8 +233,8 @@ async fn admin_user_creation_rejects_unknown_role_and_status_without_database_ca
             "invalid_status",
         ),
     ] {
-        let response = test_router()
-            .await
+        let response = router
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -216,12 +253,13 @@ async fn admin_user_creation_rejects_unknown_role_and_status_without_database_ca
         let error: serde_json::Value = serde_json::from_slice(&body).expect("JSON error");
         assert_eq!(error["code"], code);
     }
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn login_endpoint_rejects_invalid_identifier_without_database_call() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -239,18 +277,20 @@ async fn login_endpoint_rejects_invalid_identifier_without_database_call() {
         .expect("response body");
     let error: serde_json::Value = serde_json::from_slice(&body).expect("JSON error");
     assert_eq!(error["code"], "invalid_credentials");
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn unknown_protocol_paths_return_json_not_found_instead_of_spa_html() {
+    let (router, key_directory) = test_router().await;
     for path in [
         "/api/v1/does-not-exist",
         "/.well-known/does-not-exist",
         "/oauth/does-not-exist",
         "/health/does-not-exist",
     ] {
-        let response = test_router()
-            .await
+        let response = router
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri(path)
@@ -277,12 +317,13 @@ async fn unknown_protocol_paths_return_json_not_found_instead_of_spa_html() {
         let error: serde_json::Value = serde_json::from_slice(&body).expect("JSON error");
         assert_eq!(error["code"], "not_found", "{path} error code");
     }
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn unknown_static_asset_path_returns_not_found() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .uri("/assets/does-not-exist.js")
@@ -293,12 +334,13 @@ async fn unknown_static_asset_path_returns_not_found() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn unknown_frontend_route_returns_spa_html() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .uri("/some-frontend-route")
@@ -316,4 +358,5 @@ async fn unknown_frontend_route_returns_spa_html() {
             .and_then(|value| value.to_str().ok()),
         Some("text/html; charset=utf-8")
     );
+    let _ = std::fs::remove_dir_all(key_directory);
 }

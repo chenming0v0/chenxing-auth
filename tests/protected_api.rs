@@ -13,8 +13,32 @@ use uuid::Uuid;
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
 
-async fn test_router() -> Router {
-    api::router(AppState::for_test().await)
+async fn test_router() -> (Router, std::path::PathBuf) {
+    let key_directory = std::env::temp_dir().join(format!("chenxing-protected-{}", Uuid::new_v4()));
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let database = db_isolation::isolated_pool("protected_api", &database_url).await;
+    let mut config = Config::from_values_with_issuer(
+        "127.0.0.1".to_owned(),
+        3000,
+        "http://127.0.0.1:3000".to_owned(),
+        database_url,
+        redis_url,
+        3600,
+    )
+    .expect("test configuration");
+    config.cookie_secure = false;
+    config.key_directory = key_directory.to_string_lossy().into_owned();
+    (
+        api::router(
+            AppState::new_with_pool(config, database)
+                .await
+                .expect("test state"),
+        ),
+        key_directory,
+    )
 }
 
 async fn admin_router() -> (Router, String, std::path::PathBuf) {
@@ -37,8 +61,8 @@ async fn admin_router() -> (Router, String, std::path::PathBuf) {
 
 #[tokio::test]
 async fn userinfo_requires_bearer_token() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .uri("/oauth/userinfo")
@@ -49,11 +73,12 @@ async fn userinfo_requires_bearer_token() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn admin_routes_forward_to_the_react_spa() {
-    let router = test_router().await;
+    let (router, key_directory) = test_router().await;
     for (uri, expected) in [
         ("/admin/login", "/login"),
         ("/admin", "/admin"),
@@ -79,12 +104,13 @@ async fn admin_routes_forward_to_the_react_spa() {
             "{uri}"
         );
     }
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn admin_login_post_redirects_to_react_login() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .method(Method::POST)
@@ -100,11 +126,12 @@ async fn admin_login_post_redirects_to_react_login() {
         response.headers()[axum::http::header::LOCATION],
         "/login?returnTo=%2Fadmin%2Fusers%3Fpage%3D2&state=login-state"
     );
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn admin_redirects_preserve_query_parameters() {
-    let router = test_router().await;
+    let (router, key_directory) = test_router().await;
     for (uri, expected) in [
         ("/admin?tab=overview", "/admin?tab=overview"),
         (
@@ -138,6 +165,7 @@ async fn admin_redirects_preserve_query_parameters() {
             "{uri}"
         );
     }
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[test]
@@ -160,8 +188,8 @@ fn admin_redirect_targets_exist_in_react_app() {
 
 #[tokio::test]
 async fn client_management_requires_admin_bearer_token() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -176,12 +204,13 @@ async fn client_management_requires_admin_bearer_token() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
 async fn signing_key_rotation_requires_admin_bearer_token() {
-    let response = test_router()
-        .await
+    let (router, key_directory) = test_router().await;
+    let response = router
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -193,6 +222,7 @@ async fn signing_key_rotation_requires_admin_bearer_token() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]

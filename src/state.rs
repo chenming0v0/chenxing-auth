@@ -209,17 +209,4 @@ impl AppState {
             external_login_states,
         })
     }
-
-    pub async fn for_test() -> Self {
-        let config = Config::from_values(
-            "127.0.0.1".to_owned(),
-            3000,
-            "postgres://localhost/chenxing_auth".to_owned(),
-            "redis://localhost".to_owned(),
-            3600,
-        )
-        .expect("test configuration");
-
-        Self::new(config).await.expect("test state")
-    }
 }
