@@ -1,6 +1,6 @@
 use axum::{
     Router,
-    http::HeaderMap,
+    http::{HeaderMap, Request},
     routing::{delete, get, post},
 };
 use std::net::SocketAddr;
@@ -65,6 +65,15 @@ use crate::{
 
 use discovery::{jwks, openid_configuration};
 use health::{health, health_live, health_ready};
+
+/// 请求 query 可能包含 OAuth 凭据和状态值，不能进入 HTTP trace span。
+fn request_span<B>(request: &Request<B>) -> tracing::Span {
+    tracing::debug_span!(
+        "request",
+        method = %request.method(),
+        uri = %request.uri().path(),
+    )
+}
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -246,7 +255,7 @@ pub fn router(state: AppState) -> Router {
         // 路由都不匹配时才生效，所以 /api/*、/health 等不会被静态服务抢走。
         .fallback_service(static_files::static_service())
         .with_state(state)
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(request_span))
 }
 
 /// 从请求对端地址和头部解析真实客户端 IP。
