@@ -44,18 +44,13 @@ const TOMBSTONE_PREFIX: &str = "cx:refresh:tombstone:";
 /// `Consumed` 表示 token 被正常单次消费/轮换，是 replay 检测的候选；
 /// `ExplicitRevoke` 表示主动撤销，不应被当成凭据重放；
 /// `FamilyRevoked` 表示 family 已经完成撤销，重复提交不应再次执行撤销脚本。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TombstoneState {
+    #[default]
     Consumed,
     ExplicitRevoke,
     FamilyRevoked,
-}
-
-impl Default for TombstoneState {
-    fn default() -> Self {
-        Self::Consumed
-    }
 }
 
 /// 墓碑载荷（存入 Redis，供重放检测时校验 client_id 和消费状态）。

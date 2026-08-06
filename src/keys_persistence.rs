@@ -13,7 +13,7 @@ use crate::key_storage::{
 };
 
 use super::{
-    KeyMaterial, KeyManagerError, PrivateKeyDer, generate_rsa_key, key_material,
+    KeyMaterial, KeyManagerError, generate_rsa_key, key_material,
     prune_materials, within_retention_at,
 };
 

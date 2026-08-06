@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::{
-    code::AuthorizationCode,
     refresh::RefreshToken,
     session::active_user_id,
 };
