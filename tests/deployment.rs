@@ -228,6 +228,7 @@ fn database_uses_explicit_unified_baseline_migrations() {
             std::ffi::OsString::from("0009_system_settings.sql"),
             std::ffi::OsString::from("0010_consent_revoked_at.sql"),
             std::ffi::OsString::from("0011_oauth_provider_pkce.sql"),
+            std::ffi::OsString::from("0012_restore_basic_plan.sql"),
         ]
     );
 }
