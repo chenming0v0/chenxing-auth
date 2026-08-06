@@ -712,7 +712,11 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
     let _: usize = connection
         .del(&[
             session_key,
-            format!("chenxing:oauth:code:{}", code.value),
+            format!(
+                "chenxing:oauth:code:{}",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(sha2::Sha256::digest(code.value.as_bytes()))
+            ),
             format!("chenxing:oauth:refresh:{}", refresh.value),
             format!("chenxing:oauth:refresh:{}", rotatable.value),
             format!("chenxing:oauth:refresh:{}", rotated.value),

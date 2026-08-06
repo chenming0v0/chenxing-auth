@@ -1,4 +1,6 @@
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use redis::{AsyncCommands, Client, Script};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::code::AuthorizationCode;
@@ -96,6 +98,9 @@ impl AuthorizationCodeStore {
     }
 
     fn key(value: &str) -> String {
-        format!("chenxing:oauth:code:{value}")
+        format!(
+            "chenxing:oauth:code:{}",
+            URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()))
+        )
     }
 }
