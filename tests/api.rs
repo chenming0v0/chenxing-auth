@@ -56,6 +56,30 @@ async fn liveness_endpoint_reports_process_status_without_dependencies() {
 }
 
 #[tokio::test]
+async fn liveness_endpoint_includes_security_headers_without_hsts_for_http_issuer() {
+    let (router, key_directory) = test_router().await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/health/live")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.headers()["x-frame-options"], "DENY");
+    assert_eq!(
+        response.headers()["content-security-policy"],
+        "frame-ancestors 'none'"
+    );
+    assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(response.headers()["referrer-policy"], "no-referrer");
+    assert!(response.headers().get("strict-transport-security").is_none());
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
 async fn readiness_endpoint_returns_a_dependency_agnostic_failure_body() {
     let (router, key_directory) = test_router().await;
     let response = router

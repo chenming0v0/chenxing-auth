@@ -1,6 +1,8 @@
 use axum::{
     Router,
     http::{HeaderMap, Request},
+    middleware::map_response,
+    response::Response,
     routing::{delete, get, post},
 };
 use std::net::SocketAddr;
@@ -10,6 +12,7 @@ use crate::config::TrustedProxies;
 
 mod discovery;
 mod health;
+mod security_headers;
 mod static_files;
 
 use crate::{
@@ -76,6 +79,8 @@ fn request_span<B>(request: &Request<B>) -> tracing::Span {
 }
 
 pub fn router(state: AppState) -> Router {
+    let hsts_enabled = security_headers::hsts_enabled(&state.config.issuer_url);
+
     Router::new()
         .route("/health", get(health))
         .route("/health/live", get(health_live))
@@ -256,6 +261,9 @@ pub fn router(state: AppState) -> Router {
         .fallback_service(static_files::static_service())
         .with_state(state)
         .layer(TraceLayer::new_for_http().make_span_with(request_span))
+        .layer(map_response(move |response: Response| {
+            security_headers::apply(response, hsts_enabled)
+        }))
 }
 
 /// 从请求对端地址和头部解析真实客户端 IP。
