@@ -12,13 +12,14 @@
 use std::time::Duration;
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 use time::OffsetDateTime;
 
 use super::{
     crypto,
-    domain::{Session, SessionPayload},
+    domain::{
+        Session, SessionLookup, SessionPayload, session_token_hash_bytes,
+    },
 };
 use crate::{
     config::AuthEncryptionKeyRing,
@@ -144,8 +145,20 @@ impl SessionStore {
         }
     }
 
+    /// Look up active session metadata without requiring or reconstructing the plaintext token.
+    pub async fn find_by_token_hash(
+        &self,
+        token_hash: &[u8],
+    ) -> Result<Option<SessionLookup>, SessionStoreError> {
+        if self.metadata.is_some() {
+            postgres::find_with_metadata_by_token_hash(self, token_hash).await
+        } else {
+            redis_only::find_redis_only_by_token_hash(self, token_hash).await
+        }
+    }
+
     pub async fn revoke(&self, token: &str) -> Result<(), SessionStoreError> {
-        let hash = Sha256::digest(token.as_bytes()).to_vec();
+        let hash = session_token_hash_bytes(token).to_vec();
         if self.metadata.is_none() {
             redis_only::revoke_redis_only(self, &hash).await
         } else {
@@ -205,7 +218,7 @@ impl SessionStore {
     }
 
     pub(super) fn key(&self, token: &str) -> String {
-        self.key_hash(&Sha256::digest(token.as_bytes()))
+        self.key_hash(&session_token_hash_bytes(token))
     }
 
     pub(super) fn key_hash(&self, hash: &[u8]) -> String {

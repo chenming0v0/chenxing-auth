@@ -1,4 +1,5 @@
 use crate::oauth::request_store::AuthorizationRequestStore;
+use crate::sessions::domain::session_token_hash;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum PendingRequestBindingError {
@@ -26,17 +27,18 @@ pub(crate) async fn bind_pending_request(
     if pending.request_id != request_id {
         return Err(PendingRequestBindingError::Invalid);
     }
+    let session_hash = session_token_hash(session_token);
     match (holder_hash, pending.holder_hash.as_deref()) {
         (Some(holder_hash), Some(stored_hash)) if holder_hash == stored_hash => {}
         _ => return Err(PendingRequestBindingError::Invalid),
     }
-    match pending.session_id.as_deref() {
+    match pending.session_token_hash.as_deref() {
         None => {}
-        Some(existing) if existing == session_token => return Ok(()),
+        Some(existing) if existing == session_hash => return Ok(()),
         Some(_) => return Err(PendingRequestBindingError::Invalid),
     }
     let original_pending = pending.clone();
-    pending.session_id = Some(session_token.to_owned());
+    pending.session_token_hash = Some(session_hash.clone());
     match store
         .replace_if_matches(request_id, &original_pending, &pending)
         .await
@@ -45,7 +47,7 @@ pub(crate) async fn bind_pending_request(
         Ok(false) => match store.find(request_id).await {
             Ok(Some(current))
                 if current.request_id == request_id
-                    && current.session_id.as_deref() == Some(session_token) =>
+                    && current.session_token_hash.as_deref() == Some(session_hash.as_str()) =>
             {
                 Ok(())
             }
@@ -73,7 +75,7 @@ pub(crate) async fn bind_pending_request(
 mod tests {
     use super::{PendingRequestBindingError, bind_pending_request};
     use crate::oauth::{consent::PendingAuthorization, request_store::AuthorizationRequestStore};
-    use crate::sessions::cookies;
+    use crate::sessions::{cookies, domain::session_token_hash};
 
     fn store() -> AuthorizationRequestStore {
         let url =
@@ -91,7 +93,7 @@ mod tests {
             nonce: None,
             code_challenge: "challenge".to_owned(),
             code_challenge_method: "S256".to_owned(),
-            session_id: None,
+            session_token_hash: None,
             holder_hash: Some(cookies::authz_holder_hash("test-holder")),
         }
     }
@@ -133,22 +135,30 @@ mod tests {
             .await
             .expect("find bound request")
             .expect("bound request");
-        let winning_session = bound.session_id.expect("winning session");
-        assert!(matches!(
-            winning_session.as_str(),
-            "session-a" | "session-b"
-        ));
+        let winning_session_hash = bound
+            .session_token_hash
+            .expect("winning session hash");
+        let first_session_hash = session_token_hash(first_session);
+        let second_session_hash = session_token_hash(second_session);
+        assert!(
+            winning_session_hash == first_session_hash
+                || winning_session_hash == second_session_hash
+        );
         assert_eq!(
             bind_pending_request(
                 &store,
                 &request.request_id,
-                &winning_session,
+                if winning_session_hash == first_session_hash {
+                    first_session
+                } else {
+                    second_session
+                },
                 Some(holder_hash.as_str()),
             )
             .await,
             Ok(())
         );
-        let losing_session = if winning_session == first_session {
+        let losing_session = if winning_session_hash == first_session_hash {
             second_session
         } else {
             first_session
@@ -225,7 +235,7 @@ mod tests {
                 .await
                 .expect("find pending request")
                 .expect("pending request")
-                .session_id,
+                .session_token_hash,
             None
         );
         store
@@ -244,7 +254,7 @@ mod tests {
                 uuid::Uuid::new_v4().simple()
             ),
         );
-        request.session_id = Some("session-a".to_owned());
+        request.session_token_hash = Some(session_token_hash("session-a"));
         store.save(&request).await.expect("save pending request");
         let mismatched_holder_hash = cookies::authz_holder_hash("other-holder");
 

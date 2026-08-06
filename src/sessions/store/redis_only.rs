@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 
 use super::{SessionStore, SessionStoreError, timestamp_watermark};
 use crate::{
-    sessions::domain::{Session, SessionPayload},
+    sessions::domain::{Session, SessionLookup, SessionPayload},
     users::domain::UserId,
 };
 
@@ -73,6 +73,34 @@ pub(super) async fn find_redis_only(
         return Ok(None);
     }
     Ok(Some(session))
+}
+
+pub(super) async fn find_redis_only_by_token_hash(
+    store: &SessionStore,
+    token_hash: &[u8],
+) -> Result<Option<SessionLookup>, SessionStoreError> {
+    let mut connection = store.client.get_multiplexed_async_connection().await?;
+    let payload: Option<Vec<u8>> = connection.get(store.key_hash(token_hash)).await?;
+    let Some(payload) = payload else {
+        return Ok(None);
+    };
+    let Some(stored_payload) = store.decode_payload(&payload)? else {
+        return Ok(None);
+    };
+    let lookup = stored_payload.into_lookup();
+    if !lookup.is_active() {
+        return Ok(None);
+    }
+    let marker: Option<String> = connection
+        .get(store.redis_only_revocation_key(&lookup.user_id))
+        .await?;
+    if marker
+        .and_then(|value| value.parse::<i128>().ok())
+        .is_some_and(|before| lookup.created_at.unix_timestamp_nanos() <= before)
+    {
+        return Ok(None);
+    }
+    Ok(Some(lookup))
 }
 
 pub(super) async fn revoke_redis_only(

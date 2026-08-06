@@ -9,7 +9,11 @@ use super::{
     session::active_user_id,
     token::issue_access_token,
 };
-use crate::{state::AppState, users::domain::UserId};
+use crate::{
+    sessions::domain::decode_session_token_hash,
+    state::AppState,
+    users::domain::UserId,
+};
 
 #[path = "refresh_use_case.rs"]
 mod refresh_use_case;
@@ -299,18 +303,26 @@ async fn issue_id_token(
 /// 校验授权码绑定的会话仍然有效，并返回该会话的认证时刻。
 ///
 /// 返回的时间戳是会话建立时间，用作 ID Token 的 `auth_time`，而不是令牌签发时刻。
-/// `session_id` 为 `None` 时走无浏览器会话的兼容路径，不声明 `auth_time`。
+/// `session_token_hash` 为 `None` 时走无浏览器会话的兼容路径，不声明 `auth_time`。
 async fn authorization_code_session_auth_time(
     state: &AppState,
     code: &AuthorizationCode,
 ) -> Result<Option<i64>, OAuthError> {
-    let Some(session_token) = code.session_id.as_deref() else {
+    let Some(session_hash) = code.session_token_hash.as_deref() else {
         return Ok(None);
     };
-    match state.sessions.find(session_token).await {
-        Ok(Some(session)) if session.is_active() => Ok(Some(session.created_at.unix_timestamp())),
+    let Some(session_hash) = decode_session_token_hash(session_hash) else {
+        tracing::info!(
+            client_id = %code.client_id,
+            "OAuth authorization code rejected: session binding is invalid"
+        );
+        return Err(OAuthError::invalid_grant());
+    };
+    match state.sessions.find_by_token_hash(&session_hash).await {
+        Ok(Some(session)) if session.is_active() => {
+            Ok(Some(session.created_at.unix_timestamp()))
+        }
         Ok(_) => {
-            // 不记录会话令牌，它是凭据。
             tracing::info!(
                 client_id = %code.client_id,
                 "OAuth authorization code rejected: issuing session is no longer active"

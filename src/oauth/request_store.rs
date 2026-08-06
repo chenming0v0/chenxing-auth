@@ -261,7 +261,7 @@ mod tests {
             nonce: None,
             code_challenge: "challenge".to_owned(),
             code_challenge_method: "S256".to_owned(),
-            session_id: None,
+            session_token_hash: None,
             holder_hash: None,
         }
     }

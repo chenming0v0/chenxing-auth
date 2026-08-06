@@ -1,4 +1,5 @@
 use chenxing_auth::oauth::code::{AuthorizationCode, CodeError};
+use chenxing_auth::sessions::domain::session_token_hash;
 use time::OffsetDateTime;
 
 #[test]
@@ -46,7 +47,11 @@ fn authorization_code_binds_the_issuing_session() {
         None,
         Some("session-token".to_owned()),
     );
-    assert_eq!(bound.session_id.as_deref(), Some("session-token"));
+    let expected_hash = session_token_hash("session-token");
+    assert_eq!(
+        bound.session_token_hash.as_deref(),
+        Some(expected_hash.as_str())
+    );
 
     let unbound = AuthorizationCode::new(
         "cx_project".to_owned(),
@@ -55,7 +60,7 @@ fn authorization_code_binds_the_issuing_session() {
         vec!["openid".to_owned()],
         "challenge".to_owned(),
     );
-    assert!(unbound.session_id.is_none());
+    assert!(unbound.session_token_hash.is_none());
 }
 
 #[test]

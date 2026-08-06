@@ -33,13 +33,13 @@ pub struct ValidatedAuthorizationRequest {
     pub nonce: Option<String>,
     pub code_challenge: String,
     pub owner_user_id: Option<UserId>,
-    /// 发起该授权请求的浏览器会话令牌，用于把签发出的授权码绑定到会话。
+    /// 发起该授权请求的浏览器会话令牌 SHA-256 摘要，用于把签发出的授权码绑定到会话。
     ///
     /// 协议校验阶段拿不到会话（`/oauth/authorize` 的查询参数里不该、也不能带
     /// 会话凭据，否则会话令牌会进 Referer 和访问日志），因此
     /// `validate_authorization_request` 一律填 `None`，由持有会话的调用方
     /// （`handlers::authorize_request` / 授权确认页）在校验之后回填。
-    pub session_id: Option<String>,
+    pub session_token_hash: Option<String>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -108,6 +108,6 @@ pub fn validate_authorization_request(
         code_challenge: code_challenge.to_owned(),
         owner_user_id: Some(client.owner_user_id).flatten(),
         // 会话绑定由持有会话的调用方回填，见字段文档。
-        session_id: None,
+        session_token_hash: None,
     })
 }
