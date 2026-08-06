@@ -192,8 +192,8 @@ impl KeyManager {
             )
         };
         let (key_id, der) = generate_rsa_key()?;
-        prune_materials(directory.as_ref(), &key_id, &mut materials, retention, now);
         materials.insert(key_id.clone(), key_material(der.clone(), now));
+        prune_materials(directory.as_ref(), &key_id, &mut materials, retention, now);
         let next_state = build_key_state(directory.clone(), retention, key_id.clone(), materials)?;
 
         if let Some(directory) = directory.as_ref()
@@ -477,7 +477,15 @@ fn within_retention_at(
     let Ok(retention) = TimeDuration::try_from(retention) else {
         return false;
     };
-    now >= created_at && now - created_at <= retention
+    // created_at 晚于 now 说明这个 key 是在该时间快照之后写入的：并发轮换各自在
+    // 抢锁之前捕获 now，后执行的轮换可能持有更早的快照。晚于参照时刻创建的 key
+    // 不可能已经超过自创建起算的保留期，必须保留。
+    // 这也符合"轮换时保留必要的旧公钥验证窗口"：宁可多留一瞬，不可误删仍在 JWKS
+    // 中公布的验证密钥。
+    if now < created_at {
+        return true;
+    }
+    now - created_at <= retention
 }
 
 fn key_file_name(key_id: &str) -> String {
