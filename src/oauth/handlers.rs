@@ -15,10 +15,14 @@ use super::{
         authorization_quota_redirect, pending_from_validated, restore_pending_after_failure,
     },
     consent::PendingAuthorization,
-    request_store::PENDING_REQUEST_TTL_SECONDS,
     session::{SessionLookupError, session_for_headers},
 };
-use crate::{error, sessions::cookies, state::AppState};
+use crate::{
+    error,
+    sessions::cookies,
+    settings::SecurityLimitsSetting,
+    state::AppState,
+};
 
 pub use super::authorization_code_handlers::{
     AuthorizationCodeIssue, issue_authorization_code_result, validated_pending_request,
@@ -140,7 +144,11 @@ async fn save_and_redirect_to_login(
 ) -> Response {
     let holder = cookies::new_authz_holder();
     pending.holder_hash = Some(cookies::authz_holder_hash(&holder));
-    if let Err(response) = save_pending(state, pending).await {
+    let limits = match load_security_limits(state).await {
+        Ok(limits) => limits,
+        Err(response) => return response,
+    };
+    if let Err(response) = save_pending_with_limits(state, pending, &limits).await {
         return response;
     }
     let mut response =
@@ -149,14 +157,27 @@ async fn save_and_redirect_to_login(
     cookies::append_authz_holder_cookie(
         response.headers_mut(),
         &holder,
-        PENDING_REQUEST_TTL_SECONDS,
+        limits.pending_request_ttl_seconds,
         state.config.cookie_secure,
     );
     response
 }
 
 async fn save_pending(state: &AppState, pending: &PendingAuthorization) -> Result<(), Response> {
-    match state.authorization_requests.save_limited(pending).await {
+    let limits = load_security_limits(state).await?;
+    save_pending_with_limits(state, pending, &limits).await
+}
+
+async fn save_pending_with_limits(
+    state: &AppState,
+    pending: &PendingAuthorization,
+    limits: &SecurityLimitsSetting,
+) -> Result<(), Response> {
+    match state
+        .authorization_requests
+        .save_limited_with_limits(pending, limits)
+        .await
+    {
         Ok(true) => Ok(()),
         Ok(false) => Err(error::oauth_too_many_requests(
             "temporarily_unavailable",
@@ -167,6 +188,13 @@ async fn save_pending(state: &AppState, pending: &PendingAuthorization) -> Resul
             Err(error::oauth_temporarily_unavailable())
         }
     }
+}
+
+async fn load_security_limits(state: &AppState) -> Result<SecurityLimitsSetting, Response> {
+    state.settings.security_limits().await.map_err(|error_value| {
+        tracing::error!(error = %error_value, "failed to load OAuth security limits");
+        error::oauth_temporarily_unavailable()
+    })
 }
 
 async fn issue_preconsented_request(

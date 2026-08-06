@@ -4,7 +4,7 @@ use crate::{
     admin::AdminAuthenticator,
     audit::AuditService,
     auth_factors::service::AuthFactorService,
-    auth_limiter::{AuthFailureLimiter, AuthFailureLimits, RedisAuthFailureLimiter},
+    auth_limiter::{AuthFailureLimiter, RedisAuthFailureLimiter},
     clients::service::ClientService,
     config::Config,
     consents::ConsentService,
@@ -22,7 +22,7 @@ use crate::{
     plans::service::PlanService,
     redis_client::RedisClient,
     sessions::store::SessionStore,
-    settings::SettingsService,
+    settings::{SecurityLimitsSetting, SettingsService},
     users::service::UserService,
 };
 
@@ -120,28 +120,25 @@ impl AppState {
         })
         .await??;
 
-        // #121：认证失败阈值与窗口来自配置，不再是编译期常量。
+        let settings = SettingsService::with_security_limits(
+            database.clone(),
+            secret_manager.clone(),
+            &config.webauthn_rp_id,
+            &config.webauthn_origin,
+            SecurityLimitsSetting::from(&config.security_limits),
+        );
+
+        // 安全阈值从 SettingsService 读取，数据库中的管理修改可以立即被执行路径看到。
         let auth_limiter: Arc<dyn AuthFailureLimiter> =
-            Arc::new(RedisAuthFailureLimiter::with_limits(
+            Arc::new(RedisAuthFailureLimiter::with_settings(
                 redis.clone(),
                 config.auth_limiter_failure_policy,
-                AuthFailureLimits {
-                    window_seconds: config.security_limits.auth_failure_window_seconds,
-                    account_limit: config.security_limits.account_failure_limit,
-                    ip_limit: config.security_limits.ip_failure_limit,
-                    ticket_limit: config.security_limits.totp_ticket_failure_limit,
-                },
+                settings.clone(),
             ));
         let sessions = SessionStore::with_metadata_and_key_ring(
             redis.clone(),
             database.clone(),
             config.auth_encryption_keys.clone(),
-        );
-        let settings = SettingsService::new(
-            database.clone(),
-            secret_manager.clone(),
-            &config.webauthn_rp_id,
-            &config.webauthn_origin,
         );
         let users = UserService::with_source_ip_policy(
             database.clone(),
@@ -163,7 +160,8 @@ impl AppState {
         let clients =
             ClientService::with_limits(database.clone(), config.client_registration_limits.clone())
                 .with_refresh_tokens(refresh_tokens.clone());
-        let authorization_requests = AuthorizationRequestStore::new(redis.clone());
+        let authorization_requests =
+            AuthorizationRequestStore::new_with_settings(redis.clone(), settings.clone());
         let consents = ConsentService::new(database.clone());
         let revocations = TokenRevocationStore::new_with_pool(redis.clone(), database.clone());
         let oauth_quotas = OAuthQuotaStore::new(redis.clone());
@@ -173,16 +171,8 @@ impl AppState {
         let audit = AuditService::new(database.clone());
         // 复用已加载的 secret_manager，避免第二次 load_or_generate 创建独立副本。
         let external_oauth = ExternalOAuthService::new(database.clone(), secret_manager)?;
-        // #121：外部登录 state 的 TTL 和限流阈值来自配置，不再硬编码。
-        let external_login_states = ExternalLoginStateStore::new_with_config(
-            redis.clone(),
-            config.security_limits.external_login_state_ttl_seconds,
-            config
-                .security_limits
-                .external_login_state_rate_window_seconds,
-            config.security_limits.external_login_state_rate_limit,
-            config.security_limits.external_login_state_max_pending,
-        );
+        let external_login_states =
+            ExternalLoginStateStore::new_with_settings(redis.clone(), settings.clone());
 
         Ok(Self {
             config,

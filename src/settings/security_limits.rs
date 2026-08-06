@@ -43,6 +43,26 @@ impl Default for SecurityLimitsSetting {
     }
 }
 
+impl From<&crate::config::SecurityLimits> for SecurityLimitsSetting {
+    fn from(value: &crate::config::SecurityLimits) -> Self {
+        Self {
+            unauthenticated_source_qps: value.unauthenticated_source_qps,
+            authorization_code_ttl_seconds: value.authorization_code_ttl_seconds,
+            pending_request_ttl_seconds: value.pending_request_ttl_seconds,
+            max_pending_requests_per_client: value.max_pending_requests_per_client,
+            max_pending_requests_global: value.max_pending_requests_global,
+            auth_failure_window_seconds: value.auth_failure_window_seconds,
+            account_failure_limit: value.account_failure_limit,
+            ip_failure_limit: value.ip_failure_limit,
+            totp_ticket_failure_limit: value.totp_ticket_failure_limit,
+            external_login_state_ttl_seconds: value.external_login_state_ttl_seconds,
+            external_login_state_rate_window_seconds: value.external_login_state_rate_window_seconds,
+            external_login_state_rate_limit: value.external_login_state_rate_limit,
+            external_login_state_max_pending: value.external_login_state_max_pending,
+        }
+    }
+}
+
 impl SecurityLimitsSetting {
     /// 校验语义与 `config_limits.rs` 的 `sanitized()` **有意不同**，原因是输入来源不同：
     ///

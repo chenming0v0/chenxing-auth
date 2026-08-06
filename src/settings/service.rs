@@ -17,6 +17,7 @@ pub struct SettingsService {
     pool: crate::sqlx::PgPool,
     secrets: SecretManager,
     default_passkey: PasskeySetting,
+    default_security_limits: SecurityLimitsSetting,
 }
 
 #[derive(Debug, Error)]
@@ -38,11 +39,28 @@ impl SettingsService {
         default_rp_id: &str,
         default_origin: &str,
     ) -> Self {
+        Self::with_security_limits(
+            pool,
+            secrets,
+            default_rp_id,
+            default_origin,
+            SecurityLimitsSetting::default(),
+        )
+    }
+
+    pub fn with_security_limits(
+        pool: crate::sqlx::PgPool,
+        secrets: SecretManager,
+        default_rp_id: &str,
+        default_origin: &str,
+        default_security_limits: SecurityLimitsSetting,
+    ) -> Self {
         Self {
             pool,
             secrets,
             default_passkey: PasskeySetting::default()
                 .with_runtime_defaults(default_rp_id, default_origin),
+            default_security_limits,
         }
     }
 
@@ -138,9 +156,10 @@ impl SettingsService {
     }
 
     pub async fn security_limits(&self) -> Result<SecurityLimitsSetting, SettingsServiceError> {
-        Ok(repository::get_security_limits(&self.pool)
-            .await?
-            .unwrap_or_default())
+        match repository::get_security_limits(&self.pool).await? {
+            Some(value) => Ok(value.validate()?),
+            None => Ok(self.default_security_limits.clone()),
+        }
     }
 
     pub async fn set_security_limits(

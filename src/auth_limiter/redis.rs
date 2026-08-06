@@ -8,6 +8,7 @@ use super::domain::{
     AUTH_FAILURE_WINDOW_SECONDS, AuthFailureLimiter, AuthFailureLimits, AuthLimiterError,
     AuthLimiterFailurePolicy, FailureDimension, FailureRecord, LimiterDimension, LimiterFuture,
 };
+use crate::settings::SettingsService;
 
 const FAILURE_KEY_PREFIX: &str = "chenxing:auth:failure:";
 const PENDING_KEY_PREFIX: &str = "chenxing:auth:pending:";
@@ -38,6 +39,7 @@ pub struct RedisAuthFailureLimiter {
     client: RedisClient,
     failure_policy: AuthLimiterFailurePolicy,
     limits: AuthFailureLimits,
+    settings: Option<SettingsService>,
 }
 
 impl RedisAuthFailureLimiter {
@@ -61,10 +63,24 @@ impl RedisAuthFailureLimiter {
             client: client.into(),
             failure_policy,
             limits,
+            settings: None,
         }
     }
 
-    /// 窗口计算（用于测试和向后兼容）。使用硬编码常量，不受运行期配置影响。
+    pub fn with_settings(
+        client: Client,
+        failure_policy: AuthLimiterFailurePolicy,
+        settings: SettingsService,
+    ) -> Self {
+        Self {
+            client,
+            failure_policy,
+            limits: AuthFailureLimits::default(),
+            settings: Some(settings),
+        }
+    }
+
+    /// 窗口计算（用于测试和向后兼容）。使用默认常量，不代表生产实例的动态配置。
     pub fn window() -> (i64, i64) {
         let now = OffsetDateTime::now_utc().unix_timestamp();
         let window = now / AUTH_FAILURE_WINDOW_SECONDS;
@@ -72,13 +88,31 @@ impl RedisAuthFailureLimiter {
         (window, ttl)
     }
 
-    /// 当前实例的窗口计算，使用配置的窗口时长。
-    fn window_with_limits(&self) -> (i64, i64) {
+    fn window_with_limits(limits: AuthFailureLimits) -> (i64, i64) {
         let now = OffsetDateTime::now_utc().unix_timestamp();
-        let window_seconds = self.limits.window();
+        let window_seconds = limits.window();
         let window = now / window_seconds;
         let ttl = ((window + 1) * window_seconds - now).max(1);
         (window, ttl)
+    }
+
+    async fn current_limits(&self) -> Result<AuthFailureLimits, AuthLimiterError> {
+        let Some(settings) = &self.settings else {
+            return Ok(self.limits);
+        };
+        let value = settings.security_limits().await.map_err(|error_value| {
+            tracing::error!(
+                error = %error_value,
+                "failed to load security limits for authentication limiter"
+            );
+            AuthLimiterError::Storage
+        })?;
+        Ok(AuthFailureLimits {
+            window_seconds: value.auth_failure_window_seconds,
+            account_limit: value.account_failure_limit,
+            ip_limit: value.ip_failure_limit,
+            ticket_limit: value.totp_ticket_failure_limit,
+        })
     }
 
     fn value_hash(value: &str) -> String {
@@ -191,7 +225,8 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
     fn clear<'a>(&'a self, dimension: FailureDimension, value: &str) -> LimiterFuture<'a, ()> {
         let value = value.to_owned();
         Box::pin(async move {
-            let (window, _) = self.window_with_limits();
+            let limits = self.current_limits().await?;
+            let (window, _) = Self::window_with_limits(limits);
             let key = Self::key(dimension, &value, window);
             let dimensions = [(dimension, value.clone())];
             let mut connection = match self.client.get_multiplexed_async_connection().await {
@@ -219,7 +254,8 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             if dimensions.is_empty() {
                 return Ok(false);
             }
-            let (window, _) = self.window_with_limits();
+            let limits = self.current_limits().await?;
+            let (window, _) = Self::window_with_limits(limits);
             let keys: Vec<String> = dimensions
                 .iter()
                 .map(|(dimension, value)| Self::key(*dimension, value, window))
@@ -234,7 +270,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                 invocation.key(key);
             }
             for (dimension, _) in &dimensions {
-                invocation.arg(self.limits.limit_for(*dimension));
+                invocation.arg(limits.limit_for(*dimension));
             }
             let limited: i64 = match invocation.invoke_async(&mut connection).await {
                 Ok(limited) => limited,
@@ -259,7 +295,8 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                     reached: Vec::new(),
                 });
             }
-            let (window, ttl) = self.window_with_limits();
+            let limits = self.current_limits().await?;
+            let (window, ttl) = Self::window_with_limits(limits);
             let keys: Vec<String> = dimensions
                 .iter()
                 .map(|(dimension, value)| Self::key(*dimension, value, window))
@@ -275,7 +312,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             }
             invocation.arg(ttl);
             for (dimension, _) in &dimensions {
-                invocation.arg(self.limits.limit_for(*dimension));
+                invocation.arg(limits.limit_for(*dimension));
             }
             let flags: Vec<i64> = match invocation.invoke_async(&mut connection).await {
                 Ok(flags) => flags,
@@ -303,7 +340,8 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             if dimensions.is_empty() {
                 return Ok(true);
             }
-            let (window, ttl) = self.window_with_limits();
+            let limits = self.current_limits().await?;
+            let (window, ttl) = Self::window_with_limits(limits);
             let failure_keys: Vec<String> = dimensions
                 .iter()
                 .map(|(dimension, value)| Self::key(*dimension, value, window))
@@ -324,7 +362,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             invocation.arg(dimensions.len());
             invocation.arg(ttl);
             for (dimension, _) in &dimensions {
-                invocation.arg(self.limits.limit_for(*dimension));
+                invocation.arg(limits.limit_for(*dimension));
             }
             let reserved: i64 = match invocation.invoke_async(&mut connection).await {
                 Ok(reserved) => reserved,
@@ -349,7 +387,8 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                     reached: Vec::new(),
                 });
             }
-            let (window, ttl) = self.window_with_limits();
+            let limits = self.current_limits().await?;
+            let (window, ttl) = Self::window_with_limits(limits);
             let failure_keys: Vec<String> = dimensions
                 .iter()
                 .map(|(dimension, value)| Self::key(*dimension, value, window))
@@ -370,7 +409,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             invocation.arg(dimensions.len());
             invocation.arg(ttl);
             for (dimension, _) in &dimensions {
-                invocation.arg(self.limits.limit_for(*dimension));
+                invocation.arg(limits.limit_for(*dimension));
             }
             let flags: Vec<i64> = match invocation.invoke_async(&mut connection).await {
                 Ok(flags) => flags,
@@ -398,7 +437,8 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             if dimensions.is_empty() {
                 return Ok(());
             }
-            let (window, _) = self.window_with_limits();
+            let limits = self.current_limits().await?;
+            let (window, _) = Self::window_with_limits(limits);
             let keys: Vec<String> = dimensions
                 .iter()
                 .map(|(dimension, value)| Self::pending_key(*dimension, value, window))

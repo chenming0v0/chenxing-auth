@@ -6,8 +6,12 @@ use super::request_store_scripts::{
     PENDING_CAPACITY_SCRIPT, PENDING_REPLACE_SCRIPT, PENDING_TAKE_IF_MATCHES_SCRIPT,
     PENDING_TAKE_SCRIPT,
 };
-use crate::redis_client::RedisClient;
+use crate::{
+    redis_client::RedisClient,
+    settings::{SecurityLimitsSetting, SettingsService, SettingsServiceError},
+};
 
+/// Pending request defaults retained for standalone store users and compatibility tests.
 pub const PENDING_REQUEST_TTL_SECONDS: u64 = 600;
 pub const MAX_PENDING_REQUESTS_PER_CLIENT: u64 = 20;
 pub const MAX_PENDING_REQUESTS_GLOBAL: u64 = 1_000;
@@ -15,6 +19,7 @@ pub const MAX_PENDING_REQUESTS_GLOBAL: u64 = 1_000;
 #[derive(Clone)]
 pub struct AuthorizationRequestStore {
     client: RedisClient,
+    settings: Option<SettingsService>,
 }
 
 #[derive(Debug, Error)]
@@ -25,12 +30,25 @@ pub enum AuthorizationRequestStoreError {
     Serialization(#[from] serde_json::Error),
     #[error("pending authorization request capacity exceeded")]
     CapacityExceeded,
+    #[error("security limits setting operation failed: {0}")]
+    Settings(#[from] SettingsServiceError),
 }
 
 impl AuthorizationRequestStore {
     pub fn new(client: impl Into<RedisClient>) -> Self {
         Self {
             client: client.into(),
+            settings: None,
+        }
+    }
+
+    pub fn new_with_settings(
+        client: impl Into<RedisClient>,
+        settings: SettingsService,
+    ) -> Self {
+        Self {
+            client: client.into(),
+            settings: Some(settings),
         }
     }
 
@@ -49,6 +67,15 @@ impl AuthorizationRequestStore {
         &self,
         request: &PendingAuthorization,
     ) -> Result<bool, AuthorizationRequestStoreError> {
+        let limits = self.current_limits().await?;
+        self.save_limited_with_limits(request, &limits).await
+    }
+
+    pub(crate) async fn save_limited_with_limits(
+        &self,
+        request: &PendingAuthorization,
+        limits: &SecurityLimitsSetting,
+    ) -> Result<bool, AuthorizationRequestStoreError> {
         let payload = serde_json::to_string(request)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let result: i64 = Script::new(PENDING_CAPACITY_SCRIPT)
@@ -59,9 +86,9 @@ impl AuthorizationRequestStore {
             .key(Self::global_index_key())
             .key(Self::global_expiry_key())
             .arg(payload)
-            .arg(PENDING_REQUEST_TTL_SECONDS)
-            .arg(MAX_PENDING_REQUESTS_PER_CLIENT)
-            .arg(MAX_PENDING_REQUESTS_GLOBAL)
+            .arg(limits.pending_request_ttl_seconds)
+            .arg(limits.max_pending_requests_per_client)
+            .arg(limits.max_pending_requests_global)
             .arg(&request.client_id)
             .arg(&request.request_id)
             .invoke_async(&mut connection)
@@ -73,6 +100,15 @@ impl AuthorizationRequestStore {
         &self,
         request_id: &str,
     ) -> Result<Option<PendingAuthorization>, AuthorizationRequestStoreError> {
+        let limits = self.current_limits().await?;
+        self.take_with_limits(request_id, &limits).await
+    }
+
+    async fn take_with_limits(
+        &self,
+        request_id: &str,
+        limits: &SecurityLimitsSetting,
+    ) -> Result<Option<PendingAuthorization>, AuthorizationRequestStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload: Option<String> = Script::new(PENDING_TAKE_SCRIPT)
             .key(Self::key(request_id))
@@ -80,7 +116,7 @@ impl AuthorizationRequestStore {
             .key(Self::global_capacity_key())
             .key(Self::global_expiry_key())
             .arg(request_id)
-            .arg(PENDING_REQUEST_TTL_SECONDS)
+            .arg(limits.pending_request_ttl_seconds)
             .invoke_async(&mut connection)
             .await?;
         payload
@@ -94,6 +130,17 @@ impl AuthorizationRequestStore {
         request_id: &str,
         request: &PendingAuthorization,
     ) -> Result<Option<PendingAuthorization>, AuthorizationRequestStoreError> {
+        let limits = self.current_limits().await?;
+        self.take_if_matches_with_limits(request_id, request, &limits)
+            .await
+    }
+
+    async fn take_if_matches_with_limits(
+        &self,
+        request_id: &str,
+        request: &PendingAuthorization,
+        limits: &SecurityLimitsSetting,
+    ) -> Result<Option<PendingAuthorization>, AuthorizationRequestStoreError> {
         let expected = serde_json::to_string(request)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload: Option<String> = Script::new(PENDING_TAKE_IF_MATCHES_SCRIPT)
@@ -103,7 +150,7 @@ impl AuthorizationRequestStore {
             .key(Self::global_expiry_key())
             .arg(expected)
             .arg(request_id)
-            .arg(PENDING_REQUEST_TTL_SECONDS)
+            .arg(limits.pending_request_ttl_seconds)
             .invoke_async(&mut connection)
             .await?;
         payload
@@ -118,6 +165,18 @@ impl AuthorizationRequestStore {
         expected: &PendingAuthorization,
         replacement: &PendingAuthorization,
     ) -> Result<bool, AuthorizationRequestStoreError> {
+        let limits = self.current_limits().await?;
+        self.replace_if_matches_with_limits(request_id, expected, replacement, &limits)
+            .await
+    }
+
+    async fn replace_if_matches_with_limits(
+        &self,
+        request_id: &str,
+        expected: &PendingAuthorization,
+        replacement: &PendingAuthorization,
+        limits: &SecurityLimitsSetting,
+    ) -> Result<bool, AuthorizationRequestStoreError> {
         let expected = serde_json::to_string(expected)?;
         let replacement = serde_json::to_string(replacement)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
@@ -129,9 +188,9 @@ impl AuthorizationRequestStore {
             .arg(expected)
             .arg(replacement)
             .arg(request_id)
-            .arg(PENDING_REQUEST_TTL_SECONDS)
-            .arg(MAX_PENDING_REQUESTS_PER_CLIENT)
-            .arg(MAX_PENDING_REQUESTS_GLOBAL)
+            .arg(limits.pending_request_ttl_seconds)
+            .arg(limits.max_pending_requests_per_client)
+            .arg(limits.max_pending_requests_global)
             .invoke_async(&mut connection)
             .await?;
         Ok(replaced == 1)
@@ -147,6 +206,13 @@ impl AuthorizationRequestStore {
             .map(|payload| serde_json::from_str(&payload))
             .transpose()
             .map_err(AuthorizationRequestStoreError::from)
+    }
+
+    async fn current_limits(&self) -> Result<SecurityLimitsSetting, AuthorizationRequestStoreError> {
+        match &self.settings {
+            Some(settings) => Ok(settings.security_limits().await?),
+            None => Ok(SecurityLimitsSetting::default()),
+        }
     }
 
     fn key(request_id: &str) -> String {

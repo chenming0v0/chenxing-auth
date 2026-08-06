@@ -14,8 +14,8 @@ pub const TOTP_TICKET_FAILURE_LIMIT: i64 = 5;
 /// 运行期可配置的认证失败阈值（#121）。
 ///
 /// 上面的常量保留为默认值，`FailureDimension::limit()` 也保持原语义不变——
-/// 大量集成测试按常量断言限流行为，改签名会连带破坏它们。限流器实例持有本结构体，
-/// 阈值来自 `AppConfig`，因此调整阈值不再需要改代码重发版。
+/// 大量集成测试按常量断言限流行为，改签名会连带破坏它们。生产限流器在每个原子
+/// Redis 操作前从 `SettingsService` 取得本结构体，因此调整阈值不再需要重启服务。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuthFailureLimits {
     /// 固定窗口时长（秒）。账户、IP、ticket 三个维度共用。
