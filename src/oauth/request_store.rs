@@ -175,7 +175,6 @@ impl AuthorizationRequestStore {
 mod tests {
     use super::{AuthorizationRequestStore, MAX_PENDING_REQUESTS_PER_CLIENT, PendingAuthorization};
     use redis::AsyncCommands;
-    use std::time::Duration;
 
     fn store() -> AuthorizationRequestStore {
         let url =
@@ -325,11 +324,11 @@ mod tests {
             .get_multiplexed_async_connection()
             .await
             .expect("Redis connection");
+        // Redis owns this TTL clock; advancing Tokio time cannot expire a remote Redis key.
         let _: bool = connection
-            .expire(format!("chenxing:oauth:request:{}", expired.request_id), 1)
+            .expire(format!("chenxing:oauth:request:{}", expired.request_id), 0)
             .await
             .expect("expire pending request");
-        tokio::time::sleep(Duration::from_secs(2)).await;
         assert!(
             store
                 .take(&expired.request_id)

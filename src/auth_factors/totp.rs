@@ -1,7 +1,7 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 use totp_rs::{Algorithm, Secret, TOTP};
+
+use crate::clock::{Clock, SystemClock};
 
 use super::domain::validate_totp_code;
 
@@ -133,10 +133,8 @@ pub fn verify_totp_code_current(secret: &[u8], code: &str) -> bool {
 }
 
 pub fn verify_totp_code_current_timestep(secret: &[u8], code: &str) -> Option<u64> {
-    let Ok(timestamp) = SystemTime::now().duration_since(UNIX_EPOCH) else {
-        return None;
-    };
-    verify_totp_code_at_timestep(secret, code, timestamp.as_secs())
+    let timestamp = u64::try_from(SystemClock.now().unix_timestamp()).ok()?;
+    verify_totp_code_at_timestep(secret, code, timestamp)
 }
 
 fn build_totp(

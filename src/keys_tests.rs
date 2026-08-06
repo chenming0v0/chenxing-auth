@@ -9,17 +9,24 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
+use time::{Duration as TimeDuration, OffsetDateTime};
 use zeroize::Zeroizing;
 
 use crate::oauth::token::{decode_access_token, issue_access_token};
 
-use super::{KeyManager, KeyMaterial, key_material, prune_materials};
+use super::{KeyManager, KeyMaterial, key_material, prune_materials, within_retention_at};
+
+const TEST_NOW_UNIX_SECONDS: i64 = 1_700_000_000;
+
+fn test_now() -> OffsetDateTime {
+    OffsetDateTime::from_unix_timestamp(TEST_NOW_UNIX_SECONDS).expect("valid test timestamp")
+}
 
 /// 构造指定“年龄”的密钥材料，用于保留窗口测试。
 fn aged(byte: u8, age_seconds: u64) -> KeyMaterial {
-    let created_at = SystemTime::now() - Duration::from_secs(age_seconds);
+    let created_at = test_now() - TimeDuration::seconds(age_seconds as i64);
     key_material(Zeroizing::new(vec![byte]), created_at)
 }
 
@@ -32,7 +39,7 @@ fn key_material_debug_redacts_private_key_bytes() {
     // 0xDE 的十进制是 222。Vec<u8> 默认 Debug 会把字节打成十进制整数列表，
     // 所以一旦 der 被原样输出，"222" 必然出现在结果里。
     let der = Zeroizing::new(vec![0xDE, 0xAD, 0xBE, 0xEF]);
-    let material = key_material(der, SystemTime::UNIX_EPOCH);
+    let material = key_material(der, OffsetDateTime::UNIX_EPOCH);
 
     let output = format!("{material:?}");
 
@@ -50,7 +57,7 @@ fn prune_materials_is_noop_without_directory() {
     let mut map = BTreeMap::new();
     map.insert(key_id.clone(), aged(1, 999_999));
 
-    prune_materials(None, &key_id, &mut map, Duration::from_secs(1));
+    prune_materials(None, &key_id, &mut map, Duration::from_secs(1), test_now());
 
     assert_eq!(map.len(), 1, "in-memory manager must not prune");
 }
@@ -67,7 +74,7 @@ fn prune_materials_retains_active_and_recent_removes_expired() {
     map.insert(recent.clone(), aged(2, 60));
     map.insert(expired.clone(), aged(3, 7200));
 
-    prune_materials(Some(&storage_dir()), &active, &mut map, retention);
+    prune_materials(Some(&storage_dir()), &active, &mut map, retention, test_now());
 
     assert!(map.contains_key(&active), "active key must survive");
     assert!(map.contains_key(&recent), "recent key must survive");
@@ -82,9 +89,26 @@ fn prune_materials_never_removes_active_key_even_if_stale() {
     map.insert(active.clone(), aged(9, 999_999));
 
     let retention = Duration::from_secs(60);
-    prune_materials(Some(&storage_dir()), &active, &mut map, retention);
+    prune_materials(Some(&storage_dir()), &active, &mut map, retention, test_now());
 
     assert!(map.contains_key(&active), "active key always retained");
+}
+
+#[test]
+fn within_retention_at_handles_the_exact_expiry_boundary() {
+    let now = test_now();
+    let retention = Duration::from_secs(60);
+
+    assert!(within_retention_at(
+        now - TimeDuration::seconds(60),
+        retention,
+        now
+    ));
+    assert!(!within_retention_at(
+        now - TimeDuration::seconds(61),
+        retention,
+        now
+    ));
 }
 
 #[test]

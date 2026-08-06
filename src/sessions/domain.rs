@@ -8,6 +8,8 @@ use subtle::ConstantTimeEq;
 use thiserror::Error;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
+use crate::clock::{Clock, SystemClock};
+
 /// 运行时会话结构，`token` 字段保存明文会话令牌。
 ///
 /// 刻意不派生 `Serialize` / `Deserialize`：一旦可序列化，明文令牌就有可能被写进
@@ -99,13 +101,20 @@ pub enum SessionError {
 
 impl Session {
     pub fn new(user_id: String, ttl: Duration) -> Result<Self, SessionError> {
+        Self::new_at(user_id, ttl, SystemClock.now())
+    }
+
+    pub fn new_at(
+        user_id: String,
+        ttl: Duration,
+        now: OffsetDateTime,
+    ) -> Result<Self, SessionError> {
         if user_id.trim().is_empty() {
             return Err(SessionError::EmptyUserId);
         }
         if ttl.is_zero() {
             return Err(SessionError::ZeroTtl);
         }
-        let created_at = OffsetDateTime::now_utc();
         let ttl = TimeDuration::try_from(ttl).map_err(|_| SessionError::ZeroTtl)?;
         let credential = generate_credential();
         let mut csrf_bytes = [0_u8; 32];
@@ -114,8 +123,8 @@ impl Session {
             id: 0,
             token: credential.token,
             user_id,
-            created_at,
-            expires_at: created_at + ttl,
+            created_at: now,
+            expires_at: now + ttl,
             csrf_token: URL_SAFE_NO_PAD.encode(csrf_bytes),
             revoked_at: None,
         })
@@ -126,11 +135,15 @@ impl Session {
     }
 
     pub fn revoke(&mut self) {
-        self.revoked_at = Some(OffsetDateTime::now_utc());
+        self.revoke_at(SystemClock.now());
+    }
+
+    pub fn revoke_at(&mut self, now: OffsetDateTime) {
+        self.revoked_at = Some(now);
     }
 
     pub fn is_active(&self) -> bool {
-        self.is_active_at(OffsetDateTime::now_utc())
+        self.is_active_at(SystemClock.now())
     }
 
     /// 校验双提交模式下的 CSRF 令牌。
@@ -164,6 +177,7 @@ pub fn generate_credential() -> SessionCredential {
 mod tests {
     use super::{Session, SessionPayload, generate_credential};
     use std::time::Duration;
+    use time::OffsetDateTime;
 
     #[test]
     fn credentials_are_random_and_hashable_without_exposing_plaintext() {
@@ -179,6 +193,19 @@ mod tests {
         let session = Session::new("1".to_owned(), Duration::from_secs(60)).unwrap();
         assert_eq!(session.id, 0);
         assert!(!session.token.is_empty());
+    }
+
+    #[test]
+    fn new_session_uses_the_supplied_creation_time() {
+        let created_at = OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(123);
+        let session =
+            Session::new_at("1".to_owned(), Duration::from_secs(60), created_at).unwrap();
+
+        assert_eq!(session.created_at, created_at);
+        assert_eq!(
+            session.expires_at,
+            created_at + time::Duration::seconds(60)
+        );
     }
 
     /// 43 字符的 base64url 令牌，与 `Session::new` 生成的 CSRF 令牌长度一致。
