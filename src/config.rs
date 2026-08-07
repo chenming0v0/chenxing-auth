@@ -27,6 +27,8 @@ use config_parsing::{
 };
 use config_proxy::trusted_proxies_from_env;
 
+const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 30;
+
 pub use config_audit::AuditRetentionConfig;
 pub use config_limits::SecurityLimits;
 pub use config_parsing::{AuthEncryptionKey, AuthEncryptionKeyRing};
@@ -54,6 +56,8 @@ pub enum ConfigError {
 pub struct Config {
     pub host: String,
     pub port: u16,
+    /// Maximum time for a matched application route to produce a response.
+    pub request_timeout_seconds: u64,
     pub issuer_url: String,
     pub admin_token: String,
     pub key_directory: String,
@@ -91,6 +95,7 @@ impl fmt::Debug for Config {
         f.debug_struct("Config")
             .field("host", &self.host)
             .field("port", &self.port)
+            .field("request_timeout_seconds", &self.request_timeout_seconds)
             .field("issuer_url", &self.issuer_url)
             .field("admin_token", &"REDACTED")
             .field("key_directory", &self.key_directory)
@@ -130,6 +135,7 @@ impl fmt::Debug for Config {
 struct ConfigValues {
     host: String,
     port: u16,
+    request_timeout_seconds: u64,
     issuer_url: String,
     admin_token: String,
     key_directory: String,
@@ -162,6 +168,10 @@ impl Config {
         let port = parse_u16(
             "APP_PORT",
             env::var("APP_PORT").ok().as_deref().unwrap_or("3000"),
+        )?;
+        let request_timeout_seconds = optional_u64(
+            "REQUEST_TIMEOUT_SECONDS",
+            DEFAULT_REQUEST_TIMEOUT_SECONDS,
         )?;
         let database_url = required_env("DATABASE_URL")?;
         let redis_url = required_env("REDIS_URL")?;
@@ -235,6 +245,7 @@ impl Config {
         Self::from_values_with_log(ConfigValues {
             host,
             port,
+            request_timeout_seconds,
             issuer_url: issuer_url.clone(),
             admin_token,
             key_directory,
@@ -290,6 +301,7 @@ impl Config {
         Self::from_values_with_log(ConfigValues {
             host,
             port,
+            request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
             issuer_url: issuer_url.clone(),
             admin_token: String::new(),
             key_directory: "data/keys".to_owned(),
@@ -320,6 +332,7 @@ impl Config {
         let ConfigValues {
             host,
             port,
+            request_timeout_seconds,
             issuer_url,
             admin_token,
             key_directory,
@@ -352,6 +365,9 @@ impl Config {
         }
         if port == 0 {
             return Err(ConfigError::InvalidValue("APP_PORT"));
+        }
+        if request_timeout_seconds == 0 {
+            return Err(ConfigError::InvalidValue("REQUEST_TIMEOUT_SECONDS"));
         }
         let issuer =
             url::Url::parse(&issuer_url).map_err(|_| ConfigError::InvalidValue("APP_ISSUER"))?;
@@ -411,6 +427,7 @@ impl Config {
         Ok(Self {
             host,
             port,
+            request_timeout_seconds,
             issuer_url,
             admin_token,
             key_directory,
