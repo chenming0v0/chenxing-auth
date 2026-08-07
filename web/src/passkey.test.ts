@@ -65,7 +65,11 @@ describe('passkey codec', () => {
         challenge: 'AQIDBA',
         rpId: 'example.com',
         timeout: 60000,
-        allowCredentials: [{ type: 'public-key', id: 'Y3JlZA' }],
+        allowCredentials: [{
+          type: 'public-key',
+          id: 'Y3JlZA',
+          transports: ['usb', 'unknown', 123, 'internal'],
+        }],
         userVerification: 'required',
       },
     }
@@ -75,6 +79,29 @@ describe('passkey codec', () => {
     expect(options.userVerification).toBe('required')
     expect(options.allowCredentials).toHaveLength(1)
     expect(options.allowCredentials![0].type).toBe('public-key')
+    expect(options.allowCredentials![0].transports).toEqual(['usb', 'internal'])
+  })
+
+  it('omits absent credential transports', () => {
+    const options = decodeRequestOptions({
+      publicKey: { challenge: 'AQIDBA', allowCredentials: [{ type: 'public-key', id: 'Y3JlZA' }] },
+    })
+    expect('transports' in options.allowCredentials![0]).toBe(false)
+  })
+
+  it('omits credential transports when the array has no valid values', () => {
+    const options = decodeRequestOptions({
+      publicKey: {
+        challenge: 'AQIDBA',
+        allowCredentials: [
+          { type: 'public-key', id: 'Y3JlZA', transports: [] },
+          { type: 'public-key', id: 'Y3JlZA', transports: ['unknown', 123] },
+        ],
+      },
+    })
+    expect(options.allowCredentials).toHaveLength(2)
+    expect('transports' in options.allowCredentials![0]).toBe(false)
+    expect('transports' in options.allowCredentials![1]).toBe(false)
   })
 
   it('rejects request options without a challenge', () => {
@@ -84,6 +111,9 @@ describe('passkey codec', () => {
     // challenge 必须是 base64url 字符串，非字符串同样拒绝而不是静默产生空 buffer。
     expect(() => decodeRequestOptions({ publicKey: { challenge: 123 } }))
       .toThrow('Passkey challenge is invalid')
+    expect(() => decodeRequestOptions({
+      publicKey: { challenge: 'AQIDBA', allowCredentials: [{ type: 'not-public-key', id: 'Y3JlZA' }] },
+    })).toThrow('Passkey challenge is invalid')
     expect(() => decodeRequestOptions({})).toThrow('Passkey challenge is invalid')
   })
 

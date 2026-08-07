@@ -13,6 +13,12 @@ const UNAVAILABLE_CREDENTIAL = 'Passkey credential is unavailable'
 const PASSKEY_FAILED = 'Passkey 操作失败，请重试。'
 const USER_VERIFICATION = ['required', 'preferred', 'discouraged']
 const ATTESTATION = ['none', 'indirect', 'direct', 'enterprise']
+const AUTHENTICATOR_TRANSPORTS = ['ble', 'hybrid', 'internal', 'nfc', 'usb'] as const
+  satisfies readonly AuthenticatorTransport[]
+
+function isAuthenticatorTransport(value: unknown): value is AuthenticatorTransport {
+  return typeof value === 'string' && AUTHENTICATOR_TRANSPORTS.some((transport) => transport === value)
+}
 
 /**
  * 本模块自身抛出的哨兵消息到用户文案的映射。只有这些由代码写死的消息才允许
@@ -62,7 +68,15 @@ function publicKeyOf(options: PasskeyChallenge): Record<string, unknown> {
 function decodeDescriptor(value: unknown): PublicKeyCredentialDescriptor {
   if (!value || typeof value !== 'object') throw new Error(INVALID_CHALLENGE)
   const descriptor = value as Record<string, unknown>
-  return { type: 'public-key', id: decodeBase64Url(descriptor.id) }
+  if (descriptor.type !== 'public-key') throw new Error(INVALID_CHALLENGE)
+  const transports = Array.isArray(descriptor.transports)
+    ? descriptor.transports.filter(isAuthenticatorTransport)
+    : []
+  return {
+    type: 'public-key',
+    id: decodeBase64Url(descriptor.id),
+    ...(transports.length > 0 ? { transports } : {}),
+  }
 }
 
 function decodeCredParam(value: unknown): PublicKeyCredentialParameters {
