@@ -12,7 +12,7 @@ use super::{
     form,
     refresh_grant::exchange_refresh_token,
     response,
-    token_security::{enforce_qps, enforce_source_qps, verify_client_credentials},
+    token_security::{enforce_qps, enforce_source_qps_with_policy, verify_client_credentials},
     token_use_case::{self, OAuthError},
 };
 use crate::{error, state::AppState};
@@ -58,9 +58,7 @@ async fn token_inner(
     source_ip: Option<&str>,
     mut request: TokenRequest,
 ) -> Response {
-    if let Some(source_ip) = source_ip
-        && let Some(response) = enforce_source_qps(&state, source_ip).await
-    {
+    if let Some(response) = enforce_source_qps_with_policy(&state, source_ip).await {
         return response;
     }
     let credentials = match resolve_client_credentials(
