@@ -51,7 +51,7 @@ function ClientsTable({ access }: { access: AdminAccess }) {
     if (current.get('search')) query.set('search', current.get('search') as string)
     let active = true
     void apiFetch<Paged<ClientSummary>>(`/api/v1/admin/clients/query?${query}`)
-      .then((value) => { if (active) setResult(value) })
+      .then((value) => { if (active) { setResult(value); setError('') } })
       .catch((reason: unknown) => { if (active) { setResult(null); setError(reason instanceof Error ? reason.message : 'Client 查询失败。') } })
     return () => { active = false }
   }, [location.search, page, refreshKey])

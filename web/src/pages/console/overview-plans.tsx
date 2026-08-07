@@ -32,6 +32,7 @@ export function ConsoleOverview() {
       setClients(clientResponse.items)
       setSessions(sessionResponse.items)
       setApps(appResponse.items)
+      setError('')
     }).catch((reason: unknown) => {
       if (active) setError(reason instanceof Error ? reason.message : '账户摘要加载失败。')
     }).finally(() => { if (active) setLoading(false) })
@@ -313,5 +314,3 @@ export function ConsolePlans() {
     </ConsoleLayout>
   )
 }
-
-

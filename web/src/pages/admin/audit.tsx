@@ -54,7 +54,7 @@ function AuditTable() {
     if (current.get('resource_type')) query.set('resource_type', current.get('resource_type') as string)
     let active = true
     void apiFetch<Paged<AuditEvent>>(`/api/v1/admin/audit/query?${query}`)
-      .then((value) => { if (active) setResult(value) })
+      .then((value) => { if (active) { setResult(value); setError('') } })
       .catch((reason: unknown) => { if (active) { setResult(null); setError(reason instanceof Error ? reason.message : '审计查询失败。') } })
     return () => { active = false }
   }, [location.search, page])
@@ -109,4 +109,3 @@ function AuditTable() {
     </HudPanel>
   )
 }
-
