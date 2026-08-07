@@ -66,13 +66,15 @@
 
 `identifier` 可以填写普通用户注册时的 `username` 或邮箱地址。为兼容旧客户端，服务端仍接受请求体中的 `email` 别名；新客户端应使用 `identifier`。
 
-首次登录或已绑定因子但尚未完成验证时响应 `202`，不会设置 Session Cookie：
+首次登录或已绑定因子但尚未完成验证时响应 `202`，并设置短期 HttpOnly pending-login Cookie：
 
 ```json
-{"status":"factor_setup_required","login_ticket":"opaque-ticket","methods":["totp","passkey"]}
+{"status":"factor_setup_required","methods":["totp","passkey"]}
 ```
 
-已绑定因子时 `status` 为 `factor_required`，`methods` 只包含当前策略允许的已绑定方式；全局禁用 Passkey 时不会发布 `passkey`。TOTP 登录可在本请求中携带当前六位 `totp_code`；passkey 使用下面的 WebAuthn challenge 接口。没有可用因子时只能进入策略允许的设置流程。
+已绑定因子时 `status` 为 `factor_required`，`methods` 只包含当前策略允许的已绑定方式；全局禁用 Passkey 时不会发布 `passkey`。ticket 不再出现在普通 JSON 响应中，而是由 `HttpOnly`、`SameSite=Lax` 的 pending-login Cookie 携带，并绑定同一响应下发的独立 holder Cookie。TOTP 登录可在本请求中携带当前六位 `totp_code`；passkey 使用下面的 WebAuthn challenge 接口。没有可用因子时只能进入策略允许的设置流程。
+
+HTTPS 部署使用 `__Host-chenxing_login_ticket` 和 `__Host-chenxing_login_holder`；仅在 loopback HTTP 本地开发时使用 `chenxing_login_ticket` 和 `chenxing_login_holder`。两个 Cookie 都是 `Path=/`、`HttpOnly`、`SameSite=Lax`，成功签发 Session 后立即清理。
 
 因子完成后响应 `200`：
 
@@ -86,21 +88,21 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ### 首次 TOTP 绑定
 
-1. `POST /api/v1/auth/totp/setup`，请求 `{"login_ticket":"opaque-ticket"}`，响应一次性返回 `secret_base32` 和 `otpauth_url`。前端应使用项目内二维码组件将 `otpauth_url` 作为二维码内容本地生成二维码；`secret_base32` 仅用于无法扫描时手动输入或复制。服务端不调用第三方二维码服务，也不返回二维码图片。
-2. `POST /api/v1/auth/totp/setup/confirm`，请求 `{"login_ticket":"opaque-ticket","code":"123456"}`。验证码正确后保存加密秘钥、消费 ticket 并返回 Session Cookie；错误验证码不会消费 ticket。
+1. `POST /api/v1/auth/totp/setup`，请求 `{}`（旧客户端可附带 `login_ticket`，但必须与 HttpOnly Cookie 完全一致），响应一次性返回 `secret_base32` 和 `otpauth_url`。前端应使用项目内二维码组件将 `otpauth_url` 作为二维码内容本地生成二维码；`secret_base32` 仅用于无法扫描时手动输入或复制。服务端不调用第三方二维码服务，也不返回二维码图片。
+2. `POST /api/v1/auth/totp/setup/confirm`，请求 `{ "code":"123456" }`。验证码正确后保存加密秘钥、消费 ticket 并返回 Session Cookie；错误验证码不会消费 ticket。
 
-已有 TOTP 的待处理登录也可以调用 `POST /api/v1/auth/totp/login`，请求同样包含 `login_ticket` 和当前六位 `code`。验证码正确后消费 ticket 并返回 Session Cookie；无效 ticket 返回 `400`，错误验证码返回 `401`。
+已有 TOTP 的待处理登录也可以调用 `POST /api/v1/auth/totp/login`，请求包含当前六位 `code`。验证码正确后消费 ticket 并返回 Session Cookie；无效或缺少 holder proof 的 ticket 返回 `400`，错误验证码返回 `401`。
 
 ### Passkey / WebAuthn
 
-- `POST /api/v1/auth/passkeys/register/start`：请求 `login_ticket`，返回 WebAuthn `PublicKeyCredentialCreationOptions`。
-- `POST /api/v1/auth/passkeys/register/finish`：请求 `login_ticket` 和浏览器 `navigator.credentials.create()` 返回的 `credential`，验证通过后保存公开凭据并返回 Session Cookie。
-- `POST /api/v1/auth/passkeys/authentication/start`：请求 `login_ticket`，返回 `PublicKeyCredentialRequestOptions`。
-- `POST /api/v1/auth/passkeys/authentication/finish`：请求 `login_ticket` 和浏览器 `navigator.credentials.get()` 返回的 `credential`，验证通过后更新 credential counter、消费 ticket 并返回 Session Cookie。
+- `POST /api/v1/auth/passkeys/register/start`：请求 `{}`，返回 WebAuthn `PublicKeyCredentialCreationOptions`。
+- `POST /api/v1/auth/passkeys/register/finish`：请求浏览器 `navigator.credentials.create()` 返回的 `credential`，验证通过后保存公开凭据并返回 Session Cookie。
+- `POST /api/v1/auth/passkeys/authentication/start`：请求 `{}`，返回 `PublicKeyCredentialRequestOptions`。
+- `POST /api/v1/auth/passkeys/authentication/finish`：请求浏览器 `navigator.credentials.get()` 返回的 `credential`，验证通过后更新 credential counter、消费 ticket 并返回 Session Cookie。
 
 管理员通过 `PUT /api/v1/admin/settings/passkey` 禁用 Passkey 时，如果存在活跃且唯一绑定 Passkey 的账号，服务端返回 `409 passkey_disable_blocked`，设置不会变更。这样已绑定 Passkey 的账号不会因全局策略被锁定；禁用后新的登录因子响应和首次绑定选项只发布 TOTP。
 
-所有 `login_ticket` 和 WebAuthn challenge 默认有效 5 分钟；ticket 是一次性的。WebAuthn 的 RP ID 和 origin 由固定配置 `WEBAUTHN_RP_ID`、`WEBAUTHN_ORIGIN` 控制，不能从请求 Host 推导。
+所有 pending-login Cookie、`login_ticket` 和 WebAuthn challenge 默认有效 5 分钟；ticket 是一次性的。Redis 中只保存 holder Cookie 的摘要，不保存 holder 原值；缺少 holder、Cookie 中 ticket 与旧请求字段不一致、或升级前无 holder 摘要的 ticket 都 fail closed，需要重新开始登录。WebAuthn 的 RP ID 和 origin 由固定配置 `WEBAUTHN_RP_ID`、`WEBAUTHN_ORIGIN` 控制，不能从请求 Host 推导。
 
 浏览器 OAuth 登录现在由 React SPA 承接。密码步骤调用 `POST /api/v1/auth/login`，TOTP 绑定和登录分别调用 `POST /api/v1/auth/totp/setup`、`POST /api/v1/auth/totp/setup/confirm` 或 `POST /api/v1/auth/totp/login`；passkey 流程使用上面的 WebAuthn API。因子完成后，SPA 调用授权请求绑定接口并继续授权确认。
 

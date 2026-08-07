@@ -44,12 +44,13 @@ impl AuthFactorService {
     pub async fn start_passkey_registration(
         &self,
         ticket_id: &str,
+        holder_hash: &str,
         source_ip: Option<&str>,
         user_name: &str,
         display_name: &str,
     ) -> Result<Option<CreationChallengeResponse>, AuthFactorServiceError> {
         let settings = self.enabled_passkey_settings().await?;
-        let Some(ticket) = self.tickets.find(ticket_id).await? else {
+        let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(None);
         };
         if !ticket.is_active_at(time::OffsetDateTime::now_utc())
@@ -108,11 +109,12 @@ impl AuthFactorService {
     pub async fn finish_passkey_registration(
         &self,
         ticket_id: &str,
+        holder_hash: &str,
         source_ip: Option<&str>,
         credential: &RegisterPublicKeyCredential,
     ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
         self.enabled_passkey_settings().await?;
-        let Some(ticket) = self.tickets.find(ticket_id).await? else {
+        let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(PasskeyConfirmation::InvalidTicket);
         };
         if !ticket.is_active_at(time::OffsetDateTime::now_utc())
@@ -150,6 +152,7 @@ impl AuthFactorService {
                 return self
                     .record_passkey_failure(
                         ticket_id,
+                        holder_hash,
                         ticket.user_id,
                         &Self::passkey_registration_key(ticket_id),
                         dimensions,
@@ -172,7 +175,7 @@ impl AuthFactorService {
         let confirmation = match consume_then_persist(
             PasskeyConfirmation::Completed(ticket.user_id),
             PasskeyConfirmation::InvalidTicket,
-            self.tickets.take(ticket_id),
+            self.tickets.take_for_holder(ticket_id, holder_hash),
             async {
                 match repository::insert_passkey_if_empty(
                     &self.pool,
@@ -194,7 +197,10 @@ impl AuthFactorService {
         {
             Ok(confirmation) => confirmation,
             Err(AuthFactorServiceError::FirstFactorAlreadyExists) => {
-                let _ = self.tickets.take(ticket_id).await?;
+                let _ = self
+                    .tickets
+                    .take_for_holder(ticket_id, holder_hash)
+                    .await?;
                 self.tickets
                     .delete(&Self::passkey_registration_key(ticket_id))
                     .await?;
@@ -214,10 +220,11 @@ impl AuthFactorService {
     pub async fn start_passkey_authentication(
         &self,
         ticket_id: &str,
+        holder_hash: &str,
         source_ip: Option<&str>,
     ) -> Result<Option<RequestChallengeResponse>, AuthFactorServiceError> {
         let settings = self.enabled_passkey_settings().await?;
-        let Some(ticket) = self.tickets.find(ticket_id).await? else {
+        let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(None);
         };
         if !ticket.is_active_at(time::OffsetDateTime::now_utc())
@@ -263,11 +270,12 @@ impl AuthFactorService {
     pub async fn finish_passkey_authentication(
         &self,
         ticket_id: &str,
+        holder_hash: &str,
         source_ip: Option<&str>,
         credential: &PublicKeyCredential,
     ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
         self.enabled_passkey_settings().await?;
-        let Some(ticket) = self.tickets.find(ticket_id).await? else {
+        let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(PasskeyConfirmation::InvalidTicket);
         };
         if !ticket.is_active_at(time::OffsetDateTime::now_utc())
@@ -306,6 +314,7 @@ impl AuthFactorService {
                 return self
                     .record_passkey_failure(
                         ticket_id,
+                        holder_hash,
                         ticket.user_id,
                         &Self::passkey_authentication_key(ticket_id),
                         dimensions,
@@ -327,6 +336,7 @@ impl AuthFactorService {
             return self
                 .record_passkey_failure(
                     ticket_id,
+                    holder_hash,
                     ticket.user_id,
                     &Self::passkey_authentication_key(ticket_id),
                     dimensions,
@@ -341,7 +351,7 @@ impl AuthFactorService {
         let confirmation = consume_then_persist(
             PasskeyConfirmation::Completed(ticket.user_id),
             PasskeyConfirmation::InvalidTicket,
-            self.tickets.take(ticket_id),
+            self.tickets.take_for_holder(ticket_id, holder_hash),
             async {
                 if result.needs_update()
                     && passkey
@@ -385,13 +395,14 @@ impl AuthFactorService {
     async fn record_passkey_failure(
         &self,
         ticket_id: &str,
+        holder_hash: &str,
         user_id: UserId,
         pending_key: &str,
         dimensions: Vec<LimiterDimension>,
     ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
         let record = self.record_failure(dimensions).await?;
         if record.reached(FailureDimension::Ticket) {
-            self.invalidate_ticket(ticket_id).await?;
+            self.invalidate_ticket(ticket_id, holder_hash).await?;
             self.tickets.delete(pending_key).await?;
             return Ok(PasskeyConfirmation::RateLimited(user_id));
         }

@@ -74,6 +74,38 @@ async fn request(
         .expect("JSON response")
 }
 
+fn pending_cookie(response: &axum::response::Response) -> String {
+    response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().expect("cookie pair"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+async fn request_with_cookie(
+    router: &Router,
+    uri: &str,
+    payload: serde_json::Value,
+    cookie: &str,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .body(Body::from(payload.to_string()))
+                .expect("JSON request"),
+        )
+        .await
+        .expect("JSON response")
+}
+
 #[tokio::test]
 async fn parallel_first_factor_tickets_have_only_one_winner() {
     let (router, database, key_directory, email) = setup().await;
@@ -90,47 +122,39 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
         StatusCode::CREATED
     );
 
-    let first_login = json_body(
-        request(
+    let first_login_response = request(
             &router,
             "/api/v1/auth/login",
             serde_json::json!({"identifier": username, "password": password}),
         )
-        .await,
-    )
-    .await;
-    let first_ticket = first_login["login_ticket"]
-        .as_str()
-        .expect("first login ticket")
-        .to_owned();
-    let second_login = json_body(
-        request(
+        .await;
+    let first_cookie = pending_cookie(&first_login_response);
+    let _first_login = json_body(first_login_response).await;
+    let second_login_response = request(
             &router,
             "/api/v1/auth/login",
             serde_json::json!({"identifier": username, "password": password}),
         )
-        .await,
-    )
-    .await;
-    let second_ticket = second_login["login_ticket"]
-        .as_str()
-        .expect("second login ticket")
-        .to_owned();
+        .await;
+    let second_cookie = pending_cookie(&second_login_response);
+    let _second_login = json_body(second_login_response).await;
 
     let first_setup = json_body(
-        request(
+        request_with_cookie(
             &router,
             "/api/v1/auth/totp/setup",
-            serde_json::json!({"login_ticket": first_ticket}),
+            serde_json::json!({}),
+            &first_cookie,
         )
         .await,
     )
     .await;
     let second_setup = json_body(
-        request(
+        request_with_cookie(
             &router,
             "/api/v1/auth/totp/setup",
-            serde_json::json!({"login_ticket": second_ticket}),
+            serde_json::json!({}),
+            &second_cookie,
         )
         .await,
     )
@@ -145,26 +169,26 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
     .expect("second TOTP");
 
     assert_eq!(
-        request(
+        request_with_cookie(
             &router,
             "/api/v1/auth/totp/setup/confirm",
             serde_json::json!({
-                "login_ticket": first_ticket,
                 "code": first_totp.generate_current().expect("first TOTP code")
             }),
+            &first_cookie,
         )
         .await
         .status(),
         StatusCode::OK
     );
     assert_eq!(
-        request(
+        request_with_cookie(
             &router,
             "/api/v1/auth/totp/setup/confirm",
             serde_json::json!({
-                "login_ticket": second_ticket,
                 "code": second_totp.generate_current().expect("second TOTP code")
             }),
+            &second_cookie,
         )
         .await
         .status(),

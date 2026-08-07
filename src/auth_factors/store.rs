@@ -12,6 +12,14 @@ const TOTP_REPLAY_PREFIX: &str = "chenxing:auth:totp-used:";
 const TOTP_REPLAY_TTL_SECONDS: u64 = 120;
 const CLAIM_TOTP_STEP_SCRIPT: &str =
     "if redis.call('SET', KEYS[1], '1', 'NX', 'EX', ARGV[1]) then return 1 else return 0 end";
+const TAKE_LOGIN_TICKET_IF_HOLDER_SCRIPT: &str = r#"
+local payload = redis.call('GET', KEYS[1])
+if not payload then return nil end
+local ticket = cjson.decode(payload)
+if ticket['holder_hash'] ~= ARGV[1] then return nil end
+redis.call('DEL', KEYS[1])
+return payload
+"#;
 
 #[derive(Clone)]
 pub struct LoginTicketStore {
@@ -44,6 +52,9 @@ impl LoginTicketStore {
         }
     }
 
+    /// Compatibility constructor for direct store users. HTTP-issued tickets
+    /// must use `create_with_epoch_and_holder`; an unbound ticket is not
+    /// accepted by `find_for_holder` or `take_for_holder`.
     pub async fn create(
         &self,
         user_id: UserId,
@@ -60,6 +71,34 @@ impl LoginTicketStore {
     ) -> Result<(String, LoginTicket), LoginTicketStoreError> {
         let ticket_id = Uuid::new_v4().to_string();
         let ticket = LoginTicket::new_with_epoch(user_id, methods, session_epoch);
+        self.save(&ticket_id, &ticket).await?;
+        Ok((ticket_id, ticket))
+    }
+
+    pub async fn create_with_holder(
+        &self,
+        user_id: UserId,
+        methods: Vec<FactorMethod>,
+        holder_hash: String,
+    ) -> Result<(String, LoginTicket), LoginTicketStoreError> {
+        self.create_with_epoch_and_holder(user_id, methods, 0, holder_hash)
+            .await
+    }
+
+    pub async fn create_with_epoch_and_holder(
+        &self,
+        user_id: UserId,
+        methods: Vec<FactorMethod>,
+        session_epoch: i64,
+        holder_hash: String,
+    ) -> Result<(String, LoginTicket), LoginTicketStoreError> {
+        let ticket_id = Uuid::new_v4().to_string();
+        let ticket = LoginTicket::new_with_epoch_and_holder(
+            user_id,
+            methods,
+            session_epoch,
+            Some(holder_hash),
+        );
         self.save(&ticket_id, &ticket).await?;
         Ok((ticket_id, ticket))
     }
@@ -81,18 +120,36 @@ impl LoginTicketStore {
         Ok(())
     }
 
-    pub async fn find(
+    async fn find(
         &self,
         ticket_id: &str,
     ) -> Result<Option<LoginTicket>, LoginTicketStoreError> {
         self.read(ticket_id, false).await
     }
 
-    pub async fn take(
+    pub async fn find_for_holder(
         &self,
         ticket_id: &str,
+        holder_hash: &str,
     ) -> Result<Option<LoginTicket>, LoginTicketStoreError> {
-        self.read(ticket_id, true).await
+        Ok(self
+            .find(ticket_id)
+            .await?
+            .filter(|ticket| ticket.matches_holder_hash(holder_hash)))
+    }
+
+    pub async fn take_for_holder(
+        &self,
+        ticket_id: &str,
+        holder_hash: &str,
+    ) -> Result<Option<LoginTicket>, LoginTicketStoreError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let payload: Option<String> = Script::new(TAKE_LOGIN_TICKET_IF_HOLDER_SCRIPT)
+            .key(Self::key(ticket_id))
+            .arg(holder_hash)
+            .invoke_async(&mut connection)
+            .await?;
+        self.decode_ticket_payload(payload).await
     }
 
     pub async fn restore(
@@ -123,6 +180,13 @@ impl LoginTicketStore {
         } else {
             connection.get(Self::key(ticket_id)).await?
         };
+        self.decode_ticket_payload(payload).await
+    }
+
+    async fn decode_ticket_payload(
+        &self,
+        payload: Option<String>,
+    ) -> Result<Option<LoginTicket>, LoginTicketStoreError> {
         let ticket: Option<LoginTicket> = payload
             .map(|value| serde_json::from_str(&value))
             .transpose()

@@ -108,7 +108,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/LoginResponse'
         '202':
-          description: 密码正确但需要首次绑定或完成认证因子，不设置 Session Cookie
+          description: 密码正确但需要首次绑定或完成认证因子。通过 HttpOnly login ticket 与 holder Cookie 继续流程，不在 JSON 响应中返回 ticket
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PendingLoginResponse' }
@@ -1486,7 +1488,7 @@ components:
     Search: { name: search, in: query, required: false, schema: { type: string, maxLength: 128 } }
     StatusFilter: { name: status, in: query, required: false, schema: { type: string, enum: [active, disabled] } }
   headers:
-    SetCookie: { description: Session 和 CSRF Cookie, schema: { type: string } }
+    SetCookie: { description: Session、CSRF 或 pending-login Cookie, schema: { type: string } }
   responses:
     BadRequest: { description: 请求错误, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Unauthorized: { description: 未认证或凭据无效, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
@@ -1545,14 +1547,13 @@ components:
         totp_code: { type: string, pattern: '^[0-9]{6}$' }
     PendingLoginResponse:
       type: object
-      required: [status, login_ticket, methods]
+      required: [status, methods]
       properties:
         status: { type: string, enum: [factor_setup_required, factor_required] }
-        login_ticket: { type: string }
         methods: { type: array, items: { type: string, enum: [totp, passkey] } }
     LoginTicketInput:
       type: object
-      required: [login_ticket]
+      description: 可选的旧版请求字段。服务端只把它与 HttpOnly login ticket Cookie 做一致性校验，不能替代 Cookie 和 holder proof。
       properties:
         login_ticket: { type: string }
     TotpSetupResponse:

@@ -7,16 +7,25 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
+mod ticket_proof;
+
 use super::{
     service::{AuthFactorServiceError, PasskeyConfirmation, TotpConfirmation},
     session::issue_user_session,
 };
-use crate::{audit::AuditEvent, error, state::AppState, users::domain::UserId};
+use ticket_proof::ticket_proof;
+use crate::{
+    audit::AuditEvent,
+    error,
+    state::AppState,
+    users::domain::UserId,
+};
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 #[derive(Debug, Deserialize)]
 pub struct TotpSetupInput {
-    pub login_ticket: String,
+    #[serde(default)]
+    pub login_ticket: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -27,38 +36,55 @@ struct TotpSetupResponse<'a> {
 
 #[derive(Debug, Deserialize)]
 pub struct TotpConfirmInput {
-    pub login_ticket: String,
+    #[serde(default)]
+    pub login_ticket: Option<String>,
     pub code: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct TotpLoginInput {
-    pub login_ticket: String,
+    #[serde(default)]
+    pub login_ticket: Option<String>,
     pub code: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct PasskeyTicketInput {
-    pub login_ticket: String,
+    #[serde(default)]
+    pub login_ticket: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct PasskeyRegistrationInput {
-    pub login_ticket: String,
+    #[serde(default)]
+    pub login_ticket: Option<String>,
     pub credential: RegisterPublicKeyCredential,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct PasskeyAuthenticationInput {
-    pub login_ticket: String,
+    #[serde(default)]
+    pub login_ticket: Option<String>,
     pub credential: PublicKeyCredential,
 }
 
 pub async fn start_totp_setup(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(input): Json<TotpSetupInput>,
 ) -> Response {
-    let Some(user_id) = (match state.factors.user_id_for_ticket(&input.login_ticket).await {
+    let Some((ticket_id, holder_hash)) = ticket_proof(
+        &headers,
+        input.login_ticket.as_deref(),
+        state.config.cookie_secure,
+    ) else {
+        return error::bad_request("invalid_login_ticket", "login ticket is invalid");
+    };
+    let Some(user_id) = (match state
+        .factors
+        .user_id_for_ticket(&ticket_id, &holder_hash)
+        .await
+    {
         Ok(user_id) => user_id,
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to load TOTP ticket");
@@ -78,7 +104,7 @@ pub async fn start_totp_setup(
     };
     let ticket = match state
         .factors
-        .start_totp_enrollment(&input.login_ticket, &profile.email, "Chenxing Pass")
+        .start_totp_enrollment(&ticket_id, &holder_hash, &profile.email, "Chenxing Pass")
         .await
     {
         Ok(ticket) => ticket,
@@ -111,9 +137,21 @@ pub async fn confirm_totp_setup(
         &headers,
         &state.config.trusted_proxies,
     );
+    let Some((ticket_id, holder_hash)) = ticket_proof(
+        &headers,
+        input.login_ticket.as_deref(),
+        state.config.cookie_secure,
+    ) else {
+        return error::bad_request("invalid_login_ticket", "login ticket is invalid");
+    };
     match state
         .factors
-        .confirm_totp_enrollment(&input.login_ticket, source_ip.as_deref(), &input.code)
+        .confirm_totp_enrollment(
+            &ticket_id,
+            &holder_hash,
+            source_ip.as_deref(),
+            &input.code,
+        )
         .await
     {
         // 注册确认端点不承担登录语义：没有待确认的注册就是无效 ticket。
@@ -140,14 +178,31 @@ pub async fn login_totp(
         &headers,
         &state.config.trusted_proxies,
     );
+    let Some((ticket_id, holder_hash)) = ticket_proof(
+        &headers,
+        input.login_ticket.as_deref(),
+        state.config.cookie_secure,
+    ) else {
+        return error::bad_request("invalid_login_ticket", "login ticket is invalid");
+    };
     let confirmation = match state
         .factors
-        .confirm_totp_enrollment(&input.login_ticket, source_ip.as_deref(), &input.code)
+        .confirm_totp_enrollment(
+            &ticket_id,
+            &holder_hash,
+            source_ip.as_deref(),
+            &input.code,
+        )
         .await
     {
         Ok(TotpConfirmation::NoPendingEnrollment) => match state
             .factors
-            .verify_totp_login(&input.login_ticket, source_ip.as_deref(), &input.code)
+            .verify_totp_login(
+                &ticket_id,
+                &holder_hash,
+                source_ip.as_deref(),
+                &input.code,
+            )
             .await
         {
             Ok(confirmation) => confirmation,
@@ -172,7 +227,18 @@ pub async fn start_passkey_registration(
         &headers,
         &state.config.trusted_proxies,
     );
-    let Some(user_id) = (match state.factors.user_id_for_ticket(&input.login_ticket).await {
+    let Some((ticket_id, holder_hash)) = ticket_proof(
+        &headers,
+        input.login_ticket.as_deref(),
+        state.config.cookie_secure,
+    ) else {
+        return error::bad_request("invalid_login_ticket", "login ticket is invalid");
+    };
+    let Some(user_id) = (match state
+        .factors
+        .user_id_for_ticket(&ticket_id, &holder_hash)
+        .await
+    {
         Ok(user_id) => user_id,
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to load passkey ticket");
@@ -193,7 +259,8 @@ pub async fn start_passkey_registration(
     match state
         .factors
         .start_passkey_registration(
-            &input.login_ticket,
+            &ticket_id,
+            &holder_hash,
             source_ip.as_deref(),
             &profile.email,
             profile.display_name.as_deref().unwrap_or(&profile.username),
@@ -226,9 +293,21 @@ pub async fn finish_passkey_registration(
         &headers,
         &state.config.trusted_proxies,
     );
+    let Some((ticket_id, holder_hash)) = ticket_proof(
+        &headers,
+        input.login_ticket.as_deref(),
+        state.config.cookie_secure,
+    ) else {
+        return error::bad_request("invalid_login_ticket", "login ticket is invalid");
+    };
     match state
         .factors
-        .finish_passkey_registration(&input.login_ticket, source_ip.as_deref(), &input.credential)
+        .finish_passkey_registration(
+            &ticket_id,
+            &holder_hash,
+            source_ip.as_deref(),
+            &input.credential,
+        )
         .await
     {
         Ok(confirmation) => passkey_confirmation_response(&state, confirmation, &headers).await,
@@ -257,9 +336,16 @@ pub async fn start_passkey_authentication(
         &headers,
         &state.config.trusted_proxies,
     );
+    let Some((ticket_id, holder_hash)) = ticket_proof(
+        &headers,
+        input.login_ticket.as_deref(),
+        state.config.cookie_secure,
+    ) else {
+        return error::bad_request("invalid_login_ticket", "login ticket is invalid");
+    };
     match state
         .factors
-        .start_passkey_authentication(&input.login_ticket, source_ip.as_deref())
+        .start_passkey_authentication(&ticket_id, &holder_hash, source_ip.as_deref())
         .await
     {
         Ok(Some(challenge)) => (axum::http::StatusCode::OK, Json(challenge)).into_response(),
@@ -288,9 +374,21 @@ pub async fn finish_passkey_authentication(
         &headers,
         &state.config.trusted_proxies,
     );
+    let Some((ticket_id, holder_hash)) = ticket_proof(
+        &headers,
+        input.login_ticket.as_deref(),
+        state.config.cookie_secure,
+    ) else {
+        return error::bad_request("invalid_login_ticket", "login ticket is invalid");
+    };
     match state
         .factors
-        .finish_passkey_authentication(&input.login_ticket, source_ip.as_deref(), &input.credential)
+        .finish_passkey_authentication(
+            &ticket_id,
+            &holder_hash,
+            source_ip.as_deref(),
+            &input.credential,
+        )
         .await
     {
         Ok(confirmation) => passkey_confirmation_response(&state, confirmation, &headers).await,

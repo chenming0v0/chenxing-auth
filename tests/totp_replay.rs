@@ -65,6 +65,38 @@ async fn request(router: &Router, uri: &str, payload: Value) -> axum::response::
         .expect("JSON response")
 }
 
+fn pending_cookie(response: &axum::response::Response) -> String {
+    response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().expect("cookie pair"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+async fn request_with_cookie(
+    router: &Router,
+    uri: &str,
+    payload: Value,
+    cookie: &str,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .body(Body::from(payload.to_string()))
+                .expect("JSON request"),
+        )
+        .await
+        .expect("JSON response")
+}
+
 #[tokio::test]
 async fn a_totp_time_step_is_single_use_across_tickets_and_inline_login() {
     let (router, database, key_directory) = setup().await;
@@ -83,64 +115,55 @@ async fn a_totp_time_step_is_single_use_across_tickets_and_inline_login() {
         StatusCode::CREATED
     );
 
-    let pending = json(
-        request(
+    let pending_response = request(
             &router,
             "/api/v1/auth/login",
             serde_json::json!({"identifier": username, "password": password}),
         )
-        .await,
-    )
-    .await;
-    let setup_ticket = pending["login_ticket"].as_str().expect("setup ticket");
+        .await;
+    let setup_cookie = pending_cookie(&pending_response);
+    let _pending = json(pending_response).await;
     let setup = json(
-        request(
+        request_with_cookie(
             &router,
             "/api/v1/auth/totp/setup",
-            serde_json::json!({"login_ticket": setup_ticket}),
+            serde_json::json!({}),
+            &setup_cookie,
         )
         .await,
     )
     .await;
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
     assert_eq!(
-        request(
+        request_with_cookie(
             &router,
             "/api/v1/auth/totp/setup/confirm",
             serde_json::json!({
-                "login_ticket": setup_ticket,
                 "code": totp.generate_current().expect("TOTP code")
             }),
+            &setup_cookie,
         )
         .await
         .status(),
         StatusCode::OK
     );
 
-    let first_ticket = json(
-        request(
+    let first_response = request(
             &router,
             "/api/v1/auth/login",
             serde_json::json!({"identifier": email, "password": password}),
         )
-        .await,
-    )
-    .await["login_ticket"]
-        .as_str()
-        .expect("first ticket")
-        .to_owned();
-    let second_ticket = json(
-        request(
+        .await;
+    let first_cookie = pending_cookie(&first_response);
+    let _first_pending = json(first_response).await;
+    let second_response = request(
             &router,
             "/api/v1/auth/login",
             serde_json::json!({"identifier": email, "password": password}),
         )
-        .await,
-    )
-    .await["login_ticket"]
-        .as_str()
-        .expect("second ticket")
-        .to_owned();
+        .await;
+    let second_cookie = pending_cookie(&second_response);
+    let _second_pending = json(second_response).await;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time")
@@ -148,20 +171,22 @@ async fn a_totp_time_step_is_single_use_across_tickets_and_inline_login() {
     let code = totp.generate(now);
 
     assert_eq!(
-        request(
+        request_with_cookie(
             &router,
             "/api/v1/auth/totp/login",
-            serde_json::json!({"login_ticket": first_ticket, "code": code}),
+            serde_json::json!({"code": code}),
+            &first_cookie,
         )
         .await
         .status(),
         StatusCode::OK
     );
     assert_eq!(
-        request(
+        request_with_cookie(
             &router,
             "/api/v1/auth/totp/login",
-            serde_json::json!({"login_ticket": second_ticket, "code": code}),
+            serde_json::json!({"code": code}),
+            &second_cookie,
         )
         .await
         .status(),

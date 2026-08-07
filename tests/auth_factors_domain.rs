@@ -41,3 +41,16 @@ fn login_ticket_exposes_only_configured_factor_methods() {
     assert!(ticket.is_active_at(ticket.expires_at - time::Duration::seconds(1)));
     assert!(!ticket.is_active_at(ticket.expires_at));
 }
+
+#[test]
+fn login_ticket_requires_the_matching_holder_hash() {
+    let ticket = LoginTicket::new_with_holder(
+        42,
+        vec![FactorMethod::Totp],
+        "holder-hash".to_owned(),
+    );
+
+    assert!(ticket.matches_holder_hash("holder-hash"));
+    assert!(!ticket.matches_holder_hash("other-holder-hash"));
+    assert!(!LoginTicket::new(42, vec![FactorMethod::Totp]).matches_holder_hash("holder-hash"));
+}

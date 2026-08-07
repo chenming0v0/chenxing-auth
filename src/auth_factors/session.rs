@@ -114,6 +114,7 @@ pub async fn issue_user_session(
         state.config.session_ttl_seconds,
         state.config.cookie_secure,
     );
+    cookies::append_clear_login_ticket_cookies(response.headers_mut(), state.config.cookie_secure);
     response
 }
 

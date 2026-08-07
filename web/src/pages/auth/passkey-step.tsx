@@ -28,7 +28,7 @@ export function PasskeyStep({
     }
     onBusy(true)
     try {
-      await (register ? registerPasskey(pending.login_ticket) : authenticatePasskey(pending.login_ticket))
+      await (register ? registerPasskey() : authenticatePasskey())
       await onComplete()
     } catch (error) {
       onMessage(passkeyErrorMessage(error))
@@ -51,26 +51,26 @@ export function PasskeyStep({
   )
 }
 
-async function registerPasskey(loginTicket: string): Promise<void> {
+async function registerPasskey(): Promise<void> {
   const challenge = await apiFetch<PasskeyChallenge>('/api/v1/auth/passkeys/register/start', {
-    method: 'POST', redirectOn401: false, body: JSON.stringify({ login_ticket: loginTicket }),
+    method: 'POST', redirectOn401: false, body: JSON.stringify({}),
   })
   const publicKey = decodeCreationOptions(challenge)
   const credential = assertPublicKeyCredential(await navigator.credentials.create({ publicKey }))
   await apiFetch<LoginResponse>('/api/v1/auth/passkeys/register/finish', {
     method: 'POST', redirectOn401: false,
-    body: JSON.stringify({ login_ticket: loginTicket, credential: serializeAttestation(credential) }),
+    body: JSON.stringify({ credential: serializeAttestation(credential) }),
   })
 }
 
-async function authenticatePasskey(loginTicket: string): Promise<void> {
+async function authenticatePasskey(): Promise<void> {
   const challenge = await apiFetch<PasskeyChallenge>('/api/v1/auth/passkeys/authentication/start', {
-    method: 'POST', redirectOn401: false, body: JSON.stringify({ login_ticket: loginTicket }),
+    method: 'POST', redirectOn401: false, body: JSON.stringify({}),
   })
   const publicKey = decodeRequestOptions(challenge)
   const credential = assertPublicKeyCredential(await navigator.credentials.get({ publicKey }))
   await apiFetch<LoginResponse>('/api/v1/auth/passkeys/authentication/finish', {
     method: 'POST', redirectOn401: false,
-    body: JSON.stringify({ login_ticket: loginTicket, credential: serializeAssertion(credential) }),
+    body: JSON.stringify({ credential: serializeAssertion(credential) }),
   })
 }

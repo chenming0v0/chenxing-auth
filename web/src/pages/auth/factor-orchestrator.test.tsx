@@ -4,7 +4,7 @@ import type { PendingLoginResponse } from '../../api'
 import { FactorOrchestrator } from './factor-orchestrator'
 
 function pendingWith(methods: string[], status: PendingLoginResponse['status'] = 'factor_setup_required'): PendingLoginResponse {
-  return { status, login_ticket: 'ticket-1', methods }
+  return { status, methods }
 }
 
 function renderOrchestrator(pending: PendingLoginResponse) {

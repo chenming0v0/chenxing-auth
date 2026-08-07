@@ -31,11 +31,16 @@ async fn password_epoch_change_invalidates_existing_login_ticket() {
     .expect("insert test user");
 
     let store = LoginTicketStore::new_with_pool(redis.clone(), pool.clone());
+    let holder_hash = "holder-hash".to_owned();
     let (ticket_id, ticket) = store
-        .create_with_epoch(user_id, vec![FactorMethod::Totp], 0)
+        .create_with_epoch_and_holder(user_id, vec![FactorMethod::Totp], 0, holder_hash.clone())
         .await
         .expect("create ticket");
-    assert!(store.find(&ticket_id).await.expect("find ticket").is_some());
+    assert!(store
+        .find_for_holder(&ticket_id, &holder_hash)
+        .await
+        .expect("find ticket")
+        .is_some());
     assert_eq!(ticket.session_epoch, 0);
 
     chenxing_auth::sqlx::query("UPDATE users SET session_epoch = 1 WHERE id = $1")
@@ -45,7 +50,7 @@ async fn password_epoch_change_invalidates_existing_login_ticket() {
         .expect("advance session epoch");
     assert!(
         store
-            .find(&ticket_id)
+            .find_for_holder(&ticket_id, &holder_hash)
             .await
             .expect("find stale ticket")
             .is_none()

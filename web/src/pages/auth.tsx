@@ -90,7 +90,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
         redirectOn401: false,
         body: JSON.stringify({ identifier: email, password }),
       })
-      if ('login_ticket' in response) {
+      if ('status' in response && 'methods' in response) {
         setPending(response)
         return
       }

@@ -62,6 +62,38 @@ async fn request(router: &Router, uri: &str, payload: Value) -> axum::response::
         .expect("JSON response")
 }
 
+fn pending_cookie(response: &axum::response::Response) -> String {
+    response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().expect("cookie pair"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+async fn request_with_cookie(
+    router: &Router,
+    uri: &str,
+    payload: Value,
+    cookie: &str,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .body(Body::from(payload.to_string()))
+                .expect("JSON request"),
+        )
+        .await
+        .expect("JSON response")
+}
+
 #[tokio::test]
 async fn password_success_does_not_reset_mfa_account_failures() {
     let (router, database, key_directory) = setup().await;
@@ -78,37 +110,34 @@ async fn password_success_does_not_reset_mfa_account_failures() {
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
 
-    let pending = json(
-        request(
+    let pending_response = request(
             &router,
             "/api/v1/auth/login",
             serde_json::json!({"identifier": username, "password": password}),
         )
-        .await,
-    )
-    .await;
-    let ticket = pending["login_ticket"]
-        .as_str()
-        .expect("setup ticket")
-        .to_owned();
+        .await;
+    let pending_cookie_header = pending_cookie(&pending_response);
+    let pending = json(pending_response).await;
+    assert!(pending.get("login_ticket").is_none());
     let setup = json(
-        request(
+        request_with_cookie(
             &router,
             "/api/v1/auth/totp/setup",
-            serde_json::json!({"login_ticket": ticket}),
+            serde_json::json!({}),
+            &pending_cookie_header,
         )
         .await,
     )
     .await;
     let totp =
         totp_rs::TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
-    let response = request(
+    let response = request_with_cookie(
         &router,
         "/api/v1/auth/totp/setup/confirm",
         serde_json::json!({
-            "login_ticket": ticket,
             "code": totp.generate_current().expect("TOTP code")
         }),
+        &pending_cookie_header,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -134,14 +163,14 @@ async fn password_success_does_not_reset_mfa_account_failures() {
     )
     .await;
     assert_eq!(pending.status(), StatusCode::ACCEPTED);
-    let ticket = json(pending).await["login_ticket"]
-        .as_str()
-        .expect("login ticket")
-        .to_owned();
-    let response = request(
+    let pending_cookie_header = pending_cookie(&pending);
+    let pending_body = json(pending).await;
+    assert!(pending_body.get("login_ticket").is_none());
+    let response = request_with_cookie(
         &router,
         "/api/v1/auth/totp/login",
-        serde_json::json!({"login_ticket": ticket, "code": "000000"}),
+        serde_json::json!({"code": "000000"}),
+        &pending_cookie_header,
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);

@@ -68,10 +68,8 @@ async fn owner_login_issues_shared_session_and_csrf_cookies() {
         .await
         .expect("owner login response");
     assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let login_ticket = json_body(response).await["login_ticket"]
-        .as_str()
-        .expect("owner login ticket")
-        .to_owned();
+    let pending_cookie = cookie_header(&response);
+    assert!(json_body(response).await.get("login_ticket").is_none());
 
     let response = router
         .clone()
@@ -80,8 +78,9 @@ async fn owner_login_issues_shared_session_and_csrf_cookies() {
                 .method("POST")
                 .uri("/api/v1/auth/totp/setup")
                 .header("content-type", "application/json")
+                .header("cookie", &pending_cookie)
                 .body(Body::from(
-                    serde_json::json!({"login_ticket": login_ticket}).to_string(),
+                    serde_json::json!({}).to_string(),
                 ))
                 .expect("owner TOTP setup request"),
         )
@@ -99,9 +98,9 @@ async fn owner_login_issues_shared_session_and_csrf_cookies() {
                 .method("POST")
                 .uri("/api/v1/auth/totp/setup/confirm")
                 .header("content-type", "application/json")
+                .header("cookie", &pending_cookie)
                 .body(Body::from(
                     serde_json::json!({
-                        "login_ticket": login_ticket,
                         "code": totp.generate_current().expect("owner TOTP code")
                     })
                     .to_string(),
