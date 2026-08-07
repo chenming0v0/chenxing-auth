@@ -1,7 +1,4 @@
-use axum::{
-    http::HeaderMap,
-    response::Response,
-};
+use axum::{http::HeaderMap, response::Response};
 
 use super::super::{
     service::{AuthFactorServiceError, PasskeyConfirmation, TotpConfirmation},

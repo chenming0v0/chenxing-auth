@@ -1,3 +1,9 @@
+use super::{
+    inputs::{PasskeyAuthenticationInput, PasskeyRegistrationInput, PasskeyTicketInput},
+    responses::{mfa_failure_response, passkey_confirmation_response},
+    ticket_proof::ticket_proof,
+};
+use crate::{auth_factors::service::AuthFactorServiceError, error, state::AppState};
 use axum::{
     Json,
     extract::{ConnectInfo, Extension, State},
@@ -5,16 +11,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use std::net::SocketAddr;
-use super::{
-    inputs::{PasskeyAuthenticationInput, PasskeyRegistrationInput, PasskeyTicketInput},
-    responses::{mfa_failure_response, passkey_confirmation_response},
-    ticket_proof::ticket_proof,
-};
-use crate::{
-    auth_factors::service::AuthFactorServiceError,
-    error,
-    state::AppState,
-};
 
 pub async fn start_passkey_registration(
     State(state): State<AppState>,
