@@ -155,8 +155,10 @@ export function ToggleRow({
 
 export function Notice({ children, tone = 'info' }: { children: ReactNode; tone?: 'info' | 'success' | 'warning' }) {
   const icon = tone === 'success' ? 'check' : tone === 'warning' ? 'alert-triangle' : 'info'
+  const role = tone === 'warning' ? 'alert' : 'status'
+  const live = tone === 'warning' ? 'assertive' : 'polite'
   return (
-    <div className={`cx-alert cx-alert-${tone}`}>
+    <div className={`cx-alert cx-alert-${tone}`} role={role} aria-live={live}>
       <Icon name={icon} size={16} className="mt-0.5 shrink-0" />
       <div className="chenxing-caption text-[var(--chenxing-foreground)]">{children}</div>
     </div>
