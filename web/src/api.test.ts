@@ -189,20 +189,25 @@ describe('apiFetch', () => {
 
   it('returns undefined for 204 responses without parsing a body', async () => {
     // 204 没有 body，调用 response.json() 会抛错，必须提前短路。
+    document.cookie = 'chenxing_csrf=token-abc'
     const json = vi.fn(() => Promise.reject(new Error('unexpected json parse')))
     fetchMock.mockResolvedValue({ ok: true, status: 204, json } as unknown as Response)
     await expect(apiFetch<void>('/api/v1/auth/logout', { method: 'POST' })).resolves.toBeUndefined()
     expect(json).not.toHaveBeenCalled()
   })
 
-  it('omits the CSRF header on GET and HEAD', async () => {
-    document.cookie = 'chenxing_csrf=token-abc'
+  it('omits the CSRF header on the default GET and every safe method', async () => {
     fetchMock.mockResolvedValue(stubResponse({ status: 200, body: { authenticated: false } }))
     await apiFetch('/api/v1/auth/status')
     await apiFetch('/api/v1/auth/status', { method: 'head' })
+    await apiFetch('/api/v1/auth/status', { method: ' OPTIONS ' })
+    await apiFetch('/api/v1/auth/status', { method: 'trace' })
+    expect(fetchMock).toHaveBeenCalledTimes(4)
     expect(headersOf(fetchMock, 0).get('X-CSRF-Token')).toBeNull()
     expect(headersOf(fetchMock, 0).get('Content-Type')).toBeNull()
     expect(headersOf(fetchMock, 1).get('X-CSRF-Token')).toBeNull()
+    expect(headersOf(fetchMock, 2).get('X-CSRF-Token')).toBeNull()
+    expect(headersOf(fetchMock, 3).get('X-CSRF-Token')).toBeNull()
   })
 
   it('sends the CSRF header from the cookie on state changing methods', async () => {
@@ -214,10 +219,25 @@ describe('apiFetch', () => {
     expect(headers.get('Content-Type')).toBe('application/json')
   })
 
-  it('skips the CSRF header when the cookie is missing', async () => {
+  it('fails before fetch when a state-changing request has no CSRF cookie', async () => {
     fetchMock.mockResolvedValue(stubResponse({ status: 200, body: {} }))
-    await apiFetch('/api/v1/auth/login', { method: 'POST', body: '{}' })
-    expect(headersOf(fetchMock).get('X-CSRF-Token')).toBeNull()
+    const error = await apiFetch('/api/v1/auth/login', { method: 'POST', body: '{}' })
+      .catch((value: unknown) => value)
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({
+      status: 0,
+      code: 'csrf_required',
+      message: '请求校验失败，请刷新页面后重试。',
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('preserves an explicit CSRF header when the cookie is missing', async () => {
+    fetchMock.mockResolvedValue(stubResponse({ status: 200, body: {} }))
+    await apiFetch('/api/v1/auth/login', {
+      method: 'POST', body: '{}', headers: { 'X-CSRF-Token': 'explicit-token' },
+    })
+    expect(headersOf(fetchMock).get('X-CSRF-Token')).toBe('explicit-token')
   })
 
   it('lets the browser set the boundary for FormData bodies', async () => {
@@ -238,6 +258,7 @@ describe('apiFetch', () => {
   })
 
   it('maps error responses to safe messages and keeps the code', async () => {
+    document.cookie = 'chenxing_csrf=token-abc'
     fetchMock.mockResolvedValue(stubResponse({
       status: 400,
       body: { code: 'invalid_credentials', message: 'password hash mismatch for user 42' },
@@ -251,6 +272,7 @@ describe('apiFetch', () => {
 
   it('ignores a non-string code and an unparsable error body', async () => {
     // code 只接受字符串，对象或缺失都退回状态码文案，避免把结构化数据渲染到界面。
+    document.cookie = 'chenxing_csrf=token-abc'
     fetchMock.mockResolvedValue(stubResponse({ status: 409, body: { code: { evil: true } } }))
     const objectCode = await apiFetch('/api/v1/plans', { method: 'POST' }).catch((value: unknown) => value) as ApiError
     expect(objectCode.status).toBe(409)
@@ -279,6 +301,7 @@ describe('apiFetch', () => {
 
   it('does not redirect when redirectOn401 is disabled', async () => {
     // 登录和 Passkey 流程需要就地展示错误，重定向会打断多因素步骤。
+    document.cookie = 'chenxing_csrf=token-abc'
     const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {})
     fetchMock.mockResolvedValue(stubResponse({ status: 401, body: { code: 'invalid_login_ticket' } }))
 

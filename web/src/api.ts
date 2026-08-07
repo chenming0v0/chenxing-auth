@@ -34,6 +34,8 @@ function csrfToken(): string | undefined {
   return parseCsrfToken(document.cookie)
 }
 
+const SAFE_HTTP_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE'])
+
 /** 安全错误码文案映射，使用 Map 避免原型链污染（Object 字面量索引可访问 constructor 等原型属性）。 */
 const safeMessages = new Map<string, string>([
   ['invalid_credentials', '账号或密码不正确。'],
@@ -173,15 +175,25 @@ function invalidSuccessResponse(status: number): ApiError {
   return new ApiError(safeErrorMessage(status), status)
 }
 
+function normalizeMethod(method: RequestInit['method']): string {
+  const normalized = String(method ?? 'GET').trim().toUpperCase()
+  return normalized || 'GET'
+}
+
+function missingCsrfError(): ApiError {
+  return new ApiError(safeErrorMessage(0, 'csrf_required'), 0, 'csrf_required')
+}
+
 export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
   const { redirectOn401 = true, ...requestInit } = init
-  const method = requestInit.method?.toUpperCase() ?? 'GET'
+  const method = normalizeMethod(requestInit.method)
   const headers = new Headers(requestInit.headers)
   headers.set('Accept', 'application/json')
-  if (method !== 'GET' && method !== 'HEAD') {
+  if (!SAFE_HTTP_METHODS.has(method)) {
     if (!(requestInit.body instanceof FormData)) headers.set('Content-Type', 'application/json')
     const token = csrfToken()
     if (token) headers.set('X-CSRF-Token', token)
+    else if (!headers.has('X-CSRF-Token')) throw missingCsrfError()
   }
 
   let response: Response
