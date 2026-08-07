@@ -3,6 +3,17 @@ use time::OffsetDateTime;
 
 use super::{AuditError, AuditEvent};
 
+type AuditRow = (
+    i64,
+    String,
+    Option<i64>,
+    String,
+    String,
+    Option<String>,
+    serde_json::Value,
+    OffsetDateTime,
+);
+
 pub(crate) async fn insert(pool: &PgPool, event: &AuditEvent) -> Result<(), AuditError> {
     let mut event = event.clone();
     event.redact_metadata_in_place();
@@ -41,19 +52,39 @@ pub async fn list_filtered(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<AuditEvent>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<
-        _,
-        (
-            i64,
-            String,
-            Option<i64>,
-            String,
-            String,
-            Option<String>,
-            serde_json::Value,
-            OffsetDateTime,
-        ),
-    >(
+    list_filtered_with(pool, action, resource_type, limit, offset).await
+}
+
+pub async fn query_filtered(
+    pool: &PgPool,
+    action: Option<&str>,
+    resource_type: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<AuditEvent>, i64), crate::sqlx::Error> {
+    // COUNT and page rows must observe one MVCC snapshot.
+    let mut transaction = pool.begin().await?;
+    crate::sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *transaction)
+        .await?;
+    let total = count_filtered_with(&mut *transaction, action, resource_type).await?;
+    let events =
+        list_filtered_with(&mut *transaction, action, resource_type, limit, offset).await?;
+    transaction.commit().await?;
+    Ok((events, total))
+}
+
+async fn list_filtered_with<'executor, E>(
+    executor: E,
+    action: Option<&str>,
+    resource_type: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<AuditEvent>, crate::sqlx::Error>
+where
+    E: crate::sqlx::Executor<'executor, Database = crate::sqlx::Postgres>,
+{
+    crate::sqlx::query_as::<_, AuditRow>(
         "WITH event_rows AS (
              SELECT id, actor_type, actor_user_id, action, resource_type, resource_id, metadata, created_at
              FROM audit_events
@@ -71,7 +102,7 @@ pub async fn list_filtered(
     .bind(resource_type)
     .bind(limit)
     .bind(offset)
-    .fetch_all(pool)
+    .fetch_all(executor)
     .await
     .map(|rows| {
         rows.into_iter()
@@ -105,6 +136,17 @@ pub async fn count_filtered(
     action: Option<&str>,
     resource_type: Option<&str>,
 ) -> Result<i64, crate::sqlx::Error> {
+    count_filtered_with(pool, action, resource_type).await
+}
+
+async fn count_filtered_with<'executor, E>(
+    executor: E,
+    action: Option<&str>,
+    resource_type: Option<&str>,
+) -> Result<i64, crate::sqlx::Error>
+where
+    E: crate::sqlx::Executor<'executor, Database = crate::sqlx::Postgres>,
+{
     crate::sqlx::query_scalar(
         "WITH event_rows AS (
              SELECT action, resource_type FROM audit_events
@@ -117,7 +159,7 @@ pub async fn count_filtered(
     )
     .bind(action)
     .bind(resource_type)
-    .fetch_one(pool)
+    .fetch_one(executor)
     .await
 }
 

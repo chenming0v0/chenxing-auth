@@ -273,6 +273,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             false,
         ),
         Migration::new(
+            15,
+            Cow::Borrowed("admin search indexes"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0015_admin_search_indexes.sql")),
+            false,
+        ),
+        Migration::new(
             16,
             Cow::Borrowed("client secret rotation compare-and-swap version"),
             MigrationType::Simple,

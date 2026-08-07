@@ -194,8 +194,10 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     for index in [
         "users_admin_query_order_idx",
         "users_admin_query_status_idx",
+        "users_admin_search_trgm_idx",
         "oauth_clients_admin_query_order_idx",
         "oauth_clients_admin_query_status_idx",
+        "oauth_clients_admin_search_trgm_idx",
         "audit_events_action_idx",
         "audit_events_archive_action_idx",
         "user_sessions_active_created_idx",

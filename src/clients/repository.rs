@@ -8,9 +8,7 @@ use crate::users::domain::UserId;
 
 #[path = "repository_rotation.rs"]
 mod rotation;
-pub use rotation::{
-    find_client_secret_version, update_client_secret_if_version,
-};
+pub use rotation::{find_client_secret_version, update_client_secret_if_version};
 
 /// Client 的认证方式与对应凭据材料。
 ///
@@ -332,6 +330,11 @@ pub async fn query_clients(
                 .replace('_', "\\_")
         )
     });
+    // COUNT and page rows must observe one MVCC snapshot.
+    let mut transaction = pool.begin().await?;
+    crate::sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *transaction)
+        .await?;
     let total = crate::sqlx::query_scalar(
         "SELECT COUNT(*) FROM oauth_clients
          WHERE ($1::text IS NULL OR status = $1)
@@ -340,7 +343,7 @@ pub async fn query_clients(
     )
     .bind(status)
     .bind(search_pattern.as_deref())
-    .fetch_one(pool)
+    .fetch_one(&mut *transaction)
     .await?;
     let rows = crate::sqlx::query_as::<_, ClientRow>(&format!(
         "SELECT {LIST_COLUMNS}
@@ -354,11 +357,12 @@ pub async fn query_clients(
     .bind(search_pattern.as_deref())
     .bind(limit)
     .bind(offset)
-    .fetch_all(pool)
+    .fetch_all(&mut *transaction)
     .await?
     .into_iter()
     .map(to_listed_client)
     .collect();
+    transaction.commit().await?;
     Ok((rows, total))
 }
 
@@ -409,19 +413,16 @@ pub async fn set_client_status(
     Ok(result.rows_affected() == 1)
 }
 
-/// 轮换 Client Secret。
+/// 轮换 Client Secret 的兼容入口。
 ///
-/// `auth_method <> 'none'` 是安全边界：公开客户端不允许持有 secret，
-/// 因此轮换请求匹配不到行、返回 false，调用方按「对象不可用」处理。
-/// 用 SQL 条件而不是先查后写，避免检查与写入之间的竞态。
+/// 保留既有签名，但先读取版本再执行 CAS，避免旧调用方继续触发 LWW。
 pub async fn update_client_secret(
     pool: &PgPool,
     owner_user_id: Option<UserId>,
     client_id: &str,
     client_secret_hash: &str,
 ) -> Result<bool, crate::sqlx::Error> {
-    let Some(expected_version) =
-        find_client_secret_version(pool, owner_user_id, client_id).await?
+    let Some(expected_version) = find_client_secret_version(pool, owner_user_id, client_id).await?
     else {
         return Ok(false);
     };

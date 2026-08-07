@@ -29,6 +29,11 @@ pub async fn query_users(
                 .replace('_', "\\_")
         )
     });
+    // COUNT and page rows must observe one MVCC snapshot.
+    let mut transaction = pool.begin().await?;
+    crate::sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *transaction)
+        .await?;
     let total = crate::sqlx::query_scalar(
         "SELECT COUNT(*) FROM users
          WHERE ($1::text IS NULL OR status = $1)
@@ -38,7 +43,7 @@ pub async fn query_users(
     )
     .bind(status)
     .bind(search_pattern.as_deref())
-    .fetch_one(pool)
+    .fetch_one(&mut *transaction)
     .await?;
     let rows = crate::sqlx::query_as::<
         _,
@@ -78,7 +83,7 @@ pub async fn query_users(
     .bind(search_pattern.as_deref())
     .bind(limit)
     .bind(offset)
-    .fetch_all(pool)
+    .fetch_all(&mut *transaction)
     .await?
     .into_iter()
     .map(
@@ -114,6 +119,7 @@ pub async fn query_users(
         },
     )
     .collect();
+    transaction.commit().await?;
     Ok((rows, total))
 }
 
