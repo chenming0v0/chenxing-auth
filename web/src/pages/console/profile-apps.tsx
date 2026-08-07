@@ -201,7 +201,7 @@ export function AuthorizedApps() {
   useEffect(() => { void loadApps() }, [])
 
   async function revokeApp(app: AuthorizedOAuthApp) {
-    if (!window.confirm(`确认撤销“${app.client_name}”的授权吗？`)) return
+    if (!window.confirm(`确认撤销“${app.client_name}”的授权吗？撤销后，该应用将立即失去访问账户数据的权限，若要继续使用，必须重新授权。`)) return
     setBusyClientId(app.client_id)
     setMessage('')
     try {
