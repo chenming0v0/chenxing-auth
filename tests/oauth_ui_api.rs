@@ -120,7 +120,10 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
         .await
         .expect("register response");
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(json(response).await["code"], "email_verification_unavailable");
+    assert_eq!(
+        json(response).await["code"],
+        "email_verification_unavailable"
+    );
 
     let response = router
         .clone()

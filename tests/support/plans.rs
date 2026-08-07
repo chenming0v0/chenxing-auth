@@ -137,7 +137,8 @@ pub async fn register_user(router: &Router, suffix: &str) -> i64 {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/users")
+                .uri("/api/v1/admin/users")
+                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({
@@ -152,7 +153,7 @@ pub async fn register_user(router: &Router, suffix: &str) -> i64 {
         .await
         .expect("registration response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    json(response).await["user"]["id"]
+    json(response).await["id"]
         .as_i64()
         .expect("numeric user id")
 }

@@ -130,7 +130,10 @@ async fn owner_can_use_admin_ui_queries_but_normal_user_cannot() {
         .await
         .expect("register response");
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(json(response).await["code"], "email_verification_unavailable");
+    assert_eq!(
+        json(response).await["code"],
+        "email_verification_unavailable"
+    );
 
     let public_registration_count: i64 = chenxing_auth::sqlx::query_scalar(
         "SELECT COUNT(*) FROM users WHERE username = $1 OR email = $2",
@@ -164,9 +167,7 @@ async fn owner_can_use_admin_ui_queries_but_normal_user_cannot() {
         .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
     let user = json(response).await;
-    let user_id = user["id"]
-        .as_i64()
-        .expect("admin-created user id");
+    let user_id = user["id"].as_i64().expect("admin-created user id");
     assert_eq!(user["role"], "user");
 
     for uri in [

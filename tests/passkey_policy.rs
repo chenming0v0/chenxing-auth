@@ -118,16 +118,22 @@ async fn create_user(router: &Router, database: &sqlx::PgPool) -> (i64, String) 
     let response = request(
         router,
         "POST",
-        "/api/v1/users",
+        "/api/v1/admin/users",
         serde_json::json!({
             "username": username,
             "email": email,
             "password": PASSWORD
         }),
-        None,
+        Some("Bearer passkey-policy-token"),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::CREATED);
+    let status = response.status();
+    let body = json(response).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "user creation response: {body}"
+    );
     let user_id: i64 = sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
         .bind(&email)
         .fetch_one(database)

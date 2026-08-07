@@ -112,7 +112,10 @@ async fn password_success_does_not_reset_mfa_account_failures() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(json(response).await["code"], "email_verification_unavailable");
+    assert_eq!(
+        json(response).await["code"],
+        "email_verification_unavailable"
+    );
 
     let response = router
         .clone()

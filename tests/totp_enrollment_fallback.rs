@@ -19,6 +19,8 @@ mod db_isolation;
 #[path = "support/oauth_flow.rs"]
 mod oauth_flow;
 
+const ADMIN_TOKEN: &str = "totp-fallback-admin-token";
+
 async fn setup() -> (
     Router,
     chenxing_auth::sqlx::PgPool,
@@ -41,6 +43,7 @@ async fn setup() -> (
         3600,
     )
     .expect("test configuration");
+    config.admin_token = ADMIN_TOKEN.to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let email = format!("totp-fallback-{}@example.com", Uuid::new_v4().simple());
@@ -82,6 +85,30 @@ async fn request(
         .expect("JSON response")
 }
 
+async fn create_user(router: &Router, username: &str, email: &str, password: &str) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": username,
+                        "email": email,
+                        "password": password,
+                    })
+                    .to_string(),
+                ))
+                .expect("admin user creation request"),
+        )
+        .await
+        .expect("admin user creation response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
 fn pending_cookie(response: &axum::response::Response) -> String {
     response
         .headers()
@@ -117,16 +144,7 @@ async fn request_with_cookie(
 /// 注册账号并完成 TOTP 首次注册，返回 TOTP 生成器。
 /// 返回时账号已有注册好的 TOTP 因子，后续 login ticket 上不再有待确认注册。
 async fn enroll_totp(router: &Router, username: &str, email: &str, password: &str) -> TOTP {
-    assert_eq!(
-        request(
-            router,
-            "/api/v1/users",
-            serde_json::json!({"username": username, "email": email, "password": password}),
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
-    );
+    create_user(router, username, email, password).await;
     let login_response = request(
         router,
         "/api/v1/auth/login",

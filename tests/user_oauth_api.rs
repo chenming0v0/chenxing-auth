@@ -120,7 +120,8 @@ async fn register_and_login_without_plan(router: &Router, suffix: &str) -> (Stri
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/users")
+                .uri("/api/v1/admin/users")
+                .header("authorization", "Bearer user-ui-admin-token")
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::json!({"username": username, "email": email, "password": password})

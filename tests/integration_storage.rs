@@ -541,10 +541,12 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
         .del(&watermark_key)
         .await
         .expect("clear Redis-only session watermark");
-    assert!(!connection
-        .exists::<_, bool>(&watermark_key)
-        .await
-        .expect("check missing Redis-only session watermark"));
+    assert!(
+        !connection
+            .exists::<_, bool>(&watermark_key)
+            .await
+            .expect("check missing Redis-only session watermark")
+    );
     sessions
         .save(&mut session, Duration::from_secs(60))
         .await

@@ -129,7 +129,10 @@ async fn oauth_ui_approval_failure_keeps_pending_request_for_retry() {
         .await
         .expect("register response");
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(json(response).await["code"], "email_verification_unavailable");
+    assert_eq!(
+        json(response).await["code"],
+        "email_verification_unavailable"
+    );
 
     let response = router
         .clone()
@@ -152,9 +155,7 @@ async fn oauth_ui_approval_failure_keeps_pending_request_for_retry() {
         .await
         .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    let user_id = json(response).await["id"]
-        .as_i64()
-        .expect("user id");
+    let user_id = json(response).await["id"].as_i64().expect("user id");
     // 自助创建 Client 需要生效套餐；迁移不再种子默认套餐，这里显式挂一个。
     plan_fixtures::assign_private_plan(
         &database,

@@ -11,6 +11,8 @@ use uuid::Uuid;
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
 
+const ADMIN_TOKEN: &str = "totp-admin-token";
+
 async fn setup() -> (
     Router,
     chenxing_auth::sqlx::PgPool,
@@ -32,6 +34,7 @@ async fn setup() -> (
         3600,
     )
     .expect("test configuration");
+    config.admin_token = ADMIN_TOKEN.to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let owner_suffix = Uuid::new_v4().simple().to_string();
@@ -92,6 +95,30 @@ async fn request(
         .expect("JSON response")
 }
 
+async fn create_user(router: &Router, username: &str, email: &str, password: &str) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": username,
+                        "email": email,
+                        "password": password,
+                    })
+                    .to_string(),
+                ))
+                .expect("admin user creation request"),
+        )
+        .await
+        .expect("admin user creation response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
 fn pending_cookie(response: &axum::response::Response) -> String {
     response
         .headers()
@@ -129,22 +156,7 @@ async fn password_login_without_factor_returns_pending_setup_ticket() {
     let (router, database, key_directory, email) = setup().await;
     let username = format!("totp-{}", Uuid::new_v4().simple());
     let password = "correct horse battery";
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/users")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({"username": username, "email": email, "password": password})
-                        .to_string(),
-                ))
-                .expect("registration request"),
-        )
-        .await
-        .expect("registration response");
-    assert_eq!(response.status(), StatusCode::CREATED);
+    create_user(&router, &username, &email, password).await;
 
     let response = router
         .clone()
@@ -187,13 +199,7 @@ async fn totp_login_endpoint_completes_a_pending_factor_ticket() {
     let (router, database, key_directory, email) = setup().await;
     let username = format!("totp-login-{}", Uuid::new_v4().simple());
     let password = "correct horse battery";
-    let response = request(
-        &router,
-        "/api/v1/users",
-        serde_json::json!({"username": username, "email": email, "password": password}),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::CREATED);
+    create_user(&router, &username, &email, password).await;
 
     let login_response = request(
         &router,
@@ -247,13 +253,7 @@ async fn totp_login_ticket_is_invalidated_after_five_failed_codes() {
     let (router, database, key_directory, email) = setup().await;
     let username = format!("totp-limit-{}", Uuid::new_v4().simple());
     let password = "correct horse battery";
-    let response = request(
-        &router,
-        "/api/v1/users",
-        serde_json::json!({"username": username, "email": email, "password": password}),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::CREATED);
+    create_user(&router, &username, &email, password).await;
 
     let login_response = request(
         &router,
@@ -305,13 +305,7 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
     let (router, database, key_directory, email) = setup().await;
     let username = format!("totp-{}", Uuid::new_v4().simple());
     let password = "correct horse battery";
-    let response = request(
-        &router,
-        "/api/v1/users",
-        serde_json::json!({"username": username, "email": email, "password": password}),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::CREATED);
+    create_user(&router, &username, &email, password).await;
 
     let response = request(
         &router,

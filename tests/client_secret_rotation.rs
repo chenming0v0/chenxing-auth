@@ -61,11 +61,10 @@ async fn concurrent_secret_writes_have_one_compare_and_swap_winner() {
         .await
         .expect("read rotated credentials")
         .expect("rotated credentials");
-    assert_eq!(credentials.client_secret_hash.as_deref(), Some(if first {
-        "first-hash"
-    } else {
-        "second-hash"
-    }));
+    assert_eq!(
+        credentials.client_secret_hash.as_deref(),
+        Some(if first { "first-hash" } else { "second-hash" })
+    );
     assert_eq!(
         repository::find_client_secret_version(&pool, None, &client_id)
             .await

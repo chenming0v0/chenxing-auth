@@ -15,6 +15,8 @@ mod db_isolation;
 #[path = "support/oauth_flow.rs"]
 mod oauth_flow;
 
+const ADMIN_TOKEN: &str = "totp-replay-admin-token";
+
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
@@ -31,6 +33,7 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
         3600,
     )
     .expect("test configuration");
+    config.admin_token = ADMIN_TOKEN.to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let router = api::router(
@@ -63,6 +66,30 @@ async fn request(router: &Router, uri: &str, payload: Value) -> axum::response::
         )
         .await
         .expect("JSON response")
+}
+
+async fn create_user(router: &Router, username: &str, email: &str, password: &str) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": username,
+                        "email": email,
+                        "password": password,
+                    })
+                    .to_string(),
+                ))
+                .expect("admin user creation request"),
+        )
+        .await
+        .expect("admin user creation response");
+    assert_eq!(response.status(), StatusCode::CREATED);
 }
 
 fn pending_cookie(response: &axum::response::Response) -> String {
@@ -104,16 +131,7 @@ async fn a_totp_time_step_is_single_use_across_tickets_and_inline_login() {
     let username = format!("replay-{suffix}");
     let email = format!("replay-{suffix}@example.com");
     let password = "correct horse battery";
-    assert_eq!(
-        request(
-            &router,
-            "/api/v1/users",
-            serde_json::json!({"username": username, "email": email, "password": password}),
-        )
-        .await
-        .status(),
-        StatusCode::CREATED
-    );
+    create_user(&router, &username, &email, password).await;
 
     let pending_response = request(
         &router,

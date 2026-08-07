@@ -36,6 +36,7 @@ async fn setup() -> (
         3600,
     )
     .expect("test configuration");
+    config.admin_token = "flow-admin-token".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let email = format!("passkey-{}@example.com", Uuid::new_v4().simple());
@@ -126,16 +127,26 @@ fn bogus_registration_credential() -> serde_json::Value {
 
 async fn create_user(router: &Router, email: &str) -> String {
     let username = format!("passkey-limit-{}", Uuid::new_v4().simple());
-    let response = post(
-        router,
-        "/api/v1/users",
-        serde_json::json!({
-            "username": username,
-            "email": email,
-            "password": "correct horse battery"
-        }),
-    )
-    .await;
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("authorization", "Bearer flow-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": username,
+                        "email": email,
+                        "password": "correct horse battery"
+                    })
+                    .to_string(),
+                ))
+                .expect("admin user creation request"),
+        )
+        .await
+        .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
     username
 }
@@ -217,15 +228,8 @@ async fn cleanup_user(database: &chenxing_auth::sqlx::PgPool, user_id: i64) {
 #[serial(passkey_auth)]
 async fn passkey_registration_start_returns_creation_challenge_for_login_ticket() {
     let (router, database, key_directory, email) = setup().await;
-    let username = format!("passkey-{}", Uuid::new_v4().simple());
+    let username = create_user(&router, &email).await;
     let password = "correct horse battery";
-    let response = post(
-        &router,
-        "/api/v1/users",
-        serde_json::json!({"username": username, "email": email, "password": password}),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::CREATED);
     let response = post(
         &router,
         "/api/v1/auth/login",
@@ -293,7 +297,7 @@ async fn passkey_registration_start_returns_creation_challenge_for_login_ticket(
 #[serial(passkey_auth)]
 async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
     let (router, database, key_directory, email) = setup().await;
-    let username = format!("passkey-settings-{}", Uuid::new_v4().simple());
+    let username = create_user(&router, &email).await;
     let password = "correct horse battery";
     let old_setting = serde_json::json!({
         "enabled": true,
@@ -315,13 +319,6 @@ async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
     .await
     .expect("old passkey setting");
 
-    let response = post(
-        &router,
-        "/api/v1/users",
-        serde_json::json!({"username": username, "email": email, "password": password}),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::CREATED);
     let login_response = post(
         &router,
         "/api/v1/auth/login",
