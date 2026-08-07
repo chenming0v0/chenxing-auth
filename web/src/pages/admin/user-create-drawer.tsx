@@ -4,11 +4,18 @@ import { Drawer } from '../../components/drawer'
 import { Button, Field, HudPanel, Notice, PasswordField } from '../../components/ui'
 import { SelectField, type SelectOption } from '../../components/select'
 
-/* 校验规则与服务端 src/users/domain.rs 一致：用户名 3-64 字符、无 @ 与空白，
-   密码 10-128 字符，显示名称 ≤128 字符，长度一律按字符数而非字节数计。
+/* 校验规则与服务端 src/users/domain.rs 一致：用户名 3-64 字符，仅含 ASCII 字母、数字、
+   点号、下划线或连字符且不能使用系统保留名，密码 10-128 字符，显示名称 ≤128 字符，
+   长度一律按字符数而非字节数计。
    前端校验只为少一次往返，服务端仍是唯一判定方。 */
 const USERNAME_MIN = 3
 const USERNAME_MAX = 64
+const USERNAME_SAFE = /^[A-Za-z0-9._-]+$/
+const USERNAME_CONTROL = /\p{Cc}/u
+const RESERVED_USERNAMES = new Set([
+  'admin', 'administrator', 'owner', 'root', 'security', 'service', 'support',
+  'superadmin', 'superuser', 'sysadmin', 'system',
+])
 const PASSWORD_MIN = 10
 const PASSWORD_MAX = 128
 const DISPLAY_NAME_MAX = 128
@@ -64,10 +71,15 @@ function validate(form: FormState): FieldErrors {
   const errors: FieldErrors = {}
   const username = form.username.trim()
   if (!username) errors.username = '请填写用户名。'
+  else if (USERNAME_CONTROL.test(form.username)) errors.username = '用户名不能包含控制字符。'
   else if (charCount(username) < USERNAME_MIN || charCount(username) > USERNAME_MAX) {
     errors.username = `用户名需要 ${USERNAME_MIN} 到 ${USERNAME_MAX} 个字符。`
   } else if (username.includes('@') || /\s/.test(username)) {
     errors.username = '用户名不能包含 @ 或空格。'
+  } else if (!USERNAME_SAFE.test(username)) {
+    errors.username = '用户名只能包含字母、数字、点号、下划线和连字符。'
+  } else if (RESERVED_USERNAMES.has(username.toLowerCase())) {
+    errors.username = '该用户名为系统保留名称，请更换。'
   }
 
   const email = form.email.trim()
@@ -194,7 +206,7 @@ export function UserCreateDrawer({ canManageRoles, onClose, onCreated }: {
           value={form.username}
           onChange={(event) => update('username', event.target.value)}
           errorText={errors.username}
-          hint={`${USERNAME_MIN}-${USERNAME_MAX} 个字符，不含 @ 和空格，服务端会转为小写。`}
+          hint={`${USERNAME_MIN}-${USERNAME_MAX} 个字符，仅含字母、数字、点号、下划线和连字符，服务端会转为小写。`}
         />
         <Field
           label="邮箱"

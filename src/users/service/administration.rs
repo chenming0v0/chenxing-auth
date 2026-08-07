@@ -5,7 +5,7 @@
 
 use super::{UserService, UserServiceError};
 use crate::users::{
-    domain::{UserId, UserRole},
+    domain::{UserId, UserRole, UserStatus},
     query_repository, repository,
 };
 
@@ -35,6 +35,9 @@ impl UserService {
     }
 
     pub async fn set_status(&self, id: UserId, status: &str) -> Result<bool, UserServiceError> {
+        let Some(status) = UserStatus::parse(status) else {
+            return Ok(false);
+        };
         self.set_status_guarded(id, status).await
     }
 
@@ -56,11 +59,8 @@ impl UserService {
     pub async fn set_status_guarded(
         &self,
         id: UserId,
-        status: &str,
+        status: UserStatus,
     ) -> Result<bool, UserServiceError> {
-        if !matches!(status, "active" | "disabled") {
-            return Ok(false);
-        }
         match repository::set_user_status_guarded(&self.pool, id, status).await? {
             Some("last_owner_required") => Err(UserServiceError::LastOwnerRequired),
             Some("updated") => Ok(true),

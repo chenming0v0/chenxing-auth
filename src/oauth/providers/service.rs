@@ -9,7 +9,7 @@ use super::{
     repository::{self, CreateIdentityError},
     secrets::{SecretError, SecretManager},
 };
-use crate::users::domain::UserId;
+use crate::users::domain::{UserId, UserStatus};
 use argon2::{
     Argon2,
     password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
@@ -273,7 +273,7 @@ impl ExternalOAuthService {
         if let Some(identity) =
             repository::find_identity(&self.pool, provider.id, &external.subject).await?
         {
-            if identity.user_status != "active" {
+            if UserStatus::parse(&identity.user_status) != Some(UserStatus::Active) {
                 return Err(ExternalOAuthError::UserDisabled);
             }
             return Ok(identity.user_id);

@@ -40,7 +40,7 @@
 
 ```json
 {
-  "username": "owner",
+  "username": "chenxing-owner",
   "email": "owner@example.com",
   "password": "at-least-10-chars"
 }

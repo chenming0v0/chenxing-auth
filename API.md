@@ -48,7 +48,7 @@
 {"username":"chenxing-user","email":"user@example.com","password":"at-least-10-chars","display_name":"显示名称"}
 ```
 
-`username` 必填，长度 3-64 个字符且不可包含空格或 `@`；必须唯一。`display_name` 可省略或为 `null`，最长 128 个字符；密码至少 10 个字符。
+`username` 必填，长度 3-64 个字符，仅允许 ASCII 字母、数字、点号、下划线和连字符；首尾空白会被裁剪，必须唯一，且不区分大小写的 `admin`、`administrator`、`owner`、`root`、`system` 等系统保留名不可使用。`display_name` 可省略或为 `null`，最长 128 个字符；密码至少 10 个字符。
 
 验证投递能力接入后，成功响应 `201`：
 

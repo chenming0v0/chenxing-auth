@@ -14,7 +14,10 @@ use super::{
 use crate::{
     error,
     state::AppState,
-    users::{domain::UserRole, ui_auth::current_user},
+    users::{
+        domain::{UserRole, UserStatus},
+        ui_auth::current_user,
+    },
 };
 
 #[derive(Debug, Deserialize)]
@@ -78,7 +81,7 @@ pub async fn admin_me(State(state): State<AppState>, headers: HeaderMap) -> Resp
                 username: None,
                 role: "owner",
                 permissions: permissions(AdminRole::Owner),
-                status: "active",
+                status: UserStatus::Active.as_str(),
             }),
         )
             .into_response();
@@ -105,7 +108,7 @@ pub async fn admin_me(State(state): State<AppState>, headers: HeaderMap) -> Resp
             username: Some(profile.username),
             role: context.role.as_str(),
             permissions: permissions(context.role),
-            status: "active",
+            status: UserStatus::Active.as_str(),
         }),
     )
         .into_response()

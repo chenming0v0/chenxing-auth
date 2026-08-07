@@ -5,7 +5,7 @@ use crate::{
     auth_limiter::{FailureDimension, LimiterDimension, MissingSourceIpPolicy},
     users::{
         credentials::{hash_password, verify_password},
-        domain::{UserId, validate_display_name, validate_password_length},
+        domain::{UserId, UserStatus, validate_display_name, validate_password_length},
         repository,
     },
 };
@@ -51,7 +51,7 @@ impl UserService {
             return Err(UserServiceError::RateLimited);
         }
 
-        if credentials.status != "active" {
+        if UserStatus::parse(&credentials.status) != Some(UserStatus::Active) {
             self.limiter.release(dimensions).await?;
             return Err(UserServiceError::InvalidCredentials);
         }

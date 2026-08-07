@@ -10,7 +10,7 @@ use super::{SessionStore, SessionStoreError};
 use crate::{
     sessions::domain::{Session, SessionPayload, session_token_hash_bytes},
     sqlx::{Postgres, Transaction},
-    users::domain::UserId,
+    users::domain::{UserId, UserStatus},
 };
 
 #[path = "postgres_lookup.rs"]
@@ -44,7 +44,7 @@ pub(super) async fn save_with_metadata(
     let Some((session_epoch, status)) = user_state else {
         return Err(SessionStoreError::UserNotFound);
     };
-    if status != "active" {
+    if UserStatus::parse(&status) != Some(UserStatus::Active) {
         return Err(SessionStoreError::UserDisabled);
     }
     let active_count: i64 = crate::sqlx::query_scalar(

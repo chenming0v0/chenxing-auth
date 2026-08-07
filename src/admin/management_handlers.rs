@@ -111,10 +111,10 @@ pub async fn set_user_status(
     };
     // The service uses `false` for both an invalid status and a missing user.
     // Preserve the existing validation response so only a missing resource becomes 404.
-    if UserStatus::parse(&status).is_none() {
+    let Some(status) = UserStatus::parse(&status) else {
         return error::bad_request("user_not_found", "user or status was not found");
-    }
-    match state.users.set_status_guarded(user_id, &status).await {
+    };
+    match state.users.set_status_guarded(user_id, status).await {
         Ok(true) => {
             let (actor_type, actor_id) = actor.audit_fields();
             state
@@ -122,7 +122,7 @@ pub async fn set_user_status(
                 .record_best_effort(crate::audit::AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
-                    format!("user_{status}"),
+                    format!("user_{}", status.as_str()),
                     "user".to_owned(),
                     Some(user_id.to_string()),
                     serde_json::json!({"result":"success"}),

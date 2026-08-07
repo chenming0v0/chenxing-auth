@@ -1,4 +1,6 @@
-use chenxing_auth::users::domain::{RegistrationError, RegistrationInput, validate_registration};
+use chenxing_auth::users::domain::{
+    RegistrationError, RegistrationInput, validate_registration, validate_username,
+};
 
 #[test]
 fn registration_normalizes_email_and_keeps_display_name() {
@@ -64,6 +66,31 @@ fn registration_requires_a_valid_username() {
     .expect_err("short username must be rejected");
 
     assert_eq!(error, RegistrationError::InvalidUsername);
+}
+
+#[test]
+fn username_rejects_reserved_names_case_insensitively() {
+    for username in ["admin", "SYSTEM", "Owner", "rOoT", "administrator"] {
+        assert!(validate_username(username).is_none(), "{username}");
+    }
+}
+
+#[test]
+fn username_rejects_control_and_unsafe_characters() {
+    for username in ["safe\nname", "safe\0name", "safe name", "safe/name", "safe@name"] {
+        assert!(validate_username(username).is_none(), "{username:?}");
+    }
+}
+
+#[test]
+fn username_keeps_existing_safe_characters_and_normalization() {
+    for (input, expected) in [
+        (" ChenXing-User ", "chenxing-user"),
+        ("chenxing_user", "chenxing_user"),
+        ("user.name", "user.name"),
+    ] {
+        assert_eq!(validate_username(input).as_deref(), Some(expected));
+    }
 }
 
 // ── Issue #122：口令长度上界 ──────────────────────────────────────────────
