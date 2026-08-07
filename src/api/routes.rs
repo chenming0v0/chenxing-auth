@@ -30,7 +30,9 @@ use crate::{
     },
     admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
     admin::user_creation::create_user,
-    admin::web_handlers::{audit_page, clients_page, dashboard, login_page, login_submit, users_page},
+    admin::web_handlers::{
+        audit_page, clients_page, dashboard, login_page, login_submit, users_page,
+    },
     auth_factors::handlers::{
         confirm_totp_setup, finish_passkey_authentication, finish_passkey_registration, login_totp,
         start_passkey_authentication, start_passkey_registration, start_totp_setup,
@@ -60,10 +62,7 @@ use super::{
     health::{health, health_live, health_ready},
 };
 
-pub(super) fn register(
-    router: Router<AppState>,
-    request_timeout: Duration,
-) -> Router<AppState> {
+pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> Router<AppState> {
     router
         .route(
             "/.well-known/openid-configuration",
