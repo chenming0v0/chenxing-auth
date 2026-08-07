@@ -5,6 +5,7 @@ import { TotpStep } from './totp-step'
 import { PasskeyStep } from './passkey-step'
 
 type FactorMethod = 'totp' | 'passkey'
+type BusyHandler = (value: boolean) => boolean | void
 
 const FACTOR_LABELS: Record<FactorMethod, { icon: string; title: string; hint: string; setupHint: string }> = {
   totp: {
@@ -34,7 +35,7 @@ export function FactorOrchestrator({
   pending: PendingLoginResponse
   busy: boolean
   onComplete: () => Promise<void>
-  onBusy: (value: boolean) => void
+  onBusy: BusyHandler
   onMessage: (value: string) => void
   onRelogin: () => void
 }) {

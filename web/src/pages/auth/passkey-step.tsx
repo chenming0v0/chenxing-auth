@@ -17,16 +17,16 @@ export function PasskeyStep({
   register: boolean
   busy: boolean
   onComplete: () => Promise<void>
-  onBusy: (value: boolean) => void
+  onBusy: (value: boolean) => boolean | void
   onMessage: (value: string) => void
 }) {
   async function run() {
-    onMessage('')
     if (register ? !supportsWebAuthnCreate() : !supportsWebAuthnGet()) {
       onMessage('当前浏览器不支持 Passkey，请使用支持 WebAuthn 的浏览器。')
       return
     }
-    onBusy(true)
+    if (onBusy(true) === false) return
+    onMessage('')
     try {
       await (register ? registerPasskey() : authenticatePasskey())
       await onComplete()

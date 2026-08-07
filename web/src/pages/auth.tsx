@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
 import { apiFetch, externalLoginErrorMessage, type LoginResponse, type PendingLoginResponse } from '../api'
@@ -49,8 +49,32 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [pending, setPending] = useState<PendingLoginResponse | null>(null)
+  // busy updates after React renders; the ref closes the same-event submit window.
+  const submitLockRef = useRef(false)
   const isLogin = mode === 'login'
   const externalError = query.get('external_error')
+
+  function acquireSubmitLock(): boolean {
+    if (submitLockRef.current) return false
+    submitLockRef.current = true
+    return true
+  }
+
+  function releaseSubmitLock() {
+    submitLockRef.current = false
+    setBusy(false)
+  }
+
+  /** MFA 子步骤也使用同一把同步锁，避免 busy 尚未重渲染时重复发起请求。 */
+  function setAuthBusy(nextBusy: boolean): boolean {
+    if (!nextBusy) {
+      releaseSubmitLock()
+      return true
+    }
+    if (!acquireSubmitLock()) return false
+    setBusy(true)
+    return true
+  }
 
   async function completeLogin() {
     const profile = await refresh()
@@ -78,34 +102,36 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
    * 用户直接重新提交即可，不打断登录流程也不把用户卡死。
    */
   function resetToLogin() {
+    releaseSubmitLock()
     setMessage('验证流程已失效，请重新登录。')
     setPending(null)
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    setMessage('')
-    if (!email || !password || (!isLogin && !username)) {
-      setMessage('请完整填写必填信息。')
-      return
-    }
-    if (!isLogin) {
-      const passwordLength = passwordCodePointLength(password)
-      if (passwordLength < PASSWORD_MIN_LENGTH) {
-        setMessage(`密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`)
-        return
-      }
-      if (passwordLength > PASSWORD_MAX_LENGTH) {
-        setMessage(`密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`)
-        return
-      }
-    }
-    if (!isLogin && !agree) {
-      setMessage('请先同意服务条款与隐私政策。')
-      return
-    }
-    setBusy(true)
+    if (!acquireSubmitLock()) return
     try {
+      setMessage('')
+      if (!email || !password || (!isLogin && !username)) {
+        setMessage('请完整填写必填信息。')
+        return
+      }
+      if (!isLogin) {
+        const passwordLength = passwordCodePointLength(password)
+        if (passwordLength < PASSWORD_MIN_LENGTH) {
+          setMessage(`密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`)
+          return
+        }
+        if (passwordLength > PASSWORD_MAX_LENGTH) {
+          setMessage(`密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`)
+          return
+        }
+      }
+      if (!isLogin && !agree) {
+        setMessage('请先同意服务条款与隐私政策。')
+        return
+      }
+      setBusy(true)
       if (!isLogin) {
         await apiFetch<{ user: unknown }>('/api/v1/users', {
           method: 'POST',
@@ -128,7 +154,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '登录未完成，请稍后重试。')
     } finally {
-      setBusy(false)
+      releaseSubmitLock()
     }
   }
 
@@ -159,7 +185,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
 
         {pending ? (
           <div className="mt-5">
-            <FactorOrchestrator pending={pending} busy={busy} onComplete={completeLogin} onBusy={setBusy} onMessage={setMessage} onRelogin={resetToLogin} />
+            <FactorOrchestrator pending={pending} busy={busy} onComplete={completeLogin} onBusy={setAuthBusy} onMessage={setMessage} onRelogin={resetToLogin} />
           </div>
         ) : isLogin && authTab === 'auth' ? (
           <div className="mt-5">

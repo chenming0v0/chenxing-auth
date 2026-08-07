@@ -20,7 +20,7 @@ export function TotpStep({
   busy: boolean
   onSetup: (value: TotpSetupResponse) => void
   onComplete: () => Promise<void>
-  onBusy: (value: boolean) => void
+  onBusy: (value: boolean) => boolean | void
   onMessage: (value: string) => void
   onTicketInvalid: () => void
 }) {
@@ -28,8 +28,8 @@ export function TotpStep({
   const setupRequired = pending.status === 'factor_setup_required'
 
   async function startSetup() {
+    if (onBusy(true) === false) return
     onMessage('')
-    onBusy(true)
     try {
       onSetup(await apiFetch<TotpSetupResponse>('/api/v1/auth/totp/setup', {
         method: 'POST', redirectOn401: false, body: JSON.stringify({}),
@@ -51,8 +51,8 @@ export function TotpStep({
       onMessage('请输入 6 位验证码。')
       return
     }
+    if (onBusy(true) === false) return
     onMessage('')
-    onBusy(true)
     try {
       await apiFetch<LoginResponse>(setupRequired ? '/api/v1/auth/totp/setup/confirm' : '/api/v1/auth/totp/login', {
         method: 'POST', redirectOn401: false, body: JSON.stringify({ code }),

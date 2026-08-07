@@ -138,6 +138,59 @@ describe('AuthPage 登录页移除失效的 keepLogin 控件（#88）', () => {
   })
 })
 
+describe('AuthPage 提交互斥（#219）', () => {
+  it('busy 尚未重渲染时重复提交登录也只发出一个请求', async () => {
+    let rejectLogin!: (reason: unknown) => void
+    const loginRequest = new Promise<Response>((_, reject) => { rejectLogin = reject })
+    const fetchMock = vi.fn((path: string) => path === '/api/v1/auth/login'
+      ? loginRequest
+      : Promise.resolve(jsonResponse({ expires_at: '2099-01-01T00:00:00Z' })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<AuthPage mode="login" />)
+    fireEvent.change(screen.getByLabelText('邮箱或用户名'), { target: { value: 'user@chenxing.star' } })
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'sufficiently-long-pass' } })
+
+    const form = screen.getByRole('button', { name: /登录 · 进入星门/ }).closest('form') as HTMLFormElement
+    fireEvent.submit(form)
+    fireEvent.submit(form)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    rejectLogin(new Error('request failed'))
+    await waitFor(() => expect(screen.getByText('网络连接不可用，请稍后重试。')).toBeTruthy())
+  })
+
+  it('MFA 验证提交复用同一同步锁，失败后仍可再次提交', async () => {
+    let rejectTotp!: (reason: unknown) => void
+    let totpCalls = 0
+    const totpRequest = new Promise<Response>((_, reject) => { rejectTotp = reject })
+    const fetchMock = vi.fn((path: string) => {
+      if (path === '/api/v1/auth/login') return Promise.resolve(jsonResponse({ status: 'factor_required', methods: ['totp'] }))
+      if (path === '/api/v1/auth/totp/login') {
+        totpCalls += 1
+        return totpRequest
+      }
+      return Promise.resolve(jsonResponse({ expires_at: '2099-01-01T00:00:00Z' }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<AuthPage mode="login" />)
+    fireEvent.change(screen.getByLabelText('邮箱或用户名'), { target: { value: 'user@chenxing.star' } })
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'sufficiently-long-pass' } })
+    fireEvent.submit(screen.getByRole('button', { name: /登录 · 进入星门/ }).closest('form') as HTMLFormElement)
+    await waitFor(() => expect(screen.getByLabelText('一次性验证码')).toBeTruthy())
+
+    fireEvent.change(screen.getByLabelText('一次性验证码'), { target: { value: '123456' } })
+    const totpForm = screen.getByRole('button', { name: /完成验证/ }).closest('form') as HTMLFormElement
+    fireEvent.submit(totpForm)
+    fireEvent.submit(totpForm)
+    expect(totpCalls).toBe(1)
+
+    rejectTotp(new Error('totp request failed'))
+    await waitFor(() => expect(screen.getByText('网络连接不可用，请稍后重试。')).toBeTruthy())
+    fireEvent.submit(totpForm)
+    await waitFor(() => expect(totpCalls).toBe(2))
+  })
+})
+
 describe('AuthPage MFA 登录凭证失效恢复（#195）', () => {
   it('login_ticket 失效后可通过「重新登录」回到登录表单，MFA 状态被清理', async () => {
     // 分阶段响应：登录返回待二次验证，随后 TOTP 校验返回 login_ticket 失效
