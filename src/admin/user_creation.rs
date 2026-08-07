@@ -13,6 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use std::fmt;
 
 use super::{authorization::current_admin_mutation, domain::AdminPermission};
 use crate::{
@@ -25,7 +26,7 @@ use crate::{
     },
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct CreateUserInput {
     pub username: String,
     pub email: String,
@@ -35,6 +36,19 @@ pub struct CreateUserInput {
     pub role: Option<String>,
     /// 缺省为 `active`。
     pub status: Option<String>,
+}
+
+impl fmt::Debug for CreateUserInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreateUserInput")
+            .field("username", &self.username)
+            .field("email", &self.email)
+            .field("password", &"<redacted>")
+            .field("display_name", &self.display_name)
+            .field("role", &self.role)
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 /// 管理员创建用户。

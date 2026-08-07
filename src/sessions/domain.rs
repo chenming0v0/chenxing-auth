@@ -4,6 +4,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fmt;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use time::{Duration as TimeDuration, OffsetDateTime};
@@ -36,7 +37,7 @@ impl Default for SessionPolicy {
 /// 刻意不派生 `Serialize` / `Deserialize`：一旦可序列化，明文令牌就有可能被写进
 /// 持久化载荷、日志或 API 响应。持久化统一走 [`SessionPayload`]，由类型系统保证
 /// 明文令牌不会进入存储；新增字段时也不会因为忘记标注属性而重新泄露凭据。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Session {
     pub id: i64,
     pub token: String,
@@ -47,6 +48,22 @@ pub struct Session {
     pub csrf_token: String,
     pub revoked_at: Option<OffsetDateTime>,
     idle_timeout: Option<Duration>,
+}
+
+impl fmt::Debug for Session {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Session")
+            .field("id", &self.id)
+            .field("token", &"<redacted>")
+            .field("user_id", &self.user_id)
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .field("last_seen_at", &self.last_seen_at)
+            .field("csrf_token", &"<redacted>")
+            .field("revoked_at", &self.revoked_at)
+            .field("idle_timeout", &self.idle_timeout)
+            .finish()
+    }
 }
 
 /// 会话持久化载荷结构。
@@ -66,7 +83,7 @@ pub struct Session {
 /// - 升级前写入的旧载荷包含 `token` 字段。
 /// - 反序列化时，serde 默认忽略未知字段（除非显式标注 `deny_unknown_fields`），
 ///   因此旧载荷中多出的 `token` 会被静默丢弃，不会导致解析失败。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SessionPayload {
     pub id: i64,
     // token 字段被移除：它是明文凭据且在查询时被调用方传入值覆盖，持久化它没有必要且扩大了密钥泄露的影响面
@@ -78,6 +95,20 @@ pub struct SessionPayload {
     pub last_seen_at: Option<OffsetDateTime>,
     pub csrf_token: String,
     pub revoked_at: Option<OffsetDateTime>,
+}
+
+impl fmt::Debug for SessionPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionPayload")
+            .field("id", &self.id)
+            .field("user_id", &self.user_id)
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .field("last_seen_at", &self.last_seen_at)
+            .field("csrf_token", &"<redacted>")
+            .field("revoked_at", &self.revoked_at)
+            .finish()
+    }
 }
 
 /// Hash-only session metadata returned when the caller has a token digest but
@@ -156,10 +187,19 @@ impl SessionPayload {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SessionCredential {
     pub token: String,
     pub token_hash: [u8; 32],
+}
+
+impl fmt::Debug for SessionCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionCredential")
+            .field("token", &"<redacted>")
+            .field("token_hash", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 use super::{
     authorization::{AuthorizationRequest, validate_authorization_request},
@@ -24,7 +25,7 @@ use crate::{
     users::domain::UserId,
 };
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct PendingRequestResponse {
     request_id: String,
     client_id: String,
@@ -34,15 +35,37 @@ struct PendingRequestResponse {
     expires_in: u64,
 }
 
+impl fmt::Debug for PendingRequestResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingRequestResponse")
+            .field("request_id", &"<redacted>")
+            .field("client_id", &self.client_id)
+            .field("client_name", &self.client_name)
+            .field("redirect_host", &self.redirect_host)
+            .field("scopes", &self.scopes)
+            .field("expires_in", &self.expires_in)
+            .finish()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DecisionInput {
     pub decision: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct DecisionResponse {
     decision: &'static str,
     redirect_to: String,
+}
+
+impl fmt::Debug for DecisionResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DecisionResponse")
+            .field("decision", &self.decision)
+            .field("redirect_to", &"<redacted>")
+            .finish()
+    }
 }
 
 struct UserContext {
@@ -150,7 +173,6 @@ pub async fn bind_authorization_request(
     if !authz_holder_valid(&headers, &pending) {
         tracing::warn!(
             event = "oauth.authz_holder_rejected",
-            request_id = %request_id,
             user_id = %context.user_id,
             "rejected authorization request binding with missing or mismatched holder cookie"
         );

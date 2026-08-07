@@ -5,7 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
+use std::{fmt, net::SocketAddr};
 
 use super::{
     service::{AuthFactorServiceError, PasskeyConfirmation, TotpConfirmation},
@@ -14,44 +14,105 @@ use super::{
 use crate::{audit::AuditEvent, error, state::AppState, users::domain::UserId};
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct TotpSetupInput {
     pub login_ticket: String,
 }
 
-#[derive(Debug, Serialize)]
+impl fmt::Debug for TotpSetupInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TotpSetupInput")
+            .field("login_ticket", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Serialize)]
 struct TotpSetupResponse<'a> {
     secret_base32: &'a str,
     otpauth_url: &'a str,
 }
 
-#[derive(Debug, Deserialize)]
+impl fmt::Debug for TotpSetupResponse<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TotpSetupResponse")
+            .field("secret_base32", &"<redacted>")
+            .field("otpauth_url", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 pub struct TotpConfirmInput {
     pub login_ticket: String,
     pub code: String,
 }
 
-#[derive(Debug, Deserialize)]
+impl fmt::Debug for TotpConfirmInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TotpConfirmInput")
+            .field("login_ticket", &"<redacted>")
+            .field("code", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 pub struct TotpLoginInput {
     pub login_ticket: String,
     pub code: String,
 }
 
-#[derive(Debug, Deserialize)]
+impl fmt::Debug for TotpLoginInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TotpLoginInput")
+            .field("login_ticket", &"<redacted>")
+            .field("code", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 pub struct PasskeyTicketInput {
     pub login_ticket: String,
 }
 
-#[derive(Debug, Deserialize)]
+impl fmt::Debug for PasskeyTicketInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PasskeyTicketInput")
+            .field("login_ticket", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 pub struct PasskeyRegistrationInput {
     pub login_ticket: String,
     pub credential: RegisterPublicKeyCredential,
 }
 
-#[derive(Debug, Deserialize)]
+impl fmt::Debug for PasskeyRegistrationInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PasskeyRegistrationInput")
+            .field("login_ticket", &"<redacted>")
+            .field("credential", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 pub struct PasskeyAuthenticationInput {
     pub login_ticket: String,
     pub credential: PublicKeyCredential,
+}
+
+impl fmt::Debug for PasskeyAuthenticationInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PasskeyAuthenticationInput")
+            .field("login_ticket", &"<redacted>")
+            .field("credential", &"<redacted>")
+            .finish()
+    }
 }
 
 pub async fn start_totp_setup(

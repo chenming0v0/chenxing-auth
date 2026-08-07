@@ -3,7 +3,7 @@
 //! 这里不涉及 ticket、限流或数据库，只做纯粹的协议与配置换算。
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{fmt, time::Duration};
 use webauthn_rs::prelude::Passkey;
 use webauthn_rs_core::{
     WebauthnCore,
@@ -20,23 +20,51 @@ const AUTHENTICATOR_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// 挂起的注册状态。`settings` 是 challenge 签发时的配置快照，确保 finish 阶段
 /// 使用与 start 相同的 RP 和 origin，即使中途管理员改了设置。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub(super) struct PendingPasskeyRegistration {
     pub(super) user_id: i64,
     pub(super) state: RegistrationState,
     pub(super) settings: crate::settings::PasskeySetting,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl fmt::Debug for PendingPasskeyRegistration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingPasskeyRegistration")
+            .field("user_id", &self.user_id)
+            .field("state", &"<redacted>")
+            .field("settings", &self.settings)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub(super) struct PendingPasskeyAuthentication {
     pub(super) user_id: i64,
     pub(super) state: AuthenticationState,
     pub(super) settings: crate::settings::PasskeySetting,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl fmt::Debug for PendingPasskeyAuthentication {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingPasskeyAuthentication")
+            .field("user_id", &self.user_id)
+            .field("state", &"<redacted>")
+            .field("settings", &self.settings)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct PasskeyEnvelope {
     cred: Credential,
+}
+
+impl fmt::Debug for PasskeyEnvelope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PasskeyEnvelope")
+            .field("cred", &"<redacted>")
+            .finish()
+    }
 }
 
 pub(super) fn build_core(

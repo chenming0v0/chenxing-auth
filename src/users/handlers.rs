@@ -5,7 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
-use std::net::SocketAddr;
+use std::{fmt, net::SocketAddr};
 
 use super::{
     domain::{LoginInput, RegistrationError, RegistrationInput},
@@ -22,11 +22,21 @@ struct CreatedUserResponse {
     user: super::domain::PublicUser,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct PendingLoginResponse {
     status: &'static str,
     login_ticket: String,
     methods: Vec<crate::auth_factors::domain::FactorMethod>,
+}
+
+impl fmt::Debug for PendingLoginResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingLoginResponse")
+            .field("status", &self.status)
+            .field("login_ticket", &"<redacted>")
+            .field("methods", &self.methods)
+            .finish()
+    }
 }
 
 pub async fn register_user(

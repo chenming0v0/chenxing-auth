@@ -24,11 +24,19 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::{RngCore, rngs::OsRng};
 use serde::Deserialize;
-use std::net::SocketAddr;
+use std::{fmt, net::SocketAddr};
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct ExternalLoginQuery {
     pub request_id: Option<String>,
+}
+
+impl fmt::Debug for ExternalLoginQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExternalLoginQuery")
+            .field("request_id", &self.request_id.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// Public-facing view of an external identity provider: only what the login page
@@ -61,11 +69,21 @@ pub async fn list_public_providers(State(state): State<AppState>) -> Response {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct ExternalCallbackQuery {
     pub code: Option<String>,
     pub state: Option<String>,
     pub error: Option<String>,
+}
+
+impl fmt::Debug for ExternalCallbackQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExternalCallbackQuery")
+            .field("code", &self.code.as_ref().map(|_| "<redacted>"))
+            .field("state", &self.state.as_ref().map(|_| "<redacted>"))
+            .field("error", &self.error)
+            .finish()
+    }
 }
 
 pub async fn start_external_login(

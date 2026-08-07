@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 use axum::{
     Json,
@@ -28,9 +29,17 @@ pub struct UserInfoClaims {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct UserInfoRequest {
     pub access_token: Option<String>,
+}
+
+impl fmt::Debug for UserInfoRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UserInfoRequest")
+            .field("access_token", &self.access_token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl UserInfoClaims {

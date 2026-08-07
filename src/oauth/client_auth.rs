@@ -1,14 +1,25 @@
 use axum::http::{HeaderMap, header::AUTHORIZATION};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use std::fmt;
 use thiserror::Error;
 
 use crate::clients::domain::ClientAuthMethod;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ClientCredentials {
     pub client_id: String,
     pub client_secret: Option<String>,
     pub auth_method: ClientAuthMethod,
+}
+
+impl fmt::Debug for ClientCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClientCredentials")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .field("auth_method", &self.auth_method)
+            .finish()
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

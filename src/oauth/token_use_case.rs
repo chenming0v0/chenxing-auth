@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use thiserror::Error;
 
 use super::{refresh::RefreshToken, session::active_user_id};
@@ -20,7 +21,7 @@ use token_use_case_support::{
 const TOKEN_EXCHANGE_ACTION: &str = "token_exchange";
 const TOKEN_EXCHANGE_FAILURE_ACTION: &str = "token_exchange_failure";
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct TokenRequest {
     pub grant_type: String,
     pub code: Option<String>,
@@ -32,7 +33,22 @@ pub struct TokenRequest {
     pub scope: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+impl fmt::Debug for TokenRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenRequest")
+            .field("grant_type", &self.grant_type)
+            .field("code", &self.code.as_ref().map(|_| "<redacted>"))
+            .field("redirect_uri", &self.redirect_uri)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .field("code_verifier", &self.code_verifier.as_ref().map(|_| "<redacted>"))
+            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "<redacted>"))
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
+#[derive(Serialize)]
 pub struct TokenResponse {
     pub access_token: String,
     pub token_type: &'static str,
@@ -42,6 +58,19 @@ pub struct TokenResponse {
     pub refresh_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id_token: Option<String>,
+}
+
+impl fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"<redacted>")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field("scope", &self.scope)
+            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "<redacted>"))
+            .field("id_token", &self.id_token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 use crate::{
     admin::{
@@ -32,7 +33,7 @@ pub struct ClientListQuery {
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct RegisteredClientResponse {
     id: i64,
     client_id: String,
@@ -44,6 +45,20 @@ struct RegisteredClientResponse {
     /// 公开客户端不签发 secret，此时该字段整体省略（Issue #66）。
     #[serde(skip_serializing_if = "Option::is_none")]
     client_secret: Option<String>,
+}
+
+impl fmt::Debug for RegisteredClientResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RegisteredClientResponse")
+            .field("id", &self.id)
+            .field("client_id", &self.client_id)
+            .field("client_name", &self.client_name)
+            .field("redirect_uris", &self.redirect_uris)
+            .field("scopes", &self.scopes)
+            .field("auth_method", &self.auth_method)
+            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]

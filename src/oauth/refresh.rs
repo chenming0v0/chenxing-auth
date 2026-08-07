@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -18,7 +19,7 @@ pub const REFRESH_TOKEN_ABSOLUTE_TTL_DAYS: i64 = 180;
 /// Refresh Token 的滑动过期窗口（每次轮换后重新计时）。
 pub const REFRESH_TOKEN_SLIDING_TTL_DAYS: i64 = 30;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RefreshToken {
     pub value: String,
     pub client_id: String,
@@ -48,6 +49,22 @@ pub struct RefreshToken {
     /// `skip_serializing_if` 保证旧 token 的 CAS 兼容性（同 `issued_at` 约束）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub family_id: String,
+}
+
+impl fmt::Debug for RefreshToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RefreshToken")
+            .field("value", &"<redacted>")
+            .field("client_id", &self.client_id)
+            .field("user_id", &self.user_id)
+            .field("scopes", &self.scopes)
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .field("revoked_at", &self.revoked_at)
+            .field("issued_at", &self.issued_at)
+            .field("family_id", &self.family_id)
+            .finish()
+    }
 }
 
 #[cfg(test)]

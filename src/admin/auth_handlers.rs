@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use std::fmt;
 
 use super::{
     authorization::current_admin_mutation, domain::AdminPermission,
@@ -17,19 +18,40 @@ use crate::{
     users::domain::{RegistrationInput, UserRole},
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct BootstrapAdmin {
     pub username: String,
     pub email: String,
     pub password: String,
 }
 
-#[derive(Debug, Deserialize)]
+impl fmt::Debug for BootstrapAdmin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BootstrapAdmin")
+            .field("username", &self.username)
+            .field("email", &self.email)
+            .field("password", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 pub struct CreateAdmin {
     pub username: String,
     pub email: String,
     pub password: String,
     pub role: String,
+}
+
+impl fmt::Debug for CreateAdmin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CreateAdmin")
+            .field("username", &self.username)
+            .field("email", &self.email)
+            .field("password", &"<redacted>")
+            .field("role", &self.role)
+            .finish()
+    }
 }
 
 #[derive(Debug, serde::Serialize)]

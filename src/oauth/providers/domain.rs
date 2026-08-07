@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt;
 use thiserror::Error;
 use url::{Host, Url};
 
@@ -15,7 +16,7 @@ pub enum ClientAuthMethod {
     RequestBody,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct ProviderInput {
     pub name: String,
     pub slug: String,
@@ -39,6 +40,27 @@ pub struct ProviderInput {
     pub pkce_enabled: bool,
 }
 
+impl fmt::Debug for ProviderInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderInput")
+            .field("name", &self.name)
+            .field("slug", &self.slug)
+            .field("authorization_endpoint", &self.authorization_endpoint)
+            .field("token_endpoint", &self.token_endpoint)
+            .field("userinfo_endpoint", &self.userinfo_endpoint)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .field("scopes", &self.scopes)
+            .field("subject_claim", &self.subject_claim)
+            .field("email_claim", &self.email_claim)
+            .field("name_claim", &self.name_claim)
+            .field("email_verified_claim", &self.email_verified_claim)
+            .field("client_auth_method", &self.client_auth_method)
+            .field("pkce_enabled", &self.pkce_enabled)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderSummary {
     pub id: i64,
@@ -59,7 +81,7 @@ pub struct ProviderSummary {
     pub client_secret_configured: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ValidatedProviderInput {
     pub name: String,
     pub slug: String,
@@ -77,7 +99,28 @@ pub struct ValidatedProviderInput {
     pub pkce_enabled: bool,
 }
 
-#[derive(Debug, Clone)]
+impl fmt::Debug for ValidatedProviderInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ValidatedProviderInput")
+            .field("name", &self.name)
+            .field("slug", &self.slug)
+            .field("authorization_endpoint", &self.authorization_endpoint)
+            .field("token_endpoint", &self.token_endpoint)
+            .field("userinfo_endpoint", &self.userinfo_endpoint)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .field("scopes", &self.scopes)
+            .field("subject_claim", &self.subject_claim)
+            .field("email_claim", &self.email_claim)
+            .field("name_claim", &self.name_claim)
+            .field("email_verified_claim", &self.email_verified_claim)
+            .field("client_auth_method", &self.client_auth_method)
+            .field("pkce_enabled", &self.pkce_enabled)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct ProviderRecord {
     pub id: i64,
     pub name: String,
@@ -95,6 +138,29 @@ pub struct ProviderRecord {
     pub client_auth_method: ClientAuthMethod,
     pub pkce_enabled: bool,
     pub status: String,
+}
+
+impl fmt::Debug for ProviderRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderRecord")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("slug", &self.slug)
+            .field("authorization_endpoint", &self.authorization_endpoint)
+            .field("token_endpoint", &self.token_endpoint)
+            .field("userinfo_endpoint", &self.userinfo_endpoint)
+            .field("client_id", &self.client_id)
+            .field("client_secret_ciphertext", &"<redacted>")
+            .field("scopes", &self.scopes)
+            .field("subject_claim", &self.subject_claim)
+            .field("email_claim", &self.email_claim)
+            .field("name_claim", &self.name_claim)
+            .field("email_verified_claim", &self.email_verified_claim)
+            .field("client_auth_method", &self.client_auth_method)
+            .field("pkce_enabled", &self.pkce_enabled)
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 impl ProviderInput {

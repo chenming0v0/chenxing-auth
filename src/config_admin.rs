@@ -103,7 +103,7 @@ mod tests {
             assert_eq!(
                 validate_admin_token(token),
                 Err(ConfigError::InvalidValue("ADMIN_TOKEN")),
-                "token = {token}"
+                "placeholder token must be rejected"
             );
         }
     }
@@ -118,7 +118,7 @@ mod tests {
             assert_eq!(
                 validate_admin_token(token),
                 Err(ConfigError::InvalidValue("ADMIN_TOKEN")),
-                "token = {token:?}"
+                "whitespace-containing token must be rejected"
             );
         }
     }

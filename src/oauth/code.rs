@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::fmt;
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
@@ -15,7 +16,7 @@ use crate::{
 /// 保留此常量作为无状态构造和补偿路径的向后兼容回退值。
 pub const AUTHORIZATION_CODE_TTL_SECONDS: u64 = 5 * 60;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 pub struct AuthorizationCode {
     pub value: String,
     pub client_id: String,
@@ -47,7 +48,28 @@ pub struct AuthorizationCode {
     pub redeemed_at: Option<OffsetDateTime>,
 }
 
-#[derive(Debug, Deserialize)]
+impl fmt::Debug for AuthorizationCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthorizationCode")
+            .field("value", &"<redacted>")
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("user_id", &self.user_id)
+            .field(
+                "session_token_hash",
+                &self.session_token_hash.as_ref().map(|_| "<redacted>"),
+            )
+            .field("scopes", &self.scopes)
+            .field("code_challenge", &"<redacted>")
+            .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .field("redeemed_at", &self.redeemed_at)
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 struct AuthorizationCodePayload {
     value: String,
     client_id: String,
@@ -63,6 +85,29 @@ struct AuthorizationCodePayload {
     redeemed_at: Option<OffsetDateTime>,
     #[serde(flatten)]
     extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl fmt::Debug for AuthorizationCodePayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthorizationCodePayload")
+            .field("value", &"<redacted>")
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("user_id", &self.user_id)
+            .field(
+                "session_token_hash",
+                &self.session_token_hash.as_ref().map(|_| "<redacted>"),
+            )
+            .field("scopes", &self.scopes)
+            .field("code_challenge", &"<redacted>")
+            .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .field("redeemed_at", &self.redeemed_at)
+            // Legacy payloads may carry the former plaintext session token here.
+            .field("extra", &"<redacted>")
+            .finish()
+    }
 }
 
 impl<'de> Deserialize<'de> for AuthorizationCode {

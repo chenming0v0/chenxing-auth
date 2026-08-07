@@ -1,4 +1,5 @@
 use crate::sqlx::{PgPool, types::Json};
+use std::fmt;
 use thiserror::Error;
 use time::OffsetDateTime;
 
@@ -10,7 +11,6 @@ use crate::users::domain::UserId;
 /// 三个变体与数据库 `oauth_clients_auth_method_check` 的三个取值一一对应，
 /// 因此「公开客户端带 secret」或「机密客户端没有 secret」在类型上就不可构造，
 /// 不需要在服务层或 SQL 里再补 if 判断（Issue #66 的安全边界）。
-#[derive(Debug)]
 pub enum ClientCredential {
     /// 机密客户端，令牌端点用 HTTP Basic 提交凭据。
     SecretBasic(String),
@@ -19,6 +19,16 @@ pub enum ClientCredential {
     /// 公开客户端（SPA / 移动端）：不签发也不存储 secret，
     /// 令牌端点的防护由授权端点强制的 PKCE S256 承担。
     Public,
+}
+
+impl fmt::Debug for ClientCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SecretBasic(_) => f.debug_tuple("SecretBasic").field(&"<redacted>").finish(),
+            Self::SecretPost(_) => f.debug_tuple("SecretPost").field(&"<redacted>").finish(),
+            Self::Public => f.write_str("Public"),
+        }
+    }
 }
 
 impl ClientCredential {
@@ -60,11 +70,23 @@ pub struct StoredClient {
     pub owner_user_id: Option<UserId>,
 }
 
-#[derive(Debug)]
 pub struct StoredClientCredentials {
     pub client_secret_hash: Option<String>,
     pub auth_method: String,
     pub status: String,
+}
+
+impl fmt::Debug for StoredClientCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StoredClientCredentials")
+            .field(
+                "client_secret_hash",
+                &self.client_secret_hash.as_ref().map(|_| "<redacted>"),
+            )
+            .field("auth_method", &self.auth_method)
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 #[derive(Debug)]

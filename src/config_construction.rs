@@ -290,7 +290,7 @@ impl Config {
         validate_cookie_security(&issuer, cookie_secure)?;
         if cookie_secure && issuer.scheme() == "http" {
             tracing::warn!(
-                issuer = %issuer,
+                issuer_scheme = %issuer.scheme(),
                 "COOKIE_SECURE=true with an HTTP APP_ISSUER: browsers may reject the Secure cookies"
             );
         }

@@ -2,6 +2,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use redis::Script;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fmt;
 use thiserror::Error;
 
 use crate::{
@@ -56,7 +57,7 @@ end
 return payload
 "#;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalLoginState {
     pub state: String,
     pub provider_slug: String,
@@ -72,6 +73,17 @@ pub struct ExternalLoginState {
     /// 会相应地不发送 `code_verifier`。
     #[serde(default)]
     pub code_verifier: String,
+}
+
+impl fmt::Debug for ExternalLoginState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExternalLoginState")
+            .field("state", &"<redacted>")
+            .field("provider_slug", &self.provider_slug)
+            .field("request_id", &self.request_id.as_ref().map(|_| "<redacted>"))
+            .field("code_verifier", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Clone)]

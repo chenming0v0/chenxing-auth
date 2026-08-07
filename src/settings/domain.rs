@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use thiserror::Error;
 use url::Url;
 
@@ -89,7 +90,7 @@ impl Default for SmtpSetting {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct SmtpSettingUpdate {
     pub host: String,
     pub port: u16,
@@ -101,7 +102,21 @@ pub struct SmtpSettingUpdate {
     pub password: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl fmt::Debug for SmtpSettingUpdate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SmtpSettingUpdate")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("from_address", &self.from_address)
+            .field("ssl_enabled", &self.ssl_enabled)
+            .field("force_auth_login", &self.force_auth_login)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct StoredSmtpSetting {
     pub host: String,
     pub port: u16,
@@ -111,6 +126,23 @@ pub(crate) struct StoredSmtpSetting {
     pub force_auth_login: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_ciphertext: Option<String>,
+}
+
+impl fmt::Debug for StoredSmtpSetting {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StoredSmtpSetting")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("from_address", &self.from_address)
+            .field("ssl_enabled", &self.ssl_enabled)
+            .field("force_auth_login", &self.force_auth_login)
+            .field(
+                "password_ciphertext",
+                &self.password_ciphertext.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
