@@ -129,10 +129,45 @@ async fn owner_can_use_admin_ui_queries_but_normal_user_cannot() {
         )
         .await
         .expect("register response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json(response).await["code"], "email_verification_unavailable");
+
+    let public_registration_count: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM users WHERE username = $1 OR email = $2",
+    )
+    .bind(&username)
+    .bind(&email)
+    .fetch_one(&database)
+    .await
+    .expect("check failed public registration");
+    assert_eq!(public_registration_count, 0);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("authorization", "Bearer admin-ui-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": username,
+                        "email": email,
+                        "password": password
+                    })
+                    .to_string(),
+                ))
+                .expect("admin user creation request"),
+        )
+        .await
+        .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    let user_id = json(response).await["user"]["id"]
+    let user = json(response).await;
+    let user_id = user["id"]
         .as_i64()
-        .expect("registered user id");
+        .expect("admin-created user id");
+    assert_eq!(user["role"], "user");
 
     for uri in [
         "/api/v1/admin/auth/me",
