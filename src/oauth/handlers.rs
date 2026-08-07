@@ -1,11 +1,12 @@
 use axum::{
     extract::{
-        Form, Query, State,
+        ConnectInfo, Extension, Form, Query, State,
         rejection::{FormRejection, QueryRejection},
     },
     http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
 };
+use std::net::SocketAddr;
 
 use super::{
     authorization::{
@@ -16,6 +17,7 @@ use super::{
     },
     consent::PendingAuthorization,
     session::{SessionLookupError, session_for_headers},
+    token_security::enforce_source_qps_with_policy,
 };
 use crate::{
     error,
@@ -31,6 +33,7 @@ pub use super::authorization_code_handlers::{
 pub async fn authorize(
     State(state): State<AppState>,
     headers: HeaderMap,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     request: Result<Query<AuthorizationRequest>, QueryRejection>,
 ) -> Response {
     let Query(request) = match request {
@@ -39,12 +42,19 @@ pub async fn authorize(
             return error::oauth_bad_request("invalid_request", "authorization request is invalid");
         }
     };
-    authorize_request(state, headers, request).await
+    authorize_request(
+        state,
+        headers,
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        request,
+    )
+    .await
 }
 
 pub async fn authorize_post(
     State(state): State<AppState>,
     headers: HeaderMap,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     form: Result<Form<AuthorizationRequest>, FormRejection>,
 ) -> Response {
     let Form(request) = match form {
@@ -53,14 +63,26 @@ pub async fn authorize_post(
             return error::oauth_bad_request("invalid_request", "authorization request is invalid");
         }
     };
-    authorize_request(state, headers, request).await
+    authorize_request(
+        state,
+        headers,
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        request,
+    )
+    .await
 }
 
 async fn authorize_request(
     state: AppState,
     headers: HeaderMap,
+    peer: Option<SocketAddr>,
     request: AuthorizationRequest,
 ) -> Response {
+    let source_ip = crate::api::source_ip(peer, &headers, &state.config.trusted_proxies);
+    if let Some(response) = enforce_source_qps_with_policy(&state, source_ip.as_deref()).await {
+        return response;
+    }
+
     let Some(client) = (match state.clients.find_registered(&request.client_id).await {
         Ok(client) => client,
         Err(database_error) => {
