@@ -14,6 +14,7 @@ pub mod id_token;
 pub mod pkce;
 pub mod providers;
 pub mod quota;
+mod quota_scripts;
 pub mod rate_limit;
 pub mod refresh;
 pub mod refresh_grant;
