@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
 import { apiFetch, type AuthorizationDecisionResponse, type PendingAuthorization } from '../api'
@@ -27,6 +27,18 @@ function safeRedirectTarget(raw: string): string | null {
   } catch {
     return null
   }
+}
+
+/**
+ * 把当前地址换成同路径的无查询版本（#196）。
+ * OAuth 流程里的 request_id / code / state / error 等参数完成使命后就不该继续留在
+ * 地址栏：跳转第三方时 `window.location.assign` 会把当前页面 URL 作为 Referer 发出，
+ * 浏览器历史也会保留当前条目。在离开确认页前、或进入回调结果页后立即 replaceState
+ * 掉查询参数，可同时堵住 Referer 与历史两条泄露路径。无查询时不动，避免无谓改写。
+ */
+function scrubLocationQuery(): void {
+  if (!window.location.search) return
+  window.history.replaceState({}, '', window.location.pathname)
 }
 
 function scopeMeta(scope: string): { title: string; desc: string } {
@@ -147,6 +159,9 @@ export function OAuthConsentPage() {
         setSubmitting(false)
         return
       }
+      // 跳出前先抹掉地址栏与历史中的 request_id（#196），再交给第三方；
+      // 顺序不能反：assign 发出的 Referer 与留在历史栈里的条目都取自跳转瞬间的 URL。
+      scrubLocationQuery()
       window.location.assign(target)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '授权请求处理失败。')
@@ -168,6 +183,20 @@ export function OAuthConsentPage() {
             <h1 className="oauth-title">
               「{pending?.client_name || '接入应用'}」想要访问<br />你的辰星通行证
             </h1>
+            {/* #199：不可伪造身份锚点。redirect_host / client_id 来自服务端校验的
+                授权请求与注册数据，应用无法自行伪造；与应用名分层：名称留在标题
+                大字号里，身份锚点用等宽小字号 + 「服务端校验」标签独立成组，
+                窄屏下 host 可任意断行，不撑破卡片。 */}
+            {pending ? (
+              <div className="oauth-identity" role="group" aria-label="接入应用身份，由服务端校验">
+                <span className="oauth-identity-icon" aria-hidden="true"><Icon name="shield-check" size={15} /></span>
+                <span className="oauth-identity-body">
+                  <span className="oauth-identity-label">接入域名 · 服务端校验</span>
+                  <span className="oauth-identity-host">{pending.redirect_host}</span>
+                  <span className="oauth-identity-clientid">Client ID · {pending.client_id}</span>
+                </span>
+              </div>
+            ) : null}
             <Link className="oauth-account" to={requestId ? `/oauth/account?request_id=${encodeURIComponent(requestId)}` : '/oauth/account'} aria-label={`切换账号：${user?.email || ''}`}>
               <span className="oauth-avatar">{initialOf(user?.display_name || user?.username)}</span>
               <span className="truncate text-[13px]">{user?.email || '当前会话'}</span>
@@ -179,7 +208,8 @@ export function OAuthConsentPage() {
             {!message && !pending ? <Notice tone="info">正在读取授权摘要…</Notice> : null}
             {pending ? (
               <>
-                <p className="oauth-copy">除非你确定「{pending.client_name}」是你信任的接入应用，否则请勿继续授权。</p>
+                {/* #199：信任提示以不可伪造的接入域名为准，不依赖可自定义的应用名 */}
+                <p className="oauth-copy">除非你确认上方接入域名「{pending.redirect_host}」正是你要授权的应用，否则请勿继续授权。应用名称可被自定义，请以服务端校验的接入域名与 Client ID 为准。</p>
                 <p className="oauth-copy">如果该应用最近更新过权限范围，可能会再次要求你确认授权。</p>
                 <p className="oauth-copy">本次请求将在 {pending.expires_in} 秒内失效，且只绑定当前 Session。</p>
                 <div className="mt-5">
@@ -213,8 +243,16 @@ export function OAuthConsentPage() {
 }
 
 export function OAuthRedirectPage() {
-  const query = new URLSearchParams(useLocation().search)
-  const hasError = query.has('error')
+  // #196：结果分支在清理前固化成状态，进入页面后立即抹掉地址栏、Referer 与历史中的
+  // 敏感 query（code/state/error/request_id 等）。读取与清理分离：先读后清，
+  // 清理不影响本次渲染要展示的分支，页面展示不再依赖 URL 里的参数。
+  const [hasError] = useState(() => new URLSearchParams(window.location.search).has('error'))
+
+  // useLayoutEffect 先于绘制执行：避免敏感参数在地址栏闪现一个可被截图/观察的窗口
+  useLayoutEffect(() => {
+    scrubLocationQuery()
+  }, [])
+
   return (
     <OAuthShell>
       {/* 页面主内容区：外层 OAuthShell 已提供唯一的 <main>，此处只能是 region。

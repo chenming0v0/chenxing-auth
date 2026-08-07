@@ -121,6 +121,60 @@
         border-color: var(--chenxing-border-strong);
         box-shadow: 0 0 24px rgba(56, 189, 248, 0.12);
       }
+      /* #199：确认页的不可伪造身份锚点（服务端校验的 redirect_host / client_id）。
+         与应用名分层：名称留在 .oauth-title 大字号里，锚点用等宽小字号独立成组；
+         overflow-wrap: anywhere 让超长 host 在窄屏上任意断行，不撑破卡片。 */
+      .oauth-identity {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        margin-top: 18px;
+        max-width: 100%;
+        padding: 10px 12px;
+        border: 1px solid rgba(125, 211, 252, 0.22);
+        border-radius: var(--chenxing-radius-md);
+        background: rgba(56, 189, 248, 0.06);
+      }
+      .oauth-identity-icon {
+        display: inline-flex;
+        height: 24px;
+        width: 24px;
+        flex-shrink: 0;
+        align-items: center;
+        justify-content: center;
+        border-radius: 9999px;
+        background: rgba(56, 189, 248, 0.16);
+        color: var(--chenxing-cyan);
+      }
+      .oauth-identity-body {
+        min-width: 0;
+      }
+      .oauth-identity-label {
+        display: block;
+        font-size: 10.5px;
+        line-height: 1.4;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--chenxing-muted-foreground);
+      }
+      .oauth-identity-host {
+        display: block;
+        margin-top: 2px;
+        font-family: var(--chenxing-font-mono);
+        font-size: 13px;
+        line-height: 1.45;
+        color: var(--chenxing-foreground);
+        overflow-wrap: anywhere;
+      }
+      .oauth-identity-clientid {
+        display: block;
+        margin-top: 1px;
+        font-family: var(--chenxing-font-mono);
+        font-size: 11px;
+        line-height: 1.4;
+        color: var(--chenxing-muted-foreground);
+        overflow-wrap: anywhere;
+      }
       .oauth-avatar {
         display: inline-flex;
         height: 28px;
