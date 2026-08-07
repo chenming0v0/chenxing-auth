@@ -74,11 +74,23 @@ impl AuditService {
         loop {
             match repository::insert(&self.pool, &event).await {
                 Ok(()) => return Ok(()),
+                Err(error) if !is_retryable_database_error(&error) => {
+                    tracing::error!(
+                        event = "audit.persistence_failed",
+                        action = %event.action,
+                        attempts = attempt,
+                        retryable = false,
+                        error = %error,
+                        "audit event could not be persisted; error is not safe to retry"
+                    );
+                    return Err(error);
+                }
                 Err(error) if attempt >= AUDIT_WRITE_MAX_ATTEMPTS => {
                     tracing::error!(
                         event = "audit.persistence_failed",
                         action = %event.action,
                         attempts = attempt,
+                        retryable = true,
                         error = %error,
                         "audit event could not be persisted after retries"
                     );
@@ -175,6 +187,22 @@ impl AuditService {
 
     pub async fn archive_expired(&self, retention_days: i32) -> Result<i64, crate::sqlx::Error> {
         repository::archive_expired(&self.pool, retention_days).await
+    }
+}
+
+/// Retrying an audit insert is safe only when its outcome is known before a
+/// successful insert could have been committed. A pool acquisition timeout
+/// never sends the statement; PostgreSQL's serialization and deadlock errors
+/// abort the failed statement/transaction. Network and protocol errors remain
+/// single-shot because the server may already have committed the insert.
+fn is_retryable_database_error(error: &AuditError) -> bool {
+    match error {
+        AuditError::Database(crate::sqlx::Error::PoolTimedOut) => true,
+        AuditError::Database(error) => error
+            .as_database_error()
+            .and_then(|database_error| database_error.code())
+            .is_some_and(|code| code == "40001" || code == "40P01"),
+        _ => false,
     }
 }
 
@@ -451,4 +479,20 @@ fn contains_sensitive_assignment(value: &str) -> bool {
 
 fn is_embedded_key_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retries_only_known_safe_database_failures() {
+        assert!(is_retryable_database_error(&AuditError::Database(
+            crate::sqlx::Error::PoolTimedOut,
+        )));
+        assert!(!is_retryable_database_error(&AuditError::Database(
+            crate::sqlx::Error::Protocol("connection outcome is unknown".to_owned()),
+        )));
+        assert!(!is_retryable_database_error(&AuditError::InvalidActorType));
+    }
 }
