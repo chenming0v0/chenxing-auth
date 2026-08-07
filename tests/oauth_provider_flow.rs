@@ -422,6 +422,25 @@ async fn custom_provider_does_not_auto_link_existing_email() {
         )
         .await
         .expect("registration response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        oauth_flow::json_body(response).await["code"],
+        "email_verification_unavailable"
+    );
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("authorization", "Bearer provider-flow-admin")
+                .header("content-type", "application/json")
+                .body(Body::from(registration.to_string()))
+                .expect("admin user creation request"),
+        )
+        .await
+        .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
 
     let response = router
