@@ -313,6 +313,7 @@ paths:
         '204': { description: 密码已修改并撤销所有用户 Session }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/auth/entitlements:
     get:
       tags: [User Entitlements]
