@@ -19,7 +19,7 @@ type SessionMetadataRow = (
     Option<Vec<u8>>,
 );
 
-pub(super) async fn find_with_metadata(
+pub(in crate::sessions::store) async fn find_with_metadata(
     store: &SessionStore,
     token: &str,
 ) -> Result<Option<Session>, SessionStoreError> {
@@ -130,7 +130,7 @@ async fn enqueue_sync_event(
     Ok(())
 }
 
-pub(super) async fn find_with_metadata_by_token_hash(
+pub(in crate::sessions::store) async fn find_with_metadata_by_token_hash(
     store: &SessionStore,
     token_hash: &[u8],
 ) -> Result<Option<SessionLookup>, SessionStoreError> {
@@ -201,7 +201,7 @@ pub(super) async fn find_with_metadata_by_token_hash(
     ))
 }
 
-pub(super) async fn list_for_user(
+pub(in crate::sessions::store) async fn list_for_user(
     store: &SessionStore,
     user_id: UserId,
 ) -> Result<Vec<SessionSummary>, SessionStoreError> {
@@ -235,7 +235,7 @@ pub(super) async fn list_for_user(
         .collect())
 }
 
-pub(super) async fn revoke_for_user(
+pub(in crate::sessions::store) async fn revoke_for_user(
     store: &SessionStore,
     user_id: UserId,
     session_id: i64,
