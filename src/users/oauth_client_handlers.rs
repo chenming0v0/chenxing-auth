@@ -361,8 +361,7 @@ pub async fn rotate_owned_client_secret(
         Err(
             ClientServiceError::SecretHash
             | ClientServiceError::Validation(_)
-            | ClientServiceError::QuotaExceeded
-            | ClientServiceError::SecretRotationConflict,
+            | ClientServiceError::QuotaExceeded,
         ) => error::internal(),
     }
 }

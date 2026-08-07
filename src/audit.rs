@@ -169,16 +169,14 @@ impl AuditService {
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<AuditEvent>, i64), crate::sqlx::Error> {
-        let total = repository::count_filtered(&self.pool, action, resource_type).await?;
-        let events = repository::list_filtered(
+        repository::query_filtered(
             &self.pool,
             action,
             resource_type,
             limit.clamp(1, 100),
             offset.max(0),
         )
-        .await?;
-        Ok((events, total))
+        .await
     }
 
     pub async fn count(&self) -> Result<i64, crate::sqlx::Error> {
@@ -269,6 +267,7 @@ impl AuditEvent {
     /// 用户名和邮箱可能属于个人数据，不能原样写入审计。规范化后的标识符只用于
     /// 生成跨事件稳定的 SHA-256 引用；来源地址必须已经由可信代理解析器取得，且
     /// 这里再次 canonicalize，避免审计落入带端口或非标准 IPv6 表示。
+    #[allow(clippy::too_many_arguments)]
     pub fn authentication_failure(
         action: String,
         actor_type: String,

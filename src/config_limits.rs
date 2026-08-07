@@ -75,13 +75,7 @@ pub(super) fn client_registration_limits_from_env() -> Result<ClientRegistration
         .ok_or(ConfigError::InvalidValue("OAUTH_CLIENT_LIMITS"))?;
     let allowed_scopes = env::var("OAUTH_CLIENT_ALLOWED_SCOPES")
         .ok()
-        .unwrap_or_else(|| {
-            DEFAULT_ALLOWED_SCOPES
-                .iter()
-                .copied()
-                .collect::<Vec<_>>()
-                .join(",")
-        });
+        .unwrap_or_else(|| DEFAULT_ALLOWED_SCOPES.to_vec().join(","));
     let allowed_scopes = parse_allowed_scopes(&allowed_scopes)?;
     limits
         .with_allowed_scopes(allowed_scopes)
