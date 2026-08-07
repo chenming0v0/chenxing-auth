@@ -104,7 +104,7 @@ export function OAuthAccountPage() {
                     </button>
                   </li>
                   <li>
-                    <Link to="/login" className="flex w-full items-center gap-3.5 border-0 bg-transparent px-4 py-3.5 text-left">
+                    <Link to={requestId ? `/login?request_id=${encodeURIComponent(requestId)}` : '/login'} className="flex w-full items-center gap-3.5 border-0 bg-transparent px-4 py-3.5 text-left">
                       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-dashed border-[var(--chenxing-border-strong)] text-[var(--chenxing-muted-foreground)]">+</span>
                       <span className="min-w-0 flex-1">
                         <span className="block text-sm font-medium text-[var(--chenxing-foreground)]">使用其他辰星通行证</span>

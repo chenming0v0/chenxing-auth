@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { PendingAuthorization } from '../api'
-import { OAuthConsentPage, OAuthRedirectPage } from './oauth'
+import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './oauth'
 
 // OAuthConsentPage 依赖 useAuth 提供当前用户；mock 掉 auth-state，
 // 避免 AuthProvider 挂载时额外发出 /auth/me 与 /admin/bootstrap/status 请求。
@@ -137,6 +137,24 @@ describe('OAuthConsentPage 跳转第三方前清理 request_id（#196）', () =>
     await waitFor(() => expect(screen.getByText('授权跳转地址无效，已阻止本次跳转，请重新发起授权。')).toBeTruthy())
     expect(replaceState).not.toHaveBeenCalled()
     expect(assign).not.toHaveBeenCalled()
+  })
+})
+
+describe('OAuthAccountPage 使用其他辰星通行证保留 request_id（#224）', () => {
+  it('跳转登录页时保留当前 request_id，并只编码一次', async () => {
+    const requestId = 'req/with?reserved=1&provider=github'
+    const encodedRequestId = encodeURIComponent(requestId)
+    window.history.replaceState({}, '', `/oauth/account?request_id=${encodedRequestId}`)
+    vi.stubGlobal('fetch', () => Promise.resolve(jsonResponse(PENDING)))
+
+    render(<OAuthAccountPage />)
+
+    const link = await screen.findByRole('link', { name: '使用其他辰星通行证' })
+    expect(link.getAttribute('href')).toBe(`/login?request_id=${encodedRequestId}`)
+    fireEvent.click(link)
+
+    expect(window.location.pathname).toBe('/login')
+    expect(window.location.search).toBe(`?request_id=${encodedRequestId}`)
   })
 })
 
