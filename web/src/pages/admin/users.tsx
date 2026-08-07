@@ -222,8 +222,8 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                     <button
                       type="button"
                       className="chenxing-link inline-flex items-center gap-1.5"
-                      disabled={!access.data?.permissions.includes('manage_settings')}
-                      title={access.data?.permissions.includes('manage_settings') ? undefined : '套餐分配需要 manage_settings 权限'}
+                      disabled={!access.data?.permissions.includes('manage_users')}
+                      title={access.data?.permissions.includes('manage_users') ? undefined : '套餐分配需要 manage_users 权限'}
                       onClick={() => setAssignTarget(user.id)}
                     >
                       <Icon name="crown" size={13} />
@@ -275,4 +275,3 @@ export function UsersTable({ access }: { access: AdminAccess }) {
     </HudPanel>
   )
 }
-
