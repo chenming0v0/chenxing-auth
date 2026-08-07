@@ -166,6 +166,10 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
 
   async function save(event: FormEvent) {
     event.preventDefault()
+    if (editing && !editing.client_secret_configured && !form.client_secret.trim()) {
+      onMessage('该提供商尚未配置 Client Secret，无法保存。请输入密钥。', 'warning')
+      return
+    }
     setBusy(true)
     try {
       if (editing) {
@@ -233,7 +237,7 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
           <Button icon="plus" onClick={openCreate}>添加 OAuth 提供商</Button>
         </div>
         <div className="mt-5 overflow-x-auto rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)]">
-          <table className="w-full min-w-[720px] text-left">
+          <table className="w-full min-w-[820px] text-left">
             <thead>
               <tr className="border-b border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)]">
                 <th className="chenxing-label px-4 py-3">图标</th>
@@ -241,6 +245,7 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
                 <th className="chenxing-label px-4 py-3">Slug</th>
                 <th className="chenxing-label px-4 py-3">状态</th>
                 <th className="chenxing-label px-4 py-3">Client ID</th>
+                <th className="chenxing-label px-4 py-3">Client Secret</th>
                 <th className="chenxing-label px-4 py-3 text-right">操作</th>
               </tr>
             </thead>
@@ -261,6 +266,19 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
                   </td>
                   <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">
                     {provider.client_id.length > 18 ? `${provider.client_id.slice(0, 18)}...` : provider.client_id}
+                  </td>
+                  <td className="px-4 py-3">
+                    {provider.client_secret_configured ? (
+                      <Badge tone="success">
+                        <Icon name="check" size={12} />
+                        已配置
+                      </Badge>
+                    ) : (
+                      <Badge tone="warning">
+                        <Icon name="alert-triangle" size={12} />
+                        未配置
+                      </Badge>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-3">
@@ -318,7 +336,17 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
                 <Field label="Slug *" value={form.slug} onChange={(event) => setForm({ ...form, slug: event.target.value })} placeholder="例如: gitlab" required disabled={Boolean(editing)} />
               </div>
               <Field label="Client ID *" value={form.client_id} onChange={(event) => setForm({ ...form, client_id: event.target.value })} placeholder="从提供商控制台复制" required />
-              <PasswordField label={editing ? 'Client Secret（留空保留原值）' : 'Client Secret *'} value={form.client_secret} onChange={(event) => setForm({ ...form, client_secret: event.target.value })} placeholder="仅保存时使用，保存后不再回显" required={!editing} />
+              <PasswordField
+                label={editing ? (editing.client_secret_configured ? 'Client Secret' : 'Client Secret *') : 'Client Secret *'}
+                value={form.client_secret}
+                onChange={(event) => setForm({ ...form, client_secret: event.target.value })}
+                placeholder={editing ? (editing.client_secret_configured ? '留空保持不变，输入新值替换' : '尚未配置，请输入 Client Secret') : '仅保存时使用，保存后不再回显'}
+                hint={editing ? (editing.client_secret_configured ? '已配置 Client Secret：留空保持不变，输入新值替换。保存后不会回显明文。' : '当前未配置 Client Secret，登录该提供商将失败。请输入密钥，保存后不会回显明文。') : '密钥将加密存储，保存后不会回显明文。'}
+                required={!editing || !editing.client_secret_configured}
+              />
+              {editing && !editing.client_secret_configured ? (
+                <Notice tone="warning">尚未配置 Client Secret，用户通过该提供商登录将失败。请输入密钥后保存。</Notice>
+              ) : null}
               <Field label="Authorization Endpoint *" value={form.authorization_endpoint} onChange={(event) => setForm({ ...form, authorization_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/authorize" required />
               <Field label="Token Endpoint *" value={form.token_endpoint} onChange={(event) => setForm({ ...form, token_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/token" required />
               <Field label="UserInfo Endpoint *" value={form.userinfo_endpoint} onChange={(event) => setForm({ ...form, userinfo_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/userinfo" required />
