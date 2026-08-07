@@ -20,11 +20,104 @@ use crate::{
 
 /// 写入会话前先比对撤销水位：水位不早于会话创建时刻则拒绝写入（返回 0）。
 /// 判定与写入在同一个 Lua 脚本里完成，保证原子性。
-const REDIS_ONLY_SESSION_SET: &str = "local marker = redis.call('GET', KEYS[1])\nif marker and tonumber(marker) >= tonumber(ARGV[1]) then return 0 end\nif redis.call('EXISTS', KEYS[3]) == 1 then return 0 end\nredis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])\nreturn 1";
+/// 水位以有符号十进制字符串传给 Redis；Lua 的 number 是双精度浮点数，不能用于纳秒值。
+const REDIS_ONLY_SESSION_SET: &str = r#"
+local function normalize_decimal(value)
+    local sign = 1
+    local first = string.sub(value, 1, 1)
+    if first == '-' then
+        sign = -1
+        value = string.sub(value, 2)
+    elseif first == '+' then
+        value = string.sub(value, 2)
+    end
+    if not string.match(value, '^%d+$') then
+        return nil
+    end
+    value = string.gsub(value, '^0+', '')
+    if value == '' then
+        return 1, '0'
+    end
+    return sign, value
+end
+
+local function compare_decimal(left, right)
+    local left_sign, left_digits = normalize_decimal(left)
+    local right_sign, right_digits = normalize_decimal(right)
+    if not left_sign or not right_sign then
+        return nil
+    end
+    if left_sign ~= right_sign then
+        return left_sign < right_sign and -1 or 1
+    end
+    if #left_digits ~= #right_digits then
+        local result = #left_digits < #right_digits and -1 or 1
+        return left_sign < 0 and -result or result
+    end
+    if left_digits == right_digits then
+        return 0
+    end
+    local result = left_digits < right_digits and -1 or 1
+    return left_sign < 0 and -result or result
+end
+
+local marker = redis.call('GET', KEYS[1])
+local comparison = marker and compare_decimal(marker, ARGV[1])
+if comparison ~= nil and comparison >= 0 then return 0 end
+if redis.call('EXISTS', KEYS[3]) == 1 then return 0 end
+redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+return 1
+"#;
 const REDIS_ONLY_REVOKE_SESSION: &str =
     "redis.call('DEL', KEYS[1])\nredis.call('SET', KEYS[2], '1', 'EX', ARGV[1])\nreturn 1";
 /// 水位单调前进：只在新值更大时覆盖，避免乱序请求把水位往回拨。
-const REDIS_ONLY_ADVANCE_WATERMARK: &str = "local current = redis.call('GET', KEYS[1])\nif not current or tonumber(current) < tonumber(ARGV[1]) then redis.call('SET', KEYS[1], ARGV[1]) end\nreturn 1";
+const REDIS_ONLY_ADVANCE_WATERMARK: &str = r#"
+local function normalize_decimal(value)
+    local sign = 1
+    local first = string.sub(value, 1, 1)
+    if first == '-' then
+        sign = -1
+        value = string.sub(value, 2)
+    elseif first == '+' then
+        value = string.sub(value, 2)
+    end
+    if not string.match(value, '^%d+$') then
+        return nil
+    end
+    value = string.gsub(value, '^0+', '')
+    if value == '' then
+        return 1, '0'
+    end
+    return sign, value
+end
+
+local function compare_decimal(left, right)
+    local left_sign, left_digits = normalize_decimal(left)
+    local right_sign, right_digits = normalize_decimal(right)
+    if not left_sign or not right_sign then
+        return nil
+    end
+    if left_sign ~= right_sign then
+        return left_sign < right_sign and -1 or 1
+    end
+    if #left_digits ~= #right_digits then
+        local result = #left_digits < #right_digits and -1 or 1
+        return left_sign < 0 and -result or result
+    end
+    if left_digits == right_digits then
+        return 0
+    end
+    local result = left_digits < right_digits and -1 or 1
+    return left_sign < 0 and -result or result
+end
+
+local current = redis.call('GET', KEYS[1])
+local comparison = current and compare_decimal(current, ARGV[1])
+if not current or comparison == nil or comparison < 0 then
+    redis.call('SET', KEYS[1], ARGV[1])
+end
+return 1
+"#;
 
 pub(super) async fn save_redis_only(
     store: &SessionStore,
@@ -83,10 +176,7 @@ pub(super) async fn find_redis_only(
     }
     // 水位判定用 `<=`：与撤销时刻同一纳秒创建的会话也必须失效，
     // 否则撤销与登录在同一时刻竞争时会漏放一条会话。
-    if marker
-        .and_then(|value| value.parse::<i128>().ok())
-        .is_some_and(|before| session.created_at.unix_timestamp_nanos() <= before)
-    {
+    if is_revoked_by_watermark(marker.as_deref(), session.created_at) {
         return Ok(None);
     }
     if session.last_seen_at <= now - store.renewal_interval() {
@@ -136,10 +226,7 @@ pub(super) async fn find_redis_only_by_token_hash(
     if token_revocation.is_some() {
         return Ok(None);
     }
-    if marker
-        .and_then(|value| value.parse::<i128>().ok())
-        .is_some_and(|before| session.created_at.unix_timestamp_nanos() <= before)
-    {
+    if is_revoked_by_watermark(marker.as_deref(), session.created_at) {
         return Ok(None);
     }
     if session.last_seen_at <= now - store.renewal_interval() {
@@ -191,4 +278,10 @@ pub(super) async fn revoke_all_redis_only(
         .invoke_async(&mut connection)
         .await?;
     Ok(())
+}
+
+fn is_revoked_by_watermark(marker: Option<&str>, created_at: OffsetDateTime) -> bool {
+    marker
+        .and_then(|value| value.parse::<i128>().ok())
+        .is_some_and(|before| i128::from(timestamp_watermark(created_at)) <= before)
 }
