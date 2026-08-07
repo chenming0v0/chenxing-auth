@@ -312,12 +312,13 @@ async fn concurrent_external_identity_creation_rejects_duplicate_email() {
     .await
     .expect("insert provider");
     let email = format!("external-{suffix}@example.com");
+    let email_variant = format!("  EXTERNAL-{suffix}@EXAMPLE.COM  ");
 
     let (first, second) = tokio::join!(
         create_user_with_identity(
             &database,
             provider_id,
-            &email,
+            &email_variant,
             Some("External 1"),
             "external-subject-1",
             "unusable-hash",

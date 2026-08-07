@@ -217,10 +217,14 @@ pub enum RegistrationError {
     DisplayNameTooLong,
 }
 
+pub fn normalize_email(email: &str) -> String {
+    email.trim().to_ascii_lowercase()
+}
+
 pub fn validate_registration(
     input: RegistrationInput,
 ) -> Result<ValidatedRegistration, RegistrationError> {
-    let email = input.email.trim().to_ascii_lowercase();
+    let email = normalize_email(&input.email);
     if !is_valid_email(&email) {
         return Err(RegistrationError::InvalidEmail);
     }
