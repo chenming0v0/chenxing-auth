@@ -8,19 +8,22 @@ function DrawerHarness({ busy = false }: { busy?: boolean }) {
   const [open, setOpen] = useState(false)
   return (
     <>
-      <button type="button" onClick={() => setOpen(true)}>打开抽屉</button>
-      {open ? (
-        <Drawer
-          title="测试抽屉"
-          description="用于验证焦点管理。"
-          onClose={() => setOpen(false)}
-          onSubmit={(event) => event.preventDefault()}
-          busy={busy}
-          footer={<button type="submit">提交</button>}
-        >
-          <input aria-label="第一个字段" />
-        </Drawer>
-      ) : null}
+      <div data-testid="drawer-background">页面背景</div>
+      <div>
+        <button type="button" onClick={() => setOpen(true)}>打开抽屉</button>
+        {open ? (
+          <Drawer
+            title="测试抽屉"
+            description="用于验证焦点管理。"
+            onClose={() => setOpen(false)}
+            onSubmit={(event) => event.preventDefault()}
+            busy={busy}
+            footer={<button type="submit">提交</button>}
+          >
+            <input aria-label="第一个字段" />
+          </Drawer>
+        ) : null}
+      </div>
     </>
   )
 }
@@ -34,7 +37,11 @@ function openDrawer(busy = false) {
   return trigger
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  document.documentElement.style.removeProperty('overflow')
+  document.body.style.removeProperty('overflow')
+})
 
 describe('Drawer', () => {
   it('exposes the dialog role labelled by its title', () => {
@@ -44,6 +51,50 @@ describe('Drawer', () => {
     const labelId = dialog.getAttribute('aria-labelledby')
     expect(labelId).toBeTruthy()
     expect(document.getElementById(labelId as string)?.textContent).toBe('测试抽屉')
+  })
+
+  it('locks page scrolling and makes background branches inert while open', () => {
+    const trigger = openDrawer()
+    const background = screen.getByTestId('drawer-background')
+
+    expect(document.documentElement.style.overflow).toBe('hidden')
+    expect(document.body.style.overflow).toBe('hidden')
+    for (const element of [background, trigger]) {
+      expect(element.hasAttribute('inert')).toBe(true)
+      expect(element.getAttribute('aria-hidden')).toBe('true')
+    }
+
+    fireEvent.click(screen.getByLabelText('关闭'))
+
+    expect(document.documentElement.style.overflow).toBe('')
+    expect(document.body.style.overflow).toBe('')
+    for (const element of [background, trigger]) {
+      expect(element.hasAttribute('inert')).toBe(false)
+      expect(element.hasAttribute('aria-hidden')).toBe(false)
+    }
+  })
+
+  it('restores existing overflow declarations and background attributes exactly', () => {
+    document.documentElement.style.setProperty('overflow', 'clip', 'important')
+    document.body.style.setProperty('overflow', 'scroll')
+    render(<DrawerHarness />)
+
+    const background = screen.getByTestId('drawer-background')
+    const trigger = screen.getByText('打开抽屉')
+    background.setAttribute('inert', 'preserved')
+    background.setAttribute('aria-hidden', 'false')
+    trigger.focus()
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByLabelText('关闭'))
+
+    expect(document.documentElement.style.getPropertyValue('overflow')).toBe('clip')
+    expect(document.documentElement.style.getPropertyPriority('overflow')).toBe('important')
+    expect(document.body.style.getPropertyValue('overflow')).toBe('scroll')
+    expect(document.body.style.getPropertyPriority('overflow')).toBe('')
+    expect(background.getAttribute('inert')).toBe('preserved')
+    expect(background.getAttribute('aria-hidden')).toBe('false')
+    expect(trigger.hasAttribute('inert')).toBe(false)
+    expect(trigger.hasAttribute('aria-hidden')).toBe(false)
   })
 
   it('moves focus into the drawer when it opens', () => {

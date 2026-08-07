@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type FormEventHandler, type ReactNode } from 'react'
+import { activateDrawerModal } from './drawer-modal-effects'
 import { Icon } from './ui'
 
 /**
@@ -40,13 +41,16 @@ export function useDrawerFocus(onClose: () => void, busy = false) {
     // 记录触发元素：抽屉是从某个按钮打开的，关闭后焦点必须还给它。
     const opener = document.activeElement
     const container = containerRef.current
-    if (container) {
-      const focusable = focusableWithin(container)
-      // 首个可聚焦元素通常是关闭按钮；没有可聚焦内容时退回到容器自身（tabIndex=-1）。
-      const target = focusable.length > 0 ? focusable[0] : container
-      target.focus()
-    }
+    if (!container) return
+
+    const restoreModalEffects = activateDrawerModal(container)
+    const focusable = focusableWithin(container)
+    // 首个可聚焦元素通常是关闭按钮；没有可聚焦内容时退回到容器自身（tabIndex=-1）。
+    const target = focusable.length > 0 ? focusable[0] : container
+    target.focus()
+
     return () => {
+      restoreModalEffects()
       // document.body 不是真正的触发元素（例如点击不可聚焦的列表行打开抽屉），
       // 触发元素已从 DOM 移除时也不再强行聚焦。
       if (opener instanceof HTMLElement && opener !== document.body && opener.isConnected) {
@@ -112,7 +116,7 @@ type DrawerProps = {
 /**
  * 右侧模态抽屉：包含遮罩、标题栏、可滚动表单主体和底部操作区。
  * 抽屉是真正的模态覆盖层，因此使用 role="dialog" + aria-modal + aria-labelledby，
- * 屏幕阅读器进入时会朗读标题并把背景内容视作不可交互。
+ * 打开期间锁定页面滚动，并把抽屉祖先路径之外的背景分支标记为不可交互。
  */
 export function Drawer({ title, description, onClose, onSubmit, busy = false, footer, children }: DrawerProps) {
   const titleId = useId()
