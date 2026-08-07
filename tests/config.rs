@@ -2,7 +2,10 @@ use chenxing_auth::clients::domain::{
     DEFAULT_MAX_REDIRECT_URI_LENGTH, DEFAULT_MAX_REDIRECT_URIS, DEFAULT_MAX_SCOPE_LENGTH,
     DEFAULT_MAX_SCOPES,
 };
-use chenxing_auth::config::{AuthEncryptionKey, AuthEncryptionKeyRing, Config, ConfigError};
+use chenxing_auth::config::{
+    AuthEncryptionKey, AuthEncryptionKeyRing, Config, ConfigError,
+    DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS, DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,
+};
 
 #[test]
 fn config_accepts_valid_runtime_values() {
@@ -18,6 +21,14 @@ fn config_accepts_valid_runtime_values() {
     assert_eq!(config.host, "127.0.0.1");
     assert_eq!(config.port, 3000);
     assert_eq!(config.session_ttl_seconds, 3600);
+    assert_eq!(
+        config.session_idle_timeout_seconds,
+        DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS
+    );
+    assert_eq!(
+        config.session_max_concurrent_sessions,
+        DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS
+    );
     assert!(!config.session_token_response_enabled);
     assert_eq!(config.key_rotation_grace_seconds, 604800);
     assert_eq!(

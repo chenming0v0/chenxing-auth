@@ -6,17 +6,19 @@
 
 use std::time::Duration;
 
-use redis::AsyncCommands;
-use time::OffsetDateTime;
-
-use super::{SessionStore, SessionStoreError, SessionSummary};
+use super::{SessionStore, SessionStoreError};
 use crate::{
-    sessions::domain::{Session, SessionLookup, SessionPayload, session_token_hash_bytes},
+    sessions::domain::{Session, SessionPayload, session_token_hash_bytes},
     sqlx::{Postgres, Transaction},
     users::domain::UserId,
 };
 
-type SessionMetadataRow = (i64, UserId, OffsetDateTime, OffsetDateTime, Option<Vec<u8>>);
+#[path = "postgres_lookup.rs"]
+mod lookup;
+
+pub(super) use lookup::{
+    find_with_metadata, find_with_metadata_by_token_hash, list_for_user, revoke_for_user,
+};
 
 pub(super) async fn save_with_metadata(
     store: &SessionStore,
@@ -45,16 +47,78 @@ pub(super) async fn save_with_metadata(
     if status != "active" {
         return Err(SessionStoreError::UserDisabled);
     }
+    let active_count: i64 = crate::sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM user_sessions
+         WHERE user_id = $1
+           AND revoked_at IS NULL
+           AND expires_at > NOW()
+           AND last_seen_at > NOW() - $2
+           AND session_epoch >= $3",
+    )
+    .bind(user_id)
+    .bind(store.idle_timeout_interval())
+    .bind(session_epoch)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let max_sessions =
+        i64::try_from(store.policy.max_concurrent_sessions).unwrap_or(i64::MAX);
+    let revoke_count = active_count.saturating_sub(max_sessions.saturating_sub(1));
+    let active_sessions: Vec<(i64, Vec<u8>)> = if revoke_count == 0 {
+        Vec::new()
+    } else {
+        crate::sqlx::query_as(
+            "SELECT id, token_hash
+             FROM user_sessions
+             WHERE user_id = $1
+               AND revoked_at IS NULL
+               AND expires_at > NOW()
+               AND last_seen_at > NOW() - $2
+               AND session_epoch >= $3
+             ORDER BY created_at ASC, id ASC
+             LIMIT $4
+             FOR UPDATE",
+        )
+        .bind(user_id)
+        .bind(store.idle_timeout_interval())
+        .bind(session_epoch)
+        .bind(revoke_count)
+        .fetch_all(&mut *transaction)
+        .await?
+    };
+    for (session_id, old_token_hash) in active_sessions {
+        crate::sqlx::query(
+            "UPDATE user_sessions
+             SET revoked_at = COALESCE(revoked_at, NOW())
+             WHERE id = $1",
+        )
+        .bind(session_id)
+        .execute(&mut *transaction)
+        .await?;
+        crate::sqlx::query(
+            "INSERT INTO session_outbox
+                 (operation, session_id, user_id, token_hash, generation)
+             VALUES ('revoke_session', $1, $2, $3, $4)",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .bind(old_token_hash)
+        .bind(session_epoch)
+        .execute(&mut *transaction)
+        .await?;
+    }
     let id: i64 = crate::sqlx::query_scalar(
         "INSERT INTO user_sessions
-             (token_hash, user_id, created_at, expires_at, session_payload, session_epoch)
-         VALUES ($1, $2, $3, $4, NULL, $5)
+             (token_hash, user_id, created_at, expires_at, last_seen_at,
+              session_payload, session_epoch)
+         VALUES ($1, $2, $3, $4, $5, NULL, $6)
          RETURNING id",
     )
     .bind(&token_hash)
     .bind(user_id)
     .bind(session.created_at)
     .bind(session.expires_at)
+    .bind(session.last_seen_at)
     .bind(session_epoch)
     .fetch_one(&mut *transaction)
     .await?;
@@ -80,89 +144,6 @@ pub(super) async fn save_with_metadata(
     .await?;
     transaction.commit().await?;
     Ok(())
-}
-
-pub(super) async fn find_with_metadata(
-    store: &SessionStore,
-    token: &str,
-) -> Result<Option<Session>, SessionStoreError> {
-    let pool = store
-        .metadata
-        .as_ref()
-        .ok_or(SessionStoreError::MetadataUnavailable)?;
-    let token_hash = session_token_hash_bytes(token).to_vec();
-    let metadata: Option<SessionMetadataRow> = crate::sqlx::query_as(
-        "SELECT sessions.id, sessions.user_id, sessions.created_at,
-                sessions.expires_at, sessions.session_payload
-         FROM user_sessions AS sessions
-         JOIN users ON users.id = sessions.user_id
-         WHERE sessions.token_hash = $1
-           AND sessions.revoked_at IS NULL
-           AND sessions.expires_at > NOW()
-           AND sessions.session_epoch >= users.session_epoch
-           AND users.status = 'active'",
-    )
-    .bind(&token_hash)
-    .fetch_optional(pool)
-    .await?;
-    let Some((id, user_id, created_at, expires_at, payload)) = metadata else {
-        return Ok(None);
-    };
-    let decoded_payload = if let Some(payload) = payload {
-        store.decode_payload(&payload)?
-    } else {
-        // 库里载荷为 NULL：回退到 Redis 取载荷。
-        // 这条路径在 outbox 同步延迟或载荷迁移升级时会走到。
-        let mut connection = store.client.get_multiplexed_async_connection().await?;
-        let Some(payload): Option<Vec<u8>> = connection.get(store.key(token)).await? else {
-            return Ok(None);
-        };
-        store.decode_payload(&payload)?
-    };
-    let Some(stored_payload) = decoded_payload else {
-        return Ok(None);
-    };
-    // 令牌只来自请求，不来自存储。
-    let mut session = stored_payload.into_session(token.to_owned());
-    session.id = id;
-    session.user_id = user_id.to_string();
-    session.created_at = created_at;
-    session.expires_at = expires_at;
-    session.revoked_at = None;
-    Ok(Some(session))
-}
-
-pub(super) async fn find_with_metadata_by_token_hash(
-    store: &SessionStore,
-    token_hash: &[u8],
-) -> Result<Option<SessionLookup>, SessionStoreError> {
-    let pool = store
-        .metadata
-        .as_ref()
-        .ok_or(SessionStoreError::MetadataUnavailable)?;
-    let metadata: Option<(i64, UserId, OffsetDateTime, OffsetDateTime)> = crate::sqlx::query_as(
-        "SELECT sessions.id, sessions.user_id, sessions.created_at,
-                    sessions.expires_at
-             FROM user_sessions AS sessions
-             JOIN users ON users.id = sessions.user_id
-             WHERE sessions.token_hash = $1
-               AND sessions.revoked_at IS NULL
-               AND sessions.expires_at > NOW()
-               AND sessions.session_epoch >= users.session_epoch
-               AND users.status = 'active'",
-    )
-    .bind(token_hash.to_vec())
-    .fetch_optional(pool)
-    .await?;
-    Ok(
-        metadata.map(|(id, user_id, created_at, expires_at)| SessionLookup {
-            id,
-            user_id: user_id.to_string(),
-            created_at,
-            expires_at,
-            revoked_at: None,
-        }),
-    )
 }
 
 /// 按令牌哈希撤销单条会话。
@@ -196,81 +177,6 @@ pub(super) async fn revoke_by_token_hash(
     .await?;
     transaction.commit().await?;
     Ok(())
-}
-
-pub(super) async fn list_for_user(
-    store: &SessionStore,
-    user_id: UserId,
-) -> Result<Vec<SessionSummary>, SessionStoreError> {
-    let pool = store
-        .metadata
-        .as_ref()
-        .ok_or(SessionStoreError::MetadataUnavailable)?;
-    let rows = crate::sqlx::query_as::<_, (i64, OffsetDateTime, OffsetDateTime)>(
-        "SELECT sessions.id, sessions.created_at, sessions.expires_at
-         FROM user_sessions AS sessions
-         JOIN users ON users.id = sessions.user_id
-         WHERE sessions.user_id = $1
-           AND sessions.revoked_at IS NULL
-           AND sessions.expires_at > NOW()
-           AND sessions.session_epoch >= users.session_epoch
-           AND users.status = 'active'
-         ORDER BY sessions.created_at DESC",
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(id, created_at, expires_at)| SessionSummary {
-            id,
-            created_at,
-            expires_at,
-        })
-        .collect())
-}
-
-pub(super) async fn revoke_for_user(
-    store: &SessionStore,
-    user_id: UserId,
-    session_id: i64,
-) -> Result<bool, SessionStoreError> {
-    let pool = store
-        .metadata
-        .as_ref()
-        .ok_or(SessionStoreError::MetadataUnavailable)?;
-    let mut transaction = pool.begin().await?;
-    lock_user_session_scope(&mut transaction, user_id).await?;
-    let found: Option<(Vec<u8>,)> = crate::sqlx::query_as(
-        "SELECT token_hash
-         FROM user_sessions
-         WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > NOW()
-         FOR UPDATE",
-    )
-    .bind(session_id)
-    .bind(user_id)
-    .fetch_optional(&mut *transaction)
-    .await?;
-    let Some((hash,)) = found else {
-        transaction.rollback().await?;
-        return Ok(false);
-    };
-    crate::sqlx::query("UPDATE user_sessions SET revoked_at = NOW() WHERE id = $1")
-        .bind(session_id)
-        .execute(&mut *transaction)
-        .await?;
-    crate::sqlx::query(
-        "INSERT INTO session_outbox
-             (operation, session_id, user_id, token_hash, generation)
-         VALUES ('revoke_session', $1, $2, $3, 0)",
-    )
-    .bind(session_id)
-    .bind(user_id)
-    .bind(&hash)
-    .execute(&mut *transaction)
-    .await?;
-    transaction.commit().await?;
-    Ok(true)
 }
 
 pub(super) async fn revoke_all_for_user(

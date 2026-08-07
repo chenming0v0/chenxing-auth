@@ -143,7 +143,7 @@ src/
 日常开发推荐工作流：每日首次启动运行 `./dev.sh`，后续代码修改后只需 `Ctrl+C` 停止前后端再重新运行 `./dev-services.sh`，无需反复重启数据库容器。停止 Docker 服务使用 `docker compose down`。
 
 认证失败限流由 Redis Lua 脚本在单次原子操作中完成计数、窗口 TTL 和阈值判定。生产默认使用 `AUTH_LIMITER_FAILURE_POLICY=fail-closed`：Redis 不可用时认证请求不会被放行，并记录结构化 `auth_limiter.redis_unavailable` 事件；只有在明确接受降级风险时才使用 `fail-open`。`AUTH_LIMITER_MISSING_SOURCE_IP=reject` 是生产默认值，防止没有可信 `ConnectInfo` 的请求共用全局 `unknown` 桶；`skip` 只跳过 IP 维度，仍保留 account、ticket 限流，并应仅用于明确配置的测试或受控入口。限流日志只记录维度、窗口和不可逆 key hash，不记录账户、ticket、IP 原文或认证凭据。
-迁移编号在合并时必须保持唯一且连续：sessions lane 使用 `0006_session_epochs.sql`，plans lane 使用 `0007_plan_default_invariant.sql`，本 lane 的管理员查询索引使用 `0008_admin_query_indexes.sql`，审计不可变性和归档边界使用 `0013_audit_append_only_retention.sql`。不要复用已占用的编号或修改已有迁移的 SQL 内容。
+迁移编号在合并时必须保持唯一且连续：sessions lane 使用 `0006_session_epochs.sql` 和 `0014_session_idle_policy.sql`，plans lane 使用 `0007_plan_default_invariant.sql`，本 lane 的管理员查询索引使用 `0008_admin_query_indexes.sql`，审计不可变性和归档边界使用 `0013_audit_append_only_retention.sql`。不要复用已占用的编号或修改已有迁移的 SQL 内容。
 
 本次统一身份数据库重构使用新的单一基线迁移，不支持保留旧开发数据滚动升级。旧数据库中的 `_sqlx_migrations` 记录也不能被这条新基线自动转换；生产环境部署遇到迁移失败时必须先备份并执行经过批准的数据迁移或重建方案。首次在本地切换到该版本时，请确认 Compose 项目为本仓库的 `chenxing-auth` 后执行 `docker compose down -v`，再运行 `docker compose up -d postgres redis`；该操作会删除本地 PostgreSQL/Redis 开发数据，生产环境不得照此操作。
 
@@ -187,6 +187,8 @@ src/
 `APP_ISSUER` 是必填配置项，没有默认值：它是 OIDC 发行者标识，会写入 JWT 的 `iss` claim 和 Discovery 文档，必须是无 path、query 和 fragment 的绝对 URL，且不能从请求 Host 或反向代理输入推导。未设置、为空或格式非法时服务启动失败，不再回退到 `http://<APP_HOST>:<APP_PORT>`。
 
 Session payload 使用 AES-256-GCM 并携带 key id。`AUTH_ENCRYPTION_KEY` 保留为单密钥兼容写法。轮换时设置逗号分隔的 `kid=<key-id>:<standard-base64-32-byte-key>` 密钥环 `AUTH_ENCRYPTION_KEYS`，并设置 `AUTH_ENCRYPTION_ACTIVE_KID`；新 Session 只使用 active key，旧 key 只读。旧 key 必须保留到最长 Session TTL 加 outbox 重试窗口结束后再移除。回滚通过把旧 key 设为 `AUTH_ENCRYPTION_ACTIVE_KID` 并继续保留新 key 完成。移除 key 会故意使仅由该 key 加密的 Session 失效，请求返回 401 并清理浏览器 Cookie。Redis 只保存加密 payload，不保存 Session 或 CSRF 明文。
+
+浏览器 Session 同时受绝对期限和空闲期限约束：`SESSION_TTL_SECONDS` 默认 7 天，是创建时固定的绝对截止时间；`SESSION_IDLE_TIMEOUT_SECONDS` 默认 1800 秒，成功认证请求在空闲窗口过半时更新 `last_seen_at`，但绝不会延长绝对截止时间。Redis 投影的 TTL 取这两个截止时间中较早者，PostgreSQL 是撤销、epoch 和空闲状态的权威来源。`SESSION_MAX_CONCURRENT_SESSIONS` 默认 5；新登录达到上限时，在同一用户事务锁内撤销最早的活跃 Session，再写入新 Session，并通过 outbox 删除旧 Redis 投影。Cookie 本身仍保留绝对生命周期，服务端 idle 校验负责缩短不活动凭据的有效窗口。
 
 用户首次密码登录会返回短期 `login_ticket`，前端需要完成 TOTP 或 WebAuthn passkey 注册后才会获得 Session。后续登录需要密码加已绑定的 TOTP 或 passkey。生产环境应设置固定的 `WEBAUTHN_RP_ID` 和 `WEBAUTHN_ORIGIN`，默认从固定 `APP_ISSUER` 派生，不能从请求 Host 派生。
 

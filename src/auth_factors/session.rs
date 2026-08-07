@@ -43,7 +43,12 @@ pub async fn issue_user_session(
         return error::unauthorized("user_disabled", "user account is disabled");
     }
     let ttl = Duration::from_secs(state.config.session_ttl_seconds);
-    let mut session = match Session::new(user_id.to_string(), ttl) {
+    let idle_timeout = Duration::from_secs(state.config.session_idle_timeout_seconds);
+    let mut session = match Session::new_with_idle_timeout(
+        user_id.to_string(),
+        ttl,
+        idle_timeout,
+    ) {
         Ok(session) => session,
         Err(session_error) => {
             tracing::error!(error = %session_error, "failed to create session");

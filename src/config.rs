@@ -16,6 +16,9 @@ mod config_parsing;
 mod config_proxy;
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
+pub use crate::sessions::domain::{
+    DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS, DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,
+};
 use config_admin::admin_token_from_env;
 use config_audit::audit_retention_from_env;
 use config_limits::{
@@ -66,6 +69,10 @@ pub struct Config {
     pub database_url: String,
     pub redis_url: String,
     pub session_ttl_seconds: u64,
+    /// Successful requests renew idle activity, but never extend `session_ttl_seconds`.
+    pub session_idle_timeout_seconds: u64,
+    /// Oldest active sessions are revoked when this per-user bound is reached.
+    pub session_max_concurrent_sessions: u64,
     /// Access token 有效期（秒）。#112：与浏览器会话 TTL 解耦。默认 3600。
     pub access_token_ttl_seconds: u64,
     /// ID token 有效期（秒）。默认与 access token 一致。
@@ -110,6 +117,14 @@ impl fmt::Debug for Config {
             .field("database_url", &self.database_url)
             .field("redis_url", &self.redis_url)
             .field("session_ttl_seconds", &self.session_ttl_seconds)
+            .field(
+                "session_idle_timeout_seconds",
+                &self.session_idle_timeout_seconds,
+            )
+            .field(
+                "session_max_concurrent_sessions",
+                &self.session_max_concurrent_sessions,
+            )
             .field("access_token_ttl_seconds", &self.access_token_ttl_seconds)
             .field("id_token_ttl_seconds", &self.id_token_ttl_seconds)
             .field("log_filter", &self.log_filter)
@@ -140,6 +155,8 @@ struct ConfigValues {
     database_url: String,
     redis_url: String,
     session_ttl_seconds: u64,
+    session_idle_timeout_seconds: u64,
+    session_max_concurrent_sessions: u64,
     access_token_ttl_seconds: u64,
     id_token_ttl_seconds: u64,
     log_filter: String,
@@ -209,6 +226,20 @@ impl Config {
                 .as_deref()
                 .unwrap_or("604800"),
         )?;
+        let session_idle_timeout_seconds = parse_u64(
+            "SESSION_IDLE_TIMEOUT_SECONDS",
+            env::var("SESSION_IDLE_TIMEOUT_SECONDS")
+                .ok()
+                .as_deref()
+                .unwrap_or("1800"),
+        )?;
+        let session_max_concurrent_sessions = parse_u64(
+            "SESSION_MAX_CONCURRENT_SESSIONS",
+            env::var("SESSION_MAX_CONCURRENT_SESSIONS")
+                .ok()
+                .as_deref()
+                .unwrap_or("5"),
+        )?;
         // #112：access/id token TTL 与浏览器会话 TTL 解耦，默认 3600 秒（1 小时）。
         let access_token_ttl_seconds = optional_u64("ACCESS_TOKEN_TTL_SECONDS", 3600)?;
         let id_token_ttl_seconds = optional_u64("ID_TOKEN_TTL_SECONDS", 3600)?;
@@ -245,6 +276,8 @@ impl Config {
             database_url,
             redis_url,
             session_ttl_seconds,
+            session_idle_timeout_seconds,
+            session_max_concurrent_sessions,
             access_token_ttl_seconds,
             id_token_ttl_seconds,
             log_filter,
@@ -300,6 +333,8 @@ impl Config {
             database_url,
             redis_url,
             session_ttl_seconds,
+            session_idle_timeout_seconds: DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
+            session_max_concurrent_sessions: DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,
             access_token_ttl_seconds: 3600,
             id_token_ttl_seconds: 3600,
             log_filter: "chenxing_auth=debug".to_owned(),
@@ -330,6 +365,8 @@ impl Config {
             database_url,
             redis_url,
             session_ttl_seconds,
+            session_idle_timeout_seconds,
+            session_max_concurrent_sessions,
             access_token_ttl_seconds,
             id_token_ttl_seconds,
             log_filter,
@@ -371,6 +408,14 @@ impl Config {
         }
         if session_ttl_seconds == 0 {
             return Err(ConfigError::InvalidValue("SESSION_TTL_SECONDS"));
+        }
+        if session_idle_timeout_seconds == 0 {
+            return Err(ConfigError::InvalidValue("SESSION_IDLE_TIMEOUT_SECONDS"));
+        }
+        if session_max_concurrent_sessions == 0 {
+            return Err(ConfigError::InvalidValue(
+                "SESSION_MAX_CONCURRENT_SESSIONS",
+            ));
         }
         if webauthn_rp_id.trim().is_empty() {
             return Err(ConfigError::InvalidValue("WEBAUTHN_RP_ID"));
@@ -421,6 +466,8 @@ impl Config {
             database_url,
             redis_url,
             session_ttl_seconds,
+            session_idle_timeout_seconds,
+            session_max_concurrent_sessions,
             access_token_ttl_seconds,
             id_token_ttl_seconds,
             log_filter,

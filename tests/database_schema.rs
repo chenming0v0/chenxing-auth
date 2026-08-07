@@ -168,6 +168,14 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     )
     .await;
     assert_column(&pool, "user_sessions", "session_payload", "bytea", true).await;
+    assert_column(
+        &pool,
+        "user_sessions",
+        "last_seen_at",
+        "timestamp with time zone",
+        false,
+    )
+    .await;
     assert_column(&pool, "users", "session_epoch", "bigint", false).await;
     assert_column(&pool, "user_sessions", "session_epoch", "bigint", false).await;
     assert_column(&pool, "session_outbox", "id", "bigint", false).await;
@@ -190,6 +198,7 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
         "oauth_clients_admin_query_status_idx",
         "audit_events_action_idx",
         "audit_events_archive_action_idx",
+        "user_sessions_active_created_idx",
     ] {
         assert_index(&pool, index).await;
     }
