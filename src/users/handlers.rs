@@ -157,7 +157,15 @@ pub async fn login_user(
     let user_id = match state.users.authenticate(input, source_ip.as_deref()).await {
         Ok(user_id) => user_id,
         Err(UserServiceError::InvalidCredentials) => {
-            record_security_event(&state, "login_failure", None, "invalid_credentials").await;
+            record_security_event(
+                &state,
+                "login_failure",
+                None,
+                "invalid_credentials",
+                Some(&identifier),
+                source_ip.as_deref(),
+            )
+            .await;
             return error::unauthorized(
                 "invalid_credentials",
                 "username, email, or password is incorrect",
@@ -170,7 +178,15 @@ pub async fn login_user(
             );
         }
         Err(UserServiceError::RateLimited) => {
-            record_security_event(&state, "rate_limit_triggered", None, "login").await;
+            record_security_event(
+                &state,
+                "rate_limit_triggered",
+                None,
+                "login",
+                Some(&identifier),
+                source_ip.as_deref(),
+            )
+            .await;
             return error::unauthorized(
                 "invalid_credentials",
                 "username, email, or password is incorrect",
@@ -213,8 +229,15 @@ pub async fn login_user(
         {
             Ok(valid) => valid,
             Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
-                record_security_event(&state, "mfa_failure", Some(user_id), "totp_rate_limited")
-                    .await;
+                record_security_event(
+                    &state,
+                    "mfa_failure",
+                    Some(user_id),
+                    "totp_rate_limited",
+                    None,
+                    source_ip.as_deref(),
+                )
+                .await;
                 return error::unauthorized("invalid_factor", "authentication factor is invalid");
             }
             Err(factor_error) => {
@@ -223,7 +246,15 @@ pub async fn login_user(
             }
         };
         if !valid {
-            record_security_event(&state, "mfa_failure", Some(user_id), "totp_invalid").await;
+            record_security_event(
+                &state,
+                "mfa_failure",
+                Some(user_id),
+                "totp_invalid",
+                None,
+                source_ip.as_deref(),
+            )
+            .await;
             return error::unauthorized("invalid_factor", "authentication factor is invalid");
         }
         return issue_user_session(&state, user_id, "totp", &headers).await;
@@ -244,6 +275,8 @@ pub async fn login_user(
                 "passkey_recovery_required",
                 Some(user_id),
                 "passkey_disabled",
+                None,
+                source_ip.as_deref(),
             )
             .await;
         }
@@ -330,20 +363,24 @@ async fn record_security_event(
     action: &str,
     actor_id: Option<crate::users::domain::UserId>,
     reason: &str,
+    attempted_identifier: Option<&str>,
+    source_ip: Option<&str>,
 ) {
     state
         .audit
-        .record_best_effort(AuditEvent::new(
+        .record_best_effort(AuditEvent::authentication_failure(
+            action.to_owned(),
             if actor_id.is_some() {
                 "user".to_owned()
             } else {
                 "anonymous".to_owned()
             },
             actor_id.map(|id| id.to_string()),
-            action.to_owned(),
             "authentication".to_owned(),
             None,
-            serde_json::json!({"reason": reason}),
+            reason,
+            attempted_identifier,
+            source_ip,
         ))
         .await;
 }

@@ -27,8 +27,11 @@
 //! 或者在凭据没有可追溯审计记录时仍把凭据交给调用方。要彻底消除阻断式路径的
 //! 提交窗口，仍需把业务写入和 `audit_events` 写入放进同一数据库事务。
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use sha2::{Digest, Sha256};
+use std::net::IpAddr;
 use std::time::Duration;
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -221,13 +224,52 @@ impl AuditEvent {
         resource_id: Option<String>,
         reason: impl Into<String>,
     ) -> Self {
+        Self::authentication_failure(
+            action,
+            actor_type,
+            actor_id,
+            resource_type,
+            resource_id,
+            reason,
+            None,
+            None,
+        )
+    }
+
+    /// 构造认证失败事件的非凭据上下文。
+    ///
+    /// 用户名和邮箱可能属于个人数据，不能原样写入审计。规范化后的标识符只用于
+    /// 生成跨事件稳定的 SHA-256 引用；来源地址必须已经由可信代理解析器取得，且
+    /// 这里再次 canonicalize，避免审计落入带端口或非标准 IPv6 表示。
+    pub fn authentication_failure(
+        action: String,
+        actor_type: String,
+        actor_id: Option<String>,
+        resource_type: String,
+        resource_id: Option<String>,
+        reason: impl Into<String>,
+        attempted_identifier: Option<&str>,
+        source_ip: Option<&str>,
+    ) -> Self {
+        let mut metadata = Map::new();
+        metadata.insert("result".to_owned(), Value::String("failure".to_owned()));
+        metadata.insert("reason".to_owned(), Value::String(reason.into()));
+        if let Some(identifier) = attempted_identifier.filter(|value| !value.is_empty()) {
+            metadata.insert(
+                "account_ref".to_owned(),
+                Value::String(stable_account_reference(identifier)),
+            );
+        }
+        if let Some(source_ip) = source_ip.and_then(canonical_source_ip) {
+            metadata.insert("source_ip".to_owned(), Value::String(source_ip));
+        }
         Self::new(
             actor_type,
             actor_id,
             action,
             resource_type,
             resource_id,
-            serde_json::json!({"result": "failure", "reason": reason.into()}),
+            Value::Object(metadata),
         )
     }
 
@@ -250,6 +292,19 @@ impl AuditEvent {
         }
         Ok(())
     }
+}
+
+/// 返回不包含原始用户名或邮箱的稳定账户引用。
+pub fn stable_account_reference(identifier: &str) -> String {
+    let normalized = identifier.trim().to_ascii_lowercase();
+    format!(
+        "sha256:{}",
+        URL_SAFE_NO_PAD.encode(Sha256::digest(normalized.as_bytes()))
+    )
+}
+
+fn canonical_source_ip(source_ip: &str) -> Option<String> {
+    source_ip.parse::<IpAddr>().ok().map(|ip| ip.to_string())
 }
 
 pub(crate) fn redact_metadata(metadata: Value) -> Map<String, Value> {
@@ -306,7 +361,9 @@ fn normalize_key(key: &str) -> String {
 }
 
 const SAFE_METADATA_KEYS: &[&str] = &[
+    "accountref",
     "passwordconfigured",
+    "sourceip",
     "tokencount",
     "tokentype",
     "tokentypehint",
