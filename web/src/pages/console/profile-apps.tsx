@@ -6,6 +6,19 @@ import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, PasswordField, logoUrl } from '../../components/ui'
 import { formatDate, initialOf } from '../../data'
 
+const PASSWORD_MIN_LENGTH = 10
+const PASSWORD_MAX_LENGTH = 128
+// HTML maxLength counts UTF-16 code units; two units per code point is the safe upper bound.
+const PASSWORD_MAX_INPUT_LENGTH = PASSWORD_MAX_LENGTH * 2
+
+function passwordCodePointLength(value: string): number {
+  return Array.from(value).length
+}
+
+function limitPasswordInput(value: string): string {
+  return Array.from(value).slice(0, PASSWORD_MAX_LENGTH).join('')
+}
+
 export function ConsoleProfile() {
   const { user, clear, refresh } = useAuth()
   const navigate = useNavigate()
@@ -42,7 +55,9 @@ export function ConsoleProfile() {
   async function updatePassword(event: FormEvent) {
     event.preventDefault()
     setMessage('')
-    if (newPassword.length < 10) { setMessage('新密码至少需要 10 位字符。'); return }
+    const newPasswordLength = passwordCodePointLength(newPassword)
+    if (newPasswordLength < PASSWORD_MIN_LENGTH) { setMessage(`新密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`); return }
+    if (newPasswordLength > PASSWORD_MAX_LENGTH) { setMessage(`新密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`); return }
     if (newPassword !== confirmPassword) { setMessage('两次输入的新密码不一致。'); return }
     setBusy(true)
     try {
@@ -121,8 +136,8 @@ export function ConsoleProfile() {
             {showPassword ? (
               <form className="space-y-4" onSubmit={updatePassword}>
                 <PasswordField label="当前密码" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required />
-                <PasswordField label="新密码" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required hint="至少 10 位字符。" />
-                <PasswordField label="确认新密码" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required error={confirmPassword.length > 0 && confirmPassword !== newPassword} hint={confirmPassword.length > 0 && confirmPassword !== newPassword ? '两次输入的新密码不一致。' : '再次输入新密码以确认。'} />
+                <PasswordField label="新密码" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(limitPasswordInput(event.target.value))} maxLength={PASSWORD_MAX_INPUT_LENGTH} required hint={`长度为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个 Unicode 字符。`} />
+                <PasswordField label="确认新密码" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(limitPasswordInput(event.target.value))} maxLength={PASSWORD_MAX_INPUT_LENGTH} required error={passwordCodePointLength(confirmPassword) > 0 && confirmPassword !== newPassword} hint={passwordCodePointLength(confirmPassword) > 0 && confirmPassword !== newPassword ? '两次输入的新密码不一致。' : '再次输入新密码以确认。'} />
                 <div className="flex flex-wrap gap-3">
                   <Button type="submit" icon="key-round" disabled={busy}>确认修改</Button>
                   <Button type="button" variant="ghost" onClick={() => setShowPassword(false)}>取消</Button>
@@ -255,4 +270,3 @@ export function AuthorizedApps() {
     </ConsoleLayout>
   )
 }
-

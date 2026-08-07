@@ -9,6 +9,19 @@ import { ExternalProviders } from './auth/external-providers'
 
 type AuthMode = 'login' | 'register'
 
+const PASSWORD_MIN_LENGTH = 10
+const PASSWORD_MAX_LENGTH = 128
+// HTML maxLength counts UTF-16 code units; two units per code point is the safe upper bound.
+const PASSWORD_MAX_INPUT_LENGTH = PASSWORD_MAX_LENGTH * 2
+
+function passwordCodePointLength(value: string): number {
+  return Array.from(value).length
+}
+
+function limitPasswordInput(value: string): string {
+  return Array.from(value).slice(0, PASSWORD_MAX_LENGTH).join('')
+}
+
 function safeReturnTo(value: string | null): string {
   if (!value) return '/console'
   try {
@@ -76,9 +89,16 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
       setMessage('请完整填写必填信息。')
       return
     }
-    if (password.length < 10) {
-      setMessage('密码至少需要 10 位字符。')
-      return
+    if (!isLogin) {
+      const passwordLength = passwordCodePointLength(password)
+      if (passwordLength < PASSWORD_MIN_LENGTH) {
+        setMessage(`密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`)
+        return
+      }
+      if (passwordLength > PASSWORD_MAX_LENGTH) {
+        setMessage(`密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`)
+        return
+      }
     }
     if (!isLogin && !agree) {
       setMessage('请先同意服务条款与隐私政策。')
@@ -165,10 +185,12 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
             <PasswordField
               label="密码"
               icon="lock-keyhole"
-              placeholder={isLogin ? '输入通行凭证' : '至少 10 位'}
+              placeholder={isLogin ? '输入通行凭证' : `${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个字符`}
               autoComplete={isLogin ? 'current-password' : 'new-password'}
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onChange={(event) => setPassword(isLogin ? event.target.value : limitPasswordInput(event.target.value))}
+              maxLength={!isLogin ? PASSWORD_MAX_INPUT_LENGTH : undefined}
+              hint={!isLogin ? `长度为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个 Unicode 字符。` : undefined}
             />
             {!isLogin ? (
               <label className="flex cursor-pointer items-start gap-2 text-[0.8125rem] leading-relaxed text-[var(--chenxing-muted-foreground)]">
@@ -218,6 +240,15 @@ export function BootstrapPage() {
   async function submit(event: FormEvent) {
     event.preventDefault()
     setMessage('')
+    const passwordLength = passwordCodePointLength(password)
+    if (passwordLength < PASSWORD_MIN_LENGTH) {
+      setMessage(`密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`)
+      return
+    }
+    if (passwordLength > PASSWORD_MAX_LENGTH) {
+      setMessage(`密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`)
+      return
+    }
     setBusy(true)
     try {
       await apiFetch('/api/v1/admin/bootstrap', {
@@ -269,7 +300,16 @@ export function BootstrapPage() {
               <form className="mt-6 space-y-4" onSubmit={submit} noValidate>
                 <Field label="管理员用户名" icon="user" placeholder="chenxing-owner" value={username} onChange={(event) => setUsername(event.target.value)} required />
                 <Field label="邮箱" icon="mail" type="email" placeholder="owner@chenxing.star" value={email} onChange={(event) => setEmail(event.target.value)} required />
-                <PasswordField label="密码" icon="lock-keyhole" placeholder="至少 12 位，含字母与数字" value={password} onChange={(event) => setPassword(event.target.value)} required />
+                <PasswordField
+                  label="密码"
+                  icon="lock-keyhole"
+                  placeholder={`${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个字符`}
+                  value={password}
+                  onChange={(event) => setPassword(limitPasswordInput(event.target.value))}
+                  maxLength={PASSWORD_MAX_INPUT_LENGTH}
+                  hint={`长度为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个 Unicode 字符。`}
+                  required
+                />
                 <div className="flex items-start gap-3 rounded-[var(--chenxing-radius-md)] border border-[rgba(255,107,122,0.35)] bg-[rgba(255,107,122,0.08)] px-4 py-3">
                   <Icon name="alert-triangle" className="mt-0.5 h-4 w-4 shrink-0 text-[var(--chenxing-error)]" size={16} />
                   <p className="chenxing-caption text-[var(--chenxing-foreground)]">初始化成功后将跳转至统一登录页，不会自动创建会话。需要重新初始化时，请由维护人员清理数据库后重试。</p>
