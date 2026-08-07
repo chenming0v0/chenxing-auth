@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { EmailPolicySetting } from '../../../api'
 import { EmailPolicyPanel } from './email-policy-panel'
 
@@ -87,10 +87,12 @@ describe('EmailPolicyPanel 域名输入', () => {
 
     expect(confirmCalls).toBe(1)
     expect(confirmMessage).toContain('当前允许域名列表将被忽略')
-    expect(requests[requests.length - 1]?.body).toMatchObject({
-      whitelist_enabled: false,
-      allowed_domains: ['corp.example'],
-    })
+    await waitFor(() =>
+      expect(requests[requests.length - 1]?.body).toMatchObject({
+        whitelist_enabled: false,
+        allowed_domains: ['corp.example'],
+      }),
+    )
   })
 
   it('白名单原本关闭时清空被忽略的列表不要求确认', async () => {
@@ -100,7 +102,7 @@ describe('EmailPolicyPanel 域名输入', () => {
     save()
 
     expect(confirmCalls).toBe(0)
-    expect(requests.some((request) => request.method === 'PUT')).toBe(true)
+    await waitFor(() => expect(requests.some((request) => request.method === 'PUT')).toBe(true))
   })
 
   it('白名单启用但列表为空时显示原因并阻止保存', async () => {
