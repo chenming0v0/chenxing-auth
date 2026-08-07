@@ -59,7 +59,11 @@ function ClientsTable({ access }: { access: AdminAccess }) {
   async function setClientStatus(client: ClientSummary) {
     if (!access.data?.permissions.includes('manage_clients')) return
     const action = client.status === 'active' ? 'disable' : 'enable'
-    if (!window.confirm(`确认${action === 'disable' ? '禁用' : '启用'} ${client.client_name} 吗？`)) return
+    const actionLabel = action === 'disable' ? '禁用' : '启用'
+    const consequence = action === 'disable'
+      ? '禁用后，该 OAuth 应用将无法发起新的授权，也无法获取新的令牌。'
+      : '启用后，该 OAuth 应用可以重新发起授权并获取令牌。'
+    if (!window.confirm(`确认${actionLabel} ${client.client_name} 吗？\n${consequence}`)) return
     try {
       await apiFetch<void>(`/api/v1/admin/clients/${encodeURIComponent(client.client_id)}/${action}`, { method: 'POST' })
       setRefreshKey((value) => value + 1)
@@ -123,4 +127,3 @@ function ClientsTable({ access }: { access: AdminAccess }) {
     </HudPanel>
   )
 }
-

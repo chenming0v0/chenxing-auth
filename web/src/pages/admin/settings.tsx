@@ -43,7 +43,7 @@ function SettingsWorkspace({ access }: { access: AdminAccess }) {
   }
 
   async function rotateKey() {
-    if (!canRotateKeys || !window.confirm('确认轮换签名密钥吗？')) return
+    if (!canRotateKeys || !window.confirm('确认轮换签名密钥吗？\n轮换后新密钥立即用于签发；旧公钥会在 KEY_ROTATION_GRACE_SECONDS 配置的保留窗口内继续用于验签（该窗口需覆盖 Access Token 和 ID Token 有效期），过期的旧密钥材料将在后续启动或轮换时清理。')) return
     setBusy(true)
     try {
       setKeyResult(await apiFetch<KeyRotationResponse>('/api/v1/admin/keys/rotate', { method: 'POST' }))

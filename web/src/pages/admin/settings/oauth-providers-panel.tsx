@@ -210,7 +210,11 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
 
   async function toggleStatus(provider: OAuthProviderSummary) {
     const action = provider.status === 'active' ? 'disable' : 'enable'
-    if (!window.confirm(`确认${action === 'disable' ? '禁用' : '启用'} ${provider.name} 吗？`)) return
+    const actionLabel = action === 'disable' ? '禁用' : '启用'
+    const consequence = action === 'disable'
+      ? '禁用后，用户将无法再通过该提供商登录。'
+      : '启用后，用户可以重新通过该提供商登录。'
+    if (!window.confirm(`确认${actionLabel} ${provider.name} 吗？\n${consequence}`)) return
     setBusy(true)
     try {
       await apiFetch<void>(`/api/v1/admin/oauth/providers/${encodeURIComponent(provider.slug)}/${action}`, { method: 'POST' })

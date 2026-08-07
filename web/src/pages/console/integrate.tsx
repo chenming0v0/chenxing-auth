@@ -96,11 +96,15 @@ export function IntegratePage() {
   }
 
   async function setStatus(client: OwnedOAuthClient) {
-    const next = client.status === 'active' ? '禁用' : '启用'
-    if (!window.confirm(`确认${next}“${client.client_name}”吗？`)) return
+    const action = client.status === 'active' ? 'disable' : 'enable'
+    const actionLabel = action === 'disable' ? '禁用' : '启用'
+    const consequence = action === 'disable'
+      ? '禁用后，该 OAuth 应用将无法发起新的授权，也无法获取新的令牌。'
+      : '启用后，该 OAuth 应用可以重新发起授权并获取令牌。'
+    if (!window.confirm(`确认${actionLabel}“${client.client_name}”吗？\n${consequence}`)) return
     setMessage('')
     try {
-      await apiFetch<void>(`/api/v1/auth/oauth-clients/${encodeURIComponent(client.client_id)}/${client.status === 'active' ? 'disable' : 'enable'}`, { method: 'POST' })
+      await apiFetch<void>(`/api/v1/auth/oauth-clients/${encodeURIComponent(client.client_id)}/${action}`, { method: 'POST' })
       load()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '应用状态更新失败。')

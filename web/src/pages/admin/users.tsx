@@ -110,7 +110,11 @@ export function UsersTable({ access }: { access: AdminAccess }) {
   async function setUserStatus(user: PublicUser) {
     if (!access.data?.permissions.includes('manage_users')) return
     const nextStatus = user.status === 'disabled' ? 'active' : 'disabled'
-    if (!window.confirm(`确认将 ${user.display_name || user.username} 设为 ${nextStatus} 吗？`)) return
+    const nextStatusLabel = nextStatus === 'disabled' ? '已禁用' : '已启用'
+    const consequence = nextStatus === 'disabled'
+      ? '禁用后将撤销该用户的全部会话，并阻止其登录。'
+      : '启用后该用户可以重新登录。'
+    if (!window.confirm(`确认将 ${user.display_name || user.username} 的状态改为「${nextStatusLabel}」吗？\n${consequence}`)) return
     setBusy(user.id)
     setError('')
     try {

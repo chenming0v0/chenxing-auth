@@ -182,7 +182,7 @@ describe('UsersTable 保持既有行为', () => {
     renderTable()
     await screen.findByText('星尘')
     fireEvent.click(within(rowOf('星尘')).getByRole('button', { name: '禁用' }))
-    expect(confirmMessage).toBe('确认将 星尘 设为 disabled 吗？')
+    expect(confirmMessage).toBe('确认将 星尘 的状态改为「已禁用」吗？\n禁用后将撤销该用户的全部会话，并阻止其登录。')
     const statusReq = requests.find((r) => r.path.endsWith('/disabled'))
     expect(statusReq?.method).toBe('POST')
   })
