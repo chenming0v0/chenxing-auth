@@ -35,7 +35,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               <BrandLockup />
               <h1 className="chenxing-h1 mt-1">界面遇到问题</h1>
               <p className="chenxing-caption">
-                页面未能正常加载，你的数据是安全的。请刷新重试，或返回首页。
+                页面未能正常加载。请刷新重试，或返回首页。
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-3">
                 <Button onClick={() => window.location.reload()}>刷新页面</Button>
