@@ -31,9 +31,14 @@ export function PasskeyPanel({ onMessage }: { onMessage: (message: string, tone?
     return () => { active = false }
   }, [onMessage])
 
+  function updateSetting(patch: Partial<PasskeySetting>) {
+    if (busy) return
+    setSetting((current) => current ? { ...current, ...patch } : current)
+  }
+
   async function save(event: FormEvent) {
     event.preventDefault()
-    if (!setting) return
+    if (busy || !setting) return
     setBusy(true)
     try {
       const payload: PasskeySetting = {
@@ -75,52 +80,58 @@ export function PasskeyPanel({ onMessage }: { onMessage: (message: string, tone?
         <div className="mt-5"><Notice>正在加载 Passkey 设置。</Notice></div>
       ) : (
         <form className="mt-5 flex flex-col gap-4" onSubmit={save}>
-          <ToggleRow
-            title="允许通过 Passkey 登录 & 认证"
-            description="向所有用户开放 WebAuthn 无密码通道"
-            checked={setting.enabled}
-            onChange={(enabled) => setSetting({ ...setting, enabled })}
-          />
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="服务显示名称" value={setting.rp_name} onChange={(event) => setSetting({ ...setting, rp_name: event.target.value })} />
-            <Field label="网站域名标识 (RP ID)" value={setting.rp_id} onChange={(event) => setSetting({ ...setting, rp_id: event.target.value })} placeholder="例如: auth.clya.top" />
-            <SelectField
-              label="安全验证级别"
-              value={setting.user_verification}
-              onChange={(value) => setSetting({ ...setting, user_verification: value as PasskeyUserVerification })}
-              options={[
-                { value: 'preferred', label: '推荐使用（用户可选）' },
-                { value: 'required', label: '必须验证用户身份' },
-                { value: 'discouraged', label: '不要求用户验证' },
-              ]}
+          <fieldset disabled={busy} className="contents">
+            <ToggleRow
+              title="允许通过 Passkey 登录 & 认证"
+              description="向所有用户开放 WebAuthn 无密码通道"
+              checked={setting.enabled}
+              disabled={busy}
+              onChange={(enabled) => updateSetting({ enabled })}
             />
-            <SelectField
-              label="设备类型偏好"
-              value={setting.authenticator_attachment}
-              onChange={(value) => setSetting({ ...setting, authenticator_attachment: value as PasskeyAuthenticatorAttachment })}
-              options={[
-                { value: 'any', label: '不限制' },
-                { value: 'platform', label: '仅平台认证器' },
-                { value: 'cross_platform', label: '仅跨平台安全密钥' },
-              ]}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="服务显示名称" value={setting.rp_name} onChange={(event) => updateSetting({ rp_name: event.target.value })} />
+              <Field label="网站域名标识 (RP ID)" value={setting.rp_id} onChange={(event) => updateSetting({ rp_id: event.target.value })} placeholder="例如: auth.clya.top" />
+              <SelectField
+                label="安全验证级别"
+                value={setting.user_verification}
+                disabled={busy}
+                onChange={(value) => updateSetting({ user_verification: value as PasskeyUserVerification })}
+                options={[
+                  { value: 'preferred', label: '推荐使用（用户可选）' },
+                  { value: 'required', label: '必须验证用户身份' },
+                  { value: 'discouraged', label: '不要求用户验证' },
+                ]}
+              />
+              <SelectField
+                label="设备类型偏好"
+                value={setting.authenticator_attachment}
+                disabled={busy}
+                onChange={(value) => updateSetting({ authenticator_attachment: value as PasskeyAuthenticatorAttachment })}
+                options={[
+                  { value: 'any', label: '不限制' },
+                  { value: 'platform', label: '仅平台认证器' },
+                  { value: 'cross_platform', label: '仅跨平台安全密钥' },
+                ]}
+              />
+            </div>
+            <ToggleRow
+              title="允许不安全的 Origin (HTTP)"
+              description="仅用于开发环境，生产环境必须使用 HTTPS"
+              checked={setting.allow_insecure_origin}
+              disabled={busy}
+              onChange={(allow_insecure_origin) => updateSetting({ allow_insecure_origin })}
             />
-          </div>
-          <ToggleRow
-            title="允许不安全的 Origin (HTTP)"
-            description="仅用于开发环境，生产环境必须使用 HTTPS"
-            checked={setting.allow_insecure_origin}
-            onChange={(allow_insecure_origin) => setSetting({ ...setting, allow_insecure_origin })}
-          />
-          <Field
-            label="允许的 Origins"
-            value={originsText}
-            onChange={(event) => setOriginsText(event.target.value)}
-            placeholder="https://auth.clya.top, https://app.clya.top"
-            hint="多个 Origin 可用逗号或空格分隔。"
-          />
-          <div>
-            <Button type="submit" icon="save" disabled={busy}>保存 Passkey 设置</Button>
-          </div>
+            <Field
+              label="允许的 Origins"
+              value={originsText}
+              onChange={(event) => { if (!busy) setOriginsText(event.target.value) }}
+              placeholder="https://auth.clya.top, https://app.clya.top"
+              hint="多个 Origin 可用逗号或空格分隔。"
+            />
+            <div>
+              <Button type="submit" icon="save" disabled={busy}>保存 Passkey 设置</Button>
+            </div>
+          </fieldset>
         </form>
       )}
     </HudPanel>

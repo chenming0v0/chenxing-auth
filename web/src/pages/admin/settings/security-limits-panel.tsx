@@ -97,9 +97,14 @@ export function SecurityLimitsPanel({ onMessage }: { onMessage: (message: string
     return () => { active = false }
   }, [onMessage])
 
+  function updateDraft(key: FieldKey, value: string) {
+    if (busy) return
+    setDraft((current) => current ? { ...current, [key]: value } : current)
+  }
+
   async function save(event: FormEvent) {
     event.preventDefault()
-    if (!draft) return
+    if (busy || !draft) return
     const payload: Record<string, number> = {}
     for (const { key, label, maximum } of FIELD_KEYS) {
       const result = validateSecurityLimitInput(draft[key] ?? '', label, maximum)
@@ -135,31 +140,33 @@ export function SecurityLimitsPanel({ onMessage }: { onMessage: (message: string
         <div className="mt-5"><Notice>正在加载安全限流配置。</Notice></div>
       ) : (
         <form className="mt-5 flex flex-col gap-6" noValidate onSubmit={save}>
-          {GROUPS.map((group) => (
-            <div key={group.title}>
-              <h3 className="chenxing-h3">{group.title}</h3>
-              <p className="chenxing-caption mt-1 mb-3">{group.description}</p>
-              <div className="grid gap-4 sm:grid-cols-2">
-                {group.fields.map(({ key, label, hint, maximum }) => (
-                  <Field
-                    key={key}
-                    label={label}
-                    hint={hint}
-                    type="number"
-                    inputMode="numeric"
-                    min="1"
-                    max={maximum}
-                    step="1"
-                    value={draft[key]}
-                    onChange={(event) => setDraft({ ...draft, [key]: event.target.value })}
-                  />
-                ))}
+          <fieldset disabled={busy} className="contents">
+            {GROUPS.map((group) => (
+              <div key={group.title}>
+                <h3 className="chenxing-h3">{group.title}</h3>
+                <p className="chenxing-caption mt-1 mb-3">{group.description}</p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {group.fields.map(({ key, label, hint, maximum }) => (
+                    <Field
+                      key={key}
+                      label={label}
+                      hint={hint}
+                      type="number"
+                      inputMode="numeric"
+                      min="1"
+                      max={maximum}
+                      step="1"
+                      value={draft[key]}
+                      onChange={(event) => updateDraft(key, event.target.value)}
+                    />
+                  ))}
+                </div>
               </div>
+            ))}
+            <div>
+              <Button type="submit" icon="save" disabled={busy}>保存安全限流配置</Button>
             </div>
-          ))}
-          <div>
-            <Button type="submit" icon="save" disabled={busy}>保存安全限流配置</Button>
-          </div>
+          </fieldset>
         </form>
       )}
     </HudPanel>

@@ -52,7 +52,7 @@ export function EmailPolicyPanel({ onMessage }: { onMessage: (message: string, t
   }, [onMessage])
 
   function addDomain() {
-    if (!setting) return
+    if (busy || !setting) return
     const domain = normalizeDomain(draftDomain)
     const error = domainValidationError(draftDomain)
     if (error) {
@@ -78,6 +78,7 @@ export function EmailPolicyPanel({ onMessage }: { onMessage: (message: string, t
   }
 
   function onDomainKey(event: KeyboardEvent<HTMLInputElement>) {
+    if (busy) return
     if (event.key === 'Enter') {
       event.preventDefault()
       addDomain()
@@ -86,7 +87,7 @@ export function EmailPolicyPanel({ onMessage }: { onMessage: (message: string, t
 
   async function save(event: FormEvent) {
     event.preventDefault()
-    if (!setting) return
+    if (busy || !setting) return
     const pendingDomainError = domainValidationError(draftDomain)
     if (pendingDomainError) {
       setDomainError(pendingDomainError)
@@ -136,18 +137,22 @@ export function EmailPolicyPanel({ onMessage }: { onMessage: (message: string, t
         <div className="mt-5"><Notice>正在加载邮箱域名白名单。</Notice></div>
       ) : (
         <form className="mt-5 flex flex-col gap-4" onSubmit={save}>
-          <ToggleRow
-            title="启用邮箱域名白名单"
-            description="仅允许下列域名的邮箱完成注册"
-            checked={setting.whitelist_enabled}
-            onChange={(whitelist_enabled) => setSetting({ ...setting, whitelist_enabled })}
-          />
-          <ToggleRow
-            title="启用邮箱别名限制"
-            description="禁止 + 号别名规避唯一性"
-            checked={setting.alias_restriction_enabled}
-            onChange={(alias_restriction_enabled) => setSetting({ ...setting, alias_restriction_enabled })}
-          />
+          <fieldset disabled={busy} className="contents">
+            <ToggleRow
+              title="启用邮箱域名白名单"
+              description="仅允许下列域名的邮箱完成注册"
+              checked={setting.whitelist_enabled}
+              disabled={busy}
+              onChange={(whitelist_enabled) => { if (!busy) setSetting({ ...setting, whitelist_enabled }) }}
+            />
+            <ToggleRow
+              title="启用邮箱别名限制"
+              description="禁止 + 号别名规避唯一性"
+              checked={setting.alias_restriction_enabled}
+              disabled={busy}
+              onChange={(alias_restriction_enabled) => { if (!busy) setSetting({ ...setting, alias_restriction_enabled }) }}
+            />
+          </fieldset>
           <Notice>
             {setting.whitelist_enabled
               ? '白名单开启时，只允许与下方列表精确匹配的邮箱域名；列表至少需要一个域名。'
@@ -159,48 +164,54 @@ export function EmailPolicyPanel({ onMessage }: { onMessage: (message: string, t
           {setting.whitelist_enabled && !hasConfiguredDomain(setting.allowed_domains) ? (
             <Notice tone="warning">白名单已启用但允许域名列表为空，无法保存。请至少添加一个域名，或关闭白名单。</Notice>
           ) : null}
-          <div>
-            <p className="chenxing-label">已允许的域名</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              {setting.allowed_domains.length ? setting.allowed_domains.map((domain) => (
-                <Chip
-                  key={domain}
-                  onRemove={() => setSetting({
-                    ...setting,
-                    allowed_domains: setting.allowed_domains.filter((item) => item !== domain),
-                  })}
-                >
-                  {domain}
-                </Chip>
-              )) : <p className="chenxing-caption">尚未添加域名。</p>}
+          <fieldset disabled={busy} className="contents">
+            <div>
+              <p className="chenxing-label">已允许的域名</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {setting.allowed_domains.length ? setting.allowed_domains.map((domain) => (
+                  <Chip
+                    key={domain}
+                    onRemove={() => {
+                      if (busy) return
+                      setSetting((current) => current ? {
+                        ...current,
+                        allowed_domains: current.allowed_domains.filter((item) => item !== domain),
+                      } : current)
+                    }}
+                  >
+                    {domain}
+                  </Chip>
+                )) : <p className="chenxing-caption">尚未添加域名。</p>}
+              </div>
             </div>
-          </div>
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <div className="flex-1">
-              <Field
-                label="输入要添加的邮箱域名"
-                value={draftDomain}
-                onChange={(event) => {
-                  const value = event.target.value
-                  setDraftDomain(value)
-                  if (domainError) setDomainError(domainValidationError(value))
-                }}
-                onKeyDown={onDomainKey}
-                onBlur={() => setDomainError(domainValidationError(draftDomain))}
-                placeholder="例如: gmail.com"
-                maxLength={MAX_DOMAIN_LENGTH}
-                spellCheck={false}
-                errorText={domainError || undefined}
-                hint={domainError ? undefined : '仅接受完整域名，例如 example.com；不含 @、协议、路径或通配符。'}
-              />
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <div className="flex-1">
+                <Field
+                  label="输入要添加的邮箱域名"
+                  value={draftDomain}
+                  onChange={(event) => {
+                    if (busy) return
+                    const value = event.target.value
+                    setDraftDomain(value)
+                    if (domainError) setDomainError(domainValidationError(value))
+                  }}
+                  onKeyDown={onDomainKey}
+                  onBlur={() => { if (!busy) setDomainError(domainValidationError(draftDomain)) }}
+                  placeholder="例如: gmail.com"
+                  maxLength={MAX_DOMAIN_LENGTH}
+                  spellCheck={false}
+                  errorText={domainError || undefined}
+                  hint={domainError ? undefined : '仅接受完整域名，例如 example.com；不含 @、协议、路径或通配符。'}
+                />
+              </div>
+              <div className="flex items-end">
+                <Button type="button" icon="plus" onClick={addDomain} disabled={busy}>添加</Button>
+              </div>
             </div>
-            <div className="flex items-end">
-              <Button type="button" icon="plus" onClick={addDomain}>添加</Button>
+            <div>
+              <Button type="submit" variant="ghost" icon="save" disabled={busy}>保存邮箱域名白名单设置</Button>
             </div>
-          </div>
-          <div>
-            <Button type="submit" variant="ghost" icon="save" disabled={busy}>保存邮箱域名白名单设置</Button>
-          </div>
+          </fieldset>
         </form>
       )}
     </HudPanel>
