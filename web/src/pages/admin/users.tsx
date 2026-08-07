@@ -17,6 +17,33 @@ const ROLE_OPTIONS: SelectOption[] = [
   { value: 'owner', label: 'Owner' },
 ]
 
+const ROLE_LABEL: Record<string, string> = {
+  user: '普通用户',
+  admin: '管理员',
+  owner: 'Owner',
+}
+
+/** 角色变更的确认文案：点明变更方向，并在涉及 Owner 时说明其全部管理权限的后果。 */
+function roleChangeConfirmText(user: PublicUser, nextRole: string): string {
+  const name = user.display_name || user.username
+  const current = ROLE_LABEL[user.role] ?? user.role
+  const next = ROLE_LABEL[nextRole] ?? nextRole
+
+  let consequence: string
+  if (nextRole === 'owner') {
+    consequence = '提升为 Owner 后将拥有全部管理权限（用户、套餐、密钥轮换、审计与 OAuth 客户端），并可管理其他管理员与 Owner。'
+  } else if (nextRole === 'admin' && user.role === 'user') {
+    consequence = '提升为管理员后将获得用户、套餐与审计等后台管理权限。'
+  } else if (nextRole === 'admin') {
+    consequence = '降级为管理员后将移除 Owner 独有的权限（管理其他管理员与 Owner），保留用户、套餐与审计等后台管理权限。'
+  } else if (user.role === 'owner') {
+    consequence = '降级为普通用户将立即移除 Owner 的全部管理权限（用户、套餐、密钥轮换、审计与 OAuth 客户端），仅保留普通用户权限。'
+  } else {
+    consequence = '降级为普通用户将移除其全部后台管理权限。'
+  }
+  return `确认将 ${name} 的角色从「${current}」改为「${next}」？\n${consequence}`
+}
+
 const STATUS_FILTER_OPTIONS: SelectOption[] = [
   { value: '', label: '全部状态' },
   { value: 'active', label: '已启用' },
@@ -33,7 +60,7 @@ export function AdminUsers() {
   )
 }
 
-function UsersTable({ access }: { access: AdminAccess }) {
+export function UsersTable({ access }: { access: AdminAccess }) {
   const location = useLocation()
   const navigate = useNavigate()
   const params = new URLSearchParams(location.search)
@@ -98,6 +125,10 @@ function UsersTable({ access }: { access: AdminAccess }) {
 
   async function setRole(user: PublicUser, role: string) {
     if (!access.data?.permissions.includes('manage_roles') || role === user.role) return
+    // 与后端 self_role_change_forbidden 对齐：自己的行已禁用下拉，这里兜底拦截绕过。
+    if (user.id === access.data?.user_id) return
+    // 两步提交：先确认角色变更方向与 Owner 权限后果，确认后才发起请求。
+    if (!window.confirm(roleChangeConfirmText(user, role))) return
     setBusy(user.id)
     setError('')
     try {
@@ -152,59 +183,67 @@ function UsersTable({ access }: { access: AdminAccess }) {
             </tr>
           </thead>
           <tbody>
-            {result?.items.map((user) => (
-              <tr key={user.id} className="border-t border-[var(--chenxing-border)]">
-                <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{user.id}</td>
-                <td className="px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <span className="chenxing-avatar h-9 w-9 text-sm">{initialOf(user.display_name || user.username)}</span>
-                    <div>
-                      <p className="chenxing-body text-sm font-semibold">{user.display_name || user.username}</p>
-                      <p className="chenxing-caption text-xs">{user.email}</p>
+            {result?.items.map((user) => {
+              const isSelf = user.id === access.data?.user_id
+              return (
+                <tr key={user.id} className="border-t border-[var(--chenxing-border)]">
+                  <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{user.id}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <span className="chenxing-avatar h-9 w-9 text-sm">{initialOf(user.display_name || user.username)}</span>
+                      <div>
+                        <p className="chenxing-body text-sm font-semibold">{user.display_name || user.username}</p>
+                        <p className="chenxing-caption text-xs">{user.email}</p>
+                      </div>
                     </div>
-                  </div>
-                </td>
-                <td className="px-4 py-3">
-                  <Badge tone={user.status === 'active' ? 'success' : 'warning'}>
-                    <Icon name={user.status === 'active' ? 'check' : 'circle-alert'} size={12} />
-                    {user.status === 'active' ? '已启用' : user.status}
-                  </Badge>
-                </td>
-                <td className="px-4 py-3">
-                  <Select
-                    className="!text-sm"
-                    value={user.role}
-                    disabled={!access.data?.permissions.includes('manage_roles') || busy === user.id}
-                    onChange={(role) => void setRole(user, role)}
-                    options={ROLE_OPTIONS}
-                    aria-label="用户角色"
-                  />
-                </td>
-                <td className="px-4 py-3">
-                  <button
-                    type="button"
-                    className="chenxing-link inline-flex items-center gap-1.5"
-                    disabled={!access.data?.permissions.includes('manage_settings')}
-                    title={access.data?.permissions.includes('manage_settings') ? undefined : '套餐分配需要 manage_settings 权限'}
-                    onClick={() => setAssignTarget(user.id)}
-                  >
-                    <Icon name="crown" size={13} />
-                    分配套餐
-                  </button>
-                </td>
-                <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(user.created_at)}</td>
-                <td className="px-4 py-3 text-right">
-                  <button
-                    type="button"
-                    className={`chenxing-link${user.status === 'active' ? ' text-[var(--chenxing-error)]' : ''}`}
-                    disabled={!access.data?.permissions.includes('manage_users') || busy === user.id}
-                    onClick={() => void setUserStatus(user)}
-                  >
-                    {user.status === 'active' ? '禁用' : '启用'}
-                  </button>
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td className="px-4 py-3">
+                    <Badge tone={user.status === 'active' ? 'success' : 'warning'}>
+                      <Icon name={user.status === 'active' ? 'check' : 'circle-alert'} size={12} />
+                      {user.status === 'active' ? '已启用' : user.status}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <Select
+                        className="!text-sm"
+                        value={user.role}
+                        disabled={!access.data?.permissions.includes('manage_roles') || isSelf || busy === user.id}
+                        onChange={(role) => void setRole(user, role)}
+                        options={ROLE_OPTIONS}
+                        aria-label={isSelf ? '角色（当前登录账号，不能修改自己的角色）' : '用户角色'}
+                      />
+                      {isSelf ? (
+                        <span className="chenxing-caption text-xs text-[var(--chenxing-muted-foreground)]">不能修改自己的角色</span>
+                      ) : null}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      className="chenxing-link inline-flex items-center gap-1.5"
+                      disabled={!access.data?.permissions.includes('manage_settings')}
+                      title={access.data?.permissions.includes('manage_settings') ? undefined : '套餐分配需要 manage_settings 权限'}
+                      onClick={() => setAssignTarget(user.id)}
+                    >
+                      <Icon name="crown" size={13} />
+                      分配套餐
+                    </button>
+                  </td>
+                  <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(user.created_at)}</td>
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      type="button"
+                      className={`chenxing-link${user.status === 'active' ? ' text-[var(--chenxing-error)]' : ''}`}
+                      disabled={!access.data?.permissions.includes('manage_users') || busy === user.id}
+                      onClick={() => void setUserStatus(user)}
+                    >
+                      {user.status === 'active' ? '禁用' : '启用'}
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
