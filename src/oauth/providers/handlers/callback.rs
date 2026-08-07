@@ -1,0 +1,309 @@
+use crate::{
+    audit::AuditEvent,
+    error,
+    oauth::providers::{
+        error_helpers::{
+            append_external_state_clear, external_callback_path, external_error,
+            external_error_with_request, external_error_with_session,
+        },
+        provider_pending::{PendingRequestBindingError, bind_pending_request},
+        service::ExternalOAuthError,
+    },
+    sessions::{cookies, domain::Session},
+    state::AppState,
+};
+use axum::{
+    extract::{Path, Query, State},
+    http::HeaderMap,
+    response::{IntoResponse, Redirect, Response},
+};
+use serde::Deserialize;
+use std::fmt;
+
+#[derive(Deserialize)]
+pub struct ExternalCallbackQuery {
+    pub code: Option<String>,
+    pub state: Option<String>,
+    pub error: Option<String>,
+}
+
+impl fmt::Debug for ExternalCallbackQuery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExternalCallbackQuery")
+            .field("code", &self.code.as_ref().map(|_| "<redacted>"))
+            .field("state", &self.state.as_ref().map(|_| "<redacted>"))
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
+pub async fn external_callback(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<ExternalCallbackQuery>,
+) -> Response {
+    let callback_path = external_callback_path(&slug);
+    let Some(returned_state) = query.state.as_deref().filter(|value| !value.is_empty()) else {
+        return external_error(&state, &slug, "oauth_login_failed").await;
+    };
+    let cookie_state = cookies::external_state(&headers, returned_state);
+    if cookie_state.as_deref() != Some(returned_state) {
+        return external_error_with_request(
+            &state,
+            &slug,
+            None,
+            Some(returned_state),
+            "oauth_login_failed",
+        )
+        .await;
+    }
+    let stored_state = match state.external_login_states.take(returned_state).await {
+        Ok(Some(value)) if value.provider_slug == slug => value,
+        Ok(_) => {
+            return external_error_with_request(
+                &state,
+                &slug,
+                None,
+                Some(returned_state),
+                "oauth_login_failed",
+            )
+            .await;
+        }
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to consume external OAuth state");
+            return external_error_with_request(
+                &state,
+                &slug,
+                None,
+                Some(returned_state),
+                "oauth_login_failed",
+            )
+            .await;
+        }
+    };
+    if query.error.is_some() {
+        return external_error_with_request(
+            &state,
+            &slug,
+            stored_state.request_id.as_deref(),
+            Some(returned_state),
+            "oauth_login_failed",
+        )
+        .await;
+    }
+    let Some(code) = query.code.as_deref().filter(|value| !value.is_empty()) else {
+        return external_error_with_request(
+            &state,
+            &slug,
+            stored_state.request_id.as_deref(),
+            Some(returned_state),
+            "oauth_login_failed",
+        )
+        .await;
+    };
+    let provider = match state.external_oauth.find(&slug).await {
+        Ok(provider) if provider.status == "active" => provider,
+        _ => {
+            return external_error_with_request(
+                &state,
+                &slug,
+                stored_state.request_id.as_deref(),
+                Some(returned_state),
+                "oauth_provider_not_found",
+            )
+            .await;
+        }
+    };
+    let callback = format!("{}{}", state.config.issuer_url, callback_path);
+    // 用发起授权时存入 state 的 verifier 兑换授权码（RFC 7636 §4.5）。
+    // 空串表示本次登录未使用 PKCE：provider 关闭了开关，或这是升级前签发的旧 state。
+    let token = match state
+        .external_oauth
+        .exchange_code(&provider, &callback, code, &stored_state.code_verifier)
+        .await
+    {
+        Ok(token) => token,
+        Err(error_value) => {
+            tracing::info!(error = %error_value, provider = %slug, "external OAuth token exchange failed");
+            return external_error_with_request(
+                &state,
+                &slug,
+                stored_state.request_id.as_deref(),
+                Some(returned_state),
+                "oauth_login_failed",
+            )
+            .await;
+        }
+    };
+    let external_user = match state.external_oauth.userinfo(&provider, &token).await {
+        Ok(user) => user,
+        Err(error_value) => {
+            tracing::info!(error = %error_value, provider = %slug, "external OAuth userinfo failed");
+            return external_error_with_request(
+                &state,
+                &slug,
+                stored_state.request_id.as_deref(),
+                Some(returned_state),
+                "oauth_login_failed",
+            )
+            .await;
+        }
+    };
+    let user_id = match state
+        .external_oauth
+        .resolve_user(&provider, &external_user)
+        .await
+    {
+        Ok(user_id) => user_id,
+        Err(ExternalOAuthError::EmailAlreadyRegistered) => {
+            return external_error_with_request(
+                &state,
+                &slug,
+                stored_state.request_id.as_deref(),
+                Some(returned_state),
+                "oauth_account_link_required",
+            )
+            .await;
+        }
+        Err(ExternalOAuthError::UserDisabled) => {
+            return external_error_with_request(
+                &state,
+                &slug,
+                stored_state.request_id.as_deref(),
+                Some(returned_state),
+                "oauth_login_failed",
+            )
+            .await;
+        }
+        Err(ExternalOAuthError::OwnerBootstrapRequired) => {
+            return external_error_with_request(
+                &state,
+                &slug,
+                stored_state.request_id.as_deref(),
+                Some(returned_state),
+                "owner_bootstrap_required",
+            )
+            .await;
+        }
+        Err(error_value) => {
+            tracing::error!(error = %error_value, provider = %slug, "failed to resolve external OAuth identity");
+            return external_error_with_request(
+                &state,
+                &slug,
+                stored_state.request_id.as_deref(),
+                Some(returned_state),
+                "oauth_login_failed",
+            )
+            .await;
+        }
+    };
+    let ttl = std::time::Duration::from_secs(state.config.session_ttl_seconds);
+    let idle_timeout = std::time::Duration::from_secs(state.config.session_idle_timeout_seconds);
+    let mut session = match Session::new_with_idle_timeout(user_id.to_string(), ttl, idle_timeout) {
+        Ok(session) => session,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to create external OAuth session");
+            let mut response = error::internal();
+            append_external_state_clear(
+                &mut response,
+                returned_state,
+                &callback_path,
+                state.config.cookie_secure,
+            );
+            return response;
+        }
+    };
+    if let Err(error_value) = state.sessions.save(&mut session, ttl).await {
+        tracing::error!(error = %error_value, "failed to save external OAuth session");
+        let mut response = error::internal();
+        append_external_state_clear(
+            &mut response,
+            returned_state,
+            &callback_path,
+            state.config.cookie_secure,
+        );
+        return response;
+    }
+    let request_id = stored_state
+        .request_id
+        .as_deref()
+        .filter(|value| !value.is_empty());
+    let holder_hash = cookies::extract_authz_holder_cookie(&headers)
+        .as_deref()
+        .map(cookies::authz_holder_hash);
+    if let Some(request_id) = request_id
+        && let Err(binding_error) = bind_pending_request(
+            &state.authorization_requests,
+            request_id,
+            &session.token,
+            holder_hash.as_deref(),
+        )
+        .await
+    {
+        let error_code = match binding_error {
+            PendingRequestBindingError::Expired => "oauth_request_expired",
+            PendingRequestBindingError::Invalid | PendingRequestBindingError::Storage => {
+                "oauth_request_binding_failed"
+            }
+        };
+        return external_error_with_session(
+            &state,
+            &slug,
+            request_id,
+            returned_state,
+            error_code,
+            &session,
+        )
+        .await;
+    }
+    if state
+        .audit
+        .record_blocking(AuditEvent::new(
+            "user".to_owned(),
+            Some(user_id.to_string()),
+            "login".to_owned(),
+            "session".to_owned(),
+            Some(session.id.to_string()),
+            serde_json::json!({"result": "success", "channel": "external_oauth", "provider": slug}),
+        ))
+        .await
+        .is_err()
+    {
+        if let Err(error_value) = state.sessions.revoke(&session.token).await {
+            tracing::warn!(
+                error = %error_value,
+                "failed to compensate external OAuth session after audit persistence failure"
+            );
+        }
+        let mut response = error::internal();
+        append_external_state_clear(
+            &mut response,
+            returned_state,
+            &callback_path,
+            state.config.cookie_secure,
+        );
+        return response;
+    }
+    // Session is bound to the pending request above before handing control to the
+    // SPA consent screen; otherwise land on the SPA login page.
+    let mut response = if let Some(request_id) = request_id {
+        Redirect::to(&format!("/oauth/consent?request_id={request_id}")).into_response()
+    } else {
+        Redirect::to("/login?external=success").into_response()
+    };
+    cookies::append_login_cookies(
+        response.headers_mut(),
+        &session.token,
+        &session.csrf_token,
+        state.config.session_ttl_seconds,
+        state.config.cookie_secure,
+    );
+    append_external_state_clear(
+        &mut response,
+        returned_state,
+        &callback_path,
+        state.config.cookie_secure,
+    );
+    response
+}
