@@ -17,7 +17,7 @@ function backgroundBranches(container: HTMLElement): HTMLElement[] {
 
   // Keep the branch containing the drawer active and disable each sibling branch.
   while (branch && branch !== document.body) {
-    const parent = branch.parentElement
+    const parent: HTMLElement | null = branch.parentElement
     if (!parent) break
     for (const sibling of parent.children) {
       if (sibling !== branch && sibling instanceof HTMLElement) background.push(sibling)

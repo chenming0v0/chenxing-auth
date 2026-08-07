@@ -131,7 +131,7 @@ export function IntegratePage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <a href="#" className="chenxing-btn-ghost"><Icon name="book-open" size={16} />接入文档</a>
+          <a href="https://wiki.auth.clya.top" className="chenxing-btn-ghost"><Icon name="book-open" size={16} />接入文档</a>
           {/* 禁用态用 aria-disabled 保留焦点，并用 aria-describedby 指向下方说明，
               让键盘和读屏用户拿到「为什么不能点」的原因，而不是只看到按钮变淡 */}
           <Button

@@ -13,8 +13,7 @@ fn redis_client() -> redis::Client {
 
 /// 计算 token 的 Redis 主键（与 refresh_store.rs 的 token_key 逻辑一致）。
 fn token_hash(value: &str) -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(sha2::Sha256::digest(value.as_bytes()))
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(value.as_bytes()))
 }
 
 fn token_key(value: &str) -> String {
@@ -524,7 +523,10 @@ async fn client_revoke_preserves_corrupt_payload_for_retry() {
         .expect("read family membership after failure");
     assert_eq!(payload_after_error, "{");
     assert!(client_member, "client member must remain retryable");
-    assert!(family_member, "preflight failure must not mutate family index");
+    assert!(
+        family_member,
+        "preflight failure must not mutate family index"
+    );
 
     let _: () = redis::cmd("SET")
         .arg(&token_key)
@@ -615,7 +617,10 @@ async fn client_revoke_recovers_after_family_index_wrongtype() {
         tombstone_still_exists,
         "WRONGTYPE must not delete the tombstone"
     );
-    assert!(client_member, "WRONGTYPE must leave a retryable client member");
+    assert!(
+        client_member,
+        "WRONGTYPE must leave a retryable client member"
+    );
 
     let _: () = redis::cmd("DEL")
         .arg(&family_index_key)

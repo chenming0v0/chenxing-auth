@@ -1,0 +1,179 @@
+/* ---------- integrate: app list (newapi-style table rows) ---------- */
+/* Shared column template so the header row and app rows stay aligned:
+   ID | 名称 | 分组 | 状态 | 操作. Client ID lives in the drawer, not here. */
+.chenxing-app-grid {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr) 7rem 7.5rem minmax(15rem, auto);
+  align-items: center;
+  gap: 1rem;
+}
+.chenxing-app-grid > span { justify-self: start; }
+@media (max-width: 1023px) {
+  .chenxing-app-grid { grid-template-columns: 2rem minmax(0, 1fr) auto; }
+}
+.chenxing-app-row {
+  padding: 0.85rem 1rem;
+  background: rgba(8, 14, 26, 0.45);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-md);
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+  cursor: pointer;
+}
+.chenxing-app-row:hover {
+  background: rgba(14, 24, 44, 0.55);
+  border-color: var(--chenxing-border-strong);
+  box-shadow: 0 0 20px rgba(56, 189, 248, 0.12);
+}
+.chenxing-app-row + .chenxing-app-row { margin-top: 0.65rem; }
+
+/* ---------- drawer: right-side sheet (newapi style) ---------- */
+.chenxing-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--chenxing-z-overlay);
+  background: rgba(2, 5, 12, 0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+.chenxing-drawer-overlay.is-open { opacity: 1; pointer-events: auto; }
+
+/* Full-height right sheet, flush to the viewport edge.
+   The sheet itself is an OPAQUE dark surface (background layer);
+   content inside .chenxing-drawer-body sits in .chenxing-hud-panel cards. */
+.chenxing-drawer {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  z-index: var(--chenxing-z-dialog);
+  display: flex;
+  flex-direction: column;
+  width: min(36.125rem, 100vw);
+  padding: 0;
+  background: linear-gradient(170deg, rgba(13, 21, 39, 0.97), rgba(6, 10, 20, 0.98));
+  backdrop-filter: blur(28px) saturate(1.5);
+  -webkit-backdrop-filter: blur(28px) saturate(1.5);
+  border-left: 1px solid var(--chenxing-border-strong);
+  box-shadow: var(--chenxing-shadow-overlay);
+  transform: translateX(102%);
+  transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.chenxing-drawer.is-open { transform: translateX(0); }
+
+.chenxing-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-shrink: 0;
+  padding: 1.1rem 1.5rem;
+  border-bottom: 1px solid var(--chenxing-border);
+}
+.chenxing-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.5rem;
+}
+.chenxing-drawer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  flex-shrink: 0;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--chenxing-border);
+  background: rgba(4, 7, 14, 0.6);
+}
+
+/* ---------- select / listbox ---------- */
+/* Native <select> renders its option list through the OS, so <option> can never
+   be themed. These classes back the custom listbox in components/select.tsx:
+   the trigger mirrors .chenxing-field, the popup follows .chenxing-menu. */
+.chenxing-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.8rem 1rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.9375rem;
+  text-align: left;
+  color: var(--chenxing-foreground);
+  background: rgba(4, 8, 16, 0.6);
+  border: 1px solid var(--chenxing-input);
+  border-radius: var(--chenxing-radius-md);
+  transition: border-color 0.2s, box-shadow 0.2s;
+  cursor: pointer;
+}
+.chenxing-select-trigger:focus-visible,
+.chenxing-select-trigger[aria-expanded="true"] {
+  outline: none;
+  border-color: var(--chenxing-primary);
+  box-shadow: 0 0 0 3px var(--chenxing-primary-soft), 0 0 18px rgba(56, 189, 248, 0.18);
+}
+.chenxing-select-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
+.chenxing-select-trigger.chenxing-field-error { border-color: var(--chenxing-error); box-shadow: 0 0 0 3px var(--chenxing-error-soft); }
+
+/* inside a field shell the wrapper owns the border, so the trigger goes bare */
+.chenxing-field-shell .chenxing-select-trigger {
+  flex: 1;
+  min-width: 0;
+  padding: 0.8rem 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.chenxing-select-placeholder { color: rgba(147, 167, 199, 0.55); }
+.chenxing-select-caret { flex-shrink: 0; color: var(--chenxing-muted-foreground); transition: color 0.2s, transform 0.2s; }
+.chenxing-select-trigger[aria-expanded="true"] .chenxing-select-caret { color: var(--chenxing-cyan); }
+
+.chenxing-select-popup {
+  position: fixed;
+  z-index: var(--chenxing-z-popover);
+  max-height: 18rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.35rem;
+  background: var(--chenxing-popover);
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  border: 1px solid var(--chenxing-border-strong);
+  border-radius: var(--chenxing-radius-md);
+  box-shadow: var(--chenxing-shadow-overlay);
+  animation: chenxing-select-in 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.chenxing-select-option {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.875rem;
+  text-align: left;
+  color: var(--chenxing-foreground);
+  border-radius: var(--chenxing-radius-sm);
+  transition: background 0.15s, color 0.15s;
+  cursor: pointer;
+}
+.chenxing-select-option-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* keyboard cursor and hover share one resting highlight */
+.chenxing-select-option.is-active { background: var(--chenxing-muted); }
+.chenxing-select-option.is-selected { color: var(--chenxing-cyan); background: var(--chenxing-cyan-soft); }
+.chenxing-select-option.is-selected.is-active { background: rgba(103, 232, 249, 0.22); }
+.chenxing-select-option[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; background: transparent; }
+.chenxing-select-check { flex-shrink: 0; color: var(--chenxing-cyan); }
+
+@keyframes chenxing-select-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chenxing-select-popup { animation: none; }
+}

@@ -408,15 +408,14 @@ impl RefreshTokenStore {
         let mut removed = 0_u64;
 
         loop {
-            let (batch_removed, remaining): (i64, i64) =
-                Script::new(REVOKE_CLIENT_TOKENS_SCRIPT)
-                    .key(&client_idx_key)
-                    .arg(TOKEN_KEY_PREFIX)
-                    .arg(FAMILY_IDX_PREFIX)
-                    .arg(TOMBSTONE_PREFIX)
-                    .arg(CLIENT_REVOKE_BATCH_SIZE)
-                    .invoke_async(&mut connection)
-                    .await?;
+            let (batch_removed, remaining): (i64, i64) = Script::new(REVOKE_CLIENT_TOKENS_SCRIPT)
+                .key(&client_idx_key)
+                .arg(TOKEN_KEY_PREFIX)
+                .arg(FAMILY_IDX_PREFIX)
+                .arg(TOMBSTONE_PREFIX)
+                .arg(CLIENT_REVOKE_BATCH_SIZE)
+                .invoke_async(&mut connection)
+                .await?;
             removed = removed.saturating_add(batch_removed.max(0) as u64);
             if remaining <= 0 {
                 return Ok(removed);

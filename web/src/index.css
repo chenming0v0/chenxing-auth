@@ -1,5 +1,8 @@
 @import "tailwindcss";
+@import "./chenxing-design-foundation.css";
 @import "./chenxing-design.css";
+@import "./chenxing-design-shell.css";
+@import "./chenxing-design-controls.css";
 @import "./oauth.css";
 
 /* ============================================================
