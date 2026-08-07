@@ -209,6 +209,21 @@ describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
   })
 })
 
+describe('账户菜单用户信息不做成文档标题（#226）', () => {
+  it('账户菜单里用户名为非标题标签，菜单整体不含任何 heading', () => {
+    renderConsole()
+    fireEvent.click(screen.getByRole('button', { name: '账户菜单' }))
+    const panelId = screen.getByRole('button', { name: '账户菜单' }).getAttribute('aria-controls') as string
+    const panel = document.getElementById(panelId) as HTMLElement
+    expect(panel).toBeTruthy()
+    expect(within(panel).queryByRole('heading')).toBeNull()
+    // 用户名仍在原位置以原样式渲染，只是语义从 h3 变成普通文本标签
+    const nameLabel = within(panel).getByText('测试员')
+    expect(nameLabel.tagName).toBe('P')
+    expect(nameLabel.className).toContain('text-sm font-semibold')
+  })
+})
+
 describe('全局「跳到主内容」跳过链接（#225）', () => {
   /** 断言 Shell 的跳过链接与内容锚点成对出现且互相对应。 */
   function assertSkipPair(container: HTMLElement) {

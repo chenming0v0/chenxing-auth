@@ -173,7 +173,8 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
       <AuthPanel>
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="chenxing-h2">{isLogin ? '统一登录' : '创建辰星通行证'}</h2>
+            {/* 语义层级为页面唯一 h1；视觉沿用 chenxing-h2 面板标题样式，保持既有视觉层级不变 */}
+            <h1 className="chenxing-h2">{isLogin ? '统一登录' : '创建辰星通行证'}</h1>
             <p className="chenxing-caption mt-1">{isLogin ? '使用辰星通行证身份进入服务' : '铸造你的辰星信标'}</p>
           </div>
         </div>

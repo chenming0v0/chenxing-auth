@@ -287,3 +287,15 @@ describe('AuthPage returnTo 同源校验（#228）', () => {
     expect(window.location.hash).toBe('#sessions')
   })
 })
+
+describe('AuthPage 标题层级（#226）', () => {
+  it.each([
+    ['login', '统一登录'],
+    ['register', '创建辰星通行证'],
+  ] as const)('%s 页渲染唯一 h1：%s', (mode, title) => {
+    render(<AuthPage mode={mode} />)
+    // AuthShell/顶栏不贡献任何标题，整页必须恰好一个 h1（无跳级、无重复）
+    expect(screen.getAllByRole('heading')).toHaveLength(1)
+    expect(screen.getByRole('heading', { level: 1, name: title })).toBeTruthy()
+  })
+})

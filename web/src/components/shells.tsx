@@ -235,7 +235,8 @@ function AccountMenu() {
             <div className="chenxing-avatar h-14 w-14 text-lg pointer-events-none">
               {initialOf(name)}
             </div>
-            <h3 className="mt-2 text-sm font-semibold text-[var(--chenxing-foreground)]">{name}</h3>
+            {/* 用户名是菜单标签而非文档章节标题：用非标题元素承载，类名与视觉不变 */}
+            <p className="mt-2 text-sm font-semibold text-[var(--chenxing-foreground)]">{name}</p>
             <div className="mt-2 grid grid-cols-2 gap-x-6 text-center text-[11px]">
               <div>
                 <p className="chenxing-caption uppercase tracking-[0.1em]">会员序列</p>
