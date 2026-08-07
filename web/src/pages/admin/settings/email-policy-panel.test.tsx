@@ -68,7 +68,7 @@ describe('EmailPolicyPanel 域名输入', () => {
     expect(requests.some((request) => request.method === 'PUT')).toBe(false)
   })
 
-  it('白名单关闭后清空原有有效白名单才要求确认', async () => {
+  it('关闭白名单并清空原有有效白名单时要求确认', async () => {
     confirmResult = false
     await renderPanel()
     fireEvent.click(screen.getByRole('switch', { name: '启用邮箱域名白名单' }))
@@ -80,6 +80,19 @@ describe('EmailPolicyPanel 域名输入', () => {
     expect(requests.some((request) => request.method === 'PUT')).toBe(false)
   })
 
+  it('关闭白名单并保留原有列表时也要求确认', async () => {
+    await renderPanel()
+    fireEvent.click(screen.getByRole('switch', { name: '启用邮箱域名白名单' }))
+    save()
+
+    expect(confirmCalls).toBe(1)
+    expect(confirmMessage).toContain('当前允许域名列表将被忽略')
+    expect(requests[requests.length - 1]?.body).toMatchObject({
+      whitelist_enabled: false,
+      allowed_domains: ['corp.example'],
+    })
+  })
+
   it('白名单原本关闭时清空被忽略的列表不要求确认', async () => {
     policy.whitelist_enabled = false
     await renderPanel()
@@ -88,5 +101,19 @@ describe('EmailPolicyPanel 域名输入', () => {
 
     expect(confirmCalls).toBe(0)
     expect(requests.some((request) => request.method === 'PUT')).toBe(true)
+  })
+
+  it('白名单启用但列表为空时显示原因并阻止保存', async () => {
+    policy.allowed_domains = []
+    const onMessage = vi.fn()
+    render(<EmailPolicyPanel onMessage={onMessage} />)
+    await screen.findByText('白名单已启用但允许域名列表为空，无法保存。请至少添加一个域名，或关闭白名单。')
+    save()
+
+    expect(onMessage).toHaveBeenCalledWith(
+      '白名单已启用但允许域名列表为空，无法保存。请至少添加一个域名，或关闭白名单。',
+      'warning',
+    )
+    expect(requests.some((request) => request.method === 'PUT')).toBe(false)
   })
 })

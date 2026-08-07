@@ -92,19 +92,19 @@ export function EmailPolicyPanel({ onMessage }: { onMessage: (message: string, t
       setDomainError(pendingDomainError)
       return
     }
-    if (setting.whitelist_enabled && setting.allowed_domains.length === 0) {
+    if (setting.whitelist_enabled && !hasConfiguredDomain(setting.allowed_domains)) {
+      onMessage('白名单已启用但允许域名列表为空，无法保存。请至少添加一个域名，或关闭白名单。', 'warning')
       return
     }
-    const clearsActiveAllowlist = Boolean(
+    const broadensActiveAllowlist = Boolean(
       savedSetting?.whitelist_enabled
       && hasConfiguredDomain(savedSetting.allowed_domains)
       && !setting.whitelist_enabled
-      && setting.allowed_domains.length === 0,
     )
     if (
-      clearsActiveAllowlist
+      broadensActiveAllowlist
       && !window.confirm(
-        `确认清空邮箱域名白名单吗？\n保存后，注册不再按允许域名限制；${setting.alias_restriction_enabled
+        `确认关闭邮箱域名白名单吗？\n关闭后，注册不再按允许域名限制，当前允许域名列表将被忽略；${setting.alias_restriction_enabled
           ? '当前启用的别名限制仍会拒绝含 + 的邮箱地址。'
           : '当前未启用别名限制。'}`,
       )
@@ -156,8 +156,8 @@ export function EmailPolicyPanel({ onMessage }: { onMessage: (message: string, t
               ? '别名限制先于域名判断，含 + 的邮箱地址始终拒绝。'
               : '开启别名限制后，含 + 的邮箱地址会先于域名判断被拒绝。'}
           </Notice>
-          {setting.whitelist_enabled && setting.allowed_domains.length === 0 ? (
-            <Notice tone="warning">白名单已启用但允许列表为空，保存前请至少添加一个域名。</Notice>
+          {setting.whitelist_enabled && !hasConfiguredDomain(setting.allowed_domains) ? (
+            <Notice tone="warning">白名单已启用但允许域名列表为空，无法保存。请至少添加一个域名，或关闭白名单。</Notice>
           ) : null}
           <div>
             <p className="chenxing-label">已允许的域名</p>
