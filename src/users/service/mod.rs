@@ -58,6 +58,8 @@ pub enum UserServiceError {
     OwnerBootstrapRequired,
     #[error("email domain is not allowed by policy")]
     EmailDomainNotAllowed,
+    #[error("email ownership verification is unavailable")]
+    EmailVerificationUnavailable,
 }
 
 impl UserService {

@@ -13,7 +13,7 @@
 {"code":"invalid_credentials","message":"email or password is incorrect"}
 ```
 
-- 常见状态码：`200` 成功，`201` 创建成功，`204` 成功且无响应体，`400` 参数或业务校验失败，`401` 未认证，`403` 无权限，`409` 冲突，`500` 服务端错误。
+- 常见状态码：`200` 成功，`201` 创建成功，`204` 成功且无响应体，`400` 参数或业务校验失败，`401` 未认证，`403` 无权限，`409` 冲突，`503` 依赖暂不可用，`500` 服务端错误。
 - 不要在前端日志中记录密码、Client Secret、Session、授权码或 Token。
 
 ## 健康和 OIDC 元数据
@@ -40,6 +40,8 @@
 
 创建辰星通行证账号。
 
+当前公开注册在真实的邮件投递和验证令牌消费能力接入前 fail-closed：格式合法的请求返回 `503` 和 `email_verification_unavailable`，不会创建 active 用户，也不会写入无期限的待验证身份。系统不会把邮件标记为已验证，也不会在响应中返回验证令牌。
+
 请求：
 
 ```json
@@ -48,13 +50,15 @@
 
 `username` 必填，长度 3-64 个字符且不可包含空格或 `@`；必须唯一。`display_name` 可省略或为 `null`，最长 128 个字符；密码至少 10 个字符。
 
-响应 `201`：
+验证投递能力接入后，成功响应 `201`：
 
 ```json
 {"user":{"id":1,"username":"chenxing-user","email":"user@example.com","display_name":"显示名称","status":"active","created_at":"2026-07-28T00:00:00Z"}}
 ```
 
-常见错误：`invalid_username`、`invalid_email`、`password_too_short`、`display_name_too_long`、`username_already_registered`、`email_already_registered`。
+常见错误：`invalid_username`、`invalid_email`、`password_too_short`、`display_name_too_long`、`registration_conflict`、`email_verification_unavailable`。
+
+公开注册的用户名和邮箱唯一冲突统一返回 `registration_conflict`，不暴露具体冲突字段。数据库仍保留 `users.username` 和 `users.email` 的独立唯一约束，避免绕过接口检查破坏身份完整性。
 
 ### `POST /api/v1/auth/login`
 

@@ -169,6 +169,17 @@ pub fn too_many_requests(code: &'static str, message: impl Into<String>) -> Resp
         .into_response()
 }
 
+pub fn service_unavailable(code: &'static str, message: impl Into<String>) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ErrorResponse {
+            code: code.to_owned(),
+            message: message.into(),
+        }),
+    )
+        .into_response()
+}
+
 pub fn internal() -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
