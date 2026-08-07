@@ -151,6 +151,31 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
         )
         .await
         .expect("registration response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let registration_error: serde_json::Value =
+        serde_json::from_str(&body(response).await).expect("registration error JSON");
+    assert_eq!(registration_error["code"], "email_verification_unavailable");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("authorization", "Bearer browser-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": username,
+                        "email": email,
+                        "password": password
+                    })
+                    .to_string(),
+                ))
+                .expect("admin user creation request"),
+        )
+        .await
+        .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
 
     let response = router
