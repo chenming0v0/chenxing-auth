@@ -72,7 +72,7 @@ pub async fn issue_user_session(
     }
     if state
         .audit
-        .record(AuditEvent::new(
+        .record_blocking(AuditEvent::new(
             "user".to_owned(),
             Some(user_id.to_string()),
             "login".to_owned(),

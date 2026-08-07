@@ -112,9 +112,9 @@ pub async fn set_user_status(
     match state.users.set_status_guarded(user_id, &status).await {
         Ok(true) => {
             let (actor_type, actor_id) = actor.audit_fields();
-            if state
+            state
                 .audit
-                .record(crate::audit::AuditEvent::new(
+                .record_best_effort(crate::audit::AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
                     format!("user_{status}"),
@@ -122,11 +122,7 @@ pub async fn set_user_status(
                     Some(user_id.to_string()),
                     serde_json::json!({"result":"success"}),
                 ))
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
+                .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::bad_request("user_not_found", "user or status was not found"),
@@ -163,9 +159,9 @@ pub async fn set_user_role(
     match state.users.set_role(user_id, role).await {
         Ok(true) => {
             let (actor_type, actor_id) = actor.audit_fields();
-            if state
+            state
                 .audit
-                .record(crate::audit::AuditEvent::new(
+                .record_best_effort(crate::audit::AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
                     "user_role_update".to_owned(),
@@ -173,11 +169,7 @@ pub async fn set_user_role(
                     Some(user_id.to_string()),
                     serde_json::json!({"role": role.as_str()}),
                 ))
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
+                .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::not_found("user_not_found", "user was not found"),

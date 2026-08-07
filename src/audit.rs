@@ -9,40 +9,23 @@
 //! The web process never archives or deletes audit rows. Deployments that turn
 //! on `AUDIT_ARCHIVE_ENABLED` must schedule one maintenance command separately.
 //!
-//! # 两种审计策略：阻断式 vs Best-effort
+//! # 审计失败策略
 //!
-//! ## 凭据签发路径——阻断式审计
+//! 业务写入与审计写入目前不是同一事务，因此审计不能决定一个已经完成的业务
+//! 写入是否发生。所有调用点都必须先确定业务结果，再按操作性质选择策略：
 //!
-//! `client_create` 和 `client_secret_rotate` 遵循**阻断式审计**策略：
-//! 先写审计，审计成功后才将 secret 返回给调用者。若审计写入失败（含重试），
-//! 处理器返回 500，调用者收不到任何凭据。
+//! - [`AuditService::record_blocking`] 用于凭据签发或消费路径。调用方只能在审计
+//!   成功后返回凭据；失败时返回通用错误，并对仍可逆的状态执行补偿。Client
+//!   secret 创建/轮换即使业务写入已经提交，也不会把 secret 返回给调用方，且
+//!   `audit.block_on_failure` 日志保留人工补账所需的上下文。
+//! - [`AuditService::record_best_effort`] 用于普通状态变更和已经确定的拒绝路径。
+//!   这些操作的成功或拒绝结果不因审计数据库暂时不可用而被改写，也不尝试为了
+//!   审计失败回滚不可逆的业务状态。失败会统一记录
+//!   `audit.best_effort_failure`，包含 actor、action 和 resource，供告警与人工补录。
 //!
-//! 这意味着仍存在一个窄窗口——底层 DB 变更（client 行/secret hash）已提交，
-//! 但 `audit_events` 写入失败。与"静默签发"相比，这种取舍更安全：
-//!
-//! - **攻击者拿不到可用凭据**：500 响应中不含 secret，无法直接利用。
-//! - **可观测、可追溯**：处理器在 `tracing::error!` 里记录了 `client_id`、
-//!   `actor_id` 和操作类型，运维可根据日志人工补录审计记录或撤销 client。
-//! - **可重试**：调用方收到 500 后可通过管理 API 查询 client 状态再决策；
-//!   相比之下，静默签发的凭据一旦落到攻击者手里无法撤回。
-//!
-//! 若需完全消除此窗口，须将 client DB 写入与 `audit_events` 写入放在同一
-//! 数据库事务中（事务回滚 = 凭据未签发），这需要修改 `ClientService` 签名，
-//! 留待后续迭代。
-//!
-//! ## 拒绝路径——Best-effort 审计
-//!
-//! 已认证用户触发 admin 授权失败（权限不足或 CSRF 校验失败）时，
-//! 写入 `admin_authorization_denied` 事件遵循 **best-effort** 策略：
-//!
-//! - 请求本来就要被拒绝（403/400）；审计写入失败**不改变**这一安全决策。
-//! - 若把审计错误升级为 500，反而向探测者泄露"这次探测触发了服务端异常"，
-//!   且"拒绝"动作本身不签发任何凭据，没有需要阻断的对象。
-//! - 写入失败时通过 `tracing::error!(event = "audit.authorization_denial_unrecorded", ...)`
-//!   保留结构化上下文，供运维告警和人工补录。
-//!
-//! 两种策略的核心判断依据：**安全决策的方向**。
-//! 阻断式 = "不审计则不给凭据"；best-effort = "已拒绝，审计失败不改变结果"。
+//! 这套顺序避免了两种错误：把已经生效的状态变更伪装成 500，诱导调用方重复执行；
+//! 或者在凭据没有可追溯审计记录时仍把凭据交给调用方。要彻底消除阻断式路径的
+//! 提交窗口，仍需把业务写入和 `audit_events` 写入放进同一数据库事务。
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -109,6 +92,53 @@ impl AuditService {
                     sleep(AUDIT_RETRY_DELAY * attempt).await;
                     attempt += 1;
                 }
+            }
+        }
+    }
+
+    /// Persist an audit event while preserving an already-determined operation result.
+    ///
+    /// The operation has already committed (or has already been rejected) when this
+    /// method is called. A failed audit write is therefore observable through the
+    /// structured error log, but it must not turn a real success or denial into a
+    /// misleading 500 response.
+    pub async fn record_best_effort(&self, event: AuditEvent) {
+        let _ = self
+            .record_with_failure_event(event, "audit.best_effort_failure")
+            .await;
+    }
+
+    /// Persist an audit event for a credential path that must not return a credential
+    /// when its audit record is unavailable.
+    pub async fn record_blocking(&self, event: AuditEvent) -> Result<(), AuditError> {
+        self.record_with_failure_event(event, "audit.block_on_failure")
+            .await
+    }
+
+    async fn record_with_failure_event(
+        &self,
+        event: AuditEvent,
+        failure_event: &'static str,
+    ) -> Result<(), AuditError> {
+        let action = event.action.clone();
+        let actor_type = event.actor_type.clone();
+        let actor_id = event.actor_id.clone();
+        let resource_type = event.resource_type.clone();
+        let resource_id = event.resource_id.clone();
+        match self.record(event).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                tracing::error!(
+                    event = failure_event,
+                    action = %action,
+                    actor_type = %actor_type,
+                    actor_id = ?actor_id,
+                    resource_type = %resource_type,
+                    resource_id = ?resource_id,
+                    error = %error,
+                    "audit event was not persisted"
+                );
+                Err(error)
             }
         }
     }

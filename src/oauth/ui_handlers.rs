@@ -264,9 +264,9 @@ pub async fn decide_authorization_request(
         }) else {
             return pending_expired();
         };
-        if state
+        state
             .audit
-            .record(AuditEvent::new(
+            .record_best_effort(AuditEvent::new(
                 "user".to_owned(),
                 Some(context.user_id.to_string()),
                 "authorization_denied".to_owned(),
@@ -274,11 +274,7 @@ pub async fn decide_authorization_request(
                 Some(pending.client_id.clone()),
                 serde_json::json!({"reason": "user_denied"}),
             ))
-            .await
-            .is_err()
-        {
-            return error::internal();
-        }
+            .await;
         return match error_redirect(&pending) {
             Some(redirect_to) => (
                 axum::http::StatusCode::OK,

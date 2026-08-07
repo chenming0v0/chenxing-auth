@@ -37,9 +37,12 @@ pub async fn rotate_signing_key(State(state): State<AppState>, headers: HeaderMa
     };
     let key_id = rotation.key_id;
     let published_key_count = rotation.published_key_count;
-    if state
+    // Rotation has already changed the shared in-memory state and key files. It is
+    // deliberately not compensated on an audit outage: returning 500 would invite
+    // a second, non-idempotent rotation. `record_best_effort` emits the alert context.
+    state
         .audit
-        .record(AuditEvent::new(
+        .record_best_effort(AuditEvent::new(
             actor.actor_type().to_owned(),
             actor.user_id().map(|id| id.to_string()),
             "signing_key_rotate".to_owned(),
@@ -47,11 +50,7 @@ pub async fn rotate_signing_key(State(state): State<AppState>, headers: HeaderMa
             Some(key_id.clone()),
             serde_json::json!({"published_key_count": published_key_count}),
         ))
-        .await
-        .is_err()
-    {
-        return error::internal();
-    }
+        .await;
 
     (
         StatusCode::OK,
@@ -96,9 +95,11 @@ pub async fn revoke_signing_key(
     let key_id = revocation.key_id.clone();
     let active_key_id = revocation.active_key_id.clone();
     let published_key_count = revocation.published_key_count;
-    if state
+    // Revocation is also authoritative before audit persistence; the response must
+    // describe the effective key state rather than a later audit outage.
+    state
         .audit
-        .record(AuditEvent::new(
+        .record_best_effort(AuditEvent::new(
             actor.actor_type().to_owned(),
             actor.user_id().map(|id| id.to_string()),
             "signing_key_revoke".to_owned(),
@@ -109,11 +110,7 @@ pub async fn revoke_signing_key(
                 "published_key_count": published_key_count,
             }),
         ))
-        .await
-        .is_err()
-    {
-        return error::internal();
-    }
+        .await;
 
     (
         StatusCode::OK,

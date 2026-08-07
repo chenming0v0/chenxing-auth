@@ -412,16 +412,14 @@ async fn passkey_confirmation_response(
     }
 }
 
-/// 认证因子失败响应：记录审计事件，返回统一的未授权错误。审计记录失败时
-/// 返回 500，让可观测信号保持完整（限流证据不能静默丢失）。
+/// 认证因子失败响应：记录审计事件，返回统一的未授权错误。拒绝结果不依赖
+/// 审计数据库可用性；写入失败由 AuditService 通过结构化日志暴露。
 async fn mfa_failure_response(
     state: &AppState,
     actor_id: Option<UserId>,
     reason: &str,
 ) -> Response {
-    if record_mfa_event(state, actor_id, reason).await.is_err() {
-        return error::internal();
-    }
+    record_mfa_event(state, actor_id, reason).await;
     error::unauthorized("invalid_factor", "authentication factor is invalid")
 }
 
@@ -440,10 +438,10 @@ async fn record_mfa_event(
     state: &AppState,
     actor_id: Option<UserId>,
     reason: &str,
-) -> Result<(), crate::audit::AuditError> {
+) {
     state
         .audit
-        .record(AuditEvent::new(
+        .record_best_effort(AuditEvent::new(
             if actor_id.is_some() {
                 "user".to_owned()
             } else {
@@ -455,5 +453,5 @@ async fn record_mfa_event(
             None,
             serde_json::json!({"reason": reason}),
         ))
-        .await
+        .await;
 }

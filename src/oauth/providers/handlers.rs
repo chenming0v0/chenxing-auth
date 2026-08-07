@@ -178,9 +178,9 @@ pub async fn start_external_login(
                 provider = %slug,
                 "external OAuth state admission limit reached"
             );
-            if let Err(audit_error) = state
+            state
                 .audit
-                .record(AuditEvent::security_failure(
+                .record_best_effort(AuditEvent::security_failure(
                     "login_rate_limited".to_owned(),
                     "anonymous".to_owned(),
                     None,
@@ -188,10 +188,7 @@ pub async fn start_external_login(
                     Some(slug.clone()),
                     "state_admission_denied",
                 ))
-                .await
-            {
-                tracing::error!(error = %audit_error, "failed to audit external OAuth rate limit");
-            }
+                .await;
             return error::too_many_requests(
                 "oauth_login_rate_limited",
                 "too many external login attempts; try again later",
@@ -448,7 +445,7 @@ pub async fn external_callback(
     }
     if state
         .audit
-        .record(AuditEvent::new(
+        .record_blocking(AuditEvent::new(
             "user".to_owned(),
             Some(user_id.to_string()),
             "login".to_owned(),

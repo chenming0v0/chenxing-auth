@@ -85,18 +85,14 @@ pub async fn update_registration_email(
             return error::internal();
         }
     };
-    if record_setting_event(
+    record_setting_event(
         &state,
         actor,
         "registration_email_update",
         REGISTRATION_EMAIL_FROM_KEY,
         serde_json::json!({"configured": registration_email_from.is_some()}),
     )
-    .await
-    .is_err()
-    {
-        return error::internal();
-    }
+    .await;
     (
         StatusCode::OK,
         Json(RegistrationEmailSettingResponse {
@@ -155,7 +151,7 @@ pub async fn update_passkey_setting(
     }
     match state.settings.set_passkey(input).await {
         Ok(setting) => {
-            if record_setting_event(
+            record_setting_event(
                 &state,
                 actor,
                 "passkey_setting_update",
@@ -167,11 +163,7 @@ pub async fn update_passkey_setting(
                     "origin_count": setting.allowed_origins.len(),
                 }),
             )
-            .await
-            .is_err()
-            {
-                return error::internal();
-            }
+            .await;
             (StatusCode::OK, Json(setting)).into_response()
         }
         Err(SettingsServiceError::Validation(error_value)) => {
@@ -214,7 +206,7 @@ pub async fn update_email_policy_setting(
         };
     match state.settings.set_email_policy(input).await {
         Ok(setting) => {
-            if record_setting_event(
+            record_setting_event(
                 &state,
                 actor,
                 "email_policy_update",
@@ -225,11 +217,7 @@ pub async fn update_email_policy_setting(
                     "domain_count": setting.allowed_domains.len(),
                 }),
             )
-            .await
-            .is_err()
-            {
-                return error::internal();
-            }
+            .await;
             (StatusCode::OK, Json(setting)).into_response()
         }
         Err(SettingsServiceError::Validation(error_value)) => {
@@ -269,7 +257,7 @@ pub async fn update_smtp_setting(
         };
     match state.settings.set_smtp(input).await {
         Ok(setting) => {
-            if record_setting_event(
+            record_setting_event(
                 &state,
                 actor,
                 "smtp_setting_update",
@@ -281,11 +269,7 @@ pub async fn update_smtp_setting(
                     "password_configured": setting.password_configured,
                 }),
             )
-            .await
-            .is_err()
-            {
-                return error::internal();
-            }
+            .await;
             (StatusCode::OK, Json(setting)).into_response()
         }
         Err(SettingsServiceError::Validation(error_value)) => {
@@ -329,7 +313,7 @@ pub async fn update_security_limits_setting(
     match state.settings.set_security_limits(input).await {
         Ok(setting) => {
             // 阈值数值本身不是凭据，完整记录便于事后追查是谁放宽了限流。
-            if record_setting_event(
+            record_setting_event(
                 &state,
                 actor,
                 "security_limits_update",
@@ -350,11 +334,7 @@ pub async fn update_security_limits_setting(
                     "external_login_state_max_pending": setting.external_login_state_max_pending,
                 }),
             )
-            .await
-            .is_err()
-            {
-                return error::internal();
-            }
+            .await;
             (StatusCode::OK, Json(setting)).into_response()
         }
         Err(SettingsServiceError::Validation(error_value)) => {
@@ -373,10 +353,10 @@ async fn record_setting_event(
     action: &str,
     resource_id: &str,
     metadata: serde_json::Value,
-) -> Result<(), crate::audit::AuditError> {
+) {
     state
         .audit
-        .record(AuditEvent::new(
+        .record_best_effort(AuditEvent::new(
             actor.actor_type().to_owned(),
             actor.user_id().map(|id| id.to_string()),
             action.to_owned(),
@@ -384,5 +364,5 @@ async fn record_setting_event(
             Some(resource_id.to_owned()),
             metadata,
         ))
-        .await
+        .await;
 }
