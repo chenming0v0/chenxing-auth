@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import type { PendingLoginResponse } from '../../api'
 import { FactorOrchestrator } from './factor-orchestrator'
 
@@ -7,7 +7,7 @@ function pendingWith(methods: string[], status: PendingLoginResponse['status'] =
   return { status, methods }
 }
 
-function renderOrchestrator(pending: PendingLoginResponse) {
+function renderOrchestrator(pending: PendingLoginResponse, onRelogin: () => void = () => {}) {
   return render(
     <FactorOrchestrator
       pending={pending}
@@ -15,6 +15,7 @@ function renderOrchestrator(pending: PendingLoginResponse) {
       onComplete={async () => {}}
       onBusy={() => {}}
       onMessage={() => {}}
+      onRelogin={onRelogin}
     />,
   )
 }
@@ -78,5 +79,55 @@ describe('FactorOrchestrator', () => {
   it('warns when no supported factor is returned', () => {
     renderOrchestrator(pendingWith(['sms']))
     expect(screen.getByText('当前账号没有可用的认证因子，请重新登录。')).toBeTruthy()
+  })
+})
+
+describe('FactorOrchestrator 登录凭证失效恢复（#195）', () => {
+  /** 直通 TOTP 流程并提交一次验证码，让后端错误码有机会触发恢复视图。 */
+  async function submitInvalidTicketCode() {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: false,
+      status: 400,
+      json: async () => ({ code: 'invalid_login_ticket' }),
+    } as Response)))
+    renderOrchestrator(pendingWith(['totp'], 'factor_required'))
+    fireEvent.change(screen.getByLabelText('一次性验证码'), { target: { value: '123456' } })
+    fireEvent.click(screen.getByRole('button', { name: /完成验证/ }))
+    await waitFor(() => expect(screen.getByText('验证流程已失效，请重新登录。')).toBeTruthy())
+  }
+
+  it('login_ticket 失效时展示「重新登录」恢复动作', async () => {
+    await submitInvalidTicketCode()
+    expect(screen.getByRole('button', { name: /重新登录/ })).toBeTruthy()
+  })
+
+  it('点击「重新登录」通知登录页清理 pending/setup 状态', async () => {
+    const onRelogin = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: false,
+      status: 400,
+      json: async () => ({ code: 'invalid_login_ticket' }),
+    } as Response)))
+    render(
+      <FactorOrchestrator
+        pending={pendingWith(['totp'], 'factor_required')}
+        busy={false}
+        onComplete={async () => {}}
+        onBusy={() => {}}
+        onMessage={() => {}}
+        onRelogin={onRelogin}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText('一次性验证码'), { target: { value: '123456' } })
+    fireEvent.click(screen.getByRole('button', { name: /完成验证/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /重新登录/ })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /重新登录/ }))
+    expect(onRelogin).toHaveBeenCalledTimes(1)
+  })
+
+  it('恢复视图替换因子流程，不再提供验证码输入', async () => {
+    await submitInvalidTicketCode()
+    expect(screen.queryByLabelText('一次性验证码')).toBeNull()
+    expect(screen.queryByText('换用其他验证方式')).toBeNull()
   })
 })

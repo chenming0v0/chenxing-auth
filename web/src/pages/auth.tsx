@@ -59,6 +59,16 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
     navigate(returnTo)
   }
 
+  /**
+   * login_ticket 失效后从 MFA 步骤回到登录表单。pending 置空会卸载整个
+   * 因子编排器，其内部的 setup/选中/验证码状态随之销毁；已填凭据保留，
+   * 用户直接重新提交即可，不打断登录流程也不把用户卡死。
+   */
+  function resetToLogin() {
+    setMessage('验证流程已失效，请重新登录。')
+    setPending(null)
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault()
     setMessage('')
@@ -129,7 +139,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
 
         {pending ? (
           <div className="mt-5">
-            <FactorOrchestrator pending={pending} busy={busy} onComplete={completeLogin} onBusy={setBusy} onMessage={setMessage} />
+            <FactorOrchestrator pending={pending} busy={busy} onComplete={completeLogin} onBusy={setBusy} onMessage={setMessage} onRelogin={resetToLogin} />
           </div>
         ) : isLogin && authTab === 'auth' ? (
           <div className="mt-5">

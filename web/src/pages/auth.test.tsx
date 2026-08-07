@@ -137,3 +137,57 @@ describe('AuthPage 登录页移除失效的 keepLogin 控件（#88）', () => {
     expect('keep_login' in requests[0].body).toBe(false)
   })
 })
+
+describe('AuthPage MFA 登录凭证失效恢复（#195）', () => {
+  it('login_ticket 失效后可通过「重新登录」回到登录表单，MFA 状态被清理', async () => {
+    // 分阶段响应：登录返回待二次验证，随后 TOTP 校验返回 login_ticket 失效
+    vi.stubGlobal('fetch', (path: string) => {
+      if (path === '/api/v1/auth/login') {
+        return Promise.resolve(jsonResponse({ status: 'factor_required', methods: ['totp'] }))
+      }
+      if (path === '/api/v1/auth/totp/login') {
+        return Promise.resolve({ ok: false, status: 400, json: async () => ({ code: 'invalid_login_ticket' }) } as Response)
+      }
+      return Promise.resolve(jsonResponse({ expires_at: '2099-01-01T00:00:00Z' }))
+    })
+    render(<AuthPage mode="login" />)
+    fireEvent.change(screen.getByLabelText('邮箱或用户名'), { target: { value: 'user@chenxing.star' } })
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'sufficiently-long-pass' } })
+    fireEvent.click(screen.getByRole('button', { name: /登录 · 进入星门/ }))
+    await waitFor(() => expect(screen.getByText('请输入验证器中的 6 位验证码。')).toBeTruthy())
+
+    fireEvent.change(screen.getByLabelText('一次性验证码'), { target: { value: '123456' } })
+    fireEvent.click(screen.getByRole('button', { name: /完成验证/ }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /重新登录/ })).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: /重新登录/ }))
+    // 回到登录表单：MFA 步骤消失、已填凭据保留、失效原因仍可见
+    await waitFor(() => expect(screen.getByRole('button', { name: /登录 · 进入星门/ })).toBeTruthy())
+    expect(screen.queryByLabelText('一次性验证码')).toBeNull()
+    expect((screen.getByLabelText('邮箱或用户名') as HTMLInputElement).value).toBe('user@chenxing.star')
+    expect(screen.getByText('验证流程已失效，请重新登录。')).toBeTruthy()
+  })
+
+  it('MFA 期间普通校验失败不触发恢复视图，仅展示错误文案', async () => {
+    vi.stubGlobal('fetch', (path: string) => {
+      if (path === '/api/v1/auth/login') {
+        return Promise.resolve(jsonResponse({ status: 'factor_required', methods: ['totp'] }))
+      }
+      if (path === '/api/v1/auth/totp/login') {
+        return Promise.resolve({ ok: false, status: 400, json: async () => ({ code: 'invalid_factor' }) } as Response)
+      }
+      return Promise.resolve(jsonResponse({ expires_at: '2099-01-01T00:00:00Z' }))
+    })
+    render(<AuthPage mode="login" />)
+    fireEvent.change(screen.getByLabelText('邮箱或用户名'), { target: { value: 'user@chenxing.star' } })
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'sufficiently-long-pass' } })
+    fireEvent.click(screen.getByRole('button', { name: /登录 · 进入星门/ }))
+    await waitFor(() => expect(screen.getByLabelText('一次性验证码')).toBeTruthy())
+
+    fireEvent.change(screen.getByLabelText('一次性验证码'), { target: { value: '123456' } })
+    fireEvent.click(screen.getByRole('button', { name: /完成验证/ }))
+    await waitFor(() => expect(screen.getByText('验证码不正确，请重试。')).toBeTruthy())
+    expect(screen.queryByRole('button', { name: /重新登录/ })).toBeNull()
+    expect(screen.getByLabelText('一次性验证码')).toBeTruthy()
+  })
+})

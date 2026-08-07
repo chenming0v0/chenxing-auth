@@ -1,10 +1,19 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import QRCode from 'qrcode'
-import { apiFetch, type LoginResponse, type PendingLoginResponse, type TotpSetupResponse } from '../../api'
+import { apiFetch, ApiError, type LoginResponse, type PendingLoginResponse, type TotpSetupResponse } from '../../api'
 import { Button, CopyValue, Field, Notice } from '../../components/ui'
 
+/**
+ * login_ticket 是 MFA 步骤的会话凭证，失效（过期、被消费或服务端撤销）后
+ * 后端统一返回 invalid_login_ticket。此时继续输入验证码只会反复失败，
+ * 必须把控制权交还上层展示「重新登录」恢复动作，不能把用户卡在步骤里。
+ */
+function isInvalidLoginTicket(error: unknown): boolean {
+  return error instanceof ApiError && error.code === 'invalid_login_ticket'
+}
+
 export function TotpStep({
-  pending, setup, busy, onSetup, onComplete, onBusy, onMessage,
+  pending, setup, busy, onSetup, onComplete, onBusy, onMessage, onTicketInvalid,
 }: {
   pending: PendingLoginResponse
   setup: TotpSetupResponse | null
@@ -13,6 +22,7 @@ export function TotpStep({
   onComplete: () => Promise<void>
   onBusy: (value: boolean) => void
   onMessage: (value: string) => void
+  onTicketInvalid: () => void
 }) {
   const [code, setCode] = useState('')
   const setupRequired = pending.status === 'factor_setup_required'
@@ -25,6 +35,10 @@ export function TotpStep({
         method: 'POST', redirectOn401: false, body: JSON.stringify({}),
       }))
     } catch (error) {
+      if (isInvalidLoginTicket(error)) {
+        onTicketInvalid()
+        return
+      }
       onMessage(error instanceof Error ? error.message : '无法开始验证器绑定。')
     } finally {
       onBusy(false)
@@ -45,6 +59,10 @@ export function TotpStep({
       })
       await onComplete()
     } catch (error) {
+      if (isInvalidLoginTicket(error)) {
+        onTicketInvalid()
+        return
+      }
       onMessage(error instanceof Error ? error.message : '验证码校验失败。')
     } finally {
       onBusy(false)

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { PendingLoginResponse, TotpSetupResponse } from '../../api'
-import { Icon, Notice } from '../../components/ui'
+import { Button, Icon, Notice } from '../../components/ui'
 import { TotpStep } from './totp-step'
 import { PasskeyStep } from './passkey-step'
 
@@ -25,22 +25,35 @@ const FACTOR_LABELS: Record<FactorMethod, { icon: string; title: string; hint: s
  * 因子编排器。后端可以同时返回多个可用方法，这里负责：单一方法直通、
  * 多方法先选择再进入对应流程。首次绑定与已绑定登录的差异只体现在
  * PasskeyStep 的 register 开关和 TotpStep 内部的 setupRequired 判断上。
+ * login_ticket 失效时整个 MFA 会话作废，编排器切换到「重新登录」恢复视图，
+ * 由 onRelogin 通知登录页清理 pending/setup 状态。
  */
 export function FactorOrchestrator({
-  pending, busy, onComplete, onBusy, onMessage,
+  pending, busy, onComplete, onBusy, onMessage, onRelogin,
 }: {
   pending: PendingLoginResponse
   busy: boolean
   onComplete: () => Promise<void>
   onBusy: (value: boolean) => void
   onMessage: (value: string) => void
+  onRelogin: () => void
 }) {
   const [selected, setSelected] = useState<FactorMethod | null>(null)
   const [totpSetup, setTotpSetup] = useState<TotpSetupResponse | null>(null)
+  const [invalidated, setInvalidated] = useState(false)
 
   const methods = availableFactors(pending.methods)
   const setupRequired = pending.status === 'factor_setup_required'
   const active = methods.length === 1 ? methods[0] : selected
+
+  if (invalidated) {
+    return (
+      <div className="space-y-4">
+        <Notice tone="warning">验证流程已失效，请重新登录。</Notice>
+        <Button type="button" icon="log-in" onClick={onRelogin} className="w-full">重新登录</Button>
+      </div>
+    )
+  }
 
   if (methods.length === 0) {
     return <Notice tone="warning">当前账号没有可用的认证因子，请重新登录。</Notice>
@@ -68,7 +81,7 @@ export function FactorOrchestrator({
   return (
     <div className="space-y-4">
       {active === 'totp' ? (
-        <TotpStep pending={pending} setup={totpSetup} busy={busy} onSetup={setTotpSetup} onComplete={onComplete} onBusy={onBusy} onMessage={onMessage} />
+        <TotpStep pending={pending} setup={totpSetup} busy={busy} onSetup={setTotpSetup} onComplete={onComplete} onBusy={onBusy} onMessage={onMessage} onTicketInvalid={() => setInvalidated(true)} />
       ) : (
         <PasskeyStep pending={pending} register={setupRequired} busy={busy} onComplete={onComplete} onBusy={onBusy} onMessage={onMessage} />
       )}
