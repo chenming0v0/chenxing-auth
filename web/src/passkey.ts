@@ -13,8 +13,7 @@ const UNAVAILABLE_CREDENTIAL = 'Passkey credential is unavailable'
 const PASSKEY_FAILED = 'Passkey 操作失败，请重试。'
 const USER_VERIFICATION = ['required', 'preferred', 'discouraged']
 const ATTESTATION = ['none', 'indirect', 'direct', 'enterprise']
-const AUTHENTICATOR_TRANSPORTS = ['ble', 'hybrid', 'internal', 'nfc', 'usb'] as const
-  satisfies readonly AuthenticatorTransport[]
+const AUTHENTICATOR_TRANSPORTS = ['ble', 'hybrid', 'internal', 'nfc', 'usb'] as const satisfies readonly AuthenticatorTransport[]
 
 function isAuthenticatorTransport(value: unknown): value is AuthenticatorTransport {
   return typeof value === 'string' && AUTHENTICATOR_TRANSPORTS.some((transport) => transport === value)
