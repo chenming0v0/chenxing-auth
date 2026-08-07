@@ -6,10 +6,18 @@ pub const DEFAULT_MAX_REDIRECT_URIS: usize = 10;
 pub const DEFAULT_MAX_REDIRECT_URI_LENGTH: usize = 2_048;
 pub const DEFAULT_MAX_SCOPES: usize = 32;
 pub const DEFAULT_MAX_SCOPE_LENGTH: usize = 64;
+pub const DEFAULT_ALLOWED_SCOPES: &[&str] = &["openid", "profile", "email"];
 pub const ABSOLUTE_MAX_REDIRECT_URIS: usize = 100;
 pub const ABSOLUTE_MAX_REDIRECT_URI_LENGTH: usize = 8_192;
 pub const ABSOLUTE_MAX_SCOPES: usize = 100;
 pub const ABSOLUTE_MAX_SCOPE_LENGTH: usize = 256;
+
+fn default_allowed_scopes() -> Vec<String> {
+    DEFAULT_ALLOWED_SCOPES
+        .iter()
+        .map(|scope| (*scope).to_owned())
+        .collect()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientAuthMethod {
@@ -43,6 +51,7 @@ pub struct ClientRegistrationLimits {
     pub max_redirect_uri_length: usize,
     pub max_scopes: usize,
     pub max_scope_length: usize,
+    pub allowed_scopes: Vec<String>,
 }
 
 impl Default for ClientRegistrationLimits {
@@ -52,6 +61,7 @@ impl Default for ClientRegistrationLimits {
             max_redirect_uri_length: DEFAULT_MAX_REDIRECT_URI_LENGTH,
             max_scopes: DEFAULT_MAX_SCOPES,
             max_scope_length: DEFAULT_MAX_SCOPE_LENGTH,
+            allowed_scopes: default_allowed_scopes(),
         }
     }
 }
@@ -63,15 +73,12 @@ impl ClientRegistrationLimits {
         max_scopes: usize,
         max_scope_length: usize,
     ) -> Option<Self> {
-        if max_redirect_uris == 0
-            || max_redirect_uris > ABSOLUTE_MAX_REDIRECT_URIS
-            || max_redirect_uri_length == 0
-            || max_redirect_uri_length > ABSOLUTE_MAX_REDIRECT_URI_LENGTH
-            || max_scopes == 0
-            || max_scopes > ABSOLUTE_MAX_SCOPES
-            || max_scope_length == 0
-            || max_scope_length > ABSOLUTE_MAX_SCOPE_LENGTH
-        {
+        if !valid_numeric_limits(
+            max_redirect_uris,
+            max_redirect_uri_length,
+            max_scopes,
+            max_scope_length,
+        ) {
             return None;
         }
         Some(Self {
@@ -79,8 +86,30 @@ impl ClientRegistrationLimits {
             max_redirect_uri_length,
             max_scopes,
             max_scope_length,
+            allowed_scopes: default_allowed_scopes(),
         })
     }
+
+    pub fn with_allowed_scopes(mut self, allowed_scopes: Vec<String>) -> Option<Self> {
+        self.allowed_scopes = normalize_allowed_scopes(allowed_scopes, self.max_scope_length)?;
+        Some(self)
+    }
+}
+
+fn valid_numeric_limits(
+    max_redirect_uris: usize,
+    max_redirect_uri_length: usize,
+    max_scopes: usize,
+    max_scope_length: usize,
+) -> bool {
+    max_redirect_uris > 0
+        && max_redirect_uris <= ABSOLUTE_MAX_REDIRECT_URIS
+        && max_redirect_uri_length > 0
+        && max_redirect_uri_length <= ABSOLUTE_MAX_REDIRECT_URI_LENGTH
+        && max_scopes > 0
+        && max_scopes <= ABSOLUTE_MAX_SCOPES
+        && max_scope_length > 0
+        && max_scope_length <= ABSOLUTE_MAX_SCOPE_LENGTH
 }
 
 #[derive(Debug, Deserialize)]
@@ -121,6 +150,8 @@ pub enum ClientRegistrationError {
     TooManyScopes,
     #[error("scope is too long")]
     ScopeTooLong,
+    #[error("scope is not supported")]
+    UnsupportedScope,
     #[error("scope is invalid")]
     InvalidScope,
 }
@@ -173,6 +204,12 @@ pub fn validate_client_registration_with_limits(
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if scopes
+        .iter()
+        .any(|scope| !limits.allowed_scopes.contains(scope))
+    {
+        return Err(ClientRegistrationError::UnsupportedScope);
+    }
     // Duplicate values are accepted and normalized in first-seen order.
     let redirect_uris = deduplicate(redirect_uris);
     let scopes = deduplicate(scopes);
@@ -182,6 +219,31 @@ pub fn validate_client_registration_with_limits(
         redirect_uris,
         scopes,
     })
+}
+
+fn normalize_allowed_scopes(
+    scopes: Vec<String>,
+    max_scope_length: usize,
+) -> Option<Vec<String>> {
+    if scopes.is_empty() || scopes.len() > ABSOLUTE_MAX_SCOPES {
+        return None;
+    }
+    let scopes = scopes
+        .into_iter()
+        .map(|scope| {
+            let scope = scope.trim().to_owned();
+            if scope.is_empty()
+                || scope.chars().count() > max_scope_length
+                || scope.chars().any(char::is_whitespace)
+            {
+                None
+            } else {
+                Some(scope)
+            }
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let scopes = deduplicate(scopes);
+    (!scopes.is_empty()).then_some(scopes)
 }
 
 fn validate_redirect_uri(

@@ -1,4 +1,5 @@
 use super::pkce::validate_s256_challenge;
+use crate::clients::domain::DEFAULT_ALLOWED_SCOPES;
 use crate::users::domain::UserId;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -64,6 +65,18 @@ pub fn validate_authorization_request(
     client: &RegisteredClient,
     request: AuthorizationRequest,
 ) -> Result<ValidatedAuthorizationRequest, AuthorizationRequestError> {
+    let allowed_scopes = DEFAULT_ALLOWED_SCOPES
+        .iter()
+        .map(|scope| (*scope).to_owned())
+        .collect::<Vec<_>>();
+    validate_authorization_request_with_allowlist(client, request, &allowed_scopes)
+}
+
+pub fn validate_authorization_request_with_allowlist(
+    client: &RegisteredClient,
+    request: AuthorizationRequest,
+    allowed_scopes: &[String],
+) -> Result<ValidatedAuthorizationRequest, AuthorizationRequestError> {
     if request.client_id != client.client_id {
         return Err(AuthorizationRequestError::InvalidClient);
     }
@@ -82,7 +95,7 @@ pub fn validate_authorization_request(
         .split_whitespace()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    if scopes.is_empty() || scopes.iter().any(|scope| !client.scopes.contains(scope)) {
+    if !scopes_are_allowed(client, &scopes, allowed_scopes) {
         return Err(AuthorizationRequestError::ScopeNotAllowed);
     }
     let state = request
@@ -110,4 +123,16 @@ pub fn validate_authorization_request(
         // 会话绑定由持有会话的调用方回填，见字段文档。
         session_token_hash: None,
     })
+}
+
+pub(crate) fn scopes_are_allowed(
+    client: &RegisteredClient,
+    scopes: &[String],
+    allowed_scopes: &[String],
+) -> bool {
+    !scopes.is_empty()
+        && scopes.iter().all(|scope| {
+            allowed_scopes.iter().any(|allowed| allowed == scope)
+                && client.scopes.iter().any(|registered| registered == scope)
+        })
 }

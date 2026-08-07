@@ -54,6 +54,36 @@ fn client_registration_enforces_configured_collection_limits() {
 }
 
 #[test]
+fn client_registration_rejects_scope_outside_server_allowlist() {
+    let error = validate_client_registration(ClientRegistrationInput {
+        client_name: "项目".to_owned(),
+        redirect_uris: vec!["https://project.example.com/callback".to_owned()],
+        scopes: vec!["admin".to_owned()],
+    })
+    .expect_err("unknown scopes must be rejected");
+
+    assert_eq!(error, ClientRegistrationError::UnsupportedScope);
+}
+
+#[test]
+fn client_registration_accepts_explicitly_configured_custom_scope() {
+    let limits = ClientRegistrationLimits::default()
+        .with_allowed_scopes(vec!["openid".to_owned(), "project:read".to_owned()])
+        .expect("valid scope allowlist");
+    let client = validate_client_registration_with_limits(
+        ClientRegistrationInput {
+            client_name: "项目".to_owned(),
+            redirect_uris: vec!["https://project.example.com/callback".to_owned()],
+            scopes: vec!["project:read".to_owned()],
+        },
+        &limits,
+    )
+    .expect("configured custom scope");
+
+    assert_eq!(client.scopes, vec!["project:read"]);
+}
+
+#[test]
 fn client_registration_rejects_boundary_overflows_and_large_json_values() {
     let too_many_redirects =
         vec!["https://project.example.com/callback".to_owned(); DEFAULT_MAX_REDIRECT_URIS + 1];

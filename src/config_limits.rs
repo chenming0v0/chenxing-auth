@@ -2,8 +2,8 @@ use std::env;
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 use crate::clients::domain::{
-    ClientRegistrationLimits, DEFAULT_MAX_REDIRECT_URI_LENGTH, DEFAULT_MAX_REDIRECT_URIS,
-    DEFAULT_MAX_SCOPE_LENGTH, DEFAULT_MAX_SCOPES,
+    ClientRegistrationLimits, DEFAULT_ALLOWED_SCOPES, DEFAULT_MAX_REDIRECT_URI_LENGTH,
+    DEFAULT_MAX_REDIRECT_URIS, DEFAULT_MAX_SCOPE_LENGTH, DEFAULT_MAX_SCOPES,
 };
 
 use super::ConfigError;
@@ -71,8 +71,30 @@ pub(super) fn client_registration_limits_from_env() -> Result<ClientRegistration
         .into_iter()
         .map(|(name, value)| parse_usize(name, &value))
         .collect::<Result<Vec<_>, _>>()?;
-    ClientRegistrationLimits::new(values[0], values[1], values[2], values[3])
-        .ok_or(ConfigError::InvalidValue("OAUTH_CLIENT_LIMITS"))
+    let limits = ClientRegistrationLimits::new(values[0], values[1], values[2], values[3])
+        .ok_or(ConfigError::InvalidValue("OAUTH_CLIENT_LIMITS"))?;
+    let allowed_scopes = env::var("OAUTH_CLIENT_ALLOWED_SCOPES")
+        .ok()
+        .unwrap_or_else(|| DEFAULT_ALLOWED_SCOPES.iter().copied().collect::<Vec<_>>().join(","));
+    let allowed_scopes = parse_allowed_scopes(&allowed_scopes)?;
+    limits
+        .with_allowed_scopes(allowed_scopes)
+        .ok_or(ConfigError::InvalidValue("OAUTH_CLIENT_ALLOWED_SCOPES"))
+}
+
+fn parse_allowed_scopes(value: &str) -> Result<Vec<String>, ConfigError> {
+    if value.trim().is_empty() {
+        return Err(ConfigError::InvalidValue("OAUTH_CLIENT_ALLOWED_SCOPES"));
+    }
+    let scopes = value
+        .split(',')
+        .map(str::trim)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if scopes.iter().any(String::is_empty) {
+        return Err(ConfigError::InvalidValue("OAUTH_CLIENT_ALLOWED_SCOPES"));
+    }
+    Ok(scopes)
 }
 
 /// 可配置的安全阈值与 TTL（#121）。

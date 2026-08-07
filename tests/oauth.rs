@@ -1,6 +1,6 @@
 use chenxing_auth::oauth::authorization::{
     AuthorizationRequest, AuthorizationRequestError, RegisteredClient,
-    validate_authorization_request,
+    validate_authorization_request, validate_authorization_request_with_allowlist,
 };
 
 fn client() -> RegisteredClient {
@@ -70,6 +70,29 @@ fn authorization_request_rejects_scope_outside_client_registration() {
         },
     )
     .expect_err("unregistered scope must be rejected");
+
+    assert_eq!(error, AuthorizationRequestError::ScopeNotAllowed);
+}
+
+#[test]
+fn authorization_request_rejects_client_scope_outside_server_allowlist() {
+    let mut client = client();
+    client.scopes.push("admin".to_owned());
+    let error = validate_authorization_request_with_allowlist(
+        &client,
+        AuthorizationRequest {
+            client_id: "cx_project".to_owned(),
+            redirect_uri: "https://project.example/callback".to_owned(),
+            response_type: "code".to_owned(),
+            scope: "admin".to_owned(),
+            state: Some("state-value".to_owned()),
+            nonce: None,
+            code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
+            code_challenge_method: Some("S256".to_owned()),
+        },
+        &["openid".to_owned(), "profile".to_owned()],
+    )
+    .expect_err("server-disallowed client scopes must not authorize");
 
     assert_eq!(error, AuthorizationRequestError::ScopeNotAllowed);
 }

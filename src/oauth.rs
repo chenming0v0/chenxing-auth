@@ -47,7 +47,7 @@ pub struct OpenIdConfiguration {
     pub response_types_supported: Vec<&'static str>,
     pub subject_types_supported: Vec<&'static str>,
     pub id_token_signing_alg_values_supported: Vec<&'static str>,
-    pub scopes_supported: Vec<&'static str>,
+    pub scopes_supported: Vec<String>,
     pub claims_supported: Vec<&'static str>,
     pub code_challenge_methods_supported: Vec<&'static str>,
     pub token_endpoint_auth_methods_supported: Vec<&'static str>,
@@ -55,6 +55,14 @@ pub struct OpenIdConfiguration {
 
 impl OpenIdConfiguration {
     pub fn for_issuer(issuer: &str) -> Self {
+        let scopes = crate::clients::domain::DEFAULT_ALLOWED_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_owned())
+            .collect::<Vec<_>>();
+        Self::for_issuer_with_scopes(issuer, &scopes)
+    }
+
+    pub fn for_issuer_with_scopes(issuer: &str, scopes_supported: &[String]) -> Self {
         let issuer = issuer.trim_end_matches('/').to_owned();
         Self {
             authorization_endpoint: format!("{issuer}/oauth/authorize"),
@@ -66,7 +74,7 @@ impl OpenIdConfiguration {
             response_types_supported: vec!["code"],
             subject_types_supported: vec!["public"],
             id_token_signing_alg_values_supported: vec!["RS256"],
-            scopes_supported: vec!["openid", "profile", "email"],
+            scopes_supported: scopes_supported.to_owned(),
             // `nonce` 在实际签发的 ID Token 中出现（有会话时）；`auth_time` 同样
             // 已实现。`azp` 未实现（单 audience 场景可省略，OIDC Core §2 允许），
             // 故不声明，避免制造新的不一致。

@@ -546,7 +546,7 @@ paths:
         - { $ref: '#/components/parameters/ClientId' }
         - { name: redirect_uri, in: query, required: true, schema: { type: string, format: uri } }
         - { name: response_type, in: query, required: true, schema: { type: string, enum: [code] } }
-        - { name: scope, in: query, required: true, schema: { type: string, example: 'openid email profile' } }
+        - { name: scope, in: query, required: true, description: "空格分隔的 scope；每个值必须同时属于服务端 OAUTH_CLIENT_ALLOWED_SCOPES allowlist（默认 openid、profile、email）和该 Client 已注册的 scope 集合", schema: { type: string, example: 'openid email profile' } }
         - { name: state, in: query, required: true, schema: { type: string } }
         - { name: nonce, in: query, schema: { type: string } }
         - { name: code_challenge, in: query, required: true, schema: { type: string } }
@@ -2142,6 +2142,7 @@ components:
           type: array
           minItems: 1
           maxItems: 32
+          description: 服务端仅接受 OAUTH_CLIENT_ALLOWED_SCOPES allowlist 中的 scope；默认 allowlist 为 openid、profile、email。
           items: { type: string, minLength: 1, maxLength: 64 }
     ClientSummary:
       allOf:
