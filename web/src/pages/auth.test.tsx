@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
-import { AuthPage } from './auth'
+import { AuthPage, safeReturnTo } from './auth'
+import { navigate } from '../router'
 
 // AuthPage 依赖 useAuth。这里 mock 掉 auth-state，避免 AuthProvider 挂载时额外发出
 // /auth/me 与 /admin/bootstrap/status 请求，污染下面对请求 body 的断言。
@@ -242,5 +243,47 @@ describe('AuthPage MFA 登录凭证失效恢复（#195）', () => {
     await waitFor(() => expect(screen.getByText('验证码不正确，请重试。')).toBeTruthy())
     expect(screen.queryByRole('button', { name: /重新登录/ })).toBeNull()
     expect(screen.getByLabelText('一次性验证码')).toBeTruthy()
+  })
+})
+
+describe('AuthPage returnTo 同源校验（#228）', () => {
+  function decodedReturnTo(raw: string): string | null {
+    return new URLSearchParams(`returnTo=${raw}`).get('returnTo')
+  }
+
+  it('拒绝 URL 解析会转成 authority 的反斜杠路径', () => {
+    expect(safeReturnTo('/\\evil.com')).toBe('/console')
+  })
+
+  it.each([
+    '%2F%5Cevil.com',
+    '%2F%2Fevil.com',
+  ])('拒绝 URLSearchParams 解码后的协议相对攻击地址：%s', (encoded) => {
+    expect(safeReturnTo(decodedReturnTo(encoded))).toBe('/console')
+  })
+
+  it('不会对 URLSearchParams 解码后的双重编码路径再次解码', () => {
+    expect(safeReturnTo(decodedReturnTo('%252F%255Cevil.com'))).toBe('/%2F%5Cevil.com')
+  })
+
+  it.each(['/console/%', '/console/%ZZ', '/console?tab=%GG'])('拒绝畸形百分号编码：%s', (value) => {
+    expect(safeReturnTo(value)).toBe('/console')
+  })
+
+  it('拒绝同源 URL 中的 userinfo 凭据', () => {
+    const credentialed = new URL('/console', window.location.origin)
+    credentialed.username = 'user'
+    credentialed.password = 'secret'
+    expect(safeReturnTo(credentialed.href)).toBe('/console')
+  })
+
+  it('保留同源相对路径的 query 和 hash，并返回 SPA navigate 可用的路径', () => {
+    const target = safeReturnTo(decodedReturnTo('%2Fconsole%2Fsettings%3Ftab%3Dsecurity%26mode%3Dcompact%23sessions'))
+    expect(target).toBe('/console/settings?tab=security&mode=compact#sessions')
+
+    navigate(target)
+    expect(window.location.pathname).toBe('/console/settings')
+    expect(window.location.search).toBe('?tab=security&mode=compact')
+    expect(window.location.hash).toBe('#sessions')
   })
 })

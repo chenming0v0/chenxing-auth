@@ -22,13 +22,19 @@ function limitPasswordInput(value: string): string {
   return Array.from(value).slice(0, PASSWORD_MAX_LENGTH).join('')
 }
 
-function safeReturnTo(value: string | null): string {
-  if (!value) return '/console'
+const DEFAULT_RETURN_TO = '/console'
+
+export function safeReturnTo(value: string | null): string {
+  if (!value) return DEFAULT_RETURN_TO
   try {
-    const decoded = decodeURIComponent(value)
-    return decoded.startsWith('/') && !decoded.startsWith('//') ? decoded : '/console'
+    // URLSearchParams.get() already decodes one layer. Validate any remaining
+    // escapes without using the decoded result, so double-encoded paths stay paths.
+    decodeURIComponent(value)
+    const target = new URL(value.replace(/\\/g, '/'), window.location.origin)
+    if (target.origin !== window.location.origin || target.username || target.password) return DEFAULT_RETURN_TO
+    return `${target.pathname}${target.search}${target.hash}`
   } catch {
-    return '/console'
+    return DEFAULT_RETURN_TO
   }
 }
 
