@@ -8,7 +8,10 @@
 
 use super::{UserService, UserServiceError};
 use crate::{
-    auth_limiter::{FailureDimension, LimiterDimension, MissingSourceIpPolicy},
+    auth_limiter::{
+        FailureDimension, LimiterDimension, MissingSourceIpPolicy,
+        domain::commit_reserved_failure,
+    },
     users::{
         credentials::verify_login_password,
         domain::{LoginError, LoginInput, UserId, validate_login},
@@ -170,27 +173,7 @@ impl UserService {
         &self,
         dimensions: Vec<LimiterDimension>,
     ) -> Result<crate::auth_limiter::domain::FailureRecord, UserServiceError> {
-        match self
-            .limiter
-            .record_reserved_failures(dimensions.clone())
-            .await
-        {
-            Ok(record) => Ok(record),
-            Err(error) => {
-                // 失败记账未消费 pending 计数，先归还本次所有预留再传播原错误。
-                let dimension_count = dimensions.len();
-                if let Err(release_error) = self.release_dimensions(dimensions).await {
-                    tracing::error!(
-                        event = "auth_limiter.reservation_release_failed",
-                        operation = "authentication_record_reserved_failures",
-                        dimensions = dimension_count,
-                        error = %release_error,
-                        "reserved authentication quota was not released after failure recording error"
-                    );
-                }
-                Err(UserServiceError::Limiter(error))
-            }
-        }
+        Ok(commit_reserved_failure(self.limiter.as_ref(), dimensions).await?)
     }
 
     async fn finish_authentication_failure(

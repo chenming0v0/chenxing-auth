@@ -2,7 +2,10 @@
 
 use super::{UserService, UserServiceError};
 use crate::{
-    auth_limiter::{FailureDimension, LimiterDimension, MissingSourceIpPolicy},
+    auth_limiter::{
+        FailureDimension, LimiterDimension, MissingSourceIpPolicy,
+        domain::commit_reserved_failure,
+    },
     users::{
         credentials::{hash_password, verify_password},
         domain::{UserId, validate_display_name, validate_password_length},
@@ -109,26 +112,11 @@ impl UserService {
         &self,
         dimensions: Vec<LimiterDimension>,
     ) -> Result<(), UserServiceError> {
-        match self
-            .limiter
-            .record_reserved_failures(dimensions.clone())
-            .await
-        {
-            Ok(record) if record.reached.is_empty() => Err(UserServiceError::InvalidCredentials),
-            Ok(_) => Err(UserServiceError::RateLimited),
-            Err(error) => {
-                let dimension_count = dimensions.len();
-                if let Err(release_error) = self.limiter.release(dimensions).await {
-                    tracing::error!(
-                        event = "auth_limiter.reservation_release_failed",
-                        operation = "password_change_record_reserved_failures",
-                        dimensions = dimension_count,
-                        error = %release_error,
-                        "reserved password-change quota was not released after limiter failure"
-                    );
-                }
-                Err(UserServiceError::Limiter(error))
-            }
+        let record = commit_reserved_failure(self.limiter.as_ref(), dimensions).await?;
+        if record.reached.is_empty() {
+            Err(UserServiceError::InvalidCredentials)
+        } else {
+            Err(UserServiceError::RateLimited)
         }
     }
 }

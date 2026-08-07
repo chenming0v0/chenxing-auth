@@ -8,7 +8,7 @@ use crate::{
     auth_factors::repository,
     auth_limiter::{
         AuthFailureLimiter, FailureDimension, LimiterDimension, MissingSourceIpPolicy,
-        domain::{AuthLimiterError, FailureRecord},
+        domain::{FailureRecord, commit_reserved_failure, release_reserved},
     },
     users::domain::UserId,
 };
@@ -82,48 +82,7 @@ impl AuthFactorService {
     /// 已经确定要返回错误时的归还路径：归还本身失败只记日志，不覆盖调用方手上
     /// 那个更本质的错误原因。
     pub(super) async fn release_dimensions_after_error(&self, dimensions: Vec<LimiterDimension>) {
-        release_after_error(self.limiter.as_ref(), dimensions, "attempt_failed").await;
-    }
-}
-
-/// 提交一次已预留的失败尝试。
-///
-/// `record_reserved_failures` 会在同一个 Lua 脚本里递减 pending 计数并递增失败计数。
-/// 一旦这一步失败（Redis 抖动），`reserve` 留下的 pending 计数就既没被转记为失败、
-/// 也没被归还，额度被凭空吃掉；窗口内反复抖动会把某个 IP 或账号的失败预算提前耗尽，
-/// 把用户锁死在 RateLimited 上。所以出错时先尽力归还，再抛出原始错误。
-///
-/// 这里用显式补偿而不是 RAII 守卫：Rust 没有 async Drop，守卫无法在 `Drop` 里 await
-/// Redis 调用，只能退化成 spawn 一个脱离请求生命周期的任务，反而更难推理。
-async fn commit_reserved_failure(
-    limiter: &dyn AuthFailureLimiter,
-    dimensions: Vec<LimiterDimension>,
-) -> Result<FailureRecord, AuthLimiterError> {
-    match limiter.record_reserved_failures(dimensions.clone()).await {
-        Ok(record) => Ok(record),
-        Err(error) => {
-            release_after_error(limiter, dimensions, "record_reserved_failures").await;
-            Err(error)
-        }
-    }
-}
-
-/// 尽力归还预留额度。失败只上报可观测信号：悬挂的 pending 计数最迟随固定窗口
-/// key 过期归零，用归还失败覆盖原始错误只会丢掉真实故障原因。
-async fn release_after_error(
-    limiter: &dyn AuthFailureLimiter,
-    dimensions: Vec<LimiterDimension>,
-    operation: &str,
-) {
-    let dimension_count = dimensions.len();
-    if let Err(release_error) = limiter.release(dimensions).await {
-        tracing::error!(
-            event = "auth_limiter.reservation_release_failed",
-            operation,
-            dimensions = dimension_count,
-            error = %release_error,
-            "reserved authentication quota was not released; pending counters expire with the window"
-        );
+        release_reserved(self.limiter.as_ref(), dimensions, "attempt_failed").await;
     }
 }
 

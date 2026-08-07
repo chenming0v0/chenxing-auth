@@ -119,18 +119,85 @@ pub enum AuthLimiterError {
     Storage,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureRecordStatus {
+    Recorded,
+    NotRecorded,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailureRecord {
     pub reached: Vec<FailureDimension>,
+    pub status: FailureRecordStatus,
 }
 
 impl FailureRecord {
+    pub fn recorded(reached: Vec<FailureDimension>) -> Self {
+        Self {
+            reached,
+            status: FailureRecordStatus::Recorded,
+        }
+    }
+
+    pub fn not_recorded() -> Self {
+        Self {
+            reached: Vec::new(),
+            status: FailureRecordStatus::NotRecorded,
+        }
+    }
+
+    pub const fn was_recorded(&self) -> bool {
+        matches!(self.status, FailureRecordStatus::Recorded)
+    }
+
     pub fn reached(&self, dimension: FailureDimension) -> bool {
         self.reached.contains(&dimension)
     }
 }
 
 pub type LimiterDimension = (FailureDimension, String);
+
+/// Commits a previously reserved failure and closes the reservation lifecycle.
+///
+/// FailOpen may return a successful `NotRecorded` result when storage is
+/// unavailable. That result must release the pending reservation just like a
+/// storage error; an actual record remains the only path that consumes it.
+pub(crate) async fn commit_reserved_failure(
+    limiter: &dyn AuthFailureLimiter,
+    dimensions: Vec<LimiterDimension>,
+) -> Result<FailureRecord, AuthLimiterError> {
+    match limiter.record_reserved_failures(dimensions.clone()).await {
+        Ok(record) => {
+            if !record.was_recorded() {
+                release_reserved(limiter, dimensions, "record_reserved_failures").await;
+            }
+            Ok(record)
+        }
+        Err(error) => {
+            release_reserved(limiter, dimensions, "record_reserved_failures").await;
+            Err(error)
+        }
+    }
+}
+
+/// Best-effort release for a reservation that was not committed. The original
+/// limiter failure is more useful than a release failure and must be preserved.
+pub(crate) async fn release_reserved(
+    limiter: &dyn AuthFailureLimiter,
+    dimensions: Vec<LimiterDimension>,
+    operation: &str,
+) {
+    let dimension_count = dimensions.len();
+    if let Err(release_error) = limiter.release(dimensions).await {
+        tracing::error!(
+            event = "auth_limiter.reservation_release_failed",
+            operation,
+            dimensions = dimension_count,
+            error = %release_error,
+            "reserved authentication quota was not released; pending counters expire with the window"
+        );
+    }
+}
 
 pub type LimiterFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, AuthLimiterError>> + Send + 'a>>;
@@ -165,6 +232,8 @@ pub trait AuthFailureLimiter: Send + Sync {
     }
 
     /// Commits a previously reserved attempt as a failed authentication.
+    /// A FailOpen fallback is returned as `FailureRecordStatus::NotRecorded`;
+    /// callers must use `commit_reserved_failure` so that pending quota is released.
     fn record_reserved_failures<'a>(
         &'a self,
         dimensions: Vec<LimiterDimension>,
@@ -207,7 +276,7 @@ pub trait AuthFailureLimiter: Send + Sync {
                     reached.push(dimension);
                 }
             }
-            Ok(FailureRecord { reached })
+            Ok(FailureRecord::recorded(reached))
         })
     }
 }

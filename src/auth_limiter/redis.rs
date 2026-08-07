@@ -163,9 +163,7 @@ impl RedisAuthFailureLimiter {
     ) -> Result<FailureRecord, AuthLimiterError> {
         self.log_storage_error(operation, dimensions);
         match self.failure_policy {
-            AuthLimiterFailurePolicy::FailOpen => Ok(FailureRecord {
-                reached: Vec::new(),
-            }),
+            AuthLimiterFailurePolicy::FailOpen => Ok(FailureRecord::not_recorded()),
             AuthLimiterFailurePolicy::FailClosed => Err(AuthLimiterError::Storage),
         }
     }
@@ -277,9 +275,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
     ) -> LimiterFuture<'a, FailureRecord> {
         Box::pin(async move {
             if dimensions.is_empty() {
-                return Ok(FailureRecord {
-                    reached: Vec::new(),
-                });
+                return Ok(FailureRecord::recorded(Vec::new()));
             }
             let limits = self.current_limits().await?;
             let mut connection = match self.client.get_multiplexed_async_connection().await {
@@ -316,7 +312,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                     }
                 })
                 .collect();
-            Ok(FailureRecord { reached })
+            Ok(FailureRecord::recorded(reached))
         })
     }
 
@@ -366,9 +362,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
     ) -> LimiterFuture<'a, FailureRecord> {
         Box::pin(async move {
             if dimensions.is_empty() {
-                return Ok(FailureRecord {
-                    reached: Vec::new(),
-                });
+                return Ok(FailureRecord::recorded(Vec::new()));
             }
             let limits = self.current_limits().await?;
             let mut connection = match self.client.get_multiplexed_async_connection().await {
@@ -409,7 +403,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                     }
                 })
                 .collect();
-            Ok(FailureRecord { reached })
+            Ok(FailureRecord::recorded(reached))
         })
     }
 
