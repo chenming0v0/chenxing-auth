@@ -235,11 +235,43 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
         )
         .await
         .expect("user registration response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json(response).await["code"], "email_verification_unavailable");
+
+    let public_registration_count: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM users WHERE username = $1 OR email = $2",
+    )
+    .bind(&user_username)
+    .bind(&user_email)
+    .fetch_one(&database)
+    .await
+    .expect("check failed public registration");
+    assert_eq!(public_registration_count, 0);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("authorization", "Bearer bootstrap-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": user_username,
+                        "email": user_email,
+                        "password": password
+                    })
+                    .to_string(),
+                ))
+                .expect("admin user creation request"),
+        )
+        .await
+        .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
     let user = json(response).await;
-    let user_id = user["user"]["id"].as_i64().expect("numeric user id");
-    assert_eq!(user_id, 3);
-    assert_eq!(user["user"]["role"], "user");
+    let user_id = user["id"].as_i64().expect("numeric user id");
+    assert_eq!(user["role"], "user");
 
     let response = router
         .clone()
