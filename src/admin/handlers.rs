@@ -72,29 +72,23 @@ pub async fn create_client(
         Ok(client) => {
             let client_id = client.client_id.clone();
             let (actor_type, actor_id) = actor.audit_fields();
-            // 必须先写审计，审计成功后才把凭据返回给调用者。
+            // Client 已落库后必须先写审计，审计成功后才把凭据返回给调用者。
             // 若审计失败：client 记录已在数据库提交，但调用者拿不到 secret，
-            // 攻击者无法利用未被记录的凭据；运维可凭结构化日志人工补账。
-            if let Err(audit_err) = state
+            // 攻击者无法利用未被记录的凭据；record_blocking 会发出
+            // audit.block_on_failure 结构化日志供运维人工补账。
+            if state
                 .audit
-                .record(AuditEvent::new(
+                .record_blocking(AuditEvent::new(
                     actor_type.to_owned(),
-                    actor_id.clone(),
+                    actor_id,
                     "client_create".to_owned(),
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),
                     serde_json::json!({"result": "success"}),
                 ))
                 .await
+                .is_err()
             {
-                tracing::error!(
-                    event = "audit.block_on_failure",
-                    action = "client_create",
-                    client_id = %client_id,
-                    actor_id = ?actor_id,
-                    error = %audit_err,
-                    "审计写入失败；client 已创建但 secret 未返回，可凭 client_id 人工补账"
-                );
                 return error::internal();
             }
             (
@@ -192,9 +186,9 @@ pub async fn update_client(
     match state.clients.update(&client_id, input).await {
         Ok(true) => {
             let (actor_type, actor_id) = actor.audit_fields();
-            if state
+            state
                 .audit
-                .record(AuditEvent::new(
+                .record_best_effort(AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
                     "client_update".to_owned(),
@@ -202,11 +196,7 @@ pub async fn update_client(
                     Some(client_id.clone()),
                     serde_json::json!({"result": "success"}),
                 ))
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
+                .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::bad_request("client_not_found", "client was not found"),
@@ -239,9 +229,9 @@ pub async fn set_client_status(
     match state.clients.set_status(&client_id, status).await {
         Ok(true) => {
             let (actor_type, actor_id) = actor.audit_fields();
-            if state
+            state
                 .audit
-                .record(AuditEvent::new(
+                .record_best_effort(AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
                     format!("client_{status}"),
@@ -249,11 +239,7 @@ pub async fn set_client_status(
                     Some(client_id.clone()),
                     serde_json::json!({"result": "success"}),
                 ))
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
+                .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::bad_request("client_not_found", "client was not found"),
@@ -300,29 +286,23 @@ pub async fn rotate_secret(
         Ok(secret) => {
             let client_id = secret.client_id.clone();
             let (actor_type, actor_id) = actor.audit_fields();
-            // 与 create_client 一致：先写审计，审计成功后才返回新 secret。
+            // 与 create_client 一致：新 secret 已落库后先写审计，成功后才返回它。
             // 若审计失败：旧 secret 已在数据库失效，但调用者拿不到新 secret，
-            // 该 client 暂时无法认证；运维可凭结构化日志人工补账或再次轮换。
-            if let Err(audit_err) = state
+            // 该 client 暂时无法认证；record_blocking 会发出
+            // audit.block_on_failure 结构化日志供运维人工补账。
+            if state
                 .audit
-                .record(AuditEvent::new(
+                .record_blocking(AuditEvent::new(
                     actor_type.to_owned(),
-                    actor_id.clone(),
+                    actor_id,
                     "client_secret_rotate".to_owned(),
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),
                     serde_json::json!({"result": "success"}),
                 ))
                 .await
+                .is_err()
             {
-                tracing::error!(
-                    event = "audit.block_on_failure",
-                    action = "client_secret_rotate",
-                    client_id = %client_id,
-                    actor_id = ?actor_id,
-                    error = %audit_err,
-                    "审计写入失败；secret 已轮换但新 secret 未返回，可凭 client_id 人工补账"
-                );
                 return error::internal();
             }
             (StatusCode::OK, Json(secret)).into_response()

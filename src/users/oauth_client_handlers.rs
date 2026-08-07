@@ -136,9 +136,9 @@ pub async fn revoke_authorized_app(
         // Redis 失效失败不影响正确性（DB 已是权威真相，缓存未命中会回源），
         // 仅 warn 不返回 500。
     }
-    if let Err(error_value) = state
+    state
         .audit
-        .record(AuditEvent::new(
+        .record_best_effort(AuditEvent::new(
             "user".to_owned(),
             Some(context.user_id.to_string()),
             "consent_revoke".to_owned(),
@@ -146,11 +146,7 @@ pub async fn revoke_authorized_app(
             Some(client_id),
             serde_json::json!({"result": "success"}),
         ))
-        .await
-    {
-        tracing::error!(error = %error_value, "failed to audit OAuth consent revocation");
-        return error::internal();
-    }
+        .await;
     StatusCode::NO_CONTENT.into_response()
 }
 

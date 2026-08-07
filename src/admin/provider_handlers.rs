@@ -86,12 +86,7 @@ pub async fn create_provider(
     }
     match state.external_oauth.create(input).await {
         Ok(provider) => {
-            if record_provider_event(&state, actor, "oauth_provider_create", &provider.slug)
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
+            record_provider_event(&state, actor, "oauth_provider_create", &provider.slug).await;
             (
                 StatusCode::CREATED,
                 Json(provider_response(&state, provider)),
@@ -120,12 +115,7 @@ pub async fn update_provider(
     }
     match state.external_oauth.update(&slug, input).await {
         Ok(true) => {
-            if record_provider_event(&state, actor, "oauth_provider_update", &slug)
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
+            record_provider_event(&state, actor, "oauth_provider_update", &slug).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::bad_request("oauth_provider_not_found", "provider was not found"),
@@ -164,12 +154,7 @@ async fn set_provider_status(
         };
     match state.external_oauth.set_status(&slug, status).await {
         Ok(true) => {
-            if record_provider_event(&state, actor, &format!("oauth_provider_{status}"), &slug)
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
+            record_provider_event(&state, actor, &format!("oauth_provider_{status}"), &slug).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::bad_request("oauth_provider_not_found", "provider was not found"),
@@ -213,11 +198,11 @@ async fn record_provider_event(
     actor: super::authorization::AdminActor,
     action: &str,
     slug: &str,
-) -> Result<(), crate::audit::AuditError> {
+) {
     let (actor_type, actor_id) = actor.audit_fields();
     state
         .audit
-        .record(AuditEvent::new(
+        .record_best_effort(AuditEvent::new(
             actor_type.to_owned(),
             actor_id,
             action.to_owned(),
@@ -225,5 +210,5 @@ async fn record_provider_event(
             Some(slug.to_owned()),
             serde_json::json!({"result": "success"}),
         ))
-        .await
+        .await;
 }

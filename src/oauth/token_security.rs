@@ -42,20 +42,14 @@ pub(crate) async fn enforce_source_qps(state: &AppState, source_ip: &str) -> Opt
     match state.qps.allow_source(source_ip, qps_limit).await {
         Ok(true) => None,
         Ok(false) => {
-            if let Err(error_value) = record_token_event(
+            record_token_event_best_effort(
                 state,
                 None,
                 "rate_limit_triggered",
                 None,
                 "oauth_source_qps",
             )
-            .await
-            {
-                tracing::warn!(
-                    error = %error_value,
-                    "failed to record OAuth source rate limit audit event"
-                );
-            }
+            .await;
             Some(error::oauth_too_many_requests(
                 "temporarily_unavailable",
                 "request rate limit exceeded",
@@ -97,20 +91,14 @@ pub(crate) async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Res
         Ok(true) => None,
         Ok(false) => {
             // Rate-limit denials should not depend on audit durability; log and still 429.
-            if let Err(error_value) = record_token_event(
+            record_token_event_best_effort(
                 state,
                 None,
                 "rate_limit_triggered",
                 Some(client_id),
                 "oauth_qps",
             )
-            .await
-            {
-                tracing::warn!(
-                    error = %error_value,
-                    "failed to record OAuth QPS rate limit audit event"
-                );
-            }
+            .await;
             Some(error::oauth_too_many_requests(
                 "temporarily_unavailable",
                 "request rate limit exceeded",
@@ -162,6 +150,23 @@ pub(crate) async fn record_token_event(
     .await
 }
 
+pub(crate) async fn record_token_event_best_effort(
+    state: &AppState,
+    actor_id: Option<&str>,
+    action: &str,
+    client_id: Option<&str>,
+    reason: &str,
+) {
+    record_token_event_with_metadata_best_effort(
+        state,
+        actor_id,
+        action,
+        client_id,
+        serde_json::json!({"reason": reason}),
+    )
+    .await;
+}
+
 pub(crate) async fn record_token_event_with_metadata(
     state: &AppState,
     actor_id: Option<&str>,
@@ -171,7 +176,7 @@ pub(crate) async fn record_token_event_with_metadata(
 ) -> Result<(), crate::audit::AuditError> {
     state
         .audit
-        .record(AuditEvent::new(
+        .record_blocking(token_event(
             if actor_id.is_some() {
                 "user".to_owned()
             } else {
@@ -179,9 +184,48 @@ pub(crate) async fn record_token_event_with_metadata(
             },
             actor_id.map(str::to_owned),
             action.to_owned(),
-            "oauth_token".to_owned(),
             client_id.map(str::to_owned),
             metadata,
         ))
         .await
+}
+
+pub(crate) async fn record_token_event_with_metadata_best_effort(
+    state: &AppState,
+    actor_id: Option<&str>,
+    action: &str,
+    client_id: Option<&str>,
+    metadata: serde_json::Value,
+) {
+    state
+        .audit
+        .record_best_effort(token_event(
+            if actor_id.is_some() {
+                "user".to_owned()
+            } else {
+                "oauth_client".to_owned()
+            },
+            actor_id.map(str::to_owned),
+            action.to_owned(),
+            client_id.map(str::to_owned),
+            metadata,
+        ))
+        .await;
+}
+
+fn token_event(
+    actor_type: String,
+    actor_id: Option<String>,
+    action: String,
+    resource_id: Option<String>,
+    metadata: serde_json::Value,
+) -> AuditEvent {
+    AuditEvent::new(
+        actor_type,
+        actor_id,
+        action,
+        "oauth_token".to_owned(),
+        resource_id,
+        metadata,
+    )
 }

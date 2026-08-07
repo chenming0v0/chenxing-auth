@@ -4,7 +4,7 @@ use crate::{state::AppState, users::domain::UserId};
 use super::super::{
     refresh_store::{Tombstone, TombstoneState},
     session::active_user_id,
-    token_security::record_token_event,
+    token_security::{record_token_event, record_token_event_best_effort},
 };
 
 /// Exchange a refresh token after the token endpoint has authenticated the client.
@@ -341,18 +341,14 @@ async fn record_and_return_invalid(
     client_id: &str,
     reason: &str,
 ) -> Result<TokenResponse, RefreshExchangeError> {
-    if record_token_event(
+    record_token_event_best_effort(
         state,
         user_id,
         "token_refresh_failure",
         Some(client_id),
         reason,
     )
-    .await
-    .is_err()
-    {
-        return Err(RefreshExchangeError::ServerError);
-    }
+    .await;
     Err(OAuthError::invalid_refresh_grant().into())
 }
 

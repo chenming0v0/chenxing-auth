@@ -26,9 +26,9 @@ pub(super) async fn external_error_with_request(
     state_value: Option<&str>,
     code: &str,
 ) -> Response {
-    if state
+    state
         .audit
-        .record(AuditEvent::security_failure(
+        .record_best_effort(AuditEvent::security_failure(
             "login_failure".to_owned(),
             "anonymous".to_owned(),
             None,
@@ -36,20 +36,7 @@ pub(super) async fn external_error_with_request(
             Some(slug.to_owned()),
             code,
         ))
-        .await
-        .is_err()
-    {
-        let mut response = error::internal();
-        if let Some(state_value) = state_value {
-            append_external_state_clear(
-                &mut response,
-                state_value,
-                &external_callback_path(slug),
-                state.config.cookie_secure,
-            );
-        }
-        return response;
-    }
+        .await;
     tracing::info!(provider = %slug, error_code = %code, "external OAuth login failed");
     let location = match request_id.filter(|value| !value.is_empty()) {
         Some(request_id) => format!("/login?request_id={request_id}&external_error={code}"),

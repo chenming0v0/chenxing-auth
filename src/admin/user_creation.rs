@@ -89,11 +89,11 @@ pub async fn create_user(
     {
         Ok(user) => {
             let (actor_type, actor_id) = actor.audit_fields();
-            // 阻断式审计：创建账号是高价值特权变更，审计缺失时不允许静默成功。
+            // 账号已经落库；审计失败不能把已完成的创建伪装成 500。
             // 元数据只记录角色与状态，口令与哈希都不进审计。
-            if state
+            state
                 .audit
-                .record(AuditEvent::new(
+                .record_best_effort(AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
                     "user_create".to_owned(),
@@ -101,11 +101,7 @@ pub async fn create_user(
                     Some(user.id.to_string()),
                     serde_json::json!({"role": role.as_str(), "status": status.as_str()}),
                 ))
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
+                .await;
             (StatusCode::CREATED, Json(user)).into_response()
         }
         Err(error_value) => user_creation_error_response(error_value),

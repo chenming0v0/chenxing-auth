@@ -78,12 +78,7 @@ pub async fn create_plan(
         };
     match state.plans.create(input).await {
         Ok(plan) => {
-            if record_plan_event(&state, actor, "plan_create", &plan.code)
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
+            record_plan_event(&state, actor, "plan_create", &plan.code).await;
             // 新建套餐尚无分配用户，直接返回 0
             (StatusCode::CREATED, Json(plan_response(plan, 0))).into_response()
         }
@@ -104,12 +99,7 @@ pub async fn update_plan(
         };
     match state.plans.update(id, input).await {
         Ok(updated) => {
-            if record_plan_event(&state, actor, "plan_update", &updated.plan.code)
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
+            record_plan_event(&state, actor, "plan_update", &updated.plan.code).await;
             // assigned_users 由 repository.update 在同一事务中统计，与 list_plans 行为一致
             let response = plan_response(updated.plan, updated.assigned_users);
             (StatusCode::OK, Json(response)).into_response()
@@ -159,12 +149,7 @@ async fn finish_plan_status_change(
 ) -> Response {
     match result {
         Ok(()) => {
-            if record_plan_event(state, actor, action, resource_id)
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
+            record_plan_event(state, actor, action, resource_id).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error_value) => plan_error_response(error_value),
@@ -200,12 +185,7 @@ pub async fn assign_plan(
         .await
     {
         Ok(()) => {
-            if record_plan_event(&state, actor, "user_plan_assign", &user_id.to_string())
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
+            record_plan_event(&state, actor, "user_plan_assign", &user_id.to_string()).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error_value) => plan_error_response(error_value),
@@ -258,11 +238,11 @@ async fn record_plan_event(
     actor: AdminActor,
     action: &str,
     resource_id: &str,
-) -> Result<(), crate::audit::AuditError> {
+) {
     let (actor_type, actor_id) = actor.audit_fields();
     state
         .audit
-        .record(AuditEvent::new(
+        .record_best_effort(AuditEvent::new(
             actor_type.to_owned(),
             actor_id,
             action.to_owned(),
@@ -270,5 +250,5 @@ async fn record_plan_event(
             Some(resource_id.to_owned()),
             serde_json::json!({"result": "success"}),
         ))
-        .await
+        .await;
 }

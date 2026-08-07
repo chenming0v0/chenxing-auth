@@ -208,7 +208,7 @@ async fn record_revocation_event(
 ) -> Result<(), crate::audit::AuditError> {
     state
         .audit
-        .record(AuditEvent::new(
+        .record_blocking(AuditEvent::new(
             if actor_id.is_some() {
                 "user".to_owned()
             } else {

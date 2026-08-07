@@ -36,17 +36,17 @@ pub async fn issue_authorization_code_result(
     match active_user_id(state, &user_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
-            if record_authorization_event(
-                state,
-                Some(&user_id),
-                "authorization_denied",
-                "user_disabled",
-            )
-            .await
-            .is_err()
-            {
-                return Err(error::oauth_server_error());
-            }
+            state
+                .audit
+                .record_best_effort(AuditEvent::new(
+                    "user".to_owned(),
+                    Some(user_id.clone()),
+                    "authorization_denied".to_owned(),
+                    "oauth_authorization".to_owned(),
+                    None,
+                    serde_json::json!({"reason": "user_disabled"}),
+                ))
+                .await;
             return Err(error::oauth_unauthorized(
                 "invalid_session",
                 "the authenticated session is no longer valid",
@@ -138,17 +138,17 @@ pub async fn issue_authorization_code_result(
             QuotaConsumeResult::Allowed => consumption.reservation(),
             QuotaConsumeResult::DailyExceeded | QuotaConsumeResult::MonthlyExceeded => {
                 remove_authorization_code_after_failure(state, &code, &client_id, None).await;
-                if record_authorization_event(
-                    state,
-                    Some(&user_id),
-                    "rate_limit_triggered",
-                    "oauth_quota",
-                )
-                .await
-                .is_err()
-                {
-                    return Err(error::oauth_server_error());
-                }
+                state
+                    .audit
+                    .record_best_effort(AuditEvent::new(
+                        "user".to_owned(),
+                        Some(user_id.clone()),
+                        "rate_limit_triggered".to_owned(),
+                        "oauth_quota".to_owned(),
+                        None,
+                        serde_json::json!({"reason": "oauth_quota"}),
+                    ))
+                    .await;
                 return Ok(AuthorizationCodeIssue::QuotaExceeded);
             }
         }
@@ -157,7 +157,7 @@ pub async fn issue_authorization_code_result(
     };
     if state
         .audit
-        .record(AuditEvent::new(
+        .record_blocking(AuditEvent::new(
             "user".to_owned(),
             Some(code.user_id.clone()),
             "authorization_code_issue".to_owned(),
@@ -230,29 +230,6 @@ async fn refund_quota_if_consumed(
             "failed to refund OAuth authorization quota"
         );
     }
-}
-
-async fn record_authorization_event(
-    state: &AppState,
-    actor_id: Option<&str>,
-    action: &str,
-    reason: &str,
-) -> Result<(), crate::audit::AuditError> {
-    state
-        .audit
-        .record(AuditEvent::new(
-            if actor_id.is_some() {
-                "user".to_owned()
-            } else {
-                "anonymous".to_owned()
-            },
-            actor_id.map(str::to_owned),
-            action.to_owned(),
-            "oauth_authorization".to_owned(),
-            None,
-            serde_json::json!({"reason": reason}),
-        ))
-        .await
 }
 
 pub fn validated_pending_request(pending: PendingAuthorization) -> ValidatedAuthorizationRequest {
