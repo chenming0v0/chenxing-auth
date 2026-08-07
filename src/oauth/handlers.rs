@@ -181,12 +181,15 @@ async fn save_and_redirect_to_login(
     let mut response =
         Redirect::to(&format!("/login?request_id={}", pending.request_id)).into_response();
     // Cookie 生命周期与 pending 记录的 Redis TTL 对齐：pending 过期后 Cookie 也失效。
-    cookies::append_authz_holder_cookie(
+    if let Err(cookie_error) = cookies::append_authz_holder_cookie(
         response.headers_mut(),
         &holder,
         limits.pending_request_ttl_seconds,
         state.config.cookie_secure,
-    );
+    ) {
+        tracing::error!(error = %cookie_error, "failed to build OAuth holder cookie response");
+        return error::internal();
+    }
     response
 }
 

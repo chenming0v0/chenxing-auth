@@ -131,7 +131,15 @@ pub async fn change_current_user_password(
     {
         Ok(()) => {
             let mut response = StatusCode::NO_CONTENT.into_response();
-            cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure);
+            if let Err(cookie_error) =
+                cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure)
+            {
+                tracing::error!(
+                    error = %cookie_error,
+                    "failed to build password change cookie response"
+                );
+                return error::internal();
+            }
             response
         }
         Err(crate::users::service::UserServiceError::InvalidCredentials) => {
@@ -208,8 +216,17 @@ pub async fn revoke_user_session(
     {
         Ok(true) => {
             let mut response = StatusCode::NO_CONTENT.into_response();
-            if session_id == context.session.id {
-                cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure);
+            if session_id == context.session.id
+                && let Err(cookie_error) = cookies::append_clear_cookies(
+                    response.headers_mut(),
+                    state.config.cookie_secure,
+                )
+            {
+                tracing::error!(
+                    error = %cookie_error,
+                    "failed to build session revoke cookie response"
+                );
+                return error::internal();
             }
             response
         }

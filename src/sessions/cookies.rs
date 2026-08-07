@@ -1,6 +1,6 @@
 use axum::http::{
-    HeaderMap,
-    header::{COOKIE, SET_COOKIE},
+    HeaderMap, HeaderValue,
+    header::{COOKIE, InvalidHeaderValue, SET_COOKIE},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use cookie::{Cookie, SameSite};
@@ -30,17 +30,18 @@ const LOCAL_LOGIN_TICKET_COOKIE: &str = "chenxing_login_ticket";
 const LOCAL_LOGIN_TICKET_HOLDER_COOKIE: &str = "chenxing_login_holder";
 const LOGIN_TICKET_HOLDER_BYTES: usize = 32;
 
+pub type CookieError = InvalidHeaderValue;
+
 pub fn append_login_cookies(
     headers: &mut HeaderMap,
     session_token: &str,
     csrf_token: &str,
     max_age_seconds: u64,
     secure: bool,
-) {
+) -> Result<(), CookieError> {
     let session_name = session_cookie_name(secure);
     let csrf_name = csrf_cookie_name(secure);
-    headers.append(
-        SET_COOKIE,
+    let values = [
         build_cookie(
             session_name,
             session_token,
@@ -48,29 +49,26 @@ pub fn append_login_cookies(
             secure,
             true,
             "/",
-        )
-        .parse()
-        .expect("session cookie is valid ASCII"),
-    );
-    headers.append(
-        SET_COOKIE,
-        build_cookie(csrf_name, csrf_token, max_age_seconds, secure, false, "/")
-            .parse()
-            .expect("CSRF cookie is valid ASCII"),
-    );
+        )?,
+        build_cookie(csrf_name, csrf_token, max_age_seconds, secure, false, "/")?,
+    ];
+    for value in values {
+        headers.append(SET_COOKIE, value);
+    }
+    Ok(())
 }
 
-pub fn append_clear_cookies(headers: &mut HeaderMap, secure: bool) {
+pub fn append_clear_cookies(headers: &mut HeaderMap, secure: bool) -> Result<(), CookieError> {
     let session_name = session_cookie_name(secure);
     let csrf_name = csrf_cookie_name(secure);
-    for name in [session_name, csrf_name] {
-        headers.append(
-            SET_COOKIE,
-            build_cookie(name, "", 0, secure, name == session_name, "/")
-                .parse()
-                .expect("clear cookie is valid ASCII"),
-        );
+    let values = [
+        build_cookie(session_name, "", 0, secure, true, "/")?,
+        build_cookie(csrf_name, "", 0, secure, false, "/")?,
+    ];
+    for value in values {
+        headers.append(SET_COOKIE, value);
     }
+    Ok(())
 }
 
 pub fn append_external_state_cookie(
@@ -79,14 +77,13 @@ pub fn append_external_state_cookie(
     max_age_seconds: u64,
     secure: bool,
     path: &str,
-) {
+) -> Result<(), CookieError> {
     let name = external_state_cookie_name(state);
     headers.append(
         SET_COOKIE,
-        build_cookie(&name, state, max_age_seconds, secure, true, path)
-            .parse()
-            .expect("external OAuth state cookie is valid ASCII"),
+        build_cookie(&name, state, max_age_seconds, secure, true, path)?,
     );
+    Ok(())
 }
 
 pub fn append_clear_external_state_cookie(
@@ -94,14 +91,10 @@ pub fn append_clear_external_state_cookie(
     state: &str,
     secure: bool,
     path: &str,
-) {
+) -> Result<(), CookieError> {
     let name = external_state_cookie_name(state);
-    headers.append(
-        SET_COOKIE,
-        build_cookie(&name, "", 0, secure, true, path)
-            .parse()
-            .expect("external OAuth state cookie is valid ASCII"),
-    );
+    headers.append(SET_COOKIE, build_cookie(&name, "", 0, secure, true, path)?);
+    Ok(())
 }
 
 /// 生成一个随机的授权持有者值（32 字节，base64url 编码，不含填充）。
@@ -136,30 +129,33 @@ pub fn append_login_ticket_cookies(
     holder: &str,
     max_age_seconds: u64,
     secure: bool,
-) {
+) -> Result<(), CookieError> {
     let ticket_name = login_ticket_cookie_name(secure);
     let holder_name = login_ticket_holder_cookie_name(secure);
-    for (name, value) in [(ticket_name, ticket_id), (holder_name, holder)] {
-        headers.append(
-            SET_COOKIE,
-            build_cookie(name, value, max_age_seconds, secure, true, "/")
-                .parse()
-                .expect("login ticket cookie is valid ASCII"),
-        );
+    let values = [
+        build_cookie(ticket_name, ticket_id, max_age_seconds, secure, true, "/")?,
+        build_cookie(holder_name, holder, max_age_seconds, secure, true, "/")?,
+    ];
+    for value in values {
+        headers.append(SET_COOKIE, value);
     }
+    Ok(())
 }
 
-pub fn append_clear_login_ticket_cookies(headers: &mut HeaderMap, secure: bool) {
+pub fn append_clear_login_ticket_cookies(
+    headers: &mut HeaderMap,
+    secure: bool,
+) -> Result<(), CookieError> {
     let ticket_name = login_ticket_cookie_name(secure);
     let holder_name = login_ticket_holder_cookie_name(secure);
-    for name in [ticket_name, holder_name] {
-        headers.append(
-            SET_COOKIE,
-            build_cookie(name, "", 0, secure, true, "/")
-                .parse()
-                .expect("clear login ticket cookie is valid ASCII"),
-        );
+    let values = [
+        build_cookie(ticket_name, "", 0, secure, true, "/")?,
+        build_cookie(holder_name, "", 0, secure, true, "/")?,
+    ];
+    for value in values {
+        headers.append(SET_COOKIE, value);
     }
+    Ok(())
 }
 
 pub fn login_ticket_id_for_secure_transport(headers: &HeaderMap, secure: bool) -> Option<String> {
@@ -183,7 +179,7 @@ pub fn append_authz_holder_cookie(
     holder: &str,
     max_age_seconds: u64,
     secure: bool,
-) {
+) -> Result<(), CookieError> {
     headers.append(
         SET_COOKIE,
         build_cookie(
@@ -193,10 +189,9 @@ pub fn append_authz_holder_cookie(
             secure,
             true, // http_only
             "/",
-        )
-        .parse()
-        .expect("authz holder cookie is valid ASCII"),
+        )?,
     );
+    Ok(())
 }
 
 /// 从请求 Cookie 头中提取授权持有者值（如存在）。
@@ -295,9 +290,8 @@ pub fn append_named_login_cookies(
     csrf_token: &str,
     max_age_seconds: u64,
     secure: bool,
-) {
-    headers.append(
-        SET_COOKIE,
+) -> Result<(), CookieError> {
+    let values = [
         build_cookie(
             session_name,
             session_token,
@@ -305,16 +299,13 @@ pub fn append_named_login_cookies(
             secure,
             true,
             "/",
-        )
-        .parse()
-        .expect("session cookie is valid ASCII"),
-    );
-    headers.append(
-        SET_COOKIE,
-        build_cookie(csrf_name, csrf_token, max_age_seconds, secure, false, "/")
-            .parse()
-            .expect("CSRF cookie is valid ASCII"),
-    );
+        )?,
+        build_cookie(csrf_name, csrf_token, max_age_seconds, secure, false, "/")?,
+    ];
+    for value in values {
+        headers.append(SET_COOKIE, value);
+    }
+    Ok(())
 }
 
 pub fn append_named_clear_cookies(
@@ -322,15 +313,15 @@ pub fn append_named_clear_cookies(
     session_name: &str,
     csrf_name: &str,
     secure: bool,
-) {
-    for name in [session_name, csrf_name] {
-        headers.append(
-            SET_COOKIE,
-            build_cookie(name, "", 0, secure, name == session_name, "/")
-                .parse()
-                .expect("clear cookie is valid ASCII"),
-        );
+) -> Result<(), CookieError> {
+    let values = [
+        build_cookie(session_name, "", 0, secure, true, "/")?,
+        build_cookie(csrf_name, "", 0, secure, csrf_name == session_name, "/")?,
+    ];
+    for value in values {
+        headers.append(SET_COOKIE, value);
     }
+    Ok(())
 }
 
 fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -348,7 +339,7 @@ fn build_cookie(
     secure: bool,
     http_only: bool,
     path: &str,
-) -> String {
+) -> Result<HeaderValue, CookieError> {
     let mut cookie = Cookie::build((name, value))
         .path(path)
         .same_site(SameSite::Lax)
@@ -361,13 +352,16 @@ fn build_cookie(
     if http_only {
         cookie = cookie.http_only(true);
     }
-    cookie.build().to_string()
+    HeaderValue::from_str(&cookie.build().to_string())
 }
 
 #[cfg(test)]
 mod tests {
+    use axum::http::{HeaderMap, header::SET_COOKIE};
+
     use super::{
-        authz_holder_hash, login_ticket_holder_hash, new_authz_holder, new_login_ticket_holder,
+        append_login_cookies, authz_holder_hash, login_ticket_holder_hash, new_authz_holder,
+        new_login_ticket_holder,
     };
 
     /// 回归 #115：holder 值生成应足够随机且长度合理。
@@ -416,5 +410,15 @@ mod tests {
             login_ticket_holder_hash(&holder1),
             login_ticket_holder_hash(&holder2)
         );
+    }
+
+    #[test]
+    fn invalid_cookie_header_is_returned_without_partial_headers() {
+        let mut headers = HeaderMap::new();
+
+        let result = append_login_cookies(&mut headers, "session", "csrf\nvalue", 300, false);
+
+        assert!(result.is_err());
+        assert!(headers.get(SET_COOKIE).is_none());
     }
 }

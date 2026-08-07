@@ -313,13 +313,16 @@ pub async fn login_user(
         }),
     )
         .into_response();
-    cookies::append_login_ticket_cookies(
+    if let Err(cookie_error) = cookies::append_login_ticket_cookies(
         response.headers_mut(),
         &login_ticket,
         &holder,
         crate::auth_factors::domain::LoginTicket::TTL.whole_seconds() as u64,
         state.config.cookie_secure,
-    );
+    ) {
+        tracing::error!(error = %cookie_error, "failed to build login ticket cookie response");
+        return error::internal();
+    }
     response
 }
 
@@ -352,7 +355,12 @@ pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -
                 ))
                 .await;
             let mut response = StatusCode::NO_CONTENT.into_response();
-            cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure);
+            if let Err(cookie_error) =
+                cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure)
+            {
+                tracing::error!(error = %cookie_error, "failed to build logout cookie response");
+                return error::internal();
+            }
             response
         }
         Err(session_error) => {

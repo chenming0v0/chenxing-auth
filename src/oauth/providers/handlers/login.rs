@@ -164,13 +164,20 @@ pub async fn start_external_login(
         }
     };
     let mut response = Redirect::to(&authorization_url).into_response();
-    cookies::append_external_state_cookie(
+    if let Err(cookie_error) = cookies::append_external_state_cookie(
         response.headers_mut(),
         &state_value,
         limits.external_login_state_ttl_seconds,
         state.config.cookie_secure,
         &callback_path,
-    );
+    ) {
+        tracing::error!(
+            error = %cookie_error,
+            provider = %slug,
+            "failed to build external OAuth state cookie response"
+        );
+        return error::internal();
+    }
     response
 }
 

@@ -44,7 +44,7 @@ fn secure_mode_does_not_accept_local_cookie_names() {
 #[test]
 fn logout_cookies_are_expired_for_the_browser() {
     let mut headers = HeaderMap::new();
-    append_clear_cookies(&mut headers, true);
+    append_clear_cookies(&mut headers, true).expect("valid logout cookies");
 
     let values = headers
         .get_all("set-cookie")
@@ -71,7 +71,8 @@ fn logout_cookies_are_expired_for_the_browser() {
 #[test]
 fn loopback_development_cookies_keep_http_compatibility() {
     let mut headers = HeaderMap::new();
-    append_login_cookies(&mut headers, "session", "csrf", 3600, false);
+    append_login_cookies(&mut headers, "session", "csrf", 3600, false)
+        .expect("valid login cookies");
 
     let values = headers
         .get_all("set-cookie")

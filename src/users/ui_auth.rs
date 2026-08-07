@@ -66,7 +66,15 @@ fn invalid_session_response(state: &AppState, code: &'static str) -> Response {
         "user session is invalid"
     };
     let mut response = error::unauthorized(code, message);
-    cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure);
+    if let Err(cookie_error) =
+        cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure)
+    {
+        tracing::error!(
+            error = %cookie_error,
+            "failed to build invalid session cookie response"
+        );
+        return error::internal();
+    }
     response
 }
 

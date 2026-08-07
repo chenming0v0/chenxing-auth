@@ -119,14 +119,29 @@ pub async fn issue_user_session(
         }),
     )
         .into_response();
-    cookies::append_login_cookies(
+    let cookie_result = cookies::append_login_cookies(
         response.headers_mut(),
         &session.token,
         &session.csrf_token,
         state.config.session_ttl_seconds,
         state.config.cookie_secure,
-    );
-    cookies::append_clear_login_ticket_cookies(response.headers_mut(), state.config.cookie_secure);
+    )
+    .and_then(|()| {
+        cookies::append_clear_login_ticket_cookies(
+            response.headers_mut(),
+            state.config.cookie_secure,
+        )
+    });
+    if let Err(cookie_error) = cookie_result {
+        if let Err(revoke_error) = state.sessions.revoke(&session.token).await {
+            tracing::warn!(
+                error = %revoke_error,
+                "failed to compensate session after cookie response failure"
+            );
+        }
+        tracing::error!(error = %cookie_error, "failed to build login cookie response");
+        return error::internal();
+    }
     response
 }
 
