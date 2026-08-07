@@ -120,14 +120,14 @@ function PlansManager() {
           <table className="w-full min-w-[1080px] text-left">
             <thead>
               <tr className="border-b border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)]">
-                <th className="chenxing-label px-4 py-3">套餐</th>
-                <th className="chenxing-label px-4 py-3">OAuth 应用</th>
-                <th className="chenxing-label px-4 py-3">每日授权</th>
-                <th className="chenxing-label px-4 py-3">每月授权</th>
-                <th className="chenxing-label px-4 py-3">QPS</th>
-                <th className="chenxing-label px-4 py-3">挂载用户</th>
-                <th className="chenxing-label px-4 py-3">状态</th>
-                <th className="chenxing-label px-4 py-3 text-right">操作</th>
+                <th scope="col" className="chenxing-label px-4 py-3">套餐</th>
+                <th scope="col" className="chenxing-label px-4 py-3">OAuth 应用</th>
+                <th scope="col" className="chenxing-label px-4 py-3">每日授权</th>
+                <th scope="col" className="chenxing-label px-4 py-3">每月授权</th>
+                <th scope="col" className="chenxing-label px-4 py-3">QPS</th>
+                <th scope="col" className="chenxing-label px-4 py-3">挂载用户</th>
+                <th scope="col" className="chenxing-label px-4 py-3">状态</th>
+                <th scope="col" className="chenxing-label px-4 py-3 text-right">操作</th>
               </tr>
             </thead>
             <tbody>

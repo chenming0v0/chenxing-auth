@@ -161,10 +161,10 @@ export function ConsoleOverview() {
           <table className="cx-table min-w-[720px]">
             <thead>
               <tr>
-                <th className="chenxing-body px-6 py-3 text-[0.9375rem] font-medium text-[var(--chenxing-muted-foreground)]">时间</th>
-                <th className="chenxing-body px-6 py-3 text-[0.9375rem] font-medium text-[var(--chenxing-muted-foreground)]">应用</th>
-                <th className="chenxing-body px-6 py-3 text-[0.9375rem] font-medium text-[var(--chenxing-muted-foreground)]">事件</th>
-                <th className="chenxing-body px-6 py-3 text-[0.9375rem] font-medium text-[var(--chenxing-muted-foreground)]">状态</th>
+                <th scope="col" className="chenxing-body px-6 py-3 text-[0.9375rem] font-medium text-[var(--chenxing-muted-foreground)]">时间</th>
+                <th scope="col" className="chenxing-body px-6 py-3 text-[0.9375rem] font-medium text-[var(--chenxing-muted-foreground)]">应用</th>
+                <th scope="col" className="chenxing-body px-6 py-3 text-[0.9375rem] font-medium text-[var(--chenxing-muted-foreground)]">事件</th>
+                <th scope="col" className="chenxing-body px-6 py-3 text-[0.9375rem] font-medium text-[var(--chenxing-muted-foreground)]">状态</th>
               </tr>
             </thead>
             <tbody>

@@ -244,13 +244,13 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
           <table className="w-full min-w-[820px] text-left">
             <thead>
               <tr className="border-b border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)]">
-                <th className="chenxing-label px-4 py-3">图标</th>
-                <th className="chenxing-label px-4 py-3">名称</th>
-                <th className="chenxing-label px-4 py-3">Slug</th>
-                <th className="chenxing-label px-4 py-3">状态</th>
-                <th className="chenxing-label px-4 py-3">Client ID</th>
-                <th className="chenxing-label px-4 py-3">Client Secret</th>
-                <th className="chenxing-label px-4 py-3 text-right">操作</th>
+                <th scope="col" className="chenxing-label px-4 py-3">图标</th>
+                <th scope="col" className="chenxing-label px-4 py-3">名称</th>
+                <th scope="col" className="chenxing-label px-4 py-3">Slug</th>
+                <th scope="col" className="chenxing-label px-4 py-3">状态</th>
+                <th scope="col" className="chenxing-label px-4 py-3">Client ID</th>
+                <th scope="col" className="chenxing-label px-4 py-3">Client Secret</th>
+                <th scope="col" className="chenxing-label px-4 py-3 text-right">操作</th>
               </tr>
             </thead>
             <tbody>

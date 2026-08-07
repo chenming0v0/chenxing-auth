@@ -91,11 +91,11 @@ function ClientsTable({ access }: { access: AdminAccess }) {
         <table className="w-full min-w-[920px] text-left">
           <thead>
             <tr className="border-b border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)]">
-              <th className="chenxing-label px-4 py-3">Client</th>
-              <th className="chenxing-label px-4 py-3">Owner</th>
-              <th className="chenxing-label px-4 py-3">Redirect URI</th>
-              <th className="chenxing-label px-4 py-3">状态</th>
-              <th className="chenxing-label px-4 py-3 text-right">操作</th>
+              <th scope="col" className="chenxing-label px-4 py-3">Client</th>
+              <th scope="col" className="chenxing-label px-4 py-3">Owner</th>
+              <th scope="col" className="chenxing-label px-4 py-3">Redirect URI</th>
+              <th scope="col" className="chenxing-label px-4 py-3">状态</th>
+              <th scope="col" className="chenxing-label px-4 py-3 text-right">操作</th>
             </tr>
           </thead>
           <tbody>

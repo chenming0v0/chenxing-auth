@@ -76,10 +76,10 @@ function AuditTable() {
         <table className="w-full min-w-[860px] text-left">
           <thead>
             <tr className="border-b border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)]">
-              <th className="chenxing-label px-4 py-3">时间</th>
-              <th className="chenxing-label px-4 py-3">动作</th>
-              <th className="chenxing-label px-4 py-3">资源</th>
-              <th className="chenxing-label px-4 py-3">执行者</th>
+              <th scope="col" className="chenxing-label px-4 py-3">时间</th>
+              <th scope="col" className="chenxing-label px-4 py-3">动作</th>
+              <th scope="col" className="chenxing-label px-4 py-3">资源</th>
+              <th scope="col" className="chenxing-label px-4 py-3">执行者</th>
             </tr>
           </thead>
           <tbody>

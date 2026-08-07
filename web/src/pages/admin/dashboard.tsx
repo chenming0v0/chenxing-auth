@@ -98,10 +98,10 @@ export function AdminDashboard() {
                   <table className="cx-table min-w-[720px]">
                     <thead>
                       <tr className="bg-[rgba(4,8,16,0.5)]">
-                        <th className="chenxing-label px-4 py-3">时间</th>
-                        <th className="chenxing-label px-4 py-3">事件</th>
-                        <th className="chenxing-label px-4 py-3">主体</th>
-                        <th className="chenxing-label px-4 py-3 text-right">资源</th>
+                        <th scope="col" className="chenxing-label px-4 py-3">时间</th>
+                        <th scope="col" className="chenxing-label px-4 py-3">事件</th>
+                        <th scope="col" className="chenxing-label px-4 py-3">主体</th>
+                        <th scope="col" className="chenxing-label px-4 py-3 text-right">资源</th>
                       </tr>
                     </thead>
                     <tbody>
