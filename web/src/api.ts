@@ -93,6 +93,86 @@ function redirectToLogin(): void {
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
+function isUserRole(value: unknown): value is UserRole {
+  return value === 'user' || value === 'admin' || value === 'owner'
+}
+
+function isUserMeResponse(value: unknown): value is UserMe {
+  return isRecord(value)
+    && typeof value.id === 'number'
+    && Number.isFinite(value.id)
+    && typeof value.username === 'string'
+    && typeof value.email === 'string'
+    && (value.display_name === null || typeof value.display_name === 'string')
+    && typeof value.status === 'string'
+    && isUserRole(value.role)
+    && typeof value.current_session_expires_at === 'string'
+}
+
+function isAuthStatusResponse(value: unknown): value is AuthStatusResponse {
+  return isRecord(value) && typeof value.authenticated === 'boolean'
+}
+
+function isAdminMeResponse(value: unknown): value is AdminMeResponse {
+  if (!isRecord(value)) return false
+  const userIdValid = value.user_id === undefined
+    || value.user_id === null
+    || (typeof value.user_id === 'number' && Number.isFinite(value.user_id))
+  const usernameValid = value.username === undefined
+    || value.username === null
+    || typeof value.username === 'string'
+  return userIdValid
+    && usernameValid
+    && (value.role === 'admin' || value.role === 'owner')
+    && isStringArray(value.permissions)
+    && typeof value.status === 'string'
+}
+
+function isPendingAuthorizationResponse(value: unknown): value is PendingAuthorization {
+  return isRecord(value)
+    && typeof value.request_id === 'string'
+    && typeof value.client_id === 'string'
+    && typeof value.client_name === 'string'
+    && typeof value.redirect_host === 'string'
+    && isStringArray(value.scopes)
+    && typeof value.expires_in === 'number'
+    && Number.isFinite(value.expires_in)
+}
+
+function isAuthorizationDecisionResponse(value: unknown): value is AuthorizationDecisionResponse {
+  return isRecord(value)
+    && (value.decision === 'approve' || value.decision === 'deny')
+    && typeof value.redirect_to === 'string'
+}
+
+type ResponseGuard = (value: unknown) => boolean
+
+function responseGuard(path: string, method: string): ResponseGuard | undefined {
+  const endpoint = path.split('?')[0]
+  if (endpoint === '/api/v1/auth/me') return isUserMeResponse
+  if (endpoint === '/api/v1/auth/status') return isAuthStatusResponse
+  if (endpoint === '/api/v1/admin/auth/me') return isAdminMeResponse
+
+  const pendingEndpoint = /^\/api\/v1\/oauth\/authorize\/requests\/[^/]+$/
+  if (pendingEndpoint.test(endpoint)) {
+    if (method === 'GET') return isPendingAuthorizationResponse
+    if (method === 'POST') return isAuthorizationDecisionResponse
+  }
+  return undefined
+}
+
+function invalidSuccessResponse(status: number): ApiError {
+  return new ApiError(safeErrorMessage(status), status)
+}
+
 export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
   const { redirectOn401 = true, ...requestInit } = init
   const method = requestInit.method?.toUpperCase() ?? 'GET'
@@ -117,8 +197,23 @@ export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Prom
     if (response.status === 401 && redirectOn401) redirectToLogin()
     throw new ApiError(safeErrorMessage(response.status, code), response.status, code)
   }
-  if (response.status === 204) return undefined as T
-  return response.json() as Promise<T>
+
+  const guard = responseGuard(path, method)
+  if (response.status === 204) {
+    if (guard) throw invalidSuccessResponse(response.status)
+    return undefined as T
+  }
+
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    throw invalidSuccessResponse(response.status)
+  }
+  if (body === undefined || (guard && !guard(body))) {
+    throw invalidSuccessResponse(response.status)
+  }
+  return body as T
 }
 
 export type UserRole = 'user' | 'admin' | 'owner'

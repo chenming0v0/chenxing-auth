@@ -129,11 +129,13 @@ describe('externalLoginErrorMessage', () => {
 })
 
 /** 构造 apiFetch 只需要的 Response 子集，避免依赖 jsdom 的 Response 实现细节。 */
-function stubResponse(init: { status: number; body?: unknown; jsonThrows?: boolean }): Response {
+function stubResponse(init: { status: number; body?: unknown; jsonThrows?: boolean; jsonError?: unknown }): Response {
   return {
     ok: init.status >= 200 && init.status < 300,
     status: init.status,
-    json: () => (init.jsonThrows ? Promise.reject(new Error('not json')) : Promise.resolve(init.body)),
+    json: () => (init.jsonThrows
+      ? Promise.reject(init.jsonError ?? new Error('not json'))
+      : Promise.resolve(init.body)),
   } as unknown as Response
 }
 
@@ -172,6 +174,19 @@ describe('apiFetch', () => {
     expect(headersOf(fetchMock).get('Accept')).toBe('application/json')
   })
 
+  it('wraps invalid JSON from a successful response in a safe ApiError', async () => {
+    fetchMock.mockResolvedValue(stubResponse({
+      status: 200,
+      jsonThrows: true,
+      jsonError: new SyntaxError('Unexpected token < in JSON'),
+    }))
+
+    const error = await apiFetch('/api/v1/health').catch((value: unknown) => value)
+    expect(error).toBeInstanceOf(ApiError)
+    expect(error).toMatchObject({ status: 200, message: SAFE_FALLBACK })
+    expect((error as ApiError).message).not.toContain('Unexpected token')
+  })
+
   it('returns undefined for 204 responses without parsing a body', async () => {
     // 204 没有 body，调用 response.json() 会抛错，必须提前短路。
     const json = vi.fn(() => Promise.reject(new Error('unexpected json parse')))
@@ -182,7 +197,7 @@ describe('apiFetch', () => {
 
   it('omits the CSRF header on GET and HEAD', async () => {
     document.cookie = 'chenxing_csrf=token-abc'
-    fetchMock.mockResolvedValue(stubResponse({ status: 200, body: {} }))
+    fetchMock.mockResolvedValue(stubResponse({ status: 200, body: { authenticated: false } }))
     await apiFetch('/api/v1/auth/status')
     await apiFetch('/api/v1/auth/status', { method: 'head' })
     expect(headersOf(fetchMock, 0).get('X-CSRF-Token')).toBeNull()
@@ -281,8 +296,56 @@ describe('apiFetch', () => {
   })
 
   it('does not send redirectOn401 to fetch', async () => {
-    fetchMock.mockResolvedValue(stubResponse({ status: 200, body: {} }))
+    fetchMock.mockResolvedValue(stubResponse({ status: 200, body: { authenticated: false } }))
     await apiFetch('/api/v1/auth/status', { redirectOn401: false })
     expect(fetchMock.mock.calls[0][1]).not.toHaveProperty('redirectOn401')
+  })
+
+  it('rejects an auth/status response with the wrong field type', async () => {
+    fetchMock.mockResolvedValue(stubResponse({ status: 200, body: { authenticated: 'true' } }))
+
+    await expect(apiFetch('/api/v1/auth/status')).rejects.toMatchObject({
+      status: 200,
+      message: SAFE_FALLBACK,
+    })
+  })
+
+  it('rejects an auth/me response with an unknown role', async () => {
+    fetchMock.mockResolvedValue(stubResponse({
+      status: 200,
+      body: {
+        id: 42,
+        username: 'user-42',
+        email: 'user@example.test',
+        display_name: null,
+        status: 'active',
+        role: 'superuser',
+        current_session_expires_at: '2099-01-01T00:00:00Z',
+      },
+    }))
+
+    await expect(apiFetch('/api/v1/auth/me')).rejects.toMatchObject({
+      status: 200,
+      message: SAFE_FALLBACK,
+    })
+  })
+
+  it('rejects an OAuth pending response with non-array scopes', async () => {
+    fetchMock.mockResolvedValue(stubResponse({
+      status: 200,
+      body: {
+        request_id: 'request-1',
+        client_id: 'client-1',
+        client_name: 'Example App',
+        redirect_host: 'client.example.test',
+        scopes: 'openid',
+        expires_in: 600,
+      },
+    }))
+
+    await expect(apiFetch('/api/v1/oauth/authorize/requests/request-1')).rejects.toMatchObject({
+      status: 200,
+      message: SAFE_FALLBACK,
+    })
   })
 })
