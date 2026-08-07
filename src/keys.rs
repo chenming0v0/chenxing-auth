@@ -410,9 +410,15 @@ fn build_key_state(
 
 fn generate_rsa_key() -> Result<(String, PrivateKeyDer), KeyManagerError> {
     let key_pair = KeyPair::generate(KeySize::Rsa2048).map_err(|_| KeyManagerError::Generation)?;
-    let pkcs8 = key_pair.as_der().map_err(|_| KeyManagerError::Encoding)?;
-    let private_key_info = PrivateKeyInfo::try_from(pkcs8.as_ref())?;
-    let der = Zeroizing::new(private_key_info.private_key.to_vec());
+    let pkcs8 = {
+        let encoded = key_pair.as_der().map_err(|_| KeyManagerError::Encoding)?;
+        // Keep an owned copy zeroizing too; the parsed PKCS#1 material is another sensitive copy.
+        Zeroizing::new(encoded.as_ref().to_vec())
+    };
+    let der = {
+        let private_key_info = PrivateKeyInfo::try_from(pkcs8.as_slice())?;
+        Zeroizing::new(private_key_info.private_key.to_vec())
+    };
     Ok((format!("cx-{}", uuid::Uuid::new_v4().simple()), der))
 }
 
