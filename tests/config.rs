@@ -97,6 +97,26 @@ fn config_debug_does_not_expose_authentication_key() {
 }
 
 #[test]
+fn config_debug_redacts_database_and_redis_credentials() {
+    let config = Config::from_values_with_issuer(
+        "127.0.0.1".to_owned(),
+        3000,
+        "http://127.0.0.1:3000".to_owned(),
+        "postgres://db-user:database-password@db.example/chenxing_auth".to_owned(),
+        "redis://redis-user:redis-password@redis.example/0".to_owned(),
+        3600,
+    )
+    .expect("valid configuration");
+
+    let debug = format!("{config:?}");
+
+    assert!(debug.contains("database_url: \"<redacted>\""));
+    assert!(debug.contains("redis_url: \"<redacted>\""));
+    assert!(!debug.contains("database-password"));
+    assert!(!debug.contains("redis-password"));
+}
+
+#[test]
 fn encryption_key_ring_selects_active_key_and_keeps_old_keys_readable() {
     let ring = AuthEncryptionKeyRing::from_entries(
         "current".to_owned(),
