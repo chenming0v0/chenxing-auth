@@ -97,9 +97,33 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
         )
         .await
         .expect("registration response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json_body(response).await["code"], "email_verification_unavailable");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("authorization", "Bearer flow-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": username,
+                        "email": email,
+                        "password": password,
+                        "display_name": "Flow User"
+                    })
+                    .to_string(),
+                ))
+                .expect("admin user creation request"),
+        )
+        .await
+        .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
     let user = json_body(response).await;
-    let user_id = user["user"]["id"].as_i64().expect("numeric user id");
+    let user_id = user["id"].as_i64().expect("numeric user id");
 
     let response = router
         .clone()
