@@ -7,10 +7,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::auth_limiter::{
     AuthFailureLimiter, FailureDimension,
-    domain::{AuthLimiterError, FailureRecord, LimiterFuture},
+    domain::{AuthLimiterError, FailureRecord, LimiterFuture, commit_reserved_failure},
 };
-
-use super::commit_reserved_failure;
 
 /// 记录收到的调用类型，`record_reserved_failures` 始终返回存储错误以模拟 Redis 故障。
 struct FailingRecordLimiter {
@@ -73,12 +71,21 @@ impl AuthFailureLimiter for FailingRecordLimiter {
 /// `record_reserved_failures` 成功时不应调用 `release`。
 struct SuccessLimiter {
     calls: Mutex<Vec<&'static str>>,
+    record: FailureRecord,
 }
 
 impl SuccessLimiter {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             calls: Mutex::new(Vec::new()),
+            record: FailureRecord::recorded(Vec::new()),
+        })
+    }
+
+    fn not_recorded() -> Arc<Self> {
+        Arc::new(Self {
+            calls: Mutex::new(Vec::new()),
+            record: FailureRecord::not_recorded(),
         })
     }
 
@@ -113,11 +120,8 @@ impl AuthFailureLimiter for SuccessLimiter {
         _dimensions: Vec<crate::auth_limiter::LimiterDimension>,
     ) -> LimiterFuture<'a, FailureRecord> {
         self.calls.lock().unwrap().push("record");
-        Box::pin(async {
-            Ok(FailureRecord {
-                reached: Vec::new(),
-            })
-        })
+        let record = self.record.clone();
+        Box::pin(async move { Ok(record) })
     }
 
     fn release<'a>(
@@ -167,4 +171,17 @@ async fn record_failure_does_not_release_on_success() {
         vec!["record"],
         "no release call on success, got: {calls:?}"
     );
+}
+
+#[tokio::test]
+// #186：FailOpen 的未记账成功结果也必须归还 pending reservation。
+async fn unrecorded_fail_open_result_releases_reservation() {
+    let limiter = SuccessLimiter::not_recorded();
+    let dimensions = vec![(FailureDimension::Account, "user@example.com".to_owned())];
+
+    let result = commit_reserved_failure(limiter.as_ref(), dimensions).await;
+
+    let record = result.expect("expected fail-open fallback record");
+    assert!(!record.was_recorded());
+    assert_eq!(limiter.calls(), vec!["record", "release"]);
 }
