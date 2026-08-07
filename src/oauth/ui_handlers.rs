@@ -132,7 +132,7 @@ pub async fn bind_authorization_request(
         Ok(context) => context,
         Err(response) => return response,
     };
-    if !csrf_valid(&headers, &context.session) {
+    if !csrf_valid(&headers, &context.session, state.config.cookie_secure) {
         return error::bad_request("csrf_invalid", "CSRF token is invalid");
     }
     let Some(mut pending) = (match state.authorization_requests.find(&request_id).await {
@@ -206,7 +206,7 @@ pub async fn decide_authorization_request(
         Ok(context) => context,
         Err(response) => return response,
     };
-    if !csrf_valid(&headers, &context.session) {
+    if !csrf_valid(&headers, &context.session, state.config.cookie_secure) {
         return error::bad_request("csrf_invalid", "CSRF token is invalid");
     }
     let Some(decision) = parse_decision(&input.decision) else {
@@ -435,8 +435,8 @@ fn pending_expired() -> Response {
     )
 }
 
-fn csrf_valid(headers: &HeaderMap, session: &Session) -> bool {
-    let Some(cookie) = cookies::csrf_cookie(headers) else {
+fn csrf_valid(headers: &HeaderMap, session: &Session, secure: bool) -> bool {
+    let Some(cookie) = cookies::csrf_cookie_for_secure_transport(headers, secure) else {
         return false;
     };
     let Some(header) = cookies::csrf_token(headers) else {

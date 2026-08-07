@@ -363,6 +363,13 @@ impl Config {
         {
             return Err(ConfigError::InvalidValue("APP_ISSUER"));
         }
+        validate_cookie_security(&issuer, cookie_secure)?;
+        if cookie_secure && issuer.scheme() == "http" {
+            tracing::warn!(
+                issuer = %issuer,
+                "COOKIE_SECURE=true with an HTTP APP_ISSUER: browsers may reject the Secure cookies"
+            );
+        }
         if database_url.trim().is_empty() {
             return Err(ConfigError::MissingValue("DATABASE_URL"));
         }
@@ -436,6 +443,29 @@ impl Config {
             audit_retention,
         })
     }
+
+    pub(crate) fn validate_cookie_security(&self) -> Result<(), ConfigError> {
+        let issuer = url::Url::parse(&self.issuer_url)
+            .map_err(|_| ConfigError::InvalidValue("APP_ISSUER"))?;
+        validate_cookie_security(&issuer, self.cookie_secure)
+    }
+}
+
+fn validate_cookie_security(issuer: &url::Url, cookie_secure: bool) -> Result<(), ConfigError> {
+    if cookie_secure || is_loopback_http_issuer(issuer) {
+        return Ok(());
+    }
+    Err(ConfigError::InvalidValue("COOKIE_SECURE"))
+}
+
+fn is_loopback_http_issuer(issuer: &url::Url) -> bool {
+    issuer.scheme() == "http"
+        && issuer.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|address| address.is_loopback())
+        })
 }
 
 #[cfg(test)]

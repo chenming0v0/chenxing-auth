@@ -41,6 +41,7 @@ fn changing_the_session_ttl_never_moves_the_token_ttls() {
 fn test_constructors_default_to_safe_values() {
     let config = config_with_session_ttl(3600);
 
+    assert!(config.cookie_secure);
     // 未配置可信代理：忽略 XFF，等价于升级前的行为。
     assert!(config.trusted_proxies.is_empty());
     assert_eq!(config.security_limits, SecurityLimits::default());
@@ -57,4 +58,23 @@ fn session_ttl_of_zero_is_still_rejected() {
     )
     .expect_err("zero session TTL must be rejected");
     assert_eq!(error, ConfigError::InvalidValue("SESSION_TTL_SECONDS"));
+}
+
+#[test]
+fn insecure_cookies_are_allowed_only_for_loopback_http() {
+    let mut config = config_with_session_ttl(3600);
+    config.cookie_secure = false;
+    assert!(config.validate_cookie_security().is_ok());
+
+    config.issuer_url = "https://auth.example.com".to_owned();
+    assert_eq!(
+        config.validate_cookie_security(),
+        Err(ConfigError::InvalidValue("COOKIE_SECURE"))
+    );
+
+    config.issuer_url = "http://auth.example.com".to_owned();
+    assert_eq!(
+        config.validate_cookie_security(),
+        Err(ConfigError::InvalidValue("COOKIE_SECURE"))
+    );
 }

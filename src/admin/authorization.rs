@@ -105,7 +105,7 @@ pub async fn current_admin_mutation(
     }
     let context = current_user(state, headers).await?;
     // CSRF 校验失败同样是安全失败：可能是跨站伪造或会话重放，必须可检索。
-    if !user_csrf_valid(headers, &context.session) {
+    if !user_csrf_valid(headers, &context.session, state.config.cookie_secure) {
         record_authz_denial(state, context.user_id, permission, "csrf_invalid").await;
         return Err(error::bad_request("csrf_invalid", "CSRF token is invalid"));
     }

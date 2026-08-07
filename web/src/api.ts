@@ -13,17 +13,20 @@ export type ApiRequestInit = RequestInit & { redirectOn401?: boolean }
 
 /** 从 cookie 字符串中解析 CSRF token；接受字符串入参以便脱离 document 单测。 */
 export function parseCsrfToken(cookieString: string): string | undefined {
-  const value = cookieString
-    .split(';')
-    .map((cookie) => cookie.trim())
-    .find((cookie) => cookie.startsWith('chenxing_csrf='))
-    ?.slice('chenxing_csrf='.length)
-  if (!value) return undefined
-  try {
-    return decodeURIComponent(value)
-  } catch {
-    return value
+  for (const name of ['__Host-chenxing_csrf', 'chenxing_csrf']) {
+    const value = cookieString
+      .split(';')
+      .map((cookie) => cookie.trim())
+      .find((cookie) => cookie.startsWith(`${name}=`))
+      ?.slice(name.length + 1)
+    if (!value) continue
+    try {
+      return decodeURIComponent(value)
+    } catch {
+      return value
+    }
   }
+  return undefined
 }
 
 function csrfToken(): string | undefined {

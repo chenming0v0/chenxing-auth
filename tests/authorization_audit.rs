@@ -74,9 +74,9 @@ async fn browser_session(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -
         .expect("save browser session");
     let cookie = format!(
         "{}={}; {}={}",
-        cookies::SESSION_COOKIE,
+        cookies::session_cookie_name(false),
         session.token,
-        cookies::CSRF_COOKIE,
+        cookies::csrf_cookie_name(false),
         session.csrf_token
     );
     (cookie, session.csrf_token)

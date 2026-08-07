@@ -112,9 +112,9 @@ async fn revoke_fixture(label: &str) -> RevokeFixture {
 fn session_cookie(session: &Session) -> String {
     format!(
         "{}={}; {}={}",
-        cookies::SESSION_COOKIE,
+        cookies::session_cookie_name(false),
         session.token,
-        cookies::CSRF_COOKIE,
+        cookies::csrf_cookie_name(false),
         session.csrf_token
     )
 }

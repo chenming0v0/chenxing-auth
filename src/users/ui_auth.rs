@@ -18,7 +18,8 @@ pub(crate) async fn current_user(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<UserContext, Response> {
-    let Some(session_token) = cookies::cookie_value_by_name(headers, cookies::SESSION_COOKIE)
+    let Some(session_token) =
+        cookies::session_cookie_id_for_secure_transport(headers, state.config.cookie_secure)
     else {
         return Err(error::unauthorized(
             "login_required",
@@ -74,7 +75,7 @@ pub(crate) async fn mutation_user(
     headers: &HeaderMap,
 ) -> Result<UserContext, ()> {
     let context = current_user(state, headers).await.map_err(|_| ())?;
-    if !user_csrf_valid(headers, &context.session) {
+    if !user_csrf_valid(headers, &context.session, state.config.cookie_secure) {
         return Err(());
     }
     Ok(context)
@@ -83,15 +84,17 @@ pub(crate) async fn mutation_user(
 pub(crate) async fn mutation_error(state: &AppState, headers: &HeaderMap) -> Response {
     match current_user(state, headers).await {
         Err(response) => response,
-        Ok(context) if !user_csrf_valid(headers, &context.session) => {
+        Ok(context)
+            if !user_csrf_valid(headers, &context.session, state.config.cookie_secure) =>
+        {
             error::bad_request("csrf_invalid", "CSRF token is invalid")
         }
         Ok(_) => error::internal(),
     }
 }
 
-pub(crate) fn user_csrf_valid(headers: &HeaderMap, session: &Session) -> bool {
-    let Some(cookie) = cookies::csrf_cookie(headers) else {
+pub(crate) fn user_csrf_valid(headers: &HeaderMap, session: &Session, secure: bool) -> bool {
+    let Some(cookie) = cookies::csrf_cookie_for_secure_transport(headers, secure) else {
         return false;
     };
     let Some(header) = cookies::csrf_token(headers) else {

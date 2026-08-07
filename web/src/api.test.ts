@@ -16,6 +16,10 @@ const POLLUTION_KEYS = [
 ]
 
 describe('parseCsrfToken', () => {
+  it('reads the secure host-only cookie name', () => {
+    expect(parseCsrfToken('__Host-chenxing_csrf=abc123')).toBe('abc123')
+  })
+
   it('reads the token from a single cookie', () => {
     expect(parseCsrfToken('chenxing_csrf=abc123')).toBe('abc123')
   })
@@ -24,6 +28,7 @@ describe('parseCsrfToken', () => {
     expect(parseCsrfToken('a=1; chenxing_csrf=abc123; b=2')).toBe('abc123')
     expect(parseCsrfToken('chenxing_csrf=abc123; b=2')).toBe('abc123')
     expect(parseCsrfToken('a=1; chenxing_csrf=abc123')).toBe('abc123')
+    expect(parseCsrfToken('a=1; __Host-chenxing_csrf=abc123; b=2')).toBe('abc123')
   })
 
   it('tolerates missing spaces and extra whitespace between cookies', () => {
@@ -57,6 +62,10 @@ describe('parseCsrfToken', () => {
 
   it('picks the first matching cookie when duplicates exist', () => {
     expect(parseCsrfToken('chenxing_csrf=first; chenxing_csrf=second')).toBe('first')
+  })
+
+  it('prefers the secure cookie when both names are present', () => {
+    expect(parseCsrfToken('chenxing_csrf=local; __Host-chenxing_csrf=secure')).toBe('secure')
   })
 })
 
@@ -146,6 +155,7 @@ describe('apiFetch', () => {
   beforeEach(() => {
     fetchMock = createFetchMock()
     vi.stubGlobal('fetch', fetchMock)
+    document.cookie = '__Host-chenxing_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
     document.cookie = 'chenxing_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
   })
 
