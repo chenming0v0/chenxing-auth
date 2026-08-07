@@ -160,7 +160,7 @@ function NavMenu({
       data-menu
       ref={panelRef}
       onKeyDown={onKeyDown}
-      className="chenxing-menu absolute right-0 top-full z-50 mt-3 w-60"
+      className="chenxing-menu absolute right-0 top-full z-[var(--chenxing-z-menu)] mt-3 w-60"
     >
       <Link to="/" className="chenxing-nav-menu-item" onClick={onNavigate}>主页<Icon name="arrow-up-right" size={16} /></Link>
       <Link to="/console" className="chenxing-nav-menu-item" onClick={onNavigate}>控制台<Icon name="layout-dashboard" size={16} /></Link>
@@ -229,7 +229,7 @@ function AccountMenu() {
         {initialOf(name)}
       </button>
       {open ? (
-        <div id={panelId} ref={panelRef} onKeyDown={onPanelKeyDown} className="chenxing-menu absolute right-0 top-full z-50 mt-3 w-64 p-0 overflow-hidden">
+        <div id={panelId} ref={panelRef} onKeyDown={onPanelKeyDown} className="chenxing-menu absolute right-0 top-full z-[var(--chenxing-z-menu)] mt-3 w-64 p-0 overflow-hidden">
           {/* ── 用户信息头 ── */}
           <div className="chenxing-account-header">
             <div className="chenxing-avatar h-14 w-14 text-lg pointer-events-none">
@@ -347,7 +347,7 @@ export function AuthShell({
 
 export function AuthPanel({ children, className = 'w-full max-w-md' }: { children: ReactNode; className?: string }) {
   return (
-    <section className="relative z-10 flex flex-1 items-center justify-center px-6 py-14 lg:px-12">
+    <section className="relative z-[var(--chenxing-z-content)] flex flex-1 items-center justify-center px-6 py-14 lg:px-12">
       <div className={className}>
         <HudPanel>{children}</HudPanel>
         <p className="chenxing-mono mt-6 text-center text-[10px] uppercase tracking-[0.24em] text-[var(--chenxing-muted-foreground)]">
@@ -431,7 +431,7 @@ export function ConsoleLayout({ children }: { children: ReactNode }) {
     <SpaceBackdrop className="console-shell" opacity={0.4} dense>
       <SkipLink targetId={targetId} />
       <Sidebar />
-      <div className="chenxing-console-main relative z-10 flex min-h-screen flex-col">
+      <div className="chenxing-console-main relative z-[var(--chenxing-z-content)] flex min-h-screen flex-col">
         {/* sidebar already carries the brand lockup, so the topbar brand only
             appears once the bar condenses into its capsule */}
         <GlobalTopbar

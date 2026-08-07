@@ -91,7 +91,7 @@ export function ConsoleProfile() {
           <div className="relative flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
             <div className="flex items-start gap-5">
               <div className="relative shrink-0">
-                <span className="pointer-events-none absolute inset-0 -z-10 m-auto block h-28 w-28 rounded-full bg-[var(--chenxing-cyan)] opacity-40 blur-2xl" />
+                <span className="pointer-events-none absolute inset-0 z-[var(--chenxing-z-backdrop)] m-auto block h-28 w-28 rounded-full bg-[var(--chenxing-cyan)] opacity-40 blur-2xl" />
                 <span className="chenxing-avatar h-24 w-24 text-3xl">{initialOf(name)}</span>
                 <span className="absolute -bottom-1 -right-1 inline-flex h-8 w-8 items-center justify-center rounded-full border border-[rgba(103,232,249,0.4)] bg-[var(--chenxing-background)]">
                   <Icon name="badge-check" className="text-[var(--chenxing-cyan)]" size={20} />

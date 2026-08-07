@@ -91,8 +91,8 @@ export function SpaceBackdrop({
       <div className={`chenxing-nebula ${dense ? 'right-[-12%] top-[30%] h-[480px] w-[480px] opacity-10' : 'right-[-12%] bottom-[-18%] h-[540px] w-[540px] opacity-15'} bg-[var(--chenxing-cyan)]`} />
       {!dense ? <div className="chenxing-nebula left-[30%] bottom-[-20%] h-[560px] w-[560px] bg-[var(--chenxing-primary)] opacity-15" /> : null}
       <Starfield opacity={opacity} />
-      <div className={`chenxing-grid absolute inset-0 ${dense ? '-z-10' : ''}`} />
-      <div className={`chenxing-vignette absolute inset-0 ${dense ? '-z-10' : ''}`} />
+      <div className={`chenxing-grid absolute inset-0 ${dense ? 'z-[var(--chenxing-z-backdrop)]' : ''}`} />
+      <div className={`chenxing-vignette absolute inset-0 ${dense ? 'z-[var(--chenxing-z-backdrop)]' : ''}`} />
       {children}
     </main>
   )

@@ -1,6 +1,6 @@
 .oauth-shell {
         position: relative;
-        z-index: 10;
+        z-index: var(--chenxing-z-content);
         display: flex;
         min-height: 100vh;
         flex-direction: column;

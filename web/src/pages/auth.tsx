@@ -300,7 +300,7 @@ export function BootstrapPage() {
 
   return (
     <AuthShell status="系统初始化" action="返回登录" actionTo="/login" className="">
-      <section className="relative z-10 flex min-h-screen items-center justify-center px-6 py-14">
+      <section className="relative z-[var(--chenxing-z-content)] flex min-h-screen items-center justify-center px-6 py-14">
         <div className="w-full max-w-lg">
           <HudPanel>
             <div className="text-center">

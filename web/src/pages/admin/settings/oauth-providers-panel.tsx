@@ -306,7 +306,7 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
       </HudPanel>
 
       {open ? (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[rgba(2,4,10,0.72)] px-4 py-8 backdrop-blur-md">
+        <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-[rgba(2,4,10,0.72)] px-4 py-8 backdrop-blur-md">
           <HudPanel as="form" className="w-full max-w-lg max-h-[90vh] overflow-y-auto" onSubmit={save}>
             <div className="flex items-start justify-between gap-4">
               <div>

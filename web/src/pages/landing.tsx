@@ -37,7 +37,7 @@ export function LandingPage() {
         </>
       )}
     >
-      <div className="relative z-10">
+      <div className="relative z-[var(--chenxing-z-content)]">
         <section className="relative mx-auto flex min-h-[88vh] max-w-6xl flex-col items-center justify-center px-6 pb-16 pt-20 text-center">
           <div className="relative mb-10 flex h-36 w-36 items-center justify-center">
             <span className="absolute -inset-10 rounded-full border border-[var(--chenxing-border)] opacity-60" />

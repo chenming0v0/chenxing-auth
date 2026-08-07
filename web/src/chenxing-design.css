@@ -57,6 +57,23 @@
   --chenxing-shadow-glow-float: 0 0 24px rgba(56, 189, 248, 0.35), 0 0 64px rgba(56, 189, 248, 0.18);
   --chenxing-shadow-cyan-float: 0 0 20px rgba(103, 232, 249, 0.25);
 
+  /* z-index — 语义分层（#231）
+     禁止在组件里写裸数字：所有 z-index 只在此定义一次，组件按层名引用。
+     层号刻意保留历史值，只把“魔法数字”收敛为语义 token，不改变任何实际
+     叠放顺序；唯一例外是跳过链接从 60 提到 90，保证键盘聚焦时盖过所有
+     模态层（抽屉 70 / select 弹出层 80）。从底到顶：
+     装饰背景 → 基础内容 → 顶栏 → 导航 → 菜单 → 遮罩 → 对话框/抽屉 →
+     弹出层 → 系统 UI。 */
+  --chenxing-z-backdrop: -10;  /* 装饰背景：网格 / 暗角 / 光斑，垫在内容之下 */
+  --chenxing-z-content: 10;    /* 基础内容：oauth-shell、认证/控制台面板、落地页 */
+  --chenxing-z-topbar: 30;     /* 全局顶栏（sticky 胶囊） */
+  --chenxing-z-nav: 40;        /* 固定导航：桌面侧栏、移动端底栏 */
+  --chenxing-z-menu: 50;       /* 下拉菜单：汉堡导航、账户菜单 */
+  --chenxing-z-overlay: 60;    /* 模态遮罩：抽屉遮罩、居中对话框遮罩 */
+  --chenxing-z-dialog: 70;     /* 对话框 / 抽屉面板本体 */
+  --chenxing-z-popover: 80;    /* 弹出层：自定义 select 列表 */
+  --chenxing-z-system: 90;     /* 系统 UI：跳到主内容，聚焦时须盖过一切 */
+
   /* type
      拉丁字形来自 index.css 里自托管的 Orbitron / Exo 2 / Share Tech Mono；
      中文走系统字体栈，不再下载 Noto Sans SC（完整 CJK 字符集有 505 个 woff2
@@ -463,7 +480,7 @@ td.chenxing-label {
 .chenxing-sidebar {
   position: fixed;
   top: 0; left: 0; bottom: 0;
-  z-index: 40;
+  z-index: var(--chenxing-z-nav);
   display: flex;
   flex-direction: column;
   width: 15rem;
@@ -526,7 +543,7 @@ td.chenxing-label {
 .chenxing-topbar {
   position: sticky;
   top: 0.9rem;
-  z-index: 30;
+  z-index: var(--chenxing-z-topbar);
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
@@ -681,14 +698,16 @@ td.chenxing-label {
 
 /* ---------- global skip-to-content (#225) ---------- */
 /* 键盘可达的「跳到主内容」：链接常驻 DOM 但不可见，:focus-visible 时从视口
-   顶部滑入，盖在 topbar（z-30）/ 侧栏（z-40）之上（z-60）。
+   顶部滑入。用系统 UI 层（--chenxing-z-system，90），高于导航（40）、菜单
+   （50）、抽屉/对话框（70）与 select 弹出层（80）：无论什么模态层打开，
+   键盘用户聚焦跳过链接时它都永远在最上面。
    不用玻璃卡片样式：半透明 popover 表面 + cyan 描边与光晕，全部沿用现有令牌；
    focus ring 由 index.css 的全局 :focus-visible 规则提供。 */
 .chenxing-skip-link {
   position: fixed;
   top: 0.85rem;
   left: 50%;
-  z-index: 60;
+  z-index: var(--chenxing-z-system);
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
@@ -772,7 +791,7 @@ td.chenxing-label {
 .chenxing-bottom-nav {
   position: fixed;
   left: 0; right: 0; bottom: 0;
-  z-index: 40;
+  z-index: var(--chenxing-z-nav);
   display: flex;
   gap: 0.15rem;
   padding: 0.4rem 0.5rem calc(0.4rem + env(safe-area-inset-bottom));
@@ -919,7 +938,7 @@ td.chenxing-label {
 .chenxing-drawer-overlay {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: var(--chenxing-z-overlay);
   background: rgba(2, 5, 12, 0.62);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
@@ -935,7 +954,7 @@ td.chenxing-label {
 .chenxing-drawer {
   position: fixed;
   top: 0; right: 0; bottom: 0;
-  z-index: 70;
+  z-index: var(--chenxing-z-dialog);
   display: flex;
   flex-direction: column;
   width: min(36.125rem, 100vw);
@@ -1023,7 +1042,7 @@ td.chenxing-label {
 
 .chenxing-select-popup {
   position: fixed;
-  z-index: 80;
+  z-index: var(--chenxing-z-popover);
   max-height: 18rem;
   overflow-y: auto;
   overscroll-behavior: contain;
