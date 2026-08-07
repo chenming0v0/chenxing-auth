@@ -41,14 +41,14 @@ export function LandingPage() {
         <section className="relative mx-auto flex min-h-[88vh] max-w-6xl flex-col items-center justify-center px-6 pb-16 pt-20 text-center">
           <div className="relative mb-10 flex h-36 w-36 items-center justify-center">
             <span className="absolute -inset-10 rounded-full border border-[var(--chenxing-border)] opacity-60" />
-            <span className="absolute -inset-5 animate-[spin_22s_linear_infinite] rounded-full border border-dashed border-[rgba(245,199,106,0.3)]">
+            <span className="absolute -inset-5 animate-[spin_22s_linear_infinite] motion-reduce:animate-none rounded-full border border-dashed border-[rgba(245,199,106,0.3)]">
               <span className="absolute -top-1 left-1/2 h-2 w-2 -translate-x-1/2 rounded-full bg-[var(--chenxing-gold)] shadow-[0_0_14px_4px_rgba(245,199,106,0.7)]" />
             </span>
-            <span className="absolute inset-1 animate-[spin_16s_linear_infinite_reverse] rounded-full border border-[rgba(103,232,249,0.18)]">
+            <span className="absolute inset-1 animate-[spin_16s_linear_infinite_reverse] motion-reduce:animate-none rounded-full border border-[rgba(103,232,249,0.18)]">
               <span className="absolute -bottom-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full bg-[var(--chenxing-cyan)] shadow-[0_0_12px_3px_rgba(103,232,249,0.7)]" />
             </span>
             <span className="absolute inset-0 rounded-full bg-[var(--chenxing-primary-soft)] blur-2xl" />
-            <BrandMark className="relative h-28 w-28 animate-pulse rounded-full drop-shadow-[0_0_28px_rgba(56,189,248,0.55)]" />
+            <BrandMark className="relative h-28 w-28 animate-pulse motion-reduce:animate-none rounded-full drop-shadow-[0_0_28px_rgba(56,189,248,0.55)]" />
           </div>
           <span className="chenxing-chip"><span className="h-1.5 w-1.5 rounded-full bg-[var(--chenxing-cyan)]" />全星域认证服务运行中</span>
           <h1 className="chenxing-display mt-9 text-[17vw] font-bold leading-[0.92] tracking-[0.06em] sm:text-[92px]">

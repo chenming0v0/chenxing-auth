@@ -885,6 +885,22 @@ td.chenxing-label {
   100% { transform: translate(-46vw, 30vh) rotate(215deg); opacity: 0; }
 }
 
+/* ---------- reduced motion: 装饰性循环动画 ---------- */
+/* prefers-reduced-motion: reduce 下停掉所有非必要的无限循环动画（流光标题、
+   扫描光束、信标脉冲、发光描边脉动），保留用户驱动的一次性过渡（抽屉滑入、
+   topbar 收缩、悬停变色）与状态反馈。静态外观取动画的某一帧等价呈现
+   （流光停在渐变的起始段、信标停在常亮光晕），不改动品牌视觉。
+   组件级一次性动画各自就近处理：.chenxing-select-popup 见下方 select 段，
+   oauth 的传输光束/旋转图标见 oauth.css。 */
+@media (prefers-reduced-motion: reduce) {
+  .chenxing-text-shimmer,
+  .chenxing-beam,
+  .chenxing-dot::after,
+  .chenxing-userchip-glow::before {
+    animation: none;
+  }
+}
+
 /* subtle scrollbar */
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-track { background: #04060d; }

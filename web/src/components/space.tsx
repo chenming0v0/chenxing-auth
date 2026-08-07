@@ -12,6 +12,19 @@ function Starfield({ opacity = 0.7 }: { opacity?: number }) {
     let width = 0
     let height = 0
     let raf = 0
+    let running = false
+    /* 画一帧星野：frame 只参与闪烁相位。静态帧取 0，每颗星落在自身自然亮度上，
+       视觉上与动画的某一瞬间等价，只是不再随时间变化。 */
+    const paint = (f: number) => {
+      ctx.clearRect(0, 0, width, height)
+      for (const star of stars) {
+        const twinkle = 0.45 + Math.sin(f * 0.02 + star.tw) * 0.35
+        ctx.beginPath()
+        ctx.fillStyle = `rgba(186, 230, 253, ${0.25 + star.z * 0.55 * twinkle})`
+        ctx.arc(star.x, star.y, star.r * (0.6 + star.z), 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
     const resize = () => {
       width = canvas.width = canvas.offsetWidth * devicePixelRatio
       height = canvas.height = canvas.offsetHeight * devicePixelRatio
@@ -26,25 +39,36 @@ function Starfield({ opacity = 0.7 }: { opacity?: number }) {
           tw: Math.random() * Math.PI * 2,
         })
       }
+      // 缩放会清空画布；静止模式下补一帧，避免星空变空白
+      if (!running) paint(0)
     }
-    const draw = () => {
-      frame += 1
-      ctx.clearRect(0, 0, width, height)
-      for (const star of stars) {
-        const twinkle = 0.45 + Math.sin(frame * 0.02 + star.tw) * 0.35
-        ctx.beginPath()
-        ctx.fillStyle = `rgba(186, 230, 253, ${0.25 + star.z * 0.55 * twinkle})`
-        ctx.arc(star.x, star.y, star.r * (0.6 + star.z), 0, Math.PI * 2)
-        ctx.fill()
+    const stop = () => {
+      running = false
+      cancelAnimationFrame(raf)
+      paint(0)
+    }
+    const start = () => {
+      if (running) return
+      running = true
+      const loop = () => {
+        frame += 1
+        paint(frame)
+        raf = requestAnimationFrame(loop)
       }
-      raf = requestAnimationFrame(draw)
+      raf = requestAnimationFrame(loop)
     }
+    /* prefers-reduced-motion: reduce 下只画一个静态星野，不跑 RAF 循环；
+       偏好中途变化时跟随切换，无需刷新页面。 */
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const sync = () => (mq.matches ? stop() : start())
     resize()
-    draw()
+    sync()
     window.addEventListener('resize', resize)
+    mq.addEventListener('change', sync)
     return () => {
       cancelAnimationFrame(raf)
       window.removeEventListener('resize', resize)
+      mq.removeEventListener('change', sync)
     }
   }, [])
   return <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" style={{ opacity }} aria-hidden="true" />
