@@ -34,7 +34,10 @@ pub struct ExternalLoginQuery {
 impl fmt::Debug for ExternalLoginQuery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExternalLoginQuery")
-            .field("request_id", &self.request_id.as_ref().map(|_| "<redacted>"))
+            .field(
+                "request_id",
+                &self.request_id.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }

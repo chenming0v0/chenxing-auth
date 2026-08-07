@@ -48,7 +48,10 @@ impl fmt::Debug for RegisteredOwnedClientResponse {
         f.debug_struct("RegisteredOwnedClientResponse")
             .field("client", &self.client)
             .field("auth_method", &self.auth_method)
-            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }

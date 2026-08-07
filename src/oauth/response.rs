@@ -35,7 +35,10 @@ impl fmt::Debug for TokenResponse {
             .field("token_type", &self.token_type)
             .field("expires_in", &self.expires_in)
             .field("scope", &self.scope)
-            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "<redacted>"))
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
             .field("id_token", &self.id_token.as_ref().map(|_| "<redacted>"))
             .finish()
     }

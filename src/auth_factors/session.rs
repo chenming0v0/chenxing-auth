@@ -24,7 +24,10 @@ pub struct LoginResponse {
 impl fmt::Debug for LoginResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LoginResponse")
-            .field("session_id", &self.session_id.as_ref().map(|_| "<redacted>"))
+            .field(
+                "session_id",
+                &self.session_id.as_ref().map(|_| "<redacted>"),
+            )
             .field("expires_at", &self.expires_at)
             .finish()
     }

@@ -29,7 +29,10 @@ impl fmt::Debug for RevocationRequest {
             .field("token", &"<redacted>")
             .field("token_type_hint", &self.token_type_hint)
             .field("client_id", &self.client_id)
-            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }

@@ -36,13 +36,7 @@ mod tests {
 
     fn pending_headers(ticket_id: &str, holder: &str) -> HeaderMap {
         let mut response_headers = HeaderMap::new();
-        cookies::append_login_ticket_cookies(
-            &mut response_headers,
-            ticket_id,
-            holder,
-            300,
-            false,
-        );
+        cookies::append_login_ticket_cookies(&mut response_headers, ticket_id, holder, 300, false);
         let cookie_header = response_headers
             .get_all("set-cookie")
             .iter()

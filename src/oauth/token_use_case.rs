@@ -40,9 +40,18 @@ impl fmt::Debug for TokenRequest {
             .field("code", &self.code.as_ref().map(|_| "<redacted>"))
             .field("redirect_uri", &self.redirect_uri)
             .field("client_id", &self.client_id)
-            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
-            .field("code_verifier", &self.code_verifier.as_ref().map(|_| "<redacted>"))
-            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "<redacted>"))
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "code_verifier",
+                &self.code_verifier.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
             .field("scope", &self.scope)
             .finish()
     }
@@ -67,7 +76,10 @@ impl fmt::Debug for TokenResponse {
             .field("token_type", &self.token_type)
             .field("expires_in", &self.expires_in)
             .field("scope", &self.scope)
-            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "<redacted>"))
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
             .field("id_token", &self.id_token.as_ref().map(|_| "<redacted>"))
             .finish()
     }

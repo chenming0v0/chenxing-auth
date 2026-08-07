@@ -79,9 +79,7 @@ async fn owner_login_issues_shared_session_and_csrf_cookies() {
                 .uri("/api/v1/auth/totp/setup")
                 .header("content-type", "application/json")
                 .header("cookie", &pending_cookie)
-                .body(Body::from(
-                    serde_json::json!({}).to_string(),
-                ))
+                .body(Body::from(serde_json::json!({}).to_string()))
                 .expect("owner TOTP setup request"),
         )
         .await

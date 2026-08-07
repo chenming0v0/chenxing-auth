@@ -101,10 +101,7 @@ impl LoginTicket {
         let Some(stored_hash) = self.holder_hash.as_deref() else {
             return false;
         };
-        stored_hash
-            .as_bytes()
-            .ct_eq(holder_hash.as_bytes())
-            .into()
+        stored_hash.as_bytes().ct_eq(holder_hash.as_bytes()).into()
     }
 }
 

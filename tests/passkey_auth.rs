@@ -150,10 +150,7 @@ async fn login_ticket(router: &Router, username: &str) -> (String, String) {
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     let cookie = cookie_header(&response);
     assert!(json_response(response).await.get("login_ticket").is_none());
-    (
-        cookie_value(&cookie, "chenxing_login_ticket"),
-        cookie,
-    )
+    (cookie_value(&cookie, "chenxing_login_ticket"), cookie)
 }
 
 /// 在一个 ticket 上耗尽 Passkey 注册失败额度，返回每次尝试的状态码。
@@ -333,7 +330,12 @@ async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
     .await;
     let ticket = {
         let cookie = cookie_header(&login_response);
-        assert!(json_response(login_response).await.get("login_ticket").is_none());
+        assert!(
+            json_response(login_response)
+                .await
+                .get("login_ticket")
+                .is_none()
+        );
         (cookie_value(&cookie, "chenxing_login_ticket"), cookie)
     };
     let response = post_with_cookie(

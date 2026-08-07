@@ -1,8 +1,6 @@
 use std::time::Duration;
 
-use chenxing_auth::audit::{
-    AuditError, AuditEvent, AuditService, stable_account_reference,
-};
+use chenxing_auth::audit::{AuditError, AuditEvent, AuditService, stable_account_reference};
 
 #[test]
 fn audit_event_redacts_sensitive_values_from_metadata() {

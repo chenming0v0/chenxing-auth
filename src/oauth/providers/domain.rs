@@ -49,7 +49,10 @@ impl fmt::Debug for ProviderInput {
             .field("token_endpoint", &self.token_endpoint)
             .field("userinfo_endpoint", &self.userinfo_endpoint)
             .field("client_id", &self.client_id)
-            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
             .field("scopes", &self.scopes)
             .field("subject_claim", &self.subject_claim)
             .field("email_claim", &self.email_claim)
@@ -108,7 +111,10 @@ impl fmt::Debug for ValidatedProviderInput {
             .field("token_endpoint", &self.token_endpoint)
             .field("userinfo_endpoint", &self.userinfo_endpoint)
             .field("client_id", &self.client_id)
-            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
             .field("scopes", &self.scopes)
             .field("subject_claim", &self.subject_claim)
             .field("email_claim", &self.email_claim)

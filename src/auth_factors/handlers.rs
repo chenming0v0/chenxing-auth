@@ -13,13 +13,8 @@ use super::{
     service::{AuthFactorServiceError, PasskeyConfirmation, TotpConfirmation},
     session::issue_user_session,
 };
+use crate::{audit::AuditEvent, error, state::AppState, users::domain::UserId};
 use ticket_proof::ticket_proof;
-use crate::{
-    audit::AuditEvent,
-    error,
-    state::AppState,
-    users::domain::UserId,
-};
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 #[derive(Deserialize)]
@@ -207,12 +202,7 @@ pub async fn confirm_totp_setup(
     };
     match state
         .factors
-        .confirm_totp_enrollment(
-            &ticket_id,
-            &holder_hash,
-            source_ip.as_deref(),
-            &input.code,
-        )
+        .confirm_totp_enrollment(&ticket_id, &holder_hash, source_ip.as_deref(), &input.code)
         .await
     {
         // 注册确认端点不承担登录语义：没有待确认的注册就是无效 ticket。
@@ -250,22 +240,12 @@ pub async fn login_totp(
     };
     let confirmation = match state
         .factors
-        .confirm_totp_enrollment(
-            &ticket_id,
-            &holder_hash,
-            source_ip.as_deref(),
-            &input.code,
-        )
+        .confirm_totp_enrollment(&ticket_id, &holder_hash, source_ip.as_deref(), &input.code)
         .await
     {
         Ok(TotpConfirmation::NoPendingEnrollment) => match state
             .factors
-            .verify_totp_login(
-                &ticket_id,
-                &holder_hash,
-                source_ip.as_deref(),
-                &input.code,
-            )
+            .verify_totp_login(&ticket_id, &holder_hash, source_ip.as_deref(), &input.code)
             .await
         {
             Ok(confirmation) => confirmation,

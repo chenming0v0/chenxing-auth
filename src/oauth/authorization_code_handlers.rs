@@ -2,7 +2,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use std::fmt;
 
 use super::{
-    authorization::{scopes_are_allowed, ValidatedAuthorizationRequest},
+    authorization::{ValidatedAuthorizationRequest, scopes_are_allowed},
     code::AuthorizationCode,
     consent::PendingAuthorization,
     quota::{QuotaConsumeResult, QuotaReservation},

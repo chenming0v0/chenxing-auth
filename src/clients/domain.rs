@@ -221,10 +221,7 @@ pub fn validate_client_registration_with_limits(
     })
 }
 
-fn normalize_allowed_scopes(
-    scopes: Vec<String>,
-    max_scope_length: usize,
-) -> Option<Vec<String>> {
+fn normalize_allowed_scopes(scopes: Vec<String>, max_scope_length: usize) -> Option<Vec<String>> {
     if scopes.is_empty() || scopes.len() > ABSOLUTE_MAX_SCOPES {
         return None;
     }

@@ -128,11 +128,11 @@ async fn enroll_totp(router: &Router, username: &str, email: &str, password: &st
         StatusCode::CREATED
     );
     let login_response = request(
-            router,
-            "/api/v1/auth/login",
-            serde_json::json!({"identifier": username, "password": password}),
-        )
-        .await;
+        router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": username, "password": password}),
+    )
+    .await;
     let pending_cookie = pending_cookie(&login_response);
     let _pending = json_body(login_response).await;
     let setup = json_body(
@@ -166,11 +166,11 @@ async fn enroll_totp(router: &Router, username: &str, email: &str, password: &st
 /// 取一张新的 login ticket。账号已有因子，因此状态是 `factor_required`。
 async fn factor_login_ticket(router: &Router, username: &str, password: &str) -> String {
     let response = request(
-            router,
-            "/api/v1/auth/login",
-            serde_json::json!({"identifier": username, "password": password}),
-        )
-        .await;
+        router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": username, "password": password}),
+    )
+    .await;
     let cookie = pending_cookie(&response);
     let body = json_body(response).await;
     assert_eq!(body["status"], "factor_required");

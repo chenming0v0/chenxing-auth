@@ -120,10 +120,7 @@ impl LoginTicketStore {
         Ok(())
     }
 
-    async fn find(
-        &self,
-        ticket_id: &str,
-    ) -> Result<Option<LoginTicket>, LoginTicketStoreError> {
+    async fn find(&self, ticket_id: &str) -> Result<Option<LoginTicket>, LoginTicketStoreError> {
         self.read(ticket_id, false).await
     }
 

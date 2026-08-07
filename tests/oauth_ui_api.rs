@@ -188,9 +188,7 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
                 .uri("/api/v1/auth/totp/setup")
                 .header("content-type", "application/json")
                 .header("cookie", &pending_login_cookie)
-                .body(Body::from(
-                    serde_json::json!({}).to_string(),
-                ))
+                .body(Body::from(serde_json::json!({}).to_string()))
                 .expect("totp setup request"),
         )
         .await

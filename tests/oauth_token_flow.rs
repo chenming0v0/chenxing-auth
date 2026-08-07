@@ -218,9 +218,7 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
                 .uri("/api/v1/auth/totp/setup")
                 .header("content-type", "application/json")
                 .header("cookie", &pending_cookie)
-                .body(Body::from(
-                    serde_json::json!({}).to_string(),
-                ))
+                .body(Body::from(serde_json::json!({}).to_string()))
                 .expect("TOTP setup request"),
         )
         .await

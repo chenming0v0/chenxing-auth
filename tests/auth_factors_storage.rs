@@ -28,11 +28,13 @@ async fn login_ticket_is_readable_then_consumed_once() {
             .map(|value| value.user_id),
         Some(ticket.user_id)
     );
-    assert!(store
-        .take_for_holder(&ticket_id, &holder_hash)
-        .await
-        .expect("take ticket")
-        .is_some());
+    assert!(
+        store
+            .take_for_holder(&ticket_id, &holder_hash)
+            .await
+            .expect("take ticket")
+            .is_some()
+    );
     assert!(
         store
             .take_for_holder(&ticket_id, &holder_hash)
@@ -61,21 +63,27 @@ async fn login_ticket_cannot_be_read_or_consumed_with_another_holder() {
         .await
         .expect("create ticket");
 
-    assert!(store
-        .find_for_holder(&ticket_id, "holder-b")
-        .await
-        .expect("find with wrong holder")
-        .is_none());
-    assert!(store
-        .take_for_holder(&ticket_id, "holder-b")
-        .await
-        .expect("take with wrong holder")
-        .is_none());
-    assert!(store
-        .take_for_holder(&ticket_id, &holder_hash)
-        .await
-        .expect("take with correct holder")
-        .is_some());
+    assert!(
+        store
+            .find_for_holder(&ticket_id, "holder-b")
+            .await
+            .expect("find with wrong holder")
+            .is_none()
+    );
+    assert!(
+        store
+            .take_for_holder(&ticket_id, "holder-b")
+            .await
+            .expect("take with wrong holder")
+            .is_none()
+    );
+    assert!(
+        store
+            .take_for_holder(&ticket_id, &holder_hash)
+            .await
+            .expect("take with correct holder")
+            .is_some()
+    );
 
     let mut connection = client
         .get_multiplexed_async_connection()

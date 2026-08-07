@@ -116,11 +116,11 @@ async fn a_totp_time_step_is_single_use_across_tickets_and_inline_login() {
     );
 
     let pending_response = request(
-            &router,
-            "/api/v1/auth/login",
-            serde_json::json!({"identifier": username, "password": password}),
-        )
-        .await;
+        &router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": username, "password": password}),
+    )
+    .await;
     let setup_cookie = pending_cookie(&pending_response);
     let _pending = json(pending_response).await;
     let setup = json(
@@ -149,19 +149,19 @@ async fn a_totp_time_step_is_single_use_across_tickets_and_inline_login() {
     );
 
     let first_response = request(
-            &router,
-            "/api/v1/auth/login",
-            serde_json::json!({"identifier": email, "password": password}),
-        )
-        .await;
+        &router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": email, "password": password}),
+    )
+    .await;
     let first_cookie = pending_cookie(&first_response);
     let _first_pending = json(first_response).await;
     let second_response = request(
-            &router,
-            "/api/v1/auth/login",
-            serde_json::json!({"identifier": email, "password": password}),
-        )
-        .await;
+        &router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": email, "password": password}),
+    )
+    .await;
     let second_cookie = pending_cookie(&second_response);
     let _second_pending = json(second_response).await;
     let now = SystemTime::now()

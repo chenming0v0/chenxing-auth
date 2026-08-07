@@ -4,15 +4,13 @@
 //! 邮件所有权验证能力接入前 fail-closed，不创建未验证身份。
 
 use super::{BootstrapOwnerResult, UserService, UserServiceError};
-use crate::{
-    users::{
-        credentials::hash_password,
-        domain::{
-            PublicUser, RegistrationInput, UserCreation, UserId, UserRole, UserStatus,
-            validate_registration,
-        },
-        repository::{self, NewUser},
+use crate::users::{
+    credentials::hash_password,
+    domain::{
+        PublicUser, RegistrationInput, UserCreation, UserId, UserRole, UserStatus,
+        validate_registration,
     },
+    repository::{self, NewUser},
 };
 
 impl UserService {

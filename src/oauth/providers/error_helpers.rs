@@ -1,6 +1,5 @@
 use crate::{
     audit::AuditEvent,
-    error,
     sessions::{cookies, domain::Session},
     state::AppState,
 };

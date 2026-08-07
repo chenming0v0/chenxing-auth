@@ -156,9 +156,7 @@ async fn register_and_login_without_plan(router: &Router, suffix: &str) -> (Stri
                 .uri("/api/v1/auth/totp/setup")
                 .header("content-type", "application/json")
                 .header("cookie", &pending_cookie)
-                .body(Body::from(
-                    serde_json::json!({}).to_string(),
-                ))
+                .body(Body::from(serde_json::json!({}).to_string()))
                 .expect("TOTP setup request"),
         )
         .await

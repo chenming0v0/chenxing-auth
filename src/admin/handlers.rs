@@ -56,7 +56,10 @@ impl fmt::Debug for RegisteredClientResponse {
             .field("redirect_uris", &self.redirect_uris)
             .field("scopes", &self.scopes)
             .field("auth_method", &self.auth_method)
-            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }

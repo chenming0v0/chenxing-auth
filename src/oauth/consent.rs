@@ -89,7 +89,10 @@ impl fmt::Debug for PendingAuthorization {
                 "session_token_hash",
                 &self.session_token_hash.as_ref().map(|_| "<redacted>"),
             )
-            .field("holder_hash", &self.holder_hash.as_ref().map(|_| "<redacted>"))
+            .field(
+                "holder_hash",
+                &self.holder_hash.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
@@ -127,7 +130,10 @@ impl fmt::Debug for PendingAuthorizationPayload {
                 "session_token_hash",
                 &self.session_token_hash.as_ref().map(|_| "<redacted>"),
             )
-            .field("holder_hash", &self.holder_hash.as_ref().map(|_| "<redacted>"))
+            .field(
+                "holder_hash",
+                &self.holder_hash.as_ref().map(|_| "<redacted>"),
+            )
             // Legacy payloads may carry the former plaintext session token here.
             .field("extra", &"<redacted>")
             .finish()

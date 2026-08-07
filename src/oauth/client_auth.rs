@@ -16,7 +16,10 @@ impl fmt::Debug for ClientCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientCredentials")
             .field("client_id", &self.client_id)
-            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
             .field("auth_method", &self.auth_method)
             .finish()
     }

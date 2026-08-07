@@ -36,11 +36,13 @@ async fn password_epoch_change_invalidates_existing_login_ticket() {
         .create_with_epoch_and_holder(user_id, vec![FactorMethod::Totp], 0, holder_hash.clone())
         .await
         .expect("create ticket");
-    assert!(store
-        .find_for_holder(&ticket_id, &holder_hash)
-        .await
-        .expect("find ticket")
-        .is_some());
+    assert!(
+        store
+            .find_for_holder(&ticket_id, &holder_hash)
+            .await
+            .expect("find ticket")
+            .is_some()
+    );
     assert_eq!(ticket.session_epoch, 0);
 
     chenxing_auth::sqlx::query("UPDATE users SET session_epoch = 1 WHERE id = $1")

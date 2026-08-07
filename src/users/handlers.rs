@@ -93,10 +93,13 @@ pub async fn register_user(
             if database_error
                 .as_database_error()
                 .and_then(|error| error.code())
-                .is_some_and(|code| code == "23505") => error::conflict(
-            "registration_conflict",
-            "registration details are unavailable",
-        ),
+                .is_some_and(|code| code == "23505") =>
+        {
+            error::conflict(
+                "registration_conflict",
+                "registration details are unavailable",
+            )
+        }
         Err(UserServiceError::Database(database_error)) => {
             tracing::error!(error = %database_error, "failed to register user");
             error::internal()

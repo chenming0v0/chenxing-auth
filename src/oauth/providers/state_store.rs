@@ -80,7 +80,10 @@ impl fmt::Debug for ExternalLoginState {
         f.debug_struct("ExternalLoginState")
             .field("state", &"<redacted>")
             .field("provider_slug", &self.provider_slug)
-            .field("request_id", &self.request_id.as_ref().map(|_| "<redacted>"))
+            .field(
+                "request_id",
+                &self.request_id.as_ref().map(|_| "<redacted>"),
+            )
             .field("code_verifier", &"<redacted>")
             .finish()
     }

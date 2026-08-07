@@ -37,7 +37,10 @@ pub struct UserInfoRequest {
 impl fmt::Debug for UserInfoRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UserInfoRequest")
-            .field("access_token", &self.access_token.as_ref().map(|_| "<redacted>"))
+            .field(
+                "access_token",
+                &self.access_token.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }

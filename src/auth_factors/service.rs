@@ -164,12 +164,7 @@ impl AuthFactorService {
         };
         Ok(self
             .tickets
-            .create_with_epoch_and_holder(
-                user_id,
-                methods,
-                session_epoch,
-                holder_hash.to_owned(),
-            )
+            .create_with_epoch_and_holder(user_id, methods, session_epoch, holder_hash.to_owned())
             .await?)
     }
 

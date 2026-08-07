@@ -9,8 +9,8 @@
 //!
 //! 全部子模块条目在此 `pub use`，`crate::users::repository::*` 的既有引用路径不变。
 
-use time::OffsetDateTime;
 use std::fmt;
+use time::OffsetDateTime;
 
 use super::domain::{UserId, UserRole, UserStatus};
 

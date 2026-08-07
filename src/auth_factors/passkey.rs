@@ -197,10 +197,7 @@ impl AuthFactorService {
         {
             Ok(confirmation) => confirmation,
             Err(AuthFactorServiceError::FirstFactorAlreadyExists) => {
-                let _ = self
-                    .tickets
-                    .take_for_holder(ticket_id, holder_hash)
-                    .await?;
+                let _ = self.tickets.take_for_holder(ticket_id, holder_hash).await?;
                 self.tickets
                     .delete(&Self::passkey_registration_key(ticket_id))
                     .await?;

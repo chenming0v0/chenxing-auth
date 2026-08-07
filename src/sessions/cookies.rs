@@ -162,10 +162,7 @@ pub fn append_clear_login_ticket_cookies(headers: &mut HeaderMap, secure: bool) 
     }
 }
 
-pub fn login_ticket_id_for_secure_transport(
-    headers: &HeaderMap,
-    secure: bool,
-) -> Option<String> {
+pub fn login_ticket_id_for_secure_transport(headers: &HeaderMap, secure: bool) -> Option<String> {
     cookie_value(headers, login_ticket_cookie_name(secure))
 }
 

@@ -265,9 +265,7 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
                 .uri("/api/v1/auth/totp/setup")
                 .header("content-type", "application/json")
                 .header("cookie", &pending_cookie)
-                .body(Body::from(
-                    serde_json::json!({}).to_string(),
-                ))
+                .body(Body::from(serde_json::json!({}).to_string()))
                 .expect("totp setup request"),
         )
         .await

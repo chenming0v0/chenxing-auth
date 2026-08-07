@@ -26,7 +26,10 @@ impl fmt::Debug for AuthorizationRequest {
             .field("scope", &self.scope)
             .field("state", &self.state.as_ref().map(|_| "<redacted>"))
             .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
-            .field("code_challenge", &self.code_challenge.as_ref().map(|_| "<redacted>"))
+            .field(
+                "code_challenge",
+                &self.code_challenge.as_ref().map(|_| "<redacted>"),
+            )
             .field("code_challenge_method", &self.code_challenge_method)
             .finish()
     }

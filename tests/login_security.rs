@@ -111,11 +111,11 @@ async fn password_success_does_not_reset_mfa_account_failures() {
     assert_eq!(response.status(), StatusCode::CREATED);
 
     let pending_response = request(
-            &router,
-            "/api/v1/auth/login",
-            serde_json::json!({"identifier": username, "password": password}),
-        )
-        .await;
+        &router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": username, "password": password}),
+    )
+    .await;
     let pending_cookie_header = pending_cookie(&pending_response);
     let pending = json(pending_response).await;
     assert!(pending.get("login_ticket").is_none());

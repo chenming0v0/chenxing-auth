@@ -123,19 +123,19 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
     );
 
     let first_login_response = request(
-            &router,
-            "/api/v1/auth/login",
-            serde_json::json!({"identifier": username, "password": password}),
-        )
-        .await;
+        &router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": username, "password": password}),
+    )
+    .await;
     let first_cookie = pending_cookie(&first_login_response);
     let _first_login = json_body(first_login_response).await;
     let second_login_response = request(
-            &router,
-            "/api/v1/auth/login",
-            serde_json::json!({"identifier": username, "password": password}),
-        )
-        .await;
+        &router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": username, "password": password}),
+    )
+    .await;
     let second_cookie = pending_cookie(&second_login_response);
     let _second_login = json_body(second_login_response).await;
 

@@ -233,12 +233,7 @@ fn plan_error_response(error_value: PlanServiceError) -> Response {
     }
 }
 
-async fn record_plan_event(
-    state: &AppState,
-    actor: AdminActor,
-    action: &str,
-    resource_id: &str,
-) {
+async fn record_plan_event(state: &AppState, actor: AdminActor, action: &str, resource_id: &str) {
     let (actor_type, actor_id) = actor.audit_fields();
     state
         .audit
