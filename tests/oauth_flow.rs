@@ -579,7 +579,7 @@ async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
         user_id.to_string(),
         ValidatedAuthorizationRequest {
             client_id: client_id.clone(),
-            redirect_uri: "https://flow.example/callback".to_owned(),
+            redirect_uri: "https://disabled.example/callback".to_owned(),
             scopes: vec!["openid".to_owned()],
             state: "quota-failure-state".to_owned(),
             nonce: None,
