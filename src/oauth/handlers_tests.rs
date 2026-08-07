@@ -1,3 +1,4 @@
+use super::super::authorization::MAX_STATE_LENGTH;
 use super::*;
 use axum::http::{StatusCode, header::LOCATION};
 
@@ -54,4 +55,24 @@ fn authorization_error_redirects_only_after_exact_uri_verification() {
         .expect("verified redirect location");
     assert!(location.contains("error=unsupported_response_type"));
     assert!(location.contains("state=state-1"));
+}
+
+#[test]
+fn authorization_error_does_not_reflect_overlong_state() {
+    let mut request = request("https://client.example/callback");
+    request.state = Some("x".repeat(MAX_STATE_LENGTH + 1));
+    let response = authorization_error(
+        &request,
+        &client(),
+        AuthorizationRequestError::StateTooLong,
+    );
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("verified redirect location");
+    assert!(location.contains("error=invalid_request"));
+    assert!(!location.contains("state="));
 }

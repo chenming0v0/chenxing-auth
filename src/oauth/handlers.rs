@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 
 use super::{
     authorization::{
-        AuthorizationRequest, AuthorizationRequestError,
+        AuthorizationRequest, AuthorizationRequestError, MAX_STATE_LENGTH,
         validate_authorization_request_with_allowlist,
     },
     authorization_code_handlers::{
@@ -295,6 +295,8 @@ fn authorization_error(
         }
         AuthorizationRequestError::ScopeNotAllowed => ("invalid_scope", "scope is invalid"),
         AuthorizationRequestError::MissingState => ("invalid_request", "state is required"),
+        AuthorizationRequestError::StateTooLong => ("invalid_request", "state is too long"),
+        AuthorizationRequestError::NonceTooLong => ("invalid_request", "nonce is too long"),
         AuthorizationRequestError::PkceRequired => ("invalid_request", "PKCE S256 is required"),
         AuthorizationRequestError::InvalidCodeChallenge => {
             ("invalid_request", "code_challenge is invalid")
@@ -310,7 +312,9 @@ fn authorization_error(
             .query_pairs_mut()
             .append_pair("error", code)
             .append_pair("error_description", description);
-        if let Some(state) = request.state.as_deref().filter(|state| !state.is_empty()) {
+        if let Some(state) = request.state.as_deref().filter(|state| {
+            !state.is_empty() && state.chars().count() <= MAX_STATE_LENGTH
+        }) {
             redirect.query_pairs_mut().append_pair("state", state);
         }
         return Redirect::to(redirect.as_str()).into_response();

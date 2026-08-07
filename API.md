@@ -154,10 +154,10 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 | `redirect_uri` | 必须精确匹配注册值 |
 | `response_type` | 当前仅支持 `code` |
 | `scope` | 空格分隔，如 `openid email profile`；每个值必须同时属于服务端 allowlist（默认 `openid`、`profile`、`email`）和该 Client 已注册的 scopes |
-| `state` | 必填，建议由接入方随机生成 |
+| `state` | 必填，建议由接入方随机生成，最多 512 个字符 |
 | `code_challenge` | PKCE challenge |
 | `code_challenge_method` | 必须为 `S256` |
-| `nonce` | 使用 OIDC 时建议必填并随机生成 |
+| `nonce` | 使用 OIDC 时建议必填并随机生成，最多 512 个字符 |
 
 未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`，同时下发 `chenxing_authz_holder` HttpOnly Cookie（防御 OAuth login CSRF，见下文 bind 端点说明）；非 HTML 请求返回 `401 login_required`。首次授权会进入 `/oauth/consent?request_id=...`。
 
