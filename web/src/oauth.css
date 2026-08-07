@@ -279,15 +279,18 @@
         font-weight: 600;
         margin-bottom: 22px;
       }
+      /* 账号列表是 HUD 面板内的平面选区：外层 .chenxing-hud-panel 已负责磨砂玻璃，
+         这里不再叠加 backdrop-filter（嵌套模糊层既多余又让边缘发糊），
+         改用设计系统的平面表面 token --chenxing-muted + --chenxing-border，
+         与 auth.tsx / ui.tsx 里同款 muted 表面保持一致，不另建玻璃卡片样式。 */
       .oauth-list {
         list-style: none;
         margin: 0;
         padding: 0;
         border: 1px solid var(--chenxing-border);
-        border-radius: 16px;
+        border-radius: var(--chenxing-radius-lg);
         overflow: hidden;
-        background: rgba(255, 255, 255, 0.035);
-        backdrop-filter: blur(12px);
+        background: var(--chenxing-muted);
       }
       .oauth-list button {
         display: flex;
@@ -295,7 +298,7 @@
         align-items: center;
         gap: 14px;
         border: 0;
-        border-bottom: 1px solid rgba(255,255,255,0.06);
+        border-bottom: 1px solid var(--chenxing-border);
         background: transparent;
         padding: 14px 16px;
         text-align: left;
@@ -304,7 +307,9 @@
         transition: background .15s ease;
       }
       .oauth-list li:last-child button { border-bottom: 0; }
-      .oauth-list button:hover { background: rgba(255,255,255,0.05); }
+      /* 行 hover 用设计系统通用的 0.08 档（同 .chenxing-btn-ghost / .chenxing-icon-btn）：
+         列表表面已是 --chenxing-muted(0.05)，原来的 0.05 hover 会完全不可见 */
+      .oauth-list button:hover { background: rgba(255,255,255,0.08); }
       .oauth-list button:focus-visible {
         outline: 2px solid var(--chenxing-primary);
         outline-offset: -2px;
