@@ -12,6 +12,8 @@ pub(crate) use key_lock::KeyStorageLock;
 
 pub(crate) const PRIVATE_FILE_MODE: u32 = 0o600;
 pub(crate) const KEY_DIRECTORY_MODE: u32 = 0o700;
+const TEMPORARY_FILE_PREFIX: &str = ".chenxing-key-";
+const TEMPORARY_FILE_SUFFIX: &str = ".tmp";
 
 pub(crate) fn ensure_secure_directory(path: &Path) -> io::Result<()> {
     create_restricted_directory(path)?;
@@ -72,12 +74,33 @@ pub(crate) fn atomic_write(path: &Path, contents: &[u8], replace_existing: bool)
     }
 
     let parent = path.parent().ok_or_else(invalid_storage_path)?;
-    let temporary = parent.join(format!(".chenxing-key-{}.tmp", Uuid::new_v4().simple()));
+    let temporary = parent.join(format!(
+        "{TEMPORARY_FILE_PREFIX}{}{TEMPORARY_FILE_SUFFIX}",
+        Uuid::new_v4().simple()
+    ));
     let result = write_temporary(&temporary, path, contents, replace_existing);
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+/// Remove temporary files left by an interrupted atomic write.
+///
+/// The name is deliberately restricted to the namespace owned by `atomic_write`; other files in
+/// the key directory, including valid persisted keys, are left untouched. Deletion still goes
+/// through the secure-file checks so a symlink or non-regular path fails closed.
+pub(crate) fn cleanup_stale_temporary_files(directory: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let path = entry?.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if is_atomic_write_temporary(file_name) {
+            remove_secure_file(&path)?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn modified_time(path: &Path) -> io::Result<std::time::SystemTime> {
@@ -108,6 +131,13 @@ fn write_temporary(
     }
     sync_directory(destination.parent());
     Ok(())
+}
+
+fn is_atomic_write_temporary(file_name: &str) -> bool {
+    file_name
+        .strip_prefix(TEMPORARY_FILE_PREFIX)
+        .and_then(|name| name.strip_suffix(TEMPORARY_FILE_SUFFIX))
+        .is_some_and(|unique| !unique.is_empty())
 }
 
 fn sync_directory(path: Option<&Path>) {

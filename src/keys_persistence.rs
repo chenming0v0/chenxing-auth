@@ -4,7 +4,8 @@ use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
 use crate::key_storage::{
-    atomic_write, ensure_secure_directory, modified_time, remove_secure_file, secure_existing_file,
+    atomic_write, cleanup_stale_temporary_files, ensure_secure_directory, modified_time,
+    remove_secure_file, secure_existing_file,
 };
 
 use super::{
@@ -27,6 +28,7 @@ pub(super) fn load_materials(
     generate_if_empty: bool,
 ) -> Result<(String, BTreeMap<String, KeyMaterial>), KeyManagerError> {
     ensure_secure_directory(directory)?;
+    cleanup_stale_temporary_files(directory)?;
     let active_id_path = directory.join(ACTIVE_KEY_ID_FILE);
     let active_id = read_optional_key_id(&active_id_path)?;
     cleanup_expired_key_files(directory, active_id.as_deref(), retention, now)?;

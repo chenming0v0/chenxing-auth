@@ -16,6 +16,34 @@ fn key_manager_reloads_the_same_active_key() {
     let _ = fs::remove_dir_all(directory);
 }
 
+#[test]
+fn startup_removes_crash_left_atomic_write_temporary_files_only() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let manager = KeyManager::load_or_generate(&directory).expect("initial key");
+    let key_id = manager.key_id();
+    let key_path = directory.join(format!("rs256-{key_id}.pkcs1.der"));
+    let stale_temporary_path = directory.join(".chenxing-key-crashed.tmp");
+    let unrelated_temporary_path = directory.join("unrelated.tmp");
+
+    fs::write(&stale_temporary_path, b"crash-left private key material").expect("stale file");
+    fs::write(&unrelated_temporary_path, b"unrelated file").expect("unrelated file");
+
+    let reloaded = KeyManager::load_or_generate(&directory).expect("reload key manager");
+
+    assert_eq!(reloaded.key_id(), key_id);
+    assert!(key_path.exists(), "valid persisted key must survive cleanup");
+    assert!(
+        !stale_temporary_path.exists(),
+        "atomic-write temporary file must be removed on startup"
+    );
+    assert!(
+        unrelated_temporary_path.exists(),
+        "files outside the atomic-write namespace must survive cleanup"
+    );
+
+    let _ = fs::remove_dir_all(directory);
+}
+
 #[tokio::test]
 async fn reloaded_key_manager_keeps_rotated_key_for_old_token_validation() {
     let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
