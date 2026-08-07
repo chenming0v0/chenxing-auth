@@ -80,7 +80,7 @@ pub(super) fn client_registration_limits_from_env() -> Result<ClientRegistration
 /// 每一项的默认值都等于提升前的硬编码值，因此不配置任何变量即保持原有行为。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SecurityLimits {
-    /// 未认证来源在 OAuth `/token` 端点的 QPS 上限。
+    /// OAuth 公共端点按源 IP 计算的 QPS 上限。
     pub unauthenticated_source_qps: u32,
     /// 授权码有效期（秒）。RFC 6749 §4.1.2 建议不超过 10 分钟。
     pub authorization_code_ttl_seconds: u64,
