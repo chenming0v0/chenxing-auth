@@ -14,7 +14,16 @@ describe('passkey codec', () => {
 
   it('rejects invalid base64url', () => {
     expect(() => decodeBase64Url('invalid!@#')).toThrow('Passkey challenge is invalid')
-    expect(() => decodeBase64Url(123)).toThrow('Passkey challenge is invalid')
+    for (const value of [undefined, null, 123, {}, []]) {
+      expect(() => decodeBase64Url(value)).toThrow('Passkey challenge is invalid')
+    }
+  })
+
+  it('rejects base64url lengths with an impossible remainder', () => {
+    for (const value of ['A', 'AQIDA']) {
+      expect(value.length % 4).toBe(1)
+      expect(() => decodeBase64Url(value)).toThrow('Passkey challenge is invalid')
+    }
   })
 
   it('encodes ArrayBuffer to base64url', () => {
@@ -108,9 +117,10 @@ describe('passkey codec', () => {
     expect(() => decodeRequestOptions({ publicKey: {} })).toThrow('Passkey challenge is invalid')
     expect(() => decodeRequestOptions({ publicKey: { rpId: 'example.com' } }))
       .toThrow('Passkey challenge is invalid')
-    // challenge 必须是 base64url 字符串，非字符串同样拒绝而不是静默产生空 buffer。
-    expect(() => decodeRequestOptions({ publicKey: { challenge: 123 } }))
-      .toThrow('Passkey challenge is invalid')
+    for (const challenge of [undefined, null, 123, {}, [], 'invalid!@#']) {
+      expect(() => decodeRequestOptions({ publicKey: { challenge } }))
+        .toThrow('Passkey challenge is invalid')
+    }
     expect(() => decodeRequestOptions({
       publicKey: { challenge: 'AQIDBA', allowCredentials: [{ type: 'not-public-key', id: 'Y3JlZA' }] },
     })).toThrow('Passkey challenge is invalid')
@@ -150,6 +160,18 @@ describe('passkey codec', () => {
   it('rejects creation options missing required fields', () => {
     expect(() => decodeCreationOptions({ publicKey: {} })).toThrow('Passkey challenge is invalid')
     expect(() => decodeCreationOptions({ publicKey: { rp: {} } })).toThrow('Passkey challenge is invalid')
+  })
+
+  it('rejects malformed creation challenges after validating the other required fields', () => {
+    const required = {
+      rp: { id: 'example.com', name: 'Example' },
+      user: { id: 'dXNlcg', name: 'user@example.com', displayName: 'User' },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+    }
+    for (const challenge of [undefined, null, 123, {}, [], 'invalid!@#']) {
+      expect(() => decodeCreationOptions({ publicKey: { ...required, challenge } }))
+        .toThrow('Passkey challenge is invalid')
+    }
   })
 
   it('provides user-friendly error messages', () => {
@@ -266,7 +288,7 @@ describe('passkey codec', () => {
     expect(serializeAssertion(credential).response.userHandle).toBe('')
   })
 
-  it('serializes an attestation response and omits empty transports', () => {
+  it('serializes an attestation response and handles optional transports', () => {
     const base = {
       id: 'cred-2',
       rawId: new Uint8Array([1, 2]).buffer,
@@ -274,10 +296,18 @@ describe('passkey codec', () => {
       response: {
         attestationObject: new Uint8Array([3, 4]).buffer,
         clientDataJSON: new Uint8Array([5, 6]).buffer,
-        getTransports: () => [],
       },
     } as unknown as PublicKeyCredential
     expect(serializeAttestation(base).response).toEqual({
+      attestationObject: 'AwQ',
+      clientDataJSON: 'BQY',
+    })
+
+    const withEmptyTransports = {
+      ...base,
+      response: { ...base.response, getTransports: () => [] },
+    } as unknown as PublicKeyCredential
+    expect(serializeAttestation(withEmptyTransports).response).toEqual({
       attestationObject: 'AwQ',
       clientDataJSON: 'BQY',
     })
