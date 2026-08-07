@@ -1,5 +1,6 @@
 use crate::{
     audit::AuditEvent,
+    auth_limiter::MissingSourceIpPolicy,
     error,
     oauth::consent::pending_request_exists,
     oauth::providers::{
@@ -72,6 +73,7 @@ pub async fn start_external_login(
     Path(slug): Path<String>,
     Query(query): Query<ExternalLoginQuery>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
 ) -> Response {
     let provider = match state.external_oauth.find(&slug).await {
         Ok(provider) if provider.status == "active" => provider,
@@ -86,9 +88,31 @@ pub async fn start_external_login(
     {
         return Redirect::to("/login?external_error=oauth_request_expired").into_response();
     }
-    let source_ip = connect_info
-        .map(|Extension(ConnectInfo(peer))| peer.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_owned());
+    let source_ip = match crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    ) {
+        Some(source_ip) => Some(source_ip),
+        None => match state.config.missing_source_ip_policy {
+            MissingSourceIpPolicy::Skip => {
+                tracing::warn!(
+                    event = "auth_limiter.source_ip_unavailable",
+                    policy = MissingSourceIpPolicy::Skip.as_str(),
+                    "external OAuth state admission is using no source-IP rate dimension"
+                );
+                None
+            }
+            MissingSourceIpPolicy::Reject => {
+                tracing::error!(
+                    event = "auth_limiter.source_ip_unavailable",
+                    policy = MissingSourceIpPolicy::Reject.as_str(),
+                    "external OAuth login rejected without trusted ConnectInfo"
+                );
+                return error::internal();
+            }
+        },
+    };
     let state_value = random_state();
     // RFC 9700 §2.1.1：本系统作为 OAuth 客户端访问外部 IdP 时也必须使用 PKCE。
     // verifier 只存在于 Redis 中的 state payload 里，不进入重定向 URL、日志或审计。
@@ -105,20 +129,23 @@ pub async fn start_external_login(
             return error::internal();
         }
     };
-    if let Err(store_error) = state
-        .external_login_states
-        .save_from_source_with_limits(
-            &ExternalLoginState {
-                state: state_value.clone(),
-                provider_slug: slug.clone(),
-                request_id: query.request_id.clone().filter(|value| !value.is_empty()),
-                code_verifier: code_verifier.clone(),
-            },
-            &source_ip,
-            &limits,
-        )
-        .await
-    {
+    let login_state = ExternalLoginState {
+        state: state_value.clone(),
+        provider_slug: slug.clone(),
+        request_id: query.request_id.clone().filter(|value| !value.is_empty()),
+        code_verifier: code_verifier.clone(),
+    };
+    let save_result = match source_ip.as_deref() {
+        Some(source_ip) => state
+            .external_login_states
+            .save_from_source_with_limits(&login_state, source_ip, &limits)
+            .await,
+        None => state
+            .external_login_states
+            .save_without_source_with_limits(&login_state, &limits)
+            .await,
+    };
+    if let Err(store_error) = save_result {
         if matches!(
             &store_error,
             crate::oauth::providers::state_store::ExternalLoginStateStoreError::RateLimited

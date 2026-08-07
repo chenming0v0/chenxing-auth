@@ -24,21 +24,26 @@ local window_seconds = tonumber(ARGV[1])
 local rate_limit = tonumber(ARGV[2])
 local pending_limit = tonumber(ARGV[3])
 local ttl_seconds = tonumber(ARGV[4])
-local state = ARGV[5]
-local payload = ARGV[6]
+local source_rate_enabled = ARGV[5] == '1'
+local state = ARGV[6]
+local payload = ARGV[7]
 local time = redis.call('TIME')
 local now = (tonumber(time[1]) * 1000) + math.floor(tonumber(time[2]) / 1000)
 
 redis.call('ZREMRANGEBYSCORE', pending_key, '-inf', now)
-redis.call('ZREMRANGEBYSCORE', rate_key, '-inf', now - (window_seconds * 1000))
-if redis.call('ZCARD', rate_key) >= rate_limit then return 0 end
+if source_rate_enabled then
+    redis.call('ZREMRANGEBYSCORE', rate_key, '-inf', now - (window_seconds * 1000))
+    if redis.call('ZCARD', rate_key) >= rate_limit then return 0 end
+end
 if redis.call('ZCARD', pending_key) >= pending_limit then return -1 end
 if not redis.call('SET', state_key, payload, 'EX', ttl_seconds, 'NX') then return -2 end
 
 redis.call('ZADD', pending_key, now + (ttl_seconds * 1000), state)
-redis.call('ZADD', rate_key, now, state)
 redis.call('EXPIRE', pending_key, ttl_seconds + 1)
-redis.call('EXPIRE', rate_key, window_seconds + 1)
+if source_rate_enabled then
+    redis.call('ZADD', rate_key, now, state)
+    redis.call('EXPIRE', rate_key, window_seconds + 1)
+end
 return 1
 "#;
 
@@ -145,7 +150,8 @@ impl ExternalLoginStateStore {
         &self,
         value: &ExternalLoginState,
     ) -> Result<(), ExternalLoginStateStoreError> {
-        self.save_from_source(value, "unknown").await
+        let limits = self.current_limits().await?;
+        self.save_without_source_with_limits(value, &limits).await
     }
 
     pub async fn save_from_source(
@@ -164,16 +170,37 @@ impl ExternalLoginStateStore {
         source_ip: &str,
         limits: &SecurityLimitsSetting,
     ) -> Result<(), ExternalLoginStateStoreError> {
+        self.save_with_limits(value, Some(source_ip), limits).await
+    }
+
+    pub(crate) async fn save_without_source_with_limits(
+        &self,
+        value: &ExternalLoginState,
+        limits: &SecurityLimitsSetting,
+    ) -> Result<(), ExternalLoginStateStoreError> {
+        self.save_with_limits(value, None, limits).await
+    }
+
+    async fn save_with_limits(
+        &self,
+        value: &ExternalLoginState,
+        source_ip: Option<&str>,
+        limits: &SecurityLimitsSetting,
+    ) -> Result<(), ExternalLoginStateStoreError> {
         let payload = serde_json::to_string(value)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let rate_key = source_ip
+            .map(|source_ip| self.rate_key(source_ip))
+            .unwrap_or_else(|| self.pending_key());
         let result: i64 = Script::new(SAVE_STATE_SCRIPT)
             .key(self.pending_key())
-            .key(self.rate_key(source_ip))
+            .key(rate_key)
             .key(self.state_key(&value.state))
             .arg(limits.external_login_state_rate_window_seconds)
             .arg(limits.external_login_state_rate_limit)
             .arg(limits.external_login_state_max_pending)
             .arg(limits.external_login_state_ttl_seconds)
+            .arg(if source_ip.is_some() { 1 } else { 0 })
             .arg(&value.state)
             .arg(payload)
             .invoke_async(&mut connection)
