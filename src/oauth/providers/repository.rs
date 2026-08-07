@@ -4,7 +4,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::domain::{ClientAuthMethod, ProviderRecord, ValidatedProviderInput};
-use crate::users::domain::UserId;
+use crate::users::domain::{UserId, normalize_email};
 
 #[derive(Debug, Clone)]
 pub struct ExternalIdentity {
@@ -169,6 +169,7 @@ pub async fn create_user_with_identity(
     subject: &str,
     password_hash: &str,
 ) -> Result<UserId, CreateIdentityError> {
+    let email = normalize_email(email);
     let mut transaction = pool.begin().await?;
     crate::sqlx::query("SELECT pg_advisory_xact_lock(7341928)")
         .execute(&mut *transaction)
@@ -194,7 +195,7 @@ pub async fn create_user_with_identity(
 
     let existing_user: Option<UserId> =
         crate::sqlx::query_scalar("SELECT id FROM users WHERE email = $1 FOR UPDATE")
-            .bind(email)
+            .bind(&email)
             .fetch_optional(&mut *transaction)
             .await?;
     if existing_user.is_some() {
@@ -220,7 +221,7 @@ pub async fn create_user_with_identity(
          RETURNING id",
     )
     .bind(username)
-    .bind(email)
+    .bind(&email)
     .bind(password_hash)
     .bind(display_name)
     .bind(now)
@@ -234,7 +235,7 @@ pub async fn create_user_with_identity(
     .bind(provider_id)
     .bind(user_id)
     .bind(subject)
-    .bind(email)
+    .bind(&email)
     .bind(now)
     .execute(&mut *transaction)
     .await?;

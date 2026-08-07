@@ -4,6 +4,8 @@ use std::fmt;
 use thiserror::Error;
 use url::{Host, Url};
 
+use crate::users::domain::normalize_email;
+
 const MAX_NAME_LENGTH: usize = 128;
 const MAX_SLUG_LENGTH: usize = 64;
 const MAX_CLAIM_PATH_LENGTH: usize = 128;
@@ -265,7 +267,7 @@ impl ExternalUser {
             .filter(|value| !value.trim().is_empty())
             .ok_or(ProviderValidationError::MissingSubject)?;
         let email = claim_string(claims, &provider.email_claim)
-            .map(|value| value.trim().to_ascii_lowercase())
+            .map(|value| normalize_email(&value))
             .filter(|value| is_valid_email(value))
             .ok_or(ProviderValidationError::InvalidEmail)?;
         let email_verified = provider
