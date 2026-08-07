@@ -272,7 +272,9 @@ pub fn router(state: AppState) -> Router {
         .fallback_service(static_files::static_service())
         .with_state(state)
         .layer(TraceLayer::new_for_http().make_span_with(request_span))
-        .layer(map_response(crate::error::map_request_timeout))
+        .layer(map_response(|response: Response| async move {
+            crate::error::map_request_timeout(response)
+        }))
         .layer(map_response(move |response: Response| {
             security_headers::apply(response, hsts_enabled)
         }))
