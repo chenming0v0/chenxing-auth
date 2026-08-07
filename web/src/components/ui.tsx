@@ -270,9 +270,20 @@ export function TextAreaField({ label, hint, className = '', ...props }: TextAre
   )
 }
 
-export function CopyValue({ value }: { value: string }) {
+type CopyValueProps = {
+  value: string
+  /** 覆盖默认复制操作名称；开启 announceValue 后，完整值会追加到该名称。 */
+  ariaLabel?: string
+  /** 仅在确实需要时把完整值加入无障碍名称，例如手动输入 TOTP 密钥。 */
+  announceValue?: boolean
+}
+
+export function CopyValue({ value, ariaLabel, announceValue = false }: CopyValueProps) {
+  const accessibleName = announceValue
+    ? `${ariaLabel ?? '复制值'}：${value}`
+    : ariaLabel ?? '复制值'
   return (
-    <button type="button" className="cx-copy-row" onClick={() => void navigator.clipboard?.writeText(value)} title="复制">
+    <button type="button" className="cx-copy-row" onClick={() => void navigator.clipboard?.writeText(value)} title="复制" aria-label={accessibleName}>
       <span className="min-w-0 truncate">{value}</span>
       <Icon name="copy" size={15} />
     </button>

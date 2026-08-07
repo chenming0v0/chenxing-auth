@@ -167,8 +167,8 @@ export function IntegratePage() {
             <Icon name="key-round" className="text-[var(--chenxing-cyan)]" size={18} />
           </div>
           <div className="grid gap-4 md:grid-cols-2">
-            <div><span className="chenxing-label">Client ID</span><CopyValue value={secret.clientId} /></div>
-            <div><span className="chenxing-label">Client Secret</span><CopyValue value={secret.value} /></div>
+            <div><span className="chenxing-label">Client ID</span><CopyValue value={secret.clientId} ariaLabel="复制 Client ID" /></div>
+            <div><span className="chenxing-label">Client Secret</span><CopyValue value={secret.value} ariaLabel="复制 Client Secret" /></div>
           </div>
           <div className="mt-4"><Notice tone="warning">Secret 不会再次从列表接口返回，请立即保存到受保护的服务端配置中。</Notice></div>
         </HudPanel>

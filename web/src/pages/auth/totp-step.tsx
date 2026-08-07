@@ -78,7 +78,7 @@ export function TotpStep({
           <TotpSetupQr otpauthUrl={setup.otpauth_url} />
           <div>
             <span className="chenxing-label">验证器密钥</span>
-            <CopyValue value={setup.secret_base32} />
+            <CopyValue value={setup.secret_base32} ariaLabel="复制验证器密钥" announceValue />
             <small className="chenxing-caption mt-1.5 block">无法扫码时，可在验证器中手动输入该密钥。</small>
           </div>
         </div>
