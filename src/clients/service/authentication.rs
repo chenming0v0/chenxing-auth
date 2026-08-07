@@ -2,9 +2,7 @@
 
 use super::{ClientService, ClientServiceError};
 use crate::clients::{
-    credentials::verify_client_credentials_constant_time,
-    domain::ClientAuthMethod,
-    repository,
+    credentials::verify_client_credentials_constant_time, domain::ClientAuthMethod, repository,
 };
 
 impl ClientService {

@@ -1,7 +1,7 @@
 use chenxing_auth::oauth::authorization::{
     AuthorizationRequest, AuthorizationRequestError, MAX_NONCE_LENGTH, MAX_STATE_LENGTH,
-    RegisteredClient,
-    validate_authorization_request, validate_authorization_request_with_allowlist,
+    RegisteredClient, validate_authorization_request,
+    validate_authorization_request_with_allowlist,
 };
 
 fn client() -> RegisteredClient {

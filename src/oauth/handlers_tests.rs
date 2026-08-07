@@ -61,11 +61,8 @@ fn authorization_error_redirects_only_after_exact_uri_verification() {
 fn authorization_error_does_not_reflect_overlong_state() {
     let mut request = request("https://client.example/callback");
     request.state = Some("x".repeat(MAX_STATE_LENGTH + 1));
-    let response = authorization_error(
-        &request,
-        &client(),
-        AuthorizationRequestError::StateTooLong,
-    );
+    let response =
+        authorization_error(&request, &client(), AuthorizationRequestError::StateTooLong);
 
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     let location = response

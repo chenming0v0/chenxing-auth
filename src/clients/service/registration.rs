@@ -2,7 +2,7 @@
 
 use super::{ClientService, ClientServiceError, RegisteredClientSecret};
 use crate::clients::{
-    credentials::{issue_client_credential, ClientRegistrationRequest},
+    credentials::{ClientRegistrationRequest, issue_client_credential},
     domain::validate_client_registration_with_limits,
     repository::{self, ClientInsertError},
 };

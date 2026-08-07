@@ -312,9 +312,11 @@ fn authorization_error(
             .query_pairs_mut()
             .append_pair("error", code)
             .append_pair("error_description", description);
-        if let Some(state) = request.state.as_deref().filter(|state| {
-            !state.is_empty() && state.chars().count() <= MAX_STATE_LENGTH
-        }) {
+        if let Some(state) = request
+            .state
+            .as_deref()
+            .filter(|state| !state.is_empty() && state.chars().count() <= MAX_STATE_LENGTH)
+        {
             redirect.query_pairs_mut().append_pair("state", state);
         }
         return Redirect::to(redirect.as_str()).into_response();

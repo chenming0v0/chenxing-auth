@@ -77,7 +77,13 @@ fn username_rejects_reserved_names_case_insensitively() {
 
 #[test]
 fn username_rejects_control_and_unsafe_characters() {
-    for username in ["safe\nname", "safe\0name", "safe name", "safe/name", "safe@name"] {
+    for username in [
+        "safe\nname",
+        "safe\0name",
+        "safe name",
+        "safe/name",
+        "safe@name",
+    ] {
         assert!(validate_username(username).is_none(), "{username:?}");
     }
 }

@@ -2,7 +2,7 @@
 
 use super::{ClientService, ClientServiceError, ClientSummary};
 use crate::clients::{
-    domain::{validate_client_registration_with_limits, ClientRegistrationInput},
+    domain::{ClientRegistrationInput, validate_client_registration_with_limits},
     repository,
 };
 use crate::users::domain::UserId;
@@ -71,11 +71,13 @@ impl ClientService {
         &self,
         owner_user_id: UserId,
     ) -> Result<Vec<ClientSummary>, ClientServiceError> {
-        Ok(repository::list_clients(&self.pool, Some(owner_user_id), MAX_CLIENT_LIST_LIMIT, 0)
-            .await?
-            .into_iter()
-            .map(to_summary)
-            .collect())
+        Ok(
+            repository::list_clients(&self.pool, Some(owner_user_id), MAX_CLIENT_LIST_LIMIT, 0)
+                .await?
+                .into_iter()
+                .map(to_summary)
+                .collect(),
+        )
     }
 
     pub async fn update(

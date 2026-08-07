@@ -311,8 +311,7 @@ pub fn validate_username(username: &str) -> Option<String> {
     let length = username.chars().count();
     if !(MIN_USERNAME_LENGTH..=MAX_USERNAME_LENGTH).contains(&length)
         || !username.chars().all(|character| {
-            character.is_ascii_alphanumeric()
-                || matches!(character, '-' | '_' | '.')
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
         })
         || RESERVED_USERNAMES.contains(&username.as_str())
     {

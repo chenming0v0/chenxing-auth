@@ -3,8 +3,7 @@
 use super::{UserService, UserServiceError};
 use crate::{
     auth_limiter::{
-        FailureDimension, LimiterDimension, MissingSourceIpPolicy,
-        domain::commit_reserved_failure,
+        FailureDimension, LimiterDimension, MissingSourceIpPolicy, domain::commit_reserved_failure,
     },
     users::{
         credentials::{hash_password, verify_password},

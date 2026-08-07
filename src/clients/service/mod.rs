@@ -9,11 +9,11 @@ use serde::Serialize;
 use std::fmt;
 use thiserror::Error;
 
-use crate::{sqlx::PgPool, users::domain::UserId};
 use crate::{
     clients::domain::{ClientAuthMethod, ClientRegistrationError, ClientRegistrationLimits},
     oauth::refresh_store::RefreshTokenStore,
 };
+use crate::{sqlx::PgPool, users::domain::UserId};
 
 mod administration;
 mod authentication;
