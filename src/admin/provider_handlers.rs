@@ -118,7 +118,7 @@ pub async fn update_provider(
             record_provider_event(&state, actor, "oauth_provider_update", &slug).await;
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(false) => error::bad_request("oauth_provider_not_found", "provider was not found"),
+        Ok(false) => error::not_found("oauth_provider_not_found", "provider was not found"),
         Err(error_value) => provider_error_response(error_value),
     }
 }
@@ -157,7 +157,7 @@ async fn set_provider_status(
             record_provider_event(&state, actor, &format!("oauth_provider_{status}"), &slug).await;
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(false) => error::bad_request("oauth_provider_not_found", "provider was not found"),
+        Ok(false) => error::not_found("oauth_provider_not_found", "provider was not found"),
         Err(error_value) => provider_error_response(error_value),
     }
 }
@@ -168,7 +168,7 @@ fn provider_error_response(error_value: ExternalOAuthError) -> Response {
             error::bad_request("invalid_oauth_provider", validation_error.to_string())
         }
         ExternalOAuthError::NotFound | ExternalOAuthError::Disabled => {
-            error::bad_request("oauth_provider_not_found", "provider was not found")
+            error::not_found("oauth_provider_not_found", "provider was not found")
         }
         ExternalOAuthError::Database(database_error)
             if database_error

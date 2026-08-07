@@ -7,7 +7,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use super::domain::UserId;
+use super::domain::{RegistrationError, UserId};
 use super::ui_auth::{UserContext, current_user, mutation_error, mutation_user};
 use crate::{error, sessions::cookies, state::AppState};
 
@@ -130,9 +130,15 @@ pub async fn change_current_user_password(
         Err(crate::users::service::UserServiceError::InvalidCredentials) => {
             error::unauthorized("invalid_credentials", "current password is incorrect")
         }
-        Err(crate::users::service::UserServiceError::Validation(validation_error)) => {
-            error::bad_request("password_too_short", validation_error.to_string())
-        }
+        Err(crate::users::service::UserServiceError::Validation(
+            RegistrationError::PasswordTooShort,
+        )) => error::bad_request("password_too_short", "password is too short"),
+        Err(crate::users::service::UserServiceError::Validation(
+            RegistrationError::PasswordTooLong,
+        )) => error::bad_request(
+            "password_too_long",
+            "password must be at most 128 characters",
+        ),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to change user password");
             error::internal()
