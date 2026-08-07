@@ -14,23 +14,28 @@ fn redis_client() -> redis::Client {
 async fn login_ticket_is_readable_then_consumed_once() {
     let client = redis_client();
     let store = LoginTicketStore::new(client.clone());
+    let holder_hash = "holder-hash".to_owned();
     let (ticket_id, ticket) = store
-        .create(42, vec![FactorMethod::Totp])
+        .create_with_holder(42, vec![FactorMethod::Totp], holder_hash.clone())
         .await
         .expect("create ticket");
 
     assert_eq!(
         store
-            .find(&ticket_id)
+            .find_for_holder(&ticket_id, &holder_hash)
             .await
             .expect("find ticket")
             .map(|value| value.user_id),
         Some(ticket.user_id)
     );
-    assert!(store.take(&ticket_id).await.expect("take ticket").is_some());
+    assert!(store
+        .take_for_holder(&ticket_id, &holder_hash)
+        .await
+        .expect("take ticket")
+        .is_some());
     assert!(
         store
-            .take(&ticket_id)
+            .take_for_holder(&ticket_id, &holder_hash)
             .await
             .expect("take consumed ticket")
             .is_none()
@@ -42,6 +47,42 @@ async fn login_ticket_is_readable_then_consumed_once() {
         .expect("Redis connection");
     let _: usize = connection
         .del(format!("chenxing:auth:login-ticket:{ticket_id}"))
+        .await
+        .expect("cleanup ticket");
+}
+
+#[tokio::test]
+async fn login_ticket_cannot_be_read_or_consumed_with_another_holder() {
+    let client = redis_client();
+    let store = LoginTicketStore::new(client.clone());
+    let holder_hash = "holder-a".to_owned();
+    let (ticket_id, _) = store
+        .create_with_holder(42, vec![FactorMethod::Totp], holder_hash.clone())
+        .await
+        .expect("create ticket");
+
+    assert!(store
+        .find_for_holder(&ticket_id, "holder-b")
+        .await
+        .expect("find with wrong holder")
+        .is_none());
+    assert!(store
+        .take_for_holder(&ticket_id, "holder-b")
+        .await
+        .expect("take with wrong holder")
+        .is_none());
+    assert!(store
+        .take_for_holder(&ticket_id, &holder_hash)
+        .await
+        .expect("take with correct holder")
+        .is_some());
+
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let _: usize = connection
+        .del(LoginTicketStore::key(&ticket_id))
         .await
         .expect("cleanup ticket");
 }

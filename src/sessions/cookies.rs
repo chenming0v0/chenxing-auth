@@ -20,6 +20,15 @@ const EXTERNAL_STATE_COOKIE_ID_BYTES: usize = 12;
 /// 的那一个（#115）。只在服务端与 pending 记录中的摘要比对，值本身不进日志。
 pub const AUTHZ_HOLDER_COOKIE: &str = "chenxing_authz_holder";
 const AUTHZ_HOLDER_BYTES: usize = 32;
+/// Pending login ticket cookie. The ticket is HttpOnly so normal browser code
+/// cannot copy the bearer value into a URL, log, or response body.
+pub const LOGIN_TICKET_COOKIE: &str = "__Host-chenxing_login_ticket";
+/// Separate browser holder proof for a pending login ticket. Redis stores only
+/// its digest, so a leaked ticket value alone cannot complete MFA.
+pub const LOGIN_TICKET_HOLDER_COOKIE: &str = "__Host-chenxing_login_holder";
+const LOCAL_LOGIN_TICKET_COOKIE: &str = "chenxing_login_ticket";
+const LOCAL_LOGIN_TICKET_HOLDER_COOKIE: &str = "chenxing_login_holder";
+const LOGIN_TICKET_HOLDER_BYTES: usize = 32;
 
 pub fn append_login_cookies(
     headers: &mut HeaderMap,
@@ -110,6 +119,63 @@ pub fn authz_holder_hash(holder: &str) -> String {
     URL_SAFE_NO_PAD.encode(digest)
 }
 
+pub fn new_login_ticket_holder() -> String {
+    let mut bytes = [0_u8; LOGIN_TICKET_HOLDER_BYTES];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+pub fn login_ticket_holder_hash(holder: &str) -> String {
+    let digest = Sha256::digest(holder.as_bytes());
+    URL_SAFE_NO_PAD.encode(digest)
+}
+
+pub fn append_login_ticket_cookies(
+    headers: &mut HeaderMap,
+    ticket_id: &str,
+    holder: &str,
+    max_age_seconds: u64,
+    secure: bool,
+) {
+    let ticket_name = login_ticket_cookie_name(secure);
+    let holder_name = login_ticket_holder_cookie_name(secure);
+    for (name, value) in [(ticket_name, ticket_id), (holder_name, holder)] {
+        headers.append(
+            SET_COOKIE,
+            build_cookie(name, value, max_age_seconds, secure, true, "/")
+                .parse()
+                .expect("login ticket cookie is valid ASCII"),
+        );
+    }
+}
+
+pub fn append_clear_login_ticket_cookies(headers: &mut HeaderMap, secure: bool) {
+    let ticket_name = login_ticket_cookie_name(secure);
+    let holder_name = login_ticket_holder_cookie_name(secure);
+    for name in [ticket_name, holder_name] {
+        headers.append(
+            SET_COOKIE,
+            build_cookie(name, "", 0, secure, true, "/")
+                .parse()
+                .expect("clear login ticket cookie is valid ASCII"),
+        );
+    }
+}
+
+pub fn login_ticket_id_for_secure_transport(
+    headers: &HeaderMap,
+    secure: bool,
+) -> Option<String> {
+    cookie_value(headers, login_ticket_cookie_name(secure))
+}
+
+pub fn login_ticket_holder_for_secure_transport(
+    headers: &HeaderMap,
+    secure: bool,
+) -> Option<String> {
+    cookie_value(headers, login_ticket_holder_cookie_name(secure))
+}
+
 /// 下发授权请求持有者 Cookie（HttpOnly, SameSite=Lax, path="/"）。
 ///
 /// 路径设 `/` 而非 `/oauth/`：bind 端点位于 `/api/v1/...`，受限路径会导致
@@ -188,6 +254,22 @@ pub const fn csrf_cookie_name(secure: bool) -> &'static str {
         CSRF_COOKIE
     } else {
         LOCAL_CSRF_COOKIE
+    }
+}
+
+pub const fn login_ticket_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        LOGIN_TICKET_COOKIE
+    } else {
+        LOCAL_LOGIN_TICKET_COOKIE
+    }
+}
+
+pub const fn login_ticket_holder_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        LOGIN_TICKET_HOLDER_COOKIE
+    } else {
+        LOCAL_LOGIN_TICKET_HOLDER_COOKIE
     }
 }
 
@@ -287,7 +369,9 @@ fn build_cookie(
 
 #[cfg(test)]
 mod tests {
-    use super::{authz_holder_hash, new_authz_holder};
+    use super::{
+        authz_holder_hash, login_ticket_holder_hash, new_authz_holder, new_login_ticket_holder,
+    };
 
     /// 回归 #115：holder 值生成应足够随机且长度合理。
     #[test]
@@ -323,5 +407,17 @@ mod tests {
         let hash1 = authz_holder_hash("holder_a");
         let hash2 = authz_holder_hash("holder_b");
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn login_ticket_holder_is_random_and_hashed() {
+        let holder1 = new_login_ticket_holder();
+        let holder2 = new_login_ticket_holder();
+        assert_ne!(holder1, holder2);
+        assert_ne!(login_ticket_holder_hash(&holder1), holder1);
+        assert_ne!(
+            login_ticket_holder_hash(&holder1),
+            login_ticket_holder_hash(&holder2)
+        );
     }
 }

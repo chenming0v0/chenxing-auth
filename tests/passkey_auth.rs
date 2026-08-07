@@ -70,6 +70,46 @@ async fn post(router: &Router, uri: &str, body: serde_json::Value) -> axum::resp
         .expect("response")
 }
 
+async fn post_with_cookie(
+    router: &Router,
+    uri: &str,
+    body: serde_json::Value,
+    cookie: &str,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .body(Body::from(body.to_string()))
+                .expect("request"),
+        )
+        .await
+        .expect("response")
+}
+
+fn cookie_header(response: &axum::response::Response) -> String {
+    response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().expect("cookie pair"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn cookie_value(cookie: &str, name: &str) -> String {
+    cookie
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
+        .expect("cookie value")
+        .to_owned()
+}
+
 /// 逐个 ticket 的 Passkey 失败上限直接取自限流域模型，避免测试与实现漂移。
 fn ticket_failure_limit() -> usize {
     FailureDimension::Ticket.limit() as usize
@@ -100,7 +140,7 @@ async fn create_user(router: &Router, email: &str) -> String {
     username
 }
 
-async fn login_ticket(router: &Router, username: &str) -> String {
+async fn login_ticket(router: &Router, username: &str) -> (String, String) {
     let response = post(
         router,
         "/api/v1/auth/login",
@@ -108,30 +148,33 @@ async fn login_ticket(router: &Router, username: &str) -> String {
     )
     .await;
     assert_eq!(response.status(), StatusCode::ACCEPTED);
-    json_response(response).await["login_ticket"]
-        .as_str()
-        .expect("login ticket")
-        .to_owned()
+    let cookie = cookie_header(&response);
+    assert!(json_response(response).await.get("login_ticket").is_none());
+    (
+        cookie_value(&cookie, "chenxing_login_ticket"),
+        cookie,
+    )
 }
 
 /// 在一个 ticket 上耗尽 Passkey 注册失败额度，返回每次尝试的状态码。
-async fn exhaust_ticket_failures(router: &Router, ticket: &str) -> Vec<StatusCode> {
-    let response = post(
+async fn exhaust_ticket_failures(router: &Router, ticket: &(String, String)) -> Vec<StatusCode> {
+    let response = post_with_cookie(
         router,
         "/api/v1/auth/passkeys/register/start",
-        serde_json::json!({"login_ticket": ticket}),
+        serde_json::json!({}),
+        &ticket.1,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let mut statuses = Vec::new();
     for _ in 0..ticket_failure_limit() {
-        let response = post(
+        let response = post_with_cookie(
             router,
             "/api/v1/auth/passkeys/register/finish",
             serde_json::json!({
-                "login_ticket": ticket,
                 "credential": bogus_registration_credential()
             }),
+            &ticket.1,
         )
         .await;
         statuses.push(response.status());
@@ -192,15 +235,17 @@ async fn passkey_registration_start_returns_creation_challenge_for_login_ticket(
         serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
-    let ticket = json_response(response).await["login_ticket"]
-        .as_str()
-        .expect("login ticket")
-        .to_owned();
+    let ticket = {
+        let cookie = cookie_header(&response);
+        assert!(json_response(response).await.get("login_ticket").is_none());
+        (cookie_value(&cookie, "chenxing_login_ticket"), cookie)
+    };
 
-    let response = post(
+    let response = post_with_cookie(
         &router,
         "/api/v1/auth/passkeys/register/start",
-        serde_json::json!({"login_ticket": ticket}),
+        serde_json::json!({}),
+        &ticket.1,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -209,11 +254,10 @@ async fn passkey_registration_start_returns_creation_challenge_for_login_ticket(
     assert!(body["publicKey"]["rp"]["id"].as_str().is_some());
     assert!(body["session_id"].is_null());
 
-    let response = post(
+    let response = post_with_cookie(
         &router,
         "/api/v1/auth/passkeys/register/finish",
         serde_json::json!({
-            "login_ticket": ticket,
             "credential": {
                 "id": "",
                 "rawId": "",
@@ -221,14 +265,16 @@ async fn passkey_registration_start_returns_creation_challenge_for_login_ticket(
                 "type": "public-key"
             }
         }),
+        &ticket.1,
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    let response = post(
+    let response = post_with_cookie(
         &router,
         "/api/v1/auth/passkeys/authentication/start",
-        serde_json::json!({"login_ticket": ticket}),
+        serde_json::json!({}),
+        &ticket.1,
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -279,22 +325,22 @@ async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
-    let ticket = json_response(
-        post(
-            &router,
-            "/api/v1/auth/login",
-            serde_json::json!({"identifier": username, "password": password}),
-        )
-        .await,
+    let login_response = post(
+        &router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": username, "password": password}),
     )
-    .await["login_ticket"]
-        .as_str()
-        .expect("login ticket")
-        .to_owned();
-    let response = post(
+    .await;
+    let ticket = {
+        let cookie = cookie_header(&login_response);
+        assert!(json_response(login_response).await.get("login_ticket").is_none());
+        (cookie_value(&cookie, "chenxing_login_ticket"), cookie)
+    };
+    let response = post_with_cookie(
         &router,
         "/api/v1/auth/passkeys/register/start",
-        serde_json::json!({"login_ticket": ticket}),
+        serde_json::json!({}),
+        &ticket.1,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -337,7 +383,7 @@ async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
         .expect("Redis connection");
     let pending: serde_json::Value = serde_json::from_str(
         &connection
-            .get::<_, String>(format!("chenxing:auth:passkey-registration:{ticket}"))
+            .get::<_, String>(format!("chenxing:auth:passkey-registration:{}", ticket.0))
             .await
             .expect("registration snapshot"),
     )
@@ -354,14 +400,17 @@ async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
         serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
-    let second_ticket = json_response(response).await["login_ticket"]
-        .as_str()
-        .expect("second login ticket")
-        .to_owned();
-    let response = post(
+    let second_cookie = cookie_header(&response);
+    let _second_pending = json_response(response).await;
+    let second_ticket = (
+        cookie_value(&second_cookie, "chenxing_login_ticket"),
+        second_cookie,
+    );
+    let response = post_with_cookie(
         &router,
         "/api/v1/auth/passkeys/register/start",
-        serde_json::json!({"login_ticket": second_ticket}),
+        serde_json::json!({}),
+        &second_ticket.1,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -378,7 +427,8 @@ async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
     let pending: serde_json::Value = serde_json::from_str(
         &connection
             .get::<_, String>(format!(
-                "chenxing:auth:passkey-registration:{second_ticket}"
+                "chenxing:auth:passkey-registration:{}",
+                second_ticket.0
             ))
             .await
             .expect("updated registration snapshot"),
@@ -405,12 +455,13 @@ async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
         .await
         .expect("user cleanup");
     let _: usize = connection
-        .del(format!("chenxing:auth:passkey-registration:{ticket}"))
+        .del(format!("chenxing:auth:passkey-registration:{}", ticket.0))
         .await
         .expect("old snapshot cleanup");
     let _: usize = connection
         .del(format!(
-            "chenxing:auth:passkey-registration:{second_ticket}"
+            "chenxing:auth:passkey-registration:{}",
+            second_ticket.0
         ))
         .await
         .expect("new snapshot cleanup");
@@ -435,13 +486,13 @@ async fn passkey_finish_failures_are_rate_limited_and_invalidate_the_ticket() {
     );
 
     // ticket 维度达阈值后 ticket 已被失效，后续请求连挂起状态都不复存在。
-    let response = post(
+    let response = post_with_cookie(
         &router,
         "/api/v1/auth/passkeys/register/finish",
         serde_json::json!({
-            "login_ticket": ticket,
             "credential": bogus_registration_credential()
         }),
+        &ticket.1,
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -502,28 +553,31 @@ async fn passkey_start_endpoints_reject_before_touching_passkey_storage() {
 
     // 账号维度耗尽后，challenge 端点必须在 list_passkeys 之前就拒绝。该账号没有任何
     // Passkey，若限流检查在数据库查询之后才生效，这里会退化成 400 invalid_login_ticket。
-    let response = post(
+    let response = post_with_cookie(
         &router,
         "/api/v1/auth/passkeys/authentication/start",
-        serde_json::json!({"login_ticket": spare_ticket}),
+        serde_json::json!({}),
+        &spare_ticket.1,
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(json_response(response).await["code"], "invalid_factor");
 
-    let response = post(
+    let response = post_with_cookie(
         &router,
         "/api/v1/auth/passkeys/register/start",
-        serde_json::json!({"login_ticket": spare_ticket}),
+        serde_json::json!({}),
+        &spare_ticket.1,
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     // 限流按账号隔离：另一个账号的成功路径不受这些失败影响。
-    let response = post(
+    let response = post_with_cookie(
         &router,
         "/api/v1/auth/passkeys/register/start",
-        serde_json::json!({"login_ticket": other_ticket}),
+        serde_json::json!({}),
+        &other_ticket.1,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);

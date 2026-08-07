@@ -22,7 +22,7 @@ export function TotpStep({
     onBusy(true)
     try {
       onSetup(await apiFetch<TotpSetupResponse>('/api/v1/auth/totp/setup', {
-        method: 'POST', redirectOn401: false, body: JSON.stringify({ login_ticket: pending.login_ticket }),
+        method: 'POST', redirectOn401: false, body: JSON.stringify({}),
       }))
     } catch (error) {
       onMessage(error instanceof Error ? error.message : '无法开始验证器绑定。')
@@ -41,7 +41,7 @@ export function TotpStep({
     onBusy(true)
     try {
       await apiFetch<LoginResponse>(setupRequired ? '/api/v1/auth/totp/setup/confirm' : '/api/v1/auth/totp/login', {
-        method: 'POST', redirectOn401: false, body: JSON.stringify({ login_ticket: pending.login_ticket, code }),
+        method: 'POST', redirectOn401: false, body: JSON.stringify({ code }),
       })
       await onComplete()
     } catch (error) {

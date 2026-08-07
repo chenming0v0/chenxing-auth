@@ -176,11 +176,9 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
         .await
         .expect("login response");
     assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let pending_login_cookie = cookies(&response);
     let pending_login = json(response).await;
-    let ticket = pending_login["login_ticket"]
-        .as_str()
-        .expect("login ticket")
-        .to_owned();
+    assert!(pending_login.get("login_ticket").is_none());
 
     let response = router
         .clone()
@@ -189,8 +187,9 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
                 .method("POST")
                 .uri("/api/v1/auth/totp/setup")
                 .header("content-type", "application/json")
+                .header("cookie", &pending_login_cookie)
                 .body(Body::from(
-                    serde_json::json!({"login_ticket": ticket}).to_string(),
+                    serde_json::json!({}).to_string(),
                 ))
                 .expect("totp setup request"),
         )
@@ -207,9 +206,9 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
                 .method("POST")
                 .uri("/api/v1/auth/totp/login")
                 .header("content-type", "application/json")
+                .header("cookie", &pending_login_cookie)
                 .body(Body::from(
                     serde_json::json!({
-                        "login_ticket": ticket,
                         "code": totp.generate_current().expect("TOTP code")
                     })
                     .to_string(),

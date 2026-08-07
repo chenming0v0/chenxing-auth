@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 use time::{Duration, OffsetDateTime};
 
 use crate::users::domain::UserId;
@@ -36,6 +37,10 @@ pub fn setup_factor_methods(passkey_enabled: bool) -> Vec<FactorMethod> {
 pub struct LoginTicket {
     pub user_id: UserId,
     methods: Vec<FactorMethod>,
+    /// SHA-256 digest of the browser holder cookie. The raw holder never enters
+    /// Redis, logs, or an API response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder_hash: Option<String>,
     #[serde(default)]
     pub session_epoch: i64,
     pub created_at: OffsetDateTime,
@@ -45,15 +50,35 @@ pub struct LoginTicket {
 impl LoginTicket {
     pub const TTL: Duration = Duration::minutes(5);
 
+    /// Legacy/test constructor. Tickets without a holder hash are deliberately
+    /// rejected by the HTTP factor flow after the holder binding migration.
     pub fn new(user_id: UserId, methods: Vec<FactorMethod>) -> Self {
         Self::new_with_epoch(user_id, methods, 0)
     }
 
     pub fn new_with_epoch(user_id: UserId, methods: Vec<FactorMethod>, session_epoch: i64) -> Self {
+        Self::new_with_epoch_and_holder(user_id, methods, session_epoch, None)
+    }
+
+    pub fn new_with_holder(
+        user_id: UserId,
+        methods: Vec<FactorMethod>,
+        holder_hash: String,
+    ) -> Self {
+        Self::new_with_epoch_and_holder(user_id, methods, 0, Some(holder_hash))
+    }
+
+    pub fn new_with_epoch_and_holder(
+        user_id: UserId,
+        methods: Vec<FactorMethod>,
+        session_epoch: i64,
+        holder_hash: Option<String>,
+    ) -> Self {
         let created_at = OffsetDateTime::now_utc();
         Self {
             user_id,
             methods,
+            holder_hash,
             session_epoch,
             created_at,
             expires_at: created_at + Self::TTL,
@@ -70,6 +95,16 @@ impl LoginTicket {
 
     pub fn supports(&self, method: FactorMethod) -> bool {
         self.methods.contains(&method)
+    }
+
+    pub fn matches_holder_hash(&self, holder_hash: &str) -> bool {
+        let Some(stored_hash) = self.holder_hash.as_deref() else {
+            return false;
+        };
+        stored_hash
+            .as_bytes()
+            .ct_eq(holder_hash.as_bytes())
+            .into()
     }
 }
 

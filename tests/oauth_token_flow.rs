@@ -208,10 +208,8 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
         .await
         .expect("login response");
     assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let ticket = json_body(response).await["login_ticket"]
-        .as_str()
-        .expect("login ticket")
-        .to_owned();
+    let pending_cookie = cookie_header(&response);
+    assert!(json_body(response).await.get("login_ticket").is_none());
     let response = router
         .clone()
         .oneshot(
@@ -219,8 +217,9 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
                 .method("POST")
                 .uri("/api/v1/auth/totp/setup")
                 .header("content-type", "application/json")
+                .header("cookie", &pending_cookie)
                 .body(Body::from(
-                    serde_json::json!({"login_ticket": ticket}).to_string(),
+                    serde_json::json!({}).to_string(),
                 ))
                 .expect("TOTP setup request"),
         )
@@ -236,9 +235,9 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
                 .method("POST")
                 .uri("/api/v1/auth/totp/setup/confirm")
                 .header("content-type", "application/json")
+                .header("cookie", &pending_cookie)
                 .body(Body::from(
                     serde_json::json!({
-                        "login_ticket": ticket,
                         "code": totp.generate_current().expect("TOTP code")
                     })
                     .to_string(),

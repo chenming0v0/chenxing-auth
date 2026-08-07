@@ -109,10 +109,11 @@ impl AuthFactorService {
     pub async fn start_totp_enrollment(
         &self,
         ticket_id: &str,
+        holder_hash: &str,
         account_name: &str,
         issuer: &str,
     ) -> Result<Option<TotpEnrollment>, AuthFactorServiceError> {
-        let Some(ticket) = self.tickets.find(ticket_id).await? else {
+        let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(None);
         };
         let factor_methods = repository::list_factor_methods(&self.pool, ticket.user_id).await?;
@@ -149,10 +150,11 @@ impl AuthFactorService {
     pub async fn confirm_totp_enrollment(
         &self,
         ticket_id: &str,
+        holder_hash: &str,
         source_ip: Option<&str>,
         code: &str,
     ) -> Result<TotpConfirmation, AuthFactorServiceError> {
-        let Some(ticket) = self.tickets.find(ticket_id).await? else {
+        let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(TotpConfirmation::InvalidTicket);
         };
         if !ticket.is_active_at(time::OffsetDateTime::now_utc())
@@ -196,7 +198,7 @@ impl AuthFactorService {
         let Some(_) = valid else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {
-                self.invalidate_ticket(ticket_id).await?;
+                self.invalidate_ticket(ticket_id, holder_hash).await?;
                 return Ok(TotpConfirmation::RateLimited);
             }
             if !record.reached.is_empty() {
@@ -212,7 +214,7 @@ impl AuthFactorService {
         let confirmation = match consume_then_persist(
             TotpConfirmation::Completed(ticket.user_id),
             TotpConfirmation::InvalidTicket,
-            self.tickets.take(ticket_id),
+            self.tickets.take_for_holder(ticket_id, holder_hash),
             async {
                 let result = if passkey_recovery {
                     repository::insert_totp_factor_for_passkey_recovery(
@@ -242,7 +244,10 @@ impl AuthFactorService {
         {
             Ok(confirmation) => confirmation,
             Err(AuthFactorServiceError::FirstFactorAlreadyExists) => {
-                let _ = self.tickets.take(ticket_id).await?;
+                let _ = self
+                    .tickets
+                    .take_for_holder(ticket_id, holder_hash)
+                    .await?;
                 self.tickets
                     .delete(&Self::totp_setup_key(ticket_id))
                     .await?;
@@ -259,10 +264,11 @@ impl AuthFactorService {
     pub async fn verify_totp_login(
         &self,
         ticket_id: &str,
+        holder_hash: &str,
         source_ip: Option<&str>,
         code: &str,
     ) -> Result<TotpConfirmation, AuthFactorServiceError> {
-        let Some(ticket) = self.tickets.find(ticket_id).await? else {
+        let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(TotpConfirmation::InvalidTicket);
         };
         if !ticket.is_active_at(time::OffsetDateTime::now_utc())
@@ -286,7 +292,7 @@ impl AuthFactorService {
         let Some(encrypted_secret) = encrypted_secret else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {
-                self.invalidate_ticket(ticket_id).await?;
+                self.invalidate_ticket(ticket_id, holder_hash).await?;
                 return Ok(TotpConfirmation::RateLimited);
             }
             if !record.reached.is_empty() {
@@ -314,7 +320,7 @@ impl AuthFactorService {
         let Some(timestep) = valid else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {
-                self.invalidate_ticket(ticket_id).await?;
+                self.invalidate_ticket(ticket_id, holder_hash).await?;
                 return Ok(TotpConfirmation::RateLimited);
             }
             if !record.reached.is_empty() {
@@ -341,7 +347,12 @@ impl AuthFactorService {
                 "TOTP verification succeeded but key rotation migration was deferred"
             );
         }
-        if self.tickets.take(ticket_id).await?.is_none() {
+        if self
+            .tickets
+            .take_for_holder(ticket_id, holder_hash)
+            .await?
+            .is_none()
+        {
             return Ok(TotpConfirmation::InvalidTicket);
         }
         Ok(TotpConfirmation::Completed(ticket.user_id))
@@ -377,8 +388,9 @@ impl AuthFactorService {
     pub(super) async fn invalidate_ticket(
         &self,
         ticket_id: &str,
+        holder_hash: &str,
     ) -> Result<(), AuthFactorServiceError> {
-        self.tickets.take(ticket_id).await?;
+        self.tickets.take_for_holder(ticket_id, holder_hash).await?;
         self.tickets
             .delete(&Self::totp_setup_key(ticket_id))
             .await?;

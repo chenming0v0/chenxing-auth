@@ -92,6 +92,38 @@ async fn request(
         .expect("JSON response")
 }
 
+fn pending_cookie(response: &axum::response::Response) -> String {
+    response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().expect("cookie pair"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+async fn request_with_cookie(
+    router: &Router,
+    uri: &str,
+    payload: serde_json::Value,
+    cookie: &str,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .body(Body::from(payload.to_string()))
+                .expect("JSON request"),
+        )
+        .await
+        .expect("JSON response")
+}
+
 #[tokio::test]
 async fn password_login_without_factor_returns_pending_setup_ticket() {
     let (router, database, key_directory, email) = setup().await;
@@ -129,13 +161,12 @@ async fn password_login_without_factor_returns_pending_setup_ticket() {
         .await
         .expect("login response");
     assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let cookie = pending_cookie(&response);
     let body = json_body(response).await;
     assert_eq!(body["status"], "factor_setup_required");
-    assert!(
-        body["login_ticket"]
-            .as_str()
-            .is_some_and(|value| !value.is_empty())
-    );
+    assert!(body.get("login_ticket").is_none());
+    assert!(cookie.contains("chenxing_login_ticket="));
+    assert!(cookie.contains("chenxing_login_holder="));
     assert_eq!(body["methods"][0], "totp");
 
     let user_id: (i64,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
@@ -164,42 +195,40 @@ async fn totp_login_endpoint_completes_a_pending_factor_ticket() {
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
 
-    let pending = json_body(
-        request(
-            &router,
-            "/api/v1/auth/login",
-            serde_json::json!({"identifier": username, "password": password}),
-        )
-        .await,
+    let login_response = request(
+        &router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
-    let ticket = pending["login_ticket"].as_str().expect("login ticket");
+    let cookie = pending_cookie(&login_response);
+    let _pending = json_body(login_response).await;
     let setup = json_body(
-        request(
+        request_with_cookie(
             &router,
             "/api/v1/auth/totp/setup",
-            serde_json::json!({"login_ticket": ticket}),
+            serde_json::json!({}),
+            &cookie,
         )
         .await,
     )
     .await;
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
 
-    let response = request(
+    let response = request_with_cookie(
         &router,
         "/api/v1/auth/totp/login",
-        serde_json::json!({"login_ticket": ticket, "code": "000000"}),
+        serde_json::json!({"code": "000000"}),
+        &cookie,
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    let response = request(
+    let response = request_with_cookie(
         &router,
         "/api/v1/auth/totp/login",
-        serde_json::json!({
-            "login_ticket": ticket,
-            "code": totp.generate_current().expect("TOTP code")
-        }),
+        serde_json::json!({"code": totp.generate_current().expect("TOTP code")}),
+        &cookie,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -226,38 +255,39 @@ async fn totp_login_ticket_is_invalidated_after_five_failed_codes() {
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
 
-    let pending = json_body(
-        request(
-            &router,
-            "/api/v1/auth/login",
-            serde_json::json!({"identifier": username, "password": password}),
-        )
-        .await,
+    let login_response = request(
+        &router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
-    let ticket = pending["login_ticket"].as_str().expect("login ticket");
-    let response = request(
+    let cookie = pending_cookie(&login_response);
+    let _pending = json_body(login_response).await;
+    let response = request_with_cookie(
         &router,
         "/api/v1/auth/totp/setup",
-        serde_json::json!({"login_ticket": ticket}),
+        serde_json::json!({}),
+        &cookie,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
 
     for _ in 0..5 {
-        let response = request(
+        let response = request_with_cookie(
             &router,
             "/api/v1/auth/totp/login",
-            serde_json::json!({"login_ticket": ticket, "code": "000000"}),
+            serde_json::json!({"code": "000000"}),
+            &cookie,
         )
         .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    let response = request(
+    let response = request_with_cookie(
         &router,
         "/api/v1/auth/totp/login",
-        serde_json::json!({"login_ticket": ticket, "code": "000000"}),
+        serde_json::json!({"code": "000000"}),
+        &cookie,
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -289,15 +319,14 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
         serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
-    let ticket = json_body(response).await["login_ticket"]
-        .as_str()
-        .expect("login ticket")
-        .to_owned();
+    let cookie = pending_cookie(&response);
+    let _pending = json_body(response).await;
 
-    let response = request(
+    let response = request_with_cookie(
         &router,
         "/api/v1/auth/totp/setup",
-        serde_json::json!({"login_ticket": ticket}),
+        serde_json::json!({}),
+        &cookie,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -309,18 +338,20 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
     assert_eq!(totp.get_secret_base32(), secret);
     let code = totp.generate_current().expect("current TOTP code");
 
-    let response = request(
+    let response = request_with_cookie(
         &router,
         "/api/v1/auth/totp/setup/confirm",
-        serde_json::json!({"login_ticket": ticket, "code": "000000"}),
+        serde_json::json!({"code": "000000"}),
+        &cookie,
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    let response = request(
+    let response = request_with_cookie(
         &router,
         "/api/v1/auth/totp/setup/confirm",
-        serde_json::json!({"login_ticket": ticket, "code": code}),
+        serde_json::json!({"code": code}),
+        &cookie,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -328,10 +359,11 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
     let session_body = json_body(response).await;
     assert!(session_body["session_id"].is_null());
 
-    let response = request(
+    let response = request_with_cookie(
         &router,
         "/api/v1/auth/totp/setup/confirm",
-        serde_json::json!({"login_ticket": ticket, "code": code}),
+        serde_json::json!({"code": code}),
+        &cookie,
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -344,23 +376,19 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
     .await;
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     assert_eq!(json_body(response).await["status"], "factor_required");
-
-    let login_ticket = json_body(
-        request(
-            &router,
-            "/api/v1/auth/login",
-            serde_json::json!({"identifier": username, "password": password}),
-        )
-        .await,
+    let login_response = request(
+        &router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": username, "password": password}),
     )
-    .await["login_ticket"]
-        .as_str()
-        .expect("login ticket")
-        .to_owned();
-    let response = request(
+    .await;
+    let second_cookie = pending_cookie(&login_response);
+    let _pending = json_body(login_response).await;
+    let response = request_with_cookie(
         &router,
         "/api/v1/auth/passkeys/register/start",
-        serde_json::json!({"login_ticket": login_ticket}),
+        serde_json::json!({}),
+        &second_cookie,
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);

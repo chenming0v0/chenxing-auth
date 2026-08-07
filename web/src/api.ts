@@ -137,7 +137,6 @@ export type AuthStatusResponse = { authenticated: boolean }
 export type LoginResponse = { expires_at?: string }
 export type PendingLoginResponse = {
   status: 'factor_setup_required' | 'factor_required'
-  login_ticket: string
   methods: Array<'totp' | 'passkey' | string>
 }
 export type TotpSetupResponse = { secret_base32: string; otpauth_url: string }

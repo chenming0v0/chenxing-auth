@@ -121,6 +121,7 @@ async fn login(
         .await
         .expect("login response");
     if response.status() == StatusCode::ACCEPTED {
+        let pending_cookie = cookies(&response);
         let pending = json(response).await;
         if pending["status"] == "factor_required" {
             let code = current_totp_code(database, email).await;
@@ -148,10 +149,7 @@ async fn login(
             let csrf_token = csrf(&cookie_header);
             return (cookie_header, csrf_token);
         }
-        let ticket = pending["login_ticket"]
-            .as_str()
-            .expect("login ticket")
-            .to_owned();
+        assert!(pending.get("login_ticket").is_none());
         let response = router
             .clone()
             .oneshot(
@@ -159,8 +157,9 @@ async fn login(
                     .method("POST")
                     .uri("/api/v1/auth/totp/setup")
                     .header("content-type", "application/json")
+                    .header("cookie", &pending_cookie)
                     .body(Body::from(
-                        serde_json::json!({"login_ticket": ticket}).to_string(),
+                        serde_json::json!({}).to_string(),
                     ))
                     .expect("TOTP setup request"),
             )
@@ -176,9 +175,9 @@ async fn login(
                     .method("POST")
                     .uri("/api/v1/auth/totp/setup/confirm")
                     .header("content-type", "application/json")
+                    .header("cookie", &pending_cookie)
                     .body(Body::from(
                         serde_json::json!({
-                            "login_ticket": ticket,
                             "code": totp.generate_current().expect("TOTP code")
                         })
                         .to_string(),

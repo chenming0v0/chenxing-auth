@@ -82,6 +82,38 @@ async fn request(
         .expect("JSON response")
 }
 
+fn pending_cookie(response: &axum::response::Response) -> String {
+    response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().expect("cookie pair"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+async fn request_with_cookie(
+    router: &Router,
+    uri: &str,
+    payload: serde_json::Value,
+    cookie: &str,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .body(Body::from(payload.to_string()))
+                .expect("JSON request"),
+        )
+        .await
+        .expect("JSON response")
+}
+
 /// 注册账号并完成 TOTP 首次注册，返回 TOTP 生成器。
 /// 返回时账号已有注册好的 TOTP 因子，后续 login ticket 上不再有待确认注册。
 async fn enroll_totp(router: &Router, username: &str, email: &str, password: &str) -> TOTP {
@@ -95,23 +127,20 @@ async fn enroll_totp(router: &Router, username: &str, email: &str, password: &st
         .status(),
         StatusCode::CREATED
     );
-    let ticket = json_body(
-        request(
+    let login_response = request(
             router,
             "/api/v1/auth/login",
             serde_json::json!({"identifier": username, "password": password}),
         )
-        .await,
-    )
-    .await["login_ticket"]
-        .as_str()
-        .expect("setup login ticket")
-        .to_owned();
+        .await;
+    let pending_cookie = pending_cookie(&login_response);
+    let _pending = json_body(login_response).await;
     let setup = json_body(
-        request(
+        request_with_cookie(
             router,
             "/api/v1/auth/totp/setup",
-            serde_json::json!({"login_ticket": ticket}),
+            serde_json::json!({}),
+            &pending_cookie,
         )
         .await,
     )
@@ -119,13 +148,13 @@ async fn enroll_totp(router: &Router, username: &str, email: &str, password: &st
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
     // 专用的注册确认端点完成注册，登录端点此后只应走验证路径。
     assert_eq!(
-        request(
+        request_with_cookie(
             router,
             "/api/v1/auth/totp/setup/confirm",
             serde_json::json!({
-                "login_ticket": ticket,
                 "code": totp.generate_current().expect("enrollment code")
             }),
+            &pending_cookie,
         )
         .await
         .status(),
@@ -136,20 +165,17 @@ async fn enroll_totp(router: &Router, username: &str, email: &str, password: &st
 
 /// 取一张新的 login ticket。账号已有因子，因此状态是 `factor_required`。
 async fn factor_login_ticket(router: &Router, username: &str, password: &str) -> String {
-    let body = json_body(
-        request(
+    let response = request(
             router,
             "/api/v1/auth/login",
             serde_json::json!({"identifier": username, "password": password}),
         )
-        .await,
-    )
-    .await;
+        .await;
+    let cookie = pending_cookie(&response);
+    let body = json_body(response).await;
     assert_eq!(body["status"], "factor_required");
-    body["login_ticket"]
-        .as_str()
-        .expect("factor login ticket")
-        .to_owned()
+    assert!(body.get("login_ticket").is_none());
+    cookie
 }
 
 async fn cleanup(
@@ -178,10 +204,11 @@ async fn totp_login_falls_back_to_verification_without_pending_enrollment() {
     // 这张 ticket 上没有待确认注册，`confirm_totp_enrollment` 返回
     // `NoPendingEnrollment`，handler 回落到 `verify_totp_login`：错误码仍是因子失败。
     assert_eq!(
-        request(
+        request_with_cookie(
             &router,
             "/api/v1/auth/totp/login",
-            serde_json::json!({"login_ticket": ticket, "code": "000000"}),
+            serde_json::json!({"code": "000000"}),
+            &ticket,
         )
         .await
         .status(),
@@ -189,13 +216,11 @@ async fn totp_login_falls_back_to_verification_without_pending_enrollment() {
     );
 
     // 正确验证码走回落路径完成登录并签发会话。
-    let response = request(
+    let response = request_with_cookie(
         &router,
         "/api/v1/auth/totp/login",
-        serde_json::json!({
-            "login_ticket": ticket,
-            "code": totp.generate_current().expect("login code")
-        }),
+        serde_json::json!({"code": totp.generate_current().expect("login code")}),
+        &ticket,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -224,10 +249,11 @@ async fn totp_login_fallback_consumes_one_quota_round_per_request() {
     let ticket_limit = chenxing_auth::auth_limiter::FailureDimension::Ticket.limit();
     for attempt in 1..ticket_limit {
         assert_eq!(
-            request(
+            request_with_cookie(
                 &router,
                 "/api/v1/auth/totp/login",
-                serde_json::json!({"login_ticket": ticket, "code": "000000"}),
+                serde_json::json!({"code": "000000"}),
+                &ticket,
             )
             .await
             .status(),
@@ -237,13 +263,11 @@ async fn totp_login_fallback_consumes_one_quota_round_per_request() {
     }
 
     // 阈值内的失败次数不应烧掉 ticket：正确验证码仍然可以完成登录。
-    let response = request(
+    let response = request_with_cookie(
         &router,
         "/api/v1/auth/totp/login",
-        serde_json::json!({
-            "login_ticket": ticket,
-            "code": totp.generate_current().expect("login code")
-        }),
+        serde_json::json!({"code": totp.generate_current().expect("login code")}),
+        &ticket,
     )
     .await;
     assert_eq!(

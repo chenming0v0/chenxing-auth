@@ -250,13 +250,11 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
         .await
         .expect("login response");
     assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let pending_cookie = cookies(&response);
     let pending_login: serde_json::Value =
         serde_json::from_str(&body(response).await).expect("pending login JSON");
     assert_eq!(pending_login["status"], "factor_setup_required");
-    let login_ticket = pending_login["login_ticket"]
-        .as_str()
-        .expect("login ticket")
-        .to_owned();
+    assert!(pending_login.get("login_ticket").is_none());
 
     // TOTP enrollment: fetch the secret, then confirm the current code to get a session.
     let response = router
@@ -266,8 +264,9 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
                 .method("POST")
                 .uri("/api/v1/auth/totp/setup")
                 .header("content-type", "application/json")
+                .header("cookie", &pending_cookie)
                 .body(Body::from(
-                    serde_json::json!({"login_ticket": login_ticket}).to_string(),
+                    serde_json::json!({}).to_string(),
                 ))
                 .expect("totp setup request"),
         )
@@ -284,9 +283,9 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
                 .method("POST")
                 .uri("/api/v1/auth/totp/login")
                 .header("content-type", "application/json")
+                .header("cookie", &pending_cookie)
                 .body(Body::from(
                     serde_json::json!({
-                        "login_ticket": login_ticket,
                         "code": totp.generate_current().expect("totp code")
                     })
                     .to_string(),

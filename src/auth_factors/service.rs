@@ -157,13 +157,19 @@ impl AuthFactorService {
         &self,
         user_id: UserId,
         methods: Vec<FactorMethod>,
+        holder_hash: &str,
     ) -> Result<(String, LoginTicket), AuthFactorServiceError> {
         let Some(session_epoch) = repository::find_session_epoch(&self.pool, user_id).await? else {
             return Err(AuthFactorServiceError::UserNotFound);
         };
         Ok(self
             .tickets
-            .create_with_epoch(user_id, methods, session_epoch)
+            .create_with_epoch_and_holder(
+                user_id,
+                methods,
+                session_epoch,
+                holder_hash.to_owned(),
+            )
             .await?)
     }
 
@@ -181,10 +187,11 @@ impl AuthFactorService {
     pub async fn user_id_for_ticket(
         &self,
         ticket_id: &str,
+        holder_hash: &str,
     ) -> Result<Option<UserId>, AuthFactorServiceError> {
         Ok(self
             .tickets
-            .find(ticket_id)
+            .find_for_holder(ticket_id, holder_hash)
             .await?
             .map(|ticket| ticket.user_id))
     }

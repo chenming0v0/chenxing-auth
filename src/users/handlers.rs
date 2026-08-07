@@ -25,7 +25,6 @@ struct CreatedUserResponse {
 #[derive(Serialize)]
 struct PendingLoginResponse {
     status: &'static str,
-    login_ticket: String,
     methods: Vec<crate::auth_factors::domain::FactorMethod>,
 }
 
@@ -285,9 +284,11 @@ pub async fn login_user(
     } else {
         methods
     };
+    let holder = cookies::new_login_ticket_holder();
+    let holder_hash = cookies::login_ticket_holder_hash(&holder);
     let (login_ticket, _) = match state
         .factors
-        .create_login_ticket(user_id, ticket_methods.clone())
+        .create_login_ticket(user_id, ticket_methods.clone(), &holder_hash)
         .await
     {
         Ok(ticket) => ticket,
@@ -301,15 +302,22 @@ pub async fn login_user(
     } else {
         "factor_required"
     };
-    (
+    let mut response = (
         StatusCode::ACCEPTED,
         Json(PendingLoginResponse {
             status,
-            login_ticket,
             methods: ticket_methods,
         }),
     )
-        .into_response()
+        .into_response();
+    cookies::append_login_ticket_cookies(
+        response.headers_mut(),
+        &login_ticket,
+        &holder,
+        crate::auth_factors::domain::LoginTicket::TTL.whole_seconds() as u64,
+        state.config.cookie_secure,
+    );
+    response
 }
 
 /// 撤销当前浏览器会话（自注销）。
