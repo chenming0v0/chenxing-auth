@@ -17,13 +17,13 @@ const baseProvider = {
   token_endpoint: 'https://idp.example.com/oauth/token',
   userinfo_endpoint: 'https://idp.example.com/oauth/userinfo',
   client_id: 'client-abc',
-  scopes: ['openid', 'profile', 'email'],
+  scopes: ['openid', 'profile', 'email'] as string[],
   subject_claim: 'sub',
   email_claim: 'email',
   name_claim: null,
   email_verified_claim: null,
-  client_auth_method: 'basic',
-} as const
+  client_auth_method: 'basic' as const,
+}
 
 const CONFIGURED: OAuthProviderSummary = {
   ...baseProvider,
@@ -72,7 +72,8 @@ async function openEditRow(name: string) {
 }
 
 function save() {
-  fireEvent.click(screen.getByRole('button', { name: '保存' }))
+  const button = screen.getByRole('button', { name: '保存' })
+  fireEvent.submit(button.closest('form') as HTMLFormElement)
 }
 
 describe('OAuthProvidersPanel Client Secret 状态展示', () => {
