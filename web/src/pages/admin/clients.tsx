@@ -7,7 +7,7 @@ import {
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { formatDate, initialOf } from '../../data'
-import { AdminGate, useAdminAccess, type AdminAccess } from './shared'
+import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
 
 export function AdminClients() {
   const access = useAdminAccess()
@@ -24,7 +24,7 @@ function ClientsTable({ access }: { access: AdminAccess }) {
   const navigate = useNavigate()
   const params = new URLSearchParams(location.search)
   const [search, setSearch] = useState(params.get('search') || '')
-  const [page, setPage] = useState(Number(params.get('page') || 1))
+  const [page, setPage] = useState(parsePageParam(params.get('page')))
   const [result, setResult] = useState<Paged<ClientSummary> | null>(null)
   const [error, setError] = useState('')
   const [refreshKey, setRefreshKey] = useState(0)
@@ -33,7 +33,7 @@ function ClientsTable({ access }: { access: AdminAccess }) {
   useEffect(() => {
     const current = new URLSearchParams(location.search)
     setSearch(current.get('search') || '')
-    setPage(Number(current.get('page') || 1))
+    setPage(parsePageParam(current.get('page')))
   }, [location.search])
 
   const updateQuery = (nextPage = page) => {
@@ -45,7 +45,7 @@ function ClientsTable({ access }: { access: AdminAccess }) {
 
   useEffect(() => {
     const current = new URLSearchParams(location.search)
-    const currentPage = Number(current.get('page') || 1)
+    const currentPage = parsePageParam(current.get('page'))
     if (currentPage !== page) { setPage(currentPage); return }
     const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
     if (current.get('search')) query.set('search', current.get('search') as string)

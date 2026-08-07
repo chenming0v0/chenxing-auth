@@ -7,7 +7,7 @@ import {
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { formatDate, initialOf } from '../../data'
-import { AdminGate, useAdminAccess, type AdminAccess } from './shared'
+import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
 
 export function AdminAudit() {
   const access = useAdminAccess()
@@ -25,7 +25,7 @@ function AuditTable() {
   const params = new URLSearchParams(location.search)
   const [action, setAction] = useState(params.get('action') || '')
   const [resourceType, setResourceType] = useState(params.get('resource_type') || '')
-  const [page, setPage] = useState(Number(params.get('page') || 1))
+  const [page, setPage] = useState(parsePageParam(params.get('page')))
   const [result, setResult] = useState<Paged<AuditEvent> | null>(null)
   const [error, setError] = useState('')
   const pageSize = 20
@@ -42,12 +42,12 @@ function AuditTable() {
     const current = new URLSearchParams(location.search)
     setAction(current.get('action') || '')
     setResourceType(current.get('resource_type') || '')
-    setPage(Number(current.get('page') || 1))
+    setPage(parsePageParam(current.get('page')))
   }, [location.search])
 
   useEffect(() => {
     const current = new URLSearchParams(location.search)
-    const currentPage = Number(current.get('page') || 1)
+    const currentPage = parsePageParam(current.get('page'))
     if (currentPage !== page) { setPage(currentPage); return }
     const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
     if (current.get('action')) query.set('action', current.get('action') as string)

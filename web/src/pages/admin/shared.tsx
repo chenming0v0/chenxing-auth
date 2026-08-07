@@ -4,6 +4,11 @@ import { HudPanel, Notice } from '../../components/ui'
 
 export type AdminAccess = { data: AdminMeResponse | null; loading: boolean; error: string }
 
+export function parsePageParam(value: string | null): number {
+  const page = Number(value)
+  return Number.isFinite(page) && Number.isInteger(page) && page >= 1 ? page : 1
+}
+
 export function useAdminAccess(): AdminAccess {
   const [data, setData] = useState<AdminMeResponse | null>(null)
   const [error, setError] = useState('')

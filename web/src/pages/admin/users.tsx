@@ -7,7 +7,7 @@ import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, EmptyState, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { Select, type SelectOption } from '../../components/select'
 import { formatDate, initialOf } from '../../data'
-import { AdminGate, useAdminAccess, type AdminAccess } from './shared'
+import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
 import { AssignPlanDrawer } from './plan-assign'
 import { UserCreateDrawer } from './user-create-drawer'
 
@@ -66,7 +66,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
   const params = new URLSearchParams(location.search)
   const [search, setSearch] = useState(params.get('search') || '')
   const [status, setStatus] = useState(params.get('status') || '')
-  const [page, setPage] = useState(Number(params.get('page') || 1))
+  const [page, setPage] = useState(parsePageParam(params.get('page')))
   const [result, setResult] = useState<Paged<PublicUser> | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState<number | null>(null)
@@ -80,7 +80,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
     const current = new URLSearchParams(location.search)
     setSearch(current.get('search') || '')
     setStatus(current.get('status') || '')
-    setPage(Number(current.get('page') || 1))
+    setPage(parsePageParam(current.get('page')))
   }, [location.search])
 
   const updateQuery = (nextPage = page) => {
@@ -94,7 +94,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
   }
 
   useEffect(() => {
-    const currentPage = Number(new URLSearchParams(location.search).get('page') || 1)
+    const currentPage = parsePageParam(new URLSearchParams(location.search).get('page'))
     if (currentPage !== page) { setPage(currentPage); return }
     let active = true
     const current = new URLSearchParams(location.search)
