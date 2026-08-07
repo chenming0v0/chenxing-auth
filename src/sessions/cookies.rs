@@ -57,14 +57,7 @@ pub fn append_clear_cookies(headers: &mut HeaderMap, secure: bool) {
     for name in [session_name, csrf_name] {
         headers.append(
             SET_COOKIE,
-            build_cookie(
-                name,
-                "",
-                0,
-                secure,
-                name == session_name,
-                "/",
-            )
+            build_cookie(name, "", 0, secure, name == session_name, "/")
                 .parse()
                 .expect("clear cookie is valid ASCII"),
         );
@@ -163,10 +156,7 @@ pub fn session_cookie_id(headers: &HeaderMap) -> Option<String> {
     cookie_value(headers, SESSION_COOKIE)
 }
 
-pub fn session_cookie_id_for_secure_transport(
-    headers: &HeaderMap,
-    secure: bool,
-) -> Option<String> {
+pub fn session_cookie_id_for_secure_transport(headers: &HeaderMap, secure: bool) -> Option<String> {
     cookie_value(headers, session_cookie_name(secure))
 }
 

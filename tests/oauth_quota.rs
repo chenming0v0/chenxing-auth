@@ -11,9 +11,8 @@ fn quota_store_can_be_constructed_from_redis_client() {
 
 #[tokio::test]
 async fn refund_is_idempotent_and_stays_with_the_consumed_period() {
-    let store = OAuthQuotaStore::new(
-        redis::Client::open("redis://127.0.0.1:6379").expect("redis URL"),
-    );
+    let store =
+        OAuthQuotaStore::new(redis::Client::open("redis://127.0.0.1:6379").expect("redis URL"));
     let client_id = format!("quota-refund-{}", Uuid::new_v4().simple());
     let limits = AuthQuotaLimits {
         daily_auth_limit: 10,
@@ -29,10 +28,8 @@ async fn refund_is_idempotent_and_stays_with_the_consumed_period() {
         ),
     }
     .expect("next month date");
-    let after_boundary = next_month
-        .with_time(Time::MIDNIGHT)
-        .assume_utc()
-        + time::Duration::seconds(1);
+    let after_boundary =
+        next_month.with_time(Time::MIDNIGHT).assume_utc() + time::Duration::seconds(1);
     let before_boundary = after_boundary - time::Duration::seconds(2);
 
     let first = store

@@ -1845,13 +1845,12 @@ async fn session_find_renews_idle_activity_without_extending_absolute_expiry() {
         .expect("renewed session remains active");
     assert_eq!(found.expires_at, absolute_expiry);
     assert!(found.last_seen_at > session.created_at);
-    let stored_last_seen: OffsetDateTime = chenxing_auth::sqlx::query_scalar(
-        "SELECT last_seen_at FROM user_sessions WHERE id = $1",
-    )
-    .bind(session.id)
-    .fetch_one(&pool)
-    .await
-    .expect("read renewed activity");
+    let stored_last_seen: OffsetDateTime =
+        chenxing_auth::sqlx::query_scalar("SELECT last_seen_at FROM user_sessions WHERE id = $1")
+            .bind(session.id)
+            .fetch_one(&pool)
+            .await
+            .expect("read renewed activity");
     assert!(stored_last_seen > session.created_at);
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
@@ -1926,8 +1925,20 @@ async fn session_save_revokes_the_oldest_active_session_at_the_user_cap() {
             .expect("find evicted session")
             .is_none()
     );
-    assert!(store.find(&second.token).await.expect("find second").is_some());
-    assert!(store.find(&third.token).await.expect("find third").is_some());
+    assert!(
+        store
+            .find(&second.token)
+            .await
+            .expect("find second")
+            .is_some()
+    );
+    assert!(
+        store
+            .find(&third.token)
+            .await
+            .expect("find third")
+            .is_some()
+    );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user.id)

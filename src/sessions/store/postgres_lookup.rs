@@ -103,14 +103,7 @@ pub(super) async fn find_with_metadata(
             .bind(id)
             .execute(&mut *transaction)
             .await?;
-        enqueue_sync_event(
-            &mut transaction,
-            id,
-            user_id,
-            &token_hash,
-            session_epoch,
-        )
-        .await?;
+        enqueue_sync_event(&mut transaction, id, user_id, &token_hash, session_epoch).await?;
     }
     transaction.commit().await?;
     Ok(Some(session))

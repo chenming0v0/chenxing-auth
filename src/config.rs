@@ -39,9 +39,7 @@ pub use config_audit::AuditRetentionConfig;
 pub use config_limits::{MAX_UNAUTHENTICATED_SOURCE_QPS, SecurityLimits};
 pub use config_parsing::{AuthEncryptionKey, AuthEncryptionKeyRing};
 pub use config_proxy::TrustedProxies;
-pub use config_security::{
-    DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_TOKEN_TTL_SECONDS,
-};
+pub use config_security::{DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_TOKEN_TTL_SECONDS};
 
 // `config_limits` 的测试通过这个路径复用 key ring 解析器；非测试构建没有其他调用方。
 #[cfg(test)]
@@ -192,10 +190,8 @@ impl Config {
             "APP_PORT",
             env::var("APP_PORT").ok().as_deref().unwrap_or("3000"),
         )?;
-        let request_timeout_seconds = optional_u64(
-            "REQUEST_TIMEOUT_SECONDS",
-            DEFAULT_REQUEST_TIMEOUT_SECONDS,
-        )?;
+        let request_timeout_seconds =
+            optional_u64("REQUEST_TIMEOUT_SECONDS", DEFAULT_REQUEST_TIMEOUT_SECONDS)?;
         let database_url = required_env("DATABASE_URL")?;
         let redis_url = required_env("REDIS_URL")?;
         let auth_encryption_keys = parse_auth_encryption_key_ring()?;
@@ -256,8 +252,7 @@ impl Config {
         // #112：access/id token TTL 与浏览器会话 TTL 解耦，默认 3600 秒（1 小时）。
         let access_token_ttl_seconds =
             optional_u64("ACCESS_TOKEN_TTL_SECONDS", DEFAULT_TOKEN_TTL_SECONDS)?;
-        let id_token_ttl_seconds =
-            optional_u64("ID_TOKEN_TTL_SECONDS", DEFAULT_TOKEN_TTL_SECONDS)?;
+        let id_token_ttl_seconds = optional_u64("ID_TOKEN_TTL_SECONDS", DEFAULT_TOKEN_TTL_SECONDS)?;
         let log_filter = env::var("RUST_LOG")
             .unwrap_or_else(|_| "chenxing_auth=debug,tower_http=debug".to_owned());
         let auth_limiter_failure_policy = parse_auth_limiter_failure_policy(
@@ -441,9 +436,7 @@ impl Config {
             return Err(ConfigError::InvalidValue("SESSION_IDLE_TIMEOUT_SECONDS"));
         }
         if session_max_concurrent_sessions == 0 {
-            return Err(ConfigError::InvalidValue(
-                "SESSION_MAX_CONCURRENT_SESSIONS",
-            ));
+            return Err(ConfigError::InvalidValue("SESSION_MAX_CONCURRENT_SESSIONS"));
         }
         validate_token_and_key_lifetimes(
             key_rotation_grace_seconds,

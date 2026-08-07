@@ -29,17 +29,22 @@ fn idle_timeout_invalidates_inactive_sessions_without_moving_absolute_expiry() {
     )
     .expect("valid session");
 
-    assert_eq!(session.expires_at, created_at + time::Duration::seconds(600));
+    assert_eq!(
+        session.expires_at,
+        created_at + time::Duration::seconds(600)
+    );
     assert!(session.is_active_at(created_at + time::Duration::seconds(29)));
     assert!(!session.is_active_at(created_at + time::Duration::seconds(30)));
 }
 
 #[test]
 fn idle_timeout_is_validated_when_a_policy_session_is_created() {
-    assert!(Session::new_with_idle_timeout(
-        "user-1".to_owned(),
-        Duration::from_secs(60),
-        Duration::ZERO,
-    )
-    .is_err());
+    assert!(
+        Session::new_with_idle_timeout(
+            "user-1".to_owned(),
+            Duration::from_secs(60),
+            Duration::ZERO,
+        )
+        .is_err()
+    );
 }

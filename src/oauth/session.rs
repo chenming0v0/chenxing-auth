@@ -20,13 +20,11 @@ pub async fn session_for_headers(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<Option<Session>, SessionLookupError> {
-    let Some(session_token) =
-        session_id_from_headers(
-            headers,
-            state.config.oauth_session_header_enabled,
-            state.config.cookie_secure,
-        )
-    else {
+    let Some(session_token) = session_id_from_headers(
+        headers,
+        state.config.oauth_session_header_enabled,
+        state.config.cookie_secure,
+    ) else {
         return Ok(None);
     };
     let Some(session) = state.sessions.find(&session_token).await? else {

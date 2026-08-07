@@ -136,14 +136,18 @@ pub async fn start_external_login(
         code_verifier: code_verifier.clone(),
     };
     let save_result = match source_ip.as_deref() {
-        Some(source_ip) => state
-            .external_login_states
-            .save_from_source_with_limits(&login_state, source_ip, &limits)
-            .await,
-        None => state
-            .external_login_states
-            .save_without_source_with_limits(&login_state, &limits)
-            .await,
+        Some(source_ip) => {
+            state
+                .external_login_states
+                .save_from_source_with_limits(&login_state, source_ip, &limits)
+                .await
+        }
+        None => {
+            state
+                .external_login_states
+                .save_without_source_with_limits(&login_state, &limits)
+                .await
+        }
     };
     if let Err(store_error) = save_result {
         if matches!(
@@ -366,13 +370,8 @@ pub async fn external_callback(
         }
     };
     let ttl = std::time::Duration::from_secs(state.config.session_ttl_seconds);
-    let idle_timeout =
-        std::time::Duration::from_secs(state.config.session_idle_timeout_seconds);
-    let mut session = match Session::new_with_idle_timeout(
-        user_id.to_string(),
-        ttl,
-        idle_timeout,
-    ) {
+    let idle_timeout = std::time::Duration::from_secs(state.config.session_idle_timeout_seconds);
+    let mut session = match Session::new_with_idle_timeout(user_id.to_string(), ttl, idle_timeout) {
         Ok(session) => session,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to create external OAuth session");

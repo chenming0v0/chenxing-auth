@@ -21,7 +21,8 @@ use crate::{
 /// 写入会话前先比对撤销水位：水位不早于会话创建时刻则拒绝写入（返回 0）。
 /// 判定与写入在同一个 Lua 脚本里完成，保证原子性。
 const REDIS_ONLY_SESSION_SET: &str = "local marker = redis.call('GET', KEYS[1])\nif marker and tonumber(marker) >= tonumber(ARGV[1]) then return 0 end\nif redis.call('EXISTS', KEYS[3]) == 1 then return 0 end\nredis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])\nreturn 1";
-const REDIS_ONLY_REVOKE_SESSION: &str = "redis.call('DEL', KEYS[1])\nredis.call('SET', KEYS[2], '1', 'EX', ARGV[1])\nreturn 1";
+const REDIS_ONLY_REVOKE_SESSION: &str =
+    "redis.call('DEL', KEYS[1])\nredis.call('SET', KEYS[2], '1', 'EX', ARGV[1])\nreturn 1";
 /// 水位单调前进：只在新值更大时覆盖，避免乱序请求把水位往回拨。
 const REDIS_ONLY_ADVANCE_WATERMARK: &str = "local current = redis.call('GET', KEYS[1])\nif not current or tonumber(current) < tonumber(ARGV[1]) then redis.call('SET', KEYS[1], ARGV[1]) end\nreturn 1";
 
@@ -90,8 +91,8 @@ pub(super) async fn find_redis_only(
     }
     if session.last_seen_at <= now - store.renewal_interval() {
         session.last_seen_at = now;
-        let payload = store
-            .encrypt_payload(&serde_json::to_vec(&SessionPayload::from(&session))?)?;
+        let payload =
+            store.encrypt_payload(&serde_json::to_vec(&SessionPayload::from(&session))?)?;
         let stored: i64 = Script::new(REDIS_ONLY_SESSION_SET)
             .key(store.redis_only_revocation_key(&session.user_id))
             .key(store.key(&session.token))
@@ -143,8 +144,8 @@ pub(super) async fn find_redis_only_by_token_hash(
     }
     if session.last_seen_at <= now - store.renewal_interval() {
         session.last_seen_at = now;
-        let payload = store
-            .encrypt_payload(&serde_json::to_vec(&SessionPayload::from(&session))?)?;
+        let payload =
+            store.encrypt_payload(&serde_json::to_vec(&SessionPayload::from(&session))?)?;
         let stored: i64 = Script::new(REDIS_ONLY_SESSION_SET)
             .key(store.redis_only_revocation_key(&session.user_id))
             .key(store.key_hash(token_hash))

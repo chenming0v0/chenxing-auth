@@ -184,7 +184,12 @@ impl Session {
         ttl: Duration,
         now: OffsetDateTime,
     ) -> Result<Self, SessionError> {
-        Self::new_at_inner(user_id, ttl, Some(SessionPolicy::default().idle_timeout), now)
+        Self::new_at_inner(
+            user_id,
+            ttl,
+            Some(SessionPolicy::default().idle_timeout),
+            now,
+        )
     }
 
     pub fn new_with_idle_timeout(
@@ -219,9 +224,7 @@ impl Session {
         if ttl.is_zero() {
             return Err(SessionError::ZeroTtl);
         }
-        if idle_timeout
-            .is_some_and(|timeout| TimeDuration::try_from(timeout).is_err())
-        {
+        if idle_timeout.is_some_and(|timeout| TimeDuration::try_from(timeout).is_err()) {
             return Err(SessionError::IdleTimeoutOutOfRange);
         }
         let ttl = TimeDuration::try_from(ttl).map_err(|_| SessionError::ZeroTtl)?;

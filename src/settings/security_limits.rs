@@ -297,7 +297,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            invalid.validate().expect_err("excessive QPS must be rejected"),
+            invalid
+                .validate()
+                .expect_err("excessive QPS must be rejected"),
             SettingsValidationError::InvalidSecurityLimit("unauthenticated_source_qps")
         );
     }

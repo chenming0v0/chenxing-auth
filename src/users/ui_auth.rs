@@ -84,9 +84,7 @@ pub(crate) async fn mutation_user(
 pub(crate) async fn mutation_error(state: &AppState, headers: &HeaderMap) -> Response {
     match current_user(state, headers).await {
         Err(response) => response,
-        Ok(context)
-            if !user_csrf_valid(headers, &context.session, state.config.cookie_secure) =>
-        {
+        Ok(context) if !user_csrf_valid(headers, &context.session, state.config.cookie_secure) => {
             error::bad_request("csrf_invalid", "CSRF token is invalid")
         }
         Ok(_) => error::internal(),

@@ -21,8 +21,7 @@ use crate::sqlx::PgPool;
 ///   不是撤销事实的生命周期。
 /// - 生产模式在缓存未命中时回源查询 PostgreSQL 的 `revoked_at`，所以缓存到期后
 ///   撤销仍然有效，不会因为 Redis 键回收而重新放行凭据。
-const CONSENT_REVOCATION_TTL_SECONDS: u64 =
-    (REFRESH_TOKEN_ABSOLUTE_TTL_DAYS * 24 * 60 * 60) as u64;
+const CONSENT_REVOCATION_TTL_SECONDS: u64 = (REFRESH_TOKEN_ABSOLUTE_TTL_DAYS * 24 * 60 * 60) as u64;
 
 #[derive(Clone)]
 pub struct TokenRevocationStore {

@@ -62,24 +62,30 @@ mod tests {
             DEFAULT_KEY_ROTATION_GRACE_SECONDS,
             crate::keys::DEFAULT_KEY_RETENTION_SECONDS
         );
-        assert!(validate_token_and_key_lifetimes(
-            DEFAULT_KEY_ROTATION_GRACE_SECONDS,
-            DEFAULT_TOKEN_TTL_SECONDS,
-            DEFAULT_TOKEN_TTL_SECONDS,
-        )
-        .is_ok());
-        assert!(validate_token_and_key_lifetimes(
-            MIN_KEY_ROTATION_GRACE_SECONDS,
-            MIN_TOKEN_TTL_SECONDS,
-            MIN_TOKEN_TTL_SECONDS,
-        )
-        .is_ok());
-        assert!(validate_token_and_key_lifetimes(
-            MAX_KEY_ROTATION_GRACE_SECONDS,
-            MAX_TOKEN_TTL_SECONDS,
-            MAX_TOKEN_TTL_SECONDS,
-        )
-        .is_ok());
+        assert!(
+            validate_token_and_key_lifetimes(
+                DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+                DEFAULT_TOKEN_TTL_SECONDS,
+                DEFAULT_TOKEN_TTL_SECONDS,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_token_and_key_lifetimes(
+                MIN_KEY_ROTATION_GRACE_SECONDS,
+                MIN_TOKEN_TTL_SECONDS,
+                MIN_TOKEN_TTL_SECONDS,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_token_and_key_lifetimes(
+                MAX_KEY_ROTATION_GRACE_SECONDS,
+                MAX_TOKEN_TTL_SECONDS,
+                MAX_TOKEN_TTL_SECONDS,
+            )
+            .is_ok()
+        );
     }
 
     #[test]

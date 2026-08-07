@@ -31,8 +31,12 @@ fn expired_access_token_is_rejected_without_clock_leeway() {
         iss: "https://auth.example.com".to_owned(),
         sub: "user-1".to_owned(),
         aud: "cx_project".to_owned(),
-        exp: now.checked_sub(1).expect("current timestamp is after epoch"),
-        iat: now.checked_sub(2).expect("current timestamp is after epoch"),
+        exp: now
+            .checked_sub(1)
+            .expect("current timestamp is after epoch"),
+        iat: now
+            .checked_sub(2)
+            .expect("current timestamp is after epoch"),
         scope: "openid".to_owned(),
     };
     let signing_key = keys.active_signing_key().expect("active signing key");

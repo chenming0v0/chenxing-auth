@@ -142,9 +142,7 @@ impl SessionStore {
     }
 
     pub fn with_absolute_ttl(mut self, absolute_ttl: Duration) -> Self {
-        if !absolute_ttl.is_zero()
-            && time::Duration::try_from(absolute_ttl).is_ok()
-        {
+        if !absolute_ttl.is_zero() && time::Duration::try_from(absolute_ttl).is_ok() {
             self.policy.absolute_ttl = absolute_ttl;
         }
         self

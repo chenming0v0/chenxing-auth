@@ -1,6 +1,6 @@
 use super::{
-    Session, SessionPayload, decode_session_token_hash, generate_credential,
-    session_token_hash, session_token_hash_bytes,
+    Session, SessionPayload, decode_session_token_hash, generate_credential, session_token_hash,
+    session_token_hash_bytes,
 };
 use std::time::Duration;
 use time::OffsetDateTime;
@@ -137,9 +137,11 @@ fn serialized_payload_never_contains_the_plaintext_session_token() {
 
     let value = serde_json::to_value(&payload).expect("payload as JSON value");
     assert!(value.get("token").is_none());
-    assert!(!serde_json::to_string(&payload)
-        .expect("serialize payload")
-        .contains(&session.token));
+    assert!(
+        !serde_json::to_string(&payload)
+            .expect("serialize payload")
+            .contains(&session.token)
+    );
     // csrf_token 必须继续持久化：find() 依赖它完成双提交校验。
     assert_eq!(
         value.get("csrf_token").and_then(serde_json::Value::as_str),

@@ -243,8 +243,7 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("request timeout body");
-        let body: serde_json::Value = serde_json::from_slice(&body)
-            .expect("request timeout JSON");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("request timeout JSON");
         assert_eq!(body["code"], "request_timeout");
         assert_eq!(body["message"], "request timed out");
     }

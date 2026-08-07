@@ -2,7 +2,8 @@ use axum::response::{IntoResponse, Redirect, Response};
 use std::fmt;
 
 use super::{
-    authorization::ValidatedAuthorizationRequest, code::AuthorizationCode,
+    authorization::ValidatedAuthorizationRequest,
+    code::AuthorizationCode,
     consent::PendingAuthorization,
     quota::{QuotaConsumeResult, QuotaReservation},
     session::active_user_id,

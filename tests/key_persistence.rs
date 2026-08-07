@@ -31,7 +31,10 @@ fn startup_removes_crash_left_atomic_write_temporary_files_only() {
     let reloaded = KeyManager::load_or_generate(&directory).expect("reload key manager");
 
     assert_eq!(reloaded.key_id(), key_id);
-    assert!(key_path.exists(), "valid persisted key must survive cleanup");
+    assert!(
+        key_path.exists(),
+        "valid persisted key must survive cleanup"
+    );
     assert!(
         !stale_temporary_path.exists(),
         "atomic-write temporary file must be removed on startup"

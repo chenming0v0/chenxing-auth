@@ -180,7 +180,10 @@ impl OAuthQuotaStore {
             }),
             QuotaConsumeResult::DailyExceeded | QuotaConsumeResult::MonthlyExceeded => None,
         };
-        Ok(QuotaConsumption { result, reservation })
+        Ok(QuotaConsumption {
+            result,
+            reservation,
+        })
     }
 
     pub async fn refund(&self, reservation: &QuotaReservation) -> Result<(), OAuthQuotaError> {
