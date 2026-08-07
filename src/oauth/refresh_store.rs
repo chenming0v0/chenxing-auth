@@ -30,6 +30,9 @@ pub const REFRESH_ROTATION_CONCURRENCY_GRACE_SECONDS: i64 = 5;
 /// 索引 TTL：client / family 索引的过期时间设为绝对上限，防止无界增长。
 const INDEX_TTL_SECONDS: u64 = ABSOLUTE_TTL_SECONDS;
 
+/// Client 级撤销单个 Lua 批次的成员上限，避免长时间阻塞 Redis。
+const CLIENT_REVOKE_BATCH_SIZE: u64 = 128;
+
 /// Token 主键前缀（保持与历史一致，避免 keyspace 迁移风险）。
 const TOKEN_KEY_PREFIX: &str = "chenxing:oauth:refresh:";
 /// Client 索引前缀。
@@ -388,8 +391,9 @@ impl RefreshTokenStore {
 
     /// 撤销某个 Client 的全部 Refresh Token（Issue #62：Secret 轮换时调用）。
     ///
-    /// O(n) 操作，n = 该 Client 存活 token 数。Secret 轮换是低频管理操作，
-    /// 成本可接受（Issue #62 设计决策 §6）。
+    /// 每个 Lua 批次最多处理 128 个索引成员，并重复到 client 索引清空。
+    /// payload 解析或 family 索引清理失败时，脚本不会确认对应的 client
+    /// 成员，调用方修复数据后可再次执行撤销。
     ///
     /// 故意不写墓碑：Secret 轮换不是凭据泄露信号，旧 token 后续应静默返回
     /// `invalid_grant`，不触发「检测到重放」的审计噪声。
@@ -400,14 +404,24 @@ impl RefreshTokenStore {
         client_id: &str,
     ) -> Result<u64, RefreshTokenStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let removed: i64 = Script::new(REVOKE_CLIENT_TOKENS_SCRIPT)
-            .key(Self::client_idx_key(client_id))
-            .arg(TOKEN_KEY_PREFIX)
-            .arg(FAMILY_IDX_PREFIX)
-            .arg(TOMBSTONE_PREFIX)
-            .invoke_async(&mut connection)
-            .await?;
-        Ok(removed.max(0) as u64)
+        let client_idx_key = Self::client_idx_key(client_id);
+        let mut removed = 0_u64;
+
+        loop {
+            let (batch_removed, remaining): (i64, i64) =
+                Script::new(REVOKE_CLIENT_TOKENS_SCRIPT)
+                    .key(&client_idx_key)
+                    .arg(TOKEN_KEY_PREFIX)
+                    .arg(FAMILY_IDX_PREFIX)
+                    .arg(TOMBSTONE_PREFIX)
+                    .arg(CLIENT_REVOKE_BATCH_SIZE)
+                    .invoke_async(&mut connection)
+                    .await?;
+            removed = removed.saturating_add(batch_removed.max(0) as u64);
+            if remaining <= 0 {
+                return Ok(removed);
+            }
+        }
     }
 }
 

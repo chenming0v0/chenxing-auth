@@ -196,8 +196,9 @@ return removed
 
 /// 撤销某个 Client 的全部 Refresh Token（Issue #62：Secret 轮换后旧 token 必须失效）。
 ///
-/// 读取 client 索引的所有成员，删除 token 主键；顺便从 payload 里取出
-/// `family_id` 清理对应的 family 索引，避免留下悬空索引。
+/// 每批非破坏地选取最多 128 个 client 索引成员。整批 payload 成功解析且
+/// family 索引清理成功后，才删除 token / tombstone，最后从 client 索引
+/// 移除成员作为完成确认。任何失败都保留尚未确认的成员，允许修复后重试。
 ///
 /// 这里不写墓碑：Secret 轮换是管理员的主动操作，不是凭据泄露信号，
 /// 旧 token 的后续请求应当只是普通的 `invalid_grant`，不应触发
@@ -207,26 +208,59 @@ return removed
 /// - `ARGV[1]` token 主键前缀
 /// - `ARGV[2]` family 索引键前缀
 /// - `ARGV[3]` tombstone 键前缀（清理同 token 的旧 marker）
+/// - `ARGV[4]` 请求的批大小（脚本内硬限制为最多 128）
 ///
-/// 返回被删除的 token 数量。
+/// 返回 `{被删除的 token 数量, client 索引剩余成员数}`。
 pub const REVOKE_CLIENT_TOKENS_SCRIPT: &str = r#"
-local members = redis.call('SMEMBERS', KEYS[1])
-local removed = 0
+local batch_size = tonumber(ARGV[4])
+if not batch_size or batch_size < 1 then
+    return redis.error_reply('ERR invalid client revoke batch size')
+end
+batch_size = math.min(batch_size, 128)
+local members = redis.call('SRANDMEMBER', KEYS[1], batch_size)
+local tokens = {}
+
+-- Preflight every selected payload before changing any index or token key.
 for _, token_hash in ipairs(members) do
     local token_key = ARGV[1] .. token_hash
     local payload = redis.call('GET', token_key)
+    local family_id = nil
     if payload then
         local decoded = cjson.decode(payload)
-        local family_id = decoded['family_id']
-        if family_id and family_id ~= '' then
-            redis.call('SREM', ARGV[2] .. family_id, token_hash)
+        if type(decoded) ~= 'table' then
+            return redis.error_reply('ERR invalid refresh token payload')
+        end
+        family_id = decoded['family_id']
+        if family_id and type(family_id) ~= 'string' then
+            return redis.error_reply('ERR invalid refresh token family_id')
         end
     end
-    redis.call('DEL', ARGV[3] .. token_hash)
-    if redis.call('DEL', token_key) == 1 then
-        removed = removed + 1
+    tokens[#tokens + 1] = {
+        hash = token_hash,
+        key = token_key,
+        family_id = family_id
+    }
+end
+
+-- A family index error must happen before any selected token is destroyed.
+for _, token in ipairs(tokens) do
+    if token.family_id and token.family_id ~= '' then
+        redis.call('SREM', ARGV[2] .. token.family_id, token.hash)
     end
 end
-redis.call('DEL', KEYS[1])
-return removed
+
+local removed = 0
+for _, token in ipairs(tokens) do
+    if redis.call('DEL', token.key) == 1 then
+        removed = removed + 1
+    end
+    redis.call('DEL', ARGV[3] .. token.hash)
+end
+
+-- Removing the client member is the completion acknowledgement for retries.
+for _, token in ipairs(tokens) do
+    redis.call('SREM', KEYS[1], token.hash)
+end
+
+return {removed, redis.call('SCARD', KEYS[1])}
 "#;

@@ -12,10 +12,25 @@ fn redis_client() -> redis::Client {
 }
 
 /// 计算 token 的 Redis 主键（与 refresh_store.rs 的 token_key 逻辑一致）。
+fn token_hash(value: &str) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(value.as_bytes()))
+}
+
 fn token_key(value: &str) -> String {
-    let hash = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(sha2::Sha256::digest(value.as_bytes()));
-    format!("chenxing:oauth:refresh:{}", hash)
+    format!("chenxing:oauth:refresh:{}", token_hash(value))
+}
+
+fn client_index_key(client_id: &str) -> String {
+    format!("cx:refresh:client_idx:{client_id}")
+}
+
+fn family_index_key(family_id: &str) -> String {
+    format!("cx:refresh:family_idx:{family_id}")
+}
+
+fn tombstone_key(value: &str) -> String {
+    format!("cx:refresh:tombstone:{}", token_hash(value))
 }
 
 /// Issue #109：绝对生命周期限制生效，轮换不能无限延长有效期。
@@ -398,6 +413,241 @@ async fn rotate_client_secret_revokes_all_refresh_tokens() {
         .query_async(&mut conn)
         .await
         .expect("cleanup");
+}
+
+/// Issue #183：Client 级撤销按最多 128 个成员分批，并持续处理到索引清空。
+#[tokio::test]
+async fn client_revoke_drains_129_members_and_is_idempotent() {
+    let store = RefreshTokenStore::new(redis_client());
+    let client_id = format!("cx_client_batch_{}", Uuid::new_v4().simple());
+    let tokens: Vec<_> = (0..129)
+        .map(|index| {
+            RefreshToken::new(
+                client_id.clone(),
+                format!("user-batch-{index}"),
+                vec!["openid".to_owned()],
+            )
+        })
+        .collect();
+
+    for token in &tokens {
+        store.save(token).await.expect("save batch token");
+    }
+
+    assert_eq!(
+        store
+            .revoke_client_tokens(&client_id)
+            .await
+            .expect("revoke 129 client tokens"),
+        129
+    );
+    assert_eq!(
+        store
+            .revoke_client_tokens(&client_id)
+            .await
+            .expect("repeat client revoke"),
+        0,
+        "repeating a completed client revoke must be idempotent"
+    );
+
+    let client = redis_client();
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis");
+    let mut exists = redis::cmd("EXISTS");
+    exists.arg(client_index_key(&client_id));
+    for token in &tokens {
+        exists.arg(token_key(&token.value));
+        exists.arg(family_index_key(&token.family_id));
+    }
+    let remaining_keys: i64 = exists
+        .query_async(&mut conn)
+        .await
+        .expect("query remaining batch keys");
+    assert_eq!(
+        remaining_keys, 0,
+        "all token, family, and client index keys must be drained"
+    );
+}
+
+/// Issue #183：损坏的 payload 必须让批次报错，不能丢失重试所需的索引成员。
+#[tokio::test]
+async fn client_revoke_preserves_corrupt_payload_for_retry() {
+    let store = RefreshTokenStore::new(redis_client());
+    let client_id = format!("cx_client_corrupt_{}", Uuid::new_v4().simple());
+    let token = RefreshToken::new(
+        client_id.clone(),
+        "user-corrupt".to_owned(),
+        vec!["openid".to_owned()],
+    );
+    store.save(&token).await.expect("save token");
+
+    let token_key = token_key(&token.value);
+    let client_index_key = client_index_key(&client_id);
+    let family_index_key = family_index_key(&token.family_id);
+    let hash = token_hash(&token.value);
+    let valid_payload = serde_json::to_string(&token).expect("serialize token");
+    let client = redis_client();
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis");
+    let _: () = redis::cmd("SET")
+        .arg(&token_key)
+        .arg("{")
+        .query_async(&mut conn)
+        .await
+        .expect("corrupt token payload");
+
+    store
+        .revoke_client_tokens(&client_id)
+        .await
+        .expect_err("corrupt payload must fail client revoke");
+
+    let payload_after_error: String = redis::cmd("GET")
+        .arg(&token_key)
+        .query_async(&mut conn)
+        .await
+        .expect("read corrupt payload after failure");
+    let client_member: bool = redis::cmd("SISMEMBER")
+        .arg(&client_index_key)
+        .arg(&hash)
+        .query_async(&mut conn)
+        .await
+        .expect("read client membership after failure");
+    let family_member: bool = redis::cmd("SISMEMBER")
+        .arg(&family_index_key)
+        .arg(&hash)
+        .query_async(&mut conn)
+        .await
+        .expect("read family membership after failure");
+    assert_eq!(payload_after_error, "{");
+    assert!(client_member, "client member must remain retryable");
+    assert!(family_member, "preflight failure must not mutate family index");
+
+    let _: () = redis::cmd("SET")
+        .arg(&token_key)
+        .arg(valid_payload)
+        .query_async(&mut conn)
+        .await
+        .expect("repair token payload");
+    assert_eq!(
+        store
+            .revoke_client_tokens(&client_id)
+            .await
+            .expect("retry repaired client revoke"),
+        1
+    );
+
+    let remaining_keys: i64 = redis::cmd("EXISTS")
+        .arg(&token_key)
+        .arg(&client_index_key)
+        .arg(&family_index_key)
+        .query_async(&mut conn)
+        .await
+        .expect("query repaired revoke keys");
+    assert_eq!(remaining_keys, 0);
+}
+
+/// Issue #183：family 索引类型错误必须发生在 token / tombstone 删除之前。
+#[tokio::test]
+async fn client_revoke_recovers_after_family_index_wrongtype() {
+    let store = RefreshTokenStore::new(redis_client());
+    let client_id = format!("cx_client_wrongtype_{}", Uuid::new_v4().simple());
+    let token = RefreshToken::new(
+        client_id.clone(),
+        "user-wrongtype".to_owned(),
+        vec!["openid".to_owned()],
+    );
+    store.save(&token).await.expect("save token");
+
+    let token_key = token_key(&token.value);
+    let client_index_key = client_index_key(&client_id);
+    let family_index_key = family_index_key(&token.family_id);
+    let tombstone_key = tombstone_key(&token.value);
+    let hash = token_hash(&token.value);
+    let client = redis_client();
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis");
+    let _: () = redis::cmd("SET")
+        .arg(&tombstone_key)
+        .arg("stale tombstone")
+        .query_async(&mut conn)
+        .await
+        .expect("save stale tombstone");
+    let _: () = redis::cmd("SET")
+        .arg(&family_index_key)
+        .arg("wrong type")
+        .query_async(&mut conn)
+        .await
+        .expect("corrupt family index type");
+
+    let error = store
+        .revoke_client_tokens(&client_id)
+        .await
+        .expect_err("WRONGTYPE must fail client revoke");
+    assert!(
+        error.to_string().contains("WRONGTYPE"),
+        "unexpected Redis error: {error}"
+    );
+
+    let token_still_exists: bool = redis::cmd("EXISTS")
+        .arg(&token_key)
+        .query_async(&mut conn)
+        .await
+        .expect("query token after WRONGTYPE");
+    let tombstone_still_exists: bool = redis::cmd("EXISTS")
+        .arg(&tombstone_key)
+        .query_async(&mut conn)
+        .await
+        .expect("query tombstone after WRONGTYPE");
+    let client_member: bool = redis::cmd("SISMEMBER")
+        .arg(&client_index_key)
+        .arg(&hash)
+        .query_async(&mut conn)
+        .await
+        .expect("query client member after WRONGTYPE");
+    assert!(token_still_exists, "WRONGTYPE must not delete the token");
+    assert!(
+        tombstone_still_exists,
+        "WRONGTYPE must not delete the tombstone"
+    );
+    assert!(client_member, "WRONGTYPE must leave a retryable client member");
+
+    let _: () = redis::cmd("DEL")
+        .arg(&family_index_key)
+        .query_async(&mut conn)
+        .await
+        .expect("remove wrong-type family index");
+    let _: i64 = redis::cmd("SADD")
+        .arg(&family_index_key)
+        .arg(&hash)
+        .query_async(&mut conn)
+        .await
+        .expect("restore family index");
+    assert_eq!(
+        store
+            .revoke_client_tokens(&client_id)
+            .await
+            .expect("retry after repairing family index"),
+        1
+    );
+
+    let remaining_keys: i64 = redis::cmd("EXISTS")
+        .arg(&token_key)
+        .arg(&tombstone_key)
+        .arg(&family_index_key)
+        .arg(&client_index_key)
+        .query_async(&mut conn)
+        .await
+        .expect("query keys after recovered revoke");
+    assert_eq!(
+        remaining_keys, 0,
+        "recovery must clean token, tombstone, family, and client indexes"
+    );
 }
 
 /// Issue #161：显式 token revoke 与补偿删除不应留下可触发 family revoke 的墓碑。
