@@ -117,10 +117,8 @@ fn verify_client_secret_blocking(secret: &str, encoded_hash: &str) -> bool {
 pub async fn verify_client_secret(secret: &str, encoded_hash: &str) -> bool {
     let secret = secret.to_owned();
     let encoded_hash = encoded_hash.to_owned();
-    match tokio::task::spawn_blocking(move || {
-        verify_client_secret_blocking(&secret, &encoded_hash)
-    })
-    .await
+    match tokio::task::spawn_blocking(move || verify_client_secret_blocking(&secret, &encoded_hash))
+        .await
     {
         Ok(valid) => valid,
         Err(error) => {
@@ -236,29 +234,14 @@ mod tests {
     #[tokio::test]
     async fn credentials_match_rejects_public_client_with_leaked_hash() {
         // 若公开客户端在数据库里遗留了 hash（配置迁移错误），拒绝认证（fail closed）
-        assert!(!credentials_match(
-            ClientAuthMethod::None,
-            None,
-            Some("leaked-hash")
-        )
-        .await);
+        assert!(!credentials_match(ClientAuthMethod::None, None, Some("leaked-hash")).await);
     }
 
     #[tokio::test]
     async fn credentials_match_rejects_mismatched_secret_presence() {
         // 机密客户端请求带 secret，但数据库没 hash（或反之），都拒绝
-        assert!(!credentials_match(
-            ClientAuthMethod::Basic,
-            Some("secret"),
-            None
-        )
-        .await);
-        assert!(!credentials_match(
-            ClientAuthMethod::Basic,
-            None,
-            Some("hash")
-        )
-        .await);
+        assert!(!credentials_match(ClientAuthMethod::Basic, Some("secret"), None).await);
+        assert!(!credentials_match(ClientAuthMethod::Basic, None, Some("hash")).await);
     }
 
     #[test]

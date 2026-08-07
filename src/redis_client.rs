@@ -1,8 +1,7 @@
 use std::time::Duration;
 
 use redis::{
-    AsyncConnectionConfig, Client, IntoConnectionInfo, RedisResult,
-    aio::MultiplexedConnection,
+    AsyncConnectionConfig, Client, IntoConnectionInfo, RedisResult, aio::MultiplexedConnection,
 };
 
 /// Redis TCP/DNS connection establishment must fail quickly enough that a broken

@@ -15,8 +15,7 @@ use crate::clients::{domain::ClientAuthMethod, repository::StoredClientCredentia
 const DUMMY_SECRET_PROBE: &str = "chenxing-auth-dummy-client-secret-probe";
 
 /// 运行期 dummy 哈希生成失败时的合法 PHC 兜底，确保仍然执行 Argon2 verify。
-const FALLBACK_DUMMY_CLIENT_SECRET_HASH: &str =
-    "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const FALLBACK_DUMMY_CLIENT_SECRET_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 /// Dummy Argon2 哈希缓存（Issue #63 计时均一化）。
 ///
@@ -203,54 +202,62 @@ mod tests {
     #[tokio::test]
     async fn constant_time_verify_rejects_gate_failures() {
         // client 不存在
-        assert!(!verify_client_credentials_constant_time(
-            ClientAuthMethod::Basic,
-            Some("s"),
-            None
-        )
-        .await);
+        assert!(
+            !verify_client_credentials_constant_time(ClientAuthMethod::Basic, Some("s"), None)
+                .await
+        );
         // status disabled
-        assert!(!verify_client_credentials_constant_time(
-            ClientAuthMethod::Basic,
-            Some("s"),
-            Some(&stored("client_secret_basic", "disabled", Some("h")))
-        )
-        .await);
+        assert!(
+            !verify_client_credentials_constant_time(
+                ClientAuthMethod::Basic,
+                Some("s"),
+                Some(&stored("client_secret_basic", "disabled", Some("h")))
+            )
+            .await
+        );
         // method 不匹配
-        assert!(!verify_client_credentials_constant_time(
-            ClientAuthMethod::Post,
-            Some("s"),
-            Some(&stored("client_secret_basic", "active", Some("h")))
-        )
-        .await);
+        assert!(
+            !verify_client_credentials_constant_time(
+                ClientAuthMethod::Post,
+                Some("s"),
+                Some(&stored("client_secret_basic", "active", Some("h")))
+            )
+            .await
+        );
     }
 
     #[tokio::test]
     async fn constant_time_verify_accepts_public_client_without_secret() {
-        assert!(verify_client_credentials_constant_time(
-            ClientAuthMethod::None,
-            None,
-            Some(&stored("none", "active", None))
-        )
-        .await);
+        assert!(
+            verify_client_credentials_constant_time(
+                ClientAuthMethod::None,
+                None,
+                Some(&stored("none", "active", None))
+            )
+            .await
+        );
     }
 
     #[tokio::test]
     async fn constant_time_verify_rejects_public_client_edge_cases() {
         // 请求携带了不该有的 secret
-        assert!(!verify_client_credentials_constant_time(
-            ClientAuthMethod::None,
-            Some("unexpected"),
-            Some(&stored("none", "active", None))
-        )
-        .await);
+        assert!(
+            !verify_client_credentials_constant_time(
+                ClientAuthMethod::None,
+                Some("unexpected"),
+                Some(&stored("none", "active", None))
+            )
+            .await
+        );
         // 数据库遗留了 hash（配置错误），fail closed
-        assert!(!verify_client_credentials_constant_time(
-            ClientAuthMethod::None,
-            None,
-            Some(&stored("none", "active", Some("$argon2...")))
-        )
-        .await);
+        assert!(
+            !verify_client_credentials_constant_time(
+                ClientAuthMethod::None,
+                None,
+                Some(&stored("none", "active", Some("$argon2...")))
+            )
+            .await
+        );
     }
 
     #[tokio::test]
@@ -258,12 +265,14 @@ mod tests {
         // 生成真实 Argon2 哈希（昂贵操作，覆盖完整路径所必需）
         let (plaintext, hash) = generate_client_secret().expect("generate secret");
         let s = stored("client_secret_basic", "active", Some(&hash));
-        assert!(verify_client_credentials_constant_time(
-            ClientAuthMethod::Basic,
-            Some(&plaintext),
-            Some(&s)
-        )
-        .await);
+        assert!(
+            verify_client_credentials_constant_time(
+                ClientAuthMethod::Basic,
+                Some(&plaintext),
+                Some(&s)
+            )
+            .await
+        );
     }
 
     #[tokio::test]
@@ -271,18 +280,17 @@ mod tests {
         let (_, hash) = generate_client_secret().expect("generate secret");
         let s = stored("client_secret_basic", "active", Some(&hash));
         // 错误 secret
-        assert!(!verify_client_credentials_constant_time(
-            ClientAuthMethod::Basic,
-            Some("cxs_wrong"),
-            Some(&s)
-        )
-        .await);
+        assert!(
+            !verify_client_credentials_constant_time(
+                ClientAuthMethod::Basic,
+                Some("cxs_wrong"),
+                Some(&s)
+            )
+            .await
+        );
         // 缺少 secret
-        assert!(!verify_client_credentials_constant_time(
-            ClientAuthMethod::Basic,
-            None,
-            Some(&s)
-        )
-        .await);
+        assert!(
+            !verify_client_credentials_constant_time(ClientAuthMethod::Basic, None, Some(&s)).await
+        );
     }
 }

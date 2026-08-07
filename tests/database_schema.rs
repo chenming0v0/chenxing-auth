@@ -236,12 +236,11 @@ async fn audit_events_are_immutable_and_old_rows_move_to_archive() {
     .await
     .expect("insert old audit event");
 
-    let update = chenxing_auth::sqlx::query(
-        "UPDATE audit_events SET action = 'mutated' WHERE id = $1",
-    )
-    .bind(event_id)
-    .execute(&pool)
-    .await;
+    let update =
+        chenxing_auth::sqlx::query("UPDATE audit_events SET action = 'mutated' WHERE id = $1")
+            .bind(event_id)
+            .execute(&pool)
+            .await;
     assert!(update.is_err(), "audit UPDATE must be rejected");
 
     let delete = chenxing_auth::sqlx::query("DELETE FROM audit_events WHERE id = $1")
@@ -250,20 +249,17 @@ async fn audit_events_are_immutable_and_old_rows_move_to_archive() {
         .await;
     assert!(delete.is_err(), "direct audit DELETE must be rejected");
 
-    let archived: i32 = chenxing_auth::sqlx::query_scalar(
-        "SELECT archive_audit_events(1, 1000)",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("archive old audit event");
+    let archived: i32 = chenxing_auth::sqlx::query_scalar("SELECT archive_audit_events(1, 1000)")
+        .fetch_one(&pool)
+        .await
+        .expect("archive old audit event");
     assert_eq!(archived, 1);
 
-    let archived_action: String = chenxing_auth::sqlx::query_scalar(
-        "SELECT action FROM audit_events_archive WHERE id = $1",
-    )
-    .bind(event_id)
-    .fetch_one(&pool)
-    .await
-    .expect("archived audit event");
+    let archived_action: String =
+        chenxing_auth::sqlx::query_scalar("SELECT action FROM audit_events_archive WHERE id = $1")
+            .bind(event_id)
+            .fetch_one(&pool)
+            .await
+            .expect("archived audit event");
     assert_eq!(archived_action, "append_only_test");
 }

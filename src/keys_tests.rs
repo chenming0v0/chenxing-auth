@@ -74,7 +74,13 @@ fn prune_materials_retains_active_and_recent_removes_expired() {
     map.insert(recent.clone(), aged(2, 60));
     map.insert(expired.clone(), aged(3, 7200));
 
-    prune_materials(Some(&storage_dir()), &active, &mut map, retention, test_now());
+    prune_materials(
+        Some(&storage_dir()),
+        &active,
+        &mut map,
+        retention,
+        test_now(),
+    );
 
     assert!(map.contains_key(&active), "active key must survive");
     assert!(map.contains_key(&recent), "recent key must survive");
@@ -89,7 +95,13 @@ fn prune_materials_never_removes_active_key_even_if_stale() {
     map.insert(active.clone(), aged(9, 999_999));
 
     let retention = Duration::from_secs(60);
-    prune_materials(Some(&storage_dir()), &active, &mut map, retention, test_now());
+    prune_materials(
+        Some(&storage_dir()),
+        &active,
+        &mut map,
+        retention,
+        test_now(),
+    );
 
     assert!(map.contains_key(&active), "active key always retained");
 }

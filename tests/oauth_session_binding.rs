@@ -130,7 +130,10 @@ async fn authorization_code_rejected_after_session_revocation_and_code_not_consu
         "chenxing:oauth:code:{}",
         URL_SAFE_NO_PAD.encode(Sha256::digest(code.as_bytes()))
     );
-    let payload: String = redis.get(&code_key).await.expect("authorization code payload");
+    let payload: String = redis
+        .get(&code_key)
+        .await
+        .expect("authorization code payload");
     let session_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(session.token.as_bytes()));
     assert!(payload.contains(&session_hash));
     assert!(!payload.contains(&session.token));

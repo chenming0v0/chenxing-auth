@@ -6,11 +6,7 @@ use super::super::{
     token::issue_access_token,
 };
 use super::{OAuthError, TokenResponse};
-use crate::{
-    sessions::domain::decode_session_token_hash,
-    state::AppState,
-    users::domain::UserId,
-};
+use crate::{sessions::domain::decode_session_token_hash, state::AppState, users::domain::UserId};
 
 pub(super) fn validate_code_binding(
     client_id: &str,
@@ -144,9 +140,7 @@ pub(super) async fn authorization_code_session_auth_time(
         return Err(OAuthError::invalid_grant());
     };
     match state.sessions.find_by_token_hash(&session_hash).await {
-        Ok(Some(session)) if session.is_active() => {
-            Ok(Some(session.created_at.unix_timestamp()))
-        }
+        Ok(Some(session)) if session.is_active() => Ok(Some(session.created_at.unix_timestamp())),
         Ok(_) => {
             tracing::info!(
                 client_id = %code.client_id,

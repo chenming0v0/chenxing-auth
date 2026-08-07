@@ -40,11 +40,7 @@ pub async fn register_user(
         &headers,
         &state.config.trusted_proxies,
     );
-    match state
-        .users
-        .register(input, source_ip.as_deref())
-        .await
-    {
+    match state.users.register(input, source_ip.as_deref()).await {
         Ok(user) => {
             if state
                 .audit

@@ -17,15 +17,9 @@ use time::OffsetDateTime;
 
 use super::{
     crypto,
-    domain::{
-        Session, SessionLookup, SessionPayload, session_token_hash_bytes,
-    },
+    domain::{Session, SessionLookup, SessionPayload, session_token_hash_bytes},
 };
-use crate::{
-    config::AuthEncryptionKeyRing,
-    redis_client::RedisClient,
-    users::domain::UserId,
-};
+use crate::{config::AuthEncryptionKeyRing, redis_client::RedisClient, users::domain::UserId};
 
 mod postgres;
 mod redis_only;

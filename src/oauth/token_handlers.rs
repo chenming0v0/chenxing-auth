@@ -6,6 +6,7 @@ use axum::{
 };
 use std::net::SocketAddr;
 
+pub use super::token_use_case::TokenRequest;
 use super::{
     client_auth::{ClientCredentialError, resolve_client_credentials},
     form,
@@ -15,7 +16,6 @@ use super::{
     token_use_case::{self, OAuthError},
 };
 use crate::{error, state::AppState};
-pub use super::token_use_case::TokenRequest;
 
 pub async fn token(
     State(state): State<AppState>,
@@ -102,9 +102,7 @@ async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> 
 
 fn oauth_error_response(error_value: OAuthError) -> Response {
     match error_value {
-        OAuthError::BadRequest { code, description } => {
-            error::oauth_bad_request(code, description)
-        }
+        OAuthError::BadRequest { code, description } => error::oauth_bad_request(code, description),
         OAuthError::InvalidClient => error::oauth_invalid_client(),
         OAuthError::TemporarilyUnavailable => error::oauth_temporarily_unavailable(),
         OAuthError::ServerError => error::oauth_server_error(),

@@ -135,9 +135,7 @@ mod tests {
             .await
             .expect("find bound request")
             .expect("bound request");
-        let winning_session_hash = bound
-            .session_token_hash
-            .expect("winning session hash");
+        let winning_session_hash = bound.session_token_hash.expect("winning session hash");
         let first_session_hash = session_token_hash(first_session);
         let second_session_hash = session_token_hash(second_session);
         assert!(
@@ -248,7 +246,10 @@ mod tests {
     async fn binding_with_mismatched_holder_is_rejected() {
         let store = store();
         let mut request = pending(
-            format!("provider-bind-mismatched-holder-{}", uuid::Uuid::new_v4().simple()),
+            format!(
+                "provider-bind-mismatched-holder-{}",
+                uuid::Uuid::new_v4().simple()
+            ),
             &format!(
                 "provider-bind-mismatched-holder-client-{}",
                 uuid::Uuid::new_v4().simple()

@@ -1,8 +1,8 @@
 use std::env;
 
 use super::{
-    config_parsing::{parse_bool, parse_u64},
     ConfigError,
+    config_parsing::{parse_bool, parse_u64},
 };
 
 pub const DEFAULT_AUDIT_RETENTION_DAYS: i32 = 2_555;

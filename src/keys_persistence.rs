@@ -1,9 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::Path,
-    time::Duration,
-};
+use std::{collections::BTreeMap, fs, path::Path, time::Duration};
 
 use time::OffsetDateTime;
 use zeroize::Zeroizing;
@@ -13,8 +8,8 @@ use crate::key_storage::{
 };
 
 use super::{
-    KeyMaterial, KeyManagerError, generate_rsa_key, key_material,
-    prune_materials, within_retention_at,
+    KeyManagerError, KeyMaterial, generate_rsa_key, key_material, prune_materials,
+    within_retention_at,
 };
 
 const ACTIVE_KEY_ID_FILE: &str = "active-rs256.kid";
@@ -48,9 +43,8 @@ pub(super) fn load_materials(
         }
         let (key_id, der) = generate_rsa_key()?;
         persist_key(directory, &key_id, &der)?;
-        let created_at = OffsetDateTime::from(modified_time(
-            &directory.join(key_file_name(&key_id)),
-        )?);
+        let created_at =
+            OffsetDateTime::from(modified_time(&directory.join(key_file_name(&key_id)))?);
         persist_active_key_id(directory, &key_id)?;
         key_files.insert(key_id, key_material(der, created_at));
     }
@@ -195,16 +189,9 @@ pub(super) fn remove_key(directory: &Path, key_id: &str) -> Result<(), KeyManage
     Ok(())
 }
 
-pub(super) fn persist_active_key_id(
-    directory: &Path,
-    key_id: &str,
-) -> Result<(), KeyManagerError> {
+pub(super) fn persist_active_key_id(directory: &Path, key_id: &str) -> Result<(), KeyManagerError> {
     validate_key_id(key_id)?;
-    atomic_write(
-        &directory.join(ACTIVE_KEY_ID_FILE),
-        key_id.as_bytes(),
-        true,
-    )?;
+    atomic_write(&directory.join(ACTIVE_KEY_ID_FILE), key_id.as_bytes(), true)?;
     Ok(())
 }
 

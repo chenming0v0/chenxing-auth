@@ -42,10 +42,7 @@ impl AuthorizationRequestStore {
         }
     }
 
-    pub fn new_with_settings(
-        client: impl Into<RedisClient>,
-        settings: SettingsService,
-    ) -> Self {
+    pub fn new_with_settings(client: impl Into<RedisClient>, settings: SettingsService) -> Self {
         Self {
             client: client.into(),
             settings: Some(settings),
@@ -208,7 +205,9 @@ impl AuthorizationRequestStore {
             .map_err(AuthorizationRequestStoreError::from)
     }
 
-    async fn current_limits(&self) -> Result<SecurityLimitsSetting, AuthorizationRequestStoreError> {
+    async fn current_limits(
+        &self,
+    ) -> Result<SecurityLimitsSetting, AuthorizationRequestStoreError> {
         match &self.settings {
             Some(settings) => Ok(settings.security_limits().await?),
             None => Ok(SecurityLimitsSetting::default()),

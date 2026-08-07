@@ -11,8 +11,7 @@ use std::net::SocketAddr;
 use crate::{
     error,
     oauth::{
-        response::with_no_store_headers,
-        token::decode_userinfo_token,
+        response::with_no_store_headers, token::decode_userinfo_token,
         token_security::enforce_source_qps_with_policy,
     },
     state::AppState,

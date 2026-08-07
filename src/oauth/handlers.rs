@@ -191,10 +191,14 @@ async fn save_pending_with_limits(
 }
 
 async fn load_security_limits(state: &AppState) -> Result<SecurityLimitsSetting, Response> {
-    state.settings.security_limits().await.map_err(|error_value| {
-        tracing::error!(error = %error_value, "failed to load OAuth security limits");
-        error::oauth_temporarily_unavailable()
-    })
+    state
+        .settings
+        .security_limits()
+        .await
+        .map_err(|error_value| {
+            tracing::error!(error = %error_value, "failed to load OAuth security limits");
+            error::oauth_temporarily_unavailable()
+        })
 }
 
 async fn issue_preconsented_request(

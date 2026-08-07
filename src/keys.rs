@@ -156,10 +156,7 @@ impl KeyManager {
             .map_err(|_| KeyManagerError::RotationWorker)?
     }
 
-    pub async fn revoke(
-        &self,
-        key_id: impl AsRef<str>,
-    ) -> Result<KeyRevocation, KeyManagerError> {
+    pub async fn revoke(&self, key_id: impl AsRef<str>) -> Result<KeyRevocation, KeyManagerError> {
         self.revoke_at(key_id.as_ref().to_owned(), SystemClock.now())
             .await
     }
@@ -223,10 +220,7 @@ impl KeyManager {
         Ok(())
     }
 
-    pub fn verification_key_for(
-        &self,
-        key_id: &str,
-    ) -> Result<DecodingKey, KeyManagerError> {
+    pub fn verification_key_for(&self, key_id: &str) -> Result<DecodingKey, KeyManagerError> {
         self.refresh_from_disk()?;
         self.read_state()
             .verification_keys
@@ -285,14 +279,19 @@ impl KeyManager {
             None => None,
         };
         if let Some(directory) = directory.as_ref() {
-            let (_, disk_materials) =
-                persistence::load_materials(directory, retention, now, true)?;
+            let (_, disk_materials) = persistence::load_materials(directory, retention, now, true)?;
             materials = disk_materials;
         }
 
         let (key_id, der) = generate_rsa_key()?;
         materials.insert(key_id.clone(), key_material(der.clone(), now));
-        prune_materials(directory.as_deref(), &key_id, &mut materials, retention, now);
+        prune_materials(
+            directory.as_deref(),
+            &key_id,
+            &mut materials,
+            retention,
+            now,
+        );
         let next_state = build_key_state(directory.clone(), retention, key_id.clone(), materials)?;
 
         if let Some(directory) = directory.as_ref()
@@ -310,12 +309,8 @@ impl KeyManager {
         }
 
         if let Some(directory) = directory.as_ref()
-            && let Err(error) = persistence::cleanup_expired_key_files(
-                directory,
-                Some(&key_id),
-                retention,
-                now,
-            )
+            && let Err(error) =
+                persistence::cleanup_expired_key_files(directory, Some(&key_id), retention, now)
         {
             tracing::warn!(error = %error, "failed to collect expired signing keys");
         }

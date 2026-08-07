@@ -7,12 +7,7 @@ use axum::{
 use serde::Serialize;
 
 use super::{authorization::current_admin_mutation, domain::AdminPermission};
-use crate::{
-    audit::AuditEvent,
-    error,
-    keys::KeyManagerError,
-    state::AppState,
-};
+use crate::{audit::AuditEvent, error, keys::KeyManagerError, state::AppState};
 
 #[derive(Debug, Serialize)]
 pub struct KeyRotationResponse {

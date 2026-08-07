@@ -4,31 +4,31 @@ use thiserror::Error;
 
 use crate::clients::domain::ClientRegistrationLimits;
 
-#[path = "config_limits.rs"]
-mod config_limits;
 #[path = "config_admin.rs"]
 mod config_admin;
 #[path = "config_audit.rs"]
 mod config_audit;
+#[path = "config_limits.rs"]
+mod config_limits;
 #[path = "config_parsing.rs"]
 mod config_parsing;
 #[path = "config_proxy.rs"]
 mod config_proxy;
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
+use config_admin::admin_token_from_env;
+use config_audit::audit_retention_from_env;
 use config_limits::{
     client_registration_limits_from_env, parse_auth_limiter_failure_policy,
     parse_missing_source_ip_policy, security_limits_from_env,
 };
-use config_admin::admin_token_from_env;
-use config_audit::audit_retention_from_env;
 use config_parsing::{
     optional_u64, parse_auth_encryption_key_ring, parse_bool, parse_u16, parse_u64, required_env,
 };
 use config_proxy::trusted_proxies_from_env;
 
-pub use config_limits::SecurityLimits;
 pub use config_audit::AuditRetentionConfig;
+pub use config_limits::SecurityLimits;
 pub use config_parsing::{AuthEncryptionKey, AuthEncryptionKeyRing};
 pub use config_proxy::TrustedProxies;
 

@@ -1,6 +1,4 @@
-use super::{
-    OAuthError, TOKEN_EXCHANGE_ACTION, TOKEN_EXCHANGE_FAILURE_ACTION, TokenResponse,
-};
+use super::{OAuthError, TOKEN_EXCHANGE_ACTION, TOKEN_EXCHANGE_FAILURE_ACTION, TokenResponse};
 use crate::{oauth::token_security::record_token_event_with_metadata, state::AppState};
 
 pub(super) async fn exchange_failure(

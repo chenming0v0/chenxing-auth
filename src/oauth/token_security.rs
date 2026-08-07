@@ -1,12 +1,7 @@
 use axum::response::Response;
 
 use super::client_auth::ClientCredentials;
-use crate::{
-    audit::AuditEvent,
-    auth_limiter::MissingSourceIpPolicy,
-    error,
-    state::AppState,
-};
+use crate::{audit::AuditEvent, auth_limiter::MissingSourceIpPolicy, error, state::AppState};
 
 pub(crate) async fn enforce_source_qps_with_policy(
     state: &AppState,

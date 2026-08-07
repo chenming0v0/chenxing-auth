@@ -11,9 +11,7 @@ use time::OffsetDateTime;
 
 use super::{SessionStore, SessionStoreError, SessionSummary};
 use crate::{
-    sessions::domain::{
-        Session, SessionLookup, SessionPayload, session_token_hash_bytes,
-    },
+    sessions::domain::{Session, SessionLookup, SessionPayload, session_token_hash_bytes},
     sqlx::{Postgres, Transaction},
     users::domain::UserId,
 };
@@ -142,9 +140,8 @@ pub(super) async fn find_with_metadata_by_token_hash(
         .metadata
         .as_ref()
         .ok_or(SessionStoreError::MetadataUnavailable)?;
-    let metadata: Option<(i64, UserId, OffsetDateTime, OffsetDateTime)> =
-        crate::sqlx::query_as(
-            "SELECT sessions.id, sessions.user_id, sessions.created_at,
+    let metadata: Option<(i64, UserId, OffsetDateTime, OffsetDateTime)> = crate::sqlx::query_as(
+        "SELECT sessions.id, sessions.user_id, sessions.created_at,
                     sessions.expires_at
              FROM user_sessions AS sessions
              JOIN users ON users.id = sessions.user_id
@@ -153,19 +150,19 @@ pub(super) async fn find_with_metadata_by_token_hash(
                AND sessions.expires_at > NOW()
                AND sessions.session_epoch >= users.session_epoch
                AND users.status = 'active'",
-        )
-        .bind(token_hash.to_vec())
-        .fetch_optional(pool)
-        .await?;
-    Ok(metadata.map(
-        |(id, user_id, created_at, expires_at)| SessionLookup {
+    )
+    .bind(token_hash.to_vec())
+    .fetch_optional(pool)
+    .await?;
+    Ok(
+        metadata.map(|(id, user_id, created_at, expires_at)| SessionLookup {
             id,
             user_id: user_id.to_string(),
             created_at,
             expires_at,
             revoked_at: None,
-        },
-    ))
+        }),
+    )
 }
 
 /// 按令牌哈希撤销单条会话。

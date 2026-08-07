@@ -221,12 +221,10 @@ impl ClientService {
     ) -> Result<bool, ClientServiceError> {
         // 唯一的 `?` 早退是数据库错误，它与 client 是否存在无关，不构成侧信道。
         let stored = repository::find_client_credentials(&self.pool, client_id).await?;
-        Ok(verify_client_credentials_constant_time(
-            auth_method,
-            client_secret,
-            stored.as_ref(),
+        Ok(
+            verify_client_credentials_constant_time(auth_method, client_secret, stored.as_ref())
+                .await,
         )
-        .await)
     }
 
     /// 列出 Client（管理端），支持分页。

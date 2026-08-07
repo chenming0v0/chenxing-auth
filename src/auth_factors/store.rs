@@ -37,10 +37,7 @@ impl LoginTicketStore {
         }
     }
 
-    pub fn new_with_pool(
-        client: impl Into<RedisClient>,
-        metadata: crate::sqlx::PgPool,
-    ) -> Self {
+    pub fn new_with_pool(client: impl Into<RedisClient>, metadata: crate::sqlx::PgPool) -> Self {
         Self {
             client: client.into(),
             metadata: Some(metadata),

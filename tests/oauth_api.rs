@@ -44,7 +44,8 @@ async fn test_router() -> (Router, std::path::PathBuf) {
 async fn test_router_no_db() -> (Router, std::path::PathBuf) {
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let key_directory = std::env::temp_dir().join(format!("chenxing-oauth-nodb-{}", Uuid::new_v4()));
+    let key_directory =
+        std::env::temp_dir().join(format!("chenxing-oauth-nodb-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
         3000,

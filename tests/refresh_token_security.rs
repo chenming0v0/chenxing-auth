@@ -142,10 +142,7 @@ async fn replay_old_token_revokes_entire_family() {
     assert!(tombstone.is_some());
     assert_eq!(tombstone.as_ref().unwrap().family_id, family_id);
     assert_eq!(tombstone.as_ref().unwrap().client_id, client_id);
-    assert_eq!(
-        tombstone.as_ref().unwrap().state,
-        TombstoneState::Consumed
-    );
+    assert_eq!(tombstone.as_ref().unwrap().state, TombstoneState::Consumed);
     assert!(tombstone.as_ref().unwrap().recorded_at > 0);
 
     // 此时 token2 仍然存活
@@ -235,7 +232,11 @@ async fn concurrent_rotation_keeps_the_single_winner_token_alive() {
     let won_b = result_b.expect("rotation B");
     assert_ne!(won_a, won_b, "exactly one concurrent CAS must win");
 
-    let winner = if won_a { &replacement_a } else { &replacement_b };
+    let winner = if won_a {
+        &replacement_a
+    } else {
+        &replacement_b
+    };
     assert!(
         store
             .find(&winner.value)
@@ -412,7 +413,10 @@ async fn explicit_refresh_revoke_does_not_create_replay_tombstone() {
     let family_id = token.family_id.clone();
 
     store.save(&token).await.expect("save token");
-    store.remove(&token.value).await.expect("explicitly revoke token");
+    store
+        .remove(&token.value)
+        .await
+        .expect("explicitly revoke token");
     assert!(
         store
             .read_tombstone(&token.value)

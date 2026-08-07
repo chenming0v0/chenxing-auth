@@ -14,11 +14,7 @@ pub(super) async fn apply(response: Response, hsts_enabled: bool) -> Response {
     let mut response = response;
     let headers = response.headers_mut();
     set_header(headers, "x-frame-options", "DENY");
-    set_header(
-        headers,
-        "content-security-policy",
-        FRAME_ANCESTORS_POLICY,
-    );
+    set_header(headers, "content-security-policy", FRAME_ANCESTORS_POLICY);
     set_header(headers, "x-content-type-options", "nosniff");
     set_header(headers, "referrer-policy", "no-referrer");
     if hsts_enabled {
@@ -57,7 +53,12 @@ mod tests {
         );
         assert_eq!(response.headers()["x-content-type-options"], "nosniff");
         assert_eq!(response.headers()["referrer-policy"], "no-referrer");
-        assert!(response.headers().get("strict-transport-security").is_none());
+        assert!(
+            response
+                .headers()
+                .get("strict-transport-security")
+                .is_none()
+        );
     }
 
     #[tokio::test]

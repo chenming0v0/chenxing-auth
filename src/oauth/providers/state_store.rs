@@ -128,10 +128,7 @@ impl ExternalLoginStateStore {
         )
     }
 
-    pub fn new_with_settings(
-        client: impl Into<RedisClient>,
-        settings: SettingsService,
-    ) -> Self {
+    pub fn new_with_settings(client: impl Into<RedisClient>, settings: SettingsService) -> Self {
         let mut store = Self::new_with_limits(
             client,
             STATE_KEY_PREFIX.to_owned(),

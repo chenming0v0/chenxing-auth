@@ -60,10 +60,7 @@ impl UserService {
         source_ip: Option<&str>,
     ) -> Result<Vec<LimiterDimension>, UserServiceError> {
         match (source_ip, self.missing_source_ip_policy) {
-            (Some(source_ip), _) => Ok(vec![(
-                FailureDimension::SourceIp,
-                source_ip.to_owned(),
-            )]),
+            (Some(source_ip), _) => Ok(vec![(FailureDimension::SourceIp, source_ip.to_owned())]),
             (None, MissingSourceIpPolicy::Skip) => {
                 tracing::warn!(
                     event = "auth_limiter.source_ip_unavailable",

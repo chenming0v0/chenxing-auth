@@ -121,8 +121,7 @@ async fn revoke_inner(state: AppState, headers: HeaderMap, request: RevocationRe
         &state.config.issuer_url,
         &credentials.client_id,
         &request.token,
-    )
-    {
+    ) {
         let now = time::OffsetDateTime::now_utc().unix_timestamp();
         if let Ok(expires_at) = i64::try_from(claims.exp) {
             let ttl = expires_at.saturating_sub(now);

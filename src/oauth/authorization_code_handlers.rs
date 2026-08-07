@@ -69,10 +69,14 @@ pub async fn issue_authorization_code_result(
             "client is invalid",
         ));
     };
-    let limits = state.settings.security_limits().await.map_err(|error_value| {
-        tracing::error!(error = %error_value, "failed to load OAuth security limits");
-        error::oauth_temporarily_unavailable()
-    })?;
+    let limits = state
+        .settings
+        .security_limits()
+        .await
+        .map_err(|error_value| {
+            tracing::error!(error = %error_value, "failed to load OAuth security limits");
+            error::oauth_temporarily_unavailable()
+        })?;
     let client_id = validated.client_id.clone();
     let code = AuthorizationCode::new_with_nonce_and_ttl_with_session_hash(
         validated.client_id,

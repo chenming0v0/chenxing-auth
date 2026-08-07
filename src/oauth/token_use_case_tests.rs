@@ -61,13 +61,8 @@ fn expired_code_is_rejected_before_pkce_and_remains_unconsumed() {
 fn pkce_mismatch_is_rejected_without_consuming_the_code() {
     let code = authorization_code();
 
-    let error = validate_code_binding(
-        CLIENT_ID,
-        REDIRECT_URI,
-        "a".repeat(43).as_str(),
-        &code,
-    )
-    .expect_err("PKCE mismatch must reject");
+    let error = validate_code_binding(CLIENT_ID, REDIRECT_URI, "a".repeat(43).as_str(), &code)
+        .expect_err("PKCE mismatch must reject");
 
     assert_eq!(error, OAuthError::invalid_grant());
     assert!(code.redeemed_at.is_none());

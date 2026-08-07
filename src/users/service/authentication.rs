@@ -92,9 +92,7 @@ impl UserService {
             Err(error) => {
                 // 账户预留失败不会替 source 预留做回滚，先尽力归还再传播原错误。
                 let dimension_count = source_dimensions.len();
-                if let Err(release_error) = self
-                    .release_dimensions(source_dimensions.clone())
-                    .await
+                if let Err(release_error) = self.release_dimensions(source_dimensions.clone()).await
                 {
                     tracing::error!(
                         event = "auth_limiter.reservation_release_failed",
@@ -115,9 +113,7 @@ impl UserService {
         }
         let mut dimensions = source_dimensions;
         dimensions.extend(account_dimensions);
-        let password_valid = password
-            .verify_against(credentials.password_hash)
-            .await;
+        let password_valid = password.verify_against(credentials.password_hash).await;
         // 状态、口令登录开关与口令校验合并判定：三者中任何一项不通过都返回同一个
         // 错误，不让调用方区分"账号被禁用"和"口令错误"。
         if credentials.status != "active" || !credentials.password_login_enabled || !password_valid
@@ -354,15 +350,9 @@ mod tests {
             Box::pin(async { Err(AuthLimiterError::Storage) })
         }
 
-        fn release<'a>(
-            &'a self,
-            dimensions: Vec<LimiterDimension>,
-        ) -> LimiterFuture<'a, ()> {
+        fn release<'a>(&'a self, dimensions: Vec<LimiterDimension>) -> LimiterFuture<'a, ()> {
             self.calls.lock().unwrap().push("release");
-            self.released_dimensions
-                .lock()
-                .unwrap()
-                .extend(dimensions);
+            self.released_dimensions.lock().unwrap().extend(dimensions);
             Box::pin(async { Err(AuthLimiterError::Storage) })
         }
     }

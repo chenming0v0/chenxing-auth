@@ -1,24 +1,21 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use super::{
-    refresh::RefreshToken,
-    session::active_user_id,
-};
+use super::{refresh::RefreshToken, session::active_user_id};
 use crate::state::AppState;
 
 #[path = "refresh_use_case.rs"]
 mod refresh_use_case;
-#[path = "token_use_case_support.rs"]
-mod token_use_case_support;
 #[path = "token_exchange_audit.rs"]
 mod token_exchange_audit;
+#[path = "token_use_case_support.rs"]
+mod token_use_case_support;
+use token_exchange_audit::{exchange_failure, record_token_exchange_success};
+pub(crate) use token_use_case_support::issue_token_response;
 use token_use_case_support::{
     authorization_code_session_auth_time, compensate_authorization_code_exchange,
     validate_code_binding,
 };
-pub(crate) use token_use_case_support::issue_token_response;
-use token_exchange_audit::{exchange_failure, record_token_exchange_success};
 
 const TOKEN_EXCHANGE_ACTION: &str = "token_exchange";
 const TOKEN_EXCHANGE_FAILURE_ACTION: &str = "token_exchange_failure";
@@ -169,12 +166,7 @@ pub async fn exchange_code(
         )
         .await;
     };
-    if let Err(error) = validate_code_binding(
-        client_id,
-        redirect_uri,
-        code_verifier,
-        &code,
-    ) {
+    if let Err(error) = validate_code_binding(client_id, redirect_uri, code_verifier, &code) {
         return exchange_failure(
             state,
             Some(&code.user_id),
@@ -292,13 +284,8 @@ pub async fn exchange_code(
             .await;
         }
     };
-    if let Err(audit_error) = record_token_exchange_success(
-        state,
-        &code.user_id,
-        client_id,
-        &code.scopes,
-    )
-    .await
+    if let Err(audit_error) =
+        record_token_exchange_success(state, &code.user_id, client_id, &code.scopes).await
     {
         compensate_authorization_code_exchange(state, &code, &refresh.value).await;
         tracing::error!(

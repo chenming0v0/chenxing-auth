@@ -1,6 +1,4 @@
-use super::{
-    issue_token_response, OAuthError, RefreshExchangeError, TokenRequest, TokenResponse,
-};
+use super::{OAuthError, RefreshExchangeError, TokenRequest, TokenResponse, issue_token_response};
 use crate::{state::AppState, users::domain::UserId};
 
 use super::super::{
@@ -142,35 +140,30 @@ pub(super) async fn exchange_refresh_token(
             };
             match tombstone {
                 Some(tombstone) if tombstone.client_id == client_id => {
-                    match classify_tombstone(
-                        &tombstone,
-                        time::OffsetDateTime::now_utc(),
-                        true,
-                    ) {
-                        TombstoneDisposition::ConcurrentRace => record_and_return_invalid(
-                            state,
-                            Some(&refresh.user_id),
-                            client_id,
-                            "token_race",
-                        )
-                        .await,
-                        TombstoneDisposition::Replay => {
-                            revoke_family_after_replay(
+                    match classify_tombstone(&tombstone, time::OffsetDateTime::now_utc(), true) {
+                        TombstoneDisposition::ConcurrentRace => {
+                            record_and_return_invalid(
                                 state,
+                                Some(&refresh.user_id),
                                 client_id,
-                                refresh_value,
-                                &tombstone,
+                                "token_race",
                             )
                             .await
                         }
+                        TombstoneDisposition::Replay => {
+                            revoke_family_after_replay(state, client_id, refresh_value, &tombstone)
+                                .await
+                        }
                         TombstoneDisposition::ExplicitRevoke
-                        | TombstoneDisposition::FamilyRevoked => record_and_return_invalid(
-                            state,
-                            Some(&refresh.user_id),
-                            client_id,
-                            "token_revoked",
-                        )
-                        .await,
+                        | TombstoneDisposition::FamilyRevoked => {
+                            record_and_return_invalid(
+                                state,
+                                Some(&refresh.user_id),
+                                client_id,
+                                "token_revoked",
+                            )
+                            .await
+                        }
                     }
                 }
                 _ => {
@@ -236,21 +229,24 @@ async fn handle_missing_refresh_token(
                 TombstoneDisposition::Replay => {
                     revoke_family_after_replay(state, client_id, refresh_value, &tombstone).await
                 }
-                TombstoneDisposition::ConcurrentRace => record_and_return_invalid(
-                    state,
-                    Some(&tombstone.user_id),
-                    client_id,
-                    "token_race",
-                )
-                .await,
-                TombstoneDisposition::ExplicitRevoke
-                | TombstoneDisposition::FamilyRevoked => record_and_return_invalid(
-                    state,
-                    Some(&tombstone.user_id),
-                    client_id,
-                    "token_revoked",
-                )
-                .await,
+                TombstoneDisposition::ConcurrentRace => {
+                    record_and_return_invalid(
+                        state,
+                        Some(&tombstone.user_id),
+                        client_id,
+                        "token_race",
+                    )
+                    .await
+                }
+                TombstoneDisposition::ExplicitRevoke | TombstoneDisposition::FamilyRevoked => {
+                    record_and_return_invalid(
+                        state,
+                        Some(&tombstone.user_id),
+                        client_id,
+                        "token_revoked",
+                    )
+                    .await
+                }
             }
         }
         Ok(Some(_)) => {
@@ -363,8 +359,8 @@ async fn record_and_return_invalid(
 #[cfg(test)]
 mod tests {
     use super::{TombstoneDisposition, classify_tombstone, select_scopes};
-    use crate::oauth::{refresh::RefreshToken, token_use_case::OAuthError};
     use crate::oauth::refresh_store::{Tombstone, TombstoneState};
+    use crate::oauth::{refresh::RefreshToken, token_use_case::OAuthError};
     use time::{Duration, OffsetDateTime};
 
     fn refresh_token() -> RefreshToken {

@@ -140,10 +140,7 @@ impl AuditService {
         repository::count_filtered(&self.pool, None, None).await
     }
 
-    pub async fn archive_expired(
-        &self,
-        retention_days: i32,
-    ) -> Result<i64, crate::sqlx::Error> {
+    pub async fn archive_expired(&self, retention_days: i32) -> Result<i64, crate::sqlx::Error> {
         repository::archive_expired(&self.pool, retention_days).await
     }
 }

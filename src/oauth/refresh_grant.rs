@@ -1,6 +1,9 @@
 //! HTTP adapter for the `grant_type=refresh_token` flow.
 
-use axum::{Json, response::{IntoResponse, Response}};
+use axum::{
+    Json,
+    response::{IntoResponse, Response},
+};
 
 use super::{
     token_handlers::TokenRequest,

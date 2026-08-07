@@ -433,8 +433,7 @@ async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() 
     plan_fixtures::seed_default_plan(&database).await;
     let plan_code = format!("query-plan-{suffix}");
     let plan_name = format!("Query Plan {suffix}");
-    let plan_id =
-        plan_fixtures::insert_private_plan(&database, &plan_code, &plan_name).await;
+    let plan_id = plan_fixtures::insert_private_plan(&database, &plan_code, &plan_name).await;
     let default_username = format!("query-plan-user-default-{suffix}");
     let assigned_username = format!("query-plan-user-assigned-{suffix}");
     let expired_username = format!("query-plan-user-expired-{suffix}");

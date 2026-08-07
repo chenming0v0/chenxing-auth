@@ -7,9 +7,9 @@ use thiserror::Error;
 use super::{
     refresh::{REFRESH_TOKEN_ABSOLUTE_TTL_DAYS, REFRESH_TOKEN_SLIDING_TTL_DAYS, RefreshToken},
     refresh_store_scripts::{
-        REMOVE_WITHOUT_TOMBSTONE_SCRIPT, REMOVE_WITH_TOMBSTONE_SCRIPT,
-        REVOKE_CLIENT_TOKENS_SCRIPT, REVOKE_FAMILY_SCRIPT, ROTATE_WITH_TOMBSTONE_SCRIPT,
-        SAVE_WITH_INDEXES_SCRIPT, TAKE_IF_MATCHES_SCRIPT,
+        REMOVE_WITH_TOMBSTONE_SCRIPT, REMOVE_WITHOUT_TOMBSTONE_SCRIPT, REVOKE_CLIENT_TOKENS_SCRIPT,
+        REVOKE_FAMILY_SCRIPT, ROTATE_WITH_TOMBSTONE_SCRIPT, SAVE_WITH_INDEXES_SCRIPT,
+        TAKE_IF_MATCHES_SCRIPT,
     },
 };
 use crate::redis_client::RedisClient;
@@ -189,10 +189,8 @@ impl RefreshTokenStore {
         };
         let token: RefreshToken = serde_json::from_str(&payload)?;
         let hash = Self::token_hash(value);
-        let tombstone = serde_json::to_string(&Tombstone::for_token(
-            &token,
-            TombstoneState::Consumed,
-        ))?;
+        let tombstone =
+            serde_json::to_string(&Tombstone::for_token(&token, TombstoneState::Consumed))?;
         let _: i32 = Script::new(REMOVE_WITH_TOMBSTONE_SCRIPT)
             .key(&key)
             .key(Self::client_idx_key(&token.client_id))
@@ -249,10 +247,8 @@ impl RefreshTokenStore {
         let expected = serde_json::to_string(token)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let hash = Self::token_hash(value);
-        let tombstone = serde_json::to_string(&Tombstone::for_token(
-            token,
-            TombstoneState::Consumed,
-        ))?;
+        let tombstone =
+            serde_json::to_string(&Tombstone::for_token(token, TombstoneState::Consumed))?;
         // CAS 消费、索引清理和墓碑写入在同一个 Lua 脚本内完成，
         // 避免「已删除但墓碑未写」的中间状态漏掉后续重放检测。
         let deleted: i32 = Script::new(TAKE_IF_MATCHES_SCRIPT)
@@ -282,10 +278,8 @@ impl RefreshTokenStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let old_hash = Self::token_hash(value);
         let new_hash = Self::token_hash(&replacement.value);
-        let tombstone = serde_json::to_string(&Tombstone::for_token(
-            token,
-            TombstoneState::Consumed,
-        ))?;
+        let tombstone =
+            serde_json::to_string(&Tombstone::for_token(token, TombstoneState::Consumed))?;
         let new_ttl = Self::effective_ttl(replacement);
         let rotated: i32 = Script::new(ROTATE_WITH_TOMBSTONE_SCRIPT)
             .key(Self::token_key(value))
@@ -359,13 +353,8 @@ impl RefreshTokenStore {
         user_id: &str,
         replayed_value: &str,
     ) -> Result<u64, RefreshTokenStoreError> {
-        self.revoke_family_internal(
-            family_id,
-            client_id,
-            user_id,
-            Some(replayed_value),
-        )
-        .await
+        self.revoke_family_internal(family_id, client_id, user_id, Some(replayed_value))
+            .await
     }
 
     async fn revoke_family_internal(
@@ -429,10 +418,9 @@ mod tests {
 
     #[test]
     fn legacy_tombstones_remain_replay_candidates() {
-        let tombstone: Tombstone = serde_json::from_str(
-            r#"{"family_id":"family","client_id":"client","user_id":"user"}"#,
-        )
-        .expect("legacy tombstone should deserialize");
+        let tombstone: Tombstone =
+            serde_json::from_str(r#"{"family_id":"family","client_id":"client","user_id":"user"}"#)
+                .expect("legacy tombstone should deserialize");
 
         assert_eq!(tombstone.state, TombstoneState::Consumed);
         let now = OffsetDateTime::UNIX_EPOCH + Duration::days(1);

@@ -100,9 +100,7 @@ pub fn issue_id_token_with_profile(
         name: profile.name.map(str::to_owned),
     };
     let mut header = Header::new(Algorithm::RS256);
-    let signing_key = keys
-        .active_signing_key()
-        .map_err(IdTokenError::KeyState)?;
+    let signing_key = keys.active_signing_key().map_err(IdTokenError::KeyState)?;
     header.kid = Some(signing_key.key_id().to_owned());
     encode(&header, &claims, signing_key.encoding_key()).map_err(IdTokenError::from)
 }

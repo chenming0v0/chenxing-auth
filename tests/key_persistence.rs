@@ -292,13 +292,8 @@ async fn managers_refresh_shared_active_key_before_signing_and_verifying() {
     .expect("sign with refreshed key");
     let header = jsonwebtoken::decode_header(&token).expect("token header");
     assert_eq!(header.kid.as_deref(), Some(rotation.key_id.as_str()));
-    decode_access_token(
-        &second,
-        "https://auth.example.com",
-        "cx_project",
-        &token,
-    )
-    .expect("verify with refreshed key");
+    decode_access_token(&second, "https://auth.example.com", "cx_project", &token)
+        .expect("verify with refreshed key");
 
     let _ = fs::remove_dir_all(directory);
 }

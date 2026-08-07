@@ -259,14 +259,10 @@ mod tests {
     #[test]
     fn new_session_uses_the_supplied_creation_time() {
         let created_at = OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(123);
-        let session =
-            Session::new_at("1".to_owned(), Duration::from_secs(60), created_at).unwrap();
+        let session = Session::new_at("1".to_owned(), Duration::from_secs(60), created_at).unwrap();
 
         assert_eq!(session.created_at, created_at);
-        assert_eq!(
-            session.expires_at,
-            created_at + time::Duration::seconds(60)
-        );
+        assert_eq!(session.expires_at, created_at + time::Duration::seconds(60));
     }
 
     /// 43 字符的 base64url 令牌，与 `Session::new` 生成的 CSRF 令牌长度一致。

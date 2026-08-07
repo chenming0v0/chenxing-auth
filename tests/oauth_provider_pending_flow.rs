@@ -347,7 +347,8 @@ async fn external_callback_does_not_redirect_to_consent_when_pending_request_exp
         .await
         .expect("delete pending request");
 
-    let response = complete_external_callback(&router, &slug, &state_cookie, &state, &holder_cookie).await;
+    let response =
+        complete_external_callback(&router, &slug, &state_cookie, &state, &holder_cookie).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     let redirect = location(&response);
     assert!(redirect.starts_with(&format!("/login?request_id={request_id}")));

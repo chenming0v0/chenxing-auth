@@ -75,7 +75,12 @@ async fn liveness_endpoint_includes_security_headers_without_hsts_for_http_issue
     );
     assert_eq!(response.headers()["x-content-type-options"], "nosniff");
     assert_eq!(response.headers()["referrer-policy"], "no-referrer");
-    assert!(response.headers().get("strict-transport-security").is_none());
+    assert!(
+        response
+            .headers()
+            .get("strict-transport-security")
+            .is_none()
+    );
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

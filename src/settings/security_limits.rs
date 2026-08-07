@@ -56,7 +56,8 @@ impl From<&crate::config::SecurityLimits> for SecurityLimitsSetting {
             ip_failure_limit: value.ip_failure_limit,
             totp_ticket_failure_limit: value.totp_ticket_failure_limit,
             external_login_state_ttl_seconds: value.external_login_state_ttl_seconds,
-            external_login_state_rate_window_seconds: value.external_login_state_rate_window_seconds,
+            external_login_state_rate_window_seconds: value
+                .external_login_state_rate_window_seconds,
             external_login_state_rate_limit: value.external_login_state_rate_limit,
             external_login_state_max_pending: value.external_login_state_max_pending,
         }
