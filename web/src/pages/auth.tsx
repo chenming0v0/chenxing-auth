@@ -234,8 +234,10 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
               // Issue #88：后端 LoginInput 只接受 identifier / password / totp_code，
               // 没有 keep_login 字段，会话有效期完全由服务端配置决定。
               // 「在此设备保持登录」复选框对实际行为零影响，属于误导性 UI，故移除。
+              // Issue #240：后端没有自助重置密码流程，不渲染指向 # 的伪链接；
+              // 初始密码由管理员创建用户时设置，改为联系管理员的静态引导。
               <div className="flex items-center justify-end">
-                <a className="chenxing-link" href="#">忘记密码？</a>
+                <span className="chenxing-caption text-[12.5px] text-[var(--chenxing-muted-foreground)]">忘记密码？请联系管理员重置。</span>
               </div>
             )}
             {/* 未同意条款时禁用提交按钮，避免出现「无同意记录却完成注册」的情况 */}

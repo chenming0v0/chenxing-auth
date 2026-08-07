@@ -113,8 +113,9 @@ export function OAuthAccountPage() {
                     </Link>
                   </li>
                 </ul>
+                {/* #240：隐私政策/服务条款尚无链接目标，保留为纯文本，不渲染伪链接 */}
                 <p className="oauth-copy is-legal">
-                  在使用该应用之前，你可以查看「{pending.client_name}」的<a href="#">隐私政策</a>和<a href="#">服务条款</a>。
+                  在使用该应用之前，请知悉「{pending.client_name}」的隐私政策与服务条款。
                 </p>
               </>
             ) : null}

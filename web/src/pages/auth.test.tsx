@@ -114,9 +114,12 @@ describe('AuthPage 登录页移除失效的 keepLogin 控件（#88）', () => {
     expect(screen.queryByText('在此设备保持登录')).toBeNull()
   })
 
-  it('保留忘记密码入口', () => {
+  it('忘记密码改为联系管理员的静态引导，不再是伪链接（#240）', () => {
     render(<AuthPage mode="login" />)
-    expect(screen.getByText('忘记密码？')).toBeTruthy()
+    expect(screen.getByText('忘记密码？请联系管理员重置。')).toBeTruthy()
+    // 后端无自助重置流程：不允许渲染成可点击的链接或按钮
+    expect(screen.queryByRole('link', { name: /忘记密码/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /忘记密码/ })).toBeNull()
   })
 
   it('登录请求 body 只包含 identifier 与 password，不含 keep_login', async () => {

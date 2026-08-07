@@ -791,6 +791,20 @@ td.chenxing-label {
 }
 .chenxing-menu-item:hover { background: var(--chenxing-muted); }
 
+/* #240：菜单里暂无行为的静态条目（应用广场 / 文档中心）：保留行样式与间距，
+   移除可点击暗示与 hover 反馈；span 不进 useNavDisclosure 的焦点循环 */
+.chenxing-menu-item.is-static,
+.chenxing-nav-menu-item.is-static {
+  cursor: default;
+}
+.chenxing-menu-item.is-static:hover,
+.chenxing-nav-menu-item.is-static:hover {
+  background: transparent;
+}
+.chenxing-nav-menu-item.is-static:hover i {
+  color: var(--chenxing-muted-foreground);
+}
+
 /* Account menu user info header */
 .chenxing-account-header {
   display: flex;

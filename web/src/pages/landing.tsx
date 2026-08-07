@@ -145,9 +145,10 @@ export function LandingPage() {
                 <div className="chenxing-caption mt-1 text-[11px]">© 2026 TianQiong ChenXing. All rights reserved.</div>
               </div>
             </div>
+            {/* #240：页脚栏目暂无对应页面，以静态文本呈现，不渲染 href="#" 的伪链接 */}
             <div className="chenxing-caption flex flex-wrap gap-6 text-[11.5px]">
               {['开发者文档', '服务条款', '隐私政策', '系统状态', '安全公告'].map((item) => (
-                <a key={item} href="#" className="transition-colors hover:text-[var(--chenxing-gold)]">{item}</a>
+                <span key={item}>{item}</span>
               ))}
             </div>
           </div>

@@ -250,7 +250,8 @@
         gap: 4px;
       }
       .oauth-footer button,
-      .oauth-footer a {
+      .oauth-footer a,
+      .oauth-footer-label {
         border: 0;
         background: transparent;
         color: inherit;
@@ -263,6 +264,11 @@
       .oauth-footer a:hover {
         background: rgba(255,255,255,0.04);
         color: var(--chenxing-foreground);
+      }
+      /* #240：页脚语言/帮助/隐私权/条款暂无对应行为：与按钮同尺寸同间距的
+         静态文本，去掉可点击暗示（不匹配上面的 :hover 规则，无 hover 反馈） */
+      .oauth-footer-label {
+        cursor: default;
       }
       .oauth-app-mark {
         display: inline-flex;

@@ -297,3 +297,39 @@ describe('全局「跳到主内容」跳过链接（#225）', () => {
     expect(window.location.pathname).toBe('/console')
   })
 })
+
+describe('无行为控件改为静态文本（#240）', () => {
+  it('OAuth 页脚语言选择器不再是带 aria-haspopup 的按钮，帮助/隐私权/条款不再是伪链接', () => {
+    const { container } = render(<OAuthShell><div>授权内容</div></OAuthShell>)
+    const footer = container.querySelector('.oauth-footer') as HTMLElement
+    expect(footer).toBeTruthy()
+    // 语言选择器不声明 listbox，也不渲染成按钮/combobox
+    expect(within(footer).queryByRole('button', { name: /简体中文/ })).toBeNull()
+    expect(within(footer).queryByRole('combobox')).toBeNull()
+    expect(footer.querySelector('[aria-haspopup]')).toBeNull()
+    // 语言与页脚链接保留为静态文本，维持页脚视觉平衡
+    for (const label of ['简体中文', '帮助', '隐私权', '条款']) {
+      const el = within(footer).getByText(label)
+      expect(el.tagName).toBe('SPAN')
+      expect(el.getAttribute('href')).toBeNull()
+    }
+    // 页脚不存在任何 href="#" 的死链接
+    expect(footer.querySelectorAll('a[href="#"]')).toHaveLength(0)
+  })
+
+  it('账户菜单「文档中心」与汉堡菜单「应用广场」不再是按钮', () => {
+    renderConsole()
+    fireEvent.click(screen.getByRole('button', { name: '账户菜单' }))
+    const panelId = screen.getByRole('button', { name: '账户菜单' }).getAttribute('aria-controls') as string
+    const accountPanel = document.getElementById(panelId) as HTMLElement
+    expect(accountPanel).toBeTruthy()
+    expect(within(accountPanel).queryByRole('button', { name: /文档中心/ })).toBeNull()
+    expect(within(accountPanel).getByText('文档中心').tagName).toBe('SPAN')
+
+    fireEvent.click(screen.getByRole('button', { name: '打开导航菜单' }))
+    const menu = document.querySelector('[data-menu]') as HTMLElement
+    expect(menu).toBeTruthy()
+    expect(within(menu).queryByRole('button', { name: /应用广场/ })).toBeNull()
+    expect(within(menu).getByText('应用广场').tagName).toBe('SPAN')
+  })
+})

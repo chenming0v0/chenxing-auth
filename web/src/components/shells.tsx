@@ -164,7 +164,10 @@ function NavMenu({
     >
       <Link to="/" className="chenxing-nav-menu-item" onClick={onNavigate}>主页<Icon name="arrow-up-right" size={16} /></Link>
       <Link to="/console" className="chenxing-nav-menu-item" onClick={onNavigate}>控制台<Icon name="layout-dashboard" size={16} /></Link>
-      <button type="button" className="chenxing-nav-menu-item" onClick={onNavigate}>应用广场<Icon name="store" size={16} /></button>
+      <span className="chenxing-nav-menu-item is-static">
+        <span className="flex items-center gap-2">应用广场<span className="chenxing-caption text-[10px] uppercase tracking-[0.08em] text-[var(--chenxing-muted-foreground)]">即将上线</span></span>
+        <Icon name="store" size={16} />
+      </span>
       <div className="chenxing-divider my-1" />
       <div className="flex items-center justify-between px-3.5 py-2">
         <span className="chenxing-caption text-[11px] tracking-[0.06em]">状态</span>
@@ -258,9 +261,10 @@ function AccountMenu() {
             <Link to="/console/plans" className="chenxing-menu-item" onClick={close}>
               <Icon name="receipt" className="text-[var(--chenxing-cyan)]" size={16} />套餐订阅
             </Link>
-            <button type="button" className="chenxing-menu-item">
+            <span className="chenxing-menu-item is-static">
               <Icon name="book-open" className="text-[var(--chenxing-cyan)]" size={16} />文档中心
-            </button>
+              <span className="ml-auto chenxing-caption text-[10px] uppercase tracking-[0.08em] text-[var(--chenxing-muted-foreground)]">即将上线</span>
+            </span>
             <div className="chenxing-divider my-1" />
             <button
               type="button"
@@ -467,11 +471,12 @@ export function OAuthShell({ children, footer = true }: { children: ReactNode; f
         {children}
         {footer ? (
           <div className="oauth-footer">
-            <button type="button" aria-haspopup="listbox">简体中文 ▾</button>
+            {/* #240：语言选择与帮助/隐私权/条款均无对应行为，静态文本而非伪控件 */}
+            <span className="oauth-footer-label">简体中文</span>
             <div className="oauth-footer-links">
-              <a href="#">帮助</a>
-              <a href="#">隐私权</a>
-              <a href="#">条款</a>
+              <span className="oauth-footer-label">帮助</span>
+              <span className="oauth-footer-label">隐私权</span>
+              <span className="oauth-footer-label">条款</span>
             </div>
           </div>
         ) : null}
