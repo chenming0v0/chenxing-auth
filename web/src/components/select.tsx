@@ -203,6 +203,7 @@ export function Select({
         aria-haspopup="listbox"
         aria-controls={open ? `${baseId}-listbox` : undefined}
         aria-activedescendant={open && activeIndex >= 0 ? optionId(activeIndex) : undefined}
+        aria-invalid={error || undefined}
         aria-label={ariaLabel}
         aria-labelledby={ariaLabelledBy}
         disabled={disabled}
@@ -239,7 +240,7 @@ export function Select({
                   key={option.value}
                   id={optionId(index)}
                   role="option"
-                  aria-selected={option.value === value}
+                  aria-selected={index === activeIndex}
                   aria-disabled={option.disabled || undefined}
                   data-index={index}
                   className={[
@@ -280,7 +281,7 @@ export function SelectField({ label, icon, hint, error, ...props }: SelectFieldP
       {icon ? (
         <div className={`chenxing-field-shell${error ? ' chenxing-field-error' : ''}`}>
           <Icon name={icon} className="chenxing-field-icon h-4 w-4" size={16} />
-          <Select aria-labelledby={labelId} {...props} />
+          <Select aria-labelledby={labelId} error={error} {...props} />
         </div>
       ) : (
         <Select aria-labelledby={labelId} error={error} {...props} />
