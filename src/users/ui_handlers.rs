@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 use super::domain::UserId;
 use super::ui_auth::{UserContext, current_user, mutation_error, mutation_user};
@@ -31,10 +32,19 @@ pub struct UpdateProfileInput {
     pub display_name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct ChangePasswordInput {
     pub current_password: String,
     pub new_password: String,
+}
+
+impl fmt::Debug for ChangePasswordInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChangePasswordInput")
+            .field("current_password", &"<redacted>")
+            .field("new_password", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]

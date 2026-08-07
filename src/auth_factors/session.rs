@@ -4,7 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use crate::{
     audit::AuditEvent,
@@ -14,11 +14,20 @@ use crate::{
     users::domain::UserId,
 };
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct LoginResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     pub expires_at: time::OffsetDateTime,
+}
+
+impl fmt::Debug for LoginResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LoginResponse")
+            .field("session_id", &self.session_id.as_ref().map(|_| "<redacted>"))
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 const SESSION_RESPONSE_MODE_HEADER: &str = "x-chenxing-session-mode";

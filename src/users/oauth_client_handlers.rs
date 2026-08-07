@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
+use std::fmt;
 
 use super::ui_auth::{current_user, mutation_error, mutation_user};
 use crate::{
@@ -31,7 +32,7 @@ struct OwnedClientResponse {
     quota: QuotaSnapshot,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct RegisteredOwnedClientResponse {
     #[serde(flatten)]
     client: OwnedClientResponse,
@@ -40,6 +41,16 @@ struct RegisteredOwnedClientResponse {
     /// 公开客户端（SPA / 移动端）不签发 secret，此时该字段整体省略（Issue #66）。
     #[serde(skip_serializing_if = "Option::is_none")]
     client_secret: Option<String>,
+}
+
+impl fmt::Debug for RegisteredOwnedClientResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RegisteredOwnedClientResponse")
+            .field("client", &self.client)
+            .field("auth_method", &self.auth_method)
+            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]

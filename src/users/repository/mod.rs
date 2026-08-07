@@ -10,6 +10,7 @@
 //! 全部子模块条目在此 `pub use`，`crate::users::repository::*` 的既有引用路径不变。
 
 use time::OffsetDateTime;
+use std::fmt;
 
 use super::domain::{UserId, UserRole, UserStatus};
 
@@ -34,7 +35,6 @@ pub use write::{
 ///
 /// `role` 与 `status` 是插入时实际落库的值而不是调用方的猜测：服务层据此构造
 /// `PublicUser`，不再在响应里重复写一遍 `"active"` / `UserRole::User` 字面量。
-#[derive(Debug)]
 pub struct NewUser {
     pub id: UserId,
     pub username: String,
@@ -46,7 +46,21 @@ pub struct NewUser {
     pub created_at: OffsetDateTime,
 }
 
-#[derive(Debug)]
+impl fmt::Debug for NewUser {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NewUser")
+            .field("id", &self.id)
+            .field("username", &self.username)
+            .field("email", &self.email)
+            .field("password_hash", &"<redacted>")
+            .field("display_name", &self.display_name)
+            .field("role", &self.role)
+            .field("status", &self.status)
+            .field("created_at", &self.created_at)
+            .finish()
+    }
+}
+
 pub struct UserCredentials {
     pub id: UserId,
     pub email: String,
@@ -54,6 +68,19 @@ pub struct UserCredentials {
     pub password_login_enabled: bool,
     pub status: String,
     pub role: UserRole,
+}
+
+impl fmt::Debug for UserCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UserCredentials")
+            .field("id", &self.id)
+            .field("email", &self.email)
+            .field("password_hash", &"<redacted>")
+            .field("password_login_enabled", &self.password_login_enabled)
+            .field("status", &self.status)
+            .field("role", &self.role)
+            .finish()
+    }
 }
 
 #[derive(Debug)]

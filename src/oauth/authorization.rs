@@ -1,9 +1,10 @@
 use super::pkce::validate_s256_challenge;
 use crate::users::domain::UserId;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use thiserror::Error;
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct AuthorizationRequest {
     pub client_id: String,
     pub redirect_uri: String,
@@ -15,6 +16,21 @@ pub struct AuthorizationRequest {
     pub code_challenge_method: Option<String>,
 }
 
+impl fmt::Debug for AuthorizationRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthorizationRequest")
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("response_type", &self.response_type)
+            .field("scope", &self.scope)
+            .field("state", &self.state.as_ref().map(|_| "<redacted>"))
+            .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
+            .field("code_challenge", &self.code_challenge.as_ref().map(|_| "<redacted>"))
+            .field("code_challenge_method", &self.code_challenge_method)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RegisteredClient {
     pub client_id: String,
@@ -24,7 +40,7 @@ pub struct RegisteredClient {
     pub owner_user_id: Option<UserId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ValidatedAuthorizationRequest {
     pub client_id: String,
     pub redirect_uri: String,
@@ -40,6 +56,24 @@ pub struct ValidatedAuthorizationRequest {
     /// `validate_authorization_request` 一律填 `None`，由持有会话的调用方
     /// （`handlers::authorize_request` / 授权确认页）在校验之后回填。
     pub session_token_hash: Option<String>,
+}
+
+impl fmt::Debug for ValidatedAuthorizationRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ValidatedAuthorizationRequest")
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scopes", &self.scopes)
+            .field("state", &"<redacted>")
+            .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
+            .field("code_challenge", &"<redacted>")
+            .field("owner_user_id", &self.owner_user_id)
+            .field(
+                "session_token_hash",
+                &self.session_token_hash.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::de::Error as DeError;
 use serde::{Deserialize, Deserializer, Serialize};
+use std::fmt;
 
 use crate::state::AppState;
 
@@ -19,14 +20,24 @@ pub fn parse_decision(value: &str) -> Option<ConsentDecision> {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct ConsentForm {
     pub request_id: String,
     pub decision: String,
     pub csrf_token: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+impl fmt::Debug for ConsentForm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConsentForm")
+            .field("request_id", &"<redacted>")
+            .field("decision", &self.decision)
+            .field("csrf_token", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize)]
 pub struct PendingAuthorization {
     pub request_id: String,
     pub client_id: String,
@@ -63,7 +74,27 @@ pub struct PendingAuthorization {
     pub holder_hash: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+impl fmt::Debug for PendingAuthorization {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingAuthorization")
+            .field("request_id", &"<redacted>")
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scope", &self.scope)
+            .field("state", &"<redacted>")
+            .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
+            .field("code_challenge", &"<redacted>")
+            .field("code_challenge_method", &self.code_challenge_method)
+            .field(
+                "session_token_hash",
+                &self.session_token_hash.as_ref().map(|_| "<redacted>"),
+            )
+            .field("holder_hash", &self.holder_hash.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 struct PendingAuthorizationPayload {
     request_id: String,
     client_id: String,
@@ -79,6 +110,28 @@ struct PendingAuthorizationPayload {
     holder_hash: Option<String>,
     #[serde(flatten)]
     extra: BTreeMap<String, serde_json::Value>,
+}
+
+impl fmt::Debug for PendingAuthorizationPayload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingAuthorizationPayload")
+            .field("request_id", &"<redacted>")
+            .field("client_id", &self.client_id)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scope", &self.scope)
+            .field("state", &"<redacted>")
+            .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
+            .field("code_challenge", &"<redacted>")
+            .field("code_challenge_method", &self.code_challenge_method)
+            .field(
+                "session_token_hash",
+                &self.session_token_hash.as_ref().map(|_| "<redacted>"),
+            )
+            .field("holder_hash", &self.holder_hash.as_ref().map(|_| "<redacted>"))
+            // Legacy payloads may carry the former plaintext session token here.
+            .field("extra", &"<redacted>")
+            .finish()
+    }
 }
 
 impl<'de> Deserialize<'de> for PendingAuthorization {

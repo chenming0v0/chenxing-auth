@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use thiserror::Error;
 
 use super::credentials::MAX_PASSWORD_LENGTH;
@@ -95,7 +96,7 @@ impl UserRole {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct RegistrationInput {
     pub username: String,
     pub email: String,
@@ -103,7 +104,18 @@ pub struct RegistrationInput {
     pub display_name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+impl fmt::Debug for RegistrationInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RegistrationInput")
+            .field("username", &self.username)
+            .field("email", &self.email)
+            .field("password", &"<redacted>")
+            .field("display_name", &self.display_name)
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
 pub struct LoginInput {
     #[serde(alias = "email")]
     pub identifier: String,
@@ -111,10 +123,29 @@ pub struct LoginInput {
     pub totp_code: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl fmt::Debug for LoginInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LoginInput")
+            .field("identifier", &self.identifier)
+            .field("password", &"<redacted>")
+            .field("totp_code", &self.totp_code.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct ValidatedLogin {
     pub identifier: String,
     pub password: String,
+}
+
+impl fmt::Debug for ValidatedLogin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ValidatedLogin")
+            .field("identifier", &self.identifier)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -125,12 +156,23 @@ pub enum LoginError {
     EmptyPassword,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ValidatedRegistration {
     pub username: String,
     pub email: String,
     pub password: String,
     pub display_name: Option<String>,
+}
+
+impl fmt::Debug for ValidatedRegistration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ValidatedRegistration")
+            .field("username", &self.username)
+            .field("email", &self.email)
+            .field("password", &"<redacted>")
+            .field("display_name", &self.display_name)
+            .finish()
+    }
 }
 
 /// 一次用户创建的完整意图。
@@ -139,11 +181,21 @@ pub struct ValidatedRegistration {
 /// 把它们和已校验的注册信息绑在一起，仓储层就只需要一个插入函数，
 /// 调用方也不再在 SQL 里硬编码 `'active'` 或 `UserRole::User`。
 /// 明文口令不属于本结构的职责：调用方在哈希前 take 走 `registration.password`。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct UserCreation {
     pub registration: ValidatedRegistration,
     pub role: UserRole,
     pub status: UserStatus,
+}
+
+impl fmt::Debug for UserCreation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UserCreation")
+            .field("registration", &self.registration)
+            .field("role", &self.role)
+            .field("status", &self.status)
+            .finish()
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

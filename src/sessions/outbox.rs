@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use redis::{AsyncCommands, Script};
+use std::fmt;
 use time::OffsetDateTime;
 
 use super::store::{SessionStore, SessionStoreError};
@@ -28,7 +29,6 @@ type SessionProjectionRow = (
     UserId,
 );
 
-#[derive(Debug)]
 struct OutboxEntry {
     id: i64,
     operation: String,
@@ -37,6 +37,20 @@ struct OutboxEntry {
     token_hash: Option<Vec<u8>>,
     attempts: i32,
     generation: i64,
+}
+
+impl fmt::Debug for OutboxEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OutboxEntry")
+            .field("id", &self.id)
+            .field("operation", &self.operation)
+            .field("session_id", &self.session_id)
+            .field("user_id", &self.user_id)
+            .field("token_hash", &"<redacted>")
+            .field("attempts", &self.attempts)
+            .field("generation", &self.generation)
+            .finish()
+    }
 }
 
 impl SessionStore {

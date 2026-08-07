@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
+use std::fmt;
 
 use super::{
     id_token::{IdTokenProfile, issue_id_token_with_profile},
@@ -15,7 +16,7 @@ use super::{
 };
 use crate::{error, state::AppState};
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 struct TokenResponse {
     access_token: String,
     token_type: &'static str,
@@ -25,6 +26,19 @@ struct TokenResponse {
     refresh_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     id_token: Option<String>,
+}
+
+impl fmt::Debug for TokenResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenResponse")
+            .field("access_token", &"<redacted>")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field("scope", &self.scope)
+            .field("refresh_token", &self.refresh_token.as_ref().map(|_| "<redacted>"))
+            .field("id_token", &self.id_token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// `auth_time` 是终端用户完成认证的时刻（会话建立时间），`None` 表示无会话

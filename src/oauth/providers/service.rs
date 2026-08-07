@@ -17,6 +17,7 @@ use argon2::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::{Client, StatusCode};
 use serde_json::Value;
+use std::fmt;
 use thiserror::Error;
 
 const EXTERNAL_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -54,10 +55,19 @@ pub enum ExternalOAuthError {
     OwnerBootstrapRequired,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ExternalToken {
     pub access_token: String,
     pub token_type: Option<String>,
+}
+
+impl fmt::Debug for ExternalToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExternalToken")
+            .field("access_token", &"<redacted>")
+            .field("token_type", &self.token_type)
+            .finish()
+    }
 }
 
 impl ExternalOAuthService {

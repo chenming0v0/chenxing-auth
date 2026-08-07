@@ -1,10 +1,11 @@
 use jsonwebtoken::{Algorithm, Header, encode};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use thiserror::Error;
 
 use crate::keys::{KeyManager, KeyManagerError};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct IdTokenClaims {
     pub iss: String,
     pub sub: String,
@@ -30,13 +31,40 @@ pub struct IdTokenClaims {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+impl fmt::Debug for IdTokenClaims {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IdTokenClaims")
+            .field("iss", &self.iss)
+            .field("sub", &self.sub)
+            .field("aud", &self.aud)
+            .field("exp", &self.exp)
+            .field("iat", &self.iat)
+            .field("auth_time", &self.auth_time)
+            .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
+            .field("email", &self.email)
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
+#[derive(Clone, Default)]
 pub struct IdTokenProfile<'a> {
     pub nonce: Option<&'a str>,
     pub email: Option<&'a str>,
     pub name: Option<&'a str>,
     /// 会话建立时间的 Unix 秒，`None` 表示没有会话上下文，`auth_time` 将被省略。
     pub auth_time: Option<i64>,
+}
+
+impl fmt::Debug for IdTokenProfile<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IdTokenProfile")
+            .field("nonce", &self.nonce.map(|_| "<redacted>"))
+            .field("email", &self.email)
+            .field("name", &self.name)
+            .field("auth_time", &self.auth_time)
+            .finish()
+    }
 }
 
 #[derive(Debug, Error)]

@@ -4,7 +4,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
-use std::net::SocketAddr;
+use std::{fmt, net::SocketAddr};
 
 use super::{
     client_auth::{ClientCredentialError, resolve_client_credentials},
@@ -15,12 +15,23 @@ use super::{
 };
 use crate::{audit::AuditEvent, error, state::AppState};
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 pub struct RevocationRequest {
     pub token: String,
     pub token_type_hint: Option<String>,
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
+}
+
+impl fmt::Debug for RevocationRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RevocationRequest")
+            .field("token", &"<redacted>")
+            .field("token_type_hint", &self.token_type_hint)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &self.client_secret.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 pub async fn revoke(

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 use super::{AuthFactorService, AuthFactorServiceError, TotpConfirmation};
 use crate::{
@@ -18,10 +19,19 @@ use crate::{
 
 const TOTP_SETUP_PREFIX: &str = "chenxing:auth:totp-setup:";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct PendingTotpSetup {
     user_id: UserId,
     encrypted_secret: Vec<u8>,
+}
+
+impl fmt::Debug for PendingTotpSetup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingTotpSetup")
+            .field("user_id", &self.user_id)
+            .field("encrypted_secret", &"<redacted>")
+            .finish()
+    }
 }
 
 impl AuthFactorService {

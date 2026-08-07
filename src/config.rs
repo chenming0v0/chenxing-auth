@@ -98,7 +98,7 @@ impl fmt::Debug for Config {
             .field("host", &self.host)
             .field("port", &self.port)
             .field("request_timeout_seconds", &self.request_timeout_seconds)
-            .field("issuer_url", &self.issuer_url)
+            .field("issuer_url", &debug_safe_url(&self.issuer_url))
             .field("admin_token", &"REDACTED")
             .field("key_directory", &self.key_directory)
             .field(
@@ -114,8 +114,8 @@ impl fmt::Debug for Config {
                 "session_token_response_enabled",
                 &self.session_token_response_enabled,
             )
-            .field("database_url", &self.database_url)
-            .field("redis_url", &self.redis_url)
+            .field("database_url", &"<redacted>")
+            .field("redis_url", &"<redacted>")
             .field("session_ttl_seconds", &self.session_ttl_seconds)
             .field(
                 "session_idle_timeout_seconds",
@@ -139,6 +139,13 @@ impl fmt::Debug for Config {
             .field("security_limits", &self.security_limits)
             .field("audit_retention", &self.audit_retention)
             .finish()
+    }
+}
+
+fn debug_safe_url(value: &str) -> String {
+    match url::Url::parse(value) {
+        Ok(url) if url.username().is_empty() && url.password().is_none() => value.to_owned(),
+        _ => "<redacted>".to_owned(),
     }
 }
 

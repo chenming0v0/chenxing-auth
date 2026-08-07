@@ -1,6 +1,7 @@
 use crate::sqlx::PgPool;
 use crate::users::domain::UserId;
 use serde::Serialize;
+use std::fmt;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -54,7 +55,6 @@ pub struct ClientService {
     refresh_tokens: Option<RefreshTokenStore>,
 }
 
-#[derive(Debug)]
 pub struct RegisteredClientSecret {
     pub id: i64,
     pub client_id: String,
@@ -64,6 +64,23 @@ pub struct RegisteredClientSecret {
     pub redirect_uris: Vec<String>,
     pub scopes: Vec<String>,
     pub auth_method: ClientAuthMethod,
+}
+
+impl fmt::Debug for RegisteredClientSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RegisteredClientSecret")
+            .field("id", &self.id)
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field("client_name", &self.client_name)
+            .field("redirect_uris", &self.redirect_uris)
+            .field("scopes", &self.scopes)
+            .field("auth_method", &self.auth_method)
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -77,10 +94,19 @@ pub struct ClientSummary {
     pub owner_user_id: Option<UserId>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 pub struct RotatedClientSecret {
     pub client_id: String,
     pub client_secret: String,
+}
+
+impl fmt::Debug for RotatedClientSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RotatedClientSecret")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Error)]
