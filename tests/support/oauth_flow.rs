@@ -104,8 +104,41 @@ pub async fn register_test_user(router: &Router, suffix: &str) -> (i64, String, 
         .expect("registration response");
     let status = response.status();
     let body = json_body(response).await;
-    assert_eq!(status, StatusCode::CREATED, "registration response: {body}");
-    let user_id = body["user"]["id"].as_i64().expect("numeric user id");
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "registration response: {body}"
+    );
+    assert_eq!(body["code"], "email_verification_unavailable");
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("authorization", "Bearer flow-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": username,
+                        "email": email,
+                        "password": password,
+                    })
+                    .to_string(),
+                ))
+                .expect("admin user creation request"),
+        )
+        .await
+        .expect("admin user creation response");
+    let status = response.status();
+    let body = json_body(response).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "admin user creation response: {body}"
+    );
+    let user_id = body["id"].as_i64().expect("numeric user id");
     (user_id, username, email, password.to_owned())
 }
 
