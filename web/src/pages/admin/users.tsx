@@ -162,11 +162,11 @@ export function UsersTable({ access }: { access: AdminAccess }) {
         <div className="flex flex-wrap items-center gap-3">
           <div className="chenxing-field-shell w-full sm:w-72">
             <Icon name="search" className="chenxing-field-icon h-4 w-4" size={16} />
-            <input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') updateQuery(1) }} placeholder="搜索用户 ID / 用户名 / 邮箱" />
+            <input aria-label="搜索用户" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') updateQuery(1) }} placeholder="搜索用户 ID / 用户名 / 邮箱" />
           </div>
           <div className="chenxing-field-shell w-36">
             <Icon name="activity" className="chenxing-field-icon h-4 w-4" size={16} />
-            <Select value={status} onChange={setStatus} options={STATUS_FILTER_OPTIONS} />
+            <Select value={status} onChange={setStatus} options={STATUS_FILTER_OPTIONS} aria-label="按用户状态筛选" />
           </div>
           <Button variant="ghost" icon="search" onClick={() => updateQuery(1)}>查询</Button>
           <Button variant="ghost" icon="rotate-ccw" onClick={() => { setSearch(''); setStatus(''); navigate('/admin/users?page=1') }}>重置</Button>

@@ -67,8 +67,8 @@ function AuditTable() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="chenxing-h2">审计目录</h2>
         <div className="flex flex-wrap items-center gap-3">
-          <input className="chenxing-field w-40" value={action} onChange={(event) => setAction(event.target.value)} placeholder="action" />
-          <input className="chenxing-field w-44" value={resourceType} onChange={(event) => setResourceType(event.target.value)} placeholder="resource_type" />
+          <input aria-label="按动作筛选" className="chenxing-field w-40" value={action} onChange={(event) => setAction(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') updateQuery(1) }} placeholder="action" />
+          <input aria-label="按资源类型筛选" className="chenxing-field w-44" value={resourceType} onChange={(event) => setResourceType(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') updateQuery(1) }} placeholder="resource_type" />
           <Button variant="ghost" icon="search" onClick={() => updateQuery(1)}>查询</Button>
         </div>
       </div>

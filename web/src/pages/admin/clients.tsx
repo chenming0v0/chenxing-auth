@@ -82,7 +82,7 @@ function ClientsTable({ access }: { access: AdminAccess }) {
         <div className="flex flex-wrap items-center gap-3">
           <div className="chenxing-field-shell w-full sm:w-72">
             <Icon name="search" className="chenxing-field-icon h-4 w-4" size={16} />
-            <input value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') updateQuery(1) }} placeholder="搜索 Client 或名称" />
+            <input aria-label="搜索客户端" value={search} onChange={(event) => setSearch(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') updateQuery(1) }} placeholder="搜索 Client 或名称" />
           </div>
           <Button variant="ghost" icon="search" onClick={() => updateQuery(1)}>查询</Button>
         </div>
