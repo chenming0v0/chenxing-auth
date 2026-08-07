@@ -473,6 +473,23 @@ async fn owner_role_mutation_is_owner_only_and_updates_existing_sessions() {
         .expect("promote second owner response");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
+    // 禁用 Owner 属于角色管理：只有 ManageUsers 的 Admin 不得绕过 ManageRoles。
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/admin/users/{second_admin_id}/disabled"))
+                .header("cookie", &managed_cookie)
+                .header("x-csrf-token", &managed_csrf)
+                .body(Body::empty())
+                .expect("disable owner request"),
+        )
+        .await
+        .expect("disable owner response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json(response).await["code"], "admin_forbidden");
+
     let response = router
         .clone()
         .oneshot(

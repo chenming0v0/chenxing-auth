@@ -105,7 +105,15 @@ pub async fn set_user_status(
     headers: HeaderMap,
     Path((user_id, status)): Path<(UserId, String)>,
 ) -> Response {
-    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageUsers).await {
+    let required_permission = match state.users.find_profile(user_id).await {
+        Ok(Some(profile)) if profile.role == UserRole::Owner => AdminPermission::ManageRoles,
+        Ok(Some(_)) | Ok(None) => AdminPermission::ManageUsers,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load user before status update");
+            return error::internal();
+        }
+    };
+    let actor = match current_admin_mutation(&state, &headers, required_permission).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };
