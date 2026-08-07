@@ -149,7 +149,7 @@ describe('OAuthAccountPage 使用其他辰星通行证保留 request_id（#224�
 
     render(<OAuthAccountPage />)
 
-    const link = await screen.findByRole('link', { name: /^使用其他辰星通行证/ })
+    const link = await screen.findByRole('link', { name: /使用其他辰星通行证/ })
     expect(link.getAttribute('href')).toBe(`/login?request_id=${encodedRequestId}`)
     fireEvent.click(link)
 
