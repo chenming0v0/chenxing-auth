@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
 
+/// Maximum number of Unicode scalar values accepted for the OAuth `state` value.
+pub const MAX_STATE_LENGTH: usize = 512;
+/// Maximum number of Unicode scalar values accepted for the OIDC `nonce` value.
+pub const MAX_NONCE_LENGTH: usize = 512;
+
 #[derive(Clone, Deserialize, Serialize)]
 pub struct AuthorizationRequest {
     pub client_id: String,
@@ -92,6 +97,10 @@ pub enum AuthorizationRequestError {
     ScopeNotAllowed,
     #[error("state is required")]
     MissingState,
+    #[error("state is too long")]
+    StateTooLong,
+    #[error("nonce is too long")]
+    NonceTooLong,
     #[error("PKCE S256 is required")]
     PkceRequired,
     #[error("PKCE S256 challenge is invalid")]
@@ -139,6 +148,16 @@ pub fn validate_authorization_request_with_allowlist(
         .state
         .filter(|state| !state.trim().is_empty())
         .ok_or(AuthorizationRequestError::MissingState)?;
+    if state.chars().count() > MAX_STATE_LENGTH {
+        return Err(AuthorizationRequestError::StateTooLong);
+    }
+    let nonce = request.nonce.filter(|nonce| !nonce.trim().is_empty());
+    if nonce
+        .as_ref()
+        .is_some_and(|nonce| nonce.chars().count() > MAX_NONCE_LENGTH)
+    {
+        return Err(AuthorizationRequestError::NonceTooLong);
+    }
     if request.code_challenge_method.as_deref() != Some("S256") {
         return Err(AuthorizationRequestError::PkceRequired);
     }
@@ -154,7 +173,7 @@ pub fn validate_authorization_request_with_allowlist(
         redirect_uri: request.redirect_uri,
         scopes,
         state,
-        nonce: request.nonce.filter(|nonce| !nonce.trim().is_empty()),
+        nonce,
         code_challenge: code_challenge.to_owned(),
         owner_user_id: Some(client.owner_user_id).flatten(),
         // 会话绑定由持有会话的调用方回填，见字段文档。

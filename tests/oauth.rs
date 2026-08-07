@@ -1,5 +1,6 @@
 use chenxing_auth::oauth::authorization::{
-    AuthorizationRequest, AuthorizationRequestError, RegisteredClient,
+    AuthorizationRequest, AuthorizationRequestError, MAX_NONCE_LENGTH, MAX_STATE_LENGTH,
+    RegisteredClient,
     validate_authorization_request, validate_authorization_request_with_allowlist,
 };
 
@@ -124,6 +125,46 @@ fn authorization_request_rejects_blank_nonce() {
     .expect("nonce is optional when omitted, but blank nonce is normalized away");
 
     assert_eq!(error.nonce, None);
+}
+
+#[test]
+fn authorization_request_rejects_state_over_limit() {
+    let error = validate_authorization_request(
+        &client(),
+        AuthorizationRequest {
+            client_id: "cx_project".to_owned(),
+            redirect_uri: "https://project.example/callback".to_owned(),
+            response_type: "code".to_owned(),
+            scope: "openid".to_owned(),
+            state: Some("x".repeat(MAX_STATE_LENGTH + 1)),
+            nonce: None,
+            code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
+            code_challenge_method: Some("S256".to_owned()),
+        },
+    )
+    .expect_err("overlong state must be rejected before pending creation");
+
+    assert_eq!(error, AuthorizationRequestError::StateTooLong);
+}
+
+#[test]
+fn authorization_request_rejects_nonce_over_limit() {
+    let error = validate_authorization_request(
+        &client(),
+        AuthorizationRequest {
+            client_id: "cx_project".to_owned(),
+            redirect_uri: "https://project.example/callback".to_owned(),
+            response_type: "code".to_owned(),
+            scope: "openid".to_owned(),
+            state: Some("state-value".to_owned()),
+            nonce: Some("x".repeat(MAX_NONCE_LENGTH + 1)),
+            code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
+            code_challenge_method: Some("S256".to_owned()),
+        },
+    )
+    .expect_err("overlong nonce must be rejected before pending creation");
+
+    assert_eq!(error, AuthorizationRequestError::NonceTooLong);
 }
 
 #[test]

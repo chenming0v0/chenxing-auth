@@ -555,8 +555,8 @@ paths:
         - { name: redirect_uri, in: query, required: true, schema: { type: string, format: uri } }
         - { name: response_type, in: query, required: true, schema: { type: string, enum: [code] } }
         - { name: scope, in: query, required: true, description: "空格分隔的 scope；每个值必须同时属于服务端 OAUTH_CLIENT_ALLOWED_SCOPES allowlist（默认 openid、profile、email）和该 Client 已注册的 scope 集合", schema: { type: string, example: 'openid email profile' } }
-        - { name: state, in: query, required: true, schema: { type: string } }
-        - { name: nonce, in: query, schema: { type: string } }
+        - { name: state, in: query, required: true, description: 最多 512 个字符, schema: { type: string, maxLength: 512 } }
+        - { name: nonce, in: query, description: 最多 512 个字符, schema: { type: string, maxLength: 512 } }
         - { name: code_challenge, in: query, required: true, schema: { type: string } }
         - { name: code_challenge_method, in: query, required: true, schema: { type: string, enum: [S256] } }
       responses:
