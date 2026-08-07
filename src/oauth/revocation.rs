@@ -3,6 +3,7 @@ use redis::AsyncCommands;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use super::refresh::REFRESH_TOKEN_ABSOLUTE_TTL_DAYS;
 use crate::consents::repository::{ConsentRepository, PgConsentRepository};
 use crate::redis_client::RedisClient;
 use crate::sqlx::PgPool;
@@ -14,14 +15,14 @@ use crate::sqlx::PgPool;
 /// 此标记仅作为短期加速缓存。
 ///
 /// **取值依据**：
-/// - 必须 ≥ refresh token 的绝对最大可能寿命，确保所有存量凭据在标记过期前已自然失效。
-/// - 当前 refresh token 使用 30 天滑动窗口（`refresh_store.rs` 的 `REFRESH_TOKEN_TTL_SECONDS`）。
-/// - Issue #109 将引入绝对上限以终止无限轮转，但在该功能落地前，此处采用保守值 90 天（3 倍安全系数）。
-/// - 90 天后，任何撤销前签发的 refresh token 在实际业务场景下均已过期，标记失效不影响安全性。
-///
-/// **后续改进**：
-/// - Issue #109 落地后，应从配置读取 refresh token 绝对上限，并将此 TTL 设为该上限 + 小幅缓冲（如 +7 天）。
-const CONSENT_REVOCATION_TTL_SECONDS: u64 = 90 * 24 * 60 * 60;
+/// - 必须覆盖 refresh token 的绝对最大可能寿命；当前上限由
+///   `REFRESH_TOKEN_ABSOLUTE_TTL_DAYS` 统一定义为 180 天（Issue #109）。
+/// - TTL 从撤销缓存写入时开始计时，因此是有界的；它只负责控制缓存占用，
+///   不是撤销事实的生命周期。
+/// - 生产模式在缓存未命中时回源查询 PostgreSQL 的 `revoked_at`，所以缓存到期后
+///   撤销仍然有效，不会因为 Redis 键回收而重新放行凭据。
+const CONSENT_REVOCATION_TTL_SECONDS: u64 =
+    (REFRESH_TOKEN_ABSOLUTE_TTL_DAYS * 24 * 60 * 60) as u64;
 
 #[derive(Clone)]
 pub struct TokenRevocationStore {
@@ -96,8 +97,9 @@ impl TokenRevocationStore {
     /// `user_consents.revoked_at`（Issue #64）。因此本函数失败时调用方
     /// 只需告警，不必回滚——缓存缺失会在下次判定时回源补上。
     ///
-    /// 绑定 TTL（90 天）而非无限期 SET：超出窗口后所有存量凭据均已自然过期，
+    /// 绑定 TTL（与 refresh token 绝对生命周期一致）而非无限期 SET，
     /// 缓存键自动回收，避免键数量随「用户 × Client」撤销组合单调递增。
+    /// TTL 到期后由数据库中的 `revoked_at` 继续提供权威判定。
     pub async fn revoke_consent(
         &self,
         user_id: &str,
@@ -233,5 +235,19 @@ impl TokenRevocationStore {
             "chenxing:oauth:consent-revoked:{}",
             URL_SAFE_NO_PAD.encode(digest)
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CONSENT_REVOCATION_TTL_SECONDS;
+    use crate::oauth::refresh::REFRESH_TOKEN_ABSOLUTE_TTL_DAYS;
+
+    #[test]
+    fn consent_revocation_ttl_covers_refresh_token_absolute_lifetime() {
+        assert_eq!(
+            CONSENT_REVOCATION_TTL_SECONDS,
+            (REFRESH_TOKEN_ABSOLUTE_TTL_DAYS * 24 * 60 * 60) as u64
+        );
     }
 }

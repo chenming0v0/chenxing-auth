@@ -11,7 +11,8 @@ use crate::clock::{Clock, SystemClock};
 /// 防止多年前被窃取的 token 因持续使用而永不失效（Issue #109）。
 ///
 /// 当前硬编码 180 天；后续应收敛进 `AppConfig` 以支持运维调整。
-/// `refresh_store` 从此常量派生 Redis TTL，避免两处各写一个 180。
+/// `refresh_store` 和 consent revocation cache 都从此常量派生 Redis TTL，
+/// 避免各处分别写死 180 天。
 pub const REFRESH_TOKEN_ABSOLUTE_TTL_DAYS: i64 = 180;
 
 /// Refresh Token 的滑动过期窗口（每次轮换后重新计时）。
