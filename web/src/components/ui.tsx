@@ -219,7 +219,7 @@ export function Field({ label, icon, hint, error, errorText, trailing, className
   )
 }
 
-export function PasswordField({ label, icon, hint, error, errorText, className = '', ...props }: Omit<FieldProps, 'type' | 'trailing'>) {
+export function PasswordField({ label, icon, hint, error, errorText, autoComplete = 'new-password', className = '', ...props }: Omit<FieldProps, 'type' | 'trailing'>) {
   const [visible, setVisible] = useState(false)
   return (
     <Field
@@ -230,6 +230,7 @@ export function PasswordField({ label, icon, hint, error, errorText, className =
       errorText={errorText}
       className={className}
       {...props}
+      autoComplete={autoComplete}
       type={visible ? 'text' : 'password'}
       trailing={
         <button
