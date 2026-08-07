@@ -82,6 +82,8 @@
 
 同时设置 HttpOnly Session Cookie 和 CSRF Cookie。浏览器请求应使用 `credentials: "include"`，再通过 `/api/v1/auth/status` 和 `/api/v1/auth/me` 确认登录状态。默认不会将可直接使用的 Session token 放入 JSON；非浏览器兼容调用只有在服务端 `SESSION_TOKEN_RESPONSE_ENABLED=true` 且显式发送 `X-Chenxing-Session-Mode: token` 时才会收到 `session_id`。
 
+Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSION_TTL_SECONDS` 控制绝对期限，`SESSION_IDLE_TIMEOUT_SECONDS` 控制连续无活动期限。成功认证请求会在空闲窗口过半时更新服务端 `last_seen_at`，但不会改变绝对 `expires_at`；Redis TTL 取两者较早者。每个用户的活跃 Session 数受 `SESSION_MAX_CONCURRENT_SESSIONS` 限制，达到上限时最早的活跃 Session 会被撤销。
+
 ### 首次 TOTP 绑定
 
 1. `POST /api/v1/auth/totp/setup`，请求 `{"login_ticket":"opaque-ticket"}`，响应一次性返回 `secret_base32` 和 `otpauth_url`。前端应使用项目内二维码组件将 `otpauth_url` 作为二维码内容本地生成二维码；`secret_base32` 仅用于无法扫描时手动输入或复制。服务端不调用第三方二维码服务，也不返回二维码图片。

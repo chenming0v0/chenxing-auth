@@ -265,6 +265,15 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             )),
             false,
         ),
+        Migration::new(
+            14,
+            Cow::Borrowed("session idle policy"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!(
+                "../migrations/0014_session_idle_policy.sql"
+            )),
+            false,
+        ),
     ];
 
     Migrator {

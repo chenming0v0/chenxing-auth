@@ -139,7 +139,12 @@ impl AppState {
             redis.clone(),
             database.clone(),
             config.auth_encryption_keys.clone(),
-        );
+        )
+        .with_session_policy(
+            Duration::from_secs(config.session_idle_timeout_seconds),
+            config.session_max_concurrent_sessions,
+        )
+        .with_absolute_ttl(Duration::from_secs(config.session_ttl_seconds));
         let users = UserService::with_source_ip_policy(
             database.clone(),
             auth_limiter.clone(),

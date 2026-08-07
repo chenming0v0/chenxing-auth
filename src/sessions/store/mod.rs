@@ -17,7 +17,7 @@ use time::OffsetDateTime;
 
 use super::{
     crypto,
-    domain::{Session, SessionLookup, SessionPayload, session_token_hash_bytes},
+    domain::{Session, SessionLookup, SessionPayload, SessionPolicy, session_token_hash_bytes},
 };
 use crate::{config::AuthEncryptionKeyRing, redis_client::RedisClient, users::domain::UserId};
 
@@ -36,6 +36,7 @@ pub struct SessionStore {
     pub(super) key_prefix: String,
     pub(super) metadata: Option<crate::sqlx::PgPool>,
     pub(super) encryption_keys: Option<AuthEncryptionKeyRing>,
+    pub(super) policy: SessionPolicy,
 }
 
 #[derive(Debug, Error)]
@@ -80,6 +81,7 @@ impl SessionStore {
             key_prefix: "chenxing:session:".to_owned(),
             metadata: None,
             encryption_keys: None,
+            policy: SessionPolicy::default(),
         }
     }
 
@@ -91,6 +93,7 @@ impl SessionStore {
             encryption_keys: Some(AuthEncryptionKeyRing::single(
                 crate::config::AuthEncryptionKey::new(encryption_key),
             )),
+            policy: SessionPolicy::default(),
         }
     }
 
@@ -116,7 +119,35 @@ impl SessionStore {
             key_prefix: "chenxing:session:".to_owned(),
             metadata: Some(metadata),
             encryption_keys: Some(encryption_keys),
+            policy: SessionPolicy::default(),
         }
+    }
+
+    pub fn with_session_policy(
+        mut self,
+        idle_timeout: Duration,
+        max_concurrent_sessions: u64,
+    ) -> Self {
+        if !idle_timeout.is_zero()
+            && time::Duration::try_from(idle_timeout).is_ok()
+            && max_concurrent_sessions > 0
+        {
+            self.policy = SessionPolicy {
+                absolute_ttl: self.policy.absolute_ttl,
+                idle_timeout,
+                max_concurrent_sessions,
+            };
+        }
+        self
+    }
+
+    pub fn with_absolute_ttl(mut self, absolute_ttl: Duration) -> Self {
+        if !absolute_ttl.is_zero()
+            && time::Duration::try_from(absolute_ttl).is_ok()
+        {
+            self.policy.absolute_ttl = absolute_ttl;
+        }
+        self
     }
 
     pub async fn save(
@@ -124,6 +155,7 @@ impl SessionStore {
         session: &mut Session,
         ttl: Duration,
     ) -> Result<(), SessionStoreError> {
+        session.set_idle_timeout(self.policy.idle_timeout);
         if self.metadata.is_some() {
             postgres::save_with_metadata(self, session, ttl).await
         } else {
@@ -225,6 +257,48 @@ impl SessionStore {
 
     pub(super) fn redis_only_revocation_key(&self, user_id: &str) -> String {
         format!("{}revoked-before:{user_id}", self.key_prefix)
+    }
+
+    pub(super) fn redis_only_token_revocation_key(&self, hash: &[u8]) -> String {
+        format!(
+            "{}revoked-token:{}",
+            self.key_prefix,
+            URL_SAFE_NO_PAD.encode(hash)
+        )
+    }
+
+    pub(super) fn idle_timeout_interval(&self) -> time::Duration {
+        time::Duration::seconds(
+            i64::try_from(self.policy.idle_timeout.as_secs())
+                .unwrap_or(i64::MAX)
+                .max(1),
+        )
+    }
+
+    pub(super) fn renewal_interval(&self) -> time::Duration {
+        time::Duration::seconds(
+            i64::try_from(self.policy.idle_timeout.as_secs() / 2)
+                .unwrap_or(i64::MAX)
+                .max(1),
+        )
+    }
+
+    pub(super) fn revocation_ttl_seconds(&self) -> u64 {
+        self.policy.absolute_ttl.as_secs().max(1)
+    }
+
+    pub(super) fn redis_ttl_seconds(
+        &self,
+        session: &Session,
+        absolute_ttl: Duration,
+        now: OffsetDateTime,
+    ) -> u64 {
+        let absolute = (session.expires_at - now).whole_seconds().max(1) as u64;
+        let idle = session
+            .idle_deadline()
+            .map(|deadline| (deadline - now).whole_seconds().max(1) as u64)
+            .unwrap_or(absolute);
+        absolute.min(idle).min(absolute_ttl.as_secs().max(1))
     }
 }
 

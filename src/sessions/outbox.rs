@@ -19,7 +19,14 @@ type ClaimedOutboxRow = (
     i32,
     i64,
 );
-type SessionProjectionRow = (Option<Vec<u8>>, bool, OffsetDateTime, i64, UserId);
+type SessionProjectionRow = (
+    Option<Vec<u8>>,
+    bool,
+    OffsetDateTime,
+    OffsetDateTime,
+    i64,
+    UserId,
+);
 
 #[derive(Debug)]
 struct OutboxEntry {
@@ -146,18 +153,26 @@ impl SessionStore {
                     "SELECT sessions.session_payload,
                                 sessions.revoked_at IS NULL
                                     AND sessions.expires_at > NOW()
+                                    AND sessions.last_seen_at + $2 > NOW()
                                     AND sessions.session_epoch >= users.session_epoch
                                     AND users.status = 'active',
-                                sessions.expires_at, sessions.session_epoch, sessions.user_id
+                                LEAST(
+                                    sessions.expires_at,
+                                    sessions.last_seen_at + $2
+                                ),
+                                sessions.last_seen_at,
+                                sessions.session_epoch, sessions.user_id
                          FROM user_sessions AS sessions
                          JOIN users ON users.id = sessions.user_id
                          WHERE sessions.id = $1
                          FOR UPDATE OF sessions",
                 )
                 .bind(session_id)
+                .bind(self.idle_timeout_interval())
                 .fetch_optional(&mut *transaction)
                 .await?;
-                let Some((payload, active, expires_at, generation, user_id)) = row else {
+                let Some((payload, active, expires_at, last_seen_at, generation, user_id)) = row
+                else {
                     let _: usize = connection.del(self.key_hash(token_hash)).await?;
                     transaction.commit().await?;
                     return Ok(());
@@ -173,17 +188,15 @@ impl SessionStore {
                     return Ok(());
                 };
                 // 始终重新加密投影：旧密钥写入的载荷在迁移期仍可读，且明文不落入 Redis。
-                // 这里额外经过 SessionPayload 归一化——升级前写入的载荷含明文 token 字段，
-                // 解析后重新序列化会把它剥离，否则历史会话会继续在 Redis 留下可用令牌。
-                let Some(payload) = self
-                    .decode_payload(&payload)?
-                    .and_then(|stored| serde_json::to_vec(&stored).ok())
-                    .and_then(|payload| self.encrypt_payload(&payload).ok())
-                else {
+                // 解析后重新序列化会把升级前载荷中的明文 token 剥离，同时把权威
+                // last_seen_at 写回投影，避免续期事件留下旧的 idle 时间。
+                let Some(mut stored_payload) = self.decode_payload(&payload)? else {
                     let _: usize = connection.del(self.key_hash(token_hash)).await?;
                     transaction.commit().await?;
                     return Ok(());
                 };
+                stored_payload.last_seen_at = Some(last_seen_at);
+                let payload = self.encrypt_payload(&serde_json::to_vec(&stored_payload)?)?;
                 let ttl = (expires_at - OffsetDateTime::now_utc())
                     .whole_seconds()
                     .max(1) as u64;

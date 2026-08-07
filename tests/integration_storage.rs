@@ -1798,3 +1798,140 @@ async fn session_projection_is_encrypted_and_old_key_remains_readable() {
         .await
         .expect("cleanup key ring user");
 }
+
+#[tokio::test]
+#[serial(session_outbox)]
+async fn session_find_renews_idle_activity_without_extending_absolute_expiry() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("idle-renew-{}", Uuid::new_v4().simple()),
+            email: format!("idle-renew-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert idle renewal user");
+    let store = SessionStore::with_metadata_and_key(redis_client(), pool.clone(), [0x52; 32])
+        .with_session_policy(Duration::from_secs(10), 5);
+    let mut session = Session::new_with_idle_timeout(
+        user.id.to_string(),
+        Duration::from_secs(300),
+        Duration::from_secs(10),
+    )
+    .expect("session");
+    let absolute_expiry = session.expires_at;
+    store
+        .save(&mut session, Duration::from_secs(300))
+        .await
+        .expect("save idle renewal session");
+    chenxing_auth::sqlx::query(
+        "UPDATE user_sessions
+         SET last_seen_at = NOW() - INTERVAL '6 seconds'
+         WHERE id = $1",
+    )
+    .bind(session.id)
+    .execute(&pool)
+    .await
+    .expect("age session activity");
+
+    let found = store
+        .find(&session.token)
+        .await
+        .expect("find renewed session")
+        .expect("renewed session remains active");
+    assert_eq!(found.expires_at, absolute_expiry);
+    assert!(found.last_seen_at > session.created_at);
+    let stored_last_seen: OffsetDateTime = chenxing_auth::sqlx::query_scalar(
+        "SELECT last_seen_at FROM user_sessions WHERE id = $1",
+    )
+    .bind(session.id)
+    .fetch_one(&pool)
+    .await
+    .expect("read renewed activity");
+    assert!(stored_last_seen > session.created_at);
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup idle renewal user");
+}
+
+#[tokio::test]
+#[serial(session_outbox)]
+async fn session_save_revokes_the_oldest_active_session_at_the_user_cap() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("session-cap-{}", Uuid::new_v4().simple()),
+            email: format!("session-cap-{}@example.com", Uuid::new_v4().simple()),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert session cap user");
+    let store = SessionStore::with_metadata_and_key(redis_client(), pool.clone(), [0x53; 32])
+        .with_session_policy(Duration::from_secs(3_600), 2);
+    let mut first = Session::new_with_idle_timeout(
+        user.id.to_string(),
+        Duration::from_secs(3_600),
+        Duration::from_secs(3_600),
+    )
+    .expect("first session");
+    store
+        .save(&mut first, Duration::from_secs(3_600))
+        .await
+        .expect("save first session");
+    let mut second = Session::new_with_idle_timeout(
+        user.id.to_string(),
+        Duration::from_secs(3_600),
+        Duration::from_secs(3_600),
+    )
+    .expect("second session");
+    store
+        .save(&mut second, Duration::from_secs(3_600))
+        .await
+        .expect("save second session");
+    let mut third = Session::new_with_idle_timeout(
+        user.id.to_string(),
+        Duration::from_secs(3_600),
+        Duration::from_secs(3_600),
+    )
+    .expect("third session");
+    store
+        .save(&mut third, Duration::from_secs(3_600))
+        .await
+        .expect("save third session");
+
+    let active_count: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_sessions
+         WHERE user_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(user.id)
+    .fetch_one(&pool)
+    .await
+    .expect("count active session rows");
+    assert_eq!(active_count, 2);
+    assert!(
+        store
+            .find(&first.token)
+            .await
+            .expect("find evicted session")
+            .is_none()
+    );
+    assert!(store.find(&second.token).await.expect("find second").is_some());
+    assert!(store.find(&third.token).await.expect("find third").is_some());
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup session cap user");
+}

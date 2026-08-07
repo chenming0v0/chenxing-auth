@@ -20,6 +20,14 @@ fn token_ttls_are_independent_of_the_session_ttl() {
     let config = config_with_session_ttl(week);
 
     assert_eq!(config.session_ttl_seconds, week);
+    assert_eq!(
+        config.session_idle_timeout_seconds,
+        DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS
+    );
+    assert_eq!(
+        config.session_max_concurrent_sessions,
+        DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS
+    );
     assert_eq!(config.access_token_ttl_seconds, 3600);
     assert_eq!(config.id_token_ttl_seconds, 3600);
     assert_ne!(config.access_token_ttl_seconds, config.session_ttl_seconds);
