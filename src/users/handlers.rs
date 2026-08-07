@@ -151,9 +151,16 @@ pub async fn login_user(
     let user_id = match state.users.authenticate(input, source_ip.as_deref()).await {
         Ok(user_id) => user_id,
         Err(UserServiceError::InvalidCredentials) => {
-            if record_security_event(&state, "login_failure", None, "invalid_credentials")
-                .await
-                .is_err()
+            if record_security_event(
+                &state,
+                "login_failure",
+                None,
+                "invalid_credentials",
+                Some(&identifier),
+                source_ip.as_deref(),
+            )
+            .await
+            .is_err()
             {
                 return error::internal();
             }
@@ -169,9 +176,16 @@ pub async fn login_user(
             );
         }
         Err(UserServiceError::RateLimited) => {
-            if record_security_event(&state, "rate_limit_triggered", None, "login")
-                .await
-                .is_err()
+            if record_security_event(
+                &state,
+                "rate_limit_triggered",
+                None,
+                "login",
+                Some(&identifier),
+                source_ip.as_deref(),
+            )
+            .await
+            .is_err()
             {
                 return error::internal();
             }
@@ -217,9 +231,16 @@ pub async fn login_user(
         {
             Ok(valid) => valid,
             Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
-                if record_security_event(&state, "mfa_failure", Some(user_id), "totp_rate_limited")
-                    .await
-                    .is_err()
+                if record_security_event(
+                    &state,
+                    "mfa_failure",
+                    Some(user_id),
+                    "totp_rate_limited",
+                    None,
+                    source_ip.as_deref(),
+                )
+                .await
+                .is_err()
                 {
                     return error::internal();
                 }
@@ -231,9 +252,16 @@ pub async fn login_user(
             }
         };
         if !valid {
-            if record_security_event(&state, "mfa_failure", Some(user_id), "totp_invalid")
-                .await
-                .is_err()
+            if record_security_event(
+                &state,
+                "mfa_failure",
+                Some(user_id),
+                "totp_invalid",
+                None,
+                source_ip.as_deref(),
+            )
+            .await
+            .is_err()
             {
                 return error::internal();
             }
@@ -257,6 +285,8 @@ pub async fn login_user(
                 "passkey_recovery_required",
                 Some(user_id),
                 "passkey_disabled",
+                None,
+                source_ip.as_deref(),
             )
             .await
             .is_err()
@@ -350,20 +380,24 @@ async fn record_security_event(
     action: &str,
     actor_id: Option<crate::users::domain::UserId>,
     reason: &str,
+    attempted_identifier: Option<&str>,
+    source_ip: Option<&str>,
 ) -> Result<(), crate::audit::AuditError> {
     state
         .audit
-        .record(AuditEvent::new(
+        .record(AuditEvent::authentication_failure(
+            action.to_owned(),
             if actor_id.is_some() {
                 "user".to_owned()
             } else {
                 "anonymous".to_owned()
             },
             actor_id.map(|id| id.to_string()),
-            action.to_owned(),
             "authentication".to_owned(),
             None,
-            serde_json::json!({"reason": reason}),
+            reason,
+            attempted_identifier,
+            source_ip,
         ))
         .await
 }

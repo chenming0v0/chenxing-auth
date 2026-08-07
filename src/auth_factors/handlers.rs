@@ -117,7 +117,9 @@ pub async fn confirm_totp_setup(
         .await
     {
         // 注册确认端点不承担登录语义：没有待确认的注册就是无效 ticket。
-        Ok(confirmation) => totp_confirmation_response(&state, confirmation, &headers).await,
+        Ok(confirmation) => {
+            totp_confirmation_response(&state, confirmation, &headers, source_ip.as_deref()).await
+        }
         Err(factor_error) => factor_error_response(factor_error, "confirm TOTP enrollment"),
     }
 }
@@ -158,7 +160,7 @@ pub async fn login_totp(
             return factor_error_response(factor_error, "confirm TOTP enrollment login");
         }
     };
-    totp_confirmation_response(&state, confirmation, &headers).await
+    totp_confirmation_response(&state, confirmation, &headers, source_ip.as_deref()).await
 }
 
 pub async fn start_passkey_registration(
@@ -206,7 +208,13 @@ pub async fn start_passkey_registration(
             error::bad_request("passkey_disabled", "passkey authentication is disabled")
         }
         Err(AuthFactorServiceError::RateLimited) => {
-            mfa_failure_response(&state, Some(user_id), "passkey_rate_limited").await
+            mfa_failure_response(
+                &state,
+                Some(user_id),
+                "passkey_rate_limited",
+                source_ip.as_deref(),
+            )
+            .await
         }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to start passkey registration");
@@ -231,7 +239,10 @@ pub async fn finish_passkey_registration(
         .finish_passkey_registration(&input.login_ticket, source_ip.as_deref(), &input.credential)
         .await
     {
-        Ok(confirmation) => passkey_confirmation_response(&state, confirmation, &headers).await,
+        Ok(confirmation) => {
+            passkey_confirmation_response(&state, confirmation, &headers, source_ip.as_deref())
+                .await
+        }
         Err(AuthFactorServiceError::PasskeyDisabled) => {
             error::bad_request("passkey_disabled", "passkey authentication is disabled")
         }
@@ -293,7 +304,10 @@ pub async fn finish_passkey_authentication(
         .finish_passkey_authentication(&input.login_ticket, source_ip.as_deref(), &input.credential)
         .await
     {
-        Ok(confirmation) => passkey_confirmation_response(&state, confirmation, &headers).await,
+        Ok(confirmation) => {
+            passkey_confirmation_response(&state, confirmation, &headers, source_ip.as_deref())
+                .await
+        }
         Err(AuthFactorServiceError::PasskeyDisabled) => {
             error::bad_request("passkey_disabled", "passkey authentication is disabled")
         }
@@ -312,14 +326,17 @@ async fn totp_confirmation_response(
     state: &AppState,
     confirmation: TotpConfirmation,
     headers: &HeaderMap,
+    source_ip: Option<&str>,
 ) -> Response {
     match confirmation {
         TotpConfirmation::Completed(user_id) => {
             issue_user_session(state, user_id, "totp", headers).await
         }
-        TotpConfirmation::InvalidCode => mfa_failure_response(state, None, "totp_invalid").await,
+        TotpConfirmation::InvalidCode => {
+            mfa_failure_response(state, None, "totp_invalid", source_ip).await
+        }
         TotpConfirmation::RateLimited => {
-            mfa_failure_response(state, None, "totp_rate_limited").await
+            mfa_failure_response(state, None, "totp_rate_limited", source_ip).await
         }
         // `NoPendingEnrollment` 只在登录端点的回落判断逻辑里出现，不会传到这里。
         // 注册确认端点把它当 `InvalidTicket` 处理。
@@ -334,16 +351,17 @@ async fn passkey_confirmation_response(
     state: &AppState,
     confirmation: PasskeyConfirmation,
     headers: &HeaderMap,
+    source_ip: Option<&str>,
 ) -> Response {
     match confirmation {
         PasskeyConfirmation::Completed(user_id) => {
             issue_user_session(state, user_id, "passkey", headers).await
         }
         PasskeyConfirmation::InvalidCredential(user_id) => {
-            mfa_failure_response(state, Some(user_id), "passkey_invalid").await
+            mfa_failure_response(state, Some(user_id), "passkey_invalid", source_ip).await
         }
         PasskeyConfirmation::RateLimited(user_id) => {
-            mfa_failure_response(state, Some(user_id), "passkey_rate_limited").await
+            mfa_failure_response(state, Some(user_id), "passkey_rate_limited", source_ip).await
         }
         PasskeyConfirmation::InvalidTicket => {
             error::bad_request("invalid_login_ticket", "login ticket is invalid")
@@ -357,8 +375,12 @@ async fn mfa_failure_response(
     state: &AppState,
     actor_id: Option<UserId>,
     reason: &str,
+    source_ip: Option<&str>,
 ) -> Response {
-    if record_mfa_event(state, actor_id, reason).await.is_err() {
+    if record_mfa_event(state, actor_id, reason, source_ip)
+        .await
+        .is_err()
+    {
         return error::internal();
     }
     error::unauthorized("invalid_factor", "authentication factor is invalid")
@@ -379,20 +401,23 @@ async fn record_mfa_event(
     state: &AppState,
     actor_id: Option<UserId>,
     reason: &str,
+    source_ip: Option<&str>,
 ) -> Result<(), crate::audit::AuditError> {
     state
         .audit
-        .record(AuditEvent::new(
+        .record(AuditEvent::authentication_failure(
+            "mfa_failure".to_owned(),
             if actor_id.is_some() {
                 "user".to_owned()
             } else {
                 "anonymous".to_owned()
             },
             actor_id.map(|id| id.to_string()),
-            "mfa_failure".to_owned(),
             "authentication_factor".to_owned(),
             None,
-            serde_json::json!({"reason": reason}),
+            reason,
+            None,
+            source_ip,
         ))
         .await
 }

@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use chenxing_auth::audit::{AuditError, AuditEvent, AuditService};
+use chenxing_auth::audit::{
+    AuditError, AuditEvent, AuditService, stable_account_reference,
+};
 
 #[test]
 fn audit_event_redacts_sensitive_values_from_metadata() {
@@ -195,6 +197,29 @@ fn security_failure_event_has_a_stable_failure_contract() {
     assert_eq!(event.action, "login_failure");
     assert_eq!(event.metadata["result"], "failure");
     assert_eq!(event.metadata["reason"], "provider_unavailable");
+}
+
+#[test]
+fn authentication_failure_keeps_stable_account_reference_and_canonical_ip() {
+    let event = AuditEvent::authentication_failure(
+        "login_failure".to_owned(),
+        "anonymous".to_owned(),
+        None,
+        "authentication".to_owned(),
+        None,
+        "invalid_credentials",
+        Some("  Alice@Example.COM "),
+        Some("2001:0db8:0:0:0:0:0:1"),
+    );
+
+    assert_eq!(
+        event.metadata["account_ref"],
+        stable_account_reference("alice@example.com")
+    );
+    assert_eq!(event.metadata["source_ip"], "2001:db8::1");
+    let serialized = serde_json::to_string(&event.metadata).expect("metadata serializes");
+    assert!(!serialized.contains("Alice@Example.COM"));
+    assert!(!serialized.contains("password"));
 }
 
 #[test]
