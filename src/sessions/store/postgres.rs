@@ -62,7 +62,9 @@ pub(super) async fn save_with_metadata(
     .fetch_one(&mut *transaction)
     .await?;
     let max_sessions = i64::try_from(store.policy.max_concurrent_sessions).unwrap_or(i64::MAX);
-    let revoke_count = active_count.saturating_sub(max_sessions.saturating_sub(1));
+    let revoke_count = active_count
+        .saturating_sub(max_sessions.saturating_sub(1))
+        .max(0);
     let active_sessions: Vec<(i64, Vec<u8>)> = if revoke_count == 0 {
         Vec::new()
     } else {
