@@ -14,6 +14,8 @@ mod config_limits;
 mod config_parsing;
 #[path = "config_proxy.rs"]
 mod config_proxy;
+#[path = "config_security.rs"]
+mod config_security;
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 pub use crate::sessions::domain::{
@@ -29,13 +31,17 @@ use config_parsing::{
     optional_u64, parse_auth_encryption_key_ring, parse_bool, parse_u16, parse_u64, required_env,
 };
 use config_proxy::trusted_proxies_from_env;
+use config_security::validate_token_and_key_lifetimes;
 
 const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 
 pub use config_audit::AuditRetentionConfig;
-pub use config_limits::SecurityLimits;
+pub use config_limits::{MAX_UNAUTHENTICATED_SOURCE_QPS, SecurityLimits};
 pub use config_parsing::{AuthEncryptionKey, AuthEncryptionKeyRing};
 pub use config_proxy::TrustedProxies;
+pub use config_security::{
+    DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_TOKEN_TTL_SECONDS,
+};
 
 // `config_limits` 的测试通过这个路径复用 key ring 解析器；非测试构建没有其他调用方。
 #[cfg(test)]
@@ -204,13 +210,10 @@ impl Config {
         let client_registration_limits = client_registration_limits_from_env()?;
         let admin_token = admin_token_from_env()?;
         let key_directory = env::var("KEY_DIRECTORY").unwrap_or_else(|_| "data/keys".to_owned());
-        let key_rotation_grace_seconds = parse_u64(
-            "KEY_ROTATION_GRACE_SECONDS",
-            env::var("KEY_ROTATION_GRACE_SECONDS")
-                .ok()
-                .as_deref()
-                .unwrap_or("604800"),
-        )?;
+        let key_rotation_grace_raw = env::var("KEY_ROTATION_GRACE_SECONDS")
+            .unwrap_or_else(|_| DEFAULT_KEY_ROTATION_GRACE_SECONDS.to_string());
+        let key_rotation_grace_seconds =
+            parse_u64("KEY_ROTATION_GRACE_SECONDS", &key_rotation_grace_raw)?;
         let cookie_secure = parse_bool(
             "COOKIE_SECURE",
             env::var("COOKIE_SECURE").ok().as_deref().unwrap_or("true"),
@@ -251,8 +254,10 @@ impl Config {
                 .unwrap_or("5"),
         )?;
         // #112：access/id token TTL 与浏览器会话 TTL 解耦，默认 3600 秒（1 小时）。
-        let access_token_ttl_seconds = optional_u64("ACCESS_TOKEN_TTL_SECONDS", 3600)?;
-        let id_token_ttl_seconds = optional_u64("ID_TOKEN_TTL_SECONDS", 3600)?;
+        let access_token_ttl_seconds =
+            optional_u64("ACCESS_TOKEN_TTL_SECONDS", DEFAULT_TOKEN_TTL_SECONDS)?;
+        let id_token_ttl_seconds =
+            optional_u64("ID_TOKEN_TTL_SECONDS", DEFAULT_TOKEN_TTL_SECONDS)?;
         let log_filter = env::var("RUST_LOG")
             .unwrap_or_else(|_| "chenxing_auth=debug,tower_http=debug".to_owned());
         let auth_limiter_failure_policy = parse_auth_limiter_failure_policy(
@@ -338,7 +343,7 @@ impl Config {
             issuer_url: issuer_url.clone(),
             admin_token: String::new(),
             key_directory: "data/keys".to_owned(),
-            key_rotation_grace_seconds: 604_800,
+            key_rotation_grace_seconds: DEFAULT_KEY_ROTATION_GRACE_SECONDS,
             cookie_secure: true,
             oauth_session_header_enabled: true,
             session_token_response_enabled: false,
@@ -347,8 +352,8 @@ impl Config {
             session_ttl_seconds,
             session_idle_timeout_seconds: DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
             session_max_concurrent_sessions: DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,
-            access_token_ttl_seconds: 3600,
-            id_token_ttl_seconds: 3600,
+            access_token_ttl_seconds: DEFAULT_TOKEN_TTL_SECONDS,
+            id_token_ttl_seconds: DEFAULT_TOKEN_TTL_SECONDS,
             log_filter: "chenxing_auth=debug".to_owned(),
             auth_encryption_key: AuthEncryptionKey::new([0_u8; 32]),
             auth_encryption_keys: AuthEncryptionKeyRing::single(AuthEncryptionKey::new([0_u8; 32])),
@@ -440,6 +445,11 @@ impl Config {
                 "SESSION_MAX_CONCURRENT_SESSIONS",
             ));
         }
+        validate_token_and_key_lifetimes(
+            key_rotation_grace_seconds,
+            access_token_ttl_seconds,
+            id_token_ttl_seconds,
+        )?;
         if webauthn_rp_id.trim().is_empty() {
             return Err(ConfigError::InvalidValue("WEBAUTHN_RP_ID"));
         }
@@ -464,18 +474,6 @@ impl Config {
                  IPs resolve to the direct peer. Set TRUSTED_PROXIES if behind a proxy."
             );
         }
-        // #112：access token 超过 24 小时告警（无状态 JWT 撤销窗口风险）。
-        const DAY: u64 = 86_400;
-        if access_token_ttl_seconds > DAY {
-            tracing::warn!(
-                access_token_ttl_seconds,
-                "ACCESS_TOKEN_TTL_SECONDS > 24h: stateless JWT revocation exposure"
-            );
-        }
-        if id_token_ttl_seconds > DAY {
-            tracing::warn!(id_token_ttl_seconds, "ID_TOKEN_TTL_SECONDS > 24h");
-        }
-
         Ok(Self {
             host,
             port,

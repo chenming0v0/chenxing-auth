@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::MAX_UNAUTHENTICATED_SOURCE_QPS;
+
 use super::domain::SettingsValidationError;
 
 /// 安全限流阈值配置，对应 `config::SecurityLimits` 的 13 个字段。
@@ -73,6 +75,8 @@ impl SecurityLimitsSetting {
     ///   静默改写会让人以为已经生效，等到真被攻击时才发现阈值根本不是自己设的。
     ///
     /// u32/u64 字段 `== 0` 拒绝：QPS 为 0 表示拒绝所有请求、TTL 为 0 表示凭据签发即过期。
+    /// 未认证来源 QPS 还必须不超过 `MAX_UNAUTHENTICATED_SOURCE_QPS`，避免 Redis ZSET
+    /// 因过大的滑动窗口阈值无限增长。
     /// i64 字段 `<= 0` 拒绝：负阈值在 Redis Lua 比较里等价于「立即触发限流」。
     ///
     /// 错误里带字段名，供 UI 提示具体是哪一项非法。
@@ -89,12 +93,13 @@ impl SecurityLimitsSetting {
                 )+
             };
         }
-        let is_zero_u32 = |value: u32| value == 0;
+        let is_invalid_source_qps =
+            |value: u32| value == 0 || value > MAX_UNAUTHENTICATED_SOURCE_QPS;
         let is_zero_u64 = |value: u64| value == 0;
         let is_not_positive = |value: i64| value <= 0;
 
         reject! {
-            unauthenticated_source_qps: is_zero_u32,
+            unauthenticated_source_qps: is_invalid_source_qps,
             authorization_code_ttl_seconds: is_zero_u64,
             pending_request_ttl_seconds: is_zero_u64,
             max_pending_requests_per_client: is_zero_u64,
@@ -283,6 +288,18 @@ mod tests {
                 "expected {field} to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn security_limits_rejects_excessive_source_qps() {
+        let invalid = SecurityLimitsSetting {
+            unauthenticated_source_qps: MAX_UNAUTHENTICATED_SOURCE_QPS + 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            invalid.validate().expect_err("excessive QPS must be rejected"),
+            SettingsValidationError::InvalidSecurityLimit("unauthenticated_source_qps")
+        );
     }
 
     /// 合法的非默认取值必须原样保留，否则配置项形同虚设。

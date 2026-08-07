@@ -9,6 +9,8 @@ use crate::clients::domain::{
 use super::ConfigError;
 use super::config_parsing::{optional_i64, optional_u32, optional_u64};
 
+pub const MAX_UNAUTHENTICATED_SOURCE_QPS: u32 = 1_000;
+
 pub(super) fn parse_auth_limiter_failure_policy(
     name: &'static str,
     value: &str,
@@ -134,6 +136,9 @@ impl SecurityLimits {
     /// （例如把变量设成空字符串后又被 shell 展开为 0）。静默接受会造成全站不可用，
     /// 因此这里回退并告警，而不是让服务带着自毁配置启动。
     ///
+    /// 未认证来源 QPS 还设有硬上限，避免每个请求都向 Redis 滑动窗口 ZSET 追加 member，
+    /// 让一个过大的阈值变成可利用的内存增长。
+    ///
     /// 明显危险但仍可能是有意选择的取值（如授权码 TTL 过长）只告警，不改写。
     fn sanitized(mut self) -> Self {
         let defaults = Self::default();
@@ -170,6 +175,16 @@ impl SecurityLimits {
             external_login_state_rate_window_seconds,
             "EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS"
         );
+
+        if self.unauthenticated_source_qps > MAX_UNAUTHENTICATED_SOURCE_QPS {
+            tracing::warn!(
+                configured = self.unauthenticated_source_qps,
+                maximum = MAX_UNAUTHENTICATED_SOURCE_QPS,
+                default = defaults.unauthenticated_source_qps,
+                "UNAUTHENTICATED_SOURCE_QPS exceeds the supported upper bound; falling back to default"
+            );
+            self.unauthenticated_source_qps = defaults.unauthenticated_source_qps;
+        }
 
         // i64 维度同时拒绝 0 和负数：负阈值在 Redis Lua 比较里等价于「立即触发限流」。
         macro_rules! reset_if_not_positive {
@@ -404,5 +419,18 @@ mod tests {
         }
         .sanitized();
         assert_eq!(sanitized.authorization_code_ttl_seconds, 3_600);
+    }
+
+    #[test]
+    fn excessive_source_qps_falls_back_to_the_default() {
+        let sanitized = SecurityLimits {
+            unauthenticated_source_qps: MAX_UNAUTHENTICATED_SOURCE_QPS + 1,
+            ..SecurityLimits::default()
+        }
+        .sanitized();
+        assert_eq!(
+            sanitized.unauthenticated_source_qps,
+            SecurityLimits::default().unauthenticated_source_qps
+        );
     }
 }
