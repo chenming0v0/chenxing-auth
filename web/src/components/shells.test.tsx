@@ -224,6 +224,16 @@ describe('账户菜单用户信息不做成文档标题（#226）', () => {
   })
 })
 
+describe('账户菜单头像触发器目标尺寸（WCAG 2.5.8, #229）', () => {
+  it('头像触发器至少 40x40，布局允许时取 44（h-11 w-11）', () => {
+    renderConsole()
+    const button = screen.getByRole('button', { name: '账户菜单' })
+    // jsdom 不做布局，断言尺寸类；h-11 w-11 = 44px，若回退到 h-9 w-9（36px）即不达标
+    expect(button.className).toContain('h-11')
+    expect(button.className).toContain('w-11')
+  })
+})
+
 describe('全局「跳到主内容」跳过链接（#225）', () => {
   /** 断言 Shell 的跳过链接与内容锚点成对出现且互相对应。 */
   function assertSkipPair(container: HTMLElement) {

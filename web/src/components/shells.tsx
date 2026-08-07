@@ -215,10 +215,12 @@ function AccountMenu() {
   const handle = user?.username ? `@${user.username}` : '@user'
   return (
     <div className="relative" ref={containerRef}>
+      {/* 头像触发器 44x44：WCAG 2.5.8 目标尺寸下限 24，本项目取 40 起步；
+          顶栏布局放得下就用 44（与汉堡 40x40 同处一个胶囊，略大一点更易命中） */}
       <button
         ref={buttonRef}
         type="button"
-        className="chenxing-avatar h-9 w-9 text-sm"
+        className="chenxing-avatar h-11 w-11 text-sm"
         aria-label="账户菜单"
         aria-expanded={open}
         aria-controls={panelId}

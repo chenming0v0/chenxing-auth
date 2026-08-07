@@ -97,7 +97,14 @@ export function Chip({ children, onRemove }: { children: ReactNode; onRemove?: (
     <span className="chenxing-chip">
       {children}
       {onRemove ? (
-        <button type="button" className="ml-1 inline-flex" onClick={onRemove} aria-label="移除">
+        /* 视觉上仍是紧凑的 12px 图标，但命中区保证 24x24（WCAG 2.5.8）：
+           负外边距让 24px 按钮从 chip 的内容盒向外扩展，不撑大 chip 本体。 */
+        <button
+          type="button"
+          className="-my-1 -mr-2 ml-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--chenxing-cyan)] transition-colors hover:bg-[var(--chenxing-muted)]"
+          onClick={onRemove}
+          aria-label="移除"
+        >
           <Icon name="x" size={12} />
         </button>
       ) : null}

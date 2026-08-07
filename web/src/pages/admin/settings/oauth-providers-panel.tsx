@@ -286,8 +286,8 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-3">
-                      <button type="button" className="chenxing-link" onClick={() => openEdit(provider)}>编辑</button>
-                      <button type="button" className="chenxing-link" style={{ color: 'var(--chenxing-error)' }} onClick={() => void toggleStatus(provider)} disabled={busy}>
+                      <button type="button" className="chenxing-link chenxing-row-action" onClick={() => openEdit(provider)}>编辑</button>
+                      <button type="button" className="chenxing-link chenxing-row-action" style={{ color: 'var(--chenxing-error)' }} onClick={() => void toggleStatus(provider)} disabled={busy}>
                         {provider.status === 'active' ? '禁用' : '启用'}
                       </button>
                     </div>

@@ -436,6 +436,20 @@ td.chenxing-label {
 }
 .chenxing-link:hover { color: #bff3ff; }
 
+/* dense table row actions: keep the chenxing-link text look but guarantee a
+   24x24 hit target (WCAG 2.5.8). Opt-in only — ordinary inline hyperlinks
+   keep their natural size. 与 chenxing-link 叠加使用。 */
+.chenxing-row-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 24px;
+  padding: 0 0.375rem;
+  border-radius: var(--chenxing-radius-sm);
+  transition: background 0.15s;
+}
+.chenxing-row-action:hover { background: var(--chenxing-muted); }
+
 .chenxing-divider {
   height: 1px;
   background: linear-gradient(90deg, transparent, var(--chenxing-border-strong), transparent);

@@ -156,11 +156,11 @@ function PlansManager() {
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex items-center gap-3">
-                        <button type="button" className="chenxing-link" disabled={busyId === plan.id} onClick={() => setEditor({ mode: 'edit', plan })}>编辑</button>
+                        <button type="button" className="chenxing-link chenxing-row-action" disabled={busyId === plan.id} onClick={() => setEditor({ mode: 'edit', plan })}>编辑</button>
                         {/* 默认套餐不再受服务端保护：可以归档，也可以取消默认（代价是关闭自助接入） */}
                         <button
                           type="button"
-                          className={`chenxing-link${archived ? '' : ' text-[var(--chenxing-error)]'}`}
+                          className={`chenxing-link chenxing-row-action${archived ? '' : ' text-[var(--chenxing-error)]'}`}
                           disabled={busyId === plan.id}
                           onClick={() => void changeStatus(plan)}
                         >

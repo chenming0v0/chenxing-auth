@@ -225,7 +225,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                   <td className="px-4 py-3">
                     <button
                       type="button"
-                      className="chenxing-link inline-flex items-center gap-1.5"
+                      className="chenxing-link chenxing-row-action"
                       disabled={!access.data?.permissions.includes('manage_users')}
                       title={access.data?.permissions.includes('manage_users') ? undefined : '套餐分配需要 manage_users 权限'}
                       onClick={() => setAssignTarget(user.id)}
@@ -238,7 +238,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                   <td className="px-4 py-3 text-right">
                     <button
                       type="button"
-                      className={`chenxing-link${user.status === 'active' ? ' text-[var(--chenxing-error)]' : ''}`}
+                      className={`chenxing-link chenxing-row-action${user.status === 'active' ? ' text-[var(--chenxing-error)]' : ''}`}
                       disabled={!access.data?.permissions.includes('manage_users') || busy === user.id}
                       onClick={() => void setUserStatus(user)}
                     >

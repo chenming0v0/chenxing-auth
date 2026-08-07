@@ -1,7 +1,7 @@
 import { describe, expect, it, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import type { FormEvent } from 'react'
-import { Button, HudPanel } from './ui'
+import { Button, Chip, HudPanel } from './ui'
 
 // 多个用例渲染相同文案，不清理会让 getByText 命中多个节点。
 afterEach(cleanup)
@@ -104,6 +104,23 @@ describe('HudPanel', () => {
     const panel = screen.getByText('侧边栏内容')
     expect(panel.tagName).toBe('ASIDE')
     expect(panel.className).toContain('chenxing-hud-panel')
+  })
+})
+
+describe('Chip remove control target size（WCAG 2.5.8, #229）', () => {
+  it('移除按钮带 24x24 命中区类，且图标保持 12px 紧凑尺寸', () => {
+    render(<Chip onRemove={() => {}}>example.com</Chip>)
+    const button = screen.getByRole('button', { name: '移除' })
+    // 命中区由显式尺寸类保证；jsdom 不做布局，断言类名而非 getBoundingClientRect
+    expect(button.className).toContain('h-6')
+    expect(button.className).toContain('w-6')
+    // 视觉上图标仍然紧凑（lucide 以 width/height 属性承载 size）
+    expect(button.querySelector('svg')?.getAttribute('width')).toBe('12')
+  })
+
+  it('未提供 onRemove 时不渲染移除按钮', () => {
+    render(<Chip>state · abc</Chip>)
+    expect(screen.queryByRole('button')).toBeNull()
   })
 })
 

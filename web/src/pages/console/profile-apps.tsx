@@ -254,9 +254,7 @@ export function AuthorizedApps() {
               </div>
               <div className="flex shrink-0 items-center gap-4 lg:flex-col lg:items-end lg:gap-3">
                 <Button variant="ghost" icon="eye" disabled title="详情接口尚未提供">查看详情</Button>
-                <button type="button" className="chenxing-link inline-flex items-center gap-1.5 text-[var(--chenxing-error)] hover:text-[var(--chenxing-error)]" disabled={busyClientId !== null} onClick={() => void revokeApp(app)}>
-                  <Icon name="unlink" size={16} />撤销授权
-                </button>
+                <Button variant="danger" icon="unlink" disabled={busyClientId !== null} onClick={() => void revokeApp(app)}>撤销授权</Button>
               </div>
             </div>
           </HudPanel>
