@@ -14,22 +14,33 @@ export function AdminDashboard() {
   const [overview, setOverview] = useState<AdminOverview | null>(null)
   const [audits, setAudits] = useState<AuditEvent[]>([])
   const [error, setError] = useState('')
+  const [auditError, setAuditError] = useState('')
 
   useEffect(() => {
-    if (!access.data?.permissions.includes('manage_clients')) return
+    const permissions = access.data?.permissions
+    if (!permissions?.includes('manage_clients')) return
     let active = true
-    void Promise.all([
-      apiFetch<AdminOverview>('/api/v1/admin/overview'),
-      access.data.permissions.includes('read_audit')
-        ? apiFetch<Paged<AuditEvent>>('/api/v1/admin/audit/query?page=1&page_size=5')
-        : Promise.resolve({ items: [], page: 1, page_size: 5, total: 0 }),
-    ]).then(([overviewValue, auditValue]) => {
-      if (!active) return
-      setOverview(overviewValue)
-      setAudits(auditValue.items)
-    }).catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : '概览数据加载失败。')
-    })
+    setError('')
+    setAuditError('')
+
+    void apiFetch<AdminOverview>('/api/v1/admin/overview')
+      .then((value) => { if (active) setOverview(value) })
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : '概览数据加载失败。')
+      })
+
+    if (!permissions.includes('read_audit')) {
+      setAudits([])
+    } else {
+      void apiFetch<Paged<AuditEvent>>('/api/v1/admin/audit/query?page=1&page_size=5')
+        .then((value) => { if (active) setAudits(value.items) })
+        .catch((reason: unknown) => {
+          if (!active) return
+          setAudits([])
+          setAuditError(reason instanceof Error ? reason.message : '最近审计加载失败。')
+        })
+    }
+
     return () => { active = false }
   }, [access.data])
 
@@ -82,6 +93,7 @@ export function AdminDashboard() {
                   <h2 className="chenxing-h2">最近审计</h2>
                   <p className="chenxing-caption mt-1">只展示非敏感索引字段。</p>
                 </div>
+                {auditError ? <div className="px-6 pb-4"><Notice tone="warning">{auditError}</Notice></div> : null}
                 <div className="cx-table-wrap border-0 rounded-none">
                   <table className="cx-table min-w-[720px]">
                     <thead>
@@ -102,7 +114,7 @@ export function AdminDashboard() {
                         </tr>
                       ))}
                       {!audits.length ? (
-                        <tr><td colSpan={4} className="px-4 py-10 text-center"><span className="chenxing-caption">暂无审计事件或缺少 read_audit 权限</span></td></tr>
+                        <tr><td colSpan={4} className="px-4 py-10 text-center"><span className="chenxing-caption">{auditError ? '最近审计暂时不可用。' : access.data?.permissions.includes('read_audit') ? '暂无审计事件。' : '暂无审计事件或缺少 read_audit 权限'}</span></td></tr>
                       ) : null}
                     </tbody>
                   </table>
@@ -115,4 +127,3 @@ export function AdminDashboard() {
     </ConsoleLayout>
   )
 }
-
