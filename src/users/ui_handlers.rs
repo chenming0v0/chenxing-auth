@@ -1,11 +1,11 @@
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{ConnectInfo, Extension, Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{fmt, net::SocketAddr};
 
 use super::domain::{RegistrationError, UserId};
 use super::ui_auth::{UserContext, current_user, mutation_error, mutation_user};
@@ -107,18 +107,25 @@ pub async fn update_current_user_profile(
 
 pub async fn change_current_user_password(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     Json(input): Json<ChangePasswordInput>,
 ) -> Response {
     let Ok(context) = mutation_user(&state, &headers).await else {
         return mutation_error(&state, &headers).await;
     };
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
     match state
         .users
         .change_password(
             context.user_id,
             &input.current_password,
             &input.new_password,
+            source_ip.as_deref(),
         )
         .await
     {
@@ -139,6 +146,18 @@ pub async fn change_current_user_password(
             "password_too_long",
             "password must be at most 128 characters",
         ),
+        Err(crate::users::service::UserServiceError::RateLimited) => error::too_many_requests(
+            "password_change_rate_limited",
+            "too many password change attempts; try again later",
+        ),
+        Err(crate::users::service::UserServiceError::Limiter(limiter_error)) => {
+            tracing::warn!(
+                error = %limiter_error,
+                "authentication limiter unavailable during password change"
+            );
+            error::internal()
+        }
+        Err(crate::users::service::UserServiceError::SourceIpUnavailable) => error::internal(),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to change user password");
             error::internal()
