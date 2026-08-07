@@ -86,25 +86,18 @@ pub async fn register_user(
         Err(UserServiceError::Validation(RegistrationError::DisplayNameTooLong)) => {
             error::bad_request("display_name_too_long", "display name is too long")
         }
+        Err(UserServiceError::EmailVerificationUnavailable) => error::service_unavailable(
+            "email_verification_unavailable",
+            "email ownership verification is temporarily unavailable",
+        ),
         Err(UserServiceError::Database(database_error))
             if database_error
                 .as_database_error()
                 .and_then(|error| error.code())
-                .is_some_and(|code| code == "23505") =>
-        {
-            let constraint = database_error
-                .as_database_error()
-                .and_then(|error| error.constraint())
-                .unwrap_or_default();
-            if constraint == "users_username_key" {
-                error::conflict(
-                    "username_already_registered",
-                    "username is already registered",
-                )
-            } else {
-                error::conflict("email_already_registered", "email is already registered")
-            }
-        }
+                .is_some_and(|code| code == "23505") => error::conflict(
+            "registration_conflict",
+            "registration details are unavailable",
+        ),
         Err(UserServiceError::Database(database_error)) => {
             tracing::error!(error = %database_error, "failed to register user");
             error::internal()
