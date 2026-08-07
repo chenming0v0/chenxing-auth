@@ -31,9 +31,15 @@ export function IntegratePage() {
   }
   useEffect(() => { load() }, [])
 
+  function closeDrawer() {
+    setMessage('')
+    setDrawerOpen(false)
+  }
+
   function openCreate() {
     // 兜底：入口已是 aria-disabled，这里再拦一次，避免任何路径把用户送去吃 403
     if (selfServiceClosed) return
+    setMessage('')
     setEditing(null)
     setName('')
     setRedirectUris('')
@@ -42,6 +48,7 @@ export function IntegratePage() {
   }
 
   function openEdit(client: OwnedOAuthClient) {
+    setMessage('')
     setEditing(client)
     setName(client.client_name)
     setRedirectUris(client.redirect_uris.join('\n'))
@@ -69,7 +76,7 @@ export function IntegratePage() {
         })
         setSecret({ clientId: response.client_id, value: response.client_secret })
       }
-      setDrawerOpen(false)
+      closeDrawer()
       load()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '应用保存失败。')
@@ -148,7 +155,7 @@ export function IntegratePage() {
         </HudPanel>
       ) : null}
 
-      {message ? <div className="mt-5"><Notice tone="warning">{message}</Notice></div> : null}
+      {message && !drawerOpen ? <div className="mt-5"><Notice tone="warning">{message}</Notice></div> : null}
       {entitlements.error ? <div className="mt-5"><Notice tone="warning">{entitlements.error}<button className="chenxing-link ml-2" type="button" onClick={entitlements.retry}>重试</button></Notice></div> : null}
       {secret ? (
         <HudPanel className="mt-5">
@@ -247,15 +254,16 @@ export function IntegratePage() {
         <Drawer
           title={editing ? '编辑应用' : '注册新应用'}
           description="服务端负责校验 Redirect URI、Scope 和配额。"
-          onClose={() => setDrawerOpen(false)}
+          onClose={closeDrawer}
           onSubmit={save}
           footer={
             <>
-              <Button type="button" variant="ghost" onClick={() => setDrawerOpen(false)}>取消</Button>
+              <Button type="button" variant="ghost" onClick={closeDrawer}>取消</Button>
               <Button type="submit" icon="save" disabled={busy}>{busy ? '保存中…' : editing ? '保存更新' : '创建应用'}</Button>
             </>
           }
         >
+          {message ? <Notice tone="warning">{message}</Notice> : null}
           <HudPanel className="space-y-4 !p-5">
             <Field label="应用名称" placeholder="例如：星尘控制台" value={name} onChange={(event) => setName(event.target.value)} required />
             <TextAreaField label="Redirect URI" placeholder="每行一个严格匹配的 URI" value={redirectUris} onChange={(event) => setRedirectUris(event.target.value)} required hint="服务端会严格校验 URI，不使用通配符。" />
