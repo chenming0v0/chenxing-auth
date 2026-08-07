@@ -701,6 +701,46 @@ td.chenxing-label {
   .chenxing-console-main { margin-left: 15rem; }
 }
 
+/* ---------- global skip-to-content (#225) ---------- */
+/* 键盘可达的「跳到主内容」：链接常驻 DOM 但不可见，:focus-visible 时从视口
+   顶部滑入，盖在 topbar（z-30）/ 侧栏（z-40）之上（z-60）。
+   不用玻璃卡片样式：半透明 popover 表面 + cyan 描边与光晕，全部沿用现有令牌；
+   focus ring 由 index.css 的全局 :focus-visible 规则提供。 */
+.chenxing-skip-link {
+  position: fixed;
+  top: 0.85rem;
+  left: 50%;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.55rem 1.1rem;
+  font-family: var(--chenxing-font-body);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  color: var(--chenxing-cyan);
+  background: var(--chenxing-popover);
+  border: 1px solid rgba(103, 232, 249, 0.4);
+  border-radius: var(--chenxing-radius-pill);
+  box-shadow: 0 0 20px rgba(103, 232, 249, 0.22), var(--chenxing-shadow-overlay);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 1.5rem));
+  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.18s ease;
+}
+.chenxing-skip-link:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+}
+/* 内容锚点：高度为 0 的标记，不参与布局；键盘聚焦时浏览器把它滚进视口，
+   scroll-margin-top 保证从页面下方触发时也落在 sticky topbar 之下。 */
+.chenxing-skip-target {
+  scroll-margin-top: 5rem;
+}
+
 /* ---------- console shell: avatar (rounded-rect) + dropdown ---------- */
 .chenxing-avatar {
   display: inline-flex;

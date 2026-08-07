@@ -14,6 +14,7 @@ import { useAuth } from '../auth-state'
 import { navGroups, pageStatus, initialOf } from '../data'
 import { BrandLockup, BrandMark, Button, HudPanel, Icon, Notice } from './ui'
 import { SpaceBackdrop } from './space'
+import { SkipLink, SkipTarget, useSkipTargetId } from './skip-link'
 
 /* 汉堡/账户下拉的共享可访问性逻辑，实现 WAI-ARIA Disclosure Navigation 模式
    （面板里是导航链接/按钮，不是 role="menu"，因此不用 menu 小部件语义）：
@@ -331,9 +332,13 @@ export function AuthShell({
   className?: string
   menuExtra?: ReactNode
 }) {
+  /* 跳过链接是 Shell 的第一个可聚焦元素，内容锚点紧跟顶栏之后（见 skip-link.tsx） */
+  const targetId = useSkipTargetId()
   return (
     <SpaceBackdrop className={className} opacity={0.7}>
+      <SkipLink targetId={targetId} />
       <GlobalTopbar status={status} action={action} actionTo={actionTo} menuExtra={menuExtra} />
+      <SkipTarget targetId={targetId} />
       {children}
     </SpaceBackdrop>
   )
@@ -418,8 +423,12 @@ function BottomNav() {
 export function ConsoleLayout({ children }: { children: ReactNode }) {
   const location = useLocation()
   const status = pageStatus[location.pathname] || (location.pathname.startsWith('/admin') ? '管理' : '控制台')
+  /* 跳过链接盖在最前（侧栏/顶栏之上），内容锚点放在内容列起点，
+     这样跳过链接一次 Tab 就能越过侧栏、顶栏与汉堡菜单直达页面内容 */
+  const targetId = useSkipTargetId()
   return (
     <SpaceBackdrop className="console-shell" opacity={0.4} dense>
+      <SkipLink targetId={targetId} />
       <Sidebar />
       <div className="chenxing-console-main relative z-10 flex min-h-screen flex-col">
         {/* sidebar already carries the brand lockup, so the topbar brand only
@@ -436,6 +445,7 @@ export function ConsoleLayout({ children }: { children: ReactNode }) {
           )}
         />
         <div className="chenxing-console-content flex-1 px-4 py-6 pb-10 sm:px-6 lg:px-8">
+          <SkipTarget targetId={targetId} />
           {children}
         </div>
       </div>
@@ -445,9 +455,12 @@ export function ConsoleLayout({ children }: { children: ReactNode }) {
 }
 
 export function OAuthShell({ children, footer = true }: { children: ReactNode; footer?: boolean }) {
+  const targetId = useSkipTargetId()
   return (
     <SpaceBackdrop opacity={0.6}>
+      <SkipLink targetId={targetId} />
       <section className="oauth-shell">
+        <SkipTarget targetId={targetId} />
         {children}
         {footer ? (
           <div className="oauth-footer">

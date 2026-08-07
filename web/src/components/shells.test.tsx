@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, within } from '@testing-library/react'
-import { ConsoleLayout } from './shells'
+import { AuthShell, ConsoleLayout, OAuthShell } from './shells'
 import { navGroups } from '../data'
 
 // 可变的桩用户：角色过滤用例需要切换 role。vi.mock 工厂引用 hoisted 对象，
@@ -206,5 +206,69 @@ describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
     fireEvent.click(within(menu).getByRole('link', { name: '套餐与权益' }))
     expect(document.querySelector('[data-menu]')).toBeNull()
     expect(button.getAttribute('aria-expanded')).toBe('false')
+  })
+})
+
+describe('全局「跳到主内容」跳过链接（#225）', () => {
+  /** 断言 Shell 的跳过链接与内容锚点成对出现且互相对应。 */
+  function assertSkipPair(container: HTMLElement) {
+    const skip = within(container).getByRole('link', { name: /跳到主内容/ })
+    expect(skip.className).toContain('chenxing-skip-link')
+    const targetId = skip.getAttribute('href')!.replace(/^#/, '')
+    expect(targetId).toBeTruthy()
+    const target = container.querySelector(`#${targetId}`) as HTMLElement
+    expect(target).toBeTruthy()
+    expect(target.className).toContain('chenxing-skip-target')
+    expect(target.getAttribute('tabindex')).toBe('-1')
+    return { skip, target }
+  }
+
+  it('ConsoleLayout：跳过链接是第一个链接，锚点在侧栏/顶栏之后、内容之前', () => {
+    const { container } = render(
+      <ConsoleLayout>
+        <div>页面内容</div>
+      </ConsoleLayout>,
+    )
+    const { skip, target } = assertSkipPair(container)
+    // 跳过链接必须是页面上第一个可聚焦的链接（先于侧栏品牌与导航）
+    const links = within(container).getAllByRole('link')
+    expect(links[0]).toBe(skip)
+    // 锚点按 DOM 顺序位于侧栏之后（跳过链接位于侧栏之前）
+    const sidebar = within(container).getByRole('navigation', { name: '控制台导航' })
+    expect(skip.compareDocumentPosition(sidebar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(sidebar.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // 锚点落在内容列里、页面内容之前
+    const content = container.querySelector('.chenxing-console-content') as HTMLElement
+    expect(content.contains(target)).toBe(true)
+    expect(target.nextElementSibling?.textContent).toBe('页面内容')
+  })
+
+  it('AuthShell 与 OAuthShell 同样渲染成对的跳过链接与锚点', () => {
+    const auth = render(<AuthShell status="星门在线"><div>登录内容</div></AuthShell>)
+    assertSkipPair(auth.container)
+    const oauth = render(<OAuthShell><div>授权内容</div></OAuthShell>)
+    assertSkipPair(oauth.container)
+  })
+
+  it('同一页面挂载多个 Shell 时，锚点 id 不重复且各指各的', () => {
+    const first = render(<ConsoleLayout><div>甲</div></ConsoleLayout>)
+    const second = render(<ConsoleLayout><div>乙</div></ConsoleLayout>)
+    const ids = [first, second].map(({ container }) =>
+      within(container).getByRole('link', { name: /跳到主内容/ }).getAttribute('href')!.replace(/^#/, ''),
+    )
+    expect(ids[0]).not.toBe(ids[1])
+    expect(document.getElementById(ids[0])).toBe(first.container.querySelector('.chenxing-skip-target'))
+    expect(document.getElementById(ids[1])).toBe(second.container.querySelector('.chenxing-skip-target'))
+  })
+
+  it('跳过链接是原生锚点，点击不改写路由路径', () => {
+    const { container } = render(
+      <ConsoleLayout>
+        <div>页面内容</div>
+      </ConsoleLayout>,
+    )
+    const skip = within(container).getByRole('link', { name: /跳到主内容/ })
+    fireEvent.click(skip)
+    expect(window.location.pathname).toBe('/console')
   })
 })
