@@ -53,6 +53,9 @@ fn decode_with_validation(
     let header = jsonwebtoken::decode_header(token).map_err(TokenError::Validation)?;
     let key_id = header.kid.as_deref().ok_or_else(invalid_token_error)?;
     let mut validation = Validation::new(Algorithm::RS256);
+    // Access and UserInfo tokens are revoked at their protocol expiry; do not inherit
+    // jsonwebtoken's 60-second default clock-skew window.
+    validation.leeway = 0;
     validation.set_issuer(&[issuer.trim_end_matches('/')]);
     validation.validate_aud = validate_audience;
     if validate_audience {
