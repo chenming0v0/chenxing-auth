@@ -34,6 +34,8 @@ export function PlaygroundPage() {
     setSelectedId(clientId)
     setRedirectUri(client?.redirect_uris[0] || '')
     setScope(client?.scopes.join(' ') || 'openid')
+    setResult(null)
+    setMessage('')
   }
 
   async function generate() {
@@ -158,4 +160,3 @@ export function PlaygroundPage() {
     </ConsoleLayout>
   )
 }
-
