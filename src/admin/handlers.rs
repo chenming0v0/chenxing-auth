@@ -209,7 +209,7 @@ pub async fn update_client(
             }
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(false) => error::bad_request("client_not_found", "client was not found"),
+        Ok(false) => error::not_found("client_not_found", "client was not found"),
         Err(ClientServiceError::Validation(validation_error)) => {
             error::bad_request("invalid_client_registration", validation_error.to_string())
         }
@@ -256,7 +256,7 @@ pub async fn set_client_status(
             }
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(false) => error::bad_request("client_not_found", "client was not found"),
+        Ok(false) => error::not_found("client_not_found", "client was not found"),
         Err(ClientServiceError::Database(database_error)) => {
             tracing::error!(error = %database_error, "failed to update OAuth client status");
             error::internal()
@@ -328,7 +328,7 @@ pub async fn rotate_secret(
             (StatusCode::OK, Json(secret)).into_response()
         }
         Err(ClientServiceError::InvalidData) => {
-            error::bad_request("client_not_found", "client was not found")
+            error::not_found("client_not_found", "client was not found")
         }
         Err(ClientServiceError::Database(database_error)) => {
             tracing::error!(error = %database_error, "failed to rotate OAuth client secret");

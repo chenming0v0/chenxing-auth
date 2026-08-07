@@ -1,4 +1,4 @@
-use crate::users::domain::{UserId, UserRole};
+use crate::users::domain::{UserId, UserRole, UserStatus};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -109,6 +109,11 @@ pub async fn set_user_status(
         Ok(actor) => actor,
         Err(response) => return response,
     };
+    // The service uses `false` for both an invalid status and a missing user.
+    // Preserve the existing validation response so only a missing resource becomes 404.
+    if UserStatus::parse(&status).is_none() {
+        return error::bad_request("user_not_found", "user or status was not found");
+    }
     match state.users.set_status_guarded(user_id, &status).await {
         Ok(true) => {
             let (actor_type, actor_id) = actor.audit_fields();
@@ -129,7 +134,7 @@ pub async fn set_user_status(
             }
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(false) => error::bad_request("user_not_found", "user or status was not found"),
+        Ok(false) => error::not_found("user_not_found", "user was not found"),
         Err(crate::users::service::UserServiceError::LastOwnerRequired) => error::conflict(
             "last_owner_required",
             "at least one active owner is required",
