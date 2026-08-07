@@ -105,3 +105,106 @@ describe('ConsoleLayout 移动端导航可达性（#197）', () => {
     expect(within(sidebar).getByRole('link', { name: '接入应用' })).toBeTruthy()
   })
 })
+
+describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
+  /** 面板里的可聚焦项（与 useNavDisclosure 的 focusableItems 同一选择器）。 */
+  function menuItems(menu: HTMLElement): HTMLElement[] {
+    return Array.from(menu.querySelectorAll<HTMLElement>('a[href], button:not([disabled])'))
+  }
+
+  it('汉堡按钮带 aria-expanded/aria-controls/aria-haspopup，面板挂在 aria-controls 指向的 id 上', () => {
+    renderConsole()
+    const button = screen.getByRole('button', { name: '打开导航菜单' })
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+    expect(button.getAttribute('aria-haspopup')).toBe('true')
+    const panelId = button.getAttribute('aria-controls')
+    expect(panelId).toBeTruthy()
+    fireEvent.click(button)
+    expect(button.getAttribute('aria-expanded')).toBe('true')
+    const menu = document.querySelector('[data-menu]') as HTMLElement
+    expect(menu.id).toBe(panelId)
+  })
+
+  it('汉堡与账户两个触发器的 aria-controls id 互不重复', () => {
+    renderConsole()
+    const hamburgerId = screen.getByRole('button', { name: '打开导航菜单' }).getAttribute('aria-controls')
+    const accountId = screen.getByRole('button', { name: '账户菜单' }).getAttribute('aria-controls')
+    expect(hamburgerId).toBeTruthy()
+    expect(accountId).toBeTruthy()
+    expect(hamburgerId).not.toBe(accountId)
+  })
+
+  it('Escape 关闭汉堡菜单并把焦点还给触发器按钮', () => {
+    renderConsole()
+    const button = screen.getByRole('button', { name: '打开导航菜单' })
+    fireEvent.click(button)
+    expect(document.querySelector('[data-menu]')).toBeTruthy()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(document.querySelector('[data-menu]')).toBeNull()
+    expect(document.activeElement).toBe(button)
+  })
+
+  it('Escape 关闭账户菜单并把焦点还给头像按钮', () => {
+    renderConsole()
+    const button = screen.getByRole('button', { name: '账户菜单' })
+    fireEvent.click(button)
+    const panelId = button.getAttribute('aria-controls') as string
+    expect(document.getElementById(panelId)).toBeTruthy()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(document.getElementById(panelId)).toBeNull()
+    expect(document.activeElement).toBe(button)
+  })
+
+  it('在汉堡按钮上按 ArrowDown 打开菜单并聚焦首项', () => {
+    renderConsole()
+    const button = screen.getByRole('button', { name: '打开导航菜单' })
+    fireEvent.keyDown(button, { key: 'ArrowDown' })
+    const menu = document.querySelector('[data-menu]') as HTMLElement
+    expect(menu).toBeTruthy()
+    expect(document.activeElement).toBe(menuItems(menu)[0])
+  })
+
+  it('面板内 ArrowDown/ArrowUp 在可聚焦项间循环移动焦点', () => {
+    const menu = openHamburgerMenu()
+    const items = menuItems(menu)
+    expect(items.length).toBeGreaterThan(1)
+    const button = screen.getByRole('button', { name: '打开导航菜单' })
+    // 从触发器用方向键进入面板
+    fireEvent.keyDown(button, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(items[0])
+    // 顺移
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(items[1])
+    // 回退
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(items[0])
+    // 首项 ArrowUp 回绕到末项
+    fireEvent.keyDown(items[0], { key: 'ArrowUp' })
+    expect(document.activeElement).toBe(items[items.length - 1])
+    // 末项 ArrowDown 回绕到首项
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(items[0])
+  })
+
+  it('面板内 Home/End 跳到首尾项', () => {
+    const menu = openHamburgerMenu()
+    const items = menuItems(menu)
+    const button = screen.getByRole('button', { name: '打开导航菜单' })
+    fireEvent.keyDown(button, { key: 'ArrowDown' })
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(items[1])
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Home' })
+    expect(document.activeElement).toBe(items[0])
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'End' })
+    expect(document.activeElement).toBe(items[items.length - 1])
+  })
+
+  it('点击导航项后菜单关闭（原有行为不变）', () => {
+    const menu = openHamburgerMenu()
+    const button = screen.getByRole('button', { name: '打开导航菜单' })
+    expect(button.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.click(within(menu).getByRole('link', { name: '套餐与权益' }))
+    expect(document.querySelector('[data-menu]')).toBeNull()
+    expect(button.getAttribute('aria-expanded')).toBe('false')
+  })
+})

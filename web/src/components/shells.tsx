@@ -1,21 +1,128 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type KeyboardEventHandler,
+  type ReactNode,
+  type Ref,
+} from 'react'
 import { Link, NavLink, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
 import { navGroups, pageStatus, initialOf } from '../data'
 import { BrandLockup, BrandMark, Button, HudPanel, Icon, Notice } from './ui'
 import { SpaceBackdrop } from './space'
 
-function useClickAway(open: boolean, onClose: () => void) {
-  const ref = useRef<HTMLDivElement>(null)
+/* 汉堡/账户下拉的共享可访问性逻辑，实现 WAI-ARIA Disclosure Navigation 模式
+   （面板里是导航链接/按钮，不是 role="menu"，因此不用 menu 小部件语义）：
+   - 触发器带 aria-expanded / aria-controls / aria-haspopup，useId 保证多实例不重复；
+   - 点击面板外部关闭（沿用原 mousedown 行为）；
+   - Escape 关闭并把焦点还给触发器按钮；
+   - 面板内 ArrowDown/ArrowUp 循环移动焦点，Home/End 跳首尾；
+   - 在触发器上按 ArrowDown/ArrowUp 打开面板并把焦点移进首/末项。 */
+function useNavDisclosure() {
+  const [open, setOpen] = useState(false)
+  const panelId = useId()
+  const containerRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const pendingFocus = useRef<'first' | 'last' | null>(null)
+
+  const close = useCallback(() => setOpen(false), [])
+  const toggle = useCallback(() => setOpen((value) => !value), [])
+
+  const focusableItems = useCallback(() => {
+    const panel = panelRef.current
+    if (!panel) return []
+    return Array.from(panel.querySelectorAll<HTMLElement>('a[href], button:not([disabled])'))
+  }, [])
+
+  const moveFocus = useCallback(
+    (delta: number) => {
+      const items = focusableItems()
+      if (items.length === 0) return
+      const current = items.indexOf(document.activeElement as HTMLElement)
+      const next =
+        current === -1 ? (delta > 0 ? 0 : items.length - 1) : (current + delta + items.length) % items.length
+      items[next].focus()
+    },
+    [focusableItems],
+  )
+
+  // 点击面板外部关闭
   useEffect(() => {
     if (!open) return
     const onPointer = (event: MouseEvent) => {
-      if (!ref.current?.contains(event.target as Node)) onClose()
+      if (!containerRef.current?.contains(event.target as Node)) close()
     }
     document.addEventListener('mousedown', onPointer)
     return () => document.removeEventListener('mousedown', onPointer)
-  }, [open, onClose])
-  return ref
+  }, [open, close])
+
+  // Escape 关闭并把焦点还给触发器按钮（焦点在面板内或触发器上都生效）
+  useEffect(() => {
+    if (!open) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        close()
+        buttonRef.current?.focus()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open, close])
+
+  // 键盘打开（方向键）时，渲染完成后把焦点移进面板首/末项
+  useEffect(() => {
+    if (!open || pendingFocus.current == null) return
+    const items = focusableItems()
+    const target = pendingFocus.current === 'first' ? 0 : items.length - 1
+    pendingFocus.current = null
+    if (items[target]) items[target].focus()
+  }, [open, focusableItems])
+
+  const onButtonKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+      event.preventDefault()
+      if (open) {
+        moveFocus(event.key === 'ArrowDown' ? 1 : -1)
+      } else {
+        pendingFocus.current = event.key === 'ArrowDown' ? 'first' : 'last'
+        setOpen(true)
+      }
+    },
+    [open, moveFocus],
+  )
+
+  const onPanelKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        moveFocus(event.key === 'ArrowDown' ? 1 : -1)
+      } else if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault()
+        const items = focusableItems()
+        const target = event.key === 'Home' ? 0 : items.length - 1
+        if (items[target]) items[target].focus()
+      }
+    },
+    [focusableItems, moveFocus],
+  )
+
+  return {
+    open,
+    panelId,
+    containerRef,
+    panelRef,
+    buttonRef,
+    close,
+    toggle,
+    onButtonKeyDown,
+    onPanelKeyDown,
+  }
 }
 
 /* Expanded at page top, condensed once the user scrolls; sentinel keeps it
@@ -33,9 +140,27 @@ function useTopbarExpanded() {
   return { expanded, sentinelRef }
 }
 
-function NavMenu({ extra, onNavigate }: { extra?: ReactNode; onNavigate?: () => void }) {
+function NavMenu({
+  id,
+  panelRef,
+  onKeyDown,
+  extra,
+  onNavigate,
+}: {
+  id: string
+  panelRef: Ref<HTMLDivElement>
+  onKeyDown: KeyboardEventHandler<HTMLDivElement>
+  extra?: ReactNode
+  onNavigate?: () => void
+}) {
   return (
-    <div data-menu className="chenxing-menu absolute right-0 top-full z-50 mt-3 w-60">
+    <div
+      id={id}
+      data-menu
+      ref={panelRef}
+      onKeyDown={onKeyDown}
+      className="chenxing-menu absolute right-0 top-full z-50 mt-3 w-60"
+    >
       <Link to="/" className="chenxing-nav-menu-item" onClick={onNavigate}>主页<Icon name="arrow-up-right" size={16} /></Link>
       <Link to="/console" className="chenxing-nav-menu-item" onClick={onNavigate}>控制台<Icon name="layout-dashboard" size={16} /></Link>
       <button type="button" className="chenxing-nav-menu-item" onClick={onNavigate}>应用广场<Icon name="store" size={16} /></button>
@@ -55,34 +180,55 @@ function NavMenu({ extra, onNavigate }: { extra?: ReactNode; onNavigate?: () => 
 }
 
 function HamburgerMenu({ extra }: { extra?: ReactNode }) {
-  const [open, setOpen] = useState(false)
-  const ref = useClickAway(open, () => setOpen(false))
-  const close = () => setOpen(false)
+  const { open, panelId, containerRef, panelRef, buttonRef, close, toggle, onButtonKeyDown, onPanelKeyDown } =
+    useNavDisclosure()
   return (
-    <div className="relative" ref={ref}>
-      <button type="button" className="chenxing-hamburger" aria-label="打开导航菜单" onClick={() => setOpen((value) => !value)}>
+    <div className="relative" ref={containerRef}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="chenxing-hamburger"
+        aria-label="打开导航菜单"
+        aria-expanded={open}
+        aria-controls={panelId}
+        aria-haspopup="true"
+        onClick={toggle}
+        onKeyDown={onButtonKeyDown}
+      >
         <span /><span /><span />
       </button>
-      {open ? <NavMenu extra={extra} onNavigate={close} /> : null}
+      {open ? (
+        <NavMenu id={panelId} panelRef={panelRef} onKeyDown={onPanelKeyDown} extra={extra} onNavigate={close} />
+      ) : null}
     </div>
   )
 }
 
 function AccountMenu() {
-  const [open, setOpen] = useState(false)
-  const ref = useClickAway(open, () => setOpen(false))
+  const { open, panelId, containerRef, panelRef, buttonRef, close, toggle, onButtonKeyDown, onPanelKeyDown } =
+    useNavDisclosure()
   const navigate = useNavigate()
   const { user, logout } = useAuth()
   const name = user?.display_name || user?.username || '辰'
   const memberId = user?.id != null ? `NO.${String(user.id).padStart(6, '0')}` : 'NO.000000'
   const handle = user?.username ? `@${user.username}` : '@user'
   return (
-    <div className="relative" ref={ref}>
-      <button type="button" className="chenxing-avatar h-9 w-9 text-sm" aria-label="账户菜单" onClick={() => setOpen((value) => !value)}>
+    <div className="relative" ref={containerRef}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="chenxing-avatar h-9 w-9 text-sm"
+        aria-label="账户菜单"
+        aria-expanded={open}
+        aria-controls={panelId}
+        aria-haspopup="true"
+        onClick={toggle}
+        onKeyDown={onButtonKeyDown}
+      >
         {initialOf(name)}
       </button>
       {open ? (
-        <div className="chenxing-menu absolute right-0 top-full z-50 mt-3 w-64 p-0 overflow-hidden">
+        <div id={panelId} ref={panelRef} onKeyDown={onPanelKeyDown} className="chenxing-menu absolute right-0 top-full z-50 mt-3 w-64 p-0 overflow-hidden">
           {/* ── 用户信息头 ── */}
           <div className="chenxing-account-header">
             <div className="chenxing-avatar h-14 w-14 text-lg pointer-events-none">
@@ -102,10 +248,10 @@ function AccountMenu() {
           </div>
           {/* ── 菜单项 ── */}
           <div className="p-1">
-            <Link to="/console/profile" className="chenxing-menu-item" onClick={() => setOpen(false)}>
+            <Link to="/console/profile" className="chenxing-menu-item" onClick={close}>
               <Icon name="user" className="text-[var(--chenxing-cyan)]" size={16} />账户设置
             </Link>
-            <Link to="/console/plans" className="chenxing-menu-item" onClick={() => setOpen(false)}>
+            <Link to="/console/plans" className="chenxing-menu-item" onClick={close}>
               <Icon name="receipt" className="text-[var(--chenxing-cyan)]" size={16} />套餐订阅
             </Link>
             <button type="button" className="chenxing-menu-item">
