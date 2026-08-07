@@ -25,7 +25,7 @@ function stubMatchMedia() {
 const originalLocation = Object.getOwnPropertyDescriptor(window, 'location')
 
 /** 渲染即抛错，用于触发错误边界。错误文案刻意带「机密字样」，供泄漏断言使用。 */
-function Bomb() {
+function Bomb(): never {
   throw new Error('leaked-secret-detail')
 }
 
