@@ -54,6 +54,13 @@ export const pageStatus: Record<string, string> = {
   '/admin/settings': '管理 · 系统设置',
 }
 
+export const DEFAULT_DOCUMENT_TITLE = '辰星通行证 · 天穹辰星'
+
+export function getDocumentTitle(pathname: string): string {
+  const status = pageStatus[pathname]
+  return pathname === '/' || !status ? DEFAULT_DOCUMENT_TITLE : `${status} · 辰星通行证`
+}
+
 export function formatDate(value?: string | null): string {
   if (!value) return '—'
   const date = new Date(value)

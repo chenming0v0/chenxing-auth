@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 import { Navigate, usePathname } from './router'
 import { AuthProvider, useAuth } from './auth-state'
+import { getDocumentTitle } from './data'
 import { LandingPage } from './pages/landing'
 import { AuthPage, BootstrapPage } from './pages/auth'
 import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './pages/oauth'
@@ -13,6 +14,11 @@ import { Notice } from './components/ui'
 function AppContent() {
   const path = usePathname()
   const { status, user, bootstrap } = useAuth()
+
+  useEffect(() => {
+    document.title = getDocumentTitle(path)
+  }, [path])
+
   const protectedPath = path.startsWith('/console') || path === '/oauth/account' || path === '/oauth/consent'
   const adminPath = path.startsWith('/admin')
   const bootstrapPath = path === '/bootstrap'
