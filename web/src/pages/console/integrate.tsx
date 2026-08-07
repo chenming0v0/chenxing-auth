@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type FormEvent } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { apiFetch, type ClientInput, type OwnedOAuthClient, type RegisteredOwnedOAuthClient } from '../../api'
 import { Drawer } from '../../components/drawer'
 import { ConsoleLayout } from '../../components/shells'
@@ -11,6 +11,8 @@ export function IntegratePage() {
   const [secret, setSecret] = useState<{ clientId: string; value: string } | null>(null)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  const [rotatingClientIds, setRotatingClientIds] = useState<Set<string>>(() => new Set())
+  const rotatingClientIdsRef = useRef(new Set<string>())
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editing, setEditing] = useState<OwnedOAuthClient | null>(null)
   const [name, setName] = useState('')
@@ -77,13 +79,19 @@ export function IntegratePage() {
   }
 
   async function rotate(clientId: string) {
+    if (rotatingClientIdsRef.current.has(clientId)) return
     if (!window.confirm('轮换后旧 Secret 将失效，且新 Secret 只显示这一次，继续吗？')) return
+    rotatingClientIdsRef.current.add(clientId)
+    setRotatingClientIds(new Set(rotatingClientIdsRef.current))
     setMessage('')
     try {
       const response = await apiFetch<{ client_id: string; client_secret: string }>(`/api/v1/auth/oauth-clients/${encodeURIComponent(clientId)}/rotate-secret`, { method: 'POST' })
       setSecret({ clientId: response.client_id, value: response.client_secret })
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Secret 轮换失败。')
+    } finally {
+      rotatingClientIdsRef.current.delete(clientId)
+      setRotatingClientIds(new Set(rotatingClientIdsRef.current))
     }
   }
 
@@ -187,7 +195,9 @@ export function IntegratePage() {
                 {client.status === 'active' ? '禁用' : '启用'}
               </Button>
               <Button variant="ghost" icon="pencil" onClick={() => openEdit(client)}>编辑</Button>
-              <Button variant="ghost" icon="refresh-cw" onClick={() => void rotate(client.client_id)}>轮换</Button>
+              <Button variant="ghost" icon="refresh-cw" disabled={rotatingClientIds.has(client.client_id)} onClick={() => void rotate(client.client_id)}>
+                {rotatingClientIds.has(client.client_id) ? '轮换中…' : '轮换'}
+              </Button>
             </div>
           </article>
         ))}
@@ -252,4 +262,3 @@ export function IntegratePage() {
     </ConsoleLayout>
   )
 }
-
