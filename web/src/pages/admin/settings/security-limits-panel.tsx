@@ -83,7 +83,7 @@ export function SecurityLimitsPanel({ onMessage }: { onMessage: (message: string
         body: JSON.stringify(payload),
       })
       setDraft(toDraft(updated))
-      onMessage('安全限流配置已保存。')
+      onMessage('安全限流配置已保存，重启服务后生效。', 'warning')
     } catch (reason) {
       onMessage(reason instanceof Error ? reason.message : '安全限流配置保存失败。', 'warning')
     } finally {
@@ -97,7 +97,7 @@ export function SecurityLimitsPanel({ onMessage }: { onMessage: (message: string
         <Icon name="shield" className="text-[var(--chenxing-cyan)]" size={18} />
         配置安全限流阈值
       </h2>
-      <p className="chenxing-caption mt-1.5">用以在暴力破解或洪泛发生时调整边界，无需改代码重发版</p>
+      <p className="chenxing-caption mt-1.5">用以在暴力破解或洪泛发生时调整边界；配置保存后需重启服务才能生效。</p>
       {loading || !draft ? (
         <div className="mt-5"><Notice>正在加载安全限流配置。</Notice></div>
       ) : (
