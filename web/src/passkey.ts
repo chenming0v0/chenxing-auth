@@ -50,8 +50,7 @@ export function decodeBase64Url(value: unknown): ArrayBuffer {
 
 export function encodeBase64Url(value: ArrayBuffer): string {
   const bytes = new Uint8Array(value)
-  let binary = ''
-  for (const byte of bytes) binary += String.fromCharCode(byte)
+  const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join('')
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
