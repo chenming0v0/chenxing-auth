@@ -182,16 +182,6 @@ main {
   border-bottom-right-radius: var(--chenxing-radius-md);
 }
 
-/* scanning beam */
-.chenxing-beam {
-  position: absolute;
-  left: 0; right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--chenxing-cyan), transparent);
-  opacity: 0;
-  animation: chenxing-scan 7s linear infinite;
-}
-
 /* ---------- buttons ---------- */
 .chenxing-btn-primary {
   position: relative;
@@ -451,18 +441,6 @@ td.chenxing-label {
 }
 .chenxing-vignette {
   background: radial-gradient(ellipse 120% 90% at 50% 0%, transparent 55%, rgba(1, 3, 8, 0.6) 100%);
-}
-
-/* pulsing beacon dot */
-.chenxing-dot { position: relative; display: inline-flex; }
-.chenxing-dot::after {
-  content: "";
-  position: absolute;
-  inset: -4px;
-  border-radius: 9999px;
-  background: currentColor;
-  opacity: 0.35;
-  animation: chenxing-ping 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
 }
 
 /* ---------- console shell: brand lockup ---------- */
@@ -790,44 +768,6 @@ td.chenxing-label {
   background: linear-gradient(135deg, rgba(124, 92, 255, 0.08), rgba(255, 122, 194, 0.06));
 }
 
-/* ---------- console shell: glowing user chip (mobile) ---------- */
-/* Bottom user card that "泛着光" — animated aurora border glow + logo watermark. */
-.chenxing-userchip-glow {
-  position: relative;
-  overflow: hidden;
-  padding: 1rem 1.1rem;
-  background: linear-gradient(150deg, rgba(24, 38, 66, 0.85), rgba(9, 14, 28, 0.8));
-  border: 1px solid rgba(147, 197, 253, 0.28);
-  border-radius: var(--chenxing-radius-lg);
-  box-shadow: 0 0 26px rgba(56, 189, 248, 0.28), var(--chenxing-shadow-float);
-}
-.chenxing-userchip-glow::before {
-  content: "";
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  padding: 1px;
-  background: linear-gradient(115deg, rgba(124, 92, 255, 0.7), rgba(56, 189, 248, 0.7) 45%, rgba(103, 232, 249, 0.7) 70%, rgba(210, 75, 255, 0.6));
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  opacity: 0.9;
-  animation: chenxing-pulse 3.6s ease-in-out infinite;
-  pointer-events: none;
-}
-.chenxing-userchip-logo {
-  position: absolute;
-  right: -0.4rem;
-  bottom: -0.6rem;
-  width: 5.5rem;
-  height: 5.5rem;
-  object-fit: contain;
-  opacity: 0.16;
-  filter: drop-shadow(0 0 14px rgba(56, 189, 248, 0.5));
-  pointer-events: none;
-}
-
 /* ---------- console shell: mobile bottom tab bar ---------- */
 .chenxing-bottom-nav {
   position: fixed;
@@ -903,40 +843,16 @@ td.chenxing-label {
 .chenxing-switch.is-on::after { transform: translateX(1.4rem); background: var(--chenxing-cyan); box-shadow: 0 0 10px rgba(103, 232, 249, 0.7); }
 
 /* ---------- keyframes ---------- */
-/* scroll reveal: [data-reveal-3d] elements fade/rise in when .is-visible is added */
-[data-reveal-3d] {
-  opacity: 0;
-  transform: translateY(26px) scale(0.985);
-  transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1), transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: opacity, transform;
-}
-[data-reveal-3d].is-visible { opacity: 1; transform: none; }
-
-@keyframes chenxing-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
-@keyframes chenxing-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
-@keyframes chenxing-ping { 0% { transform: scale(1); opacity: 0.4; } 80%, 100% { transform: scale(2.2); opacity: 0; } }
-@keyframes chenxing-spin-slow { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 @keyframes chenxing-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
-@keyframes chenxing-scan { 0%, 12% { top: 6%; opacity: 0; } 18% { opacity: 0.9; } 82% { opacity: 0.9; } 88%, 100% { top: 94%; opacity: 0; } }
-@keyframes chenxing-shoot {
-  0% { transform: translate(0, 0) rotate(215deg); opacity: 0; }
-  6% { opacity: 1; }
-  22% { transform: translate(-46vw, 30vh) rotate(215deg); opacity: 0; }
-  100% { transform: translate(-46vw, 30vh) rotate(215deg); opacity: 0; }
-}
 
 /* ---------- reduced motion: 装饰性循环动画 ---------- */
-/* prefers-reduced-motion: reduce 下停掉所有非必要的无限循环动画（流光标题、
-   扫描光束、信标脉冲、发光描边脉动），保留用户驱动的一次性过渡（抽屉滑入、
-   topbar 收缩、悬停变色）与状态反馈。静态外观取动画的某一帧等价呈现
-   （流光停在渐变的起始段、信标停在常亮光晕），不改动品牌视觉。
+/* prefers-reduced-motion: reduce 下停掉所有非必要的无限循环动画（流光标题），
+   保留用户驱动的一次性过渡（抽屉滑入、topbar 收缩、悬停变色）与状态反馈。
+   静态外观取动画的某一帧等价呈现（流光停在渐变的起始段），不改动品牌视觉。
    组件级一次性动画各自就近处理：.chenxing-select-popup 见下方 select 段，
    oauth 的传输光束/旋转图标见 oauth.css。 */
 @media (prefers-reduced-motion: reduce) {
-  .chenxing-text-shimmer,
-  .chenxing-beam,
-  .chenxing-dot::after,
-  .chenxing-userchip-glow::before {
+  .chenxing-text-shimmer {
     animation: none;
   }
 }
@@ -1060,40 +976,6 @@ td.chenxing-label {
   background: rgba(4, 7, 14, 0.6);
 }
 
-/* ---------- key/value row: mono value + trailing copy (接入信息) ---------- */
-.chenxing-kv {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
-  padding: 0.6rem 0.55rem 0.6rem 0.85rem;
-  background: rgba(4, 8, 16, 0.6);
-  border: 1px solid var(--chenxing-input);
-  border-radius: var(--chenxing-radius-md);
-}
-.chenxing-kv-value {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--chenxing-font-mono);
-  font-size: 0.8125rem;
-  color: var(--chenxing-ice);
-}
-.chenxing-kv-copy {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  flex-shrink: 0;
-  color: var(--chenxing-muted-foreground);
-  border-radius: var(--chenxing-radius-sm);
-  transition: color 0.18s, background 0.18s;
-  cursor: pointer;
-}
-.chenxing-kv-copy:hover { color: var(--chenxing-cyan); background: var(--chenxing-cyan-soft); }
-
 /* ---------- select / listbox ---------- */
 /* Native <select> renders its option list through the OS, so <option> can never
    be themed. These classes back the custom listbox in components/select.tsx:
@@ -1183,28 +1065,4 @@ td.chenxing-label {
 }
 @media (prefers-reduced-motion: reduce) {
   .chenxing-select-popup { animation: none; }
-}
-
-/* ---------- scope toggle chip (checkbox-like) ---------- */
-.chenxing-scope-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  font-family: var(--chenxing-font-mono);
-  font-size: 0.75rem;
-  letter-spacing: 0.06em;
-  white-space: nowrap;
-  color: var(--chenxing-muted-foreground);
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--chenxing-border);
-  border-radius: var(--chenxing-radius-pill);
-  padding: 0.45rem 0.85rem;
-  transition: color 0.18s, background 0.18s, border-color 0.18s;
-  cursor: pointer;
-}
-.chenxing-scope-toggle:hover { border-color: var(--chenxing-border-strong); }
-.chenxing-scope-toggle.is-on {
-  color: var(--chenxing-cyan);
-  background: var(--chenxing-cyan-soft);
-  border-color: rgba(103, 232, 249, 0.4);
 }
