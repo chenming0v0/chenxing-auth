@@ -50,6 +50,11 @@ const STATUS_FILTER_OPTIONS: SelectOption[] = [
   { value: 'disabled', label: '已禁用' },
 ]
 
+const STATUS_LABEL: Record<string, string> = {
+  active: '已启用',
+  disabled: '已禁用',
+}
+
 export function AdminUsers() {
   const access = useAdminAccess()
   return (
@@ -204,7 +209,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                   <td className="px-4 py-3">
                     <Badge tone={user.status === 'active' ? 'success' : 'warning'}>
                       <Icon name={user.status === 'active' ? 'check' : 'circle-alert'} size={12} />
-                      {user.status === 'active' ? '已启用' : user.status}
+                      {STATUS_LABEL[user.status] ?? user.status}
                     </Badge>
                   </td>
                   <td className="px-4 py-3">

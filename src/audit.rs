@@ -38,6 +38,8 @@ use time::OffsetDateTime;
 use tokio::time::sleep;
 
 pub mod repository;
+#[cfg(test)]
+mod unit_tests;
 
 pub(crate) const AUDIT_ARCHIVE_BATCH_SIZE: i32 = 1_000;
 const AUDIT_WRITE_MAX_ATTEMPTS: u32 = 3;
@@ -213,6 +215,7 @@ pub struct AuditEvent {
     pub resource_type: String,
     pub resource_id: Option<String>,
     pub metadata: Map<String, Value>,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
@@ -478,20 +481,4 @@ fn contains_sensitive_assignment(value: &str) -> bool {
 
 fn is_embedded_key_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn retries_only_known_safe_database_failures() {
-        assert!(is_retryable_database_error(&AuditError::Database(
-            crate::sqlx::Error::PoolTimedOut,
-        )));
-        assert!(!is_retryable_database_error(&AuditError::Database(
-            crate::sqlx::Error::Protocol("connection outcome is unknown".to_owned()),
-        )));
-        assert!(!is_retryable_database_error(&AuditError::InvalidActorType));
-    }
 }

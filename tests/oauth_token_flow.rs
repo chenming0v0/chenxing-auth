@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     http::{
         Request, StatusCode,
-        header::{CACHE_CONTROL, LOCATION, PRAGMA, SET_COOKIE},
+        header::{CACHE_CONTROL, CONTENT_TYPE, LOCATION, PRAGMA, SET_COOKIE},
     },
 };
 use base64::{
@@ -329,8 +329,28 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
         .headers()
         .get(LOCATION)
         .and_then(|value| value.to_str().ok())
-        .expect("authorization redirect");
-    let consent_url = resolve_location(location);
+        .expect("authorization redirect")
+        .to_owned();
+    let consent_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(location.as_str())
+                .body(Body::empty())
+                .expect("consent SPA request"),
+        )
+        .await
+        .expect("consent SPA response");
+    assert_eq!(consent_response.status(), StatusCode::OK);
+    assert_eq!(
+        consent_response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/html; charset=utf-8")
+    );
+
+    let consent_url = resolve_location(&location);
     assert_eq!(consent_url.path(), "/oauth/consent");
     let request_id = consent_url
         .query_pairs()

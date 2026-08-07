@@ -310,12 +310,11 @@ async fn login_endpoint_rejects_invalid_identifier_without_database_call() {
 }
 
 #[tokio::test]
-async fn unknown_protocol_paths_return_json_not_found_instead_of_spa_html() {
+async fn unknown_api_wellknown_and_health_paths_return_json_not_found_instead_of_spa_html() {
     let (router, key_directory) = test_router().await;
     for path in [
         "/api/v1/does-not-exist",
         "/.well-known/does-not-exist",
-        "/oauth/does-not-exist",
         "/health/does-not-exist",
     ] {
         let response = router

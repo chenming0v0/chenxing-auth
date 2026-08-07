@@ -1,10 +1,35 @@
-use axum::{body::Body, http::Request};
+use axum::{
+    Router,
+    body::Body,
+    http::{Request, StatusCode, header::CONTENT_TYPE},
+};
 use chenxing_auth::{api, config::Config, state::AppState};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
+
+async fn assert_spa_shell(router: Router, uri: &str) {
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .body(Body::empty())
+                .expect("SPA request"),
+        )
+        .await
+        .expect("SPA response");
+    assert_eq!(response.status(), StatusCode::OK, "{uri}");
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/html; charset=utf-8"),
+        "{uri}"
+    );
+}
 
 async fn test_router() -> (axum::Router, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
@@ -36,33 +61,16 @@ async fn test_router() -> (axum::Router, std::path::PathBuf) {
 
 #[tokio::test]
 async fn rust_forwards_root_and_spa_paths_to_the_compiled_react_app() {
-    let (router, first_key_directory) = test_router().await;
-    let response = router
-        .oneshot(
-            Request::builder()
-                .uri("/")
-                .body(Body::empty())
-                .expect("root request"),
-        )
-        .await
-        .expect("root response");
-    assert_eq!(response.status(), axum::http::StatusCode::OK);
-    assert_eq!(
-        response.headers()[axum::http::header::CONTENT_TYPE],
-        "text/html; charset=utf-8"
-    );
-
-    let (router, second_key_directory) = test_router().await;
-    let response = router
-        .oneshot(
-            Request::builder()
-                .uri("/console/developer")
-                .body(Body::empty())
-                .expect("spa request"),
-        )
-        .await
-        .expect("spa response");
-    assert_eq!(response.status(), axum::http::StatusCode::OK);
-    let _ = std::fs::remove_dir_all(first_key_directory);
-    let _ = std::fs::remove_dir_all(second_key_directory);
+    let (router, key_directory) = test_router().await;
+    for uri in [
+        "/",
+        "/console/developer",
+        "/oauth/account",
+        "/oauth/consent?request_id=test-request",
+        "/oauth/redirect?redirect_to=https%3A%2F%2Fclient.example%2Fcallback",
+        "/oauth/does-not-exist",
+    ] {
+        assert_spa_shell(router.clone(), uri).await;
+    }
+    let _ = std::fs::remove_dir_all(key_directory);
 }

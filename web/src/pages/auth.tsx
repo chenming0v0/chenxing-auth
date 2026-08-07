@@ -142,6 +142,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
         await apiFetch<{ user: unknown }>('/api/v1/users', {
           method: 'POST',
           redirectOn401: false,
+          csrf: 'pre-session',
           body: JSON.stringify({ username, email, password, display_name: displayName || null }),
         })
         navigate('/login?registered=1')
@@ -150,6 +151,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
       const response = await apiFetch<LoginResponse | PendingLoginResponse>('/api/v1/auth/login', {
         method: 'POST',
         redirectOn401: false,
+        csrf: 'pre-session',
         body: JSON.stringify({ identifier: email, password }),
       })
       if ('status' in response && 'methods' in response) {
@@ -289,6 +291,7 @@ export function BootstrapPage() {
       await apiFetch('/api/v1/admin/bootstrap', {
         method: 'POST',
         redirectOn401: false,
+        csrf: 'pre-session',
         body: JSON.stringify({ username, email, password }),
       })
       await refreshBootstrap()

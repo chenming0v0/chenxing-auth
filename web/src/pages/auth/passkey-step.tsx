@@ -53,24 +53,24 @@ export function PasskeyStep({
 
 async function registerPasskey(): Promise<void> {
   const challenge = await apiFetch<PasskeyChallenge>('/api/v1/auth/passkeys/register/start', {
-    method: 'POST', redirectOn401: false, body: JSON.stringify({}),
+    method: 'POST', redirectOn401: false, csrf: 'pre-session', body: JSON.stringify({}),
   })
   const publicKey = decodeCreationOptions(challenge)
   const credential = assertPublicKeyCredential(await navigator.credentials.create({ publicKey }))
   await apiFetch<LoginResponse>('/api/v1/auth/passkeys/register/finish', {
-    method: 'POST', redirectOn401: false,
+    method: 'POST', redirectOn401: false, csrf: 'pre-session',
     body: JSON.stringify({ credential: serializeAttestation(credential) }),
   })
 }
 
 async function authenticatePasskey(): Promise<void> {
   const challenge = await apiFetch<PasskeyChallenge>('/api/v1/auth/passkeys/authentication/start', {
-    method: 'POST', redirectOn401: false, body: JSON.stringify({}),
+    method: 'POST', redirectOn401: false, csrf: 'pre-session', body: JSON.stringify({}),
   })
   const publicKey = decodeRequestOptions(challenge)
   const credential = assertPublicKeyCredential(await navigator.credentials.get({ publicKey }))
   await apiFetch<LoginResponse>('/api/v1/auth/passkeys/authentication/finish', {
-    method: 'POST', redirectOn401: false,
+    method: 'POST', redirectOn401: false, csrf: 'pre-session',
     body: JSON.stringify({ credential: serializeAssertion(credential) }),
   })
 }

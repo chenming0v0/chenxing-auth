@@ -11,7 +11,10 @@ export class ApiError extends Error {
   }
 }
 
-export type ApiRequestInit = RequestInit & { redirectOn401?: boolean }
+export type ApiRequestInit = RequestInit & {
+  redirectOn401?: boolean
+  csrf?: 'required' | 'pre-session'
+}
 
 /** 从 cookie 字符串中解析 CSRF token；接受字符串入参以便脱离 document 单测。 */
 export function parseCsrfToken(cookieString: string): string | undefined {
@@ -37,6 +40,18 @@ function csrfToken(): string | undefined {
 }
 
 const SAFE_HTTP_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE'])
+const PRE_SESSION_MUTATION_PATHS = new Set([
+  '/api/v1/admin/bootstrap',
+  '/api/v1/users',
+  '/api/v1/auth/login',
+  '/api/v1/auth/totp/setup',
+  '/api/v1/auth/totp/setup/confirm',
+  '/api/v1/auth/totp/login',
+  '/api/v1/auth/passkeys/register/start',
+  '/api/v1/auth/passkeys/register/finish',
+  '/api/v1/auth/passkeys/authentication/start',
+  '/api/v1/auth/passkeys/authentication/finish',
+])
 
 /** 安全错误码文案映射，使用 Map 避免原型链污染（Object 字面量索引可访问 constructor 等原型属性）。 */
 const safeMessages = new Map<string, string>([
@@ -111,7 +126,7 @@ function missingCsrfError(): ApiError {
 }
 
 export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Promise<T> {
-  const { redirectOn401 = true, ...requestInit } = init
+  const { redirectOn401 = true, csrf = 'required', ...requestInit } = init
   const method = normalizeMethod(requestInit.method)
   const headers = new Headers(requestInit.headers)
   headers.set('Accept', 'application/json')
@@ -119,7 +134,10 @@ export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Prom
     if (!(requestInit.body instanceof FormData)) headers.set('Content-Type', 'application/json')
     const token = csrfToken()
     if (token) headers.set('X-CSRF-Token', token)
-    else if (!headers.has('X-CSRF-Token')) throw missingCsrfError()
+    else if (!headers.has('X-CSRF-Token')) {
+      const allowedWithoutCsrf = csrf === 'pre-session' && PRE_SESSION_MUTATION_PATHS.has(path)
+      if (!allowedWithoutCsrf) throw missingCsrfError()
+    }
   }
 
   let response: Response

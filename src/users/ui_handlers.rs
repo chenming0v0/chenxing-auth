@@ -24,6 +24,7 @@ struct UserMeResponse {
     display_name: Option<String>,
     status: String,
     role: super::domain::UserRole,
+    #[serde(with = "time::serde::rfc3339")]
     current_session_expires_at: time::OffsetDateTime,
 }
 
@@ -50,7 +51,9 @@ impl fmt::Debug for ChangePasswordInput {
 #[derive(Debug, Serialize)]
 struct SessionItem {
     id: i64,
+    #[serde(with = "time::serde::rfc3339")]
     created_at: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     expires_at: time::OffsetDateTime,
     current: bool,
 }
@@ -255,4 +258,38 @@ fn profile_response(
         }),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SessionItem, UserMeResponse};
+    use crate::users::domain::UserRole;
+
+    #[test]
+    fn user_api_times_serialize_as_rfc3339() {
+        let profile = serde_json::to_value(UserMeResponse {
+            id: 1,
+            username: "owner".to_owned(),
+            email: "owner@example.test".to_owned(),
+            display_name: None,
+            status: "active".to_owned(),
+            role: UserRole::Owner,
+            current_session_expires_at: time::OffsetDateTime::UNIX_EPOCH,
+        })
+        .expect("profile serializes");
+        let session = serde_json::to_value(SessionItem {
+            id: 1,
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            expires_at: time::OffsetDateTime::UNIX_EPOCH,
+            current: true,
+        })
+        .expect("session serializes");
+
+        assert_eq!(
+            profile["current_session_expires_at"],
+            "1970-01-01T00:00:00Z"
+        );
+        assert_eq!(session["created_at"], "1970-01-01T00:00:00Z");
+        assert_eq!(session["expires_at"], "1970-01-01T00:00:00Z");
+    }
 }

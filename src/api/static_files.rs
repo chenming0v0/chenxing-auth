@@ -86,7 +86,7 @@ async fn web_app(request: axum::extract::Request) -> Response {
     }
 
     let path = request.uri().path();
-    // 协议路径（/api、/oauth 等）和带扩展名的资源路径都不应返回 SPA shell：
+    // 协议路径（API、真实 OAuth/OIDC 端点等）和带扩展名的资源路径都不应返回 SPA shell：
     // 前者会让客户端把 HTML 当 JSON 解析，后者会让缺失的 JS/CSS 静默变成 HTML。
     if is_protocol_path(path) || has_file_extension(path) {
         return crate::error::not_found("not_found", "not found");
@@ -103,8 +103,10 @@ async fn web_app(request: axum::extract::Request) -> Response {
 fn is_protocol_path(path: &str) -> bool {
     path == "/api"
         || path.starts_with("/api/")
-        || path == "/oauth"
-        || path.starts_with("/oauth/")
+        || matches!(
+            path,
+            "/oauth/authorize" | "/oauth/token" | "/oauth/revoke" | "/oauth/userinfo"
+        )
         || path == "/.well-known"
         || path.starts_with("/.well-known/")
         || path.starts_with("/health/")
@@ -147,11 +149,21 @@ mod tests {
     fn is_protocol_path_recognizes_api_oauth_wellknown_prefixes() {
         assert!(is_protocol_path("/api"));
         assert!(is_protocol_path("/api/v1/users"));
-        assert!(is_protocol_path("/oauth/authorize"));
+        for path in [
+            "/oauth/authorize",
+            "/oauth/token",
+            "/oauth/revoke",
+            "/oauth/userinfo",
+        ] {
+            assert!(is_protocol_path(path), "{path}");
+        }
         assert!(is_protocol_path("/.well-known/openid-configuration"));
         assert!(is_protocol_path("/health/ready"));
 
         // 其他路径交给文件服务或 SPA 处理
+        for path in ["/oauth/account", "/oauth/consent", "/oauth/redirect"] {
+            assert!(!is_protocol_path(path), "{path}");
+        }
         assert!(!is_protocol_path("/console"));
         assert!(!is_protocol_path("/assets/main.js"));
         assert!(!is_protocol_path("/admin/login"));

@@ -45,6 +45,7 @@ pub struct UserSummary {
     pub display_name: Option<String>,
     pub status: String,
     pub role: UserRole,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: time::OffsetDateTime,
 }
 
@@ -242,5 +243,27 @@ pub async fn list_admins(State(state): State<AppState>, headers: HeaderMap) -> R
             tracing::error!(error = %error_value, "failed to list administrators");
             error::internal()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UserSummary;
+    use crate::users::domain::UserRole;
+
+    #[test]
+    fn management_user_summary_serializes_creation_time_as_rfc3339() {
+        let value = serde_json::to_value(UserSummary {
+            id: 1,
+            username: "owner".to_owned(),
+            email: "owner@example.test".to_owned(),
+            display_name: None,
+            status: "active".to_owned(),
+            role: UserRole::Owner,
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+        })
+        .expect("user summary serializes");
+
+        assert_eq!(value["created_at"], "1970-01-01T00:00:00Z");
     }
 }

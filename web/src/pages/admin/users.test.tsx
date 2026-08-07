@@ -29,8 +29,12 @@ const TARGET: PublicUser = {
   id: 12, username: 'stardust', email: 'stardust@example.com', display_name: '星尘',
   status: 'active', role: 'user', created_at: '2026-01-02T00:00:00Z',
 }
+const DISABLED: PublicUser = {
+  id: 14, username: 'offline_star', email: 'offline@example.com', display_name: '离线星',
+  status: 'disabled', role: 'user', created_at: '2026-01-04T00:00:00Z',
+}
 
-const PAGE = { items: [TARGET, OWNER_2, SELF], page: 1, page_size: 20, total: 3 }
+const PAGE = { items: [TARGET, DISABLED, OWNER_2, SELF], page: 1, page_size: 20, total: 4 }
 
 beforeEach(() => {
   window.history.replaceState({}, '', '/admin/users')
@@ -178,6 +182,14 @@ describe('UsersTable 自己的角色不可修改（对齐 self_role_change_forbi
 })
 
 describe('UsersTable 保持既有行为', () => {
+  it('禁用用户的状态徽标显示中文而不是后端枚举值', async () => {
+    renderTable()
+    await screen.findByText('离线星')
+    const row = rowOf('离线星')
+    expect(within(row).getByText('已禁用')).toBeTruthy()
+    expect(within(row).queryByText('disabled')).toBeNull()
+  })
+
   it('禁用用户仍走原有确认流程并提交', async () => {
     renderTable()
     await screen.findByText('星尘')

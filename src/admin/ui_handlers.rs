@@ -57,6 +57,7 @@ struct AdminUserQueryPlan {
     id: i64,
     code: String,
     name: String,
+    #[serde(with = "time::serde::rfc3339::option")]
     expires_at: Option<time::OffsetDateTime>,
 }
 
@@ -68,6 +69,7 @@ struct AdminUserQueryItem {
     display_name: Option<String>,
     status: String,
     role: UserRole,
+    #[serde(with = "time::serde::rfc3339")]
     created_at: time::OffsetDateTime,
     plan: Option<AdminUserQueryPlan>,
 }
@@ -310,4 +312,33 @@ fn permissions(role: AdminRole) -> Vec<&'static str> {
     .into_iter()
     .filter_map(|(permission, name)| role.allows(permission).then_some(name))
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AdminUserQueryItem, AdminUserQueryPlan};
+    use crate::users::domain::UserRole;
+
+    #[test]
+    fn admin_query_times_serialize_as_rfc3339() {
+        let value = serde_json::to_value(AdminUserQueryItem {
+            id: 1,
+            username: "owner".to_owned(),
+            email: "owner@example.test".to_owned(),
+            display_name: None,
+            status: "active".to_owned(),
+            role: UserRole::Owner,
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            plan: Some(AdminUserQueryPlan {
+                id: 1,
+                code: "default".to_owned(),
+                name: "Default".to_owned(),
+                expires_at: Some(time::OffsetDateTime::UNIX_EPOCH),
+            }),
+        })
+        .expect("admin query item serializes");
+
+        assert_eq!(value["created_at"], "1970-01-01T00:00:00Z");
+        assert_eq!(value["plan"]["expires_at"], "1970-01-01T00:00:00Z");
+    }
 }

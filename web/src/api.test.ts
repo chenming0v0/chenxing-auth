@@ -232,6 +232,20 @@ describe('apiFetch', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('allows an explicitly marked pre-session request without a CSRF cookie', async () => {
+    fetchMock.mockResolvedValue(stubResponse({ status: 200, body: { expires_at: '2099-01-01T00:00:00Z' } }))
+
+    await expect(apiFetch('/api/v1/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ identifier: 'user@example.test', password: 'password' }),
+      csrf: 'pre-session',
+    })).resolves.toEqual({ expires_at: '2099-01-01T00:00:00Z' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(headersOf(fetchMock).get('X-CSRF-Token')).toBeNull()
+    expect(fetchMock.mock.calls[0][1]).not.toHaveProperty('csrf')
+  })
+
   it('preserves an explicit CSRF header when the cookie is missing', async () => {
     fetchMock.mockResolvedValue(stubResponse({ status: 200, body: {} }))
     await apiFetch('/api/v1/auth/login', {

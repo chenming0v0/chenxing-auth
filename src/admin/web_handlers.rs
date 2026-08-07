@@ -3,30 +3,14 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 
-/// All `/admin/*` pages now live in the React SPA. Rust only forwards so the
-/// legacy bookmarks and automation keep working while the UI renders in React.
-pub async fn dashboard(OriginalUri(uri): OriginalUri) -> Response {
-    redirect_to("/admin", &uri)
-}
-
+/// `/admin/login` is a legacy URL. The React login page lives at a different
+/// path, so both GET and POST preserve the query while forwarding to `/login`.
 pub async fn login_page(OriginalUri(uri): OriginalUri) -> Response {
     redirect_to("/login", &uri)
 }
 
 pub async fn login_submit(OriginalUri(uri): OriginalUri) -> Response {
     redirect_to("/login", &uri)
-}
-
-pub async fn users_page(OriginalUri(uri): OriginalUri) -> Response {
-    redirect_to("/admin/users", &uri)
-}
-
-pub async fn clients_page(OriginalUri(uri): OriginalUri) -> Response {
-    redirect_to("/admin/clients", &uri)
-}
-
-pub async fn audit_page(OriginalUri(uri): OriginalUri) -> Response {
-    redirect_to("/admin/audit", &uri)
 }
 
 fn redirect_to(target: &'static str, uri: &axum::http::Uri) -> Response {

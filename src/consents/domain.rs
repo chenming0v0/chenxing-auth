@@ -31,6 +31,7 @@ pub struct AuthorizedApp {
     pub client_id: String,
     pub client_name: String,
     pub scopes: Vec<String>,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -82,6 +83,7 @@ mod tests {
         assert!(object.contains_key("client_name"));
         assert!(object.contains_key("scopes"));
         assert!(object.contains_key("updated_at"));
+        assert_eq!(object["updated_at"], "1970-01-01T00:00:00Z");
         assert!(!object.contains_key("client_secret"));
         assert!(!object.contains_key("redirect_uris"));
     }

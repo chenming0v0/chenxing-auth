@@ -5,7 +5,7 @@ export type BootstrapState = 'loading' | 'required' | 'ready'
 
 type AuthContextValue = {
   user: UserMe | null
-  status: 'loading' | 'authenticated' | 'unauthenticated'
+  status: 'loading' | 'authenticated' | 'unauthenticated' | 'error'
   bootstrap: BootstrapState
   refresh: () => Promise<UserMe | null>
   refreshBootstrap: () => Promise<BootstrapState>
@@ -51,6 +51,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // 记录启动时的代数。若 clear() / logout() 在 await 期间运行，gen 会与
     // generationRef.current 不一致，届时应丢弃结果，不得覆盖已清除的认证状态。
     const gen = generationRef.current
+    // 已认证页面刷新资料时保持现有内容；初次加载、登录完成和错误重试则进入 loading。
+    setStatus((current) => current === 'authenticated' ? current : 'loading')
     try {
       // Issue #102：直接请求 /auth/me，移除冗余的 /auth/status 前置请求。
       // 未认证时 /auth/me 返回 401，由 catch 块处理；无需额外往返。
@@ -71,9 +73,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // 只有明确的 401 才代表未认证，应清空本地状态。
       // 网络错误（ApiError.status === 0）和服务端错误（5xx）不等于已登出：
       // 在网络抖动时误调 clear() 会把仍有效的会话踢出，属于错误行为。
-      // 非 401 错误时保持当前 status（初次加载时维持 'loading'），由调用方决定重试策略。
       if (error instanceof ApiError && error.status === 401) {
         clear()
+      } else {
+        // 非 401 故障不代表会话失效。已认证页面继续保留当前用户；初次加载则
+        // 进入显式可恢复状态，由受保护路由提供重试动作，避免永久停在 loading。
+        setStatus((current) => current === 'authenticated' ? current : 'error')
       }
       return null
     }

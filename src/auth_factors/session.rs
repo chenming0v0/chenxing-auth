@@ -18,6 +18,7 @@ use crate::{
 pub struct LoginResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
     pub expires_at: time::OffsetDateTime,
 }
 
@@ -157,7 +158,7 @@ fn should_return_session_token(enabled: bool, headers: &HeaderMap) -> bool {
 mod tests {
     use axum::http::{HeaderMap, HeaderValue};
 
-    use super::should_return_session_token;
+    use super::{LoginResponse, should_return_session_token};
 
     #[test]
     fn session_token_response_requires_opt_in_configuration_and_header() {
@@ -168,5 +169,16 @@ mod tests {
         headers.insert("x-chenxing-session-mode", HeaderValue::from_static("token"));
         assert!(!should_return_session_token(false, &headers));
         assert!(should_return_session_token(true, &headers));
+    }
+
+    #[test]
+    fn login_response_serializes_expiry_as_rfc3339() {
+        let value = serde_json::to_value(LoginResponse {
+            session_id: None,
+            expires_at: time::OffsetDateTime::UNIX_EPOCH,
+        })
+        .expect("login response serializes");
+
+        assert_eq!(value["expires_at"], "1970-01-01T00:00:00Z");
     }
 }

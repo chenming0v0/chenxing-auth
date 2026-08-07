@@ -1,7 +1,10 @@
 use axum::{
     Router,
     body::Body,
-    http::{Method, Request, StatusCode},
+    http::{
+        Method, Request, StatusCode,
+        header::{CONTENT_TYPE, LOCATION},
+    },
 };
 use chenxing_auth::config::Config;
 use chenxing_auth::{api, state::AppState};
@@ -12,6 +15,21 @@ use uuid::Uuid;
 
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
+
+fn get_request(uri: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .body(Body::empty())
+        .expect("valid GET request")
+}
+
+fn content_type(response: &axum::response::Response) -> Option<&str> {
+    response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+}
 
 async fn test_router() -> (Router, std::path::PathBuf) {
     let key_directory = std::env::temp_dir().join(format!("chenxing-protected-{}", Uuid::new_v4()));
@@ -79,30 +97,21 @@ async fn userinfo_requires_bearer_token() {
 #[tokio::test]
 async fn admin_routes_forward_to_the_react_spa() {
     let (router, key_directory) = test_router().await;
-    for (uri, expected) in [
-        ("/admin/login", "/login"),
-        ("/admin", "/admin"),
-        ("/admin/users", "/admin/users"),
-        ("/admin/clients", "/admin/clients"),
-        ("/admin/audit", "/admin/audit"),
-        ("/admin/settings/oauth", "/admin/settings"),
+    for uri in [
+        "/admin",
+        "/admin?tab=overview",
+        "/admin/users?search=alice&status=active&page=2",
+        "/admin/clients?page=3",
+        "/admin/audit?action=login&resource_type=user",
     ] {
         let response = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .body(Body::empty())
-                    .expect("valid request"),
-            )
+            .oneshot(get_request(uri))
             .await
             .expect("admin page response");
-        assert_eq!(response.status(), StatusCode::SEE_OTHER, "{uri}");
-        assert_eq!(
-            response.headers()[axum::http::header::LOCATION],
-            expected,
-            "{uri}"
-        );
+        assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        assert_eq!(content_type(&response), Some("text/html"), "{uri}");
+        assert!(!response.headers().contains_key(LOCATION), "{uri}");
     }
     let _ = std::fs::remove_dir_all(key_directory);
 }
@@ -130,19 +139,15 @@ async fn admin_login_post_redirects_to_react_login() {
 }
 
 #[tokio::test]
-async fn admin_redirects_preserve_query_parameters() {
+async fn admin_legacy_redirects_preserve_query_parameters() {
     let (router, key_directory) = test_router().await;
     for (uri, expected) in [
-        ("/admin?tab=overview", "/admin?tab=overview"),
+        ("/admin/login", "/login"),
         (
-            "/admin/users?search=alice&status=active&page=2",
-            "/admin/users?search=alice&status=active&page=2",
+            "/admin/login?returnTo=%2Fadmin%2Fusers%3Fpage%3D2&state=login-state",
+            "/login?returnTo=%2Fadmin%2Fusers%3Fpage%3D2&state=login-state",
         ),
-        ("/admin/clients?page=3", "/admin/clients?page=3"),
-        (
-            "/admin/audit?action=login&resource_type=user",
-            "/admin/audit?action=login&resource_type=user",
-        ),
+        ("/admin/settings/oauth", "/admin/settings"),
         (
             "/admin/settings/oauth?state=provider-state",
             "/admin/settings?state=provider-state",
@@ -150,26 +155,17 @@ async fn admin_redirects_preserve_query_parameters() {
     ] {
         let response = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .body(Body::empty())
-                    .expect("valid request"),
-            )
+            .oneshot(get_request(uri))
             .await
             .expect("admin page response");
         assert_eq!(response.status(), StatusCode::SEE_OTHER, "{uri}");
-        assert_eq!(
-            response.headers()[axum::http::header::LOCATION],
-            expected,
-            "{uri}"
-        );
+        assert_eq!(response.headers()[LOCATION], expected, "{uri}");
     }
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[test]
-fn admin_redirect_targets_exist_in_react_app() {
+fn admin_paths_exist_in_react_app() {
     let app = include_str!("../web/src/App.tsx");
     for target in [
         "/login",

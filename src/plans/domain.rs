@@ -15,7 +15,9 @@ pub struct Plan {
     pub max_qps: Option<i32>,
     pub is_default: bool,
     pub status: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
@@ -216,6 +218,15 @@ mod tests {
                 monthly_auth_limit: Some(11),
             }
         );
+    }
+
+    #[test]
+    fn plan_serializes_timestamps_as_rfc3339() {
+        let value =
+            serde_json::to_value(plan_with_auth_limits(7, Some(11))).expect("plan serializes");
+
+        assert_eq!(value["created_at"], "1970-01-01T00:00:00Z");
+        assert_eq!(value["updated_at"], "1970-01-01T00:00:00Z");
     }
 
     #[test]
