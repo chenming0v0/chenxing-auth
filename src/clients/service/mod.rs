@@ -105,6 +105,8 @@ pub enum ClientServiceError {
     QuotaExceeded,
     #[error("client data is invalid")]
     InvalidData,
+    #[error("client secret was rotated by another concurrent request")]
+    SecretRotationConflict,
 }
 
 impl ClientService {

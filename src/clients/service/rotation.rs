@@ -9,15 +9,7 @@ impl ClientService {
         &self,
         client_id: &str,
     ) -> Result<RotatedClientSecret, ClientServiceError> {
-        let (client_secret, hash) = generate_client_secret()?;
-        if !repository::update_client_secret(&self.pool, None, client_id, &hash).await? {
-            return Err(ClientServiceError::InvalidData);
-        }
-        self.revoke_refresh_tokens_after_rotation(client_id).await;
-        Ok(RotatedClientSecret {
-            client_id: client_id.to_owned(),
-            client_secret,
-        })
+        self.rotate_secret_in_scope(None, client_id).await
     }
 
     pub async fn rotate_secret_for_user(
@@ -25,11 +17,31 @@ impl ClientService {
         owner_user_id: UserId,
         client_id: &str,
     ) -> Result<RotatedClientSecret, ClientServiceError> {
-        let (client_secret, hash) = generate_client_secret()?;
-        if !repository::update_client_secret(&self.pool, Some(owner_user_id), client_id, &hash)
-            .await?
-        {
+        self.rotate_secret_in_scope(Some(owner_user_id), client_id)
+            .await
+    }
+
+    async fn rotate_secret_in_scope(
+        &self,
+        owner_user_id: Option<UserId>,
+        client_id: &str,
+    ) -> Result<RotatedClientSecret, ClientServiceError> {
+        let Some(expected_version) =
+            repository::find_client_secret_version(&self.pool, owner_user_id, client_id).await?
+        else {
             return Err(ClientServiceError::InvalidData);
+        };
+        let (client_secret, hash) = generate_client_secret()?;
+        if !repository::update_client_secret_if_version(
+            &self.pool,
+            owner_user_id,
+            client_id,
+            expected_version,
+            &hash,
+        )
+        .await?
+        {
+            return Err(ClientServiceError::SecretRotationConflict);
         }
         self.revoke_refresh_tokens_after_rotation(client_id).await;
         Ok(RotatedClientSecret {

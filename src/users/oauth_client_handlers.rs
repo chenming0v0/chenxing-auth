@@ -212,7 +212,11 @@ pub async fn create_owned_client(
             tracing::error!(error = %database_error, "failed to create owned OAuth client");
             error::internal()
         }
-        Err(ClientServiceError::SecretHash | ClientServiceError::InvalidData) => error::internal(),
+        Err(
+            ClientServiceError::SecretHash
+            | ClientServiceError::InvalidData
+            | ClientServiceError::SecretRotationConflict,
+        ) => error::internal(),
     }
 }
 
@@ -242,7 +246,8 @@ pub async fn update_owned_client(
         Err(
             ClientServiceError::SecretHash
             | ClientServiceError::InvalidData
-            | ClientServiceError::QuotaExceeded,
+            | ClientServiceError::QuotaExceeded
+            | ClientServiceError::SecretRotationConflict,
         ) => error::internal(),
     }
 }
@@ -289,7 +294,8 @@ async fn set_owned_client_status(
         Err(
             ClientServiceError::Validation(_)
             | ClientServiceError::SecretHash
-            | ClientServiceError::QuotaExceeded,
+            | ClientServiceError::QuotaExceeded
+            | ClientServiceError::SecretRotationConflict,
         ) => error::internal(),
     }
 }
@@ -307,9 +313,46 @@ pub async fn rotate_owned_client_secret(
         .rotate_secret_for_user(context.user_id, &client_id)
         .await
     {
-        Ok(secret) => (StatusCode::OK, Json(secret)).into_response(),
+        Ok(secret) => {
+            if state
+                .audit
+                .record_blocking(AuditEvent::new(
+                    "user".to_owned(),
+                    Some(context.user_id.to_string()),
+                    "client_secret_rotate".to_owned(),
+                    "oauth_client".to_owned(),
+                    Some(client_id.clone()),
+                    serde_json::json!({"result": "success"}),
+                ))
+                .await
+                .is_err()
+            {
+                return error::internal();
+            }
+            (StatusCode::OK, Json(secret)).into_response()
+        }
         Err(ClientServiceError::InvalidData) => {
             error::not_found("oauth_client_not_found", "OAuth project was not found")
+        }
+        Err(ClientServiceError::SecretRotationConflict) => {
+            state
+                .audit
+                .record_best_effort(AuditEvent::new(
+                    "user".to_owned(),
+                    Some(context.user_id.to_string()),
+                    "client_secret_rotate_conflict".to_owned(),
+                    "oauth_client".to_owned(),
+                    Some(client_id.clone()),
+                    serde_json::json!({
+                        "result": "conflict",
+                        "reason": "concurrent_rotation"
+                    }),
+                ))
+                .await;
+            error::conflict(
+                "client_secret_rotation_conflict",
+                "client secret was rotated by another concurrent request",
+            )
         }
         Err(ClientServiceError::Database(database_error)) => {
             tracing::error!(error = %database_error, "failed to rotate owned OAuth client secret");
@@ -318,7 +361,8 @@ pub async fn rotate_owned_client_secret(
         Err(
             ClientServiceError::SecretHash
             | ClientServiceError::Validation(_)
-            | ClientServiceError::QuotaExceeded,
+            | ClientServiceError::QuotaExceeded
+            | ClientServiceError::SecretRotationConflict,
         ) => error::internal(),
     }
 }

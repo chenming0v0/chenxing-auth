@@ -6,6 +6,12 @@ use time::OffsetDateTime;
 use super::domain::{ClientAuthMethod, ValidatedClientRegistration};
 use crate::users::domain::UserId;
 
+#[path = "repository_rotation.rs"]
+mod rotation;
+pub use rotation::{
+    find_client_secret_version, update_client_secret_if_version,
+};
+
 /// Client 的认证方式与对应凭据材料。
 ///
 /// 三个变体与数据库 `oauth_clients_auth_method_check` 的三个取值一一对应，
@@ -414,18 +420,19 @@ pub async fn update_client_secret(
     client_id: &str,
     client_secret_hash: &str,
 ) -> Result<bool, crate::sqlx::Error> {
-    let result = crate::sqlx::query(
-        "UPDATE oauth_clients SET client_secret_hash = $3
-         WHERE client_id = $1
-           AND ($2::bigint IS NULL OR owner_user_id = $2)
-           AND auth_method <> 'none'",
+    let Some(expected_version) =
+        find_client_secret_version(pool, owner_user_id, client_id).await?
+    else {
+        return Ok(false);
+    };
+    update_client_secret_if_version(
+        pool,
+        owner_user_id,
+        client_id,
+        expected_version,
+        client_secret_hash,
     )
-    .bind(client_id)
-    .bind(owner_user_id)
-    .bind(client_secret_hash)
-    .execute(pool)
-    .await?;
-    Ok(result.rows_affected() == 1)
+    .await
 }
 
 #[cfg(test)]

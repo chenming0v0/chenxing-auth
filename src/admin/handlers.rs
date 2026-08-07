@@ -144,7 +144,8 @@ pub async fn create_client(
         Err(
             ClientServiceError::SecretHash
             | ClientServiceError::InvalidData
-            | ClientServiceError::QuotaExceeded,
+            | ClientServiceError::QuotaExceeded
+            | ClientServiceError::SecretRotationConflict,
         ) => {
             tracing::error!("failed to create OAuth client secret");
             error::internal()
@@ -228,7 +229,8 @@ pub async fn update_client(
         Err(
             ClientServiceError::SecretHash
             | ClientServiceError::InvalidData
-            | ClientServiceError::QuotaExceeded,
+            | ClientServiceError::QuotaExceeded
+            | ClientServiceError::SecretRotationConflict,
         ) => error::internal(),
     }
 }
@@ -270,7 +272,8 @@ pub async fn set_client_status(
         }
         Err(ClientServiceError::Validation(_))
         | Err(ClientServiceError::SecretHash)
-        | Err(ClientServiceError::QuotaExceeded) => error::internal(),
+        | Err(ClientServiceError::QuotaExceeded)
+        | Err(ClientServiceError::SecretRotationConflict) => error::internal(),
     }
 }
 
@@ -327,6 +330,27 @@ pub async fn rotate_secret(
         }
         Err(ClientServiceError::InvalidData) => {
             error::not_found("client_not_found", "client was not found")
+        }
+        Err(ClientServiceError::SecretRotationConflict) => {
+            let (actor_type, actor_id) = actor.audit_fields();
+            state
+                .audit
+                .record_best_effort(AuditEvent::new(
+                    actor_type.to_owned(),
+                    actor_id,
+                    "client_secret_rotate_conflict".to_owned(),
+                    "oauth_client".to_owned(),
+                    Some(client_id.clone()),
+                    serde_json::json!({
+                        "result": "conflict",
+                        "reason": "concurrent_rotation"
+                    }),
+                ))
+                .await;
+            error::conflict(
+                "client_secret_rotation_conflict",
+                "client secret was rotated by another concurrent request",
+            )
         }
         Err(ClientServiceError::Database(database_error)) => {
             tracing::error!(error = %database_error, "failed to rotate OAuth client secret");

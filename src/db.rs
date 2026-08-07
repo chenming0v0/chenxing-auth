@@ -272,6 +272,15 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0014_session_idle_policy.sql")),
             false,
         ),
+        Migration::new(
+            16,
+            Cow::Borrowed("client secret rotation compare-and-swap version"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!(
+                "../migrations/0016_client_secret_rotation_version.sql"
+            )),
+            false,
+        ),
     ];
 
     Migrator {
