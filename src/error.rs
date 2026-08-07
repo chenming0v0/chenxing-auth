@@ -42,6 +42,25 @@ pub fn oauth_temporarily_unavailable() -> Response {
     )
 }
 
+pub(crate) fn request_timeout() -> Response {
+    (
+        StatusCode::GATEWAY_TIMEOUT,
+        Json(ErrorResponse {
+            code: "request_timeout".to_owned(),
+            message: "request timed out".to_owned(),
+        }),
+    )
+        .into_response()
+}
+
+pub(crate) fn map_request_timeout(response: Response) -> Response {
+    if response.status() == StatusCode::GATEWAY_TIMEOUT {
+        request_timeout()
+    } else {
+        response
+    }
+}
+
 pub fn oauth_unauthorized(
     code: &'static str,
     description: impl Into<String>,
@@ -163,8 +182,11 @@ pub fn internal() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{oauth_invalid_bearer, oauth_invalid_client};
-    use axum::{body::to_bytes, http::header::WWW_AUTHENTICATE};
+    use super::{map_request_timeout, oauth_invalid_bearer, oauth_invalid_client};
+    use axum::{
+        body::{Body, to_bytes},
+        http::{StatusCode, header::WWW_AUTHENTICATE},
+    };
 
     #[tokio::test]
     async fn oauth_client_error_has_rfc_fields_and_basic_challenge() {
@@ -206,5 +228,24 @@ mod tests {
             response.status(),
             axum::http::StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    #[tokio::test]
+    async fn request_timeout_uses_generic_json_without_internal_details() {
+        let response = map_request_timeout(
+            axum::http::Response::builder()
+                .status(StatusCode::GATEWAY_TIMEOUT)
+                .body(Body::empty())
+                .expect("request timeout response"),
+        );
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("request timeout body");
+        let body: serde_json::Value = serde_json::from_slice(&body)
+            .expect("request timeout JSON");
+        assert_eq!(body["code"], "request_timeout");
+        assert_eq!(body["message"], "request timed out");
     }
 }

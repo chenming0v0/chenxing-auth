@@ -1,12 +1,12 @@
 use axum::{
     Router,
-    http::{HeaderMap, Request},
+    http::{HeaderMap, Request, StatusCode},
     middleware::map_response,
     response::Response,
     routing::{delete, get, post},
 };
-use std::net::SocketAddr;
-use tower_http::trace::TraceLayer;
+use std::{net::SocketAddr, time::Duration};
+use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 
 use crate::config::TrustedProxies;
 
@@ -80,11 +80,9 @@ fn request_span<B>(request: &Request<B>) -> tracing::Span {
 
 pub fn router(state: AppState) -> Router {
     let hsts_enabled = security_headers::hsts_enabled(&state.config.issuer_url);
+    let request_timeout = Duration::from_secs(state.config.request_timeout_seconds);
 
     Router::new()
-        .route("/health", get(health))
-        .route("/health/live", get(health_live))
-        .route("/health/ready", get(health_ready))
         .route(
             "/.well-known/openid-configuration",
             get(openid_configuration),
@@ -260,11 +258,21 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/admin/keys/{key_id}/revoke",
             axum::routing::post(revoke_signing_key),
         )
+        // Health probes have their own 2s dependency budget. The static fallback may
+        // stream files, so neither should inherit this handler-future timeout.
+        .route_layer(TimeoutLayer::with_status_code(
+            StatusCode::GATEWAY_TIMEOUT,
+            request_timeout,
+        ))
+        .route("/health", get(health))
+        .route("/health/live", get(health_live))
+        .route("/health/ready", get(health_ready))
         // 静态资源与 SPA 回退挂在 fallback 上：fallback_service 只在上面所有
         // 路由都不匹配时才生效，所以 /api/*、/health 等不会被静态服务抢走。
         .fallback_service(static_files::static_service())
         .with_state(state)
         .layer(TraceLayer::new_for_http().make_span_with(request_span))
+        .layer(map_response(crate::error::map_request_timeout))
         .layer(map_response(move |response: Response| {
             security_headers::apply(response, hsts_enabled)
         }))
