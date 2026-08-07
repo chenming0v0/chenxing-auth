@@ -7,7 +7,7 @@ use super::{AuthFactorService, AuthFactorServiceError};
 use crate::{
     auth_factors::repository,
     auth_limiter::{
-        AuthFailureLimiter, FailureDimension, LimiterDimension, MissingSourceIpPolicy,
+        FailureDimension, LimiterDimension, MissingSourceIpPolicy,
         domain::{FailureRecord, commit_reserved_failure, release_reserved},
     },
     users::domain::UserId,
