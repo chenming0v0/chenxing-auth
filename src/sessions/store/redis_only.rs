@@ -63,7 +63,7 @@ end
 
 local marker = redis.call('GET', KEYS[1])
 local comparison = marker and compare_decimal(marker, ARGV[1])
-if comparison ~= nil and comparison >= 0 then return 0 end
+if comparison and comparison >= 0 then return 0 end
 if redis.call('EXISTS', KEYS[3]) == 1 then return 0 end
 redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
 return 1

@@ -536,6 +536,15 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
     let sessions = SessionStore::with_redis_key(client.clone(), [0; 32]);
     let mut session =
         Session::new("storage-user".to_owned(), Duration::from_secs(60)).expect("session");
+    let watermark_key = "chenxing:session:revoked-before:storage-user".to_owned();
+    let _: usize = connection
+        .del(&watermark_key)
+        .await
+        .expect("clear Redis-only session watermark");
+    assert!(!connection
+        .exists::<_, bool>(&watermark_key)
+        .await
+        .expect("check missing Redis-only session watermark"));
     sessions
         .save(&mut session, Duration::from_secs(60))
         .await
@@ -730,6 +739,7 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
     let _: usize = connection
         .del(&[
             session_key,
+            watermark_key,
             format!(
                 "chenxing:oauth:code:{}",
                 base64::engine::general_purpose::URL_SAFE_NO_PAD
