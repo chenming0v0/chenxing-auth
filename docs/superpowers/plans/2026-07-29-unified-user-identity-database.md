@@ -201,7 +201,7 @@ git commit -m "feat: add hierarchical user roles"
 Use an isolated empty database and submit:
 
 ```json
-{"username":"owner","email":"owner@example.com","password":"1234567890"}
+{"username":"chenxing-owner","email":"owner@example.com","password":"1234567890"}
 ```
 
 Assert `201`, `id = 1`, `role = owner`, no Session Cookie, and a stored `users` row with normalized email. Assert invalid email returns `400`, two concurrent requests produce exactly one `201`, and later requests return `409`.

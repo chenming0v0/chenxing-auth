@@ -257,7 +257,7 @@ export function BootstrapPage() {
               </div>
             ) : (
               <form className="mt-6 space-y-4" onSubmit={submit} noValidate>
-                <Field label="管理员用户名" icon="user" placeholder="owner" value={username} onChange={(event) => setUsername(event.target.value)} required />
+                <Field label="管理员用户名" icon="user" placeholder="chenxing-owner" value={username} onChange={(event) => setUsername(event.target.value)} required />
                 <Field label="邮箱" icon="mail" type="email" placeholder="owner@chenxing.star" value={email} onChange={(event) => setEmail(event.target.value)} required />
                 <PasswordField label="密码" icon="lock-keyhole" placeholder="至少 12 位，含字母与数字" value={password} onChange={(event) => setPassword(event.target.value)} required />
                 <div className="flex items-start gap-3 rounded-[var(--chenxing-radius-md)] border border-[rgba(255,107,122,0.35)] bg-[rgba(255,107,122,0.08)] px-4 py-3">

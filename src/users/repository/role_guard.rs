@@ -62,7 +62,7 @@ pub async fn set_user_role(
     };
     if current_role == "owner"
         && role != UserRole::Owner
-        && status == "active"
+        && UserStatus::parse(&status) == Some(UserStatus::Active)
         && active_owner_count <= 1
     {
         transaction.rollback().await?;
@@ -82,6 +82,9 @@ pub async fn set_user_status(
     id: UserId,
     status: &str,
 ) -> Result<bool, crate::sqlx::Error> {
+    let Some(status) = UserStatus::parse(status) else {
+        return Ok(false);
+    };
     Ok(matches!(
         set_user_status_guarded(pool, id, status).await?,
         Some("updated")
@@ -91,14 +94,8 @@ pub async fn set_user_status(
 pub async fn set_user_status_guarded(
     pool: &PgPool,
     id: UserId,
-    status: &str,
+    status: UserStatus,
 ) -> Result<Option<&'static str>, crate::sqlx::Error> {
-    // 状态词表只有 `UserStatus` 一个来源：这里曾经内联 `matches!(status, "active" | "disabled")`，
-    // 与领域枚举和数据库 CHECK 约束构成第三份副本。返回语义保持不变——
-    // 非法状态仍然按"未找到"处理（调用方翻成 400 user_not_found）。
-    if UserStatus::parse(status).is_none() {
-        return Ok(None);
-    }
     let mut transaction = pool.begin().await?;
     crate::sessions::store::lock_user_session_scope(&mut transaction, id).await?;
     let (active_owner_count, current) = lock_owner_scope(&mut transaction, id).await?;
@@ -106,22 +103,23 @@ pub async fn set_user_status_guarded(
         transaction.rollback().await?;
         return Ok(None);
     };
+    let current_status = UserStatus::parse(&current_status);
     if role == "owner"
-        && current_status == "active"
-        && status == "disabled"
+        && current_status == Some(UserStatus::Active)
+        && status == UserStatus::Disabled
         && active_owner_count <= 1
     {
         transaction.rollback().await?;
         return Ok(Some("last_owner_required"));
     }
     // 禁用即撤销该用户全部会话：否则被禁用的账号仍能用既有 Cookie 继续访问。
-    if current_status != status && status == "disabled" {
+    if current_status != Some(status) && status == UserStatus::Disabled {
         crate::sessions::store::revoke_all_for_user_in_transaction(&mut transaction, id).await?;
     }
     let result =
         crate::sqlx::query("UPDATE users SET status = $2, updated_at = NOW() WHERE id = $1")
             .bind(id)
-            .bind(status)
+            .bind(status.as_str())
             .execute(&mut *transaction)
             .await?;
     transaction.commit().await?;

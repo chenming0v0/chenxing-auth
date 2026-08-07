@@ -73,6 +73,19 @@ describe('UserCreateDrawer 客户端校验', () => {
     expect(screen.getByText('用户名不能包含 @ 或空格。')).toBeTruthy()
   })
 
+  it('拒绝系统保留名和不安全字符', () => {
+    renderDrawer()
+    fill({ username: 'SYSTEM' })
+    submit()
+    expect(requests).toEqual([])
+    expect(screen.getByText('该用户名为系统保留名称，请更换。')).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('用户名'), { target: { value: 'safe/name' } })
+    submit()
+    expect(requests).toEqual([])
+    expect(screen.getByText('用户名只能包含字母、数字、点号、下划线和连字符。')).toBeTruthy()
+  })
+
   it('拒绝过短的用户名', () => {
     renderDrawer()
     fill({ username: 'ab' })

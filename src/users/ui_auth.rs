@@ -4,7 +4,7 @@ use crate::{
     error,
     sessions::{cookies, domain::Session},
     state::AppState,
-    users::domain::UserId,
+    users::domain::{UserId, UserStatus},
 };
 
 #[derive(Debug)]
@@ -49,7 +49,7 @@ pub(crate) async fn current_user(
     else {
         return Err(invalid_session_response(state, "invalid_session"));
     };
-    if profile.status != "active" {
+    if UserStatus::parse(&profile.status) != Some(UserStatus::Active) {
         return Err(invalid_session_response(state, "user_disabled"));
     }
     Ok(UserContext {

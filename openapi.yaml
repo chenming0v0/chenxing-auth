@@ -1541,7 +1541,7 @@ components:
       type: object
       required: [username, email, password]
       properties:
-        username: { type: string, minLength: 3, maxLength: 64 }
+        username: { type: string, minLength: 3, maxLength: 64, pattern: '^[A-Za-z0-9._-]+$', description: 仅允许 ASCII 字母、数字、点号、下划线和连字符；系统保留名不可使用 }
         email: { type: string, format: email }
         password: { type: string, format: password, minLength: 10, maxLength: 128 }
         display_name: { type: string, nullable: true, maxLength: 128 }
@@ -1607,7 +1607,7 @@ components:
       required: [id, username, email, status, role, created_at]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
-        username: { type: string, minLength: 3, maxLength: 64 }
+        username: { type: string, minLength: 3, maxLength: 64, pattern: '^[A-Za-z0-9._-]+$' }
         email: { type: string, format: email }
         display_name: { type: string, nullable: true }
         status: { type: string }
@@ -1651,7 +1651,7 @@ components:
       required: [id, username, email, status, role, current_session_expires_at]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
-        username: { type: string, minLength: 3, maxLength: 64 }
+        username: { type: string, minLength: 3, maxLength: 64, pattern: '^[A-Za-z0-9._-]+$' }
         email: { type: string, format: email }
         display_name: { type: string, nullable: true }
         status: { type: string }
@@ -1896,7 +1896,7 @@ components:
       type: object
       required: [username, email, password, role]
       properties:
-        username: { type: string, minLength: 3, maxLength: 64 }
+        username: { type: string, minLength: 3, maxLength: 64, pattern: '^[A-Za-z0-9._-]+$' }
         email: { type: string, format: email }
         password: { type: string, format: password, minLength: 10 }
         role: { type: string, enum: [admin, owner] }
@@ -1904,7 +1904,7 @@ components:
       type: object
       required: [username, email, password]
       properties:
-        username: { type: string, minLength: 3, maxLength: 64 }
+        username: { type: string, minLength: 3, maxLength: 64, pattern: '^[A-Za-z0-9._-]+$' }
         email: { type: string, format: email }
         password: { type: string, format: password, minLength: 10 }
     BootstrapOwnerResponse:

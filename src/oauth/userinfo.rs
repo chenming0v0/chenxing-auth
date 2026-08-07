@@ -16,6 +16,7 @@ use crate::{
         token_security::enforce_source_qps_with_policy,
     },
     state::AppState,
+    users::domain::UserStatus,
 };
 
 use super::form;
@@ -186,7 +187,7 @@ async fn userinfo_inner(
     }) else {
         return error::oauth_invalid_bearer("access token is invalid");
     };
-    if profile.status != "active" {
+    if UserStatus::parse(&profile.status) != Some(UserStatus::Active) {
         return error::oauth_invalid_bearer("access token is invalid");
     }
 

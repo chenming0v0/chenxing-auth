@@ -5,6 +5,21 @@ use thiserror::Error;
 use super::credentials::MAX_PASSWORD_LENGTH;
 
 pub const MIN_PASSWORD_LENGTH: usize = 10;
+pub const MIN_USERNAME_LENGTH: usize = 3;
+pub const MAX_USERNAME_LENGTH: usize = 64;
+pub const RESERVED_USERNAMES: &[&str] = &[
+    "admin",
+    "administrator",
+    "owner",
+    "root",
+    "security",
+    "service",
+    "support",
+    "superadmin",
+    "superuser",
+    "sysadmin",
+    "system",
+];
 pub type UserId = i64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -17,9 +32,8 @@ pub enum UserRole {
 
 /// 账号状态词表。
 ///
-/// 与 `UserRole` 对齐：状态字符串此前散落在 SQL 字面量、`matches!(status, ...)`
-/// 守卫和 handler 参数里，任何一处漂移都不会被编译器发现，只能靠数据库的
-/// `users_status_check` 在运行期兜住。收成枚举后，词表只有这一个来源。
+/// 与 `UserRole` 对齐：业务代码通过这个枚举解析和表示状态，持久化层仍使用
+/// 数据库约束要求的文本值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UserStatus {
@@ -290,11 +304,17 @@ pub fn validate_login(input: LoginInput) -> Result<ValidatedLogin, LoginError> {
 }
 
 pub fn validate_username(username: &str) -> Option<String> {
+    if username.chars().any(char::is_control) {
+        return None;
+    }
     let username = username.trim().to_ascii_lowercase();
     let length = username.chars().count();
-    if !(3..=64).contains(&length)
-        || username.contains('@')
-        || username.chars().any(char::is_whitespace)
+    if !(MIN_USERNAME_LENGTH..=MAX_USERNAME_LENGTH).contains(&length)
+        || !username.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, '-' | '_' | '.')
+        })
+        || RESERVED_USERNAMES.contains(&username.as_str())
     {
         return None;
     }

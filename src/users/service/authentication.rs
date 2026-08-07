@@ -14,7 +14,7 @@ use crate::{
     },
     users::{
         credentials::verify_login_password,
-        domain::{LoginError, LoginInput, UserId, validate_login},
+        domain::{LoginError, LoginInput, UserId, UserStatus, validate_login},
         repository,
     },
 };
@@ -119,7 +119,9 @@ impl UserService {
         let password_valid = password.verify_against(credentials.password_hash).await;
         // 状态、口令登录开关与口令校验合并判定：三者中任何一项不通过都返回同一个
         // 错误，不让调用方区分"账号被禁用"和"口令错误"。
-        if credentials.status != "active" || !credentials.password_login_enabled || !password_valid
+        if UserStatus::parse(&credentials.status) != Some(UserStatus::Active)
+            || !credentials.password_login_enabled
+            || !password_valid
         {
             return self
                 .finish_authentication_failure(

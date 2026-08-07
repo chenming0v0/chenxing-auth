@@ -4,7 +4,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::domain::{ClientAuthMethod, ProviderRecord, ValidatedProviderInput};
-use crate::users::domain::{UserId, normalize_email};
+use crate::users::domain::{UserId, UserStatus, normalize_email};
 
 #[derive(Debug, Clone)]
 pub struct ExternalIdentity {
@@ -187,7 +187,7 @@ pub async fn create_user_with_identity(
     .await?;
     if let Some((user_id, status)) = existing_identity {
         transaction.rollback().await?;
-        if status != "active" {
+        if UserStatus::parse(&status) != Some(UserStatus::Active) {
             return Err(CreateIdentityError::UserDisabled);
         }
         return Ok(user_id);

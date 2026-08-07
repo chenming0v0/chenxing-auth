@@ -5,7 +5,10 @@ use crate::{
     sessions::store::SessionStoreError,
     sessions::{cookies, domain::Session},
     state::AppState,
-    users::{domain::UserId, service::UserServiceError},
+    users::{
+        domain::{UserId, UserStatus},
+        service::UserServiceError,
+    },
 };
 
 #[derive(Debug, Error)]
@@ -58,7 +61,7 @@ pub async fn active_user_id(
     let Some(profile) = state.users.find_profile(user_id).await? else {
         return Ok(None);
     };
-    Ok((profile.status == "active").then_some(user_id))
+    Ok((UserStatus::parse(&profile.status) == Some(UserStatus::Active)).then_some(user_id))
 }
 
 fn session_id_from_headers(

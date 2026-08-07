@@ -11,7 +11,7 @@ use crate::{
     error,
     sessions::{cookies, domain::Session},
     state::AppState,
-    users::domain::UserId,
+    users::domain::{UserId, UserStatus},
 };
 
 #[derive(Serialize)]
@@ -51,7 +51,7 @@ pub async fn issue_user_session(
     }) else {
         return error::unauthorized("invalid_session", "user account is invalid");
     };
-    if profile.status != "active" {
+    if UserStatus::parse(&profile.status) != Some(UserStatus::Active) {
         return error::unauthorized("user_disabled", "user account is disabled");
     }
     let ttl = Duration::from_secs(state.config.session_ttl_seconds);
