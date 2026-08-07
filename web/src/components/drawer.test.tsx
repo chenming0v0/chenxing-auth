@@ -4,7 +4,7 @@ import { render, screen, cleanup, fireEvent } from '@testing-library/react'
 import { Drawer } from './drawer'
 
 /** 还原真实用法：页面上的触发按钮 + 条件渲染的抽屉。 */
-function DrawerHarness() {
+function DrawerHarness({ busy = false }: { busy?: boolean }) {
   const [open, setOpen] = useState(false)
   return (
     <>
@@ -15,6 +15,7 @@ function DrawerHarness() {
           description="用于验证焦点管理。"
           onClose={() => setOpen(false)}
           onSubmit={(event) => event.preventDefault()}
+          busy={busy}
           footer={<button type="submit">提交</button>}
         >
           <input aria-label="第一个字段" />
@@ -24,8 +25,8 @@ function DrawerHarness() {
   )
 }
 
-function openDrawer() {
-  render(<DrawerHarness />)
+function openDrawer(busy = false) {
+  render(<DrawerHarness busy={busy} />)
   const trigger = screen.getByText('打开抽屉')
   // 真实浏览器点击按钮会先聚焦它，fireEvent 不会；显式聚焦才能还原触发元素的焦点状态。
   trigger.focus()
@@ -65,6 +66,25 @@ describe('Drawer', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(document.activeElement).toBe(trigger)
+  })
+
+  it('blocks the close button, overlay click, and Escape while busy', () => {
+    const { rerender } = render(<DrawerHarness />)
+    fireEvent.click(screen.getByText('打开抽屉'))
+    rerender(<DrawerHarness busy />)
+
+    const dialog = screen.getByRole('dialog')
+    const overlay = dialog.parentElement
+    const close = screen.getByLabelText('关闭') as HTMLButtonElement
+    expect(close.disabled).toBe(true)
+    expect(dialog.getAttribute('aria-busy')).toBe('true')
+
+    fireEvent.click(close)
+    if (!overlay) throw new Error('Drawer overlay is missing')
+    fireEvent.click(overlay)
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(screen.getByRole('dialog')).toBe(dialog)
   })
 
   it('stops listening for Escape once closed', () => {

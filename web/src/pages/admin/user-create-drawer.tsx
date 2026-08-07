@@ -184,6 +184,7 @@ export function UserCreateDrawer({ canManageRoles, onClose, onCreated }: {
       description="由管理员直接建号，创建后账号立即可用，密码请通过安全渠道转交本人。"
       onClose={onClose}
       onSubmit={(event) => void submit(event)}
+      busy={saving}
       footer={
         <>
           <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>取消</Button>

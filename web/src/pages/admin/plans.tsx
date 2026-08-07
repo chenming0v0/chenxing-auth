@@ -297,9 +297,10 @@ function PlanEditorDrawer({ initial, defaultOn = false, onSaved, onCancel }: {
       description="额度字段留空表示无限制；保存后立即作用于配额检查。"
       onClose={onCancel}
       onSubmit={(event) => void submit(event)}
+      busy={saving}
       footer={
         <>
-          <Button type="button" variant="ghost" onClick={onCancel}>取消</Button>
+          <Button type="button" variant="ghost" onClick={onCancel} disabled={saving}>取消</Button>
           <Button type="submit" icon="save" disabled={saving}>{saving ? '保存中…' : initial ? '保存更新' : '创建套餐'}</Button>
         </>
       }

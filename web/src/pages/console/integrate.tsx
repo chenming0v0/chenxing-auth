@@ -256,9 +256,10 @@ export function IntegratePage() {
           description="服务端负责校验 Redirect URI、Scope 和配额。"
           onClose={closeDrawer}
           onSubmit={save}
+          busy={busy}
           footer={
             <>
-              <Button type="button" variant="ghost" onClick={closeDrawer}>取消</Button>
+              <Button type="button" variant="ghost" onClick={closeDrawer} disabled={busy}>取消</Button>
               <Button type="submit" icon="save" disabled={busy}>{busy ? '保存中…' : editing ? '保存更新' : '创建应用'}</Button>
             </>
           }

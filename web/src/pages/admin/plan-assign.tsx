@@ -68,6 +68,7 @@ export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
       description="到期后自动回退默认套餐；留空到期时间表示永久有效。"
       onClose={onClose}
       onSubmit={(event) => void submit(event)}
+      busy={saving}
       footer={
         <>
           <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>取消</Button>

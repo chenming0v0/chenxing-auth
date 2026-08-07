@@ -27,14 +27,14 @@ function focusableWithin(container: HTMLElement): HTMLElement[] {
  *   否则键盘用户会被留在页面背景里，屏幕阅读器也不会朗读新出现的内容。
  * - ARIA APG dialog 模式：模态对话框期间 Tab / Shift+Tab 只在对话框内循环，Escape 关闭。
  */
-export function useDrawerFocus(onClose: () => void) {
+export function useDrawerFocus(onClose: () => void, busy = false) {
   const containerRef = useRef<HTMLDivElement>(null)
-  // onClose 在每次渲染都是新函数；用 latest ref 让键盘监听器只注册一次，
-  // 保证卸载时一定被移除（否则抽屉关闭后 Escape 仍会触发回调）。
+  // 键盘监听器只注册一次；latest refs 让它读取当前关闭回调和提交状态，
+  // 保证提交开始后 Escape 立即失效，卸载时监听器也能可靠移除。
   const onCloseRef = useRef(onClose)
-  useEffect(() => {
-    onCloseRef.current = onClose
-  }, [onClose])
+  const busyRef = useRef(busy)
+  onCloseRef.current = onClose
+  busyRef.current = busy
 
   useEffect(() => {
     // 记录触发元素：抽屉是从某个按钮打开的，关闭后焦点必须还给它。
@@ -62,7 +62,7 @@ export function useDrawerFocus(onClose: () => void) {
 
       if (event.key === 'Escape') {
         event.preventDefault()
-        onCloseRef.current()
+        if (!busyRef.current) onCloseRef.current()
         return
       }
       if (event.key !== 'Tab') return
@@ -102,6 +102,8 @@ type DrawerProps = {
   /** 遮罩点击、关闭按钮和 Escape 共用的关闭回调。 */
   onClose: () => void
   onSubmit: FormEventHandler<HTMLFormElement>
+  /** 提交期间阻止关闭按钮、遮罩点击和 Escape 关闭；默认不阻止。 */
+  busy?: boolean
   /** 抽屉底部操作区，通常是「取消 + 提交」。 */
   footer: ReactNode
   children: ReactNode
@@ -112,18 +114,23 @@ type DrawerProps = {
  * 抽屉是真正的模态覆盖层，因此使用 role="dialog" + aria-modal + aria-labelledby，
  * 屏幕阅读器进入时会朗读标题并把背景内容视作不可交互。
  */
-export function Drawer({ title, description, onClose, onSubmit, footer, children }: DrawerProps) {
+export function Drawer({ title, description, onClose, onSubmit, busy = false, footer, children }: DrawerProps) {
   const titleId = useId()
-  const containerRef = useDrawerFocus(onClose)
+  const containerRef = useDrawerFocus(onClose, busy)
+
+  function requestClose() {
+    if (!busy) onClose()
+  }
 
   return (
-    <div className="chenxing-drawer-overlay is-open" onClick={onClose}>
+    <div className="chenxing-drawer-overlay is-open" onClick={requestClose}>
       <div
         ref={containerRef}
         className="chenxing-drawer is-open"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-busy={busy || undefined}
         tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
       >
@@ -132,7 +139,7 @@ export function Drawer({ title, description, onClose, onSubmit, footer, children
             <h2 className="chenxing-h2" id={titleId}>{title}</h2>
             {description ? <p className="chenxing-caption mt-1">{description}</p> : null}
           </div>
-          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onClose}><Icon name="x" size={16} /></button>
+          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={requestClose} disabled={busy}><Icon name="x" size={16} /></button>
         </div>
         <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
           <div className="chenxing-drawer-body space-y-4">{children}</div>
