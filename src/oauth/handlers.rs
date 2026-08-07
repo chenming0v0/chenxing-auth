@@ -10,7 +10,8 @@ use std::net::SocketAddr;
 
 use super::{
     authorization::{
-        AuthorizationRequest, AuthorizationRequestError, validate_authorization_request,
+        AuthorizationRequest, AuthorizationRequestError,
+        validate_authorization_request_with_allowlist,
     },
     authorization_code_handlers::{
         authorization_quota_redirect, pending_from_validated, restore_pending_after_failure,
@@ -93,7 +94,11 @@ async fn authorize_request(
         return error::oauth_bad_request("invalid_client", "client is invalid");
     };
 
-    let mut validated = match validate_authorization_request(&client, request.clone()) {
+    let mut validated = match validate_authorization_request_with_allowlist(
+        &client,
+        request.clone(),
+        &state.config.client_registration_limits.allowed_scopes,
+    ) {
         Ok(request) => request,
         Err(validation_error) => {
             tracing::info!(error = %validation_error, "OAuth authorization request rejected");

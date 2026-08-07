@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use super::{
-    authorization::{AuthorizationRequest, validate_authorization_request},
+    authorization::{AuthorizationRequest, validate_authorization_request_with_allowlist},
     consent::{ConsentDecision, PendingAuthorization, parse_decision},
     handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
     session::session_for_headers,
@@ -372,7 +372,7 @@ async fn validated_pending(
             "client is invalid",
         ));
     };
-    let mut validated = validate_authorization_request(
+    let mut validated = validate_authorization_request_with_allowlist(
         &client,
         AuthorizationRequest {
             client_id: pending.client_id.clone(),
@@ -384,6 +384,7 @@ async fn validated_pending(
             code_challenge: Some(pending.code_challenge.clone()),
             code_challenge_method: Some(pending.code_challenge_method.clone()),
         },
+        &state.config.client_registration_limits.allowed_scopes,
     )
     .map_err(|_| error::oauth_bad_request("invalid_request", "authorization request is invalid"))?;
     // 调用方已校验 pending 绑定的会话就是当前会话，授权码必须继承该绑定，

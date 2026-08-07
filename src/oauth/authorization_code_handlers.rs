@@ -2,7 +2,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use std::fmt;
 
 use super::{
-    authorization::ValidatedAuthorizationRequest,
+    authorization::{scopes_are_allowed, ValidatedAuthorizationRequest},
     code::AuthorizationCode,
     consent::PendingAuthorization,
     quota::{QuotaConsumeResult, QuotaReservation},
@@ -72,6 +72,22 @@ pub async fn issue_authorization_code_result(
             "client is invalid",
         ));
     };
+    if validated.client_id != client.client_id
+        || !client
+            .redirect_uris
+            .iter()
+            .any(|uri| uri == &validated.redirect_uri)
+        || !scopes_are_allowed(
+            &client,
+            &validated.scopes,
+            &state.config.client_registration_limits.allowed_scopes,
+        )
+    {
+        return Err(error::oauth_bad_request(
+            "invalid_request",
+            "authorization request is invalid",
+        ));
+    }
     let limits = state
         .settings
         .security_limits()

@@ -1,6 +1,6 @@
 use chenxing_auth::clients::domain::{
-    DEFAULT_MAX_REDIRECT_URI_LENGTH, DEFAULT_MAX_REDIRECT_URIS, DEFAULT_MAX_SCOPE_LENGTH,
-    DEFAULT_MAX_SCOPES,
+    DEFAULT_ALLOWED_SCOPES, DEFAULT_MAX_REDIRECT_URI_LENGTH, DEFAULT_MAX_REDIRECT_URIS,
+    DEFAULT_MAX_SCOPE_LENGTH, DEFAULT_MAX_SCOPES,
 };
 use chenxing_auth::config::{
     AuthEncryptionKey, AuthEncryptionKeyRing, Config, ConfigError,
@@ -47,6 +47,13 @@ fn config_accepts_valid_runtime_values() {
     assert_eq!(
         config.client_registration_limits.max_scope_length,
         DEFAULT_MAX_SCOPE_LENGTH
+    );
+    assert_eq!(
+        config.client_registration_limits.allowed_scopes,
+        DEFAULT_ALLOWED_SCOPES
+            .iter()
+            .map(|scope| (*scope).to_owned())
+            .collect::<Vec<_>>()
     );
 }
 

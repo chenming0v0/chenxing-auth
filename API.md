@@ -147,7 +147,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 | `client_id` | 已注册 Client ID |
 | `redirect_uri` | 必须精确匹配注册值 |
 | `response_type` | 当前仅支持 `code` |
-| `scope` | 空格分隔，如 `openid email profile` |
+| `scope` | 空格分隔，如 `openid email profile`；每个值必须同时属于服务端 allowlist（默认 `openid`、`profile`、`email`）和该 Client 已注册的 scopes |
 | `state` | 必填，建议由接入方随机生成 |
 | `code_challenge` | PKCE challenge |
 | `code_challenge_method` | 必须为 `S256` |
@@ -318,6 +318,10 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 ```json
 {"client_name":"我的应用","redirect_uris":["https://app.example/callback"],"scopes":["openid","email"]}
 ```
+
+Client 的 scopes 由服务端配置的 `OAUTH_CLIENT_ALLOWED_SCOPES` allowlist 约束，默认只允许
+`openid`、`profile`、`email`；自定义 scope 必须先加入服务端配置，且授权请求仍必须精确落在该
+Client 自身注册的 scope 集合内。
 
 - `POST /api/v1/admin/clients`：创建 Client，需要 `ManageClients`。浏览器 Session 请求必须携带 `X-CSRF-Token`，也可使用有效的 `ADMIN_TOKEN` Bearer 请求而不携带浏览器 CSRF；响应包含 `client_secret`，只返回这一次。
 - `GET /api/v1/admin/clients`：列出 Client，不返回 Secret 或其哈希。

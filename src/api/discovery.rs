@@ -20,8 +20,11 @@ pub(super) async fn openid_configuration(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Response {
-    let mut response =
-        Json(OpenIdConfiguration::for_issuer(&state.config.issuer_url)).into_response();
+    let mut response = Json(OpenIdConfiguration::for_issuer_with_scopes(
+        &state.config.issuer_url,
+        &state.config.client_registration_limits.allowed_scopes,
+    ))
+    .into_response();
     // Discovery 是公开的只读元数据，允许任意来源读取；
     // 带上 Vary 以免缓存把有/无 Origin 的响应混用。
     if headers.contains_key(ORIGIN) {
