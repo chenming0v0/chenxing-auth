@@ -190,6 +190,51 @@
     display: flex;
   }
 }
+
+/* ---------- console shell: mobile navigation (#197) ----------
+   移动端（<1024px）侧栏隐藏，完整控制台导航改由汉堡菜单承载，
+   核心页另有固定底栏直达。桌面端侧栏与 active 态不受影响。 */
+
+/* 汉堡菜单现在可能装下整个控制台导航：封顶高度 + 内滚，
+   避免在小屏上溢出视口；dvh 兜住移动端地址栏伸缩。 */
+.chenxing-menu {
+  max-height: calc(100vh - 6rem);
+  max-height: min(calc(100dvh - 6rem), 34rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* 菜单里的导航分组沿用侧栏视觉语言，但压缩间距以适配窄菜单 */
+.chenxing-menu .chenxing-nav-label {
+  margin-top: 0.75rem;
+  padding: 0 0.5rem;
+  font-size: 0.8125rem;
+}
+.chenxing-menu .chenxing-nav-item {
+  padding: 0.5rem 0.6rem;
+  font-size: 0.875rem;
+}
+
+/* 侧栏的左侧发光竖条在菜单里会伸出面板外（菜单滚动时还会被裁出横滚条）；
+   激活态改由软底 + 内描边 + 青色图标承担，和下拉菜单的视觉一致。 */
+.chenxing-menu .chenxing-nav-item[aria-current="page"]::before,
+.chenxing-menu .chenxing-nav-item.is-active::before {
+  display: none;
+}
+
+/* 固定底栏：仅移动端显示，规则与侧栏的显隐互为镜像 */
+.cx-space-root.console-shell .chenxing-bottom-nav {
+  display: none;
+}
+@media (max-width: 1023px) {
+  .cx-space-root.console-shell .chenxing-bottom-nav {
+    display: flex;
+  }
+  /* 给最后一块内容留出底栏高度，避免被固定栏遮住 */
+  .cx-space-root.console-shell .chenxing-console-content {
+    padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+  }
+}
 .chenxing-console-content {
   width: 100%;
 }

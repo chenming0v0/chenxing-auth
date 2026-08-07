@@ -33,12 +33,12 @@ function useTopbarExpanded() {
   return { expanded, sentinelRef }
 }
 
-function NavMenu({ extra }: { extra?: ReactNode }) {
+function NavMenu({ extra, onNavigate }: { extra?: ReactNode; onNavigate?: () => void }) {
   return (
     <div data-menu className="chenxing-menu absolute right-0 top-full z-50 mt-3 w-60">
-      <Link to="/" className="chenxing-nav-menu-item">主页<Icon name="arrow-up-right" size={16} /></Link>
-      <Link to="/console" className="chenxing-nav-menu-item">控制台<Icon name="layout-dashboard" size={16} /></Link>
-      <button type="button" className="chenxing-nav-menu-item">应用广场<Icon name="store" size={16} /></button>
+      <Link to="/" className="chenxing-nav-menu-item" onClick={onNavigate}>主页<Icon name="arrow-up-right" size={16} /></Link>
+      <Link to="/console" className="chenxing-nav-menu-item" onClick={onNavigate}>控制台<Icon name="layout-dashboard" size={16} /></Link>
+      <button type="button" className="chenxing-nav-menu-item" onClick={onNavigate}>应用广场<Icon name="store" size={16} /></button>
       <div className="chenxing-divider my-1" />
       <div className="flex items-center justify-between px-3.5 py-2">
         <span className="chenxing-caption text-[11px] tracking-[0.06em]">状态</span>
@@ -46,7 +46,10 @@ function NavMenu({ extra }: { extra?: ReactNode }) {
           <span className="chenxing-status-dot" />星门在线
         </span>
       </div>
-      {extra}
+      {/* menuExtra 里全是导航性链接/按钮：点任何一项都等于「已作出选择」，
+          关掉菜单与跳转同时发生（与 AccountMenu 里菜单项 onClick 关闭的行为一致）。
+          包一层 div 让调用方不用感知关闭回调，menuExtra 的 ReactNode 契约保持不变。 */}
+      {extra ? <div onClick={onNavigate}>{extra}</div> : null}
     </div>
   )
 }
@@ -54,12 +57,13 @@ function NavMenu({ extra }: { extra?: ReactNode }) {
 function HamburgerMenu({ extra }: { extra?: ReactNode }) {
   const [open, setOpen] = useState(false)
   const ref = useClickAway(open, () => setOpen(false))
+  const close = () => setOpen(false)
   return (
     <div className="relative" ref={ref}>
       <button type="button" className="chenxing-hamburger" aria-label="打开导航菜单" onClick={() => setOpen((value) => !value)}>
         <span /><span /><span />
       </button>
-      {open ? <NavMenu extra={extra} /> : null}
+      {open ? <NavMenu extra={extra} onNavigate={close} /> : null}
     </div>
   )
 }
@@ -202,34 +206,66 @@ export function AuthPanel({ children, className = 'w-full max-w-md' }: { childre
   )
 }
 
-function Sidebar() {
+/** 控制台导航分组：按角色过滤可见分组，渲染带 active 态的导航项。
+    桌面侧栏与移动端汉堡菜单共用同一份数据与 active 判定，避免两处漂移。 */
+function ConsoleNavGroups() {
   const { user } = useAuth()
   const location = useLocation()
   const visible = navGroups.filter((group) => group.label === '账户' || group.label === '开发者' || user?.role !== 'user')
+  return (
+    <>
+      {visible.map((group) => (
+        <div key={group.label}>
+          <p className="chenxing-nav-label">{group.label}</p>
+          {group.items.map((item) => (
+            <NavLink
+              key={item.path}
+              to={item.path}
+              className="chenxing-nav-item"
+              aria-current={location.pathname === item.path ? 'page' : undefined}
+            >
+              <Icon name={item.icon} size={16} className="h-4 w-4" />
+              {item.label}
+            </NavLink>
+          ))}
+        </div>
+      ))}
+    </>
+  )
+}
+
+function Sidebar() {
   return (
     <aside className="chenxing-sidebar flex">
       <Link to="/" className="flex items-center gap-3 px-2">
         <BrandLockup subtitle="用户中心" compact />
       </Link>
-      <nav className="chenxing-sidebar-scroll mt-5 no-scrollbar">
-        {visible.map((group) => (
-          <div key={group.label}>
-            <p className="chenxing-nav-label">{group.label}</p>
-            {group.items.map((item) => (
-              <NavLink
-                key={item.path}
-                to={item.path}
-                className="chenxing-nav-item"
-                aria-current={location.pathname === item.path ? 'page' : undefined}
-              >
-                <Icon name={item.icon} size={16} className="h-4 w-4" />
-                {item.label}
-              </NavLink>
-            ))}
-          </div>
-        ))}
+      <nav className="chenxing-sidebar-scroll mt-5 no-scrollbar" aria-label="控制台导航">
+        <ConsoleNavGroups />
       </nav>
     </aside>
+  )
+}
+
+/** 移动端核心页快捷栏：固定底栏只承载「账户」组的四项核心页，
+    完整导航（开发者/管理/系统）在汉堡菜单里；桌面端由 CSS 隐藏。 */
+function BottomNav() {
+  const location = useLocation()
+  const core = navGroups.find((group) => group.label === '账户')?.items ?? []
+  return (
+    <nav className="chenxing-bottom-nav" aria-label="控制台快捷导航">
+      {core.map((item) => (
+        <NavLink
+          key={item.path}
+          to={item.path}
+          className="chenxing-bottom-tab"
+          aria-current={location.pathname === item.path ? 'page' : undefined}
+        >
+          <Icon name={item.icon} size={18} />
+          {item.label}
+        </NavLink>
+      ))}
+    </nav>
   )
 }
 
@@ -242,11 +278,22 @@ export function ConsoleLayout({ children }: { children: ReactNode }) {
       <div className="chenxing-console-main relative z-10 flex min-h-screen flex-col">
         {/* sidebar already carries the brand lockup, so the topbar brand only
             appears once the bar condenses into its capsule */}
-        <GlobalTopbar status={status} loggedIn hideBrandWhenExpanded />
+        <GlobalTopbar
+          status={status}
+          loggedIn
+          hideBrandWhenExpanded
+          menuExtra={(
+            <>
+              <div className="chenxing-divider my-1" />
+              <ConsoleNavGroups />
+            </>
+          )}
+        />
         <div className="chenxing-console-content flex-1 px-4 py-6 pb-10 sm:px-6 lg:px-8">
           {children}
         </div>
       </div>
+      <BottomNav />
     </SpaceBackdrop>
   )
 }
