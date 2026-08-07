@@ -604,8 +604,8 @@ paths:
       security: [{ sessionCookie: [] }]
       description: |
         绑定时必须同时满足：
-        1. 有效的 Session Cookie（chenxing_session）
-        2. CSRF 校验通过（chenxing_csrf Cookie + X-CSRF-Token 头）
+        1. 有效的 Session Cookie（HTTPS 部署为 __Host-chenxing_session）
+        2. CSRF 校验通过（HTTPS 部署为 __Host-chenxing_csrf Cookie + X-CSRF-Token 头）
         3. 授权持有者 Cookie 与 pending 记录中的摘要匹配（chenxing_authz_holder，防御 OAuth login CSRF / 请求固定攻击 #115）
         
         chenxing_authz_holder Cookie 由 `/oauth/authorize` 在创建未绑定 pending 请求时下发（HttpOnly, SameSite=Lax, path=/），
@@ -1475,7 +1475,7 @@ components:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
     adminBearer: { type: http, scheme: bearer }
     basicClientAuth: { type: http, scheme: basic }
-    sessionCookie: { type: apiKey, in: cookie, name: chenxing_session }
+    sessionCookie: { type: apiKey, in: cookie, name: __Host-chenxing_session, description: HTTPS 浏览器部署使用的 host-only Session Cookie；仅 loopback HTTP 本地开发使用不带前缀的兼容名称 }
     chenxingSession: { type: apiKey, in: header, name: X-Chenxing-Session, description: 仅开发兼容配置 OAUTH_SESSION_HEADER_ENABLED=true 时可用；不能替代 pending、Session 绑定、CSRF 或 consent }
   parameters:
     ClientId: { name: client_id, in: query, required: true, schema: { type: string } }

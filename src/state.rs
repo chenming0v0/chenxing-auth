@@ -53,6 +53,8 @@ pub struct AppState {
 
 #[derive(Debug, thiserror::Error)]
 pub enum StateError {
+    #[error("application configuration is invalid: {0}")]
+    Config(#[from] crate::config::ConfigError),
     #[error("database configuration is invalid: {0}")]
     Database(#[from] crate::sqlx::Error),
     #[error("redis configuration is invalid: {0}")]
@@ -105,6 +107,7 @@ impl AppState {
         config: Config,
         database: crate::db::Database,
     ) -> Result<Self, StateError> {
+        config.validate_cookie_security()?;
         let redis = RedisClient::open(config.redis_url.as_str())?;
 
         // 密钥目录的读写和 RSA 生成是同步阻塞调用，直接在 async 上下文执行会占住

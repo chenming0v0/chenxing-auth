@@ -61,7 +61,7 @@ fn admin_mutation_requires_matching_csrf_token() {
     let mut headers = HeaderMap::new();
     headers.insert(
         "cookie",
-        HeaderValue::from_static("chenxing_csrf=csrf-value"),
+        HeaderValue::from_static("__Host-chenxing_csrf=csrf-value"),
     );
     headers.insert("x-csrf-token", HeaderValue::from_static("csrf-value"));
     assert!(

@@ -29,6 +29,7 @@ fn config_accepts_valid_runtime_values() {
         config.session_max_concurrent_sessions,
         DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS
     );
+    assert!(config.cookie_secure);
     assert!(!config.session_token_response_enabled);
     assert_eq!(config.key_rotation_grace_seconds, 604800);
     assert_eq!(

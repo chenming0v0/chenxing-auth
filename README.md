@@ -130,7 +130,7 @@ src/
 - PostgreSQL 14 或更高版本
 - Redis 6 或更高版本
 
-复制 `.env.example` 为 `.env`，按本地环境修改连接地址。正常服务启动不会修改数据库结构；需要执行迁移时运行 `cargo run -- migrate`，生产 Docker 部署脚本会在启动应用前显式执行同一迁移命令。审计归档不在 Web 服务启动时自动运行，只有单独的 `cargo run -- audit-archive` 维护命令会搬运过期热表事件。
+复制 `.env.example` 为 `.env`，按本地环境修改连接地址。使用 HTTP 本地开发时，将 `APP_ISSUER` 设置为 `http://127.0.0.1:3000`（或其他 loopback 地址）并将 `COOKIE_SECURE` 显式设为 `false`；HTTPS 或非 loopback 环境必须保持 `COOKIE_SECURE=true`。正常服务启动不会修改数据库结构；需要执行迁移时运行 `cargo run -- migrate`，生产 Docker 部署脚本会在启动应用前显式执行同一迁移命令。审计归档不在 Web 服务启动时自动运行，只有单独的 `cargo run -- audit-archive` 维护命令会搬运过期热表事件。
 
 #### 快速启动
 
@@ -185,6 +185,8 @@ src/
 `KEY_DIRECTORY` 默认指向 `data/keys`，该目录包含运行时私钥并已加入 `.gitignore`。Unix 下应用会将目录收紧为 `0700`，私钥、active `kid` 和 OAuth Provider 主密钥收紧为 `0600`，并在启动时修正已有过宽权限。密钥写入使用受限临时文件和原子替换。`KEY_ROTATION_GRACE_SECONDS` 默认是 `604800`（7 天）：轮换后的旧公钥在该窗口内继续用于验签，窗口外的旧私钥会在启动或后续轮换时回收；设置为 `0` 会禁用旧 key 验证窗口。`ADMIN_TOKEN` 为空时，管理 API 默认全部拒绝访问，唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口；此时启动日志会记录一条 `ADMIN_TOKEN not set` 警告，便于运维感知管理面不可用。
 
 `APP_ISSUER` 是必填配置项，没有默认值：它是 OIDC 发行者标识，会写入 JWT 的 `iss` claim 和 Discovery 文档，必须是无 path、query 和 fragment 的绝对 URL，且不能从请求 Host 或反向代理输入推导。未设置、为空或格式非法时服务启动失败，不再回退到 `http://<APP_HOST>:<APP_PORT>`。
+
+HTTPS 部署的 Session 和 CSRF Cookie 使用 `__Host-chenxing_session` 与 `__Host-chenxing_csrf`，固定带 `Secure; Path=/` 且不带 `Domain`，由浏览器强制 host-only 约束。`COOKIE_SECURE=false` 只允许用于明确的 loopback HTTP 本地开发（`localhost`、`127.0.0.1` 或 `::1`）；在 HTTPS 或其他主机发行者下会导致启动失败。HTTP 发行者配合 `COOKIE_SECURE=true` 会记录启动警告，因为浏览器可能拒绝 Secure Cookie。
 
 Session payload 使用 AES-256-GCM 并携带 key id。`AUTH_ENCRYPTION_KEY` 保留为单密钥兼容写法。轮换时设置逗号分隔的 `kid=<key-id>:<standard-base64-32-byte-key>` 密钥环 `AUTH_ENCRYPTION_KEYS`，并设置 `AUTH_ENCRYPTION_ACTIVE_KID`；新 Session 只使用 active key，旧 key 只读。旧 key 必须保留到最长 Session TTL 加 outbox 重试窗口结束后再移除。回滚通过把旧 key 设为 `AUTH_ENCRYPTION_ACTIVE_KID` 并继续保留新 key 完成。移除 key 会故意使仅由该 key 加密的 Session 失效，请求返回 401 并清理浏览器 Cookie。Redis 只保存加密 payload，不保存 Session 或 CSRF 明文。
 

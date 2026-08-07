@@ -21,7 +21,11 @@ pub async fn session_for_headers(
     headers: &HeaderMap,
 ) -> Result<Option<Session>, SessionLookupError> {
     let Some(session_token) =
-        session_id_from_headers(headers, state.config.oauth_session_header_enabled)
+        session_id_from_headers(
+            headers,
+            state.config.oauth_session_header_enabled,
+            state.config.cookie_secure,
+        )
     else {
         return Ok(None);
     };
@@ -59,8 +63,12 @@ pub async fn active_user_id(
     Ok((profile.status == "active").then_some(user_id))
 }
 
-fn session_id_from_headers(headers: &HeaderMap, allow_header: bool) -> Option<String> {
-    let cookie = cookies::session_cookie_id(headers);
+fn session_id_from_headers(
+    headers: &HeaderMap,
+    allow_header: bool,
+    secure: bool,
+) -> Option<String> {
+    let cookie = cookies::session_cookie_id_for_secure_transport(headers, secure);
     let header = cookies::session_header_id(headers);
     if cookie.is_some() && header.is_some() && cookie != header {
         return None;
@@ -80,12 +88,12 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             "cookie",
-            HeaderValue::from_str(&format!("chenxing_session={session_id}"))
+            HeaderValue::from_str(&format!("__Host-chenxing_session={session_id}"))
                 .expect("valid cookie header"),
         );
 
         assert_eq!(
-            session_id_from_headers(&headers, false).as_deref(),
+            session_id_from_headers(&headers, false, true).as_deref(),
             Some(session_id)
         );
     }
@@ -98,9 +106,9 @@ mod tests {
             HeaderValue::from_static("header-session-token"),
         );
 
-        assert_eq!(session_id_from_headers(&headers, false), None);
+        assert_eq!(session_id_from_headers(&headers, false, true), None);
         assert_eq!(
-            session_id_from_headers(&headers, true).as_deref(),
+            session_id_from_headers(&headers, true, true).as_deref(),
             Some("header-session-token")
         );
     }
@@ -110,13 +118,13 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             "cookie",
-            HeaderValue::from_static("chenxing_session=cookie-session-token"),
+            HeaderValue::from_static("__Host-chenxing_session=cookie-session-token"),
         );
         headers.insert(
             "x-chenxing-session",
             HeaderValue::from_static("header-session-token"),
         );
 
-        assert_eq!(session_id_from_headers(&headers, true), None);
+        assert_eq!(session_id_from_headers(&headers, true, true), None);
     }
 }

@@ -7,8 +7,13 @@ use cookie::{Cookie, SameSite};
 use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
 
-pub const SESSION_COOKIE: &str = "chenxing_session";
-pub const CSRF_COOKIE: &str = "chenxing_csrf";
+/// Secure browser session cookie. The `__Host-` prefix requires Secure, Path=/,
+/// and no Domain attribute, which makes the host-only contract browser-enforced.
+pub const SESSION_COOKIE: &str = "__Host-chenxing_session";
+/// Secure browser CSRF cookie. See [`SESSION_COOKIE`] for the prefix contract.
+pub const CSRF_COOKIE: &str = "__Host-chenxing_csrf";
+const LOCAL_SESSION_COOKIE: &str = "chenxing_session";
+const LOCAL_CSRF_COOKIE: &str = "chenxing_csrf";
 pub const EXTERNAL_STATE_COOKIE_PREFIX: &str = "chenxing_external_oauth_state_";
 const EXTERNAL_STATE_COOKIE_ID_BYTES: usize = 12;
 /// 授权请求持有者 Cookie：证明调用绑定端点的浏览器就是发起 `/oauth/authorize`
@@ -23,10 +28,12 @@ pub fn append_login_cookies(
     max_age_seconds: u64,
     secure: bool,
 ) {
+    let session_name = session_cookie_name(secure);
+    let csrf_name = csrf_cookie_name(secure);
     headers.append(
         SET_COOKIE,
         build_cookie(
-            SESSION_COOKIE,
+            session_name,
             session_token,
             max_age_seconds,
             secure,
@@ -38,17 +45,26 @@ pub fn append_login_cookies(
     );
     headers.append(
         SET_COOKIE,
-        build_cookie(CSRF_COOKIE, csrf_token, max_age_seconds, secure, false, "/")
+        build_cookie(csrf_name, csrf_token, max_age_seconds, secure, false, "/")
             .parse()
             .expect("CSRF cookie is valid ASCII"),
     );
 }
 
 pub fn append_clear_cookies(headers: &mut HeaderMap, secure: bool) {
-    for name in [SESSION_COOKIE, CSRF_COOKIE] {
+    let session_name = session_cookie_name(secure);
+    let csrf_name = csrf_cookie_name(secure);
+    for name in [session_name, csrf_name] {
         headers.append(
             SET_COOKIE,
-            build_cookie(name, "", 0, secure, name == SESSION_COOKIE, "/")
+            build_cookie(
+                name,
+                "",
+                0,
+                secure,
+                name == session_name,
+                "/",
+            )
                 .parse()
                 .expect("clear cookie is valid ASCII"),
         );
@@ -147,6 +163,13 @@ pub fn session_cookie_id(headers: &HeaderMap) -> Option<String> {
     cookie_value(headers, SESSION_COOKIE)
 }
 
+pub fn session_cookie_id_for_secure_transport(
+    headers: &HeaderMap,
+    secure: bool,
+) -> Option<String> {
+    cookie_value(headers, session_cookie_name(secure))
+}
+
 pub fn csrf_token(headers: &HeaderMap) -> Option<String> {
     headers
         .get("x-csrf-token")
@@ -156,6 +179,26 @@ pub fn csrf_token(headers: &HeaderMap) -> Option<String> {
 
 pub fn csrf_cookie(headers: &HeaderMap) -> Option<String> {
     cookie_value(headers, CSRF_COOKIE)
+}
+
+pub fn csrf_cookie_for_secure_transport(headers: &HeaderMap, secure: bool) -> Option<String> {
+    cookie_value(headers, csrf_cookie_name(secure))
+}
+
+pub const fn session_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        SESSION_COOKIE
+    } else {
+        LOCAL_SESSION_COOKIE
+    }
+}
+
+pub const fn csrf_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        CSRF_COOKIE
+    } else {
+        LOCAL_CSRF_COOKIE
+    }
 }
 
 pub fn external_state(headers: &HeaderMap, state: &str) -> Option<String> {
@@ -243,7 +286,7 @@ fn build_cookie(
         .max_age(cookie::time::Duration::seconds(
             max_age_seconds.min(i64::MAX as u64) as i64,
         ));
-    if secure {
+    if secure || name.starts_with("__Host-") {
         cookie = cookie.secure(true);
     }
     if http_only {

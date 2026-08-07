@@ -80,7 +80,7 @@
 {"expires_at":"2026-08-04T00:00:00Z"}
 ```
 
-同时设置 HttpOnly Session Cookie 和 CSRF Cookie。浏览器请求应使用 `credentials: "include"`，再通过 `/api/v1/auth/status` 和 `/api/v1/auth/me` 确认登录状态。默认不会将可直接使用的 Session token 放入 JSON；非浏览器兼容调用只有在服务端 `SESSION_TOKEN_RESPONSE_ENABLED=true` 且显式发送 `X-Chenxing-Session-Mode: token` 时才会收到 `session_id`。
+同时设置 HttpOnly Session Cookie 和 CSRF Cookie。HTTPS 部署使用 `__Host-chenxing_session` 与 `__Host-chenxing_csrf`，它们固定为 `Secure; Path=/` 且不带 `Domain`，由浏览器强制 host-only 约束。仅在 loopback HTTP 本地开发时才允许 `COOKIE_SECURE=false`，此时使用不带前缀的兼容名称。浏览器请求应使用 `credentials: "include"`，再通过 `/api/v1/auth/status` 和 `/api/v1/auth/me` 确认登录状态。默认不会将可直接使用的 Session token 放入 JSON；非浏览器兼容调用只有在服务端 `SESSION_TOKEN_RESPONSE_ENABLED=true` 且显式发送 `X-Chenxing-Session-Mode: token` 时才会收到 `session_id`。
 
 Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSION_TTL_SECONDS` 控制绝对期限，`SESSION_IDLE_TIMEOUT_SECONDS` 控制连续无活动期限。成功认证请求会在空闲窗口过半时更新服务端 `last_seen_at`，但不会改变绝对 `expires_at`；Redis TTL 取两者较早者。每个用户的活跃 Session 数受 `SESSION_MAX_CONCURRENT_SESSIONS` 限制，达到上限时最早的活跃 Session 会被撤销。
 
@@ -163,8 +163,8 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 | 凭据 | 来源 | 说明 |
 | --- | --- | --- |
-| Session Cookie `chenxing_session` | TOTP / 密码登录响应 | 身份认证 |
-| CSRF Cookie `chenxing_csrf` + `X-CSRF-Token` | 同上 | 防 CSRF |
+| Session Cookie `__Host-chenxing_session` | TOTP / 密码登录响应 | 身份认证 |
+| CSRF Cookie `__Host-chenxing_csrf` + `X-CSRF-Token` | 同上 | 防 CSRF |
 | 持有者 Cookie `chenxing_authz_holder` | `/oauth/authorize` 重定向响应 | **防 OAuth login CSRF（#115）** |
 
 **`chenxing_authz_holder` Cookie 说明**：`request_id` 通过 URL 查询参数传递，可能通过 Referer、浏览器历史或分享链接泄露。没有持有者绑定，任何拿到 `request_id` 的已登录攻击者都可以把受害者的 pending 请求绑到自己的会话上并批准，使受害者登录进攻击者账号（OAuth login CSRF / 请求固定攻击）。
@@ -255,7 +255,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ## 管理 API
 
-管理员 Bearer Token 请求头：`Authorization: Bearer <ADMIN_TOKEN>`。初始化完成后，管理 API 使用 Bearer Token 或普通用户 Session；`ADMIN_TOKEN` 为空时拒绝 Bearer Token 管理请求。浏览器写操作使用普通 `chenxing_session`、`chenxing_csrf` Cookie 和 `X-CSRF-Token` 三者绑定。
+管理员 Bearer Token 请求头：`Authorization: Bearer <ADMIN_TOKEN>`。初始化完成后，管理 API 使用 Bearer Token 或普通用户 Session；`ADMIN_TOKEN` 为空时拒绝 Bearer Token 管理请求。浏览器写操作使用 `__Host-chenxing_session`、`__Host-chenxing_csrf` Cookie 和 `X-CSRF-Token` 三者绑定（loopback HTTP 开发环境使用对应的不带前缀名称）。
 
 角色为 `user`、`admin`、`owner`，权限按层级继承。管理员登录不再有独立接口、密码表、Session 或 Cookie；所有角色使用 `/api/v1/auth/login`。
 
