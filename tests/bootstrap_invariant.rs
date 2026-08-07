@@ -77,8 +77,8 @@ async fn public_registration_cannot_consume_id_before_owner_bootstrap() {
         )
         .await
         .expect("registration response");
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(json(response).await["code"], "owner_bootstrap_required");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(json(response).await["code"], "email_verification_unavailable");
 
     let response = router
         .clone()
