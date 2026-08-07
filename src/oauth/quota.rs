@@ -2,6 +2,7 @@ use redis::Script;
 use serde::Serialize;
 use thiserror::Error;
 use time::{Date, Month, OffsetDateTime, Time};
+use uuid::Uuid;
 
 use crate::clock::{Clock, SystemClock};
 use crate::plans::domain::AuthQuotaLimits;
@@ -21,17 +22,32 @@ if monthly_limit >= 0 and month >= monthly_limit then
 end
 local new_day = redis.call('INCR', KEYS[1])
 local new_month = redis.call('INCR', KEYS[2])
+redis.call('HSET', KEYS[3], ARGV[5], '1')
+redis.call('HSET', KEYS[4], ARGV[5], '1')
 if new_day == 1 then redis.call('EXPIREAT', KEYS[1], ARGV[3]) end
 if new_month == 1 then redis.call('EXPIREAT', KEYS[2], ARGV[4]) end
+redis.call('EXPIREAT', KEYS[3], ARGV[3])
+redis.call('EXPIREAT', KEYS[4], ARGV[4])
 return {1, 0, new_day, new_month}
 "#;
 
 const REFUND_SCRIPT: &str = r#"
+local refunded = 0
 local day = tonumber(redis.call('GET', KEYS[1]) or '0')
+if day > 0 and redis.call('HDEL', KEYS[3], ARGV[1]) == 1 then
+  redis.call('DECR', KEYS[1])
+  refunded = 1
+elseif day <= 0 then
+  redis.call('HDEL', KEYS[3], ARGV[1])
+end
 local month = tonumber(redis.call('GET', KEYS[2]) or '0')
-if day > 0 then redis.call('DECR', KEYS[1]) end
-if month > 0 then redis.call('DECR', KEYS[2]) end
-return 1
+if month > 0 and redis.call('HDEL', KEYS[4], ARGV[1]) == 1 then
+  redis.call('DECR', KEYS[2])
+  refunded = 1
+elseif month <= 0 then
+  redis.call('HDEL', KEYS[4], ARGV[1])
+end
+return refunded
 "#;
 
 #[derive(Clone)]
@@ -58,6 +74,25 @@ pub enum QuotaConsumeResult {
     MonthlyExceeded,
 }
 
+/// A successful quota reservation owns one increment in each period counter.
+/// The period keys are retained so compensation cannot be redirected by a
+/// clock boundary between consumption and refund.
+pub struct QuotaReservation {
+    day_key: String,
+    month_key: String,
+    day_reservations_key: String,
+    month_reservations_key: String,
+    id: String,
+}
+pub struct QuotaConsumption {
+    pub result: QuotaConsumeResult,
+    reservation: Option<QuotaReservation>,
+}
+impl QuotaConsumption {
+    pub fn reservation(self) -> Option<QuotaReservation> {
+        self.reservation
+    }
+}
 #[derive(Debug, Error)]
 pub enum OAuthQuotaError {
     #[error("redis operation failed: {0}")]
@@ -81,7 +116,17 @@ impl OAuthQuotaStore {
         client_id: &str,
         limits: AuthQuotaLimits,
     ) -> Result<QuotaConsumeResult, OAuthQuotaError> {
-        self.consume_with_limits_at(client_id, limits, SystemClock.now())
+        self.consume_with_limits_and_reservation(client_id, limits)
+            .await
+            .map(|consumption| consumption.result)
+    }
+
+    pub async fn consume_with_limits_and_reservation(
+        &self,
+        client_id: &str,
+        limits: AuthQuotaLimits,
+    ) -> Result<QuotaConsumption, OAuthQuotaError> {
+        self.consume_with_limits_and_reservation_at(client_id, limits, SystemClock.now())
             .await
     }
 
@@ -91,39 +136,61 @@ impl OAuthQuotaStore {
         limits: AuthQuotaLimits,
         now: OffsetDateTime,
     ) -> Result<QuotaConsumeResult, OAuthQuotaError> {
+        self.consume_with_limits_and_reservation_at(client_id, limits, now)
+            .await
+            .map(|consumption| consumption.result)
+    }
+
+    pub async fn consume_with_limits_and_reservation_at(
+        &self,
+        client_id: &str,
+        limits: AuthQuotaLimits,
+        now: OffsetDateTime,
+    ) -> Result<QuotaConsumption, OAuthQuotaError> {
         let (day_key, month_key, next_day, next_month) = period_keys(client_id, now)?;
+        let day_reservations_key = reservation_key(&day_key);
+        let month_reservations_key = reservation_key(&month_key);
+        let reservation_id = Uuid::new_v4().simple().to_string();
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let result: Vec<i64> = Script::new(CONSUME_SCRIPT)
-            .key(day_key)
-            .key(month_key)
+            .key(day_key.as_str())
+            .key(month_key.as_str())
+            .key(day_reservations_key.as_str())
+            .key(month_reservations_key.as_str())
             .arg(redis_limit(Some(limits.daily_auth_limit))?)
             .arg(redis_limit(limits.monthly_auth_limit)?)
             .arg(next_day)
             .arg(next_month)
+            .arg(reservation_id.as_str())
             .invoke_async(&mut connection)
             .await?;
-        match result.as_slice() {
-            [1, 0, ..] => Ok(QuotaConsumeResult::Allowed),
-            [0, 1, ..] => Ok(QuotaConsumeResult::DailyExceeded),
-            [0, 2, ..] => Ok(QuotaConsumeResult::MonthlyExceeded),
-            _ => Err(OAuthQuotaError::InvalidResponse),
-        }
+        let result = match result.as_slice() {
+            [1, 0, ..] => QuotaConsumeResult::Allowed,
+            [0, 1, ..] => QuotaConsumeResult::DailyExceeded,
+            [0, 2, ..] => QuotaConsumeResult::MonthlyExceeded,
+            _ => return Err(OAuthQuotaError::InvalidResponse),
+        };
+        let reservation = match result {
+            QuotaConsumeResult::Allowed => Some(QuotaReservation {
+                day_key,
+                month_key,
+                day_reservations_key,
+                month_reservations_key,
+                id: reservation_id,
+            }),
+            QuotaConsumeResult::DailyExceeded | QuotaConsumeResult::MonthlyExceeded => None,
+        };
+        Ok(QuotaConsumption { result, reservation })
     }
 
-    pub async fn refund(&self, client_id: &str) -> Result<(), OAuthQuotaError> {
-        self.refund_at(client_id, SystemClock.now()).await
-    }
-
-    pub async fn refund_at(
-        &self,
-        client_id: &str,
-        now: OffsetDateTime,
-    ) -> Result<(), OAuthQuotaError> {
-        let (day_key, month_key, _, _) = period_keys(client_id, now)?;
+    pub async fn refund(&self, reservation: &QuotaReservation) -> Result<(), OAuthQuotaError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let _: i64 = Script::new(REFUND_SCRIPT)
-            .key(day_key)
-            .key(month_key)
+            .key(reservation.day_key.as_str())
+            .key(reservation.month_key.as_str())
+            .key(reservation.day_reservations_key.as_str())
+            .key(reservation.month_reservations_key.as_str())
+            .arg(reservation.id.as_str())
             .invoke_async(&mut connection)
             .await?;
         Ok(())
@@ -168,6 +235,9 @@ fn redis_limit(limit: Option<u64>) -> Result<i64, OAuthQuotaError> {
         .map(|limit| i64::try_from(limit).map_err(|_| OAuthQuotaError::InvalidLimit))
         .transpose()
         .map(|limit| limit.unwrap_or(-1))
+}
+fn reservation_key(period_key: &str) -> String {
+    format!("{period_key}:reservations")
 }
 
 fn period_keys(
