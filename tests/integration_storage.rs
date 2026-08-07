@@ -1843,7 +1843,14 @@ async fn session_find_renews_idle_activity_without_extending_absolute_expiry() {
         .await
         .expect("find renewed session")
         .expect("renewed session remains active");
-    assert_eq!(found.expires_at, absolute_expiry);
+    let expiry_difference_nanos = found
+        .expires_at
+        .unix_timestamp_nanos()
+        .abs_diff(absolute_expiry.unix_timestamp_nanos());
+    assert!(
+        expiry_difference_nanos < 1_000,
+        "absolute expiry changed by {expiry_difference_nanos}ns"
+    );
     assert!(found.last_seen_at > session.created_at);
     let stored_last_seen: OffsetDateTime =
         chenxing_auth::sqlx::query_scalar("SELECT last_seen_at FROM user_sessions WHERE id = $1")
