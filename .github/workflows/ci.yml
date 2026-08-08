@@ -68,6 +68,13 @@ jobs:
           bash -n deploy/install.sh
           cp .env.example .env
           docker compose --env-file .env -f docker-compose.prod.yml config --quiet
+      - name: Verify migration checksum manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd migrations
+          sha256sum -c checksums.sha256
+          diff -u <(printf '%s\n' *.sql | sort) <(awk '{print $2}' checksums.sha256 | sort)
       - name: Check Rust source file size
         shell: bash
         run: |

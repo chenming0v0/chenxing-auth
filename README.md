@@ -147,7 +147,7 @@ src/
 
 本次统一身份数据库重构使用新的单一基线迁移，不支持保留旧开发数据滚动升级。旧数据库中的 `_sqlx_migrations` 记录也不能被这条新基线自动转换；生产环境部署遇到迁移失败时必须先备份并执行经过批准的数据迁移或重建方案。首次在本地切换到该版本时，请确认 Compose 项目为本仓库的 `chenxing-auth` 后执行 `docker compose down -v`，再运行 `docker compose up -d postgres redis`；该操作会删除本地 PostgreSQL/Redis 开发数据，生产环境不得照此操作。
 
-审计事件由 `audit_events` 和 `audit_events_archive` 两张表保存。迁移创建的数据库触发器拒绝两张表的 `UPDATE`、`DELETE` 和 `TRUNCATE`；由于当前迁移、应用写入和维护命令使用同一个 PostgreSQL role，不能用 `REVOKE` 区分这些路径，只有应用支持的数据库批量归档函数会在事务内临时放行热表删除。归档先复制后删除，且只删除已成功复制的行；归档表本身永久保留并拒绝修改。审计查询会合并两张表。
+审计事件由 `audit_events` 和 `audit_events_archive` 两张表保存。迁移创建的数据库触发器拒绝两张表的 `UPDATE`、`DELETE` 和 `TRUNCATE`；生产安装还会把 migration/owner role 与 `chenxing_runtime` 分离，runtime role 对两张审计表没有任何修改权限，归档只通过固定 `search_path` 的最小权限 `SECURITY DEFINER` 函数完成。触发器保留为纵深防御，不再作为唯一边界。归档先复制后删除，且只删除已成功复制的行；归档表本身永久保留并拒绝修改。审计查询会合并两张表。
 
 `AUDIT_ARCHIVE_ENABLED` 默认是 `false`。明确设置为 `true` 后，`AUDIT_RETENTION_DAYS`（默认 2555 天，允许 1 至 36500 天）定义事件留在热表的最短时间；超过该窗口的事件只是被搬到永久归档表，不会被物理丢弃。Web 请求和正常服务进程不会执行清理，部署必须由一个外部 cron/systemd 任务定期运行 `cargo run -- audit-archive`（Docker 部署使用 `docker compose --env-file .env -f docker-compose.prod.yml run --rm app audit-archive`）。每次命令最多处理 1000 行，重复调用安全；命令日志只记录批次数和保留窗口，不记录 action、resource、metadata 或其他事件内容。不要让多个部署副本各自建立定时器，也不要在未确认合规窗口前缩短保留天数。回滚迁移前先停用调度器，并按迁移注释把归档行恢复到热表，再按逆序删除对象。
 
@@ -174,7 +174,7 @@ src/
 ./deploy/install.sh
 ```
 
-脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码和 `ADMIN_TOKEN`，先校验生产 Compose 配置，再启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。已有 `.env` 不会被覆盖；`APP_ISSUER` 是必填项，生产环境必须设置为固定的 HTTPS 地址（例如 `https://auth.example.com`），未设置或为空时服务启动即失败，并将 `.env` 作为秘密文件保护。健康检查失败时脚本会输出 Compose 状态和应用日志，便于定位启动问题。
+脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码、runtime 数据库密码和 `ADMIN_TOKEN`，先校验生产 Compose 配置，再启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。已有 `.env` 不会被覆盖，但缺少 runtime 角色凭据时会自动追加；`APP_ISSUER` 是必填项，生产环境必须设置为固定的 HTTPS 地址（例如 `https://auth.example.com`），未设置或为空时服务启动即失败，并将 `.env` 作为秘密文件保护。升级 v1.0.6 数据库时，安装脚本会先运行 `deploy/repair-v106-checksum.sql` 修复被原地修改的迁移元数据。健康检查失败时脚本会输出 Compose 状态和应用日志，便于定位启动问题。
 
 生产 Compose 文件为 `docker-compose.prod.yml`。数据库、Redis、JWK 密钥和内嵌 Web 都由应用容器提供，应用容器以非 root 用户运行。TLS 终止可以交给服务器网关，但 Web/API 本身不依赖反向代理。
 

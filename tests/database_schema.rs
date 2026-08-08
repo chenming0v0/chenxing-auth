@@ -1,6 +1,7 @@
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
 
+use chenxing_auth::sqlx::postgres::PgPoolOptions;
 use std::env;
 
 async fn database() -> chenxing_auth::sqlx::PgPool {
@@ -273,4 +274,88 @@ async fn audit_events_are_immutable_and_old_rows_move_to_archive() {
             .await
             .expect("archived audit event");
     assert_eq!(archived_action, "append_only_test");
+}
+
+#[tokio::test]
+async fn runtime_role_cannot_delete_audit_and_uses_security_definer_archive() {
+    let pool = database().await;
+    let schema: String = chenxing_auth::sqlx::query_scalar("SELECT current_schema()")
+        .fetch_one(&pool)
+        .await
+        .expect("current schema");
+
+    let database_url = env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let mut runtime_url = url::Url::parse(&database_url).expect("runtime database URL");
+    runtime_url
+        .set_username(chenxing_auth::db::RUNTIME_DATABASE_ROLE)
+        .expect("set runtime username");
+    let password = format!("runtime-{}", uuid::Uuid::new_v4().simple());
+    runtime_url
+        .set_password(Some(&password))
+        .expect("set runtime password");
+
+    chenxing_auth::db::configure_runtime_role(&pool, runtime_url.as_str())
+        .await
+        .expect("configure runtime role");
+
+    let schema_for_pool = schema.clone();
+    let runtime_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .after_connect(move |connection, _meta| {
+            let schema = schema_for_pool.clone();
+            Box::pin(async move {
+                chenxing_auth::sqlx::query(&format!("SET search_path TO {schema}"))
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(runtime_url.as_str())
+        .await
+        .expect("runtime role connection");
+
+    let event_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO audit_events
+             (actor_type, action, resource_type, metadata, created_at)
+         VALUES ('test', 'runtime_role_test', 'test', '{}'::jsonb,
+                 CURRENT_TIMESTAMP - INTERVAL '2 days')
+         RETURNING id",
+    )
+    .fetch_one(&runtime_pool)
+    .await
+    .expect("runtime role can insert audit events");
+
+    for privilege in ["DELETE", "UPDATE", "TRUNCATE"] {
+        let granted: bool = chenxing_auth::sqlx::query_scalar(
+            "SELECT has_table_privilege(current_user, 'audit_events', $1)",
+        )
+        .bind(privilege)
+        .fetch_one(&runtime_pool)
+        .await
+        .expect("audit privilege check");
+        assert!(
+            !granted,
+            "runtime role must not be granted {privilege} on audit_events"
+        );
+    }
+
+    chenxing_auth::sqlx::query("SELECT set_config('chenxing.audit_events_archive', 'on', false)")
+        .execute(&runtime_pool)
+        .await
+        .expect("runtime role can set the archive marker");
+    let delete = chenxing_auth::sqlx::query("DELETE FROM audit_events WHERE id = $1")
+        .bind(event_id)
+        .execute(&runtime_pool)
+        .await;
+    assert!(
+        delete.is_err(),
+        "runtime DELETE with the archive marker must still be rejected"
+    );
+
+    let archived: i32 = chenxing_auth::sqlx::query_scalar("SELECT archive_audit_events(1, 1000)")
+        .fetch_one(&runtime_pool)
+        .await
+        .expect("runtime role can archive through SECURITY DEFINER function");
+    assert_eq!(archived, 1);
 }
