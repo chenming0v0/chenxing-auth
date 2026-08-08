@@ -1,13 +1,5 @@
-use axum::http::HeaderMap;
-
-use super::{domain::AdminPermission, handlers::is_admin_request};
-use crate::{
-    audit::AuditEvent,
-    error,
-    state::AppState,
-    users::domain::UserId,
-    users::ui_auth::{current_user, user_csrf_valid},
-};
+use super::domain::AdminPermission;
+use crate::{audit::AuditEvent, state::AppState, users::domain::UserId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminActor {
@@ -45,7 +37,7 @@ impl AdminActor {
 ///
 /// 凭据签发路径（client_create / client_secret_rotate）使用阻断式审计——
 /// 两种策略的选择依据见 `audit` 模块文档。
-async fn record_authz_denial(
+pub(crate) async fn record_authz_denial(
     state: &AppState,
     user_id: UserId,
     permission: AdminPermission,
@@ -73,48 +65,4 @@ async fn record_authz_denial(
             "best-effort 授权失败审计写入失败，事件未入库"
         );
     }
-}
-
-pub async fn current_admin_permission(
-    state: &AppState,
-    headers: &HeaderMap,
-    permission: AdminPermission,
-) -> Result<AdminActor, axum::response::Response> {
-    if is_admin_request(state, headers) {
-        return Ok(AdminActor::SystemToken);
-    }
-    let context = current_user(state, headers).await?;
-    if !context.role.allows(permission) {
-        // 已认证用户权限不足：先留痕，再返回 403。响应体不透露缺少哪个权限。
-        record_authz_denial(state, context.user_id, permission, "insufficient_role").await;
-        return Err(error::forbidden(
-            "admin_forbidden",
-            "administrator permission is insufficient",
-        ));
-    }
-    Ok(AdminActor::User(context.user_id))
-}
-
-pub async fn current_admin_mutation(
-    state: &AppState,
-    headers: &HeaderMap,
-    permission: AdminPermission,
-) -> Result<AdminActor, axum::response::Response> {
-    if is_admin_request(state, headers) {
-        return Ok(AdminActor::SystemToken);
-    }
-    let context = current_user(state, headers).await?;
-    // CSRF 校验失败同样是安全失败：可能是跨站伪造或会话重放，必须可检索。
-    if !user_csrf_valid(headers, &context.session, state.config.cookie_secure) {
-        record_authz_denial(state, context.user_id, permission, "csrf_invalid").await;
-        return Err(error::bad_request("csrf_invalid", "CSRF token is invalid"));
-    }
-    if !context.role.allows(permission) {
-        record_authz_denial(state, context.user_id, permission, "insufficient_role").await;
-        return Err(error::forbidden(
-            "admin_forbidden",
-            "administrator permission is insufficient",
-        ));
-    }
-    Ok(AdminActor::User(context.user_id))
 }

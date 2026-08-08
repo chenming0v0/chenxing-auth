@@ -10,11 +10,10 @@ use std::{fmt, net::SocketAddr};
 use super::{
     domain::{LoginInput, RegistrationError, RegistrationInput},
     service::UserServiceError,
-    ui_auth::{mutation_error, mutation_user},
 };
 use crate::{
-    audit::AuditEvent, auth_factors::session::issue_user_session, error, sessions::cookies,
-    state::AppState,
+    api::extract::SessionWrite, audit::AuditEvent, auth_factors::session::issue_user_session,
+    error, sessions::cookies, state::AppState,
 };
 
 #[derive(Debug, Serialize)]
@@ -328,18 +327,15 @@ pub async fn login_user(
 
 /// 撤销当前浏览器会话（自注销）。
 ///
-/// 身份只从 HttpOnly Session Cookie 读取，并复用 `mutation_user` 无条件校验
+/// 身份只从 HttpOnly Session Cookie 读取。`SessionWrite` 在提取阶段无条件校验
 /// Session Cookie、CSRF Cookie 与 `X-CSRF-Token` 三者绑定。撤销是状态变更，
 /// 校验一旦以「请求是否带 Cookie 头」为条件，攻击者只要改走开发期兼容的
 /// `x-chenxing-session` 请求头（不发 Cookie 头）就能完整跳过 CSRF 防护。
-pub async fn revoke_session(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let Ok(context) = mutation_user(&state, &headers).await else {
-        return mutation_error(&state, &headers).await;
-    };
+pub async fn revoke_session(State(state): State<AppState>, session: SessionWrite) -> Response {
     // 撤销目标就是调用者自身的 Cookie 会话，令牌只来自已校验的会话上下文
-    let user_id = context.session.user_id;
-    let session_id = context.session.id;
-    let session_token = context.session.token;
+    let user_id = session.session.user_id.clone();
+    let session_id = session.session.id;
+    let session_token = session.session.token.clone();
 
     match state.sessions.revoke(&session_token).await {
         Ok(()) => {

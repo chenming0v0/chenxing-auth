@@ -1,14 +1,14 @@
 use axum::{
     Json,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
 use std::fmt;
 
-use super::ui_auth::{current_user, mutation_error, mutation_user};
 use crate::{
+    api::extract::{SessionRead, SessionWrite},
     audit::AuditEvent,
     clients::{
         domain::ClientRegistrationInput,
@@ -66,12 +66,8 @@ struct AuthorizedAppListResponse {
     items: Vec<crate::consents::AuthorizedApp>,
 }
 
-pub async fn list_owned_clients(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let context = match current_user(&state, &headers).await {
-        Ok(context) => context,
-        Err(response) => return response,
-    };
-    let effective = match state.plans.effective_plan_for_user(context.user_id).await {
+pub async fn list_owned_clients(State(state): State<AppState>, session: SessionRead) -> Response {
+    let effective = match state.plans.effective_plan_for_user(session.user_id).await {
         Ok(effective) => effective,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load plan for owned OAuth client quota");
@@ -80,7 +76,7 @@ pub async fn list_owned_clients(State(state): State<AppState>, headers: HeaderMa
     };
     // 读路径不设闸门：没有生效套餐时照常列出既有 Client，配额上限留空。
     let quota_limits = effective.map(|effective| effective.plan.auth_quota_limits());
-    let clients = match state.clients.list_for_user(context.user_id).await {
+    let clients = match state.clients.list_for_user(session.user_id).await {
         Ok(clients) => clients,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to list owned OAuth clients");
@@ -93,12 +89,8 @@ pub async fn list_owned_clients(State(state): State<AppState>, headers: HeaderMa
     }
 }
 
-pub async fn list_authorized_apps(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let context = match current_user(&state, &headers).await {
-        Ok(context) => context,
-        Err(response) => return response,
-    };
-    match state.consents.list_for_user(context.user_id).await {
+pub async fn list_authorized_apps(State(state): State<AppState>, session: SessionRead) -> Response {
+    match state.consents.list_for_user(session.user_id).await {
         Ok(items) => (StatusCode::OK, Json(AuthorizedAppListResponse { items })).into_response(),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to list authorized OAuth apps");
@@ -109,12 +101,9 @@ pub async fn list_authorized_apps(State(state): State<AppState>, headers: Header
 
 pub async fn revoke_authorized_app(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    session: SessionWrite,
     Path(client_id): Path<String>,
 ) -> Response {
-    let Ok(context) = mutation_user(&state, &headers).await else {
-        return mutation_error(&state, &headers).await;
-    };
     // Issue #65 原子性修复：将撤销的权威写入（DB）与缓存失效（Redis）顺序调整，
     // 使 DB 成为单一原子事实，Redis 成为 best-effort 缓存。
     //
@@ -122,7 +111,7 @@ pub async fn revoke_authorized_app(
     // 修复后：先 DB（原子 UPDATE）再 Redis（best-effort），DB 失败时无副作用。
     let revoked = match state
         .consents
-        .revoke_for_user(context.user_id, &client_id)
+        .revoke_for_user(session.user_id, &client_id)
         .await
     {
         Ok(revoked) => revoked,
@@ -138,12 +127,12 @@ pub async fn revoke_authorized_app(
     // DB 写入成功，尝试失效 Redis 缓存（best-effort）
     if let Err(error_value) = state
         .revocations
-        .revoke_consent(&context.user_id.to_string(), &client_id)
+        .revoke_consent(&session.user_id.to_string(), &client_id)
         .await
     {
         tracing::warn!(
             error = %error_value,
-            user_id = %context.user_id,
+            user_id = %session.user_id,
             client_id = %client_id,
             "failed to invalidate OAuth consent revocation cache, will fall back to DB on next check"
         );
@@ -154,7 +143,7 @@ pub async fn revoke_authorized_app(
         .audit
         .record_best_effort(AuditEvent::new(
             "user".to_owned(),
-            Some(context.user_id.to_string()),
+            Some(session.user_id.to_string()),
             "consent_revoke".to_owned(),
             "oauth_consent".to_owned(),
             Some(client_id),
@@ -166,13 +155,10 @@ pub async fn revoke_authorized_app(
 
 pub async fn create_owned_client(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    session: SessionWrite,
     Json(input): Json<ClientRegistrationRequest>,
 ) -> Response {
-    let Ok(context) = mutation_user(&state, &headers).await else {
-        return mutation_error(&state, &headers).await;
-    };
-    let effective = match state.plans.effective_plan_for_user(context.user_id).await {
+    let effective = match state.plans.effective_plan_for_user(session.user_id).await {
         Ok(Some(effective)) => effective,
         // 自助接入闸门：没有生效套餐时不允许新建 Client，但既有 Client 的
         // 授权、令牌和列表路径不受影响。
@@ -191,7 +177,7 @@ pub async fn create_owned_client(
     match state
         .clients
         .register_for_user(
-            context.user_id,
+            session.user_id,
             input,
             effective.plan.oauth_clients_limit as i64,
         )
@@ -222,16 +208,13 @@ pub async fn create_owned_client(
 
 pub async fn update_owned_client(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    session: SessionWrite,
     Path(client_id): Path<String>,
     Json(input): Json<ClientRegistrationInput>,
 ) -> Response {
-    let Ok(context) = mutation_user(&state, &headers).await else {
-        return mutation_error(&state, &headers).await;
-    };
     match state
         .clients
-        .update_for_user(context.user_id, &client_id, input)
+        .update_for_user(session.user_id, &client_id, input)
         .await
     {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
@@ -254,32 +237,29 @@ pub async fn update_owned_client(
 
 pub async fn disable_owned_client(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    session: SessionWrite,
     Path(client_id): Path<String>,
 ) -> Response {
-    set_owned_client_status(state, headers, client_id, "disabled").await
+    set_owned_client_status(state, session, client_id, "disabled").await
 }
 
 pub async fn enable_owned_client(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    session: SessionWrite,
     Path(client_id): Path<String>,
 ) -> Response {
-    set_owned_client_status(state, headers, client_id, "active").await
+    set_owned_client_status(state, session, client_id, "active").await
 }
 
 async fn set_owned_client_status(
     state: AppState,
-    headers: HeaderMap,
+    session: SessionWrite,
     client_id: String,
     status: &str,
 ) -> Response {
-    let Ok(context) = mutation_user(&state, &headers).await else {
-        return mutation_error(&state, &headers).await;
-    };
     match state
         .clients
-        .set_status_for_user(context.user_id, &client_id, status)
+        .set_status_for_user(session.user_id, &client_id, status)
         .await
     {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
@@ -302,15 +282,12 @@ async fn set_owned_client_status(
 
 pub async fn rotate_owned_client_secret(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    session: SessionWrite,
     Path(client_id): Path<String>,
 ) -> Response {
-    let Ok(context) = mutation_user(&state, &headers).await else {
-        return mutation_error(&state, &headers).await;
-    };
     match state
         .clients
-        .rotate_secret_for_user(context.user_id, &client_id)
+        .rotate_secret_for_user(session.user_id, &client_id)
         .await
     {
         Ok(secret) => {
@@ -318,7 +295,7 @@ pub async fn rotate_owned_client_secret(
                 .audit
                 .record_blocking(AuditEvent::new(
                     "user".to_owned(),
-                    Some(context.user_id.to_string()),
+                    Some(session.user_id.to_string()),
                     "client_secret_rotate".to_owned(),
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),
@@ -339,7 +316,7 @@ pub async fn rotate_owned_client_secret(
                 .audit
                 .record_best_effort(AuditEvent::new(
                     "user".to_owned(),
-                    Some(context.user_id.to_string()),
+                    Some(session.user_id.to_string()),
                     "client_secret_rotate_conflict".to_owned(),
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),

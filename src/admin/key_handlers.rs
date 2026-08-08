@@ -1,13 +1,15 @@
 use axum::{
     Json,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
 
-use super::{authorization::current_admin_mutation, domain::AdminPermission};
-use crate::{audit::AuditEvent, error, keys::KeyManagerError, state::AppState};
+use super::domain::AdminPermission;
+use crate::{
+    api::extract::AdminWrite, audit::AuditEvent, error, keys::KeyManagerError, state::AppState,
+};
 
 #[derive(Debug, Serialize)]
 pub struct KeyRotationResponse {
@@ -22,8 +24,8 @@ pub struct KeyRevocationResponse {
     pub published_key_count: usize,
 }
 
-pub async fn rotate_signing_key(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let actor = match current_admin_mutation(&state, &headers, AdminPermission::RotateKeys).await {
+pub async fn rotate_signing_key(State(state): State<AppState>, admin: AdminWrite) -> Response {
+    let actor = match admin.authorize(&state, AdminPermission::RotateKeys).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };
@@ -64,10 +66,10 @@ pub async fn rotate_signing_key(State(state): State<AppState>, headers: HeaderMa
 
 pub async fn revoke_signing_key(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path(key_id): Path<String>,
 ) -> Response {
-    let actor = match current_admin_mutation(&state, &headers, AdminPermission::RotateKeys).await {
+    let actor = match admin.authorize(&state, AdminPermission::RotateKeys).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };

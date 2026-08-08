@@ -1,16 +1,14 @@
 use axum::{
     Json,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 
 use crate::{
-    admin::{
-        authorization::{current_admin_mutation, current_admin_permission},
-        domain::AdminPermission,
-    },
+    admin::{authorization::AdminActor, domain::AdminPermission},
+    api::extract::{AdminRead, AdminWrite},
     audit::AuditEvent,
     error,
     oauth::providers::{domain::ProviderInput, service::ExternalOAuthError},
@@ -42,9 +40,10 @@ pub struct ProviderStatusPath {
     pub slug: String,
 }
 
-pub async fn list_providers(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageIdentityProviders).await
+pub async fn list_providers(State(state): State<AppState>, admin: AdminRead) -> Response {
+    if let Err(response) = admin
+        .authorize(&state, AdminPermission::ManageIdentityProviders)
+        .await
     {
         return response;
     }
@@ -68,16 +67,16 @@ pub async fn list_providers(State(state): State<AppState>, headers: HeaderMap) -
 
 pub async fn create_provider(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Json(input): Json<ProviderInput>,
 ) -> Response {
-    let actor =
-        match current_admin_mutation(&state, &headers, AdminPermission::ManageIdentityProviders)
-            .await
-        {
-            Ok(actor) => actor,
-            Err(response) => return response,
-        };
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageIdentityProviders)
+        .await
+    {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     if input.client_secret.as_deref().is_none_or(str::is_empty) {
         return error::bad_request(
             "invalid_oauth_provider",
@@ -99,17 +98,17 @@ pub async fn create_provider(
 
 pub async fn update_provider(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path(slug): Path<String>,
     Json(input): Json<ProviderInput>,
 ) -> Response {
-    let actor =
-        match current_admin_mutation(&state, &headers, AdminPermission::ManageIdentityProviders)
-            .await
-        {
-            Ok(actor) => actor,
-            Err(response) => return response,
-        };
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageIdentityProviders)
+        .await
+    {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     if input.slug != slug {
         return error::bad_request("invalid_oauth_provider", "provider slug cannot be changed");
     }
@@ -125,36 +124,38 @@ pub async fn update_provider(
 
 pub async fn enable_provider(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path(slug): Path<String>,
 ) -> Response {
-    set_provider_status(state, headers, slug, "active").await
+    set_provider_status(&state, &admin, &slug, "active").await
 }
 
 pub async fn disable_provider(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path(slug): Path<String>,
 ) -> Response {
-    set_provider_status(state, headers, slug, "disabled").await
+    set_provider_status(&state, &admin, &slug, "disabled").await
 }
 
+/// 启用/停用的公共实现。授权由调用点传入的 `AdminWrite` 完成，
+/// 因此 CSRF 与权限校验仍然只有一条路径。
 async fn set_provider_status(
-    state: AppState,
-    headers: HeaderMap,
-    slug: String,
+    state: &AppState,
+    admin: &AdminWrite,
+    slug: &str,
     status: &str,
 ) -> Response {
-    let actor =
-        match current_admin_mutation(&state, &headers, AdminPermission::ManageIdentityProviders)
-            .await
-        {
-            Ok(actor) => actor,
-            Err(response) => return response,
-        };
-    match state.external_oauth.set_status(&slug, status).await {
+    let actor = match admin
+        .authorize(state, AdminPermission::ManageIdentityProviders)
+        .await
+    {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
+    match state.external_oauth.set_status(slug, status).await {
         Ok(true) => {
-            record_provider_event(&state, actor, &format!("oauth_provider_{status}"), &slug).await;
+            record_provider_event(state, actor, &format!("oauth_provider_{status}"), slug).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::not_found("oauth_provider_not_found", "provider was not found"),
@@ -193,12 +194,7 @@ fn provider_error_response(error_value: ExternalOAuthError) -> Response {
     }
 }
 
-async fn record_provider_event(
-    state: &AppState,
-    actor: super::authorization::AdminActor,
-    action: &str,
-    slug: &str,
-) {
+async fn record_provider_event(state: &AppState, actor: AdminActor, action: &str, slug: &str) {
     let (actor_type, actor_id) = actor.audit_fields();
     state
         .audit

@@ -2,16 +2,17 @@ use crate::users::domain::{UserId, UserRole, UserStatus};
 use axum::{
     Json,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 
-use super::{
-    authorization::{AdminActor, current_admin_mutation, current_admin_permission},
-    domain::AdminPermission,
+use super::{authorization::AdminActor, domain::AdminPermission};
+use crate::{
+    api::extract::{AdminRead, AdminWrite},
+    error,
+    state::AppState,
 };
-use crate::{error, state::AppState};
 
 /// list_users 默认返回条数（未提供 limit 查询参数时）。
 const DEFAULT_USER_LIST_LIMIT: i64 = 50;
@@ -59,12 +60,10 @@ pub struct AdminSummary {
 
 pub async fn list_users(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminRead,
     Query(query): Query<UserListQuery>,
 ) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageUsers).await
-    {
+    if let Err(response) = admin.authorize(&state, AdminPermission::ManageUsers).await {
         return response;
     }
     // 无上限列表会把整张用户表（含 email）在单次响应里倾倒出去，
@@ -103,7 +102,7 @@ pub async fn list_users(
 
 pub async fn set_user_status(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path((user_id, status)): Path<(UserId, String)>,
 ) -> Response {
     let required_permission = match state.users.find_profile(user_id).await {
@@ -114,7 +113,7 @@ pub async fn set_user_status(
             return error::internal();
         }
     };
-    let actor = match current_admin_mutation(&state, &headers, required_permission).await {
+    let actor = match admin.authorize(&state, required_permission).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };
@@ -153,11 +152,11 @@ pub async fn set_user_status(
 
 pub async fn set_user_role(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path(user_id): Path<UserId>,
     Json(input): Json<SetUserRoleInput>,
 ) -> Response {
-    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageRoles).await {
+    let actor = match admin.authorize(&state, AdminPermission::ManageRoles).await {
         Ok(actor_id) => actor_id,
         Err(response) => return response,
     };
@@ -200,12 +199,10 @@ pub async fn set_user_role(
 
 pub async fn list_audit(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminRead,
     Query(query): Query<LimitQuery>,
 ) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ReadAudit).await
-    {
+    if let Err(response) = admin.authorize(&state, AdminPermission::ReadAudit).await {
         return response;
     }
     match state.audit.list(query.limit.unwrap_or(50)).await {
@@ -217,10 +214,8 @@ pub async fn list_audit(
     }
 }
 
-pub async fn list_admins(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageUsers).await
-    {
+pub async fn list_admins(State(state): State<AppState>, admin: AdminRead) -> Response {
+    if let Err(response) = admin.authorize(&state, AdminPermission::ManageUsers).await {
         return response;
     }
     match state.users.list_administrators().await {

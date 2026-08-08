@@ -9,14 +9,15 @@
 use axum::{
     Json,
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 use std::fmt;
 
-use super::{authorization::current_admin_mutation, domain::AdminPermission};
+use super::domain::AdminPermission;
 use crate::{
+    api::extract::AdminWrite,
     audit::AuditEvent,
     error,
     state::AppState,
@@ -54,11 +55,11 @@ impl fmt::Debug for CreateUserInput {
 /// 管理员创建用户。
 ///
 /// 权限模型：`ManageUsers` 是基线；请求 admin/owner 角色时把所需权限抬到
-/// `ManageRoles`。写路径统一走 `current_admin_mutation`，即校验
+/// `ManageRoles`。写路径统一走 [`AdminWrite`]，其 `authorize()` 无条件校验
 /// HttpOnly Session Cookie、CSRF Cookie 与 `X-CSRF-Token` 三者绑定。
 pub async fn create_user(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Json(input): Json<CreateUserInput>,
 ) -> Response {
     // 角色决定所需权限，必须在守卫之前解析。状态一并在此解析：两个词表都属于
@@ -85,7 +86,7 @@ pub async fn create_user(
     } else {
         AdminPermission::ManageUsers
     };
-    let actor = match current_admin_mutation(&state, &headers, required).await {
+    let actor = match admin.authorize(&state, required).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };

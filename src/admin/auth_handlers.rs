@@ -1,17 +1,15 @@
 use axum::{
     Json,
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
 use std::fmt;
 
-use super::{
-    authorization::current_admin_mutation, domain::AdminPermission,
-    user_creation::user_creation_error_response,
-};
+use super::{domain::AdminPermission, user_creation::user_creation_error_response};
 use crate::{
+    api::extract::AdminWrite,
     audit::AuditEvent,
     error,
     state::AppState,
@@ -116,10 +114,10 @@ pub async fn bootstrap_admin(
 
 pub async fn create_admin(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Json(input): Json<CreateAdmin>,
 ) -> Response {
-    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageRoles).await {
+    let actor = match admin.authorize(&state, AdminPermission::ManageRoles).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };

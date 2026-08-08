@@ -14,6 +14,7 @@ use super::{
     session::session_for_headers,
 };
 use crate::{
+    api::extract::{SessionRead, SessionWrite},
     audit::AuditEvent,
     consents::ConsentServiceError,
     error,
@@ -22,7 +23,6 @@ use crate::{
         domain::{Session, session_token_hash},
     },
     state::AppState,
-    users::domain::UserId,
 };
 
 #[derive(Serialize)]
@@ -68,20 +68,15 @@ impl fmt::Debug for DecisionResponse {
     }
 }
 
-struct UserContext {
-    user_id: UserId,
-    session: Session,
-}
-
+/// 读取待确认授权请求的展示数据。
+///
+/// `SessionRead` 只接受 HttpOnly Session Cookie：授权确认页是浏览器场景，
+/// 身份不能来自开发期兼容的 `x-chenxing-session` 请求头。
 pub async fn inspect_authorization_request(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    session: SessionRead,
     Path(request_id): Path<String>,
 ) -> Response {
-    let context = match current_user(&state, &headers).await {
-        Ok(context) => context,
-        Err(response) => return response,
-    };
     let pending = match state.authorization_requests.find(&request_id).await {
         Ok(Some(pending)) => pending,
         Ok(None) => return pending_expired(),
@@ -90,7 +85,7 @@ pub async fn inspect_authorization_request(
             return error::oauth_temporarily_unavailable();
         }
     };
-    let current_session_hash = session_token_hash(&context.session.token);
+    let current_session_hash = session_token_hash(&session.session.token);
     if pending.session_token_hash.as_deref() != Some(current_session_hash.as_str()) {
         return error::unauthorized(
             "invalid_session",
@@ -146,18 +141,15 @@ pub async fn inspect_authorization_request(
 /// 绑定前必须通过授权请求持有者 Cookie 校验（#115）：仅凭有效会话 + `request_id`
 /// 不足以认领一条 pending 请求，否则拿到泄露 `request_id` 的攻击者可以把受害者
 /// 的授权请求绑到自己的会话上并批准，使受害者登录进攻击者账号。
+///
+/// `SessionWrite` 在提取阶段校验 Session Cookie、CSRF Cookie 与 `X-CSRF-Token`
+/// 三者绑定；持有者 Cookie 是叠加在其之上的第二层，两者都必须通过。
 pub async fn bind_authorization_request(
     State(state): State<AppState>,
     headers: HeaderMap,
+    session: SessionWrite,
     Path(request_id): Path<String>,
 ) -> Response {
-    let context = match current_user(&state, &headers).await {
-        Ok(context) => context,
-        Err(response) => return response,
-    };
-    if !csrf_valid(&headers, &context.session, state.config.cookie_secure) {
-        return error::bad_request("csrf_invalid", "CSRF token is invalid");
-    }
     let Some(mut pending) = (match state.authorization_requests.find(&request_id).await {
         Ok(pending) => pending,
         Err(store_error) => {
@@ -173,7 +165,7 @@ pub async fn bind_authorization_request(
     if !authz_holder_valid(&headers, &pending) {
         tracing::warn!(
             event = "oauth.authz_holder_rejected",
-            user_id = %context.user_id,
+            user_id = %session.user_id,
             "rejected authorization request binding with missing or mismatched holder cookie"
         );
         return error::forbidden(
@@ -183,7 +175,7 @@ pub async fn bind_authorization_request(
     }
     // Only allow binding an unbound request, or re-binding one already owned by
     // this same session (idempotent retry). Refuse to steal another session's request.
-    let current_session_hash = session_token_hash(&context.session.token);
+    let current_session_hash = session_token_hash(&session.session.token);
     match pending.session_token_hash.as_deref() {
         None => {}
         Some(existing) if existing == current_session_hash => {
@@ -218,19 +210,17 @@ pub async fn bind_authorization_request(
     (axum::http::StatusCode::NO_CONTENT, ()).into_response()
 }
 
+/// 提交授权确认结果（approve / deny）。
+///
+/// `SessionWrite` 排在 `Json` 之前：CSRF 与会话校验在请求体反序列化之前完成，
+/// 伪造请求的 body 不会被解析。
 pub async fn decide_authorization_request(
     State(state): State<AppState>,
     headers: HeaderMap,
+    session: SessionWrite,
     Path(request_id): Path<String>,
     Json(input): Json<DecisionInput>,
 ) -> Response {
-    let context = match current_user(&state, &headers).await {
-        Ok(context) => context,
-        Err(response) => return response,
-    };
-    if !csrf_valid(&headers, &context.session, state.config.cookie_secure) {
-        return error::bad_request("csrf_invalid", "CSRF token is invalid");
-    }
     let Some(decision) = parse_decision(&input.decision) else {
         return error::bad_request("invalid_decision", "authorization decision is invalid");
     };
@@ -243,7 +233,7 @@ pub async fn decide_authorization_request(
     }) else {
         return pending_expired();
     };
-    let current_session_hash = session_token_hash(&context.session.token);
+    let current_session_hash = session_token_hash(&session.session.token);
     if pending.session_token_hash.as_deref() != Some(current_session_hash.as_str()) {
         return error::unauthorized(
             "invalid_session",
@@ -268,7 +258,7 @@ pub async fn decide_authorization_request(
             .audit
             .record_best_effort(AuditEvent::new(
                 "user".to_owned(),
-                Some(context.user_id.to_string()),
+                Some(session.user_id.to_string()),
                 "authorization_denied".to_owned(),
                 "oauth_authorization".to_owned(),
                 Some(pending.client_id.clone()),
@@ -304,13 +294,13 @@ pub async fn decide_authorization_request(
     }) else {
         return pending_expired();
     };
-    if let Err(response) = session_still_active(&state, &headers, &context.session).await {
+    if let Err(response) = session_still_active(&state, &headers, &session.session).await {
         restore_pending(&state, &consumed).await;
         return response;
     }
     if let Err(error_value) = state
         .consents
-        .save(context.user_id, &consumed.client_id, &validated.scopes)
+        .save(session.user_id, &consumed.client_id, &validated.scopes)
         .await
     {
         // ClientNotFound 是内部一致性错误：validated_pending 已确认过 client 存在
@@ -318,7 +308,7 @@ pub async fn decide_authorization_request(
             ConsentServiceError::ClientNotFound => {
                 tracing::error!(
                     client_id = %consumed.client_id,
-                    user_id = %context.user_id,
+                    user_id = %session.user_id,
                     "consent save rejected: OAuth client no longer exists"
                 );
                 error::oauth_server_error()
@@ -331,7 +321,7 @@ pub async fn decide_authorization_request(
         restore_pending(&state, &consumed).await;
         return response;
     }
-    match issue_authorization_code_result(&state, context.user_id.to_string(), validated).await {
+    match issue_authorization_code_result(&state, session.user_id.to_string(), validated).await {
         Ok(AuthorizationCodeIssue::Redirect(redirect_to)) => (
             axum::http::StatusCode::OK,
             Json(DecisionResponse {
@@ -402,27 +392,10 @@ fn error_redirect(pending: &PendingAuthorization) -> Option<String> {
     Some(redirect.to_string())
 }
 
-async fn current_user(state: &AppState, headers: &HeaderMap) -> Result<UserContext, Response> {
-    let session = match session_for_headers(state, headers).await {
-        Ok(Some(session)) => session,
-        Ok(None) => {
-            return Err(error::unauthorized(
-                "login_required",
-                "an authenticated session is required",
-            ));
-        }
-        Err(session_error) => {
-            tracing::error!(error = %session_error, "OAuth session lookup failed");
-            return Err(error::oauth_temporarily_unavailable());
-        }
-    };
-    let user_id = session
-        .user_id
-        .parse::<UserId>()
-        .map_err(|_| error::unauthorized("invalid_session", "user session is invalid"))?;
-    Ok(UserContext { user_id, session })
-}
-
+/// 授权码签发前重新确认会话仍然有效。
+///
+/// 提取器只在请求进入时校验一次身份；pending 请求被原子消费之后、授权码签发之前
+/// 会话可能已被撤销或用户被停用，这里再查一次以避免把授权码发给已失效的会话。
 async fn session_still_active(
     state: &AppState,
     headers: &HeaderMap,
@@ -452,16 +425,6 @@ fn pending_expired() -> Response {
         "authorization_request_expired",
         "authorization request is expired",
     )
-}
-
-fn csrf_valid(headers: &HeaderMap, session: &Session, secure: bool) -> bool {
-    let Some(cookie) = cookies::csrf_cookie_for_secure_transport(headers, secure) else {
-        return false;
-    };
-    let Some(header) = cookies::csrf_token(headers) else {
-        return false;
-    };
-    cookie == header && session.validates_csrf(&header)
 }
 
 /// 校验授权请求持有者 Cookie（#115）：

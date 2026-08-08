@@ -8,8 +8,13 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, net::SocketAddr};
 
 use super::domain::{RegistrationError, UserId};
-use super::ui_auth::{UserContext, current_user, mutation_error, mutation_user};
-use crate::{error, sessions::cookies, state::AppState};
+use super::ui_auth::UserContext;
+use crate::{
+    api::extract::{SessionRead, SessionWrite},
+    error,
+    sessions::cookies,
+    state::AppState,
+};
 
 #[derive(Debug, Serialize)]
 struct AuthStatusResponse {
@@ -63,18 +68,20 @@ struct SessionListResponse {
     items: Vec<SessionItem>,
 }
 
-pub async fn auth_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let authenticated = current_user(&state, &headers).await.is_ok();
-    (StatusCode::OK, Json(AuthStatusResponse { authenticated })).into_response()
+/// 探测登录状态：未登录是正常答案，因此用 `Option<SessionRead>` 而非要求会话。
+pub async fn auth_status(session: Option<SessionRead>) -> Response {
+    (
+        StatusCode::OK,
+        Json(AuthStatusResponse {
+            authenticated: session.is_some(),
+        }),
+    )
+        .into_response()
 }
 
-pub async fn current_user_profile(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let context = match current_user(&state, &headers).await {
-        Ok(context) => context,
-        Err(response) => return response,
-    };
-    match state.users.find_profile(context.user_id).await {
-        Ok(Some(profile)) => profile_response(context, profile),
+pub async fn current_user_profile(State(state): State<AppState>, session: SessionRead) -> Response {
+    match state.users.find_profile(session.user_id).await {
+        Ok(Some(profile)) => profile_response(&session, profile),
         Ok(None) => error::unauthorized("invalid_session", "user session is invalid"),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load current user profile");
@@ -85,18 +92,15 @@ pub async fn current_user_profile(State(state): State<AppState>, headers: Header
 
 pub async fn update_current_user_profile(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    session: SessionWrite,
     Json(input): Json<UpdateProfileInput>,
 ) -> Response {
-    let Ok(context) = mutation_user(&state, &headers).await else {
-        return mutation_error(&state, &headers).await;
-    };
     match state
         .users
-        .update_display_name(context.user_id, input.display_name)
+        .update_display_name(session.user_id, input.display_name)
         .await
     {
-        Ok(Some(profile)) => profile_response(context, profile),
+        Ok(Some(profile)) => profile_response(&session, profile),
         Ok(None) => error::unauthorized("invalid_session", "user session is invalid"),
         Err(crate::users::service::UserServiceError::Validation(validation_error)) => {
             error::bad_request("invalid_display_name", validation_error.to_string())
@@ -112,11 +116,9 @@ pub async fn change_current_user_password(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
+    session: SessionWrite,
     Json(input): Json<ChangePasswordInput>,
 ) -> Response {
-    let Ok(context) = mutation_user(&state, &headers).await else {
-        return mutation_error(&state, &headers).await;
-    };
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
         &headers,
@@ -125,7 +127,7 @@ pub async fn change_current_user_password(
     match state
         .users
         .change_password(
-            context.user_id,
+            session.user_id,
             &input.current_password,
             &input.new_password,
             source_ip.as_deref(),
@@ -176,22 +178,18 @@ pub async fn change_current_user_password(
     }
 }
 
-pub async fn list_user_sessions(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let context = match current_user(&state, &headers).await {
-        Ok(context) => context,
-        Err(response) => return response,
-    };
-    match state.sessions.list_for_user(context.user_id).await {
+pub async fn list_user_sessions(State(state): State<AppState>, session: SessionRead) -> Response {
+    match state.sessions.list_for_user(session.user_id).await {
         Ok(sessions) => (
             StatusCode::OK,
             Json(SessionListResponse {
                 items: sessions
                     .into_iter()
-                    .map(|session| SessionItem {
-                        current: session.id == context.session.id,
-                        id: session.id,
-                        created_at: session.created_at,
-                        expires_at: session.expires_at,
+                    .map(|item| SessionItem {
+                        current: item.id == session.session.id,
+                        id: item.id,
+                        created_at: item.created_at,
+                        expires_at: item.expires_at,
                     })
                     .collect(),
             }),
@@ -206,20 +204,17 @@ pub async fn list_user_sessions(State(state): State<AppState>, headers: HeaderMa
 
 pub async fn revoke_user_session(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    session: SessionWrite,
     Path(session_id): Path<i64>,
 ) -> Response {
-    let Ok(context) = mutation_user(&state, &headers).await else {
-        return mutation_error(&state, &headers).await;
-    };
     match state
         .sessions
-        .revoke_for_user(context.user_id, session_id)
+        .revoke_for_user(session.user_id, session_id)
         .await
     {
         Ok(true) => {
             let mut response = StatusCode::NO_CONTENT.into_response();
-            if session_id == context.session.id
+            if session_id == session.session.id
                 && let Err(cookie_error) = cookies::append_clear_cookies(
                     response.headers_mut(),
                     state.config.cookie_secure,
@@ -242,7 +237,7 @@ pub async fn revoke_user_session(
 }
 
 fn profile_response(
-    context: UserContext,
+    context: &UserContext,
     profile: crate::users::repository::UserProfile,
 ) -> Response {
     (

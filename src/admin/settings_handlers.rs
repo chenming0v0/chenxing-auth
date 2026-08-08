@@ -1,16 +1,14 @@
 use axum::{
     Json,
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 
-use super::{
-    authorization::{current_admin_mutation, current_admin_permission},
-    domain::AdminPermission,
-};
+use super::domain::AdminPermission;
 use crate::{
+    api::extract::{AdminRead, AdminWrite},
     audit::AuditEvent,
     error,
     settings::{
@@ -30,9 +28,10 @@ pub struct RegistrationEmailSettingResponse {
     pub registration_email_from: Option<String>,
 }
 
-pub async fn get_registration_email(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageSettings).await
+pub async fn get_registration_email(State(state): State<AppState>, admin: AdminRead) -> Response {
+    if let Err(response) = admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
     {
         return response;
     }
@@ -53,14 +52,16 @@ pub async fn get_registration_email(State(state): State<AppState>, headers: Head
 
 pub async fn update_registration_email(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Json(input): Json<UpdateRegistrationEmail>,
 ) -> Response {
-    let actor =
-        match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
-            Ok(admin_id) => admin_id,
-            Err(response) => return response,
-        };
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
+    {
+        Ok(admin_id) => admin_id,
+        Err(response) => return response,
+    };
     let Some(registration_email_from) = input.registration_email_from else {
         return error::bad_request(
             "invalid_request",
@@ -102,9 +103,10 @@ pub async fn update_registration_email(
         .into_response()
 }
 
-pub async fn get_passkey_setting(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageSettings).await
+pub async fn get_passkey_setting(State(state): State<AppState>, admin: AdminRead) -> Response {
+    if let Err(response) = admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
     {
         return response;
     }
@@ -119,14 +121,16 @@ pub async fn get_passkey_setting(State(state): State<AppState>, headers: HeaderM
 
 pub async fn update_passkey_setting(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Json(input): Json<PasskeySetting>,
 ) -> Response {
-    let actor =
-        match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
-            Ok(actor) => actor,
-            Err(response) => return response,
-        };
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
+    {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     if !input.enabled {
         match state.factors.has_active_passkey_only_accounts().await {
             Ok(true) => {
@@ -176,12 +180,10 @@ pub async fn update_passkey_setting(
     }
 }
 
-pub async fn get_email_policy_setting(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageSettings).await
+pub async fn get_email_policy_setting(State(state): State<AppState>, admin: AdminRead) -> Response {
+    if let Err(response) = admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
     {
         return response;
     }
@@ -196,14 +198,16 @@ pub async fn get_email_policy_setting(
 
 pub async fn update_email_policy_setting(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Json(input): Json<EmailPolicySetting>,
 ) -> Response {
-    let actor =
-        match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
-            Ok(actor) => actor,
-            Err(response) => return response,
-        };
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
+    {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     match state.settings.set_email_policy(input).await {
         Ok(setting) => {
             record_setting_event(
@@ -230,9 +234,10 @@ pub async fn update_email_policy_setting(
     }
 }
 
-pub async fn get_smtp_setting(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageSettings).await
+pub async fn get_smtp_setting(State(state): State<AppState>, admin: AdminRead) -> Response {
+    if let Err(response) = admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
     {
         return response;
     }
@@ -247,14 +252,16 @@ pub async fn get_smtp_setting(State(state): State<AppState>, headers: HeaderMap)
 
 pub async fn update_smtp_setting(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Json(input): Json<SmtpSettingUpdate>,
 ) -> Response {
-    let actor =
-        match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
-            Ok(actor) => actor,
-            Err(response) => return response,
-        };
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
+    {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     match state.settings.set_smtp(input).await {
         Ok(setting) => {
             record_setting_event(
@@ -284,10 +291,11 @@ pub async fn update_smtp_setting(
 
 pub async fn get_security_limits_setting(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminRead,
 ) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageSettings).await
+    if let Err(response) = admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
     {
         return response;
     }
@@ -302,14 +310,16 @@ pub async fn get_security_limits_setting(
 
 pub async fn update_security_limits_setting(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Json(input): Json<SecurityLimitsSetting>,
 ) -> Response {
-    let actor =
-        match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
-            Ok(actor) => actor,
-            Err(response) => return response,
-        };
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
+    {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     match state.settings.set_security_limits(input).await {
         Ok(setting) => {
             // 阈值数值本身不是凭据，完整记录便于事后追查是谁放宽了限流。
