@@ -21,6 +21,8 @@ mod plan_fixtures;
 
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
+#[path = "support/key_directory.rs"]
+mod key_directory;
 
 async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
@@ -28,7 +30,7 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
     let database = db_isolation::isolated_pool("admin_ui_api", &database_url).await;
-    let key_directory = std::env::temp_dir().join(format!("chenxing-admin-ui-{}", Uuid::new_v4()));
+    let key_directory = key_directory::isolated_key_directory("admin-ui");
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
         3000,

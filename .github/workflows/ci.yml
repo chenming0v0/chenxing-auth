@@ -92,7 +92,9 @@ jobs:
           exit "$failed"
       - run: cargo fmt --all -- --check
       - run: cargo check --all-targets --all-features
-      - run: cargo test --all-features
+      - uses: taiki-e/install-action@nextest
+      - name: Run Rust tests in parallel
+        run: cargo nextest run --all-features
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - uses: taiki-e/install-action@cargo-audit
       # RUSTSEC-2023-0071 currently has no fixed release. It is pulled in by

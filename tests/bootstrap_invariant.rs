@@ -8,9 +8,10 @@ use chenxing_auth::{api, config::Config, state::AppState};
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
-
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
+#[path = "support/key_directory.rs"]
+mod key_directory;
 
 async fn setup() -> (
     axum::Router,
@@ -22,7 +23,7 @@ async fn setup() -> (
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
     let database = db_isolation::isolated_pool("bootstrap_invariant", &database_url).await;
-    let key_directory = std::env::temp_dir().join(format!("chenxing-bootstrap-{}", Uuid::new_v4()));
+    let key_directory = key_directory::isolated_key_directory("bootstrap");
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
         3000,

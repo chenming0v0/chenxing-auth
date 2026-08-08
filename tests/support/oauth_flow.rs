@@ -8,7 +8,9 @@ use axum::{
 use chenxing_auth::{api, config::Config, state::AppState};
 use serde_json::Value;
 use tower::ServiceExt;
-use uuid::Uuid;
+
+#[path = "key_directory.rs"]
+mod key_directory;
 
 /// `binary_name` 决定 schema 隔离边界，必须传调用方测试二进制自己的名字
 /// （见 `support/db_isolation.rs`）。共享同一个名字的二进制会共享数据库状态。
@@ -28,7 +30,7 @@ pub async fn test_state(
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
     let database = crate::db_isolation::isolated_pool(binary_name, &database_url).await;
-    let key_directory = std::env::temp_dir().join(format!("chenxing-flow-{}", Uuid::new_v4()));
+    let key_directory = key_directory::isolated_key_directory("flow");
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
         3000,

@@ -8,10 +8,11 @@ use axum::{
 };
 use chenxing_auth::{api, config::Config, state::AppState};
 use tower::ServiceExt;
-use uuid::Uuid;
 
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
+#[path = "support/key_directory.rs"]
+mod key_directory;
 
 async fn test_router() -> (Router, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
@@ -19,7 +20,7 @@ async fn test_router() -> (Router, std::path::PathBuf) {
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
     let database = db_isolation::isolated_pool("oauth_api", &database_url).await;
-    let key_directory = std::env::temp_dir().join(format!("chenxing-oauth-{}", Uuid::new_v4()));
+    let key_directory = key_directory::isolated_key_directory("oauth");
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
         3000,
@@ -44,8 +45,7 @@ async fn test_router() -> (Router, std::path::PathBuf) {
 async fn test_router_no_db() -> (Router, std::path::PathBuf) {
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let key_directory =
-        std::env::temp_dir().join(format!("chenxing-oauth-nodb-{}", Uuid::new_v4()));
+    let key_directory = key_directory::isolated_key_directory("oauth-nodb");
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
         3000,
