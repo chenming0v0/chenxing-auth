@@ -3,7 +3,6 @@ mod db_isolation;
 
 use chenxing_auth::auth_factors::{domain::FactorMethod, store::LoginTicketStore};
 use redis::Client;
-use serial_test::serial;
 use uuid::Uuid;
 
 async fn database() -> chenxing_auth::sqlx::PgPool {
@@ -13,7 +12,6 @@ async fn database() -> chenxing_auth::sqlx::PgPool {
 }
 
 #[tokio::test]
-#[serial(login_ticket_epoch)]
 async fn password_epoch_change_invalidates_existing_login_ticket() {
     let pool = database().await;
     let redis_url =

@@ -13,7 +13,6 @@ use chenxing_auth::{
     plans::domain::AuthQuotaLimits,
 };
 use serde_json::Value;
-use serial_test::serial;
 use std::net::{IpAddr, SocketAddr};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -34,7 +33,6 @@ use support::{
 };
 
 #[tokio::test]
-#[serial]
 async fn assigned_plan_controls_client_quota_and_entitlements() {
     let env = test_state().await;
     let router = env.router();
@@ -108,7 +106,6 @@ async fn assigned_plan_controls_client_quota_and_entitlements() {
 }
 
 #[tokio::test]
-#[serial]
 async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
     let env = test_state().await;
     let router = env.router();
@@ -144,7 +141,6 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
 }
 
 #[tokio::test]
-#[serial]
 async fn authorization_code_save_failure_refunds_consumed_quota() {
     let mut env = test_state().await;
     let router = env.router();
@@ -205,7 +201,6 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
 }
 
 #[tokio::test]
-#[serial]
 async fn unlimited_monthly_plan_never_rejects_authorizations() {
     let env = test_state().await;
     let router = env.router();
@@ -250,7 +245,6 @@ async fn unlimited_monthly_plan_never_rejects_authorizations() {
 }
 
 #[tokio::test]
-#[serial]
 async fn qps_limiter_rejects_requests_over_the_plan_limit() {
     let env = test_state().await;
     let router = env.router();
@@ -328,7 +322,6 @@ async fn qps_limiter_rejects_requests_over_the_plan_limit() {
 }
 
 #[tokio::test]
-#[serial]
 async fn entitlements_aggregate_usage_across_multiple_clients() {
     let env = test_state().await;
     let router = env.router();
@@ -398,7 +391,6 @@ async fn entitlements_aggregate_usage_across_multiple_clients() {
 /// 同一条 UPDATE 顺手清掉 `is_default`，否则 `plans_default_must_be_active`
 /// 会被违反。
 #[tokio::test]
-#[serial]
 async fn admin_plan_archive_restore_and_default_clearing() {
     let env = test_state().await;
     let router = env.router();
@@ -470,7 +462,6 @@ async fn admin_plan_archive_restore_and_default_clearing() {
 /// 取消唯一默认套餐后，自助接入闸门关闭（新建 Client 403），
 /// 但**既有 Client 的授权路径必须继续可用** —— 闸门只关新增，不打死既有集成。
 #[tokio::test]
-#[serial]
 async fn unsetting_the_last_default_plan_closes_self_service() {
     let env = test_state().await;
     let router = env.router();
@@ -526,7 +517,6 @@ async fn unsetting_the_last_default_plan_closes_self_service() {
 }
 
 #[tokio::test]
-#[serial]
 async fn archived_plan_cannot_become_default() {
     let env = test_state().await;
     let router = env.router();
@@ -548,7 +538,6 @@ async fn archived_plan_cannot_become_default() {
 }
 
 #[tokio::test]
-#[serial]
 async fn updating_plan_code_conflict_returns_409_business_error() {
     let env = test_state().await;
     let router = env.router();
@@ -580,7 +569,6 @@ async fn updating_plan_code_conflict_returns_409_business_error() {
 /// `plans_single_default_idx` + advisory lock 的不变式：并发把两个套餐设为默认，
 /// 最终 active 默认套餐**至多一个**（新语义下 0 也合法，两个才是 bug）。
 #[tokio::test]
-#[serial]
 async fn concurrent_default_updates_leave_at_most_one_active_default() {
     let env = test_state().await;
     let router = env.router();
@@ -631,7 +619,6 @@ async fn concurrent_default_updates_leave_at_most_one_active_default() {
 
 /// 没有任何套餐 → 自助接入闸门关闭。
 #[tokio::test]
-#[serial]
 async fn no_default_plan_refuses_new_client_creation() {
     let env = test_state().await;
     let router = env.router();
@@ -652,7 +639,6 @@ async fn no_default_plan_refuses_new_client_creation() {
 
 /// 闸门只关新增：套餐清空后，既有用户 Client 的 authorize 和 token 兑换都要成功。
 #[tokio::test]
-#[serial]
 async fn no_default_plan_keeps_existing_user_clients_working() {
     let env = test_state().await;
     let router = env.router();
@@ -695,7 +681,6 @@ async fn no_default_plan_keeps_existing_user_clients_working() {
 
 /// 权益端点描述状态，「没有生效套餐」是状态而不是错误：200 + `plan: null`。
 #[tokio::test]
-#[serial]
 async fn entitlements_returns_empty_state_when_no_plan() {
     let env = test_state().await;
     let router = env.router();
@@ -719,7 +704,6 @@ async fn entitlements_returns_empty_state_when_no_plan() {
 
 /// 读路径不设闸门：没有套餐时照常列出既有 Client，配额上限留空、用量照报。
 #[tokio::test]
-#[serial]
 async fn listing_clients_without_plan_reports_null_limits() {
     let env = test_state().await;
     let router = env.router();
@@ -758,7 +742,6 @@ async fn listing_clients_without_plan_reports_null_limits() {
 /// 管理端创建的 Client（`owner_user_id IS NULL`）不参与套餐计量，
 /// 缺少默认套餐时 authorize / token 全程正常。
 #[tokio::test]
-#[serial]
 async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
     let env = test_state().await;
     let router = env.router();
@@ -812,7 +795,6 @@ async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
 /// 没有默认套餐时管理员仍能分配套餐。
 /// 回归：`ensure_active_default` 曾让整个分配事务回滚。
 #[tokio::test]
-#[serial]
 async fn assigning_a_plan_works_without_a_default_plan() {
     let env = test_state().await;
     let router = env.router();
@@ -855,7 +837,6 @@ async fn assigning_a_plan_works_without_a_default_plan() {
 /// 如果有人把那个 `?` 改成 `unwrap_or(0)` 或返回 503，authorize 那条测试抓不到，
 /// 这条测试会抓到。
 #[tokio::test]
-#[serial]
 async fn no_plan_skips_plan_qps_limiting_for_existing_clients() {
     let env = test_state().await;
     let router = env.router();

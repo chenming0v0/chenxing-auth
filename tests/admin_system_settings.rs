@@ -5,7 +5,6 @@ use axum::{
 };
 use chenxing_auth::{api, config::Config, state::AppState};
 use serde_json::Value;
-use serial_test::serial;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -53,7 +52,6 @@ async fn json(response: axum::response::Response) -> Value {
 }
 
 #[tokio::test]
-#[serial(system_settings)]
 async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
     let (router, database, key_directory) = setup().await;
 
@@ -197,7 +195,6 @@ async fn owner_can_manage_passkey_email_policy_and_smtp_settings() {
 }
 
 #[tokio::test]
-#[serial(system_settings)]
 async fn owner_can_manage_security_limits_with_validation() {
     let (router, database, key_directory) = setup().await;
 
