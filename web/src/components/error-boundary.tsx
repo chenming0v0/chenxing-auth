@@ -37,7 +37,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               <p className="chenxing-caption">
                 页面未能正常加载。请刷新重试，或返回首页。
               </p>
-              <div className="mt-3 flex flex-wrap items-center gap-3">
+              <div className="mt-6 grid w-full grid-cols-2 gap-3">
                 <Button onClick={() => window.location.reload()}>刷新页面</Button>
                 <a href="/" className="chenxing-btn-ghost">返回首页</a>
               </div>
