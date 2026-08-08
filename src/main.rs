@@ -13,8 +13,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match std::env::args().nth(1).as_deref() {
         Some("migrate") => {
-            let database = db::connect(&config)?;
+            let migration_database_url = std::env::var("MIGRATION_DATABASE_URL")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| config.database_url.clone());
+            if std::env::var("MIGRATION_DATABASE_URL").is_ok_and(|value| !value.trim().is_empty()) {
+                let migration_role = url::Url::parse(&migration_database_url)
+                    .ok()
+                    .map(|value| value.username().to_owned())
+                    .unwrap_or_default();
+                let runtime_role = url::Url::parse(&config.database_url)
+                    .ok()
+                    .map(|value| value.username().to_owned())
+                    .unwrap_or_default();
+                if migration_role == runtime_role {
+                    return Err(
+                        "MIGRATION_DATABASE_URL must use a role different from the runtime \
+                         DATABASE_URL so the runtime role cannot mutate audit tables"
+                            .into(),
+                    );
+                }
+                if runtime_role != chenxing_auth::db::RUNTIME_DATABASE_ROLE {
+                    return Err(
+                        "runtime DATABASE_URL must use the chenxing_runtime role when \
+                         MIGRATION_DATABASE_URL is set"
+                            .into(),
+                    );
+                }
+            }
+            let database = db::connect_with_url(&migration_database_url)?;
             db::migrate(&database).await?;
+            db::configure_runtime_role(&database, &config.database_url).await?;
             info!("database migrations completed");
             return Ok(());
         }

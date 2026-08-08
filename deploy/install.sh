@@ -30,6 +30,21 @@ read_env_value() {
     return 0
 }
 
+generate_secret() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -hex 32
+    else
+        head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
+    fi
+}
+
+ensure_env_value() {
+    local key="$1" value="$2"
+    if [[ -z "$(read_env_value "$key")" ]]; then
+        printf '\n%s=%s\n' "$key" "$value" >> .env
+    fi
+}
+
 validate_issuer() {
     if [[ "$APP_ISSUER" =~ ^https://[^/[:space:]?#@]+$ ]]; then
         EXPECTED_COOKIE_SECURE=true
@@ -69,6 +84,8 @@ else
     POSTGRES_DB="${POSTGRES_DB:-chenxing_auth}"
     POSTGRES_USER="${POSTGRES_USER:-chenxing}"
     POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-$(openssl rand -hex 32)}"
+    POSTGRES_RUNTIME_USER="${POSTGRES_RUNTIME_USER:-chenxing_runtime}"
+    POSTGRES_RUNTIME_PASSWORD="${POSTGRES_RUNTIME_PASSWORD:-$(generate_secret)}"
     ADMIN_TOKEN="${ADMIN_TOKEN:-$(openssl rand -hex 32)}"
     AUTH_ENCRYPTION_KEY="${AUTH_ENCRYPTION_KEY:-$(openssl rand -base64 32)}"
     COOKIE_SECURE="${COOKIE_SECURE:-$EXPECTED_COOKIE_SECURE}"
@@ -90,12 +107,28 @@ COOKIE_SECURE=${COOKIE_SECURE}
 POSTGRES_DB=${POSTGRES_DB}
 POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+POSTGRES_RUNTIME_USER=${POSTGRES_RUNTIME_USER}
+POSTGRES_RUNTIME_PASSWORD=${POSTGRES_RUNTIME_PASSWORD}
 SESSION_TTL_SECONDS=${SESSION_TTL_SECONDS:-604800}
 AUDIT_ARCHIVE_ENABLED=${AUDIT_ARCHIVE_ENABLED:-false}
 AUDIT_RETENTION_DAYS=${AUDIT_RETENTION_DAYS:-2555}
 RUST_LOG=${RUST_LOG:-chenxing_auth=info,tower_http=info}
 EOF
     printf '%s\n' 'Created .env with generated secrets. Keep this file private.'
+fi
+
+POSTGRES_DB="$(read_env_value POSTGRES_DB)"
+POSTGRES_USER="$(read_env_value POSTGRES_USER)"
+POSTGRES_RUNTIME_USER="$(read_env_value POSTGRES_RUNTIME_USER)"
+POSTGRES_RUNTIME_PASSWORD="$(read_env_value POSTGRES_RUNTIME_PASSWORD)"
+# MIGRATION_DATABASE_URL is constructed by docker-compose.prod.yml from the
+# POSTGRES_USER/POSTGRES_PASSWORD pair, while DATABASE_URL uses the runtime role.
+if [[ -z "$POSTGRES_RUNTIME_USER" ]]; then
+    POSTGRES_RUNTIME_USER="chenxing_runtime"
+    ensure_env_value POSTGRES_RUNTIME_USER "$POSTGRES_RUNTIME_USER"
+fi
+if [[ -z "$POSTGRES_RUNTIME_PASSWORD" ]]; then
+    ensure_env_value POSTGRES_RUNTIME_PASSWORD "$(generate_secret)"
 fi
 
 validate_issuer
@@ -110,6 +143,18 @@ if ! docker compose --env-file .env -f docker-compose.prod.yml config >/dev/null
 fi
 
 docker compose --env-file .env -f docker-compose.prod.yml up -d postgres redis
+for attempt in $(seq 1 30); do
+    if docker compose --env-file .env -f docker-compose.prod.yml \
+        exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+        break
+    fi
+    sleep 2
+done
+if [[ -f deploy/repair-v106-checksum.sql ]]; then
+    docker compose --env-file .env -f docker-compose.prod.yml exec -T postgres \
+        psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+        < deploy/repair-v106-checksum.sql
+fi
 if ! docker compose --env-file .env -f docker-compose.prod.yml run --rm --build app migrate; then
     printf '%s\n' 'Database migration failed. This release uses a fresh unified SQLx baseline and does not roll old schemas forward automatically.' >&2
     printf '%s\n' 'Back up the database and follow the documented reset/migration procedure before retrying.' >&2

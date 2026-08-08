@@ -7,6 +7,18 @@ use crate::config::Config;
 
 pub type Database = PgPool;
 
+pub const RUNTIME_DATABASE_ROLE: &str = "chenxing_runtime";
+
+#[derive(Debug, thiserror::Error)]
+pub enum DbError {
+    #[error("invalid runtime database URL")]
+    InvalidRuntimeDatabaseUrl,
+    #[error("runtime database password is missing; configure a separate runtime role")]
+    MissingRuntimeDatabasePassword,
+    #[error("database error")]
+    Database(#[from] crate::sqlx::Error),
+}
+
 fn normalize_migration_sql(sql: &'static str) -> Cow<'static, str> {
     if sql.contains('\r') {
         Cow::Owned(sql.replace("\r\n", "\n"))
@@ -142,13 +154,17 @@ fn parse_pool_u64(raw: Option<&str>, name: &'static str, default: u64) -> u64 {
 }
 
 pub fn connect(config: &Config) -> Result<Database, crate::sqlx::Error> {
+    connect_with_url(&config.database_url)
+}
+
+pub fn connect_with_url(database_url: &str) -> Result<Database, crate::sqlx::Error> {
     let settings = pool_settings_from_env();
     PgPoolOptions::new()
         .max_connections(settings.max_connections)
         .acquire_timeout(settings.acquire_timeout)
         .idle_timeout(settings.idle_timeout)
         .max_lifetime(settings.max_lifetime)
-        .connect_lazy(&config.database_url)
+        .connect_lazy(database_url)
 }
 
 pub async fn check_ready(database: &Database) -> Result<(), crate::sqlx::Error> {
@@ -160,6 +176,52 @@ pub async fn check_ready(database: &Database) -> Result<(), crate::sqlx::Error> 
 
 pub async fn migrate(database: &Database) -> Result<(), crate::sqlx::migrate::MigrateError> {
     embedded_migrator().run(database).await
+}
+
+/// Ensure the fixed runtime role exists with the password carried by the
+/// runtime `DATABASE_URL`. The migration role owns the audit tables; the
+/// runtime role only receives the explicitly granted privileges.
+pub async fn configure_runtime_role(
+    database: &Database,
+    runtime_database_url: &str,
+) -> Result<(), DbError> {
+    let url =
+        url::Url::parse(runtime_database_url).map_err(|_| DbError::InvalidRuntimeDatabaseUrl)?;
+    let password = url
+        .password()
+        .filter(|password| !password.is_empty())
+        .ok_or(DbError::MissingRuntimeDatabasePassword)?;
+
+    let role_exists: bool =
+        crate::sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)")
+            .bind(RUNTIME_DATABASE_ROLE)
+            .fetch_one(database)
+            .await?;
+    if !role_exists {
+        crate::sqlx::query(&format!(
+            "CREATE ROLE {} LOGIN",
+            quote_ident(RUNTIME_DATABASE_ROLE)
+        ))
+        .execute(database)
+        .await?;
+    }
+
+    crate::sqlx::query(&format!(
+        "ALTER ROLE {} WITH LOGIN PASSWORD {}",
+        quote_ident(RUNTIME_DATABASE_ROLE),
+        quote_literal(password)
+    ))
+    .execute(database)
+    .await?;
+    Ok(())
+}
+
+fn quote_ident(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn quote_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
@@ -287,6 +349,29 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
                 "../migrations/0016_client_secret_rotation_version.sql"
             )),
             false,
+        ),
+        Migration::new(
+            17,
+            Cow::Borrowed("relax plan default policy"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!(
+                "../migrations/0017_relax_plan_default_policy.sql"
+            )),
+            false,
+        ),
+        Migration::new(
+            18,
+            Cow::Borrowed("seed security limits"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0018_seed_security_limits.sql")),
+            false,
+        ),
+        Migration::new(
+            19,
+            Cow::Borrowed("audit runtime role separation"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0019_audit_runtime_role.sql")),
+            true,
         ),
     ];
 

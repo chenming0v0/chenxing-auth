@@ -11,7 +11,8 @@ services:
       APP_HOST: 0.0.0.0
       APP_PORT: 3000
       KEY_DIRECTORY: /var/lib/chenxing-auth/keys
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      DATABASE_URL: postgres://${POSTGRES_RUNTIME_USER}:${POSTGRES_RUNTIME_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      MIGRATION_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
     ports:
       - "${APP_PORT:-3000}:3000"
