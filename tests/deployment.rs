@@ -267,6 +267,7 @@ fn database_uses_explicit_unified_baseline_migrations() {
             std::ffi::OsString::from("0017_relax_plan_default_policy.sql"),
             std::ffi::OsString::from("0018_seed_security_limits.sql"),
             std::ffi::OsString::from("0019_audit_runtime_role.sql"),
+            std::ffi::OsString::from("0020_user_avatar.sql"),
         ]
     );
 }

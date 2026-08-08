@@ -5,6 +5,7 @@
 //! - [`registration`]：注册、Owner 引导与特权用户创建。
 //! - [`authentication`]：登录校验与失败限流协作。
 //! - [`profile`]：本人资料读取、显示名更新与改密。
+//! - [`avatar`]：头像规范化与持久化。
 //! - [`administration`]：管理侧列表、计数、角色与状态变更。
 //!
 //! 子模块里都是 `impl UserService` 的固有方法，对外仍然是
@@ -22,8 +23,11 @@ use crate::{
 
 mod administration;
 mod authentication;
+mod avatar;
 mod profile;
 mod registration;
+
+pub use avatar::AvatarServiceError;
 
 #[derive(Clone)]
 pub struct UserService {

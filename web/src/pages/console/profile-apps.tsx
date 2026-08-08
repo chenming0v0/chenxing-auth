@@ -4,7 +4,8 @@ import { useAuth } from '../../auth-state'
 import { apiFetch, type AuthorizedOAuthApp, type SessionItem, type UserMe } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, PasswordField, logoUrl } from '../../components/ui'
-import { formatDate, initialOf } from '../../data'
+import { ProfileAvatar, type MessageTone } from './profile-avatar'
+import { formatDate } from '../../data'
 
 const PASSWORD_MIN_LENGTH = 10
 const PASSWORD_MAX_LENGTH = 128
@@ -28,56 +29,60 @@ export function ConsoleProfile() {
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
-  const [message, setMessage] = useState('')
+  /* 提示语连同语气一起存。早先的实现用 message.includes('已保存') 反推语气，
+     每加一条成功提示都得记得让文案命中那个子串，是等着出错的写法。 */
+  const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
   const [busy, setBusy] = useState(false)
+  const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
+  const warn = (text: string) => notify(text, 'warning')
 
   useEffect(() => { setDisplayName(user?.display_name || '') }, [user?.display_name])
   const loadSessions = () => {
     void apiFetch<{ items: SessionItem[] }>('/api/v1/auth/sessions')
       .then((response) => setSessions(response.items))
-      .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '会话列表加载失败。'))
+      .catch((reason: unknown) => warn(reason instanceof Error ? reason.message : '会话列表加载失败。'))
   }
   useEffect(() => { loadSessions() }, [])
 
   async function updateProfile(event: FormEvent) {
     event.preventDefault()
-    setMessage('')
+    setNotice(null)
     setBusy(true)
     try {
       await apiFetch<UserMe>('/api/v1/auth/me', { method: 'PATCH', body: JSON.stringify({ display_name: displayName || null }) })
       await refresh()
-      setMessage('资料已保存。')
+      notify('资料已保存。', 'success')
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '资料保存失败。')
+      warn(error instanceof Error ? error.message : '资料保存失败。')
     } finally { setBusy(false) }
   }
 
   async function updatePassword(event: FormEvent) {
     event.preventDefault()
-    setMessage('')
+    setNotice(null)
     const newPasswordLength = passwordCodePointLength(newPassword)
-    if (newPasswordLength < PASSWORD_MIN_LENGTH) { setMessage(`新密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`); return }
-    if (newPasswordLength > PASSWORD_MAX_LENGTH) { setMessage(`新密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`); return }
-    if (newPassword !== confirmPassword) { setMessage('两次输入的新密码不一致。'); return }
+    if (newPasswordLength < PASSWORD_MIN_LENGTH) { warn(`新密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`); return }
+    if (newPasswordLength > PASSWORD_MAX_LENGTH) { warn(`新密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`); return }
+    if (newPassword !== confirmPassword) { warn('两次输入的新密码不一致。'); return }
     setBusy(true)
     try {
       await apiFetch<void>('/api/v1/auth/password', { method: 'POST', body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }) })
       clear()
       navigate('/login?returnTo=%2Fconsole%2Fprofile')
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '密码修改失败。')
+      warn(error instanceof Error ? error.message : '密码修改失败。')
     } finally { setBusy(false) }
   }
 
   async function revokeSession(session: SessionItem) {
     if (!window.confirm(session.current ? '撤销当前会话后需要重新登录，继续吗？' : '确认撤销这个会话吗？')) return
-    setMessage('')
+    setNotice(null)
     try {
       await apiFetch<void>(`/api/v1/auth/sessions/${session.id}`, { method: 'DELETE' })
       if (session.current) { clear(); navigate('/login?returnTo=%2Fconsole%2Fprofile'); return }
       loadSessions()
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '会话撤销失败。')
+      warn(error instanceof Error ? error.message : '会话撤销失败。')
     }
   }
 
@@ -90,13 +95,7 @@ export function ConsoleProfile() {
           <img src={logoUrl} className="pointer-events-none absolute -right-6 -top-6 h-40 w-40 object-contain opacity-10" alt="" />
           <div className="relative flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
             <div className="flex items-start gap-5">
-              <div className="relative shrink-0">
-                <span className="pointer-events-none absolute inset-0 z-[var(--chenxing-z-backdrop)] m-auto block h-28 w-28 rounded-full bg-[var(--chenxing-cyan)] opacity-40 blur-2xl" />
-                <span className="chenxing-avatar h-24 w-24 text-3xl">{initialOf(name)}</span>
-                <span className="absolute -bottom-1 -right-1 inline-flex h-8 w-8 items-center justify-center rounded-full border border-[rgba(103,232,249,0.4)] bg-[var(--chenxing-background)]">
-                  <Icon name="badge-check" className="text-[var(--chenxing-cyan)]" size={20} />
-                </span>
-              </div>
+              <ProfileAvatar user={user} name={name} onMessage={notify} refresh={refresh} />
               <div className="space-y-2.5 pt-1">
                 <div className="flex flex-wrap items-center gap-3">
                   <h1 className="chenxing-h1">{name}</h1>
@@ -113,7 +112,7 @@ export function ConsoleProfile() {
           </div>
         </HudPanel>
 
-        {message ? <Notice tone={message.includes('已保存') ? 'success' : 'warning'}>{message}</Notice> : null}
+        {notice ? <Notice tone={notice.tone}>{notice.text}</Notice> : null}
 
         <div className="grid gap-6 xl:grid-cols-2">
           <HudPanel>

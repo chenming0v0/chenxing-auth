@@ -373,6 +373,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0019_audit_runtime_role.sql")),
             true,
         ),
+        Migration::new(
+            20,
+            Cow::Borrowed("user avatar storage"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0020_user_avatar.sql")),
+            false,
+        ),
     ];
 
     Migrator {

@@ -11,8 +11,9 @@ import {
 } from 'react'
 import { Link, NavLink, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
-import { navGroups, pageStatus, initialOf } from '../data'
-import { BrandLockup, BrandMark, Button, HudPanel, Icon, Notice } from './ui'
+import { navGroups, pageStatus } from '../data'
+import { avatarUrl } from '../api'
+import { AvatarContent, BrandLockup, BrandMark, Button, HudPanel, Icon, Notice } from './ui'
 import { SpaceBackdrop } from './space'
 import { SkipLink, SkipTarget, useSkipTargetId } from './skip-link'
 
@@ -214,6 +215,7 @@ function AccountMenu() {
   const navigate = useNavigate()
   const { user, logout } = useAuth()
   const name = user?.display_name || user?.username || '辰'
+  const avatar = avatarUrl(user)
   const memberId = user?.id != null ? `NO.${String(user.id).padStart(6, '0')}` : 'NO.000000'
   const handle = user?.username ? `@${user.username}` : '@user'
   return (
@@ -231,14 +233,14 @@ function AccountMenu() {
         onClick={toggle}
         onKeyDown={onButtonKeyDown}
       >
-        {initialOf(name)}
+        <AvatarContent src={avatar} name={name} />
       </button>
       {open ? (
         <div id={panelId} ref={panelRef} onKeyDown={onPanelKeyDown} className="chenxing-menu absolute right-0 top-full z-[var(--chenxing-z-menu)] mt-3 w-64 p-0 overflow-hidden">
           {/* ── 用户信息头 ── */}
           <div className="chenxing-account-header">
             <div className="chenxing-avatar h-14 w-14 text-lg pointer-events-none">
-              {initialOf(name)}
+              <AvatarContent src={avatar} name={name} />
             </div>
             {/* 用户名是菜单标签而非文档章节标题：用非标题元素承载，类名与视觉不变 */}
             <p className="mt-2 text-sm font-semibold text-[var(--chenxing-foreground)]">{name}</p>

@@ -3,6 +3,7 @@ import { apiFetch, type AdminPlan, type AdminPlanInput } from '../../api'
 import { Drawer } from '../../components/drawer'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Field, HudPanel, Icon, Notice, PageIntro, TextAreaField, ToggleRow } from '../../components/ui'
+import { DataTable } from '../../components/data-table'
 import { AdminGate, useAdminAccess } from './shared'
 
 export function formatLimit(value: number | null): string {
@@ -116,45 +117,35 @@ function PlansManager() {
           <Button icon="plus" onClick={() => setEditor({ mode: 'create' })}>新建套餐</Button>
         </div>
 
-        <div className="mt-5 overflow-x-auto rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)]">
-          <table className="w-full min-w-[1080px] text-left">
-            <thead>
-              <tr className="border-b border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)]">
-                <th scope="col" className="chenxing-label px-4 py-3">套餐</th>
-                <th scope="col" className="chenxing-label px-4 py-3">OAuth 应用</th>
-                <th scope="col" className="chenxing-label px-4 py-3">每日授权</th>
-                <th scope="col" className="chenxing-label px-4 py-3">每月授权</th>
-                <th scope="col" className="chenxing-label px-4 py-3">QPS</th>
-                <th scope="col" className="chenxing-label px-4 py-3">挂载用户</th>
-                <th scope="col" className="chenxing-label px-4 py-3">状态</th>
-                <th scope="col" className="chenxing-label px-4 py-3 text-right">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {plans?.map((plan) => {
-                const archived = plan.status !== 'active'
-                return (
-                  <tr key={plan.id} className={`border-t border-[var(--chenxing-border)]${archived ? ' opacity-60' : ''}`}>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <p className="chenxing-body text-sm font-semibold">{plan.name}</p>
-                        {plan.is_default ? <Badge tone="success"><Icon name="crown" size={12} />默认</Badge> : null}
-                      </div>
-                      <p className="chenxing-mono mt-0.5 text-xs text-[var(--chenxing-cyan)]">{plan.code}</p>
-                      {plan.description ? <p className="chenxing-caption mt-0.5 max-w-xs truncate text-xs" title={plan.description}>{plan.description}</p> : null}
-                    </td>
-                    <td className="chenxing-mono px-4 py-3 text-sm">{formatLimit(plan.oauth_clients_limit)}</td>
-                    <td className="chenxing-mono px-4 py-3 text-sm">{formatLimit(plan.daily_auth_limit)}</td>
-                    <td className="chenxing-mono px-4 py-3 text-sm">{formatLimit(plan.monthly_auth_limit)}</td>
-                    <td className="chenxing-mono px-4 py-3 text-sm">{formatLimit(plan.max_qps)}</td>
-                    <td className="chenxing-mono px-4 py-3 text-sm">{plan.assigned_users.toLocaleString('zh-CN')}</td>
-                    <td className="px-4 py-3">
+        <DataTable
+          minWidth={1080}
+          columns={['套餐', 'OAuth 应用', '每日授权', '每月授权', 'QPS', '挂载用户', '状态', { label: '操作', align: 'right' }]}
+          empty={plans?.length ? null : plans ? '还没有套餐，从「新建套餐」开始。' : error ? null : '正在加载套餐列表。'}
+        >
+          {plans?.map((plan) => {
+            const archived = plan.status !== 'active'
+            return (
+              <tr key={plan.id} className={archived ? 'opacity-60' : ''}>
+                <td>
+                  <div className="flex items-center gap-2">
+                    <p className="chenxing-body text-sm font-semibold">{plan.name}</p>
+                    {plan.is_default ? <Badge tone="success"><Icon name="crown" size={12} />默认</Badge> : null}
+                  </div>
+                  <p className="chenxing-mono mt-0.5 text-xs text-[var(--chenxing-cyan)]">{plan.code}</p>
+                  {plan.description ? <p className="chenxing-caption mt-0.5 max-w-xs truncate text-xs" title={plan.description}>{plan.description}</p> : null}
+                </td>
+                <td className="chenxing-mono text-sm">{formatLimit(plan.oauth_clients_limit)}</td>
+                <td className="chenxing-mono text-sm">{formatLimit(plan.daily_auth_limit)}</td>
+                <td className="chenxing-mono text-sm">{formatLimit(plan.monthly_auth_limit)}</td>
+                <td className="chenxing-mono text-sm">{formatLimit(plan.max_qps)}</td>
+                <td className="chenxing-mono text-sm">{plan.assigned_users.toLocaleString('zh-CN')}</td>
+                <td>
                       <Badge tone={archived ? 'warning' : 'success'}>
                         <Icon name={archived ? 'circle-alert' : 'check'} size={12} />
                         {archived ? '已归档' : '启用中'}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3 text-right">
+                    </Badge>
+                  </td>
+                  <td className="text-right">
                       <div className="inline-flex items-center gap-3">
                         <button type="button" className="chenxing-link chenxing-row-action" disabled={busyId === plan.id} onClick={() => setEditor({ mode: 'edit', plan })}>编辑</button>
                         {/* 默认套餐不再受服务端保护：可以归档，也可以取消默认（代价是关闭自助接入） */}
@@ -168,18 +159,10 @@ function PlansManager() {
                         </button>
                       </div>
                     </td>
-                  </tr>
-                )
-              })}
-              {plans && !plans.length ? (
-                <tr><td colSpan={8} className="px-4 py-10 text-center"><span className="chenxing-caption">还没有套餐，从「新建套餐」开始。</span></td></tr>
-              ) : null}
-              {!plans && !error ? (
-                <tr><td colSpan={8} className="px-4 py-10 text-center"><span className="chenxing-caption">正在加载套餐列表。</span></td></tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
+                </tr>
+              )
+            })}
+          </DataTable>
       </HudPanel>
 
       {editor ? (

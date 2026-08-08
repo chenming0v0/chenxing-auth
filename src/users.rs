@@ -1,3 +1,5 @@
+pub mod avatar_handlers;
+pub mod avatar_image;
 pub mod credentials;
 pub mod domain;
 mod email_policy;

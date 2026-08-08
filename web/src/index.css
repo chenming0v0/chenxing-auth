@@ -322,6 +322,14 @@
   padding: 0.85rem 1rem;
   vertical-align: middle;
 }
+/* 表头排版是表格规范的一部分，不靠页面逐个 <th> 重复 chenxing-label */
+.cx-table thead th {
+  font-family: var(--chenxing-font-display);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--chenxing-muted-foreground);
+}
 .cx-table thead tr {
   border-bottom: 1px solid var(--chenxing-border);
   background: rgba(4, 8, 16, 0.5);
@@ -331,6 +339,15 @@
   transition: background 0.15s;
 }
 .cx-table tbody tr:hover { background: var(--chenxing-muted); }
+/* 空态行不是数据行：不参与 hover 反馈，并给 EmptyState 留出与独立空态一致的高度 */
+.cx-table tbody tr.cx-table-empty-row:hover { background: transparent; }
+.cx-table-empty {
+  padding: 2.5rem 1rem;
+  text-align: center;
+  color: var(--chenxing-muted-foreground);
+  font-size: 0.875rem;
+}
+.cx-table-empty .cx-empty { min-height: 0; }
 .cx-empty {
   display: grid;
   place-items: center;

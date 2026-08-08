@@ -304,6 +304,59 @@ paths:
               schema: { $ref: '#/components/schemas/UserMeResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/me/avatar:
+    get:
+      tags: [User Auth/Account]
+      operationId: getCurrentUserAvatar
+      summary: 获取本人头像字节
+      description: 按会话返回本人头像。响应为 image/jpeg，Cache-Control 为 private。
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 头像字节
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: 未设置头像 }
+    put:
+      tags: [User Auth/Account]
+      operationId: uploadCurrentUserAvatar
+      summary: 上传或替换本人头像
+      description: >
+        请求体为原始图片字节（PNG / JPEG / WebP，上限 5 MiB，最短边 250 像素）。
+        格式按字节魔数判定，不读 Content-Type。服务端一律重编码为 256x256 JPEG 后落库。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          image/png:  { schema: { type: string, format: binary } }
+          image/jpeg: { schema: { type: string, format: binary } }
+          image/webp: { schema: { type: string, format: binary } }
+      responses:
+        '200':
+          description: 更新后的用户资料
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserMeResponse' }
+        '400': { description: avatar_empty / avatar_too_small / avatar_unsupported_format / avatar_undecodable / csrf_invalid }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { description: 请求体超过 5 MiB }
+    delete:
+      tags: [User Auth/Account]
+      operationId: deleteCurrentUserAvatar
+      summary: 移除本人头像
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      responses:
+        '200':
+          description: 更新后的用户资料（avatar_updated_at 为 null）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserMeResponse' }
+        '400': { description: csrf_invalid }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/auth/password:
     post:
       tags: [User Auth/Account]
@@ -1659,6 +1712,11 @@ components:
         status: { type: string }
         role: { type: string, enum: [user, admin, owner] }
         current_session_expires_at: { type: string, format: date-time }
+        avatar_updated_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: 头像版本时间戳；null 表示未设置头像。同时作为头像 URL 的缓存击穿参数。
     UpdateProfileInput:
       type: object
       properties:

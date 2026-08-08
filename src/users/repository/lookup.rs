@@ -66,21 +66,34 @@ pub async fn find_profile_by_id<'e, E>(
 where
     E: crate::sqlx::Executor<'e, Database = Postgres> + 'e,
 {
-    crate::sqlx::query_as::<_, (UserId, String, String, Option<String>, String, String)>(
-        "SELECT id, username, email, display_name, status, role FROM users WHERE id = $1",
+    crate::sqlx::query_as::<
+        _,
+        (
+            UserId,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            Option<OffsetDateTime>,
+        ),
+    >(
+        "SELECT id, username, email, display_name, status, role, avatar_updated_at
+         FROM users WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(executor)
     .await
     .map(|record| {
         record.map(
-            |(id, username, email, display_name, status, role)| UserProfile {
+            |(id, username, email, display_name, status, role, avatar_updated_at)| UserProfile {
                 id,
                 username,
                 email,
                 display_name,
                 status,
                 role: UserRole::parse(&role).unwrap_or(UserRole::User),
+                avatar_updated_at,
             },
         )
     })

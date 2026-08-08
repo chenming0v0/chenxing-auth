@@ -6,6 +6,7 @@ import {
 } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { DataTable, TablePanel, TablePagination } from '../../components/data-table'
 import { formatDate, initialOf } from '../../data'
 import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
 
@@ -72,40 +73,29 @@ function AuditTable() {
           <Button variant="ghost" icon="search" onClick={() => updateQuery(1)}>查询</Button>
         </div>
       </div>
-      <div className="mt-5 overflow-x-auto rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)]">
-        <table className="w-full min-w-[860px] text-left">
-          <thead>
-            <tr className="border-b border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)]">
-              <th scope="col" className="chenxing-label px-4 py-3">时间</th>
-              <th scope="col" className="chenxing-label px-4 py-3">动作</th>
-              <th scope="col" className="chenxing-label px-4 py-3">资源</th>
-              <th scope="col" className="chenxing-label px-4 py-3">执行者</th>
-            </tr>
-          </thead>
-          <tbody>
-            {result?.items.map((event, index) => (
-              <tr key={event.id ?? `${event.created_at}-${index}`} className="border-t border-[var(--chenxing-border)]">
-                <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(event.created_at)}</td>
-                <td className="chenxing-mono px-4 py-3 text-sm">{event.action || '—'}</td>
-                <td className="px-4 py-3">
-                  <p className="chenxing-body text-sm">{event.resource_type || '—'}</p>
-                  {event.resource_id ? <p className="chenxing-caption chenxing-mono">{event.resource_id}</p> : null}
-                </td>
-                <td className="px-4 py-3">
-                  <p className="chenxing-body text-sm">{event.actor_type || '—'}</p>
-                  {event.actor_id ? <p className="chenxing-caption chenxing-mono">{event.actor_id}</p> : null}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {!result?.items.length ? <div className="mt-6"><EmptyState icon="activity" title={result ? '暂无审计事件' : '正在加载审计事件'} /></div> : null}
-      <div className="mt-5 flex items-center justify-between gap-3">
-        <Button variant="ghost" disabled={page <= 1} onClick={() => updateQuery(page - 1)}>上一页</Button>
-        <span className="chenxing-caption">第 {page} / {totalPages} 页 · 共 {result?.total ?? '—'} 条</span>
-        <Button variant="ghost" disabled={page >= totalPages} onClick={() => updateQuery(page + 1)}>下一页</Button>
-      </div>
+      <DataTable
+        minWidth={860}
+        columns={['时间', '动作', '资源', '执行者']}
+        empty={result?.items.length ? null : result ? '暂无审计事件' : '正在加载审计事件'}
+      >
+        {result?.items.map((event, index) => (
+          <tr key={event.id ?? `${event.created_at}-${index}`}>
+            <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(event.created_at)}</td>
+            <td className="chenxing-mono text-sm">{event.action || '—'}</td>
+            <td>
+              <p className="chenxing-body text-sm">{event.resource_type || '—'}</p>
+              {event.resource_id ? <p className="chenxing-caption chenxing-mono">{event.resource_id}</p> : null}
+            </td>
+            <td>
+              <p className="chenxing-body text-sm">{event.actor_type || '—'}</p>
+              {event.actor_id ? <p className="chenxing-caption chenxing-mono">{event.actor_id}</p> : null}
+            </td>
+          </tr>
+        ))}
+      </DataTable>
+      {result && result.total > 0 ? (
+        <TablePagination page={page} totalPages={totalPages} total={result.total} onPageChange={updateQuery} />
+      ) : null}
     </HudPanel>
   )
 }

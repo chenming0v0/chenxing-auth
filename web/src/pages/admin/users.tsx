@@ -4,7 +4,8 @@ import {
   apiFetch, type Paged, type PublicUser,
 } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, EmptyState, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { Badge, Button, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { DataTable, TablePagination } from '../../components/data-table'
 import { Select, type SelectOption } from '../../components/select'
 import { formatDate, initialOf } from '../../data'
 import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
@@ -178,26 +179,17 @@ export function UsersTable({ access }: { access: AdminAccess }) {
         </div>
       </div>
 
-      <div className="mt-5 overflow-x-auto rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)]">
-        <table className="w-full min-w-[1080px] text-left">
-          <thead>
-            <tr className="border-b border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)]">
-              <th scope="col" className="chenxing-label px-4 py-3">ID</th>
-              <th scope="col" className="chenxing-label px-4 py-3">用户名</th>
-              <th scope="col" className="chenxing-label px-4 py-3">状态</th>
-              <th scope="col" className="chenxing-label px-4 py-3">角色</th>
-              <th scope="col" className="chenxing-label px-4 py-3">套餐</th>
-              <th scope="col" className="chenxing-label px-4 py-3">创建时间</th>
-              <th scope="col" className="chenxing-label px-4 py-3 text-right">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {result?.items.map((user) => {
-              const isSelf = user.id === access.data?.user_id
-              return (
-                <tr key={user.id} className="border-t border-[var(--chenxing-border)]">
-                  <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{user.id}</td>
-                  <td className="px-4 py-3">
+      <DataTable
+        minWidth={1080}
+        columns={['ID', '用户名', '状态', '角色', '套餐', '创建时间', { label: '操作', align: 'right' }]}
+        empty={result?.items.length ? null : result ? '没有匹配用户' : '正在加载用户'}
+      >
+        {result?.items.map((user) => {
+          const isSelf = user.id === access.data?.user_id
+          return (
+            <tr key={user.id}>
+                  <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{user.id}</td>
+                  <td>
                     <div className="flex items-center gap-3">
                       <span className="chenxing-avatar h-9 w-9 text-sm">{initialOf(user.display_name || user.username)}</span>
                       <div>
@@ -206,13 +198,13 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-3">
+                  <td>
                     <Badge tone={user.status === 'active' ? 'success' : 'warning'}>
                       <Icon name={user.status === 'active' ? 'check' : 'circle-alert'} size={12} />
                       {STATUS_LABEL[user.status] ?? user.status}
                     </Badge>
                   </td>
-                  <td className="px-4 py-3">
+                  <td>
                     <div className="flex items-center gap-2">
                       <Select
                         className="!text-sm"
@@ -227,7 +219,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                       ) : null}
                     </div>
                   </td>
-                  <td className="px-4 py-3">
+                  <td>
                     <button
                       type="button"
                       className="chenxing-link chenxing-row-action"
@@ -239,8 +231,8 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                       分配套餐
                     </button>
                   </td>
-                  <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(user.created_at)}</td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(user.created_at)}</td>
+                  <td className="text-right">
                     <button
                       type="button"
                       className={`chenxing-link chenxing-row-action${user.status === 'active' ? ' text-[var(--chenxing-error)]' : ''}`}
@@ -250,18 +242,13 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                       {user.status === 'active' ? '禁用' : '启用'}
                     </button>
                   </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
-      {!result?.items.length ? <div className="mt-6"><EmptyState icon="users" title={result ? '没有匹配用户' : '正在加载用户'} /></div> : null}
-      <div className="mt-5 flex items-center justify-between gap-3">
-        <Button variant="ghost" disabled={page <= 1} onClick={() => updateQuery(page - 1)}>上一页</Button>
-        <span className="chenxing-caption">第 {page} / {totalPages} 页 · 共 {result?.total ?? '—'} 条</span>
-        <Button variant="ghost" disabled={page >= totalPages} onClick={() => updateQuery(page + 1)}>下一页</Button>
-      </div>
+              </tr>
+            )
+          })}
+        </DataTable>
+        {result && result.total > 0 ? (
+          <TablePagination page={page} totalPages={totalPages} total={result.total} onPageChange={updateQuery} />
+        ) : null}
       {createOpen ? (
         <UserCreateDrawer
           canManageRoles={Boolean(access.data?.permissions.includes('manage_roles'))}

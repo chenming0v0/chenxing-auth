@@ -6,6 +6,7 @@ import {
 } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { DataTable, TablePanel, TablePagination } from '../../components/data-table'
 import { formatDate, initialOf } from '../../data'
 import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
 
@@ -87,43 +88,31 @@ function ClientsTable({ access }: { access: AdminAccess }) {
           <Button variant="ghost" icon="search" onClick={() => updateQuery(1)}>查询</Button>
         </div>
       </div>
-      <div className="mt-5 overflow-x-auto rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)]">
-        <table className="w-full min-w-[920px] text-left">
-          <thead>
-            <tr className="border-b border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)]">
-              <th scope="col" className="chenxing-label px-4 py-3">Client</th>
-              <th scope="col" className="chenxing-label px-4 py-3">Owner</th>
-              <th scope="col" className="chenxing-label px-4 py-3">Redirect URI</th>
-              <th scope="col" className="chenxing-label px-4 py-3">状态</th>
-              <th scope="col" className="chenxing-label px-4 py-3 text-right">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {result?.items.map((client) => (
-              <tr key={client.client_id} className="border-t border-[var(--chenxing-border)]">
-                <td className="px-4 py-3">
-                  <p className="chenxing-body text-sm font-semibold">{client.client_name}</p>
-                  <p className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{client.client_id}</p>
-                </td>
-                <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{client.owner_user_id ?? '—'}</td>
-                <td className="px-4 py-3"><p className="chenxing-caption max-w-xs truncate">{client.redirect_uris.join(' · ')}</p></td>
-                <td className="px-4 py-3"><Badge tone={client.status === 'active' ? 'success' : 'warning'}>{client.status}</Badge></td>
-                <td className="px-4 py-3 text-right">
-                  <Button variant={client.status === 'active' ? 'danger' : 'ghost'} icon={client.status === 'active' ? 'x' : 'check'} onClick={() => void setClientStatus(client)}>
-                    {client.status === 'active' ? '禁用' : '启用'}
-                  </Button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {!result?.items.length ? <div className="mt-6"><EmptyState icon="key-round" title={result ? '没有匹配 Client' : '正在加载 Client'} /></div> : null}
-      <div className="mt-5 flex items-center justify-between gap-3">
-        <Button variant="ghost" disabled={page <= 1} onClick={() => updateQuery(page - 1)}>上一页</Button>
-        <span className="chenxing-caption">第 {page} / {totalPages} 页 · 共 {result?.total ?? '—'} 条</span>
-        <Button variant="ghost" disabled={page >= totalPages} onClick={() => updateQuery(page + 1)}>下一页</Button>
-      </div>
+      <DataTable
+        minWidth={920}
+        columns={['Client', 'Owner', 'Redirect URI', '状态', { label: '操作', align: 'right' }]}
+        empty={result?.items.length ? null : result ? '没有匹配 Client' : '正在加载 Client'}
+      >
+        {result?.items.map((client) => (
+          <tr key={client.client_id}>
+            <td>
+              <p className="chenxing-body text-sm font-semibold">{client.client_name}</p>
+              <p className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{client.client_id}</p>
+            </td>
+            <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{client.owner_user_id ?? '—'}</td>
+            <td><p className="chenxing-caption max-w-xs truncate">{client.redirect_uris.join(' · ')}</p></td>
+            <td><Badge tone={client.status === 'active' ? 'success' : 'warning'}>{client.status}</Badge></td>
+            <td className="text-right">
+              <Button variant={client.status === 'active' ? 'danger' : 'ghost'} icon={client.status === 'active' ? 'x' : 'check'} onClick={() => void setClientStatus(client)}>
+                {client.status === 'active' ? '禁用' : '启用'}
+              </Button>
+            </td>
+          </tr>
+        ))}
+      </DataTable>
+      {result && result.total > 0 ? (
+        <TablePagination page={page} totalPages={totalPages} total={result.total} onPageChange={updateQuery} />
+      ) : null}
     </HudPanel>
   )
 }

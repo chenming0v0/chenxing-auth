@@ -26,6 +26,10 @@ struct UserMeResponse {
     role: super::domain::UserRole,
     #[serde(with = "time::serde::rfc3339")]
     current_session_expires_at: time::OffsetDateTime,
+    /// 头像版本时间戳；`null` 表示未设置头像。前端用它判断是否请求头像字节，
+    /// 并作为头像 URL 的缓存击穿参数。
+    #[serde(with = "time::serde::rfc3339::option")]
+    avatar_updated_at: Option<time::OffsetDateTime>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -241,7 +245,9 @@ pub async fn revoke_user_session(
     }
 }
 
-fn profile_response(
+/// 资料响应的唯一构造点。头像端点也复用它，保证 `PUT`/`DELETE /me/avatar` 与
+/// `GET /me` 返回完全同一套字段，前端不必为头像操作单独解析另一种响应体。
+pub(crate) fn profile_response(
     context: UserContext,
     profile: crate::users::repository::UserProfile,
 ) -> Response {
@@ -255,6 +261,7 @@ fn profile_response(
             status: profile.status,
             role: profile.role,
             current_session_expires_at: context.session.expires_at,
+            avatar_updated_at: profile.avatar_updated_at,
         }),
     )
         .into_response()
@@ -275,6 +282,7 @@ mod tests {
             status: "active".to_owned(),
             role: UserRole::Owner,
             current_session_expires_at: time::OffsetDateTime::UNIX_EPOCH,
+            avatar_updated_at: None,
         })
         .expect("profile serializes");
         let session = serde_json::to_value(SessionItem {
@@ -289,6 +297,9 @@ mod tests {
             profile["current_session_expires_at"],
             "1970-01-01T00:00:00Z"
         );
+        // 未设置头像时必须是显式 null 而不是缺字段：前端以该字段是否为 null
+        // 作为「有无头像」的唯一判据。
+        assert!(profile["avatar_updated_at"].is_null());
         assert_eq!(session["created_at"], "1970-01-01T00:00:00Z");
         assert_eq!(session["expires_at"], "1970-01-01T00:00:00Z");
     }

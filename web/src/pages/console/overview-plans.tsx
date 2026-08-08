@@ -4,6 +4,7 @@ import { useAuth } from '../../auth-state'
 import { apiFetch, type AuthorizedOAuthApp, type OwnedOAuthClient, type SessionItem } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Chip, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { DataTable, TablePanel } from '../../components/data-table'
 import { formatDate, greeting } from '../../data'
 import {
   entitlementState, entitlementView, Meter, SelfServiceClosedBlock,
@@ -153,36 +154,27 @@ export function ConsoleOverview() {
         </HudPanel>
       </div>
 
-      <HudPanel className="mt-6 !p-0 overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-5">
-          <div><h2 className="chenxing-h2">最近活动</h2><p className="chenxing-caption mt-1">来自当前会话与授权记录的摘要</p></div>
-        </div>
-        <div className="cx-table-wrap border-0 rounded-none">
-          <table className="cx-table min-w-[720px]">
-            <thead>
-              <tr>
-                <th scope="col" className="chenxing-body px-6 py-3 text-[0.9375rem] font-medium text-[var(--chenxing-muted-foreground)]">时间</th>
-                <th scope="col" className="chenxing-body px-6 py-3 text-[0.9375rem] font-medium text-[var(--chenxing-muted-foreground)]">应用</th>
-                <th scope="col" className="chenxing-body px-6 py-3 text-[0.9375rem] font-medium text-[var(--chenxing-muted-foreground)]">事件</th>
-                <th scope="col" className="chenxing-body px-6 py-3 text-[0.9375rem] font-medium text-[var(--chenxing-muted-foreground)]">状态</th>
-              </tr>
-            </thead>
-            <tbody>
-              {apps.slice(0, 4).map((app) => (
-                <tr key={app.client_id}>
-                  <td className="chenxing-mono px-6 py-4 text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(app.updated_at)}</td>
-                  <td className="chenxing-body px-6 py-4 text-sm">{app.client_name}</td>
-                  <td className="chenxing-body px-6 py-4 text-sm">授权范围 · {app.scopes.join(' ')}</td>
-                  <td className="px-6 py-4"><span className="chenxing-body text-sm font-bold text-[var(--chenxing-success)]">成功</span></td>
-                </tr>
-              ))}
-              {!loading && !apps.length ? (
-                <tr><td colSpan={4} className="px-6 py-10 text-center"><span className="chenxing-caption">暂无最近授权活动</span></td></tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </HudPanel>
+      <TablePanel
+        className="mt-6"
+        icon="activity"
+        title="最近活动"
+        description="来自当前会话与授权记录的摘要"
+      >
+        <DataTable
+          minWidth={720}
+          columns={['时间', '应用', '事件', '状态']}
+          empty={loading ? '正在加载最近活动。' : apps.length ? null : '暂无最近授权活动'}
+        >
+          {apps.slice(0, 4).map((app) => (
+            <tr key={app.client_id}>
+              <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(app.updated_at)}</td>
+              <td className="chenxing-body text-sm">{app.client_name}</td>
+              <td className="chenxing-body text-sm">授权范围 · {app.scopes.join(' ')}</td>
+              <td><Badge tone="success"><Icon name="check" size={12} />成功</Badge></td>
+            </tr>
+          ))}
+        </DataTable>
+      </TablePanel>
     </ConsoleLayout>
   )
 }

@@ -18,6 +18,7 @@ vi.mock('../auth-state', () => ({
     user: {
       id: 1, username: 'chenxing', email: 'user@chenxing.star', display_name: '辰星',
       status: 'active', role: 'user', current_session_expires_at: '2099-01-01T00:00:00Z',
+      avatar_updated_at: null,
     },
     status: 'authenticated',
     bootstrap: 'ready',

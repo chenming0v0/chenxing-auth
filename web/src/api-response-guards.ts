@@ -29,6 +29,12 @@ function isUserMeResponse(value: unknown): value is UserMe {
     && typeof value.status === 'string'
     && isUserRole(value.role)
     && typeof value.current_session_expires_at === 'string'
+    /* 头像版本号缺失时容忍而不整体拒绝：它只影响头像是否渲染（缺失即回落到
+       首字母），而拒掉整个 /auth/me 会让用户完全进不去控制台。承载语义的
+       id / username / role / status 仍然严格必需。 */
+    && (value.avatar_updated_at === null
+      || value.avatar_updated_at === undefined
+      || typeof value.avatar_updated_at === 'string')
 }
 
 function isAuthStatusResponse(value: unknown): value is AuthStatusResponse {
@@ -72,6 +78,10 @@ type ResponseGuard = (value: unknown) => boolean
 export function responseGuard(path: string, method: string): ResponseGuard | undefined {
   const endpoint = path.split('?')[0]
   if (endpoint === '/api/v1/auth/me') return isUserMeResponse
+  // 头像的 PUT / DELETE 返回完整资料；GET 返回图片字节，不走 apiFetch。
+  if (endpoint === '/api/v1/auth/me/avatar' && (method === 'PUT' || method === 'DELETE')) {
+    return isUserMeResponse
+  }
   if (endpoint === '/api/v1/auth/status') return isAuthStatusResponse
   if (endpoint === '/api/v1/admin/auth/me') return isAdminMeResponse
 

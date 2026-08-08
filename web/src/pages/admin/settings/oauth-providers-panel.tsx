@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { apiFetch, type OAuthProviderInput, type OAuthProviderSummary } from '../../../api'
 import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '../../../components/ui'
+import { DataTable, TablePanel } from '../../../components/data-table'
 import { SelectField } from '../../../components/select'
 
 type ProviderForm = {
@@ -229,81 +230,66 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
 
   return (
     <>
-      <HudPanel>
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h2 className="chenxing-h2 flex items-center gap-2">
-              <Icon name="link" className="text-[var(--chenxing-cyan)]" size={18} />
-              自定义 OAuth 提供商
-            </h2>
-            <p className="chenxing-caption mt-1.5">支持 GitHub Enterprise、GitLab、Gitea、Keycloak 等兼容 OAuth 2.0 的身份提供商</p>
-          </div>
-          <Button icon="plus" onClick={openCreate}>添加 OAuth 提供商</Button>
-        </div>
-        <div className="mt-5 overflow-x-auto rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)]">
-          <table className="w-full min-w-[820px] text-left">
-            <thead>
-              <tr className="border-b border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)]">
-                <th scope="col" className="chenxing-label px-4 py-3">图标</th>
-                <th scope="col" className="chenxing-label px-4 py-3">名称</th>
-                <th scope="col" className="chenxing-label px-4 py-3">Slug</th>
-                <th scope="col" className="chenxing-label px-4 py-3">状态</th>
-                <th scope="col" className="chenxing-label px-4 py-3">Client ID</th>
-                <th scope="col" className="chenxing-label px-4 py-3">Client Secret</th>
-                <th scope="col" className="chenxing-label px-4 py-3 text-right">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {providers?.map((provider) => (
-                <tr key={provider.slug} className="border-t border-[var(--chenxing-border)]">
-                  <td className="px-4 py-3">
-                    <span className="inline-flex h-9 w-9 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(56,189,248,0.1)]">
-                      <Icon name="shield" className="text-[var(--chenxing-cyan)]" size={16} />
-                    </span>
-                  </td>
-                  <td className="chenxing-body px-4 py-3 text-sm">{provider.name}</td>
-                  <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">{provider.slug}</td>
-                  <td className="px-4 py-3">
-                    <Badge tone={provider.status === 'active' ? 'success' : 'warning'}>
-                      {provider.status === 'active' ? '已启用' : '已禁用'}
-                    </Badge>
-                  </td>
-                  <td className="chenxing-mono px-4 py-3 text-xs text-[var(--chenxing-muted-foreground)]">
-                    {provider.client_id.length > 18 ? `${provider.client_id.slice(0, 18)}...` : provider.client_id}
-                  </td>
-                  <td className="px-4 py-3">
-                    {provider.client_secret_configured ? (
-                      <Badge tone="success">
-                        <Icon name="check" size={12} />
-                        已配置
-                      </Badge>
-                    ) : (
-                      <Badge tone="warning">
-                        <Icon name="alert-triangle" size={12} />
-                        未配置
-                      </Badge>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center justify-end gap-3">
-                      <button type="button" className="chenxing-link chenxing-row-action" onClick={() => openEdit(provider)}>编辑</button>
-                      <button type="button" className="chenxing-link chenxing-row-action" style={{ color: 'var(--chenxing-error)' }} onClick={() => void toggleStatus(provider)} disabled={busy}>
-                        {provider.status === 'active' ? '禁用' : '启用'}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {loading ? <div className="mt-5"><Notice>正在加载 OAuth 提供商。</Notice></div> : null}
-        {!loading && !providers?.length ? (
-          <div className="mt-6">
-            <EmptyState icon="link" title="尚未配置外部身份提供商" description="添加兼容 OAuth 2.0 的发行者后，用户可在登录页选择外部身份。" action={<Button icon="plus" onClick={openCreate}>添加 OAuth 提供商</Button>} />
-          </div>
-        ) : null}
-      </HudPanel>
+      <TablePanel
+        icon="link"
+        title="自定义 OAuth 提供商"
+        description="支持 GitHub Enterprise、GitLab、Gitea、Keycloak 等兼容 OAuth 2.0 的身份提供商"
+        action={<Button icon="plus" onClick={openCreate}>添加 OAuth 提供商</Button>}
+      >
+        <DataTable
+          minWidth={820}
+          columns={['图标', '名称', 'Slug', '状态', 'Client ID', 'Client Secret', { label: '操作', align: 'right' }]}
+          empty={loading ? '正在加载 OAuth 提供商。' : providers?.length ? null : (
+            <EmptyState
+              icon="link"
+              title="尚未配置外部身份提供商"
+              description="添加兼容 OAuth 2.0 的发行者后，用户可在登录页选择外部身份。"
+              action={<Button icon="plus" onClick={openCreate}>添加 OAuth 提供商</Button>}
+            />
+          )}
+        >
+          {providers?.map((provider) => (
+            <tr key={provider.slug}>
+              <td>
+                <span className="inline-flex h-9 w-9 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(56,189,248,0.1)]">
+                  <Icon name="shield" className="text-[var(--chenxing-cyan)]" size={16} />
+                </span>
+              </td>
+              <td className="chenxing-body text-sm">{provider.name}</td>
+              <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{provider.slug}</td>
+              <td>
+                <Badge tone={provider.status === 'active' ? 'success' : 'warning'}>
+                  {provider.status === 'active' ? '已启用' : '已禁用'}
+                </Badge>
+              </td>
+              <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">
+                {provider.client_id.length > 18 ? `${provider.client_id.slice(0, 18)}...` : provider.client_id}
+              </td>
+              <td>
+                {provider.client_secret_configured ? (
+                  <Badge tone="success">
+                    <Icon name="check" size={12} />
+                    已配置
+                  </Badge>
+                ) : (
+                  <Badge tone="warning">
+                    <Icon name="alert-triangle" size={12} />
+                    未配置
+                  </Badge>
+                )}
+              </td>
+              <td>
+                <div className="flex items-center justify-end gap-3">
+                  <button type="button" className="chenxing-link chenxing-row-action" onClick={() => openEdit(provider)}>编辑</button>
+                  <button type="button" className="chenxing-link chenxing-row-action" style={{ color: 'var(--chenxing-error)' }} onClick={() => void toggleStatus(provider)} disabled={busy}>
+                    {provider.status === 'active' ? '禁用' : '启用'}
+                  </button>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </DataTable>
+      </TablePanel>
 
       {open ? (
         <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-[rgba(2,4,10,0.72)] px-4 py-8 backdrop-blur-md">

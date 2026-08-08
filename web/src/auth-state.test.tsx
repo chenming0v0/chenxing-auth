@@ -41,6 +41,7 @@ describe('AuthProvider recoverable failures (#250)', () => {
           status: 'active',
           role: 'owner',
           current_session_expires_at: '2099-01-01T00:00:00Z',
+          avatar_updated_at: null,
         }))
       }
       throw new Error(`unexpected request: ${path}`)

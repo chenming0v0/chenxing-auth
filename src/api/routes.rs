@@ -43,6 +43,10 @@ use crate::{
     },
     oauth::userinfo::{userinfo, userinfo_post},
     state::AppState,
+    users::avatar_handlers::{
+        current_user_avatar, delete_current_user_avatar, upload_current_user_avatar,
+    },
+    users::avatar_image::MAX_UPLOAD_BYTES,
     users::entitlements_handlers::current_entitlements,
     users::handlers::{login_user, register_user, revoke_session},
     users::oauth_client_handlers::{
@@ -104,6 +108,15 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
         .route(
             "/api/v1/auth/me",
             get(current_user_profile).patch(update_current_user_profile),
+        )
+        // 头像上传体远大于 JSON 请求，需要单独放宽 axum 默认的 2 MiB 体上限。
+        // 该 layer 只挂在本路由上：全局放宽会让每个 JSON 端点都能被灌入大体积请求。
+        .route(
+            "/api/v1/auth/me/avatar",
+            get(current_user_avatar)
+                .put(upload_current_user_avatar)
+                .delete(delete_current_user_avatar)
+                .route_layer(axum::extract::DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
         )
         .route("/api/v1/auth/password", post(change_current_user_password))
         .route("/api/v1/auth/entitlements", get(current_entitlements))

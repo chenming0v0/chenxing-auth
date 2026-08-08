@@ -297,17 +297,47 @@
 
 /* ---------- console shell: avatar (rounded-rect) + dropdown ---------- */
 .chenxing-avatar {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: none;
   cursor: pointer;
+  /* 头像图片靠容器裁切来贴合圆角，因此必须裁掉溢出内容 */
+  overflow: hidden;
+  flex-shrink: 0;
   border-radius: var(--chenxing-radius-md);
   font-family: var(--chenxing-font-display);
   font-weight: 700;
   color: #fff;
   background: linear-gradient(135deg, #7c5cff, #d24bff 55%, #ff7ac2);
   box-shadow: 0 0 16px rgba(160, 92, 255, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+/* 头像图已是方图，object-fit 只作为非方图落库时的兜底，避免拉伸变形 */
+.chenxing-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* 可上传头像：悬停或聚焦时浮出相机蒙层，提示这里可点 */
+.chenxing-avatar-editable { cursor: pointer; padding: 0; }
+.chenxing-avatar-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  color: #fff;
+  background: rgba(2, 5, 12, 0.62);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+.chenxing-avatar-editable:hover .chenxing-avatar-overlay,
+.chenxing-avatar-editable:focus-visible .chenxing-avatar-overlay { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .chenxing-avatar-overlay { transition: none; }
 }
 .chenxing-menu {
   min-width: 12rem;

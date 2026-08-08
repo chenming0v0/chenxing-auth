@@ -4,6 +4,7 @@
 //!
 //! - [`lookup`]：读取路径（凭据、资料、列表）。
 //! - [`write`]：写入路径（插入、资料更新、改密）。
+//! - [`avatar`]：头像字节的读写与清除。
 //! - [`owner_bootstrap`]：Owner 引导与受 Owner 前提约束的创建。
 //! - [`role_guard`]：角色与状态守卫（最后一个活跃 Owner 规则）。
 //!
@@ -14,11 +15,13 @@ use time::OffsetDateTime;
 
 use super::domain::{UserId, UserRole, UserStatus};
 
+mod avatar;
 mod lookup;
 mod owner_bootstrap;
 mod role_guard;
 mod write;
 
+pub use avatar::{StoredAvatar, clear_avatar, find_avatar, update_avatar};
 pub use lookup::{
     find_credentials_by_email, find_credentials_by_id, find_credentials_by_identifier,
     find_profile_by_id, list_users,
@@ -91,6 +94,9 @@ pub struct UserProfile {
     pub display_name: Option<String>,
     pub status: String,
     pub role: UserRole,
+    /// 头像版本时间戳。`None` 表示没有头像，前端据此回落到首字母占位符；
+    /// 有值时它同时充当头像 URL 的缓存击穿参数，因此不能省略进响应。
+    pub avatar_updated_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug)]

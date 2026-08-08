@@ -88,6 +88,12 @@ const safeMessages = new Map<string, string>([
   ['oauth_request_expired', '授权请求已过期，请重新发起。'],
   ['oauth_request_binding_failed', '授权请求绑定失败，请重新开始。'],
   ['oauth_account_link_required', '该外部账号尚未绑定辰星通行证，请先登录后在账号设置中绑定。'],
+  ['avatar_empty', '没有读取到图片内容，请重新选择。'],
+  ['avatar_too_large', '图片超出大小上限，请更换一张。'],
+  ['avatar_unsupported_format', '只支持 PNG、JPEG 或 WebP 图片。'],
+  ['avatar_undecodable', '图片无法读取，请更换一张。'],
+  ['avatar_too_small', '图片尺寸过小，请选择更清晰的图片。'],
+  ['avatar_not_found', '当前没有设置头像。'],
 ])
 
 /** 把 HTTP 状态码和后端错误码映射为用户可见文案；返回值恒为 string，不泄露内部细节。 */
@@ -131,7 +137,11 @@ export async function apiFetch<T>(path: string, init: ApiRequestInit = {}): Prom
   const headers = new Headers(requestInit.headers)
   headers.set('Accept', 'application/json')
   if (!SAFE_HTTP_METHODS.has(method)) {
-    if (!(requestInit.body instanceof FormData)) headers.set('Content-Type', 'application/json')
+    /* Content-Type 只在调用方没有表态、且 body 不自带类型时才补 JSON。
+       FormData 需要 fetch 生成 multipart boundary，Blob 自带 MIME（头像上传即走这条路），
+       两者被强改成 application/json 都会让服务端拿到错误的类型声明。 */
+    const bodyCarriesOwnType = requestInit.body instanceof FormData || requestInit.body instanceof Blob
+    if (!bodyCarriesOwnType && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     const token = csrfToken()
     if (token) headers.set('X-CSRF-Token', token)
     else if (!headers.has('X-CSRF-Token')) {
@@ -182,6 +192,19 @@ export type UserMe = {
   status: string
   role: UserRole
   current_session_expires_at: string
+  /** 头像版本时间戳；null 表示未设置头像，界面回落到首字母占位符。 */
+  avatar_updated_at: string | null
+}
+
+/**
+ * 头像字节地址。
+ *
+ * 该端点按会话返回本人头像，响应体不随路径变化，因此必须把版本时间戳带进查询参数：
+ * 否则浏览器会一直复用旧头像的缓存条目，用户换了图也看不到变化。
+ */
+export function avatarUrl(user: Pick<UserMe, 'avatar_updated_at'> | null | undefined): string | undefined {
+  if (!user?.avatar_updated_at) return undefined
+  return `/api/v1/auth/me/avatar?v=${encodeURIComponent(user.avatar_updated_at)}`
 }
 
 export type AuthStatusResponse = { authenticated: boolean }
@@ -268,7 +291,8 @@ export type AdminMeResponse = {
   status: string
 }
 export type AdminOverview = { users: number; oauth_clients: number; administrators: number; audit_events: number }
-export type PublicUser = Omit<UserMe, 'current_session_expires_at'> & { created_at: string }
+/** 管理端用户对象。该接口不返回头像版本号，因此显式排除，避免类型宣称后端没给的字段。 */
+export type PublicUser = Omit<UserMe, 'current_session_expires_at' | 'avatar_updated_at'> & { created_at: string }
 /** 管理端建号入参；display_name 留空时传 null，role / status 省略时由服务端取默认值。 */
 export type AdminCreateUserInput = {
   username: string
