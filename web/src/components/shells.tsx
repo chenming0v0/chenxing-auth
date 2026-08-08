@@ -287,18 +287,18 @@ export function GlobalTopbar({
   status,
   action,
   actionTo,
-  loggedIn = false,
   menuExtra,
   hideBrandWhenExpanded = false,
 }: {
   status: string
   action?: string
   actionTo?: string
-  loggedIn?: boolean
   menuExtra?: ReactNode
   hideBrandWhenExpanded?: boolean
 }) {
   const { expanded, sentinelRef } = useTopbarExpanded()
+  const { status: authStatus } = useAuth()
+  const loggedIn = authStatus === 'authenticated'
   return (
     <>
       <div ref={sentinelRef} aria-hidden="true" className="chenxing-topbar-sentinel" />
@@ -442,7 +442,6 @@ export function ConsoleLayout({ children }: { children: ReactNode }) {
             appears once the bar condenses into its capsule */}
         <GlobalTopbar
           status={status}
-          loggedIn
           hideBrandWhenExpanded
           menuExtra={(
             <>
