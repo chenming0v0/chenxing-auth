@@ -204,6 +204,7 @@ CHENXING_TEST_ROLE=orchestrator ./test_sh/test.sh --full
 - 本项目的主要开发分支是 `dev`。用户未明确指定分支、说“主要分支”或要求合并到主线时，默认使用 `dev`，不要自行使用已废弃的 `master`。
 - `releases` 是释放分支。
 - `releases` 不接受任何直接提交，只接受来自其他分支的合并。发现自己即将在 `releases` 上提交时，不要停下询问：自觉切回 `dev` 再提交，并顺口告诉用户一句他忘记切分支了。这条自主切换分支的权限仅限“当前确实要提交、且提交目标是 `releases`”这一种情形，其他分支切换仍需用户确认。
+- 把 `dev` 合并到 `releases` 之前，必须先在 `dev` 上把 `Cargo.toml` 的 `version` 改成本次要发布的版本号，并同步 `Cargo.lock` 里 `chenxing-auth` 的版本和 `.github/workflows/release-tag.yml` 的 `default`。版本号提交在合并之前完成，让标签 `vX.Y.Z` 与它指向的提交自身声明的版本一致；不要合并完再补。
 - `design` 是设计稿分支，只保存 `design-auth-chengming/` 和设计稿专用 skill；它单向从 `dev` 接收更新，禁止合并回 `dev` 或 `releases`。
 - 功能分支应从当前明确的目标基线创建；开始工作前必须检查当前分支、工作区状态、远端跟踪关系以及目标分支的祖先关系，确认没有把功能分支误合入 `dev` 或 `releases`。
 - 涉及分支合并、推送、删除或发布时，先向用户确认目标分支语义；“主要分支”表示 `dev`，“释放分支”明确表示 `releases`。
