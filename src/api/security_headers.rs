@@ -150,7 +150,11 @@ mod tests {
 
     #[tokio::test]
     async fn html_documents_get_the_spa_policy() {
-        let response = apply(response_with_content_type("text/html; charset=utf-8"), false).await;
+        let response = apply(
+            response_with_content_type("text/html; charset=utf-8"),
+            false,
+        )
+        .await;
 
         assert_eq!(response.headers()["content-security-policy"], DOCUMENT_CSP);
     }

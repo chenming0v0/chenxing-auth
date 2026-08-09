@@ -300,8 +300,8 @@ mod tests {
     #[test]
     fn pool_settings_fallback_on_zero_acquire_timeout() {
         // acquire_timeout=0 会导致立即超时，回退默认值
-        let s = pool_settings_from_lookup(only("DB_ACQUIRE_TIMEOUT_SECONDS", "0"))
-            .expect("falls back");
+        let s =
+            pool_settings_from_lookup(only("DB_ACQUIRE_TIMEOUT_SECONDS", "0")).expect("falls back");
         assert_eq!(s.acquire_timeout, Duration::from_secs(5));
     }
 

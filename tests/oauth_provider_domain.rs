@@ -48,7 +48,8 @@ fn provider_input_defaults_pkce_to_enabled() {
         "userinfo_endpoint": "https://sso.example.com/oauth/userinfo",
         "client_id": "client-id",
         "client_secret": "client-secret",
-        "scopes": ["openid"]
+        "scopes": ["openid"],
+        "email_verified_claim": "email_verified"
     }))
     .expect("provider input without pkce_enabled");
     assert!(input.pkce_enabled);
@@ -179,7 +180,13 @@ fn external_user_rejects_missing_email_verified_claim_in_response() {
 /// 放宽任何一种都等价于接受 IdP 的自由文本作为安全断言。
 #[test]
 fn external_user_rejects_non_boolean_email_verified_claim() {
-    for value in [json!("true"), json!(1), json!(null), json!({}), json!([true])] {
+    for value in [
+        json!("true"),
+        json!(1),
+        json!(null),
+        json!({}),
+        json!([true]),
+    ] {
         let error = ExternalUser::from_claims(
             &json!({"sub": "subject-1", "email": "person@example.com", "email_verified": value}),
             &mapping(),

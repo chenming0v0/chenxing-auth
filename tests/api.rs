@@ -119,7 +119,10 @@ async fn the_spa_shell_gets_a_document_csp_that_allows_its_real_assets() {
         "form-action 'self'",
         "frame-ancestors 'none'",
     ] {
-        assert!(policy.contains(directive), "missing {directive} in {policy}");
+        assert!(
+            policy.contains(directive),
+            "missing {directive} in {policy}"
+        );
     }
     assert!(!policy.contains("unsafe-inline"), "{policy}");
     assert!(!policy.contains("unsafe-eval"), "{policy}");

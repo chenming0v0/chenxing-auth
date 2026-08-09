@@ -461,7 +461,10 @@ async fn disk_sync_never_reverts_a_concurrent_rotation() {
         let manager = manager.clone();
         tokio::spawn(async move {
             for _ in 0..32 {
-                manager.sync_from_disk().await.expect("sync during rotation");
+                manager
+                    .sync_from_disk()
+                    .await
+                    .expect("sync during rotation");
             }
         })
     };

@@ -427,8 +427,8 @@ mod tests {
             ip_failure_limit: MAX_IP_FAILURE_LIMIT + 1,
             totp_ticket_failure_limit: MAX_TOTP_TICKET_FAILURE_LIMIT + 1,
             external_login_state_ttl_seconds: MAX_EXTERNAL_LOGIN_STATE_TTL_SECONDS + 1,
-            external_login_state_rate_window_seconds:
-                MAX_EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS + 1,
+            external_login_state_rate_window_seconds: MAX_EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS
+                + 1,
             external_login_state_rate_limit: MAX_EXTERNAL_LOGIN_STATE_RATE_LIMIT + 1,
             external_login_state_max_pending: MAX_EXTERNAL_LOGIN_STATE_MAX_PENDING + 1,
         }

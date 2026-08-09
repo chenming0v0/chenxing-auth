@@ -236,8 +236,13 @@ async fn enroll_totp(router: &Router, username: &str, password: &str) -> TOTP {
     assert_eq!(login.status(), StatusCode::ACCEPTED);
     let cookie = pending_cookie(&login);
     assert_eq!(json_body(login).await["status"], "factor_setup_required");
-    let setup_response =
-        post_with_cookie(router, "/api/v1/auth/totp/setup", serde_json::json!({}), &cookie).await;
+    let setup_response = post_with_cookie(
+        router,
+        "/api/v1/auth/totp/setup",
+        serde_json::json!({}),
+        &cookie,
+    )
+    .await;
     let setup = json_body(setup_response).await;
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
     assert_eq!(
@@ -339,10 +344,7 @@ async fn retired_encryption_kid_is_reported_as_unavailable_without_burning_quota
     )
     .await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(
-        json_body(response).await["code"],
-        "factor_key_unavailable"
-    );
+    assert_eq!(json_body(response).await["code"], "factor_key_unavailable");
 
     fixture.cleanup();
 }

@@ -321,10 +321,10 @@ mod tests {
                     ..Default::default()
                 };
                 assert_eq!(
-                    boundary
-                        .clone()
-                        .validate()
-                        .expect(concat!(stringify!($field), " at its bound must be accepted")),
+                    boundary.clone().validate().expect(concat!(
+                        stringify!($field),
+                        " at its bound must be accepted"
+                    )),
                     boundary
                 );
             }};
@@ -454,7 +454,10 @@ mod tests {
         assert_eq!(sanitized, defaults);
         // 降级后的取值必须自身合法，否则回读结果仍然是不可用配置。
         assert_eq!(
-            sanitized.clone().validate().expect("sanitized must be valid"),
+            sanitized
+                .clone()
+                .validate()
+                .expect("sanitized must be valid"),
             sanitized
         );
     }

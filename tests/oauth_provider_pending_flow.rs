@@ -530,8 +530,8 @@ async fn external_callback_revokes_session_when_request_binding_is_invalid() {
         .get(format!("chenxing:oauth:request:{request_id}"))
         .await
         .expect("read pending request");
-    let pending: Value =
-        serde_json::from_str(&pending.expect("pending request still stored")).expect("pending JSON");
+    let pending: Value = serde_json::from_str(&pending.expect("pending request still stored"))
+        .expect("pending JSON");
     assert!(
         pending["session_token_hash"].is_null(),
         "invalid binding must not claim the pending request"

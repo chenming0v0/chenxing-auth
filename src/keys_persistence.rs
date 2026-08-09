@@ -36,7 +36,12 @@ pub(super) fn load_materials(
     let mut key_files = discover_key_files(directory)?;
 
     let migrated_id = if key_files.is_empty() {
-        migrate_legacy_key(directory, declared_active_id.as_deref(), &mut key_files, now)?
+        migrate_legacy_key(
+            directory,
+            declared_active_id.as_deref(),
+            &mut key_files,
+            now,
+        )?
     } else {
         remove_legacy_key(directory)?;
         None
