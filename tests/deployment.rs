@@ -242,6 +242,8 @@ fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("0019_audit_runtime_role.sql"));
     assert!(DB_MODULE.contains("external provider requires email_verified claim"));
     assert!(DB_MODULE.contains("0021_oauth_provider_require_email_verified_claim.sql"));
+    assert!(DB_MODULE.contains("consent state version for cache staleness detection"));
+    assert!(DB_MODULE.contains("0022_consent_state_version.sql"));
     let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -273,6 +275,7 @@ fn database_uses_explicit_unified_baseline_migrations() {
             std::ffi::OsString::from("0019_audit_runtime_role.sql"),
             std::ffi::OsString::from("0020_user_avatar.sql"),
             std::ffi::OsString::from("0021_oauth_provider_require_email_verified_claim.sql"),
+            std::ffi::OsString::from("0022_consent_state_version.sql"),
         ]
     );
 }

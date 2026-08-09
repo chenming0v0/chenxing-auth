@@ -9,38 +9,30 @@
 //!
 //! **Issue #276：写入交错留下的陈旧撤销标记**
 //!
-//! 撤销与重新授权都是「先写 PostgreSQL（权威），再写 Redis（缓存）」。
-//! 两条链路交错时 Redis 的写入顺序可以与数据库提交顺序相反：
-//!
-//! ```text
-//! T1 撤销     : UPDATE revoked_at = now()   → DB state_version = 2, 已撤销
-//! T2 重新授权 : UPSERT revoked_at = NULL    → DB state_version = 3, 已授权
-//! T2 重新授权 : 写缓存
-//! T1 撤销     : 写缓存                       ← 迟到，描述的是 v2 的旧结论
-//! ```
-//!
-//! 修复前缓存值是无版本的 `"1"`，最后一步用裸 `SET` 覆盖，缓存于是长期声称
-//! 「已撤销」，而数据库里 `revoked_at IS NULL`。读路径命中缓存直接短路，
-//! refresh 和 userinfo 被持续拒绝，且旧实现的键 TTL 是 180 天——用户重新授权后
-//! 仍可能数天甚至数月无法使用该应用。
+//! 撤销与重新授权都是「先写 PostgreSQL（权威），再写 Redis（缓存）」，两条链路
+//! 交错时 Redis 的写入顺序可以与数据库提交顺序相反（时序见
+//! [`super::consent_cache_scripts`]）。修复前缓存值是无版本的 `"1"`，迟到的撤销
+//! 写入用裸 `SET` 覆盖了重新授权的结论，缓存于是长期声称「已撤销」而数据库里
+//! `revoked_at IS NULL`；读路径命中即短路，refresh 和 userinfo 被持续拒绝，
+//! 且旧实现的键 TTL 是 180 天——用户重新授权后仍可能数天无法使用该应用。
 //!
 //! **修复方式（两层，互相独立）**
 //!
 //! 1. **版本围栏**：缓存值携带产生它的 `state_version`，更新走 Lua 条件写
 //!    （[`CONSENT_STATE_UPDATE_SCRIPT`]），缓存中已有更高版本时拒绝落盘。
-//!    重新授权写下的 `a:3` 因此能挡住迟到的 `r:2`，交错不再产生错误结论。
-//!    这是主修复：正常路径下（含 Redis 可用的所有交错顺序）陈旧标记不会出现。
+//!    重新授权写下的 `3:a` 因此能挡住迟到的 `2:r`。这是主修复：Redis 可用时
+//!    任何交错顺序都不再产生与数据库矛盾的结论。
 //! 2. **有界信任窗口**：键 TTL 从 180 天收到
-//!    [`CONSENT_STATE_CACHE_TTL_SECONDS`]。生产模式在未命中时回源 PostgreSQL，
-//!    所以缩短 TTL 不削弱撤销效力，只是多一次查询；换来的是任何残余不一致
-//!    （例如重新授权时 Redis 恰好不可用，或副本故障转移丢掉了新写入）最多
-//!    存活一个窗口就自愈，而不是数天。
+//!    [`CONSENT_STATE_CACHE_TTL_SECONDS`]。生产模式未命中时回源 PostgreSQL，
+//!    缩短 TTL 不削弱撤销效力，只是多一次查询；换来的是任何残余不一致
+//!    （重新授权时 Redis 恰好不可用、副本故障转移丢掉新写入）最多存活一个窗口
+//!    就自愈，而不是数天。
 //!
 //! **键前缀更换**：
-//! 值格式从 `"1"` 变为 `"<version>:<state>"`，因此键前缀同步从
-//! `consent-revoked:` 换成 `consent-state:`。滚动升级期间新代码不读旧键，
-//! 旧键随自身 TTL 回收；这比在 Lua 和 Rust 两侧各留一条旧格式分支更简单，
-//! 代价只是升级瞬间已撤销的同意会回源一次数据库（结论不变）。
+//! 值格式变了（`"1"` → `"<version>:<state>"`），键前缀同步从 `consent-revoked:`
+//! 换成 `consent-state:`。滚动升级期间新代码不读旧键，旧键随自身 TTL 回收；
+//! 这比在 Lua 和 Rust 两侧各留一条旧格式分支更简单，代价只是升级瞬间已撤销的
+//! 同意会回源一次数据库（结论不变）。
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use redis::{AsyncCommands, Script};
@@ -143,7 +135,8 @@ impl ConsentStateCache {
         client_id: &str,
         version: i64,
     ) -> Result<bool, TokenRevocationError> {
-        self.write(user_id, client_id, version, REVOKED_MARKER).await
+        self.write(user_id, client_id, version, REVOKED_MARKER)
+            .await
     }
 
     /// 写入「已授权」缓存结论（版本围栏）。
@@ -237,7 +230,8 @@ impl ConsentStateCache {
             return Ok(false);
         };
 
-        self.cache_state_best_effort(user_id, client_id, state).await;
+        self.cache_state_best_effort(user_id, client_id, state)
+            .await;
         Ok(state.revoked)
     }
 
@@ -246,11 +240,7 @@ impl ConsentStateCache {
     /// 不做版本比较：语义是「忘掉缓存」，而不是「写入一个更新的结论」。
     /// 用于仅缓存模式的同步路径，以及测试中模拟 Redis 数据丢失。
     /// 删除本身不会导致错误放行——下一次判定会回源权威库。
-    pub async fn forget(
-        &self,
-        user_id: &str,
-        client_id: &str,
-    ) -> Result<(), TokenRevocationError> {
+    pub async fn forget(&self, user_id: &str, client_id: &str) -> Result<(), TokenRevocationError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let _: usize = connection.del(Self::key(user_id, client_id)).await?;
         Ok(())
@@ -345,55 +335,5 @@ impl ConsentStateCache {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        ACTIVE_MARKER, CONSENT_STATE_CACHE_ONLY_TTL_SECONDS, CONSENT_STATE_CACHE_TTL_SECONDS,
-        CachedConsentState, ConsentStateCache, REVOKED_MARKER,
-    };
-    use crate::oauth::refresh::REFRESH_TOKEN_ABSOLUTE_TTL_DAYS;
-
-    #[test]
-    fn cached_state_parses_versioned_markers() {
-        assert_eq!(
-            CachedConsentState::parse(&format!("2:{REVOKED_MARKER}")),
-            Some(CachedConsentState::Revoked)
-        );
-        assert_eq!(
-            CachedConsentState::parse(&format!("3:{ACTIVE_MARKER}")),
-            Some(CachedConsentState::Active)
-        );
-    }
-
-    #[test]
-    fn unparseable_cached_values_are_treated_as_a_miss() {
-        // 旧格式（Issue #276 之前的无版本值）和脏值都必须回落到权威源，
-        // 而不是被猜成某一侧结论。
-        for raw in ["1", "", "2:x", ":r", "abc"] {
-            assert_eq!(CachedConsentState::parse(raw), None, "{raw:?}");
-        }
-    }
-
-    #[test]
-    fn cache_key_is_bound_to_both_user_and_client() {
-        let base = ConsentStateCache::key("user-1", "client-1");
-
-        assert_ne!(base, ConsentStateCache::key("user-1", "client-2"));
-        assert_ne!(base, ConsentStateCache::key("user-2", "client-1"));
-        // 键前缀随值格式一同更换，新代码不会读到旧格式的无版本值
-        assert!(base.starts_with("chenxing:oauth:consent-state:"));
-        // user_id / client_id 不得出现在 keyspace 中
-        assert!(!base.contains("user-1"));
-        assert!(!base.contains("client-1"));
-    }
-
-    #[test]
-    fn cache_only_ttl_still_covers_refresh_token_absolute_lifetime() {
-        // 仅缓存模式没有权威回源，键一到期撤销就失效，因此必须覆盖
-        // refresh token 的绝对寿命。生产模式不受此约束（见常量文档）。
-        assert_eq!(
-            CONSENT_STATE_CACHE_ONLY_TTL_SECONDS,
-            (REFRESH_TOKEN_ABSOLUTE_TTL_DAYS * 24 * 60 * 60) as u64
-        );
-        assert!(CONSENT_STATE_CACHE_TTL_SECONDS < CONSENT_STATE_CACHE_ONLY_TTL_SECONDS);
-    }
-}
+#[path = "consent_cache_tests.rs"]
+mod tests;

@@ -192,6 +192,17 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     assert_column(&pool, "session_outbox", "attempts", "integer", false).await;
     assert_column(&pool, "session_outbox", "generation", "bigint", false).await;
     assert_fk(&pool, "session_outbox", "session_id", "user_sessions", "id").await;
+    // Issue #276：同意状态版本号。NOT NULL 是缓存条件写的前提——可空的版本号
+    // 会让「无法比较大小」变成一种需要在 Lua 侧特判的合法状态。
+    assert_column(&pool, "user_consents", "state_version", "bigint", false).await;
+    assert_column(
+        &pool,
+        "user_consents",
+        "revoked_at",
+        "timestamp with time zone",
+        true,
+    )
+    .await;
     for index in [
         "users_admin_query_order_idx",
         "users_admin_query_status_idx",

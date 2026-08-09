@@ -110,7 +110,9 @@ impl MockConsentRepository {
             .expect("records lock")
             .iter()
             // 已撤销的记录对读路径不可见，与 SQL 的 `revoked_at IS NULL` 一致
-            .find(|record| record.user_id == user_id && record.client_id == client_id && !record.revoked)
+            .find(|record| {
+                record.user_id == user_id && record.client_id == client_id && !record.revoked
+            })
             .map(|record| record.scopes.clone())
     }
 
@@ -170,9 +172,9 @@ impl MockConsentRepository {
 
     fn sync_soft_revoke(&self, user_id: UserId, client_id: &str) -> Option<i64> {
         let mut records = self.state.records.lock().expect("records lock");
-        let record = records
-            .iter_mut()
-            .find(|record| record.user_id == user_id && record.client_id == client_id && !record.revoked)?;
+        let record = records.iter_mut().find(|record| {
+            record.user_id == user_id && record.client_id == client_id && !record.revoked
+        })?;
         record.revoked = true;
         record.state_version += 1;
         Some(record.state_version)

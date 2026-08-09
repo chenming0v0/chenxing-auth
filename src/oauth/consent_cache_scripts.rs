@@ -5,10 +5,10 @@
 //! Redis 的写入顺序可以与数据库的提交顺序相反：
 //!
 //! ```text
-//! 撤销      : UPDATE revoked_at = now()   (DB v2, 已撤销)
-//! 重新授权  : UPSERT revoked_at = NULL    (DB v3, 已授权)
-//! 重新授权  : 写缓存 a:3
-//! 撤销      : 写缓存 r:2                   ← 迟到的写入
+//! 撤销      : UPDATE revoked_at = now()   → DB state_version = 2, 已撤销
+//! 重新授权  : UPSERT revoked_at = NULL    → DB state_version = 3, 已授权
+//! 重新授权  : 写缓存 3:a
+//! 撤销      : 写缓存 2:r                   ← 迟到的写入
 //! ```
 //!
 //! 用裸 `SET` 时最后一步会赢，留下与 `revoked_at IS NULL` 相矛盾的「已撤销」标记，
