@@ -6,6 +6,8 @@ const BUILD_WORKFLOW: &str = include_str!("../.github/workflows/build.yml");
 const INSTALL_SCRIPT: &str = include_str!("../deploy/install.sh");
 const PRODUCTION_COMPOSE: &str = include_str!("../docker-compose.prod.yml");
 const DB_MODULE: &str = include_str!("../src/db.rs");
+const DB_POOL_MODULE: &str = include_str!("../src/db_pool.rs");
+const ENV_EXAMPLE: &str = include_str!("../.env.example");
 const DOCKERFILE: &str = include_str!("../Dockerfile");
 const RUNTIME_DOCKERFILE: &str = include_str!("../Dockerfile.runtime");
 const AUDIT_RUNTIME_MIGRATION: &str = include_str!("../migrations/0019_audit_runtime_role.sql");
@@ -354,6 +356,41 @@ fn application_startup_does_not_mutate_schema_outside_migrations() {
     assert!(!main.contains("db::migrate(&state.database)"));
     assert!(!main.contains("CREATE TABLE"));
     assert!(!main.contains("ALTER TABLE"));
+}
+
+/// Issue #267：请求路径必须带服务端语句上限，维护路径必须不带。
+///
+/// 断言写在源码文本上，因为这个不变量的代价在生产才显现：只有真实 PostgreSQL 能
+/// 观察到 `statement_timeout` 生效，而这里要守住的是"谁走哪个池"这个结构决定，
+/// 不需要数据库就能验证，也不会被集成测试环境缺失掩盖。
+#[test]
+fn request_path_pool_enforces_statement_timeout_and_maintenance_pool_does_not() {
+    assert!(
+        DB_POOL_MODULE.contains("DB_STATEMENT_TIMEOUT_MS"),
+        "statement timeout must be configurable"
+    );
+    assert!(
+        DB_MODULE.contains("set_config('statement_timeout', $1, false)"),
+        "statement timeout must be applied per connection as a bound parameter"
+    );
+    assert!(
+        DB_MODULE.contains("PoolRole::Maintenance => None"),
+        "the maintenance pool must not carry a statement timeout"
+    );
+
+    // 迁移与归档命令必须显式走维护池，否则长任务会被请求路径的上限截断。
+    let main = include_str!("../src/main.rs");
+    assert!(!main.contains("db::connect_with_url("));
+    assert_eq!(
+        main.matches("db::connect_maintenance(").count(),
+        2,
+        "both `migrate` and `audit-archive` must use the maintenance pool"
+    );
+
+    assert!(
+        ENV_EXAMPLE.contains("DB_STATEMENT_TIMEOUT_MS"),
+        "the tunable must be documented in .env.example"
+    );
 }
 
 #[test]

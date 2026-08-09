@@ -83,7 +83,7 @@ src/
 
 - Axum 服务入口和 `/health` 健康检查
 - 环境配置加载与启动校验
-- PostgreSQL 连接池边界和初始迁移
+- PostgreSQL 连接池边界、请求路径语句超时和初始迁移
 - Redis Client 边界
 - 用户注册输入校验和 Argon2 密码哈希
 - `POST /api/v1/users` 基础注册接口
@@ -131,6 +131,8 @@ src/
 - Redis 6 或更高版本
 
 复制 `.env.example` 为 `.env`，按本地环境修改连接地址。使用 HTTP 本地开发时，将 `APP_ISSUER` 设置为 `http://127.0.0.1:3000`（或其他 loopback 地址）并将 `COOKIE_SECURE` 显式设为 `false`；HTTPS 或非 loopback 环境必须保持 `COOKIE_SECURE=true`。正常服务启动不会修改数据库结构；需要执行迁移时运行 `cargo run -- migrate`，生产 Docker 部署脚本会在启动应用前显式执行同一迁移命令。审计归档不在 Web 服务启动时自动运行，只有单独的 `cargo run -- audit-archive` 维护命令会搬运过期热表事件。
+
+数据库连接分成两个用途不同的池。请求路径使用的应用池会在每条新连接上设置服务端 `statement_timeout`，默认 `DB_STATEMENT_TIMEOUT_MS=5000`（允许 100 至 60000 毫秒）：`REQUEST_TIMEOUT_SECONDS` 只放弃 HTTP 响应，PostgreSQL 后端仍在执行，连接不会归还，因此语句上限必须由数据库自己执行，否则少量卡住的查询就能抽干连接池并让登录和令牌签发一起失败。该变量取值越界或不是整数时直接启动失败，不静默回退，避免运维以为自己配置的上限生效；设为 `0` 表示显式关闭（仅在数据库角色已带 `ALTER ROLE ... SET statement_timeout` 时使用），启动时会记录警告。`migrate` 和 `audit-archive` 走独立的维护池，不带 `statement_timeout`，长时间 DDL 和归档批次不会被中途取消。
 
 #### 快速启动
 

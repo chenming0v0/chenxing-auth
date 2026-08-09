@@ -1,9 +1,13 @@
 use std::borrow::Cow;
-use std::time::Duration;
 
 use crate::sqlx::{PgPool, PgPoolOptions};
 
 use crate::config::Config;
+
+#[path = "db_pool.rs"]
+mod pool;
+
+pub use pool::{PoolRole, PoolSettingsError};
 
 pub type Database = PgPool;
 
@@ -15,6 +19,8 @@ pub enum DbError {
     InvalidRuntimeDatabaseUrl,
     #[error("runtime database password is missing; configure a separate runtime role")]
     MissingRuntimeDatabasePassword,
+    #[error("database pool configuration is invalid: {0}")]
+    PoolSettings(#[from] PoolSettingsError),
     #[error("database error")]
     Database(#[from] crate::sqlx::Error),
 }
@@ -27,144 +33,68 @@ fn normalize_migration_sql(sql: &'static str) -> Cow<'static, str> {
     }
 }
 
-/// 连接池参数，从环境变量读取。
-/// 后续应收敛进 AppConfig，当前为避免并发改动冲突而就地读取。
-struct PoolSettings {
-    max_connections: u32,
-    acquire_timeout: Duration,
-    idle_timeout: Duration,
-    max_lifetime: Duration,
-}
-
-/// 从环境变量解析连接池参数，解析失败时记录 warn 并回退默认值。
+/// 构建请求路径使用的应用查询池。
 ///
-/// 默认值依据：
-/// - `max_connections = 10`：向后兼容，不改变现有部署行为。
-/// - `acquire_timeout = 5s`：认证服务要求快速失败；sqlx 默认 30s 会在连接耗尽时
-///   导致请求长时间阻塞，触发级联故障。5s 足以覆盖正常连接建立 + 池等待。
-/// - `idle_timeout = 600s`：定期回收空闲连接，避免数据库端关闭连接后复用失效。
-/// - `max_lifetime = 1800s`（30 分钟）：让连接定期轮换，消除长连接累积的服务端
-///   状态，并在数据库主从切换后自然重连。
-fn pool_settings_from_env() -> PoolSettings {
-    pool_settings_from_lookup(|key| std::env::var(key).ok())
+/// 该池的每条连接都带 `statement_timeout`（Issue #267），除非运维显式设置
+/// `DB_STATEMENT_TIMEOUT_MS=0`。
+pub fn connect(config: &Config) -> Result<Database, DbError> {
+    connect_for(PoolRole::Application, &config.database_url)
 }
 
-/// 连接池参数解析核心逻辑，接受任意 lookup 函数，方便单元测试。
-fn pool_settings_from_lookup(lookup: impl Fn(&str) -> Option<String>) -> PoolSettings {
-    const DEFAULT_MAX_CONNECTIONS: u32 = 10;
-    const DEFAULT_ACQUIRE_TIMEOUT_SECS: u64 = 5;
-    const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 600;
-    const DEFAULT_MAX_LIFETIME_SECS: u64 = 1800;
-
-    let max_connections = parse_pool_u32(
-        lookup("DB_MAX_CONNECTIONS").as_deref(),
-        "DB_MAX_CONNECTIONS",
-        DEFAULT_MAX_CONNECTIONS,
-    );
-    let acquire_timeout_secs = parse_pool_u64(
-        lookup("DB_ACQUIRE_TIMEOUT_SECONDS").as_deref(),
-        "DB_ACQUIRE_TIMEOUT_SECONDS",
-        DEFAULT_ACQUIRE_TIMEOUT_SECS,
-    );
-    let idle_timeout_secs = parse_pool_u64(
-        lookup("DB_IDLE_TIMEOUT_SECONDS").as_deref(),
-        "DB_IDLE_TIMEOUT_SECONDS",
-        DEFAULT_IDLE_TIMEOUT_SECS,
-    );
-    let max_lifetime_secs = parse_pool_u64(
-        lookup("DB_MAX_LIFETIME_SECONDS").as_deref(),
-        "DB_MAX_LIFETIME_SECONDS",
-        DEFAULT_MAX_LIFETIME_SECS,
-    );
-
-    // 启动期校验：拒绝明显无意义或危险的值，记录 warn 但不终止启动。
-    let max_connections = if max_connections == 0 {
-        tracing::warn!(
-            "DB_MAX_CONNECTIONS=0 is invalid; using default {}",
-            DEFAULT_MAX_CONNECTIONS
-        );
-        DEFAULT_MAX_CONNECTIONS
-    } else {
-        max_connections
-    };
-
-    // acquire_timeout=0 在 sqlx 里意味着"立即超时"，会让几乎所有请求失败。
-    let acquire_timeout_secs = if acquire_timeout_secs == 0 {
-        tracing::warn!(
-            "DB_ACQUIRE_TIMEOUT_SECONDS=0 would cause immediate timeouts; using default {}s",
-            DEFAULT_ACQUIRE_TIMEOUT_SECS
-        );
-        DEFAULT_ACQUIRE_TIMEOUT_SECS
-    } else {
-        // 超过 60s 的 acquire_timeout 会在连接池耗尽时导致请求长时间阻塞，触发级联故障。
-        // 仍然接受该值（运维可能有意为之），但必须明确记录。
-        if acquire_timeout_secs > 60 {
-            tracing::warn!(
-                "DB_ACQUIRE_TIMEOUT_SECONDS={} exceeds 60s; this may cause cascading failures under load",
-                acquire_timeout_secs
-            );
-        }
-        acquire_timeout_secs
-    };
-
-    PoolSettings {
-        max_connections,
-        acquire_timeout: Duration::from_secs(acquire_timeout_secs),
-        idle_timeout: Duration::from_secs(idle_timeout_secs),
-        max_lifetime: Duration::from_secs(max_lifetime_secs),
-    }
+/// 构建迁移与显式维护命令使用的池，不施加 `statement_timeout`。
+///
+/// 迁移和审计归档的正常耗时可以远超请求路径的上限，共用应用池会让它们被中途掐断。
+pub fn connect_maintenance(database_url: &str) -> Result<Database, DbError> {
+    connect_for(PoolRole::Maintenance, database_url)
 }
 
-/// 从可选原始字符串解析 u32，解析失败时 warn 并返回默认值。
-fn parse_pool_u32(raw: Option<&str>, name: &'static str, default: u32) -> u32 {
-    let Some(raw) = raw else {
-        return default;
-    };
-    match raw.trim().parse::<u32>() {
-        Ok(v) => v,
-        Err(_) => {
-            tracing::warn!(
-                "{}={:?} is not a valid u32; using default {}",
-                name,
-                raw,
-                default
-            );
-            default
-        }
-    }
-}
-
-/// 从可选原始字符串解析 u64，解析失败时 warn 并返回默认值。
-fn parse_pool_u64(raw: Option<&str>, name: &'static str, default: u64) -> u64 {
-    let Some(raw) = raw else {
-        return default;
-    };
-    match raw.trim().parse::<u64>() {
-        Ok(v) => v,
-        Err(_) => {
-            tracing::warn!(
-                "{}={:?} is not a valid u64; using default {}",
-                name,
-                raw,
-                default
-            );
-            default
-        }
-    }
-}
-
-pub fn connect(config: &Config) -> Result<Database, crate::sqlx::Error> {
-    connect_with_url(&config.database_url)
-}
-
-pub fn connect_with_url(database_url: &str) -> Result<Database, crate::sqlx::Error> {
-    let settings = pool_settings_from_env();
-    PgPoolOptions::new()
+/// 按用途构建连接池。
+///
+/// 两种用途只在 `statement_timeout` 上分叉，容量与回收策略保持一致：维护池独占的
+/// 容量参数会引入新的失败模式（例如单连接池在任何嵌套获取处死锁），而它并不解决
+/// 本 Issue 的问题。sqlx 的 `max_lifetime` 只在连接归还或获取时判定，不会打断已经
+/// 借出的长任务，所以迁移即使跑满 30 分钟也不会被回收策略截断。
+///
+/// `statement_timeout` 通过 `after_connect` 设置在每条新连接的会话上，而不是塞进
+/// URL 的 `options` 参数：URL 可能已经带了运维自己的 `options`，覆盖它会静默丢掉
+/// 那些设置；`after_connect` 也在 PgBouncer 之类的连接代理后面行为更可预测。
+/// 每条连接只多一次往返，而 `idle_timeout` / `max_lifetime` 让连接被复用很多次，
+/// 这次往返摊薄到可忽略。
+///
+/// 上限对请求路径上的阻塞式等待同样生效：`pg_advisory_xact_lock` 和 `FOR UPDATE`
+/// 在锁竞争下会被取消并返回错误，而不是无限期占住连接。调用方本来就要处理数据库
+/// 错误，这正是需要的行为。Session outbox worker 走应用池，被取消时按既有重试循环
+/// 重新领取任务。
+pub fn connect_for(role: PoolRole, database_url: &str) -> Result<Database, DbError> {
+    let settings = pool::pool_settings_from_env()?;
+    let mut options = PgPoolOptions::new()
         .max_connections(settings.max_connections)
         .acquire_timeout(settings.acquire_timeout)
         .idle_timeout(settings.idle_timeout)
-        .max_lifetime(settings.max_lifetime)
-        .connect_lazy(database_url)
+        .max_lifetime(settings.max_lifetime);
+
+    let statement_timeout = match role {
+        PoolRole::Application => settings.statement_timeout,
+        PoolRole::Maintenance => None,
+    };
+
+    if let Some(timeout) = statement_timeout {
+        // 毫秒数由 pool 模块校验过取值范围，这里作为绑定参数传给 set_config，
+        // 不做字符串拼接。第三个参数 false = 会话级，作用于整条连接的生命周期。
+        let milliseconds = timeout.as_millis().to_string();
+        options = options.after_connect(move |connection, _meta| {
+            let milliseconds = milliseconds.clone();
+            Box::pin(async move {
+                crate::sqlx::query("SELECT set_config('statement_timeout', $1, false)")
+                    .bind(milliseconds)
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        });
+    }
+
+    options.connect_lazy(database_url).map_err(DbError::from)
 }
 
 pub async fn check_ready(database: &Database) -> Result<(), crate::sqlx::Error> {
@@ -390,14 +320,7 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use super::{normalize_migration_sql, pool_settings_from_lookup};
-
-    // 辅助：构造一个总是返回 None 的 lookup（模拟所有变量未设置）
-    fn no_env(_: &str) -> Option<String> {
-        None
-    }
+    use super::normalize_migration_sql;
 
     #[test]
     fn migration_sql_normalizes_windows_line_endings() {
@@ -405,80 +328,5 @@ mod tests {
             normalize_migration_sql("CREATE TABLE test;\r\n"),
             "CREATE TABLE test;\n"
         );
-    }
-
-    #[test]
-    fn pool_settings_defaults_when_unset() {
-        let s = pool_settings_from_lookup(no_env);
-        assert_eq!(s.max_connections, 10);
-        assert_eq!(s.acquire_timeout, Duration::from_secs(5));
-        assert_eq!(s.idle_timeout, Duration::from_secs(600));
-        assert_eq!(s.max_lifetime, Duration::from_secs(1800));
-    }
-
-    #[test]
-    fn pool_settings_parses_valid_values() {
-        let s = pool_settings_from_lookup(|key| match key {
-            "DB_MAX_CONNECTIONS" => Some("20".into()),
-            "DB_ACQUIRE_TIMEOUT_SECONDS" => Some("10".into()),
-            "DB_IDLE_TIMEOUT_SECONDS" => Some("300".into()),
-            "DB_MAX_LIFETIME_SECONDS" => Some("900".into()),
-            _ => None,
-        });
-        assert_eq!(s.max_connections, 20);
-        assert_eq!(s.acquire_timeout, Duration::from_secs(10));
-        assert_eq!(s.idle_timeout, Duration::from_secs(300));
-        assert_eq!(s.max_lifetime, Duration::from_secs(900));
-    }
-
-    #[test]
-    fn pool_settings_fallback_on_invalid_string() {
-        // 解析失败（非数字）时回退默认值
-        let s = pool_settings_from_lookup(|key| match key {
-            "DB_MAX_CONNECTIONS" => Some("abc".into()),
-            "DB_ACQUIRE_TIMEOUT_SECONDS" => Some("not-a-number".into()),
-            _ => None,
-        });
-        assert_eq!(s.max_connections, 10);
-        assert_eq!(s.acquire_timeout, Duration::from_secs(5));
-    }
-
-    #[test]
-    fn pool_settings_fallback_on_zero_max_connections() {
-        // 0 无意义，回退默认值
-        let s = pool_settings_from_lookup(|key| {
-            if key == "DB_MAX_CONNECTIONS" {
-                Some("0".into())
-            } else {
-                None
-            }
-        });
-        assert_eq!(s.max_connections, 10);
-    }
-
-    #[test]
-    fn pool_settings_fallback_on_zero_acquire_timeout() {
-        // acquire_timeout=0 会导致立即超时，回退默认值
-        let s = pool_settings_from_lookup(|key| {
-            if key == "DB_ACQUIRE_TIMEOUT_SECONDS" {
-                Some("0".into())
-            } else {
-                None
-            }
-        });
-        assert_eq!(s.acquire_timeout, Duration::from_secs(5));
-    }
-
-    #[test]
-    fn pool_settings_accepts_large_acquire_timeout_with_warning() {
-        // 超过 60s 仍被接受（运维可能有意为之），只记录 warn
-        let s = pool_settings_from_lookup(|key| {
-            if key == "DB_ACQUIRE_TIMEOUT_SECONDS" {
-                Some("120".into())
-            } else {
-                None
-            }
-        });
-        assert_eq!(s.acquire_timeout, Duration::from_secs(120));
     }
 }

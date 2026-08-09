@@ -41,7 +41,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             }
-            let database = db::connect_with_url(&migration_database_url)?;
+            // 迁移走维护池：不带 statement_timeout，长时间的 DDL 不会被中途取消。
+            let database = db::connect_maintenance(&migration_database_url)?;
             db::migrate(&database).await?;
             db::configure_runtime_role(&database, &config.database_url).await?;
             info!("database migrations completed");
@@ -55,7 +56,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
                 .into());
             }
-            let database = db::connect(&config)?;
+            // 归档批次扫描审计热表，耗时随保留窗口和数据量变化，同样走维护池。
+            let database = db::connect_maintenance(&config.database_url)?;
             let archived = AuditService::new(database)
                 .archive_expired(config.audit_retention.retention_days)
                 .await?;
