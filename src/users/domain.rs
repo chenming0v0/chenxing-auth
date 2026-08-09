@@ -369,6 +369,9 @@ pub fn validate_username(username: &str) -> Option<String> {
 }
 
 pub fn is_valid_email(email: &str) -> bool {
+    if email.chars().count() > MAX_IDENTIFIER_LENGTH {
+        return false;
+    }
     let mut parts = email.split('@');
     let Some(local) = parts.next() else {
         return false;
@@ -382,6 +385,10 @@ pub fn is_valid_email(email: &str) -> bool {
         && domain.contains('.')
         && !email.chars().any(char::is_whitespace)
 }
+
+#[cfg(test)]
+#[path = "domain_email_tests.rs"]
+mod email_tests;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PublicUser {
