@@ -35,6 +35,32 @@ pub struct AuthorizedApp {
     pub updated_at: OffsetDateTime,
 }
 
+/// 同意记录在某一时刻的撤销状态，带权威存储的状态版本号（Issue #276）。
+///
+/// **为什么撤销标记要带版本号**：
+/// 撤销和重新授权都是「先写 PostgreSQL，再写 Redis 缓存」。两条链路交错时
+/// Redis 的写入顺序可以与数据库的提交顺序相反，迟到的撤销写入会覆盖
+/// 重新授权刚刚写下的正确状态，留下与 `revoked_at IS NULL` 相矛盾的陈旧标记。
+///
+/// 把版本号带上之后，缓存值自己就能回答「我描述的是哪一个 DB 状态」，
+/// 条件写就能拒绝任何比缓存中已有结论更旧的写入。
+///
+/// `version` 由数据库在撤销 / 重新授权的同一条语句内自增，严格单调，
+/// 因此比较大小等价于比较「谁描述的 DB 状态更新」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConsentState {
+    /// `true` 表示 `revoked_at IS NOT NULL`。
+    pub revoked: bool,
+    /// `user_consents.state_version`：每次状态跃迁自增。
+    pub version: i64,
+}
+
+impl ConsentState {
+    pub fn new(revoked: bool, version: i64) -> Self {
+        Self { revoked, version }
+    }
+}
+
 /// 判定已存储的 scope 集合是否覆盖请求的全部 scope。
 ///
 /// 领域规则放在这里而不是下沉成 SQL 条件：scope 覆盖语义属于授权规则，
@@ -45,7 +71,20 @@ pub fn scopes_are_covered(stored: &[String], requested: &[String]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthorizedApp, ConsentServiceError, scopes_are_covered};
+    use super::{AuthorizedApp, ConsentServiceError, ConsentState, scopes_are_covered};
+
+    #[test]
+    fn consent_state_versions_are_comparable_across_transitions() {
+        // 撤销 → 重新授权 → 再撤销：版本号严格单调，缓存据此判定谁更新
+        let revoked = ConsentState::new(true, 2);
+        let reauthorized = ConsentState::new(false, 3);
+        let revoked_again = ConsentState::new(true, 4);
+
+        assert!(reauthorized.version > revoked.version);
+        assert!(revoked_again.version > reauthorized.version);
+        // 同一版本号必然描述同一状态，因此相等版本可安全互相覆盖（幂等续期）
+        assert_eq!(ConsentState::new(true, 2), revoked);
+    }
 
     #[test]
     fn client_not_found_error_does_not_leak_internal_details() {

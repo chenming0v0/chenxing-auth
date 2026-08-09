@@ -435,6 +435,8 @@ fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("0021_oauth_provider_require_email_verified_claim.sql"));
     assert!(DB_MODULE.contains("session outbox retention and dead letters"));
     assert!(DB_MODULE.contains("0022_session_outbox_retention.sql"));
+    assert!(DB_MODULE.contains("consent state version for cache staleness detection"));
+    assert!(DB_MODULE.contains("0023_consent_state_version.sql"));
     let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -467,6 +469,7 @@ fn database_uses_explicit_unified_baseline_migrations() {
             std::ffi::OsString::from("0020_user_avatar.sql"),
             std::ffi::OsString::from("0021_oauth_provider_require_email_verified_claim.sql"),
             std::ffi::OsString::from("0022_session_outbox_retention.sql"),
+            std::ffi::OsString::from("0023_consent_state_version.sql"),
         ]
     );
 }

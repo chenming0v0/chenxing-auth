@@ -120,14 +120,18 @@ pub async fn revoke_authorized_app(
             return error::internal();
         }
     };
-    if !revoked {
-        // 记录不存在或已撤销：幂等返回 204
+    // 记录不存在或已撤销：幂等返回 204
+    let Some(state_version) = revoked else {
         return StatusCode::NO_CONTENT.into_response();
-    }
-    // DB 写入成功，尝试失效 Redis 缓存（best-effort）
+    };
+    // DB 写入成功，尝试写入 Redis 缓存结论（best-effort）。
+    //
+    // Issue #276：必须带上这次撤销的 `state_version`。缓存更新是版本化条件写，
+    // 如果用户在这两步之间已经重新授权（DB 版本更高），本次写入会被拒绝，
+    // 从而不会留下一个否决数据库新状态的陈旧撤销标记。被拒绝不是错误。
     if let Err(error_value) = state
         .revocations
-        .revoke_consent(&session.user_id.to_string(), &client_id)
+        .revoke_consent(&session.user_id.to_string(), &client_id, state_version)
         .await
     {
         tracing::warn!(
