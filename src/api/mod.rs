@@ -10,6 +10,7 @@ use tower_http::trace::TraceLayer;
 use crate::{config::TrustedProxies, state::AppState};
 
 mod discovery;
+pub mod extract;
 mod health;
 mod routes;
 mod security_headers;

@@ -20,7 +20,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tower::ServiceExt;
-use uuid::Uuid;
+
+#[path = "key_directory.rs"]
+mod key_directory;
 
 #[path = "plan_fixtures.rs"]
 pub mod fixtures;
@@ -70,7 +72,7 @@ pub async fn test_state() -> PlanTestEnv {
     let database = crate::db_isolation::isolated_pool("plans", &database_url).await;
     clear_all_plans(&database).await;
     let default_plan_id = seed_default_plan(&database).await;
-    let key_directory = std::env::temp_dir().join(format!("chenxing-plans-{}", Uuid::new_v4()));
+    let key_directory = key_directory::isolated_key_directory("plans");
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
         3000,

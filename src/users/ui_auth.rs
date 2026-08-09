@@ -8,7 +8,7 @@ use crate::{
 };
 
 #[derive(Debug)]
-pub(crate) struct UserContext {
+pub struct UserContext {
     pub user_id: UserId,
     pub session: Session,
     pub role: super::domain::UserRole,
@@ -78,27 +78,13 @@ fn invalid_session_response(state: &AppState, code: &'static str) -> Response {
     response
 }
 
-pub(crate) async fn mutation_user(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<UserContext, ()> {
-    let context = current_user(state, headers).await.map_err(|_| ())?;
-    if !user_csrf_valid(headers, &context.session, state.config.cookie_secure) {
-        return Err(());
-    }
-    Ok(context)
-}
-
-pub(crate) async fn mutation_error(state: &AppState, headers: &HeaderMap) -> Response {
-    match current_user(state, headers).await {
-        Err(response) => response,
-        Ok(context) if !user_csrf_valid(headers, &context.session, state.config.cookie_secure) => {
-            error::bad_request("csrf_invalid", "CSRF token is invalid")
-        }
-        Ok(_) => error::internal(),
-    }
-}
-
+/// 校验 CSRF 三者绑定：CSRF Cookie、`X-CSRF-Token` 头部与会话内的令牌。
+///
+/// 三者都要比对：只查 Cookie 与头部相等无法防御「攻击者写入自己的 Cookie 对」，
+/// 只查会话令牌则无法防御「头部缺失但 Cookie 被浏览器自动附带」。
+///
+/// 调用方是 `crate::api::extract` 中的提取器，handler 不直接调用它 ——
+/// 让类型系统而非人工记忆来保证写端点走到这一步。
 pub(crate) fn user_csrf_valid(headers: &HeaderMap, session: &Session, secure: bool) -> bool {
     let Some(cookie) = cookies::csrf_cookie_for_secure_transport(headers, secure) else {
         return false;

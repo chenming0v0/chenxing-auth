@@ -3,7 +3,6 @@ mod db_isolation;
 
 use base64::Engine;
 use chenxing_auth::auth_factors::repository;
-use serial_test::serial;
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
@@ -44,7 +43,6 @@ async fn database() -> chenxing_auth::sqlx::PgPool {
 }
 
 #[tokio::test]
-#[serial(auth_factors_repository)]
 async fn totp_factor_round_trip_returns_ciphertext_only() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple().to_string();
@@ -101,7 +99,6 @@ async fn totp_factor_round_trip_returns_ciphertext_only() {
 }
 
 #[tokio::test]
-#[serial(auth_factors_repository)]
 async fn passkey_insert_is_idempotent_and_rejects_cross_user_collisions() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple().to_string();
@@ -164,7 +161,6 @@ async fn passkey_insert_is_idempotent_and_rejects_cross_user_collisions() {
 }
 
 #[tokio::test]
-#[serial(auth_factors_repository)]
 async fn first_factor_race_allows_only_one_factor_type_to_win() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple();

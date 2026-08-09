@@ -10,10 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use crate::{
-    admin::{
-        authorization::{current_admin_mutation, current_admin_permission},
-        domain::AdminPermission,
-    },
+    admin::domain::AdminPermission,
+    api::extract::{AdminRead, AdminWrite},
     audit::AuditEvent,
     clients::{
         domain::ClientRegistrationInput,
@@ -77,10 +75,12 @@ struct ClientSummary {
 
 pub async fn create_client(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Json(input): Json<ClientRegistrationRequest>,
 ) -> Response {
-    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageClients)
+        .await
     {
         Ok(actor) => actor,
         Err(response) => return response,
@@ -155,11 +155,12 @@ pub async fn create_client(
 
 pub async fn list_clients(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminRead,
     Query(query): Query<ClientListQuery>,
 ) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageClients).await
+    if let Err(response) = admin
+        .authorize(&state, AdminPermission::ManageClients)
+        .await
     {
         return response;
     }
@@ -193,11 +194,13 @@ pub async fn list_clients(
 
 pub async fn update_client(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path(client_id): Path<String>,
     Json(input): Json<ClientRegistrationInput>,
 ) -> Response {
-    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageClients)
+        .await
     {
         Ok(actor) => actor,
         Err(response) => return response,
@@ -235,13 +238,15 @@ pub async fn update_client(
     }
 }
 
-pub async fn set_client_status(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(client_id): Path<String>,
+async fn set_client_status(
+    state: AppState,
+    admin: AdminWrite,
+    client_id: String,
     status: &'static str,
 ) -> Response {
-    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageClients)
+        .await
     {
         Ok(actor) => actor,
         Err(response) => return response,
@@ -279,26 +284,28 @@ pub async fn set_client_status(
 
 pub async fn disable_client(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path(client_id): Path<String>,
 ) -> Response {
-    set_client_status(State(state), headers, Path(client_id), "disabled").await
+    set_client_status(state, admin, client_id, "disabled").await
 }
 
 pub async fn enable_client(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path(client_id): Path<String>,
 ) -> Response {
-    set_client_status(State(state), headers, Path(client_id), "active").await
+    set_client_status(state, admin, client_id, "active").await
 }
 
 pub async fn rotate_secret(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path(client_id): Path<String>,
 ) -> Response {
-    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageClients).await
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageClients)
+        .await
     {
         Ok(actor) => actor,
         Err(response) => return response,

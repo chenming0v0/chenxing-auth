@@ -25,7 +25,6 @@ use chenxing_auth::{
     },
 };
 use redis::AsyncCommands;
-use serial_test::serial;
 use sha2::Digest;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -756,7 +755,6 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_revocation_generation_rejects_restored_old_payloads() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -818,7 +816,6 @@ async fn session_revocation_generation_rejects_restored_old_payloads() {
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_find_rejects_metadata_revocation_even_when_redis_payload_exists() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -862,7 +859,6 @@ async fn session_find_rejects_metadata_revocation_even_when_redis_payload_exists
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_find_uses_database_identity_for_cached_payloads() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -914,7 +910,6 @@ async fn session_find_uses_database_identity_for_cached_payloads() {
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_save_keeps_metadata_pending_when_redis_connection_fails() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -999,7 +994,6 @@ fn unavailable_redis_client() -> redis::Client {
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_save_commits_metadata_and_replays_redis_after_connection_failure() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -1095,7 +1089,6 @@ async fn session_save_commits_metadata_and_replays_redis_after_connection_failur
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_outbox_claims_new_events_but_not_future_events() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -1198,7 +1191,6 @@ async fn session_outbox_claims_new_events_but_not_future_events() {
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_sync_projection_does_not_resurrect_a_concurrently_revoked_row() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -1279,7 +1271,6 @@ async fn session_sync_projection_does_not_resurrect_a_concurrently_revoked_row()
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_revoke_keeps_database_authoritative_until_redis_recovers() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -1381,7 +1372,6 @@ async fn session_revoke_keeps_database_authoritative_until_redis_recovers() {
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_revoke_for_user_commits_revocation_before_redis_delivery() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -1447,7 +1437,6 @@ async fn session_revoke_for_user_commits_revocation_before_redis_delivery() {
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_revoke_all_commits_all_rows_before_redis_delivery() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -1536,7 +1525,6 @@ async fn session_revoke_all_commits_all_rows_before_redis_delivery() {
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_revoke_all_outbox_cleans_redis_after_user_deletion() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -1628,7 +1616,6 @@ async fn session_revoke_all_outbox_cleans_redis_after_user_deletion() {
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn concurrent_save_and_revoke_all_keep_the_epoch_boundary_monotonic() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -1730,7 +1717,6 @@ async fn concurrent_save_and_revoke_all_keep_the_epoch_boundary_monotonic() {
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_projection_is_encrypted_and_old_key_remains_readable() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -1812,7 +1798,6 @@ async fn session_projection_is_encrypted_and_old_key_remains_readable() {
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_find_renews_idle_activity_without_extending_absolute_expiry() {
     let pool = database().await;
     let user = user_repository::insert_user(
@@ -1880,7 +1865,6 @@ async fn session_find_renews_idle_activity_without_extending_absolute_expiry() {
 }
 
 #[tokio::test]
-#[serial(session_outbox)]
 async fn session_save_revokes_the_oldest_active_session_at_the_user_cap() {
     let pool = database().await;
     let user = user_repository::insert_user(

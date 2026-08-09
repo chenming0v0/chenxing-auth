@@ -7,17 +7,14 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    authorization::current_admin_permission,
     domain::{AdminPermission, AdminRole},
     handlers::is_admin_request,
 };
 use crate::{
+    api::extract::{AdminRead, SessionRead},
     error,
     state::AppState,
-    users::{
-        domain::{UserRole, UserStatus},
-        ui_auth::current_user,
-    },
+    users::domain::{UserRole, UserStatus},
 };
 
 #[derive(Debug, Deserialize)]
@@ -74,7 +71,20 @@ struct AdminUserQueryItem {
     plan: Option<AdminUserQueryPlan>,
 }
 
-pub async fn admin_me(State(state): State<AppState>, headers: HeaderMap) -> Response {
+/// 返回当前管理端调用者的身份与权限清单。
+///
+/// 这是唯一不能用 [`AdminRead`] 的管理端点：`AdminRead::authorize` 要求调用方先给出
+/// 一个具体权限，而本端点的职责恰恰是**回答调用方拥有哪些权限**，没有可供前置校验的
+/// 单一权限。挑一个权限（如 `ManageUsers`）当哨兵会把角色定义泄漏进端点语义，
+/// 且会让权限模型的任何调整静默改变这里的可访问性。
+///
+/// 因此保留双身份分支：系统 Token 直接视为 Owner；浏览器会话用 `Option<SessionRead>`
+/// 探测——两种凭据各自缺失都是正常输入，只有「两者都不成立」才是 401。
+pub async fn admin_me(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    session: Option<SessionRead>,
+) -> Response {
     if is_admin_request(&state, &headers) {
         return (
             axum::http::StatusCode::OK,
@@ -88,15 +98,15 @@ pub async fn admin_me(State(state): State<AppState>, headers: HeaderMap) -> Resp
         )
             .into_response();
     }
-    let Ok(context) = current_user(&state, &headers).await else {
+    let Some(session) = session else {
         return error::unauthorized("admin_required", "administrator authorization is required");
     };
-    if !matches!(context.role, UserRole::Admin | UserRole::Owner) {
+    if !matches!(session.role, UserRole::Admin | UserRole::Owner) {
         return error::forbidden("admin_forbidden", "administrator authorization is required");
     }
     let Some(profile) = state
         .users
-        .find_profile(context.user_id)
+        .find_profile(session.user_id)
         .await
         .ok()
         .flatten()
@@ -108,17 +118,18 @@ pub async fn admin_me(State(state): State<AppState>, headers: HeaderMap) -> Resp
         Json(AdminMeResponse {
             user_id: Some(profile.id),
             username: Some(profile.username),
-            role: context.role.as_str(),
-            permissions: permissions(context.role),
+            role: session.role.as_str(),
+            permissions: permissions(session.role),
             status: UserStatus::Active.as_str(),
         }),
     )
         .into_response()
 }
 
-pub async fn admin_overview(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageClients).await
+pub async fn admin_overview(State(state): State<AppState>, admin: AdminRead) -> Response {
+    if let Err(response) = admin
+        .authorize(&state, AdminPermission::ManageClients)
+        .await
     {
         return response;
     }
@@ -157,12 +168,10 @@ pub async fn admin_overview(State(state): State<AppState>, headers: HeaderMap) -
 
 pub async fn query_users(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminRead,
     Query(query): Query<PageQuery>,
 ) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageUsers).await
-    {
+    if let Err(response) = admin.authorize(&state, AdminPermission::ManageUsers).await {
         return response;
     }
     let Some((page, page_size, offset)) = bounds(&query) else {
@@ -210,11 +219,12 @@ pub async fn query_users(
 
 pub async fn query_clients(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminRead,
     Query(query): Query<PageQuery>,
 ) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageClients).await
+    if let Err(response) = admin
+        .authorize(&state, AdminPermission::ManageClients)
+        .await
     {
         return response;
     }
@@ -246,12 +256,10 @@ pub async fn query_clients(
 
 pub async fn query_audit(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminRead,
     Query(query): Query<PageQuery>,
 ) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ReadAudit).await
-    {
+    if let Err(response) = admin.authorize(&state, AdminPermission::ReadAudit).await {
         return response;
     }
     let Some((page, page_size, offset)) = bounds(&query) else {

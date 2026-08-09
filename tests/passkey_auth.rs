@@ -6,7 +6,6 @@ use axum::{
 use chenxing_auth::auth_limiter::FailureDimension;
 use chenxing_auth::{api, config::Config, state::AppState};
 use redis::AsyncCommands;
-use serial_test::serial;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -225,7 +224,6 @@ async fn cleanup_user(database: &chenxing_auth::sqlx::PgPool, user_id: i64) {
 }
 
 #[tokio::test]
-#[serial(passkey_auth)]
 async fn passkey_registration_start_returns_creation_challenge_for_login_ticket() {
     let (router, database, key_directory, email) = setup().await;
     let username = create_user(&router, &email).await;
@@ -294,7 +292,6 @@ async fn passkey_registration_start_returns_creation_challenge_for_login_ticket(
 }
 
 #[tokio::test]
-#[serial(passkey_auth)]
 async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
     let (router, database, key_directory, email) = setup().await;
     let username = create_user(&router, &email).await;
@@ -468,7 +465,6 @@ async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
 }
 
 #[tokio::test]
-#[serial(passkey_auth)]
 async fn passkey_finish_failures_are_rate_limited_and_invalidate_the_ticket() {
     let (router, database, key_directory, email) = setup().await;
     let username = create_user(&router, &email).await;
@@ -525,7 +521,6 @@ async fn passkey_finish_failures_are_rate_limited_and_invalidate_the_ticket() {
 }
 
 #[tokio::test]
-#[serial(passkey_auth)]
 async fn passkey_start_endpoints_reject_before_touching_passkey_storage() {
     let (router, database, key_directory, email) = setup().await;
     let username = create_user(&router, &email).await;

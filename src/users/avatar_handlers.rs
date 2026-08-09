@@ -6,15 +6,20 @@
 
 use axum::{
     body::Bytes,
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    extract::State,
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 
 use super::avatar_image::{AvatarImageError, MAX_UPLOAD_BYTES, MIN_SOURCE_EDGE};
 use super::service::AvatarServiceError;
-use super::ui_auth::{current_user, mutation_error, mutation_user};
 use super::ui_handlers::profile_response;
-use crate::{audit::AuditEvent, error, state::AppState};
+use crate::{
+    api::extract::{SessionRead, SessionWrite},
+    audit::AuditEvent,
+    error,
+    state::AppState,
+};
 
 /// 允许直出的头像 MIME 白名单。
 ///
@@ -24,19 +29,18 @@ const SERVABLE_MIME: [&str; 1] = [super::avatar_image::STORED_MIME];
 
 /// `PUT /api/v1/auth/me/avatar`
 ///
-/// `Bytes` 必须是最后一个参数：它消耗请求体，放在提取器序列中间无法编译。
+/// `SessionWrite` 在请求体解析之前完成 Session + CSRF 校验，未授权的上传字节
+/// 不会进入图片解码器。`Bytes` 必须是最后一个参数：它消耗请求体，放在提取器
+/// 序列中间无法编译。
 pub async fn upload_current_user_avatar(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    headers: HeaderMap,
+    State(state): State<AppState>,
+    session: SessionWrite,
     body: Bytes,
 ) -> Response {
-    let Ok(context) = mutation_user(&state, &headers).await else {
-        return mutation_error(&state, &headers).await;
-    };
     let byte_count = body.len();
     match state
         .users
-        .update_avatar(context.user_id, body.to_vec())
+        .update_avatar(session.user_id, body.to_vec())
         .await
     {
         Ok(Some(profile)) => {
@@ -44,14 +48,14 @@ pub async fn upload_current_user_avatar(
                 .audit
                 .record_best_effort(AuditEvent::new(
                     "user".to_owned(),
-                    Some(context.user_id.to_string()),
+                    Some(session.user_id.to_string()),
                     "user_avatar_update".to_owned(),
                     "user".to_owned(),
-                    Some(context.user_id.to_string()),
+                    Some(session.user_id.to_string()),
                     serde_json::json!({"result": "success", "upload_bytes": byte_count}),
                 ))
                 .await;
-            profile_response(context, profile)
+            profile_response(&session, profile)
         }
         Ok(None) => error::unauthorized("invalid_session", "user session is invalid"),
         Err(error_value) => avatar_error(error_value),
@@ -60,26 +64,23 @@ pub async fn upload_current_user_avatar(
 
 /// `DELETE /api/v1/auth/me/avatar`：移除头像，前端回落到首字母占位符。
 pub async fn delete_current_user_avatar(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    headers: HeaderMap,
+    State(state): State<AppState>,
+    session: SessionWrite,
 ) -> Response {
-    let Ok(context) = mutation_user(&state, &headers).await else {
-        return mutation_error(&state, &headers).await;
-    };
-    match state.users.clear_avatar(context.user_id).await {
+    match state.users.clear_avatar(session.user_id).await {
         Ok(Some(profile)) => {
             state
                 .audit
                 .record_best_effort(AuditEvent::new(
                     "user".to_owned(),
-                    Some(context.user_id.to_string()),
+                    Some(session.user_id.to_string()),
                     "user_avatar_remove".to_owned(),
                     "user".to_owned(),
-                    Some(context.user_id.to_string()),
+                    Some(session.user_id.to_string()),
                     serde_json::json!({"result": "success"}),
                 ))
                 .await;
-            profile_response(context, profile)
+            profile_response(&session, profile)
         }
         Ok(None) => error::unauthorized("invalid_session", "user session is invalid"),
         Err(error_value) => avatar_error(error_value),
@@ -92,15 +93,8 @@ pub async fn delete_current_user_avatar(
 /// 存在、是否设过头像」变成一个无需认证即可探测的信号。
 ///
 /// 缓存必须是 `private`：响应随会话变化，任何共享缓存留存它都等于跨用户泄露。
-pub async fn current_user_avatar(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    headers: HeaderMap,
-) -> Response {
-    let context = match current_user(&state, &headers).await {
-        Ok(context) => context,
-        Err(response) => return response,
-    };
-    match state.users.find_avatar(context.user_id).await {
+pub async fn current_user_avatar(State(state): State<AppState>, session: SessionRead) -> Response {
+    match state.users.find_avatar(session.user_id).await {
         Ok(Some(avatar)) => {
             let content_type = SERVABLE_MIME
                 .iter()

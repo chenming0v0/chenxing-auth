@@ -5,10 +5,11 @@ use axum::{
 };
 use chenxing_auth::{api, config::Config, state::AppState};
 use tower::ServiceExt;
-use uuid::Uuid;
 
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
+#[path = "support/key_directory.rs"]
+mod key_directory;
 
 async fn test_router() -> (Router, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
@@ -16,7 +17,7 @@ async fn test_router() -> (Router, std::path::PathBuf) {
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
     let database = db_isolation::isolated_pool("api", &database_url).await;
-    let key_directory = std::env::temp_dir().join(format!("chenxing-api-{}", Uuid::new_v4()));
+    let key_directory = key_directory::isolated_key_directory("api");
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
         3000,
@@ -243,24 +244,15 @@ async fn admin_user_creation_endpoint_rejects_unauthenticated_requests() {
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
-/// 角色与状态词表在守卫之前解析，因此非法值不需要数据库即可拒绝。
+/// 未认证请求在解析请求体前由 AdminWrite 拒绝，不应进入管理侧业务校验。
 #[tokio::test]
-async fn admin_user_creation_rejects_unknown_role_and_status_without_database_call() {
+async fn admin_user_creation_requires_admin_before_parsing_input() {
     let (router, key_directory) = test_router().await;
-    for (body, code) in [
-        (
-            r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery","role":"superuser"}"#,
-            "invalid_role",
-        ),
-        (
-            r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery","status":"deleted"}"#,
-            "invalid_status",
-        ),
+    for body in [
+        r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery","role":"superuser"}"#,
+        r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery","status":"deleted"}"#,
         // 大小写变体同样不在词表内，避免 handler 悄悄接受 "ACTIVE"。
-        (
-            r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery","status":"ACTIVE"}"#,
-            "invalid_status",
-        ),
+        r#"{"username":"newcomer","email":"newcomer@example.com","password":"correct horse battery","status":"ACTIVE"}"#,
     ] {
         let response = router
             .clone()
@@ -275,12 +267,12 @@ async fn admin_user_creation_rejects_unknown_role_and_status_without_database_ca
             .await
             .expect("response from router");
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{code}");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("response body");
         let error: serde_json::Value = serde_json::from_slice(&body).expect("JSON error");
-        assert_eq!(error["code"], code);
+        assert_eq!(error["code"], "login_required");
     }
     let _ = std::fs::remove_dir_all(key_directory);
 }

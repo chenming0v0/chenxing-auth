@@ -1,18 +1,16 @@
 use axum::{
     Json,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use super::{
-    authorization::{AdminActor, current_admin_mutation, current_admin_permission},
-    domain::AdminPermission,
-};
+use super::{authorization::AdminActor, domain::AdminPermission};
 use crate::{
+    api::extract::{AdminRead, AdminWrite},
     audit::AuditEvent,
     error,
     plans::{
@@ -37,9 +35,10 @@ fn plan_response(plan: crate::plans::domain::Plan, assigned_users: i64) -> PlanR
     }
 }
 
-pub async fn list_plans(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Err(response) =
-        current_admin_permission(&state, &headers, AdminPermission::ManageSettings).await
+pub async fn list_plans(State(state): State<AppState>, admin: AdminRead) -> Response {
+    if let Err(response) = admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
     {
         return response;
     }
@@ -68,14 +67,16 @@ pub async fn list_plans(State(state): State<AppState>, headers: HeaderMap) -> Re
 
 pub async fn create_plan(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Json(input): Json<PlanInput>,
 ) -> Response {
-    let actor =
-        match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
-            Ok(actor) => actor,
-            Err(response) => return response,
-        };
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
+    {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     match state.plans.create(input).await {
         Ok(plan) => {
             record_plan_event(&state, actor, "plan_create", &plan.code).await;
@@ -88,15 +89,17 @@ pub async fn create_plan(
 
 pub async fn update_plan(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path(id): Path<i64>,
     Json(input): Json<PlanInput>,
 ) -> Response {
-    let actor =
-        match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
-            Ok(actor) => actor,
-            Err(response) => return response,
-        };
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
+    {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     match state.plans.update(id, input).await {
         Ok(updated) => {
             record_plan_event(&state, actor, "plan_update", &updated.plan.code).await;
@@ -110,14 +113,16 @@ pub async fn update_plan(
 
 pub async fn archive_plan(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path(id): Path<i64>,
 ) -> Response {
-    let actor =
-        match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
-            Ok(actor) => actor,
-            Err(response) => return response,
-        };
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
+    {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     // 直接调用 archive，不经字符串分发；操作语义由调用点决定，而非运行时字符串比较
     let result = state.plans.archive(id).await;
     finish_plan_status_change(&state, actor, result, "plan_archive", &id.to_string()).await
@@ -125,14 +130,16 @@ pub async fn archive_plan(
 
 pub async fn restore_plan(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path(id): Path<i64>,
 ) -> Response {
-    let actor =
-        match current_admin_mutation(&state, &headers, AdminPermission::ManageSettings).await {
-            Ok(actor) => actor,
-            Err(response) => return response,
-        };
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
+    {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
     // 直接调用 restore，与 archive_plan 对称；不存在 silent fallthrough 的分支
     let result = state.plans.restore(id).await;
     finish_plan_status_change(&state, actor, result, "plan_restore", &id.to_string()).await
@@ -165,13 +172,13 @@ pub struct AssignPlanInput {
 
 pub async fn assign_plan(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    admin: AdminWrite,
     Path(user_id): Path<UserId>,
     Json(input): Json<AssignPlanInput>,
 ) -> Response {
     // 分配套餐直接改写用户权益（entitlements），语义属于用户管理而非系统设置；
     // 用 ManageUsers 把守，避免仅有 ManageSettings 的角色修改任意用户的套餐
-    let actor = match current_admin_mutation(&state, &headers, AdminPermission::ManageUsers).await {
+    let actor = match admin.authorize(&state, AdminPermission::ManageUsers).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };

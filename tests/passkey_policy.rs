@@ -5,7 +5,6 @@ use axum::{
 };
 use chenxing_auth::{api, config::Config, sqlx, state::AppState};
 use serde_json::Value;
-use serial_test::serial;
 use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -237,7 +236,6 @@ async fn update_passkey_setting(router: &Router, enabled: bool) -> axum::respons
 }
 
 #[tokio::test]
-#[serial(passkey_policy)]
 async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
     let (router, database, key_directory) = setup().await;
     let (passkey_user, passkey_username) = create_user(&router, &database).await;

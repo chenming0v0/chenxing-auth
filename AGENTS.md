@@ -98,18 +98,50 @@
 - 超过 300 行的文件属于弱警告，必须在变更说明中记录。
 - 超过 500 行的文件属于强警告，完成前必须拆分或重构；除非用户明确接受例外，不得声称任务完成。
 
-项目拥有 Cargo 配置后，常规验证命令为：
+项目拥有 Cargo 配置后，验证必须按执行角色和变更风险分层。禁止把完整测试套件作为每个子任务的默认收尾动作。
+
+#### 测试执行权限
+
+- **子代理禁止执行 `cargo test --all-features`、`cargo nextest run --all-features`、`cargo llvm-cov` 或其他完整测试套件命令。** 子代理只允许使用与修改范围匹配的 `cargo check` 命令；默认使用 `cargo check`，只有确实需要检查测试目标编译时才使用 `cargo check --tests` 或 `cargo check --all-targets`。
+- 子代理不得自行安装 `cargo-nextest`，不得启动 PostgreSQL/Redis 集成测试，不得在多个子代理中并行启动 Cargo 命令。
+- 完整测试由当前会话的编排者统一决定、统一执行，避免每个子代理重复编译和运行整套测试。
+- **未经用户明确授权，任何角色都不得执行 `cargo test --all-features`。**
+- 只有在修改数据库、迁移、SQL repository、Redis/session 持久化或其他数据库集成测试相关代码时，编排者才可以向用户请求授权；用户明确同意后，编排者最多使用一次 `cargo test --all-features` 进行最终验证。
+- 用户授权只对当前任务的这一次完整测试有效，不自动授权后续任务、子代理或覆盖率命令。
+- 修复必须先完成代码、静态检查和必要的聚焦编译；只有在最终修复完成后才能请求或使用完整测试授权。若 CI 随后失败，由编排者负责根据 CI 日志继续修复，不能把问题转交给子代理反复运行全量测试。
+
+#### 默认开发验证
+
+日常开发默认使用：
 
 ```powershell
 cargo fmt --check
+cargo check --all-features
+```
+
+只修改纯 Rust/domain/config 逻辑时，必要时补充：
+
+```powershell
+cargo test --lib --all-features
+```
+
+`cargo check` 不能替代运行时测试，但它应当是开发反馈的第一道检查。修改 SQL、迁移、PostgreSQL repository、Redis/session、OAuth 端到端流程或并发持久化逻辑时，必须在 CI 中运行数据库集成测试；本地完整集成测试不作为默认开发动作。
+
+#### 编排者最终验证与 CI
+
+标准完整验证命令如下，仅由编排者在用户授权或 CI/发布流程明确要求时执行：
+
+```powershell
 cargo check --all-targets --all-features
-cargo test --all-features
+cargo nextest run --all-features
 cargo clippy --all-targets --all-features -- -D warnings
 cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --fail-under-lines 75
 cargo audit
 ```
 
-本机快速运行测试可安装并使用 `cargo-nextest`。它会并行调度不同的测试二进制；`cargo test -- --test-threads` 只控制单个测试二进制内部的线程，不能并行化多个 `tests/*.rs` 测试进程：
+数据库集成测试必须在 CI 提供的 PostgreSQL 和 Redis 服务上运行。CI 可以使用 `cargo nextest run --all-features` 并行调度独立测试二进制；本地执行前仍需满足本节的用户授权规则。标准 `cargo test --all-features` 只在用户明确授权后由编排者执行一次，不得由子代理执行。
+
+本机如经用户授权需要运行完整集成测试，可安装并使用 `cargo-nextest`。它会并行调度不同的测试二进制；`cargo test -- --test-threads` 只控制单个测试二进制内部的线程，不能并行化多个 `tests/*.rs` 测试进程：
 
 ```powershell
 cargo install cargo-nextest --locked
@@ -122,7 +154,7 @@ cargo nextest run --all-features --test-threads 32
 
 ```powershell
 cargo check --all-targets --all-features
-cargo nextest run --all-features --test-threads 32
+cargo check --all-features
 ```
 
 不要同时启动多个 Cargo 编译或测试命令；它们会争抢 package cache 和 target build lock，导致耗时明显增加。

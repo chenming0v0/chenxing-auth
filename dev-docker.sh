@@ -5,12 +5,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-CYAN='\033[0;36m'; GREEN='\033[0;32m'; RED='\033[0;31m'; RESET='\033[0m'
+CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; RESET='\033[0m'
 info() { echo -e "${CYAN}[辰星]${RESET} $1"; }
 ok()   { echo -e "${GREEN}[辰星]${RESET} $1"; }
+warn() { echo -e "${YELLOW}[辰星]${RESET} $1"; }
 err()  { echo -e "${RED}[辰星]${RESET} $1" >&2; }
 
 command -v docker >/dev/null || { err "需要 Docker"; exit 1; }
+
+# docker compose 也从 .env 读 POSTGRES_*，先保证它存在且密钥合法
+# shellcheck source=dev-env.sh
+source ./dev-env.sh
+chenxing_ensure_env .env
 
 info "启动 PostgreSQL 和 Redis..."
 docker compose up -d postgres redis

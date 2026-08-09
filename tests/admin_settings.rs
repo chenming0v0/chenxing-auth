@@ -9,7 +9,6 @@ use chenxing_auth::{
     sqlx,
 };
 use serde_json::Value;
-use serial_test::serial;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -80,7 +79,6 @@ async fn browser_session(
 }
 
 #[tokio::test]
-#[serial(registration_email_setting)]
 async fn owner_can_read_update_and_persist_registration_email_setting() {
     let (router, database, key_directory) = setup().await;
     let response = router
@@ -183,7 +181,6 @@ async fn owner_can_read_update_and_persist_registration_email_setting() {
 }
 
 #[tokio::test]
-#[serial(registration_email_setting)]
 async fn session_authenticated_setting_mutation_records_user_actor() {
     let (router, database, key_directory) = setup().await;
     let redis_url =

@@ -1,14 +1,13 @@
 use axum::{
     Json,
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
 use time::OffsetDateTime;
 
-use super::ui_auth::current_user;
-use crate::{error, state::AppState};
+use crate::{api::extract::SessionRead, error, state::AppState};
 
 /// 用户端只读的「套餐与权益」页接口。`entitlements` 是有序数组，
 /// 前端按顺序渲染卡片；后端新增权益项只需向数组追加元素。
@@ -64,12 +63,8 @@ struct NumericEntitlement {
     used: u64,
 }
 
-pub async fn current_entitlements(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let context = match current_user(&state, &headers).await {
-        Ok(context) => context,
-        Err(response) => return response,
-    };
-    let effective = match state.plans.effective_plan_for_user(context.user_id).await {
+pub async fn current_entitlements(State(state): State<AppState>, session: SessionRead) -> Response {
+    let effective = match state.plans.effective_plan_for_user(session.user_id).await {
         Ok(Some(effective)) => effective,
         // 本端点的职责是描述当前状态，「没有生效套餐」就是一种状态。
         Ok(None) => {
@@ -90,7 +85,7 @@ pub async fn current_entitlements(State(state): State<AppState>, headers: Header
     let plan = effective.plan;
     let quota_limits = plan.auth_quota_limits();
 
-    let clients = match state.clients.list_for_user(context.user_id).await {
+    let clients = match state.clients.list_for_user(session.user_id).await {
         Ok(clients) => clients,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to list OAuth clients for entitlements");

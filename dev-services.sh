@@ -41,10 +41,9 @@ trap cleanup EXIT INT TERM
 command -v cargo >/dev/null || { err "需要 Cargo，请先安装 Rust"; exit 1; }
 command -v npm   >/dev/null || { err "需要 npm，请先安装 Node.js"; exit 1; }
 
-if [ ! -f .env ]; then
-    warn ".env 不存在，从 .env.example 复制，请按本地环境检查配置"
-    cp .env.example .env
-fi
+# shellcheck source=dev-env.sh
+source ./dev-env.sh
+chenxing_ensure_env .env
 
 # 后端端口由 .env 的 APP_PORT 决定，缺失时回落到 3000
 APP_PORT="$(sed -n 's/^APP_PORT=//p' .env | tail -1)"
