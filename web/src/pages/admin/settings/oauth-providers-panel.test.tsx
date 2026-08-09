@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import type { OAuthProviderSummary } from '../../../api'
 import { OAuthProvidersPanel } from './oauth-providers-panel'
 
@@ -7,6 +7,8 @@ type CapturedRequest = { path: string; method?: string; body: Record<string, unk
 
 let requests: CapturedRequest[] = []
 let providers: OAuthProviderSummary[]
+/** slug -> 该 slug 的 enable 还要失败几次；用来构造「落库成功、状态切换失败」的部分成功 */
+let enableFailures: Map<string, number>
 
 function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response
@@ -43,14 +45,65 @@ const UNCONFIGURED: OAuthProviderSummary = {
   client_secret_configured: false,
 }
 
+const PROVIDERS_PATH = '/api/v1/admin/oauth/providers'
+
+function setStatus(slug: string, status: 'active' | 'disabled') {
+  providers = providers.map((item) => (item.slug === slug ? { ...item, status } : item))
+}
+
+/**
+ * 有状态的假后端：创建落库后 provider 默认停用（与 openapi 的 201 语义一致），
+ * enable / disable 单独改状态。只有这样才能区分「创建失败」和「创建成功但启用失败」。
+ */
+function handle(path: string, method: string, body: Record<string, unknown>): Response {
+  const endpoint = path.slice(PROVIDERS_PATH.length)
+  if (method === 'GET') return jsonResponse(providers)
+  if (method === 'POST' && endpoint === '') {
+    const slug = String(body.slug)
+    const created: OAuthProviderSummary = {
+      ...baseProvider,
+      id: providers.length + 100,
+      name: String(body.name),
+      slug,
+      status: 'disabled',
+      client_secret_configured: true,
+    }
+    if (providers.some((item) => item.slug === slug)) {
+      return jsonResponse({ code: 'oauth_provider_slug_conflict' }, 409)
+    }
+    providers = [...providers, created]
+    return jsonResponse(created, 201)
+  }
+  const action = endpoint.endsWith('/enable') ? 'enable' : endpoint.endsWith('/disable') ? 'disable' : null
+  const slug = decodeURIComponent(endpoint.replace(/^\//, '').replace(/\/(enable|disable)$/, ''))
+  if (action === 'enable') {
+    const remaining = enableFailures.get(slug) ?? 0
+    if (remaining > 0) {
+      enableFailures.set(slug, remaining - 1)
+      return jsonResponse({ code: 'invalid_oauth_provider' }, 400)
+    }
+    setStatus(slug, 'active')
+    return jsonResponse({ ok: true })
+  }
+  if (action === 'disable') {
+    setStatus(slug, 'disabled')
+    return jsonResponse({ ok: true })
+  }
+  return jsonResponse({ ok: true })
+}
+
 beforeEach(() => {
   requests = []
   providers = [CONFIGURED, UNCONFIGURED]
+  enableFailures = new Map()
+  // 行内启用 / 禁用带 confirm；jsdom 的默认实现会抛 Not implemented。
+  vi.stubGlobal('confirm', () => true)
   vi.stubGlobal('fetch', (path: string, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
     const raw = typeof init?.body === 'string' ? init.body : '{}'
-    requests.push({ path, method, body: JSON.parse(raw) as Record<string, unknown> })
-    return Promise.resolve(jsonResponse(method === 'GET' ? providers : { ok: true }))
+    const body = JSON.parse(raw) as Record<string, unknown>
+    requests.push({ path, method, body })
+    return Promise.resolve(handle(path, method, body))
   })
 })
 
@@ -74,6 +127,43 @@ async function openEditRow(name: string) {
 function save() {
   const button = screen.getByRole('button', { name: '保存' })
   fireEvent.submit(button.closest('form') as HTMLFormElement)
+}
+
+function openCreate() {
+  fireEvent.click(screen.getAllByRole('button', { name: '添加 OAuth 提供商' })[0])
+}
+
+/** 填满创建表单的必填项，enable 默认打开（emptyForm.enabled === true） */
+function fillCreateForm(slug = 'okta') {
+  fireEvent.change(screen.getByLabelText('显示名称 *'), { target: { value: 'Okta' } })
+  fireEvent.change(screen.getByLabelText('Slug *'), { target: { value: slug } })
+  fireEvent.change(screen.getByLabelText('Client ID *'), { target: { value: 'client-okta' } })
+  fireEvent.change(screen.getByLabelText('Client Secret *'), { target: { value: 'okta-secret' } })
+}
+
+function creates() {
+  return requests.filter((r) => r.method === 'POST' && r.path === '/api/v1/admin/oauth/providers')
+}
+
+function enables(slug: string) {
+  return requests.filter((r) => r.method === 'POST' && r.path.endsWith(`/${slug}/enable`))
+}
+
+function warnings(onMessage: ReturnType<typeof vi.fn>): string[] {
+  return onMessage.mock.calls.filter((call) => call[1] === 'warning').map((call) => String(call[0]))
+}
+
+/**
+ * 部分成功提示会在 busy 还是 true 的那一帧就渲染出来（setPending 早于 load 完成），
+ * 此时按钮带 disabled，点击是空操作。等它变可用再点，避免测试与渲染时序打架。
+ */
+async function clickWhenEnabled(button: HTMLElement) {
+  await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(button)
+}
+
+async function clickRetryEnable() {
+  await clickWhenEnabled(await screen.findByRole('button', { name: '重试启用' }))
 }
 
 describe('OAuthProvidersPanel Client Secret 状态展示', () => {
@@ -171,5 +261,152 @@ describe('OAuthProvidersPanel Email Verified Claim', () => {
     renderPanel()
     await screen.findByText('GitLab')
     expect(screen.getByText('缺少 Email Verified Claim')).toBeTruthy()
+  })
+})
+
+describe('OAuthProvidersPanel 创建成功但启用失败（Issue #277）', () => {
+  it('提示已创建但启用失败，而不是笼统的保存失败', async () => {
+    enableFailures.set('okta', 1)
+    const onMessage = renderPanel()
+    await screen.findByText('GitLab')
+    openCreate()
+    fillCreateForm()
+    save()
+
+    await waitFor(() => expect(warnings(onMessage).length).toBe(1))
+    const message = warnings(onMessage)[0]
+    expect(message).toMatch(/Okta 已创建成功，但启用失败/)
+    expect(message).toMatch(/外部身份源配置不完整/)
+    expect(message).toMatch(/可直接重试启用/)
+    // 创建这一步是成功的，不能再报成保存失败
+    expect(message).not.toMatch(/保存失败/)
+    expect(onMessage).not.toHaveBeenCalledWith('OAuth 提供商已创建。')
+  })
+
+  it('关闭弹层并刷新列表，把新 provider 以已禁用状态展示出来', async () => {
+    enableFailures.set('okta', 1)
+    renderPanel()
+    await screen.findByText('GitLab')
+    openCreate()
+    fillCreateForm()
+    save()
+
+    const cell = await screen.findByText('Okta')
+    const row = cell.closest('tr') as HTMLTableRowElement
+    expect(row.textContent).toContain('已禁用')
+    expect(row.textContent).toContain('启用失败')
+    // 弹层必须关掉，否则用户会以为没保存成而重复提交
+    expect(screen.queryByText('添加 OAuth 提供商', { selector: 'h2' })).toBeNull()
+  })
+
+  it('重试只重放启用，不会再次创建而撞 slug 冲突', async () => {
+    enableFailures.set('okta', 1)
+    const onMessage = renderPanel()
+    await screen.findByText('GitLab')
+    openCreate()
+    fillCreateForm()
+    save()
+
+    await clickRetryEnable()
+
+    await waitFor(() => expect(onMessage).toHaveBeenCalledWith('已启用 Okta。'))
+    expect(creates().length).toBe(1)
+    expect(enables('okta').length).toBe(2)
+    expect(requests.some((r) => r.method === 'PUT')).toBe(false)
+  })
+
+  it('重试成功后提示消失，列表显示已启用', async () => {
+    enableFailures.set('okta', 1)
+    renderPanel()
+    await screen.findByText('GitLab')
+    openCreate()
+    fillCreateForm()
+    save()
+
+    await clickRetryEnable()
+    await waitFor(() => expect(screen.queryByRole('button', { name: '重试启用' })).toBeNull())
+    const row = screen.getByText('Okta').closest('tr') as HTMLTableRowElement
+    expect(row.textContent).toContain('已启用')
+    expect(row.textContent).not.toContain('启用失败')
+  })
+
+  it('重试再次失败时保留重试入口，仍然不发起创建', async () => {
+    enableFailures.set('okta', 2)
+    const onMessage = renderPanel()
+    await screen.findByText('GitLab')
+    openCreate()
+    fillCreateForm()
+    save()
+
+    await clickRetryEnable()
+    await waitFor(() => expect(warnings(onMessage).length).toBe(2))
+    expect(await screen.findByRole('button', { name: '重试启用' })).toBeTruthy()
+    expect(creates().length).toBe(1)
+  })
+
+  it('忽略后提示关闭，provider 仍留在列表里', async () => {
+    enableFailures.set('okta', 1)
+    renderPanel()
+    await screen.findByText('GitLab')
+    openCreate()
+    fillCreateForm()
+    save()
+
+    await clickWhenEnabled(await screen.findByRole('button', { name: '忽略' }))
+    expect(screen.queryByRole('button', { name: '重试启用' })).toBeNull()
+    expect(screen.getByText('Okta')).toBeTruthy()
+  })
+
+  it('创建本身失败时仍然按保存失败处理，不给出重试启用入口', async () => {
+    const onMessage = renderPanel()
+    await screen.findByText('GitLab')
+    openCreate()
+    // 与既有 gitlab 撞 slug：后端返回 409，创建这一步没成功
+    fillCreateForm('gitlab')
+    save()
+
+    await waitFor(() => expect(warnings(onMessage).length).toBe(1))
+    expect(warnings(onMessage)[0]).toMatch(/请求与当前数据冲突/)
+    expect(screen.queryByRole('button', { name: '重试启用' })).toBeNull()
+    expect(enables('gitlab').length).toBe(0)
+  })
+})
+
+describe('OAuthProvidersPanel 更新成功但状态切换失败（Issue #277）', () => {
+  it('区分配置已保存与启用失败，并只重试启用', async () => {
+    enableFailures.set('gitea', 1)
+    const onMessage = renderPanel()
+    await screen.findByText('Gitea')
+    await openEditRow('Gitea')
+    fireEvent.change(screen.getByLabelText('Client Secret *'), { target: { value: 'new-secret' } })
+    fireEvent.click(screen.getByRole('switch', { name: '启用供应商' }))
+    save()
+
+    await waitFor(() => expect(warnings(onMessage).length).toBe(1))
+    expect(warnings(onMessage)[0]).toMatch(/Gitea 的配置已保存成功，但启用失败/)
+    expect(requests.filter((r) => r.method === 'PUT').length).toBe(1)
+
+    await clickRetryEnable()
+    await waitFor(() => expect(onMessage).toHaveBeenCalledWith('已启用 Gitea。'))
+    // 重试不重发配置写入
+    expect(requests.filter((r) => r.method === 'PUT').length).toBe(1)
+    expect(creates().length).toBe(0)
+  })
+
+  it('provider 通过其他途径变为目标状态后，重试提示自行消失', async () => {
+    enableFailures.set('gitea', 1)
+    renderPanel()
+    await screen.findByText('Gitea')
+    await openEditRow('Gitea')
+    fireEvent.change(screen.getByLabelText('Client Secret *'), { target: { value: 'new-secret' } })
+    fireEvent.click(screen.getByRole('switch', { name: '启用供应商' }))
+    save()
+
+    await screen.findByRole('button', { name: '重试启用' })
+    // 行内「启用」动作成功后，列表状态已达目标，提示不该继续挂着
+    const row = screen.getByText('Gitea').closest('tr') as HTMLTableRowElement
+    const rowEnable = Array.from(row.querySelectorAll('button')).find((button) => button.textContent === '启用')
+    await clickWhenEnabled(rowEnable as HTMLButtonElement)
+    await waitFor(() => expect(screen.queryByRole('button', { name: '重试启用' })).toBeNull())
   })
 })
