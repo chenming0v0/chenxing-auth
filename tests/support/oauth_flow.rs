@@ -12,6 +12,9 @@ use tower::ServiceExt;
 #[path = "key_directory.rs"]
 mod key_directory;
 
+#[path = "qps_window.rs"]
+pub mod qps_window;
+
 /// `binary_name` 决定 schema 隔离边界，必须传调用方测试二进制自己的名字
 /// （见 `support/db_isolation.rs`）。共享同一个名字的二进制会共享数据库状态。
 ///
@@ -43,9 +46,11 @@ pub async fn test_state(
     config.admin_token = "flow-admin-token".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new_with_pool(config, database.clone())
+    let mut state = AppState::new_with_pool(config, database.clone())
         .await
         .expect("test state");
+    // QPS 窗口放大到 60s，限流断言不再依赖请求跑得够快（见 `qps_window`）。
+    qps_window::override_qps_window(&mut state);
     (state, database, key_directory)
 }
 

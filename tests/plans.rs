@@ -255,6 +255,8 @@ async fn qps_limiter_rejects_requests_over_the_plan_limit() {
 
     // 用 1 QPS 做顺序断言：第一发进入业务校验返回 400，第二发必被滑动窗口拒绝。
     // 这比并发三连更稳，也更直接验证 token 路径真正调用了 plan-backed limiter。
+    // 窗口由 `support::qps_window` 注入成 60s（生产仍是 1s），两发之间那次 19 MiB
+    // Argon2 校验再慢也不会把第一发挤出窗口。
     let plan = create_plan(
         &router,
         &suffix,
@@ -879,7 +881,9 @@ async fn no_plan_skips_plan_qps_limiting_for_existing_clients() {
 
     // Step 3: 先证明套餐下 QPS 闸门是生效的。
     // 第一发：凭据正确、套餐 QPS 允许，进入业务校验 → 400 (code 缺失)。
-    // 第二发：滑动窗口 1s 内第二次 → 429。
+    // 第二发：同一个滑动窗口内第二次 → 429。
+    // 窗口由 `support::qps_window` 注入成 60s（生产仍是 1s），因此两发必然落在同一
+    // 窗口内，不再取决于 token 路径上那次 19 MiB Argon2 校验跑得有多快。
     // 这一步是关键：如果套餐 QPS 本来就不生效，第 5 步的「通过」就是假绿。
     let first = router
         .clone()
@@ -900,15 +904,16 @@ async fn no_plan_skips_plan_qps_limiting_for_existing_clients() {
     assert_eq!(
         second.status(),
         StatusCode::TOO_MANY_REQUESTS,
-        "second request within 1s must be rejected by plan QPS (429)"
+        "second request in the same window must be rejected by plan QPS (429)"
     );
 
     // Step 4: 清空所有套餐，模拟「平台无生效套餐」场景。
     clear_all_plans(&env.database).await;
 
     // Step 5: 连打多发确认按套餐 QPS 已跳过，不再出现 429 或 503。
-    // 不 sleep：让第 3 步的窗口条目可能还活着，这样如果有人把 `?` 改成
-    // `unwrap_or(0)` 导致限流仍然生效，第一发就会 429 并立即失败（强突变检测）。
+    // 不 sleep：60s 窗口让第 3 步写入的条目**必然**还活着（以前只是「可能」），
+    // 所以如果有人把 `?` 改成 `unwrap_or(0)` 导致限流仍然生效，第一发就会 429
+    // 并立即失败。窗口注入把这条突变检测从概率性变成确定性。
     for i in 0..3_u32 {
         let resp = router
             .clone()
@@ -941,13 +946,18 @@ async fn no_plan_skips_plan_qps_limiting_for_existing_clients() {
     // 用唯一 IP 的 ConnectInfo 通过 HTTP 路径真实调用 enforce_source_qps，
     // 预先饱和窗口后发起 HTTP 请求，验证 token_inner 仍然调用 enforce_source_qps。
     // 如果有人删掉了 enforce_source_qps 调用，此请求会进入业务逻辑返回 400，测试失败。
-    let last_octet = (suffix
-        .bytes()
-        .fold(0_u64, |acc, b| acc.wrapping_add(b as u64))
-        % 254)
-        + 1;
-    let fake_ip_str = format!("203.0.113.{last_octet}");
-    let fake_ip: IpAddr = fake_ip_str.parse().expect("valid test IP");
+    // `chenxing:qps:source:{ip}` 是全局 Redis key，不受 schema 隔离保护。旧写法把
+    // 整个 suffix 折叠进 203.0.113.0/24 的 254 个槽位，既丢掉测试身份也会在并发或
+    // 重复运行时踩到别人的窗口。改用 IPv6 文档前缀 2001:db8::/32（RFC 3849）拼上本
+    // 测试 Uuid 的低 96 位：地址与这次运行一一对应，冲突概率可以忽略。
+    let uuid_tail = &suffix[suffix.len() - 24..];
+    let groups: Vec<&str> = (0..6).map(|i| &uuid_tail[i * 4..i * 4 + 4]).collect();
+    let fake_ip: IpAddr = format!("2001:db8:{}", groups.join(":"))
+        .parse()
+        .expect("valid IPv6 test address");
+    // 限流 key 用 `IpAddr::to_string()` 的规范形式，必须和 handler 侧
+    // （`api::source_ip` → `resolve_client_ip`）算出的字符串逐字节一致。
+    let fake_ip_str = fake_ip.to_string();
 
     // 预先饱和该 IP 的源 QPS 窗口（默认限制 30）。
     let source_qps_limit = env.state.config.security_limits.unauthenticated_source_qps;
