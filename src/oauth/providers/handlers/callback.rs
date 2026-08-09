@@ -3,8 +3,8 @@ use crate::{
     error,
     oauth::providers::{
         error_helpers::{
-            append_external_state_clear, external_callback_path, external_error,
-            external_error_with_request, external_error_with_session,
+            append_external_state_clear, external_binding_failure, external_callback_path,
+            external_error, external_error_with_request,
         },
         provider_pending::{PendingRequestBindingError, bind_pending_request},
         service::ExternalOAuthError,
@@ -257,7 +257,8 @@ pub async fn external_callback(
                 "oauth_request_binding_failed"
             }
         };
-        return external_error_with_session(
+        // 绑定失败即登录失败：撤销刚建好的 Session 并清 Cookie，不留下"已登录"副作用。
+        return external_binding_failure(
             &state,
             &slug,
             request_id,
