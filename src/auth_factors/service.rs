@@ -9,7 +9,7 @@ use crate::{
     redis_client::RedisClient,
     settings::{SettingsService, SettingsServiceError},
     sqlx::PgPool,
-    users::domain::UserId,
+    users::domain::{AuthenticatedUser, UserId},
 };
 
 use super::{
@@ -43,7 +43,8 @@ pub enum TotpConfirmation {
     /// 与「用户输错验证码」是两件完全不同的事（#258）。重试无用，必须走管理端重置。
     KeyUnavailable,
     RateLimited,
-    Completed(UserId),
+    /// 携带 ticket 上记录的认证 epoch（Issue #274），供会话签发做原子版本校验。
+    Completed(AuthenticatedUser),
 }
 
 /// 单个因子校验的三种真实结果。
@@ -63,7 +64,8 @@ pub enum PasskeyConfirmation {
     InvalidTicket,
     InvalidCredential(UserId),
     RateLimited(UserId),
-    Completed(UserId),
+    /// 携带 ticket 上记录的认证 epoch（Issue #274），供会话签发做原子版本校验。
+    Completed(AuthenticatedUser),
 }
 
 #[derive(Clone)]
@@ -84,6 +86,11 @@ pub enum AuthFactorServiceError {
     Ticket(#[from] LoginTicketStoreError),
     #[error("login ticket user was not found")]
     UserNotFound,
+    /// 认证时读到的 `session_epoch` 已经被并发改密推进（Issue #274）。
+    ///
+    /// 调用方必须把它当成一次认证失败处理，不得回落成"用当前 epoch 重签"。
+    #[error("authenticated session epoch is stale")]
+    AuthenticationEpochChanged,
     #[error("secret operation failed: {0}")]
     Secret(#[from] SecretCryptoError),
     #[error("passkey setting operation failed: {0}")]
@@ -172,18 +179,44 @@ impl AuthFactorService {
         self.is_disabled_passkey_only(&methods).await
     }
 
+    /// 为一次已完成的第一因子认证签发 login ticket。
+    ///
+    /// ticket 上盖的是**认证时**的 epoch，不是创建时刻重新读到的当前值
+    /// （Issue #274）。这条区别是修复的核心：重新读会把旧口令的认证结果套用到
+    /// 并发改密之后的新 epoch 上，让一张本该失效的 ticket 通过后续所有 epoch 校验。
+    ///
+    /// 写入前先比对当前 epoch，是为了不把一张注定无效的 ticket 交给用户；
+    /// 真正的安全保证来自两侧的版本校验：读取路径（`LoginTicketStore` 的
+    /// epoch 比对）会拒绝任何 epoch 已漂移的 ticket，兑换路径的会话写入还会在
+    /// 持锁事务内再确认一次。因此即使比对之后、Redis 写入之前发生改密，
+    /// 那张 ticket 也只是一份不可用的字节，换不出任何有效凭据。
     pub async fn create_login_ticket(
         &self,
-        user_id: UserId,
+        authenticated: AuthenticatedUser,
         methods: Vec<FactorMethod>,
         holder_hash: &str,
     ) -> Result<(String, LoginTicket), AuthFactorServiceError> {
-        let Some(session_epoch) = repository::find_session_epoch(&self.pool, user_id).await? else {
+        let Some(current_epoch) =
+            repository::find_session_epoch(&self.pool, authenticated.id).await?
+        else {
             return Err(AuthFactorServiceError::UserNotFound);
         };
+        if current_epoch != authenticated.session_epoch {
+            tracing::warn!(
+                event = "auth_factor.login_ticket.authentication_epoch_stale",
+                user_id = authenticated.id,
+                "login ticket issuance rejected because credentials were invalidated concurrently"
+            );
+            return Err(AuthFactorServiceError::AuthenticationEpochChanged);
+        }
         Ok(self
             .tickets
-            .create_with_epoch_and_holder(user_id, methods, session_epoch, holder_hash.to_owned())
+            .create_with_epoch_and_holder(
+                authenticated.id,
+                methods,
+                authenticated.session_epoch,
+                holder_hash.to_owned(),
+            )
             .await?)
     }
 

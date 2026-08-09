@@ -24,6 +24,10 @@ use crate::{config::AuthEncryptionKeyRing, redis_client::RedisClient, users::dom
 mod postgres;
 mod redis_only;
 
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod tests;
+
 // 两个函数本体在 postgres 子模块，可见性保持 `pub(crate)`：
 // `users::repository` 通过 `crate::sessions::store::...` 调用，路径不变。
 // 这里必须用 `pub(crate) use` 而非 `pub use`——`pub use` 重导出 `pub(crate)` 条目
@@ -63,6 +67,12 @@ pub enum SessionStoreError {
     UserNotFound,
     #[error("session was rejected by a revocation watermark")]
     SessionRevoked,
+    /// 认证时读到的 `session_epoch` 与写入时刻的当前值不一致（Issue #274）。
+    ///
+    /// 唯一的推进者是"改密并撤销全部会话"，因此这个错误的含义是明确的：
+    /// 本次认证依据的口令在签发完成前已被作废，会话不得建立。
+    #[error("authenticated session epoch is stale")]
+    AuthenticationEpochChanged,
     #[error("database operation failed: {0}")]
     Database(#[from] crate::sqlx::Error),
 }
@@ -72,6 +82,22 @@ pub struct SessionSummary {
     pub id: i64,
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
+}
+
+/// 新会话与用户 `session_epoch` 的绑定方式（Issue #274）。
+///
+/// 两个变体不是同一件事的强弱版本，而是两类不同的登录来源：
+///
+/// - [`SessionEpochBinding::Current`]：签发依据与口令无关（外部 IdP 回调、
+///   管理侧或测试直接建会话）。改密撤销的是"口令泄露后建立的会话"，
+///   把一次刚完成的外部登录也拒掉既没有安全收益，也会造成无法自洽的失败。
+/// - [`SessionEpochBinding::Authenticated`]：签发依据是一次口令校验（或由该
+///   校验派生的 login ticket）。写入必须在同一事务内确认当前 epoch 仍等于
+///   认证时读到的值，否则并发改密后旧口令仍能换出有效会话。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionEpochBinding {
+    Current,
+    Authenticated(i64),
 }
 
 impl SessionStore {
@@ -148,15 +174,56 @@ impl SessionStore {
         self
     }
 
+    /// 写入一条采用当前 epoch 的会话。
+    ///
+    /// 只用于签发依据与口令无关的路径（外部 IdP 回调、管理侧、测试夹具）。
+    /// 口令登录与 login ticket 兑换必须走 [`Self::save_authenticated`]，
+    /// 否则并发改密的撤销语义会被绕过（Issue #274）。
     pub async fn save(
         &self,
         session: &mut Session,
         ttl: Duration,
     ) -> Result<(), SessionStoreError> {
+        self.save_bound(session, ttl, SessionEpochBinding::Current)
+            .await
+    }
+
+    /// 写入一条绑定认证 epoch 的会话。
+    ///
+    /// `authenticated_epoch` 必须是口令校验时与 `password_hash` 同一次读取取出的
+    /// 值。当前 epoch 已经前进时返回
+    /// [`SessionStoreError::AuthenticationEpochChanged`]，且事务回滚，不留下任何
+    /// 会话行或 outbox 事件——验证失败不产生有效凭据。
+    pub async fn save_authenticated(
+        &self,
+        session: &mut Session,
+        ttl: Duration,
+        authenticated_epoch: i64,
+    ) -> Result<(), SessionStoreError> {
+        self.save_bound(
+            session,
+            ttl,
+            SessionEpochBinding::Authenticated(authenticated_epoch),
+        )
+        .await
+    }
+
+    async fn save_bound(
+        &self,
+        session: &mut Session,
+        ttl: Duration,
+        binding: SessionEpochBinding,
+    ) -> Result<(), SessionStoreError> {
         session.set_idle_timeout(self.policy.idle_timeout);
         if self.metadata.is_some() {
-            postgres::save_with_metadata(self, session, ttl).await
+            postgres::save_with_metadata(self, session, ttl, binding).await
         } else {
+            // 纯 Redis 路径没有 users 表可读，无法校验 epoch。缺少校验能力时
+            // 拒绝签发，而不是降级成"当作校验通过"：后者会让一条本应被拒绝的
+            // 凭据在配置退化时静默生效。生产 AppState 始终带 Postgres 元数据。
+            if matches!(binding, SessionEpochBinding::Authenticated(_)) {
+                return Err(SessionStoreError::MetadataUnavailable);
+            }
             redis_only::save_redis_only(self, session, ttl).await
         }
     }

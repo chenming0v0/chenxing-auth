@@ -212,16 +212,18 @@ async fn password_change_commits_password_and_session_revocation_together() {
     .await
     .expect("insert session");
 
-    assert!(
+    assert_eq!(
         user_repository::change_password_and_revoke_all(
             &pool,
             user.id,
             &hash_password(new_password.to_owned())
                 .await
                 .expect("new password hash"),
+            0,
         )
         .await
-        .expect("change password")
+        .expect("change password"),
+        user_repository::PasswordChangeOutcome::Changed
     );
 
     let (stored_hash,): (String,) =
@@ -329,6 +331,9 @@ async fn password_change_rolls_back_when_session_epoch_update_fails() {
         &hash_password(new_password.to_owned())
             .await
             .expect("new password hash"),
+        // 夹具把 epoch 直接置为 i64::MAX，认证 epoch 必须与之一致，
+        // 失败点才落在自增溢出上而不是版本比对上。
+        i64::MAX,
     )
     .await;
     assert!(result.is_err(), "epoch overflow must fail the transaction");

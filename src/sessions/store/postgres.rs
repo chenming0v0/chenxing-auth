@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use super::{SessionStore, SessionStoreError};
+use super::{SessionEpochBinding, SessionStore, SessionStoreError};
 use crate::{
     sessions::domain::{Session, SessionPayload, session_token_hash_bytes},
     sqlx::{Postgres, Transaction},
@@ -20,10 +20,19 @@ pub(super) use lookup::{
     find_with_metadata, find_with_metadata_by_token_hash, list_for_user, revoke_for_user,
 };
 
+/// 写入会话元数据。
+///
+/// `binding` 为 [`SessionEpochBinding::Authenticated`] 时，epoch 比对发生在本事务
+/// 已经持有该用户的 advisory 锁与 `users` 行锁之后（Issue #274）。这一点是原子性的
+/// 全部来源：改密走的 `revoke_all_for_user_in_transaction` 需要同一把 advisory 锁，
+/// 因此两个事务只能串行——要么改密先提交、本次读到新 epoch 并拒绝写入，要么本次
+/// 先提交、改密随后把这条会话一起撤销。不存在"读到旧 epoch 又按新 epoch 落库"的
+/// 中间态。比对失败直接返回错误，事务连一行都没插入。
 pub(super) async fn save_with_metadata(
     store: &SessionStore,
     session: &mut Session,
     _ttl: Duration,
+    binding: SessionEpochBinding,
 ) -> Result<(), SessionStoreError> {
     let pool = store
         .metadata
@@ -46,6 +55,16 @@ pub(super) async fn save_with_metadata(
     };
     if UserStatus::parse(&status) != Some(UserStatus::Active) {
         return Err(SessionStoreError::UserDisabled);
+    }
+    if let SessionEpochBinding::Authenticated(authenticated_epoch) = binding
+        && authenticated_epoch != session_epoch
+    {
+        tracing::warn!(
+            event = "session.authentication_epoch_stale",
+            user_id,
+            "session issuance rejected because credentials were invalidated concurrently"
+        );
+        return Err(SessionStoreError::AuthenticationEpochChanged);
     }
     let active_count: i64 = crate::sqlx::query_scalar(
         "SELECT COUNT(*)

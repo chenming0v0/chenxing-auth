@@ -213,7 +213,7 @@ impl AuthFactorService {
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
         let confirmation = match consume_then_persist(
-            TotpConfirmation::Completed(ticket.user_id),
+            TotpConfirmation::Completed(ticket.authenticated()),
             TotpConfirmation::InvalidTicket,
             self.tickets.take_for_holder(ticket_id, holder_hash),
             async {
@@ -349,7 +349,7 @@ impl AuthFactorService {
         {
             return Ok(TotpConfirmation::InvalidTicket);
         }
-        Ok(TotpConfirmation::Completed(ticket.user_id))
+        Ok(TotpConfirmation::Completed(ticket.authenticated()))
     }
 
     async fn can_start_totp_enrollment(

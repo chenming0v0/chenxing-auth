@@ -77,17 +77,54 @@ pub async fn update_display_name(
     Ok(result.rows_affected() == 1)
 }
 
+/// 改密的三种结果。
+///
+/// `EpochChanged` 与 `UserMissing` 分开，是因为它们的成因完全不同：前者是并发
+/// 改密已经作废了本次校验依据的当前口令，后者是账号在校验之后被删除。
+/// 两者在服务层都归一为凭据失败，但日志与测试需要能区分。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordChangeOutcome {
+    Changed,
+    UserMissing,
+    EpochChanged,
+}
+
 /// 改密并在同一事务里撤销该用户的全部会话。
 ///
 /// 两步必须原子：只改哈希不撤会话会让旧口令泄露后已建立的会话继续有效，
 /// 而改密的目的正是切断这些会话。任一步失败即整体回滚。
+///
+/// `authenticated_epoch` 是校验"当前口令"时与 `password_hash` 同一次读取取出的
+/// `session_epoch`（Issue #274）。比对在持有 advisory 锁之后进行，因此与另一个
+/// 改密事务严格串行：先提交者推进 epoch，后到者读到新值并整体回滚。
+/// 没有这道比对，两个并发改密都会拿着各自读到的旧哈希校验通过，后到者用一个
+/// **已被作废的口令**写入新口令——验证失败却产生了有效凭据。
 pub async fn change_password_and_revoke_all(
     pool: &PgPool,
     id: UserId,
     password_hash: &str,
-) -> Result<bool, crate::sqlx::Error> {
+    authenticated_epoch: i64,
+) -> Result<PasswordChangeOutcome, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
     crate::sessions::store::lock_user_session_scope(&mut transaction, id).await?;
+    let current_epoch: Option<i64> =
+        crate::sqlx::query_scalar("SELECT session_epoch FROM users WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let Some(current_epoch) = current_epoch else {
+        transaction.rollback().await?;
+        return Ok(PasswordChangeOutcome::UserMissing);
+    };
+    if current_epoch != authenticated_epoch {
+        transaction.rollback().await?;
+        tracing::warn!(
+            event = "user.password_change.authentication_epoch_stale",
+            user_id = id,
+            "password change rejected because the current password was invalidated concurrently"
+        );
+        return Ok(PasswordChangeOutcome::EpochChanged);
+    }
     let result =
         crate::sqlx::query("UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1")
             .bind(id)
@@ -96,15 +133,15 @@ pub async fn change_password_and_revoke_all(
             .await?;
     if result.rows_affected() != 1 {
         transaction.rollback().await?;
-        return Ok(false);
+        return Ok(PasswordChangeOutcome::UserMissing);
     }
     if crate::sessions::store::revoke_all_for_user_in_transaction(&mut transaction, id)
         .await?
         .is_none()
     {
         transaction.rollback().await?;
-        return Ok(false);
+        return Ok(PasswordChangeOutcome::UserMissing);
     }
     transaction.commit().await?;
-    Ok(true)
+    Ok(PasswordChangeOutcome::Changed)
 }

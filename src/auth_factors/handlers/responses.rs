@@ -2,7 +2,7 @@ use axum::{http::HeaderMap, response::Response};
 
 use super::super::{
     service::{AuthFactorServiceError, PasskeyConfirmation, TotpConfirmation},
-    session::issue_user_session,
+    session::{StaleCredentialCode, issue_user_session},
 };
 use crate::{audit::AuditEvent, error, state::AppState, users::domain::UserId};
 
@@ -14,8 +14,15 @@ pub(super) async fn totp_confirmation_response(
     source_ip: Option<&str>,
 ) -> Response {
     match confirmation {
-        TotpConfirmation::Completed(user_id) => {
-            issue_user_session(state, user_id, "totp", headers).await
+        TotpConfirmation::Completed(authenticated) => {
+            issue_user_session(
+                state,
+                authenticated,
+                "totp",
+                headers,
+                StaleCredentialCode::InvalidFactor,
+            )
+            .await
         }
         TotpConfirmation::InvalidCode => {
             mfa_failure_response(state, None, "totp_invalid", source_ip).await
@@ -42,8 +49,15 @@ pub(super) async fn passkey_confirmation_response(
     source_ip: Option<&str>,
 ) -> Response {
     match confirmation {
-        PasskeyConfirmation::Completed(user_id) => {
-            issue_user_session(state, user_id, "passkey", headers).await
+        PasskeyConfirmation::Completed(authenticated) => {
+            issue_user_session(
+                state,
+                authenticated,
+                "passkey",
+                headers,
+                StaleCredentialCode::InvalidFactor,
+            )
+            .await
         }
         PasskeyConfirmation::InvalidCredential(user_id) => {
             mfa_failure_response(state, Some(user_id), "passkey_invalid", source_ip).await

@@ -173,7 +173,7 @@ impl AuthFactorService {
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
         let confirmation = match consume_then_persist(
-            PasskeyConfirmation::Completed(ticket.user_id),
+            PasskeyConfirmation::Completed(ticket.authenticated()),
             PasskeyConfirmation::InvalidTicket,
             self.tickets.take_for_holder(ticket_id, holder_hash),
             async {
@@ -346,7 +346,7 @@ impl AuthFactorService {
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
         let confirmation = consume_then_persist(
-            PasskeyConfirmation::Completed(ticket.user_id),
+            PasskeyConfirmation::Completed(ticket.authenticated()),
             PasskeyConfirmation::InvalidTicket,
             self.tickets.take_for_holder(ticket_id, holder_hash),
             async {
