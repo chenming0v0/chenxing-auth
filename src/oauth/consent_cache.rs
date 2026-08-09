@@ -94,7 +94,16 @@ impl CachedConsentState {
     /// 当前不存在这种值；这条分支是为手工写入的脏值或未来格式演进兜底，
     /// 按未命中处理让结论回落到权威源，而不是凭猜测放行或拒绝。
     fn parse(raw: &str) -> Option<Self> {
-        match raw.split_once(':')?.1 {
+        let (version, marker) = raw.split_once(':')?;
+        if version
+            .parse::<i64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .is_none()
+        {
+            return None;
+        }
+        match marker {
             REVOKED_MARKER => Some(Self::Revoked),
             ACTIVE_MARKER => Some(Self::Active),
             _ => None,

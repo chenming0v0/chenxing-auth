@@ -147,7 +147,10 @@ async fn authentication_result_carries_the_epoch_read_with_the_password_hash() {
     let authenticated = harness
         .state
         .users
-        .authenticate(login_input(&harness.identifier, PASSWORD), Some("127.0.0.1"))
+        .authenticate(
+            login_input(&harness.identifier, PASSWORD),
+            Some("127.0.0.1"),
+        )
         .await
         .expect("authenticate with initial password");
     assert_eq!(authenticated.id, harness.user_id);
@@ -187,7 +190,10 @@ async fn login_ticket_is_refused_when_the_password_changed_after_authentication(
     let authenticated = harness
         .state
         .users
-        .authenticate(login_input(&harness.identifier, PASSWORD), Some("127.0.0.1"))
+        .authenticate(
+            login_input(&harness.identifier, PASSWORD),
+            Some("127.0.0.1"),
+        )
         .await
         .expect("authenticate before password change");
 
@@ -218,7 +224,10 @@ async fn direct_session_is_refused_when_the_password_changed_after_authenticatio
     let authenticated = harness
         .state
         .users
-        .authenticate(login_input(&harness.identifier, PASSWORD), Some("127.0.0.1"))
+        .authenticate(
+            login_input(&harness.identifier, PASSWORD),
+            Some("127.0.0.1"),
+        )
         .await
         .expect("authenticate before password change");
     change_password(&harness, PASSWORD, REPLACEMENT_PASSWORD).await;
@@ -273,7 +282,10 @@ async fn issued_login_ticket_stops_working_once_the_password_changes() {
     let authenticated = harness
         .state
         .users
-        .authenticate(login_input(&harness.identifier, PASSWORD), Some("127.0.0.1"))
+        .authenticate(
+            login_input(&harness.identifier, PASSWORD),
+            Some("127.0.0.1"),
+        )
         .await
         .expect("authenticate before password change");
     let holder_hash = format!("holder-{}", Uuid::new_v4().simple());
@@ -398,7 +410,8 @@ async fn concurrent_logins_never_mint_tickets_for_a_superseded_password() {
 
     for (ticket_id, holder_hash, ticket) in issued {
         assert_eq!(
-            ticket.session_epoch, ticket.authenticated().session_epoch,
+            ticket.session_epoch,
+            ticket.authenticated().session_epoch,
             "a ticket must report the epoch it was stamped with"
         );
         let resolves = harness
@@ -507,7 +520,10 @@ async fn unchanged_epoch_still_issues_tickets_and_sessions() {
     let authenticated = harness
         .state
         .users
-        .authenticate(login_input(&harness.identifier, PASSWORD), Some("127.0.0.1"))
+        .authenticate(
+            login_input(&harness.identifier, PASSWORD),
+            Some("127.0.0.1"),
+        )
         .await
         .expect("authenticate");
     let holder_hash = format!("holder-{}", Uuid::new_v4().simple());

@@ -172,18 +172,19 @@ async fn concurrent_binds_converge_to_a_single_session_hash() {
 
     let first_store = store.clone();
     let second_store = store.clone();
+    let holder = holder_hash();
     let (first, second) = tokio::join!(
         bind_pending_request(
             &first_store,
             &request.request_id,
             "session-a",
-            Some(holder_hash().as_str()),
+            Some(holder.as_str()),
         ),
         bind_pending_request(
             &second_store,
             &request.request_id,
             "session-b",
-            Some(holder_hash().as_str()),
+            Some(holder.as_str()),
         ),
     );
     assert!(first.is_ok(), "concurrent bind must not fail: {first:?}");

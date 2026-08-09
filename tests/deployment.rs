@@ -209,7 +209,11 @@ fn runtime_reads_the_bundle_only_through_web_dist_dir() {
 
     // 单二进制约束：只有 SPA shell 内嵌，资源不内嵌，所以镜像必须带目录。
     assert_eq!(
-        STATIC_FILES_MODULE.matches("include_str!").count(),
+        STATIC_FILES_MODULE
+            .matches(
+                "include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/web/dist/index.html\"))"
+            )
+            .count(),
         1,
         "only index.html may be embedded; assets must ship as files"
     );
@@ -233,7 +237,9 @@ fn embedded_index_html_asset_references_require_the_whole_bundle_root() {
 
     let references = root_absolute_references(&html);
     assert!(
-        references.iter().any(|reference| reference.ends_with(".js")),
+        references
+            .iter()
+            .any(|reference| reference.ends_with(".js")),
         "the built shell must reference a hashed script: {references:?}"
     );
 

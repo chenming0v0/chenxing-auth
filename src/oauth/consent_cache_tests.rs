@@ -26,7 +26,7 @@ fn cached_state_parses_versioned_markers() {
 fn unparseable_cached_values_are_treated_as_a_miss() {
     // 旧格式（Issue #276 之前的无版本值 "1"）和脏值都必须回落到权威源，
     // 而不是被猜成某一侧结论。
-    for raw in ["1", "", "2:x", ":r", "abc"] {
+    for raw in ["1", "", "2:x", ":r", "0:r", "-1:r", "abc:r", "abc"] {
         assert_eq!(CachedConsentState::parse(raw), None, "{raw:?}");
     }
 }

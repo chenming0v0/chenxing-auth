@@ -29,6 +29,7 @@ fn registration_and_login_accept_the_shared_email_boundary() {
         validate_login(LoginInput {
             identifier: email,
             password: "correct horse battery staple".to_owned(),
+            totp_code: None,
         })
         .is_ok()
     );
@@ -46,6 +47,7 @@ fn registration_and_login_reject_email_above_the_shared_boundary() {
         validate_login(LoginInput {
             identifier: email,
             password: "correct horse battery staple".to_owned(),
+            totp_code: None,
         })
         .is_err()
     );

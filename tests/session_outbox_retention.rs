@@ -167,7 +167,10 @@ async fn settled_outbox_events_are_pruned_in_bounded_batches_after_their_retenti
         .prune_settled_outbox()
         .await
         .expect("first retention batch");
-    assert_eq!(first.processed, 2, "processed cleanup must respect the batch");
+    assert_eq!(
+        first.processed, 2,
+        "processed cleanup must respect the batch"
+    );
     assert_eq!(
         first.dead_lettered, 2,
         "dead-letter cleanup must respect the batch"
@@ -375,7 +378,10 @@ async fn permanently_failing_delivery_stops_retrying_and_becomes_auditable() {
     .await
     .expect("read the dead-lettered event");
     assert_eq!(attempts, max_attempts);
-    assert!(has_error, "a dead-lettered event must retain its last error");
+    assert!(
+        has_error,
+        "a dead-lettered event must retain its last error"
+    );
     assert!(!processed, "a dead-lettered event must not look processed");
 
     // 关键断言：预算耗尽后不再重试。原来的行为是每 5 分钟重新领取一次，直到部署寿命结束。

@@ -170,8 +170,14 @@ mod credentials_binding_tests {
     /// 否则调用方可以拿旧身份冒充新身份。
     #[test]
     fn authenticated_identities_differ_across_epochs() {
-        assert_ne!(credentials(0).authenticated(), credentials(1).authenticated());
-        assert_eq!(credentials(2).authenticated(), credentials(2).authenticated());
+        assert_ne!(
+            credentials(0).authenticated(),
+            credentials(1).authenticated()
+        );
+        assert_eq!(
+            credentials(2).authenticated(),
+            credentials(2).authenticated()
+        );
     }
 
     /// 凭据的 Debug 输出不得泄露哈希，但要保留 epoch 以便排查版本漂移。
