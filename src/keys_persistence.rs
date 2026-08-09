@@ -14,6 +14,7 @@ use super::{
 };
 
 const ACTIVE_KEY_ID_FILE: &str = "active-rs256.kid";
+const LEGACY_KEY_FILE: &str = "active-rs256.pkcs1.der";
 const KEY_FILE_PREFIX: &str = "rs256-";
 const KEY_FILE_SUFFIX: &str = ".pkcs1.der";
 
@@ -30,35 +31,56 @@ pub(super) fn load_materials(
     ensure_secure_directory(directory)?;
     cleanup_stale_temporary_files(directory)?;
     let active_id_path = directory.join(ACTIVE_KEY_ID_FILE);
-    let active_id = read_optional_key_id(&active_id_path)?;
-    cleanup_expired_key_files(directory, active_id.as_deref(), retention, now)?;
+    let declared_active_id = read_optional_key_id(&active_id_path)?;
+    cleanup_expired_key_files(directory, declared_active_id.as_deref(), retention, now)?;
     let mut key_files = discover_key_files(directory)?;
 
-    if key_files.is_empty() {
-        migrate_legacy_key(directory, &active_id_path, &mut key_files, now)?;
+    let migrated_id = if key_files.is_empty() {
+        migrate_legacy_key(directory, declared_active_id.as_deref(), &mut key_files, now)?
     } else {
         remove_legacy_key(directory)?;
-    }
-    if key_files.is_empty() {
-        if !generate_if_empty {
-            return Err(KeyManagerError::InvalidKeyId);
-        }
-        let (key_id, der) = generate_rsa_key()?;
-        persist_key(directory, &key_id, &der)?;
-        let created_at =
-            OffsetDateTime::from(modified_time(&directory.join(key_file_name(&key_id)))?);
-        persist_active_key_id(directory, &key_id)?;
-        key_files.insert(key_id, key_material(der, created_at));
-    }
+        None
+    };
 
-    let active_key_id = match read_optional_key_id(&active_id_path)? {
-        Some(key_id) if key_files.contains_key(&key_id) => key_id,
-        _ => {
-            let key_id = newest_key_id(&key_files).ok_or(KeyManagerError::InvalidKeyId)?;
+    // 只有四种合法出口，其余组合一律 fail-closed。关键区分是"kid 存在但它指向的材料
+    // 不在盘上"：这不是首次初始化，而是私钥丢失或目录被破坏。此时生成替代密钥会静默
+    // 作废所有已签发令牌、把 JWKS 换成全新公钥，并覆盖唯一还能指认丢失材料的证据
+    // （kid 文件本身），使故障无法追溯。
+    let newest_id = newest_key_id(&key_files);
+    let active_key_id = match (migrated_id, declared_active_id, newest_id) {
+        // 迁移刚刚落盘并写好 kid，材料就是它自己。
+        (Some(key_id), _, _) => key_id,
+        // 正常路径：kid 指向的材料在盘上。
+        (None, Some(key_id), _) if key_files.contains_key(&key_id) => key_id,
+        // kid 指向的材料丢失或损坏：fail-closed，不改盘上任何字节。
+        (None, Some(key_id), _) => {
+            tracing::error!(
+                active_key_id = %key_id,
+                discovered_key_count = key_files.len(),
+                "active signing key material is missing from the key directory; \
+                 refusing to overwrite the active key id or generate a replacement"
+            );
+            return Err(KeyManagerError::MissingActiveKeyMaterial);
+        }
+        // kid 文件丢失但材料仍在：可以从材料自身恢复，不作废任何已签发令牌。
+        (None, None, Some(key_id)) => {
+            tracing::warn!(
+                active_key_id = %key_id,
+                discovered_key_count = key_files.len(),
+                "active key id file is missing; adopting the newest persisted signing key"
+            );
             persist_active_key_id(directory, &key_id)?;
             key_id
         }
+        // 真正的空目录：既没有 kid 也没有任何材料，才允许首次初始化。
+        (None, None, None) => {
+            if !generate_if_empty {
+                return Err(KeyManagerError::MissingActiveKeyMaterial);
+            }
+            initialize_first_key(directory, &mut key_files)?
+        }
     };
+
     prune_materials(
         Some(directory),
         &active_key_id,
@@ -66,10 +88,24 @@ pub(super) fn load_materials(
         retention,
         now,
     );
+    // prune_materials 永不删除 active key，这里只是守住该不变量。
     if !key_files.contains_key(&active_key_id) {
-        return Err(KeyManagerError::InvalidKeyId);
+        return Err(KeyManagerError::MissingActiveKeyMaterial);
     }
     Ok((active_key_id, key_files))
+}
+
+/// 空目录的首次初始化：生成、落盘并写入 kid。
+fn initialize_first_key(
+    directory: &Path,
+    key_files: &mut BTreeMap<String, KeyMaterial>,
+) -> Result<String, KeyManagerError> {
+    let (key_id, der) = generate_rsa_key()?;
+    persist_key(directory, &key_id, &der)?;
+    let created_at = OffsetDateTime::from(modified_time(&directory.join(key_file_name(&key_id)))?);
+    persist_active_key_id(directory, &key_id)?;
+    key_files.insert(key_id.clone(), key_material(der, created_at));
+    Ok(key_id)
 }
 
 fn discover_key_files(directory: &Path) -> Result<BTreeMap<String, KeyMaterial>, KeyManagerError> {
@@ -122,16 +158,20 @@ pub(super) fn cleanup_expired_key_files(
     Ok(())
 }
 
+/// 迁移旧版单文件私钥。返回迁移后落盘的 key id；没有旧文件时返回 `None`。
+///
+/// 返回值让调用方区分"kid 指向的材料由本次迁移刚刚补齐"和"kid 指向的材料确实丢失"，
+/// 迁移路径因此不需要再次从盘上读回 kid。
 fn migrate_legacy_key(
     directory: &Path,
-    active_id_path: &Path,
+    declared_active_id: Option<&str>,
     key_files: &mut BTreeMap<String, KeyMaterial>,
     now: OffsetDateTime,
-) -> Result<(), KeyManagerError> {
-    let legacy_path = directory.join("active-rs256.pkcs1.der");
+) -> Result<Option<String>, KeyManagerError> {
+    let legacy_path = directory.join(LEGACY_KEY_FILE);
     let metadata = match fs::symlink_metadata(&legacy_path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
     if !metadata.is_file() {
@@ -142,8 +182,8 @@ fn migrate_legacy_key(
         .into());
     }
     secure_existing_file(&legacy_path)?;
-    let key_id = match read_optional_key_id(active_id_path)? {
-        Some(value) => value,
+    let key_id = match declared_active_id {
+        Some(value) => value.to_owned(),
         None => format!("cx-{}", uuid::Uuid::new_v4().simple()),
     };
     validate_key_id(&key_id)?;
@@ -151,12 +191,12 @@ fn migrate_legacy_key(
     persist_key(directory, &key_id, &der)?;
     persist_active_key_id(directory, &key_id)?;
     fs::remove_file(&legacy_path)?;
-    key_files.insert(key_id, key_material(der, now));
-    Ok(())
+    key_files.insert(key_id.clone(), key_material(der, now));
+    Ok(Some(key_id))
 }
 
 fn remove_legacy_key(directory: &Path) -> Result<(), KeyManagerError> {
-    let legacy_path = directory.join("active-rs256.pkcs1.der");
+    let legacy_path = directory.join(LEGACY_KEY_FILE);
     match fs::symlink_metadata(&legacy_path) {
         Ok(metadata) if metadata.is_file() => {
             secure_existing_file(&legacy_path)?;
@@ -236,3 +276,7 @@ pub(super) fn validate_key_id(key_id: &str) -> Result<(), KeyManagerError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "keys_persistence_tests.rs"]
+mod tests;

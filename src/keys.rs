@@ -148,6 +148,8 @@ pub enum KeyManagerError {
     Io(#[from] std::io::Error),
     #[error("persisted key id is invalid")]
     InvalidKeyId,
+    #[error("persisted active key material is missing")]
+    MissingActiveKeyMaterial,
     #[error("requested signing key is not published")]
     UnknownKeyId,
     #[error("key rotation worker failed")]
