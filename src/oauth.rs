@@ -20,6 +20,7 @@ pub mod refresh;
 pub mod refresh_grant;
 pub mod refresh_store;
 mod refresh_store_scripts;
+pub(crate) mod request_binding;
 pub mod request_store;
 mod request_store_scripts;
 pub mod response;

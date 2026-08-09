@@ -5,7 +5,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  ApiError, apiFetch, externalLoginErrorMessage, parseCsrfToken, safeErrorMessage,
+  ApiError, apiFetch, externalLoginErrorMessage, loadAuthorizationRequest, loginRecoveryTarget,
+  parseCsrfToken, safeErrorMessage,
 } from './api'
 
 const SAFE_FALLBACK = '请求未完成，请稍后重试。'
@@ -159,6 +160,8 @@ describe('apiFetch', () => {
     vi.stubGlobal('fetch', fetchMock)
     document.cookie = '__Host-chenxing_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
     document.cookie = 'chenxing_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
+    // 401 重定向的 returnTo 取自当前地址：固定起点让用例互不影响。
+    window.history.replaceState({}, '', '/')
   })
 
   afterEach(() => {
@@ -313,6 +316,22 @@ describe('apiFetch', () => {
     expect(dispatchEvent.mock.calls.some(([event]) => event.type === 'popstate')).toBe(true)
   })
 
+  it('hoists request_id out of returnTo when 401 hits an OAuth page (#270)', async () => {
+    window.history.replaceState({}, '', '/oauth/consent?request_id=req-270')
+    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {})
+    fetchMock.mockResolvedValue(stubResponse({ status: 401, body: {} }))
+
+    await expect(apiFetch('/api/v1/oauth/authorize/requests/req-270')).rejects.toBeInstanceOf(ApiError)
+
+    // 登录页只读自己的 request_id 决定登录后是否重新绑定；埋在 returnTo 里读不到，
+    // 于是登录成功后直接跳确认页，确认页再次 401 —— 这就是登录循环。
+    expect(replaceState).toHaveBeenCalledWith({}, '', [
+      '/login?returnTo=',
+      encodeURIComponent('/oauth/consent?request_id=req-270'),
+      '&request_id=req-270',
+    ].join(''))
+  })
+
   it('does not redirect when redirectOn401 is disabled', async () => {
     // 登录和 Passkey 流程需要就地展示错误，重定向会打断多因素步骤。
     document.cookie = 'chenxing_csrf=token-abc'
@@ -384,5 +403,108 @@ describe('apiFetch', () => {
       status: 200,
       message: SAFE_FALLBACK,
     })
+  })
+})
+
+/**
+ * #270：登录恢复地址与「先绑后读」。
+ *
+ * 两者共同拆掉 401 登录循环：request_id 必须提升为登录页的顶层查询参数，
+ * 且确认页读取待授权请求之前先做一次幂等绑定，让新会话接管旧绑定。
+ */
+describe('loginRecoveryTarget', () => {
+  it('把 OAuth request_id 提升为顶层查询参数，同时保留 returnTo', () => {
+    const target = loginRecoveryTarget('/oauth/consent', '?request_id=req-270')
+    const params = new URLSearchParams(target.slice(target.indexOf('?')))
+    expect(target.startsWith('/login?')).toBe(true)
+    expect(params.get('request_id')).toBe('req-270')
+    expect(params.get('returnTo')).toBe('/oauth/consent?request_id=req-270')
+  })
+
+  it('非 OAuth 场景只带 returnTo，行为与改动前一致', () => {
+    expect(loginRecoveryTarget('/console/profile', '')).toBe('/login?returnTo=%2Fconsole%2Fprofile')
+    expect(loginRecoveryTarget('/console', '?tab=security'))
+      .toBe('/login?returnTo=%2Fconsole%3Ftab%3Dsecurity')
+  })
+
+  it('对 request_id 中的保留字符只编码一次', () => {
+    const requestId = 'req/with?reserved=1'
+    const target = loginRecoveryTarget('/oauth/consent', `?request_id=${encodeURIComponent(requestId)}`)
+    expect(new URLSearchParams(target.slice(target.indexOf('?'))).get('request_id')).toBe(requestId)
+  })
+})
+
+describe('loadAuthorizationRequest', () => {
+  let fetchMock: FetchMock
+
+  beforeEach(() => {
+    fetchMock = createFetchMock()
+    vi.stubGlobal('fetch', fetchMock)
+    document.cookie = 'chenxing_csrf=token-abc'
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  const PENDING = {
+    request_id: 'req-270',
+    client_id: 'client-1',
+    client_name: 'Example App',
+    redirect_host: 'client.example.test',
+    scopes: ['openid'],
+    expires_in: 600,
+  }
+
+  it('先绑定再读取，让新会话接管旧绑定', async () => {
+    fetchMock.mockImplementation((_path: string, init?: RequestInit) =>
+      Promise.resolve(init?.method === 'POST'
+        ? stubResponse({ status: 204 })
+        : stubResponse({ status: 200, body: PENDING })))
+
+    await expect(loadAuthorizationRequest('req-270')).resolves.toMatchObject({ request_id: 'req-270' })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/oauth/authorize/requests/req-270/bind')
+    expect(fetchMock.mock.calls[0][1]?.method).toBe('POST')
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/oauth/authorize/requests/req-270')
+  })
+
+  it('绑定失败但读取成功时不打断流程', async () => {
+    // holder 缺失等情形下会话可能仍然有效且已绑定，此时读得到就该继续。
+    fetchMock.mockImplementation((_path: string, init?: RequestInit) =>
+      Promise.resolve(init?.method === 'POST'
+        ? stubResponse({ status: 403, body: { code: 'authorization_holder_invalid' } })
+        : stubResponse({ status: 200, body: PENDING })))
+
+    await expect(loadAuthorizationRequest('req-270')).resolves.toMatchObject({ request_id: 'req-270' })
+  })
+
+  it('两步都失败时抛出绑定错误，因为它更能说明真实原因', async () => {
+    fetchMock.mockImplementation((_path: string, init?: RequestInit) =>
+      Promise.resolve(init?.method === 'POST'
+        ? stubResponse({ status: 400, body: { code: 'authorization_request_expired' } })
+        : stubResponse({ status: 401, body: {} })))
+
+    await expect(loadAuthorizationRequest('req-270')).rejects.toMatchObject({
+      status: 400,
+      code: 'authorization_request_expired',
+      message: '授权请求已过期，请重新发起。',
+    })
+  })
+
+  it('绑定与读取都不自动跳登录页，处置权留给调用方', async () => {
+    const replaceState = vi.spyOn(window.history, 'replaceState').mockImplementation(() => {})
+    fetchMock.mockResolvedValue(stubResponse({ status: 401, body: {} }))
+
+    await expect(loadAuthorizationRequest('req-270')).rejects.toMatchObject({ status: 401 })
+    expect(replaceState).not.toHaveBeenCalled()
+  })
+
+  it('对新增的绑定错误码给出可读文案', () => {
+    expect(safeErrorMessage(409, 'authorization_request_conflict'))
+      .toBe('授权请求正在被其他标签页更新，请稍后重试。')
+    expect(safeErrorMessage(403, 'authorization_holder_invalid'))
+      .toBe('这条授权请求不是在当前浏览器发起的，请回到应用重新开始授权。')
   })
 })

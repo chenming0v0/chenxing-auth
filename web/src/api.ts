@@ -73,6 +73,8 @@ const safeMessages = new Map<string, string>([
   ['oauth_quota_exceeded', '当前 OAuth 授权额度已用尽。'],
   ['authorization_request_expired', '授权请求已过期，请重新发起。'],
   ['authorization_request_processed', '授权请求已经处理过。'],
+  ['authorization_request_conflict', '授权请求正在被其他标签页更新，请稍后重试。'],
+  ['authorization_holder_invalid', '这条授权请求不是在当前浏览器发起的，请回到应用重新开始授权。'],
   ['csrf_invalid', '请求校验失败，请刷新页面后重试。'],
   ['csrf_required', '请求校验失败，请刷新页面后重试。'],
   ['invalid_plan', '套餐参数不正确，请检查输入。'],
@@ -112,10 +114,25 @@ export function safeErrorMessage(status: number, code?: string): string {
   return '请求未完成，请稍后重试。'
 }
 
+/**
+ * 构造「登录完成后能接着干原来的事」的登录页地址。
+ *
+ * OAuth 待授权请求的 `request_id` 必须提升为登录页自己的顶层查询参数（#270）：
+ * 登录页只读自己的 `request_id` 来决定登录后是否把新会话绑定到待授权请求。
+ * 埋在 `returnTo` 里它读不到，于是登录成功后直接跳回确认页，确认页拿着新会话
+ * 撞上旧的会话绑定再次 401，又被送回登录页——这就是 401 登录循环的成因。
+ *
+ * `returnTo` 照旧保留，非 OAuth 场景的回跳行为不变。
+ */
+export function loginRecoveryTarget(pathname: string, search: string): string {
+  const returnTo = `/login?returnTo=${encodeURIComponent(`${pathname}${search}`)}`
+  const requestId = new URLSearchParams(search).get('request_id')
+  return requestId ? `${returnTo}&request_id=${encodeURIComponent(requestId)}` : returnTo
+}
+
 function redirectToLogin(): void {
   if (typeof window === 'undefined' || window.location.pathname === '/login') return
-  const returnTo = `${window.location.pathname}${window.location.search}`
-  const target = `/login?returnTo=${encodeURIComponent(returnTo)}`
+  const target = loginRecoveryTarget(window.location.pathname, window.location.search)
   window.history.replaceState({}, '', target)
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
@@ -440,6 +457,51 @@ export type PendingAuthorization = {
   expires_in: number
 }
 export type AuthorizationDecisionResponse = { decision: 'approve' | 'deny'; redirect_to: string }
+
+function authorizationRequestPath(requestId: string, suffix = ''): string {
+  return `/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}${suffix}`
+}
+
+/**
+ * 把当前会话绑定到待授权请求。服务端语义是幂等的受控重绑：holder Cookie 与
+ * CSRF 校验通过时，无论此前绑的是哪个会话摘要，都会绑到当前会话（#270）。
+ *
+ * `redirectOn401: false`：401 的处置权交给调用方。默认的自动跳登录页会在
+ * 「登录成功但绑定失败」时把用户送回登录页，正是要避免的循环。
+ */
+export function bindAuthorizationRequest(requestId: string): Promise<void> {
+  return apiFetch<void>(authorizationRequestPath(requestId, '/bind'), {
+    method: 'POST',
+    redirectOn401: false,
+  })
+}
+
+/**
+ * 读取授权确认页所需数据，读之前先做一次绑定。
+ *
+ * 绑定放在前面是为了让「会话过期重登」和「切换账号」自愈：这两种情况下浏览器
+ * 持有的是新会话，而 pending 记录还指着旧会话摘要，直接读会 401。先绑再读，
+ * 新会话接管请求，读取随即成功。绑定幂等，重复调用没有副作用。
+ *
+ * 绑定失败不直接抛错：holder 缺失等情形下会话本身可能仍然有效且已绑定，
+ * 此时读取能成功，流程不该被拦断。只有读取也失败时才把绑定错误抛出去——
+ * 它比读取端的通用 401 更能说明真实原因。
+ */
+export async function loadAuthorizationRequest(requestId: string): Promise<PendingAuthorization> {
+  let bindError: unknown = null
+  try {
+    await bindAuthorizationRequest(requestId)
+  } catch (error) {
+    bindError = error
+  }
+  try {
+    return await apiFetch<PendingAuthorization>(authorizationRequestPath(requestId), {
+      redirectOn401: false,
+    })
+  } catch (error) {
+    throw bindError ?? error
+  }
+}
 
 let entitlementCache: EntitlementsResponse | null = null
 let entitlementRequest: Promise<EntitlementsResponse> | null = null

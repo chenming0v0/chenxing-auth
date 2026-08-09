@@ -637,7 +637,7 @@ paths:
         - { name: code_challenge, in: query, required: true, schema: { type: string } }
         - { name: code_challenge_method, in: query, required: true, schema: { type: string, enum: [S256] } }
       responses:
-        '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页（未登录时附带 chenxing_authz_holder HttpOnly Cookie） }
+        '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页（跳转到 SPA 登录页或授权确认页时附带 chenxing_authz_holder HttpOnly Cookie，供后续绑定端点校验；已授权直通到 redirect_uri 的分支不下发） }
         '400': { $ref: '#/components/responses/OAuthBadRequest' }
         '401': { $ref: '#/components/responses/OAuthUnauthorized' }
         '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
@@ -684,7 +684,7 @@ paths:
   /api/v1/oauth/authorize/requests/{request_id}/bind:
     post:
       tags: [OAuth/OIDC]
-      summary: 将登录后的 Session 原子绑定到待授权请求
+      summary: 将当前 Session 原子绑定到待授权请求
       operationId: bindAuthorizationRequest
       security: [{ sessionCookie: [] }]
       description: |
@@ -692,19 +692,31 @@ paths:
         1. 有效的 Session Cookie（HTTPS 部署为 __Host-chenxing_session）
         2. CSRF 校验通过（HTTPS 部署为 __Host-chenxing_csrf Cookie + X-CSRF-Token 头）
         3. 授权持有者 Cookie 与 pending 记录中的摘要匹配（chenxing_authz_holder，防御 OAuth login CSRF / 请求固定攻击 #115）
-        
-        chenxing_authz_holder Cookie 由 `/oauth/authorize` 在创建未绑定 pending 请求时下发（HttpOnly, SameSite=Lax, path=/），
-        SHA-256 摘要存入 Redis 的 pending 记录。缺失该 Cookie 或摘要不匹配返回 403。
-        
+
+        chenxing_authz_holder Cookie 由 `/oauth/authorize` 在把浏览器交给 SPA（登录页或授权确认页）时下发
+        （HttpOnly, SameSite=Lax, path=/），SHA-256 摘要存入 Redis 的 pending 记录。
+        缺失该 Cookie 或摘要不匹配返回 403。
+
         升级前创建的旧 pending 记录无 holder 摘要，绑定时将被拒绝（fail-secure），用户需重新发起授权流程。
+
+        **受控重绑（#270）**：上述校验全部通过时，无论该 pending 请求此前绑定的是哪个 Session 摘要，
+        都会被重绑到调用者当前的 Session，写入走 CAS 保证原子性。
+        holder Cookie 才是所有权凭据，Session 绑定是派生状态，因此重绑不放宽任何安全边界：
+        没有 holder Cookie 的第三方即使持有有效 Session 也仍然被拒（403）。
+        这让「会话过期后重新登录」与「切换账号继续授权」可以自愈，
+        不再固定返回 401 并在登录页与授权确认页之间形成跳转循环。
+        授权码在最终 approve 时按当时持有的 Session 签发。
+
+        重绑会记录审计事件 `authorization_request_rebound`（resource_type `oauth_authorization`）。
       parameters:
         - { name: request_id, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
-        '204': { description: 绑定成功或同一 Session 的幂等重试 }
+        '204': { description: 绑定成功、重绑成功，或同一 Session 的幂等重试 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 'pending 请求正被并发修改，CAS 无法收敛（authorization_request_conflict）；重试即可', content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
   /oauth/token:
     post:
