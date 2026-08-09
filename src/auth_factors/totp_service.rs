@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-use super::{AuthFactorService, AuthFactorServiceError, TotpConfirmation};
+use super::{AuthFactorService, AuthFactorServiceError, FactorVerification, TotpConfirmation};
 use crate::{
     auth_factors::{
         crypto::{
@@ -41,7 +41,7 @@ impl AuthFactorService {
         _identifier: &str,
         source_ip: Option<&str>,
         code: &str,
-    ) -> Result<bool, AuthFactorServiceError> {
+    ) -> Result<FactorVerification, AuthFactorServiceError> {
         let account_key = self.account_key(user_id).await?;
         let dimensions = self.failure_dimensions(&account_key, None, source_ip)?;
         if self.ensure_dimensions_allowed(dimensions.clone()).await? {
@@ -59,18 +59,14 @@ impl AuthFactorService {
             if !self.record_failure(dimensions).await?.reached.is_empty() {
                 return Err(AuthFactorServiceError::RateLimited);
             }
-            return Ok(false);
+            return Ok(FactorVerification::Rejected);
         };
         let decrypted =
             match decrypt_totp_secret_with_ring(&self.encryption_keys, &encrypted_secret) {
                 Ok(value) => value,
                 Err(SecretCryptoError::UnknownKeyId) => {
-                    self.release_dimensions(dimensions).await?;
-                    tracing::warn!(
-                        event = "auth_factor.totp.decrypt_key_unavailable",
-                        "TOTP secret key is outside the configured retention window"
-                    );
-                    return Ok(false);
+                    self.report_retired_key(dimensions, "verify").await;
+                    return Ok(FactorVerification::KeyUnavailable);
                 }
                 Err(error) => {
                     self.release_dimensions_after_error(dimensions).await;
@@ -85,13 +81,13 @@ impl AuthFactorService {
             if !self.record_failure(dimensions).await?.reached.is_empty() {
                 return Err(AuthFactorServiceError::RateLimited);
             }
-            return Ok(false);
+            return Ok(FactorVerification::Rejected);
         };
         if !self
             .claim_totp_timestep(user_id, timestep, dimensions)
             .await?
         {
-            return Ok(false);
+            return Ok(FactorVerification::Rejected);
         }
         if let Err(error) = self
             .reencrypt_totp_secret_if_needed(user_id, &encrypted_secret, &decrypted)
@@ -103,7 +99,7 @@ impl AuthFactorService {
                 "TOTP verification succeeded but key rotation migration was deferred"
             );
         }
-        Ok(true)
+        Ok(FactorVerification::Accepted)
     }
 
     pub async fn start_totp_enrollment(
@@ -182,12 +178,17 @@ impl AuthFactorService {
             match decrypt_totp_secret_with_ring(&self.encryption_keys, &pending.encrypted_secret) {
                 Ok(value) => value,
                 Err(SecretCryptoError::UnknownKeyId) => {
-                    self.release_dimensions(dimensions).await?;
-                    tracing::warn!(
-                        event = "auth_factor.totp.decrypt_key_unavailable",
-                        "TOTP setup key is outside the configured retention window"
-                    );
-                    return Ok(TotpConfirmation::InvalidCode);
+                    // 待确认的注册密文是几分钟前用当时的 active key 写入的，
+                    // 走到这里说明密钥环在注册过程中被换掉了。
+                    //
+                    // 只删掉这份读不出来的 pending 注册，**保留 ticket**：用户重新
+                    // 调用 setup 就能拿到当前 active key 加密的新种子，无需重新输入
+                    // 口令。连 ticket 一起废掉会把一个可自助恢复的场景升级成重新登录。
+                    self.report_retired_key(dimensions, "enrollment").await;
+                    self.tickets
+                        .delete(&Self::totp_setup_key(ticket_id))
+                        .await?;
+                    return Ok(TotpConfirmation::KeyUnavailable);
                 }
                 Err(error) => {
                     self.release_dimensions_after_error(dimensions).await;
@@ -301,12 +302,8 @@ impl AuthFactorService {
             match decrypt_totp_secret_with_ring(&self.encryption_keys, &encrypted_secret) {
                 Ok(value) => value,
                 Err(SecretCryptoError::UnknownKeyId) => {
-                    self.release_dimensions(dimensions).await?;
-                    tracing::warn!(
-                        event = "auth_factor.totp.decrypt_key_unavailable",
-                        "TOTP secret key is outside the configured retention window"
-                    );
-                    return Ok(TotpConfirmation::InvalidCode);
+                    self.report_retired_key(dimensions, "login").await;
+                    return Ok(TotpConfirmation::KeyUnavailable);
                 }
                 Err(error) => {
                     self.release_dimensions_after_error(dimensions).await;
@@ -363,6 +360,26 @@ impl AuthFactorService {
             return Ok(true);
         }
         self.is_disabled_passkey_only(methods).await
+    }
+
+    /// kid 已退役时的统一处置：归还预留额度并告警。
+    ///
+    /// 三条不变量：
+    /// 1. **不烧失败额度**。这不是用户的失败尝试，把它计入账户/IP 计数会让一个
+    ///    运维动作把用户从「TOTP 不可用」升级为「连密码登录都被限流」。
+    /// 2. 归还走 best-effort 路径。结果已经确定为 `KeyUnavailable`，让限流后端故障
+    ///    把它改写成 500 只会掩盖真正的原因。
+    /// 3. `error!` 而非 `warn!`：这是配置错误导致的账号锁死，需要人工介入，
+    ///    必须能被告警规则捕获。日志不含 kid、邮箱和种子。
+    async fn report_retired_key(&self, dimensions: Vec<LimiterDimension>, stage: &'static str) {
+        self.release_dimensions_for_key_unavailable(dimensions)
+            .await;
+        tracing::error!(
+            event = "auth_factor.totp.decrypt_key_unavailable",
+            stage,
+            "TOTP secret is encrypted under a kid that is no longer in AUTH_ENCRYPTION_KEYS; \
+             the factor cannot be verified and must be reset through the admin recovery endpoint"
+        );
     }
 
     pub(super) async fn claim_totp_timestep(

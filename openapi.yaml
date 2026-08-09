@@ -24,6 +24,7 @@ tags:
   - name: Admin Plans
   - name: Admin Clients
   - name: Admin OAuth Providers
+  - name: Admin Auth Factors
   - name: Admin Operations
 paths:
   /health:
@@ -94,6 +95,12 @@ paths:
     post:
       tags: [User Auth/Account]
       summary: 用户登录
+      description: |
+        错误码：
+        - 401 invalid_credentials / invalid_factor：口令或 TOTP 验证码错误，或已被限流。
+        - 503 factor_key_unavailable：请求带 `totp_code` 且该账号的 TOTP 种子由已退役的
+          加密 kid 保护，服务端无法解密。重试无效，需要管理员重置因子。该结果不消耗
+          认证失败额度。
       operationId: loginUser
       parameters:
         - { $ref: '#/components/parameters/SessionResponseMode' }
@@ -120,6 +127,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PendingLoginResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/totp/setup:
     post:
       tags: [User Auth/MFA]
@@ -141,6 +149,12 @@ paths:
     post:
       tags: [User Auth/MFA]
       summary: 确认 TOTP 并完成登录
+      description: |
+        错误码：
+        - 401 invalid_factor：验证码错误或已被限流。
+        - 503 factor_key_unavailable：待确认注册的密文由已退役的加密 kid 保护，
+          服务端读不出种子。重试无效；重新调用 POST /api/v1/auth/totp/setup 即可
+          用当前 active key 重新开始绑定。该结果不消耗认证失败额度。
       operationId: confirmTotpSetup
       parameters:
         - { $ref: '#/components/parameters/SessionResponseMode' }
@@ -159,10 +173,18 @@ paths:
               schema: { $ref: '#/components/schemas/LoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/totp/login:
     post:
       tags: [User Auth/MFA]
       summary: 使用 TOTP 完成待处理登录
+      description: |
+        错误码：
+        - 401 invalid_factor：验证码错误或已被限流。
+        - 503 factor_key_unavailable：已注册的 TOTP 种子由已退役的加密 kid 保护，
+          服务端无法解密。用户重试无效，必须由管理员调用
+          DELETE /api/v1/admin/users/{user_id}/auth-factors/totp 重置因子后重新绑定。
+          该结果不消耗认证失败额度，也不会把账号推向限流。
       operationId: loginTotp
       parameters:
         - { $ref: '#/components/parameters/SessionResponseMode' }
@@ -181,6 +203,7 @@ paths:
               schema: { $ref: '#/components/schemas/LoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/passkeys/register/start:
     post:
       tags: [User Auth/MFA]
@@ -887,6 +910,98 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/users/{user_id}/auth-factors:
+    get:
+      tags: [Admin Auth Factors]
+      summary: 查看账号的认证因子状态
+      description: |
+        返回该账号已注册的因子方法，以及 TOTP 密文相对当前 `AUTH_ENCRYPTION_KEYS` 的可读状态。
+
+        `totp.key_state` 的四个取值：
+        - `current`：由当前 active kid 加密。
+        - `rotatable`：由密钥环内的非 active key 加密，下次成功验证时自动迁移。
+        - `legacy`：无 kid 的历史信封，可读，需要迁移。
+        - `unavailable`：密文引用的 kid 已不在密钥环内，**账号无法通过 TOTP 登录**，
+          需要调用 DELETE /api/v1/admin/users/{user_id}/auth-factors/totp 重置。
+
+        响应只包含状态名，永不返回 kid、密文或 TOTP 种子。
+
+        权限：`manage_users`。
+      operationId: adminUserAuthFactors
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+      responses:
+        '200':
+          description: 账号因子状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountFactorStatusResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/admin/users/{user_id}/auth-factors/totp:
+    delete:
+      tags: [Admin Auth Factors]
+      summary: 重置账号的 TOTP 因子
+      description: |
+        删除该账号的 TOTP 因子并撤销它的全部会话。账号回到「无因子」状态，
+        下次密码登录返回 `factor_setup_required`，由用户重新完成 TOTP 绑定。
+
+        这是加密 kid 退役后唯一的恢复路径：种子已经无法解密，也就无法迁移，
+        只能丢弃不可读的密文。响应中的 `previous_key_state` 说明这次重置救的是
+        一个被锁死的账号（`unavailable`）还是移除了一个健康的因子。
+
+        权限：Owner 专属的 `manage_auth_factors`，**不是** `manage_users`。
+        重置因子把账号降级为「只有密码」，属于账号接管链条的一环，因此与普通
+        用户管理分权。浏览器 Session 写操作必须同时携带 HttpOnly Session Cookie、
+        CSRF Cookie 和 X-CSRF-Token。
+
+        错误码：
+        - 400：csrf_invalid
+        - 403：admin_forbidden
+        - 404：user_not_found、totp_factor_not_found
+      operationId: adminResetUserTotpFactor
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '200':
+          description: 已删除 TOTP 因子并撤销该账号的全部会话
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TotpFactorResetResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/admin/auth-factors/key-health:
+    get:
+      tags: [Admin Auth Factors]
+      summary: 因子加密密钥健康度
+      description: |
+        统计 TOTP 密文相对当前 `AUTH_ENCRYPTION_KEYS` 的分布。
+        **从 `AUTH_ENCRYPTION_KEYS` 移除旧 key 之前必须先看这个端点**：
+
+        - `unavailable > 0`：已经有账号读不出种子，处于锁死状态。
+        - `rotatable > 0`：仍有账号依赖非 active key，此刻退役该 key 会制造新的锁死账号。
+        - `legacy > 0`：仍有无 kid 的历史信封等待迁移。
+
+        单次扫描上限 10000 条；`truncated` 为真时统计只覆盖前 `scanned` 条。
+        响应只包含计数，不返回 kid 列表或密钥环结构。
+
+        权限：Owner 专属的 `rotate_keys`。
+      operationId: adminAuthFactorKeyHealth
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      responses:
+        '200':
+          description: 密文按可读状态的分布计数
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthFactorKeyHealthResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /api/v1/admin/users/{user_id}/plan:
     post:
       tags: [Admin Users]
@@ -1908,8 +2023,59 @@ components:
         user_id: { type: integer, format: int64, minimum: 1, nullable: true }
         username: { type: string, nullable: true }
         role: { type: string, enum: [owner, admin] }
-        permissions: { type: array, items: { type: string } }
+        permissions:
+          type: array
+          description: |
+            当前调用者的权限名。`manage_auth_factors` 与 `rotate_keys` 仅 Owner 拥有。
+          items:
+            type: string
+            enum: [manage_users, manage_clients, rotate_keys, read_audit, manage_settings, manage_identity_providers, manage_roles, manage_auth_factors]
         status: { type: string }
+    TotpFactorStatus:
+      type: object
+      required: [key_state, readable, updated_at]
+      description: TOTP 因子相对当前密钥环的状态。不含 kid、密文和种子。
+      properties:
+        key_state:
+          type: string
+          enum: [current, rotatable, legacy, unavailable]
+          description: unavailable 表示密文引用的 kid 已不在 AUTH_ENCRYPTION_KEYS 内，账号已被锁死。
+        readable: { type: boolean, description: 密文是否仍可被当前密钥环解密 }
+        updated_at: { type: string, format: date-time }
+    AccountFactorStatusResponse:
+      type: object
+      required: [user_id, methods]
+      properties:
+        user_id: { type: integer, format: int64, minimum: 1 }
+        methods:
+          type: array
+          description: 已注册的因子方法名，去重后排序。
+          items: { type: string, enum: [passkey, totp] }
+        totp:
+          allOf: [{ $ref: '#/components/schemas/TotpFactorStatus' }]
+          nullable: true
+          description: 未注册 TOTP 时为 null。
+    TotpFactorResetResponse:
+      type: object
+      required: [user_id, previous_key_state, sessions_revoked]
+      properties:
+        user_id: { type: integer, format: int64, minimum: 1 }
+        previous_key_state:
+          type: string
+          enum: [current, rotatable, legacy, unavailable]
+          description: 删除前密文的可读状态。unavailable 表示这次重置解救了一个被密钥退役锁死的账号。
+        sessions_revoked: { type: boolean, description: 重置同时撤销了该账号的全部会话，固定为 true }
+    AuthFactorKeyHealthResponse:
+      type: object
+      required: [total, scanned, current, rotatable, legacy, unavailable, truncated]
+      properties:
+        total: { type: integer, format: int64, description: TOTP 密文总数 }
+        scanned: { type: integer, format: int64, description: 本次实际分类的条数，上限 10000 }
+        current: { type: integer, format: int64, description: 由 active kid 加密 }
+        rotatable: { type: integer, format: int64, description: 由密钥环内的非 active key 加密，退役该 key 会造成锁死 }
+        legacy: { type: integer, format: int64, description: 无 kid 的历史信封 }
+        unavailable: { type: integer, format: int64, description: kid 已不在密钥环内，这些账号当前无法通过 TOTP 登录 }
+        truncated: { type: boolean, description: 密文总数超过扫描上限，统计只覆盖前 scanned 条 }
     AdminOverview:
       type: object
       required: [users, oauth_clients, administrators, audit_events]

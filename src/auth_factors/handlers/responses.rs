@@ -20,6 +20,9 @@ pub(super) async fn totp_confirmation_response(
         TotpConfirmation::InvalidCode => {
             mfa_failure_response(state, None, "totp_invalid", source_ip).await
         }
+        TotpConfirmation::KeyUnavailable => {
+            factor_key_unavailable_response(state, None, source_ip).await
+        }
         TotpConfirmation::RateLimited => {
             mfa_failure_response(state, None, "totp_rate_limited", source_ip).await
         }
@@ -64,6 +67,47 @@ pub(super) async fn mfa_failure_response(
 ) -> Response {
     record_mfa_event(state, actor_id, reason, source_ip).await;
     error::unauthorized("invalid_factor", "authentication factor is invalid")
+}
+
+/// 加密 kid 已退役：服务端读不出这份因子（#258）。
+///
+/// 与 `mfa_failure_response` 分开是三件事的要求：
+/// - **语义**：401 `invalid_factor` 是「你的凭据不对」，这里是「服务端的密钥没了」，
+///   属于服务端配置状态，所以是 503 `factor_key_unavailable`。用户重试一万次都不会成功，
+///   把它伪装成验证码错误只会让用户一直重试到被限流。
+/// - **审计**：独立的 action `auth_factor_key_unavailable`，运维可以按它检索出
+///   密钥轮换到底锁死了哪些账号，而不是淹没在 `mfa_failure` 里。
+/// - **限流**：service 层在这条路径上归还了预留额度且不记账，因此不烧失败额度。
+///
+/// 走到这里时调用方已经通过了第一因子（密码或有效 login ticket），因此告知
+/// 「因子不可用」不构成对未认证者的信息泄漏；反过来，隐瞒它会让用户和客服都
+/// 无法判断该找运维还是重新输码。响应不含 kid、种子和密钥环结构。
+pub(crate) async fn factor_key_unavailable_response(
+    state: &AppState,
+    actor_id: Option<UserId>,
+    source_ip: Option<&str>,
+) -> Response {
+    state
+        .audit
+        .record_best_effort(AuditEvent::authentication_failure(
+            "auth_factor_key_unavailable".to_owned(),
+            if actor_id.is_some() {
+                "user".to_owned()
+            } else {
+                "anonymous".to_owned()
+            },
+            actor_id.map(|id| id.to_string()),
+            "authentication_factor".to_owned(),
+            None,
+            "totp_key_retired",
+            None,
+            source_ip,
+        ))
+        .await;
+    error::service_unavailable(
+        "factor_key_unavailable",
+        "authentication factor cannot be verified; contact an administrator to reset it",
+    )
 }
 
 /// 因子服务层错误映射：限流归并到认证失败，其他错误记日志后返回通用 500。

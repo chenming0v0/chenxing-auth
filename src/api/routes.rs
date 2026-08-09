@@ -8,6 +8,7 @@ use tower_http::timeout::TimeoutLayer;
 
 use crate::{
     admin::auth_handlers::{bootstrap_admin, bootstrap_status, create_admin},
+    admin::factor_handlers::{auth_factor_key_health, reset_user_totp_factor, user_auth_factors},
     admin::handlers::{
         create_client, disable_client, enable_client, list_clients, rotate_secret, update_client,
     },
@@ -135,6 +136,19 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
             post(set_user_status),
         )
         .route("/api/v1/admin/users/{user_id}/role", post(set_user_role))
+        .route(
+            "/api/v1/admin/users/{user_id}/auth-factors",
+            get(user_auth_factors),
+        )
+        // 因子重置是 #258 的恢复出口：kid 退役后种子不可解，只能丢弃密文重新注册。
+        .route(
+            "/api/v1/admin/users/{user_id}/auth-factors/totp",
+            delete(reset_user_totp_factor),
+        )
+        .route(
+            "/api/v1/admin/auth-factors/key-health",
+            get(auth_factor_key_health),
+        )
         .route("/api/v1/admin/users/{user_id}/plan", post(assign_plan))
         .route("/api/v1/admin/plans", get(list_plans).post(create_plan))
         .route("/api/v1/admin/plans/{id}", axum::routing::put(update_plan))

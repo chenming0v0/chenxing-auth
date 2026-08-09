@@ -185,3 +185,24 @@ async fn unrecorded_fail_open_result_releases_reservation() {
     assert!(!record.was_recorded());
     assert_eq!(limiter.calls(), vec!["record", "release"]);
 }
+
+#[tokio::test]
+// #258：kid 退役不是一次用户失败，绝不能记账。
+//
+// 记账会让一个纯粹的运维动作把用户从「TOTP 不可用」推进到「账号被限流」，
+// 于是连不带验证码的密码登录也被挡住。这里断言调用序列里只有 release。
+async fn retired_key_releases_reservation_without_recording_a_failure() {
+    let limiter = SuccessLimiter::new();
+    let dimensions = vec![
+        (FailureDimension::Account, "user@example.com".to_owned()),
+        (FailureDimension::SourceIp, "203.0.113.7".to_owned()),
+    ];
+
+    super::release_key_unavailable(limiter.as_ref(), dimensions).await;
+
+    assert_eq!(
+        limiter.calls(),
+        vec!["release"],
+        "an unavailable key must never consume failure quota"
+    );
+}

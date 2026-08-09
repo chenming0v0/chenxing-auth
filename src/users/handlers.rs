@@ -12,8 +12,15 @@ use super::{
     service::UserServiceError,
 };
 use crate::{
-    api::extract::SessionWrite, audit::AuditEvent, auth_factors::session::issue_user_session,
-    error, sessions::cookies, state::AppState,
+    api::extract::SessionWrite,
+    audit::AuditEvent,
+    auth_factors::{
+        handlers::factor_key_unavailable_response, service::FactorVerification,
+        session::issue_user_session,
+    },
+    error,
+    sessions::cookies,
+    state::AppState,
 };
 
 #[derive(Debug, Serialize)]
@@ -211,7 +218,7 @@ pub async fn login_user(
         }
     };
     if methods.contains(&crate::auth_factors::domain::FactorMethod::Totp) && totp_code.is_some() {
-        let valid = match state
+        let verification = match state
             .factors
             .verify_totp(
                 user_id,
@@ -221,7 +228,7 @@ pub async fn login_user(
             )
             .await
         {
-            Ok(valid) => valid,
+            Ok(verification) => verification,
             Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
                 record_security_event(
                     &state,
@@ -239,19 +246,29 @@ pub async fn login_user(
                 return error::internal();
             }
         };
-        if !valid {
-            record_security_event(
-                &state,
-                "mfa_failure",
-                Some(user_id),
-                "totp_invalid",
-                None,
-                source_ip.as_deref(),
-            )
-            .await;
-            return error::unauthorized("invalid_factor", "authentication factor is invalid");
+        match verification {
+            FactorVerification::Accepted => {
+                return issue_user_session(&state, user_id, "totp", &headers).await;
+            }
+            // 密钥退役导致的不可验证不是一次凭据失败：单独的审计动作与 503，
+            // 且 service 层已归还预留额度，不烧账号/IP 失败计数（#258）。
+            FactorVerification::KeyUnavailable => {
+                let source_ip = source_ip.as_deref();
+                return factor_key_unavailable_response(&state, Some(user_id), source_ip).await;
+            }
+            FactorVerification::Rejected => {
+                record_security_event(
+                    &state,
+                    "mfa_failure",
+                    Some(user_id),
+                    "totp_invalid",
+                    None,
+                    source_ip.as_deref(),
+                )
+                .await;
+                return error::unauthorized("invalid_factor", "authentication factor is invalid");
+            }
         }
-        return issue_user_session(&state, user_id, "totp", &headers).await;
     }
 
     let setup_required = methods.is_empty();

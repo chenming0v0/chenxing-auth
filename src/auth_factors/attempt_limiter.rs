@@ -7,7 +7,7 @@ use super::{AuthFactorService, AuthFactorServiceError};
 use crate::{
     auth_factors::repository,
     auth_limiter::{
-        FailureDimension, LimiterDimension, MissingSourceIpPolicy,
+        AuthFailureLimiter, FailureDimension, LimiterDimension, MissingSourceIpPolicy,
         domain::{FailureRecord, commit_reserved_failure, release_reserved},
     },
     users::domain::UserId,
@@ -84,6 +84,25 @@ impl AuthFactorService {
     pub(super) async fn release_dimensions_after_error(&self, dimensions: Vec<LimiterDimension>) {
         release_reserved(self.limiter.as_ref(), dimensions, "attempt_failed").await;
     }
+
+    pub(super) async fn release_dimensions_for_key_unavailable(
+        &self,
+        dimensions: Vec<LimiterDimension>,
+    ) {
+        release_key_unavailable(self.limiter.as_ref(), dimensions).await;
+    }
+}
+
+/// kid 退役导致的不可验证：归还预留额度，**不记账**（#258）。
+///
+/// 这不是用户的失败尝试，而是服务端缺少密钥材料。把它计入账户或 IP 计数会让
+/// 一次运维动作把用户从「TOTP 不可用」升级为「连密码登录都被限流」，等于用限流
+/// 惩罚受害者。抽成自由函数是为了能用测试替身断言「只 release、绝不 record」。
+pub(super) async fn release_key_unavailable(
+    limiter: &dyn AuthFailureLimiter,
+    dimensions: Vec<LimiterDimension>,
+) {
+    release_reserved(limiter, dimensions, "factor_key_unavailable").await;
 }
 
 #[cfg(test)]

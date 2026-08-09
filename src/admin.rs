@@ -6,6 +6,7 @@ use subtle::ConstantTimeEq;
 pub mod auth_handlers;
 pub mod authorization;
 pub mod domain;
+pub mod factor_handlers;
 pub mod handlers;
 pub mod key_handlers;
 pub mod management_handlers;
