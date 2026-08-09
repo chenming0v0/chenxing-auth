@@ -5,13 +5,17 @@ use crate::users::domain::{UserId, UserRole};
 
 use super::{ListedUser, UserCredentials, UserProfile};
 
-/// 把 `(id, email, password_hash, password_login_enabled, status, role)` 行映射成
-/// `UserCredentials`。两个凭据查询只有 WHERE 子句不同，映射逻辑共用一份，
+/// 把 `(id, email, password_hash, password_login_enabled, status, role, session_epoch)`
+/// 行映射成 `UserCredentials`。两个凭据查询只有 WHERE 子句不同，映射逻辑共用一份，
 /// 避免角色解析的兜底策略在两处漂移。
-type CredentialsRow = (UserId, String, String, bool, String, String);
+///
+/// `session_epoch` 与 `password_hash` 必须来自同一行、同一次读取（Issue #274）：
+/// 认证结果要绑定"校验所依据的凭据版本"，分两次查询就会在两次读取之间留下
+/// 并发改密的窗口，而绑定到一个更新的 epoch 恰好就是被利用的那个漏洞。
+type CredentialsRow = (UserId, String, String, bool, String, String, i64);
 
 fn map_credentials(row: CredentialsRow) -> UserCredentials {
-    let (id, email, password_hash, password_login_enabled, status, role) = row;
+    let (id, email, password_hash, password_login_enabled, status, role, session_epoch) = row;
     UserCredentials {
         id,
         email,
@@ -20,6 +24,7 @@ fn map_credentials(row: CredentialsRow) -> UserCredentials {
         status,
         // 库里出现未知角色时按最小权限降级，不 panic 也不提权。
         role: UserRole::parse(&role).unwrap_or(UserRole::User),
+        session_epoch,
     }
 }
 
@@ -28,7 +33,8 @@ pub async fn find_credentials_by_identifier(
     identifier: &str,
 ) -> Result<Option<UserCredentials>, crate::sqlx::Error> {
     crate::sqlx::query_as::<_, CredentialsRow>(
-        "SELECT id, email, password_hash, password_login_enabled, status, role FROM users
+        "SELECT id, email, password_hash, password_login_enabled, status, role, session_epoch
+         FROM users
          WHERE email = $1 OR username = $1",
     )
     .bind(identifier)
@@ -49,7 +55,8 @@ pub async fn find_credentials_by_id(
     id: UserId,
 ) -> Result<Option<UserCredentials>, crate::sqlx::Error> {
     crate::sqlx::query_as::<_, CredentialsRow>(
-        "SELECT id, email, password_hash, password_login_enabled, status, role FROM users WHERE id = $1",
+        "SELECT id, email, password_hash, password_login_enabled, status, role, session_epoch
+         FROM users WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)

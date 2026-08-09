@@ -13,7 +13,7 @@ use crate::{
     },
     users::{
         credentials::verify_login_password,
-        domain::{LoginError, LoginInput, UserId, UserStatus, validate_login},
+        domain::{AuthenticatedUser, LoginError, LoginInput, UserStatus, validate_login},
         repository,
     },
 };
@@ -50,11 +50,16 @@ impl LoginPassword {
 }
 
 impl UserService {
+    /// 校验第一因子口令，返回绑定了凭据版本的认证身份。
+    ///
+    /// 返回 [`AuthenticatedUser`] 而不是裸 `UserId`（Issue #274）：`session_epoch`
+    /// 与 `password_hash` 来自同一次行读取，调用方据此在签发 login ticket 或
+    /// Session 时原子确认"这次口令校验所依据的版本还没被改密推进"。
     pub async fn authenticate(
         &self,
         input: LoginInput,
         source_ip: Option<&str>,
-    ) -> Result<UserId, UserServiceError> {
+    ) -> Result<AuthenticatedUser, UserServiceError> {
         // 结构化校验先于限流预留与数据库查询：超长口令和超长标识符必须在触达
         // Argon2、SQL 和限流维度之前被拒绝（Issue #259）。三类校验失败归一为同一个
         // `InvalidLoginInput`，处理器再把它映射成与"凭据错误"完全一致的 401，
@@ -119,6 +124,9 @@ impl UserService {
         }
         let mut dimensions = source_dimensions;
         dimensions.extend(account_dimensions);
+        // 认证身份在消费 password_hash 之前取出：两个值来自同一行，绑定关系
+        // 由 `find_credentials_by_identifier` 的单条 SELECT 保证。
+        let authenticated = credentials.authenticated();
         let password_valid = password.verify_against(credentials.password_hash).await;
         // 状态、口令登录开关与口令校验合并判定：三者中任何一项不通过都返回同一个
         // 错误，不让调用方区分"账号被禁用"和"口令错误"。
@@ -135,7 +143,7 @@ impl UserService {
         }
 
         self.release_dimensions(dimensions).await?;
-        Ok(credentials.id)
+        Ok(authenticated)
     }
 
     fn source_ip(&self, source_ip: Option<&str>) -> Result<Option<String>, UserServiceError> {
@@ -185,7 +193,7 @@ impl UserService {
         &self,
         password: &mut LoginPassword,
         failure: AuthenticationFailure,
-    ) -> Result<UserId, UserServiceError> {
+    ) -> Result<AuthenticatedUser, UserServiceError> {
         password.fill_if_unverified().await;
         let error = match failure {
             AuthenticationFailure::RateLimited => UserServiceError::RateLimited,

@@ -8,6 +8,7 @@ use chenxing_auth::{
     auth_factors::{domain::FactorMethod, service::TotpConfirmation},
     config::Config,
     state::AppState,
+    users::domain::AuthenticatedUser,
 };
 use totp_rs::TOTP;
 use tower::ServiceExt;
@@ -292,8 +293,9 @@ async fn concurrent_enrollment_starts_reserve_one_secret_per_ticket() {
 
     let factors = state.factors.clone();
     let holder_hash = format!("holder-{}", Uuid::new_v4().simple());
+    let authenticated = AuthenticatedUser::new(user_id, 0);
     let (ticket_id, _ticket) = factors
-        .create_login_ticket(user_id, vec![FactorMethod::Totp], &holder_hash)
+        .create_login_ticket(authenticated, vec![FactorMethod::Totp], &holder_hash)
         .await
         .expect("login ticket");
 
@@ -332,7 +334,7 @@ async fn concurrent_enrollment_starts_reserve_one_secret_per_ticket() {
             .confirm_totp_enrollment(&ticket_id, &holder_hash, None, &code)
             .await
             .expect("confirm TOTP enrollment"),
-        TotpConfirmation::Completed(user_id),
+        TotpConfirmation::Completed(authenticated),
         "the reserved secret must be the one that confirms"
     );
     assert_eq!(

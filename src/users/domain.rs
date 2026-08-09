@@ -163,6 +163,30 @@ impl fmt::Debug for LoginInput {
     }
 }
 
+/// 一次已完成的第一因子认证结果。
+///
+/// 只带 `UserId` 是不够的（Issue #274）。口令校验读取的是某一时刻的
+/// `password_hash`，而 `session_epoch` 与该哈希在同一行、同一次读取里取出，
+/// 因此它就是"这次认证所依据的凭据版本"。后续签发凭据（login ticket、Session）
+/// 必须原子地确认这个版本没有前进：并发改密会在同一事务里改哈希并把
+/// `session_epoch + 1`，旧口令的认证结果一旦被套用到新 epoch 上，改密的撤销
+/// 语义就被绕过了——旧口令刚被作废，却仍然换出了一张按新 epoch 计算的有效凭据。
+///
+/// 不新增列：`session_epoch` 已经是会话撤销水位，复用它即可，不需要"认证版本号"
+/// 这种第二套并行状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuthenticatedUser {
+    pub id: UserId,
+    /// 读取 `password_hash` 时同一行上的 `session_epoch`。
+    pub session_epoch: i64,
+}
+
+impl AuthenticatedUser {
+    pub const fn new(id: UserId, session_epoch: i64) -> Self {
+        Self { id, session_epoch }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct ValidatedLogin {
     pub identifier: String,

@@ -71,13 +71,27 @@ impl UserService {
         // non-authentication failures, so return the reservation before doing either.
         self.limiter.release(dimensions).await?;
 
+        // 认证 epoch 与被校验的 `password_hash` 同一次读取（Issue #274）：写入事务
+        // 内再比对一次，并发改密的败者不会用已作废的当前口令改出新口令。
+        let authenticated = credentials.authenticated();
         let password_hash = hash_password(new_password.to_owned())
             .await
             .map_err(|_| UserServiceError::PasswordHash)?;
-        if !repository::change_password_and_revoke_all(&self.pool, id, &password_hash).await? {
-            return Err(UserServiceError::InvalidCredentials);
+        match repository::change_password_and_revoke_all(
+            &self.pool,
+            id,
+            &password_hash,
+            authenticated.session_epoch,
+        )
+        .await?
+        {
+            repository::PasswordChangeOutcome::Changed => Ok(()),
+            // 两种失败对调用方是同一件事："你提供的当前口令不再有效"。
+            repository::PasswordChangeOutcome::UserMissing
+            | repository::PasswordChangeOutcome::EpochChanged => {
+                Err(UserServiceError::InvalidCredentials)
+            }
         }
-        Ok(())
     }
 
     fn password_change_dimensions(

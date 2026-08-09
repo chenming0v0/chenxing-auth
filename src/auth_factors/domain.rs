@@ -97,6 +97,16 @@ impl LoginTicket {
         self.methods.contains(&method)
     }
 
+    /// 这张 ticket 所代表的认证身份（Issue #274）。
+    ///
+    /// `session_epoch` 是签发这张 ticket 的那次口令校验所依据的版本，一路传到
+    /// 会话写入事务里做原子比对。ticket 只在 epoch 未漂移时才能被读出（见
+    /// `LoginTicketStore` 的 epoch 校验），因此这里返回的 epoch 必然仍是有效的
+    /// 认证依据，而不是"读取时刻的当前值"。
+    pub fn authenticated(&self) -> crate::users::domain::AuthenticatedUser {
+        crate::users::domain::AuthenticatedUser::new(self.user_id, self.session_epoch)
+    }
+
     pub fn matches_holder_hash(&self, holder_hash: &str) -> bool {
         let Some(stored_hash) = self.holder_hash.as_deref() else {
             return false;
@@ -119,7 +129,21 @@ pub fn validate_totp_code(code: &str) -> Result<(), TotpCodeError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FactorMethod, effective_factor_methods, setup_factor_methods};
+    use super::{FactorMethod, LoginTicket, effective_factor_methods, setup_factor_methods};
+
+    /// Issue #274：ticket 携带的认证身份必须是签发时盖上的 epoch。
+    ///
+    /// 会话签发用它做原子比对，一旦这里返回"读取时刻的当前值"，
+    /// 整条链路的版本绑定就断了。
+    #[test]
+    fn ticket_authenticated_identity_reports_the_stamped_epoch() {
+        let ticket = LoginTicket::new_with_epoch(42, vec![FactorMethod::Totp], 7);
+        let authenticated = ticket.authenticated();
+
+        assert_eq!(authenticated.id, 42);
+        assert_eq!(authenticated.session_epoch, 7);
+        assert_eq!(authenticated.session_epoch, ticket.session_epoch);
+    }
 
     #[test]
     fn effective_methods_follow_passkey_policy_for_all_factor_sets() {

@@ -9,9 +9,9 @@ use std::{fmt, time::Duration};
 use crate::{
     audit::AuditEvent,
     error,
-    sessions::{cookies, domain::Session},
+    sessions::{cookies, domain::Session, store::SessionStoreError},
     state::AppState,
-    users::domain::{UserId, UserStatus},
+    users::domain::{AuthenticatedUser, UserStatus},
 };
 
 #[derive(Serialize)]
@@ -37,12 +37,45 @@ impl fmt::Debug for LoginResponse {
 const SESSION_RESPONSE_MODE_HEADER: &str = "x-chenxing-session-mode";
 const SESSION_RESPONSE_TOKEN_MODE: &str = "token";
 
+/// 认证依据在签发完成前被作废时返回的错误码。
+///
+/// 每个端点用自己已声明的 401 词表，避免修复引入未文档化的错误码：
+/// 登录端点声明了 `invalid_credentials`，因子端点声明的是 `invalid_factor`。
+/// 两者对客户端的含义一致——本次登录作废，重新走一遍。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaleCredentialCode {
+    InvalidCredentials,
+    InvalidFactor,
+}
+
+impl StaleCredentialCode {
+    fn response(self) -> Response {
+        match self {
+            Self::InvalidCredentials => error::unauthorized(
+                "invalid_credentials",
+                "username, email, or password is incorrect",
+            ),
+            Self::InvalidFactor => {
+                error::unauthorized("invalid_factor", "authentication factor is invalid")
+            }
+        }
+    }
+}
+
+/// 签发浏览器会话。
+///
+/// `authenticated` 必须来自一次真实的第一因子校验（口令）或由该校验派生的
+/// login ticket，会话写入会在持锁事务内确认它携带的 `session_epoch` 仍是当前值
+/// （Issue #274）。版本漂移只可能由"改密并撤销全部会话"造成，因此按认证失败处理，
+/// 不回落成"用当前 epoch 重签"。
 pub async fn issue_user_session(
     state: &AppState,
-    user_id: UserId,
+    authenticated: AuthenticatedUser,
     factor: &str,
     headers: &HeaderMap,
+    stale_credential: StaleCredentialCode,
 ) -> Response {
+    let user_id = authenticated.id;
     let Some(profile) = (match state.users.find_profile(user_id).await {
         Ok(profile) => profile,
         Err(user_error) => {
@@ -64,12 +97,21 @@ pub async fn issue_user_session(
             return error::internal();
         }
     };
-    if let Err(session_error) = state.sessions.save(&mut session, ttl).await {
-        if matches!(
-            &session_error,
-            crate::sessions::store::SessionStoreError::UserDisabled
-        ) {
-            return error::unauthorized("user_disabled", "user account is disabled");
+    if let Err(session_error) = state
+        .sessions
+        .save_authenticated(&mut session, ttl, authenticated.session_epoch)
+        .await
+    {
+        match &session_error {
+            SessionStoreError::UserDisabled => {
+                return error::unauthorized("user_disabled", "user account is disabled");
+            }
+            // 并发改密已经作废了本次认证依据的口令：按凭据失效处理，
+            // 复用调用端点自己已声明的 401 词表，不泄露"发生了改密"。
+            SessionStoreError::AuthenticationEpochChanged => {
+                return stale_credential.response();
+            }
+            _ => {}
         }
         tracing::error!(error = %session_error, "failed to persist session");
         return error::internal();
@@ -156,9 +198,37 @@ fn should_return_session_token(enabled: bool, headers: &HeaderMap) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{HeaderMap, HeaderValue};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode};
 
-    use super::{LoginResponse, should_return_session_token};
+    use super::{LoginResponse, StaleCredentialCode, should_return_session_token};
+
+    /// Issue #274：认证 epoch 漂移一律映射成 401，且只用调用端点已声明的错误码。
+    ///
+    /// 两个变体都必须是 401 而不是 5xx：这是一次凭据失效，不是服务端故障。
+    /// 断言错误码字面量，是为了守住"修复不新增未文档化错误码"这条约束。
+    #[tokio::test]
+    async fn stale_credential_codes_map_to_documented_unauthorized_responses() {
+        for (code, expected) in [
+            (
+                StaleCredentialCode::InvalidCredentials,
+                "invalid_credentials",
+            ),
+            (StaleCredentialCode::InvalidFactor, "invalid_factor"),
+        ] {
+            let response = code.response();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{expected}");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("error body");
+            let payload: serde_json::Value =
+                serde_json::from_slice(&body).expect("JSON error body");
+            assert_eq!(payload["code"], expected);
+        }
+        assert_ne!(
+            StaleCredentialCode::InvalidCredentials,
+            StaleCredentialCode::InvalidFactor
+        );
+    }
 
     #[test]
     fn session_token_response_requires_opt_in_configuration_and_header() {

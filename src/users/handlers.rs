@@ -15,8 +15,9 @@ use crate::{
     api::extract::SessionWrite,
     audit::AuditEvent,
     auth_factors::{
-        handlers::factor_key_unavailable_response, service::FactorVerification,
-        session::issue_user_session,
+        handlers::factor_key_unavailable_response,
+        service::FactorVerification,
+        session::{StaleCredentialCode, issue_user_session},
     },
     error,
     sessions::cookies,
@@ -155,8 +156,10 @@ pub async fn login_user(
         &headers,
         &state.config.trusted_proxies,
     );
-    let user_id = match state.users.authenticate(input, source_ip.as_deref()).await {
-        Ok(user_id) => user_id,
+    // `authenticated` 绑定了本次口令校验所依据的 session_epoch（Issue #274）。
+    // 之后签发 ticket 或 Session 都用它，不再重新读当前 epoch。
+    let authenticated = match state.users.authenticate(input, source_ip.as_deref()).await {
+        Ok(authenticated) => authenticated,
         Err(UserServiceError::InvalidCredentials) => {
             record_security_event(
                 &state,
@@ -209,6 +212,7 @@ pub async fn login_user(
             return error::internal();
         }
     };
+    let user_id = authenticated.id;
 
     let methods = match state.factors.available_methods(user_id).await {
         Ok(methods) => methods,
@@ -248,7 +252,14 @@ pub async fn login_user(
         };
         match verification {
             FactorVerification::Accepted => {
-                return issue_user_session(&state, user_id, "totp", &headers).await;
+                return issue_user_session(
+                    &state,
+                    authenticated,
+                    "totp",
+                    &headers,
+                    StaleCredentialCode::InvalidCredentials,
+                )
+                .await;
             }
             // 密钥退役导致的不可验证不是一次凭据失败：单独的审计动作与 503，
             // 且 service 层已归还预留额度，不烧账号/IP 失败计数（#258）。
@@ -307,10 +318,27 @@ pub async fn login_user(
     let holder_hash = cookies::login_ticket_holder_hash(&holder);
     let (login_ticket, _) = match state
         .factors
-        .create_login_ticket(user_id, ticket_methods.clone(), &holder_hash)
+        .create_login_ticket(authenticated, ticket_methods.clone(), &holder_hash)
         .await
     {
         Ok(ticket) => ticket,
+        // 并发改密作废了本次口令：与其他凭据失败共用 401 invalid_credentials，
+        // 不签发任何 ticket，也不向调用方暴露"刚刚发生过改密"。
+        Err(crate::auth_factors::service::AuthFactorServiceError::AuthenticationEpochChanged) => {
+            record_security_event(
+                &state,
+                "login_failure",
+                Some(user_id),
+                "credentials_superseded",
+                Some(&identifier),
+                source_ip.as_deref(),
+            )
+            .await;
+            return error::unauthorized(
+                "invalid_credentials",
+                "username, email, or password is incorrect",
+            );
+        }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to create pending login ticket");
             return error::internal();

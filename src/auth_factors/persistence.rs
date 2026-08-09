@@ -42,6 +42,7 @@ mod tests {
         domain::FactorMethod,
         service::{PasskeyConfirmation, TotpConfirmation},
     };
+    use crate::users::domain::AuthenticatedUser;
 
     #[tokio::test]
     async fn consume_then_persist_restores_ticket_after_persistence_failure() {
@@ -49,7 +50,7 @@ mod tests {
         let restored = Arc::new(Mutex::new(None));
         let restored_for_closure = restored.clone();
         let result = consume_then_persist(
-            PasskeyConfirmation::Completed(1),
+            PasskeyConfirmation::Completed(AuthenticatedUser::new(1, 0)),
             PasskeyConfirmation::InvalidTicket,
             async { Ok::<_, AuthFactorServiceError>(Some(ticket.clone())) },
             async { Err::<(), _>(AuthFactorServiceError::Secret(SecretCryptoError::Malformed)) },
@@ -74,7 +75,7 @@ mod tests {
         let persisted = Arc::new(AtomicBool::new(false));
         let persisted_for_future = persisted.clone();
         let result = consume_then_persist(
-            TotpConfirmation::Completed(1),
+            TotpConfirmation::Completed(AuthenticatedUser::new(1, 0)),
             TotpConfirmation::InvalidTicket,
             async { Ok::<_, AuthFactorServiceError>(None) },
             async move {
