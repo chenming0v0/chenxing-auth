@@ -104,6 +104,91 @@ fn login_ticket_serializes_without_secrets() {
     assert!(json.get("secret").is_none());
 }
 
+/// #265：`save_json_if_absent` 是键的唯一预留入口，并发只允许一个写入者。
+///
+/// 断言两件事，缺一不可：胜者数量恰好为 1，且键里留下的是胜者的载荷。
+/// 只数胜者不够——先查后写的实现同样可能只让一个调用「看起来」成功，
+/// 却被后到的写入覆盖了内容。
+#[tokio::test]
+async fn only_one_concurrent_writer_reserves_an_absent_json_key() {
+    let client = redis_client();
+    let store = Arc::new(LoginTicketStore::new(client.clone()));
+    let key = format!("chenxing:auth:test-reserve:{}", uuid::Uuid::new_v4());
+    let mut tasks = Vec::new();
+    for candidate in 0..12_u32 {
+        let store = store.clone();
+        let key = key.clone();
+        tasks.push(tokio::spawn(async move {
+            let stored = store
+                .save_json_if_absent(&key, &candidate, 60)
+                .await
+                .expect("reserve JSON key");
+            (candidate, stored)
+        }));
+    }
+    let mut winners = Vec::new();
+    for task in tasks {
+        let (candidate, stored) = task.await.expect("join reservation");
+        if stored {
+            winners.push(candidate);
+        }
+    }
+    assert_eq!(winners.len(), 1, "exactly one writer may reserve the key");
+
+    assert_eq!(
+        store
+            .find_json::<u32>(&key)
+            .await
+            .expect("read reserved payload"),
+        Some(winners[0]),
+        "the reserved payload must belong to the single winner"
+    );
+
+    // 键已被占用：后续预留一律失败，且绝不改写已有载荷。
+    assert!(
+        !store
+            .save_json_if_absent(&key, &9_999_u32, 60)
+            .await
+            .expect("reserve occupied key")
+    );
+    assert_eq!(
+        store
+            .find_json::<u32>(&key)
+            .await
+            .expect("read payload after losing reservation"),
+        Some(winners[0]),
+        "a losing reservation must not overwrite the stored payload"
+    );
+
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let ttl: i64 = connection.ttl(&key).await.expect("reserved key TTL");
+    assert!(
+        ttl > 0 && ttl <= 60,
+        "reservation must carry the requested TTL, got {ttl}"
+    );
+
+    // 键被释放后可以重新预留：预留是一次性占用，不是永久锁。
+    store.delete(&key).await.expect("release reservation");
+    assert!(
+        store
+            .save_json_if_absent(&key, &7_u32, 60)
+            .await
+            .expect("reserve released key")
+    );
+    assert_eq!(
+        store
+            .find_json::<u32>(&key)
+            .await
+            .expect("read re-reserved payload"),
+        Some(7)
+    );
+
+    let _: usize = connection.del(&key).await.expect("cleanup reservation");
+}
+
 #[tokio::test]
 async fn one_totp_time_step_can_be_claimed_only_once_across_tickets() {
     let client = redis_client();
