@@ -298,6 +298,9 @@ pub async fn decide_authorization_request(
         restore_pending(&state, &consumed).await;
         return response;
     }
+    // `save` 返回本次重新授权的 `state_version`（Issue #276）。这里刻意不用它写缓存：
+    // 紧随其后的 `issue_authorization_code_result` 会按数据库权威状态同步缓存围栏，
+    // 两处都写只会让「谁的版本更新」多一个来源，而条件写的结论完全相同。
     if let Err(error_value) = state
         .consents
         .save(session.user_id, &consumed.client_id, &validated.scopes)

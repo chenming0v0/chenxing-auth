@@ -113,12 +113,21 @@ pub async fn issue_authorization_code_result(
         tracing::error!(error = %store_error, "failed to store OAuth authorization code");
         return Err(error::oauth_temporarily_unavailable());
     }
+    // 把同意缓存同步到数据库当前的权威状态（Issue #276）。
+    //
+    // 旧实现在这里删除缓存键。删除只能让下一次判定回源，无法阻止一个「先提交 DB
+    // 撤销、后写 Redis」的并发请求随后把陈旧的撤销标记写进来；那个标记会让刚刚
+    // 重新授权的用户在 refresh / userinfo 上被持续拒绝。
+    //
+    // 改为写入带 `state_version` 的围栏值：版本化条件写会拒绝任何版本更低的
+    // 迟到写入。失败仍然回滚授权码并返回 503——授权码尚未交给客户端，
+    // 此时放弃本次授权不会烧掉任何已发出的凭据。
     if let Err(error_value) = state
         .revocations
-        .clear_consent(&code.user_id, &code.client_id)
+        .refresh_consent_cache(&code.user_id, &code.client_id)
         .await
     {
-        tracing::error!(error = %error_value, "failed to clear OAuth consent revocation marker");
+        tracing::error!(error = %error_value, "failed to sync OAuth consent state cache");
         remove_authorization_code_after_failure(state, &code, &client_id, None).await;
         return Err(error::oauth_temporarily_unavailable());
     }

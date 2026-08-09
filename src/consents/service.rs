@@ -19,7 +19,7 @@ use crate::sqlx::PgPool;
 use crate::users::domain::UserId;
 
 use super::{
-    domain::{AuthorizedApp, ConsentServiceError, scopes_are_covered},
+    domain::{AuthorizedApp, ConsentServiceError, ConsentState, scopes_are_covered},
     repository::{ConsentRepository, PgConsentRepository},
 };
 
@@ -64,7 +64,10 @@ impl<R: ConsentRepository> ConsentService<R> {
     /// 保存（或更新）用户对某个 OAuth Client 的授权同意。
     ///
     /// 若用户此前撤销过该 client，本次保存会把 `revoked_at` 清回 NULL，
-    /// 使撤销状态在权威存储侧解除（配合 `clear_consent` 清除 Redis 缓存）。
+    /// 使撤销状态在权威存储侧解除（配合 `refresh_consent_cache` 同步 Redis 缓存）。
+    ///
+    /// 返回本次跃迁产生的 `state_version`（Issue #276）：调用方可以直接用它
+    /// 做 Redis 条件写，不必再回查一次数据库。
     ///
     /// # 错误
     ///
@@ -75,16 +78,11 @@ impl<R: ConsentRepository> ConsentService<R> {
         user_id: UserId,
         client_id: &str,
         scopes: &[String],
-    ) -> Result<(), ConsentServiceError> {
-        if self
-            .repository
+    ) -> Result<i64, ConsentServiceError> {
+        self.repository
             .upsert_consent(user_id, client_id, scopes)
             .await?
-        {
-            Ok(())
-        } else {
-            Err(ConsentServiceError::ClientNotFound)
-        }
+            .ok_or(ConsentServiceError::ClientNotFound)
     }
 
     /// 列出用户当前生效的授权应用（不含已撤销）。
@@ -101,24 +99,41 @@ impl<R: ConsentRepository> ConsentService<R> {
     /// 成功即代表撤销事实已持久化。调用方随后应 best-effort 失效 Redis 缓存，
     /// 缓存失败不影响正确性。
     ///
-    /// 返回 `false` 表示无生效授权可撤销（不存在或已撤销），调用方可幂等返回 204。
+    /// 返回 `None` 表示无生效授权可撤销（不存在或已撤销），调用方可幂等返回 204；
+    /// 返回 `Some(version)` 是本次撤销的 `state_version`，调用方必须把它带进
+    /// Redis 条件写，否则迟到的缓存写入会覆盖后续重新授权的正确状态（Issue #276）。
     pub async fn revoke_for_user(
         &self,
         user_id: UserId,
         client_id: &str,
-    ) -> Result<bool, crate::sqlx::Error> {
+    ) -> Result<Option<i64>, crate::sqlx::Error> {
         self.repository.soft_revoke(user_id, client_id).await
     }
 
-    /// 查询撤销状态的权威判定（DB 回源路径）。
+    /// 查询撤销状态与状态版本号的权威判定（DB 回源路径）。
     ///
     /// 供 `TokenRevocationStore::is_consent_revoked` 在 Redis 缓存未命中时调用，
-    /// 不应在热路径上绕过缓存直接调用。
+    /// 不应在热路径上绕过缓存直接调用。返回 `None` 表示从未授权。
+    pub async fn consent_state(
+        &self,
+        user_id: UserId,
+        client_id: &str,
+    ) -> Result<Option<ConsentState>, crate::sqlx::Error> {
+        self.repository.consent_state(user_id, client_id).await
+    }
+
+    /// 撤销状态的布尔视图。
+    ///
+    /// 「不存在同意记录」判定为未撤销：不存在的授权无法被撤销，
+    /// 真正的拦截由 `has_scopes` 完成。
     pub async fn is_revoked(
         &self,
         user_id: UserId,
         client_id: &str,
     ) -> Result<bool, crate::sqlx::Error> {
-        self.repository.is_revoked(user_id, client_id).await
+        Ok(self
+            .consent_state(user_id, client_id)
+            .await?
+            .is_some_and(|state| state.revoked))
     }
 }

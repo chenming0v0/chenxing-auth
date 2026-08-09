@@ -17,5 +17,5 @@ pub mod domain;
 pub mod repository;
 pub mod service;
 
-pub use domain::{AuthorizedApp, ConsentServiceError};
+pub use domain::{AuthorizedApp, ConsentServiceError, ConsentState};
 pub use service::ConsentService;

@@ -7,7 +7,8 @@
 use std::sync::{Arc, Mutex};
 
 use chenxing_auth::consents::{
-    ConsentService, ConsentServiceError, domain::AuthorizedApp, repository::ConsentRepository,
+    ConsentService, ConsentServiceError, ConsentState, domain::AuthorizedApp,
+    repository::ConsentRepository,
 };
 use chenxing_auth::users::domain::UserId;
 use time::OffsetDateTime;
@@ -24,13 +25,22 @@ struct MockConsentRepository {
     state: Arc<MockState>,
 }
 
-/// 一条同意记录：(user_id, client_id, scopes, revoked)
-type ConsentRecord = (UserId, String, Vec<String>, bool);
+/// 一条同意记录。
+///
+/// `state_version` 复现 SQL 侧的 `user_consents.state_version`（Issue #276）：
+/// 每次状态跃迁（撤销 / 重新授权）自增，撤销与授权路径把它带进 Redis 条件写。
+struct ConsentRecord {
+    user_id: UserId,
+    client_id: String,
+    scopes: Vec<String>,
+    revoked: bool,
+    state_version: i64,
+}
 
 #[derive(Default)]
 struct MockState {
     records: Mutex<Vec<ConsentRecord>>,
-    /// 已知的 client 集合；不在集合中的 client 会让 upsert 返回 false
+    /// 已知的 client 集合；不在集合中的 client 会让 upsert 返回 None
     known_clients: Mutex<Vec<String>>,
     /// 强制所有查询返回数据库错误，用于验证错误传播
     fail: bool,
@@ -44,12 +54,13 @@ impl MockConsentRepository {
             .records
             .lock()
             .expect("records lock")
-            .push((
+            .push(ConsentRecord {
                 user_id,
-                client_id.to_owned(),
-                scopes.iter().map(|scope| (*scope).to_owned()).collect(),
-                false,
-            ));
+                client_id: client_id.to_owned(),
+                scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+                revoked: false,
+                state_version: 1,
+            });
         repository
     }
 
@@ -81,8 +92,8 @@ impl MockConsentRepository {
             .lock()
             .expect("records lock")
             .iter()
-            .find(|(uid, cid, _, _)| *uid == user_id && cid == client_id)
-            .map(|(_, _, _, revoked)| *revoked)
+            .find(|record| record.user_id == user_id && record.client_id == client_id)
+            .map(|record| record.revoked)
     }
 }
 
@@ -99,11 +110,11 @@ impl MockConsentRepository {
             .expect("records lock")
             .iter()
             // 已撤销的记录对读路径不可见，与 SQL 的 `revoked_at IS NULL` 一致
-            .find(|(uid, cid, _, revoked)| *uid == user_id && cid == client_id && !*revoked)
-            .map(|(_, _, scopes, _)| scopes.clone())
+            .find(|record| record.user_id == user_id && record.client_id == client_id && !record.revoked)
+            .map(|record| record.scopes.clone())
     }
 
-    fn sync_upsert(&self, user_id: UserId, client_id: &str, scopes: &[String]) -> bool {
+    fn sync_upsert(&self, user_id: UserId, client_id: &str, scopes: &[String]) -> Option<i64> {
         let known = self
             .state
             .known_clients
@@ -113,21 +124,32 @@ impl MockConsentRepository {
             .any(|known| known == client_id);
         if !known {
             // 模拟 `SELECT ... FROM oauth_clients WHERE client_id = $2` 命中 0 行
-            return false;
+            return None;
         }
         let mut records = self.state.records.lock().expect("records lock");
         match records
             .iter_mut()
-            .find(|(uid, cid, _, _)| *uid == user_id && cid == client_id)
+            .find(|record| record.user_id == user_id && record.client_id == client_id)
         {
             Some(record) => {
-                record.2 = scopes.to_vec();
+                record.scopes = scopes.to_vec();
                 // 重新授权清除撤销标记，与 SQL 的 `revoked_at = NULL` 一致
-                record.3 = false;
+                record.revoked = false;
+                // 与 SQL 的 `state_version = user_consents.state_version + 1` 一致
+                record.state_version += 1;
+                Some(record.state_version)
             }
-            None => records.push((user_id, client_id.to_owned(), scopes.to_vec(), false)),
+            None => {
+                records.push(ConsentRecord {
+                    user_id,
+                    client_id: client_id.to_owned(),
+                    scopes: scopes.to_vec(),
+                    revoked: false,
+                    state_version: 1,
+                });
+                Some(1)
+            }
         }
-        true
     }
 
     fn sync_list_active(&self, user_id: UserId) -> Vec<AuthorizedApp> {
@@ -136,35 +158,34 @@ impl MockConsentRepository {
             .lock()
             .expect("records lock")
             .iter()
-            .filter(|(uid, _, _, revoked)| *uid == user_id && !*revoked)
-            .map(|(_, cid, scopes, _)| AuthorizedApp {
-                client_id: cid.clone(),
-                client_name: format!("{cid} name"),
-                scopes: scopes.clone(),
+            .filter(|record| record.user_id == user_id && !record.revoked)
+            .map(|record| AuthorizedApp {
+                client_id: record.client_id.clone(),
+                client_name: format!("{} name", record.client_id),
+                scopes: record.scopes.clone(),
                 updated_at: OffsetDateTime::UNIX_EPOCH,
             })
             .collect()
     }
 
-    fn sync_soft_revoke(&self, user_id: UserId, client_id: &str) -> bool {
+    fn sync_soft_revoke(&self, user_id: UserId, client_id: &str) -> Option<i64> {
         let mut records = self.state.records.lock().expect("records lock");
-        match records
+        let record = records
             .iter_mut()
-            .find(|(uid, cid, _, revoked)| *uid == user_id && cid == client_id && !*revoked)
-        {
-            Some(record) => {
-                record.3 = true;
-                true
-            }
-            // 不存在或已撤销：幂等返回 false
-            None => false,
-        }
+            .find(|record| record.user_id == user_id && record.client_id == client_id && !record.revoked)?;
+        record.revoked = true;
+        record.state_version += 1;
+        Some(record.state_version)
     }
 
-    fn sync_is_revoked(&self, user_id: UserId, client_id: &str) -> bool {
-        self.revoked_flag(user_id, client_id)
-            // 行不存在 = 从未授权 = 未撤销
-            .unwrap_or(false)
+    fn sync_consent_state(&self, user_id: UserId, client_id: &str) -> Option<ConsentState> {
+        self.state
+            .records
+            .lock()
+            .expect("records lock")
+            .iter()
+            .find(|record| record.user_id == user_id && record.client_id == client_id)
+            .map(|record| ConsentState::new(record.revoked, record.state_version))
     }
 
     fn database_failure(&self) -> Option<chenxing_auth::sqlx::Error> {
@@ -191,7 +212,7 @@ impl ConsentRepository for MockConsentRepository {
         user_id: UserId,
         client_id: &str,
         scopes: &[String],
-    ) -> Result<bool, chenxing_auth::sqlx::Error> {
+    ) -> Result<Option<i64>, chenxing_auth::sqlx::Error> {
         match self.database_failure() {
             Some(error) => Err(error),
             None => Ok(self.sync_upsert(user_id, client_id, scopes)),
@@ -212,21 +233,21 @@ impl ConsentRepository for MockConsentRepository {
         &self,
         user_id: UserId,
         client_id: &str,
-    ) -> Result<bool, chenxing_auth::sqlx::Error> {
+    ) -> Result<Option<i64>, chenxing_auth::sqlx::Error> {
         match self.database_failure() {
             Some(error) => Err(error),
             None => Ok(self.sync_soft_revoke(user_id, client_id)),
         }
     }
 
-    async fn is_revoked(
+    async fn consent_state(
         &self,
         user_id: UserId,
         client_id: &str,
-    ) -> Result<bool, chenxing_auth::sqlx::Error> {
+    ) -> Result<Option<ConsentState>, chenxing_auth::sqlx::Error> {
         match self.database_failure() {
             Some(error) => Err(error),
-            None => Ok(self.sync_is_revoked(user_id, client_id)),
+            None => Ok(self.sync_consent_state(user_id, client_id)),
         }
     }
 }
@@ -324,10 +345,89 @@ async fn revoke_marks_consent_revoked_instead_of_deleting_the_record() {
             .revoke_for_user(1, "cx_app")
             .await
             .expect("first revoke")
+            .is_some()
     );
 
     // 撤销事实必须可被权威查询观察到（Redis 缓存未命中时的回源路径）
     assert!(service.is_revoked(1, "cx_app").await.expect("revoked flag"));
+}
+
+// ========== Issue #276：状态版本号 ==========
+
+#[tokio::test]
+async fn every_state_transition_advances_the_version() {
+    let service =
+        ConsentService::with_repository(MockConsentRepository::with_known_client("cx_app"));
+
+    let first_grant = service
+        .save(1, "cx_app", &["openid".to_owned()])
+        .await
+        .expect("first grant");
+    let revoked = service
+        .revoke_for_user(1, "cx_app")
+        .await
+        .expect("revoke")
+        .expect("revoke produces a version");
+    let regranted = service
+        .save(1, "cx_app", &["openid".to_owned()])
+        .await
+        .expect("re-authorize");
+
+    // 版本号严格单调：Redis 条件写据此拒绝迟到的撤销写入（Issue #276）
+    assert!(revoked > first_grant);
+    assert!(regranted > revoked);
+    // 版本号与状态同步产生，两者不会错位
+    assert_eq!(
+        service
+            .consent_state(1, "cx_app")
+            .await
+            .expect("state")
+            .expect("record exists"),
+        ConsentState::new(false, regranted)
+    );
+}
+
+#[tokio::test]
+async fn idempotent_revoke_does_not_consume_a_version() {
+    let service = ConsentService::with_repository(MockConsentRepository::with_consent(
+        1,
+        "cx_app",
+        &["openid"],
+    ));
+    let revoked = service
+        .revoke_for_user(1, "cx_app")
+        .await
+        .expect("first revoke")
+        .expect("first revoke produces a version");
+
+    // 第二次没有生效授权可撤销，因此不产生新版本；否则重复的撤销请求会白白
+    // 抬高版本号，让一个本来合法的重新授权写入被围栏挡住。
+    assert_eq!(
+        service.revoke_for_user(1, "cx_app").await.expect("second"),
+        None
+    );
+    assert_eq!(
+        service
+            .consent_state(1, "cx_app")
+            .await
+            .expect("state")
+            .expect("record exists"),
+        ConsentState::new(true, revoked)
+    );
+}
+
+#[tokio::test]
+async fn consent_state_is_absent_for_a_consent_that_never_existed() {
+    let service = ConsentService::with_repository(MockConsentRepository::default());
+
+    // 没有记录就没有版本号可比较；缓存路径据此跳过回填
+    assert_eq!(
+        service
+            .consent_state(1, "cx_unknown")
+            .await
+            .expect("missing consent"),
+        None
+    );
 }
 
 #[tokio::test]
@@ -371,13 +471,15 @@ async fn revoking_twice_is_idempotent() {
             .revoke_for_user(1, "cx_app")
             .await
             .expect("first revoke")
+            .is_some()
     );
-    // 第二次没有生效授权可撤销：返回 false，handler 幂等返回 204
+    // 第二次没有生效授权可撤销：返回 None，handler 幂等返回 204
     assert!(
-        !service
+        service
             .revoke_for_user(1, "cx_app")
             .await
             .expect("second revoke")
+            .is_none()
     );
 }
 
@@ -386,10 +488,11 @@ async fn revoking_an_unknown_consent_reports_no_change() {
     let service = ConsentService::with_repository(MockConsentRepository::default());
 
     assert!(
-        !service
+        service
             .revoke_for_user(1, "cx_never_authorized")
             .await
             .expect("revoke missing consent")
+            .is_none()
     );
 }
 
