@@ -337,7 +337,75 @@ async fn owner_can_manage_security_limits_with_validation() {
         .expect("security limits negative limit response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    // 5. 无 authorization 返回 401
+    // 5. 越上界（#260）返回 400：i64::MAX 的失败阈值等于关掉账户锁定
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/settings/security-limits")
+                .header("authorization", "Bearer admin-system-settings-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "unauthenticated_source_qps": 10,
+                        "authorization_code_ttl_seconds": 120,
+                        "pending_request_ttl_seconds": 300,
+                        "max_pending_requests_per_client": 15,
+                        "max_pending_requests_global": 500,
+                        "auth_failure_window_seconds": 600,
+                        "account_failure_limit": i64::MAX,
+                        "ip_failure_limit": 20,
+                        "totp_ticket_failure_limit": 3,
+                        "external_login_state_ttl_seconds": 300,
+                        "external_login_state_rate_window_seconds": 30,
+                        "external_login_state_rate_limit": 15,
+                        "external_login_state_max_pending": 5000
+                    })
+                    .to_string(),
+                ))
+                .expect("security limits saturated limit"),
+        )
+        .await
+        .expect("security limits saturated limit response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = json(response).await;
+    assert_eq!(error["code"], "invalid_security_limits");
+
+    // 6. 授权码 TTL 超过 RFC 6749 §4.1.2 的 10 分钟建议返回 400（#260 起改为硬上界）
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/settings/security-limits")
+                .header("authorization", "Bearer admin-system-settings-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "unauthenticated_source_qps": 10,
+                        "authorization_code_ttl_seconds": 3600,
+                        "pending_request_ttl_seconds": 300,
+                        "max_pending_requests_per_client": 15,
+                        "max_pending_requests_global": 500,
+                        "auth_failure_window_seconds": 600,
+                        "account_failure_limit": 5,
+                        "ip_failure_limit": 20,
+                        "totp_ticket_failure_limit": 3,
+                        "external_login_state_ttl_seconds": 300,
+                        "external_login_state_rate_window_seconds": 30,
+                        "external_login_state_rate_limit": 15,
+                        "external_login_state_max_pending": 5000
+                    })
+                    .to_string(),
+                ))
+                .expect("security limits long code ttl"),
+        )
+        .await
+        .expect("security limits long code ttl response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // 7. 无 authorization 返回 401
     let response = router
         .clone()
         .oneshot(
