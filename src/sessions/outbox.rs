@@ -9,7 +9,24 @@ use crate::users::domain::UserId;
 
 const OUTBOX_LEASE: time::Duration = time::Duration::minutes(5);
 const CONDITIONAL_SESSION_SET: &str = "local marker = redis.call('GET', KEYS[1])\nif marker and tonumber(marker) > tonumber(ARGV[1]) then return 0 end\nredis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])\nreturn 1";
-const ADVANCE_REVOCATION_EPOCH: &str = "local current = redis.call('GET', KEYS[1])\nif not current or tonumber(current) < tonumber(ARGV[1]) then redis.call('SET', KEYS[1], ARGV[1]) end\nreturn 1";
+/// 用户级撤销水位单调前进，并始终带上过期时间。
+///
+/// `ARGV[2]` 是水位 TTL（秒），取绝对 Session TTL。水位只需覆盖"可能被它拦截的
+/// 会话键"的存活窗口：会话键 TTL 同样被绝对 Session TTL 封顶，且写入时刻不晚于
+/// 本次水位写入时刻，所以旧会话不可能活到水位过期之后。
+///
+/// 值不前进时也要刷新 TTL：重复投递、乱序重试和升级前留下的无 TTL 老键都会走到
+/// 这条分支，只有在这里补 `EXPIRE` 才能让它们最终被回收。刷新只延长、不缩短，
+/// `TTL` 返回的 -1（无过期）天然小于目标值，不需要单独判断。
+const ADVANCE_REVOCATION_EPOCH: &str = r#"
+local current = redis.call('GET', KEYS[1])
+if not current or tonumber(current) < tonumber(ARGV[1]) then
+    redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+elseif redis.call('TTL', KEYS[1]) < tonumber(ARGV[2]) then
+    redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return 1
+"#;
 
 type ClaimedOutboxRow = (
     i64,
@@ -211,9 +228,11 @@ impl SessionStore {
                 };
                 stored_payload.last_seen_at = Some(last_seen_at);
                 let payload = self.encrypt_payload(&serde_json::to_vec(&stored_payload)?)?;
-                let ttl = (expires_at - OffsetDateTime::now_utc())
-                    .whole_seconds()
-                    .max(1) as u64;
+                // 投影 TTL 同样被撤销水位 TTL 封顶：水位在撤销时刻带 `EX` 写入，
+                // 只有会话键活得不比水位久，旧会话才不可能在水位过期后被放行。
+                let remaining = expires_at - OffsetDateTime::now_utc();
+                let seconds = remaining.whole_seconds().max(1) as u64;
+                let ttl = seconds.min(self.revocation_ttl_seconds());
                 let _: i64 = Script::new(CONDITIONAL_SESSION_SET)
                     .key(self.revocation_key(&user_id.to_string()))
                     .key(self.key_hash(token_hash))
@@ -252,6 +271,7 @@ impl SessionStore {
                 let _: i64 = Script::new(ADVANCE_REVOCATION_EPOCH)
                     .key(self.revocation_key(&user_id.to_string()))
                     .arg(entry.generation)
+                    .arg(self.revocation_ttl_seconds())
                     .invoke_async(&mut connection)
                     .await?;
             }
