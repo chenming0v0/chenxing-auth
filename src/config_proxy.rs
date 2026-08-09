@@ -63,11 +63,7 @@ impl TrustedProxies {
         if self.ips.is_empty() || !self.is_trusted(&peer_ip) {
             return Some(peer_ip.to_string());
         }
-        let forwarded = headers
-            .get("x-forwarded-for")
-            .and_then(|value| value.to_str().ok())
-            .map(Self::parse_forwarded_chain)
-            .unwrap_or_default();
+        let forwarded = Self::forwarded_chain(headers);
 
         forwarded
             .iter()
@@ -80,19 +76,32 @@ impl TrustedProxies {
             .or(Some(peer_ip.to_string()))
     }
 
-    /// 解析 XFF 为 IP 列表。无法解析的条目整体丢弃而不是跳过：混入 `unknown`、
-    /// 端口后缀或废弃的 `for=` 语法时，链路位置已经不可靠，退回对端地址更安全。
-    fn parse_forwarded_chain(value: &str) -> Vec<IpAddr> {
-        let entries: Vec<&str> = value.split(',').map(str::trim).collect();
-        let parsed: Vec<IpAddr> = entries
-            .iter()
-            .filter_map(|entry| entry.parse::<IpAddr>().ok())
-            .collect();
-        if parsed.len() == entries.len() {
-            parsed
-        } else {
-            Vec::new()
+    /// 把**所有** `X-Forwarded-For` 头部行按线序拼成一条链路并解析为 IP 列表。
+    ///
+    /// HTTP 允许同名头部重复出现，其语义等价于按接收顺序用逗号拼接成单行
+    /// （RFC 9110 §5.3）。只读第一行是可伪造的（#269）：攻击者发送
+    /// `X-Forwarded-For: 9.9.9.9` 后，Nginx 之类的代理若以追加新行的方式记录
+    /// 转发链，真实客户端地址就落在第二行，第一行整行由攻击者控制。此时
+    /// 「从右往左扫描」只能看到伪造值，选中的就是伪造 IP，按源限流形同虚设。
+    /// 因此必须先按线序合并再扫描，让真实条目始终位于伪造条目的右侧。
+    ///
+    /// 任一行、任一条目无法解析（`unknown`、端口后缀、废弃的 `for=` 语法、
+    /// 非 ASCII 字节）时整条链路丢弃而不是跳过：链路位置已经不可靠，
+    /// 让调用方 fail-safe 退回对端地址更安全。
+    fn forwarded_chain(headers: &HeaderMap) -> Vec<IpAddr> {
+        let mut chain = Vec::new();
+        for value in headers.get_all("x-forwarded-for") {
+            let Ok(text) = value.to_str() else {
+                return Vec::new();
+            };
+            for entry in text.split(',') {
+                let Ok(ip) = entry.trim().parse::<IpAddr>() else {
+                    return Vec::new();
+                };
+                chain.push(ip);
+            }
         }
+        chain
     }
 }
 
@@ -125,145 +134,5 @@ pub(super) fn trusted_proxies_from_env() -> Result<TrustedProxies, ConfigError> 
 }
 
 #[cfg(test)]
-mod tests {
-    use axum::http::HeaderValue;
-
-    use super::*;
-
-    fn proxies(list: &[&str]) -> TrustedProxies {
-        TrustedProxies::from_ips(list.iter().map(|ip| ip.parse().expect("test IP")).collect())
-    }
-
-    fn peer(address: &str) -> Option<SocketAddr> {
-        Some(address.parse().expect("test socket address"))
-    }
-
-    fn headers_with_forwarded(value: &str) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-forwarded-for",
-            HeaderValue::from_str(value).expect("test header"),
-        );
-        headers
-    }
-
-    #[test]
-    fn parses_comma_separated_ipv4_and_ipv6() {
-        let parsed = parse_trusted_proxies("10.0.0.5, ::1 ,192.168.1.1").expect("valid list");
-        assert!(parsed.is_trusted(&"10.0.0.5".parse().unwrap()));
-        assert!(parsed.is_trusted(&"::1".parse().unwrap()));
-        assert!(parsed.is_trusted(&"192.168.1.1".parse().unwrap()));
-        assert!(!parsed.is_trusted(&"203.0.113.7".parse().unwrap()));
-    }
-
-    #[test]
-    fn blank_value_means_no_trusted_proxy() {
-        assert!(parse_trusted_proxies("").expect("blank").is_empty());
-        assert!(parse_trusted_proxies("   ").expect("whitespace").is_empty());
-    }
-
-    /// CIDR 记法当前不支持，必须报错而不是被当成主机名静默忽略。
-    #[test]
-    fn rejects_invalid_entries_including_cidr() {
-        for value in ["10.0.0.5,not-an-ip", "10.0.0.0/8", "10.0.0.5:8080"] {
-            let error = parse_trusted_proxies(value).expect_err("must reject");
-            assert_eq!(error, ConfigError::InvalidValue("TRUSTED_PROXIES"));
-        }
-    }
-
-    #[test]
-    fn missing_peer_yields_no_source_ip() {
-        assert_eq!(
-            proxies(&["10.0.0.5"]).resolve_client_ip(None, &HeaderMap::new()),
-            None
-        );
-    }
-
-    /// 未配置可信代理：XFF 一律忽略（默认安全）。
-    #[test]
-    fn unconfigured_proxies_ignore_forwarded_header() {
-        let resolved = TrustedProxies::none().resolve_client_ip(
-            peer("203.0.113.42:443"),
-            &headers_with_forwarded("198.51.100.7"),
-        );
-        assert_eq!(resolved.as_deref(), Some("203.0.113.42"));
-    }
-
-    /// 伪造防护：对端不在可信列表时，XFF 完全不采信。
-    #[test]
-    fn untrusted_peer_cannot_spoof_the_forwarded_header() {
-        let resolved = proxies(&["10.0.0.5"]).resolve_client_ip(
-            peer("203.0.113.99:443"),
-            &headers_with_forwarded("198.51.100.7"),
-        );
-        assert_eq!(resolved.as_deref(), Some("203.0.113.99"));
-    }
-
-    #[test]
-    fn single_proxy_resolves_the_client_entry() {
-        let resolved = proxies(&["10.0.0.5"]).resolve_client_ip(
-            peer("10.0.0.5:443"),
-            &headers_with_forwarded("198.51.100.7, 10.0.0.5"),
-        );
-        assert_eq!(resolved.as_deref(), Some("198.51.100.7"));
-    }
-
-    #[test]
-    fn multi_hop_chain_skips_every_trusted_entry() {
-        let resolved = proxies(&["10.0.0.5", "10.0.0.6"]).resolve_client_ip(
-            peer("10.0.0.5:443"),
-            &headers_with_forwarded("198.51.100.7, 10.0.0.6, 10.0.0.5"),
-        );
-        assert_eq!(resolved.as_deref(), Some("198.51.100.7"));
-    }
-
-    /// 攻击者自带 XFF，代理在右侧追加真实地址。从右往左扫描必须选中真实地址，
-    /// 而不是伪造的最左条目——否则按源限流可以被无限换 key 绕过。
-    #[test]
-    fn client_supplied_prefix_is_never_selected() {
-        let resolved = proxies(&["10.0.0.5"]).resolve_client_ip(
-            peer("10.0.0.5:443"),
-            &headers_with_forwarded("9.9.9.9, 203.0.113.77, 10.0.0.5"),
-        );
-        assert_eq!(resolved.as_deref(), Some("203.0.113.77"));
-    }
-
-    #[test]
-    fn fully_trusted_chain_falls_back_to_the_leftmost_entry() {
-        let resolved = proxies(&["10.0.0.5", "198.51.100.7"]).resolve_client_ip(
-            peer("10.0.0.5:443"),
-            &headers_with_forwarded("198.51.100.7, 10.0.0.5"),
-        );
-        assert_eq!(resolved.as_deref(), Some("198.51.100.7"));
-    }
-
-    #[test]
-    fn trusted_peer_without_forwarded_header_uses_the_peer() {
-        let resolved =
-            proxies(&["10.0.0.5"]).resolve_client_ip(peer("10.0.0.5:443"), &HeaderMap::new());
-        assert_eq!(resolved.as_deref(), Some("10.0.0.5"));
-    }
-
-    /// 链路里出现无法解析的条目时整体丢弃，退回对端地址。
-    #[test]
-    fn malformed_chain_falls_back_to_the_peer() {
-        for value in [
-            "unknown, 10.0.0.5",
-            "not-an-ip",
-            "198.51.100.7:1234, 10.0.0.5",
-        ] {
-            let resolved = proxies(&["10.0.0.5"])
-                .resolve_client_ip(peer("10.0.0.5:443"), &headers_with_forwarded(value));
-            assert_eq!(resolved.as_deref(), Some("10.0.0.5"), "value = {value}");
-        }
-    }
-
-    #[test]
-    fn ipv6_peer_and_chain_resolve() {
-        let resolved = proxies(&["::1"]).resolve_client_ip(
-            peer("[::1]:443"),
-            &headers_with_forwarded("2001:db8::42, ::1"),
-        );
-        assert_eq!(resolved.as_deref(), Some("2001:db8::42"));
-    }
-}
+#[path = "config_proxy_tests.rs"]
+mod tests;
