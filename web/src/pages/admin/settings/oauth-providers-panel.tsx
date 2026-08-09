@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { apiFetch, type OAuthProviderInput, type OAuthProviderSummary } from '../../../api'
 import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '../../../components/ui'
 import { DataTable, TablePanel } from '../../../components/data-table'
 import { SelectField } from '../../../components/select'
+import { useSettingsResource, type SettingsPanelProps } from './panel'
 
 type ProviderForm = {
   name: string
@@ -120,29 +121,24 @@ function toInput(form: ProviderForm): OAuthProviderInput {
   return input
 }
 
-export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string, tone?: 'success' | 'warning') => void }) {
+export function OAuthProvidersPanel({ onMessage }: SettingsPanelProps) {
   const [providers, setProviders] = useState<OAuthProviderSummary[] | null>(null)
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<OAuthProviderSummary | null>(null)
   const [template, setTemplate] = useState('custom')
   const [form, setForm] = useState<ProviderForm>(emptyForm)
   const [busy, setBusy] = useState(false)
-  const [loading, setLoading] = useState(true)
   const title = useMemo(() => (editing ? '编辑 OAuth 提供商' : '添加 OAuth 提供商'), [editing])
 
-  async function load() {
-    setLoading(true)
-    try {
-      setProviders(await apiFetch<OAuthProviderSummary[]>('/api/v1/admin/oauth/providers'))
-    } catch (reason) {
-      setProviders([])
-      onMessage(reason instanceof Error ? reason.message : 'OAuth 提供商加载失败。', 'warning')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => { void load() }, [])
+  /* reload 引用稳定，因此保存与启停后的刷新只重取本面板列表，
+     不会因为消息状态变化把其它面板的草稿一起冲掉（#268）。 */
+  const { loading, reload } = useSettingsResource<OAuthProviderSummary[]>({
+    path: '/api/v1/admin/oauth/providers',
+    onMessage,
+    failureMessage: 'OAuth 提供商加载失败。',
+    apply: setProviders,
+    onFailure: () => setProviders([]),
+  })
 
   function openCreate() {
     setEditing(null)
@@ -200,7 +196,7 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
         onMessage('OAuth 提供商已创建。')
       }
       setOpen(false)
-      await load()
+      await reload()
     } catch (reason) {
       onMessage(reason instanceof Error ? reason.message : 'OAuth 提供商保存失败。', 'warning')
     } finally {
@@ -219,7 +215,7 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
     try {
       await apiFetch<void>(`/api/v1/admin/oauth/providers/${encodeURIComponent(provider.slug)}/${action}`, { method: 'POST' })
       onMessage(`已${action === 'disable' ? '禁用' : '启用'} ${provider.name}。`)
-      await load()
+      await reload()
     } catch (reason) {
       onMessage(reason instanceof Error ? reason.message : 'OAuth 提供商状态更新失败。', 'warning')
     } finally {

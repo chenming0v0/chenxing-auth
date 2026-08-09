@@ -1,6 +1,7 @@
-import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { useState, type FormEvent, type KeyboardEvent } from 'react'
 import { apiFetch, type EmailPolicySetting } from '../../../api'
 import { Button, Chip, Field, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
+import { useSettingsResource, type SettingsPanelProps } from './panel'
 
 const MAX_ALLOWED_DOMAINS = 128
 const MAX_DOMAIN_LENGTH = 253
@@ -30,26 +31,22 @@ function hasConfiguredDomain(domains: string[]): boolean {
   return domains.some((domain) => Boolean(normalizeDomain(domain)))
 }
 
-export function EmailPolicyPanel({ onMessage }: { onMessage: (message: string, tone?: 'success' | 'warning') => void }) {
+export function EmailPolicyPanel({ onMessage }: SettingsPanelProps) {
   const [setting, setSetting] = useState<EmailPolicySetting | null>(null)
   const [savedSetting, setSavedSetting] = useState<EmailPolicySetting | null>(null)
   const [draftDomain, setDraftDomain] = useState('')
   const [domainError, setDomainError] = useState('')
   const [busy, setBusy] = useState(false)
-  const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    let active = true
-    void apiFetch<EmailPolicySetting>('/api/v1/admin/settings/email-policy')
-      .then((value) => {
-        if (!active) return
-        setSetting(value)
-        setSavedSetting(value)
-      })
-      .catch((reason: unknown) => onMessage(reason instanceof Error ? reason.message : '邮箱域名白名单加载失败。', 'warning'))
-      .finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
-  }, [onMessage])
+  const { loading } = useSettingsResource<EmailPolicySetting>({
+    path: '/api/v1/admin/settings/email-policy',
+    onMessage,
+    failureMessage: '邮箱域名白名单加载失败。',
+    apply: (value) => {
+      setSetting(value)
+      setSavedSetting(value)
+    },
+  })
 
   function addDomain() {
     if (busy || !setting) return
