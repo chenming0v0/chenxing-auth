@@ -157,7 +157,10 @@ impl SettingsService {
 
     pub async fn security_limits(&self) -> Result<SecurityLimitsSetting, SettingsServiceError> {
         match repository::get_security_limits(&self.pool).await? {
-            Some(value) => Ok(value.validate()?),
+            // 回读用 `sanitized()` 而不是 `validate()`：这条路径被 OAuth 授权、令牌
+            // 签发和失败限流器共用，返回错误会让一条在上界收紧之前写入的旧行把整套
+            // 协议流程打死，管理员连设置页都打不开。越界项回退默认值（收紧方向）。
+            Some(value) => Ok(value.sanitized()),
             None => Ok(self.default_security_limits.clone()),
         }
     }
