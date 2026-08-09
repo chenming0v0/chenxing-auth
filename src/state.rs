@@ -56,7 +56,7 @@ pub enum StateError {
     #[error("application configuration is invalid: {0}")]
     Config(#[from] crate::config::ConfigError),
     #[error("database configuration is invalid: {0}")]
-    Database(#[from] crate::sqlx::Error),
+    Database(#[from] crate::db::DbError),
     #[error("redis configuration is invalid: {0}")]
     Redis(#[from] redis::RedisError),
     #[error("key manager initialization failed: {0}")]
