@@ -3,6 +3,13 @@
 # Packaging-only image used by CI.
 # Native Linux binaries are compiled on the matching runners and copied in by
 # TARGETARCH (amd64 / arm64). This avoids recompiling Rust under QEMU.
+#
+# Two staged directories must exist in the build context:
+#   container-binaries/<arch>/chenxing-auth  the native release binary
+#   container-web-dist/                      the built frontend bundle
+# The bundle must be the byte-identical web-dist artifact that the binaries were
+# compiled against: the binary embeds index.html, which references assets by
+# content hash. A bundle from a different build would 404 on every asset.
 
 FROM debian:bookworm-slim
 
@@ -15,15 +22,21 @@ RUN apt-get update \
 
 COPY container-binaries/${TARGETARCH}/chenxing-auth /usr/local/bin/chenxing-auth
 
+# Architecture-independent: the bundle is staged once and shared by both platforms.
+COPY container-web-dist /usr/local/share/chenxing-auth/web/dist
+
 RUN chmod 755 /usr/local/bin/chenxing-auth \
     && mkdir -p /var/lib/chenxing-auth/keys \
     && chown -R chenxing:chenxing /var/lib/chenxing-auth
 
 USER chenxing
 WORKDIR /var/lib/chenxing-auth
+# WORKDIR holds mutable state, so web/dist cannot be found relatively; point at
+# the image path explicitly. Both production images use the same location.
 ENV APP_HOST=0.0.0.0 \
     APP_PORT=3000 \
     KEY_DIRECTORY=/var/lib/chenxing-auth/keys \
+    WEB_DIST_DIR=/usr/local/share/chenxing-auth/web/dist \
     COOKIE_SECURE=true
 
 EXPOSE 3000

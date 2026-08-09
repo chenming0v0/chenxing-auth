@@ -155,6 +155,8 @@ src/
 
 `cargo build`/`cargo run` 在缺少 `web/dist/index.html` 时会通过 Cargo build script 自动安装并构建 Web。GitHub Actions 发布流水线会先构建一次前端产物，再在各目标平台复用；推送到 GHCR 的多架构镜像只打包已经编好的 Linux 二进制，不再在容器里二次 `cargo build`。本地 `docker compose` 仍使用源码版 `Dockerfile` 现场编译。启动后访问 `http://127.0.0.1:3000/` 即可同时使用 Web 和 API。
 
+二进制只在编译期内嵌 `index.html` 这一个 SPA shell，它引用的 JS、CSS、favicon 和字体仍然按文件从磁盘提供。因此两条生产镜像路径都会把构建好的 `web/dist` 一起装进镜像的 `/usr/local/share/chenxing-auth/web/dist`，并把 `WEB_DIST_DIR` 指向该目录：镜像的 WORKDIR 是可变状态目录，相对路径 `web/dist` 找不到产物，页面会只剩空壳。GHCR 镜像装入的是编译这批二进制时用的同一份 `web-dist` artifact——`index.html` 里的文件名带内容哈希，换成另一次构建的产物会让每个资源 404。直接使用 release 压缩包里的裸二进制时，需要自行提供 `web/dist` 并设置 `WEB_DIST_DIR`；该变量留空会被拒绝并回落默认值，避免把工作目录整体当静态根暴露 `.env` 和私钥。
+
 ## API 文档
 
 - [给人看的 API 文档](https://wiki.auth.clya.top)
