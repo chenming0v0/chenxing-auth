@@ -117,6 +117,55 @@ pub async fn find_totp_secret(
         .await
 }
 
+pub async fn find_totp_factor(
+    pool: &PgPool,
+    user_id: UserId,
+) -> Result<Option<(Vec<u8>, time::OffsetDateTime)>, crate::sqlx::Error> {
+    crate::sqlx::query_as::<_, (Vec<u8>, time::OffsetDateTime)>(
+        "SELECT encrypted_secret, updated_at FROM user_totp_factors WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// 删除某个账号的 TOTP 因子。返回 false 表示该账号本来就没有 TOTP。
+///
+/// 这是 #258 的恢复出口：密文的 kid 退役后种子已经无法解密，也就无法迁移，
+/// 唯一能让账号继续可用的动作就是丢弃这份不可读的密文并让用户重新注册。
+pub async fn delete_totp_factor(
+    pool: &PgPool,
+    user_id: UserId,
+) -> Result<bool, crate::sqlx::Error> {
+    let result = crate::sqlx::query("DELETE FROM user_totp_factors WHERE user_id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+pub async fn count_totp_factors(pool: &PgPool) -> Result<i64, crate::sqlx::Error> {
+    crate::sqlx::query_scalar("SELECT COUNT(*) FROM user_totp_factors")
+        .fetch_one(pool)
+        .await
+}
+
+/// 按 user_id 升序取出至多 `limit` 份 TOTP 密文，供管理端统计密钥健康度。
+///
+/// 只返回密文，由应用层解析信封头部分类；这里不做解密，也不返回 user_id 之外的
+/// 任何账号信息。`limit` 由调用方封顶，避免一次把整张表读进内存。
+pub async fn list_totp_ciphertexts(
+    pool: &PgPool,
+    limit: i64,
+) -> Result<Vec<(UserId, Vec<u8>)>, crate::sqlx::Error> {
+    crate::sqlx::query_as::<_, (UserId, Vec<u8>)>(
+        "SELECT user_id, encrypted_secret FROM user_totp_factors ORDER BY user_id ASC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+}
+
 pub async fn find_session_epoch(
     pool: &PgPool,
     user_id: UserId,

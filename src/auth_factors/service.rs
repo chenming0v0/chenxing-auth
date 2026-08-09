@@ -25,8 +25,12 @@ mod attempt_limiter;
 mod passkey;
 #[path = "passkey_core.rs"]
 mod passkey_core;
+#[path = "recovery.rs"]
+mod recovery;
 #[path = "totp_service.rs"]
 mod totp_service;
+
+pub use recovery::{AccountFactorStatus, EncryptionKeyHealth, TotpFactorStatus, TotpResetOutcome};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TotpConfirmation {
@@ -35,8 +39,23 @@ pub enum TotpConfirmation {
     NoPendingEnrollment,
     InvalidTicket,
     InvalidCode,
+    /// 密文引用的加密 kid 已不在 `AUTH_ENCRYPTION_KEYS` 内：服务端读不出种子，
+    /// 与「用户输错验证码」是两件完全不同的事（#258）。重试无用，必须走管理端重置。
+    KeyUnavailable,
     RateLimited,
     Completed(UserId),
+}
+
+/// 单个因子校验的三种真实结果。
+///
+/// 旧签名是 `Result<bool, _>`，把「码不对」和「服务端读不出种子」压成同一个 `false`，
+/// 于是密钥退役后的锁死状态在日志、审计和 HTTP 响应里都伪装成一次普通的验证失败（#258）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactorVerification {
+    Accepted,
+    Rejected,
+    /// 加密 kid 已退役，密文不可解。不消耗失败额度，需要管理端重置因子。
+    KeyUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

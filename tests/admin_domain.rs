@@ -31,11 +31,16 @@ fn user_permission_matrix_is_least_privilege() {
     assert!(UserRole::Owner.allows(ManageSettings));
     assert!(UserRole::Owner.allows(ManageIdentityProviders));
     assert!(UserRole::Owner.allows(ManageRoles));
+    assert!(UserRole::Owner.allows(ManageAuthFactors));
 
     assert!(UserRole::Admin.allows(ManageUsers));
     assert!(UserRole::Admin.allows(ManageClients));
     assert!(!UserRole::Admin.allows(RotateKeys));
     assert!(!UserRole::Admin.allows(ManageRoles));
+    // #258：重置他人的 TOTP 把账号降级为「只有密码」，属于账号接管链条的一环，
+    // 因此不随 ManageUsers 一起下放给 Admin。
+    assert!(!UserRole::Admin.allows(ManageAuthFactors));
+    assert!(!UserRole::User.allows(ManageAuthFactors));
     assert!(!UserRole::User.allows(ManageClients));
     assert!(!UserRole::User.allows(ManageSettings));
 }

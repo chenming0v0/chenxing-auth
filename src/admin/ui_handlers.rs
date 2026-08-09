@@ -316,6 +316,7 @@ fn permissions(role: AdminRole) -> Vec<&'static str> {
             "manage_identity_providers",
         ),
         (AdminPermission::ManageRoles, "manage_roles"),
+        (AdminPermission::ManageAuthFactors, "manage_auth_factors"),
     ]
     .into_iter()
     .filter_map(|(permission, name)| role.allows(permission).then_some(name))

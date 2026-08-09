@@ -78,6 +78,9 @@ pub enum UserPermission {
     ManageIdentityProviders,
     RotateKeys,
     ManageRoles,
+    /// 重置他人的认证因子。独立于 `ManageUsers`：删除一个账号的 TOTP 会把它降级到
+    /// 「只有密码」，是账号接管链条上的一环，因此按最小权限只授予 Owner。
+    ManageAuthFactors,
 }
 
 impl UserRole {
@@ -101,6 +104,8 @@ impl UserRole {
     pub const fn allows(self, permission: UserPermission) -> bool {
         match self {
             Self::User => false,
+            // Admin 故意不含 ManageAuthFactors 与 RotateKeys：两者都能把账号或
+            // 密钥状态改到「更容易被接管」的方向，属于 Owner 保留权限。
             Self::Admin => matches!(
                 permission,
                 UserPermission::ManageUsers
