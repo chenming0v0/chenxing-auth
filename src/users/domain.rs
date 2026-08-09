@@ -7,6 +7,17 @@ use super::credentials::MAX_PASSWORD_LENGTH;
 pub const MIN_PASSWORD_LENGTH: usize = 10;
 pub const MIN_USERNAME_LENGTH: usize = 3;
 pub const MAX_USERNAME_LENGTH: usize = 64;
+
+/// 登录标识符长度上界（字符数，Issue #259）。
+///
+/// 254 是 RFC 5321 对邮件地址的长度上限，用户名上界（64）被它完全覆盖，
+/// 因此一个常量同时约束"邮箱或用户名"两种标识符形态。
+///
+/// 这个上界必须在标识符进入 SQL 之前生效。`find_credentials_by_identifier` 用
+/// `WHERE email = $1 OR username = $1` 查询，绑定参数虽然不存在注入问题，但把
+/// 数 MB 的字符串交给 Postgres 逐行比较，等于用一个请求换取一次全表扫描级的
+/// 无谓开销。审计侧同理：标识符会被哈希成 `account_ref`，哈希输入越大越亏。
+pub const MAX_IDENTIFIER_LENGTH: usize = 254;
 pub const RESERVED_USERNAMES: &[&str] = &[
     "admin",
     "administrator",
@@ -168,6 +179,16 @@ pub enum LoginError {
     InvalidIdentifier,
     #[error("password is empty")]
     EmptyPassword,
+    /// Issue #259：登录侧的口令长度上界。
+    ///
+    /// 注册和改密自 Issue #122 起就有上界，登录没有。攻击者不需要账号，
+    /// 只要 POST 一个数 MB 的 `password` 就能让服务端对哑哈希跑一次超长
+    /// Argon2——"用户不存在"路径的计时填充在这里反而成了放大器，因为它
+    /// 保证了无论账号存不存在都必然执行一次哈希。
+    ///
+    /// 限流按请求计数，拦不住单请求的计算量，所以必须在校验阶段拒绝。
+    #[error("password is too long")]
+    PasswordTooLong,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -288,13 +309,35 @@ pub fn validate_display_name(
     Ok(display_name)
 }
 
+/// 登录输入校验（Issue #259 补齐长度上界）。
+///
+/// 长度上界先于形态判定：长度检查是 O(n) 且不分配，而归一化会为标识符复制一份
+/// 新串。超长标识符在这里被挡掉，后面的 `trim().to_ascii_lowercase()` 就不会为
+/// 一个数 MB 的输入分配内存，`is_valid_email` 也不会对它做全串扫描。
+///
+/// 三个上界的作用点各不相同：
+/// - 标识符上界挡住进入 SQL 与审计哈希的超长串；
+/// - 口令上界挡住进入 Argon2 的超长明文；
+/// - 空口令仍然单独判定，错误语义与既有行为一致。
+///
+/// 判定顺序保持"标识符形态 → 口令"，与补丁前一致：两类错误在服务层都归一为
+/// `InvalidLoginInput`，但顺序变化会改变同时违反两项时的错误取值，没有必要动。
+///
+/// 登录侧只校验上界，不校验 `MIN_PASSWORD_LENGTH`：下界是注册期策略，
+/// 在登录期套用会让"下界收紧之前设置的存量短口令"直接无法登录。
 pub fn validate_login(input: LoginInput) -> Result<ValidatedLogin, LoginError> {
+    if input.identifier.chars().count() > MAX_IDENTIFIER_LENGTH {
+        return Err(LoginError::InvalidIdentifier);
+    }
     let identifier = input.identifier.trim().to_ascii_lowercase();
     if !is_valid_email(&identifier) && validate_username(&identifier).is_none() {
         return Err(LoginError::InvalidIdentifier);
     }
     if input.password.is_empty() {
         return Err(LoginError::EmptyPassword);
+    }
+    if input.password.chars().count() > MAX_PASSWORD_LENGTH {
+        return Err(LoginError::PasswordTooLong);
     }
 
     Ok(ValidatedLogin {

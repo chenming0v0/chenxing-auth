@@ -55,10 +55,14 @@ impl UserService {
         input: LoginInput,
         source_ip: Option<&str>,
     ) -> Result<UserId, UserServiceError> {
+        // 结构化校验先于限流预留与数据库查询：超长口令和超长标识符必须在触达
+        // Argon2、SQL 和限流维度之前被拒绝（Issue #259）。三类校验失败归一为同一个
+        // `InvalidLoginInput`，处理器再把它映射成与"凭据错误"完全一致的 401，
+        // 因此拒绝行为不引入新的账号存在性信号。
         let login = validate_login(input).map_err(|error| match error {
-            LoginError::InvalidIdentifier | LoginError::EmptyPassword => {
-                UserServiceError::InvalidLoginInput
-            }
+            LoginError::InvalidIdentifier
+            | LoginError::EmptyPassword
+            | LoginError::PasswordTooLong => UserServiceError::InvalidLoginInput,
         })?;
         let mut password = LoginPassword::new(login.password);
         let source_ip = self.source_ip(source_ip)?;
@@ -352,6 +356,58 @@ mod tests {
             .authenticate(
                 LoginInput {
                     identifier: "ab".to_owned(),
+                    password: "incorrect password".to_owned(),
+                    totp_code: None,
+                },
+                Some("127.0.0.1"),
+            )
+            .await;
+
+        assert!(matches!(result, Err(UserServiceError::InvalidLoginInput)));
+        assert_eq!(limiter.calls(), 0);
+    }
+
+    /// Issue #259：超长口令必须在限流预留与数据库查询之前被拒绝。
+    ///
+    /// 断言 `limiter.calls() == 0` 是关键：它同时证明请求没有触达限流维度，
+    /// 也证明流程根本没走到 `find_credentials_by_identifier`（连接池指向不可用
+    /// 主机，一旦查询就会返回 `Database` 而不是 `InvalidLoginInput`）。
+    /// 由此推出超长明文也不会到达 Argon2——口令校验在这两步之后。
+    #[tokio::test]
+    async fn oversized_password_is_rejected_before_limiter_or_database() {
+        let pool = crate::sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://invalid-host/unused")
+            .expect("lazy pool");
+        let limiter = Arc::new(CountingLimiter::default());
+        let service = UserService::new(pool, limiter.clone());
+        let result = service
+            .authenticate(
+                LoginInput {
+                    identifier: "user@example.com".to_owned(),
+                    password: "a".repeat(crate::users::credentials::MAX_PASSWORD_LENGTH + 1),
+                    totp_code: None,
+                },
+                Some("127.0.0.1"),
+            )
+            .await;
+
+        assert!(matches!(result, Err(UserServiceError::InvalidLoginInput)));
+        assert_eq!(limiter.calls(), 0);
+    }
+
+    /// 超长标识符同样不进入限流维度和 SQL 绑定参数（Issue #259）。
+    #[tokio::test]
+    async fn oversized_identifier_is_rejected_before_limiter_or_database() {
+        let pool = crate::sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://invalid-host/unused")
+            .expect("lazy pool");
+        let limiter = Arc::new(CountingLimiter::default());
+        let service = UserService::new(pool, limiter.clone());
+        let local = "a".repeat(crate::users::domain::MAX_IDENTIFIER_LENGTH);
+        let result = service
+            .authenticate(
+                LoginInput {
+                    identifier: format!("{local}@example.com"),
                     password: "incorrect password".to_owned(),
                     totp_code: None,
                 },
