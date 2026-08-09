@@ -297,9 +297,8 @@ pub(crate) fn pending_from_validated(
         code_challenge: request.code_challenge.clone(),
         code_challenge_method: "S256".to_owned(),
         session_token_hash: request.session_token_hash.clone(),
-        // 持有者绑定只在未登录路径上有意义：已有会话的请求直接进入授权确认
-        // 或预授权直通，不经过绑定端点。未登录路径由 `save_and_redirect_to_login`
-        // 生成 holder 并回填这个字段（#115）。
+        // holder 由 `save_and_redirect_to_ui` 在交给 SPA 之前生成并回填（#115 / #270）。
+        // 这里留 None：预授权直通路径不经过 SPA 也不经过绑定端点，不需要 holder。
         holder_hash: None,
     }
 }

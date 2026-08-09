@@ -1,13 +1,59 @@
 import { useEffect, useLayoutEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
-import { apiFetch, type AuthorizationDecisionResponse, type PendingAuthorization } from '../api'
+import {
+  ApiError,
+  apiFetch,
+  loadAuthorizationRequest,
+  loginRecoveryTarget,
+  type AuthorizationDecisionResponse,
+  type PendingAuthorization,
+} from '../api'
 import { OAuthShell } from '../components/shells'
 import { BrandMark, HudPanel, Icon, Notice } from '../components/ui'
 import { initialOf } from '../data'
 
 function useRequestId(): string | null {
   return new URLSearchParams(useLocation().search).get('request_id')
+}
+
+/**
+ * 读取待授权请求，并把「会话不再有效」收敛成一次带 `request_id` 的登录跳转。
+ *
+ * `loadAuthorizationRequest` 已经先绑后读，因此走到 401 说明浏览器当前确实没有
+ * 可用会话（而不是绑定指向了旧会话）。此时必须带上 `request_id` 去登录页，
+ * 登录页登录成功后才能重新绑定并回到确认页；丢掉它就会在登录页与确认页之间
+ * 无限打转（#270）。
+ */
+function usePendingAuthorization(requestId: string | null): {
+  pending: PendingAuthorization | null
+  message: string
+  setMessage: (message: string) => void
+} {
+  const navigate = useNavigate()
+  const [pending, setPending] = useState<PendingAuthorization | null>(null)
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    if (!requestId) {
+      setMessage('授权请求缺少 request_id，请重新发起。')
+      return
+    }
+    let active = true
+    void loadAuthorizationRequest(requestId)
+      .then((value) => { if (active) setPending(value) })
+      .catch((reason: unknown) => {
+        if (!active) return
+        if (reason instanceof ApiError && reason.status === 401) {
+          navigate(loginRecoveryTarget(window.location.pathname, window.location.search))
+          return
+        }
+        setMessage(reason instanceof Error ? reason.message : '授权请求已失效。')
+      })
+    return () => { active = false }
+  }, [navigate, requestId])
+
+  return { pending, message, setMessage }
 }
 
 function appMark(name?: string) {
@@ -53,20 +99,7 @@ export function OAuthAccountPage() {
   const navigate = useNavigate()
   const requestId = useRequestId()
   const { user } = useAuth()
-  const [pending, setPending] = useState<PendingAuthorization | null>(null)
-  const [message, setMessage] = useState('')
-
-  useEffect(() => {
-    if (!requestId) {
-      setMessage('授权请求缺少 request_id，请重新发起。')
-      return
-    }
-    let active = true
-    void apiFetch<PendingAuthorization>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}`)
-      .then((value) => { if (active) setPending(value) })
-      .catch((reason: unknown) => { if (active) setMessage(reason instanceof Error ? reason.message : '授权请求已失效。') })
-    return () => { active = false }
-  }, [requestId])
+  const { pending, message } = usePendingAuthorization(requestId)
 
   return (
     <OAuthShell>
@@ -129,21 +162,8 @@ export function OAuthAccountPage() {
 export function OAuthConsentPage() {
   const requestId = useRequestId()
   const { user } = useAuth()
-  const [pending, setPending] = useState<PendingAuthorization | null>(null)
-  const [message, setMessage] = useState('')
+  const { pending, message, setMessage } = usePendingAuthorization(requestId)
   const [submitting, setSubmitting] = useState(false)
-
-  useEffect(() => {
-    if (!requestId) {
-      setMessage('授权请求缺少 request_id，请重新发起。')
-      return
-    }
-    let active = true
-    void apiFetch<PendingAuthorization>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}`)
-      .then((value) => { if (active) setPending(value) })
-      .catch((reason: unknown) => { if (active) setMessage(reason instanceof Error ? reason.message : '授权请求已失效。') })
-    return () => { active = false }
-  }, [requestId])
 
   async function decide(decision: 'approve' | 'deny') {
     if (!requestId || submitting) return

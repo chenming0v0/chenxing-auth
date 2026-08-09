@@ -1,13 +1,17 @@
 use crate::{
     audit::AuditEvent,
     error,
-    oauth::providers::{
-        error_helpers::{
-            append_external_state_clear, external_binding_failure, external_callback_path,
-            external_error, external_error_with_request,
+    oauth::{
+        providers::{
+            error_helpers::{
+                append_external_state_clear, external_binding_failure, external_callback_path,
+                external_error, external_error_with_request,
+            },
+            service::ExternalOAuthError,
         },
-        provider_pending::{PendingRequestBindingError, bind_pending_request},
-        service::ExternalOAuthError,
+        request_binding::{
+            PendingRequestBinding, PendingRequestBindingError, bind_pending_request,
+        },
     },
     sessions::{cookies, domain::Session},
     state::AppState,
@@ -219,20 +223,15 @@ pub async fn external_callback(
         .as_deref()
         .map(cookies::authz_holder_hash);
     if let Some(request_id) = request_id
-        && let Err(binding_error) = bind_pending_request(
-            &state.authorization_requests,
+        && let Err(error_code) = bind_and_audit(
+            &state,
             request_id,
-            &session.token,
+            &session,
             holder_hash.as_deref(),
+            user_id,
         )
         .await
     {
-        let error_code = match binding_error {
-            PendingRequestBindingError::Expired => "oauth_request_expired",
-            PendingRequestBindingError::Invalid | PendingRequestBindingError::Storage => {
-                "oauth_request_binding_failed"
-            }
-        };
         // 绑定失败即登录失败：撤销刚建好的 Session 并清 Cookie，不留下"已登录"副作用。
         return external_binding_failure(
             &state,
@@ -307,6 +306,50 @@ pub async fn external_callback(
         return cookie_failure_response(&state, &session, returned_state, &callback_path).await;
     }
     response
+}
+
+/// 把外部登录建好的 Session 绑定到 pending 授权请求，失败时给出回跳错误码。
+///
+/// 与 SPA 的 `/bind` 端点共用 [`bind_pending_request`]，因此受控重绑语义一致：
+/// holder Cookie 匹配时，此前绑定的会话摘要会被换成这次外部登录的会话（#270）。
+/// 这条路径同样把重绑记进审计——授权码最终按重绑后的会话签发，身份变更必须可检索。
+async fn bind_and_audit(
+    state: &AppState,
+    request_id: &str,
+    session: &Session,
+    holder_hash: Option<&str>,
+    user_id: crate::users::domain::UserId,
+) -> Result<(), &'static str> {
+    match bind_pending_request(
+        &state.authorization_requests,
+        request_id,
+        &session.token,
+        holder_hash,
+    )
+    .await
+    {
+        Ok(PendingRequestBinding::Unchanged | PendingRequestBinding::Bound) => Ok(()),
+        Ok(PendingRequestBinding::Rebound) => {
+            state
+                .audit
+                .record_best_effort(AuditEvent::new(
+                    "user".to_owned(),
+                    Some(user_id.to_string()),
+                    "authorization_request_rebound".to_owned(),
+                    "oauth_authorization".to_owned(),
+                    None,
+                    serde_json::json!({"reason": "session_changed", "channel": "external_oauth"}),
+                ))
+                .await;
+            Ok(())
+        }
+        Err(PendingRequestBindingError::Expired) => Err("oauth_request_expired"),
+        Err(
+            PendingRequestBindingError::HolderInvalid
+            | PendingRequestBindingError::Contended
+            | PendingRequestBindingError::Storage,
+        ) => Err("oauth_request_binding_failed"),
+    }
 }
 
 /// 把身份解析失败映射成回跳给 SPA 的错误码。

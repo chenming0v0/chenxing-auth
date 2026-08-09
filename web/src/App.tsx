@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from 'react'
 import { Navigate, usePathname } from './router'
+import { loginRecoveryTarget } from './api'
 import { AuthProvider, useAuth } from './auth-state'
 import { getDocumentTitle } from './data'
 import { LandingPage } from './pages/landing'
@@ -61,8 +62,10 @@ function AppContent() {
   }
 
   if (protectedPath && status !== 'authenticated') {
-    const returnTo = `${window.location.pathname}${window.location.search}`
-    return <Navigate to={`/login?returnTo=${encodeURIComponent(returnTo)}`} />
+    // loginRecoveryTarget 会把 OAuth 的 request_id 提到顶层查询参数（#270）：
+    // 登录页只读自己的 request_id 决定登录后是否重新绑定待授权请求，
+    // 埋在 returnTo 里读不到，用户会在登录页与确认页之间反复跳转。
+    return <Navigate to={loginRecoveryTarget(window.location.pathname, window.location.search)} />
   }
 
   if (adminPath && status === 'authenticated' && user?.role === 'user') {

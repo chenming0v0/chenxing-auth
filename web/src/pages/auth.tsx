@@ -1,7 +1,7 @@
 import { useRef, useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
-import { apiFetch, externalLoginErrorMessage, type LoginResponse, type PendingLoginResponse } from '../api'
+import { apiFetch, bindAuthorizationRequest, externalLoginErrorMessage, type LoginResponse, type PendingLoginResponse } from '../api'
 import { AuthPanel, AuthShell } from '../components/shells'
 import { Button, Field, HudPanel, Icon, Notice, PasswordField } from '../components/ui'
 import { FactorOrchestrator } from './auth/factor-orchestrator'
@@ -41,7 +41,7 @@ export function safeReturnTo(value: string | null): string {
 export function AuthPage({ mode }: { mode: AuthMode }) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { refresh, clear } = useAuth()
+  const { refresh } = useAuth()
   const query = new URLSearchParams(location.search)
   const requestId = query.get('request_id')
   const returnTo = safeReturnTo(query.get('returnTo'))
@@ -90,9 +90,14 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
     }
     if (requestId) {
       try {
-        await apiFetch<void>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}/bind`, { method: 'POST' })
+        await bindAuthorizationRequest(requestId)
       } catch (error) {
-        clear()
+        // 登录本身已经成功，绑定失败只说明这条授权请求不可用（已过期、
+        // 不是本浏览器发起、或正被并发更新）。此处**不得**清除会话（#270）：
+        // 清了会把用户打回未认证态，登录页再次把他送去授权流程，形成
+        // 「登录成功 → 绑定失败 → 视为未登录 → 再登录」的 401 循环。
+        // 保留会话、留在登录页展示原因，用户可以回到应用重新发起授权，
+        // 也可以直接进控制台。
         setMessage(error instanceof Error ? error.message : '授权请求绑定失败，请重新开始。')
         return
       }
