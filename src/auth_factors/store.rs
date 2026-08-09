@@ -1,4 +1,4 @@
-use redis::{AsyncCommands, Script};
+use redis::{AsyncCommands, ExistenceCheck, Script, SetExpiry, SetOptions};
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -242,6 +242,37 @@ impl LoginTicketStore {
         let payload = serde_json::to_string(value)?;
         let _: () = connection.set_ex(key, payload, ttl_seconds).await?;
         Ok(())
+    }
+
+    /// 只在键不存在时写入，返回本次调用是否是写入者。
+    ///
+    /// 存在的键一律保持原值：调用方靠返回的 `false` 判断自己是竞态的败者，
+    /// 而不需要先 `find_json` 再 `save_json`。先查后写在两次往返之间没有任何
+    /// 互斥，两个并发请求会都读到空、都写入，后者覆盖前者已经交给用户的密钥
+    /// 材料（#265）。Redis 的 `SET NX EX` 是单条命令，检查与写入在同一个原子
+    /// 步骤内完成，因此不存在这个窗口。
+    ///
+    /// 序列化在发出命令之前完成：序列化失败不应该占用键，否则会把一个本可重试
+    /// 的编码错误变成 TTL 之内谁都无法重新预留的死锁。
+    pub async fn save_json_if_absent<T: Serialize>(
+        &self,
+        key: &str,
+        value: &T,
+        ttl_seconds: u64,
+    ) -> Result<bool, LoginTicketStoreError> {
+        let payload = serde_json::to_string(value)?;
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        // `SET` 在 NX 未命中时回复 Nil，redis-rs 把 Nil 解析为 false、OK 解析为 true。
+        let stored: bool = connection
+            .set_options(
+                key,
+                payload,
+                SetOptions::default()
+                    .conditional_set(ExistenceCheck::NX)
+                    .with_expiration(SetExpiry::EX(ttl_seconds)),
+            )
+            .await?;
+        Ok(stored)
     }
 
     pub async fn delete(&self, key: &str) -> Result<(), LoginTicketStoreError> {

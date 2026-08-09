@@ -123,19 +123,19 @@ impl AuthFactorService {
         {
             return Ok(None);
         }
-        if self
-            .tickets
-            .find_json::<PendingTotpSetup>(&Self::totp_setup_key(ticket_id))
-            .await?
-            .is_some()
-        {
-            return Ok(None);
-        }
         let enrollment = TotpEnrollment::new(account_name, issuer)?;
         let encrypted_secret =
             encrypt_totp_secret_with_ring(&self.encryption_keys, enrollment.secret_bytes())?;
-        self.tickets
-            .save_json(
+        // 一次原子写既做「是否已存在待确认注册」的检查，也做预留：胜者拿到 true，
+        // 败者拿到 false 并原样返回 Ok(None)。这里不能退回先 find_json 再 save_json：
+        // 两个并发 setup 请求会都读到空、都写入，后写的密钥覆盖先写的，而先请求的
+        // 用户已经把前一个密钥存进了验证器 App，之后的确认码永远对不上（#265）。
+        //
+        // 败者丢弃自己刚生成的 enrollment：它从未离开进程，没有任何一方持有它，
+        // 而已预留的密钥保持不变，胜者的确认流程不受影响。
+        let reserved = self
+            .tickets
+            .save_json_if_absent(
                 &Self::totp_setup_key(ticket_id),
                 &PendingTotpSetup {
                     user_id: ticket.user_id,
@@ -144,7 +144,7 @@ impl AuthFactorService {
                 LoginTicket::TTL.whole_seconds() as u64,
             )
             .await?;
-        Ok(Some(enrollment))
+        Ok(reserved.then_some(enrollment))
     }
 
     pub async fn confirm_totp_enrollment(
