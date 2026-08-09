@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import {
   apiFetch,
   type PasskeyAuthenticatorAttachment,
@@ -7,29 +7,26 @@ import {
 } from '../../../api'
 import { Button, Field, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
 import { SelectField } from '../../../components/select'
+import { useSettingsResource, type SettingsPanelProps } from './panel'
 
 function splitOrigins(value: string): string[] {
   return value.replace(/,/g, ' ').split(/\s+/).map((item) => item.trim()).filter(Boolean)
 }
 
-export function PasskeyPanel({ onMessage }: { onMessage: (message: string, tone?: 'success' | 'warning') => void }) {
+export function PasskeyPanel({ onMessage }: SettingsPanelProps) {
   const [setting, setSetting] = useState<PasskeySetting | null>(null)
   const [originsText, setOriginsText] = useState('')
   const [busy, setBusy] = useState(false)
-  const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    let active = true
-    void apiFetch<PasskeySetting>('/api/v1/admin/settings/passkey')
-      .then((value) => {
-        if (!active) return
-        setSetting(value)
-        setOriginsText(value.allowed_origins.join(', '))
-      })
-      .catch((reason: unknown) => onMessage(reason instanceof Error ? reason.message : 'Passkey 设置加载失败。', 'warning'))
-      .finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
-  }, [onMessage])
+  const { loading } = useSettingsResource<PasskeySetting>({
+    path: '/api/v1/admin/settings/passkey',
+    onMessage,
+    failureMessage: 'Passkey 设置加载失败。',
+    apply: (value) => {
+      setSetting(value)
+      setOriginsText(value.allowed_origins.join(', '))
+    },
+  })
 
   function updateSetting(patch: Partial<PasskeySetting>) {
     if (busy) return

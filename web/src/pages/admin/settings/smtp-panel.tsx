@@ -1,21 +1,19 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { apiFetch, type SmtpSetting } from '../../../api'
 import { Button, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '../../../components/ui'
+import { useSettingsResource, type SettingsPanelProps } from './panel'
 
-export function SmtpPanel({ onMessage }: { onMessage: (message: string, tone?: 'success' | 'warning') => void }) {
+export function SmtpPanel({ onMessage }: SettingsPanelProps) {
   const [setting, setSetting] = useState<SmtpSetting | null>(null)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
-  const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    let active = true
-    void apiFetch<SmtpSetting>('/api/v1/admin/settings/smtp')
-      .then((value) => { if (active) setSetting(value) })
-      .catch((reason: unknown) => onMessage(reason instanceof Error ? reason.message : 'SMTP 设置加载失败。', 'warning'))
-      .finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
-  }, [onMessage])
+  const { loading } = useSettingsResource<SmtpSetting>({
+    path: '/api/v1/admin/settings/smtp',
+    onMessage,
+    failureMessage: 'SMTP 设置加载失败。',
+    apply: setSetting,
+  })
 
   function updateSetting(patch: Partial<SmtpSetting>) {
     if (busy) return

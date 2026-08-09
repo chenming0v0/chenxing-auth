@@ -8,6 +8,7 @@ import { OAuthProvidersPanel } from './settings/oauth-providers-panel'
 import { PasskeyPanel } from './settings/passkey-panel'
 import { SecurityLimitsPanel } from './settings/security-limits-panel'
 import { SmtpPanel } from './settings/smtp-panel'
+import { useFlashMessage } from './settings/panel'
 
 export function AdminSettings() {
   const access = useAdminAccess()
@@ -29,18 +30,13 @@ export function AdminSettings() {
   )
 }
 
-function SettingsWorkspace({ access }: { access: AdminAccess }) {
-  const [message, setMessage] = useState('')
-  const [tone, setTone] = useState<'success' | 'warning'>('success')
+export function SettingsWorkspace({ access }: { access: AdminAccess }) {
   const [keyResult, setKeyResult] = useState<KeyRotationResponse | null>(null)
   const [busy, setBusy] = useState(false)
   const canManageProviders = Boolean(access.data?.permissions.includes('manage_identity_providers'))
   const canRotateKeys = Boolean(access.data?.permissions.includes('rotate_keys'))
-
-  function flash(next: string, nextTone: 'success' | 'warning' = 'success') {
-    setMessage(next)
-    setTone(nextTone)
-  }
+  /* flash 的引用跨渲染稳定，面板的加载 effect 不会因为消息状态变化而重跑（#268）。 */
+  const { flash, message } = useFlashMessage()
 
   async function rotateKey() {
     if (!canRotateKeys || !window.confirm('确认轮换签名密钥吗？\n轮换后新密钥立即用于签发；旧公钥会在 KEY_ROTATION_GRACE_SECONDS 配置的保留窗口内继续用于验签（该窗口需覆盖 Access Token 和 ID Token 有效期），过期的旧密钥材料将在后续启动或轮换时清理。')) return
@@ -57,7 +53,7 @@ function SettingsWorkspace({ access }: { access: AdminAccess }) {
 
   return (
     <div className="flex flex-col gap-6">
-      {message ? <Notice tone={tone}>{message}</Notice> : null}
+      {message ? <Notice tone={message.tone}>{message.text}</Notice> : null}
       <PasskeyPanel onMessage={flash} />
       <EmailPolicyPanel onMessage={flash} />
       <SmtpPanel onMessage={flash} />

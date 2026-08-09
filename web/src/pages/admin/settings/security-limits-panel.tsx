@@ -1,6 +1,7 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { apiFetch, type SecurityLimitsSetting } from '../../../api'
 import { Button, Field, HudPanel, Icon, Notice } from '../../../components/ui'
+import { useSettingsResource, type SettingsPanelProps } from './panel'
 
 type FieldKey = keyof SecurityLimitsSetting
 type FieldSpec = { key: FieldKey; label: string; hint: string; maximum: number }
@@ -101,19 +102,16 @@ export function validateSecurityLimitInput(
   return { value: numeric }
 }
 
-export function SecurityLimitsPanel({ onMessage }: { onMessage: (message: string, tone?: 'success' | 'warning') => void }) {
+export function SecurityLimitsPanel({ onMessage }: SettingsPanelProps) {
   const [draft, setDraft] = useState<Record<string, string> | null>(null)
   const [busy, setBusy] = useState(false)
-  const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    let active = true
-    void apiFetch<SecurityLimitsSetting>('/api/v1/admin/settings/security-limits')
-      .then((value) => { if (active) setDraft(toDraft(value)) })
-      .catch((reason: unknown) => onMessage(reason instanceof Error ? reason.message : '安全限流配置加载失败。', 'warning'))
-      .finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
-  }, [onMessage])
+  const { loading } = useSettingsResource<SecurityLimitsSetting>({
+    path: '/api/v1/admin/settings/security-limits',
+    onMessage,
+    failureMessage: '安全限流配置加载失败。',
+    apply: (value) => setDraft(toDraft(value)),
+  })
 
   function updateDraft(key: FieldKey, value: string) {
     if (busy) return
