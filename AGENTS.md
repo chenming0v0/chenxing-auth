@@ -87,84 +87,123 @@
 - 新增或修改任何卡片、玻璃容器、表单面板等 UI 时，必须使用项目级 `chenxing-hud-panel` skill 指定的公共容器 `.chenxing-hud-panel`，并通过 `web/src/components/ui.tsx` 的 `HudPanel` 组件渲染；禁止另建玻璃卡片样式或复用旧的 `chenxing-glass-strong chenxing-hud-frame` 组合。
 - 面板样式的唯一来源是 `web/src/chenxing-design.css`，不要复制到其他 CSS 或组件内联样式。
 
-## 测试要求
+### 变更验收
 
-按风险选择测试层级：
-
+- 完成任何代码变更后，必须使用项目级 `src-line-limit` skill 检查 `src` 目录：超过 300 行属弱警告，必须在变更说明中记录；超过 500 行属强警告，完成前必须拆分或重构，除非用户明确接受例外，不得声称任务完成。
 - 新增部署和 CI 能力必须同时验证脚本语法、Compose 配置、Action 文件结构、发布产物/校验和声明和覆盖率门槛；不能只验证 Rust 编译。
 
-完成任何代码变更后，必须使用项目级 `src-line-limit` skill 检查 `src` 目录：
+## 测试与验证
 
-- 超过 300 行的文件属于弱警告，必须在变更说明中记录。
-- 超过 500 行的文件属于强警告，完成前必须拆分或重构；除非用户明确接受例外，不得声称任务完成。
+本节规定两件事：跑测试用什么工具，谁能跑哪些命令。
 
-项目拥有 Cargo 配置后，验证必须按执行角色和变更风险分层。禁止把完整测试套件作为每个子任务的默认收尾动作。
+核心约束一句话——验证强度按执行角色和变更风险分层。全量套件是需要用户授权的一次性动作，不是每个子任务的默认收尾。
 
-#### 测试执行权限
+### 测试工具
 
-- **子代理禁止执行 `cargo test --all-features`、`cargo nextest run --all-features`、`cargo llvm-cov` 或其他完整测试套件命令。** 子代理只允许使用与修改范围匹配的 `cargo check` 命令；默认使用 `cargo check`，只有确实需要检查测试目标编译时才使用 `cargo check --tests` 或 `cargo check --all-targets`。
-- 子代理不得自行安装 `cargo-nextest`，不得启动 PostgreSQL/Redis 集成测试，不得在多个子代理中并行启动 Cargo 命令。
-- 完整测试由当前会话的编排者统一决定、统一执行，避免每个子代理重复编译和运行整套测试。
-- **未经用户明确授权，任何角色都不得执行 `cargo test --all-features`。**
-- 只有在修改数据库、迁移、SQL repository、Redis/session 持久化或其他数据库集成测试相关代码时，编排者才可以向用户请求授权；用户明确同意后，编排者最多使用一次 `cargo test --all-features` 进行最终验证。
-- 用户授权只对当前任务的这一次完整测试有效，不自动授权后续任务、子代理或覆盖率命令。
-- 修复必须先完成代码、静态检查和必要的聚焦编译；只有在最终修复完成后才能请求或使用完整测试授权。若 CI 随后失败，由编排者负责根据 CI 日志继续修复，不能把问题转交给子代理反复运行全量测试。
+判定标准只有一条：命令是否实际执行 `#[test]` 用例。执行的，走脚本；不执行的，不受限制。
 
-#### 默认开发验证
+#### 不执行用例的命令
 
-日常开发默认使用：
+日常开发反馈，改完就跑，任何角色无限制：
 
-```powershell
+```bash
 cargo fmt --check
 cargo check --all-features
 ```
 
-只修改纯 Rust/domain/config 逻辑时，必要时补充：
+需要确认测试目标能编译时，用 `cargo check --tests` 或 `cargo check --all-targets`。这两个只编译不跑用例，同样无限制。默认优先 `cargo check`，确有需要再扩大范围。
 
-```powershell
-cargo test --lib --all-features
+`cargo check` 是开发反馈的第一道检查，但它不替代运行时测试。
+
+#### 测试脚本 `test_sh/test.sh`
+
+要执行用例，统一走这个脚本。它做三件裸 Cargo 命令做不到的事：
+
+- 通过的用例不进终端，只输出失败和汇总，避免污染上下文。完整输出始终落在 `target/test-logs/<时间戳>/`，需要时按路径查看。
+- 报告分阶段耗时与总耗时。
+- 结束后自动剪枝 `target` 里陈旧的测试二进制。
+
+模式与耗时：
+
+| 模式 | 作用 | 耗时 |
+| --- | --- | --- |
+| `--lib` | 只跑单元测试，不连数据库 | 317 用例，约 6 秒 |
+| `--test NAME` | 只跑指定集成测试目标，可重复 | 约 5 秒 |
+| `--clean-only` | 只清理陈旧产物，不编译不测试 | — |
+| `--full` | 完整套件 | 681 用例，约 1 分 21 秒 |
+| `--gate` | 完整验证链：check、测试、clippy、覆盖率、audit | — |
+| `--coverage` | 仅覆盖率门槛，行覆盖 75% | — |
+| `--clippy` | 仅 `clippy -D warnings` | — |
+| `--audit` | 仅 `cargo audit` | — |
+
+不带模式裸调用会以退出码 2 失败，不存在隐式的默认全量。
+
+后五个模式加 `-E / --filter` 属于编排者专属，需按次内联传入角色变量：
+
+```bash
+CHENXING_TEST_ROLE=orchestrator ./test_sh/test.sh --full
 ```
 
-`cargo check` 不能替代运行时测试，但它应当是开发反馈的第一道检查。修改 SQL、迁移、PostgreSQL repository、Redis/session、OAuth 端到端流程或并发持久化逻辑时，必须在 CI 中运行数据库集成测试；本地完整集成测试不作为默认开发动作。
+单目标集成测试可以连 PostgreSQL / Redis。`tests/support/db_isolation.rs` 提供 per-test schema 隔离，成本和风险都远低于全量套件。
 
-#### 编排者最终验证与 CI
+脚本分三个文件：`test.sh`（参数解析、角色门控、模式分发）、`lib.sh`（计时、汇总表、日志、服务探测）、`phases.sh`（各验证阶段）。后两个由 `test.sh` source，不单独执行。
 
-标准完整验证命令如下，仅由编排者在用户授权或 CI/发布流程明确要求时执行：
+#### 为什么必须剪枝 target
 
-```powershell
-cargo check --all-targets --all-features
-cargo nextest run --all-features
-cargo clippy --all-targets --all-features -- -D warnings
-cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info --fail-under-lines 75
-cargo audit
-```
+`deps/` 下的文件名是 `名字-<hash>`，hash 由 feature 组合、profile、依赖版本、rustc 版本共同决定。任何一项变化都会产出一份新产物，而旧的不会被删除。本项目 77 个测试目标、每个约 242 MiB（其中 98% 是调试信息），因此每换一套编译配置就多占约 16 GiB，历史上曾累积到 160 GiB。
 
-数据库集成测试必须在 CI 提供的 PostgreSQL 和 Redis 服务上运行。CI 可以使用 `cargo nextest run --all-features` 并行调度独立测试二进制；本地执行前仍需满足本节的用户授权规则。标准 `cargo test --all-features` 只在用户明确授权后由编排者执行一次，不得由子代理执行。
+`test_sh/prune_target.py` 依据 Cargo 自己报告的 `compiler-artifact` 清单判定哪些产物还活着，只删陈旧配置的残留。受限编译（`--lib` / `--test`）下退化为同名去重，并用 mtime 窗口保留同一次构建的多个合法产物。
 
-本机如经用户授权需要运行完整集成测试，可安装并使用 `cargo-nextest`。它会并行调度不同的测试二进制；`cargo test -- --test-threads` 只控制单个测试二进制内部的线程，不能并行化多个 `tests/*.rs` 测试进程：
+`--coverage` 会用独立的 `target/llvm-cov-target` 从零重编译，运行器在覆盖率阶段结束后顺带剪枝该目录。
 
-```powershell
-cargo install cargo-nextest --locked
-cargo nextest run --all-features --test-threads 32
-```
+#### 会执行用例的裸 Cargo 命令
 
-`cargo-nextest` 是本地加速工具，不替代标准 `cargo test` 的通用验证命令；CI 使用 Runner 默认资源，不要硬编码本机的 32 线程。
+`cargo test`、`cargo nextest run`、`cargo llvm-cov` 都执行用例。默认不使用，唯一例外见「编排者」。
 
-本机编译性能基准：热缓存下 `cargo check --all-targets --all-features` 和 `cargo test --all-features --no-run` 通常应接近亚秒级；冷编译全部测试目标约需几十秒，主要成本来自 `aws-lc-sys`、`ring`、`sqlx` 等依赖和测试二进制链接。日常开发优先使用：
+### 权限
 
-```powershell
-cargo check --all-targets --all-features
-cargo check --all-features
-```
+#### 所有角色
 
-不要同时启动多个 Cargo 编译或测试命令；它们会争抢 package cache 和 target build lock，导致耗时明显增加。
+执行用例一律通过 `test_sh/test.sh`。不执行用例的 `fmt` / `check` 不受限。
 
-如果某个命令暂时因工具链或外部服务不可用而无法运行，必须在变更说明中明确记录原因，不要声称验证通过。
+`CHENXING_TEST_ROLE` 必须按次内联传入，禁止 `export`。一旦导出，派生的子代理会继承编排者权限，门控就失效了。
 
-### 分支工作流
+不要同时启动多个 Cargo 编译或测试命令，它们会争抢 package cache 和 target build lock，导致耗时明显增加。
+
+如果某个命令因工具链或外部服务不可用而跑不起来，在变更说明中写明原因，不要声称验证通过。
+
+角色变量是防误触的护栏，不是安全边界，子代理自己也能设。真正的权威是本节规则。运行器每次会把生效角色和模式打在第一行，越权痕迹在对话记录里可查。
+
+#### 子代理
+
+允许：`fmt` / `check` 的全部形式；`test.sh --lib`、`--test NAME`、`--clean-only`。
+
+禁止：
+
+- 任何会运行全部用例的命令，包括 `test.sh --full` / `--gate` / `--coverage`。
+- `-E / --filter`。`-E 'all()'` 等于全量套件，会绕过门控。
+- 全部执行用例的裸 Cargo 命令：`cargo test --all-features`、`cargo nextest run --all-features`、`cargo llvm-cov`。
+- 绕过运行器直接调用裸 Cargo 测试命令。
+
+#### 编排者
+
+`--clippy`、`--audit` 不执行用例，无需授权可直接跑；但它们在运行器里仍属编排者专属模式，同样要按次内联传入 `CHENXING_TEST_ROLE=orchestrator`。
+
+`--full`、`--gate`、`--coverage` 属于全量，必须先取得用户明确同意：
+
+- 只有在改动数据库、迁移、SQL repository、Redis/session 持久化、OAuth 端到端流程或并发持久化逻辑时，才向用户请求授权。
+- 请求时机是最终修复完成之后。先把代码改完，静态检查和聚焦编译过了，再问。
+- 一次授权只对当次这一次运行有效，不延伸到后续任务、子代理或覆盖率命令。
+- 全量跑出问题由编排者按日志继续修复，不转交子代理反复跑全量。
+- 本地不跑全量时，这类改动的数据库集成测试由 CI 覆盖。
+
+同一次授权内，如果确实需要裸命令复现特定失败，可以用 `cargo test --all-features` 或 `cargo nextest run --all-features` 替代 `--full`，同样只跑一次。这是授权后的替代形式，不是独立权限；未授权时它和 `--full` 一样禁止。同一授权下可按需 `cargo install cargo-nextest --locked`，它并行调度不同测试二进制，而 `cargo test -- --test-threads` 只控制单个二进制内部的线程。
+
+## 分支工作流
 
 - 本项目的主要开发分支是 `dev`。用户未明确指定分支、说“主要分支”或要求合并到主线时，默认使用 `dev`，不要自行使用已废弃的 `master`。
-- `releases` 是释放分支，仅在变更已经在 `dev` 验证通过、准备发布或用户明确要求“释放分支”时使用。
+- `releases` 是释放分支。
+- `releases` 不接受任何直接提交，只接受来自其他分支的合并。发现自己即将在 `releases` 上提交时，不要停下询问：自觉切回 `dev` 再提交，并顺口告诉用户一句他忘记切分支了。这条自主切换分支的权限仅限“当前确实要提交、且提交目标是 `releases`”这一种情形，其他分支切换仍需用户确认。
 - `design` 是设计稿分支，只保存 `design-auth-chengming/` 和设计稿专用 skill；它单向从 `dev` 接收更新，禁止合并回 `dev` 或 `releases`。
 - 功能分支应从当前明确的目标基线创建；开始工作前必须检查当前分支、工作区状态、远端跟踪关系以及目标分支的祖先关系，确认没有把功能分支误合入 `dev` 或 `releases`。
 - 涉及分支合并、推送、删除或发布时，先向用户确认目标分支语义；“主要分支”表示 `dev`，“释放分支”明确表示 `releases`。
