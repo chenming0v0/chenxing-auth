@@ -1612,8 +1612,8 @@ components:
       type: object
       required: [identifier, password]
       properties:
-        identifier: { type: string, description: 用户名或邮箱 }
-        password: { type: string, format: password, minLength: 10 }
+        identifier: { type: string, maxLength: 254, description: 用户名或邮箱；超过 254 字符按凭据错误拒绝 }
+        password: { type: string, format: password, minLength: 10, maxLength: 128, description: 超过 128 字符按凭据错误拒绝，不返回独立错误码 }
         totp_code: { type: string, pattern: '^[0-9]{6}$' }
     PendingLoginResponse:
       type: object
