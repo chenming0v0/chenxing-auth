@@ -1,14 +1,12 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::fmt;
 use thiserror::Error;
 use url::{Host, Url};
 
-use crate::users::domain::normalize_email;
+use super::claims::ClaimMapping;
 
 const MAX_NAME_LENGTH: usize = 128;
 const MAX_SLUG_LENGTH: usize = 64;
-const MAX_CLAIM_PATH_LENGTH: usize = 128;
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -33,6 +31,11 @@ pub struct ProviderInput {
     #[serde(default = "default_email_claim")]
     pub email_claim: String,
     pub name_claim: Option<String>,
+    /// 指向布尔型邮箱验证状态的 claim 路径，必填。
+    ///
+    /// 线上契约上它仍是可省略字段（旧客户端不会收到 422），但省略会在
+    /// `validate()` 里被拒成 400 `invalid_oauth_provider`。缺少它的 provider
+    /// 无法判断外部邮箱是否已验证，只能拒绝配置（Issue #261）。
     pub email_verified_claim: Option<String>,
     #[serde(default)]
     pub client_auth_method: ClientAuthMethod,
@@ -96,10 +99,8 @@ pub struct ValidatedProviderInput {
     pub client_id: String,
     pub client_secret: Option<String>,
     pub scopes: Vec<String>,
-    pub subject_claim: String,
-    pub email_claim: String,
-    pub name_claim: Option<String>,
-    pub email_verified_claim: Option<String>,
+    /// 已校验的 claim 路径集合，必然包含 `email_verified`。
+    pub claims: ClaimMapping,
     pub client_auth_method: ClientAuthMethod,
     pub pkce_enabled: bool,
 }
@@ -118,10 +119,7 @@ impl fmt::Debug for ValidatedProviderInput {
                 &self.client_secret.as_ref().map(|_| "<redacted>"),
             )
             .field("scopes", &self.scopes)
-            .field("subject_claim", &self.subject_claim)
-            .field("email_claim", &self.email_claim)
-            .field("name_claim", &self.name_claim)
-            .field("email_verified_claim", &self.email_verified_claim)
+            .field("claims", &self.claims)
             .field("client_auth_method", &self.client_auth_method)
             .field("pkce_enabled", &self.pkce_enabled)
             .finish()
@@ -142,6 +140,9 @@ pub struct ProviderRecord {
     pub subject_claim: String,
     pub email_claim: String,
     pub name_claim: Option<String>,
+    /// 保持 `Option`：数据库列可空，存量行可能是 NULL。
+    /// 读取时不报错（管理员需要看到这些行才能修复），使用时由
+    /// [`ProviderRecord::claim_mapping`] 拒绝。
     pub email_verified_claim: Option<String>,
     pub client_auth_method: ClientAuthMethod,
     pub pkce_enabled: bool,
@@ -200,13 +201,12 @@ impl ProviderInput {
             return Err(ProviderValidationError::InvalidClientSecret);
         }
         let scopes = normalize_scopes(self.scopes)?;
-        let subject_claim = validate_claim_path(self.subject_claim)?;
-        let email_claim = validate_claim_path(self.email_claim)?;
-        let name_claim = self.name_claim.map(validate_claim_path).transpose()?;
-        let email_verified_claim = self
-            .email_verified_claim
-            .map(validate_claim_path)
-            .transpose()?;
+        let claims = ClaimMapping::new(
+            self.subject_claim,
+            self.email_claim,
+            self.name_claim,
+            self.email_verified_claim,
+        )?;
 
         Ok(ValidatedProviderInput {
             name,
@@ -217,10 +217,7 @@ impl ProviderInput {
             client_id,
             client_secret: self.client_secret,
             scopes,
-            subject_claim,
-            email_claim,
-            name_claim,
-            email_verified_claim,
+            claims,
             client_auth_method: self.client_auth_method,
             pkce_enabled: self.pkce_enabled,
         })
@@ -228,6 +225,20 @@ impl ProviderInput {
 }
 
 impl ProviderRecord {
+    /// 把存储行里的 claim 路径收敛成一个可用的映射。
+    ///
+    /// 存量行的 `email_verified_claim` 可能是 NULL（该列在 provider 功能上线时
+    /// 就是可空的）。这类 provider 无法判断外部邮箱是否已验证，所有使用它的路径
+    /// 都必须在这里失败，而不是退化成「当作已验证」。
+    pub fn claim_mapping(&self) -> Result<ClaimMapping, ProviderValidationError> {
+        ClaimMapping::new(
+            self.subject_claim.clone(),
+            self.email_claim.clone(),
+            self.name_claim.clone(),
+            self.email_verified_claim.clone(),
+        )
+    }
+
     pub fn summary(&self) -> ProviderSummary {
         ProviderSummary {
             id: self.id,
@@ -250,55 +261,6 @@ impl ProviderRecord {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExternalUser {
-    pub subject: String,
-    pub email: String,
-    pub name: Option<String>,
-    pub email_verified: bool,
-}
-
-impl ExternalUser {
-    pub fn from_claims(
-        claims: &Value,
-        provider: &ValidatedProviderInput,
-    ) -> Result<Self, ProviderValidationError> {
-        let subject = claim_string(claims, &provider.subject_claim)
-            .filter(|value| !value.trim().is_empty())
-            .ok_or(ProviderValidationError::MissingSubject)?;
-        let email = claim_string(claims, &provider.email_claim)
-            .map(|value| normalize_email(&value))
-            .filter(|value| is_valid_email(value))
-            .ok_or(ProviderValidationError::InvalidEmail)?;
-        let email_verified = provider
-            .email_verified_claim
-            .as_deref()
-            .map(|path| {
-                extract_claim(claims, path)
-                    .and_then(Value::as_bool)
-                    .ok_or(ProviderValidationError::EmailNotVerified)
-            })
-            .transpose()?
-            .unwrap_or(false);
-        if provider.email_verified_claim.is_some() && !email_verified {
-            return Err(ProviderValidationError::EmailNotVerified);
-        }
-        let name = provider
-            .name_claim
-            .as_deref()
-            .and_then(|path| claim_string(claims, path))
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty());
-
-        Ok(Self {
-            subject,
-            email,
-            name,
-            email_verified,
-        })
-    }
-}
-
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ProviderValidationError {
     #[error("provider name is invalid")]
@@ -315,21 +277,14 @@ pub enum ProviderValidationError {
     InvalidScope,
     #[error("provider claim path is invalid")]
     InvalidClaimPath,
+    #[error("email_verified_claim is required")]
+    MissingEmailVerifiedClaim,
     #[error("external subject is missing")]
     MissingSubject,
     #[error("external email is invalid")]
     InvalidEmail,
     #[error("external email is not verified")]
     EmailNotVerified,
-}
-
-pub fn extract_claim<'a>(claims: &'a Value, path: &str) -> Option<&'a Value> {
-    path.split('.')
-        .try_fold(claims, |value, part| value.get(part))
-}
-
-fn claim_string(claims: &Value, path: &str) -> Option<String> {
-    extract_claim(claims, path).and_then(|value| value.as_str().map(str::to_owned))
 }
 
 fn validate_endpoint(value: &str) -> Result<Url, ProviderValidationError> {
@@ -383,36 +338,6 @@ fn normalize_scopes(scopes: Vec<String>) -> Result<Vec<String>, ProviderValidati
         return Err(ProviderValidationError::InvalidScope);
     }
     Ok(normalized)
-}
-
-fn validate_claim_path(value: String) -> Result<String, ProviderValidationError> {
-    let path = value.trim().to_owned();
-    if path.is_empty()
-        || path.chars().count() > MAX_CLAIM_PATH_LENGTH
-        || !path.split('.').all(|part| {
-            !part.is_empty()
-                && part
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
-        })
-    {
-        return Err(ProviderValidationError::InvalidClaimPath);
-    }
-    Ok(path)
-}
-
-fn is_valid_email(email: &str) -> bool {
-    let mut parts = email.split('@');
-    let Some(local) = parts.next() else {
-        return false;
-    };
-    let Some(domain) = parts.next() else {
-        return false;
-    };
-    parts.next().is_none()
-        && !local.is_empty()
-        && domain.contains('.')
-        && !email.chars().any(char::is_whitespace)
 }
 
 fn default_subject_claim() -> String {

@@ -380,6 +380,15 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0020_user_avatar.sql")),
             false,
         ),
+        Migration::new(
+            21,
+            Cow::Borrowed("external provider requires email_verified claim"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!(
+                "../migrations/0021_oauth_provider_require_email_verified_claim.sql"
+            )),
+            false,
+        ),
     ];
 
     Migrator {

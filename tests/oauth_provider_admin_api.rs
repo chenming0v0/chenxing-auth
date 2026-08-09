@@ -102,6 +102,108 @@ async fn provider_admin_api_rejects_remote_http_endpoint() {
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
+/// Issue #261：没有 `email_verified_claim` 的 provider 不允许落库。
+///
+/// 三种形态都要拦：字段缺失、显式 null、空白串。任一放过去，该 provider
+/// 就能给未验证的外部邮箱自动建号。
+#[tokio::test]
+async fn provider_admin_api_requires_email_verified_claim() {
+    let (router, database, key_directory) = setup().await;
+
+    // 三种缺失形态：字段不存在、显式 null、空白串。
+    for shape in ["missing", "null", "blank"] {
+        let slug = format!("no-verified-claim-{}", Uuid::new_v4().simple());
+        let mut input = provider_input(&slug);
+        match shape {
+            "missing" => {
+                input
+                    .as_object_mut()
+                    .expect("object")
+                    .remove("email_verified_claim");
+            }
+            "null" => input["email_verified_claim"] = Value::Null,
+            _ => input["email_verified_claim"] = Value::String("   ".to_owned()),
+        }
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/admin/oauth/providers")
+                    .header("authorization", "Bearer provider-admin-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(input.to_string()))
+                    .expect("provider request"),
+            )
+            .await
+            .expect("provider response");
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "email_verified_claim {shape} 必须被拒绝"
+        );
+        assert_eq!(json(response).await["code"], "invalid_oauth_provider");
+
+        let count: (i64,) =
+            chenxing_auth::sqlx::query_as("SELECT COUNT(*) FROM oauth_providers WHERE slug = $1")
+                .bind(&slug)
+                .fetch_one(&database)
+                .await
+                .expect("provider count");
+        assert_eq!(count.0, 0, "email_verified_claim {shape} 不得落库");
+    }
+
+    // 更新路径同样不允许把已有配置清空。
+    let slug = format!("verified-claim-{}", Uuid::new_v4().simple());
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/oauth/providers")
+                .header("authorization", "Bearer provider-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(provider_input(&slug).to_string()))
+                .expect("provider request"),
+        )
+        .await
+        .expect("provider response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let mut update = provider_input(&slug);
+    update["email_verified_claim"] = Value::Null;
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/admin/oauth/providers/{slug}"))
+                .header("authorization", "Bearer provider-admin-token")
+                .header("content-type", "application/json")
+                .body(Body::from(update.to_string()))
+                .expect("update request"),
+        )
+        .await
+        .expect("update response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let stored: (Option<String>,) = chenxing_auth::sqlx::query_as(
+        "SELECT email_verified_claim FROM oauth_providers WHERE slug = $1",
+    )
+    .bind(&slug)
+    .fetch_one(&database)
+    .await
+    .expect("stored claim");
+    assert_eq!(stored.0.as_deref(), Some("email_verified"));
+
+    chenxing_auth::sqlx::query("DELETE FROM oauth_providers WHERE slug = $1")
+        .bind(&slug)
+        .execute(&database)
+        .await
+        .expect("cleanup");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
 #[tokio::test]
 async fn provider_admin_api_requires_auth_and_never_returns_client_secret() {
     let (router, database, key_directory) = setup().await;

@@ -1,5 +1,6 @@
-use chenxing_auth::oauth::providers::domain::{
-    ClientAuthMethod, ExternalUser, ProviderInput, ProviderValidationError, extract_claim,
+use chenxing_auth::oauth::providers::{
+    claims::{ClaimMapping, ExternalUser, extract_claim},
+    domain::{ClientAuthMethod, ProviderInput, ProviderValidationError},
 };
 use serde_json::json;
 
@@ -128,6 +129,10 @@ fn claim_extraction_supports_nested_paths_without_coercing_objects() {
     assert!(extract_claim(&value, "profile.missing").is_none());
 }
 
+fn mapping() -> ClaimMapping {
+    valid_input().validate().expect("provider").claims
+}
+
 #[test]
 fn external_user_requires_valid_email_and_subject() {
     let user = ExternalUser::from_claims(
@@ -137,7 +142,7 @@ fn external_user_requires_valid_email_and_subject() {
             "name": "Person",
             "email_verified": true
         }),
-        &valid_input().validate().expect("provider"),
+        &mapping(),
     )
     .expect("claims");
 
@@ -150,9 +155,120 @@ fn external_user_requires_valid_email_and_subject() {
 fn external_user_rejects_unverified_claim_when_configured() {
     let error = ExternalUser::from_claims(
         &json!({"sub": "subject-1", "email": "person@example.com", "email_verified": false}),
-        &valid_input().validate().expect("provider"),
+        &mapping(),
     )
     .expect_err("unverified email");
 
     assert_eq!(error, ProviderValidationError::EmailNotVerified);
+}
+
+/// Issue #261 的核心回归：claim 缺失过去会被当成「未配置」而放行建号。
+/// 现在 claim 路径恒存在，缺失的是 IdP 响应，必须 fail-closed。
+#[test]
+fn external_user_rejects_missing_email_verified_claim_in_response() {
+    let error = ExternalUser::from_claims(
+        &json!({"sub": "subject-1", "email": "person@example.com", "name": "Person"}),
+        &mapping(),
+    )
+    .expect_err("missing email_verified claim");
+
+    assert_eq!(error, ProviderValidationError::EmailNotVerified);
+}
+
+/// 非 bool 一律拒绝：字符串 "true"、数字 1、null 都不构成验证证据。
+/// 放宽任何一种都等价于接受 IdP 的自由文本作为安全断言。
+#[test]
+fn external_user_rejects_non_boolean_email_verified_claim() {
+    for value in [json!("true"), json!(1), json!(null), json!({}), json!([true])] {
+        let error = ExternalUser::from_claims(
+            &json!({"sub": "subject-1", "email": "person@example.com", "email_verified": value}),
+            &mapping(),
+        )
+        .expect_err("non-boolean email_verified claim");
+
+        assert_eq!(error, ProviderValidationError::EmailNotVerified);
+    }
+}
+
+/// provider 配置必须带 email_verified_claim，否则连保存都不允许。
+#[test]
+fn provider_input_rejects_missing_or_blank_email_verified_claim() {
+    for claim in [None, Some(String::new()), Some("   ".to_owned())] {
+        let mut input = valid_input();
+        input.email_verified_claim = claim;
+        assert_eq!(
+            input.validate().expect_err("missing email_verified_claim"),
+            ProviderValidationError::MissingEmailVerifiedClaim
+        );
+    }
+}
+
+/// 省略该字段的旧请求体同样被拒，而不是静默降级成「不校验邮箱」。
+#[test]
+fn provider_input_without_email_verified_claim_field_is_rejected() {
+    let input: ProviderInput = serde_json::from_value(json!({
+        "name": "企业 SSO",
+        "slug": "enterprise-sso",
+        "authorization_endpoint": "https://sso.example.com/oauth/authorize",
+        "token_endpoint": "https://sso.example.com/oauth/token",
+        "userinfo_endpoint": "https://sso.example.com/oauth/userinfo",
+        "client_id": "client-id",
+        "client_secret": "client-secret",
+        "scopes": ["openid"]
+    }))
+    .expect("provider input without email_verified_claim");
+
+    assert_eq!(
+        input.validate().expect_err("missing email_verified_claim"),
+        ProviderValidationError::MissingEmailVerifiedClaim
+    );
+}
+
+/// 嵌套路径要能用：不少 IdP 把验证状态放在 profile 子对象里。
+#[test]
+fn email_verified_claim_supports_nested_path() {
+    let mut input = valid_input();
+    input.email_verified_claim = Some("profile.email_verified".to_owned());
+    let mapping = input.validate().expect("provider").claims;
+
+    ExternalUser::from_claims(
+        &json!({
+            "sub": "subject-1",
+            "email": "person@example.com",
+            "profile": {"email_verified": true}
+        }),
+        &mapping,
+    )
+    .expect("nested verified claim");
+
+    let error = ExternalUser::from_claims(
+        &json!({
+            "sub": "subject-1",
+            "email": "person@example.com",
+            "profile": {"email_verified": false}
+        }),
+        &mapping,
+    )
+    .expect_err("nested unverified claim");
+    assert_eq!(error, ProviderValidationError::EmailNotVerified);
+}
+
+/// ClaimMapping 构造即校验，非法路径不会进入解析阶段。
+#[test]
+fn claim_mapping_rejects_invalid_paths() {
+    assert_eq!(
+        ClaimMapping::new(
+            "sub".to_owned(),
+            "email".to_owned(),
+            None,
+            Some("email verified".to_owned()),
+        )
+        .expect_err("invalid claim path"),
+        ProviderValidationError::InvalidClaimPath
+    );
+    assert_eq!(
+        ClaimMapping::new("sub".to_owned(), "email".to_owned(), None, None)
+            .expect_err("missing email_verified"),
+        ProviderValidationError::MissingEmailVerifiedClaim
+    );
 }

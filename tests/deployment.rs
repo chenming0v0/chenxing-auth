@@ -238,6 +238,10 @@ fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("0018_seed_security_limits.sql"));
     assert!(DB_MODULE.contains("audit runtime role separation"));
     assert!(DB_MODULE.contains("0019_audit_runtime_role.sql"));
+    assert!(DB_MODULE.contains("external provider requires email_verified claim"));
+    assert!(DB_MODULE.contains(
+        "0021_oauth_provider_require_email_verified_claim.sql"
+    ));
     let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -268,6 +272,7 @@ fn database_uses_explicit_unified_baseline_migrations() {
             std::ffi::OsString::from("0018_seed_security_limits.sql"),
             std::ffi::OsString::from("0019_audit_runtime_role.sql"),
             std::ffi::OsString::from("0020_user_avatar.sql"),
+            std::ffi::OsString::from("0021_oauth_provider_require_email_verified_claim.sql"),
         ]
     );
 }
