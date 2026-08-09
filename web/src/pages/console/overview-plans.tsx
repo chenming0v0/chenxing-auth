@@ -1,44 +1,36 @@
-import { useEffect, useState } from 'react'
 import { Link } from '../../router'
 import { useAuth } from '../../auth-state'
-import { apiFetch, type AuthorizedOAuthApp, type OwnedOAuthClient, type SessionItem } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Chip, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { DataTable, TablePanel } from '../../components/data-table'
 import { formatDate, greeting } from '../../data'
 import {
   entitlementState, entitlementView, Meter, SelfServiceClosedBlock,
-  SELF_SERVICE_CLOSED_BODY, SELF_SERVICE_CLOSED_KEPT, SELF_SERVICE_CLOSED_TITLE, useEntitlements,
+  SELF_SERVICE_CLOSED_BODY, SELF_SERVICE_CLOSED_KEPT, SELF_SERVICE_CLOSED_TITLE,
+  useAccountSummary, useEntitlements,
 } from './shared'
 
 export function ConsoleOverview() {
   const { user } = useAuth()
   const entitlementQuery = useEntitlements()
-  const { error: entitlementError, retry } = entitlementQuery
+  const { error: entitlementError, retry: retryEntitlements } = entitlementQuery
   const plans = entitlementState(entitlementQuery)
-  const [clients, setClients] = useState<OwnedOAuthClient[]>([])
-  const [sessions, setSessions] = useState<SessionItem[]>([])
-  const [apps, setApps] = useState<AuthorizedOAuthApp[]>([])
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
+  const summary = useAccountSummary()
+  const { error, loading, retry: retrySummary } = summary
+  const { clients, sessions, apps } = summary.data
 
-  useEffect(() => {
-    let active = true
-    void Promise.all([
-      apiFetch<{ items: OwnedOAuthClient[] }>('/api/v1/auth/oauth-clients'),
-      apiFetch<{ items: SessionItem[] }>('/api/v1/auth/sessions'),
-      apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps'),
-    ]).then(([clientResponse, sessionResponse, appResponse]) => {
-      if (!active) return
-      setClients(clientResponse.items)
-      setSessions(sessionResponse.items)
-      setApps(appResponse.items)
-      setError('')
-    }).catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : '账户摘要加载失败。')
-    }).finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
-  }, [])
+  /**
+   * 摘要与权益是两个独立请求，共用同一个 Notice。按当前错误来源重试，
+   * 不能无条件只重跑权益接口（#273）。
+   *
+   * 两者同时失败时先摘要后权益：Notice 展示的是摘要错误（`error || entitlementError`），
+   * 先修好被展示的那条，用户看到的文案才会跟着推进；串联也避免网络仍不通时同时打出四个请求。
+   */
+  const retryFailed = () => {
+    if (error) return retrySummary().then(() => (entitlementError ? retryEntitlements() : undefined))
+    if (entitlementError) return retryEntitlements()
+    return Promise.resolve()
+  }
 
   const name = user?.display_name || user?.username || '用户'
   const openScopes = apps.reduce((sum, app) => sum + app.scopes.length, 0)
@@ -60,7 +52,7 @@ export function ConsoleOverview() {
 
       {/* 只在真实加载失败时报警；plan 为 null 属于正常状态，不走这里 */}
       {(error || entitlementError) ? (
-        <div className="mt-5"><Notice tone="warning">{error || entitlementError}<button className="chenxing-link ml-2" type="button" onClick={retry}>重试</button></Notice></div>
+        <div className="mt-5"><Notice tone="warning">{error || entitlementError}<button className="chenxing-link ml-2" type="button" onClick={() => { void retryFailed() }}>重试</button></Notice></div>
       ) : null}
 
       <div className="mt-7 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
