@@ -16,7 +16,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 
 use super::{
-    crypto,
+    SessionOutboxPolicy, crypto,
     domain::{Session, SessionLookup, SessionPayload, SessionPolicy, session_token_hash_bytes},
 };
 use crate::{config::AuthEncryptionKeyRing, redis_client::RedisClient, users::domain::UserId};
@@ -37,6 +37,7 @@ pub struct SessionStore {
     pub(super) metadata: Option<crate::sqlx::PgPool>,
     pub(super) encryption_keys: Option<AuthEncryptionKeyRing>,
     pub(super) policy: SessionPolicy,
+    pub(super) outbox_policy: SessionOutboxPolicy,
 }
 
 #[derive(Debug, Error)]
@@ -82,6 +83,7 @@ impl SessionStore {
             metadata: None,
             encryption_keys: None,
             policy: SessionPolicy::default(),
+            outbox_policy: SessionOutboxPolicy::default(),
         }
     }
 
@@ -94,6 +96,7 @@ impl SessionStore {
                 crate::config::AuthEncryptionKey::new(encryption_key),
             )),
             policy: SessionPolicy::default(),
+            outbox_policy: SessionOutboxPolicy::default(),
         }
     }
 
@@ -120,6 +123,7 @@ impl SessionStore {
             metadata: Some(metadata),
             encryption_keys: Some(encryption_keys),
             policy: SessionPolicy::default(),
+            outbox_policy: SessionOutboxPolicy::default(),
         }
     }
 
@@ -145,6 +149,15 @@ impl SessionStore {
         if !absolute_ttl.is_zero() && time::Duration::try_from(absolute_ttl).is_ok() {
             self.policy.absolute_ttl = absolute_ttl;
         }
+        self
+    }
+
+    /// 覆盖 outbox 终态策略（保留窗口、清理批量、最大尝试次数）。
+    ///
+    /// 取值经 [`SessionOutboxPolicy::sanitized`] 收敛，因此不存在"配了 0 批量导致
+    /// 清理永远不删"或"配了 0 次尝试导致每个事件立刻进 dead-letter"的组合。
+    pub fn with_outbox_policy(mut self, outbox_policy: SessionOutboxPolicy) -> Self {
+        self.outbox_policy = outbox_policy.sanitized();
         self
     }
 

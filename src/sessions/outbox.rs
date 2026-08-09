@@ -1,11 +1,14 @@
-use std::time::Duration;
-
 use redis::{AsyncCommands, Script};
 use std::fmt;
 use time::OffsetDateTime;
 
 use super::store::{SessionStore, SessionStoreError};
 use crate::users::domain::UserId;
+
+#[path = "outbox_retention.rs"]
+mod retention;
+
+pub use retention::{OutboxCleanup, SessionOutboxPolicy};
 
 const OUTBOX_LEASE: time::Duration = time::Duration::minutes(5);
 const CONDITIONAL_SESSION_SET: &str = "local marker = redis.call('GET', KEYS[1])\nif marker and tonumber(marker) > tonumber(ARGV[1]) then return 0 end\nredis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])\nreturn 1";
@@ -52,6 +55,7 @@ struct OutboxEntry {
     session_id: Option<i64>,
     user_id: Option<UserId>,
     token_hash: Option<Vec<u8>>,
+    /// 领取时自增后的尝试次数，从 1 开始。dead-letter 判定直接比较这个值。
     attempts: i32,
     generation: i64,
 }
@@ -79,9 +83,13 @@ impl SessionStore {
         while let Some(entry) = self.claim_outbox(pool).await? {
             match self.apply_outbox(pool, &entry).await {
                 Ok(()) => {
+                    // `dead_lettered_at = NULL` 处理一种租约边界情况：另一个实例
+                    // 的租约到期后本实例重新领取了同一行，而那个实例随后判定它
+                    // 用尽预算并写了 dead-letter。投递确实成功了，终态必须收敛到
+                    // processed；CHECK 约束也不允许两个终态时间戳同时非空。
                     crate::sqlx::query(
                         "UPDATE session_outbox
-                         SET processed_at = NOW(), last_error = NULL
+                         SET processed_at = NOW(), dead_lettered_at = NULL, last_error = NULL
                          WHERE id = $1",
                     )
                     .bind(entry.id)
@@ -90,39 +98,12 @@ impl SessionStore {
                     processed += 1;
                 }
                 Err(error_value) => {
-                    let delay_seconds = 2_i64
-                        .saturating_pow(entry.attempts.saturating_sub(1) as u32)
-                        .min(300);
-                    crate::sqlx::query(
-                        "UPDATE session_outbox
-                         SET available_at = NOW() + $2, last_error = $3
-                         WHERE id = $1",
-                    )
-                    .bind(entry.id)
-                    .bind(time::Duration::seconds(delay_seconds))
-                    .bind(error_value.to_string())
-                    .execute(pool)
-                    .await?;
-                    tracing::error!(
-                        outbox_id = entry.id,
-                        operation = %entry.operation,
-                        attempts = entry.attempts,
-                        error = %error_value,
-                        "session Redis projection failed; retry scheduled"
-                    );
+                    self.record_delivery_failure(pool, &entry, &error_value)
+                        .await?;
                 }
             }
         }
         Ok(processed)
-    }
-
-    pub async fn run_outbox_worker(self) {
-        loop {
-            if let Err(error_value) = self.process_pending_outbox().await {
-                tracing::error!(error = %error_value, "session outbox worker failed");
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
     }
 
     async fn claim_outbox(
@@ -130,11 +111,16 @@ impl SessionStore {
         pool: &crate::sqlx::PgPool,
     ) -> Result<Option<OutboxEntry>, SessionStoreError> {
         let mut transaction = pool.begin().await?;
+        // dead-letter 行被排除在领取之外，这是"不再无限重试"的实际执行点：
+        // `session_outbox_pending_idx` 的部分条件与这里的 WHERE 一致，坏行既不在
+        // 索引里，也不会被扫到。
         let row: Option<ClaimedOutboxRow> = crate::sqlx::query_as(
             "WITH next AS (
                  SELECT id
                  FROM session_outbox
-                 WHERE processed_at IS NULL AND available_at <= NOW()
+                 WHERE processed_at IS NULL
+                   AND dead_lettered_at IS NULL
+                   AND available_at <= NOW()
                  ORDER BY id
                  LIMIT 1
                  FOR UPDATE SKIP LOCKED
