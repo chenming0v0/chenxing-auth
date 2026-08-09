@@ -52,6 +52,16 @@ pub async fn start_external_login(
             return external_error(&state, &slug, "oauth_login_failed").await;
         }
     };
+    // Fail-closed（Issue #261）：缺少 email_verified claim 的存量 provider 不可用。
+    // 在跳转外部 IdP 之前就拒绝，用户不会走完一整圈才在回调里失败。
+    if let Err(mapping_error) = provider.claim_mapping() {
+        tracing::error!(
+            error = %mapping_error,
+            provider = %slug,
+            "external OAuth provider is missing a usable email_verified claim"
+        );
+        return external_error(&state, &slug, "oauth_provider_not_found").await;
+    }
     if let Some(request_id) = query.request_id.as_deref()
         && !pending_request_exists(&state, request_id).await
     {

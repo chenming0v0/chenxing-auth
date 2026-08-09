@@ -1591,6 +1591,7 @@ paths:
       tags: [Admin OAuth Providers]
       summary: 启用自定义 OAuth 提供商
       operationId: enableOAuthProvider
+      description: 缺少可用 email_verified_claim 的存量 provider 无法启用，返回 400 invalid_oauth_provider。
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
@@ -2327,7 +2328,7 @@ components:
         status: { type: string }
     OAuthProviderCreateInput:
       type: object
-      required: [name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, client_secret, scopes]
+      required: [name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, client_secret, scopes, email_verified_claim]
       properties:
         name: { type: string, maxLength: 128 }
         slug: { type: string, pattern: '^[a-z0-9_-]+$', maxLength: 64 }
@@ -2349,11 +2350,13 @@ components:
         subject_claim: { type: string, default: sub }
         email_claim: { type: string, default: email }
         name_claim: { type: string, nullable: true }
-        email_verified_claim: { type: string, nullable: true }
+        email_verified_claim:
+          type: string
+          description: 指向布尔型邮箱验证状态的 claim 路径。必填：缺失、空白、非 bool 或 false 时服务端拒绝身份解析与自动建号。
         client_auth_method: { type: string, enum: [basic, request_body], default: basic }
     OAuthProviderUpdateInput:
       type: object
-      required: [name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, scopes]
+      required: [name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, scopes, email_verified_claim]
       description: client_secret 可省略，省略时保留原值
       properties:
         name: { type: string, maxLength: 128 }
@@ -2376,7 +2379,9 @@ components:
         subject_claim: { type: string, default: sub }
         email_claim: { type: string, default: email }
         name_claim: { type: string, nullable: true }
-        email_verified_claim: { type: string, nullable: true }
+        email_verified_claim:
+          type: string
+          description: 指向布尔型邮箱验证状态的 claim 路径。必填：缺失、空白、非 bool 或 false 时服务端拒绝身份解析与自动建号。
         client_auth_method: { type: string, enum: [basic, request_body], default: basic }
     OAuthProviderSummary:
       type: object
@@ -2393,7 +2398,10 @@ components:
         subject_claim: { type: string }
         email_claim: { type: string }
         name_claim: { type: string, nullable: true }
-        email_verified_claim: { type: string, nullable: true }
+        email_verified_claim:
+          type: string
+          nullable: true
+          description: null 表示存量遗留配置，该 provider 无法判断邮箱验证状态，不能被启用，也不会放行外部登录。
         client_auth_method: { type: string, enum: [basic, request_body] }
         status: { type: string, enum: [active, disabled] }
         client_secret_configured: { type: boolean }

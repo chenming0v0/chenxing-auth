@@ -195,7 +195,9 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 开始并完成自定义外部 OAuth 2.0/OIDC 登录。`slug` 来自管理员设置；开始请求可携带 `request_id` 以便登录后继续辰星的授权确认。系统使用一次性 Redis `state` 和 HttpOnly Cookie 绑定浏览器流程，回调成功后创建辰星 Session。
 
-外部 UserInfo 必须按配置提供合法 `email` 和唯一 `sub`；可选校验 `email_verified`。首次外部登录在邮箱不存在时创建辰星账号并绑定 `(provider, sub)`；如果邮箱已存在，不会自动接管或合并本地账号，而是返回 `oauth_account_link_required` 页面提示。
+外部 UserInfo 必须按配置提供合法 `email`、唯一 `sub` 和布尔型邮箱验证状态。`email_verified_claim` 是 provider 必填项：claim 缺失、类型不是布尔、或取值为 `false` 时拒绝身份解析和自动建号，回跳 `external_error=oauth_email_unverified`。缺少该配置的存量 provider 无法启用，也不会跳转外部 IdP，回跳 `external_error=oauth_provider_not_found`。
+
+首次外部登录在邮箱不存在时创建辰星账号并绑定 `(provider, sub)`；如果邮箱已存在，不会自动接管或合并本地账号，而是返回 `oauth_account_link_required` 页面提示。
 
 ### React SPA 授权确认 `/oauth/consent`
 

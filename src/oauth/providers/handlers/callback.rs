@@ -139,13 +139,20 @@ pub async fn external_callback(
     let external_user = match state.external_oauth.userinfo(&provider, &token).await {
         Ok(user) => user,
         Err(error_value) => {
+            // 未验证邮箱是可解释的用户侧结果，给出专门的错误码；其余原因
+            // （远端失败、claim 缺失、provider 配置不可用）保持统一的模糊文案，
+            // 不向浏览器泄露外部 IdP 的内部细节。
+            let error_code = match &error_value {
+                ExternalOAuthError::EmailNotVerified => "oauth_email_unverified",
+                _ => "oauth_login_failed",
+            };
             tracing::info!(error = %error_value, provider = %slug, "external OAuth userinfo failed");
             return external_error_with_request(
                 &state,
                 &slug,
                 stored_state.request_id.as_deref(),
                 Some(returned_state),
-                "oauth_login_failed",
+                error_code,
             )
             .await;
         }
@@ -156,44 +163,13 @@ pub async fn external_callback(
         .await
     {
         Ok(user_id) => user_id,
-        Err(ExternalOAuthError::EmailAlreadyRegistered) => {
-            return external_error_with_request(
-                &state,
-                &slug,
-                stored_state.request_id.as_deref(),
-                Some(returned_state),
-                "oauth_account_link_required",
-            )
-            .await;
-        }
-        Err(ExternalOAuthError::UserDisabled) => {
-            return external_error_with_request(
-                &state,
-                &slug,
-                stored_state.request_id.as_deref(),
-                Some(returned_state),
-                "oauth_login_failed",
-            )
-            .await;
-        }
-        Err(ExternalOAuthError::OwnerBootstrapRequired) => {
-            return external_error_with_request(
-                &state,
-                &slug,
-                stored_state.request_id.as_deref(),
-                Some(returned_state),
-                "owner_bootstrap_required",
-            )
-            .await;
-        }
         Err(error_value) => {
-            tracing::error!(error = %error_value, provider = %slug, "failed to resolve external OAuth identity");
             return external_error_with_request(
                 &state,
                 &slug,
                 stored_state.request_id.as_deref(),
                 Some(returned_state),
-                "oauth_login_failed",
+                resolve_error_code(&slug, &error_value),
             )
             .await;
         }
@@ -331,6 +307,25 @@ pub async fn external_callback(
         return cookie_failure_response(&state, &session, returned_state, &callback_path).await;
     }
     response
+}
+
+/// 把身份解析失败映射成回跳给 SPA 的错误码。
+///
+/// 只有可解释的用户侧结果才拿到专属错误码；其余原因归到统一的模糊文案，
+/// 避免向浏览器泄露存储状态或外部 IdP 的内部细节。
+fn resolve_error_code(slug: &str, error_value: &ExternalOAuthError) -> &'static str {
+    match error_value {
+        ExternalOAuthError::EmailAlreadyRegistered => "oauth_account_link_required",
+        // 纵深防御分支：`userinfo` 已经拦掉未验证邮箱，这里只会在
+        // `ExternalUser` 被其他路径构造时触发，仍按未验证邮箱的语义回报。
+        ExternalOAuthError::EmailNotVerified => "oauth_email_unverified",
+        ExternalOAuthError::OwnerBootstrapRequired => "owner_bootstrap_required",
+        ExternalOAuthError::UserDisabled => "oauth_login_failed",
+        _ => {
+            tracing::error!(error = %error_value, provider = %slug, "failed to resolve external OAuth identity");
+            "oauth_login_failed"
+        }
+    }
 }
 
 async fn cookie_failure_response(

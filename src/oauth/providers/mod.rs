@@ -1,3 +1,4 @@
+pub mod claims;
 pub mod client_pkce;
 pub mod domain;
 mod error_helpers;

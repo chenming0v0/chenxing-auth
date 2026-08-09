@@ -50,7 +50,6 @@ const templates: Record<string, Partial<ProviderForm>> = {
     subject_claim: 'id',
     email_claim: 'email',
     name_claim: 'name',
-    email_verified_claim: '',
   },
   gitlab: {
     name: 'GitLab',
@@ -114,7 +113,7 @@ function toInput(form: ProviderForm): OAuthProviderInput {
     subject_claim: form.subject_claim.trim() || 'sub',
     email_claim: form.email_claim.trim() || 'email',
     name_claim: form.name_claim.trim() || null,
-    email_verified_claim: form.email_verified_claim.trim() || null,
+    email_verified_claim: form.email_verified_claim.trim(),
     client_auth_method: form.client_auth_method,
   }
   if (form.client_secret.trim()) input.client_secret = form.client_secret
@@ -255,7 +254,17 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
                   <Icon name="shield" className="text-[var(--chenxing-cyan)]" size={16} />
                 </span>
               </td>
-              <td className="chenxing-body text-sm">{provider.name}</td>
+              <td className="chenxing-body text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span>{provider.name}</span>
+                  {provider.email_verified_claim?.trim() ? null : (
+                    <Badge tone="warning">
+                      <Icon name="alert-triangle" size={12} />
+                      缺少 Email Verified Claim
+                    </Badge>
+                  )}
+                </div>
+              </td>
               <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{provider.slug}</td>
               <td>
                 <Badge tone={provider.status === 'active' ? 'success' : 'warning'}>
@@ -345,7 +354,14 @@ export function OAuthProvidersPanel({ onMessage }: { onMessage: (message: string
                 <Field label="Subject Claim" value={form.subject_claim} onChange={(event) => setForm({ ...form, subject_claim: event.target.value })} />
                 <Field label="Email Claim" value={form.email_claim} onChange={(event) => setForm({ ...form, email_claim: event.target.value })} />
                 <Field label="Name Claim" value={form.name_claim} onChange={(event) => setForm({ ...form, name_claim: event.target.value })} />
-                <Field label="Email Verified Claim" value={form.email_verified_claim} onChange={(event) => setForm({ ...form, email_verified_claim: event.target.value })} />
+                <Field
+                  label="Email Verified Claim *"
+                  value={form.email_verified_claim}
+                  onChange={(event) => setForm({ ...form, email_verified_claim: event.target.value })}
+                  placeholder="email_verified"
+                  hint="必填，且必须指向布尔值。该身份源不返回邮箱验证状态时，本平台无法确认邮箱归属，会拒绝登录与自动建号。"
+                  required
+                />
               </div>
               <SelectField
                 label="Client Auth Method"

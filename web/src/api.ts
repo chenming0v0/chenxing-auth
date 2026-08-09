@@ -83,11 +83,13 @@ const safeMessages = new Map<string, string>([
   ['plan_archived', '已归档的套餐不能分配给用户。'],
   ['invalid_expiration', '到期时间格式不正确，请重新选择。'],
   ['oauth_provider_not_found', '该外部身份源不可用或已被停用。'],
+  ['invalid_oauth_provider', '外部身份源配置不完整，请检查 Endpoint、Scopes 和 Email Verified Claim。'],
   ['oauth_login_failed', '外部身份源登录未完成，请重试。'],
   ['oauth_login_rate_limited', '外部登录尝试过于频繁，请稍后重试。'],
   ['oauth_request_expired', '授权请求已过期，请重新发起。'],
   ['oauth_request_binding_failed', '授权请求绑定失败，请重新开始。'],
   ['oauth_account_link_required', '该外部账号尚未绑定辰星通行证，请先登录后在账号设置中绑定。'],
+  ['oauth_email_unverified', '外部身份源未确认该邮箱已验证，无法用它登录或建号。请先在该身份源完成邮箱验证。'],
   ['avatar_empty', '没有读取到图片内容，请重新选择。'],
   ['avatar_too_large', '图片超出大小上限，请更换一张。'],
   ['avatar_unsupported_format', '只支持 PNG、JPEG 或 WebP 图片。'],
@@ -398,7 +400,8 @@ export type OAuthProviderInput = {
   subject_claim?: string
   email_claim?: string
   name_claim?: string | null
-  email_verified_claim?: string | null
+  /** 必填：指向布尔型邮箱验证状态的 claim 路径。缺失时后端拒绝配置（Issue #261）。 */
+  email_verified_claim: string
   client_auth_method?: 'basic' | 'request_body'
 }
 export type AdminPlan = {

@@ -1,10 +1,11 @@
 use std::time::Duration;
 
 use super::{
+    claims::ExternalUser,
     client_pkce::s256_code_challenge,
     domain::{
-        ClientAuthMethod, ExternalUser, ProviderInput, ProviderRecord, ProviderSummary,
-        ProviderValidationError, validate_endpoint_url,
+        ClientAuthMethod, ProviderInput, ProviderRecord, ProviderSummary, ProviderValidationError,
+        validate_endpoint_url,
     },
     repository::{self, CreateIdentityError},
     secrets::{SecretError, SecretManager},
@@ -47,6 +48,8 @@ pub enum ExternalOAuthError {
     RemoteRequest,
     #[error("external provider returned invalid user information")]
     InvalidUserInfo,
+    #[error("external email is not verified")]
+    EmailNotVerified,
     #[error("external email is already registered")]
     EmailAlreadyRegistered,
     #[error("external user is disabled")]
@@ -127,9 +130,17 @@ impl ExternalOAuthService {
         Ok(repository::update_provider(&self.pool, slug, &validated, ciphertext).await?)
     }
 
+    /// 切换 provider 启用状态。
+    ///
+    /// 启用是唯一需要额外校验的方向：存量行的 `email_verified_claim` 可能是 NULL，
+    /// 这类 provider 一旦启用就会放行未验证邮箱（Issue #261）。停用永远允许，
+    /// 否则坏配置会卡在启用状态无法关掉。
     pub async fn set_status(&self, slug: &str, status: &str) -> Result<bool, ExternalOAuthError> {
         if !matches!(status, "active" | "disabled") {
             return Ok(false);
+        }
+        if status == "active" {
+            self.find(slug).await?.claim_mapping()?;
         }
         Ok(repository::set_status(&self.pool, slug, status).await?)
     }
@@ -244,25 +255,13 @@ impl ExternalOAuthService {
             .json()
             .await
             .map_err(|_| ExternalOAuthError::RemoteRequest)?;
-        let validated = ProviderInput {
-            name: provider.name.clone(),
-            slug: provider.slug.clone(),
-            authorization_endpoint: provider.authorization_endpoint.to_string(),
-            token_endpoint: provider.token_endpoint.to_string(),
-            userinfo_endpoint: provider.userinfo_endpoint.to_string(),
-            client_id: provider.client_id.clone(),
-            client_secret: None,
-            scopes: provider.scopes.clone(),
-            subject_claim: provider.subject_claim.clone(),
-            email_claim: provider.email_claim.clone(),
-            name_claim: provider.name_claim.clone(),
-            email_verified_claim: provider.email_verified_claim.clone(),
-            client_auth_method: provider.client_auth_method,
-            pkce_enabled: provider.pkce_enabled,
-        }
-        .validate()?;
-        ExternalUser::from_claims(&claims, &validated)
-            .map_err(|_| ExternalOAuthError::InvalidUserInfo)
+        // 映射构造失败说明存储行本身不可用（缺 email_verified_claim 的存量行），
+        // 这是配置错误而不是外部响应错误，用 Validation 区分开来。
+        let mapping = provider.claim_mapping()?;
+        ExternalUser::from_claims(&claims, &mapping).map_err(|error| match error {
+            ProviderValidationError::EmailNotVerified => ExternalOAuthError::EmailNotVerified,
+            _ => ExternalOAuthError::InvalidUserInfo,
+        })
     }
 
     pub async fn resolve_user(
@@ -270,6 +269,12 @@ impl ExternalOAuthService {
         provider: &ProviderRecord,
         external: &ExternalUser,
     ) -> Result<UserId, ExternalOAuthError> {
+        // 纵深防御（Issue #261）：`ExternalUser` 只能由 `from_claims` 构造，那里已经
+        // 拒过未验证邮箱。这里再拦一次，保证任何将来新增的构造路径都不能绕过
+        // 「未验证邮箱不得登录、更不得自动建号」这条规则。
+        if !external.email_verified {
+            return Err(ExternalOAuthError::EmailNotVerified);
+        }
         if let Some(identity) =
             repository::find_identity(&self.pool, provider.id, &external.subject).await?
         {
@@ -362,7 +367,7 @@ mod tests {
             subject_claim: "sub".to_owned(),
             email_claim: "email".to_owned(),
             name_claim: None,
-            email_verified_claim: None,
+            email_verified_claim: Some("email_verified".to_owned()),
             client_auth_method: ClientAuthMethod::Basic,
             pkce_enabled,
             status: "active".to_owned(),

@@ -21,7 +21,7 @@ const baseProvider = {
   subject_claim: 'sub',
   email_claim: 'email',
   name_claim: null,
-  email_verified_claim: null,
+  email_verified_claim: 'email_verified',
   client_auth_method: 'basic' as const,
 }
 
@@ -141,5 +141,35 @@ describe('OAuthProvidersPanel Client Secret 提交语义', () => {
     save()
     expect(requests.some((r) => r.method === 'POST' && r.path.endsWith('/providers'))).toBe(false)
     expect(onMessage).toHaveBeenCalledWith('创建提供商时必须填写 Client Secret。', 'warning')
+  })
+})
+
+describe('OAuthProvidersPanel Email Verified Claim', () => {
+  it('表单字段标记必填，并说明缺失时会拒绝登录', async () => {
+    renderPanel()
+    await screen.findByText('GitLab')
+    await openEditRow('GitLab')
+    const input = screen.getByLabelText('Email Verified Claim *') as HTMLInputElement
+    expect(input.required).toBe(true)
+    expect(input.value).toBe('email_verified')
+    expect(screen.getByText(/必须指向布尔值/)).toBeTruthy()
+    // 说明文案必须通过 aria-describedby 关联到控件，否则读屏用户拿不到这条约束。
+    expect(input.getAttribute('aria-describedby')).toBeTruthy()
+  })
+
+  it('提交时按普通字符串发送，不再降级成 null', async () => {
+    renderPanel()
+    await screen.findByText('GitLab')
+    await openEditRow('GitLab')
+    save()
+    const put = requests.find((r) => r.method === 'PUT')
+    expect(put?.body.email_verified_claim).toBe('email_verified')
+  })
+
+  it('存量 provider 缺少该 claim 时在列表里给出警告徽标', async () => {
+    providers = [{ ...CONFIGURED, email_verified_claim: null }]
+    renderPanel()
+    await screen.findByText('GitLab')
+    expect(screen.getByText('缺少 Email Verified Claim')).toBeTruthy()
   })
 })
