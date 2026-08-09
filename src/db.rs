@@ -320,10 +320,10 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             false,
         ),
         Migration::new(
-            22,
+            23,
             Cow::Borrowed("consent state version for cache staleness detection"),
             MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0022_consent_state_version.sql")),
+            normalize_migration_sql(include_str!("../migrations/0023_consent_state_version.sql")),
             false,
         ),
     ];
