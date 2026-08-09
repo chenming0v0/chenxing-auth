@@ -433,6 +433,8 @@ fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("0019_audit_runtime_role.sql"));
     assert!(DB_MODULE.contains("external provider requires email_verified claim"));
     assert!(DB_MODULE.contains("0021_oauth_provider_require_email_verified_claim.sql"));
+    assert!(DB_MODULE.contains("session outbox retention and dead letters"));
+    assert!(DB_MODULE.contains("0022_session_outbox_retention.sql"));
     let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -464,7 +466,35 @@ fn database_uses_explicit_unified_baseline_migrations() {
             std::ffi::OsString::from("0019_audit_runtime_role.sql"),
             std::ffi::OsString::from("0020_user_avatar.sql"),
             std::ffi::OsString::from("0021_oauth_provider_require_email_verified_claim.sql"),
+            std::ffi::OsString::from("0022_session_outbox_retention.sql"),
         ]
+    );
+}
+
+/// Issue #275：保留窗口迁移必须留下可执行的回滚说明。
+///
+/// 这条迁移引入了一个不可逆的语义：dead-letter 行退出重试。回滚会让它们重新被
+/// 领取，而 `dead_lettered_at` 一旦随列一起被丢弃就再也分不清"放弃了"和"还会重试"。
+/// 断言写在文本上，因为要守住的是"迁移文件自带回滚剧本"这个约定，不需要数据库。
+#[test]
+fn session_outbox_retention_migration_documents_its_rollback() {
+    let migration = include_str!("../migrations/0022_session_outbox_retention.sql");
+    for marker in [
+        "Rollback note",
+        "DROP INDEX session_outbox_processed_cleanup_idx;",
+        "DROP INDEX session_outbox_dead_letter_idx;",
+        "DROP CONSTRAINT session_outbox_state_check,",
+        "DROP COLUMN dead_lettered_at;",
+        "CREATE INDEX session_outbox_pending_idx",
+    ] {
+        assert!(
+            migration.contains(marker),
+            "retention migration is missing rollback marker: {marker}"
+        );
+    }
+    assert!(
+        !migration.contains("DROP TABLE"),
+        "retention migration must not drop data-bearing tables"
     );
 }
 

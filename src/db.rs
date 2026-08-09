@@ -319,6 +319,15 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             )),
             false,
         ),
+        Migration::new(
+            22,
+            Cow::Borrowed("session outbox retention and dead letters"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!(
+                "../migrations/0022_session_outbox_retention.sql"
+            )),
+            false,
+        ),
     ];
 
     Migrator {

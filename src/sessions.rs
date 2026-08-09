@@ -5,3 +5,5 @@ pub(crate) mod crypto;
 pub mod domain;
 mod outbox;
 pub mod store;
+
+pub use outbox::{OutboxCleanup, SessionOutboxPolicy};

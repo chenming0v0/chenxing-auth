@@ -191,6 +191,14 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     .await;
     assert_column(&pool, "session_outbox", "attempts", "integer", false).await;
     assert_column(&pool, "session_outbox", "generation", "bigint", false).await;
+    assert_column(
+        &pool,
+        "session_outbox",
+        "dead_lettered_at",
+        "timestamp with time zone",
+        true,
+    )
+    .await;
     assert_fk(&pool, "session_outbox", "session_id", "user_sessions", "id").await;
     for index in [
         "users_admin_query_order_idx",
@@ -202,6 +210,8 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
         "audit_events_action_idx",
         "audit_events_archive_action_idx",
         "user_sessions_active_created_idx",
+        "session_outbox_processed_cleanup_idx",
+        "session_outbox_dead_letter_idx",
     ] {
         assert_index(&pool, index).await;
     }
@@ -232,6 +242,46 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
         .execute(&pool)
         .await
         .expect("cleanup schema users");
+}
+
+/// Issue #275：outbox 行的终态必须唯一。
+///
+/// `processed` 和 `dead_letter` 是互斥的事实断言：一个事件要么投递成功了，要么被
+/// 放弃了。允许两个时间戳同时非空会让清理的保留窗口无法判定属于哪一类，也让
+/// "还需要人处理的事件"这个查询失去意义。约束在数据库层，不依赖应用纪律。
+#[tokio::test]
+async fn session_outbox_rows_cannot_hold_two_terminal_states() {
+    let pool = database().await;
+    let both = chenxing_auth::sqlx::query(
+        "INSERT INTO session_outbox
+             (operation, token_hash, processed_at, dead_lettered_at)
+         VALUES ('revoke_session', '\\x00'::bytea, NOW(), NOW())",
+    )
+    .execute(&pool)
+    .await;
+    assert!(
+        both.is_err(),
+        "a row must not be both processed and dead-lettered"
+    );
+
+    chenxing_auth::sqlx::query(
+        "INSERT INTO session_outbox
+             (operation, token_hash, processed_at, dead_lettered_at)
+         VALUES ('revoke_session', '\\x01'::bytea, NOW(), NULL),
+                ('revoke_session', '\\x02'::bytea, NULL, NOW()),
+                ('revoke_session', '\\x03'::bytea, NULL, NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("pending and single-terminal rows must all be allowed");
+
+    assert_constraint_contains(
+        &pool,
+        "session_outbox",
+        "session_outbox_state_check",
+        &["processed_at", "dead_lettered_at"],
+    )
+    .await;
 }
 
 #[tokio::test]

@@ -192,9 +192,11 @@ src/
 
 HTTPS 部署的 Session 和 CSRF Cookie 使用 `__Host-chenxing_session` 与 `__Host-chenxing_csrf`，固定带 `Secure; Path=/` 且不带 `Domain`，由浏览器强制 host-only 约束。`COOKIE_SECURE=false` 只允许用于明确的 loopback HTTP 本地开发（`localhost`、`127.0.0.1` 或 `::1`）；在 HTTPS 或其他主机发行者下会导致启动失败。HTTP 发行者配合 `COOKIE_SECURE=true` 会记录启动警告，因为浏览器可能拒绝 Secure Cookie。
 
-Session payload 使用 AES-256-GCM 并携带 key id。`AUTH_ENCRYPTION_KEY` 保留为单密钥兼容写法。轮换时设置逗号分隔的 `kid=<key-id>:<standard-base64-32-byte-key>` 密钥环 `AUTH_ENCRYPTION_KEYS`，并设置 `AUTH_ENCRYPTION_ACTIVE_KID`；新 Session 只使用 active key，旧 key 只读。旧 key 必须保留到最长 Session TTL 加 outbox 重试窗口结束后再移除。回滚通过把旧 key 设为 `AUTH_ENCRYPTION_ACTIVE_KID` 并继续保留新 key 完成。移除 key 会故意使仅由该 key 加密的 Session 失效，请求返回 401 并清理浏览器 Cookie。Redis 只保存加密 payload，不保存 Session 或 CSRF 明文。
+Session payload 使用 AES-256-GCM 并携带 key id。`AUTH_ENCRYPTION_KEY` 保留为单密钥兼容写法。轮换时设置逗号分隔的 `kid=<key-id>:<standard-base64-32-byte-key>` 密钥环 `AUTH_ENCRYPTION_KEYS`，并设置 `AUTH_ENCRYPTION_ACTIVE_KID`；新 Session 只使用 active key，旧 key 只读。旧 key 必须保留到最长 Session TTL 加 outbox 重试窗口结束后再移除；该重试窗口现在有明确上限（10 次尝试，约 20 分钟），超出后事件进入 dead-letter 而不是无限重试。回滚通过把旧 key 设为 `AUTH_ENCRYPTION_ACTIVE_KID` 并继续保留新 key 完成。移除 key 会故意使仅由该 key 加密的 Session 失效，请求返回 401 并清理浏览器 Cookie。Redis 只保存加密 payload，不保存 Session 或 CSRF 明文。
 
 浏览器 Session 同时受绝对期限和空闲期限约束：`SESSION_TTL_SECONDS` 默认 7 天，是创建时固定的绝对截止时间；`SESSION_IDLE_TIMEOUT_SECONDS` 默认 1800 秒，成功认证请求在空闲窗口过半时更新 `last_seen_at`，但绝不会延长绝对截止时间。Redis 投影的 TTL 取这两个截止时间中较早者，PostgreSQL 是撤销、epoch 和空闲状态的权威来源。`SESSION_MAX_CONCURRENT_SESSIONS` 默认 5；新登录达到上限时，在同一用户事务锁内撤销最早的活跃 Session，再写入新 Session，并通过 outbox 删除旧 Redis 投影。Cookie 本身仍保留绝对生命周期，服务端 idle 校验负责缩短不活动凭据的有效窗口。
+
+`session_outbox` 有明确的有界生命周期，分三个状态：待处理、已投递和 dead-letter。一个事件最多被投递 10 次（退避上限 5 分钟，覆盖约 20 分钟的真实故障窗口）；仍然失败则写入 `dead_lettered_at` 并退出待处理索引，不再被重试，`attempts` 和 `last_error` 作为审计记录保留。已投递事件保留 1 天，dead-letter 事件保留 30 天，都由 outbox worker 按 5 分钟间隔分批删除，每批每类上限 500 行，积压时连续清理直到收敛。撤销只在真正发生"未撤销 → 已撤销"转变时写入事件：重复登出和对不存在令牌的登出不产生投递任务。运维应监控 dead-letter 行——一条撤销事件进入 dead-letter 意味着对应的 Redis 投影可能仍然存在，需要人工确认，而 PostgreSQL 始终是认证判定的权威来源，投影残留不会让已撤销的会话通过认证。
 
 用户首次密码登录会通过短期 HttpOnly pending-login Cookie 进入因子流程；Redis 中的 `login_ticket` 绑定同一浏览器 holder，前端需要完成 TOTP 或 WebAuthn passkey 注册后才会获得 Session。后续登录需要密码加已绑定的 TOTP 或 passkey。生产环境应设置固定的 `WEBAUTHN_RP_ID` 和 `WEBAUTHN_ORIGIN`，默认从固定 `APP_ISSUER` 派生，不能从请求 Host 派生。
 
