@@ -1,4 +1,6 @@
-use chenxing_auth::{api, audit::AuditService, config::Config, db, state::AppState};
+use chenxing_auth::{
+    api, audit::AuditService, config::Config, db, keys::DEFAULT_KEY_SYNC_INTERVAL, state::AppState,
+};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::info;
@@ -71,6 +73,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState::new(config.clone()).await?;
     let session_outbox_worker = tokio::spawn(state.sessions.clone().run_outbox_worker());
+    // 密钥热路径只读内存快照，与共享 KEY_DIRECTORY 的一致性由这个后台任务负责：
+    // 磁盘 IO 隔离在阻塞线程池，抢不到目录锁时跳过本轮而不影响任何请求（Issue #257）。
+    let key_sync_worker = tokio::spawn(
+        state
+            .keys
+            .clone()
+            .run_disk_sync_worker(DEFAULT_KEY_SYNC_INTERVAL),
+    );
     let app = api::router(state);
     let address = format!("{}:{}", config.host, config.port);
     let listener = TcpListener::bind(&address).await?;
@@ -83,6 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_graceful_shutdown(shutdown_signal())
     .await?;
     session_outbox_worker.abort();
+    key_sync_worker.abort();
 
     Ok(())
 }

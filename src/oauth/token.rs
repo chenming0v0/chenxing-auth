@@ -2,7 +2,7 @@ use jsonwebtoken::{Algorithm, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::keys::{KeyManager, KeyManagerError};
+use crate::keys::KeyManager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessTokenClaims {
@@ -18,8 +18,6 @@ pub struct AccessTokenClaims {
 pub enum TokenError {
     #[error("token signing failed: {0}")]
     Signing(#[from] jsonwebtoken::errors::Error),
-    #[error("signing key state unavailable: {0}")]
-    KeyState(#[from] KeyManagerError),
     #[error("token lifetime is invalid")]
     InvalidLifetime,
     #[error("token validation failed: {0}")]
@@ -61,13 +59,11 @@ fn decode_with_validation(
     if validate_audience {
         validation.set_audience(&[audience]);
     }
-    let decoding_key = match keys.verification_key_for(key_id) {
-        Ok(key) => key,
-        Err(KeyManagerError::UnknownKeyId) => {
-            return Err(TokenError::Validation(invalid_token_error()));
-        }
-        Err(error) => return Err(TokenError::KeyState(error)),
-    };
+    // 未发布的 `kid` 是协议层结果（令牌无效），不是服务端故障：验证只读内存快照，
+    // 没有磁盘或锁竞争可言，因此这里不存在需要区分的 5xx 分支（Issue #257）。
+    let decoding_key = keys
+        .verification_key_for(key_id)
+        .ok_or_else(|| TokenError::Validation(invalid_token_error()))?;
     let data = decode::<AccessTokenClaims>(token, &decoding_key, &validation)
         .map_err(TokenError::Validation)?;
     Ok(data.claims)
@@ -99,7 +95,7 @@ pub fn issue_access_token(
         scope: scopes.join(" "),
     };
     let mut header = Header::new(Algorithm::RS256);
-    let signing_key = keys.active_signing_key().map_err(TokenError::KeyState)?;
+    let signing_key = keys.active_signing_key();
     header.kid = Some(signing_key.key_id().to_owned());
     encode(&header, &claims, signing_key.encoding_key()).map_err(TokenError::from)
 }
