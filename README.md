@@ -184,7 +184,7 @@ src/
 
 当前 `/oauth/authorize` 同时支持开发期 `X-Chenxing-Session` 和 HttpOnly Session Cookie；带 `Accept: text/html` 的浏览器流程会进入登录页和授权确认页。浏览器 Cookie 会话的状态变更必须携带 `X-CSRF-Token`，并与 CSRF Cookie 和 Session 中的 Token 一致。管理 API 复用普通用户 Session 和 CSRF Cookie，角色决定管理权限。
 
-`KEY_DIRECTORY` 默认指向 `data/keys`，该目录包含运行时私钥并已加入 `.gitignore`。Unix 下应用会将目录收紧为 `0700`，私钥、active `kid` 和 OAuth Provider 主密钥收紧为 `0600`，并在启动时修正已有过宽权限。密钥写入使用受限临时文件和原子替换。`KEY_ROTATION_GRACE_SECONDS` 默认是 `604800`（7 天），支持范围是 `1` 到 `2592000` 秒（30 天），且不能小于 access/ID token TTL：轮换后的旧公钥在该窗口内继续用于验签，窗口外的旧私钥会在启动或后续轮换时回收；设置为 `0` 或超出范围会使服务启动失败。`ADMIN_TOKEN` 为空时，管理 API 默认全部拒绝访问，唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口；此时启动日志会记录一条 `ADMIN_TOKEN not set` 警告，便于运维感知管理面不可用。
+`KEY_DIRECTORY` 默认指向 `data/keys`，该目录包含运行时私钥并已加入 `.gitignore`。Unix 下应用会将目录收紧为 `0700`，私钥、active `kid` 和 OAuth Provider 主密钥收紧为 `0600`，并在启动时修正已有过宽权限。密钥写入使用受限临时文件和原子替换。`KEY_ROTATION_GRACE_SECONDS` 默认是 `604800`（7 天），支持范围是 `1` 到 `2592000` 秒（30 天），且不能小于 access/ID token TTL：轮换后的旧公钥在该窗口内继续用于验签，窗口外的旧私钥会在启动或后续轮换时回收；设置为 `0` 或超出范围会使服务启动失败。签发、验签和 JWKS 三条请求热路径只读进程内的密钥快照，不在请求线程里读写密钥目录；与共享 `KEY_DIRECTORY` 的一致性由一个 5 秒周期的后台任务负责（验签遇到未知 `kid` 时会提前触发一次同步）。因此多实例共享同一目录时，某个实例的轮换或吊销最迟在一个同步周期后在其他实例生效，期间旧公钥仍在保留窗口内可验签。`ADMIN_TOKEN` 为空时，管理 API 默认全部拒绝访问，唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口；此时启动日志会记录一条 `ADMIN_TOKEN not set` 警告，便于运维感知管理面不可用。
 
 `APP_ISSUER` 是必填配置项，没有默认值：它是 OIDC 发行者标识，会写入 JWT 的 `iss` claim 和 Discovery 文档，必须是无 path、query 和 fragment 的绝对 URL，且不能从请求 Host 或反向代理输入推导。未设置、为空或格式非法时服务启动失败，不再回退到 `http://<APP_HOST>:<APP_PORT>`。
 

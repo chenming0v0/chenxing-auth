@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::{error, oauth::OpenIdConfiguration, state::AppState};
+use crate::{oauth::OpenIdConfiguration, state::AppState};
 
 /// Discovery 文档。
 ///
@@ -40,12 +40,10 @@ pub(super) async fn openid_configuration(
 }
 
 /// JWKS 只返回公钥部分，私钥材料不得出现在任何 API 响应中。
+///
+/// 直接返回内存快照：JWKS 是被 RP 高频轮询的公开端点，在这里同步读密钥目录
+/// 会让并发请求互相抢目录锁并各自失败（Issue #257）。与共享目录的一致性由
+/// `KeyManager::run_disk_sync_worker` 的后台任务负责。
 pub(super) async fn jwks(State(state): State<AppState>) -> Response {
-    match state.keys.fresh_jwks() {
-        Ok(jwks) => Json(jwks).into_response(),
-        Err(key_error) => {
-            tracing::error!(error = %key_error, "failed to refresh signing keys for JWKS");
-            error::internal()
-        }
-    }
+    Json(state.keys.jwks()).into_response()
 }

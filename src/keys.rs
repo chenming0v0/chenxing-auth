@@ -1,4 +1,8 @@
-//! JWK/JWKS key storage, publication, rotation, and revocation boundary.
+//! JWK/JWKS 密钥的内存权威状态与协议读路径。
+//!
+//! 磁盘副作用拆到三个子模块，本文件只保留状态与只读访问：
+//! `keys_persistence.rs` 负责目录布局与文件读写，`keys_rotation.rs` 与
+//! `keys_revocation.rs` 是持锁写入，`keys_sync.rs` 是磁盘到内存的后台同步。
 use aws_lc_rs::{
     encoding::AsDer,
     rsa::{KeyPair, KeySize},
@@ -8,13 +12,13 @@ use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey};
 use pkcs8::PrivateKeyInfo;
 use std::{
     collections::BTreeMap,
-    fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 use thiserror::Error;
 use time::{Duration as TimeDuration, OffsetDateTime};
+use tokio::sync::Notify;
 use zeroize::Zeroizing;
 
 use crate::clock::{Clock, SystemClock};
@@ -24,12 +28,31 @@ use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 mod persistence;
 #[path = "keys_revocation.rs"]
 mod revocation;
+#[path = "keys_rotation.rs"]
+mod rotation;
+#[path = "keys_sync.rs"]
+mod sync;
+
+pub use sync::{DEFAULT_KEY_SYNC_INTERVAL, KeySyncOutcome, MINIMUM_KEY_SYNC_INTERVAL};
 
 pub const DEFAULT_KEY_RETENTION_SECONDS: u64 = 604_800;
+
+/// 签名密钥的内存权威副本。
+///
+/// 请求热路径（签发、验证、JWKS）只读 `state` 这一份内存快照，绝不在请求线程里
+/// 触碰密钥目录：密钥目录锁是 flock，锁归属是 open file description，同一进程内
+/// 不同 fd 之间同样互斥，把 reload 放进热路径会让两个并发请求互相抢锁并各自失败
+/// （Issue #257）。磁盘一致性由 `run_disk_sync_worker` 的后台任务负责，
+/// 轮换和吊销继续在 `spawn_blocking` 里持有目录锁独占写入。
 #[derive(Clone)]
 pub struct KeyManager {
     state: Arc<RwLock<KeyState>>,
     rotation_lock: Arc<Mutex<()>>,
+    /// 热路径遇到未知 `kid` 时的提示通道，唤醒后台同步任务提前对齐磁盘快照。
+    ///
+    /// 通道只承载“该同步了”这一个事实，不携带数据；后台任务自带最小间隔，
+    /// 因此伪造 `kid` 的请求无法把提示放大成任意频率的磁盘 IO。
+    resync_hint: Arc<Notify>,
 }
 struct KeyState {
     directory: Option<PathBuf>,
@@ -39,6 +62,20 @@ struct KeyState {
     private_materials: BTreeMap<String, KeyMaterial>,
     verification_keys: BTreeMap<String, DecodingKey>,
     jwks: JwkSet,
+}
+
+impl KeyState {
+    /// 判断磁盘快照是否与当前内存快照等价。
+    ///
+    /// 只比较 `kid` 集合与 active `kid`：`kid` 在生成时随机分配且与私钥一一对应，
+    /// 相同 `kid` 必然是同一份材料，因此不需要比较（也不应额外复制）私钥字节。
+    fn matches_disk_snapshot(
+        &self,
+        active_key_id: &str,
+        materials: &BTreeMap<String, KeyMaterial>,
+    ) -> bool {
+        self.active_key_id == active_key_id && self.private_materials.keys().eq(materials.keys())
+    }
 }
 
 /// RSA 私钥的 PKCS#1 DER 字节。
@@ -113,8 +150,6 @@ pub enum KeyManagerError {
     InvalidKeyId,
     #[error("requested signing key is not published")]
     UnknownKeyId,
-    #[error("signing key storage is busy")]
-    StorageBusy,
     #[error("key rotation worker failed")]
     RotationWorker,
     #[error("key operation worker failed")]
@@ -151,7 +186,7 @@ impl KeyManager {
 
     pub async fn rotate_at(&self, now: OffsetDateTime) -> Result<KeyRotation, KeyManagerError> {
         let manager = self.clone();
-        tokio::task::spawn_blocking(move || manager.rotate_blocking_at(now))
+        tokio::task::spawn_blocking(move || rotation::rotate_blocking_at(&manager, now))
             .await
             .map_err(|_| KeyManagerError::RotationWorker)?
     }
@@ -183,60 +218,35 @@ impl KeyManager {
         self.read_state().active_encoding_key.clone()
     }
 
-    pub fn active_signing_key(&self) -> Result<ActiveSigningKey, KeyManagerError> {
-        self.refresh_from_disk()?;
+    /// 取一份不可撕裂的签名快照，只读内存，不做磁盘 IO，因此不会失败。
+    ///
+    /// `key_id` 与 `encoding_key` 在同一次读锁内取出，轮换发生在两次读取之间也不会
+    /// 签出 `kid` 与私钥不匹配的 JWT。
+    pub fn active_signing_key(&self) -> ActiveSigningKey {
         let state = self.read_state();
-        Ok(ActiveSigningKey {
+        ActiveSigningKey {
             key_id: state.active_key_id.clone(),
             encoding_key: state.active_encoding_key.clone(),
-        })
+        }
     }
 
-    /// 在使用验证材料前重新读取共享目录，避免实例永久保留旧的 active/JWKS 快照。
-    pub fn refresh_from_disk(&self) -> Result<(), KeyManagerError> {
-        let (directory, retention) = {
-            let state = self.read_state();
-            (state.directory.clone(), state.retention)
-        };
-        let Some(directory) = directory else {
-            return Ok(());
-        };
-        ensure_secure_directory(&directory)?;
-        let _storage_lock = KeyStorageLock::try_acquire(&directory).map_err(|error| {
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::AlreadyExists
-            ) {
-                KeyManagerError::StorageBusy
-            } else {
-                KeyManagerError::Io(error)
-            }
-        })?;
-        let now = SystemClock.now();
-        let (active_key_id, key_files) =
-            persistence::load_materials(&directory, retention, now, false)?;
-        let next_state = build_key_state(Some(directory), retention, active_key_id, key_files)?;
-        *self.write_state() = next_state;
-        Ok(())
-    }
-
-    pub fn verification_key_for(&self, key_id: &str) -> Result<DecodingKey, KeyManagerError> {
-        self.refresh_from_disk()?;
-        self.read_state()
-            .verification_keys
-            .get(key_id)
-            .cloned()
-            .ok_or(KeyManagerError::UnknownKeyId)
-    }
-
-    pub fn fresh_jwks(&self) -> Result<JwkSet, KeyManagerError> {
-        self.refresh_from_disk()?;
-        Ok(self.read_state().jwks.clone())
+    /// 按 `kid` 取验证公钥，只读内存快照。
+    ///
+    /// `None` 表示这个 `kid` 不在当前已发布的密钥集合里，调用方必须按“令牌无效”
+    /// 处理，而不是当成服务端故障：热路径不再区分“密钥不存在”和“磁盘暂时读不到”，
+    /// 前者是协议结果，后者由后台同步任务负责收敛。
+    ///
+    /// 未命中时提示后台任务尽快同步一次共享目录，让别的实例刚轮换出的 `kid`
+    /// 在下一次同步后可验证。
+    pub fn verification_key_for(&self, key_id: &str) -> Option<DecodingKey> {
+        let key = self.read_state().verification_keys.get(key_id).cloned();
+        if key.is_none() {
+            self.hint_resync();
+        }
+        key
     }
 
     pub fn decoding_key(&self) -> Result<DecodingKey, jsonwebtoken::errors::Error> {
-        self.refresh_from_disk()
-            .map_err(|_| invalid_decoding_key_error())?;
         let state = self.read_state();
         state
             .verification_keys
@@ -250,74 +260,20 @@ impl KeyManager {
         key_id: &str,
     ) -> Result<DecodingKey, jsonwebtoken::errors::Error> {
         self.verification_key_for(key_id)
-            .map_err(|_| invalid_decoding_key_error())
+            .ok_or_else(invalid_decoding_key_error)
     }
 
-    /// 返回当前进程内存中的兼容快照。JWKS HTTP 端点使用 `fresh_jwks`。
+    /// 当前已发布的公钥集合，JWKS 端点直接返回这份内存快照。
     pub fn jwks(&self) -> JwkSet {
         self.read_state().jwks.clone()
     }
 
-    fn rotate_blocking_at(&self, now: OffsetDateTime) -> Result<KeyRotation, KeyManagerError> {
-        let _rotation_guard = self
-            .rotation_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (directory, retention, mut materials) = {
-            let state = self.read_state();
-            (
-                state.directory.clone(),
-                state.retention,
-                state.private_materials.clone(),
-            )
-        };
-        if let Some(directory) = directory.as_ref() {
-            ensure_secure_directory(directory)?;
-        }
-        let _storage_lock = match directory.as_ref() {
-            Some(directory) => Some(KeyStorageLock::acquire(directory)?),
-            None => None,
-        };
-        if let Some(directory) = directory.as_ref() {
-            let (_, disk_materials) = persistence::load_materials(directory, retention, now, true)?;
-            materials = disk_materials;
-        }
-
-        let (key_id, der) = generate_rsa_key()?;
-        materials.insert(key_id.clone(), key_material(der.clone(), now));
-        prune_materials(
-            directory.as_deref(),
-            &key_id,
-            &mut materials,
-            retention,
-            now,
-        );
-        let next_state = build_key_state(directory.clone(), retention, key_id.clone(), materials)?;
-
-        if let Some(directory) = directory.as_ref()
-            && let Err(error) = persistence::persist_key(directory, &key_id, &der)
-                .and_then(|_| persistence::persist_active_key_id(directory, &key_id))
-        {
-            let _ = fs::remove_file(directory.join(persistence::key_file_name(&key_id)));
-            return Err(error);
-        }
-
-        let published_key_count = next_state.jwks.keys.len();
-        {
-            let mut state = self.write_state();
-            *state = next_state;
-        }
-
-        if let Some(directory) = directory.as_ref()
-            && let Err(error) =
-                persistence::cleanup_expired_key_files(directory, Some(&key_id), retention, now)
-        {
-            tracing::warn!(error = %error, "failed to collect expired signing keys");
-        }
-        Ok(KeyRotation {
-            key_id,
-            published_key_count,
-        })
+    /// 请求后台同步任务尽快对齐一次磁盘快照。
+    ///
+    /// 单实例（无共享目录）下没有后台任务在等这个通道，提示被静默丢弃；
+    /// `Notify::notify_one` 会保留一个许可，同步进行中到达的提示也不会丢。
+    pub fn hint_resync(&self) {
+        self.resync_hint.notify_one();
     }
 
     fn from_key_material(
@@ -352,6 +308,7 @@ impl KeyManager {
                 materials,
             )?)),
             rotation_lock: Arc::new(Mutex::new(())),
+            resync_hint: Arc::new(Notify::new()),
         })
     }
 

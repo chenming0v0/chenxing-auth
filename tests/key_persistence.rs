@@ -1,4 +1,4 @@
-use chenxing_auth::keys::KeyManager;
+use chenxing_auth::keys::{KeyManager, KeySyncOutcome};
 use chenxing_auth::oauth::token::{decode_access_token, issue_access_token};
 use std::fs;
 use std::time::Duration;
@@ -90,10 +90,10 @@ async fn revoking_a_persisted_key_removes_its_file_and_published_key() {
         .expect("revoked persisted key");
 
     assert!(!revoked_key_path.exists());
-    assert!(manager.verification_key_for(&revoked_key_id).is_err());
+    assert!(manager.verification_key_for(&revoked_key_id).is_none());
     assert_eq!(manager.jwks().keys.len(), 1);
     let reloaded = KeyManager::load_or_generate(&directory).expect("reloaded key manager");
-    assert!(reloaded.verification_key_for(&revoked_key_id).is_err());
+    assert!(reloaded.verification_key_for(&revoked_key_id).is_none());
     assert_eq!(reloaded.jwks().keys.len(), 1);
 
     let _ = fs::remove_dir_all(directory);
@@ -123,7 +123,7 @@ async fn revoking_a_persisted_active_key_switches_before_removing_it() {
 
     let reloaded = KeyManager::load_or_generate(&directory).expect("reloaded key manager");
     assert_eq!(reloaded.key_id(), previous_key_id);
-    assert!(reloaded.verification_key_for(&active_key_id).is_err());
+    assert!(reloaded.verification_key_for(&active_key_id).is_none());
 
     let _ = fs::remove_dir_all(directory);
 }
@@ -300,17 +300,23 @@ async fn concurrent_rotations_are_serialized_without_losing_keys() {
     let _ = fs::remove_dir_all(directory);
 }
 
+/// 多实例一致性由显式的磁盘同步提供，而不是每次签发都 reload（Issue #257）。
 #[tokio::test]
-async fn managers_refresh_shared_active_key_before_signing_and_verifying() {
+async fn managers_adopt_shared_active_key_after_disk_sync() {
     let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
     let first = KeyManager::load_or_generate(&directory).expect("initial key");
     let second = KeyManager::load_or_generate(&directory).expect("second manager");
+    let stale_key_id = second.key_id();
 
     let rotation = first.rotate().await.expect("rotate signing key");
-    let signing_key = second
-        .active_signing_key()
-        .expect("refresh active signing key");
-    assert_eq!(signing_key.key_id(), rotation.key_id);
+    // 同步之前第二个实例仍用自己的快照签名：热路径不做磁盘 IO。
+    assert_eq!(second.active_signing_key().key_id(), stale_key_id);
+
+    assert_eq!(
+        second.sync_from_disk().await.expect("sync shared keys"),
+        KeySyncOutcome::Updated
+    );
+    assert_eq!(second.active_signing_key().key_id(), rotation.key_id);
 
     let token = issue_access_token(
         &second,
@@ -320,11 +326,153 @@ async fn managers_refresh_shared_active_key_before_signing_and_verifying() {
         &["openid".to_owned()],
         3600,
     )
-    .expect("sign with refreshed key");
+    .expect("sign with synchronized key");
     let header = jsonwebtoken::decode_header(&token).expect("token header");
     assert_eq!(header.kid.as_deref(), Some(rotation.key_id.as_str()));
     decode_access_token(&second, "https://auth.example.com", "cx_project", &token)
-        .expect("verify with refreshed key");
+        .expect("verify with synchronized key");
+
+    // 磁盘未再变化时同步是幂等的，不应替换内存快照。
+    assert_eq!(
+        second.sync_from_disk().await.expect("idempotent sync"),
+        KeySyncOutcome::Unchanged
+    );
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+/// 目录锁被别的 fd 占用时，热路径必须继续用内存快照服务，而不是返回错误。
+///
+/// flock 的锁归属是 open file description，同一进程内不同 fd 之间同样互斥，
+/// 因此这里持有的锁精确复现了 Issue #257 里两个并发请求互相抢锁的场景。
+#[tokio::test]
+async fn hot_paths_serve_memory_snapshot_while_storage_lock_is_held() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let manager = KeyManager::load_or_generate(&directory).expect("initial key");
+    let active_key_id = manager.key_id();
+    let published_key_count = manager.jwks().keys.len();
+
+    let _lock_holder = lock_key_storage(&directory);
+
+    // 签发、验证、JWKS 三条热路径都不碰磁盘，因此锁被占用时全部正常返回。
+    let token = issue_access_token(
+        &manager,
+        "https://auth.example.com",
+        "user-1",
+        "cx_project",
+        &["openid".to_owned()],
+        3600,
+    )
+    .expect("issue while storage lock is held");
+    decode_access_token(&manager, "https://auth.example.com", "cx_project", &token)
+        .expect("verify while storage lock is held");
+    assert_eq!(manager.active_signing_key().key_id(), active_key_id);
+    assert!(manager.verification_key_for(&active_key_id).is_some());
+    assert_eq!(manager.jwks().keys.len(), published_key_count);
+
+    // 后台同步把锁竞争降级为“跳过本轮”，不产生错误。
+    assert_eq!(
+        manager.sync_from_disk().await.expect("contended sync"),
+        KeySyncOutcome::Contended
+    );
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+/// 并发热路径不再互相抢锁：同时签发与验证必须全部成功。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_hot_path_requests_all_succeed() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let manager = KeyManager::load_or_generate(&directory).expect("initial key");
+
+    let mut tasks = Vec::new();
+    for _ in 0..16 {
+        let manager = manager.clone();
+        tasks.push(tokio::spawn(async move {
+            let token = issue_access_token(
+                &manager,
+                "https://auth.example.com",
+                "user-1",
+                "cx_project",
+                &["openid".to_owned()],
+                3600,
+            )
+            .expect("concurrent issue");
+            decode_access_token(&manager, "https://auth.example.com", "cx_project", &token)
+                .expect("concurrent verify");
+            assert!(!manager.jwks().keys.is_empty());
+        }));
+    }
+    for task in tasks {
+        task.await.expect("hot path task");
+    }
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+/// 后台同步任务把别的实例轮换出的密钥带进本实例的内存快照。
+///
+/// 未知 `kid` 的验证失败会提示后台任务提前同步，因此不必等满一个完整周期。
+#[tokio::test]
+async fn disk_sync_worker_converges_on_keys_rotated_by_another_instance() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let first = KeyManager::load_or_generate(&directory).expect("initial key");
+    let second = KeyManager::load_or_generate(&directory).expect("second manager");
+    let worker = tokio::spawn(
+        second
+            .clone()
+            .run_disk_sync_worker(Duration::from_millis(50)),
+    );
+
+    let rotation = first.rotate().await.expect("rotate signing key");
+    let token = issue_access_token(
+        &first,
+        "https://auth.example.com",
+        "user-1",
+        "cx_project",
+        &["openid".to_owned()],
+        3600,
+    )
+    .expect("token signed by the rotating instance");
+
+    // 提示通道：未知 kid 让 worker 提前跑一轮，而不是坐等下一个 tick。
+    let _ = second.verification_key_for(&rotation.key_id);
+    let converged = wait_until(Duration::from_secs(10), || {
+        second.key_id() == rotation.key_id
+    })
+    .await;
+    worker.abort();
+
+    assert!(converged, "worker must adopt the shared active key");
+    decode_access_token(&second, "https://auth.example.com", "cx_project", &token)
+        .expect("verify a token signed by the other instance");
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+/// 轮换正在持有目录锁时，同步只会跳过本轮，绝不覆盖轮换刚写入的内存快照。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn disk_sync_never_reverts_a_concurrent_rotation() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let manager = KeyManager::load_or_generate(&directory).expect("initial key");
+    let previous_key_id = manager.key_id();
+
+    let syncing = {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            for _ in 0..32 {
+                manager.sync_from_disk().await.expect("sync during rotation");
+            }
+        })
+    };
+    let rotation = manager.rotate().await.expect("rotate during sync");
+    syncing.await.expect("sync task");
+
+    // 同步收尾后内存里必须仍是轮换后的 active key。
+    manager.sync_from_disk().await.expect("final sync");
+    assert_ne!(rotation.key_id, previous_key_id);
+    assert_eq!(manager.key_id(), rotation.key_id);
+    assert!(manager.verification_key_for(&previous_key_id).is_some());
 
     let _ = fs::remove_dir_all(directory);
 }
@@ -347,22 +495,73 @@ async fn concurrent_manager_rotations_converge_on_shared_active_key() {
         "disk active key must be one of the serialized rotations"
     );
     assert_eq!(reloaded.jwks().keys.len(), 3);
-    assert_eq!(
-        first
-            .active_signing_key()
-            .expect("first manager refresh")
-            .key_id(),
-        active_key_id.as_str()
-    );
-    assert_eq!(
-        second
-            .active_signing_key()
-            .expect("second manager refresh")
-            .key_id(),
-        active_key_id.as_str()
-    );
+    first.sync_from_disk().await.expect("first manager sync");
+    second.sync_from_disk().await.expect("second manager sync");
+    assert_eq!(first.active_signing_key().key_id(), active_key_id.as_str());
+    assert_eq!(second.active_signing_key().key_id(), active_key_id.as_str());
 
     let _ = fs::remove_dir_all(directory);
+}
+
+/// 在测试进程里独占密钥目录锁，模拟“另一个实例或本进程的轮换正在写目录”。
+///
+/// 直接用 flock 而不是调用生产代码的锁类型：`KeyStorageLock` 是 crate 内部类型，
+/// 而这里要验证的正是“外部持锁时热路径依然可用”这一外部可观察行为。
+#[cfg(unix)]
+fn lock_key_storage(directory: &std::path::Path) -> fs::File {
+    use std::os::fd::AsRawFd;
+
+    unsafe extern "C" {
+        fn flock(fd: std::ffi::c_int, operation: std::ffi::c_int) -> std::ffi::c_int;
+    }
+    const LOCK_EX: std::ffi::c_int = 2;
+    const LOCK_NB: std::ffi::c_int = 4;
+
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join(".chenxing-key.lock"))
+        .expect("open key storage lock file");
+    assert_eq!(
+        unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) },
+        0,
+        "test must own the key storage lock"
+    );
+    file
+}
+
+/// 非 Unix 回退实现用目录存在表达持锁，见 `src/key_lock.rs`。
+#[cfg(not(unix))]
+fn lock_key_storage(directory: &std::path::Path) -> LockDirectoryGuard {
+    let path = directory.join(".chenxing-key.lock");
+    fs::create_dir(&path).expect("own the key storage lock");
+    LockDirectoryGuard { path }
+}
+
+#[cfg(not(unix))]
+struct LockDirectoryGuard {
+    path: std::path::PathBuf,
+}
+
+#[cfg(not(unix))]
+impl Drop for LockDirectoryGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir(&self.path);
+    }
+}
+
+/// 轮询等待条件成立，用于后台任务这种没有完成信号的收敛断言。
+async fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while tokio::time::Instant::now() < deadline {
+        if condition() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    condition()
 }
 
 fn persisted_key_count(directory: &std::path::Path) -> usize {

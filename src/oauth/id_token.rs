@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
 
-use crate::keys::{KeyManager, KeyManagerError};
+use crate::keys::KeyManager;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct IdTokenClaims {
@@ -73,8 +73,6 @@ pub enum IdTokenError {
     InvalidLifetime,
     #[error("ID token signing failed: {0}")]
     Signing(#[from] jsonwebtoken::errors::Error),
-    #[error("signing key state unavailable: {0}")]
-    KeyState(#[from] KeyManagerError),
 }
 
 pub fn issue_id_token(
@@ -128,7 +126,7 @@ pub fn issue_id_token_with_profile(
         name: profile.name.map(str::to_owned),
     };
     let mut header = Header::new(Algorithm::RS256);
-    let signing_key = keys.active_signing_key().map_err(IdTokenError::KeyState)?;
+    let signing_key = keys.active_signing_key();
     header.kid = Some(signing_key.key_id().to_owned());
     encode(&header, &claims, signing_key.encoding_key()).map_err(IdTokenError::from)
 }

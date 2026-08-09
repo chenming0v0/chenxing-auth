@@ -16,7 +16,10 @@ use zeroize::Zeroizing;
 
 use crate::oauth::token::{decode_access_token, issue_access_token};
 
-use super::{KeyManager, KeyMaterial, key_material, prune_materials, within_retention_at};
+use super::{
+    KeyManager, KeyMaterial, KeySyncOutcome, MINIMUM_KEY_SYNC_INTERVAL, key_material,
+    prune_materials, within_retention_at,
+};
 
 const TEST_NOW_UNIX_SECONDS: i64 = 1_700_000_000;
 
@@ -160,4 +163,62 @@ fn jwks_never_exposes_rsa_private_parameters() {
 
     assert!(json.contains("\"n\":"), "JWKS must include modulus n");
     assert!(json.contains("\"e\":"), "JWKS must include exponent e");
+}
+
+/// 签发热路径取的是同一次读锁下的 `kid` 与私钥，且不做任何磁盘 IO（Issue #257）。
+#[test]
+fn active_signing_key_is_a_consistent_memory_snapshot() {
+    let manager = KeyManager::generate().expect("key generation");
+    let snapshot = manager.active_signing_key();
+
+    assert_eq!(snapshot.key_id(), manager.key_id());
+    assert!(
+        manager.verification_key_for(snapshot.key_id()).is_some(),
+        "active kid must be published for verification"
+    );
+}
+
+/// 未发布的 `kid` 是协议结果，返回 `None`，不制造服务端错误。
+#[test]
+fn verification_key_for_unknown_key_id_returns_none() {
+    let manager = KeyManager::generate().expect("key generation");
+
+    assert!(manager.verification_key_for("cx-not-published").is_none());
+}
+
+/// 未知 `kid` 触发的提示必须是非阻塞的：没有 worker 在等时也不能挂住热路径。
+#[test]
+fn resync_hint_does_not_block_without_a_worker() {
+    let manager = KeyManager::generate().expect("key generation");
+
+    for _ in 0..1_000 {
+        assert!(manager.verification_key_for("cx-not-published").is_none());
+    }
+}
+
+/// 纯内存管理器没有共享目录，同步是明确的 no-op 而不是错误。
+#[test]
+fn in_memory_manager_sync_reports_not_persisted() {
+    let manager = KeyManager::generate().expect("key generation");
+
+    assert_eq!(
+        manager.sync_from_disk_blocking().expect("in-memory sync"),
+        KeySyncOutcome::NotPersisted
+    );
+}
+
+/// 无共享目录时后台任务必须立即退出，而不是空转一个什么都不做的定时器。
+///
+/// 传入 1ns 间隔：如果实现真的进入了循环，它会被抬到 `MINIMUM_KEY_SYNC_INTERVAL`
+/// 并持续 tick，从而撞上这里的超时。
+#[tokio::test]
+async fn disk_sync_worker_returns_immediately_without_a_key_directory() {
+    let manager = KeyManager::generate().expect("key generation");
+
+    tokio::time::timeout(
+        MINIMUM_KEY_SYNC_INTERVAL,
+        manager.run_disk_sync_worker(Duration::from_nanos(1)),
+    )
+    .await
+    .expect("worker must not schedule ticks without a key directory");
 }
