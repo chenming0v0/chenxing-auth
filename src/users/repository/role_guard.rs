@@ -12,20 +12,26 @@ use crate::sqlx::PgPool;
 
 use crate::users::domain::{UserId, UserRole, UserStatus};
 
-/// 角色变更的业务结果。
+/// 受 Owner 守卫保护的写操作的业务结果，角色变更与状态变更共用。
 ///
-/// 「最后一个活跃 Owner 不能降级」是领域规则，不是数据库故障。旧实现用
-/// `sqlx::Error::Protocol("last active owner required")` 携带它，服务层再用
-/// `message.contains(...)` 把字符串翻译回业务语义：错误通道被借用来传业务状态，
-/// 判定依赖一个没有类型约束的字符串常量，任何改写措辞的提交都会静默破坏守卫。
-/// 用枚举把三种终局显式化，调用方 match 时由编译器保证覆盖完整。
+/// 「最后一个活跃 Owner 不能降级/禁用」是领域规则，不是数据库故障。历史实现用过
+/// 两种代用通道，都被这个枚举取代：
+///
+/// - `set_user_role` 曾用 `sqlx::Error::Protocol("last active owner required")` 携带它，
+///   服务层再 `message.contains(...)` 翻译回业务语义 —— 判定依赖一个没有类型约束的
+///   字符串常量，任何改写措辞的提交都会静默破坏守卫。
+/// - `set_user_status_guarded` 曾返回 `Option<&'static str>`（`Some("updated")` /
+///   `Some("last_owner_required")` / `None`），服务层的 `_ => Ok(false)` 兜底分支
+///   会把任何未识别的字符串静默降级成「用户不存在」（Issue #283）。
+///
+/// 三种终局显式化后，调用方 match 时由编译器保证覆盖完整，不存在兜底分支。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SetRoleOutcome {
-    /// 角色已更新。
+pub enum OwnerGuardOutcome {
+    /// 写入已提交。
     Updated,
     /// 目标用户不存在。
     NotFound,
-    /// 拒绝降级：这是最后一个活跃 Owner。
+    /// 拒绝：这是最后一个活跃 Owner。
     LastOwnerRequired,
 }
 
@@ -53,12 +59,12 @@ pub async fn set_user_role(
     pool: &PgPool,
     id: UserId,
     role: UserRole,
-) -> Result<SetRoleOutcome, crate::sqlx::Error> {
+) -> Result<OwnerGuardOutcome, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
     let (active_owner_count, current) = lock_owner_scope(&mut transaction, id).await?;
     let Some((current_role, status)) = current else {
         transaction.rollback().await?;
-        return Ok(SetRoleOutcome::NotFound);
+        return Ok(OwnerGuardOutcome::NotFound);
     };
     if current_role == "owner"
         && role != UserRole::Owner
@@ -66,7 +72,7 @@ pub async fn set_user_role(
         && active_owner_count <= 1
     {
         transaction.rollback().await?;
-        return Ok(SetRoleOutcome::LastOwnerRequired);
+        return Ok(OwnerGuardOutcome::LastOwnerRequired);
     }
     crate::sqlx::query("UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1")
         .bind(id)
@@ -74,34 +80,24 @@ pub async fn set_user_role(
         .execute(&mut *transaction)
         .await?;
     transaction.commit().await?;
-    Ok(SetRoleOutcome::Updated)
+    Ok(OwnerGuardOutcome::Updated)
 }
 
-pub async fn set_user_status(
-    pool: &crate::sqlx::PgPool,
-    id: UserId,
-    status: &str,
-) -> Result<bool, crate::sqlx::Error> {
-    let Some(status) = UserStatus::parse(status) else {
-        return Ok(false);
-    };
-    Ok(matches!(
-        set_user_status_guarded(pool, id, status).await?,
-        Some("updated")
-    ))
-}
-
+/// 变更用户状态。
+///
+/// 入参是已解析的 [`UserStatus`]，因此本函数不存在「状态串非法」这一终局 ——
+/// 非法输入在 HTTP 层就被拒为 400，不会走到仓储层（Issue #283）。
 pub async fn set_user_status_guarded(
     pool: &PgPool,
     id: UserId,
     status: UserStatus,
-) -> Result<Option<&'static str>, crate::sqlx::Error> {
+) -> Result<OwnerGuardOutcome, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
     crate::sessions::store::lock_user_session_scope(&mut transaction, id).await?;
     let (active_owner_count, current) = lock_owner_scope(&mut transaction, id).await?;
     let Some((role, current_status)) = current else {
         transaction.rollback().await?;
-        return Ok(None);
+        return Ok(OwnerGuardOutcome::NotFound);
     };
     let current_status = UserStatus::parse(&current_status);
     if role == "owner"
@@ -110,7 +106,7 @@ pub async fn set_user_status_guarded(
         && active_owner_count <= 1
     {
         transaction.rollback().await?;
-        return Ok(Some("last_owner_required"));
+        return Ok(OwnerGuardOutcome::LastOwnerRequired);
     }
     // 禁用即撤销该用户全部会话：否则被禁用的账号仍能用既有 Cookie 继续访问。
     if current_status != Some(status) && status == UserStatus::Disabled {
@@ -123,5 +119,11 @@ pub async fn set_user_status_guarded(
             .execute(&mut *transaction)
             .await?;
     transaction.commit().await?;
-    Ok((result.rows_affected() == 1).then_some("updated"))
+    // 目标行已在 `lock_owner_scope` 里加锁，正常路径必然影响 1 行；
+    // 这里保留判定是为了不把「行在锁定后消失」当成成功。
+    Ok(if result.rows_affected() == 1 {
+        OwnerGuardOutcome::Updated
+    } else {
+        OwnerGuardOutcome::NotFound
+    })
 }

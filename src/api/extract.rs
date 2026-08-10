@@ -26,9 +26,13 @@
 //! 攻击者构造的 body 在鉴权通过前不会被反序列化。
 //!
 //! [`AdminWrite`] 把拒绝推迟到 [`AdminWrite::authorize`]，因为管理端的授权失败
-//! 审计需要记录「尝试的是哪个权限」，而权限在提取阶段还不可知：
-//! `set_user_status` 要先查目标用户角色才能决定需要 `ManageUsers` 还是 `ManageRoles`。
+//! 审计需要记录「尝试的是哪个权限」，而权限由 handler 在运行时给出。
 //! 不变量仍然成立 —— 拿到 [`AdminActor`] 的唯一途径是 `authorize()`，而它无条件校验 CSRF。
+//!
+//! 需要按目标资源抬高门槛的端点（禁用 Owner、改写 Owner 的套餐）**不得**把
+//! 「查资源决定权限」放在第一次 `authorize()` 之前：那会让权限门槛成为资源状态的
+//! 函数，403 的措辞变成资源存在性预言机（Issue #280）。正确顺序是先按与目标无关的
+//! 基线授权，再查资源，最后抬档 —— 见 `admin::authorization::authorize_user_write`。
 //!
 //! 类型让人难以写错，`tests/csrf_route_coverage.rs` 的路由级测试让写错的跑不过。
 

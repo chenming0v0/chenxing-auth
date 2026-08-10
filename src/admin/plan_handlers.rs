@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::OffsetDateTime;
 
-use super::{authorization::AdminActor, domain::AdminPermission};
+use super::{
+    authorization::{AdminActor, authorize_user_write},
+    domain::AdminPermission,
+};
 use crate::{
     api::extract::{AdminRead, AdminWrite},
     audit::AuditEvent,
@@ -170,15 +173,24 @@ pub struct AssignPlanInput {
     pub expires_at: Option<Value>,
 }
 
+/// `POST /api/v1/admin/users/{user_id}/plan`。
+///
+/// 分配套餐直接改写用户权益（entitlements），语义属于用户管理而非系统设置，
+/// 因此基线是 `ManageUsers` 而不是 `ManageSettings` —— 只有系统设置权限的角色
+/// 不得改写任意用户的套餐。目标是 Owner 时门槛抬到 `ManageRoles`：改写 Owner
+/// 的权益能压缩最高权限持有者的 Client 配额与授权额度，与禁用 Owner 同档
+/// （Issue #280）。授权顺序见 `authorize_user_write`。
 pub async fn assign_plan(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(user_id): Path<UserId>,
     Json(input): Json<AssignPlanInput>,
 ) -> Response {
-    // 分配套餐直接改写用户权益（entitlements），语义属于用户管理而非系统设置；
-    // 用 ManageUsers 把守，避免仅有 ManageSettings 的角色修改任意用户的套餐
     let actor = match admin.authorize(&state, AdminPermission::ManageUsers).await {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
+    let actor = match authorize_user_write(&state, &admin, actor, user_id).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };

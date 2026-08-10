@@ -29,7 +29,7 @@ pub use lookup::{
 pub use owner_bootstrap::{
     BootstrapOwnerOutcome, bootstrap_owner, insert_user_after_owner, owner_exists,
 };
-pub use role_guard::{SetRoleOutcome, set_user_role, set_user_status, set_user_status_guarded};
+pub use role_guard::{OwnerGuardOutcome, set_user_role, set_user_status_guarded};
 pub use write::{
     PasswordChangeOutcome, change_password_and_revoke_all, insert_user, insert_user_in_transaction,
     update_display_name,
