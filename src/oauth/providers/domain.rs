@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
-use url::{Host, Url};
+use url::Url;
 
-use super::claims::ClaimMapping;
+use super::{claims::ClaimMapping, endpoint_policy::validate_endpoint_url};
 
 const MAX_NAME_LENGTH: usize = 128;
 const MAX_SLUG_LENGTH: usize = 64;
@@ -269,6 +269,12 @@ pub enum ProviderValidationError {
     InvalidSlug,
     #[error("provider endpoint is invalid")]
     InvalidEndpoint,
+    /// 端点指向私网/链路本地/CGNAT/ULA 等非公网地址（Issue #291）。
+    ///
+    /// 与 `InvalidEndpoint` 分开是为了让管理员知道该改什么：形态没问题，是目标
+    /// 地址空间不允许。消息只描述规则，不回显解析到的地址或内部网络拓扑。
+    #[error("provider endpoint must not target a non-public network address")]
+    PrivateEndpoint,
     #[error("provider client id is invalid")]
     InvalidClientId,
     #[error("provider client secret is invalid")]
@@ -291,34 +297,6 @@ fn validate_endpoint(value: &str) -> Result<Url, ProviderValidationError> {
     let url = Url::parse(value.trim()).map_err(|_| ProviderValidationError::InvalidEndpoint)?;
     validate_endpoint_url(&url)?;
     Ok(url)
-}
-
-pub fn validate_endpoint_url(url: &Url) -> Result<(), ProviderValidationError> {
-    let host = url.host_str();
-    let allowed_scheme = match url.scheme() {
-        "https" => true,
-        "http" => is_loopback_host(url),
-        _ => false,
-    };
-    if !matches!(url.scheme(), "http" | "https")
-        || host.is_none()
-        || !allowed_scheme
-        || !url.username().is_empty()
-        || url.password().is_some()
-        || url.fragment().is_some()
-    {
-        return Err(ProviderValidationError::InvalidEndpoint);
-    }
-    Ok(())
-}
-
-fn is_loopback_host(url: &Url) -> bool {
-    match url.host() {
-        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-        Some(Host::Ipv4(address)) => address.is_loopback(),
-        Some(Host::Ipv6(address)) => address.is_loopback(),
-        None => false,
-    }
 }
 
 fn normalize_scopes(scopes: Vec<String>) -> Result<Vec<String>, ProviderValidationError> {

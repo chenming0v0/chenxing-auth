@@ -1,6 +1,7 @@
 pub mod claims;
 pub mod client_pkce;
 pub mod domain;
+pub mod endpoint_policy;
 mod error_helpers;
 pub mod handlers;
 pub mod repository;
