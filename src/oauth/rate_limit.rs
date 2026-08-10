@@ -80,15 +80,15 @@ impl QpsRateLimiter {
     /// 窗口 1000ms → 2s（与历史硬编码常量一致），60_000ms → 61s。TTL 若固定在 2s，
     /// 长窗口的 key 会先过期，窗口内的条目凭空消失，注入窗口就白做了。
     /// 多出的 1 秒是安全余量：TTL 每次写入都会刷新，只要不短于窗口就不会截断窗口。
-    fn key_ttl_seconds(&self) -> i64 {
-        // 有符号 div_ceil 仍是 nightly，构造期已保证 window_ms > 0，转 u64 安全。
-        (self.window_ms as u64).div_ceil(1_000) as i64 + 1
+    fn key_ttl_seconds(window_ms: i64) -> i64 {
+        // 有符号 div_ceil 仍是 nightly，调用方已保证 window_ms > 0，转 u64 安全。
+        (window_ms as u64).div_ceil(1_000) as i64 + 1
     }
 
     /// 对 `client_id` 在最近一个滑动窗口内计数。返回 `true` 表示放行，
     /// `false` 表示超过 `max_qps` 应拒绝；`max_qps` 由调用方决定是否为 `None`（不启用）。
     pub async fn allow(&self, client_id: &str, max_qps: u32) -> Result<bool, QpsRateLimitError> {
-        self.allow_key(format!("chenxing:qps:{client_id}"), max_qps)
+        self.allow_key(format!("chenxing:qps:{client_id}"), max_qps, self.window_ms)
             .await
     }
 
@@ -98,19 +98,54 @@ impl QpsRateLimiter {
         source_ip: &str,
         max_qps: u32,
     ) -> Result<bool, QpsRateLimitError> {
-        self.allow_key(format!("chenxing:qps:source:{source_ip}"), max_qps)
-            .await
+        self.allow_key(
+            format!("chenxing:qps:source:{source_ip}"),
+            max_qps,
+            self.window_ms,
+        )
+        .await
     }
 
-    async fn allow_key(&self, key: String, max_qps: u32) -> Result<bool, QpsRateLimitError> {
+    /// 按调用方给定的窗口在 `scope` 维度计数，与实例的 QPS 窗口无关。
+    ///
+    /// 存在的理由：不是所有滥用面都以「每秒请求数」度量。Owner 引导（#279）
+    /// 一个部署一生只该发生一次，合理配额是「每分钟几次」，用 1 秒窗口去限
+    /// 等于不限。底层 Lua 已经是通用滑动窗口，与其为每个非 QPS 维度再写一份
+    /// 脚本，不如把窗口长度提到参数位置。
+    ///
+    /// `scope` 必须由调用方带上自己的命名空间前缀，避免与 `chenxing:qps:*` 撞 key。
+    ///
+    /// # Panics
+    ///
+    /// `window_ms <= 0` 时 panic，理由同 [`QpsRateLimiter::with_window_ms`]：
+    /// 非正窗口会清空整个 ZSET，等于静默放行。
+    pub async fn allow_scoped(
+        &self,
+        scope: &str,
+        limit: u32,
+        window_ms: i64,
+    ) -> Result<bool, QpsRateLimitError> {
+        assert!(
+            window_ms > 0,
+            "scoped sliding window must be positive, got {window_ms}ms"
+        );
+        self.allow_key(scope.to_owned(), limit, window_ms).await
+    }
+
+    async fn allow_key(
+        &self,
+        key: String,
+        max_qps: u32,
+        window_ms: i64,
+    ) -> Result<bool, QpsRateLimitError> {
         let member = Uuid::new_v4().simple().to_string();
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let allowed: i64 = Script::new(QPS_SCRIPT)
             .key(key)
-            .arg(self.window_ms)
+            .arg(window_ms)
             .arg(max_qps)
             .arg(member)
-            .arg(self.key_ttl_seconds())
+            .arg(Self::key_ttl_seconds(window_ms))
             .invoke_async(&mut connection)
             .await?;
         match allowed {
@@ -171,12 +206,44 @@ mod tests {
     /// TTL 由窗口推导，且必须复刻历史上 1000ms → 2s 的关系。
     #[test]
     fn key_ttl_is_derived_from_the_window() {
-        assert_eq!(limiter().key_ttl_seconds(), 2, "production window is 1s");
-        assert_eq!(limiter_with_window(QPS_WINDOW_MS).key_ttl_seconds(), 2);
-        assert_eq!(limiter_with_window(1).key_ttl_seconds(), 2);
-        assert_eq!(limiter_with_window(1_001).key_ttl_seconds(), 3);
-        assert_eq!(limiter_with_window(2_000).key_ttl_seconds(), 3);
-        assert_eq!(limiter_with_window(60_000).key_ttl_seconds(), 61);
+        assert_eq!(
+            QpsRateLimiter::key_ttl_seconds(QPS_WINDOW_MS),
+            2,
+            "production window is 1s"
+        );
+        assert_eq!(QpsRateLimiter::key_ttl_seconds(1), 2);
+        assert_eq!(QpsRateLimiter::key_ttl_seconds(1_001), 3);
+        assert_eq!(QpsRateLimiter::key_ttl_seconds(2_000), 3);
+        assert_eq!(QpsRateLimiter::key_ttl_seconds(60_000), 61);
+    }
+
+    /// 作用域窗口独立于实例窗口：1 秒实例窗口下也能表达「每分钟 N 次」。
+    #[tokio::test]
+    async fn scoped_window_is_independent_of_the_instance_window() {
+        let limiter = limiter();
+        let scope = format!("chenxing:test:scoped:{}", uuid::Uuid::new_v4().simple());
+        assert!(
+            limiter
+                .allow_scoped(&scope, 1, 60_000)
+                .await
+                .expect("first scoped request")
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        assert!(
+            !limiter
+                .allow_scoped(&scope, 1, 60_000)
+                .await
+                .expect("second scoped request"),
+            "60s scoped window must still count the entry recorded 1.2s ago"
+        );
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "scoped sliding window must be positive")]
+    async fn non_positive_scoped_window_is_rejected() {
+        let _ = limiter()
+            .allow_scoped("chenxing:test:scoped:invalid", 1, 0)
+            .await;
     }
 
     #[test]
