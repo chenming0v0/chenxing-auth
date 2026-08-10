@@ -177,6 +177,9 @@
   /* clip (not hidden): hidden creates a scroll container and breaks the
      sticky topbar; clip still crops nebula/starfield overflow */
   overflow: clip;
+  /* clip 不建立 BFC，topbar 的 margin-top 会穿透到 main 外，把整页下推并在
+     视口顶部露出一条没有星空/网格的裸背景死区；flow-root 把外边距收回 main 内 */
+  display: flow-root;
   background: var(--chenxing-background);
   isolation: isolate;
 }
