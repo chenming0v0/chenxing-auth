@@ -285,6 +285,91 @@ async fn concurrent_rotation_keeps_the_single_winner_token_alive() {
         .expect("cleanup concurrent rotation");
 }
 
+/// Issue #290：轮换回滚必须原子完成——新 token 消失、旧 token 复活，
+/// 绝不能出现「新 token 还活着，旧 token 也被恢复」的双活凭据。
+#[tokio::test]
+async fn rotation_rollback_restores_the_previous_token_atomically() {
+    let store = RefreshTokenStore::new(redis_client());
+    let client_id = format!("cx_rollback_{}", Uuid::new_v4().simple());
+    let original = RefreshToken::new(
+        client_id.clone(),
+        "user-rollback".to_owned(),
+        vec!["openid".to_owned()],
+    );
+    let rotated = original.rotate(vec!["openid".to_owned()]);
+    let family_id = original.family_id.clone();
+
+    store.save(&original).await.expect("save original token");
+    assert!(
+        store
+            .rotate_if_matches(&original.value, &original, &rotated)
+            .await
+            .expect("rotate to the new token")
+    );
+
+    assert!(
+        store
+            .rollback_rotation(&rotated, &original)
+            .await
+            .expect("roll back the rotation")
+    );
+    assert!(
+        store
+            .find(&rotated.value)
+            .await
+            .expect("find the rolled-back token")
+            .is_none(),
+        "rollback must remove the token the client never received"
+    );
+    assert_eq!(
+        store
+            .find(&original.value)
+            .await
+            .expect("find the restored token")
+            .expect("the previous token must be usable again")
+            .value,
+        original.value
+    );
+    // 恢复后的旧 token 必须能正常轮换（载荷与 CAS 预期逐字节一致）。
+    let retried = original.rotate(vec!["openid".to_owned()]);
+    assert!(
+        store
+            .rotate_if_matches(&original.value, &original, &retried)
+            .await
+            .expect("retry the rotation after rollback")
+    );
+
+    // 新 token 已经不在时不得复活旧 token，否则同一 family 会出现两个活凭据。
+    assert!(
+        !store
+            .rollback_rotation(&rotated, &original)
+            .await
+            .expect("repeat rollback")
+    );
+    assert!(
+        store
+            .find(&original.value)
+            .await
+            .expect("find the previous token after a repeated rollback")
+            .is_none()
+    );
+
+    let client = redis_client();
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis");
+    let _: () = redis::cmd("DEL")
+        .arg(token_key(&retried.value))
+        .arg(client_index_key(&client_id))
+        .arg(family_index_key(&family_id))
+        .arg(tombstone_key(&original.value))
+        .arg(tombstone_key(&rotated.value))
+        .query_async(&mut conn)
+        .await
+        .expect("cleanup rollback keys");
+}
+
 /// Issue #110：墓碑 client_id 校验防止跨 client DoS。
 #[tokio::test]
 async fn tombstone_client_id_mismatch_does_not_revoke_family() {

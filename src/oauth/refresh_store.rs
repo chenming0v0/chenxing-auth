@@ -20,11 +20,16 @@ const ABSOLUTE_TTL_SECONDS: u64 = (REFRESH_TOKEN_ABSOLUTE_TTL_DAYS * 24 * 60 * 6
 /// 墓碑的 TTL（旧 token 被消费后需要保留一段时间以检测重放）。
 const TOMBSTONE_TTL_SECONDS: u64 = (REFRESH_TOKEN_SLIDING_TTL_DAYS * 24 * 60 * 60) as u64;
 
-/// CAS 失败时允许并发请求共享一次轮换结果的短窗口。
+/// 判定「并发轮换」与「凭据重放」的时间窗口。
 ///
-/// 只有已经读到旧 token、随后在这个窗口内输掉 CAS 的请求使用该宽限；
-/// 缺失 token 的请求仍按真实 replay 处理，避免攻击者靠反复提交旧凭据
-/// 无限延迟 family 撤销。
+/// 窗口锚定在墓碑的 `recorded_at`（旧 token 被消费的时刻），不随后续请求
+/// 刷新，因此攻击者无法靠反复提交旧凭据把 family 撤销无限推后：过了这一次
+/// 消费后的 N 秒，任何再次提交都会被判为 replay。
+///
+/// 窗口内的提交一律只拒绝当次请求（不撤销 family）。这里不区分「读到过 live
+/// token 后输掉 CAS」和「读时 token 已消失」——同一批并发请求落到哪条路径
+/// 只取决于它们与 CAS 胜者的相对时序，把后者当成 replay 会让正常的并发刷新
+/// 随机炸掉整个 family（Issue #278）。
 pub const REFRESH_ROTATION_CONCURRENCY_GRACE_SECONDS: i64 = 5;
 
 /// 索引 TTL：client / family 索引的过期时间设为绝对上限，防止无界增长。
@@ -84,19 +89,23 @@ impl Tombstone {
         }
     }
 
-    /// 只有近期的正常消费墓碑才能解释 CAS loser 的并发竞争。
+    /// 该墓碑是否近到足以解释一次并发轮换竞争。
+    ///
+    /// 窗口取绝对值：多实例部署的时钟不保证单调一致，`recorded_at` 可能略微
+    /// 领先于本机的 `now`。把这种偏移当成「很久以前的消费」会误判 replay 并
+    /// 撤销正常 family，所以两侧都给同样的容忍度。
     pub fn is_recent_consumption(&self, now: time::OffsetDateTime) -> bool {
         if self.state != TombstoneState::Consumed {
             return false;
         }
-        let Some(age) = now.unix_timestamp().checked_sub(self.recorded_at) else {
+        let Some(skew) = now
+            .unix_timestamp()
+            .checked_sub(self.recorded_at)
+            .and_then(i64::checked_abs)
+        else {
             return false;
         };
-        (0..=REFRESH_ROTATION_CONCURRENCY_GRACE_SECONDS).contains(&age)
-    }
-
-    pub fn is_replay_candidate(&self) -> bool {
-        self.state == TombstoneState::Consumed
+        skew <= REFRESH_ROTATION_CONCURRENCY_GRACE_SECONDS
     }
 }
 
@@ -306,6 +315,27 @@ impl RefreshTokenStore {
         Ok(rotated == 1)
     }
 
+    /// 原子回滚一次已提交的轮换：删除新 token 并恢复旧 token。
+    ///
+    /// 轮换成功之后如果后续步骤失败（例如审计落库失败），必须让客户端手里的
+    /// 旧凭据重新可用。分成 `remove(new)` + `save(old)` 两步做不到这件事：
+    /// 删除失败时 `save` 仍会执行，family 里就同时存在两个活 token；一个已经
+    /// 发不出去（客户端只收到了错误响应），却仍能被兑换（Issue #290）。
+    ///
+    /// 这里复用轮换脚本做反向 CAS：只有当前活 token 仍是 `issued` 时才换回
+    /// `previous`，索引与墓碑在同一次脚本内一致更新。
+    ///
+    /// 返回 `false` 表示新 token 已不在（被并发消费或已过期），此时旧 token
+    /// 不会被复活——恢复它会让同一 family 出现两个活凭据。
+    pub async fn rollback_rotation(
+        &self,
+        issued: &RefreshToken,
+        previous: &RefreshToken,
+    ) -> Result<bool, RefreshTokenStoreError> {
+        self.rotate_if_matches(&issued.value, issued, previous)
+            .await
+    }
+
     // ── 重放检测相关操作（RFC 9700 §4.14.2）──────────────────────────────
 
     /// 读取墓碑（如果存在）。
@@ -429,15 +459,54 @@ mod tests {
     use super::{Tombstone, TombstoneState};
     use time::{Duration, OffsetDateTime};
 
+    /// 升级前写入的墓碑没有 `state` / `recorded_at`：必须默认为 `Consumed`，
+    /// 且因为 `recorded_at` 缺省为 0 而落在并发窗口之外（按 replay 处理）。
     #[test]
-    fn legacy_tombstones_remain_replay_candidates() {
+    fn legacy_tombstones_default_to_an_old_consumption() {
         let tombstone: Tombstone =
             serde_json::from_str(r#"{"family_id":"family","client_id":"client","user_id":"user"}"#)
                 .expect("legacy tombstone should deserialize");
 
         assert_eq!(tombstone.state, TombstoneState::Consumed);
+        assert_eq!(tombstone.recorded_at, 0);
         let now = OffsetDateTime::UNIX_EPOCH + Duration::days(1);
         assert!(!tombstone.is_recent_consumption(now));
-        assert!(tombstone.is_replay_candidate());
+    }
+
+    /// 只有 `Consumed` 能解释并发竞争；主动撤销和 family 撤销永远不是竞争。
+    #[test]
+    fn only_consumption_tombstones_can_explain_a_concurrent_rotation() {
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(10);
+        let tombstone = |state| Tombstone {
+            family_id: "family".to_owned(),
+            client_id: "client".to_owned(),
+            user_id: "user".to_owned(),
+            state,
+            recorded_at: now.unix_timestamp(),
+        };
+
+        assert!(tombstone(TombstoneState::Consumed).is_recent_consumption(now));
+        assert!(!tombstone(TombstoneState::ExplicitRevoke).is_recent_consumption(now));
+        assert!(!tombstone(TombstoneState::FamilyRevoked).is_recent_consumption(now));
+    }
+
+    /// 多实例时钟不保证单调：领先于本机 `now` 的墓碑仍属并发窗口，
+    /// 否则轻微时钟偏移就会把正常并发刷新判成 replay 并撤销 family。
+    #[test]
+    fn clock_skew_in_either_direction_stays_inside_the_grace_window() {
+        let now = OffsetDateTime::UNIX_EPOCH + Duration::days(10);
+        let tombstone = |recorded_at| Tombstone {
+            family_id: "family".to_owned(),
+            client_id: "client".to_owned(),
+            user_id: "user".to_owned(),
+            state: TombstoneState::Consumed,
+            recorded_at,
+        };
+        let grace = super::REFRESH_ROTATION_CONCURRENCY_GRACE_SECONDS;
+
+        assert!(tombstone(now.unix_timestamp() - grace).is_recent_consumption(now));
+        assert!(tombstone(now.unix_timestamp() + grace).is_recent_consumption(now));
+        assert!(!tombstone(now.unix_timestamp() - grace - 1).is_recent_consumption(now));
+        assert!(!tombstone(i64::MIN).is_recent_consumption(now));
     }
 }

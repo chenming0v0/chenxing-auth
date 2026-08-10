@@ -155,13 +155,31 @@ pub(super) async fn authorization_code_session_auth_time(
     }
 }
 
+/// 回滚一次没能完成的授权码兑换：先撤销新签发的 Refresh Token，
+/// 只有确认它已经不存在之后才把授权码恢复成可兑换。
+///
+/// 顺序是安全边界，不是风格选择（Issue #290）。两个凭据在不同的 store，
+/// 无法用一条 Lua 脚本原子处理，所以必须 fail-closed：
+///
+/// - 删除成功 → 恢复授权码，客户端可以用同一个授权码重试。
+/// - 删除失败 → 保持授权码已消费。此时 Redis 里可能残留一个客户端从未收到的
+///   Refresh Token；如果同时把授权码放回去，同一次授权就能换出第二个 Token，
+///   两者属于不同 family，其中任意一个被 replay 撤销都杀不掉另一个，
+///   RFC 9700 §4.14.2 的 family 撤销就此失效。牺牲这次授权码、让客户端重新
+///   走授权流程，是这里唯一不会留下孤儿可兑换凭据的选择。
 pub(super) async fn compensate_authorization_code_exchange(
     state: &AppState,
     code: &AuthorizationCode,
     refresh_value: &str,
 ) {
     if let Err(store_error) = state.refresh_tokens.remove(refresh_value).await {
-        tracing::warn!(error = %store_error, "failed to remove refresh token during OAuth compensation");
+        tracing::error!(
+            error = %store_error,
+            client_id = %code.client_id,
+            "failed to remove refresh token during OAuth compensation; \
+             keeping the authorization code consumed"
+        );
+        return;
     }
     let ttl_seconds = authorization_code_restore_ttl(code);
     if let Err(store_error) = state.authorization_codes.restore(code, ttl_seconds).await {
