@@ -7,6 +7,8 @@ const INSTALL_SCRIPT: &str = include_str!("../deploy/install.sh");
 const PRODUCTION_COMPOSE: &str = include_str!("../docker-compose.prod.yml");
 const DB_MODULE: &str = include_str!("../src/db.rs");
 const DB_POOL_MODULE: &str = include_str!("../src/db_pool.rs");
+const DB_ROLES_MODULE: &str = include_str!("../src/db_audit_boundary.rs");
+const DB_MIGRATE_MODULE: &str = include_str!("../src/db_migrate.rs");
 const ENV_EXAMPLE: &str = include_str!("../.env.example");
 const DOCKERFILE: &str = include_str!("../Dockerfile");
 const RUNTIME_DOCKERFILE: &str = include_str!("../Dockerfile.runtime");
@@ -574,6 +576,58 @@ fn audit_runtime_role_migration_enforces_least_privilege() {
         assert!(
             AUDIT_RUNTIME_MIGRATION.contains(marker),
             "audit runtime migration is missing marker: {marker}"
+        );
+    }
+}
+
+/// Issue #281：0019 的 REVOKE 只在"运行时角色 ≠ 表 owner"时才是边界。
+///
+/// 断言写在源码文本上，因为这里要守住的是"迁移命令必须实测权限、不能只相信
+/// 迁移文件"这个结构决定。真实权限行为由 `database_schema` 的集成用例覆盖。
+#[test]
+fn migrate_command_verifies_the_audit_boundary_instead_of_trusting_the_migration() {
+    for marker in [
+        // 判定依据必须是数据库实际权限，而不是"变量有没有设置"。
+        "has_table_privilege(",
+        "has_function_privilege(",
+        "RuntimeRoleCanMutateAudit",
+        // 单角色部署要么被拒，要么走显式开关并强告警。
+        "AllowSingleRole",
+        "DegradedButAllowed",
+        // 运行时口令不能被无条件覆盖。
+        "PasswordAction::Keep",
+        "MIGRATION_MANAGE_RUNTIME_PASSWORD",
+    ] {
+        assert!(
+            DB_ROLES_MODULE.contains(marker),
+            "runtime role module is missing marker: {marker}"
+        );
+    }
+    for marker in [
+        "SingleRoleNotAllowed",
+        "allow-single-role",
+        "MIGRATION_DATABASE_URL",
+        "AUDIT_ROLE_SEPARATION",
+    ] {
+        assert!(
+            DB_MIGRATE_MODULE.contains(marker),
+            "migration plan module is missing marker: {marker}"
+        );
+    }
+
+    // 校验必须在 migrate 分支里被调用，否则策略只是个没人读的枚举。
+    let main = include_str!("../src/main.rs");
+    assert!(main.contains("db::MigrationPlan::from_env("));
+    assert!(main.contains("db::verify_audit_append_only_boundary("));
+
+    for marker in [
+        "AUDIT_ROLE_SEPARATION",
+        "MIGRATION_MANAGE_RUNTIME_PASSWORD",
+        "allow-single-role",
+    ] {
+        assert!(
+            ENV_EXAMPLE.contains(marker),
+            ".env.example must document the audit role separation controls: {marker}"
         );
     }
 }

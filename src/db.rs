@@ -4,10 +4,24 @@ use crate::sqlx::{PgPool, PgPoolOptions};
 
 use crate::config::Config;
 
+#[path = "db_audit_boundary.rs"]
+mod audit_boundary;
+#[path = "db_migrate.rs"]
+mod migrate_plan;
 #[path = "db_pool.rs"]
 mod pool;
+#[path = "db_roles.rs"]
+mod roles;
 
+pub use audit_boundary::{
+    AuditBoundaryError, AuditPrivileges, AuditRoleSeparation, verify_audit_append_only_boundary,
+};
+pub use migrate_plan::{
+    AUDIT_ROLE_SEPARATION_ENV, MANAGE_RUNTIME_PASSWORD_ENV, MIGRATION_DATABASE_URL_ENV,
+    MigrationPlan, MigrationPlanError,
+};
 pub use pool::{PoolRole, PoolSettingsError};
+pub use roles::{RuntimePasswordPolicy, configure_runtime_role};
 
 pub type Database = PgPool;
 
@@ -106,52 +120,6 @@ pub async fn check_ready(database: &Database) -> Result<(), crate::sqlx::Error> 
 
 pub async fn migrate(database: &Database) -> Result<(), crate::sqlx::migrate::MigrateError> {
     embedded_migrator().run(database).await
-}
-
-/// Ensure the fixed runtime role exists with the password carried by the
-/// runtime `DATABASE_URL`. The migration role owns the audit tables; the
-/// runtime role only receives the explicitly granted privileges.
-pub async fn configure_runtime_role(
-    database: &Database,
-    runtime_database_url: &str,
-) -> Result<(), DbError> {
-    let url =
-        url::Url::parse(runtime_database_url).map_err(|_| DbError::InvalidRuntimeDatabaseUrl)?;
-    let password = url
-        .password()
-        .filter(|password| !password.is_empty())
-        .ok_or(DbError::MissingRuntimeDatabasePassword)?;
-
-    let role_exists: bool =
-        crate::sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)")
-            .bind(RUNTIME_DATABASE_ROLE)
-            .fetch_one(database)
-            .await?;
-    if !role_exists {
-        crate::sqlx::query(&format!(
-            "CREATE ROLE {} LOGIN",
-            quote_ident(RUNTIME_DATABASE_ROLE)
-        ))
-        .execute(database)
-        .await?;
-    }
-
-    crate::sqlx::query(&format!(
-        "ALTER ROLE {} WITH LOGIN PASSWORD {}",
-        quote_ident(RUNTIME_DATABASE_ROLE),
-        quote_literal(password)
-    ))
-    .execute(database)
-    .await?;
-    Ok(())
-}
-
-fn quote_ident(identifier: &str) -> String {
-    format!("\"{}\"", identifier.replace('"', "\"\""))
-}
-
-fn quote_literal(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
