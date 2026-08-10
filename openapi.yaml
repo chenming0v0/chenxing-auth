@@ -2281,14 +2281,14 @@ components:
           minimum: 1
           maximum: 86400
           default: 900
-          description: 认证失败计数的固定窗口时长（秒）
+          description: 认证失败计数的滑动窗口时长（秒）
         account_failure_limit:
           type: integer
           format: int64
           minimum: 1
           maximum: 1000
           default: 10
-          description: 单窗口内账户维度的失败次数上限（次）
+          description: 任意一个滑动窗口内账户维度的失败次数上限（次）
         ip_failure_limit:
           type: integer
           format: int64

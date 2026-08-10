@@ -113,7 +113,7 @@ pub struct SecurityLimits {
     pub max_pending_requests_per_client: u64,
     /// 全局待决授权请求容量上限。
     pub max_pending_requests_global: u64,
-    /// 认证失败计数的固定窗口时长（秒）。
+    /// 认证失败计数的滑动窗口时长（秒）。
     pub auth_failure_window_seconds: i64,
     /// 单窗口内账户维度的失败次数上限。
     pub account_failure_limit: i64,

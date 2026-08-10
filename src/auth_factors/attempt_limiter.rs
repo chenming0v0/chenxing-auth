@@ -64,7 +64,7 @@ impl AuthFactorService {
     }
 
     /// 把已预留的尝试提交为一次失败。限流后端出错时预留额度会被尽力归还，
-    /// 不会悬挂到固定窗口过期。
+    /// 不会悬挂到 pending 计数器的 TTL 过期。
     pub(super) async fn record_failure(
         &self,
         dimensions: Vec<LimiterDimension>,

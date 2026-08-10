@@ -3,12 +3,15 @@ use std::sync::Arc;
 use ::redis::AsyncCommands;
 
 use super::RedisAuthFailureLimiter;
-use crate::auth_limiter::domain::AUTH_FAILURE_WINDOW_SECONDS;
+use crate::auth_limiter::domain::{AUTH_FAILURE_WINDOW_SECONDS, AuthFailureLimits};
 use crate::auth_limiter::{AuthFailureLimiter, AuthLimiterFailurePolicy, FailureDimension};
 
+fn redis_url() -> String {
+    std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned())
+}
+
 fn limiter() -> RedisAuthFailureLimiter {
-    let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    RedisAuthFailureLimiter::new(::redis::Client::open(url).expect("Redis URL"))
+    RedisAuthFailureLimiter::new(::redis::Client::open(redis_url()).expect("Redis URL"))
 }
 
 fn unique_value(prefix: &str) -> String {
@@ -163,15 +166,178 @@ async fn batch_failure_uses_account_ticket_and_ip_dimensions_with_window_ttl() {
         .get_multiplexed_async_connection()
         .await
         .expect("Redis connection");
-    let key_prefix = RedisAuthFailureLimiter::base_key(FailureDimension::Ticket, &ticket);
-    let keys: Vec<String> = connection
-        .keys(format!("{key_prefix}:*"))
+    // 滑动窗口下 key 不带窗口后缀，可以直接寻址，不需要再 KEYS 扫描。
+    let key = RedisAuthFailureLimiter::failure_key(FailureDimension::Ticket, &ticket);
+    let key_type: String = connection
+        .key_type(&key)
         .await
-        .expect("failure counter key");
-    let key = keys.into_iter().next().expect("failure counter key");
-    let ttl: i64 = connection.ttl(key).await.expect("failure counter TTL");
+        .expect("failure counter key type");
+    assert_eq!(
+        key_type, "zset",
+        "failures must be a sliding-window ZSET, not a fixed-window counter"
+    );
+    let ttl: i64 = connection.ttl(&key).await.expect("failure counter TTL");
     assert!(ttl > 0);
-    assert!(ttl <= AUTH_FAILURE_WINDOW_SECONDS);
+    // TTL 由窗口推导为 window + 1：条目按 score 老化，TTL 只负责回收空闲 key。
+    assert!(ttl <= AUTH_FAILURE_WINDOW_SECONDS + 1);
+}
+
+/// 这是本次修复的回归锚点。
+///
+/// 旧实现把 `:floor(time / window)` 追加到 key 上做 epoch 对齐固定窗口，因此跨越
+/// 一个窗口边界的失败会被记到两个不同的 key 上，计数凭空归零。CI 上
+/// `password_success_does_not_reset_mfa_account_failures` 就是这样挂的：9 次失败落在
+/// 03:00:00Z 之前的桶，随后两步落在之后的桶，账户没锁，返回 202 而不是 401。
+/// 同一次 CI 的 coverage job 在 02:59:33Z 跑完同一个测试则通过——代码一字未改，
+/// 只因墙钟位置不同而一过一挂。
+///
+/// 这里注入一个短窗口，并用 Redis 自己的 `TIME` 把两次失败刻意排布在
+/// 「旧实现会跨桶、新实现仍在同一滑动窗口内」的位置上：
+/// 第一次落在边界前 ~1.5s，第二次落在边界后 ~1.5s，间隔远小于 10s 窗口。
+/// 固定窗口实现下第二次会看到一个空桶而返回 false；滑动窗口必须返回 true。
+#[tokio::test]
+async fn failures_survive_a_fixed_window_boundary_crossing() {
+    /// 第一次失败落在边界前多少毫秒。这同时是「确实跨过边界」的抖动容差：
+    /// 调度延迟超过它，两次失败会落进同一个旧桶，测试退化为不再区分两种实现。
+    /// 那只是变弱，不会误报。
+    const LEAD_MILLIS: i64 = 700;
+    /// 两次失败的间隔。必须大于 `LEAD_MILLIS` 才能跨过边界；又必须远小于窗口，
+    /// 否则第二次失败滑出窗口，新实现也会返回 false —— 那才是误报。
+    ///
+    /// 窗口下界取 10s（而不是刚好够用的 5s）就是为这条留余量：CI 上 821 个测试并发时
+    /// 观测到约 3.3× 的整体放慢，1.4s 的 sleep 真实耗时可能接近 4.6s，5s 窗口只剩
+    /// 几百毫秒余量，Redis 侧再排队一下就会误报。10s 窗口把余量抬到 8.6s。
+    const GAP_MILLIS: i64 = 1_400;
+
+    let client = ::redis::Client::open(redis_url()).expect("Redis URL");
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    // 时钟必须取自 Redis：判定发生在 Redis 内部，测试进程的时钟可能有偏差。
+    let (seconds, micros): (i64, i64) = ::redis::cmd("TIME")
+        .query_async(&mut connection)
+        .await
+        .expect("Redis TIME");
+    let millis = micros / 1_000;
+
+    // 在候选窗口里挑「下一个边界最近」的那个，把对齐等待从「平均半个窗口」压到
+    // 通常几百毫秒。下界 5s 保证 GAP 之外仍有充足余量。
+    let (window_seconds, wait_millis) = (5..=12i64)
+        .map(|window| {
+            let window_millis = window * 1_000;
+            let into_window = (seconds.rem_euclid(window) * 1_000) + millis;
+            let wait = (window_millis - into_window - LEAD_MILLIS).rem_euclid(window_millis);
+            (window, wait)
+        })
+        .min_by_key(|(_, wait)| *wait)
+        .expect("candidate window");
+
+    let limiter = RedisAuthFailureLimiter::with_limits(
+        client,
+        AuthLimiterFailurePolicy::FailClosed,
+        AuthFailureLimits {
+            window_seconds,
+            account_limit: 2,
+            ..AuthFailureLimits::default()
+        },
+    );
+    let account = unique_value("boundary-account");
+
+    tokio::time::sleep(std::time::Duration::from_millis(wait_millis as u64)).await;
+
+    assert!(
+        !limiter
+            .record_failure(FailureDimension::Account, &account)
+            .await
+            .expect("record failure before the boundary"),
+        "first of two failures must not reach a limit of 2"
+    );
+
+    // 跨过旧实现的 epoch 边界，但仍在同一个滑动窗口内。
+    tokio::time::sleep(std::time::Duration::from_millis(GAP_MILLIS as u64)).await;
+
+    assert!(
+        limiter
+            .record_failure(FailureDimension::Account, &account)
+            .await
+            .expect("record failure after the boundary"),
+        "a sliding window must still count the failure recorded before the boundary; \
+         the epoch-aligned fixed window reset it to zero here"
+    );
+    assert!(
+        limiter
+            .is_limited(FailureDimension::Account, &account)
+            .await
+            .expect("check account limit"),
+        "the account must be locked after two failures inside one sliding window"
+    );
+}
+
+/// 窗口本身仍然生效：条目滑出窗口后放行。
+/// 与上一个测试构成一对——只证明「不归零」会掩盖「永不过期」这种反向缺陷。
+#[tokio::test]
+async fn failures_age_out_of_the_sliding_window() {
+    const WINDOW_SECONDS: i64 = 1;
+    let limiter = RedisAuthFailureLimiter::with_limits(
+        ::redis::Client::open(redis_url()).expect("Redis URL"),
+        AuthLimiterFailurePolicy::FailClosed,
+        AuthFailureLimits {
+            window_seconds: WINDOW_SECONDS,
+            account_limit: 1,
+            ..AuthFailureLimits::default()
+        },
+    );
+    let account = unique_value("aging-account");
+    assert!(
+        limiter
+            .record_failure(FailureDimension::Account, &account)
+            .await
+            .expect("record failure"),
+        "one failure reaches a limit of 1"
+    );
+    assert!(
+        limiter
+            .is_limited(FailureDimension::Account, &account)
+            .await
+            .expect("check inside the window")
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(1_400)).await;
+    assert!(
+        !limiter
+            .is_limited(FailureDimension::Account, &account)
+            .await
+            .expect("check after the window"),
+        "the failure left the sliding window and must no longer block"
+    );
+}
+
+/// 成功认证归还预留，不消耗失败配额。
+/// 预留是「在途」而非「历史」，因此 release 之后窗口内的失败数必须仍是 0。
+#[tokio::test]
+async fn released_reservations_do_not_consume_failure_budget() {
+    let limiter = limiter();
+    let account = unique_value("released-account");
+    let dimensions = vec![(FailureDimension::Account, account.clone())];
+    for _ in 0..FailureDimension::Account.limit() + 5 {
+        assert!(
+            limiter
+                .reserve(dimensions.clone())
+                .await
+                .expect("reserve attempt")
+        );
+        limiter
+            .release(dimensions.clone())
+            .await
+            .expect("release attempt");
+    }
+    assert!(
+        !limiter
+            .is_limited(FailureDimension::Account, &account)
+            .await
+            .expect("check account limit"),
+        "successful authentications must not accumulate failure budget"
+    );
 }
 
 #[tokio::test]
