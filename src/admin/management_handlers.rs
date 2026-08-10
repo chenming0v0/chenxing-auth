@@ -7,7 +7,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{authorization::AdminActor, domain::AdminPermission};
+use super::{
+    authorization::{AdminActor, authorize_user_write},
+    domain::AdminPermission,
+};
 use crate::{
     api::extract::{AdminRead, AdminWrite},
     error,
@@ -100,27 +103,27 @@ pub async fn list_users(
     }
 }
 
+/// `POST /api/v1/admin/users/{user_id}/{status}`。
+///
+/// 三段顺序由 `authorize_user_write` 固定：基线 `ManageUsers` → 目标用户 →
+/// Owner 抬到 `ManageRoles`（Issue #280）。状态串是与资源无关的语法输入，
+/// 在基线授权之后、查询目标之前解析，因此非法状态恒为 400 `invalid_status`，
+/// 不再和「用户不存在」共用一个错误码（Issue #283）。
 pub async fn set_user_status(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path((user_id, status)): Path<(UserId, String)>,
 ) -> Response {
-    let required_permission = match state.users.find_profile(user_id).await {
-        Ok(Some(profile)) if profile.role == UserRole::Owner => AdminPermission::ManageRoles,
-        Ok(Some(_)) | Ok(None) => AdminPermission::ManageUsers,
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to load user before status update");
-            return error::internal();
-        }
-    };
-    let actor = match admin.authorize(&state, required_permission).await {
+    let actor = match admin.authorize(&state, AdminPermission::ManageUsers).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    // The service uses `false` for both an invalid status and a missing user.
-    // Preserve the existing validation response so only a missing resource becomes 404.
     let Some(status) = UserStatus::parse(&status) else {
-        return error::bad_request("user_not_found", "user or status was not found");
+        return error::bad_request("invalid_status", "status is invalid");
+    };
+    let actor = match authorize_user_write(&state, &admin, actor, user_id).await {
+        Ok(actor) => actor,
+        Err(response) => return response,
     };
     match state.users.set_status_guarded(user_id, status).await {
         Ok(true) => {
@@ -138,6 +141,7 @@ pub async fn set_user_status(
                 .await;
             StatusCode::NO_CONTENT.into_response()
         }
+        // 状态串已在上面解析过，`false` 只剩一种含义：目标用户在授权与写入之间消失。
         Ok(false) => error::not_found("user_not_found", "user was not found"),
         Err(crate::users::service::UserServiceError::LastOwnerRequired) => error::conflict(
             "last_owner_required",

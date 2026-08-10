@@ -831,6 +831,43 @@ async fn assigning_a_plan_works_without_a_default_plan() {
     env.cleanup().await;
 }
 
+/// Issue #280：给 Owner 分配套餐要求 `ManageRoles`，但门槛充足时必须照常生效。
+///
+/// `authorization_audit` 守拒绝一侧（只有 `ManageUsers` 的 Admin 拿 403），
+/// 这里守放行一侧：抬档不能把「Owner 的套餐永远改不动」当成修复结果。
+#[tokio::test]
+async fn assigning_a_plan_to_an_owner_succeeds_with_role_management_permission() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let owner_id: i64 =
+        chenxing_auth::sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+            .bind(format!("plan-owner-{suffix}"))
+            .fetch_one(&env.database)
+            .await
+            .expect("bootstrapped owner id");
+
+    let plan = create_plan(&router, &suffix, plan_limits(3, 9, Some(90), None)).await;
+    let plan_id = plan["id"].as_i64().expect("plan id");
+
+    // ADMIN_TOKEN 是系统令牌，拥有全部权限，包含 ManageRoles。
+    assert_eq!(
+        assign_plan(&router, owner_id, plan_id, None).await,
+        StatusCode::NO_CONTENT,
+        "sufficient permission must still be able to assign a plan to an owner"
+    );
+    let assigned: Option<i64> =
+        chenxing_auth::sqlx::query_scalar("SELECT plan_id FROM users WHERE id = $1")
+            .bind(owner_id)
+            .fetch_one(&env.database)
+            .await
+            .expect("owner plan id");
+    assert_eq!(assigned, Some(plan_id));
+
+    env.cleanup().await;
+}
+
 /// 无生效套餐时 `enforce_qps` 里的 `effective?.plan.max_qps?` early-return
 /// 路径的专项覆盖。
 ///
