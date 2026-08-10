@@ -221,6 +221,8 @@ grant_type=authorization_code&code=...&redirect_uri=https%3A%2F%2Fapp.example%2F
 grant_type=refresh_token&refresh_token=...
 ```
 
+刷新请求可用 `scope` 缩小原授权范围；省略或传空白字符串时保留原授权 Scope，不会把权限永久清空。
+
 成功响应 `200`：
 
 ```json
@@ -273,7 +275,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ### `POST /api/v1/admin/bootstrap`
 
-仅用于初始化首个 Owner，无需认证。只有不存在 Owner 时请求才会成功；初始化使用数据库并发锁保证最多创建一个 Owner，成功后不可重复初始化。请求必须包含用户名、邮箱和密码，首个 Owner 的用户 ID 为 `1`，成功后不自动创建 Session。
+仅用于初始化首个 Owner，无需认证。只有不存在 Owner 时请求才会成功；初始化使用数据库并发锁保证最多创建一个 Owner，成功后不可重复初始化。请求按可信源 IP 限制为每分钟 5 次，缺少可信源地址或 Redis 限流不可用时按配置 fail closed。请求必须包含用户名、邮箱和密码，首个 Owner 的用户 ID 为 `1`，成功后不自动创建 Session。
 
 ```json
 {"username":"chenxing-owner","email":"owner@example.com","password":"at-least-10-chars"}
@@ -283,7 +285,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ### `GET /api/v1/admin/bootstrap/status`
 
-公开查询初始化状态，响应为 `{"initialized":false}` 或 `{"initialized":true}`。Web 前端首次打开时先查询此接口；状态为未初始化时显示 Owner 初始化界面。
+仅未初始化时公开返回 `{"initialized":false}`，供 Web 前端显示 Owner 初始化界面。实例已有 Owner 后返回与未知路径一致的 `404 not_found`，不再向匿名扫描者确认初始化状态；数据库故障返回 500。
 
 ### 注册邮件发件地址
 
@@ -298,7 +300,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 - `GET /api/v1/admin/users?limit=50&offset=0`：列出用户，需要 `ManageUsers`。响应是用户数组。服务端强制分页：`limit` 默认 `50`，取值被 clamp 到 `[1, 200]`（与审计列表一致），`offset` 默认 `0`，负值按 `0` 处理。需要 `total` 和分页信封时用 `GET /api/v1/admin/users/query`。
 - `POST /api/v1/admin/users`：创建用户，提交 `{"username":"alice","email":"alice@example.com","password":"...","display_name":null,"role":"user","status":"active"}`。`display_name`、`role`、`status` 可省略，`role` 缺省 `user`，`status` 缺省 `active`。基线权限 `ManageUsers`；`role` 为 `admin` 或 `owner` 时额外要求 `ManageRoles`。成功 `201`，响应是公开用户字段，不含口令哈希或任何凭据材料。`400` 为 `invalid_role`、`invalid_status`、`invalid_username`、`invalid_email`、`password_too_short`、`password_too_long`、`display_name_too_long`、`email_domain_not_allowed`、`csrf_invalid`；`403` 为 `admin_forbidden`；`409` 为 `username_already_registered`、`email_already_registered`、`owner_bootstrap_required`。
-- `POST /api/v1/admin/users/{user_id}/{status}`：设置用户状态，需要 `ManageUsers`。状态由后端支持值决定，常用为 `active`、`disabled`；成功 `204`。
+- `POST /api/v1/admin/users/{user_id}/{status}`：设置用户状态，基线需要 `ManageUsers`，目标为 Owner 时额外需要 `ManageRoles`。授权先于资源查询，低权限调用者不能枚举用户或 Owner 身份。状态常用为 `active`、`disabled`；非法状态返回 `400 invalid_status`，用户不存在返回 `404 user_not_found`，成功 `204`。
 
 用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`role`、`created_at`。按 `created_at DESC, id DESC` 排序。
 
@@ -319,9 +321,9 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 - `PUT /api/v1/admin/plans/{id}`：更新套餐，字段同创建，成功返回更新后的套餐。
 - `POST /api/v1/admin/plans/{id}/archive`：归档套餐；默认套餐不可归档，返回 `409 default_plan_protected`。
 - `POST /api/v1/admin/plans/{id}/restore`：恢复套餐。
-- `POST /api/v1/admin/users/{user_id}/plan`：为用户分配套餐，提交 `{"plan_id":1,"expires_at":"2026-12-31T00:00:00Z"}`；`expires_at` 传 `null` 或省略表示永久有效，归档套餐不可分配。
+- `POST /api/v1/admin/users/{user_id}/plan`：为用户分配套餐，提交 `{"plan_id":1,"expires_at":"2026-12-31T00:00:00Z"}`；`expires_at` 传 `null` 或省略表示永久有效，归档套餐不可分配。目标为 Owner 时除 `ManageUsers` 外还需要 `ManageRoles`。
 
-套餐 CRUD（create/update/archive/restore）需要 `ManageSettings` 权限；为用户分配套餐（`POST .../users/{user_id}/plan`）影响用户权益，需要 `ManageUsers` 权限。两种操作均记录审计事件。
+套餐 CRUD（create/update/archive/restore）需要 `ManageSettings` 权限；为普通用户分配套餐需要 `ManageUsers`，为 Owner 分配套餐还需要 `ManageRoles`。两种操作均记录审计事件。
 
 ### Client 管理
 
@@ -342,6 +344,8 @@ Client 自身注册的 scope 集合内。
 - `POST /api/v1/admin/clients/{client_id}/enable`：启用，成功 `204`。
 - `POST /api/v1/admin/clients/{client_id}/rotate-secret`：轮换 Secret，成功响应包含新的 `client_id` 和 `client_secret`，只显示新 Secret 一次。
 
+上述 Client 写操作触发套餐 Client 数量上限时返回 `409 quota_exceeded`；数据库或其他内部故障仍返回 500，不再伪装成配额或权限错误。
+
 Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`、`scopes`、`status`、`owner_user_id`。不返回 Secret 或其哈希。
 
 ### 自定义 OAuth 提供商管理
@@ -353,7 +357,7 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 - `PUT /api/v1/admin/oauth/providers/{slug}`：更新配置；`client_secret` 省略时保留原 Secret。
 - `POST /api/v1/admin/oauth/providers/{slug}/enable`、`/disable`：启用或停用。
 
-提供商的授权、Token、UserInfo 地址必须使用 HTTPS；仅 `localhost`、IPv4 loopback 或 `[::1]` 可使用 HTTP 进行本机测试。远程 HTTP 地址会在保存时拒绝，运行时也会再次拒绝，避免通过明文链路发送 Client Secret 或 Access Token。
+提供商的授权、Token、UserInfo 地址必须使用 HTTPS，且 IP 字面量和连接时 DNS 解析结果都必须是公网可路由地址；私网、链路本地、CGNAT、ULA、保留地址和混合公私网解析均被拒绝。仅 `localhost`、IPv4 loopback 或 `[::1]` 可使用 HTTP 进行本机测试。校验挂在实际连接使用的 DNS resolver 上，避免先解析后连接造成 DNS rebinding 时间窗。
 
 提供商支持 `basic`（Token 请求 HTTP Basic）和 `request_body`（Token 表单）两种 Client 认证方式；Claim 路径支持点分隔对象路径，例如 `profile.email`。浏览器写操作需要普通 CSRF Cookie 与 `X-CSRF-Token`；Bearer Token 是现有自动化兼容方式。
 

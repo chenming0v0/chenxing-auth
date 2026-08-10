@@ -784,6 +784,7 @@ paths:
     post:
       tags: [Admin Auth]
       summary: 初始化首个 Owner 用户
+      description: 未初始化实例允许匿名调用；按可信源 IP 限制为每分钟 5 次。缺少可信源地址时遵循服务端 missing_source_ip_policy，限流依赖不可用时 fail closed。
       operationId: bootstrapAdmin
       requestBody:
         required: true
@@ -798,10 +799,13 @@ paths:
               schema: { $ref: '#/components/schemas/BootstrapOwnerResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/bootstrap/status:
     get:
       tags: [Admin Auth]
-      summary: 查询 Owner 初始化状态
+      summary: 查询未初始化状态
+      description: 仅未初始化时返回 initialized=false；实例已有 Owner 后返回与未知路径一致的 404，避免向匿名调用者暴露初始化状态。
       operationId: adminBootstrapStatus
       responses:
         '200':
@@ -809,6 +813,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/BootstrapStatusResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
   /api/v1/admin/auth/me:
     get:
       tags: [Admin Auth]
@@ -823,6 +829,7 @@ paths:
               schema: { $ref: '#/components/schemas/AdminMeResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
   /api/v1/admin/users:
     get:
       tags: [Admin Users]
@@ -886,6 +893,7 @@ paths:
     post:
       tags: [Admin Users]
       summary: 设置用户状态
+      description: 基线权限为 manage_users；目标用户为 Owner 时额外要求 manage_roles。权限检查先于资源查询，低权限调用者不能据响应枚举用户或 Owner 身份。非法状态返回 400 invalid_status，不存在用户返回 404 user_not_found。
       operationId: setUserStatus
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
@@ -1018,6 +1026,7 @@ paths:
     post:
       tags: [Admin Users]
       summary: 为用户分配套餐
+      description: 基线权限为 manage_users；目标用户为 Owner 时额外要求 manage_roles，且权限检查先于套餐和目标资源查询。
       operationId: assignPlanToUser
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
@@ -1179,6 +1188,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/admin/clients/{client_id}/disable:
     post:
       tags: [Admin Clients]
@@ -1189,6 +1199,7 @@ paths:
       responses:
         '204': { description: 操作成功 }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/admin/clients/{client_id}/enable:
     post:
       tags: [Admin Clients]
@@ -1199,6 +1210,7 @@ paths:
       responses:
         '204': { description: 操作成功 }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/admin/clients/{client_id}/rotate-secret:
     post:
       tags: [Admin Clients]
@@ -1547,6 +1559,7 @@ paths:
     post:
       tags: [Admin OAuth Providers]
       summary: 创建自定义 OAuth 提供商
+      description: 三个远程端点必须使用 HTTPS，IP 字面量和连接时 DNS 解析结果都必须是公网可路由地址；仅 localhost/回环地址保留本机开发例外。
       operationId: createOAuthProvider
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
@@ -1568,6 +1581,7 @@ paths:
     put:
       tags: [Admin OAuth Providers]
       summary: 更新自定义 OAuth 提供商
+      description: 更新时重新执行端点 scheme、IP 地址空间和连接时 DNS 解析边界校验；省略 Client Secret 时保留原值。
       operationId: updateOAuthProvider
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
@@ -1603,7 +1617,7 @@ paths:
       tags: [Admin OAuth Providers]
       summary: 启用自定义 OAuth 提供商
       operationId: enableOAuthProvider
-      description: 缺少可用 email_verified_claim 的存量 provider 无法启用，返回 400 invalid_oauth_provider。
+      description: 缺少可用 email_verified_claim 或端点不满足公网出网边界的 provider 无法启用，返回 400 invalid_oauth_provider。
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
@@ -1694,6 +1708,7 @@ components:
     NotFound: { description: 资源不存在, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     TooManyRequests: { description: 认证、OAuth 配额或 QPS 限流触发, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     ServiceUnavailable: { description: 依赖或必要能力暂不可用, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    InternalServerError: { description: 服务端内部故障, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     OAuthBadRequest: { description: OAuth 请求错误，响应遵守 RFC 6749/7009, content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } } }
     OAuthUnauthorized:
       description: OAuth 客户端或 Bearer 凭据无效
@@ -1932,7 +1947,9 @@ components:
         redirect_uri: { type: string, format: uri }
         code_verifier: { type: string }
         refresh_token: { type: string }
-        scope: { type: string }
+        scope:
+          type: string
+          description: refresh_token grant 可省略；空白字符串按省略处理并保留原授权 scope，非空值只能缩小原授权范围。
         client_id: { type: string }
         client_secret: { type: string, format: password }
     TokenResponse:
@@ -2177,7 +2194,10 @@ components:
       properties:
         enabled: { type: boolean }
         rp_name: { type: string, maxLength: 128 }
-        rp_id: { type: string, maxLength: 253 }
+        rp_id:
+          type: string
+          maxLength: 253
+          description: 必须是至少包含一个点号的域名；localhost 是唯一允许的单标签本机开发例外。
         user_verification: { type: string, enum: [preferred, required, discouraged] }
         authenticator_attachment: { type: string, enum: [any, platform, cross_platform] }
         allow_insecure_origin: { type: boolean }
@@ -2347,15 +2367,15 @@ components:
         authorization_endpoint:
           type: string
           format: uri
-          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+          description: HTTPS 公网端点；IP 字面量和连接时 DNS 解析结果不得落入私网、链路本地、CGNAT、ULA 或保留地址。仅 localhost/回环地址可用于本机 HTTP 测试。
         token_endpoint:
           type: string
           format: uri
-          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+          description: HTTPS 公网端点；IP 字面量和连接时 DNS 解析结果不得落入私网、链路本地、CGNAT、ULA 或保留地址。仅 localhost/回环地址可用于本机 HTTP 测试。
         userinfo_endpoint:
           type: string
           format: uri
-          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+          description: HTTPS 公网端点；IP 字面量和连接时 DNS 解析结果不得落入私网、链路本地、CGNAT、ULA 或保留地址。仅 localhost/回环地址可用于本机 HTTP 测试。
         client_id: { type: string }
         client_secret: { type: string, format: password, writeOnly: true }
         scopes: { type: array, minItems: 1, items: { type: string } }
@@ -2376,15 +2396,15 @@ components:
         authorization_endpoint:
           type: string
           format: uri
-          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+          description: HTTPS 公网端点；IP 字面量和连接时 DNS 解析结果不得落入私网、链路本地、CGNAT、ULA 或保留地址。仅 localhost/回环地址可用于本机 HTTP 测试。
         token_endpoint:
           type: string
           format: uri
-          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+          description: HTTPS 公网端点；IP 字面量和连接时 DNS 解析结果不得落入私网、链路本地、CGNAT、ULA 或保留地址。仅 localhost/回环地址可用于本机 HTTP 测试。
         userinfo_endpoint:
           type: string
           format: uri
-          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+          description: HTTPS 公网端点；IP 字面量和连接时 DNS 解析结果不得落入私网、链路本地、CGNAT、ULA 或保留地址。仅 localhost/回环地址可用于本机 HTTP 测试。
         client_id: { type: string }
         client_secret: { type: string, format: password, writeOnly: true, nullable: true }
         scopes: { type: array, minItems: 1, items: { type: string } }

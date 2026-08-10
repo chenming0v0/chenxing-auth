@@ -37,6 +37,7 @@ use crate::{audit::AuditEvent, auth_limiter::MissingSourceIpPolicy, error, state
 
 /// 引导尝试的滑动窗口长度（毫秒）。
 pub const BOOTSTRAP_ATTEMPT_WINDOW_MS: i64 = 60_000;
+const _: () = assert!(BOOTSTRAP_ATTEMPT_WINDOW_MS >= 10_000);
 
 /// 单个源 IP 在一个窗口内允许的引导尝试次数。
 ///
@@ -178,6 +179,5 @@ mod tests {
     #[test]
     fn attempt_budget_stays_within_the_intended_order_of_magnitude() {
         assert!((2..=10).contains(&BOOTSTRAP_ATTEMPT_LIMIT));
-        assert!(BOOTSTRAP_ATTEMPT_WINDOW_MS >= 10_000);
     }
 }

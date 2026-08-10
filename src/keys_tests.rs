@@ -32,7 +32,6 @@ fn aged(byte: u8, age_seconds: u64) -> KeyMaterial {
     key_material(Zeroizing::new(vec![byte]), created_at)
 }
 
-
 #[test]
 fn key_material_debug_redacts_private_key_bytes() {
     // 0xDE 的十进制是 222。Vec<u8> 默认 Debug 会把字节打成十进制整数列表，
@@ -186,7 +185,9 @@ async fn in_memory_rotation_keeps_the_published_key_set_bounded() {
     );
     assert_eq!(manager.key_id(), beyond_window.key_id);
     assert!(
-        manager.verification_key_for(&beyond_window.key_id).is_some(),
+        manager
+            .verification_key_for(&beyond_window.key_id)
+            .is_some(),
         "active key must stay published"
     );
 }

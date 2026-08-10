@@ -135,12 +135,7 @@ fn is_public_ipv4(address: Ipv4Addr) -> bool {
     let benchmarking = first == 198 && (second == 18 || second == 19);
     // 240.0.0.0/4 保留段。
     let reserved = first >= 240;
-    !(this_network
-        || shared
-        || protocol_assignments
-        || relay_anycast
-        || benchmarking
-        || reserved)
+    !(this_network || shared || protocol_assignments || relay_anycast || benchmarking || reserved)
 }
 
 fn is_public_ipv6(address: Ipv6Addr) -> bool {

@@ -317,8 +317,7 @@ async fn assigning_a_plan_to_an_owner_requires_manage_roles() {
                 .header("x-csrf-token", &csrf)
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::json!({"plan_id": missing_plan_id, "expires_at": null})
-                        .to_string(),
+                    serde_json::json!({"plan_id": missing_plan_id, "expires_at": null}).to_string(),
                 ))
                 .expect("assign plan request"),
         )

@@ -44,7 +44,8 @@ fn missing_migration_url_is_rejected_by_default() {
 
 #[test]
 fn empty_migration_url_counts_as_unset() {
-    let error = plan(OWNER_URL, Some("   "), None).expect_err("blank value must not enable separation");
+    let error =
+        plan(OWNER_URL, Some("   "), None).expect_err("blank value must not enable separation");
     assert_eq!(
         error,
         MigrationPlanError::SingleRoleNotAllowed {
@@ -75,7 +76,8 @@ fn setting_the_same_role_on_both_urls_is_still_a_single_role_deployment() {
             env: AUDIT_ROLE_SEPARATION_ENV
         }
     );
-    let plan = plan(OWNER_URL, Some(OWNER_URL), Some("allow-single-role")).expect("explicit opt-in");
+    let plan =
+        plan(OWNER_URL, Some(OWNER_URL), Some("allow-single-role")).expect("explicit opt-in");
     assert!(!plan.roles_separated());
 }
 
@@ -99,8 +101,12 @@ fn separated_roles_require_the_fixed_runtime_role_name() {
 #[test]
 fn urls_without_a_role_are_rejected() {
     assert_eq!(
-        plan("postgres://127.0.0.1:5432/chenxing_auth", Some(OWNER_URL), None)
-            .expect_err("runtime URL without a role"),
+        plan(
+            "postgres://127.0.0.1:5432/chenxing_auth",
+            Some(OWNER_URL),
+            None
+        )
+        .expect_err("runtime URL without a role"),
         MigrationPlanError::MissingRuntimeRole
     );
     assert_eq!(

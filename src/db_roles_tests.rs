@@ -7,7 +7,11 @@ use super::{
 fn unmanaged_policy_never_touches_the_runtime_password() {
     // 运维用外部密钥托管管理口令时，migrate 一步都不能碰，哪怕角色刚被创建。
     for role_existed in [true, false] {
-        for probe in [None, Some(PasswordProbe::Accepted), Some(PasswordProbe::NotAccepted)] {
+        for probe in [
+            None,
+            Some(PasswordProbe::Accepted),
+            Some(PasswordProbe::NotAccepted),
+        ] {
             assert_eq!(
                 runtime_password_action(RuntimePasswordPolicy::Unmanaged, role_existed, probe),
                 PasswordAction::Skip

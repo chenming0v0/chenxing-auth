@@ -89,13 +89,9 @@ fn directory_lock_refuses_a_live_lock_held_by_another_process() {
     let error = directory_lock::acquire(directory.path(), false).expect_err("live lock must hold");
 
     assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
-    assert!(
-        directory.lock_path().is_dir(),
-        "活锁的锁目录必须原样留下"
-    );
+    assert!(directory.lock_path().is_dir(), "活锁的锁目录必须原样留下");
     assert_eq!(
-        fs::read_to_string(directory_lock::owner_file(&directory.lock_path()))
-            .expect("owner file"),
+        fs::read_to_string(directory_lock::owner_file(&directory.lock_path())).expect("owner file"),
         FOREIGN_PID.to_string(),
         "活锁的归属信息不得被改写"
     );

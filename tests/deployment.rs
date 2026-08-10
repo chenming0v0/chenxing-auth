@@ -7,7 +7,8 @@ const INSTALL_SCRIPT: &str = include_str!("../deploy/install.sh");
 const PRODUCTION_COMPOSE: &str = include_str!("../docker-compose.prod.yml");
 const DB_MODULE: &str = include_str!("../src/db.rs");
 const DB_POOL_MODULE: &str = include_str!("../src/db_pool.rs");
-const DB_ROLES_MODULE: &str = include_str!("../src/db_audit_boundary.rs");
+const DB_AUDIT_BOUNDARY_MODULE: &str = include_str!("../src/db_audit_boundary.rs");
+const DB_ROLES_MODULE: &str = include_str!("../src/db_roles.rs");
 const DB_MIGRATE_MODULE: &str = include_str!("../src/db_migrate.rs");
 const ENV_EXAMPLE: &str = include_str!("../.env.example");
 const DOCKERFILE: &str = include_str!("../Dockerfile");
@@ -594,10 +595,14 @@ fn migrate_command_verifies_the_audit_boundary_instead_of_trusting_the_migration
         // 单角色部署要么被拒，要么走显式开关并强告警。
         "AllowSingleRole",
         "DegradedButAllowed",
-        // 运行时口令不能被无条件覆盖。
-        "PasswordAction::Keep",
-        "MIGRATION_MANAGE_RUNTIME_PASSWORD",
     ] {
+        assert!(
+            DB_AUDIT_BOUNDARY_MODULE.contains(marker),
+            "audit boundary module is missing marker: {marker}"
+        );
+    }
+    // 运行时口令不能被无条件覆盖。
+    for marker in ["PasswordAction::Keep", "MIGRATION_MANAGE_RUNTIME_PASSWORD"] {
         assert!(
             DB_ROLES_MODULE.contains(marker),
             "runtime role module is missing marker: {marker}"

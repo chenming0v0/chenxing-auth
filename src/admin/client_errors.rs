@@ -24,7 +24,10 @@ use crate::{clients::service::ClientServiceError, error};
 /// 两条路径对「配额用尽」给出不同状态码只会让调用方多写一套分支。
 /// 403 在本项目里表示「凭据不具备该权限」，与配额无关。
 fn quota_exceeded() -> Response {
-    error::conflict("quota_exceeded", "the OAuth client quota has been exhausted")
+    error::conflict(
+        "quota_exceeded",
+        "the OAuth client quota has been exhausted",
+    )
 }
 
 /// 内部故障：留下可检索的结构化日志，对外只回笼统 500。

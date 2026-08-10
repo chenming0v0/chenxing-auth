@@ -107,7 +107,10 @@ pub async fn admin_me(
     if !matches!(session.role, UserRole::Admin | UserRole::Owner) {
         return error::forbidden("admin_forbidden", "administrator authorization is required");
     }
-    session_admin_me_response(session.role, state.users.find_profile(session.user_id).await)
+    session_admin_me_response(
+        session.role,
+        state.users.find_profile(session.user_id).await,
+    )
 }
 
 /// 把档案查询结果映射成响应。
