@@ -52,5 +52,7 @@ fn cache_only_ttl_still_covers_refresh_token_absolute_lifetime() {
         CONSENT_STATE_CACHE_ONLY_TTL_SECONDS,
         (REFRESH_TOKEN_ABSOLUTE_TTL_DAYS * 24 * 60 * 60) as u64
     );
-    assert!(CONSENT_STATE_CACHE_TTL_SECONDS < CONSENT_STATE_CACHE_ONLY_TTL_SECONDS);
+    const {
+        assert!(CONSENT_STATE_CACHE_TTL_SECONDS < CONSENT_STATE_CACHE_ONLY_TTL_SECONDS);
+    }
 }

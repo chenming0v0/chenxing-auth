@@ -95,14 +95,10 @@ impl CachedConsentState {
     /// 按未命中处理让结论回落到权威源，而不是凭猜测放行或拒绝。
     fn parse(raw: &str) -> Option<Self> {
         let (version, marker) = raw.split_once(':')?;
-        if version
+        version
             .parse::<i64>()
             .ok()
-            .filter(|value| *value > 0)
-            .is_none()
-        {
-            return None;
-        }
+            .filter(|value| *value > 0)?;
         match marker {
             REVOKED_MARKER => Some(Self::Revoked),
             ACTIVE_MARKER => Some(Self::Active),
