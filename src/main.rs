@@ -15,38 +15,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match std::env::args().nth(1).as_deref() {
         Some("migrate") => {
-            let migration_database_url = std::env::var("MIGRATION_DATABASE_URL")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| config.database_url.clone());
-            if std::env::var("MIGRATION_DATABASE_URL").is_ok_and(|value| !value.trim().is_empty()) {
-                let migration_role = url::Url::parse(&migration_database_url)
-                    .ok()
-                    .map(|value| value.username().to_owned())
-                    .unwrap_or_default();
-                let runtime_role = url::Url::parse(&config.database_url)
-                    .ok()
-                    .map(|value| value.username().to_owned())
-                    .unwrap_or_default();
-                if migration_role == runtime_role {
-                    return Err(
-                        "MIGRATION_DATABASE_URL must use a role different from the runtime \
-                         DATABASE_URL so the runtime role cannot mutate audit tables"
-                            .into(),
-                    );
-                }
-                if runtime_role != chenxing_auth::db::RUNTIME_DATABASE_ROLE {
-                    return Err(
-                        "runtime DATABASE_URL must use the chenxing_runtime role when \
-                         MIGRATION_DATABASE_URL is set"
-                            .into(),
-                    );
-                }
-            }
+            // 角色姿态先解析再连库：单角色部署（未配置 MIGRATION_DATABASE_URL）在
+            // 这里就被拒绝，不会先跑完迁移再报错（Issue #281）。
+            let plan = db::MigrationPlan::from_env(&config.database_url)?;
+            plan.log_posture();
             // 迁移走维护池：不带 statement_timeout，长时间的 DDL 不会被中途取消。
-            let database = db::connect_maintenance(&migration_database_url)?;
+            let database = db::connect_maintenance(plan.migration_database_url())?;
             db::migrate(&database).await?;
-            db::configure_runtime_role(&database, &config.database_url).await?;
+            db::configure_runtime_role(
+                &database,
+                plan.runtime_database_url(),
+                plan.password_policy(),
+            )
+            .await?;
+            // 迁移文件里写了 REVOKE 不等于边界成立：owner 隐含全部表权限。
+            // 这一步直接问数据库运行时角色此刻能不能改审计表。
+            db::verify_audit_append_only_boundary(
+                &database,
+                plan.runtime_role(),
+                plan.separation(),
+            )
+            .await?;
             info!("database migrations completed");
             return Ok(());
         }

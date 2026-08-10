@@ -356,9 +356,14 @@ async fn runtime_role_cannot_delete_audit_and_uses_security_definer_archive() {
         .set_password(Some(&password))
         .expect("set runtime password");
 
-    chenxing_auth::db::configure_runtime_role(&pool, runtime_url.as_str())
-        .await
-        .expect("configure runtime role");
+    // Managed：角色已存在但这个随机口令登录不上，因此会被写入，测试随后用它连接。
+    chenxing_auth::db::configure_runtime_role(
+        &pool,
+        runtime_url.as_str(),
+        chenxing_auth::db::RuntimePasswordPolicy::Managed,
+    )
+    .await
+    .expect("configure runtime role");
 
     let schema_for_pool = schema.clone();
     let runtime_pool = PgPoolOptions::new()
@@ -419,4 +424,68 @@ async fn runtime_role_cannot_delete_audit_and_uses_security_definer_archive() {
         .await
         .expect("runtime role can archive through SECURITY DEFINER function");
     assert_eq!(archived, 1);
+}
+
+/// Issue #281：迁移文件里写了 REVOKE 不代表边界成立，启动期必须实测。
+///
+/// 这条用例断言两件事：分离角色下校验通过；把 owner 当运行时角色（未配置
+/// `MIGRATION_DATABASE_URL` 的默认部署）时校验必须失败，而不是静默放行。
+#[tokio::test]
+async fn audit_boundary_verification_accepts_the_runtime_role_and_rejects_the_owner() {
+    let pool = database().await;
+
+    let database_url = env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let mut runtime_url = url::Url::parse(&database_url).expect("runtime database URL");
+    runtime_url
+        .set_username(chenxing_auth::db::RUNTIME_DATABASE_ROLE)
+        .expect("set runtime username");
+    runtime_url
+        .set_password(Some(&format!("runtime-{}", uuid::Uuid::new_v4().simple())))
+        .expect("set runtime password");
+    chenxing_auth::db::configure_runtime_role(
+        &pool,
+        runtime_url.as_str(),
+        chenxing_auth::db::RuntimePasswordPolicy::Managed,
+    )
+    .await
+    .expect("configure runtime role");
+
+    let privileges = chenxing_auth::db::verify_audit_append_only_boundary(
+        &pool,
+        chenxing_auth::db::RUNTIME_DATABASE_ROLE,
+        chenxing_auth::db::AuditRoleSeparation::Require,
+    )
+    .await
+    .expect("separated runtime role satisfies the append-only boundary");
+    assert!(privileges.can_insert);
+    assert!(privileges.can_select);
+    assert!(privileges.can_archive);
+    assert!(!privileges.can_mutate);
+
+    let owner: String = chenxing_auth::sqlx::query_scalar("SELECT current_user")
+        .fetch_one(&pool)
+        .await
+        .expect("owner role name");
+    let error = chenxing_auth::db::verify_audit_append_only_boundary(
+        &pool,
+        &owner,
+        chenxing_auth::db::AuditRoleSeparation::Require,
+    )
+    .await
+    .expect_err("the owner role must fail the append-only boundary check");
+    assert!(matches!(
+        error,
+        chenxing_auth::db::AuditBoundaryError::RuntimeRoleCanMutateAudit { .. }
+    ));
+
+    // 显式接受单角色部署时只降级为强告警，仍然返回真实权限位。
+    let degraded = chenxing_auth::db::verify_audit_append_only_boundary(
+        &pool,
+        &owner,
+        chenxing_auth::db::AuditRoleSeparation::AllowSingleRole,
+    )
+    .await
+    .expect("the explicit switch downgrades the failure to a warning");
+    assert!(degraded.can_mutate);
 }
