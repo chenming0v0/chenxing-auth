@@ -9,11 +9,11 @@ use crate::key_storage::{
 };
 
 use super::{
-    KeyManagerError, KeyMaterial, generate_rsa_key, key_material, prune_materials,
+    KeyManagerError, KeyMaterial, generate_rsa_key, journal, key_material, prune_materials,
     within_retention_at,
 };
 
-const ACTIVE_KEY_ID_FILE: &str = "active-rs256.kid";
+pub(super) const ACTIVE_KEY_ID_FILE: &str = "active-rs256.kid";
 const LEGACY_KEY_FILE: &str = "active-rs256.pkcs1.der";
 const KEY_FILE_PREFIX: &str = "rs256-";
 const KEY_FILE_SUFFIX: &str = ".pkcs1.der";
@@ -30,8 +30,11 @@ pub(super) fn load_materials(
 ) -> Result<(String, BTreeMap<String, KeyMaterial>), KeyManagerError> {
     ensure_secure_directory(directory)?;
     cleanup_stale_temporary_files(directory)?;
-    let active_id_path = directory.join(ACTIVE_KEY_ID_FILE);
-    let declared_active_id = read_optional_key_id(&active_id_path)?;
+    // 必须早于读取 kid 和发现材料：崩溃留下的半成品吊销会在这里被补完，之后所有
+    // 判断看到的都是一份已收敛的目录。否则被吊销的材料会被 discover_key_files
+    // 读回内存并重新发布进 JWKS（Issue #284）。
+    journal::recover(directory)?;
+    let declared_active_id = declared_active_key_id(directory)?;
     cleanup_expired_key_files(directory, declared_active_id.as_deref(), retention, now)?;
     let mut key_files = discover_key_files(directory)?;
 
@@ -86,13 +89,7 @@ pub(super) fn load_materials(
         }
     };
 
-    prune_materials(
-        Some(directory),
-        &active_key_id,
-        &mut key_files,
-        retention,
-        now,
-    );
+    prune_materials(&active_key_id, &mut key_files, retention, now);
     // prune_materials 永不删除 active key，这里只是守住该不变量。
     if !key_files.contains_key(&active_key_id) {
         return Err(KeyManagerError::MissingActiveKeyMaterial);
@@ -230,10 +227,39 @@ pub(super) fn persist_key(
     Ok(())
 }
 
+/// 删除私钥材料。材料已不存在同样算成功。
+///
+/// 幂等是吊销恢复路径的前提：`journal::recover` 可能在材料已被删除、只剩记录
+/// 未清除时再跑一次，此时把 `NotFound` 当错误会让目录永远卡在待恢复状态。
 pub(super) fn remove_key(directory: &Path, key_id: &str) -> Result<(), KeyManagerError> {
     validate_key_id(key_id)?;
-    remove_secure_file(&directory.join(key_file_name(key_id)))?;
-    Ok(())
+    match remove_secure_file(&directory.join(key_file_name(key_id))) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// 判断某个 `kid` 的私钥材料是否在盘上，且确实是普通文件。
+///
+/// 非普通文件（符号链接、目录）一律报错而不是当成"不存在"：密钥目录里出现这种
+/// 路径说明目录已被篡改，静默跳过会让后续写入落到攻击者可控的位置。
+pub(super) fn has_key_material(directory: &Path, key_id: &str) -> Result<bool, KeyManagerError> {
+    validate_key_id(key_id)?;
+    match fs::symlink_metadata(directory.join(key_file_name(key_id))) {
+        Ok(metadata) if metadata.is_file() => Ok(true),
+        Ok(_) => Err(KeyManagerError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "invalid secure storage path",
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// 读取盘上声明的 active `kid`；文件不存在时返回 `None`。
+pub(super) fn declared_active_key_id(directory: &Path) -> Result<Option<String>, KeyManagerError> {
+    read_optional_key_id(&directory.join(ACTIVE_KEY_ID_FILE))
 }
 
 pub(super) fn persist_active_key_id(directory: &Path, key_id: &str) -> Result<(), KeyManagerError> {

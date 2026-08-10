@@ -24,6 +24,8 @@ use zeroize::Zeroizing;
 use crate::clock::{Clock, SystemClock};
 use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 
+#[path = "keys_journal.rs"]
+mod journal;
 #[path = "keys_persistence.rs"]
 mod persistence;
 #[path = "keys_revocation.rs"]
@@ -385,16 +387,18 @@ fn key_material(der: PrivateKeyDer, created_at: OffsetDateTime) -> KeyMaterial {
     KeyMaterial { der, created_at }
 }
 
+/// 按保留窗口裁剪旧密钥材料，active key 无论多旧都保留。
+///
+/// 不区分持久化模式和纯内存模式（Issue #285）：保留窗口是"旧公钥还要能验多久"
+/// 这条协议约束，与材料存在硬盘上还是只存在内存里无关。曾经只在有目录时裁剪，
+/// 于是 `KeyManager::generate()` 起来的内存实例每轮换一次就多发布一个公钥，
+/// JWKS 随进程存活时间无界增长，早已过期的验证密钥永远不下线。
 fn prune_materials(
-    directory: Option<&Path>,
     active_key_id: &str,
     materials: &mut BTreeMap<String, KeyMaterial>,
     retention: Duration,
     now: OffsetDateTime,
 ) {
-    if directory.is_none() {
-        return;
-    }
     materials.retain(|key_id, material| {
         key_id == active_key_id || within_retention_at(material.created_at, retention, now)
     });
