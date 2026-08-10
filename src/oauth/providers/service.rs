@@ -1,12 +1,12 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use super::{
     claims::ExternalUser,
     client_pkce::s256_code_challenge,
     domain::{
         ClientAuthMethod, ProviderInput, ProviderRecord, ProviderSummary, ProviderValidationError,
-        validate_endpoint_url,
     },
+    endpoint_policy::{PublicEndpointResolver, validate_endpoint_url},
     repository::{self, CreateIdentityError},
     secrets::{SecretError, SecretManager},
 };
@@ -81,6 +81,9 @@ impl ExternalOAuthService {
         let http = Client::builder()
             .timeout(EXTERNAL_HTTP_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
+            // Issue #291：域名端点的实际指向只有解析后才知道。把筛查放进解析器，
+            // 交出的地址就是随后建连使用的地址，不留 DNS rebinding 时间窗。
+            .dns_resolver(Arc::new(PublicEndpointResolver))
             .build()
             .map_err(|_| ExternalOAuthError::RemoteRequest)?;
         Ok(Self {
@@ -132,15 +135,24 @@ impl ExternalOAuthService {
 
     /// 切换 provider 启用状态。
     ///
-    /// 启用是唯一需要额外校验的方向：存量行的 `email_verified_claim` 可能是 NULL，
-    /// 这类 provider 一旦启用就会放行未验证邮箱（Issue #261）。停用永远允许，
-    /// 否则坏配置会卡在启用状态无法关掉。
+    /// 启用是唯一需要额外校验的方向，两条都针对「存量行按旧规则写进来」的情况：
+    ///
+    /// - `email_verified_claim` 可能是 NULL，这类 provider 一旦启用就会放行未验证
+    ///   邮箱（Issue #261）。
+    /// - 端点可能是按旧规则（只查 scheme）保存的私网地址，启用后服务端就会向它
+    ///   发起请求（Issue #291）。这里拒绝比等到运行时 500 更容易让管理员定位。
+    ///
+    /// 停用永远允许，否则坏配置会卡在启用状态无法关掉。
     pub async fn set_status(&self, slug: &str, status: &str) -> Result<bool, ExternalOAuthError> {
         if !matches!(status, "active" | "disabled") {
             return Ok(false);
         }
         if status == "active" {
-            self.find(slug).await?.claim_mapping()?;
+            let provider = self.find(slug).await?;
+            provider.claim_mapping()?;
+            validate_endpoint_url(&provider.authorization_endpoint)?;
+            validate_endpoint_url(&provider.token_endpoint)?;
+            validate_endpoint_url(&provider.userinfo_endpoint)?;
         }
         Ok(repository::set_status(&self.pool, slug, status).await?)
     }

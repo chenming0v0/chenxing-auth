@@ -83,9 +83,20 @@ pub async fn create_provider(
             "client_secret is required when creating a provider",
         );
     }
-    match state.external_oauth.create(input).await {
+    match state.external_oauth.create(input.clone()).await {
         Ok(provider) => {
-            record_provider_event(&state, actor, "oauth_provider_create", &provider.slug).await;
+            record_provider_event(
+                &state,
+                actor,
+                "oauth_provider_create",
+                &provider.slug,
+                serde_json::json!({
+                    "authorization_endpoint": input.authorization_endpoint,
+                    "token_endpoint": input.token_endpoint,
+                    "userinfo_endpoint": input.userinfo_endpoint,
+                }),
+            )
+            .await;
             (
                 StatusCode::CREATED,
                 Json(provider_response(&state, provider)),
@@ -112,9 +123,20 @@ pub async fn update_provider(
     if input.slug != slug {
         return error::bad_request("invalid_oauth_provider", "provider slug cannot be changed");
     }
-    match state.external_oauth.update(&slug, input).await {
+    match state.external_oauth.update(&slug, input.clone()).await {
         Ok(true) => {
-            record_provider_event(&state, actor, "oauth_provider_update", &slug).await;
+            record_provider_event(
+                &state,
+                actor,
+                "oauth_provider_update",
+                &slug,
+                serde_json::json!({
+                    "authorization_endpoint": input.authorization_endpoint,
+                    "token_endpoint": input.token_endpoint,
+                    "userinfo_endpoint": input.userinfo_endpoint,
+                }),
+            )
+            .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::not_found("oauth_provider_not_found", "provider was not found"),
@@ -155,7 +177,14 @@ async fn set_provider_status(
     };
     match state.external_oauth.set_status(slug, status).await {
         Ok(true) => {
-            record_provider_event(state, actor, &format!("oauth_provider_{status}"), slug).await;
+            record_provider_event(
+                state,
+                actor,
+                &format!("oauth_provider_{status}"),
+                slug,
+                serde_json::json!({"result": "success"}),
+            )
+            .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::not_found("oauth_provider_not_found", "provider was not found"),
@@ -194,7 +223,13 @@ fn provider_error_response(error_value: ExternalOAuthError) -> Response {
     }
 }
 
-async fn record_provider_event(state: &AppState, actor: AdminActor, action: &str, slug: &str) {
+async fn record_provider_event(
+    state: &AppState,
+    actor: AdminActor,
+    action: &str,
+    slug: &str,
+    details: serde_json::Value,
+) {
     let (actor_type, actor_id) = actor.audit_fields();
     state
         .audit
@@ -204,7 +239,7 @@ async fn record_provider_event(state: &AppState, actor: AdminActor, action: &str
             action.to_owned(),
             "oauth_provider".to_owned(),
             Some(slug.to_owned()),
-            serde_json::json!({"result": "success"}),
+            details,
         ))
         .await;
 }

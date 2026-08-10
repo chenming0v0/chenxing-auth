@@ -192,21 +192,16 @@ impl PasskeySetting {
             return Err(SettingsValidationError::InvalidPasskeyRpName);
         }
         let rp_id = self.rp_id.trim().to_ascii_lowercase();
-        if rp_id.is_empty()
-            || rp_id.chars().count() > MAX_RP_ID_LENGTH
-            || rp_id.starts_with('.')
-            || rp_id.ends_with('.')
-            || rp_id.contains("..")
-            || !rp_id.chars().all(|character| {
-                character.is_ascii_alphanumeric() || character == '-' || character == '.'
-            })
-        {
+        if !is_registrable_rp_id(&rp_id) {
             return Err(SettingsValidationError::InvalidPasskeyRpId);
         }
         let allowed_origins = normalize_origins(self.allowed_origins, self.allow_insecure_origin)?;
         if allowed_origins.is_empty() {
             return Err(SettingsValidationError::InvalidPasskeyOrigin);
         }
+        // origin 白名单按「host 等于 rp_id 或是它的子域」判定。这条后缀规则只有在
+        // rp_id 是可注册域时才构成信任边界，因此 rp_id 的点号要求（见
+        // `is_registrable_rp_id`）是这里的前置条件，不能单独放宽。
         for origin in &allowed_origins {
             let url =
                 Url::parse(origin).map_err(|_| SettingsValidationError::InvalidPasskeyOrigin)?;
@@ -331,6 +326,30 @@ impl SmtpSettingUpdate {
             password,
         ))
     }
+}
+
+/// WebAuthn rp_id 必须是可注册域（Issue #287）。
+///
+/// origin 校验用 `host == rp_id || host.ends_with(".{rp_id}")`。单标签 rp_id 会让
+/// 这条后缀规则退化成通配：`rp_id = "com"` 时 `https://evil.com` 也能进白名单。
+/// 因此要求至少含一个点号，与 `EmailPolicySetting` 的域名校验同一强度。
+///
+/// `localhost` 是唯一保留的例外：RFC 6761 保证它（以及 `*.localhost`）指向回环，
+/// 不存在被他人注册的可能，而本地开发依赖它——`Config` 在缺少 `WEBAUTHN_RP_ID`
+/// 时就会从 issuer host 填出这个值。
+fn is_registrable_rp_id(rp_id: &str) -> bool {
+    if rp_id.is_empty()
+        || rp_id.chars().count() > MAX_RP_ID_LENGTH
+        || rp_id.starts_with('.')
+        || rp_id.ends_with('.')
+        || rp_id.contains("..")
+        || !rp_id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '.'
+        })
+    {
+        return false;
+    }
+    rp_id.contains('.') || rp_id == "localhost"
 }
 
 fn normalize_origins(
