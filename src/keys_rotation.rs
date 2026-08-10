@@ -44,13 +44,7 @@ pub(super) fn rotate_blocking_at(
 
     let (key_id, der) = generate_rsa_key()?;
     materials.insert(key_id.clone(), key_material(der.clone(), now));
-    prune_materials(
-        directory.as_deref(),
-        &key_id,
-        &mut materials,
-        retention,
-        now,
-    );
+    prune_materials(&key_id, &mut materials, retention, now);
     let next_state = build_key_state(directory.clone(), retention, key_id.clone(), materials)?;
 
     if let Some(directory) = directory.as_ref()

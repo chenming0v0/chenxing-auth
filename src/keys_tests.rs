@@ -8,7 +8,6 @@
 //! 4. JWKS 响应不含 RSA 私钥参数
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use time::{Duration as TimeDuration, OffsetDateTime};
@@ -17,8 +16,8 @@ use zeroize::Zeroizing;
 use crate::oauth::token::{decode_access_token, issue_access_token};
 
 use super::{
-    KeyManager, KeyMaterial, KeySyncOutcome, MINIMUM_KEY_SYNC_INTERVAL, key_material,
-    prune_materials, within_retention_at,
+    DEFAULT_KEY_RETENTION_SECONDS, KeyManager, KeyMaterial, KeySyncOutcome,
+    MINIMUM_KEY_SYNC_INTERVAL, key_material, prune_materials, within_retention_at,
 };
 
 const TEST_NOW_UNIX_SECONDS: i64 = 1_700_000_000;
@@ -33,9 +32,6 @@ fn aged(byte: u8, age_seconds: u64) -> KeyMaterial {
     key_material(Zeroizing::new(vec![byte]), created_at)
 }
 
-fn storage_dir() -> PathBuf {
-    PathBuf::from("/tmp")
-}
 
 #[test]
 fn key_material_debug_redacts_private_key_bytes() {
@@ -53,16 +49,23 @@ fn key_material_debug_redacts_private_key_bytes() {
     assert!(!output.contains("222"), "byte 0xDE leaked: {output}");
 }
 
+/// Issue #285：内存模式过去完全跳过裁剪，JWKS 随轮换次数无界增长。
+/// 保留窗口是协议约束，与材料落在磁盘上还是只在内存里无关。
 #[test]
-fn prune_materials_is_noop_without_directory() {
-    // 内存模式（无持久化目录）下不剪裁任何条目，即使条目已远超 retention。
-    let key_id = "cx-test".to_owned();
+fn prune_materials_applies_retention_without_a_directory() {
+    let active = "cx-active".to_owned();
+    let expired = "cx-expired".to_owned();
     let mut map = BTreeMap::new();
-    map.insert(key_id.clone(), aged(1, 999_999));
+    map.insert(active.clone(), aged(1, 0));
+    map.insert(expired.clone(), aged(2, 999_999));
 
-    prune_materials(None, &key_id, &mut map, Duration::from_secs(1), test_now());
+    prune_materials(&active, &mut map, Duration::from_secs(1), test_now());
 
-    assert_eq!(map.len(), 1, "in-memory manager must not prune");
+    assert!(map.contains_key(&active), "active key must survive");
+    assert!(
+        !map.contains_key(&expired),
+        "in-memory manager must prune expired keys too"
+    );
 }
 
 #[test]
@@ -77,13 +80,7 @@ fn prune_materials_retains_active_and_recent_removes_expired() {
     map.insert(recent.clone(), aged(2, 60));
     map.insert(expired.clone(), aged(3, 7200));
 
-    prune_materials(
-        Some(&storage_dir()),
-        &active,
-        &mut map,
-        retention,
-        test_now(),
-    );
+    prune_materials(&active, &mut map, retention, test_now());
 
     assert!(map.contains_key(&active), "active key must survive");
     assert!(map.contains_key(&recent), "recent key must survive");
@@ -97,16 +94,101 @@ fn prune_materials_never_removes_active_key_even_if_stale() {
     let mut map = BTreeMap::new();
     map.insert(active.clone(), aged(9, 999_999));
 
-    let retention = Duration::from_secs(60);
-    prune_materials(
-        Some(&storage_dir()),
-        &active,
-        &mut map,
-        retention,
-        test_now(),
-    );
+    prune_materials(&active, &mut map, Duration::from_secs(60), test_now());
 
     assert!(map.contains_key(&active), "active key always retained");
+}
+
+/// 边界：恰好等于 retention 的旧 key 仍在窗口内，多一秒才下线。
+#[test]
+fn prune_materials_keeps_a_key_exactly_at_the_retention_boundary() {
+    let active = "cx-active".to_owned();
+    let boundary = "cx-boundary".to_owned();
+    let past_boundary = "cx-past-boundary".to_owned();
+    let retention = Duration::from_secs(600);
+
+    let mut map = BTreeMap::new();
+    map.insert(active.clone(), aged(1, 0));
+    map.insert(boundary.clone(), aged(2, 600));
+    map.insert(past_boundary.clone(), aged(3, 601));
+
+    prune_materials(&active, &mut map, retention, test_now());
+
+    assert!(map.contains_key(&boundary), "恰好到期仍在验证窗口内");
+    assert!(!map.contains_key(&past_boundary));
+}
+
+/// 并发轮换各自在抢锁前捕获 now，后执行者可能持有更早的快照：晚于参照时刻
+/// 创建的 key 不可能已过期，必须保留，否则会删掉仍在 JWKS 里公布的公钥。
+#[test]
+fn prune_materials_keeps_keys_created_after_the_reference_instant() {
+    let active = "cx-active".to_owned();
+    let future = "cx-future".to_owned();
+    let mut map = BTreeMap::new();
+    map.insert(active.clone(), aged(1, 0));
+    map.insert(
+        future.clone(),
+        key_material(Zeroizing::new(vec![2]), test_now() + TimeDuration::hours(1)),
+    );
+
+    prune_materials(&active, &mut map, Duration::ZERO, test_now());
+
+    assert!(map.contains_key(&future), "未来创建的 key 不得被裁剪");
+}
+
+/// 零保留窗口下内存模式也必须只留 active key，JWKS 不随轮换增长。
+#[test]
+fn prune_materials_with_zero_retention_keeps_only_the_active_key() {
+    let active = "cx-active".to_owned();
+    let previous = "cx-previous".to_owned();
+    let mut map = BTreeMap::new();
+    map.insert(active.clone(), aged(1, 0));
+    map.insert(previous.clone(), aged(2, 1));
+
+    prune_materials(&active, &mut map, Duration::ZERO, test_now());
+
+    assert_eq!(map.len(), 1);
+    assert!(map.contains_key(&active));
+}
+
+/// 内存模式的 JWKS 必须有界：跨过保留窗口的轮换会让旧公钥真正下线（Issue #285）。
+#[tokio::test]
+async fn in_memory_rotation_keeps_the_published_key_set_bounded() {
+    let manager = KeyManager::generate().expect("key generation");
+    let initial_key_id = manager.key_id();
+    let retention = TimeDuration::seconds(DEFAULT_KEY_RETENTION_SECONDS as i64);
+    let now = OffsetDateTime::now_utc();
+
+    // 窗口内轮换：旧公钥继续发布，令牌验证不断。
+    let within_window = manager
+        .rotate_at(now + TimeDuration::seconds(1))
+        .await
+        .expect("rotation inside the retention window");
+    assert_eq!(within_window.published_key_count, 2);
+    assert!(manager.verification_key_for(&initial_key_id).is_some());
+
+    // 跨过保留窗口后再轮换：两个旧 key 都已过期，只剩新的 active key。
+    // 余量取 60 秒，避免第二个 key 恰好落在"年龄 == retention"的保留边界上。
+    let beyond_window = manager
+        .rotate_at(now + retention + TimeDuration::seconds(60))
+        .await
+        .expect("rotation beyond the retention window");
+    assert_eq!(
+        beyond_window.published_key_count, 1,
+        "in-memory JWKS must not grow without bound"
+    );
+    assert_eq!(manager.jwks().keys.len(), 1);
+    assert!(manager.verification_key_for(&initial_key_id).is_none());
+    assert!(
+        manager
+            .verification_key_for(&within_window.key_id)
+            .is_none()
+    );
+    assert_eq!(manager.key_id(), beyond_window.key_id);
+    assert!(
+        manager.verification_key_for(&beyond_window.key_id).is_some(),
+        "active key must stay published"
+    );
 }
 
 #[test]
