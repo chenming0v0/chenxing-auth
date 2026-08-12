@@ -263,7 +263,6 @@ export function LandingPage() {
         <section ref={flowRef} id="landing-flow" className="mx-auto max-w-6xl scroll-mt-24 px-6 py-20">
           <Reveal variant="mask">
             <div className="relative">
-              <span aria-hidden="true" className="cx-section-mark hidden md:block">Flow</span>
               <p className="chenxing-mono text-[10px] uppercase tracking-[0.3em] text-[var(--chenxing-cyan)]">[ Authorization Flow ]</p>
               <h2 className="chenxing-display mt-3 max-w-xl text-3xl font-bold leading-tight text-[var(--chenxing-foreground)] sm:text-[38px]">
                 四步完成一次<span className="chenxing-text-shimmer">可信授权</span>
@@ -295,7 +294,6 @@ export function LandingPage() {
         <section ref={infraRef} id="landing-features" className="mx-auto max-w-6xl scroll-mt-24 px-6 py-16">
           <Reveal variant="mask">
             <div className="relative">
-              <span aria-hidden="true" className="cx-section-mark hidden md:block">Core</span>
               <p className="chenxing-mono text-[10px] uppercase tracking-[0.3em] text-[var(--chenxing-cyan)]">[ Platform Capabilities ]</p>
               <h2 className="chenxing-display mt-3 max-w-2xl text-3xl font-bold leading-tight sm:text-[36px]">为接入方准备的身份基础设施</h2>
             </div>
