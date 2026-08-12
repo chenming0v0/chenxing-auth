@@ -499,7 +499,10 @@ async fn totp_reset_revocation_invalidates_outstanding_refresh_tokens() {
         .await
         .expect("rejected refresh response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(json_body(response).await["error"].as_str(), Some("invalid_grant"));
+    assert_eq!(
+        json_body(response).await["error"].as_str(),
+        Some("invalid_grant")
+    );
     // 代际拒绝发生在消费（CAS 轮换）之前：token 必须仍然存在，证明拒绝的
     // 原因是凭据代际被撤销，而不是重放检测或 family 撤销删掉了它。
     assert!(

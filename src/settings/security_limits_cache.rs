@@ -321,10 +321,10 @@ mod tests {
         // 管理员写入收紧阈值（account_failure_limit 10 -> 3），推进代际。
         cache.store(tightened());
         // 过期加载完成，试图用宽松的旧值回填——必须被丢弃，缓存保留新值。
-        assert!(!cache.store_if_generation_unchanged(
-            stale_generation,
-            SecurityLimitsSetting::default(),
-        ));
+        assert!(
+            !cache
+                .store_if_generation_unchanged(stale_generation, SecurityLimitsSetting::default(),)
+        );
         assert_eq!(cache.fresh(), Some(tightened()));
     }
 

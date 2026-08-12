@@ -181,6 +181,8 @@ fn connection_level_failures_are_not_password_rejections() {
 #[test]
 fn non_auth_database_errors_are_not_password_rejections() {
     // 服务端其他拒绝（如 too many connections）同样不是口令错误。
-    assert!(!super::is_password_rejection(&database_error(Some("53300"))));
+    assert!(!super::is_password_rejection(&database_error(Some(
+        "53300"
+    ))));
     assert!(!super::is_password_rejection(&database_error(None)));
 }

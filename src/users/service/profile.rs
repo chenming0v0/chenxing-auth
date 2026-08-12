@@ -25,10 +25,7 @@ impl UserService {
     /// Refresh Token 签发与兑换用它做凭据代际比对：token 内 stamp 的 epoch 与
     /// 当前值不一致，说明期间发生过撤销该用户全部凭据的操作（改密、管理端
     /// TOTP 重置、禁用）。`None` 表示用户不存在或不是 active 状态。
-    pub async fn active_session_epoch(
-        &self,
-        id: UserId,
-    ) -> Result<Option<i64>, UserServiceError> {
+    pub async fn active_session_epoch(&self, id: UserId) -> Result<Option<i64>, UserServiceError> {
         Ok(repository::find_active_session_epoch(&self.pool, id).await?)
     }
 

@@ -475,11 +475,15 @@ paths:
       summary: 查询当前用户的 OAuth 项目
       operationId: listOwnedOAuthClients
       security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: limit, in: query, required: false, description: 每页条数，默认 200，最大 200, schema: { type: integer, format: int32, minimum: 1, maximum: 200 } }
+        - { name: offset, in: query, required: false, description: 跳过条数，默认 0, schema: { type: integer, format: int64, minimum: 0 } }
       responses:
         '200':
           description: |
             只包含当前用户拥有的 OAuth 项目和配额使用量。
             没有生效套餐时照常列出既有项目，配额上限为 null，不会因此返回错误。
+            超出 200 条的项目通过 limit/offset 分页获取。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OwnedOAuthClientList' }
@@ -1966,9 +1970,10 @@ components:
         quota: { $ref: '#/components/schemas/QuotaSnapshot' }
     OwnedOAuthClientList:
       type: object
-      required: [items]
+      required: [items, total]
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/OwnedOAuthClient' } }
+        total: { type: integer, format: int64, minimum: 0, description: 当前用户拥有的 OAuth 项目总数，用于分页 }
     RegisteredOwnedOAuthClient:
       allOf:
         - $ref: '#/components/schemas/OwnedOAuthClient'
@@ -2132,14 +2137,14 @@ components:
           description: 未注册 TOTP 时为 null。
     TotpFactorResetResponse:
       type: object
-      required: [user_id, previous_key_state, sessions_revoked]
+      required: [user_id, previous_key_state, credentials_revoked]
       properties:
         user_id: { type: integer, format: int64, minimum: 1 }
         previous_key_state:
           type: string
           enum: [current, rotatable, legacy, unavailable]
           description: 删除前密文的可读状态。unavailable 表示这次重置解救了一个被密钥退役锁死的账号。
-        sessions_revoked: { type: boolean, description: 重置同时撤销了该账号的全部会话，固定为 true }
+        credentials_revoked: { type: boolean, description: 重置同时撤销了该账号的全部会话与 Refresh Token，固定为 true }
     AuthFactorKeyHealthResponse:
       type: object
       required: [total, scanned, current, rotatable, legacy, unavailable, truncated]
@@ -2594,7 +2599,7 @@ components:
         code: { type: string, maxLength: 64 }
         name: { type: string, maxLength: 128 }
         description: { type: string, nullable: true, maxLength: 512 }
-        oauth_clients_limit: { type: integer, format: int32, minimum: 0 }
+        oauth_clients_limit: { type: integer, format: int32, minimum: 0, maximum: 1000 }
         daily_auth_limit: { type: integer, format: int64, minimum: 0 }
         monthly_auth_limit: { type: integer, format: int64, nullable: true, minimum: 0 }
         max_qps: { type: integer, format: int32, nullable: true, minimum: 1 }

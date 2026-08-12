@@ -112,8 +112,7 @@ pub(super) async fn exchange_refresh_token(
         } else {
             "user_credentials_revoked"
         };
-        return record_and_return_invalid(state, Some(&refresh.user_id), client_id, reason)
-            .await;
+        return record_and_return_invalid(state, Some(&refresh.user_id), client_id, reason).await;
     }
 
     let scopes = select_scopes(request.scope.as_deref(), &refresh.scopes)?;
