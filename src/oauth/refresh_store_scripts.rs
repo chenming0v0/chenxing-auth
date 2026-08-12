@@ -84,44 +84,23 @@ redis.call('SETEX', KEYS[6], ARGV[8], ARGV[7])
 return 1
 "#;
 
-/// 原子删除单个 token、清理索引并写墓碑。
+/// 原子删除单个 token 并清理索引，不写也不删任何 tombstone。
 ///
-/// - `KEYS[1]` token 主键
-/// - `KEYS[2]` client 索引键
-/// - `KEYS[3]` family 索引键（`ARGV[5]` 为空时不使用）
-/// - `KEYS[4]` 墓碑键
-/// - `ARGV[1]` token_hash
-/// - `ARGV[2]` 墓碑 JSON
-/// - `ARGV[3]` 墓碑 TTL（秒）
-/// - `ARGV[4]` 索引 TTL（秒）
-/// - `ARGV[5]` family_id，空表示旧格式 token
-pub const REMOVE_WITH_TOMBSTONE_SCRIPT: &str = r#"
-redis.call('DEL', KEYS[1])
-redis.call('SREM', KEYS[2], ARGV[1])
-redis.call('EXPIRE', KEYS[2], ARGV[4])
-if ARGV[5] ~= '' then
-    redis.call('SREM', KEYS[3], ARGV[1])
-    redis.call('EXPIRE', KEYS[3], ARGV[4])
-end
-redis.call('SETEX', KEYS[4], ARGV[3], ARGV[2])
-return 1
-"#;
-
-/// 原子删除单个 token 并清理索引，但不写 replay tombstone。
-///
-/// 显式 `/oauth/revoke` 和审计失败后的补偿使用这个脚本：主动撤销不是
-/// replay 证据，不能因为攻击者再次提交同一凭据而触发 family 撤销。
+/// 唯一的生产调用方是授权码兑换的补偿路径：销毁一个客户端从未收到的 token。
+/// 该 token 不可能有墓碑；但脚本必须在结构上保证任何未来调用方都无法抹掉
+/// 重放证据——若对「已被消费/撤销过」的 token 执行本脚本，已存在的 `Consumed`
+/// 墓碑是重放检测的依据，删除它会让同一值的再次提交从「重放 → family 撤销」
+/// 退化成「未知 token → 静默拒绝」，给攻击者一次免费重试（Issue #356）。
+/// 因此脚本绝不触碰墓碑键，墓碑只按自身 TTL 自然过期。
 ///
 /// - `KEYS[1]` token 主键
 /// - `KEYS[2]` client 索引键
 /// - `KEYS[3]` family 索引键（`ARGV[3]` 为空时不使用）
-/// - `KEYS[4]` 旧 replay tombstone（若存在则一并清理）
 /// - `ARGV[1]` token_hash
 /// - `ARGV[2]` 索引 TTL（秒）
 /// - `ARGV[3]` family_id，空表示旧格式 token
 pub const REMOVE_WITHOUT_TOMBSTONE_SCRIPT: &str = r#"
 redis.call('DEL', KEYS[1])
-redis.call('DEL', KEYS[4])
 redis.call('SREM', KEYS[2], ARGV[1])
 redis.call('EXPIRE', KEYS[2], ARGV[2])
 if ARGV[3] ~= '' then
@@ -133,7 +112,7 @@ return 1
 
 /// 原子 CAS 删除 token、清理索引并写墓碑（授权码换取路径的单次消费）。
 ///
-/// 与 `REMOVE_WITH_TOMBSTONE_SCRIPT` 的区别是先做 CAS 比较：只有当前值
+/// 这是唯一会写 `Consumed` 墓碑的删除脚本。先做 CAS 比较：只有当前值
 /// 与预期完全一致时才消费，避免并发请求各自删掉对方刚写入的 token。
 ///
 /// - `KEYS[1]` token 主键

@@ -692,10 +692,18 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
     );
     assert!(
         refreshes
-            .take(&refresh.value)
+            .find(&refresh.value)
             .await
-            .expect("take missing refresh")
+            .expect("find consumed refresh")
             .is_none()
+    );
+    assert!(
+        refreshes
+            .read_tombstone(&refresh.value)
+            .await
+            .expect("read consumed refresh tombstone")
+            .is_some(),
+        "consuming a refresh token must leave a replay tombstone"
     );
 
     let rotatable = RefreshToken::new(
