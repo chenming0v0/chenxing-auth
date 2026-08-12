@@ -433,6 +433,44 @@ describe('OAuthProvidersPanel 更新成功但状态切换失败（Issue #277）'
   })
 })
 
+describe('OAuthProvidersPanel 重试提示隔离（Issue #367）', () => {
+  it('保存其它 provider 成功时不拿走已有重试提示', async () => {
+    enableFailures.set('okta', 1)
+    renderPanel()
+    await screen.findByText('GitLab')
+    openCreate()
+    fillCreateForm()
+    save()
+    await screen.findByRole('button', { name: '重试启用' })
+
+    // 编辑另一个 provider 并保存成功（GitLab 已启用，无状态切换，走成功路径）
+    await openEditRow('GitLab')
+    save()
+    await waitFor(() => expect(requests.some((r) => r.method === 'PUT')).toBe(true))
+
+    expect(screen.getByText(/Okta 已创建成功，但启用失败/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: '重试启用' })).toBeTruthy()
+  })
+
+  it('保存同一 provider 时，新保存取代旧的失败提示', async () => {
+    enableFailures.set('gitea', 1)
+    renderPanel()
+    await screen.findByText('Gitea')
+    await openEditRow('Gitea')
+    fireEvent.change(screen.getByLabelText('Client Secret *'), { target: { value: 'new-secret' } })
+    fireEvent.click(screen.getByRole('switch', { name: '启用供应商' }))
+    save()
+    await screen.findByRole('button', { name: '重试启用' })
+
+    // 重新编辑同一 provider：开关反映已禁用状态，不请求状态切换，直接保存
+    await openEditRow('Gitea')
+    save()
+    await waitFor(() => expect(requests.filter((r) => r.method === 'PUT').length).toBe(2))
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: '重试启用' })).toBeNull())
+  })
+})
+
 describe('OAuthProvidersPanel 加载与空态（Issue #388）', () => {
   it('reload 期间只保留数据行，不再叠加「正在加载」空行', async () => {
     renderPanel()
