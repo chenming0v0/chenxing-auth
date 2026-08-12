@@ -4,7 +4,7 @@ use crate::{clients::service::AuthenticatedClient, state::AppState, users::domai
 use super::super::{
     refresh::RefreshToken,
     refresh_store::{FamilyRevocation, RotationOutcome, Tombstone, TombstoneState},
-    session::active_user_id,
+    session::active_user_epoch,
     token_security::{
         record_token_event, record_token_event_best_effort,
         record_token_event_with_metadata_best_effort,
@@ -92,18 +92,36 @@ pub(super) async fn exchange_refresh_token(
             return Err(OAuthError::temporarily_unavailable().into());
         }
     }
-    match active_user_id(state, &refresh.user_id).await {
-        Ok(Some(_)) => {}
+    // Issue #409：凭据代际比对（见 `RefreshToken::is_bound_to_session_epoch`）。
+    // `session_epoch` 是「撤销该用户全部凭据」的单一水位，会话校验每次查找都
+    // 在比对；TOTP 重置只踢 Cookie 会话、旧 Refresh Token 仍可兑换的漏洞，
+    // 靠这道判定关闭。
+    let current_epoch = match active_user_epoch(state, &refresh.user_id).await {
+        Ok(Some(epoch)) => epoch,
         Ok(None) => return Err(OAuthError::invalid_refresh_grant().into()),
         Err(database_error) => {
-            tracing::error!(error = %database_error, "failed to load refresh token user");
+            tracing::error!(error = %database_error, "failed to load refresh token user credentials");
             return Err(OAuthError::temporarily_unavailable().into());
         }
+    };
+    if !refresh.is_bound_to_session_epoch(current_epoch) {
+        // 旧格式 payload 缺失 epoch（`None`），无法证明签发时刻先于任何撤销
+        // 操作，fail-closed 拒绝：升级后客户端重新走授权流程换取新代际凭据。
+        let reason = if refresh.session_epoch.is_none() {
+            "refresh_token_epoch_required"
+        } else {
+            "user_credentials_revoked"
+        };
+        return record_and_return_invalid(state, Some(&refresh.user_id), client_id, reason)
+            .await;
     }
 
     let scopes = select_scopes(request.scope.as_deref(), &refresh.scopes)?;
-    // Rotation inherits issued_at/family_id and stamps the authenticated Client
-    // Secret generation, including for legacy unversioned tokens.
+    // Rotation inherits issued_at/family_id/session_epoch and stamps the
+    // authenticated Client Secret generation, including for legacy unversioned
+    // tokens. The inherited epoch keeps the successor in the same credential
+    // generation: re-reading it here would let a revocation that lands between
+    // the check above and this rotation be stamped away (Issue #409).
     let next_refresh = refresh.rotate_at_with_client_secret_version(
         scopes.clone(),
         authenticated.client_secret_version(),

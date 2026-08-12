@@ -24,8 +24,8 @@ mod write;
 
 pub use avatar::{StoredAvatar, clear_avatar, find_avatar, update_avatar};
 pub use lookup::{
-    find_credentials_by_email, find_credentials_by_id, find_credentials_by_identifier,
-    find_profile_by_id, list_users,
+    find_active_session_epoch, find_credentials_by_email, find_credentials_by_id,
+    find_credentials_by_identifier, find_profile_by_id, list_users,
 };
 pub use owner_bootstrap::{
     BootstrapOwnerError, BootstrapOwnerOutcome, bootstrap_owner, insert_user_after_owner,

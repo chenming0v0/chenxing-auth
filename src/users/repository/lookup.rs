@@ -1,7 +1,7 @@
 use crate::sqlx::{PgPool, Postgres};
 use time::OffsetDateTime;
 
-use crate::users::domain::{LoginIdentifier, UserId, UserRole};
+use crate::users::domain::{LoginIdentifier, UserId, UserRole, UserStatus};
 use crate::users::email::EmailAddress;
 
 use super::{ListedUser, UserCredentials, UserProfile};
@@ -89,6 +89,25 @@ pub async fn find_credentials_by_id(
     .fetch_optional(pool)
     .await
     .map(|record| record.map(map_credentials))
+}
+
+/// 读取 active 用户的当前 `session_epoch`（Issue #409）。
+///
+/// `None` 表示用户不存在或不是 active 状态。Refresh Token 兑换用它做凭据代际
+/// 比对：token 签发时 stamp 进 payload 的 epoch 与当前值不一致，说明期间发生过
+/// 改密、管理端 TOTP 重置或禁用等「撤销该用户全部凭据」的操作，凭据必须失效。
+pub async fn find_active_session_epoch(
+    pool: &PgPool,
+    id: UserId,
+) -> Result<Option<i64>, crate::sqlx::Error> {
+    let row: Option<(i64, String)> =
+        crate::sqlx::query_as("SELECT session_epoch, status FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.and_then(|(epoch, status)| {
+        (UserStatus::parse(&status) == Some(UserStatus::Active)).then_some(epoch)
+    }))
 }
 
 /// 泛型 executor 让同一份 profile 映射逻辑既能用连接池，也能在事务内复用。

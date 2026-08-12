@@ -59,6 +59,25 @@ pub struct RefreshToken {
     /// rotation so an upgrade does not revoke otherwise healthy grants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_secret_version: Option<i64>,
+    /// 签发时用户 `users.session_epoch` 的快照（Issue #409）。
+    ///
+    /// `session_epoch` 是「撤销该用户全部凭据」的单一水位：改密、管理端 TOTP
+    /// 重置、禁用账号都通过 `revoke_all_for_user_in_transaction` 推进它，会话
+    /// 校验在每次查找时已经按它过滤（`sessions.session_epoch >= users.session_epoch`），
+    /// 而 Refresh Token 此前完全没有这道判定——TOTP 重置只踢掉 Cookie 会话，
+    /// 旧 Refresh Token 仍能持续换取 access token。签发时把 epoch 绑定进凭据，
+    /// 兑换时与当前值比对，任何推进 epoch 的撤销操作都会让该用户此前签发的
+    /// 全部 Refresh Token 立即失效。
+    ///
+    /// 轮换时**继承**而不是重新读取当前值：重新读取会让「兑换检查通过之后、
+    /// 轮换落地之前」发生的撤销被新 stamp 抹掉，等于把重置后的第一个兑换
+    /// 重新救活。同一 grant 的后继凭据必须属于同一代。
+    ///
+    /// 旧格式 payload 缺失此字段时反序列化为 `None`。`None` 在兑换路径
+    /// fail-closed（拒绝）：无法证明签发时刻的凭据不能继续信任，升级后
+    /// 客户端重新走一次授权流程换取新代际凭据即可。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_epoch: Option<i64>,
 }
 
 impl fmt::Debug for RefreshToken {
@@ -74,6 +93,7 @@ impl fmt::Debug for RefreshToken {
             .field("issued_at", &self.issued_at)
             .field("family_id", &self.family_id)
             .field("client_secret_version", &self.client_secret_version)
+            .field("session_epoch", &self.session_epoch)
             .finish()
     }
 }
@@ -91,6 +111,7 @@ mod tests {
             "user".to_owned(),
             vec!["openid".to_owned()],
             7,
+            3,
             created_at,
         );
         let rotated_at = created_at + Duration::days(2);
@@ -101,6 +122,9 @@ mod tests {
         assert_eq!(rotated.issued_at, token.issued_at);
         assert_eq!(rotated.family_id, token.family_id);
         assert_eq!(rotated.client_secret_version, token.client_secret_version);
+        // Issue #409：凭据代际必须由轮换继承，轮换不能重新读取当前 epoch，
+        // 否则撤销与轮换的竞态会把已撤销的 grant 重新救活。
+        assert_eq!(rotated.session_epoch, token.session_epoch);
     }
 }
 
@@ -127,16 +151,21 @@ impl RefreshToken {
         scopes: Vec<String>,
         now: OffsetDateTime,
     ) -> Self {
-        Self::new_at_with_client_secret_version(client_id, user_id, scopes, 0, now)
+        // 测试便捷构造：绑定到 epoch 0（注册接口创建的用户默认从 0 开始）。
+        // 需要精确控制凭据代际的测试应使用完整构造器。
+        Self::new_at_with_client_secret_version(client_id, user_id, scopes, 0, 0, now)
     }
 
     /// Construct a token bound to the Client credential snapshot that passed
-    /// authentication at the token endpoint.
+    /// authentication at the token endpoint, and to the user's current
+    /// `session_epoch` (Issue #409: the credential generation the token was
+    /// issued under, checked again at every exchange).
     pub fn new_at_with_client_secret_version(
         client_id: String,
         user_id: String,
         scopes: Vec<String>,
         client_secret_version: i64,
+        session_epoch: i64,
         now: OffsetDateTime,
     ) -> Self {
         Self {
@@ -150,6 +179,7 @@ impl RefreshToken {
             issued_at: Some(now),
             family_id: Uuid::new_v4().simple().to_string(),
             client_secret_version: Some(client_secret_version),
+            session_epoch: Some(session_epoch),
         }
     }
 
@@ -182,6 +212,7 @@ impl RefreshToken {
                 self.family_id.clone()
             },
             client_secret_version: self.client_secret_version,
+            session_epoch: self.session_epoch,
         }
     }
 
@@ -210,6 +241,16 @@ impl RefreshToken {
             Some(version) => version == expected_version,
             None => allow_legacy_refresh_tokens,
         }
+    }
+
+    /// 校验凭据代际（Issue #409）：token 签发时 stamp 的 `session_epoch` 必须
+    /// 等于用户当前值。`session_epoch` 是「撤销该用户全部凭据」的单一水位——
+    /// 改密、管理端 TOTP 重置、禁用账号都推进它，会话校验每次查找都在比对
+    /// （`sessions.session_epoch >= users.session_epoch`），Refresh Token 也必须
+    /// 一样。不一致说明签发后发生过撤销操作，凭据必须失效；旧格式 payload
+    /// 没有 epoch、无法证明签发时刻，同样 fail-closed 拒绝。
+    pub fn is_bound_to_session_epoch(&self, current_epoch: i64) -> bool {
+        self.session_epoch == Some(current_epoch)
     }
 
     /// 返回凭据的首次签发时刻（绝对有效期计算的起点）。

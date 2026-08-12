@@ -64,6 +64,23 @@ pub async fn active_user_id(
     Ok((UserStatus::parse(&profile.status) == Some(UserStatus::Active)).then_some(user_id))
 }
 
+/// 读取 active 用户的当前 `session_epoch`（Issue #409）。
+///
+/// 与 [`active_user_id`] 的 active 判定共用同一次读取，但返回 epoch 供凭据代际
+/// 比对：Refresh Token 签发时 stamp 当前值，兑换时要求一致。任何推进
+/// `session_epoch` 的撤销操作（改密、管理端 TOTP 重置、禁用账号）都会让该用户
+/// 此前签发的全部 Refresh Token 立即失效——这与会话校验既有的
+/// `sessions.session_epoch >= users.session_epoch` 判定对齐。
+pub async fn active_user_epoch(
+    state: &AppState,
+    user_id: &str,
+) -> Result<Option<i64>, UserServiceError> {
+    let Ok(user_id) = user_id.parse::<UserId>() else {
+        return Ok(None);
+    };
+    state.users.active_session_epoch(user_id).await
+}
+
 /// 从请求头部取出会话标识：仓库内唯一的「header 还是 cookie」判定点（Issue #306）。
 ///
 /// 三条规则缺一不可：
