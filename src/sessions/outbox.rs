@@ -194,15 +194,23 @@ impl SessionStore {
                     transaction.commit().await?;
                     return Ok(());
                 };
-                if !active {
-                    let _: usize = connection.del(self.key_hash(token_hash)).await?;
-                    transaction.commit().await?;
-                    return Ok(());
-                }
-                let Some(payload) = payload else {
-                    let _: usize = connection.del(self.key_hash(token_hash)).await?;
-                    transaction.commit().await?;
-                    return Ok(());
+                let payload = match (active, payload) {
+                    // PostgreSQL is authoritative for lifecycle state. Never preserve a
+                    // fallback payload after revocation, expiry, idle timeout, epoch
+                    // revocation, or user disablement.
+                    (false, _) => {
+                        let _: usize = connection.del(self.key_hash(token_hash)).await?;
+                        transaction.commit().await?;
+                        return Ok(());
+                    }
+                    // During payload migration an active row can legitimately have no
+                    // PostgreSQL payload. Redis is then the only payload source used by
+                    // `find_with_metadata`; a sync event must leave that fallback intact.
+                    (true, None) => {
+                        transaction.commit().await?;
+                        return Ok(());
+                    }
+                    (true, Some(payload)) => payload,
                 };
                 // 始终重新加密投影：旧密钥写入的载荷在迁移期仍可读，且明文不落入 Redis。
                 // 解析后重新序列化会把升级前载荷中的明文 token 剥离，同时把权威
