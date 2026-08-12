@@ -1,15 +1,20 @@
-//! #116 回归测试：登录端点的注册回落语义与限流额度消耗。
+//! #116 回归测试：登录端点的注册回落语义与限流额度消耗；#338 回归测试：
+//! TOTP 登录路径的 ticket 有效期判定必须与签发同源（注入时钟）。
 //!
-//! 这两个测试覆盖 `login_totp` 里 `NoPendingEnrollment` 的判断分支：
+//! 前两个测试覆盖 `login_totp` 里 `NoPendingEnrollment` 的判断分支：
 //! 已注册 TOTP 的账号没有待确认注册，请求必须回落到 `verify_totp_login`，
-//! 并且一次请求只消耗一轮限流额度。
+//! 并且一次请求只消耗一轮限流额度。第三个测试把注入时钟推到 ticket 过期
+//! 之后，断言同一张 Redis 里仍活着的 ticket 被判无效。
 
 use axum::{
     Router,
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, state::AppState};
+use chenxing_auth::{
+    api, auth_factors::domain::LoginTicket, clock::SharedClock, config::Config, state::AppState,
+};
+use time::{Duration, OffsetDateTime};
 use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -23,6 +28,7 @@ const ADMIN_TOKEN: &str = "totp-fallback-admin-token";
 
 async fn setup() -> (
     Router,
+    chenxing_auth::state::AppState,
     chenxing_auth::sqlx::PgPool,
     std::path::PathBuf,
     String,
@@ -47,14 +53,13 @@ async fn setup() -> (
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let email = format!("totp-fallback-{}@example.com", Uuid::new_v4().simple());
-    let router = api::router(
-        AppState::new_with_pool(config, database.clone())
-            .await
-            .expect("test state"),
-    );
+    let state = AppState::new_with_pool(config, database.clone())
+        .await
+        .expect("test state");
+    let router = api::router(state.clone());
     oauth_flow::ensure_owner_bootstrapped(&router, "totp_enrollment_fallback").await;
     db_isolation::isolate_user_ids(&database, "totp_enrollment_fallback").await;
-    (router, database, key_directory, email)
+    (router, state, database, key_directory, email)
 }
 
 async fn json_body(response: axum::response::Response) -> serde_json::Value {
@@ -223,7 +228,7 @@ async fn cleanup(
 #[tokio::test]
 // #116：没有待确认注册时，登录端点必须回落到已注册因子的验证路径
 async fn totp_login_falls_back_to_verification_without_pending_enrollment() {
-    let (router, database, key_directory, email) = setup().await;
+    let (router, _state, database, key_directory, email) = setup().await;
     let username = format!("totp-fallback-{}", Uuid::new_v4().simple());
     let password = "correct horse battery";
     let totp = enroll_totp(&router, &username, &email, password).await;
@@ -268,7 +273,7 @@ async fn totp_login_falls_back_to_verification_without_pending_enrollment() {
 // 但这个测试仍然作为回归守卫：确认回落路径与注册路径一样正确执行单轮预留语义，
 // ticket 限流阈值是完整的 5 次而不是其他值。
 async fn totp_login_fallback_consumes_one_quota_round_per_request() {
-    let (router, database, key_directory, email) = setup().await;
+    let (router, _state, database, key_directory, email) = setup().await;
     let username = format!("totp-quota-{}", Uuid::new_v4().simple());
     let password = "correct horse battery";
     let totp = enroll_totp(&router, &username, &email, password).await;
@@ -305,6 +310,61 @@ async fn totp_login_fallback_consumes_one_quota_round_per_request() {
         "ticket must survive {} failures when each request reserves one round",
         ticket_limit - 1
     );
+
+    cleanup(&database, &email, key_directory).await;
+}
+
+#[tokio::test]
+// #338：TOTP 登录路径判 ticket 有效期必须用注入时钟，与签发同源。
+//
+// 同一套 DB/Redis 上搭两个 router：系统时钟那张签发 ticket，另一张用固定时钟
+// 推到 ticket TTL 之后。Redis 键的 TTL 是真实 300 秒，所以同一张 ticket 同时满足
+// 「墙钟视角刚签发」与「注入时钟视角已过期」——只有时钟同源的实现能判出后者。
+// 修复前 totp_service/totp_enrollment 直接读 `OffsetDateTime::now_utc()`，
+// 这张 ticket 会错误地继续走到验证码检查（401），而不是 ticket 无效（400）。
+async fn totp_login_ticket_expiry_is_driven_by_the_injected_clock() {
+    let (router, state, database, key_directory, email) = setup().await;
+    let username = format!("totp-clock-{}", Uuid::new_v4().simple());
+    let password = "correct horse battery";
+    let totp = enroll_totp(&router, &username, &email, password).await;
+    let ticket = factor_login_ticket(&router, &username, password).await;
+
+    // 系统时钟下 ticket 刚签发：错误验证码得到的是因子失败（401）而不是
+    // ticket 无效（400），证明这张 ticket 本身有效且 Redis 里还活着。
+    let active = request_with_cookie(
+        &router,
+        "/api/v1/auth/totp/login",
+        serde_json::json!({"code": "000000"}),
+        &ticket,
+    )
+    .await;
+    assert_eq!(active.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(json_body(active).await["code"], "invalid_factor");
+
+    // 同一张 ticket，注入时钟推到 TTL 之后：真实 Redis TTL 还剩约 5 分钟，
+    // 墙钟下依然有效，但注入时钟必须判它过期。
+    let future = OffsetDateTime::now_utc() + LoginTicket::TTL + Duration::minutes(1);
+    let future_router = api::router(state.with_clock(SharedClock::fixed(future)));
+    let expired = request_with_cookie(
+        &future_router,
+        "/api/v1/auth/totp/login",
+        serde_json::json!({"code": "000000"}),
+        &ticket,
+    )
+    .await;
+    assert_eq!(expired.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(expired).await["code"], "invalid_login_ticket");
+
+    // 过期判定不得消耗 ticket：回到系统时钟，同一张 ticket 用正确验证码仍能
+    // 完成登录——证明上面的 400 纯粹是时钟判出的过期，不是 ticket 本身失效。
+    let recovered = request_with_cookie(
+        &router,
+        "/api/v1/auth/totp/login",
+        serde_json::json!({"code": totp.generate_current().expect("login code")}),
+        &ticket,
+    )
+    .await;
+    assert_eq!(recovered.status(), StatusCode::OK);
 
     cleanup(&database, &email, key_directory).await;
 }
