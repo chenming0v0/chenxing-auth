@@ -13,6 +13,10 @@
 //!    放在解析器而不是「先解析再请求」的预检里，是为了不留下 DNS rebinding 的
 //!    时间窗：这里返回的地址就是随后真正建连使用的地址。
 //!
+//! 第二层成立的前提是「解析器交出的地址就是建连地址」，而这一点由
+//! [`super::http_client`] 里的 `no_proxy()` 保证：走 HTTP 代理时域名由代理解析、
+//! 连接由代理建立，本层筛查的地址与实际连接目标无关（Issue #294）。
+//!
 //! 生产边界：远端端点必须是 `https`，且既不能是私网/链路本地/CGNAT/ULA 等特殊
 //! 地址的字面量，也不能解析到这些地址。
 //!
@@ -138,41 +142,75 @@ fn is_public_ipv4(address: Ipv4Addr) -> bool {
     !(this_network || shared || protocol_assignments || relay_anycast || benchmarking || reserved)
 }
 
+/// RFC 4291 §2.4 全局单播前缀。IANA 目前只从这一段分配可路由的单播地址。
+const GLOBAL_UNICAST: (u128, u32) = (0x2000_0000_0000_0000_0000_0000_0000_0000, 3);
+
+/// 全局单播内部被特殊用途占用的前缀（IANA IPv6 Special-Purpose Address Registry）。
+///
+/// 只列 `2000::/3` 内部的例外。`2000::/3` 之外的一切——回环、ULA `fc00::/7`、
+/// 链路本地 `fe80::/10`、站点本地 `fec0::/10`、RFC 6666 discard-only `100::/64`、
+/// 组播 `ff00::/8` 以及全部未分配空间——由全局单播判定统一拒绝，不在这里重复。
+const RESERVED_GLOBAL_UNICAST_PREFIXES: [(u128, u32); 5] = [
+    // RFC 6890 IETF 协议分配 2001::/23。含 Teredo 2001::/32、基准测试 2001:2::/48、
+    // AMT 2001:3::/32、ORCHID 2001:20::/28，逐个列出没有额外价值。
+    (0x2001_0000_0000_0000_0000_0000_0000_0000, 23),
+    // RFC 3849 文档用地址 2001:db8::/32。db8 > 01ff，不在上面的 /23 内，单列一行。
+    (0x2001_0db8_0000_0000_0000_0000_0000_0000, 32),
+    // RFC 9637 文档用地址 3fff::/20。
+    (0x3fff_0000_0000_0000_0000_0000_0000_0000, 20),
+    // RFC 9602 SRv6 SID 5f00::/16。
+    (0x5f00_0000_0000_0000_0000_0000_0000_0000, 16),
+    // RFC 3056 6to4 2002::/16。整段拒绝而不是按内嵌 IPv4 判定：RFC 7526 已废弃该机制，
+    // 放行它只会多出一条把 IPv4 目标藏进 IPv6 字面量的路径。
+    (0x2002_0000_0000_0000_0000_0000_0000_0000, 16),
+];
+
+/// IPv6 的判定方向与 IPv4 相反：先取出内嵌 IPv4，再只放行全局单播 `2000::/3`
+/// 里未被特殊用途占用的部分。
+///
+/// 用 allowlist 而不是「逐段排除私网」是因为 IPv6 地址空间绝大部分尚未分配。
+/// 逐段排除意味着每次 IANA 新分配一段特殊用途前缀，这里就默认放行一段——
+/// `fec0::/10` 站点本地就是这样漏掉的（Issue #294）。只认 `2000::/3` 之后，
+/// 未分配空间天然是拒绝的，新增例外只需要往上面那张表里加一行。
 fn is_public_ipv6(address: Ipv6Addr) -> bool {
-    if address.is_unspecified() || address.is_loopback() || address.is_multicast() {
+    if address.is_unspecified() || address.is_loopback() {
         return false;
     }
     // 内嵌 IPv4 的形态必须按内层地址判定，否则 `::ffff:10.0.0.1` 之类是直接绕过口。
+    // 必须放在全局单播判定之前：这些前缀都落在 `2000::/3` 之外，否则会被整段拒绝，
+    // 而 NAT64 部署（`64:ff9b::/96`）的公网目标是需要继续可用的。内层地址的组播、
+    // 私网等形态由 `is_public_ipv4` 覆盖。
     if let Some(embedded) = embedded_ipv4(address) {
         return is_public_ipv4(embedded);
     }
-    let segments = address.segments();
-    // RFC 4193 唯一本地地址 fc00::/7。
-    let unique_local = (segments[0] & 0xfe00) == 0xfc00;
-    // RFC 4291 链路本地单播 fe80::/10。
-    let link_local = (segments[0] & 0xffc0) == 0xfe80;
-    // RFC 3849 文档用地址 2001:db8::/32。
-    let documentation = segments[0] == 0x2001 && segments[1] == 0x0db8;
-    // RFC 6666 discard-only 100::/64。
-    let discard_only = segments[0] == 0x0100 && segments[1..4].iter().all(|part| *part == 0);
-    !(unique_local || link_local || documentation || discard_only)
+    let bits = u128::from_be_bytes(address.octets());
+    if !matches_prefix(bits, GLOBAL_UNICAST) {
+        return false;
+    }
+    !RESERVED_GLOBAL_UNICAST_PREFIXES
+        .iter()
+        .any(|prefix| matches_prefix(bits, *prefix))
+}
+
+/// 判断地址是否落在 `prefix/length` 内。`length` 恒在 1..=128，由上面的常量保证。
+fn matches_prefix(bits: u128, (prefix, length): (u128, u32)) -> bool {
+    let mask = u128::MAX << (128 - length);
+    bits & mask == prefix & mask
 }
 
 /// 取出 IPv6 地址里内嵌的 IPv4 地址。
 ///
 /// 覆盖三种会把 IPv4 目标藏进 IPv6 字面量的形态：IPv4-mapped `::ffff:0:0/96`、
-/// 已废弃的 IPv4-compatible `::/96`、RFC 6052 NAT64 `64:ff9b::/96` 和 RFC 3056
-/// 6to4 `2002::/16`。调用方必须先排除 `::` 与 `::1`，否则会被当成 `::/96` 内嵌。
+/// 已废弃的 IPv4-compatible `::/96` 和 RFC 6052 NAT64 `64:ff9b::/96`。三者都落在
+/// `2000::/3` 之外，因此必须在全局单播判定之前按内层地址判定——NAT64 部署里所有
+/// 目标都是合成地址，整段拒绝会让这类部署完全不可用。
+///
+/// 6to4（`2002::/16`）不在这里：它落在 `2000::/3` 内，且 RFC 7526 已废弃该机制，
+/// 由 [`RESERVED_GLOBAL_UNICAST_PREFIXES`] 整段拒绝，不再按内嵌 IPv4 放行。
+///
+/// 调用方必须先排除 `::` 与 `::1`，否则会被当成 `::/96` 内嵌。
 fn embedded_ipv4(address: Ipv6Addr) -> Option<Ipv4Addr> {
     let segments = address.segments();
-    if segments[0] == 0x2002 {
-        return Some(Ipv4Addr::new(
-            (segments[1] >> 8) as u8,
-            (segments[1] & 0xff) as u8,
-            (segments[2] >> 8) as u8,
-            (segments[2] & 0xff) as u8,
-        ));
-    }
     let nat64 = segments[0] == 0x0064
         && segments[1] == 0xff9b
         && segments[2] == 0

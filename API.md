@@ -197,7 +197,21 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ### `GET /auth/external/{slug}` / `GET /auth/external/{slug}/callback`
 
-开始并完成自定义外部 OAuth 2.0/OIDC 登录。`slug` 来自管理员设置；开始请求可携带 `request_id` 以便登录后继续辰星的授权确认。系统使用一次性 Redis `state` 和 HttpOnly Cookie 绑定浏览器流程，回调成功后创建辰星 Session。
+开始并完成自定义外部 **OAuth 2.0** 登录。`slug` 来自管理员设置；开始请求可携带 `request_id` 以便登录后继续辰星的授权确认。系统使用一次性 Redis `state` 和 HttpOnly Cookie 绑定浏览器流程，回调成功后创建辰星 Session。
+
+#### 信任模型：OAuth 2.0 + UserInfo
+
+自定义提供商是 **OAuth 2.0 授权码流程 + UserInfo 端点**，本平台在这一侧**不是 OIDC 依赖方**。管理 API 的 `trust_model` 字段恒为 `oauth2_userinfo`，明确这一语义：
+
+- 身份字段来源只有一个：用 access token 经 TLS 调用 `userinfo_endpoint` 得到的 JSON。`sub`、`email`、`email_verified` 全部按 provider 配置的 claim 路径从该响应中读取。
+- 令牌响应里的 `id_token` **不被解析、不被存储、不参与身份判定**。本平台不为自定义提供商保存 issuer、JWKS、允许算法或 nonce 策略，因此不具备验证 ID Token 签名、`kid`、`iss`、`aud`、`exp`、`iat` 和 `nonce` 的条件；把一个未验证的 JWT 当身份断言使用比丢弃它危险得多。
+- 只返回 `id_token` 而没有 `access_token` 的令牌响应按失败处理，回跳 `external_error=oauth_login_failed`。
+- `scopes` 里可以包含 `openid`——多数 OIDC 提供商需要它才开放 UserInfo 端点——但它在本平台只起「换取可调用 UserInfo 的 access token」的作用，不代表本平台执行了 OIDC 身份断言校验。
+- `email_verified` 的可信度上限就是外部 UserInfo 响应本身。选择提供商时应确认该端点返回的验证状态是可信的。
+
+本平台**作为 OP 对下游 Client 仍然完整支持 OIDC**（Discovery、RS256 ID Token、nonce 绑定、UserInfo），上面的限定只针对上游自定义提供商这一侧。
+
+#### 身份字段校验
 
 外部 UserInfo 必须按配置提供合法 `email`、唯一 `sub` 和布尔型邮箱验证状态。`email_verified_claim` 是 provider 必填项：claim 缺失、类型不是布尔、或取值为 `false` 时拒绝身份解析和自动建号，回跳 `external_error=oauth_email_unverified`。缺少该配置的存量 provider 无法启用，也不会跳转外部 IdP，回跳 `external_error=oauth_provider_not_found`。
 
@@ -354,12 +368,16 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 
 管理界面在 React 控制台的 `/console/settings`（原 `GET /admin/settings/oauth` 仅转发到该页面），也可以直接使用以下 API。提供商默认停用，确认配置无误后再启用。
 
+提供商一律按 **OAuth 2.0 + UserInfo** 信任模型接入，摘要中的 `trust_model` 恒为 `oauth2_userinfo`；本平台不为自定义提供商验证 ID Token，也不接受 issuer/JWKS/算法策略配置。详见上文「信任模型：OAuth 2.0 + UserInfo」。
+
 - `POST /api/v1/admin/oauth/providers`：创建提供商。必须填写名称、唯一小写 `slug`、授权/Token/UserInfo 地址、Client ID/Secret、Scopes；Secret 只在请求中出现，服务端使用 `KEY_DIRECTORY/oauth-provider-secret.key` 以 AES-256-GCM 加密保存。
-- `GET /api/v1/admin/oauth/providers`：列出提供商摘要，包含 `callback_uri` 和 `client_secret_configured`，不返回 Secret 或密文。
+- `GET /api/v1/admin/oauth/providers`：列出提供商摘要，包含 `trust_model`、`callback_uri` 和 `client_secret_configured`，不返回 Secret 或密文。
 - `PUT /api/v1/admin/oauth/providers/{slug}`：更新配置；`client_secret` 省略时保留原 Secret。
 - `POST /api/v1/admin/oauth/providers/{slug}/enable`、`/disable`：启用或停用。
 
-提供商的授权、Token、UserInfo 地址必须使用 HTTPS，且 IP 字面量和连接时 DNS 解析结果都必须是公网可路由地址；私网、链路本地、CGNAT、ULA、保留地址和混合公私网解析均被拒绝。仅 `localhost`、IPv4 loopback 或 `[::1]` 可使用 HTTP 进行本机测试。校验挂在实际连接使用的 DNS resolver 上，避免先解析后连接造成 DNS rebinding 时间窗。
+提供商的授权、Token、UserInfo 地址必须使用 HTTPS，且 IP 字面量和连接时 DNS 解析结果都必须是公网可路由地址；私网、链路本地、CGNAT、ULA、IPv6 站点本地（`fec0::/10`）、文档与保留前缀，以及混合公私网解析均被拒绝。IPv6 侧只放行 `2000::/3` 全局单播中未被 IANA 特殊用途占用的部分，未分配空间默认拒绝。仅 `localhost`、IPv4 loopback 或 `[::1]` 可使用 HTTP 进行本机测试。
+
+校验挂在实际连接使用的 DNS resolver 上，避免先解析后连接造成 DNS rebinding 时间窗。provider 专用 HTTP 客户端显式禁用系统代理：`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 一律不生效，因此上述地址筛查始终作用于真正的连接目标，不依赖运维配置 `NO_PROXY`。需要经代理访问外部 IdP 的部署应使用出网网关，而不是给服务进程设置代理环境变量。
 
 提供商支持 `basic`（Token 请求 HTTP Basic）和 `request_body`（Token 表单）两种 Client 认证方式；Claim 路径支持点分隔对象路径，例如 `profile.email`。浏览器写操作需要普通 CSRF Cookie 与 `X-CSRF-Token`；Bearer Token 是现有自动化兼容方式。
 

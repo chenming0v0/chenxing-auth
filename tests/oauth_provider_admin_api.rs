@@ -242,6 +242,8 @@ async fn provider_admin_api_requires_auth_and_never_returns_client_secret() {
     assert_eq!(created["slug"], slug);
     assert_eq!(created["client_secret_configured"], true);
     assert!(created.get("client_secret").is_none());
+    // Issue #296：契约上明确 OAuth 2.0 + UserInfo，不宣称 OIDC。
+    assert_eq!(created["trust_model"], "oauth2_userinfo");
     let original_ciphertext: (Vec<u8>,) = chenxing_auth::sqlx::query_as(
         "SELECT client_secret_ciphertext FROM oauth_providers WHERE slug = $1",
     )
@@ -291,6 +293,7 @@ async fn provider_admin_api_requires_auth_and_never_returns_client_secret() {
     let providers = json(response).await;
     assert_eq!(providers[0]["client_secret_configured"], true);
     assert!(providers[0].get("client_secret").is_none());
+    assert_eq!(providers[0]["trust_model"], "oauth2_userinfo");
 
     // The legacy server-rendered settings page now forwards to the React console;
     // the API-level assertions above already guarantee the client secret is never

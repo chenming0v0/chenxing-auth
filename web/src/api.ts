@@ -417,6 +417,12 @@ export type OAuthProviderSummary = {
   id: number
   name: string
   slug: string
+  /**
+   * 身份信任模型（Issue #296）。恒为 `oauth2_userinfo`：OAuth 2.0 授权码流程 + UserInfo 端点，
+   * `sub`/`email`/`email_verified` 全部来自 UserInfo 响应，令牌响应中的 `id_token` 不被解析，
+   * 本平台在这一侧不是 OIDC 依赖方。新增模式时后端会新增取值，而不是放宽这个取值的含义。
+   */
+  trust_model?: 'oauth2_userinfo' | string
   callback_uri?: string
   authorization_endpoint: string
   token_endpoint: string
