@@ -6,8 +6,8 @@ use thiserror::Error;
 use super::{
     refresh::{REFRESH_TOKEN_ABSOLUTE_TTL_DAYS, REFRESH_TOKEN_SLIDING_TTL_DAYS, RefreshToken},
     refresh_store_scripts::{
-        REMOVE_WITH_TOMBSTONE_SCRIPT, REMOVE_WITHOUT_TOMBSTONE_SCRIPT,
-        ROTATE_WITH_TOMBSTONE_SCRIPT, SAVE_WITH_INDEXES_SCRIPT, TAKE_IF_MATCHES_SCRIPT,
+        REMOVE_WITHOUT_TOMBSTONE_SCRIPT, ROTATE_WITH_TOMBSTONE_SCRIPT, SAVE_WITH_INDEXES_SCRIPT,
+        TAKE_IF_MATCHES_SCRIPT,
     },
 };
 use crate::{clock::SharedClock, redis_client::RedisClient};
@@ -187,35 +187,6 @@ impl RefreshTokenStore {
         Ok(())
     }
 
-    pub async fn take(&self, value: &str) -> Result<Option<RefreshToken>, RefreshTokenStoreError> {
-        let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let key = Self::token_key(value);
-        let payload: Option<String> = connection.get(&key).await?;
-        let Some(payload) = payload else {
-            return Ok(None);
-        };
-        let token: RefreshToken = serde_json::from_str(&payload)?;
-        let hash = Self::token_hash(value);
-        let tombstone = serde_json::to_string(&Tombstone::for_token(
-            &token,
-            TombstoneState::Consumed,
-            self.clock.now(),
-        ))?;
-        let _: i32 = Script::new(REMOVE_WITH_TOMBSTONE_SCRIPT)
-            .key(&key)
-            .key(Self::client_idx_key(&token.client_id))
-            .key(Self::family_idx_key(&token.family_id))
-            .key(Self::tombstone_key_for_hash(&hash))
-            .arg(&hash)
-            .arg(tombstone)
-            .arg(TOMBSTONE_TTL_SECONDS)
-            .arg(INDEX_TTL_SECONDS)
-            .arg(&token.family_id)
-            .invoke_async(&mut connection)
-            .await?;
-        Ok(Some(token))
-    }
-
     pub async fn find(&self, value: &str) -> Result<Option<RefreshToken>, RefreshTokenStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload: Option<String> = connection.get(Self::token_key(value)).await?;
@@ -225,11 +196,16 @@ impl RefreshTokenStore {
             .map_err(RefreshTokenStoreError::from)
     }
 
-    /// 删除单个 token 并清理索引，不写 replay 墓碑。
+    /// 删除单个 token 并清理索引；不写墓碑，也绝不删除已存在的墓碑。
     ///
     /// 唯一的生产调用方是授权码兑换的补偿路径：那里要销毁一个客户端从未收到的
     /// Refresh Token，它不是被消费的凭据，也不是重放证据。客户端主动撤销走
     /// [`Self::revoke_family_on_explicit_revoke`]，语义是撤销整个 grant。
+    ///
+    /// 已存在的墓碑（尤其是 `Consumed`）是重放检测的证据：删除它会让同一值的
+    /// 再次提交从「重放 → family 撤销」退化成「未知 token → 静默拒绝」，给
+    /// 攻击者一次免费重试（Issue #356）。因此本方法对墓碑键零操作，墓碑只按
+    /// 自身 TTL 自然过期。
     pub async fn remove(&self, value: &str) -> Result<(), RefreshTokenStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         // 先读取 payload 以便清理索引（找不到时幂等成功）
@@ -242,7 +218,6 @@ impl RefreshTokenStore {
                 .key(&key)
                 .key(Self::client_idx_key(&token.client_id))
                 .key(Self::family_idx_key(&token.family_id))
-                .key(Self::tombstone_key_for_hash(&hash))
                 .arg(&hash)
                 .arg(INDEX_TTL_SECONDS)
                 .arg(&token.family_id)

@@ -820,6 +820,73 @@ async fn compensating_removal_does_not_create_replay_tombstone() {
         .expect("cleanup compensating removal");
 }
 
+/// Issue #356：`remove()` 绝不能销毁重放证据。
+///
+/// `remove()` 的语义是销毁「客户端从未收到」的 token。若未来任何路径对它
+/// 传入一个已存在 `Consumed` 墓碑的 token，删除墓碑会让同一值的再次提交从
+/// 「重放 → family 撤销」退化成「未知 token → 静默拒绝」，攻击者获得一次
+/// 免费重试。生产流程不会产生「活 token 与墓碑并存」的状态（消费与轮换都
+/// 原子地同时删键与写墓碑），但脚本必须在结构上保证任何状态都保留证据：
+/// 这里人为构造该组合，直接验证脚本不再触碰墓碑键。
+#[tokio::test]
+async fn remove_preserves_existing_replay_tombstone() {
+    let store = RefreshTokenStore::new(redis_client());
+    let client_id = format!("cx_remove_preserves_tombstone_{}", Uuid::new_v4().simple());
+    let token = RefreshToken::new(
+        client_id.clone(),
+        "user-remove-tombstone".to_owned(),
+        vec!["openid".to_owned()],
+    );
+    let family_id = token.family_id.clone();
+
+    store.save(&token).await.expect("save token");
+    // 人为构造「活 token 与 Consumed 墓碑并存」的状态。
+    let client = redis_client();
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis");
+    let planted = format!(
+        r#"{{"family_id":"{family_id}","client_id":"{client_id}","user_id":"user-remove-tombstone","state":"consumed"}}"#
+    );
+    let _: () = redis::cmd("SET")
+        .arg(tombstone_key(&token.value))
+        .arg(&planted)
+        .query_async(&mut conn)
+        .await
+        .expect("plant replay tombstone");
+
+    store
+        .remove(&token.value)
+        .await
+        .expect("remove the never-delivered token");
+    assert!(
+        store
+            .find(&token.value)
+            .await
+            .expect("find removed token")
+            .is_none(),
+        "remove() must still delete the token itself"
+    );
+    assert_eq!(
+        store
+            .read_tombstone(&token.value)
+            .await
+            .expect("read tombstone after remove")
+            .map(|tombstone| tombstone.state),
+        Some(TombstoneState::Consumed),
+        "remove() must preserve the Consumed replay tombstone"
+    );
+
+    let _: () = redis::cmd("DEL")
+        .arg(client_index_key(&client_id))
+        .arg(family_index_key(&family_id))
+        .arg(tombstone_key(&token.value))
+        .query_async(&mut conn)
+        .await
+        .expect("cleanup");
+}
+
 /// Issue #295：显式撤销的单元是 grant family，而不是提交的那一个 token。
 ///
 /// 覆盖三件事：轮换后仍存活的后继必须一起死；提交一个已被轮换消费掉的旧
