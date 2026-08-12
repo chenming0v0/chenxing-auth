@@ -185,19 +185,22 @@ export function ConsoleProfile() {
 
 export function AuthorizedApps() {
   const [apps, setApps] = useState<AuthorizedOAuthApp[]>([])
-  const [message, setMessage] = useState('')
+  /* 提示语连同语气一起存，撤销成功显式写 success，不用文案子串反推语气。 */
+  const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
   const [busyClientId, setBusyClientId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
+  const warn = (text: string) => notify(text, 'warning')
 
   async function loadApps(): Promise<boolean> {
     setLoading(true)
-    setMessage('')
+    setNotice(null)
     try {
       const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
       setApps(response.items)
       return true
     } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。')
+      warn(reason instanceof Error ? reason.message : '应用列表加载失败。')
       return false
     } finally {
       setLoading(false)
@@ -209,12 +212,12 @@ export function AuthorizedApps() {
   async function revokeApp(app: AuthorizedOAuthApp) {
     if (!window.confirm(`确认撤销“${app.client_name}”的授权吗？撤销后，该应用将立即失去访问账户数据的权限，若要继续使用，必须重新授权。`)) return
     setBusyClientId(app.client_id)
-    setMessage('')
+    setNotice(null)
     try {
       await apiFetch<void>(`/api/v1/auth/authorized-apps/${encodeURIComponent(app.client_id)}`, { method: 'DELETE' })
-      if (await loadApps()) setMessage('应用授权已撤销。')
+      if (await loadApps()) notify('应用授权已撤销。', 'success')
     } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : '应用授权撤销失败。')
+      warn(reason instanceof Error ? reason.message : '应用授权撤销失败。')
     } finally {
       setBusyClientId(null)
     }
@@ -230,7 +233,7 @@ export function AuthorizedApps() {
         description="管理已通过辰星通行证登录的第三方应用与其权限范围。"
         action={<Link className="chenxing-btn-ghost" to="/console/integrate">接入应用</Link>}
       />
-      {message ? <div className="mb-4"><Notice tone={message.includes('已撤销') ? 'success' : 'warning'}>{message}</Notice></div> : null}
+      {notice ? <div className="mb-4"><Notice tone={notice.tone}>{notice.text}</Notice></div> : null}
       <div className="mb-6 grid grid-cols-3 gap-3 sm:gap-4">
         <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">已授权应用</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading ? '—' : apps.length}</p></HudPanel>
         <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">开放权限域</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading ? '—' : openScopes}</p></HudPanel>
