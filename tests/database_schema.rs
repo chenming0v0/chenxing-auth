@@ -159,6 +159,14 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     assert_fk(&pool, "user_passkeys", "user_id", "users", "id").await;
     assert_column(&pool, "oauth_clients", "id", "bigint", false).await;
     assert_identity(&pool, "oauth_clients", "id").await;
+    assert_column(
+        &pool,
+        "oauth_clients",
+        "allow_legacy_refresh_tokens",
+        "boolean",
+        false,
+    )
+    .await;
     assert_column(&pool, "oauth_providers", "id", "bigint", false).await;
     assert_identity(&pool, "oauth_providers", "id").await;
     assert_constraint_contains(

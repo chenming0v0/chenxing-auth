@@ -78,21 +78,28 @@ async fn token_inner(
     ) {
         return error::oauth_bad_request("unsupported_grant_type", "grant type is unsupported");
     }
-    if let Some(response) = verify_client_credentials(&state, &credentials).await {
-        return response;
-    }
+    let authenticated = match verify_client_credentials(&state, &credentials).await {
+        Ok(authenticated) => authenticated,
+        Err(response) => return response,
+    };
     if let Some(response) = enforce_qps(&state, &credentials.client_id).await {
         return response;
     }
     match request.grant_type.as_str() {
-        "authorization_code" => exchange_authorization_code(state, request).await,
-        "refresh_token" => exchange_refresh_token(state, request).await,
+        "authorization_code" => {
+            exchange_authorization_code(state, request, authenticated).await
+        }
+        "refresh_token" => exchange_refresh_token(state, request, authenticated).await,
         _ => error::oauth_bad_request("unsupported_grant_type", "grant type is unsupported"),
     }
 }
 
-async fn exchange_authorization_code(state: AppState, request: TokenRequest) -> Response {
-    match token_use_case::exchange_code(&state, request).await {
+async fn exchange_authorization_code(
+    state: AppState,
+    request: TokenRequest,
+    authenticated: crate::clients::service::AuthenticatedClient,
+) -> Response {
+    match token_use_case::exchange_code(&state, request, authenticated).await {
         Ok(token) => Json(token).into_response(),
         Err(error) => oauth_error_response(error),
     }

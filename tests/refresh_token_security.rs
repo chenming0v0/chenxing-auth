@@ -937,6 +937,7 @@ async fn revoking_a_legacy_token_does_not_touch_other_legacy_tokens() {
         revoked_at: None,
         issued_at: None,
         family_id: String::new(),
+        client_secret_version: None,
     };
     let revoked = legacy("revoked");
     let untouched = legacy("untouched");
@@ -991,10 +992,10 @@ async fn revoking_a_legacy_token_does_not_touch_other_legacy_tokens() {
         .expect("cleanup legacy revoke");
 }
 
-/// 旧格式 token（无 `issued_at` / `family_id`）能反序列化并轮换。
+/// 旧格式 token（无 `issued_at` / `family_id` / `client_secret_version`）能反序列化并轮换。
 #[test]
 fn legacy_token_without_new_fields_can_rotate() {
-    // 构造旧格式 token（无 issued_at / family_id）
+    // 构造旧格式 token（无 issued_at / family_id / client_secret_version）
     let now = OffsetDateTime::now_utc();
     let legacy = RefreshToken {
         value: "cx-refresh-legacy123".to_owned(),
@@ -1006,6 +1007,7 @@ fn legacy_token_without_new_fields_can_rotate() {
         revoked_at: None,
         issued_at: None,
         family_id: String::new(),
+        client_secret_version: None,
     };
 
     // issued_at() 回退到 created_at
@@ -1033,12 +1035,31 @@ fn legacy_token_without_new_fields_can_rotate() {
         serialized.get("family_id").is_none(),
         "family_id should not serialize when empty"
     );
+    assert!(
+        serialized.get("client_secret_version").is_none(),
+        "client_secret_version should not serialize when None"
+    );
 
     // 能从旧格式 JSON 反序列化
     let json = serde_json::to_string(&serialized).expect("to json");
     let deserialized: RefreshToken = serde_json::from_str(&json).expect("deserialize legacy token");
     assert_eq!(deserialized.issued_at, None);
     assert_eq!(deserialized.family_id, "");
+    assert_eq!(deserialized.client_secret_version, None);
+    assert!(
+        deserialized.is_bound_to_client_secret_version(7, true),
+        "legacy tokens remain usable during the rollout compatibility window"
+    );
+    assert!(
+        !deserialized.is_bound_to_client_secret_version(7, false),
+        "a post-upgrade Secret rotation permanently closes the legacy window"
+    );
+    let rebound = deserialized.rotate_at_with_client_secret_version(
+        vec!["openid".to_owned()],
+        7,
+        now,
+    );
+    assert_eq!(rebound.client_secret_version, Some(7));
 }
 
 /// 索引和墓碑的 TTL 存在（防止 Redis 无界增长）。

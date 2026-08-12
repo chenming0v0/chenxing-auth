@@ -31,6 +31,23 @@ async fn concurrent_secret_writes_have_one_compare_and_swap_winner() {
     )
     .await
     .expect("insert client");
+    assert!(
+        !repository::find_client_credentials(&pool, &client_id)
+            .await
+            .expect("read new client credentials")
+            .expect("new client credentials")
+            .allow_legacy_refresh_tokens,
+        "new Clients must never open the legacy token compatibility window"
+    );
+    // Simulate a Client row that existed before migration 0026. Its unversioned
+    // Refresh Tokens remain compatible only until the next Secret rotation.
+    chenxing_auth::sqlx::query(
+        "UPDATE oauth_clients SET allow_legacy_refresh_tokens = TRUE WHERE client_id = $1",
+    )
+    .bind(&client_id)
+    .execute(&pool)
+    .await
+    .expect("open legacy refresh compatibility window");
     let version = repository::find_client_secret_version(&pool, None, &client_id)
         .await
         .expect("read client secret version")
@@ -64,6 +81,10 @@ async fn concurrent_secret_writes_have_one_compare_and_swap_winner() {
     assert_eq!(
         credentials.client_secret_hash.as_deref(),
         Some(if first { "first-hash" } else { "second-hash" })
+    );
+    assert!(
+        !credentials.allow_legacy_refresh_tokens,
+        "the winning rotation must permanently close the legacy token window"
     );
     assert_eq!(
         repository::find_client_secret_version(&pool, None, &client_id)

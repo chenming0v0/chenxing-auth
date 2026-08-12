@@ -153,8 +153,10 @@ impl RefreshTokenStore {
     ///
     /// 故意不写墓碑也不写 family 墓志：Secret 轮换不是凭据泄露信号，旧 token
     /// 后续应静默返回 `invalid_grant`，不触发「检测到重放」的审计噪声。撤销
-    /// 按 client 索引进行，同一 family 的成员必然共享 client_id，因此索引被
-    /// 清空即等于所有相关 family 都已排空，不存在需要墓志挡住的残留成员。
+    /// 按 client 索引进行，同一 family 的成员必然共享 client_id。旧版本凭据的
+    /// Redis 写入还受 PostgreSQL `FOR SHARE` 签发栅栏约束：它要么先入索引、被
+    /// 本次清理看到，要么在 Secret UPDATE 提交后因版本不符被拒（Issue #310）。
+    /// 因此不需要 family 墓志去阻止迟到的旧版本写入；提交后的新版本写入合法。
     ///
     /// 返回被撤销的 token 数量。
     pub async fn revoke_client_tokens(

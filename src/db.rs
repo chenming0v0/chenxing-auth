@@ -375,6 +375,15 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0025_user_canonical_email.sql")),
             false,
         ),
+        Migration::new(
+            26,
+            Cow::Borrowed("client secret refresh generation boundary"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!(
+                "../migrations/0026_client_secret_refresh_generation.sql"
+            )),
+            false,
+        ),
     ];
 
     Migrator {

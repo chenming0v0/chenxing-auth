@@ -146,6 +146,8 @@ pub async fn credentials_match(
         client_secret_hash: stored_hash.map(str::to_owned),
         auth_method: auth_method.as_str().to_owned(),
         status: "active".to_owned(),
+        client_secret_version: 0,
+        allow_legacy_refresh_tokens: false,
     };
     verify_client_credentials_constant_time(auth_method, client_secret, Some(&stored)).await
 }

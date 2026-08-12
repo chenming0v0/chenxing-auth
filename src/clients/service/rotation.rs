@@ -43,6 +43,10 @@ impl ClientService {
         {
             return Err(ClientServiceError::SecretRotationConflict);
         }
+        // Token persistence holds a conflicting PostgreSQL FOR SHARE lock while
+        // writing Redis. Therefore every old-version token is indexed before
+        // this UPDATE can commit and is visible to the cleanup below; a writer
+        // arriving after commit fails its version fence instead (Issue #310).
         self.revoke_refresh_tokens_after_rotation(client_id).await;
         Ok(RotatedClientSecret {
             client_id: client_id.to_owned(),
@@ -52,25 +56,25 @@ impl ClientService {
 
     /// Secret 轮换后撤销该 Client 的全部 Refresh Token（Issue #62）。
     ///
-    /// 不这么做的话「轮换」是安全空操作：攻击者拿到泄露的 Secret 换出的
-    /// Refresh Token 在轮换后依然能继续换取新 Access Token，
-    /// 管理员以为已经止损，实际没有。
+    /// 版本不匹配已经负责语义上的失效；这里仍立即删除 Redis 记录，避免无效
+    /// 凭据占据索引和 TTL，并让正常请求尽快走既有的 token-not-found 路径。
     ///
     /// **故意不回滚 secret**（设计决策 §4）：新 secret 已经写入数据库并生效，
-    /// 回滚会让「轮换没生效」这个更危险的状态被静默掩盖。撤销失败留下的
-    /// 「旧 token 仍可用」是降级状态，通过 `tracing::error!` 暴露给运维，
-    /// 可人工再次轮换或直接停用 Client。
+    /// 回滚会让「轮换没生效」这个更危险的状态被静默掩盖。Issue #310 起，
+    /// 轮换同时关闭 legacy token 兼容位；新版 Refresh Token 自带 secret version，
+    /// 兑换时还会复核。因此撤销失败只留下不可兑换的物理记录，不会让旧授权
+    /// 复活；这里的删除仍用于及时清理。
     ///
     /// 同理，撤销失败不改变函数返回值：调用方必须拿到新 secret，
     /// 否则该 Client 会因为「新 secret 已生效但调用者不知道」而完全无法认证。
     async fn revoke_refresh_tokens_after_rotation(&self, client_id: &str) {
         let Some(store) = self.refresh_tokens.as_ref() else {
             // 未注入存储属于装配错误（生产路径一定会注入）。
-            // 记 error 而不是静默跳过，否则 #62 会悄悄回归。
+            // 记 error 而不是静默积累无效凭据。
             tracing::error!(
                 client_id = %client_id,
                 "client secret rotated without refresh token store; \
-                 previously issued refresh tokens remain valid (Issue #62)"
+                 stale refresh token records could not be eagerly removed"
             );
             return;
         };
@@ -87,7 +91,7 @@ impl ClientService {
                     error = %store_error,
                     client_id = %client_id,
                     "failed to revoke refresh tokens after client secret rotation; \
-                     previously issued tokens may still be usable (Issue #62)"
+                     version-invalid token records will remain until expiry"
                 );
             }
         }

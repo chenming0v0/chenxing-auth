@@ -226,8 +226,8 @@ impl AppState {
         let authorization_codes =
             AuthorizationCodeStore::new(redis.clone()).with_clock(clock.clone());
         let refresh_tokens = RefreshTokenStore::new(redis.clone()).with_clock(clock.clone());
-        // Issue #62：Secret 轮换必须能撤销该 Client 已签发的 Refresh Token，
-        // 否则轮换只换掉哈希，攻击者手里的 token 依然能换出新 Access Token。
+        // Secret 版本负责兑换时的硬失效；RefreshTokenStore 负责在轮换后立即
+        // 清理已经失效的 Redis 记录，避免它们一直占据索引与 TTL（#62/#310）。
         let clients =
             ClientService::with_limits(database.clone(), config.client_registration_limits.clone())
                 .with_refresh_tokens(refresh_tokens.clone());

@@ -6,6 +6,11 @@ use time::OffsetDateTime;
 use super::domain::{ClientAuthMethod, ValidatedClientRegistration};
 use crate::users::domain::UserId;
 
+#[path = "repository_credentials.rs"]
+mod credentials;
+pub use credentials::{
+    StoredClientCredentials, find_client_credentials, lock_client_credentials_if_version,
+};
 #[path = "repository_rotation.rs"]
 mod rotation;
 pub use rotation::{find_client_secret_version, update_client_secret_if_version};
@@ -72,25 +77,6 @@ pub struct StoredClient {
     pub scopes: Vec<String>,
     pub status: String,
     pub owner_user_id: Option<UserId>,
-}
-
-pub struct StoredClientCredentials {
-    pub client_secret_hash: Option<String>,
-    pub auth_method: String,
-    pub status: String,
-}
-
-impl fmt::Debug for StoredClientCredentials {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("StoredClientCredentials")
-            .field(
-                "client_secret_hash",
-                &self.client_secret_hash.as_ref().map(|_| "<redacted>"),
-            )
-            .field("auth_method", &self.auth_method)
-            .field("status", &self.status)
-            .finish()
-    }
 }
 
 #[derive(Debug)]
@@ -267,27 +253,6 @@ pub async fn find_client_by_id(
             status,
             owner_user_id,
         })
-    })
-}
-
-pub async fn find_client_credentials(
-    pool: &PgPool,
-    client_id: &str,
-) -> Result<Option<StoredClientCredentials>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (Option<String>, String, String)>(
-        "SELECT client_secret_hash, auth_method, status FROM oauth_clients WHERE client_id = $1",
-    )
-    .bind(client_id)
-    .fetch_optional(pool)
-    .await
-    .map(|record| {
-        record.map(
-            |(client_secret_hash, auth_method, status)| StoredClientCredentials {
-                client_secret_hash,
-                auth_method,
-                status,
-            },
-        )
     })
 }
 
