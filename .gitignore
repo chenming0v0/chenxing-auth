@@ -1,6 +1,7 @@
 /target/
 /data/
 /.env
+/ROOT.md
 *.log
 lcov.info
 __pycache__/
