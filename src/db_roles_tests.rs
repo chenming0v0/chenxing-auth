@@ -56,6 +56,18 @@ fn freshly_created_role_always_gets_the_password() {
 }
 
 #[test]
+fn missing_probe_result_never_overwrites() {
+    // Managed + 角色已存在 + 探测结果缺失在正常流程中不可达（探测必然执行，
+    // 连接层故障提前报错），但该状态必须 fail-safe：没有服务端明确拒绝
+    // （SQLSTATE 28P01 / 28000）的证据就写入，等于静默覆盖运维侧轮换过的
+    // 口令（Issue #349）。
+    assert_eq!(
+        runtime_password_action(RuntimePasswordPolicy::Managed, true, None),
+        PasswordAction::Skip
+    );
+}
+
+#[test]
 fn identifier_quoting_escapes_embedded_quotes() {
     assert_eq!(quote_ident("chenxing_runtime"), "\"chenxing_runtime\"");
     assert_eq!(quote_ident("we\"ird"), "\"we\"\"ird\"");

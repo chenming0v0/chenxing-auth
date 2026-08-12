@@ -10,6 +10,8 @@
 //! 明确拒绝认证（SQLSTATE 28P01 / 28000）才写入，并且写入时打 warn。连接层故障
 //! （连不上、TLS、DNS、超时）证明不了口令状态，直接中止本次口令管理并报错退出，
 //! 绝不覆盖——一次网络抖动就会把运维侧刚轮换的口令静默打回去（Issue #411）。
+//! 动作判定函数同样 fail-safe：任何拿不到"服务端明确拒绝"证据的路径都不得写入
+//! （Issue #349）。
 //! 口令完全由外部密钥托管管理的部署可以用 `MIGRATION_MANAGE_RUNTIME_PASSWORD=false`
 //! 让 migrate 一步都不碰。
 //!
@@ -141,9 +143,12 @@ pub(crate) fn runtime_password_action(
             // 只有服务端明确拒绝认证（SQLSTATE 28P01 / 28000）才写入：这才是
             // "运行时 URL 的口令确实不可用"。重设会打 warn，运维能看到。
             (true, Some(PasswordProbe::Rejected)) => PasswordAction::Write,
-            // 不可达：Managed 且角色已存在时必然执行探测，探测的连接层故障已在
-            // `configure_runtime_role` 作为错误提前返回。保留该分支维持 match 完整。
-            (true, None) => PasswordAction::Write,
+            // 探测结果缺失：Managed 且角色已存在时探测必然执行，连接层故障也在
+            // `configure_runtime_role` 作为错误提前返回，所以该分支当前不可达。
+            // 保留它维持 match 完整，但绝不能 Write——没有服务端明确拒绝的证据，
+            // 写入就是静默覆盖运维侧轮换过的口令（Issue #349/#411）。fail-safe：
+            // 拿不到探测结果时不碰口令。
+            (true, None) => PasswordAction::Skip,
         },
     }
 }
