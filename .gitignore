@@ -33,3 +33,6 @@ web/*.tsbuildinfo
 # CI-staged build context for Dockerfile.runtime
 container-binaries/
 container-web-dist/
+
+# 临时目录
+/temp/

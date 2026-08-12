@@ -303,6 +303,15 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../migrations/0023_consent_state_version.sql")),
             false,
         ),
+        Migration::new(
+            24,
+            Cow::Borrowed("runtime users sequence update grant"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!(
+                "../migrations/0024_runtime_users_sequence_update.sql"
+            )),
+            false,
+        ),
     ];
 
     Migrator {

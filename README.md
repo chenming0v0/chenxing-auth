@@ -153,6 +153,8 @@ src/
 
 角色分离必须真的配置出来才成立：PostgreSQL 里表 owner 隐含全部表权限，因此当 `MIGRATION_DATABASE_URL` 缺失、迁移与运行时共用同一角色时，迁移 `0019` 的 `REVOKE` 一行都不生效，审计 append-only 退回只剩触发器一层，而触发器的归档旁路标记是会话级 GUC，任何持有该角色的会话都能设置。`cargo run -- migrate` 因此在连库前先校验角色配置，迁移后再用 `has_table_privilege` 实测运行时角色此刻能不能 `UPDATE`/`DELETE`/`TRUNCATE` 审计表——这个函数把 owner 隐含权限、角色继承和 superuser 旁路都算在内，问的是实际权限而不是迁移文件写了什么。默认策略 `AUDIT_ROLE_SEPARATION=require` 下不满足即拒绝；只有显式设置 `AUDIT_ROLE_SEPARATION=allow-single-role` 才允许单角色部署，且每次 migrate 都会打出强告警。生产环境不得使用该开关。
 
+运行时角色对序列的权限只放开一个对象：`users.id` 的 identity 序列。Owner 初始化要求第一个 Owner 的 `id` 为 1，`bootstrap_owner` 因此在插入前调 `setval`，而 `setval` 在 PostgreSQL 里要求序列的 `UPDATE` 权限。迁移 `0019` 只授了 `USAGE, SELECT`，所以角色分离部署下第一个 Owner 会以 `permission denied for sequence users_id_seq` 失败（接口表现为 500 `could not persist user`），由 `0024` 单独补授这一个序列。审计表的序列保持只读，append-only 边界不受影响。
+
 运行时角色口令由 migrate 保证可用，但不会被无条件重写：migrate 先用 `DATABASE_URL` 真正登录一次，口令已经可用就完全不碰角色，只有登录不被接受或角色刚被创建才写入并记录告警。口令完全由外部密钥托管管理时设置 `MIGRATION_MANAGE_RUNTIME_PASSWORD=false`，migrate 便不再执行任何 `ALTER ROLE ... PASSWORD`。
 
 `AUDIT_ARCHIVE_ENABLED` 默认是 `false`。明确设置为 `true` 后，`AUDIT_RETENTION_DAYS`（默认 2555 天，允许 1 至 36500 天）定义事件留在热表的最短时间；超过该窗口的事件只是被搬到永久归档表，不会被物理丢弃。Web 请求和正常服务进程不会执行清理，部署必须由一个外部 cron/systemd 任务定期运行 `cargo run -- audit-archive`（Docker 部署使用 `docker compose --env-file .env -f docker-compose.prod.yml run --rm app audit-archive`）。每次命令最多处理 1000 行，重复调用安全；命令日志只记录批次数和保留窗口，不记录 action、resource、metadata 或其他事件内容。不要让多个部署副本各自建立定时器，也不要在未确认合规窗口前缩短保留天数。回滚迁移前先停用调度器，并按迁移注释把归档行恢复到热表，再按逆序删除对象。

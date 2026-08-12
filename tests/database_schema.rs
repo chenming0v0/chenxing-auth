@@ -426,6 +426,40 @@ async fn runtime_role_cannot_delete_audit_and_uses_security_definer_archive() {
     assert_eq!(archived, 1);
 }
 
+/// Owner 初始化要求 `users.id` 从 1 开始，`bootstrap_owner` 因此在插入前调
+/// `setval`，而 `setval` 要序列的 UPDATE 权限。迁移 0019 只授了 `USAGE, SELECT`，
+/// 角色分离部署下第一个 Owner 直接建不出来（`permission denied for sequence`），
+/// 由 0024 补授。这里直接查权限位，不改集群全局的运行时角色口令。
+#[tokio::test]
+async fn runtime_role_can_advance_the_users_sequence_but_not_audit_sequences() {
+    let pool = database().await;
+
+    let can_update: bool = chenxing_auth::sqlx::query_scalar(
+        "SELECT has_sequence_privilege($1, pg_get_serial_sequence('users', 'id'), 'UPDATE')",
+    )
+    .bind(chenxing_auth::db::RUNTIME_DATABASE_ROLE)
+    .fetch_one(&pool)
+    .await
+    .expect("users sequence privilege check");
+    assert!(
+        can_update,
+        "runtime role must be able to setval the users id sequence, otherwise owner bootstrap fails"
+    );
+
+    // 放开 users 序列不能顺带放开审计序列。
+    let audit_update: bool = chenxing_auth::sqlx::query_scalar(
+        "SELECT has_sequence_privilege($1, pg_get_serial_sequence('audit_events', 'id'), 'UPDATE')",
+    )
+    .bind(chenxing_auth::db::RUNTIME_DATABASE_ROLE)
+    .fetch_one(&pool)
+    .await
+    .expect("audit sequence privilege check");
+    assert!(
+        !audit_update,
+        "runtime role must not be able to setval the audit_events sequence"
+    );
+}
+
 /// Issue #281：迁移文件里写了 REVOKE 不代表边界成立，启动期必须实测。
 ///
 /// 这条用例断言两件事：分离角色下校验通过；把 owner 当运行时角色（未配置

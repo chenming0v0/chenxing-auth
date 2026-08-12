@@ -149,10 +149,14 @@ load_env() {
         source ./dev-env.sh   # 只定义函数，无副作用
         : "${DATABASE_URL:=$(chenxing_env_value DATABASE_URL .env || true)}"
         : "${REDIS_URL:=$(chenxing_env_value REDIS_URL .env || true)}"
+        # 角色分离部署下 DATABASE_URL 是受限的运行时角色，建 schema 和跑迁移要 owner。
+        : "${MIGRATION_DATABASE_URL:=$(chenxing_env_value MIGRATION_DATABASE_URL .env || true)}"
     fi
     : "${DATABASE_URL:=postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth}"
     : "${REDIS_URL:=redis://127.0.0.1:6379}"
     export DATABASE_URL REDIS_URL
+    # 空值不导出：db_isolation 回落到 DATABASE_URL，单角色开发库行为不变。
+    [ -n "${MIGRATION_DATABASE_URL:-}" ] && export MIGRATION_DATABASE_URL
 
     # backtrace 默认关闭：一个失败就是 20 行栈帧，这正是要避免的噪声。
     # 断言消息和 panic 位置已足够定位，需要栈时用 --backtrace。
