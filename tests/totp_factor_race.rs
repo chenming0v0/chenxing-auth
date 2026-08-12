@@ -10,6 +10,7 @@ use chenxing_auth::{
     state::AppState,
     users::domain::AuthenticatedUser,
 };
+use std::time::{SystemTime, UNIX_EPOCH};
 use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -20,6 +21,8 @@ mod db_isolation;
 mod oauth_flow;
 
 const ADMIN_TOKEN: &str = "totp-race-admin-token";
+/// TOTP 步长，与 `auth_factors::totp::TOTP_STEP_SECONDS` 一致。
+const TOTP_STEP_SECONDS: u64 = 30;
 
 struct Harness {
     router: Router,
@@ -213,13 +216,19 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
     )
     .expect("second TOTP");
 
+    // 两次确认必须落在不同的时间步。注册确认现在也 claim `user/timestep`（#301），
+    // 而两张 ticket 属于同一个用户、共享同一个 claim 键：同步提交的话第二次会先
+    // 被 claim 挡成 401 InvalidCode，测不到本用例真正要断言的「因子已存在」这条
+    // 持久化侧的败者语义。第二个码取 now+1 步，仍在 ±1 步的接受窗口内。
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_secs();
     assert_eq!(
         request_with_cookie(
             &router,
             "/api/v1/auth/totp/setup/confirm",
-            serde_json::json!({
-                "code": first_totp.generate_current().expect("first TOTP code")
-            }),
+            serde_json::json!({"code": first_totp.generate(now)}),
             &first_cookie,
         )
         .await
@@ -230,9 +239,7 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
         request_with_cookie(
             &router,
             "/api/v1/auth/totp/setup/confirm",
-            serde_json::json!({
-                "code": second_totp.generate_current().expect("second TOTP code")
-            }),
+            serde_json::json!({"code": second_totp.generate(now + TOTP_STEP_SECONDS)}),
             &second_cookie,
         )
         .await

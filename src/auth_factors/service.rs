@@ -27,6 +27,8 @@ mod passkey;
 mod passkey_core;
 #[path = "recovery.rs"]
 mod recovery;
+#[path = "totp_enrollment.rs"]
+mod totp_enrollment;
 #[path = "totp_service.rs"]
 mod totp_service;
 

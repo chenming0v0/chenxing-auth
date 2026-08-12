@@ -245,11 +245,14 @@ async fn enroll_totp(router: &Router, username: &str, password: &str) -> TOTP {
     .await;
     let setup = json_body(setup_response).await;
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
+    // 注册用**上一个时间步**的码：注册确认现在也会 claim `user/timestep`（#301）。
+    // 调用方随后要用当前步的码断言登录行为，注册不能提前把那一步烧掉。
+    // 上一步的码仍在 ±1 步接受窗口内。
     assert_eq!(
         post_with_cookie(
             router,
             "/api/v1/auth/totp/setup/confirm",
-            serde_json::json!({"code": totp.generate_current().expect("enrollment code")}),
+            serde_json::json!({"code": totp.generate(previous_timestep_timestamp())}),
             &cookie,
         )
         .await
@@ -257,6 +260,15 @@ async fn enroll_totp(router: &Router, username: &str, password: &str) -> TOTP {
         StatusCode::OK
     );
     totp
+}
+
+/// 上一个时间步的时间戳，用于生成「不占用当前步」的注册确认码（#301）。
+fn previous_timestep_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time")
+        .as_secs()
+        .saturating_sub(30)
 }
 
 #[tokio::test]

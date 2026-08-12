@@ -330,7 +330,16 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
     assert!(uri.starts_with("otpauth://totp/"));
     let totp = TOTP::from_url(uri).expect("TOTP URI");
     assert_eq!(totp.get_secret_base32(), secret);
-    let code = totp.generate_current().expect("current TOTP code");
+    // 注册用**上一个时间步**的码：注册确认现在也会 claim `user/timestep`（#301），
+    // 而本用例末尾还要用当前步的码断言内联登录成功。用当前步注册会把那一步烧掉。
+    // 上一步的码仍在 ±1 步接受窗口内。
+    let code = totp.generate(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_secs()
+            .saturating_sub(30),
+    );
 
     let response = request_with_cookie(
         &router,
