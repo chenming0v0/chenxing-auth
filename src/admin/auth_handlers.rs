@@ -105,20 +105,14 @@ pub async fn bootstrap_admin(
         password: input.password,
         display_name: None,
     };
-    match state.users.bootstrap_owner(registration).await {
+    match state
+        .users
+        .bootstrap_owner(registration, source_ip.as_deref())
+        .await
+    {
+        // 成功审计不在这里写：它由引导事务内的同一次提交保证（Issue #304）。
+        // 走到这个分支时，`owner_bootstrap` 审计行已经与 Owner 行一起落库。
         Ok(crate::users::service::BootstrapOwnerResult::Created(profile)) => {
-            state
-                .audit
-                .record_best_effort(AuditEvent::new(
-                    "bootstrap".to_owned(),
-                    None,
-                    "owner_bootstrap".to_owned(),
-                    "user".to_owned(),
-                    Some(profile.id.to_string()),
-                    // 源 IP 让「谁抢到了 Owner」在事后可追溯；键在审计脱敏白名单内。
-                    serde_json::json!({"role": "owner", "source_ip": source_ip}),
-                ))
-                .await;
             (StatusCode::CREATED, Json(serde_json::json!({
                 "id": profile.id, "username": profile.username, "email": profile.email, "role": "owner"
             }))).into_response()

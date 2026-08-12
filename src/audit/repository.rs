@@ -14,7 +14,23 @@ type AuditRow = (
     OffsetDateTime,
 );
 
-pub(crate) async fn insert(pool: &PgPool, event: &AuditEvent) -> Result<(), AuditError> {
+/// 写入一个审计事件，执行器由调用方给出。
+///
+/// 收成泛型 executor 而不是固定 `&PgPool`，是为了让「业务写入与它的审计记录必须
+/// 同生共死」的路径（Owner 引导，Issue #304）能把这条 INSERT 放进业务事务里：
+/// 事务回滚时审计行随之消失，事务提交时审计行必然已经落库，不存在
+/// 「业务已提交、审计事后 best-effort 丢失」的中间态。
+///
+/// 事务内调用时不要在外层加重试：语句失败会让整个事务进入 aborted 状态，
+/// 重试只会连续拿到 25P02。重试策略属于 [`super::AuditService::record`] 那条
+/// 独立连接的路径。
+pub(crate) async fn insert_with<'executor, E>(
+    executor: E,
+    event: &AuditEvent,
+) -> Result<(), AuditError>
+where
+    E: crate::sqlx::Executor<'executor, Database = crate::sqlx::Postgres>,
+{
     let mut event = event.clone();
     event.redact_metadata_in_place();
     event.validate()?;
@@ -35,7 +51,7 @@ pub(crate) async fn insert(pool: &PgPool, event: &AuditEvent) -> Result<(), Audi
     .bind(&event.resource_id)
     .bind(serde_json::Value::Object(event.metadata.clone()))
     .bind(event.created_at)
-    .execute(pool)
+    .execute(executor)
     .await
     .map_err(AuditError::Database)?;
     Ok(())

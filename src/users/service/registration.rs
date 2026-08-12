@@ -53,35 +53,55 @@ impl UserService {
         Ok(public_user(user))
     }
 
+    /// 创建首个 Owner。
+    ///
+    /// 成功审计不是事后动作：事件由本用例构造，并由仓储层在引导事务内写入
+    /// （Issue #304）。因此这里没有「创建成功但审计失败」的返回值 ——
+    /// 审计失败会连带回滚用户创建，收敛成 [`UserServiceError::AuditUnavailable`]。
+    ///
+    /// `source_ip` 已由可信代理解析器取得，用于事后追溯「谁抢到了 Owner」。
     pub async fn bootstrap_owner(
         &self,
         input: RegistrationInput,
+        source_ip: Option<&str>,
     ) -> Result<BootstrapOwnerResult, UserServiceError> {
         let mut registration = validate_registration(input)?;
         let password = std::mem::take(&mut registration.password);
         let password_hash = hash_password(password)
             .await
             .map_err(|_| UserServiceError::PasswordHash)?;
-        Ok(
-            match repository::bootstrap_owner(
-                &self.pool,
-                &registration.username,
-                &registration.email,
-                &password_hash,
-            )
-            .await?
-            {
-                repository::BootstrapOwnerOutcome::Created(profile) => {
-                    BootstrapOwnerResult::Created(profile)
-                }
-                repository::BootstrapOwnerOutcome::AlreadyConfigured => {
-                    BootstrapOwnerResult::AlreadyConfigured
-                }
-                repository::BootstrapOwnerOutcome::RequiresEmptyDatabase => {
-                    BootstrapOwnerResult::RequiresEmptyDatabase
-                }
-            },
+        let outcome = repository::bootstrap_owner(
+            &self.pool,
+            &registration.username,
+            &registration.email,
+            &password_hash,
+            |profile| owner_bootstrap_audit_event(profile.id, source_ip),
         )
+        .await
+        .map_err(|error| match error {
+            repository::BootstrapOwnerError::Database(error) => UserServiceError::Database(error),
+            repository::BootstrapOwnerError::Audit(error) => {
+                // 审计已经在 AuditService/仓储层留下结构化失败日志，这里只需要把
+                // 「引导没有发生」这一事实原样上报，不把审计细节带进 HTTP 层。
+                tracing::error!(
+                    event = "owner_bootstrap.audit_unavailable",
+                    error = %error,
+                    "owner bootstrap was rolled back because its audit record could not be written"
+                );
+                UserServiceError::AuditUnavailable
+            }
+        })?;
+        Ok(match outcome {
+            repository::BootstrapOwnerOutcome::Created(profile) => {
+                BootstrapOwnerResult::Created(profile)
+            }
+            repository::BootstrapOwnerOutcome::AlreadyConfigured => {
+                BootstrapOwnerResult::AlreadyConfigured
+            }
+            repository::BootstrapOwnerOutcome::RequiresEmptyDatabase => {
+                BootstrapOwnerResult::RequiresEmptyDatabase
+            }
+        })
     }
 
     /// Owner 是否已初始化。
@@ -134,6 +154,25 @@ impl UserService {
     ) -> Result<(), UserServiceError> {
         crate::users::email_policy::ensure_email_policy_allows(&self.pool, email).await
     }
+}
+
+/// Owner 引导成功的审计事件。
+///
+/// `actor_type` 用 `bootstrap` 与拒绝路径
+/// （`crate::admin::bootstrap_guard::record_bootstrap_denial`）保持一致，
+/// 因此一次部署的整条引导时间线可以按同一个 actor 检索。
+///
+/// 元数据只含角色与来源 IP：`source_ip` 在审计脱敏白名单内，用户名、邮箱和口令
+/// 都不进审计 —— 前两者属于个人数据，后者是凭据。
+fn owner_bootstrap_audit_event(id: UserId, source_ip: Option<&str>) -> crate::audit::AuditEvent {
+    crate::audit::AuditEvent::new(
+        "bootstrap".to_owned(),
+        None,
+        "owner_bootstrap".to_owned(),
+        "user".to_owned(),
+        Some(id.to_string()),
+        serde_json::json!({"result": "success", "role": "owner", "source_ip": source_ip}),
+    )
 }
 
 /// 用落库结果构造对外视图。

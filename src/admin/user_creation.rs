@@ -154,6 +154,13 @@ pub(crate) fn user_creation_error_response(error: UserServiceError) -> Response 
             "owner_bootstrap_required",
             "owner bootstrap must be completed before creating privileged users",
         ),
+        // Issue #304：同事务审计写入失败已让业务写入回滚，什么都没发生。
+        // 503 而不是 500：这是依赖暂时不可用，重试是正确动作，且与
+        // `bootstrap_unavailable`（限流器不可用）表达同一类语义。
+        UserServiceError::AuditUnavailable => error::service_unavailable(
+            "audit_unavailable",
+            "the operation was rolled back because its audit record could not be written; retry later",
+        ),
         UserServiceError::Database(ref error_value)
             if unique_violation(error_value, "users_username_key") =>
         {

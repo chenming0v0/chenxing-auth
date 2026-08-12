@@ -1,14 +1,16 @@
 //! Owner 引导与受 Owner 前提约束的用户创建。
 //!
 //! 两个函数都检查 Owner 是否已存在，逻辑集中在这一层：
-//! - `bootstrap_owner`：不存在时创建首个 Owner，否则拒绝。
+//! - `bootstrap_owner`：不存在时创建首个 Owner 并在同一事务内写入审计，否则拒绝。
 //! - `insert_user_after_owner`：已存在时按 `UserCreation` 的角色与状态创建，
 //!   否则拒绝。公开注册、管理侧创建和特权用户创建共用它，差异只在传入的
 //!   (role, status)，不再各自维护一份带 Owner 前提的插入 SQL。
 
 use crate::sqlx::{PgPool, Postgres};
+use thiserror::Error;
 use time::OffsetDateTime;
 
+use crate::audit::{AuditError, AuditEvent};
 use crate::users::domain::{UserCreation, UserId};
 
 use super::{NewUser, UserProfile};
@@ -97,12 +99,37 @@ pub async fn insert_user_after_owner(
     }))
 }
 
-pub async fn bootstrap_owner(
+/// 创建首个 Owner，并在同一事务内写入它的成功审计记录。
+///
+/// # 为什么审计必须在事务内（Issue #304）
+///
+/// 旧实现由 handler 在引导提交之后 `record_best_effort` 一条 `owner_bootstrap`
+/// 事件。那条路径有一个不可接受的终局：Owner 已经创建、审计写入失败、系统里
+/// 最高权限账号的诞生没有任何持久记录，而运维只能从一行 error 日志里事后补账。
+/// 引导在一个部署的一生中只发生一次，它恰恰是最不能丢的那条审计。
+///
+/// 现在审计 INSERT 与用户 INSERT 共享一个事务，终局收敛成两种：
+///
+/// - 提交成功：Owner 行与审计行同时可见。
+/// - 任一步失败：事务回滚，既没有 Owner 也没有审计行，调用方可以安全重试，
+///   不存在「Owner 已创建但审计丢失」这一状态。
+///
+/// 响应失败（例如客户端断开）不再产生特殊情况：事务已提交，重试拿到的是
+/// `AlreadyConfigured`，这正是正确答案 —— 引导不可重复。
+///
+/// `audit_event` 是一个以落库 profile 为入参的构造器：审计事件需要新 Owner 的
+/// id，而 id 只在事务内才存在；同时事件的语义（action、actor、来源 IP）属于
+/// 调用方，不下沉到仓储层。
+pub async fn bootstrap_owner<F>(
     pool: &PgPool,
     username: &str,
     email: &str,
     password_hash: &str,
-) -> Result<BootstrapOwnerOutcome, crate::sqlx::Error> {
+    audit_event: F,
+) -> Result<BootstrapOwnerOutcome, BootstrapOwnerError>
+where
+    F: FnOnce(&UserProfile) -> AuditEvent,
+{
     let mut transaction = pool.begin().await?;
     crate::sqlx::query("SELECT pg_advisory_xact_lock(7341928)")
         .execute(&mut *transaction)
@@ -134,6 +161,9 @@ pub async fn bootstrap_owner(
     let profile = super::lookup::find_profile_by_id(&mut *transaction, id)
         .await?
         .ok_or(crate::sqlx::Error::RowNotFound)?;
+    // 审计失败必须阻断提交。这里不重试：语句失败会把事务置为 aborted，
+    // 后续语句只会拿到 25P02，重试的正确位置是调用方重新发起整个引导。
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event(&profile)).await?;
     transaction.commit().await?;
     Ok(BootstrapOwnerOutcome::Created(profile))
 }
@@ -143,4 +173,17 @@ pub enum BootstrapOwnerOutcome {
     Created(UserProfile),
     AlreadyConfigured,
     RequiresEmptyDatabase,
+}
+
+/// Owner 引导的失败原因。
+///
+/// 审计失败与数据库失败分开，是因为两者的运维动作不同：前者指向审计表或审计
+/// 边界配置，后者指向用户表或连接。两者对调用方的语义相同 —— 什么都没发生，
+/// 可以重试。
+#[derive(Debug, Error)]
+pub enum BootstrapOwnerError {
+    #[error("could not persist the first owner")]
+    Database(#[from] crate::sqlx::Error),
+    #[error("could not persist the owner bootstrap audit record")]
+    Audit(#[from] AuditError),
 }

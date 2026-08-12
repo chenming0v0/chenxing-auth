@@ -25,6 +25,8 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 const DENIED_ACTION: &str = "admin_authorization_denied";
+/// Issue #304：领域守卫拒绝的 action，与权限拒绝分开检索。
+const GUARD_DENIED_ACTION: &str = "admin_owner_guard_denied";
 
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
@@ -113,8 +115,19 @@ async fn json(response: axum::response::Response) -> serde_json::Value {
 }
 
 async fn denial_events(database: &chenxing_auth::sqlx::PgPool) -> Vec<AuditEvent> {
+    events_for_action(database, DENIED_ACTION).await
+}
+
+async fn guard_denial_events(database: &chenxing_auth::sqlx::PgPool) -> Vec<AuditEvent> {
+    events_for_action(database, GUARD_DENIED_ACTION).await
+}
+
+async fn events_for_action(
+    database: &chenxing_auth::sqlx::PgPool,
+    action: &str,
+) -> Vec<AuditEvent> {
     let (events, _total) = AuditService::new(database.clone())
-        .query(Some(DENIED_ACTION), None, 100, 0)
+        .query(Some(action), None, 100, 0)
         .await
         .expect("audit query");
     events
@@ -337,6 +350,140 @@ async fn assigning_a_plan_to_an_owner_requires_manage_roles() {
     assert_eq!(events[0].actor_id, Some(admin_id.to_string()));
     assert_eq!(events[0].resource_id.as_deref(), Some("ManageRoles"));
     assert_eq!(events[0].metadata["reason"], "insufficient_role");
+}
+
+/// Issue #304：Owner 守卫拒绝必须留下结构化审计，且与权限拒绝分开。
+///
+/// 修复前这条路径只返回 409，审计表里什么都没有 —— 一个具备 `ManageRoles` 的
+/// 主体反复尝试移除仅存的 Owner（操作失误或接管企图）在事后完全不可见。
+/// 两条受守卫保护的写路径（禁用、降级）都要留痕，且四个事实齐全：
+/// actor、target、operation、reason。
+#[tokio::test]
+async fn last_owner_guard_denials_are_recorded_with_actor_target_and_operation() {
+    let (router, database, _key_directory) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let owner_id = seed_user(&database, &format!("owner-{suffix}"), "owner").await;
+    let (cookie, csrf) = browser_session(&database, owner_id).await;
+
+    // 唯一的活跃 Owner 试图禁用自己：守卫拒绝，必须留痕。
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/admin/users/{owner_id}/disabled"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .expect("disable last owner request"),
+        )
+        .await
+        .expect("disable last owner response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(json(response).await["code"], "last_owner_required");
+
+    let events = guard_denial_events(&database).await;
+    assert_eq!(events.len(), 1, "禁用最后一个 Owner 必须留下一条审计事件");
+    let event = &events[0];
+    assert_eq!(event.action, GUARD_DENIED_ACTION);
+    assert_eq!(event.actor_type, "user");
+    assert_eq!(event.actor_id, Some(owner_id.to_string()));
+    assert_eq!(event.resource_type, "user");
+    assert_eq!(
+        event.resource_id,
+        Some(owner_id.to_string()),
+        "target 必须是被操作的用户，而不是权限名"
+    );
+    assert_eq!(event.metadata["result"], "failure");
+    assert_eq!(event.metadata["reason"], "last_owner_required");
+    assert_eq!(event.metadata["operation"], "user_status_update");
+    assert_eq!(event.metadata["requested"], "disabled");
+
+    // 降级最后一个 Owner 走同一条留痕路径，但 operation 不同。
+    // 自改角色被更早的守卫拦掉，所以用系统 Token 作为 actor。
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/admin/users/{owner_id}/role"))
+                .header("authorization", "Bearer authz-audit-token")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::json!({"role": "user"}).to_string()))
+                .expect("demote last owner request"),
+        )
+        .await
+        .expect("demote last owner response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(json(response).await["code"], "last_owner_required");
+
+    let events = guard_denial_events(&database).await;
+    assert_eq!(events.len(), 2, "降级最后一个 Owner 同样必须留痕");
+    let event = events
+        .iter()
+        .find(|event| event.metadata["operation"] == "user_role_update")
+        .expect("role update denial event");
+    // 系统 Token 没有用户 id：审计如实记录 actor_type 而不是伪造一个用户。
+    assert_eq!(event.actor_type, "system_token");
+    assert_eq!(event.actor_id, None);
+    assert_eq!(event.resource_id, Some(owner_id.to_string()));
+    assert_eq!(event.metadata["reason"], "last_owner_required");
+    assert_eq!(event.metadata["requested"], "user");
+
+    // 守卫拒绝不得混进权限拒绝：两者 action 不同，后者这里必须为空。
+    assert!(
+        denial_events(&database).await.is_empty(),
+        "领域守卫拒绝不能被记成 admin_authorization_denied"
+    );
+
+    // Owner 仍然是活跃 Owner：拒绝路径不得改变任何状态。
+    let (role, status): (String, String) =
+        chenxing_auth::sqlx::query_as("SELECT role, status FROM users WHERE id = $1")
+            .bind(owner_id)
+            .fetch_one(&database)
+            .await
+            .expect("owner row after denials");
+    assert_eq!((role.as_str(), status.as_str()), ("owner", "active"));
+}
+
+/// 守卫拒绝的审计元数据不得携带请求凭据。
+///
+/// `requested` 是封闭词表里的枚举值（状态或角色），不是自由文本；这条测试
+/// 防止日后有人把整个请求体塞进元数据。
+#[tokio::test]
+async fn owner_guard_denial_metadata_carries_no_credentials() {
+    let (router, database, _key_directory) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let owner_id = seed_user(&database, &format!("owner-{suffix}"), "owner").await;
+    let (cookie, csrf) = browser_session(&database, owner_id).await;
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/admin/users/{owner_id}/disabled"))
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf)
+                .body(Body::empty())
+                .expect("disable last owner request"),
+        )
+        .await
+        .expect("disable last owner response");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    let events = guard_denial_events(&database).await;
+    assert_eq!(events.len(), 1);
+    let serialized = serde_json::to_string(&events[0]).expect("event serializes");
+    assert!(!serialized.contains(&csrf), "审计事件不得包含 CSRF 令牌");
+    for cookie_part in cookie.split("; ") {
+        let value = cookie_part
+            .split_once('=')
+            .map(|(_, value)| value)
+            .unwrap_or(cookie_part);
+        assert!(
+            !serialized.contains(value),
+            "审计事件不得包含会话 Cookie 值"
+        );
+    }
 }
 
 #[tokio::test]
