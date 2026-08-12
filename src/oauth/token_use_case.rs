@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
 
-use super::{refresh::RefreshToken, session::active_user_id};
+use super::{refresh::RefreshToken, session::active_user_epoch};
 use crate::{clients::service::AuthenticatedClient, state::AppState};
 
 #[path = "refresh_use_case.rs"]
@@ -234,8 +234,11 @@ pub async fn exchange_code(
         )
         .await;
     }
-    match active_user_id(state, &code.user_id).await {
-        Ok(Some(_)) => {}
+    // 凭据代际与 active 判定同一次读取（Issue #409）：下面签发 Refresh Token
+    // 时会把当前 `session_epoch` stamp 进 payload。之后任何推进 epoch 的撤销
+    // 操作（改密 / 管理端 TOTP 重置 / 禁用）都会让这枚 token 在兑换时被拒绝。
+    let user_epoch = match active_user_epoch(state, &code.user_id).await {
+        Ok(Some(epoch)) => epoch,
         Ok(None) => {
             return exchange_failure(
                 state,
@@ -257,7 +260,7 @@ pub async fn exchange_code(
             )
             .await;
         }
-    }
+    };
     // Session binding is intentionally checked before the authorization-code CAS. A failed
     // request must not burn a valid code before binding, expiry, and PKCE all pass.
     let auth_time = match authorization_code_session_auth_time(state, &code).await {
@@ -349,6 +352,7 @@ pub async fn exchange_code(
         code.user_id.clone(),
         code.scopes.clone(),
         authenticated.client_secret_version(),
+        user_epoch,
         state.clock.now(),
     );
     if let Err(store_error) = state.refresh_tokens.save(&refresh).await {

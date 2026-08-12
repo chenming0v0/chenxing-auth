@@ -487,7 +487,7 @@ async fn owner_can_reset_a_locked_totp_factor_and_admin_cannot() {
     assert_eq!(reset.status(), StatusCode::OK);
     let reset = json_body(reset).await;
     assert_eq!(reset["previous_key_state"], "unavailable");
-    assert_eq!(reset["sessions_revoked"], true);
+    assert_eq!(reset["credentials_revoked"], true);
 
     // 重置后账号回到「无因子」，可以重新绑定并完成登录。
     let totp = enroll_totp(&after, &username, password).await;

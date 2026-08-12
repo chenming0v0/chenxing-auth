@@ -67,8 +67,9 @@ pub struct TotpResetResponse {
     user_id: UserId,
     /// 删除前密文的可读状态，供调用方确认这次重置救的是不是一个被锁死的账号。
     previous_key_state: &'static str,
-    /// 重置同时撤销了该账号的全部会话。
-    sessions_revoked: bool,
+    /// 重置同时撤销了该账号的全部会话与已签发 Refresh Token（`session_epoch`
+    /// 被推进，两者在同一水位上一起失效，Issue #409），固定为 true。
+    credentials_revoked: bool,
 }
 
 pub async fn user_auth_factors(
@@ -132,9 +133,12 @@ pub async fn auth_factor_key_health(State(state): State<AppState>, admin: AdminR
 /// 降级为「只有密码」，下次登录进入 `factor_setup_required`，谁掌握密码谁就能注册
 /// 新的 TOTP。它是账号接管链条上的一环，必须与普通用户管理分权。
 ///
-/// 顺序是先撤销会话、再删除因子。反过来的话，删除成功而撤销失败会留下一批
-/// 「因子已重置但旧会话仍然有效」的会话；按当前顺序，撤销失败时因子还在，
-/// 整个操作可以安全重试。
+/// 顺序是先撤销凭据、再删除因子。反过来的话，删除成功而撤销失败会留下一批
+/// 「因子已重置但旧凭据仍然有效」的会话与 Refresh Token；按当前顺序，撤销失败
+/// 时因子还在，整个操作可以安全重试。`revoke_all_for_user` 推进该用户的
+/// `session_epoch`：Cookie 会话与全部已签发 Refresh Token 在同一水位上一起
+/// 失效（Issue #409），不会留下「TOTP 已重置、旧 Refresh Token 仍能换取
+/// access token」的恢复通道后门。
 pub async fn reset_user_totp_factor(
     State(state): State<AppState>,
     admin: AdminWrite,
@@ -202,7 +206,7 @@ pub async fn reset_user_totp_factor(
                 "result": "success",
                 "method": "totp",
                 "previous_key_state": key_state.as_str(),
-                "sessions_revoked": true,
+                "credentials_revoked": true,
             }),
         ))
         .await;
@@ -211,7 +215,7 @@ pub async fn reset_user_totp_factor(
         Json(TotpResetResponse {
             user_id,
             previous_key_state: key_state.as_str(),
-            sessions_revoked: true,
+            credentials_revoked: true,
         }),
     )
         .into_response()
@@ -245,16 +249,16 @@ mod tests {
     }
 
     #[test]
-    fn reset_response_reports_previous_state_and_session_revocation() {
+    fn reset_response_reports_previous_state_and_credential_revocation() {
         let value = serde_json::to_value(TotpResetResponse {
             user_id: 7,
             previous_key_state: SecretKeyState::Unavailable.as_str(),
-            sessions_revoked: true,
+            credentials_revoked: true,
         })
         .expect("reset response serializes");
 
         assert_eq!(value["previous_key_state"], "unavailable");
-        assert_eq!(value["sessions_revoked"], true);
+        assert_eq!(value["credentials_revoked"], true);
     }
 
     #[test]

@@ -140,6 +140,17 @@ async fn save_consent(harness: &Harness) {
     .expect("save consent");
 }
 
+/// 当前用户的 `session_epoch`（Issue #409）：直接构造的 Refresh Token 必须
+/// stamp 这个值，否则兑换路径的凭据代际比对会先于本测试要验证的
+/// client_secret_version 判定拒绝 token。
+async fn current_session_epoch(harness: &Harness) -> i64 {
+    chenxing_auth::sqlx::query_scalar("SELECT session_epoch FROM users WHERE id = $1")
+        .bind(harness.user_id)
+        .fetch_one(&harness.database)
+        .await
+        .expect("read user session epoch")
+}
+
 fn issued_refresh(response: TokenResponse) -> String {
     response
         .refresh_token
@@ -211,12 +222,15 @@ async fn refresh_written_after_rotation_is_inert_even_if_revocation_already_ran(
         harness.user_id.to_string(),
         vec!["openid".to_owned()],
         stale_authentication.client_secret_version(),
+        current_session_epoch(&harness).await,
         harness.state.clock.now(),
     );
-    let mut stale_legacy_refresh = RefreshToken::new_at(
+    let mut stale_legacy_refresh = RefreshToken::new_at_with_client_secret_version(
         harness.client_id.clone(),
         harness.user_id.to_string(),
         vec!["openid".to_owned()],
+        0,
+        current_session_epoch(&harness).await,
         harness.state.clock.now(),
     );
     stale_legacy_refresh.client_secret_version = None;
@@ -368,6 +382,7 @@ async fn concurrent_rotation_leaves_no_live_refresh_from_either_issuance_path() 
             harness.user_id.to_string(),
             vec!["openid".to_owned()],
             authenticated.client_secret_version(),
+            current_session_epoch(&harness).await,
             harness.state.clock.now(),
         );
         harness
