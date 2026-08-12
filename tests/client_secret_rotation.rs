@@ -99,3 +99,71 @@ async fn concurrent_secret_writes_have_one_compare_and_swap_winner() {
         .await
         .expect("cleanup client");
 }
+
+/// Issue #351：轮换路径必须与认证路径（`credentials::constant_time` 的
+/// `policy_gate_ok`）一样把 `status = 'active'` 作为策略门，disabled Client
+/// 不允许被轮换、更不允许拿到新 Secret。
+///
+/// 两道门都验证：
+/// - 读门：`find_client_secret_version` 对 disabled Client 返回 `None`，
+///   使服务层把它当作「不存在」拒绝（与 owner 越权、公开 Client 同语义）。
+/// - CAS 门：即使调用方带着禁用前观察到的旧版本号强写（读后禁用的
+///   TOCTOU 窗口），`update_client_secret_if_version` 也必须返回 `false`
+///   且不产生任何副作用——hash 不变、版本不递增。
+#[tokio::test]
+async fn disabled_client_secret_rotation_is_rejected_without_side_effects() {
+    let pool = database().await;
+    let client_id = format!("cx_cas_disabled_{}", Uuid::new_v4().simple());
+    let client = repository::insert_client(
+        &pool,
+        ValidatedClientRegistration {
+            client_name: "disabled rotation test client".to_owned(),
+            redirect_uris: vec!["https://disabled-rotation.example/callback".to_owned()],
+            scopes: vec!["openid".to_owned()],
+        },
+        client_id.clone(),
+        ClientCredential::SecretBasic("initial-hash".to_owned()),
+    )
+    .await
+    .expect("insert client");
+    repository::set_client_status(&pool, None, &client_id, "disabled")
+        .await
+        .expect("disable client");
+
+    assert_eq!(
+        repository::find_client_secret_version(&pool, None, &client_id)
+            .await
+            .expect("read version of disabled client"),
+        None,
+        "a disabled client must not expose its secret version to the rotation read path"
+    );
+
+    let updated =
+        repository::update_client_secret_if_version(&pool, None, &client_id, 0, "forged-hash")
+            .await
+            .expect("CAS update of disabled client");
+    assert!(
+        !updated,
+        "a disabled client must never receive a fresh secret hash, even with a stale version"
+    );
+
+    let credentials = repository::find_client_credentials(&pool, &client_id)
+        .await
+        .expect("read disabled client credentials")
+        .expect("disabled client credentials");
+    assert_eq!(
+        credentials.client_secret_hash.as_deref(),
+        Some("initial-hash"),
+        "the rejected rotation must not overwrite the stored hash"
+    );
+    assert_eq!(
+        credentials.client_secret_version, 0,
+        "the rejected rotation must not bump the secret version"
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE id = $1")
+        .bind(client.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup client");
+}
