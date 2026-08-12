@@ -38,6 +38,44 @@ export function safeReturnTo(value: string | null): string {
   }
 }
 
+/**
+ * 绑定失败后把已失效的 request_id 从地址栏与 returnTo 里一并移除（#395）。
+ *
+ * 顶层 request_id 决定登录后是否重新绑定待授权请求：不清除它，用户重新登录
+ * 后仍会绑定同一失效请求、再次失败，陷入无出口循环。returnTo 里也可能埋着
+ * 同一个 request_id（#270 的 401 提升逻辑），只清顶层时重新登录会直接跳回
+ * 同一失效请求的确认页，同样没有出路。两处同值参数一起清，重新登录才会
+ * 落到 returnTo 指向的真实目标（默认控制台）。随后派发 popstate 通知路由
+ * 重渲染，让本页重新读取到的 requestId 变为 null。
+ */
+function dropDeadRequestId(requestId: string): void {
+  const params = new URLSearchParams(window.location.search)
+  const returnTo = params.get('returnTo')
+  if (returnTo) {
+    try {
+      // 与 safeReturnTo 相同的解析规则：值已经过 URLSearchParams 解码一层，
+      // 反斜杠归一后按同源 URL 解析，畸形时交给 safeReturnTo 兜底。
+      const target = new URL(returnTo.replace(/\\/g, '/'), window.location.origin)
+      if (target.searchParams.get('request_id') === requestId) {
+        target.searchParams.delete('request_id')
+        // set() 会自行编码，与 loginRecoveryTarget 产出的编码形式一致，不能先手动 encode。
+        params.set('returnTo', `${target.pathname}${target.search}${target.hash}`)
+      }
+    } catch {
+      // returnTo 畸形时保持原样；实际导航时 safeReturnTo 会兜底到 /console。
+    }
+  }
+  if (params.get('request_id') === requestId) {
+    params.delete('request_id')
+  }
+  const hash = window.location.hash
+  const search = params.toString()
+  const next = `${window.location.pathname}${search ? `?${search}` : ''}${hash}`
+  if (next === window.location.pathname + window.location.search + hash) return
+  window.history.replaceState({}, '', next)
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
 export function AuthPage({ mode }: { mode: AuthMode }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -55,6 +93,8 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
   const [pending, setPending] = useState<PendingLoginResponse | null>(null)
+  // 绑定失败后置位，渲染「进入控制台」出口：会话仍然有效，登录页不再是死路。
+  const [bindFailed, setBindFailed] = useState(false)
   // busy updates after React renders; the ref closes the same-event submit window.
   const submitLockRef = useRef(false)
   const isLogin = mode === 'login'
@@ -96,9 +136,14 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
         // 不是本浏览器发起、或正被并发更新）。此处**不得**清除会话（#270）：
         // 清了会把用户打回未认证态，登录页再次把他送去授权流程，形成
         // 「登录成功 → 绑定失败 → 视为未登录 → 再登录」的 401 循环。
-        // 保留会话、留在登录页展示原因，用户可以回到应用重新发起授权，
-        // 也可以直接进控制台。
+        // Issue #395：失效的 request_id 若残留，用户重新登录后仍会绑定同一
+        // 失效请求、再次失败，陷入无出口循环。绑定失败即作废本条授权请求：
+        // 从地址栏与 returnTo 里清除它、复位停留在失效 MFA 步骤上的 pending，
+        // 并在文案旁给出「进入控制台」出口——会话仍然有效，用户随时可以离开。
         setMessage(error instanceof Error ? error.message : '授权请求绑定失败，请重新开始。')
+        setBindFailed(true)
+        setPending(null)
+        dropDeadRequestId(requestId)
         return
       }
       navigate(`/oauth/consent?request_id=${encodeURIComponent(requestId)}`)
@@ -123,6 +168,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
     if (!acquireSubmitLock()) return
     try {
       setMessage('')
+      setBindFailed(false)
       if (!email || !password || (!isLogin && !username)) {
         setMessage('请完整填写必填信息。')
         return
@@ -196,6 +242,13 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
         {query.get('registered') === '1' ? <div className="mt-5"><Notice tone="success">注册成功，请使用新账号登录。</Notice></div> : null}
         {externalError ? <div className="mt-5"><Notice tone="warning">{externalLoginErrorMessage(externalError)}</Notice></div> : null}
         {message ? <div className="mt-5"><Notice tone="warning">{message}</Notice></div> : null}
+        {bindFailed ? (
+          <div className="mt-3">
+            <Button type="button" icon="layout-dashboard" className="w-full py-3" onClick={() => navigate('/console')}>
+              进入控制台
+            </Button>
+          </div>
+        ) : null}
 
         {pending ? (
           <div className="mt-5">

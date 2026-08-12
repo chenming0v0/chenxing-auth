@@ -381,3 +381,80 @@ describe('AuthPage OAuth 绑定失败不清除会话（#270）', () => {
     expect(authStub.clearCalls).toBe(0)
   })
 })
+
+/**
+ * #395：绑定失败后 request_id 残留，用户重新登录仍绑定同一失效请求，反复失败。
+ *
+ * 修复行为：失败即作废本条授权请求——从地址栏与 returnTo 里清除同值
+ * request_id、复位失效的 MFA 步骤，并给出「进入控制台」出口（会话仍有效）。
+ * 重新登录不再触碰失效请求，循环被打断。
+ */
+describe('AuthPage 绑定失败清除失效 request_id（#395）', () => {
+  const PROFILE: UserMe = {
+    id: 1,
+    username: 'chenxing',
+    email: 'user@chenxing.star',
+    display_name: null,
+    status: 'active',
+    role: 'user',
+    current_session_expires_at: '2099-01-01T00:00:00Z',
+    avatar_updated_at: null,
+  }
+
+  it('MFA 绑定失败后清除 request_id 与 returnTo 里的同值参数，回到登录表单并给出控制台出口', async () => {
+    // #270 的 401 提升逻辑会把同一 request_id 同时放在顶层与 returnTo 里
+    window.history.replaceState({}, '', `/login?request_id=req-395&returnTo=${encodeURIComponent('/oauth/consent?request_id=req-395')}`)
+    authStub.profile = PROFILE
+    vi.stubGlobal('fetch', (path: string) => {
+      if (path === '/api/v1/auth/login') {
+        return Promise.resolve(jsonResponse({ status: 'factor_required', methods: ['totp'] }))
+      }
+      if (path === '/api/v1/auth/totp/login') {
+        return Promise.resolve(jsonResponse({ expires_at: '2099-01-01T00:00:00Z' }))
+      }
+      if (path.endsWith('/bind')) {
+        return Promise.resolve({ ok: false, status: 400, json: async () => ({ code: 'authorization_request_expired' }) } as Response)
+      }
+      return Promise.resolve(jsonResponse({ expires_at: '2099-01-01T00:00:00Z' }))
+    })
+    render(<AuthPage mode="login" />)
+    fireEvent.change(screen.getByLabelText('邮箱或用户名'), { target: { value: 'user@chenxing.star' } })
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'sufficiently-long-pass' } })
+    fireEvent.click(screen.getByRole('button', { name: /登录 · 进入星门/ }))
+    await waitFor(() => expect(screen.getByLabelText('一次性验证码')).toBeTruthy())
+
+    fireEvent.change(screen.getByLabelText('一次性验证码'), { target: { value: '123456' } })
+    fireEvent.click(screen.getByRole('button', { name: /完成验证/ }))
+    await waitFor(() => expect(screen.getByText('授权请求已过期，请重新发起。')).toBeTruthy())
+
+    // #270 铁律不变：会话必须保留，不清除登录态
+    expect(authStub.clearCalls).toBe(0)
+    // 失效 request_id 从顶层与 returnTo 一并清除，重新登录不会再绑定它
+    expect(new URLSearchParams(window.location.search).get('request_id')).toBeNull()
+    expect(new URLSearchParams(window.location.search).get('returnTo')).toBe('/oauth/consent')
+    // 失效 MFA 步骤复位为登录表单，并给出控制台出口
+    expect(screen.queryByLabelText('一次性验证码')).toBeNull()
+    expect(screen.getByRole('button', { name: /登录 · 进入星门/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /进入控制台/ })).toBeTruthy()
+  })
+
+  it('非 MFA 绑定失败同样清除 request_id 并给出控制台出口', async () => {
+    window.history.replaceState({}, '', '/login?request_id=req-395')
+    authStub.profile = PROFILE
+    vi.stubGlobal('fetch', (path: string) => {
+      if (path.endsWith('/bind')) {
+        return Promise.resolve({ ok: false, status: 403, json: async () => ({ code: 'authorization_holder_invalid' }) } as Response)
+      }
+      return Promise.resolve(jsonResponse({ expires_at: '2099-01-01T00:00:00Z' }))
+    })
+    render(<AuthPage mode="login" />)
+    fireEvent.change(screen.getByLabelText('邮箱或用户名'), { target: { value: 'user@chenxing.star' } })
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: 'sufficiently-long-pass' } })
+    fireEvent.click(screen.getByRole('button', { name: /登录 · 进入星门/ }))
+
+    await waitFor(() => expect(screen.getByText(/不是在当前浏览器发起的/)).toBeTruthy())
+    expect(authStub.clearCalls).toBe(0)
+    expect(new URLSearchParams(window.location.search).get('request_id')).toBeNull()
+    expect(screen.getByRole('button', { name: /进入控制台/ })).toBeTruthy()
+  })
+})
