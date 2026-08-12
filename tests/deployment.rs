@@ -15,6 +15,9 @@ const DOCKERFILE: &str = include_str!("../Dockerfile");
 const RUNTIME_DOCKERFILE: &str = include_str!("../Dockerfile.runtime");
 const DOCKERIGNORE: &str = include_str!("../.dockerignore");
 const STATIC_FILES_MODULE: &str = include_str!("../src/api/static_files.rs");
+const WEB_DIST_MODULE: &str = include_str!("../src/web_dist.rs");
+const CONFIG_CONSTRUCTION_MODULE: &str = include_str!("../src/config_construction.rs");
+const STATE_MODULE: &str = include_str!("../src/state.rs");
 const AUDIT_RUNTIME_MIGRATION: &str = include_str!("../migrations/0019_audit_runtime_role.sql");
 
 /// Where both production images place the built frontend bundle.
@@ -191,28 +194,29 @@ fn both_production_images_ship_the_web_bundle_at_the_same_web_dist_dir() {
     }
 }
 
-/// Issue #272：`WEB_DIST_DIR` 必须是服务端读取静态资源的唯一入口，且不得为空。
+/// Issue #272 / #303：`WEB_DIST_DIR` 必须是服务端读取静态资源的唯一入口，
+/// 且在启动期解析完毕。
 ///
-/// 空值会让 `ServeDir` 把整个工作目录当静态根，把 `.env` 和私钥暴露成可下载文件；
-/// 镜像里 WORKDIR 正是密钥目录的父级，所以这个降级在生产等于泄露。
+/// 请求期解析的后果是配置错误只能表现为 404，最坏的一种是把整个工作目录当静态根，
+/// 把 `.env` 和私钥暴露成可下载文件；镜像里 WORKDIR 正是密钥目录的父级。
 #[test]
 fn runtime_reads_the_bundle_only_through_web_dist_dir() {
     assert!(
-        STATIC_FILES_MODULE.contains("env::var(\"WEB_DIST_DIR\")"),
+        CONFIG_CONSTRUCTION_MODULE.contains("env::var(WEB_DIST_DIR_ENV)"),
         "the served directory must come from WEB_DIST_DIR"
     );
     assert!(
-        STATIC_FILES_MODULE.contains("ServeDir::new(dist_dir)"),
-        "static serving must use the resolved bundle directory"
+        STATIC_FILES_MODULE.contains("ServeDir::new(root.path())"),
+        "static serving must use the startup-validated bundle root"
     );
     assert!(
-        STATIC_FILES_MODULE.contains(".filter(|value| !value.trim().is_empty())"),
-        "an empty WEB_DIST_DIR must fall back instead of exposing the working directory"
+        !STATIC_FILES_MODULE.contains("env::var"),
+        "the request path must not read environment variables"
     );
 
     // 单二进制约束：只有 SPA shell 内嵌，资源不内嵌，所以镜像必须带目录。
     assert_eq!(
-        STATIC_FILES_MODULE
+        WEB_DIST_MODULE
             .matches(
                 "include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/web/dist/index.html\"))"
             )
@@ -221,8 +225,67 @@ fn runtime_reads_the_bundle_only_through_web_dist_dir() {
         "only index.html may be embedded; assets must ship as files"
     );
     assert!(
-        STATIC_FILES_MODULE.contains("/web/dist/index.html\"))"),
+        WEB_DIST_MODULE.contains("/web/dist/index.html\"))"),
         "the embedded shell must come from the built bundle, not from generated HTML"
+    );
+    assert!(
+        !STATIC_FILES_MODULE.contains("include_str!"),
+        "the embedded shell must have exactly one definition, in web_dist"
+    );
+}
+
+/// Issue #303：静态根在启动期 canonicalize 并 fail closed，不存在回退到工作目录。
+#[test]
+fn the_static_root_is_canonicalized_and_validated_at_startup() {
+    for marker in [
+        "fs::canonicalize(&requested)",
+        "WebDistError::Empty",
+        "WebDistError::NotADirectory",
+        "WebDistError::ForbiddenLocation",
+        "WebDistError::NotABundle",
+        "fn check_location(",
+        "fn check_bundle(",
+    ] {
+        assert!(
+            WEB_DIST_MODULE.contains(marker),
+            "web_dist must keep the startup validation: {marker}"
+        );
+    }
+
+    // 拒绝规则：文件系统根、工作目录及其被包含关系、KEY_DIRECTORY 重叠。
+    for reason in [
+        "the filesystem root is never a build artifact directory",
+        "it is or contains the process working directory",
+        "it overlaps KEY_DIRECTORY",
+    ] {
+        assert!(
+            WEB_DIST_MODULE.contains(reason),
+            "web_dist must reject this location: {reason}"
+        );
+    }
+
+    // 产物根必须自证同源：index.html 在盘上，且内嵌 shell 引用的资源都能找到。
+    assert!(
+        WEB_DIST_MODULE.contains("format!(\"{INDEX_FILE} is missing\")"),
+        "index.html must be required on disk"
+    );
+    assert!(
+        WEB_DIST_MODULE.contains("root_absolute_references(EMBEDDED_INDEX_HTML)"),
+        "the bundle must satisfy every asset the embedded shell references"
+    );
+
+    // 启动期解析必须真的被调用，且发生在监听之前。
+    assert!(
+        STATE_MODULE.contains("WebDistRoot::from_settings("),
+        "AppState must resolve the static root at startup"
+    );
+    assert!(
+        STATE_MODULE.contains("WebDist(#[from] WebDistError)"),
+        "an invalid static root must be a startup error, not a request-time fallback"
+    );
+    assert!(
+        !WEB_DIST_MODULE.contains("unwrap_or_else(|| DEFAULT_WEB_DIST_DIR"),
+        "an empty WEB_DIST_DIR must fail closed instead of silently falling back"
     );
 }
 

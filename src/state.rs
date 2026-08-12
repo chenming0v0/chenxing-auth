@@ -24,11 +24,14 @@ use crate::{
     sessions::store::SessionStore,
     settings::{SecurityLimitsSetting, SettingsService},
     users::service::UserService,
+    web_dist::{WebDistError, WebDistRoot},
 };
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
+    /// 启动期已校验的前端产物根：静态文件服务的唯一来源（Issue #303）。
+    pub web_dist: WebDistRoot,
     pub database: Database,
     pub redis: RedisClient,
     pub sessions: SessionStore,
@@ -55,6 +58,8 @@ pub struct AppState {
 pub enum StateError {
     #[error("application configuration is invalid: {0}")]
     Config(#[from] crate::config::ConfigError),
+    #[error("static asset configuration is invalid: {0}")]
+    WebDist(#[from] WebDistError),
     #[error("database configuration is invalid: {0}")]
     Database(#[from] crate::db::DbError),
     #[error("redis configuration is invalid: {0}")]
@@ -65,10 +70,10 @@ pub enum StateError {
     ExternalOAuth(#[from] crate::oauth::providers::service::ExternalOAuthError),
     #[error("external OAuth secret initialization failed: {0}")]
     ExternalOAuthSecret(#[from] crate::oauth::providers::secrets::SecretError),
-    /// 密钥加载放在阻塞线程池执行，线程 panic 或被取消时只能观察到 JoinError。
-    /// 保留这个变体而不是 unwrap，启动失败时才不会丢掉真实原因。
-    #[error("key material initialization task failed: {0}")]
-    KeyMaterialTask(#[from] tokio::task::JoinError),
+    /// 静态根校验与密钥加载都放在阻塞线程池执行，线程 panic 或被取消时只能观察到
+    /// JoinError。保留这个变体而不是 unwrap，启动失败时才不会丢掉真实原因。
+    #[error("startup blocking task failed: {0}")]
+    StartupTask(#[from] tokio::task::JoinError),
 }
 
 /// 启动阶段一次性加载的密钥材料。
@@ -108,6 +113,22 @@ impl AppState {
         database: crate::db::Database,
     ) -> Result<Self, StateError> {
         config.validate_cookie_security()?;
+
+        // 静态根先解析：这是纯配置校验，放在生成 RSA 私钥和连 Redis 之前，配置错误
+        // 就不会等到副作用做完才暴露。canonicalize 与 stat 是阻塞 I/O，和密钥加载
+        // 一样搬到阻塞线程池。
+        let web_dist_setting = config.web_dist_dir.clone();
+        let key_directory_setting = config.key_directory.clone();
+        let web_dist = tokio::task::spawn_blocking(move || {
+            WebDistRoot::from_settings(&web_dist_setting, &key_directory_setting)
+        })
+        .await??;
+        tracing::info!(
+            event = "web_dist_resolved",
+            path = %web_dist.path().display(),
+            "静态资源根已校验"
+        );
+
         let redis = RedisClient::open(config.redis_url.as_str())?;
 
         // 密钥目录的读写和 RSA 生成是同步阻塞调用，直接在 async 上下文执行会占住
@@ -184,6 +205,7 @@ impl AppState {
 
         Ok(Self {
             config,
+            web_dist,
             database,
             redis,
             sessions,

@@ -2,6 +2,7 @@ use std::env;
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 use crate::clients::domain::ClientRegistrationLimits;
+use crate::web_dist::{DEFAULT_WEB_DIST_DIR, WEB_DIST_DIR_ENV};
 
 use super::config_admin::admin_token_from_env;
 use super::config_audit::{AuditRetentionConfig, audit_retention_from_env};
@@ -29,6 +30,7 @@ struct ConfigValues {
     issuer_url: String,
     admin_token: String,
     key_directory: String,
+    web_dist_dir: String,
     key_rotation_grace_seconds: u64,
     cookie_secure: bool,
     oauth_session_header_enabled: bool,
@@ -77,6 +79,10 @@ impl Config {
         let client_registration_limits = client_registration_limits_from_env()?;
         let admin_token = admin_token_from_env()?;
         let key_directory = env::var("KEY_DIRECTORY").unwrap_or_else(|_| "data/keys".to_owned());
+        // 未设置时用默认相对路径；设置成空值则保留空值，由启动期解析明确拒绝，
+        // 而不是静默回退（回退到工作目录会把 .env 和私钥变成可下载文件，#303）。
+        let web_dist_dir =
+            env::var(WEB_DIST_DIR_ENV).unwrap_or_else(|_| DEFAULT_WEB_DIST_DIR.to_owned());
         let key_rotation_grace_raw = env::var("KEY_ROTATION_GRACE_SECONDS")
             .unwrap_or_else(|_| DEFAULT_KEY_ROTATION_GRACE_SECONDS.to_string());
         let key_rotation_grace_seconds =
@@ -151,6 +157,7 @@ impl Config {
             issuer_url: issuer_url.clone(),
             admin_token,
             key_directory,
+            web_dist_dir,
             key_rotation_grace_seconds,
             cookie_secure,
             oauth_session_header_enabled,
@@ -209,6 +216,7 @@ impl Config {
             issuer_url: issuer_url.clone(),
             admin_token: String::new(),
             key_directory: "data/keys".to_owned(),
+            web_dist_dir: DEFAULT_WEB_DIST_DIR.to_owned(),
             key_rotation_grace_seconds: DEFAULT_KEY_ROTATION_GRACE_SECONDS,
             cookie_secure: true,
             oauth_session_header_enabled: true,
@@ -242,6 +250,7 @@ impl Config {
             issuer_url,
             admin_token,
             key_directory,
+            web_dist_dir,
             key_rotation_grace_seconds,
             cookie_secure,
             oauth_session_header_enabled,
@@ -345,6 +354,7 @@ impl Config {
             issuer_url,
             admin_token,
             key_directory,
+            web_dist_dir,
             key_rotation_grace_seconds,
             cookie_secure,
             oauth_session_header_enabled,

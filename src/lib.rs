@@ -19,6 +19,7 @@ pub mod sessions;
 pub mod settings;
 pub mod state;
 pub mod users;
+pub mod web_dist;
 
 pub mod sqlx {
     pub use sqlx_core::acquire::Acquire;
