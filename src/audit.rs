@@ -228,6 +228,21 @@ impl AuditService {
         .await
     }
 
+    pub async fn query_security_events(
+        &self,
+        actor_user_id: i64,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<SecurityEvent>, i64), crate::sqlx::Error> {
+        repository::query_security_events(
+            &self.pool,
+            actor_user_id,
+            limit.clamp(1, 100),
+            offset.max(0),
+        )
+        .await
+    }
+
     pub async fn count(&self) -> Result<i64, crate::sqlx::Error> {
         repository::count_filtered(&self.pool, None, None).await
     }
@@ -251,6 +266,21 @@ fn is_retryable_database_error(error: &AuditError) -> bool {
             .is_some_and(|code| code == "40001" || code == "40P01"),
         _ => false,
     }
+}
+
+/// 用户可见的审计事件摘要。
+///
+/// 这是显式白名单，不包含 actor、resource_id 或 metadata。OAuth Client 信息只由
+/// repository 从已知的 Client 资源类型提取，不能把任意审计资源标识误当成公开字段。
+#[derive(Debug, Clone, Serialize)]
+pub struct SecurityEvent {
+    pub id: i64,
+    pub action: String,
+    pub resource_type: String,
+    pub client_id: Option<String>,
+    pub client_name: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

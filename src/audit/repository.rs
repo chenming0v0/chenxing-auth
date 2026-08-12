@@ -1,7 +1,7 @@
 use crate::sqlx::PgPool;
 use time::OffsetDateTime;
 
-use super::{AuditError, AuditEvent};
+use super::{AuditError, AuditEvent, SecurityEvent};
 
 type AuditRow = (
     i64,
@@ -11,6 +11,15 @@ type AuditRow = (
     String,
     Option<String>,
     serde_json::Value,
+    OffsetDateTime,
+);
+
+type SecurityEventRow = (
+    i64,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
     OffsetDateTime,
 );
 
@@ -87,6 +96,73 @@ pub async fn query_filtered(
     let events =
         list_filtered_with(&mut *transaction, action, resource_type, limit, offset).await?;
     transaction.commit().await?;
+    Ok((events, total))
+}
+
+/// 查询单个用户可见的安全事件，热表和归档表必须处于同一 MVCC 快照。
+pub async fn query_security_events(
+    pool: &PgPool,
+    actor_user_id: i64,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<SecurityEvent>, i64), crate::sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    crate::sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *transaction)
+        .await?;
+    let total: i64 = crate::sqlx::query_scalar(
+        "SELECT
+             (SELECT COUNT(*) FROM audit_events WHERE actor_user_id = $1) +
+             (SELECT COUNT(*) FROM audit_events_archive WHERE actor_user_id = $1)",
+    )
+    .bind(actor_user_id)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let rows = crate::sqlx::query_as::<_, SecurityEventRow>(
+        "WITH event_rows AS (
+             SELECT id, action, resource_type, resource_id, created_at
+             FROM audit_events
+             WHERE actor_user_id = $1
+             UNION ALL
+             SELECT id, action, resource_type, resource_id, created_at
+             FROM audit_events_archive
+             WHERE actor_user_id = $1
+         ), safe_events AS (
+             SELECT id, action, resource_type,
+                    CASE WHEN resource_type IN
+                         ('oauth_authorization', 'oauth_client', 'oauth_consent', 'oauth_token')
+                         THEN resource_id
+                         ELSE NULL
+                    END AS client_id,
+                    created_at
+             FROM event_rows
+         )
+         SELECT event.id, event.action, event.resource_type, event.client_id,
+                client.client_name, event.created_at
+         FROM safe_events AS event
+         LEFT JOIN oauth_clients AS client ON client.client_id = event.client_id
+         ORDER BY event.created_at DESC, event.id DESC
+         LIMIT $2 OFFSET $3",
+    )
+    .bind(actor_user_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    let events = rows
+        .into_iter()
+        .map(
+            |(id, action, resource_type, client_id, client_name, created_at)| SecurityEvent {
+                id,
+                action,
+                resource_type,
+                client_id,
+                client_name,
+                created_at,
+            },
+        )
+        .collect();
     Ok((events, total))
 }
 
