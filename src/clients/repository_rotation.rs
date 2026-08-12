@@ -36,7 +36,8 @@ pub async fn update_client_secret_if_version(
     let result = crate::sqlx::query(
         "UPDATE oauth_clients
          SET client_secret_hash = $3,
-             client_secret_version = client_secret_version + 1
+             client_secret_version = client_secret_version + 1,
+             allow_legacy_refresh_tokens = FALSE
          WHERE client_id = $1
            AND ($2::bigint IS NULL OR owner_user_id = $2)
            AND auth_method <> 'none'

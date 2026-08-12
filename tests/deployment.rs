@@ -513,6 +513,8 @@ fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("0024_runtime_users_sequence_update.sql"));
     assert!(DB_MODULE.contains("canonical email uniqueness"));
     assert!(DB_MODULE.contains("0025_user_canonical_email.sql"));
+    assert!(DB_MODULE.contains("client secret refresh generation boundary"));
+    assert!(DB_MODULE.contains("0026_client_secret_refresh_generation.sql"));
     let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -548,6 +550,7 @@ fn database_uses_explicit_unified_baseline_migrations() {
             std::ffi::OsString::from("0023_consent_state_version.sql"),
             std::ffi::OsString::from("0024_runtime_users_sequence_update.sql"),
             std::ffi::OsString::from("0025_user_canonical_email.sql"),
+            std::ffi::OsString::from("0026_client_secret_refresh_generation.sql"),
         ]
     );
 }
@@ -668,6 +671,23 @@ fn migration_checksum_manifest_lists_every_sql_file() {
         on_disk, listed,
         "checksum manifest must list every migration"
     );
+}
+
+#[test]
+fn client_secret_generation_migration_preserves_only_pre_upgrade_legacy_tokens() {
+    let migration = include_str!("../migrations/0026_client_secret_refresh_generation.sql");
+    for marker in [
+        "allow_legacy_refresh_tokens BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER COLUMN allow_legacy_refresh_tokens SET DEFAULT FALSE",
+        "client_secret_version",
+        "upgrade every serving instance",
+        "drain token endpoints",
+    ] {
+        assert!(
+            migration.contains(marker),
+            "client secret generation migration is missing marker: {marker}"
+        );
+    }
 }
 
 #[test]

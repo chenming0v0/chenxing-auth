@@ -1,9 +1,23 @@
-//! Client credential authentication.
+//! Client credential authentication and issuance fencing.
 
-use super::{ClientService, ClientServiceError};
+use super::{AuthenticatedClient, ClientService, ClientServiceError};
 use crate::clients::{
     credentials::verify_client_credentials_constant_time, domain::ClientAuthMethod, repository,
 };
+
+/// A PostgreSQL row lock that fences one Refresh Token persistence operation
+/// against Client Secret rotation across all application instances.
+pub(crate) struct ClientCredentialIssuanceGuard {
+    transaction: crate::sqlx::Transaction<'static, crate::sqlx::Postgres>,
+}
+
+impl ClientCredentialIssuanceGuard {
+    /// The transaction is read-only; rollback is the cheapest explicit way to
+    /// release its row lock without pretending there is state to commit.
+    pub(crate) async fn release(self) -> Result<(), crate::sqlx::Error> {
+        self.transaction.rollback().await
+    }
+}
 
 impl ClientService {
     /// 校验 Client 凭据（Issue #63：消除计时侧信道）。
@@ -24,11 +38,52 @@ impl ClientService {
         auth_method: ClientAuthMethod,
         client_secret: Option<&str>,
     ) -> Result<bool, ClientServiceError> {
+        Ok(self
+            .authenticate_credentials(client_id, auth_method, client_secret)
+            .await?
+            .is_some())
+    }
+
+    /// Authenticate and retain the version of the exact hash that succeeded.
+    pub async fn authenticate_credentials(
+        &self,
+        client_id: &str,
+        auth_method: ClientAuthMethod,
+        client_secret: Option<&str>,
+    ) -> Result<Option<AuthenticatedClient>, ClientServiceError> {
         // 唯一的 `?` 早退是数据库错误，它与 client 是否存在无关，不构成侧信道。
         let stored = repository::find_client_credentials(&self.pool, client_id).await?;
-        Ok(
+        let valid =
             verify_client_credentials_constant_time(auth_method, client_secret, stored.as_ref())
-                .await,
+                .await;
+        Ok(match (valid, stored) {
+            (true, Some(stored)) => Some(AuthenticatedClient::new(
+                client_id.to_owned(),
+                stored.client_secret_version,
+                stored.allow_legacy_refresh_tokens,
+            )),
+            _ => None,
+        })
+    }
+
+    /// Acquire the multi-instance persistence fence for an authenticated
+    /// credential snapshot.
+    pub(crate) async fn acquire_issuance_guard(
+        &self,
+        authenticated: &AuthenticatedClient,
+    ) -> Result<Option<ClientCredentialIssuanceGuard>, ClientServiceError> {
+        let mut transaction = self.pool.begin().await?;
+        if !repository::lock_client_credentials_if_version(
+            &mut transaction,
+            authenticated.client_id(),
+            authenticated.client_secret_version(),
+            authenticated.allows_legacy_refresh_tokens(),
         )
+        .await?
+        {
+            transaction.rollback().await?;
+            return Ok(None);
+        }
+        Ok(Some(ClientCredentialIssuanceGuard { transaction }))
     }
 }

@@ -87,6 +87,8 @@ pub async fn verify_client_credentials_constant_time(
         client_secret_hash: stored.client_secret_hash.clone(),
         auth_method: stored.auth_method.clone(),
         status: stored.status.clone(),
+        client_secret_version: stored.client_secret_version,
+        allow_legacy_refresh_tokens: stored.allow_legacy_refresh_tokens,
     });
     match tokio::task::spawn_blocking(move || {
         verify_client_credentials_constant_time_blocking(
@@ -167,6 +169,8 @@ mod tests {
             client_secret_hash: hash.map(|s| s.to_owned()),
             auth_method: auth_method.to_owned(),
             status: status.to_owned(),
+            client_secret_version: 0,
+            allow_legacy_refresh_tokens: false,
         }
     }
 

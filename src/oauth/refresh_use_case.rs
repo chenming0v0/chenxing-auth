@@ -1,5 +1,5 @@
 use super::{OAuthError, RefreshExchangeError, TokenRequest, TokenResponse, issue_token_response};
-use crate::{state::AppState, users::domain::UserId};
+use crate::{clients::service::AuthenticatedClient, state::AppState, users::domain::UserId};
 
 use super::super::{
     refresh::RefreshToken,
@@ -15,6 +15,7 @@ use super::super::{
 pub(super) async fn exchange_refresh_token(
     state: &AppState,
     request: TokenRequest,
+    authenticated: AuthenticatedClient,
 ) -> Result<TokenResponse, RefreshExchangeError> {
     let Some(refresh_value) = request.refresh_token.as_deref() else {
         return Err(OAuthError::bad_request("invalid_request", "refresh_token is required").into());
@@ -22,6 +23,9 @@ pub(super) async fn exchange_refresh_token(
     let Some(client_id) = request.client_id.as_deref() else {
         return Err(OAuthError::InvalidClient.into());
     };
+    if authenticated.client_id() != client_id {
+        return Err(OAuthError::InvalidClient.into());
+    }
     let refresh = match state.refresh_tokens.find(refresh_value).await {
         Ok(Some(refresh)) => refresh,
         Ok(None) => {
@@ -34,8 +38,25 @@ pub(super) async fn exchange_refresh_token(
         }
     };
 
+    // A Refresh Token is part of the credential generation that created it.
+    // Versioned tokens must match the exact authenticated generation. Legacy
+    // tokens remain compatible for one exchange and their successor is stamped
+    // below; updated issuers never create another unversioned token.
+    if !refresh.is_bound_to_client_secret_version(
+        authenticated.client_secret_version(),
+        authenticated.allows_legacy_refresh_tokens(),
+    ) {
+        return record_and_return_invalid(
+            state,
+            Some(&refresh.user_id),
+            client_id,
+            "client_secret_version_changed",
+        )
+        .await;
+    }
+
     if refresh
-        .validate(client_id, time::OffsetDateTime::now_utc())
+        .validate(client_id, state.clock.now())
         .is_err()
     {
         return record_and_return_invalid(
@@ -84,9 +105,13 @@ pub(super) async fn exchange_refresh_token(
     }
 
     let scopes = select_scopes(request.scope.as_deref(), &refresh.scopes)?;
-    // rotate() inherits issued_at and family_id so absolute lifetime and replay revocation
-    // semantics survive rotation.
-    let next_refresh = refresh.rotate(scopes.clone());
+    // Rotation inherits issued_at/family_id and stamps the authenticated Client
+    // Secret generation, including for legacy unversioned tokens.
+    let next_refresh = refresh.rotate_at_with_client_secret_version(
+        scopes.clone(),
+        authenticated.client_secret_version(),
+        state.clock.now(),
+    );
     let token = issue_token_response(
         state,
         &refresh.user_id,
@@ -98,13 +123,42 @@ pub(super) async fn exchange_refresh_token(
     )
     .await?;
 
+    // This shared PostgreSQL row lock is the cross-instance ordering boundary
+    // with Client Secret rotation. It remains held until Redis has atomically
+    // replaced the old token with its successor.
+    let issuance_guard = match state.clients.acquire_issuance_guard(&authenticated).await {
+        Ok(Some(guard)) => guard,
+        Ok(None) => return Err(OAuthError::InvalidClient.into()),
+        Err(database_error) => {
+            tracing::error!(
+                error = %database_error,
+                "failed to fence refresh-token issuance"
+            );
+            return Err(OAuthError::temporarily_unavailable().into());
+        }
+    };
+
     // All checks and token issuance happen before this CAS. It is the single credential
     // consumption boundary, and remains atomic with tombstone creation in the store.
-    match state
+    let rotation = state
         .refresh_tokens
         .rotate_if_matches(refresh_value, &refresh, &next_refresh)
-        .await
-    {
+        .await;
+    let rotated = rotation
+        .as_ref()
+        .is_ok_and(|outcome| *outcome == RotationOutcome::Rotated);
+    if let Err(release_error) = issuance_guard.release().await {
+        tracing::error!(
+            error = %release_error,
+            client_id = %client_id,
+            "failed to release Client credential issuance fence after refresh rotation"
+        );
+        if rotated {
+            rollback_rotation(state, client_id, &next_refresh, &refresh).await;
+        }
+        return Err(OAuthError::temporarily_unavailable().into());
+    }
+    match rotation {
         Ok(RotationOutcome::Rotated) => {
             if record_token_event(
                 state,

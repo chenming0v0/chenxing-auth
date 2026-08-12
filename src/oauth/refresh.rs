@@ -49,6 +49,16 @@ pub struct RefreshToken {
     /// `skip_serializing_if` 保证旧 token 的 CAS 兼容性（同 `issued_at` 约束）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub family_id: String,
+    /// Client Secret generation that authenticated the original issuance.
+    ///
+    /// Every successor inherits this value. A token is redeemable only when it
+    /// matches the generation authenticated by the current request, so a token
+    /// left behind by a failed best-effort revocation is still inert after a
+    /// Secret rotation. Legacy payloads predate the field; they are accepted
+    /// under the currently authenticated generation and stamped on their first
+    /// rotation so an upgrade does not revoke otherwise healthy grants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret_version: Option<i64>,
 }
 
 impl fmt::Debug for RefreshToken {
@@ -63,6 +73,7 @@ impl fmt::Debug for RefreshToken {
             .field("revoked_at", &self.revoked_at)
             .field("issued_at", &self.issued_at)
             .field("family_id", &self.family_id)
+            .field("client_secret_version", &self.client_secret_version)
             .finish()
     }
 }
@@ -75,10 +86,11 @@ mod tests {
     #[test]
     fn explicit_time_constructor_and_rotation_are_deterministic() {
         let created_at = OffsetDateTime::UNIX_EPOCH + Duration::days(1);
-        let token = RefreshToken::new_at(
+        let token = RefreshToken::new_at_with_client_secret_version(
             "client".to_owned(),
             "user".to_owned(),
             vec!["openid".to_owned()],
+            7,
             created_at,
         );
         let rotated_at = created_at + Duration::days(2);
@@ -88,6 +100,7 @@ mod tests {
         assert_eq!(rotated.created_at, rotated_at);
         assert_eq!(rotated.issued_at, token.issued_at);
         assert_eq!(rotated.family_id, token.family_id);
+        assert_eq!(rotated.client_secret_version, token.client_secret_version);
     }
 }
 
@@ -114,6 +127,18 @@ impl RefreshToken {
         scopes: Vec<String>,
         now: OffsetDateTime,
     ) -> Self {
+        Self::new_at_with_client_secret_version(client_id, user_id, scopes, 0, now)
+    }
+
+    /// Construct a token bound to the Client credential snapshot that passed
+    /// authentication at the token endpoint.
+    pub fn new_at_with_client_secret_version(
+        client_id: String,
+        user_id: String,
+        scopes: Vec<String>,
+        client_secret_version: i64,
+        now: OffsetDateTime,
+    ) -> Self {
         Self {
             value: format!("cx-refresh-{}", Uuid::new_v4().simple()),
             client_id,
@@ -124,6 +149,7 @@ impl RefreshToken {
             revoked_at: None,
             issued_at: Some(now),
             family_id: Uuid::new_v4().simple().to_string(),
+            client_secret_version: Some(client_secret_version),
         }
     }
 
@@ -155,6 +181,34 @@ impl RefreshToken {
             } else {
                 self.family_id.clone()
             },
+            client_secret_version: self.client_secret_version,
+        }
+    }
+
+    /// Rotate and bind a legacy or current token to the generation authenticated
+    /// by the token endpoint. This is the production refresh path.
+    pub fn rotate_at_with_client_secret_version(
+        &self,
+        scopes: Vec<String>,
+        client_secret_version: i64,
+        now: OffsetDateTime,
+    ) -> Self {
+        let mut rotated = self.rotate_at(scopes, now);
+        rotated.client_secret_version = Some(client_secret_version);
+        rotated
+    }
+
+    /// Legacy payloads have no generation to compare. A database compatibility
+    /// bit admits them only until the Client's first post-upgrade Secret
+    /// rotation; their successor is always stamped.
+    pub fn is_bound_to_client_secret_version(
+        &self,
+        expected_version: i64,
+        allow_legacy_refresh_tokens: bool,
+    ) -> bool {
+        match self.client_secret_version {
+            Some(version) => version == expected_version,
+            None => allow_legacy_refresh_tokens,
         }
     }
 

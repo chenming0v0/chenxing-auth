@@ -223,7 +223,8 @@ return removed
 ///
 /// 这里不写墓碑：Secret 轮换是管理员的主动操作，不是凭据泄露信号，
 /// 旧 token 的后续请求应当只是普通的 `invalid_grant`，不应触发
-/// 「检测到重放」的审计噪声。
+/// 「检测到重放」的审计噪声。迟到的旧版本写入由 PostgreSQL 签发栅栏阻断，
+/// Refresh Token 自身的 `client_secret_version` 是撤销失败时的兑换兜底（#310）。
 ///
 /// - `KEYS[1]` client 索引键
 /// - `ARGV[1]` token 主键前缀
