@@ -1,14 +1,11 @@
 import { useState, type FormEvent } from 'react'
 import { apiFetch, type SecurityLimitsSetting } from '../../../api'
 import { Button, Field, HudPanel, Icon, Notice } from '../../../components/ui'
-import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
+import { settingsEqual, useDirtyReport, useSettingsResource, validateIntegerWithinRange, type SettingsPanelProps } from './panel'
 
 type FieldKey = keyof SecurityLimitsSetting
 type FieldSpec = { key: FieldKey; label: string; hint: string; maximum: number }
 type FieldGroup = { title: string; description: string; fields: FieldSpec[] }
-
-/** JSON 请求使用 JavaScript number，因此边界必须停在可精确表示的安全整数。 */
-const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER
 
 /**
  * 每项的上界必须与后端 `config_limit_bounds.rs` 的 `MAX_*` 常量一致（#260）。
@@ -73,33 +70,13 @@ function toDraft(value: SecurityLimitsSetting): Record<string, string> {
 
 export type SecurityLimitValidation = { value: number } | { error: string }
 
+/** 兼容导出：测试直接引用此函数断言文案，实现委托给共享核心（panel.ts）。 */
 export function validateSecurityLimitInput(
   rawValue: string,
   label: string,
   maximum: number,
 ): SecurityLimitValidation {
-  const raw = rawValue.trim()
-  const positiveIntegerMessage = `「${label}」必须填写大于 0 的整数。`
-  if (!raw) return { error: positiveIntegerMessage }
-
-  const numeric = Number(raw)
-  if (Number.isNaN(numeric)) {
-    return { error: `「${label}」不是有效数字（NaN），请填写大于 0 的整数。` }
-  }
-  if (!Number.isFinite(numeric)) {
-    return { error: `「${label}」必须是有限数字，不能为 ${numeric}。` }
-  }
-  if (!Number.isInteger(numeric)) {
-    return { error: positiveIntegerMessage }
-  }
-  if (numeric <= 0) return { error: positiveIntegerMessage }
-  if (!Number.isSafeInteger(numeric)) {
-    return { error: `「${label}」超出 JavaScript 安全整数范围，最大为 ${MAX_SAFE_INTEGER}。` }
-  }
-  if (numeric > maximum) {
-    return { error: `「${label}」超出范围，必须在 1 到 ${maximum} 之间。` }
-  }
-  return { value: numeric }
+  return validateIntegerWithinRange(rawValue, label, maximum)
 }
 
 export function SecurityLimitsPanel({ onMessage, onDirtyChange }: SettingsPanelProps) {
