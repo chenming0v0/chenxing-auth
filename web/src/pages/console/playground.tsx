@@ -9,6 +9,7 @@ import { entitlementState, useEntitlements } from './shared'
 export function PlaygroundPage() {
   const selfServiceClosed = entitlementState(useEntitlements()).kind === 'closed'
   const [clients, setClients] = useState<OwnedOAuthClient[]>([])
+  const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState('')
   const [redirectUri, setRedirectUri] = useState('')
   const [scope, setScope] = useState('openid')
@@ -27,6 +28,7 @@ export function PlaygroundPage() {
         }
       })
       .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。'))
+      .finally(() => setLoading(false))
   }, [])
 
   function selectClient(clientId: string) {
@@ -74,7 +76,11 @@ export function PlaygroundPage() {
       <PageIntro eyebrow="// Playground" title="授权测试" description="用真实的授权码 + PKCE 流程验证你的接入配置。" />
       {message ? <div className="mb-4"><Notice tone="warning">{message}</Notice></div> : null}
 
-      {!clients.length ? (
+      {loading ? (
+        <HudPanel className="flex min-h-[20rem] flex-col items-center justify-center text-center">
+          <Notice tone="info">正在加载应用列表…</Notice>
+        </HudPanel>
+      ) : !clients.length ? (
         <HudPanel className="flex min-h-[20rem] flex-col items-center justify-center text-center">
           {/* 未开放自助接入时不引导用户去一个不能提交的注册入口 */}
           {selfServiceClosed ? (

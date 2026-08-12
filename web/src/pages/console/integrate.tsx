@@ -43,6 +43,7 @@ function findInvalidRedirectUri(redirectUris: string[]): { value: string; reason
 
 export function IntegratePage() {
   const [clients, setClients] = useState<OwnedOAuthClient[]>([])
+  const [loading, setLoading] = useState(true)
   const [secret, setSecret] = useState<{ clientId: string; value: string } | null>(null)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
@@ -62,9 +63,11 @@ export function IntegratePage() {
   const gateNoteId = useId()
 
   const load = () => {
+    setLoading(true)
     void apiFetch<{ items: OwnedOAuthClient[] }>('/api/v1/auth/oauth-clients')
       .then((response) => setClients(response.items))
       .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。'))
+      .finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
 
@@ -224,58 +227,64 @@ export function IntegratePage() {
 
       <HudPanel as="section" className="mt-6">
         <div className="flex items-center justify-between gap-4">
-          <h2 className="chenxing-h2 flex items-center gap-3">我的接入应用<span className="chenxing-chip">{clients.length} 个应用</span></h2>
+          <h2 className="chenxing-h2 flex items-center gap-3">我的接入应用<span className="chenxing-chip">{loading ? '—' : clients.length} 个应用</span></h2>
         </div>
-        <div className="chenxing-app-grid mt-5 hidden px-4 pb-2 lg:grid">
-          <span className="chenxing-label !mb-0">ID</span>
-          <span className="chenxing-label !mb-0">名称</span>
-          <span className="chenxing-label !mb-0">分组</span>
-          <span className="chenxing-label !mb-0">状态</span>
-          <span className="chenxing-label !mb-0 text-right">操作</span>
-        </div>
-        {clients.map((client, index) => (
-          <article key={client.client_id} className="chenxing-app-grid chenxing-app-row mt-2 lg:mt-0" onClick={() => openEdit(client)}>
-            <span className="chenxing-mono text-sm text-[var(--chenxing-muted-foreground)]">{String(index + 1).padStart(2, '0')}</span>
-            <div className="min-w-0">
-              <p className="chenxing-body truncate font-semibold leading-tight">{client.client_name}</p>
-              <p className="chenxing-mono truncate text-[11px] text-[var(--chenxing-muted-foreground)]">{client.client_id}</p>
-              <p className="chenxing-caption mt-1 hidden sm:block">{formatQuota(client)}</p>
+        {loading && !clients.length ? (
+          <div className="mt-6"><Notice tone="info">正在加载应用列表…</Notice></div>
+        ) : (
+          <>
+            <div className="chenxing-app-grid mt-5 hidden px-4 pb-2 lg:grid">
+              <span className="chenxing-label !mb-0">ID</span>
+              <span className="chenxing-label !mb-0">名称</span>
+              <span className="chenxing-label !mb-0">分组</span>
+              <span className="chenxing-label !mb-0">状态</span>
+              <span className="chenxing-label !mb-0 text-right">操作</span>
             </div>
-            <span className="chenxing-tag hidden lg:inline-flex">default</span>
-            <span className={`${client.status === 'active' ? 'chenxing-tag-success' : 'chenxing-tag-warning'} hidden lg:inline-flex`}>
-              {client.status === 'active' ? '已启用' : client.status}
-            </span>
-            <div className="flex items-center justify-end gap-2" onClick={(event) => event.stopPropagation()}>
-              <Button
-                variant={client.status === 'active' ? 'danger' : 'ghost'}
-                icon="power"
-                disabled={statusChangingClientIds.has(client.client_id)}
-                onClick={() => void setStatus(client)}
-              >
-                {statusChangingClientIds.has(client.client_id)
-                  ? `${client.status === 'active' ? '禁用' : '启用'}中…`
-                  : client.status === 'active' ? '禁用' : '启用'}
-              </Button>
-              <Button variant="ghost" icon="pencil" onClick={() => openEdit(client)}>编辑</Button>
-              <Button variant="ghost" icon="refresh-cw" disabled={rotatingClientIds.has(client.client_id)} onClick={() => void rotate(client.client_id)}>
-                {rotatingClientIds.has(client.client_id) ? '轮换中…' : '轮换'}
-              </Button>
-            </div>
-          </article>
-        ))}
-        {!clients.length ? (
-          <div className="mt-6">
-            {selfServiceClosed ? (
-              <EmptyState
-                icon="lock-keyhole"
-                title="暂无 OAuth 应用"
-                description="平台未开放自助接入，当前不能自行创建应用。管理员为你分配套餐后即可在这里注册。"
-              />
-            ) : (
-              <EmptyState icon="code-2" title="暂无 OAuth 项目" description="创建第一个项目后会显示在这里。" action={<Button className="mt-2" icon="plus" onClick={openCreate}>注册新应用</Button>} />
-            )}
-          </div>
-        ) : null}
+            {clients.map((client, index) => (
+              <article key={client.client_id} className="chenxing-app-grid chenxing-app-row mt-2 lg:mt-0" onClick={() => openEdit(client)}>
+                <span className="chenxing-mono text-sm text-[var(--chenxing-muted-foreground)]">{String(index + 1).padStart(2, '0')}</span>
+                <div className="min-w-0">
+                  <p className="chenxing-body truncate font-semibold leading-tight">{client.client_name}</p>
+                  <p className="chenxing-mono truncate text-[11px] text-[var(--chenxing-muted-foreground)]">{client.client_id}</p>
+                  <p className="chenxing-caption mt-1 hidden sm:block">{formatQuota(client)}</p>
+                </div>
+                <span className="chenxing-tag hidden lg:inline-flex">default</span>
+                <span className={`${client.status === 'active' ? 'chenxing-tag-success' : 'chenxing-tag-warning'} hidden lg:inline-flex`}>
+                  {client.status === 'active' ? '已启用' : client.status}
+                </span>
+                <div className="flex items-center justify-end gap-2" onClick={(event) => event.stopPropagation()}>
+                  <Button
+                    variant={client.status === 'active' ? 'danger' : 'ghost'}
+                    icon="power"
+                    disabled={statusChangingClientIds.has(client.client_id)}
+                    onClick={() => void setStatus(client)}
+                  >
+                    {statusChangingClientIds.has(client.client_id)
+                      ? `${client.status === 'active' ? '禁用' : '启用'}中…`
+                      : client.status === 'active' ? '禁用' : '启用'}
+                  </Button>
+                  <Button variant="ghost" icon="pencil" onClick={() => openEdit(client)}>编辑</Button>
+                  <Button variant="ghost" icon="refresh-cw" disabled={rotatingClientIds.has(client.client_id)} onClick={() => void rotate(client.client_id)}>
+                    {rotatingClientIds.has(client.client_id) ? '轮换中…' : '轮换'}
+                  </Button>
+                </div>
+              </article>
+            ))}
+            {!clients.length ? (
+              <div className="mt-6">
+                {selfServiceClosed ? (
+                  <EmptyState
+                    icon="lock-keyhole"
+                    title="暂无 OAuth 应用"
+                    description="平台未开放自助接入，当前不能自行创建应用。管理员为你分配套餐后即可在这里注册。"
+                  />
+                ) : (
+                  <EmptyState icon="code-2" title="暂无 OAuth 项目" description="创建第一个项目后会显示在这里。" action={<Button className="mt-2" icon="plus" onClick={openCreate}>注册新应用</Button>} />
+                )}
+              </div>
+            ) : null}
+          </>
+        )}
         <p className="chenxing-caption mt-4 flex items-center gap-2">
           <Icon name="shield-alert" className="shrink-0 text-[var(--chenxing-warning)]" size={16} />
           Client Secret 仅在创建应用时展示一次，遗失后只能重新生成。
