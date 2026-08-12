@@ -132,7 +132,11 @@ export function OAuthProvidersPanel({ onMessage, onDirtyChange }: SettingsPanelP
         setPending(failure)
         onMessage(pendingMessage(failure), 'warning')
       } else {
-        setPending(null)
+        /* 成功路径不能盲清 pending（#367）：pending 可能属于另一个 provider，
+           一次无关的保存不该拿走它的重试入口。同一 provider 的旧提示由本次保存取代
+           （用户已重新表达意图）；其它 provider 的提示留给紧随其后的 reload，
+           由 reconcile 用最新列表裁决。 */
+        setPending((current) => (current && current.slug === slug ? null : current))
         onMessage(target ? 'OAuth 提供商已更新。' : 'OAuth 提供商已创建。')
       }
       await reload()
