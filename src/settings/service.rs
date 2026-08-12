@@ -259,9 +259,13 @@ impl SettingsService {
     /// 回读用 `sanitized()` 而不是 `validate()`：这条路径被 OAuth 授权、令牌签发和
     /// 失败限流器共用，返回错误会让一条在上界收紧之前写入的旧行把整套协议流程打死，
     /// 管理员连设置页都打不开。越界项回退默认值（收紧方向）。
+    ///
+    /// 回退目标与「数据库无行」路径同源：都是 `self.default_security_limits`（启动期
+    /// 环境配置）。若各自回退到不同来源，运维设了 `ACCOUNT_FAILURE_LIMIT=50` 也会在
+    /// 旧行存在期间被静默丢回硬编码的 10（#361）。
     async fn load_security_limits(&self) -> Result<SecurityLimitsSetting, SettingsServiceError> {
         match repository::get_security_limits(&self.pool).await? {
-            Some(value) => Ok(value.sanitized()),
+            Some(value) => Ok(value.sanitized(&self.default_security_limits)),
             None => Ok(self.default_security_limits.clone()),
         }
     }
