@@ -90,8 +90,12 @@ impl AuthFactorService {
             .hints(None)
             .extensions(Some(passkey_registration_extensions()));
         let (challenge, state) = core.generate_challenge_register(builder)?;
-        self.tickets
-            .save_json(
+        // Challenge 和校验状态是一对不可拆分的一次性材料。用 SET NX EX 原子预留，
+        // 确保重复或并发 start 的败者不会用新状态覆盖已经返回给胜者的 challenge。
+        // `ensure_passkey_attempt_allowed` 只检查额度，因此预留失败也不会烧毁失败计数。
+        let reserved = self
+            .tickets
+            .save_json_if_absent(
                 &Self::passkey_registration_key(ticket_id),
                 &PendingPasskeyRegistration {
                     user_id: ticket.user_id,
@@ -101,7 +105,7 @@ impl AuthFactorService {
                 LoginTicket::TTL.whole_seconds() as u64,
             )
             .await?;
-        Ok(Some(challenge))
+        Ok(reserved.then_some(challenge))
     }
 
     pub async fn finish_passkey_registration(
@@ -244,8 +248,11 @@ impl AuthFactorService {
             .allow_backup_eligible_upgrade(true)
             .hints(None);
         let (challenge, state) = core.generate_challenge_authenticate(builder)?;
-        self.tickets
-            .save_json(
+        // 与注册路径使用同一个原子预留语义：同一 ticket 只能有一份已签发的
+        // authentication challenge/state，竞态败者明确返回 None，绝不覆盖胜者状态。
+        let reserved = self
+            .tickets
+            .save_json_if_absent(
                 &Self::passkey_authentication_key(ticket_id),
                 &PendingPasskeyAuthentication {
                     user_id: ticket.user_id,
@@ -255,7 +262,7 @@ impl AuthFactorService {
                 LoginTicket::TTL.whole_seconds() as u64,
             )
             .await?;
-        Ok(Some(challenge))
+        Ok(reserved.then_some(challenge))
     }
 
     pub async fn finish_passkey_authentication(
