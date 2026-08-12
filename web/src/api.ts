@@ -538,27 +538,35 @@ export async function loadAuthorizationRequest(requestId: string): Promise<Pendi
 let entitlementCache: EntitlementsResponse | null = null
 let entitlementRequest: Promise<EntitlementsResponse> | null = null
 /**
- * 缓存版本计数器。clearApiCache()（注销时调用）递增它，使注销前发出的 in-flight 请求
- * 在 resolve 后无法把上一个用户的权益数据写回缓存，避免跨用户泄露。
+ * 缓存版本计数器。clearApiCache()（注销时）和 getEntitlements(force=true) 递增它，
+ * 使版本号变化前发出的 in-flight 请求在 resolve 后无法把过期数据写回缓存：
+ * 注销场景避免跨用户泄露，强制刷新场景避免旧请求的响应覆盖新请求的响应。
  */
 let cacheGeneration = 0
 
 export function getEntitlements(force = false): Promise<EntitlementsResponse> {
-  if (force) entitlementCache = null
+  if (force) {
+    // 强制刷新必须绕过 in-flight 去重：清掉缓存与在途引用，真正发起新请求；
+    // 同时递增版本，让旧请求 resolve 后不能把过期数据写回缓存
+    entitlementCache = null
+    entitlementRequest = null
+    cacheGeneration += 1
+  }
   if (entitlementCache) return Promise.resolve(entitlementCache)
   if (!entitlementRequest) {
-    // 在发起请求时锁定版本，回调里比对以识别期间是否发生过注销
+    // 在发起请求时锁定版本，回调里比对以识别期间是否发生过注销或强制刷新
     const generation = cacheGeneration
-    entitlementRequest = apiFetch<EntitlementsResponse>('/api/v1/auth/entitlements')
+    const request = apiFetch<EntitlementsResponse>('/api/v1/auth/entitlements')
       .then((value) => {
         // 版本不匹配说明缓存已被清理：数据照常返回给当次调用者，但不写入缓存
         if (generation === cacheGeneration) entitlementCache = value
         return value
       })
       .finally(() => {
-        // 无条件清理 in-flight 引用，避免注销后的新请求复用上一个会话的 Promise
-        entitlementRequest = null
+        // 只清理自己的引用：force/注销后可能有更新的请求在途，旧请求收尾时不能把新请求的引用一并清掉
+        if (entitlementRequest === request) entitlementRequest = null
       })
+    entitlementRequest = request
   }
   return entitlementRequest
 }
