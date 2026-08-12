@@ -83,27 +83,17 @@
   font-family: var(--chenxing-font-body);
   font-weight: 600;
   font-size: 0.9375rem;
-  color: var(--chenxing-ice);
+  color: var(--chenxing-primary-foreground);
   padding: 0.65rem 1.25rem;
   white-space: nowrap;
-  /* 透明玻璃 + 外圈蓝色光晕：底色是 HudPanel 同族的近黑白色高光玻璃，
-     蓝色只出现在青色描边和外圈 glow 上——不往底色里掺蓝 tint（塑料感来源）。
-     文字色用 --chenxing-ice：透明底上按钮坐在深空背景，深色文字对比度不够。 */
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02) 55%, rgba(103, 232, 249, 0.05));
-  backdrop-filter: blur(18px) saturate(1.4);
-  -webkit-backdrop-filter: blur(18px) saturate(1.4);
-  border: 1px solid rgba(103, 232, 249, 0.45);
+  background: linear-gradient(120deg, #36b0fa, #1d8ff0 52%, #58d2ff);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: var(--chenxing-radius-md);
-  box-shadow: 0 0 20px rgba(56, 189, 248, 0.28), 0 0 52px rgba(56, 189, 248, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.10), inset 0 0 16px rgba(56, 189, 248, 0.06);
-  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s, border-color 0.25s, background 0.25s;
+  box-shadow: var(--chenxing-shadow-glow-float), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s, filter 0.25s;
   cursor: pointer;
 }
-.chenxing-btn-primary:hover {
-  transform: translateY(-1px);
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.04) 55%, rgba(103, 232, 249, 0.08));
-  border-color: rgba(103, 232, 249, 0.75);
-  box-shadow: 0 0 30px rgba(56, 189, 248, 0.45), 0 0 72px rgba(56, 189, 248, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 20px rgba(56, 189, 248, 0.10);
-}
+.chenxing-btn-primary:hover { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 0 34px rgba(56, 189, 248, 0.55), 0 0 80px rgba(56, 189, 248, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.35); }
 .chenxing-btn-primary:active { transform: translateY(0) scale(0.985); }
 .chenxing-btn-primary:disabled { opacity: 0.55; cursor: not-allowed; filter: saturate(0.6); }
 
