@@ -85,6 +85,23 @@ pub enum UserPermission {
     ManageAuthFactors,
 }
 
+/// 以用户为目标的管理写操作所持有的授权档位。
+///
+/// 目标是否为 Owner 必须在写事务持有目标行锁后判定（Issue #323）。把档位作为
+/// 显式值传入仓储层，而不是传一个容易写反的布尔值：`ManageUsers` 可以改普通用户，
+/// 只有 `ManageRoles` 可以改事务中实际读到的 Owner。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnerTargetAccess {
+    ManageUsers,
+    ManageRoles,
+}
+
+impl OwnerTargetAccess {
+    pub const fn permits_owner(self) -> bool {
+        matches!(self, Self::ManageRoles)
+    }
+}
+
 impl UserRole {
     pub fn parse(value: &str) -> Option<Self> {
         match value {

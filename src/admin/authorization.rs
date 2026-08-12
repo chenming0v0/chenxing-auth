@@ -6,7 +6,7 @@ use crate::{
     audit::AuditEvent,
     error,
     state::AppState,
-    users::domain::{UserId, UserRole},
+    users::domain::{OwnerTargetAccess, UserId},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,50 +35,68 @@ impl AdminActor {
     }
 }
 
-/// 校验一个「以某个用户为目标」的管理写操作。
+/// 已通过目标无关的 `ManageUsers` 基线授权及其最高写入档位。
 ///
-/// # 为什么授权必须先于资源查询（Issue #280）
-///
-/// 旧实现先查目标用户的角色，再据此决定需要 `ManageUsers` 还是 `ManageRoles`。
-/// 这让权限门槛成为资源状态的函数：任何能触达端点的调用者都会先触发一次数据库
-/// 查询，并从「403 说的是哪个权限」里读出目标用户是否存在、是否是 Owner。
-/// 权限检查本身变成了资源存在性预言机（existence oracle）。
-///
-/// 现在顺序固定为三步，且第一步与目标无关：
-///
-/// 1. 调用方先按与目标无关的基线权限（`ManageUsers`）授权。不具备基线权限的调用者
-///    在任何查询之前就被拒，拿不到任何与目标有关的信号。
-/// 2. 本函数查询目标用户。不存在即 404 —— 此时调用者已经具备基线权限，
-///    而基线权限本身就允许列出用户与管理员，404 不泄露新信息。
-/// 3. 目标是 Owner 时把门槛抬到 `ManageRoles`。Owner 保护类操作
-///    （禁用 Owner、改写 Owner 的套餐）统一走这一档，不因入口而漂移。
-///
-/// `actor` 参数是第 1 步已经完成的凭证：`AdminActor` 只能从
-/// [`AdminWrite::authorize`] 取得，因此调用方无法跳过基线授权直接调用本函数。
-/// 返回的 `AdminActor` 对应最终生效的那一档权限。
+/// 这里只携带调用者能力，不查询目标用户。目标是否为 Owner 由具体写事务持行锁判定，
+/// 因而这个值可以安全地跨越输入解析，但不能代替仓储层的目标角色检查（Issue #323）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UserWriteAuthorization {
+    actor: AdminActor,
+    access: OwnerTargetAccess,
+}
+
+impl UserWriteAuthorization {
+    pub const fn actor(self) -> AdminActor {
+        self.actor
+    }
+
+    pub const fn access(self) -> OwnerTargetAccess {
+        self.access
+    }
+}
+
 pub(crate) async fn authorize_user_write(
     state: &AppState,
     admin: &AdminWrite,
-    actor: AdminActor,
-    user_id: UserId,
-) -> Result<AdminActor, Response> {
-    let profile = match state.users.find_profile(user_id).await {
-        Ok(Some(profile)) => profile,
-        Ok(None) => return Err(error::not_found("user_not_found", "user was not found")),
-        Err(error_value) => {
-            tracing::error!(
-                error = %error_value,
-                "failed to load the target user before an admin write"
-            );
-            return Err(error::internal());
-        }
-    };
-    if profile.role != UserRole::Owner {
-        return Ok(actor);
+) -> Result<UserWriteAuthorization, Response> {
+    let actor = admin.authorize(state, AdminPermission::ManageUsers).await?;
+    Ok(UserWriteAuthorization {
+        actor,
+        access: admin.owner_target_access(),
+    })
+}
+
+/// 把事务内判定出的 Owner 权限不足翻译成既有的 403 与拒绝审计。
+///
+/// 目标角色不能再由 HTTP 层预读：预读与写入之间可以并发晋升为 Owner（Issue #323）。
+/// 状态/套餐仓储在锁住目标行后返回 `ManageRolesRequired`，写事务已经回滚；这里仅恢复
+/// Issue #280 确立的外部语义，不再查询目标，也不重试写入。
+pub(crate) async fn owner_write_permission_denied(
+    state: &AppState,
+    authorization: UserWriteAuthorization,
+) -> Response {
+    let actor = authorization.actor();
+    if authorization.access().permits_owner() {
+        tracing::error!(
+            actor_type = actor.actor_type(),
+            actor_id = ?actor.user_id(),
+            "owner write was rejected despite a ManageRoles capability"
+        );
+        return error::internal();
     }
-    // Owner 的账号状态与权益由角色管理档位把守：只有 ManageUsers 的 Admin
-    // 不得通过禁用或改套餐的方式影响最高权限持有者。
-    admin.authorize(state, AdminPermission::ManageRoles).await
+    if let Some(user_id) = actor.user_id() {
+        record_authz_denial(
+            state,
+            user_id,
+            AdminPermission::ManageRoles,
+            "insufficient_role",
+        )
+        .await;
+    }
+    error::forbidden(
+        "admin_forbidden",
+        "administrator permission is insufficient",
+    )
 }
 
 /// 领域守卫拒绝一个管理写操作时的审计 action。

@@ -9,7 +9,7 @@ use serde_json::Value;
 use time::OffsetDateTime;
 
 use super::{
-    authorization::{AdminActor, authorize_user_write},
+    authorization::{AdminActor, authorize_user_write, owner_write_permission_denied},
     domain::AdminPermission,
 };
 use crate::{
@@ -179,33 +179,39 @@ pub struct AssignPlanInput {
 /// 因此基线是 `ManageUsers` 而不是 `ManageSettings` —— 只有系统设置权限的角色
 /// 不得改写任意用户的套餐。目标是 Owner 时门槛抬到 `ManageRoles`：改写 Owner
 /// 的权益能压缩最高权限持有者的 Client 配额与授权额度，与禁用 Owner 同档
-/// （Issue #280）。授权顺序见 `authorize_user_write`。
+/// （Issue #280）。Owner 判定与套餐写入现在共用目标用户行锁（Issue #323），
+/// 不再依赖事务外的角色预读。
 pub async fn assign_plan(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(user_id): Path<UserId>,
     Json(input): Json<AssignPlanInput>,
 ) -> Response {
-    let actor = match admin.authorize(&state, AdminPermission::ManageUsers).await {
-        Ok(actor) => actor,
+    let authorization = match authorize_user_write(&state, &admin).await {
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
-    let actor = match authorize_user_write(&state, &admin, actor, user_id).await {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let actor = authorization.actor();
     let expires_at = match parse_expiry(input.expires_at) {
         Ok(expires_at) => expires_at,
         Err(message) => return error::bad_request("invalid_expiration", message),
     };
     match state
         .plans
-        .assign_to_user(user_id, input.plan_id, expires_at)
+        .assign_to_user(
+            user_id,
+            input.plan_id,
+            expires_at,
+            authorization.access(),
+        )
         .await
     {
         Ok(()) => {
             record_plan_event(&state, actor, "user_plan_assign", &user_id.to_string()).await;
             StatusCode::NO_CONTENT.into_response()
+        }
+        Err(PlanServiceError::ManageRolesRequired) => {
+            owner_write_permission_denied(&state, authorization).await
         }
         Err(error_value) => plan_error_response(error_value),
     }
@@ -245,6 +251,10 @@ fn plan_error_response(error_value: PlanServiceError) -> Response {
             "archived plans cannot be assigned to users",
         ),
         PlanServiceError::UserNotFound => error::not_found("user_not_found", "user was not found"),
+        PlanServiceError::ManageRolesRequired => {
+            tracing::error!("owner permission outcome escaped the assignment handler");
+            error::internal()
+        }
         PlanServiceError::Database(database_error) => {
             tracing::error!(error = %database_error, "plan database operation failed");
             error::internal()

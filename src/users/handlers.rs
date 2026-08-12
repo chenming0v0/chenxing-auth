@@ -136,6 +136,7 @@ pub async fn register_user(
         }
         Err(UserServiceError::SourceIpUnavailable) => error::internal(),
         Err(UserServiceError::LastOwnerRequired) => error::internal(),
+        Err(UserServiceError::ManageRolesRequired) => error::internal(),
         // 公开注册没有同事务审计要求，这个变体到不了这里；保留分支只为让新增
         // `UserServiceError` 变体在编译期被发现，而不是落进兜底的 500。
         Err(UserServiceError::AuditUnavailable) => error::internal(),
