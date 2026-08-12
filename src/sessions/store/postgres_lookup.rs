@@ -275,8 +275,12 @@ pub(in crate::sessions::store) async fn revoke_for_user(
         .ok_or(SessionStoreError::MetadataUnavailable)?;
     let mut transaction = pool.begin().await?;
     super::lock_user_session_scope(&mut transaction, user_id).await?;
-    let found: Option<(Vec<u8>,)> = crate::sqlx::query_as(
-        "SELECT token_hash
+    // `session_epoch` 与 token_hash 同行走读，写入 outbox 的 generation：
+    // 与其他撤销路径（revoke_by_token_hash、revoke_all_for_user_in_transaction）
+    // 一致，让 dead-letter 审计行能按真实 epoch 定位到会话。投递逻辑对
+    // revoke_session 只用 token_hash，该字段不改变行为。
+    let found: Option<(Vec<u8>, i64)> = crate::sqlx::query_as(
+        "SELECT token_hash, session_epoch
           FROM user_sessions
           WHERE id = $1
             AND user_id = $2
@@ -290,7 +294,7 @@ pub(in crate::sessions::store) async fn revoke_for_user(
     .bind(store.idle_timeout_interval())
     .fetch_optional(&mut *transaction)
     .await?;
-    let Some((hash,)) = found else {
+    let Some((hash, session_epoch)) = found else {
         transaction.rollback().await?;
         return Ok(false);
     };
@@ -301,11 +305,12 @@ pub(in crate::sessions::store) async fn revoke_for_user(
     crate::sqlx::query(
         "INSERT INTO session_outbox
              (operation, session_id, user_id, token_hash, generation)
-         VALUES ('revoke_session', $1, $2, $3, 0)",
+         VALUES ('revoke_session', $1, $2, $3, $4)",
     )
     .bind(session_id)
     .bind(user_id)
     .bind(&hash)
+    .bind(session_epoch)
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
