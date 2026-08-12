@@ -22,6 +22,9 @@ mod config_proxy;
 mod config_security;
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
+// 会话配置上界常量 `MAX_SESSION_*` 统一来自 config_security（#365 政策封顶），
+// 领域层另有 `crate::sessions::domain::MAX_SESSION_TTL_SECONDS`（#363 运行期 fail-closed
+// 边界，表示 OffsetDateTime 可表示范围），二者不在此处重复导出。
 pub use crate::sessions::domain::{
     DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS, DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,
 };

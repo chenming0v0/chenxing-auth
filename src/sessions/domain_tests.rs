@@ -1,6 +1,6 @@
 use super::{
-    Session, SessionPayload, decode_session_token_hash, generate_credential, session_token_hash,
-    session_token_hash_bytes,
+    Session, SessionError, SessionPayload, decode_session_token_hash, generate_credential,
+    session_token_hash, session_token_hash_bytes,
 };
 use std::time::Duration;
 use time::OffsetDateTime;
@@ -42,6 +42,33 @@ fn new_session_uses_the_supplied_creation_time() {
     assert_eq!(session.created_at, created_at);
     assert_eq!(session.expires_at, created_at + time::Duration::seconds(60));
     assert_eq!(session.last_seen_at, created_at);
+}
+
+/// #363：TTL 超过 `OffsetDateTime` 可表示范围（time crate 默认年份 ±9999）时，
+/// 创建会话必须返回可控错误；此前 `now + ttl` 的 Add 实现直接 panic。
+/// 1e15 秒约 3170 万年，`TimeDuration::try_from` 放行但 `now + ttl` 必然溢出。
+#[test]
+fn out_of_range_ttl_is_a_controlled_error_not_a_panic() {
+    let error = Session::new_at(
+        "1".to_owned(),
+        Duration::from_secs(1_000_000_000_000_000),
+        OffsetDateTime::UNIX_EPOCH,
+    )
+    .expect_err("TTL beyond OffsetDateTime range must be rejected");
+    assert_eq!(error, SessionError::TtlOutOfRange);
+}
+
+/// #363：TTL 超过 `TimeDuration::try_from` 上界（i64 秒）时同样归入
+/// `TtlOutOfRange`，而不是被误报为零 TTL（旧实现把两种错误混为一谈）。
+#[test]
+fn ttl_beyond_time_duration_range_is_not_reported_as_zero() {
+    let error = Session::new_at(
+        "1".to_owned(),
+        Duration::from_secs(u64::MAX),
+        OffsetDateTime::UNIX_EPOCH,
+    )
+    .expect_err("TTL beyond TimeDuration range must be rejected");
+    assert_eq!(error, SessionError::TtlOutOfRange);
 }
 
 /// 43 字符的 base64url 令牌，与 `Session::new` 生成的 CSRF 令牌长度一致。

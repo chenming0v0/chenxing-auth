@@ -14,6 +14,12 @@ use crate::clock::{Clock, SystemClock};
 pub const DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS: u64 = 1_800;
 pub const DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS: u64 = 5;
 pub const DEFAULT_SESSION_ABSOLUTE_TTL_SECONDS: u64 = 604_800;
+/// `OffsetDateTime` 可表示的最大 epoch 秒数（9999-12-31T23:59:59Z）：time crate
+/// 默认未启用 `large-dates`，年份范围只有 ±9999。`TimeDuration::try_from` 的上界
+/// （i64 秒，约 2920 亿年）远宽于此，TTL 落入两者之间时 `now + ttl` 的 Add 实现
+/// 会 panic。配置校验（启动期 fail-fast）与本模块的 `checked_add`（运行期
+/// fail-closed）共用该边界，保证两种路径的语义一致。
+pub const MAX_SESSION_TTL_SECONDS: u64 = 253_402_300_799;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SessionPolicy {
@@ -212,6 +218,8 @@ pub enum SessionError {
     EmptyUserId,
     #[error("session TTL must be greater than zero")]
     ZeroTtl,
+    #[error("session TTL is outside the supported time range")]
+    TtlOutOfRange,
     #[error("session idle timeout must be greater than zero")]
     ZeroIdleTimeout,
     #[error("session idle timeout is outside the supported time range")]
@@ -275,7 +283,11 @@ impl Session {
         if idle_timeout.is_some_and(|timeout| TimeDuration::try_from(timeout).is_err()) {
             return Err(SessionError::IdleTimeoutOutOfRange);
         }
-        let ttl = TimeDuration::try_from(ttl).map_err(|_| SessionError::ZeroTtl)?;
+        let ttl = TimeDuration::try_from(ttl).map_err(|_| SessionError::TtlOutOfRange)?;
+        // `now + ttl` 的 Add 实现会在结果超出 `OffsetDateTime` 范围（±9999 年）时
+        // panic，而 `TimeDuration::try_from` 的上界比这宽得多；同一个溢出点必须用
+        // `checked_add` 转成可控错误（fail-closed），与 `idle_deadline` 的处理一致。
+        let expires_at = now.checked_add(ttl).ok_or(SessionError::TtlOutOfRange)?;
         let credential = generate_credential();
         let mut csrf_bytes = [0_u8; 32];
         OsRng.fill_bytes(&mut csrf_bytes);
@@ -284,7 +296,7 @@ impl Session {
             token: credential.token,
             user_id,
             created_at: now,
-            expires_at: now + ttl,
+            expires_at,
             last_seen_at: now,
             csrf_token: URL_SAFE_NO_PAD.encode(csrf_bytes),
             revoked_at: None,
