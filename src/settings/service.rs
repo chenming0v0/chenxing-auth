@@ -134,22 +134,37 @@ impl SettingsService {
     ) -> Result<Option<String>, SettingsServiceError> {
         let value = normalize_email(value)?;
         repository::set_registration_email_from(&self.pool, value.as_deref()).await?;
-        if let Some(email) = value.as_deref() {
-            let mut smtp =
-                repository::get_smtp(&self.pool)
-                    .await?
-                    .unwrap_or_else(|| StoredSmtpSetting {
-                        host: String::new(),
-                        port: 587,
-                        username: String::new(),
-                        from_address: String::new(),
-                        ssl_enabled: true,
-                        force_auth_login: false,
-                        password_ciphertext: None,
-                    });
-            if smtp.from_address.trim().is_empty() {
-                smtp.from_address = email.to_owned();
-                repository::set_smtp(&self.pool, &smtp).await?;
+        match value.as_deref() {
+            Some(email) => {
+                // 首次配置发件人时回填 SMTP from；SMTP from 已存在（由 SMTP 表单管理）则不动。
+                let mut smtp =
+                    repository::get_smtp(&self.pool)
+                        .await?
+                        .unwrap_or_else(|| StoredSmtpSetting {
+                            host: String::new(),
+                            port: 587,
+                            username: String::new(),
+                            from_address: String::new(),
+                            ssl_enabled: true,
+                            force_auth_login: false,
+                            password_ciphertext: None,
+                        });
+                if smtp.from_address.trim().is_empty() {
+                    smtp.from_address = email.to_owned();
+                    repository::set_smtp(&self.pool, &smtp).await?;
+                }
+            }
+            None => {
+                // 清除的对称处理（#414）：SMTP from 是注册发件人的镜像（设置路径会回填，
+                // `set_smtp` 也会把非空 from 同步进独立值），而读取路径 SMTP from 优先。
+                // 只清独立值会让残留旧地址继续生效；非空 SMTP from 即当前生效发件人，
+                // 清除请求必须一并清掉它，包括修复已处于「独立值已空、SMTP 残留」状态的行。
+                if let Some(mut smtp) = repository::get_smtp(&self.pool).await?
+                    && !smtp.from_address.trim().is_empty()
+                {
+                    smtp.from_address.clear();
+                    repository::set_smtp(&self.pool, &smtp).await?;
+                }
             }
         }
         Ok(value)

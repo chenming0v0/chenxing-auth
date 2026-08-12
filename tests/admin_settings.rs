@@ -180,6 +180,92 @@ async fn owner_can_read_update_and_persist_registration_email_setting() {
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
+/// #414 回归：清除注册发件人必须对称地清掉镜像的 SMTP from，
+/// 否则读取路径（SMTP from 优先）会持续命中残留旧地址。
+#[tokio::test]
+async fn clearing_registration_email_also_clears_mirrored_smtp_sender() {
+    let (router, database, key_directory) = setup().await;
+    let email = format!("registration-{}@example.com", Uuid::new_v4().simple());
+
+    let smtp_from = || async {
+        let raw: String = chenxing_auth::sqlx::query_scalar(
+            "SELECT setting_value FROM app_settings WHERE setting_key = 'smtp'",
+        )
+        .fetch_one(&database)
+        .await
+        .expect("smtp setting");
+        serde_json::from_str::<Value>(&raw).expect("smtp JSON")["from_address"]
+            .as_str()
+            .expect("from_address string")
+            .to_owned()
+    };
+
+    // 首次设置：SMTP from 被回填，两处互为镜像。
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/settings/registration-email")
+                .header("authorization", "Bearer admin-settings-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"registration_email_from": email}).to_string(),
+                ))
+                .expect("set registration email request"),
+        )
+        .await
+        .expect("set registration email response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json(response).await["registration_email_from"], email);
+    assert_eq!(smtp_from().await, email);
+
+    // 清除：独立值与镜像的 SMTP from 必须一并清空。
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/settings/registration-email")
+                .header("authorization", "Bearer admin-settings-token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"registration_email_from": null}).to_string(),
+                ))
+                .expect("clear registration email request"),
+        )
+        .await
+        .expect("clear registration email response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(json(response).await["registration_email_from"].is_null());
+
+    let stored: Option<String> = chenxing_auth::sqlx::query_scalar(
+        "SELECT setting_value FROM app_settings WHERE setting_key = 'registration_email_from'",
+    )
+    .fetch_one(&database)
+    .await
+    .expect("stored setting");
+    assert!(stored.is_none(), "independent value must be cleared");
+    assert_eq!(smtp_from().await, "", "mirrored SMTP from must be cleared");
+
+    // 清除后读取必须返回 null，而不是残留旧地址。
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/settings/registration-email")
+                .header("authorization", "Bearer admin-settings-token")
+                .body(Body::empty())
+                .expect("read registration email request"),
+        )
+        .await
+        .expect("read registration email response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(json(response).await["registration_email_from"].is_null());
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
 #[tokio::test]
 async fn session_authenticated_setting_mutation_records_user_actor() {
     let (router, database, key_directory) = setup().await;
