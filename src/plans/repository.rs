@@ -329,12 +329,11 @@ pub async fn assign_to_user(
     // 先锁目标用户，再判定 Owner 档位；该锁一直持有到套餐写入提交。角色晋升与
     // 套餐改写因此不可能穿过两个独立快照（Issue #323）。目标先于套餐判定也保留
     // 既有错误优先级：Owner 权限不足仍是 403，而不是由套餐状态泄露 404/400。
-    let role: Option<String> = crate::sqlx::query_scalar(
-        "SELECT role FROM users WHERE id = $1 FOR UPDATE",
-    )
-    .bind(user_id)
-    .fetch_optional(&mut *transaction)
-    .await?;
+    let role: Option<String> =
+        crate::sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
     let Some(role) = role else {
         transaction.rollback().await?;
         return Ok(PlanAssignmentResult::UserNotFound);

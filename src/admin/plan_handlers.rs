@@ -198,12 +198,7 @@ pub async fn assign_plan(
     };
     match state
         .plans
-        .assign_to_user(
-            user_id,
-            input.plan_id,
-            expires_at,
-            authorization.access(),
-        )
+        .assign_to_user(user_id, input.plan_id, expires_at, authorization.access())
         .await
     {
         Ok(()) => {

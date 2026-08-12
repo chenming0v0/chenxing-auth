@@ -1054,11 +1054,8 @@ fn legacy_token_without_new_fields_can_rotate() {
         !deserialized.is_bound_to_client_secret_version(7, false),
         "a post-upgrade Secret rotation permanently closes the legacy window"
     );
-    let rebound = deserialized.rotate_at_with_client_secret_version(
-        vec!["openid".to_owned()],
-        7,
-        now,
-    );
+    let rebound =
+        deserialized.rotate_at_with_client_secret_version(vec!["openid".to_owned()], 7, now);
     assert_eq!(rebound.client_secret_version, Some(7));
 }
 

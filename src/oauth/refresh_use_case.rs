@@ -55,10 +55,7 @@ pub(super) async fn exchange_refresh_token(
         .await;
     }
 
-    if refresh
-        .validate(client_id, state.clock.now())
-        .is_err()
-    {
+    if refresh.validate(client_id, state.clock.now()).is_err() {
         return record_and_return_invalid(
             state,
             Some(&refresh.user_id),

@@ -224,19 +224,18 @@ async fn assert_start_reserves_one_challenge(
         post_with_cookie(router, endpoint, serde_json::json!({}), &ticket.1),
         post_with_cookie(router, endpoint, serde_json::json!({}), &ticket.1),
     );
-    let (winner, loser) = if first.status() == StatusCode::OK
-        && second.status() == StatusCode::BAD_REQUEST
-    {
-        (first, second)
-    } else if second.status() == StatusCode::OK && first.status() == StatusCode::BAD_REQUEST {
-        (second, first)
-    } else {
-        panic!(
-            "exactly one concurrent start must win, got {} and {}",
-            first.status(),
-            second.status()
-        );
-    };
+    let (winner, loser) =
+        if first.status() == StatusCode::OK && second.status() == StatusCode::BAD_REQUEST {
+            (first, second)
+        } else if second.status() == StatusCode::OK && first.status() == StatusCode::BAD_REQUEST {
+            (second, first)
+        } else {
+            panic!(
+                "exactly one concurrent start must win, got {} and {}",
+                first.status(),
+                second.status()
+            );
+        };
     let first_challenge = json_response(winner).await["publicKey"]["challenge"]
         .as_str()
         .expect("winner challenge")
@@ -260,10 +259,12 @@ async fn assert_start_reserves_one_challenge(
         .expect("reserved passkey state");
 
     for _ in 0..=ticket_failure_limit() {
-        let response =
-            post_with_cookie(router, endpoint, serde_json::json!({}), &ticket.1).await;
+        let response = post_with_cookie(router, endpoint, serde_json::json!({}), &ticket.1).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(json_response(response).await["code"], "invalid_login_ticket");
+        assert_eq!(
+            json_response(response).await["code"],
+            "invalid_login_ticket"
+        );
     }
     let payload_after_rejections: String = connection
         .get(pending_key)

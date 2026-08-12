@@ -256,8 +256,8 @@ pub(super) fn discard_all_key_material(directory: &Path) -> Result<(), KeyManage
         let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        let is_current_key = file_name.starts_with(KEY_FILE_PREFIX)
-            && file_name.ends_with(KEY_FILE_SUFFIX);
+        let is_current_key =
+            file_name.starts_with(KEY_FILE_PREFIX) && file_name.ends_with(KEY_FILE_SUFFIX);
         if is_current_key || file_name == LEGACY_KEY_FILE {
             key_paths.push(path);
         }

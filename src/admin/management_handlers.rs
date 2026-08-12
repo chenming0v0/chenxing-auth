@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     authorization::{
-        AdminActor, OwnerGuardedOperation, authorize_user_write, owner_write_permission_denied,
+        OwnerGuardedOperation, authorize_user_write, owner_write_permission_denied,
         record_owner_guard_denial,
     },
     domain::AdminPermission,

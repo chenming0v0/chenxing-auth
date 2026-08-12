@@ -19,9 +19,7 @@ use chenxing_auth::{
     oauth::{
         code::AuthorizationCode,
         refresh::RefreshToken,
-        token_use_case::{
-            self, OAuthError, RefreshExchangeError, TokenRequest, TokenResponse,
-        },
+        token_use_case::{self, OAuthError, RefreshExchangeError, TokenRequest, TokenResponse},
     },
     state::AppState,
 };
@@ -82,11 +80,7 @@ async fn authenticate(
 ) -> AuthenticatedClient {
     state
         .clients
-        .authenticate_credentials(
-            client_id,
-            ClientAuthMethod::Basic,
-            Some(client_secret),
-        )
+        .authenticate_credentials(client_id, ClientAuthMethod::Basic, Some(client_secret))
         .await
         .expect("authenticate client")
         .expect("valid client credentials")
@@ -155,12 +149,8 @@ fn issued_refresh(response: TokenResponse) -> String {
 #[tokio::test]
 async fn authorization_code_cannot_persist_after_authenticated_secret_version_changes() {
     let harness = setup().await;
-    let authenticated = authenticate(
-        &harness.state,
-        &harness.client_id,
-        &harness.client_secret,
-    )
-    .await;
+    let authenticated =
+        authenticate(&harness.state, &harness.client_id, &harness.client_secret).await;
     let code = authorization_code(&harness.client_id, harness.user_id);
     harness
         .state
@@ -213,12 +203,8 @@ async fn refresh_written_after_rotation_is_inert_even_if_revocation_already_ran(
     .execute(&harness.database)
     .await
     .expect("open legacy compatibility window");
-    let stale_authentication = authenticate(
-        &harness.state,
-        &harness.client_id,
-        &harness.client_secret,
-    )
-    .await;
+    let stale_authentication =
+        authenticate(&harness.state, &harness.client_id, &harness.client_secret).await;
     assert!(stale_authentication.allows_legacy_refresh_tokens());
     let stale_refresh = RefreshToken::new_at_with_client_secret_version(
         harness.client_id.clone(),
@@ -269,12 +255,8 @@ async fn refresh_written_after_rotation_is_inert_even_if_revocation_already_ran(
         Err(RefreshExchangeError::OAuth(OAuthError::InvalidClient))
     ));
 
-    let current_authentication = authenticate(
-        &harness.state,
-        &harness.client_id,
-        &rotated.client_secret,
-    )
-    .await;
+    let current_authentication =
+        authenticate(&harness.state, &harness.client_id, &rotated.client_secret).await;
     assert!(!current_authentication.allows_legacy_refresh_tokens());
     let current_result = token_use_case::exchange_refresh_token(
         &harness.state,
@@ -342,12 +324,8 @@ async fn refresh_written_after_rotation_is_inert_even_if_revocation_already_ran(
 async fn concurrent_rotation_leaves_no_live_refresh_from_either_issuance_path() {
     let harness = setup().await;
     save_consent(&harness).await;
-    let authenticated = authenticate(
-        &harness.state,
-        &harness.client_id,
-        &harness.client_secret,
-    )
-    .await;
+    let authenticated =
+        authenticate(&harness.state, &harness.client_id, &harness.client_secret).await;
     let per_path = 3_usize;
     let barrier = Arc::new(Barrier::new(per_path * 2 + 1));
 

@@ -102,7 +102,11 @@ async fn get(router: &Router, uri: &str, cookie: Option<&str>) -> axum::response
     }
     router
         .clone()
-        .oneshot(request.body(Body::empty()).expect("security events request"))
+        .oneshot(
+            request
+                .body(Body::empty())
+                .expect("security events request"),
+        )
         .await
         .expect("security events response")
 }
@@ -140,7 +144,11 @@ async fn security_events_reject_invalid_pagination() {
         )
         .await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}");
-        assert_eq!(json(response).await["code"], "invalid_pagination", "{query}");
+        assert_eq!(
+            json(response).await["code"],
+            "invalid_pagination",
+            "{query}"
+        );
     }
 
     let _ = std::fs::remove_dir_all(app.key_directory);
@@ -226,7 +234,9 @@ async fn security_events_are_user_scoped_archived_paged_and_whitelisted() {
     assert_eq!(first_page["page"], 1);
     assert_eq!(first_page["page_size"], 2);
     assert_eq!(first_page["total"], 3);
-    let items = first_page["items"].as_array().expect("security event items");
+    let items = first_page["items"]
+        .as_array()
+        .expect("security event items");
     assert_eq!(items.len(), 2);
     assert_eq!(items[0]["action"], "newest_event");
     assert_eq!(items[0]["client_id"], client_id);
@@ -262,7 +272,10 @@ async fn security_events_are_user_scoped_archived_paged_and_whitelisted() {
     assert_eq!(response.status(), StatusCode::OK);
     let second_page = json(response).await;
     assert_eq!(second_page["total"], 3);
-    assert_eq!(second_page["items"].as_array().expect("archive page").len(), 1);
+    assert_eq!(
+        second_page["items"].as_array().expect("archive page").len(),
+        1
+    );
     assert_eq!(second_page["items"][0]["action"], "archived_event");
     assert_eq!(second_page["items"][0]["client_id"], client_id);
     assert_ne!(second_page["items"][0]["action"], "other_user_event");

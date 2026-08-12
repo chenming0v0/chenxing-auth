@@ -1183,8 +1183,7 @@ async fn session_sync_outbox_preserves_redis_fallback_for_active_null_payload() 
     let client = redis_client();
     let store =
         SessionStore::with_metadata_and_key(client.clone(), pool.clone(), session_store_key());
-    let mut session =
-        Session::new(user.id.to_string(), Duration::from_secs(300)).expect("session");
+    let mut session = Session::new(user.id.to_string(), Duration::from_secs(300)).expect("session");
     store
         .save(&mut session, Duration::from_secs(300))
         .await
@@ -1221,7 +1220,10 @@ async fn session_sync_outbox_preserves_redis_fallback_for_active_null_payload() 
         .get(&redis_key)
         .await
         .expect("read retained Redis fallback payload");
-    assert_eq!(retained_payload.as_deref(), Some(fallback_payload.as_slice()));
+    assert_eq!(
+        retained_payload.as_deref(),
+        Some(fallback_payload.as_slice())
+    );
     assert!(
         store
             .find(&session.token)

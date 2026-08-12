@@ -75,22 +75,16 @@ pub(super) fn revoke_blocking_at(
     )?;
     let (next_active_key_id, next_state) = match directory.as_ref() {
         Some(directory) => {
-            let (disk_active_key_id, disk_materials) = commit_to_disk(
-                directory,
-                retention,
-                now,
-                &key_id,
-                &planned_active_key_id,
-            )?;
-            let state = if planned_state
-                .matches_disk_snapshot(&disk_active_key_id, &disk_materials)
+            let (disk_active_key_id, disk_materials) =
+                commit_to_disk(directory, retention, now, &key_id, &planned_active_key_id)?;
+            let state = if planned_state.matches_disk_snapshot(&disk_active_key_id, &disk_materials)
             {
                 planned_state
             } else {
                 // 仅异常恢复会走这里：以 journal 收敛后的实际 active/materials 为准，
                 // 不能发布调用前推算的陈旧快照。
                 build_key_state(
-                    directory.clone(),
+                    Some(directory.clone()),
                     retention,
                     disk_active_key_id.clone(),
                     disk_materials,

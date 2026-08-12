@@ -21,7 +21,10 @@ fn app_issuer_rejects_url_userinfo_without_echoing_credentials() {
         "APP_ISSUER",
         [
             ("https://issuer-user@auth.example.com", "issuer-user"),
-            ("https://:issuer-password@auth.example.com", "issuer-password"),
+            (
+                "https://:issuer-password@auth.example.com",
+                "issuer-password",
+            ),
         ],
     );
 
@@ -34,7 +37,10 @@ fn webauthn_origin_rejects_url_userinfo_without_echoing_credentials() {
         "WEBAUTHN_ORIGIN",
         [
             ("https://origin-user@auth.example.com", "origin-user"),
-            ("https://:origin-password@auth.example.com", "origin-password"),
+            (
+                "https://:origin-password@auth.example.com",
+                "origin-password",
+            ),
         ],
     );
 

@@ -86,9 +86,7 @@ async fn token_inner(
         return response;
     }
     match request.grant_type.as_str() {
-        "authorization_code" => {
-            exchange_authorization_code(state, request, authenticated).await
-        }
+        "authorization_code" => exchange_authorization_code(state, request, authenticated).await,
         "refresh_token" => exchange_refresh_token(state, request, authenticated).await,
         _ => error::oauth_bad_request("unsupported_grant_type", "grant type is unsupported"),
     }

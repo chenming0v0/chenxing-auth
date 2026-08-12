@@ -36,12 +36,9 @@ async fn setup() -> TestEnv {
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
     // 晋升事务、被测请求和锁等待探针必须能同时持有连接。
-    let database = db_isolation::isolated_pool_with_max_connections(
-        "owner_write_race",
-        &database_url,
-        6,
-    )
-    .await;
+    let database =
+        db_isolation::isolated_pool_with_max_connections("owner_write_race", &database_url, 6)
+            .await;
     let key_directory =
         std::env::temp_dir().join(format!("chenxing-owner-write-{}", Uuid::new_v4()));
     let mut config = Config::from_values_with_issuer(
@@ -80,16 +77,13 @@ async fn seed_user(database: &chenxing_auth::sqlx::PgPool, name: &str, role: &st
     .expect("seed user")
 }
 
-async fn browser_session(
-    database: &chenxing_auth::sqlx::PgPool,
-    user_id: i64,
-) -> (String, String) {
+async fn browser_session(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -> (String, String) {
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
     let redis = redis::Client::open(redis_url).expect("Redis");
     let store = SessionStore::with_metadata_and_key(redis, database.clone(), [0; 32]);
-    let mut session = Session::new(user_id.to_string(), Duration::from_secs(3600))
-        .expect("browser session");
+    let mut session =
+        Session::new(user_id.to_string(), Duration::from_secs(3600)).expect("browser session");
     store
         .save(&mut session, Duration::from_secs(3600))
         .await
@@ -105,10 +99,7 @@ async fn browser_session(
 }
 
 /// 等到被测请求确实在等待晋升事务，而不是靠 sleep 猜调度时序。
-async fn wait_for_blocked_request(
-    database: &chenxing_auth::sqlx::PgPool,
-    blocker_pid: i32,
-) {
+async fn wait_for_blocked_request(database: &chenxing_auth::sqlx::PgPool, blocker_pid: i32) {
     timeout(Duration::from_secs(5), async {
         loop {
             let blocked: bool = chenxing_auth::sqlx::query_scalar(
@@ -139,10 +130,7 @@ async fn response_json(response: axum::response::Response) -> serde_json::Value 
     serde_json::from_slice(&body).expect("JSON response")
 }
 
-async fn manage_roles_denial_count(
-    database: &chenxing_auth::sqlx::PgPool,
-    admin_id: i64,
-) -> i64 {
+async fn manage_roles_denial_count(database: &chenxing_auth::sqlx::PgPool, admin_id: i64) -> i64 {
     chenxing_auth::sqlx::query_scalar(
         "SELECT COUNT(*)
          FROM audit_events
@@ -209,10 +197,7 @@ async fn status_write_uses_the_owner_role_locked_by_its_write_transaction() {
             .await
             .expect("target state after denied status write");
     assert_eq!(state, ("owner".to_owned(), "active".to_owned()));
-    assert_eq!(
-        manage_roles_denial_count(&env.database, admin_id).await,
-        1
-    );
+    assert_eq!(manage_roles_denial_count(&env.database, admin_id).await, 1);
     let _ = std::fs::remove_dir_all(&env.key_directory);
 }
 
@@ -276,9 +261,6 @@ async fn plan_assignment_uses_the_owner_role_locked_by_its_write_transaction() {
             .await
             .expect("target state after denied plan assignment");
     assert_eq!(state, ("owner".to_owned(), None));
-    assert_eq!(
-        manage_roles_denial_count(&env.database, admin_id).await,
-        1
-    );
+    assert_eq!(manage_roles_denial_count(&env.database, admin_id).await, 1);
     let _ = std::fs::remove_dir_all(&env.key_directory);
 }

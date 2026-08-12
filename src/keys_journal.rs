@@ -153,10 +153,7 @@ pub(super) fn recover(directory: &Path) -> Result<(), KeyManagerError> {
     Ok(())
 }
 
-fn recover_pending(
-    directory: &Path,
-    pending: &PendingRevocation,
-) -> Result<(), KeyManagerError> {
+fn recover_pending(directory: &Path, pending: &PendingRevocation) -> Result<(), KeyManagerError> {
     let active_key_id = recoverable_active_key_id(directory)?;
 
     // 已有另一个可用 active 说明目录在 journal 之后已经前进，绝不能回退到记录里的
