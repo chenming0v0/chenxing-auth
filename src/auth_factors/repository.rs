@@ -244,36 +244,6 @@ pub async fn list_passkeys(
         .collect()
 }
 
-pub async fn insert_passkey(
-    pool: &PgPool,
-    user_id: UserId,
-    credential_id: &[u8],
-    passkey: &Passkey,
-) -> Result<PasskeyPersistenceResult, crate::sqlx::Error> {
-    let credential = serde_json::to_value(passkey)
-        .map_err(|error| crate::sqlx::Error::Encode(Box::new(error)))?;
-    let result = crate::sqlx::query(
-        "INSERT INTO user_passkeys AS existing
-            (user_id, credential_id, credential, created_at, updated_at)
-         VALUES ($1, $2, $3, NOW(), NOW())
-         ON CONFLICT (credential_id) DO UPDATE
-         SET credential = EXCLUDED.credential
-         WHERE existing.user_id = EXCLUDED.user_id
-           AND existing.credential = EXCLUDED.credential
-         RETURNING user_id",
-    )
-    .bind(user_id)
-    .bind(credential_id)
-    .bind(credential)
-    .fetch_optional(pool)
-    .await?;
-    Ok(if result.is_some() {
-        PasskeyPersistenceResult::Stored
-    } else {
-        PasskeyPersistenceResult::Conflict
-    })
-}
-
 pub async fn insert_passkey_if_empty(
     pool: &PgPool,
     user_id: UserId,
