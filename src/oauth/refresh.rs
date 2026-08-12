@@ -117,6 +117,10 @@ pub enum RefreshTokenError {
 }
 
 impl RefreshToken {
+    /// 墙钟便捷入口，只给测试和夹具用。
+    ///
+    /// 生产签发必须走 [`Self::new_at`] / [`Self::new_at_with_client_secret_version`]
+    /// 并传入注入的 `SharedClock`，让 TTL 和过期共用同一时间源（Issue #366）。
     pub fn new(client_id: String, user_id: String, scopes: Vec<String>) -> Self {
         Self::new_at(client_id, user_id, scopes, SystemClock.now())
     }
@@ -157,6 +161,10 @@ impl RefreshToken {
     ///
     /// 继承 `issued_at` 和 `family_id` 以维持家族关系和绝对生命周期；
     /// 更新 `created_at` / `expires_at` 以重置滑动窗口。
+    ///
+    /// 墙钟便捷入口，只给测试和夹具用。生产刷新路径必须走
+    /// [`Self::rotate_at`] / [`Self::rotate_at_with_client_secret_version`]，
+    /// 并传入与 `validate`、Redis TTL 相同的时刻（Issue #366）。
     pub fn rotate(&self, scopes: Vec<String>) -> Self {
         self.rotate_at(scopes, SystemClock.now())
     }

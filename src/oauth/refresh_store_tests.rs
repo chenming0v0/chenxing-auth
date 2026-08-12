@@ -45,3 +45,27 @@ fn family_scope_ignores_which_member_was_submitted() {
     );
     assert_eq!(from_first_member.index_key, from_second_member.index_key);
 }
+
+/// Issue #366：TTL 必须跟调用方传入的时刻走，不能回头读墙钟。
+/// 否则固定时钟下「validate 判有效、Redis 却按另一时刻裁键」会对不齐。
+#[test]
+fn refresh_ttl_uses_the_injected_instant() {
+    use crate::oauth::refresh::RefreshToken;
+    use time::{Duration, OffsetDateTime};
+
+    let created = OffsetDateTime::UNIX_EPOCH + Duration::days(10);
+    let token = RefreshToken::new_at(
+        "client".to_owned(),
+        "user".to_owned(),
+        vec!["openid".to_owned()],
+        created,
+    );
+
+    let ten_days_later = created + Duration::days(10);
+    let remaining = super::effective_ttl_at(&token, ten_days_later);
+    // 滑动窗口 30 天，已过 10 天，剩余约 20 天。
+    assert_eq!(remaining, 20 * 24 * 60 * 60);
+
+    let past_absolute_deadline = created + Duration::days(200);
+    assert_eq!(super::effective_ttl_at(&token, past_absolute_deadline), 1);
+}

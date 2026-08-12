@@ -294,17 +294,28 @@ impl RefreshTokenStore {
         token: &RefreshToken,
         replacement: &RefreshToken,
     ) -> Result<RotationOutcome, RefreshTokenStoreError> {
+        self.rotate_if_matches_at(value, token, replacement, self.clock.now())
+            .await
+    }
+
+    /// 与 [`Self::rotate_if_matches`] 相同的 CAS，但墓碑时刻和新 token TTL
+    /// 都由 `now` 派生，避免与刚刚放行该 token 的 grant 检查各读一次时钟
+    /// （Issue #366）。
+    pub async fn rotate_if_matches_at(
+        &self,
+        value: &str,
+        token: &RefreshToken,
+        replacement: &RefreshToken,
+        now: time::OffsetDateTime,
+    ) -> Result<RotationOutcome, RefreshTokenStoreError> {
         let expected = serde_json::to_string(token)?;
         let replacement_payload = serde_json::to_string(replacement)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let old_hash = Self::token_hash(value);
         let new_hash = Self::token_hash(&replacement.value);
-        let tombstone = serde_json::to_string(&Tombstone::for_token(
-            token,
-            TombstoneState::Consumed,
-            self.clock.now(),
-        ))?;
-        let new_ttl = self.effective_ttl(replacement);
+        let tombstone =
+            serde_json::to_string(&Tombstone::for_token(token, TombstoneState::Consumed, now))?;
+        let new_ttl = effective_ttl_at(replacement, now);
         let target_family = FamilyScope::new(&replacement.family_id, &new_hash);
         let rotated: i32 = Script::new(ROTATE_WITH_TOMBSTONE_SCRIPT)
             .key(Self::token_key_for_hash(&old_hash))
