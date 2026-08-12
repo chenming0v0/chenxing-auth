@@ -71,6 +71,13 @@ pub struct Config {
     pub issuer_url: String,
     pub admin_token: String,
     pub key_directory: String,
+    /// 前端构建产物根（`WEB_DIST_DIR`）的原始配置值。
+    ///
+    /// 这里只保存字符串：真正的解析、canonicalize 和「是可信产物根」的校验发生在
+    /// 启动构建 `AppState` 时（见 `crate::web_dist`）。分开的原因是 `migrate` 与
+    /// `audit-archive` 子命令同样要加载配置，但它们不托管任何静态资源，不该因为
+    /// 主机上没有前端产物而无法执行。
+    pub web_dist_dir: String,
     pub key_rotation_grace_seconds: u64,
     pub cookie_secure: bool,
     /// Development-only compatibility for the OAuth session header.
@@ -113,6 +120,7 @@ impl fmt::Debug for Config {
             .field("issuer_url", &debug_safe_url(&self.issuer_url))
             .field("admin_token", &"REDACTED")
             .field("key_directory", &self.key_directory)
+            .field("web_dist_dir", &self.web_dist_dir)
             .field(
                 "key_rotation_grace_seconds",
                 &self.key_rotation_grace_seconds,

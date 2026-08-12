@@ -53,6 +53,9 @@ fn test_constructors_default_to_safe_values() {
     // 未配置可信代理：忽略 XFF，等价于升级前的行为。
     assert!(config.trusted_proxies.is_empty());
     assert_eq!(config.security_limits, SecurityLimits::default());
+    // #303：静态根默认是相对路径，绝不是空值——空值会在启动期被拒绝。
+    assert_eq!(config.web_dist_dir, crate::web_dist::DEFAULT_WEB_DIST_DIR);
+    assert!(!config.web_dist_dir.trim().is_empty());
 }
 
 #[test]

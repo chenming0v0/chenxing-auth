@@ -29,10 +29,13 @@ pub fn router(state: AppState) -> Router {
     let hsts_enabled = security_headers::hsts_enabled(&state.config.issuer_url);
     let request_timeout = Duration::from_secs(state.config.request_timeout_seconds);
 
+    // 静态根来自 AppState 里那份启动期已校验的路径，请求路径上不再读环境变量。
+    let static_service = static_files::static_service(&state.web_dist);
+
     routes::register(Router::new(), request_timeout)
         // 静态资源与 SPA 回退挂在 fallback 上：fallback_service 只在上面所有
         // 路由都不匹配时才生效，所以 /api/*、/health 等不会被静态服务抢走。
-        .fallback_service(static_files::static_service())
+        .fallback_service(static_service)
         .with_state(state)
         .layer(TraceLayer::new_for_http().make_span_with(request_span))
         .layer(map_response(|response: Response| async move {
@@ -143,8 +146,9 @@ mod tests {
 
     /// 构造完整 Router 并发送一次请求。
     ///
-    /// 这些断言在有无 `web/dist` 的环境下都成立：`web/dist` 被 gitignore，
-    /// 测试不能依赖真实构建产物是否存在。
+    /// `web/dist` 虽然被 gitignore，但 build script 在编译期就保证了它存在
+    /// （`index.html` 是 `include_str!` 的输入），因此 `AppState::new_with_pool`
+    /// 里的启动期产物根校验（Issue #303）在测试环境下同样成立。
     async fn send_request(uri: &str, method: Method) -> Response {
         let request = Request::builder()
             .uri(uri)

@@ -1,41 +1,32 @@
 //! React 构建产物（`web/dist`）的静态托管与 SPA 回退。
 //!
 //! 后端只做静态托管，不生成或渲染任何 HTML：这里返回的 `index.html` 是
-//! Vite 的构建产物，在编译期通过 `include_str!` 内嵌。
+//! Vite 的构建产物，由 [`crate::web_dist::EMBEDDED_INDEX_HTML`] 在编译期内嵌，
+//! 本模块不持有第二份定义。
 //!
 //! 请求的处理顺序是：
-//! 1. `ServeDir` 命中 `web/dist` 下的真实文件（JS / CSS / 图标等）时直接返回文件；
+//! 1. `ServeDir` 命中产物根下的真实文件（JS / CSS / 图标等）时直接返回文件；
 //! 2. 未命中时回退到 `web_app`，由它区分协议路径、静态资源路径和 SPA 路由。
+//!
+//! 静态根不在这里解析：它是启动期就 canonicalize 并校验过的 [`WebDistRoot`]
+//! （Issue #303）。本模块因此没有任何「目录不存在」「配置为空」之类的降级分支——
+//! 那些情况在进程开始监听之前就已经被拒绝。
 
 use axum::{
     http::{Method, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
     routing::{MethodRouter, any},
 };
-use std::{env, path::PathBuf};
 use tower_http::services::ServeDir;
 
-/// 默认静态资源目录，相对于进程工作目录解析。
-const DEFAULT_WEB_DIST_DIR: &str = "web/dist";
+use crate::web_dist::{EMBEDDED_INDEX_HTML, WebDistRoot};
 
 /// 构建静态文件服务。
 ///
-/// `ServeDir` 负责 `web/dist` 下的真实文件；文件缺失或方法不被允许时回退到
+/// `ServeDir` 负责产物根下的真实文件；文件缺失或方法不被允许时回退到
 /// `web_app`，从而让 SPA 路由拿到 `index.html`、让资源路径拿到 JSON 404。
-pub(super) fn static_service() -> ServeDir<MethodRouter<()>> {
-    let dist_dir = web_dist_dir();
-
-    // 目录缺失不 panic：`index.html` 已在编译期内嵌，SPA 回退仍然可用，
-    // 静态资源退化为 404 是可接受的降级，比启动失败更适合线上。
-    if !dist_dir.is_dir() {
-        tracing::warn!(
-            event = "web_dist_missing",
-            path = %dist_dir.display(),
-            "静态资源目录不存在，JS/CSS 将返回 404；SPA 回退仍可工作"
-        );
-    }
-
-    ServeDir::new(dist_dir)
+pub(super) fn static_service(root: &WebDistRoot) -> ServeDir<MethodRouter<()>> {
+    ServeDir::new(root.path())
         // 目录请求不从磁盘拼 index.html，直接交给回退处理器：
         // 内嵌的 index.html 是 SPA shell 的唯一来源，避免磁盘副本与内嵌副本
         // 产生两条可能不一致的路径（磁盘产物可能比内嵌的旧），也顺带避免
@@ -56,29 +47,6 @@ fn spa_fallback() -> MethodRouter<()> {
     any(web_app)
 }
 
-/// 解析静态资源目录路径，支持环境变量覆盖以应对单二进制部署场景。
-///
-/// 单二进制部署时进程工作目录不一定是仓库根目录，`web/dist` 这种相对路径会
-/// 找不到，所以允许用 `WEB_DIST_DIR` 指定绝对路径。
-///
-/// 这里直接读环境变量而不是走 `AppConfig`：`router()` 目前是同步构造且不接受
-/// 额外参数，把该路径塞进 `AppConfig` 会牵动配置加载和所有调用点。
-/// TODO: 后续应把该路径收敛进 `AppConfig` 统一管理。
-fn web_dist_dir() -> PathBuf {
-    resolve_web_dist_dir(env::var("WEB_DIST_DIR").ok())
-}
-
-/// 纯函数形式的目录解析规则，便于在不改动进程环境变量的前提下测试。
-///
-/// 空值按“未配置”处理：`ServeDir::new("")` 会把整个工作目录暴露成静态根，
-/// 那样 `.env`、私钥等文件都可能被下载，必须避免。
-fn resolve_web_dist_dir(configured: Option<String>) -> PathBuf {
-    configured
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_WEB_DIST_DIR.to_owned())
-        .into()
-}
-
 /// `ServeDir` 未命中真实文件时的回退处理器。
 async fn web_app(request: axum::extract::Request) -> Response {
     if request.method() != Method::GET && request.method() != Method::HEAD {
@@ -95,7 +63,7 @@ async fn web_app(request: axum::extract::Request) -> Response {
     (
         StatusCode::OK,
         [(CONTENT_TYPE, "text/html; charset=utf-8")],
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/web/dist/index.html")),
+        EMBEDDED_INDEX_HTML,
     )
         .into_response()
 }
@@ -169,33 +137,9 @@ mod tests {
         assert!(!is_protocol_path("/admin/login"));
     }
 
+    /// 内嵌 shell 是唯一的 HTML 来源，静态根不参与 HTML 生成。
     #[test]
-    fn resolve_web_dist_dir_uses_configured_value_when_present() {
-        assert_eq!(
-            resolve_web_dist_dir(Some("/opt/app/dist".to_owned())),
-            PathBuf::from("/opt/app/dist")
-        );
-    }
-
-    #[test]
-    fn resolve_web_dist_dir_falls_back_to_default_when_none() {
-        assert_eq!(
-            resolve_web_dist_dir(None),
-            PathBuf::from(DEFAULT_WEB_DIST_DIR)
-        );
-    }
-
-    #[test]
-    fn resolve_web_dist_dir_rejects_empty_string_for_security() {
-        // 空字符串会让 ServeDir 把整个工作目录当静态根，
-        // .env 和私钥等敏感文件都可能被下载，必须回落到默认值
-        assert_eq!(
-            resolve_web_dist_dir(Some("".to_owned())),
-            PathBuf::from(DEFAULT_WEB_DIST_DIR)
-        );
-        assert_eq!(
-            resolve_web_dist_dir(Some("   ".to_owned())),
-            PathBuf::from(DEFAULT_WEB_DIST_DIR)
-        );
+    fn the_embedded_shell_is_the_spa_html_source() {
+        assert!(EMBEDDED_INDEX_HTML.contains("<div id=\"root\"></div>"));
     }
 }
