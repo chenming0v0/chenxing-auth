@@ -37,6 +37,41 @@ export function settingsEqual<T>(left: T, right: T): boolean {
 }
 
 /**
+ * 正整数输入校验核心：设置面板的草稿一律以字符串保存（保留空串和输入中间态），
+ * 保存前再按各自上限统一校验（从 security-limits 面板提取共享，#376）。
+ * 错误文案必须保持稳定——它们被各面板的校验测试逐字断言。
+ * JSON 请求使用 JavaScript number，因此上限与边界必须停在可精确表示的安全整数。
+ */
+export function validateIntegerWithinRange(
+  rawValue: string,
+  label: string,
+  maximum: number,
+): { value: number } | { error: string } {
+  const raw = rawValue.trim()
+  const positiveIntegerMessage = `「${label}」必须填写大于 0 的整数。`
+  if (!raw) return { error: positiveIntegerMessage }
+
+  const numeric = Number(raw)
+  if (Number.isNaN(numeric)) {
+    return { error: `「${label}」不是有效数字（NaN），请填写大于 0 的整数。` }
+  }
+  if (!Number.isFinite(numeric)) {
+    return { error: `「${label}」必须是有限数字，不能为 ${numeric}。` }
+  }
+  if (!Number.isInteger(numeric)) {
+    return { error: positiveIntegerMessage }
+  }
+  if (numeric <= 0) return { error: positiveIntegerMessage }
+  if (!Number.isSafeInteger(numeric)) {
+    return { error: `「${label}」超出 JavaScript 安全整数范围，最大为 ${Number.MAX_SAFE_INTEGER}。` }
+  }
+  if (numeric > maximum) {
+    return { error: `「${label}」超出范围，必须在 1 到 ${maximum} 之间。` }
+  }
+  return { value: numeric }
+}
+
+/**
  * dirty 上报的公共通道（#381）：dirty 变化时通知工作区；卸载时上报 false，
  * 让工作区的聚合计数不会因面板卸载（如 OAuth 面板按权限条件渲染）残留脏标记。
  * `onDirtyChange` 必须跨渲染稳定，effect 才不会每次渲染重跑。
