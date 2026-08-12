@@ -938,6 +938,8 @@ async fn revoking_a_legacy_token_does_not_touch_other_legacy_tokens() {
         issued_at: None,
         family_id: String::new(),
         client_secret_version: None,
+        // 旧格式 payload 没有 session_epoch（Issue #409 之前签发）
+        session_epoch: None,
     };
     let revoked = legacy("revoked");
     let untouched = legacy("untouched");
@@ -995,7 +997,7 @@ async fn revoking_a_legacy_token_does_not_touch_other_legacy_tokens() {
 /// 旧格式 token（无 `issued_at` / `family_id` / `client_secret_version`）能反序列化并轮换。
 #[test]
 fn legacy_token_without_new_fields_can_rotate() {
-    // 构造旧格式 token（无 issued_at / family_id / client_secret_version）
+    // 构造旧格式 token（无 issued_at / family_id / client_secret_version / session_epoch）
     let now = OffsetDateTime::now_utc();
     let legacy = RefreshToken {
         value: "cx-refresh-legacy123".to_owned(),
@@ -1008,6 +1010,8 @@ fn legacy_token_without_new_fields_can_rotate() {
         issued_at: None,
         family_id: String::new(),
         client_secret_version: None,
+        // 旧格式 payload 没有 session_epoch，兑换路径对其 fail-closed
+        session_epoch: None,
     };
 
     // issued_at() 回退到 created_at
