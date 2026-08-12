@@ -1031,6 +1031,28 @@ fn session_revocation_marker(user_id: i64) -> String {
     format!("chenxing:session:revoked-epoch:{user_id}")
 }
 
+fn session_redis_key(token: &str) -> String {
+    format!(
+        "chenxing:session:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(session_token_hash_bytes(token))
+    )
+}
+
+async fn enqueue_session_sync(pool: &chenxing_auth::sqlx::PgPool, session_id: i64) {
+    let result = chenxing_auth::sqlx::query(
+        "INSERT INTO session_outbox
+             (operation, session_id, user_id, token_hash, generation)
+         SELECT 'sync_session', id, user_id, token_hash, session_epoch
+         FROM user_sessions
+         WHERE id = $1",
+    )
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .expect("enqueue session sync fixture");
+    assert_eq!(result.rows_affected(), 1, "session fixture must exist");
+}
+
 fn unavailable_redis_client() -> redis::Client {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve Redis port");
     let port = listener
@@ -1137,6 +1159,209 @@ async fn session_save_commits_metadata_and_replays_redis_after_connection_failur
         .execute(&pool)
         .await
         .expect("cleanup outbox save user");
+}
+
+/// Issue #314：升级期的 active + NULL 行仍以 Redis 作为唯一载荷来源。
+#[tokio::test]
+async fn session_sync_outbox_preserves_redis_fallback_for_active_null_payload() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("outbox-null-active-{}", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-null-active-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert active NULL-payload user");
+    let client = redis_client();
+    let store =
+        SessionStore::with_metadata_and_key(client.clone(), pool.clone(), session_store_key());
+    let mut session =
+        Session::new(user.id.to_string(), Duration::from_secs(300)).expect("session");
+    store
+        .save(&mut session, Duration::from_secs(300))
+        .await
+        .expect("save active NULL-payload session");
+    store
+        .process_pending_outbox()
+        .await
+        .expect("project initial session payload");
+
+    let redis_key = session_redis_key(&session.token);
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let fallback_payload: Vec<u8> = connection
+        .get(&redis_key)
+        .await
+        .expect("initial Redis fallback payload");
+    chenxing_auth::sqlx::query("UPDATE user_sessions SET session_payload = NULL WHERE id = $1")
+        .bind(session.id)
+        .execute(&pool)
+        .await
+        .expect("simulate pre-backfill session row");
+    enqueue_session_sync(&pool, session.id).await;
+
+    assert_eq!(
+        store
+            .process_pending_outbox()
+            .await
+            .expect("process active NULL-payload sync"),
+        1
+    );
+    let retained_payload: Option<Vec<u8>> = connection
+        .get(&redis_key)
+        .await
+        .expect("read retained Redis fallback payload");
+    assert_eq!(retained_payload.as_deref(), Some(fallback_payload.as_slice()));
+    assert!(
+        store
+            .find(&session.token)
+            .await
+            .expect("find session through Redis fallback")
+            .is_some(),
+        "an active migration row must not become a permanent 401"
+    );
+
+    let _: usize = connection
+        .del(&redis_key)
+        .await
+        .expect("cleanup active NULL-payload Redis key");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup active NULL-payload user");
+}
+
+/// Issue #314：NULL 只代表载荷 fallback，不得覆盖 PostgreSQL 的终态判定。
+#[tokio::test]
+async fn session_sync_outbox_deletes_null_payload_fallbacks_after_revoke_or_expiry() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("outbox-null-terminal-{}", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-null-terminal-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert terminal NULL-payload user");
+    let client = redis_client();
+    let store =
+        SessionStore::with_metadata_and_key(client.clone(), pool.clone(), session_store_key());
+    let mut revoked =
+        Session::new(user.id.to_string(), Duration::from_secs(300)).expect("revoked session");
+    let mut expired =
+        Session::new(user.id.to_string(), Duration::from_secs(300)).expect("expired session");
+    store
+        .save(&mut revoked, Duration::from_secs(300))
+        .await
+        .expect("save session to revoke");
+    store
+        .save(&mut expired, Duration::from_secs(300))
+        .await
+        .expect("save session to expire");
+    store
+        .process_pending_outbox()
+        .await
+        .expect("project terminal-state fixtures");
+
+    let revoked_key = session_redis_key(&revoked.token);
+    let expired_key = session_redis_key(&expired.token);
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    assert!(
+        connection
+            .exists::<_, bool>(&revoked_key)
+            .await
+            .expect("revoked fixture projection")
+    );
+    assert!(
+        connection
+            .exists::<_, bool>(&expired_key)
+            .await
+            .expect("expired fixture projection")
+    );
+
+    chenxing_auth::sqlx::query(
+        "UPDATE user_sessions
+         SET session_payload = NULL, revoked_at = NOW()
+         WHERE id = $1",
+    )
+    .bind(revoked.id)
+    .execute(&pool)
+    .await
+    .expect("make NULL-payload session revoked");
+    chenxing_auth::sqlx::query(
+        "UPDATE user_sessions
+         SET session_payload = NULL, expires_at = NOW() - INTERVAL '1 second'
+         WHERE id = $1",
+    )
+    .bind(expired.id)
+    .execute(&pool)
+    .await
+    .expect("make NULL-payload session expired");
+    enqueue_session_sync(&pool, revoked.id).await;
+    enqueue_session_sync(&pool, expired.id).await;
+
+    assert_eq!(
+        store
+            .process_pending_outbox()
+            .await
+            .expect("process terminal NULL-payload syncs"),
+        2
+    );
+    assert!(
+        !connection
+            .exists::<_, bool>(&revoked_key)
+            .await
+            .expect("revoked fallback deletion"),
+        "revocation must win over the NULL-payload fallback"
+    );
+    assert!(
+        !connection
+            .exists::<_, bool>(&expired_key)
+            .await
+            .expect("expired fallback deletion"),
+        "expiry must win over the NULL-payload fallback"
+    );
+    assert!(
+        store
+            .find(&revoked.token)
+            .await
+            .expect("find revoked NULL-payload session")
+            .is_none()
+    );
+    assert!(
+        store
+            .find(&expired.token)
+            .await
+            .expect("find expired NULL-payload session")
+            .is_none()
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup terminal NULL-payload user");
 }
 
 #[tokio::test]
