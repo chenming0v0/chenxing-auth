@@ -3,7 +3,7 @@ import { Link, useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
 import { apiFetch, type AuthorizedOAuthApp, type SessionItem, type UserMe } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, PasswordField, logoUrl } from '../../components/ui'
+import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, PasswordField } from '../../components/ui'
 import { ProfileAvatar, type MessageTone } from './profile-avatar'
 import { formatDate } from '../../data'
 
@@ -91,8 +91,7 @@ export function ConsoleProfile() {
   return (
     <ConsoleLayout>
       <section className="space-y-6 pt-2">
-        <HudPanel className="relative overflow-hidden">
-          <img src={logoUrl} className="pointer-events-none absolute -right-6 -top-6 h-40 w-40 object-contain opacity-10" alt="" />
+        <HudPanel className="is-starfield">
           <div className="relative flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
             <div className="flex items-start gap-5">
               <ProfileAvatar user={user} name={name} onMessage={notify} refresh={refresh} />
@@ -235,7 +234,7 @@ export function AuthorizedApps() {
             <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0 flex-1">
                 <div className="flex items-start gap-4">
-                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[linear-gradient(135deg,var(--chenxing-primary),var(--chenxing-cyan))] text-[var(--chenxing-primary-foreground)] shadow-[var(--chenxing-shadow-cyan-float)]">
+                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-[rgba(125,211,252,0.4)] bg-[rgba(56,189,248,0.12)] text-[var(--chenxing-cyan)] shadow-[var(--chenxing-shadow-cyan-float)]">
                     <Icon name="box" size={22} />
                   </span>
                   <div className="min-w-0">

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, within } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react'
 import { AuthShell, ConsoleLayout, OAuthShell } from './shells'
 import { navGroups } from '../data'
 
@@ -90,10 +90,11 @@ describe('ConsoleLayout 移动端导航可达性（#197）', () => {
     expect(within(bottom).queryByRole('link', { name: '接入应用' })).toBeNull()
   })
 
-  it('点击汉堡菜单里的导航项后菜单关闭', () => {
+  it('点击汉堡菜单里的导航项后菜单关闭', async () => {
     const menu = openHamburgerMenu()
     fireEvent.click(within(menu).getByRole('link', { name: '套餐与权益' }))
-    expect(document.querySelector('[data-menu]')).toBeNull()
+    // 关闭带 300ms 退出动画（遮罩淡出 + 面板收拢），卸载发生在动画结束后
+    await waitFor(() => expect(document.querySelector('[data-menu]')).toBeNull())
   })
 
   it('普通用户看不到管理/系统分组', () => {
@@ -134,13 +135,14 @@ describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
     expect(hamburgerId).not.toBe(accountId)
   })
 
-  it('Escape 关闭汉堡菜单并把焦点还给触发器按钮', () => {
+  it('Escape 关闭汉堡菜单并把焦点还给触发器按钮', async () => {
     renderConsole()
     const button = screen.getByRole('button', { name: '打开导航菜单' })
     fireEvent.click(button)
     expect(document.querySelector('[data-menu]')).toBeTruthy()
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(document.querySelector('[data-menu]')).toBeNull()
+    // 关闭带 300ms 退出动画，卸载发生在动画结束后
+    await waitFor(() => expect(document.querySelector('[data-menu]')).toBeNull())
     expect(document.activeElement).toBe(button)
   })
 
@@ -199,12 +201,13 @@ describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
     expect(document.activeElement).toBe(items[items.length - 1])
   })
 
-  it('点击导航项后菜单关闭（原有行为不变）', () => {
+  it('点击导航项后菜单关闭（原有行为不变）', async () => {
     const menu = openHamburgerMenu()
     const button = screen.getByRole('button', { name: '打开导航菜单' })
     expect(button.getAttribute('aria-expanded')).toBe('true')
     fireEvent.click(within(menu).getByRole('link', { name: '套餐与权益' }))
-    expect(document.querySelector('[data-menu]')).toBeNull()
+    // 关闭带 300ms 退出动画，卸载发生在动画结束后
+    await waitFor(() => expect(document.querySelector('[data-menu]')).toBeNull())
     expect(button.getAttribute('aria-expanded')).toBe('false')
   })
 })
@@ -269,7 +272,7 @@ describe('全局「跳到主内容」跳过链接（#225）', () => {
   })
 
   it('AuthShell 与 OAuthShell 同样渲染成对的跳过链接与锚点', () => {
-    const auth = render(<AuthShell status="星门在线"><div>登录内容</div></AuthShell>)
+    const auth = render(<AuthShell status="认证中枢"><div>登录内容</div></AuthShell>)
     assertSkipPair(auth.container)
     const oauth = render(<OAuthShell><div>授权内容</div></OAuthShell>)
     assertSkipPair(oauth.container)

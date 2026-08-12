@@ -183,10 +183,11 @@
         align-items: center;
         justify-content: center;
         border-radius: 9999px;
-        background: linear-gradient(135deg, #38bdf8, #0284c7);
+        border: 1px solid rgba(125, 211, 252, 0.4);
+        background: rgba(56, 189, 248, 0.14);
         font-size: 12px;
         font-weight: 600;
-        color: #04121f;
+        color: var(--chenxing-cyan);
       }
       .oauth-actions {
         display: flex;
@@ -219,15 +220,19 @@
         outline: 2px solid var(--chenxing-primary);
         outline-offset: 2px;
       }
+      /* 与 .chenxing-btn-primary 同配方：透明玻璃 + 外圈蓝色光晕，不用实心渐变 */
       .oauth-btn-primary {
-        border-color: transparent;
-        background: linear-gradient(135deg, var(--chenxing-primary), #0ea5e9 60%, var(--chenxing-cyan));
-        color: var(--chenxing-primary-foreground);
-        box-shadow: var(--chenxing-shadow-glow-float), inset 0 1px 0 rgba(255, 255, 255, 0.3);
+        border-color: rgba(103, 232, 249, 0.45);
+        background: linear-gradient(160deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02) 55%, rgba(103, 232, 249, 0.05));
+        backdrop-filter: blur(18px) saturate(1.4);
+        -webkit-backdrop-filter: blur(18px) saturate(1.4);
+        color: var(--chenxing-ice);
+        box-shadow: 0 0 20px rgba(56, 189, 248, 0.28), 0 0 52px rgba(56, 189, 248, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.10), inset 0 0 16px rgba(56, 189, 248, 0.06);
       }
       .oauth-btn-primary:hover {
-        filter: brightness(1.08);
-        box-shadow: 0 0 34px rgba(56, 189, 248, 0.55), 0 0 80px rgba(56, 189, 248, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+        background: linear-gradient(160deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.04) 55%, rgba(103, 232, 249, 0.08));
+        border-color: rgba(103, 232, 249, 0.75);
+        box-shadow: 0 0 30px rgba(56, 189, 248, 0.45), 0 0 72px rgba(56, 189, 248, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 0 20px rgba(56, 189, 248, 0.10);
       }
       .oauth-btn:disabled {
         opacity: 0.5;

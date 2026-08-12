@@ -140,8 +140,8 @@
   overscroll-behavior: contain;
   padding: 0.35rem;
   background: var(--chenxing-popover);
-  backdrop-filter: blur(22px) saturate(1.5);
-  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  backdrop-filter: var(--chenxing-glass-blur);
+  -webkit-backdrop-filter: var(--chenxing-glass-blur);
   border: 1px solid var(--chenxing-border-strong);
   border-radius: var(--chenxing-radius-md);
   box-shadow: var(--chenxing-shadow-overlay);

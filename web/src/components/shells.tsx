@@ -4,6 +4,7 @@ import {
   useId,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type KeyboardEventHandler,
   type ReactNode,
@@ -14,6 +15,7 @@ import { useAuth } from '../auth-state'
 import { navGroups, pageStatus } from '../data'
 import { avatarUrl } from '../api'
 import { AvatarContent, BrandLockup, BrandMark, Button, HudPanel, Icon, Notice } from './ui'
+import { ScrambleText } from './motion'
 import { SpaceBackdrop } from './space'
 import { SkipLink, SkipTarget, useSkipTargetId } from './skip-link'
 
@@ -53,11 +55,13 @@ function useNavDisclosure() {
     [focusableItems],
   )
 
-  // 点击面板外部关闭
+  // 点击面板外部关闭。汉堡导航的遮罩/面板挂在顶栏之外（见 GlobalTopbar 注释：
+  // 遮罩必须是顶栏的兄弟节点），已不在 containerRef 子树里，故面板也算"内部"。
   useEffect(() => {
     if (!open) return
     const onPointer = (event: MouseEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) close()
+      const target = event.target as Node
+      if (!containerRef.current?.contains(target) && !panelRef.current?.contains(target)) close()
     }
     document.addEventListener('mousedown', onPointer)
     return () => document.removeEventListener('mousedown', onPointer)
@@ -142,13 +146,7 @@ function useTopbarExpanded() {
   return { expanded, sentinelRef }
 }
 
-function NavMenu({
-  id,
-  panelRef,
-  onKeyDown,
-  extra,
-  onNavigate,
-}: {
+function NavMenu({ id, panelRef, onKeyDown, extra, onNavigate }: {
   id: string
   panelRef: Ref<HTMLDivElement>
   onKeyDown: KeyboardEventHandler<HTMLDivElement>
@@ -156,57 +154,77 @@ function NavMenu({
   onNavigate?: () => void
 }) {
   return (
-    <div
-      id={id}
-      data-menu
-      ref={panelRef}
-      onKeyDown={onKeyDown}
-      className="chenxing-menu absolute right-0 top-full z-[var(--chenxing-z-menu)] mt-3 w-60"
-    >
-      <Link to="/" className="chenxing-nav-menu-item" onClick={onNavigate}>主页<Icon name="arrow-up-right" size={16} /></Link>
-      <Link to="/console" className="chenxing-nav-menu-item" onClick={onNavigate}>控制台<Icon name="layout-dashboard" size={16} /></Link>
-      <span className="chenxing-nav-menu-item is-static">
-        <span className="flex items-center gap-2">应用广场<span className="chenxing-caption text-[10px] uppercase tracking-[0.08em] text-[var(--chenxing-muted-foreground)]">即将上线</span></span>
+    <div id={id} data-menu ref={panelRef} onKeyDown={onKeyDown} className="chenxing-menu cx-nav-panel"
+      onClick={(event) => event.stopPropagation()}>
+      <Link to="/" className="cx-nav-row" style={{ '--i': 0 } as CSSProperties} onClick={onNavigate}>
+        <span className="cx-nav-row-label"><span className="cx-nav-row-text">主页</span></span>
+        <Icon name="arrow-up-right" size={16} />
+      </Link>
+      <Link to="/console" className="cx-nav-row" style={{ '--i': 1 } as CSSProperties} onClick={onNavigate}>
+        <span className="cx-nav-row-label"><span className="cx-nav-row-text">控制台</span></span>
+        <Icon name="layout-dashboard" size={16} />
+      </Link>
+      <span className="cx-nav-row is-static" style={{ '--i': 2 } as CSSProperties}>
+        <span className="cx-nav-row-label"><span className="cx-nav-row-text">应用广场</span>
+          <span className="chenxing-caption ml-2 self-center text-[10px] uppercase tracking-[0.08em] text-[var(--chenxing-muted-foreground)]">即将上线</span>
+        </span>
         <Icon name="store" size={16} />
       </span>
-      <div className="chenxing-divider my-1" />
-      <div className="flex items-center justify-between px-3.5 py-2">
-        <span className="chenxing-caption text-[11px] tracking-[0.06em]">状态</span>
-        <span className="chenxing-caption inline-flex items-center gap-2 text-[11px] tracking-[0.06em] text-[var(--chenxing-success)]">
-          <span className="chenxing-status-dot" />星门在线
-        </span>
-      </div>
-      {/* menuExtra 里全是导航性链接/按钮：点任何一项都等于「已作出选择」，
-          关掉菜单与跳转同时发生（与 AccountMenu 里菜单项 onClick 关闭的行为一致）。
-          包一层 div 让调用方不用感知关闭回调，menuExtra 的 ReactNode 契约保持不变。 */}
-      {extra ? <div onClick={onNavigate}>{extra}</div> : null}
+      {/* menuExtra 里全是导航性链接/按钮：点击即视为已作选择，关闭与跳转同时发生；
+          包一层 div 让调用方不用感知关闭回调，ReactNode 契约不变。 */}
+      {extra ? <div className="cx-nav-panel-extra" onClick={onNavigate}>{extra}</div> : null}
     </div>
   )
 }
 
-function HamburgerMenu({ extra }: { extra?: ReactNode }) {
-  const { open, panelId, containerRef, panelRef, buttonRef, close, toggle, onButtonKeyDown, onPanelKeyDown } =
-    useNavDisclosure()
-  return (
-    <div className="relative" ref={containerRef}>
-      <button
-        ref={buttonRef}
-        type="button"
-        className="chenxing-hamburger"
-        aria-label="打开导航菜单"
-        aria-expanded={open}
-        aria-controls={panelId}
-        aria-haspopup="true"
-        onClick={toggle}
-        onKeyDown={onButtonKeyDown}
-      >
-        <span /><span /><span />
-      </button>
-      {open ? (
-        <NavMenu id={panelId} panelRef={panelRef} onKeyDown={onPanelKeyDown} extra={extra} onNavigate={close} />
-      ) : null}
-    </div>
-  )
+/* 关闭时保留 300ms 退出动画（遮罩淡出 + 面板收拢）再卸载。
+   closing 在渲染期派生（React 认可的 derived-state 写法）：打开的那一拍面板
+   立即挂载——useNavDisclosure 的键盘焦点转移依赖同一拍里 panelRef 已就位。 */
+function useExitDelay(open: boolean, ms: number) {
+  const [closing, setClosing] = useState(false)
+  const prevOpen = useRef(open)
+  if (prevOpen.current !== open) {
+    prevOpen.current = open
+    if (!open) setClosing(true)
+  }
+  useEffect(() => {
+    if (!closing) return
+    const timer = window.setTimeout(() => setClosing(false), ms)
+    return () => window.clearTimeout(timer)
+  }, [closing, ms])
+  return closing
+}
+
+/* 手风琴展开高度：lamalama 的菜单是 GSAP `height: 0 → auto`（expo.out 0.45s）。
+   CSS 过渡不认 auto，所以测出内容真实高度再过渡到该像素值。内容高度不是常量
+   （控制台菜单按角色增减分组、视口旋转会改变可用高度），因此用 ResizeObserver
+   加 resize 监听持续重测，而不是展开时测一次就写死。
+   上限取 70vh：菜单长于视口时容器封顶、内部滚动，胶囊不会顶穿屏幕。 */
+const DRAWER_MAX_VH = 0.7
+
+function useAccordionHeight(open: boolean) {
+  const innerRef = useRef<HTMLDivElement>(null)
+  const [height, setHeight] = useState(0)
+  useEffect(() => {
+    const inner = innerRef.current
+    if (!open || !inner) {
+      setHeight(0)
+      return
+    }
+    const measure = () => {
+      const limit = typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerHeight * DRAWER_MAX_VH
+      setHeight(Math.min(inner.scrollHeight, limit))
+    }
+    measure()
+    window.addEventListener('resize', measure)
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    observer?.observe(inner)
+    return () => {
+      window.removeEventListener('resize', measure)
+      observer?.disconnect()
+    }
+  }, [open])
+  return { innerRef, height }
 }
 
 function AccountMenu() {
@@ -290,38 +308,115 @@ export function GlobalTopbar({
   action,
   actionTo,
   menuExtra,
+  links,
   hideBrandWhenExpanded = false,
 }: {
-  status: string
+  status: ReactNode
   action?: string
   actionTo?: string
   menuExtra?: ReactNode
+  /** 桌面端内联锚点导航：只在页面顶部（顶栏全宽展开态）显示，
+      收拢成胶囊后隐去，导航职责交还汉堡菜单。 */
+  links?: readonly { label: string; href: string }[]
   hideBrandWhenExpanded?: boolean
 }) {
   const { expanded, sentinelRef } = useTopbarExpanded()
   const { status: authStatus } = useAuth()
   const loggedIn = authStatus === 'authenticated'
+  /* 汉堡菜单的 disclosure 状态提到顶栏这一层：按钮必须留在顶栏里，而全屏遮罩
+     必须是顶栏的兄弟节点。遮罩带 backdrop-filter，任何在它之下绘制的内容都会
+     被 blur(12px) 糊掉，而 DOM 祖先永远先于后代绘制——遮罩若嵌在顶栏内部，
+     顶栏就无法靠 z-index 逃出模糊（同理也不能 portal 到 body：.cx-space-root
+     的 isolation: isolate 把顶栏的层级困在该容器内）。做兄弟节点后两者同处
+     一个层叠上下文，--chenxing-z-topbar(55) > --chenxing-z-menu(50) 生效，
+     顶栏保持清晰且汉堡按钮可点。 */
+  const nav = useNavDisclosure()
+  /* 450ms = 抽屉收拢 0.45s（遮罩淡出 0.35s 先结束），与 shell css 过渡对齐 */
+  const navClosing = useExitDelay(nav.open, 450)
+  const drawer = useAccordionHeight(nav.open)
   return (
     <>
       <div ref={sentinelRef} aria-hidden="true" className="chenxing-topbar-sentinel" />
       <header
         className="chenxing-topbar"
         data-expanded={expanded || undefined}
+        data-open={nav.open || undefined}
         data-hide-brand-when-expanded={hideBrandWhenExpanded || undefined}
       >
-        <Link to="/" className="chenxing-topbar-brand flex items-center gap-2.5 justify-self-start">
-          <BrandLockup />
-        </Link>
-        <div className="chenxing-topbar-status" data-topbar-status>
-          <span>{status}</span>
-        </div>
-        <div className="flex items-center gap-2 justify-self-end">
-          <HamburgerMenu extra={menuExtra} />
-          {loggedIn ? <AccountMenu /> : action && actionTo ? (
-            <Link to={actionTo} className="chenxing-btn-primary text-sm">{action}</Link>
+        {/* 胶囊视觉在内层：外层 header 流内高度固定一行（见 shell css），
+            抽屉展开只向下溢出覆盖内容，不改变文档高度与滚动条长度。 */}
+        <div className="chenxing-topbar-capsule">
+          <div className="chenxing-topbar-row">
+            {/* 只留字形：50px 行高里放不下两行中文，且首页 hero、控制台侧栏、
+                登录面板都已各自承载完整品牌名，顶栏重复一遍只是挤占密度。 */}
+            <Link to="/" className="chenxing-topbar-brand" aria-label="返回首页">
+              <BrandMark className="chenxing-topbar-mark" />
+            </Link>
+            {links?.length ? (
+              <nav className="chenxing-topbar-links" aria-label="页面导航">
+                {links.map((item) => (
+                  <a key={item.href} href={item.href}>{item.label}</a>
+                ))}
+              </nav>
+            ) : null}
+            {/* 微标签绝对居中且不吃指针：居中与两侧元素宽度解耦，也永不挡住按钮命中区。
+                lamalama 行为：页面最顶部（expanded）时中央不显示任何文字，向下滚动
+                顶栏收拢成胶囊的同时，文字以乱码逐位解码的方式出现；滚回顶部随
+                容器淡出。字符串状态走 ScrambleText，ReactNode 状态保持原样常驻。 */}
+            <div className="chenxing-topbar-status" data-topbar-status data-hidden={expanded || undefined}>
+              {typeof status === 'string' ? <ScrambleText text={status} active={!expanded} /> : <span>{status}</span>}
+            </div>
+            <div className="chenxing-topbar-actions">
+              {/* containerRef 只圈住触发器：useNavDisclosure 的「点击外部关闭」以
+                  containerRef ∪ panelRef 为界，若不挂载则 mousedown 在汉堡上会先
+                  判定为外部触发 close()，紧随的 click 再 toggle() 打开，按钮就永远
+                  关不掉菜单。 */}
+              <div className="inline-flex" ref={nav.containerRef}>
+                <button
+                  ref={nav.buttonRef}
+                  type="button"
+                  className={`chenxing-hamburger${nav.open ? ' is-open' : ''}`}
+                  aria-label="打开导航菜单"
+                  aria-expanded={nav.open}
+                  aria-controls={nav.panelId}
+                  aria-haspopup="true"
+                  onClick={nav.toggle}
+                  onKeyDown={nav.onButtonKeyDown}
+                >
+                  <span /><span /><span />
+                </button>
+              </div>
+              {loggedIn ? <AccountMenu /> : action && actionTo ? (
+                <Link to={actionTo} className="chenxing-topbar-cta">{action}</Link>
+              ) : null}
+            </div>
+          </div>
+          {/* 菜单在胶囊内部手风琴展开（lamalama：height 0→auto，expo.out 0.45s）：
+              外层过渡到实测像素高度，内层保持自然高度并在超过 70vh 时自行滚动。
+              关闭后仍延时卸载而非常驻 DOM——shells.test 依赖关闭后 [data-menu] 消失。 */}
+          {nav.open || navClosing ? (
+            <div className={`chenxing-topbar-drawer${!nav.open && navClosing ? ' is-closing' : ''}`} style={{ height: `${drawer.height}px` }}>
+              <div ref={drawer.innerRef} className="chenxing-topbar-drawer-inner">
+                <NavMenu
+                  id={nav.panelId}
+                  panelRef={nav.panelRef}
+                  onKeyDown={nav.onPanelKeyDown}
+                  extra={menuExtra}
+                  onNavigate={nav.close}
+                />
+              </div>
+            </div>
           ) : null}
         </div>
       </header>
+      {/* 遮罩只剩压暗+模糊背景这一职责（面板已移进胶囊）。它必须是顶栏的兄弟节点：
+          backdrop-filter 的模糊会作用于其下绘制的一切，而 DOM 祖先永远先于后代
+          绘制，遮罩若嵌在顶栏内部，顶栏就无法靠 z-index 逃出模糊。做兄弟节点后
+          两者同处一个层叠上下文，--chenxing-z-topbar(55) > --chenxing-z-menu(50)
+          生效，胶囊连同展开的抽屉一起保持清晰。 */}
+      {nav.open || navClosing ? (
+        <div className={`cx-menu-overlay${nav.open ? ' is-open' : ''}`} onClick={nav.close} aria-hidden="true" />
+      ) : null}
     </>
   )
 }
@@ -333,20 +428,22 @@ export function AuthShell({
   actionTo,
   className = 'chenxing-auth-layout',
   menuExtra,
+  links,
 }: {
   children: ReactNode
-  status: string
+  status: ReactNode
   action?: string
   actionTo?: string
   className?: string
   menuExtra?: ReactNode
+  links?: readonly { label: string; href: string }[]
 }) {
   /* 跳过链接是 Shell 的第一个可聚焦元素，内容锚点紧跟顶栏之后（见 skip-link.tsx） */
   const targetId = useSkipTargetId()
   return (
     <SpaceBackdrop className={className} opacity={0.7}>
       <SkipLink targetId={targetId} />
-      <GlobalTopbar status={status} action={action} actionTo={actionTo} menuExtra={menuExtra} />
+      <GlobalTopbar status={status} action={action} actionTo={actionTo} menuExtra={menuExtra} links={links} />
       <SkipTarget targetId={targetId} />
       {children}
     </SpaceBackdrop>
@@ -446,10 +543,7 @@ export function ConsoleLayout({ children }: { children: ReactNode }) {
           status={status}
           hideBrandWhenExpanded
           menuExtra={(
-            <>
-              <div className="chenxing-divider my-1" />
-              <ConsoleNavGroups />
-            </>
+            <ConsoleNavGroups />
           )}
         />
         <div className="chenxing-console-content flex-1 px-4 py-6 pb-10 sm:px-6 lg:px-8">

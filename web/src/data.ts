@@ -33,7 +33,7 @@ export const navGroups: NavGroup[] = [
 ]
 
 export const pageStatus: Record<string, string> = {
-  '/': '星门在线',
+  '/': '认证中枢',
   '/login': '统一登录',
   '/register': '创建通行证',
   '/bootstrap': '系统初始化',
