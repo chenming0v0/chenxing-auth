@@ -1,6 +1,6 @@
 use super::{
-    PasswordAction, PasswordProbe, RuntimePasswordPolicy, quote_ident, quote_literal,
-    runtime_password_action,
+    PasswordAction, PasswordProbe, RuntimePasswordPolicy, decode_runtime_password, quote_ident,
+    quote_literal, runtime_password_action,
 };
 
 #[test]
@@ -72,4 +72,49 @@ fn identifier_quoting_escapes_embedded_quotes() {
 fn literal_quoting_escapes_embedded_single_quotes() {
     assert_eq!(quote_literal("secret"), "'secret'");
     assert_eq!(quote_literal("o'brien"), "'o''brien'");
+}
+
+#[test]
+fn runtime_password_uses_sqlx_percent_decoding_semantics() {
+    let password = decode_runtime_password(
+        "postgres://chenxing_runtime:p%40ss%3Aword%2F%E4%B8%AD@localhost/chenxing_auth",
+    )
+    .expect("valid encoded runtime password");
+
+    assert_eq!(password, "p@ss:word/中");
+}
+
+#[test]
+fn runtime_password_decoding_respects_utf8_byte_boundaries() {
+    let password = decode_runtime_password(
+        "postgres://chenxing_runtime:%E5%8F%A3%E4%BB%A4%40%F0%9F%94%92@localhost/chenxing_auth",
+    )
+    .expect("valid multibyte runtime password");
+
+    assert_eq!(password, "口令@🔒");
+}
+
+#[test]
+fn runtime_password_rejects_malformed_percent_encoding_without_disclosure() {
+    for encoded_password in ["secret%", "secret%2", "secret%GG"] {
+        let runtime_url =
+            format!("postgres://chenxing_runtime:{encoded_password}@localhost/chenxing_auth");
+        let error = decode_runtime_password(&runtime_url).expect_err("malformed percent encoding");
+        let rendered = format!("{error:?} {error}");
+
+        assert!(!rendered.contains("secret"));
+        assert!(!rendered.contains(encoded_password));
+    }
+}
+
+#[test]
+fn runtime_password_rejects_invalid_utf8_without_disclosure() {
+    let encoded_password = "secret%F0%28%8C%28";
+    let runtime_url =
+        format!("postgres://chenxing_runtime:{encoded_password}@localhost/chenxing_auth");
+    let error = decode_runtime_password(&runtime_url).expect_err("invalid UTF-8 password");
+    let rendered = format!("{error:?} {error}");
+
+    assert!(!rendered.contains("secret"));
+    assert!(!rendered.contains(encoded_password));
 }

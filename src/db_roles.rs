@@ -11,6 +11,10 @@
 //! 完全由外部密钥托管管理的部署可以用 `MIGRATION_MANAGE_RUNTIME_PASSWORD=false`
 //! 让 migrate 一步都不碰。
 //!
+//! URL crate 返回的是仍带百分号编码的口令组件，而 sqlx 建连前会把它解码。写入角色
+//! 时必须做同样的解码，否则含 `%40`、UTF-8 转义等内容的 URL 永远无法用刚写入的
+//! 角色口令连接（Issue #309）。
+//!
 //! 审计表的权限边界校验在 [`super::audit_boundary`]。
 
 use std::time::Duration;
@@ -141,20 +145,56 @@ async fn write_password(
     database: &super::Database,
     runtime_database_url: &str,
 ) -> Result<(), DbError> {
-    let url =
-        url::Url::parse(runtime_database_url).map_err(|_| DbError::InvalidRuntimeDatabaseUrl)?;
-    let password = url
-        .password()
-        .filter(|password| !password.is_empty())
-        .ok_or(DbError::MissingRuntimeDatabasePassword)?;
+    let password = decode_runtime_password(runtime_database_url)?;
     crate::sqlx::query(&format!(
         "ALTER ROLE {} WITH LOGIN PASSWORD {}",
         quote_ident(RUNTIME_DATABASE_ROLE),
-        quote_literal(password)
+        quote_literal(&password)
     ))
     .execute(database)
     .await?;
     Ok(())
+}
+
+/// 取出 sqlx 建连时实际使用的口令，而不是 URL 中仍带百分号编码的表示。
+///
+/// `percent_decode_str` 对不完整或非十六进制的 `%` 序列会原样保留，因此先按字节严格
+/// 验证编码。解码完成后再整体校验 UTF-8，既能正确拼回跨多个 `%XX` 的多字节字符，
+/// 也不会在原始字符串的字符边界上切片。所有失败都折叠成不携带 URL 的静态错误。
+fn decode_runtime_password(runtime_database_url: &str) -> Result<String, DbError> {
+    let url =
+        url::Url::parse(runtime_database_url).map_err(|_| DbError::InvalidRuntimeDatabaseUrl)?;
+    let encoded_password = url
+        .password()
+        .filter(|password| !password.is_empty())
+        .ok_or(DbError::MissingRuntimeDatabasePassword)?;
+
+    if !has_valid_percent_encoding(encoded_password.as_bytes()) {
+        return Err(DbError::InvalidRuntimeDatabaseUrl);
+    }
+
+    percent_encoding::percent_decode_str(encoded_password)
+        .decode_utf8()
+        .map(|password| password.into_owned())
+        .map_err(|_| DbError::InvalidRuntimeDatabaseUrl)
+}
+
+fn has_valid_percent_encoding(value: &[u8]) -> bool {
+    let mut index = 0;
+    while index < value.len() {
+        if value[index] != b'%' {
+            index += 1;
+            continue;
+        }
+        if index + 2 >= value.len()
+            || !value[index + 1].is_ascii_hexdigit()
+            || !value[index + 2].is_ascii_hexdigit()
+        {
+            return false;
+        }
+        index += 3;
+    }
+    true
 }
 
 /// 用运行时 URL 真正登录一次，判断口令是否已经可用。

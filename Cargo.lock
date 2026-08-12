@@ -439,6 +439,7 @@ dependencies = [
  "image",
  "jsonwebtoken",
  "oxide-auth-axum",
+ "percent-encoding",
  "pkcs8",
  "qrcode",
  "rand 0.8.7",
