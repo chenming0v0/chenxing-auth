@@ -39,7 +39,7 @@ export function ConsoleProfile() {
   const [busy, setBusy] = useState(false)
   /* 撤销在途的会话 id。与 AuthorizedApps 的 busyClientId 同款约定：
      null 表示无在途请求，非 null 期间所有撤销按钮禁用，防止快速连点并发 DELETE。 */
-  const [busySessionId, setBusySessionId] = useState<string | null>(null)
+  const [busySessionId, setBusySessionId] = useState<number | null>(null)
   const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
   const warn = (text: string) => notify(text, 'warning')
 
