@@ -48,6 +48,8 @@ export function IntegratePage() {
   const [busy, setBusy] = useState(false)
   const [rotatingClientIds, setRotatingClientIds] = useState<Set<string>>(() => new Set())
   const rotatingClientIdsRef = useRef(new Set<string>())
+  const [statusChangingClientIds, setStatusChangingClientIds] = useState<Set<string>>(() => new Set())
+  const statusChangingClientIdsRef = useRef(new Set<string>())
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editing, setEditing] = useState<OwnedOAuthClient | null>(null)
   const [name, setName] = useState('')
@@ -143,18 +145,24 @@ export function IntegratePage() {
   }
 
   async function setStatus(client: OwnedOAuthClient) {
+    if (statusChangingClientIdsRef.current.has(client.client_id)) return
     const action = client.status === 'active' ? 'disable' : 'enable'
     const actionLabel = action === 'disable' ? '禁用' : '启用'
     const consequence = action === 'disable'
       ? '禁用后，该 OAuth 应用将无法发起新的授权，也无法获取新的令牌。'
       : '启用后，该 OAuth 应用可以重新发起授权并获取令牌。'
     if (!window.confirm(`确认${actionLabel}“${client.client_name}”吗？\n${consequence}`)) return
+    statusChangingClientIdsRef.current.add(client.client_id)
+    setStatusChangingClientIds(new Set(statusChangingClientIdsRef.current))
     setMessage('')
     try {
       await apiFetch<void>(`/api/v1/auth/oauth-clients/${encodeURIComponent(client.client_id)}/${action}`, { method: 'POST' })
       load()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '应用状态更新失败。')
+    } finally {
+      statusChangingClientIdsRef.current.delete(client.client_id)
+      setStatusChangingClientIds(new Set(statusChangingClientIdsRef.current))
     }
   }
 
@@ -241,9 +249,12 @@ export function IntegratePage() {
               <Button
                 variant={client.status === 'active' ? 'danger' : 'ghost'}
                 icon="power"
+                disabled={statusChangingClientIds.has(client.client_id)}
                 onClick={() => void setStatus(client)}
               >
-                {client.status === 'active' ? '禁用' : '启用'}
+                {statusChangingClientIds.has(client.client_id)
+                  ? `${client.status === 'active' ? '禁用' : '启用'}中…`
+                  : client.status === 'active' ? '禁用' : '启用'}
               </Button>
               <Button variant="ghost" icon="pencil" onClick={() => openEdit(client)}>编辑</Button>
               <Button variant="ghost" icon="refresh-cw" disabled={rotatingClientIds.has(client.client_id)} onClick={() => void rotate(client.client_id)}>
