@@ -40,14 +40,7 @@ type ClaimedOutboxRow = (
     i32,
     i64,
 );
-type SessionProjectionRow = (
-    Option<Vec<u8>>,
-    bool,
-    OffsetDateTime,
-    OffsetDateTime,
-    i64,
-    UserId,
-);
+type SessionProjectionRow = (Option<Vec<u8>>, bool, i64, OffsetDateTime, i64, UserId);
 
 struct OutboxEntry {
     id: i64,
@@ -173,10 +166,10 @@ impl SessionStore {
                                     AND sessions.last_seen_at + $2 > NOW()
                                     AND sessions.session_epoch >= users.session_epoch
                                     AND users.status = 'active',
-                                LEAST(
+                                EXTRACT(EPOCH FROM LEAST(
                                     sessions.expires_at,
                                     sessions.last_seen_at + $2
-                                ),
+                                ) - NOW())::bigint,
                                 sessions.last_seen_at,
                                 sessions.session_epoch, sessions.user_id
                          FROM user_sessions AS sessions
@@ -188,7 +181,8 @@ impl SessionStore {
                 .bind(self.idle_timeout_interval())
                 .fetch_optional(&mut *transaction)
                 .await?;
-                let Some((payload, active, expires_at, last_seen_at, generation, user_id)) = row
+                let Some((payload, active, remaining_seconds, last_seen_at, generation, user_id)) =
+                    row
                 else {
                     let _: usize = connection.del(self.key_hash(token_hash)).await?;
                     transaction.commit().await?;
@@ -225,11 +219,10 @@ impl SessionStore {
                 // 投影 TTL 同样被撤销水位 TTL 封顶：水位在撤销时刻带 `EX` 写入，
                 // 只有会话键活得不比水位久，旧会话才不可能在水位过期后被放行。
                 //
-                // `expires_at` 来自上面那条 SQL（权威时间是数据库事务时间），
-                // 但 TTL 是要写给 Redis 的相对秒数，必须用与判定同源的进程时钟
-                // 相减，否则注入固定时钟的测试算不出确定的 TTL。
-                let remaining = expires_at - self.clock.now();
-                let seconds = remaining.whole_seconds().max(1) as u64;
+                // `remaining_seconds` 由 SQL 用数据库事务时间 `NOW()` 直接算出，
+                // 与上面 `active` 判定同源，不再混入进程时钟：进程钟领先会让
+                // TTL 被压到 1 秒、投影立即消失，落后则会让投影超期存活。
+                let seconds = remaining_seconds.max(1) as u64;
                 let ttl = seconds.min(self.revocation_ttl_seconds());
                 let _: i64 = Script::new(CONDITIONAL_SESSION_SET)
                     .key(self.revocation_key(&user_id.to_string()))
