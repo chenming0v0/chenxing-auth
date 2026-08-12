@@ -412,10 +412,14 @@
   backdrop-filter: blur(12px) saturate(1.2);
   -webkit-backdrop-filter: blur(12px) saturate(1.2);
   opacity: 0;
+  /* 默认不拦截指针：关闭瞬间 is-open 被移除后遮罩还要存活 450ms 完成退出动画，
+     此时它是透明层，若仍可命中就会吞掉页面点击。打开（is-open）时才恢复命中，
+     与 .chenxing-drawer-overlay 的处理一致。 */
+  pointer-events: none;
   /* lamalama 遮罩：0.35s power4.out */
   transition: opacity 0.35s cubic-bezier(0.165, 0.84, 0.44, 1);
 }
-.cx-menu-overlay.is-open { opacity: 1; }
+.cx-menu-overlay.is-open { opacity: 1; pointer-events: auto; }
 /* 面板现在长在胶囊内部，玻璃材质由胶囊本身提供：这里必须把 .chenxing-menu 的
    浮层外观全部卸掉，否则会在玻璃胶囊里套出第二层玻璃卡片。
    选择器写成 .chenxing-menu.cx-nav-panel：.chenxing-menu 定义在本文件更靠后的
