@@ -18,6 +18,10 @@
 //! 限流刻意早于 Argon2 口令哈希：慢哈希本身是 19 MiB 内存的计算成本，让匿名请求
 //! 无限触发它等于送出一个内存放大的 DoS 面。
 //!
+//! 限流不是唯一防线：`AUTH_LIMITER_MISSING_SOURCE_IP=skip` 或代理链后取不到源 IP
+//! 时本层配额归零，此时服务层的 `bootstrap_owner` 会在 Argon2 之前先做廉价的
+//! `owner_exists` 判定，已初始化实例上的探测连慢哈希都碰不到（Issue #346）。
+//!
 //! # 初始化状态探测
 //!
 //! `GET /api/v1/admin/bootstrap/status` 原先向任何匿名调用者返回 `initialized`
