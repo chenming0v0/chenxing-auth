@@ -13,7 +13,7 @@ import {
 import { Link, NavLink, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
 import { navGroups, pageStatus } from '../data'
-import { avatarUrl } from '../api'
+import { avatarUrl, getEntitlements, type EntitlementItem } from '../api'
 import { AvatarContent, BrandLockup, BrandMark, Button, HudPanel, Icon, Notice } from './ui'
 import { ScrambleText } from './motion'
 import { SpaceBackdrop } from './space'
@@ -227,80 +227,7 @@ function useAccordionHeight(open: boolean) {
   return { innerRef, height }
 }
 
-function AccountMenu() {
-  const { open, panelId, containerRef, panelRef, buttonRef, close, toggle, onButtonKeyDown, onPanelKeyDown } =
-    useNavDisclosure()
-  const navigate = useNavigate()
-  const { user, logout } = useAuth()
-  const name = user?.display_name || user?.username || '辰'
-  const avatar = avatarUrl(user)
-  const memberId = user?.id != null ? `NO.${String(user.id).padStart(6, '0')}` : 'NO.000000'
-  const handle = user?.username ? `@${user.username}` : '@user'
-  return (
-    <div className="relative" ref={containerRef}>
-      {/* 头像触发器 44x44：WCAG 2.5.8 目标尺寸下限 24，本项目取 40 起步；
-          顶栏布局放得下就用 44（与汉堡 40x40 同处一个胶囊，略大一点更易命中） */}
-      <button
-        ref={buttonRef}
-        type="button"
-        className="chenxing-avatar h-11 w-11 text-sm"
-        aria-label="账户菜单"
-        aria-expanded={open}
-        aria-controls={panelId}
-        aria-haspopup="true"
-        onClick={toggle}
-        onKeyDown={onButtonKeyDown}
-      >
-        <AvatarContent src={avatar} name={name} />
-      </button>
-      {open ? (
-        <div id={panelId} ref={panelRef} onKeyDown={onPanelKeyDown} className="chenxing-menu absolute right-0 top-full z-[var(--chenxing-z-menu)] mt-3 w-64 p-0 overflow-hidden">
-          {/* ── 用户信息头 ── */}
-          <div className="chenxing-account-header">
-            <div className="chenxing-avatar h-14 w-14 text-lg pointer-events-none">
-              <AvatarContent src={avatar} name={name} />
-            </div>
-            {/* 用户名是菜单标签而非文档章节标题：用非标题元素承载，类名与视觉不变 */}
-            <p className="mt-2 text-sm font-semibold text-[var(--chenxing-foreground)]">{name}</p>
-            <div className="mt-2 grid grid-cols-2 gap-x-6 text-center text-[11px]">
-              <div>
-                <p className="chenxing-caption uppercase tracking-[0.1em]">会员序列</p>
-                <p className="chenxing-mono mt-0.5 text-[var(--chenxing-foreground)]">{memberId}</p>
-              </div>
-              <div>
-                <p className="chenxing-caption uppercase tracking-[0.1em]">@ Handle</p>
-                <p className="chenxing-mono mt-0.5 text-[var(--chenxing-cyan)]">{handle}</p>
-              </div>
-            </div>
-          </div>
-          {/* ── 菜单项 ── */}
-          <div className="p-1">
-            <Link to="/console/profile" className="chenxing-menu-item" onClick={close}>
-              <Icon name="user" className="text-[var(--chenxing-cyan)]" size={16} />账户设置
-            </Link>
-            <Link to="/console/plans" className="chenxing-menu-item" onClick={close}>
-              <Icon name="receipt" className="text-[var(--chenxing-cyan)]" size={16} />套餐订阅
-            </Link>
-            <span className="chenxing-menu-item is-static">
-              <Icon name="book-open" className="text-[var(--chenxing-cyan)]" size={16} />文档中心
-              <span className="ml-auto chenxing-caption text-[10px] uppercase tracking-[0.08em] text-[var(--chenxing-muted-foreground)]">即将上线</span>
-            </span>
-            <div className="chenxing-divider my-1" />
-            <button
-              type="button"
-              className="chenxing-menu-item"
-              onClick={() => {
-                void logout().then(() => navigate('/login'))
-              }}
-            >
-              <Icon name="log-out" className="text-[var(--chenxing-error)]" size={16} />退出
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  )
-}
+// AccountMenu 现在通过 GlobalTopbar 的 drawer 机制展示，不再独立渲染面板
 
 
 export function GlobalTopbar({
@@ -321,26 +248,56 @@ export function GlobalTopbar({
   hideBrandWhenExpanded?: boolean
 }) {
   const { expanded, sentinelRef } = useTopbarExpanded()
-  const { status: authStatus } = useAuth()
+  const { status: authStatus, user, logout } = useAuth()
+  const navigate = useNavigate()
   const loggedIn = authStatus === 'authenticated'
-  /* 汉堡菜单的 disclosure 状态提到顶栏这一层：按钮必须留在顶栏里，而全屏遮罩
-     必须是顶栏的兄弟节点。遮罩带 backdrop-filter，任何在它之下绘制的内容都会
-     被 blur(12px) 糊掉，而 DOM 祖先永远先于后代绘制——遮罩若嵌在顶栏内部，
-     顶栏就无法靠 z-index 逃出模糊（同理也不能 portal 到 body：.cx-space-root
-     的 isolation: isolate 把顶栏的层级困在该容器内）。做兄弟节点后两者同处
-     一个层叠上下文，--chenxing-z-topbar(55) > --chenxing-z-menu(50) 生效，
-     顶栏保持清晰且汉堡按钮可点。 */
+  
+  /* 汉堡菜单与账户菜单共享抽屉：两个按钮互斥，点击任一个都会在胶囊内展开抽屉 */
   const nav = useNavDisclosure()
+  const account = useNavDisclosure()
+  
+  /* 配额数据：仅在账户菜单打开时加载 */
+  const [entitlements, setEntitlements] = useState<{ daily: EntitlementItem | null; monthly: EntitlementItem | null } | null>(null)
+  
+  useEffect(() => {
+    if (!account.open) return
+    void getEntitlements().then((data) => {
+      const daily = data.entitlements.find((item) => item.key === 'daily_auth') ?? null
+      const monthly = data.entitlements.find((item) => item.key === 'monthly_auth') ?? null
+      setEntitlements({ daily, monthly })
+    }).catch(() => {
+      setEntitlements({ daily: null, monthly: null })
+    })
+  }, [account.open])
+  
+  // 点击头像时：关闭汉堡菜单，打开账户抽屉
+  const toggleAccount = useCallback(() => {
+    if (nav.open) nav.close()
+    account.toggle()
+  }, [nav, account])
+  
+  // 点击汉堡时：关闭账户菜单，打开汉堡抽屉
+  const toggleNav = useCallback(() => {
+    if (account.open) account.close()
+    nav.toggle()
+  }, [nav, account])
+  
+  const anyOpen = nav.open || account.open
   /* 450ms = 抽屉收拢 0.45s（遮罩淡出 0.35s 先结束），与 shell css 过渡对齐 */
-  const navClosing = useExitDelay(nav.open, 450)
-  const drawer = useAccordionHeight(nav.open)
+  const navClosing = useExitDelay(anyOpen, 450)
+  const drawer = useAccordionHeight(anyOpen)
+  const name = user?.display_name || user?.username || '辰'
+  const avatar = avatarUrl(user)
+  const memberId = user?.id != null ? `NO.${String(user.id).padStart(6, '0')}` : 'NO.000000'
+  const handle = user?.username ? `@${user.username}` : '@user'
+  
   return (
     <>
       <div ref={sentinelRef} aria-hidden="true" className="chenxing-topbar-sentinel" />
       <header
         className="chenxing-topbar"
         data-expanded={expanded || undefined}
-        data-open={nav.open || undefined}
+        data-open={anyOpen || undefined}
         data-hide-brand-when-expanded={hideBrandWhenExpanded || undefined}
       >
         {/* 胶囊视觉在内层：外层 header 流内高度固定一行（见 shell css），
@@ -367,10 +324,7 @@ export function GlobalTopbar({
               {typeof status === 'string' ? <ScrambleText text={status} active={!expanded} /> : <span>{status}</span>}
             </div>
             <div className="chenxing-topbar-actions">
-              {/* containerRef 只圈住触发器：useNavDisclosure 的「点击外部关闭」以
-                  containerRef ∪ panelRef 为界，若不挂载则 mousedown 在汉堡上会先
-                  判定为外部触发 close()，紧随的 click 再 toggle() 打开，按钮就永远
-                  关不掉菜单。 */}
+              {/* 汉堡按钮：点击时打开导航菜单 */}
               <div className="inline-flex" ref={nav.containerRef}>
                 <button
                   ref={nav.buttonRef}
@@ -380,30 +334,134 @@ export function GlobalTopbar({
                   aria-expanded={nav.open}
                   aria-controls={nav.panelId}
                   aria-haspopup="true"
-                  onClick={nav.toggle}
+                  onClick={toggleNav}
                   onKeyDown={nav.onButtonKeyDown}
                 >
                   <span /><span /><span />
                 </button>
               </div>
-              {loggedIn ? <AccountMenu /> : action && actionTo ? (
+              {/* 头像按钮：点击时收缩并打开账户菜单（在抽屉里显示） */}
+              {loggedIn ? (
+                <div className="inline-flex" ref={account.containerRef}>
+                  <button
+                    ref={account.buttonRef}
+                    type="button"
+                    className={`chenxing-avatar chenxing-avatar-trigger h-11 w-11 text-sm${account.open ? ' is-open' : ''}`}
+                    aria-label="账户菜单"
+                    aria-expanded={account.open}
+                    aria-controls={account.panelId}
+                    aria-haspopup="true"
+                    onClick={toggleAccount}
+                    onKeyDown={account.onButtonKeyDown}
+                  >
+                    <AvatarContent src={avatar} name={name} />
+                  </button>
+                </div>
+              ) : action && actionTo ? (
                 <Link to={actionTo} className="chenxing-topbar-cta">{action}</Link>
               ) : null}
             </div>
           </div>
-          {/* 菜单在胶囊内部手风琴展开（lamalama：height 0→auto，expo.out 0.45s）：
-              外层过渡到实测像素高度，内层保持自然高度并在超过 70vh 时自行滚动。
-              关闭后仍延时卸载而非常驻 DOM——shells.test 依赖关闭后 [data-menu] 消失。 */}
-          {nav.open || navClosing ? (
-            <div className={`chenxing-topbar-drawer${!nav.open && navClosing ? ' is-closing' : ''}`} style={{ height: `${drawer.height}px` }}>
+          {/* 抽屉：显示导航菜单或账户信息 */}
+          {(anyOpen || navClosing) ? (
+            <div className={`chenxing-topbar-drawer${!anyOpen && navClosing ? ' is-closing' : ''}`} style={{ height: `${drawer.height}px` }}>
               <div ref={drawer.innerRef} className="chenxing-topbar-drawer-inner">
-                <NavMenu
-                  id={nav.panelId}
-                  panelRef={nav.panelRef}
-                  onKeyDown={nav.onPanelKeyDown}
-                  extra={menuExtra}
-                  onNavigate={nav.close}
-                />
+                {nav.open ? (
+                  <NavMenu
+                    id={nav.panelId}
+                    panelRef={nav.panelRef}
+                    onKeyDown={nav.onPanelKeyDown}
+                    extra={menuExtra}
+                    onNavigate={nav.close}
+                  />
+                ) : account.open ? (
+                  <div id={account.panelId} data-menu ref={account.panelRef} onKeyDown={account.onPanelKeyDown} className="chenxing-menu cx-nav-panel cx-account-panel">
+                    {/* 用户信息头 */}
+                    <div className="cx-account-header">
+                      <div className="chenxing-avatar h-20 w-20 text-2xl pointer-events-none">
+                        <AvatarContent src={avatar} name={name} />
+                      </div>
+                      <p className="mt-3 text-base font-semibold text-[var(--chenxing-foreground)]">{name}</p>
+                      <div className="mt-2.5 grid grid-cols-2 gap-x-8 text-center text-[11px]">
+                        <div>
+                          <p className="chenxing-caption uppercase tracking-[0.1em]">会员序列</p>
+                          <p className="chenxing-mono mt-0.5 text-[var(--chenxing-foreground)]">{memberId}</p>
+                        </div>
+                        <div>
+                          <p className="chenxing-caption uppercase tracking-[0.1em]">@ Handle</p>
+                          <p className="chenxing-mono mt-0.5 text-[var(--chenxing-cyan)]">{handle}</p>
+                        </div>
+                      </div>
+                      
+                      {/* 配额卡片 */}
+                      {entitlements && (entitlements.daily || entitlements.monthly) ? (
+                        <div className="mt-4 w-full space-y-2.5 px-2">
+                          {entitlements.daily ? (
+                            <div className="cx-quota-card">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs text-[var(--chenxing-muted-foreground)]">每日授权调用</span>
+                                <span className="chenxing-mono text-xs font-semibold">
+                                  {entitlements.daily.used} / {typeof entitlements.daily.limit === 'number' ? entitlements.daily.limit : '∞'}
+                                </span>
+                              </div>
+                              {typeof entitlements.daily.limit === 'number' && entitlements.daily.limit > 0 ? (
+                                <div className="chenxing-meter h-1.5">
+                                  <div 
+                                    className="chenxing-meter-fill" 
+                                    style={{ width: `${Math.min((entitlements.daily.used / entitlements.daily.limit) * 100, 100)}%` }}
+                                  />
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          {entitlements.monthly ? (
+                            <div className="cx-quota-card">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs text-[var(--chenxing-muted-foreground)]">每月授权调用</span>
+                                <span className="chenxing-mono text-xs font-semibold">
+                                  {entitlements.monthly.used} / {typeof entitlements.monthly.limit === 'number' ? entitlements.monthly.limit : '∞'}
+                                </span>
+                              </div>
+                              {typeof entitlements.monthly.limit === 'number' && entitlements.monthly.limit > 0 ? (
+                                <div className="chenxing-meter h-1.5">
+                                  <div 
+                                    className="chenxing-meter-fill" 
+                                    style={{ width: `${Math.min((entitlements.monthly.used / entitlements.monthly.limit) * 100, 100)}%` }}
+                                  />
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                    
+                    {/* 菜单项 */}
+                    <div className="p-2">
+                      <Link to="/console/profile" className="chenxing-menu-item" onClick={account.close}>
+                        <Icon name="user" className="text-[var(--chenxing-cyan)]" size={16} />账户设置
+                      </Link>
+                      <Link to="/console/plans" className="chenxing-menu-item" onClick={account.close}>
+                        <Icon name="receipt" className="text-[var(--chenxing-cyan)]" size={16} />套餐订阅
+                      </Link>
+                      <span className="chenxing-menu-item is-static">
+                        <Icon name="book-open" className="text-[var(--chenxing-cyan)]" size={16} />文档中心
+                        <span className="ml-auto chenxing-caption text-[10px] uppercase tracking-[0.08em] text-[var(--chenxing-muted-foreground)]">即将上线</span>
+                      </span>
+                      <div className="chenxing-divider my-1" />
+                      <button
+                        type="button"
+                        className="chenxing-menu-item"
+                        onClick={() => {
+                          account.close()
+                          void logout().then(() => navigate('/login'))
+                        }}
+                      >
+                        <Icon name="log-out" className="text-[var(--chenxing-error)]" size={16} />退出
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -414,8 +472,15 @@ export function GlobalTopbar({
           绘制，遮罩若嵌在顶栏内部，顶栏就无法靠 z-index 逃出模糊。做兄弟节点后
           两者同处一个层叠上下文，--chenxing-z-topbar(55) > --chenxing-z-menu(50)
           生效，胶囊连同展开的抽屉一起保持清晰。 */}
-      {nav.open || navClosing ? (
-        <div className={`cx-menu-overlay${nav.open ? ' is-open' : ''}`} onClick={nav.close} aria-hidden="true" />
+      {(anyOpen || navClosing) ? (
+        <div 
+          className={`cx-menu-overlay${anyOpen ? ' is-open' : ''}`} 
+          onClick={() => {
+            nav.close()
+            account.close()
+          }} 
+          aria-hidden="true" 
+        />
       ) : null}
     </>
   )
