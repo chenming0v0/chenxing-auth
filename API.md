@@ -99,6 +99,8 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 已有 TOTP 的待处理登录也可以调用 `POST /api/v1/auth/totp/login`，请求包含当前六位 `code`。验证码正确后消费 ticket 并返回 Session Cookie；无效或缺少 holder proof 的 ticket 返回 `400`，错误验证码返回 `401`。
 
+验证码在同一时间步内只能使用一次，边界按「用户 + 时间步」判定，与走的是绑定确认还是登录验证无关：绑定确认消费掉的验证码不能再用于 `POST /api/v1/auth/totp/login` 或带 `totp_code` 的密码登录，换一张新的 login ticket 也不行，反向同理。命中这种冲突时返回 `401`，ticket 和待确认注册都保留，等下一个验证码重试即可。
+
 ### Passkey / WebAuthn
 
 - `POST /api/v1/auth/passkeys/register/start`：请求 `{}`，返回 WebAuthn `PublicKeyCredentialCreationOptions`。

@@ -150,8 +150,14 @@ paths:
       tags: [User Auth/MFA]
       summary: 确认 TOTP 并完成登录
       description: |
+        验证码在同一时间步内只能使用一次，边界按「用户 + 时间步」判定，
+        与注册确认还是登录验证无关：注册成功消费掉的那个码不能再用于后续登录，
+        反之亦然。遇到这种冲突时等下一个验证码重试即可，ticket 和待确认注册都保留。
+
         错误码：
-        - 401 invalid_factor：验证码错误或已被限流。
+        - 400 invalid_login_ticket：ticket 无效、缺少 holder proof，或待确认注册
+          未绑定到该 ticket 的用户（fail closed，ticket 与待确认注册一并作废）。
+        - 401 invalid_factor：验证码错误、该时间步的验证码已被使用，或已被限流。
         - 503 factor_key_unavailable：待确认注册的密文由已退役的加密 kid 保护，
           服务端读不出种子。重试无效；重新调用 POST /api/v1/auth/totp/setup 即可
           用当前 active key 重新开始绑定。该结果不消耗认证失败额度。
@@ -179,8 +185,12 @@ paths:
       tags: [User Auth/MFA]
       summary: 使用 TOTP 完成待处理登录
       description: |
+        验证码在同一时间步内只能使用一次，边界按「用户 + 时间步」判定：
+        刚用于 TOTP 绑定确认的验证码不能再用于这个端点，换一张新的 login ticket
+        也不行。等下一个验证码重试即可，本次冲突不会作废 ticket。
+
         错误码：
-        - 401 invalid_factor：验证码错误或已被限流。
+        - 401 invalid_factor：验证码错误、该时间步的验证码已被使用，或已被限流。
         - 503 factor_key_unavailable：已注册的 TOTP 种子由已退役的加密 kid 保护，
           服务端无法解密。用户重试无效，必须由管理员调用
           DELETE /api/v1/admin/users/{user_id}/auth-factors/totp 重置因子后重新绑定。

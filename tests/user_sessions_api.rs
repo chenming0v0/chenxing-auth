@@ -170,6 +170,9 @@ async fn login(
         assert_eq!(response.status(), StatusCode::OK);
         let setup = json(response).await;
         let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
+        // 注册用**上一个时间步**的码：注册确认现在也会 claim `user/timestep`（#301）。
+        // 本文件的用例会对同一个账号连续登录三次，三次各消费一个码；注册占用上一步，
+        // 后面的 `current_totp_code` 与 `next_totp_code` 各占当前步和下一步，互不冲突。
         let response = router
             .clone()
             .oneshot(
@@ -180,7 +183,7 @@ async fn login(
                     .header("cookie", &pending_cookie)
                     .body(Body::from(
                         serde_json::json!({
-                            "code": totp.generate_current().expect("TOTP code")
+                            "code": totp.generate(previous_timestep_timestamp())
                         })
                         .to_string(),
                     ))
@@ -197,6 +200,15 @@ async fn login(
     let cookie_header = cookies(&response);
     let csrf_token = csrf(&cookie_header);
     (cookie_header, csrf_token)
+}
+
+/// 上一个时间步的时间戳，用于生成「不占用当前步」的注册确认码（#301）。
+fn previous_timestep_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_secs()
+        .saturating_sub(30)
 }
 
 async fn current_totp_code(database: &chenxing_auth::sqlx::PgPool, email: &str) -> String {
