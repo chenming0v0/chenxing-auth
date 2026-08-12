@@ -175,14 +175,17 @@ describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
     expect(document.activeElement).toBe(button)
   })
 
-  it('Escape 关闭账户菜单并把焦点还给头像按钮', () => {
+  it('Escape 关闭账户菜单并把焦点还给头像按钮', async () => {
     renderConsole()
     const button = screen.getByRole('button', { name: '账户菜单' })
     fireEvent.click(button)
     const panelId = button.getAttribute('aria-controls') as string
     expect(document.getElementById(panelId)).toBeTruthy()
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(document.getElementById(panelId)).toBeNull()
+    // 退出窗口（450ms）内面板保持渲染，供 .is-closing 逐项退出动画使用（#379）；
+    // 焦点已立刻还给触发器，卸载发生在动画结束后
+    expect(document.getElementById(panelId)).toBeTruthy()
+    await waitFor(() => expect(document.getElementById(panelId)).toBeNull())
     expect(document.activeElement).toBe(button)
   })
 

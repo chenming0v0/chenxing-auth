@@ -192,9 +192,9 @@ function NavMenu({ id, panelRef, onKeyDown, extra, onNavigate }: {
   )
 }
 
-/* 关闭时保留 300ms 退出动画（遮罩淡出 + 面板收拢）再卸载。
-   closing 在渲染期派生（React 认可的 derived-state 写法）：打开的那一拍面板
-   立即挂载——useNavDisclosure 的键盘焦点转移依赖同一拍里 panelRef 已就位。 */
+/* 关闭时保留退出动画窗口（遮罩淡出 + 面板收拢，时长由调用方按 CSS 过渡传入）
+   再卸载。closing 在渲染期派生（React 认可的 derived-state 写法）：打开的那一
+   拍面板立即挂载——useNavDisclosure 的键盘焦点转移依赖同一拍里 panelRef 已就位。 */
 function useExitDelay(open: boolean, ms: number) {
   const [closing, setClosing] = useState(false)
   const prevOpen = useRef(open)
@@ -311,13 +311,26 @@ export function GlobalTopbar({
   }, [nav, account])
   
   const anyOpen = nav.open || account.open
-  /* 450ms = 抽屉收拢 0.45s（遮罩淡出 0.35s 先结束），与 shell css 过渡对齐 */
+  /* 450ms = 抽屉收拢 0.45s（遮罩淡出 0.35s 先结束），与 shell css 过渡对齐。
+     navPanelClosing / accountPanelClosing 是面板各自的退出窗口：抽屉关闭时
+     nav.open / account.open 在渲染第一拍就变 false，若面板内容同拍卸载，
+     .is-closing 下的 cx-mask-down / cx-line-out / cx-nav-fade-out
+     （chenxing-design-shell.css 537-549）匹配不到任何元素，逐项退出动画
+     永远不会执行；两个退出窗口让最后打开的面板在收拢期间保持渲染（#379）。 */
   const navClosing = useExitDelay(anyOpen, 450)
+  const navPanelClosing = useExitDelay(nav.open, 450)
+  const accountPanelClosing = useExitDelay(account.open, 450)
   const drawer = useAccordionHeight(anyOpen)
   const name = user?.display_name || user?.username || '辰'
   const avatar = avatarUrl(user)
   const memberId = user?.id != null ? `NO.${String(user.id).padStart(6, '0')}` : 'NO.000000'
   const handle = user?.username ? `@${user.username}` : '@user'
+
+  /* 抽屉内容在退出窗口内的面板选择：open 分支优先——「关汉堡同时开账户」这类
+     互斥切换必须立即换面板，不能等旧面板的退出窗口结束；两者都关闭时，各自的
+     退出窗口选中最后打开的面板，供 .is-closing 逐项退出动画使用（#379）。 */
+  const showNavMenu = nav.open || (!account.open && navPanelClosing)
+  const showAccountPanel = account.open || (!nav.open && accountPanelClosing)
   
   return (
     <>
@@ -394,7 +407,7 @@ export function GlobalTopbar({
           {(anyOpen || navClosing) ? (
             <div className={`chenxing-topbar-drawer${!anyOpen && navClosing ? ' is-closing' : ''}`} style={{ height: `${drawer.height}px` }}>
               <div ref={drawer.innerRef} className="chenxing-topbar-drawer-inner">
-                {nav.open ? (
+                {showNavMenu ? (
                   <NavMenu
                     id={nav.panelId}
                     panelRef={nav.panelRef}
@@ -402,7 +415,7 @@ export function GlobalTopbar({
                     extra={menuExtra}
                     onNavigate={nav.close}
                   />
-                ) : account.open ? (
+                ) : showAccountPanel ? (
                   <div id={account.panelId} data-menu ref={account.panelRef} onKeyDown={account.onPanelKeyDown} className="chenxing-menu cx-nav-panel cx-account-panel">
                     {/* 用户信息头 */}
                     <div className="cx-account-header">
