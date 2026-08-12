@@ -337,6 +337,32 @@ export type AuditEvent = {
   resource_id?: string | null
   created_at?: string
 }
+/** 用户级安全日志事件（GET /api/v1/auth/security-events，后端实现见 issue #307）。 */
+export type SecurityEvent = {
+  id: number
+  action: string
+  resource_type: string | null
+  client_id: string | null
+  client_name: string | null
+  created_at: string
+}
+/** 安全日志详情（GET /api/v1/auth/security-events/{id}，契约提案见 issue #308）。
+    敏感字段（ip/user_agent 等）后端未记录时为 null，前端默认打码展示。 */
+export type SecurityEventClient = {
+  client_id: string
+  client_name: string
+  created_at: string | null
+  status: string | null
+}
+export type SecurityEventDetail = SecurityEvent & {
+  category: string | null
+  severity: string | null
+  ip: string | null
+  ip_location: string | null
+  user_agent: string | null
+  ray_id: string | null
+  client: SecurityEventClient | null
+}
 export type RegistrationEmailSetting = { registration_email_from: string | null }
 export type PasskeyUserVerification = 'preferred' | 'required' | 'discouraged'
 export type PasskeyAuthenticatorAttachment = 'any' | 'platform' | 'cross_platform'

@@ -68,16 +68,24 @@ describe('ConsoleLayout 移动端导航可达性（#197）', () => {
     expect(within(sidebar).getByRole('link', { name: '套餐与权益' }).getAttribute('aria-current')).toBeNull()
   })
 
-  it('汉堡菜单里包含完整控制台导航，核心页全部可达', () => {
+  it('汉堡菜单只保留区域级入口：开发者/管理不再平铺分组', () => {
     const menu = openHamburgerMenu()
-    for (const item of allItems) {
-      expect(within(menu).getByRole('link', { name: item.label }).getAttribute('href')).toBe(item.path)
+    expect(within(menu).getByRole('link', { name: '控制台' }).getAttribute('href')).toBe('/console')
+    // 开发者入口默认落在「接入应用」，管理入口默认落在「仪表盘」
+    expect(within(menu).getByRole('link', { name: '开发者' }).getAttribute('href')).toBe('/console/integrate')
+    expect(within(menu).getByRole('link', { name: '管理' }).getAttribute('href')).toBe('/admin')
+    for (const flattened of ['总览', '接入应用', '套餐与权益', '仪表盘', '用户管理', '套餐管理', '系统设置']) {
+      expect(within(menu).queryByRole('link', { name: flattened })).toBeNull()
     }
+    // 分组列表已整体移出汉堡菜单，不再渲染 extra 容器
+    expect(menu.querySelector('.cx-nav-panel-extra')).toBeNull()
   })
 
-  it('汉堡菜单里的导航项与侧栏一样标记当前页', () => {
+  it('普通用户的汉堡菜单没有管理入口', () => {
+    mockUser.role = 'user'
     const menu = openHamburgerMenu()
-    expect(within(menu).getByRole('link', { name: '总览' }).getAttribute('aria-current')).toBe('page')
+    expect(within(menu).queryByRole('link', { name: '管理' })).toBeNull()
+    expect(within(menu).getByRole('link', { name: '开发者' })).toBeTruthy()
   })
 
   it('移动端底栏只承载核心页，且标记当前页', () => {
@@ -86,13 +94,34 @@ describe('ConsoleLayout 移动端导航可达性（#197）', () => {
     const hrefs = within(bottom).getAllByRole('link').map((link) => link.getAttribute('href'))
     expect(hrefs).toEqual(coreItems.map((item) => item.path))
     expect(within(bottom).getByRole('link', { name: '总览' }).getAttribute('aria-current')).toBe('page')
-    // 开发者/管理页不在底栏，属于汉堡菜单
+    // 开发者/管理页不在账户区底栏
     expect(within(bottom).queryByRole('link', { name: '接入应用' })).toBeNull()
+    expect(within(bottom).queryByRole('link', { name: '套餐与权益' })).toBeNull()
+  })
+
+  it('开发者区底栏切换为接入应用/授权测试/套餐与权益', () => {
+    window.history.replaceState({}, '', '/console/integrate')
+    renderConsole()
+    const bottom = screen.getByRole('navigation', { name: '控制台快捷导航' })
+    const hrefs = within(bottom).getAllByRole('link').map((link) => link.getAttribute('href'))
+    expect(hrefs).toEqual(['/console/integrate', '/console/playground', '/console/plans'])
+    expect(within(bottom).getByRole('link', { name: '接入应用' }).getAttribute('aria-current')).toBe('page')
+    expect(within(bottom).queryByRole('link', { name: '总览' })).toBeNull()
+  })
+
+  it('管理区底栏切换为仪表盘/用户管理/套餐管理/系统设置', () => {
+    window.history.replaceState({}, '', '/admin/users')
+    renderConsole()
+    const bottom = screen.getByRole('navigation', { name: '控制台快捷导航' })
+    const hrefs = within(bottom).getAllByRole('link').map((link) => link.getAttribute('href'))
+    expect(hrefs).toEqual(['/admin', '/admin/users', '/admin/plans', '/admin/settings'])
+    expect(within(bottom).getByRole('link', { name: '用户管理' }).getAttribute('aria-current')).toBe('page')
+    expect(within(bottom).queryByRole('link', { name: '总览' })).toBeNull()
   })
 
   it('点击汉堡菜单里的导航项后菜单关闭', async () => {
     const menu = openHamburgerMenu()
-    fireEvent.click(within(menu).getByRole('link', { name: '套餐与权益' }))
+    fireEvent.click(within(menu).getByRole('link', { name: '开发者' }))
     // 关闭带 300ms 退出动画（遮罩淡出 + 面板收拢），卸载发生在动画结束后
     await waitFor(() => expect(document.querySelector('[data-menu]')).toBeNull())
   })
@@ -205,7 +234,7 @@ describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
     const menu = openHamburgerMenu()
     const button = screen.getByRole('button', { name: '打开导航菜单' })
     expect(button.getAttribute('aria-expanded')).toBe('true')
-    fireEvent.click(within(menu).getByRole('link', { name: '套餐与权益' }))
+    fireEvent.click(within(menu).getByRole('link', { name: '开发者' }))
     // 关闭带 300ms 退出动画，卸载发生在动画结束后
     await waitFor(() => expect(document.querySelector('[data-menu]')).toBeNull())
     expect(button.getAttribute('aria-expanded')).toBe('false')
@@ -223,7 +252,7 @@ describe('账户菜单用户信息不做成文档标题（#226）', () => {
     // 用户名仍在原位置以原样式渲染，只是语义从 h3 变成普通文本标签
     const nameLabel = within(panel).getByText('测试员')
     expect(nameLabel.tagName).toBe('P')
-    expect(nameLabel.className).toContain('text-sm font-semibold')
+    expect(nameLabel.className).toContain('text-base font-semibold')
   })
 })
 

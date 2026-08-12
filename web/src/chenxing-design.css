@@ -283,22 +283,24 @@ td.chenxing-label {
 }
 .chenxing-badge,
 .chenxing-badge-success,
-.chenxing-badge-warning {
+.chenxing-badge-warning,
+.chenxing-badge-gold {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-family: var(--chenxing-font-mono);
-  font-size: 0.6875rem;
-  letter-spacing: 0.06em;
+  gap: 0.25rem;
+  font-size: 0.65625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   white-space: nowrap;
   color: var(--chenxing-muted-foreground);
   background: var(--chenxing-muted);
   border: 1px solid var(--chenxing-border);
-  border-radius: var(--chenxing-radius-pill);
-  padding: 0.28rem 0.65rem;
+  border-radius: var(--chenxing-radius-sm);
+  padding: 0.125rem 0.5rem;
 }
-.chenxing-badge-success { color: var(--chenxing-success); border-color: rgba(52, 211, 153, 0.32); background: rgba(52, 211, 153, 0.08); }
-.chenxing-badge-warning { color: var(--chenxing-warning); border-color: rgba(251, 191, 36, 0.32); background: rgba(251, 191, 36, 0.08); }
+.chenxing-badge-success { color: #6ee7b7; border-color: rgba(52, 211, 153, 0.25); background: rgba(52, 211, 153, 0.12); }
+.chenxing-badge-warning { color: #fcd34d; border-color: rgba(251, 191, 36, 0.25); background: rgba(251, 191, 36, 0.12); }
+.chenxing-badge-gold { color: var(--chenxing-gold); border-color: rgba(245, 199, 106, 0.30); background: rgba(245, 199, 106, 0.12); }
 
 .chenxing-link {
   font-family: var(--chenxing-font-body);

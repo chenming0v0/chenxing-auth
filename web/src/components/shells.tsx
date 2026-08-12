@@ -153,6 +153,9 @@ function NavMenu({ id, panelRef, onKeyDown, extra, onNavigate }: {
   extra?: ReactNode
   onNavigate?: () => void
 }) {
+  /* 管理入口只对已登录的管理角色显示；未登录时 user 为 null，必须显式排除 */
+  const { user } = useAuth()
+  const showAdmin = user != null && user.role !== 'user'
   return (
     <div id={id} data-menu ref={panelRef} onKeyDown={onKeyDown} className="chenxing-menu cx-nav-panel"
       onClick={(event) => event.stopPropagation()}>
@@ -164,7 +167,19 @@ function NavMenu({ id, panelRef, onKeyDown, extra, onNavigate }: {
         <span className="cx-nav-row-label"><span className="cx-nav-row-text">控制台</span></span>
         <Icon name="layout-dashboard" size={16} />
       </Link>
-      <span className="cx-nav-row is-static" style={{ '--i': 2 } as CSSProperties}>
+      {/* 开发者入口默认落在「接入应用」：开发者分组的第一页 */}
+      <Link to="/console/integrate" className="cx-nav-row" style={{ '--i': 2 } as CSSProperties} onClick={onNavigate}>
+        <span className="cx-nav-row-label"><span className="cx-nav-row-text">开发者</span></span>
+        <Icon name="code-2" size={16} />
+      </Link>
+      {/* 管理入口默认落在「仪表盘」：管理分组的第一页，具体页面切换交给管理区底栏 */}
+      {showAdmin ? (
+        <Link to="/admin" className="cx-nav-row" style={{ '--i': 3 } as CSSProperties} onClick={onNavigate}>
+          <span className="cx-nav-row-label"><span className="cx-nav-row-text">管理</span></span>
+          <Icon name="gauge" size={16} />
+        </Link>
+      ) : null}
+      <span className="cx-nav-row is-static" style={{ '--i': showAdmin ? 4 : 3 } as CSSProperties}>
         <span className="cx-nav-row-label"><span className="cx-nav-row-text">应用广场</span>
           <span className="chenxing-caption ml-2 self-center text-[10px] uppercase tracking-[0.08em] text-[var(--chenxing-muted-foreground)]">即将上线</span>
         </span>
@@ -398,38 +413,22 @@ export function GlobalTopbar({
                         <div className="mt-4 w-full space-y-2.5 px-2">
                           {entitlements.daily ? (
                             <div className="cx-quota-card">
-                              <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center justify-between">
                                 <span className="text-xs text-[var(--chenxing-muted-foreground)]">每日授权调用</span>
                                 <span className="chenxing-mono text-xs font-semibold">
                                   {entitlements.daily.used} / {typeof entitlements.daily.limit === 'number' ? entitlements.daily.limit : '∞'}
                                 </span>
                               </div>
-                              {typeof entitlements.daily.limit === 'number' && entitlements.daily.limit > 0 ? (
-                                <div className="chenxing-meter h-1.5">
-                                  <div 
-                                    className="chenxing-meter-fill" 
-                                    style={{ width: `${Math.min((entitlements.daily.used / entitlements.daily.limit) * 100, 100)}%` }}
-                                  />
-                                </div>
-                              ) : null}
                             </div>
                           ) : null}
                           {entitlements.monthly ? (
                             <div className="cx-quota-card">
-                              <div className="flex items-center justify-between mb-2">
+                              <div className="flex items-center justify-between">
                                 <span className="text-xs text-[var(--chenxing-muted-foreground)]">每月授权调用</span>
                                 <span className="chenxing-mono text-xs font-semibold">
                                   {entitlements.monthly.used} / {typeof entitlements.monthly.limit === 'number' ? entitlements.monthly.limit : '∞'}
                                 </span>
                               </div>
-                              {typeof entitlements.monthly.limit === 'number' && entitlements.monthly.limit > 0 ? (
-                                <div className="chenxing-meter h-1.5">
-                                  <div 
-                                    className="chenxing-meter-fill" 
-                                    style={{ width: `${Math.min((entitlements.monthly.used / entitlements.monthly.limit) * 100, 100)}%` }}
-                                  />
-                                </div>
-                              ) : null}
                             </div>
                           ) : null}
                         </div>
@@ -528,12 +527,15 @@ export function AuthPanel({ children, className = 'w-full max-w-md' }: { childre
   )
 }
 
-/** 控制台导航分组：按角色过滤可见分组，渲染带 active 态的导航项。
-    桌面侧栏与移动端汉堡菜单共用同一份数据与 active 判定，避免两处漂移。 */
+/** 桌面侧栏导航分组：按角色过滤可见分组，渲染带 active 态的导航项。
+    移动端不再复用它——汉堡菜单只保留区域级入口（控制台/开发者/管理），
+    区域内页面切换由底栏承载。 */
 function ConsoleNavGroups() {
   const { user } = useAuth()
   const location = useLocation()
-  const visible = navGroups.filter((group) => group.label === '账户' || group.label === '开发者' || user?.role !== 'user')
+  const visible = navGroups.filter(
+    (group) => group.label === '账户' || group.label === '开发者' || user?.role !== 'user',
+  )
   return (
     <>
       {visible.map((group) => (
@@ -569,11 +571,18 @@ function Sidebar() {
   )
 }
 
-/** 移动端核心页快捷栏：固定底栏只承载「账户」组的四项核心页，
-    完整导航（开发者/管理/系统）在汉堡菜单里；桌面端由 CSS 隐藏。 */
+/** 移动端底栏按当前区域切换：账户区显示「总览 / 个人信息 / 已授权应用」，
+    开发者区显示「接入应用 / 授权测试 / 套餐与权益」，管理区（/admin*）显示
+    管理与系统分组的四项；桌面端由 CSS 隐藏。 */
 function BottomNav() {
   const location = useLocation()
-  const core = navGroups.find((group) => group.label === '账户')?.items ?? []
+  const groupItems = (label: string) => navGroups.find((group) => group.label === label)?.items ?? []
+  const developer = groupItems('开发者')
+  const core = location.pathname.startsWith('/admin')
+    ? [...groupItems('管理'), ...groupItems('系统')]
+    : developer.some((item) => item.path === location.pathname)
+      ? developer
+      : groupItems('账户')
   return (
     <nav className="chenxing-bottom-nav" aria-label="控制台快捷导航">
       {core.map((item) => (
@@ -603,14 +612,9 @@ export function ConsoleLayout({ children }: { children: ReactNode }) {
       <Sidebar />
       <div className="chenxing-console-main relative z-[var(--chenxing-z-content)] flex min-h-screen flex-col">
         {/* sidebar already carries the brand lockup, so the topbar brand only
-            appears once the bar condenses into its capsule */}
-        <GlobalTopbar
-          status={status}
-          hideBrandWhenExpanded
-          menuExtra={(
-            <ConsoleNavGroups />
-          )}
-        />
+            appears once the bar condenses into its capsule
+            所有区域入口（控制台/开发者/管理）都在 NavMenu 本体里，无需 menuExtra */}
+        <GlobalTopbar status={status} hideBrandWhenExpanded />
         <div className="chenxing-console-content flex-1 px-4 py-6 pb-10 sm:px-6 lg:px-8">
           <SkipTarget targetId={targetId} />
           {children}

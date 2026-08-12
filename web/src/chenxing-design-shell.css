@@ -683,18 +683,64 @@
   background: transparent;
 }
 
-/* Account menu user info header */
-.chenxing-account-header {
+/* 账户面板样式：复用 cx-nav-panel 的布局，但需要特定的头部样式 */
+.cx-account-panel {
+  /* 继承 .chenxing-menu.cx-nav-panel 的无背景样式 */
+}
+
+/* 账户面板头部：透明背景，和胶囊内部一致 */
+.cx-account-header {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 1.25rem 1rem;
+  padding: 2rem 1.5rem 1.5rem;
+  background: transparent;
   border-bottom: 1px solid var(--chenxing-border);
-  /* 账户头部用一道从顶部泄下的品牌青光即可；曾共用星野配方，
-     但在小面板里网格 + 星点 + 顶部辉光全部挤在一起，观感脏乱。 */
-  background:
-    radial-gradient(ellipse 85% 100% at 50% -30%, rgba(56, 189, 248, 0.16), transparent 62%),
-    rgba(7, 12, 22, 0.55);
+}
+
+/* 配额卡片 */
+.cx-quota-card {
+  padding: 0.875rem 1rem;
+  background: rgba(4, 8, 16, 0.65);
+  border: 1px solid var(--chenxing-border);
+  border-radius: var(--chenxing-radius-sm);
+  transition: border-color 0.2s ease;
+}
+.cx-quota-card:hover {
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+/* 头像触发器：点击时弹性收缩动画
+   点击瞬间快速缩小到 0.82，然后用弹性缓动弹回到稳定的 0.88。
+   弹性缓动在 80% 时间点会稍微超调到 0.92 再回落，营造物理感。 */
+.chenxing-avatar-trigger {
+  position: relative;
+  transition: transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.chenxing-avatar-trigger.is-open {
+  transform: scale(0.88);
+}
+
+/* 径向波纹：从边缘向中心收拢，带弹性效果同步头像缩放 */
+.chenxing-avatar-trigger::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  background: radial-gradient(circle, transparent 20%, rgba(103, 232, 249, 0.2) 60%, rgba(103, 232, 249, 0.4) 100%);
+  opacity: 0;
+  transform: scale(1.3);
+  transition: 
+    opacity 0.5s cubic-bezier(0.34, 1.56, 0.64, 1), 
+    transform 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+  pointer-events: none;
+  z-index: -1;
+}
+
+.chenxing-avatar-trigger.is-open::before {
+  opacity: 1;
+  transform: scale(0.7);
 }
 
 /* ---------- console shell: mobile bottom tab bar ---------- */

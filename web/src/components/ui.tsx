@@ -1,7 +1,7 @@
 import { createElement, useId, useState } from 'react'
 import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
 import {
-  Activity, AlertTriangle, ArrowDown, ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Box, CalendarClock, Check, ChevronDown,
+  Activity, AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Box, CalendarClock, Check, ChevronDown,
   ChevronsUpDown, Circle, CircleAlert, Code2, Copy, Crown, Database, Download, ExternalLink, Eye, EyeOff, Fingerprint,
   FlaskConical, Gauge, Globe, Info, KeyRound, LayoutDashboard, LayoutGrid, Layers, Link2, Lock, LockKeyhole,
   LogIn, LogOut, Mail, Menu, MoreHorizontal, Pencil, Plus, Power, Receipt, RefreshCw, Rocket, RotateCcw, Save, Search,
@@ -12,7 +12,7 @@ import logoUrl from '../assets/logo.png'
 import { initialOf } from '../data'
 
 const icons: Record<string, LucideIcon> = {
-  activity: Activity, 'alert-triangle': AlertTriangle, 'arrow-down': ArrowDown, 'arrow-right': ArrowRight, 'arrow-up-right': ArrowUpRight,
+  activity: Activity, 'alert-triangle': AlertTriangle, 'arrow-down': ArrowDown, 'arrow-left': ArrowLeft, 'arrow-right': ArrowRight, 'arrow-up-right': ArrowUpRight,
   'badge-check': BadgeCheck, 'book-open': BookOpen, box: Box, 'calendar-clock': CalendarClock, check: Check,
   'chevron-down': ChevronDown, 'chevrons-up-down': ChevronsUpDown, circle: Circle, 'circle-alert': CircleAlert,
   'code-2': Code2, copy: Copy, crown: Crown, database: Database, download: Download, 'external-link': ExternalLink,
@@ -111,8 +111,8 @@ export function Button({ variant = 'primary', icon, children, className = '', ..
   )
 }
 
-export function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'neutral' | 'success' | 'warning' }) {
-  const cls = tone === 'success' ? 'chenxing-badge-success' : tone === 'warning' ? 'chenxing-badge-warning' : 'chenxing-badge'
+export function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'neutral' | 'success' | 'warning' | 'gold' }) {
+  const cls = tone === 'success' ? 'chenxing-badge-success' : tone === 'warning' ? 'chenxing-badge-warning' : tone === 'gold' ? 'chenxing-badge-gold' : 'chenxing-badge'
   return <span className={cls}>{children}</span>
 }
 

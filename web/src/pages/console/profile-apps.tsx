@@ -6,6 +6,7 @@ import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, PasswordField } from '../../components/ui'
 import { ProfileAvatar, type MessageTone } from './profile-avatar'
 import { formatDate } from '../../data'
+import logoSrc from '../../assets/logo.png'
 
 const PASSWORD_MIN_LENGTH = 10
 const PASSWORD_MAX_LENGTH = 128
@@ -92,14 +93,21 @@ export function ConsoleProfile() {
     <ConsoleLayout>
       <section className="space-y-6 pt-2">
         <HudPanel className="is-starfield">
+          {/* 淡化 logo 只在卡片右上角露出一角：裁切层单独 overflow-hidden，
+              不能直接给面板加 overflow-hidden，否则会裁掉 ::before/::after 的青色角标。
+              辉光层参照原型设计：右上角一道径向泛光衬在 logo 底下，金色泛光营造温暖的辰星印记。 */}
+          <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--chenxing-radius-lg)]" aria-hidden="true">
+            <div className="absolute inset-0 bg-[radial-gradient(70%_140%_at_88%_0%,rgba(245,199,106,0.16),transparent_65%)]" />
+            <img src={logoSrc} alt="" className="absolute -right-6 -top-10 h-48 w-48 opacity-[0.07] blur-[1px]" />
+          </div>
           <div className="relative flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
             <div className="flex items-start gap-5">
               <ProfileAvatar user={user} name={name} onMessage={notify} refresh={refresh} />
               <div className="space-y-2.5 pt-1">
                 <div className="flex flex-wrap items-center gap-3">
                   <h1 className="chenxing-h1">{name}</h1>
-                  <Chip><Icon name="star" size={14} />{user?.role || 'user'}</Chip>
-                  <Badge tone="success"><Icon name="shield-check" size={14} />身份已验证</Badge>
+                  <Badge tone="gold"><Icon name="star" size={13} />{user?.role || 'user'}</Badge>
+                  <Badge tone="success"><Icon name="shield-check" size={13} />身份已验证</Badge>
                 </div>
                 <p className="chenxing-caption chenxing-mono">{user?.email}</p>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
