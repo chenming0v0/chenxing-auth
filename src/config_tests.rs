@@ -71,6 +71,24 @@ fn session_ttl_of_zero_is_still_rejected() {
     assert_eq!(error, ConfigError::InvalidValue("SESSION_TTL_SECONDS"));
 }
 
+/// #365：会话 TTL 有上界。u64::MAX 秒的绝对 TTL 会原样送进 Redis
+/// `SET ... EX`（`SessionStore::redis_ttl_seconds`），Redis 整数上限是 i64，
+/// 超限即每次登录/会话写入失败；必须在启动校验阶段拒绝，而不是等错误指向 Redis。
+#[test]
+fn session_ttl_beyond_the_upper_bound_is_rejected() {
+    for session_ttl in [MAX_SESSION_TTL_SECONDS + 1, u64::MAX] {
+        let error = Config::from_values(
+            "127.0.0.1".to_owned(),
+            3000,
+            "postgres://localhost/chenxing_auth".to_owned(),
+            "redis://localhost".to_owned(),
+            session_ttl,
+        )
+        .expect_err("session TTL beyond the upper bound must be rejected");
+        assert_eq!(error, ConfigError::InvalidValue("SESSION_TTL_SECONDS"));
+    }
+}
+
 #[test]
 fn insecure_cookies_are_allowed_only_for_loopback_http() {
     let mut config = config_with_session_ttl(3600);

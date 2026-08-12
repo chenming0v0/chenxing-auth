@@ -42,7 +42,10 @@ pub use config_limit_bounds::{
 pub use config_limits::SecurityLimits;
 pub use config_parsing::{AuthEncryptionKey, AuthEncryptionKeyRing};
 pub use config_proxy::TrustedProxies;
-pub use config_security::{DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_TOKEN_TTL_SECONDS};
+pub use config_security::{
+    DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_TOKEN_TTL_SECONDS,
+    MAX_SESSION_IDLE_TIMEOUT_SECONDS, MAX_SESSION_MAX_CONCURRENT_SESSIONS, MAX_SESSION_TTL_SECONDS,
+};
 
 // `config_limits` 的测试通过这个路径复用 key ring 解析器；非测试构建没有其他调用方。
 #[cfg(test)]
