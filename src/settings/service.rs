@@ -8,6 +8,7 @@ use super::{
     },
     repository,
     security_limits_cache::{CachedSecurityLimits, SecurityLimitsCache, SecurityLimitsSource},
+    smtp_sender::parse_smtp_sender,
 };
 use crate::{
     config::AuthEncryptionKey,
@@ -343,15 +344,7 @@ fn normalize_email(value: Option<String>) -> Result<Option<String>, SettingsServ
 
 /// 从 `Name <a@b>` 或裸邮箱里取出规范化后的展示值。
 fn extract_email(value: &str) -> Option<String> {
-    let value = value.trim();
-    if let Ok(email) = EmailAddress::parse(value) {
-        return Some(email.into_display());
-    }
-    let start = value.find('<')?;
-    let end = value[start + 1..].find('>')?;
-    EmailAddress::parse(&value[start + 1..start + 1 + end])
-        .ok()
-        .map(EmailAddress::into_display)
+    parse_smtp_sender(value).map(EmailAddress::into_display)
 }
 
 #[cfg(test)]

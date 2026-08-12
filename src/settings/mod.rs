@@ -3,6 +3,7 @@ pub mod repository;
 pub mod security_limits;
 pub mod security_limits_cache;
 pub mod service;
+mod smtp_sender;
 
 pub use domain::{
     EmailPolicySetting, PasskeyAuthenticatorAttachment, PasskeySetting, PasskeyUserVerification,
