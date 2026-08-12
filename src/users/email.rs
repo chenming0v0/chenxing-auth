@@ -48,7 +48,11 @@
 //!   独立邮箱合并成一个账号。需要限制别名注册的场景由
 //!   `EmailPolicySetting::alias_restriction_enabled` 单独表达，那是准入策略，
 //!   不是身份等价规则。
-//! - 不剥离点号。同理，`a.b@` 与 `ab@` 只在部分 provider 上等价。
+//! - 不剥离点号。同理，`a.b@` 与 `ab@` 只在部分 provider 上等价。但 RFC 5321
+//!   的 Dot-string 语法（`Atom *("." Atom)`，Atom 至少一个字符）要求本地部分
+//!   不得以点号开头或结尾、也不得含连续点号：这类畸形书写既不是合法地址，又会
+//!   在折叠点号的 provider 上与受害者地址语义等价（Issue #347），因此一律拒绝。
+//!   拒绝不是归一化——合法的单点号形态（`u.ser@`）继续原样通过。
 //! - 不对非 ASCII 做大小写折叠或 NFC 归一。SMTPUTF8 的本地部分是字节敏感的，
 //!   替它归一同样是猜语义。非 ASCII 本地部分因此原样进入匹配值：两种书写形态
 //!   会被视为两个不同邮箱，这是保守方向的错误（拒绝合并），不是放行方向的。
@@ -123,6 +127,10 @@ pub enum EmailError {
     MalformedStructure,
     #[error("email local part is empty")]
     EmptyLocalPart,
+    #[error(
+        "email local part must not start or end with a dot, and must not contain consecutive dots"
+    )]
+    InvalidLocalPart,
     #[error("email domain is not a valid IDNA domain name")]
     InvalidDomain,
 }
@@ -157,6 +165,14 @@ impl EmailAddress {
         };
         if local.is_empty() {
             return Err(EmailError::EmptyLocalPart);
+        }
+        // RFC 5321 Dot-string 语法：`Atom *("." Atom)`，Atom 至少一个字符。
+        // 前导、尾随或连续点号都要求出现空的 Atom，不属于任何合法 dot-string。
+        // 这是准入校验而不是归一化：`a.b@` 与 `ab@` 的合并是 provider 特定语义
+        // （见文件头注释），但畸形书写既违反协议，又会在折叠点号的 provider 上
+        // 与受害者地址语义等价，成为账号混淆的种子（Issue #347）。
+        if local.starts_with('.') || local.ends_with('.') || local.contains("..") {
+            return Err(EmailError::InvalidLocalPart);
         }
         let domain = canonical_domain(domain)?;
 
