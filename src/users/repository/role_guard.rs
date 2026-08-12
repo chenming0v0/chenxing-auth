@@ -10,7 +10,7 @@
 
 use crate::sqlx::PgPool;
 
-use crate::users::domain::{UserId, UserRole, UserStatus};
+use crate::users::domain::{OwnerTargetAccess, UserId, UserRole, UserStatus};
 
 /// 受 Owner 守卫保护的写操作的业务结果，角色变更与状态变更共用。
 ///
@@ -24,7 +24,7 @@ use crate::users::domain::{UserId, UserRole, UserStatus};
 ///   `Some("last_owner_required")` / `None`），服务层的 `_ => Ok(false)` 兜底分支
 ///   会把任何未识别的字符串静默降级成「用户不存在」（Issue #283）。
 ///
-/// 三种终局显式化后，调用方 match 时由编译器保证覆盖完整，不存在兜底分支。
+/// 终局显式化后，调用方 match 时由编译器保证覆盖完整，不存在兜底分支。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OwnerGuardOutcome {
     /// 写入已提交。
@@ -33,6 +33,8 @@ pub enum OwnerGuardOutcome {
     NotFound,
     /// 拒绝：这是最后一个活跃 Owner。
     LastOwnerRequired,
+    /// 拒绝：目标在本事务持有的行锁内是 Owner，但调用者只有 `ManageUsers`。
+    ManageRolesRequired,
 }
 
 /// 读取当前活跃 Owner 数量与目标用户的 (role, status)，两者都加行锁。
@@ -91,6 +93,7 @@ pub async fn set_user_status_guarded(
     pool: &PgPool,
     id: UserId,
     status: UserStatus,
+    access: OwnerTargetAccess,
 ) -> Result<OwnerGuardOutcome, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
     crate::sessions::store::lock_user_session_scope(&mut transaction, id).await?;
@@ -99,6 +102,12 @@ pub async fn set_user_status_guarded(
         transaction.rollback().await?;
         return Ok(OwnerGuardOutcome::NotFound);
     };
+    // 角色判定和状态写入共用本事务持有的目标行锁。若目标在等待锁期间被晋升为
+    // Owner，这里读取晋升后的版本并拒绝，不能继续使用 HTTP 层的旧快照（#323）。
+    if role == "owner" && !access.permits_owner() {
+        transaction.rollback().await?;
+        return Ok(OwnerGuardOutcome::ManageRolesRequired);
+    }
     let current_status = UserStatus::parse(&current_status);
     if role == "owner"
         && current_status == Some(UserStatus::Active)

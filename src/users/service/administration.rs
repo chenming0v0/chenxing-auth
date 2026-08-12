@@ -5,7 +5,7 @@
 
 use super::{UserService, UserServiceError};
 use crate::users::{
-    domain::{UserId, UserRole, UserStatus},
+    domain::{OwnerTargetAccess, UserId, UserRole, UserStatus},
     query_repository,
     repository::{self, OwnerGuardOutcome},
 };
@@ -39,7 +39,7 @@ impl UserService {
     ///
     /// 仓储层返回 [`repository::OwnerGuardOutcome`]，业务终局直接 match（Issue #126）。
     /// 旧实现靠 `sqlx::Error::Protocol` 的字符串内容判定"最后一个 Owner"，
-    /// 改一次措辞就会静默放开守卫；现在由编译器保证三种终局都被处理。
+    /// 改一次措辞就会静默放开守卫；现在由编译器保证全部终局都被处理。
     pub async fn set_role(&self, id: UserId, role: UserRole) -> Result<bool, UserServiceError> {
         translate_owner_guard(repository::set_user_role(&self.pool, id, role).await?)
     }
@@ -53,17 +53,21 @@ impl UserService {
         &self,
         id: UserId,
         status: UserStatus,
+        access: OwnerTargetAccess,
     ) -> Result<bool, UserServiceError> {
-        translate_owner_guard(repository::set_user_status_guarded(&self.pool, id, status).await?)
+        translate_owner_guard(
+            repository::set_user_status_guarded(&self.pool, id, status, access).await?,
+        )
     }
 }
 
-/// Owner 守卫的三种终局 → 服务层结果。角色与状态变更共用同一张翻译表。
+/// Owner 守卫终局 → 服务层结果。角色与状态变更共用同一张翻译表。
 fn translate_owner_guard(outcome: OwnerGuardOutcome) -> Result<bool, UserServiceError> {
     match outcome {
         OwnerGuardOutcome::Updated => Ok(true),
         OwnerGuardOutcome::NotFound => Ok(false),
         OwnerGuardOutcome::LastOwnerRequired => Err(UserServiceError::LastOwnerRequired),
+        OwnerGuardOutcome::ManageRolesRequired => Err(UserServiceError::ManageRolesRequired),
     }
 }
 
@@ -72,7 +76,7 @@ mod tests {
     use super::translate_owner_guard;
     use crate::users::{repository::OwnerGuardOutcome, service::UserServiceError};
 
-    /// Issue #126 / #283：三个变体必须各自映射到确定的服务层结果。
+    /// Issue #126 / #283 / #323：每个变体必须映射到确定的服务层结果。
     ///
     /// 这里直接调用真正的翻译表（不再复刻）：`translate_owner_guard` 不接触数据库，
     /// 而被守护的正是"枚举 → 结果"这一步映射。若日后有人把 `NotFound` 误接成
@@ -90,6 +94,10 @@ mod tests {
         assert!(matches!(
             translate_owner_guard(OwnerGuardOutcome::LastOwnerRequired),
             Err(UserServiceError::LastOwnerRequired)
+        ));
+        assert!(matches!(
+            translate_owner_guard(OwnerGuardOutcome::ManageRolesRequired),
+            Err(UserServiceError::ManageRolesRequired)
         ));
     }
 

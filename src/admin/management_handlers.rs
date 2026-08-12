@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     authorization::{
-        AdminActor, OwnerGuardedOperation, authorize_user_write, record_owner_guard_denial,
+        AdminActor, OwnerGuardedOperation, authorize_user_write, owner_write_permission_denied,
+        record_owner_guard_denial,
     },
     domain::AdminPermission,
 };
@@ -107,27 +108,28 @@ pub async fn list_users(
 
 /// `POST /api/v1/admin/users/{user_id}/{status}`。
 ///
-/// 三段顺序由 `authorize_user_write` 固定：基线 `ManageUsers` → 目标用户 →
-/// Owner 抬到 `ManageRoles`（Issue #280）。状态串是与资源无关的语法输入，
-/// 在基线授权之后、查询目标之前解析，因此非法状态恒为 400 `invalid_status`，
-/// 不再和「用户不存在」共用一个错误码（Issue #283）。
+/// 顺序固定为：基线 `ManageUsers` → 解析状态 → 写事务锁住目标并判定 Owner 档位。
+/// 目标角色与状态写入共用事务，消除并发晋升 Owner 的旧快照窗口（Issue #323）。
+/// 状态串是与资源无关的语法输入，在查询目标之前解析，因此非法状态恒为
+/// 400 `invalid_status`，不再和「用户不存在」共用一个错误码（Issue #283）。
 pub async fn set_user_status(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path((user_id, status)): Path<(UserId, String)>,
 ) -> Response {
-    let actor = match admin.authorize(&state, AdminPermission::ManageUsers).await {
-        Ok(actor) => actor,
+    let authorization = match authorize_user_write(&state, &admin).await {
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
+    let actor = authorization.actor();
     let Some(status) = UserStatus::parse(&status) else {
         return error::bad_request("invalid_status", "status is invalid");
     };
-    let actor = match authorize_user_write(&state, &admin, actor, user_id).await {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
-    match state.users.set_status_guarded(user_id, status).await {
+    match state
+        .users
+        .set_status_guarded(user_id, status, authorization.access())
+        .await
+    {
         Ok(true) => {
             let (actor_type, actor_id) = actor.audit_fields();
             state
@@ -143,7 +145,7 @@ pub async fn set_user_status(
                 .await;
             StatusCode::NO_CONTENT.into_response()
         }
-        // 状态串已在上面解析过，`false` 只剩一种含义：目标用户在授权与写入之间消失。
+        // 状态串已在上面解析过，`false` 只剩一种含义：目标用户不存在。
         Ok(false) => error::not_found("user_not_found", "user was not found"),
         // 有权限的调用者试图禁用最后一个活跃 Owner：这是安全相关决策，必须留痕（Issue #304）。
         Err(crate::users::service::UserServiceError::LastOwnerRequired) => {
@@ -159,6 +161,9 @@ pub async fn set_user_status(
                 "last_owner_required",
                 "at least one active owner is required",
             )
+        }
+        Err(crate::users::service::UserServiceError::ManageRolesRequired) => {
+            owner_write_permission_denied(&state, authorization).await
         }
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to update user status");
@@ -177,7 +182,7 @@ pub async fn set_user_role(
         Ok(actor_id) => actor_id,
         Err(response) => return response,
     };
-    if actor == AdminActor::User(user_id) {
+    if actor.user_id() == Some(user_id) {
         return error::forbidden(
             "self_role_change_forbidden",
             "users cannot change their own role",

@@ -32,7 +32,8 @@
 //! 需要按目标资源抬高门槛的端点（禁用 Owner、改写 Owner 的套餐）**不得**把
 //! 「查资源决定权限」放在第一次 `authorize()` 之前：那会让权限门槛成为资源状态的
 //! 函数，403 的措辞变成资源存在性预言机（Issue #280）。正确顺序是先按与目标无关的
-//! 基线授权，再查资源，最后抬档 —— 见 `admin::authorization::authorize_user_write`。
+//! 基线授权，再由写事务锁住目标并按实际角色消费授权档位。目标角色不得在事务外
+//! 预读，否则会在预读与写入之间产生 Owner 晋升竞态（Issue #323）。
 //!
 //! 类型让人难以写错，`tests/csrf_route_coverage.rs` 的路由级测试让写错的跑不过。
 
@@ -51,7 +52,10 @@ use crate::{
     },
     error,
     state::AppState,
-    users::ui_auth::{UserContext, current_user, user_csrf_valid},
+    users::{
+        domain::OwnerTargetAccess,
+        ui_auth::{UserContext, current_user, user_csrf_valid},
+    },
 };
 
 /// 已认证的浏览器会话，未校验 CSRF。用于读端点。
@@ -228,6 +232,19 @@ impl AdminWrite {
             return Err(error::bad_request("csrf_invalid", "CSRF token is invalid"));
         }
         self.caller.check_permission(state, permission).await
+    }
+
+    /// 调用者在完成基线授权后可携带到目标用户写事务的最高档位。
+    ///
+    /// 该方法只描述调用者，不读取目标；目标角色必须由写事务持行锁后判定（#323）。
+    pub(crate) fn owner_target_access(&self) -> OwnerTargetAccess {
+        match &self.caller {
+            AdminCaller::SystemToken => OwnerTargetAccess::ManageRoles,
+            AdminCaller::Session(context) if context.role.allows(AdminPermission::ManageRoles) => {
+                OwnerTargetAccess::ManageRoles
+            }
+            AdminCaller::Session(_) => OwnerTargetAccess::ManageUsers,
+        }
     }
 }
 
