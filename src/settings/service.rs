@@ -220,9 +220,7 @@ impl SettingsService {
         if let Some(cached) = self.security_limits_cache.fresh() {
             return Ok(cached);
         }
-        let value = self.load_security_limits().await?;
-        self.security_limits_cache.store(value.clone());
-        Ok(value)
+        self.load_and_cache_security_limits().await
     }
 
     /// 认证限流热路径使用的读取：永远返回一份可用阈值，并说明它的来源。
@@ -240,14 +238,11 @@ impl SettingsService {
         if let Some(backed_off) = self.security_limits_cache.backoff_fallback() {
             return backed_off;
         }
-        match self.load_security_limits().await {
-            Ok(value) => {
-                self.security_limits_cache.store(value.clone());
-                CachedSecurityLimits {
-                    value,
-                    source: SecurityLimitsSource::Loaded,
-                }
-            }
+        match self.load_and_cache_security_limits().await {
+            Ok(value) => CachedSecurityLimits {
+                value,
+                source: SecurityLimitsSource::Loaded,
+            },
             Err(error_value) => {
                 tracing::error!(
                     event = "settings.security_limits_load_failed",
@@ -271,6 +266,28 @@ impl SettingsService {
         }
     }
 
+    /// 加载并把结果写回缓存；加载期间若有管理员写入（代际推进），本次结果被丢弃。
+    ///
+    /// #413：读库时刻与写缓存时刻分离，中间可插入管理员的写入。先捕获代际、完成后
+    /// CAS 回填，让旧快照无法覆盖新阈值。返回的仍是本次读到的值——它与读库时刻的
+    /// 数据库快照一致，仅不再回填缓存。
+    async fn load_and_cache_security_limits(
+        &self,
+    ) -> Result<SecurityLimitsSetting, SettingsServiceError> {
+        let generation = self.security_limits_cache.generation();
+        let value = self.load_security_limits().await?;
+        if !self
+            .security_limits_cache
+            .store_if_generation_unchanged(generation, value.clone())
+        {
+            tracing::debug!(
+                event = "settings.security_limits_stale_reload_discarded",
+                "discarding stale security limits reload: an administrator write landed while the load was in flight"
+            );
+        }
+        Ok(value)
+    }
+
     pub async fn set_security_limits(
         &self,
         value: SecurityLimitsSetting,
@@ -280,6 +297,8 @@ impl SettingsService {
         // 写入成功后主动刷新缓存，而不是只失效：新值已经校验过，等价于一次成功加载。
         // 否则本实例在 TTL 内仍按旧阈值限流，管理员在设置页看不到自己的改动生效。
         // 多实例部署里其他实例靠 TTL 收敛，窗口上界是 SECURITY_LIMITS_CACHE_TTL。
+        // `store` 会推进代际（#413）：早于本次写入开始、晚于本次写入完成才落地的
+        // 并发过期加载会因代际不匹配被丢弃，不会用旧阈值回填覆盖刚写入的新值。
         self.security_limits_cache.store(value.clone());
         Ok(value)
     }
