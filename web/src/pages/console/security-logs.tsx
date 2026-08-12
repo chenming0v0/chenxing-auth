@@ -35,7 +35,18 @@ function SecurityLogList() {
     let active = true
     setState({ kind: 'loading' })
     void apiFetch<Paged<SecurityEvent>>(`/api/v1/auth/security-events?page=${page}&page_size=${PAGE_SIZE}`)
-      .then((data) => { if (active) setState({ kind: 'ready', data }) })
+      .then((data) => {
+        if (!active) return
+        const pages = Math.max(1, Math.ceil(data.total / data.page_size))
+        // 预览翻到第 3 页后接口上线、或管理员删日志导致 total 缩水时，
+        // 当前 page 可能已经越界。先收敛页码，让 effect 用合法页再拉一次，
+        // 不要把空 items 渲染成「暂无活动记录」卡死下一页（#372）。
+        if (page > pages) {
+          setPage(pages)
+          return
+        }
+        setState({ kind: 'ready', data })
+      })
       .catch((reason: unknown) => {
         if (!active) return
         if (reason instanceof ApiError && reason.status === 404) { setState({ kind: 'preview', data: previewPage(page) }); return }
