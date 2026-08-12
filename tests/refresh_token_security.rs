@@ -1,7 +1,7 @@
 use base64::Engine;
 use chenxing_auth::oauth::{
     refresh::{REFRESH_TOKEN_ABSOLUTE_TTL_DAYS, RefreshToken, RefreshTokenError},
-    refresh_store::{RefreshTokenStore, TombstoneState},
+    refresh_store::{FamilyRevocation, RefreshTokenStore, RotationOutcome, TombstoneState},
 };
 use sha2::Digest;
 use time::{Duration, OffsetDateTime};
@@ -30,6 +30,10 @@ fn family_index_key(family_id: &str) -> String {
 
 fn tombstone_key(value: &str) -> String {
     format!("cx:refresh:tombstone:{}", token_hash(value))
+}
+
+fn family_revoked_key(family_id: &str) -> String {
+    format!("cx:refresh:family_revoked:{family_id}")
 }
 
 /// Issue #109：绝对生命周期限制生效，轮换不能无限延长有效期。
@@ -136,10 +140,13 @@ async fn replay_old_token_revokes_entire_family() {
 
     store.save(&token1).await.expect("save token1");
     let token2 = token1.rotate(vec!["openid".to_owned()]);
-    store
-        .rotate_if_matches(&token1.value, &token1, &token2)
-        .await
-        .expect("rotate to token2");
+    assert_eq!(
+        store
+            .rotate_if_matches(&token1.value, &token1, &token2)
+            .await
+            .expect("rotate to token2"),
+        RotationOutcome::Rotated
+    );
 
     // token1 已被轮换，墓碑已写入
     assert!(
@@ -169,11 +176,17 @@ async fn replay_old_token_revokes_entire_family() {
     );
 
     // 再次提交 token1（重放） → 撤销整个 family
-    let revoked = store
-        .revoke_family_after_replay(&family_id, &client_id, "user-replay", &token1.value)
-        .await
-        .expect("revoke family");
-    assert_eq!(revoked, 1, "should revoke 1 token (token2)");
+    assert_eq!(
+        store
+            .revoke_family_after_replay(&family_id, &client_id, "user-replay", &token1.value)
+            .await
+            .expect("revoke family"),
+        FamilyRevocation {
+            revoked_tokens: 1,
+            already_revoked: false,
+        },
+        "should revoke 1 token (token2)"
+    );
 
     let replay_tombstone = store
         .read_tombstone(&token1.value)
@@ -188,7 +201,10 @@ async fn replay_old_token_revokes_entire_family() {
             .revoke_family_after_replay(&family_id, &client_id, "user-replay", &token1.value)
             .await
             .expect("repeat family revoke"),
-        0
+        FamilyRevocation {
+            revoked_tokens: 0,
+            already_revoked: true,
+        }
     );
 
     // token2 被撤销了
@@ -200,6 +216,24 @@ async fn replay_old_token_revokes_entire_family() {
             .is_none()
     );
 
+    // Issue #295：撤销之后一次「迟到的」轮换不能把新成员写回已死的 family。
+    let late_rotation = token2.rotate(vec!["openid".to_owned()]);
+    assert_eq!(
+        store
+            .rotate_if_matches(&token2.value, &token2, &late_rotation)
+            .await
+            .expect("late rotation into a revoked family"),
+        RotationOutcome::FamilyRevoked
+    );
+    assert!(
+        store
+            .find(&late_rotation.value)
+            .await
+            .expect("find the late rotation token")
+            .is_none(),
+        "a revoked family must never gain a new redeemable member"
+    );
+
     // 清理墓碑
     let client = redis_client();
     let mut conn = client
@@ -207,16 +241,9 @@ async fn replay_old_token_revokes_entire_family() {
         .await
         .expect("Redis");
     let _: () = redis::cmd("DEL")
-        .arg(format!(
-            "cx:refresh:tombstone:{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(sha2::Sha256::digest(token1.value.as_bytes()))
-        ))
-        .arg(format!(
-            "cx:refresh:tombstone:{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .encode(sha2::Sha256::digest(token2.value.as_bytes()))
-        ))
+        .arg(tombstone_key(&token1.value))
+        .arg(tombstone_key(&token2.value))
+        .arg(family_revoked_key(&family_id))
         .query_async(&mut conn)
         .await
         .expect("cleanup tombstones");
@@ -242,11 +269,16 @@ async fn concurrent_rotation_keeps_the_single_winner_token_alive() {
         store.rotate_if_matches(&original.value, &original, &replacement_a),
         store.rotate_if_matches(&original.value, &original, &replacement_b),
     );
-    let won_a = result_a.expect("rotation A");
-    let won_b = result_b.expect("rotation B");
-    assert_ne!(won_a, won_b, "exactly one concurrent CAS must win");
+    let outcome_a = result_a.expect("rotation A");
+    let outcome_b = result_b.expect("rotation B");
+    assert_ne!(outcome_a, outcome_b, "exactly one concurrent CAS must win");
+    assert!(
+        matches!(outcome_a, RotationOutcome::Rotated)
+            || matches!(outcome_b, RotationOutcome::Rotated),
+        "one of the concurrent rotations must succeed"
+    );
 
-    let winner = if won_a {
+    let winner = if outcome_a == RotationOutcome::Rotated {
         &replacement_a
     } else {
         &replacement_b
@@ -300,18 +332,20 @@ async fn rotation_rollback_restores_the_previous_token_atomically() {
     let family_id = original.family_id.clone();
 
     store.save(&original).await.expect("save original token");
-    assert!(
+    assert_eq!(
         store
             .rotate_if_matches(&original.value, &original, &rotated)
             .await
-            .expect("rotate to the new token")
+            .expect("rotate to the new token"),
+        RotationOutcome::Rotated
     );
 
-    assert!(
+    assert_eq!(
         store
             .rollback_rotation(&rotated, &original)
             .await
-            .expect("roll back the rotation")
+            .expect("roll back the rotation"),
+        RotationOutcome::Rotated
     );
     assert!(
         store
@@ -332,19 +366,21 @@ async fn rotation_rollback_restores_the_previous_token_atomically() {
     );
     // 恢复后的旧 token 必须能正常轮换（载荷与 CAS 预期逐字节一致）。
     let retried = original.rotate(vec!["openid".to_owned()]);
-    assert!(
+    assert_eq!(
         store
             .rotate_if_matches(&original.value, &original, &retried)
             .await
-            .expect("retry the rotation after rollback")
+            .expect("retry the rotation after rollback"),
+        RotationOutcome::Rotated
     );
 
     // 新 token 已经不在时不得复活旧 token，否则同一 family 会出现两个活凭据。
-    assert!(
-        !store
+    assert_eq!(
+        store
             .rollback_rotation(&rotated, &original)
             .await
-            .expect("repeat rollback")
+            .expect("repeat rollback"),
+        RotationOutcome::CasMismatch
     );
     assert!(
         store
@@ -385,10 +421,13 @@ async fn tombstone_client_id_mismatch_does_not_revoke_family() {
 
     store.save(&token_a).await.expect("save token_a");
     let token_a2 = token_a.rotate(vec!["openid".to_owned()]);
-    store
-        .rotate_if_matches(&token_a.value, &token_a, &token_a2)
-        .await
-        .expect("rotate token_a");
+    assert_eq!(
+        store
+            .rotate_if_matches(&token_a.value, &token_a, &token_a2)
+            .await
+            .expect("rotate token_a"),
+        RotationOutcome::Rotated
+    );
 
     // token_a 的墓碑存在
     let tombstone = store
@@ -740,14 +779,17 @@ async fn client_revoke_recovers_after_family_index_wrongtype() {
     );
 }
 
-/// Issue #161：显式 token revoke 与补偿删除不应留下可触发 family revoke 的墓碑。
+/// Issue #161：授权码兑换的补偿删除不应留下可触发 family revoke 的墓碑。
+///
+/// `remove` 销毁的是客户端从未收到的 token，它既不是被消费的凭据，也不是重放
+/// 证据。写 `Consumed` 墓碑会让后续提交同一个值被误判成重放并撤销 family。
 #[tokio::test]
-async fn explicit_refresh_revoke_does_not_create_replay_tombstone() {
+async fn compensating_removal_does_not_create_replay_tombstone() {
     let store = RefreshTokenStore::new(redis_client());
-    let client_id = format!("cx_explicit_revoke_{}", Uuid::new_v4().simple());
+    let client_id = format!("cx_compensating_removal_{}", Uuid::new_v4().simple());
     let token = RefreshToken::new(
         client_id.clone(),
-        "user-explicit-revoke".to_owned(),
+        "user-compensating-removal".to_owned(),
         vec!["openid".to_owned()],
     );
     let family_id = token.family_id.clone();
@@ -756,12 +798,12 @@ async fn explicit_refresh_revoke_does_not_create_replay_tombstone() {
     store
         .remove(&token.value)
         .await
-        .expect("explicitly revoke token");
+        .expect("remove the never-delivered token");
     assert!(
         store
             .read_tombstone(&token.value)
             .await
-            .expect("read explicit revoke tombstone")
+            .expect("read compensating removal tombstone")
             .is_none()
     );
 
@@ -771,11 +813,182 @@ async fn explicit_refresh_revoke_does_not_create_replay_tombstone() {
         .await
         .expect("Redis");
     let _: () = redis::cmd("DEL")
-        .arg(format!("cx:refresh:client_idx:{client_id}"))
-        .arg(format!("cx:refresh:family_idx:{family_id}"))
+        .arg(client_index_key(&client_id))
+        .arg(family_index_key(&family_id))
         .query_async(&mut conn)
         .await
-        .expect("cleanup explicit revoke");
+        .expect("cleanup compensating removal");
+}
+
+/// Issue #295：显式撤销的单元是 grant family，而不是提交的那一个 token。
+///
+/// 覆盖三件事：轮换后仍存活的后继必须一起死；提交一个已被轮换消费掉的旧
+/// token 也要能定位并排空它的 family（撤销请求与轮换竞争时就是这个形状）；
+/// 撤销后的重复请求幂等。
+#[tokio::test]
+async fn explicit_revoke_drains_the_whole_grant_family() {
+    let store = RefreshTokenStore::new(redis_client());
+    let client_id = format!("cx_explicit_family_revoke_{}", Uuid::new_v4().simple());
+    let first = RefreshToken::new(
+        client_id.clone(),
+        "user-explicit-revoke".to_owned(),
+        vec!["openid".to_owned()],
+    );
+    let second = first.rotate(vec!["openid".to_owned()]);
+    let family_id = first.family_id.clone();
+
+    store.save(&first).await.expect("save the first token");
+    assert_eq!(
+        store
+            .rotate_if_matches(&first.value, &first, &second)
+            .await
+            .expect("rotate to the second token"),
+        RotationOutcome::Rotated
+    );
+
+    // 客户端提交它手里那个已经被轮换掉的旧值：墓碑仍然指向同一个 family。
+    assert_eq!(
+        store
+            .revoke_family_on_explicit_revoke(
+                &family_id,
+                &client_id,
+                "user-explicit-revoke",
+                &first.value,
+            )
+            .await
+            .expect("revoke the grant family"),
+        FamilyRevocation {
+            revoked_tokens: 1,
+            already_revoked: false,
+        },
+        "the live successor must be revoked even though the submitted token was consumed"
+    );
+    assert!(
+        store
+            .find(&second.value)
+            .await
+            .expect("find the successor after revoke")
+            .is_none(),
+        "explicit revoke must not leave a redeemable successor"
+    );
+
+    // 撤销墓碑是 ExplicitRevoke，不是 Consumed：主动撤销不是泄露信号，
+    // 后续提交只应得到普通 invalid_grant，不该被记成「检测到重放」。
+    for value in [&first.value, &second.value] {
+        assert_eq!(
+            store
+                .read_tombstone(value)
+                .await
+                .expect("read explicit revoke tombstone")
+                .expect("explicit revoke tombstone")
+                .state,
+            TombstoneState::ExplicitRevoke
+        );
+    }
+
+    assert_eq!(
+        store
+            .revoke_family_on_explicit_revoke(
+                &family_id,
+                &client_id,
+                "user-explicit-revoke",
+                &second.value,
+            )
+            .await
+            .expect("repeat the explicit revoke"),
+        FamilyRevocation {
+            revoked_tokens: 0,
+            already_revoked: true,
+        }
+    );
+
+    let client = redis_client();
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis");
+    let _: () = redis::cmd("DEL")
+        .arg(client_index_key(&client_id))
+        .arg(family_index_key(&family_id))
+        .arg(family_revoked_key(&family_id))
+        .arg(tombstone_key(&first.value))
+        .arg(tombstone_key(&second.value))
+        .query_async(&mut conn)
+        .await
+        .expect("cleanup explicit family revoke");
+}
+
+/// 旧格式 token 没有 `family_id`：撤销必须只影响它自己。
+///
+/// 若这类 token 共用同一个空后缀撤销键，撤销任意一个就会给全部旧 token 写上
+/// 同一个墓志，把互不相关的 grant 连坐撤销。
+#[tokio::test]
+async fn revoking_a_legacy_token_does_not_touch_other_legacy_tokens() {
+    let store = RefreshTokenStore::new(redis_client());
+    let client_id = format!("cx_legacy_revoke_{}", Uuid::new_v4().simple());
+    let now = OffsetDateTime::now_utc();
+    let legacy = |suffix: &str| RefreshToken {
+        value: format!("cx-refresh-legacy-{}-{suffix}", Uuid::new_v4().simple()),
+        client_id: client_id.clone(),
+        user_id: "user-legacy-revoke".to_owned(),
+        scopes: vec!["openid".to_owned()],
+        created_at: now,
+        expires_at: now + Duration::days(30),
+        revoked_at: None,
+        issued_at: None,
+        family_id: String::new(),
+    };
+    let revoked = legacy("revoked");
+    let untouched = legacy("untouched");
+
+    store.save(&revoked).await.expect("save the legacy token");
+    store
+        .save(&untouched)
+        .await
+        .expect("save the untouched legacy token");
+
+    assert_eq!(
+        store
+            .revoke_family_on_explicit_revoke("", &client_id, "user-legacy-revoke", &revoked.value)
+            .await
+            .expect("revoke the legacy token"),
+        FamilyRevocation {
+            revoked_tokens: 1,
+            already_revoked: false,
+        }
+    );
+    assert!(
+        store
+            .find(&revoked.value)
+            .await
+            .expect("find the revoked legacy token")
+            .is_none()
+    );
+    assert!(
+        store
+            .find(&untouched.value)
+            .await
+            .expect("find the untouched legacy token")
+            .is_some(),
+        "legacy tokens must not share a revocation scope"
+    );
+
+    let client = redis_client();
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis");
+    let _: () = redis::cmd("DEL")
+        .arg(token_key(&untouched.value))
+        .arg(client_index_key(&client_id))
+        .arg(tombstone_key(&revoked.value))
+        .arg(family_revoked_key(&format!(
+            "legacy-token:{}",
+            token_hash(&revoked.value)
+        )))
+        .query_async(&mut conn)
+        .await
+        .expect("cleanup legacy revoke");
 }
 
 /// 旧格式 token（无 `issued_at` / `family_id`）能反序列化并轮换。

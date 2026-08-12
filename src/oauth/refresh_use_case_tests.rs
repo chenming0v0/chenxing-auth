@@ -4,9 +4,7 @@
 //! 涉及真实 Redis 语义的并发轮换与 family 撤销由集成测试覆盖。
 
 use super::{TombstoneDisposition, classify_tombstone, select_scopes};
-use crate::oauth::refresh_store::{
-    REFRESH_ROTATION_CONCURRENCY_GRACE_SECONDS, Tombstone, TombstoneState,
-};
+use crate::oauth::refresh_store::{Tombstone, TombstoneState};
 use crate::oauth::{refresh::RefreshToken, token_use_case::OAuthError};
 use time::{Duration, OffsetDateTime};
 
@@ -93,65 +91,55 @@ fn tombstone(state: TombstoneState, recorded_at: i64) -> Tombstone {
     }
 }
 
-/// Issue #278：并发刷新中的落败请求可能在 CAS 处失败，也可能在 `find` 处就
-/// 看不到 token——落到哪条路径只取决于与胜者的相对时序。分类必须只看墓碑，
-/// 否则正常并发刷新会随机撤销整个 family。
+/// Issue #293：已消费凭据被再次提交就是重放，没有时间窗口豁免。
+///
+/// 曾经存在的 5 秒宽限窗口把窗口内的重复提交当成正常并发刷新放过，等于给
+/// 刚窃取到凭据的攻击者一次「不触发 family 撤销」的免费尝试。消费时刻不再
+/// 参与判定，因此无论墓碑多新都是重放。
 #[test]
-fn recent_consumption_is_a_concurrency_race_on_every_missing_path() {
+fn any_consumed_tombstone_is_a_replay_regardless_of_age() {
     let now = OffsetDateTime::UNIX_EPOCH + Duration::days(10);
 
-    for age in 0..=REFRESH_ROTATION_CONCURRENCY_GRACE_SECONDS {
+    for recorded_at in [now.unix_timestamp(), now.unix_timestamp() - 3_600, 0] {
         assert_eq!(
             classify_tombstone(
-                &tombstone(TombstoneState::Consumed, now.unix_timestamp() - age),
-                now
+                &tombstone(TombstoneState::Consumed, recorded_at),
+                "cx_client"
             ),
-            TombstoneDisposition::ConcurrentRace,
-            "a {age}s old consumption must not revoke the family"
+            TombstoneDisposition::Replay,
+            "a consumption recorded at {recorded_at} must revoke the family"
         );
     }
 }
 
-/// 宽限窗口锚定在消费时刻，不随重复提交刷新：过窗后的提交仍是 replay，
-/// 攻击者无法靠反复提交把 family 撤销无限推后。
+/// 主动撤销和 family 撤销都不是新的泄露信号：凭据已经死了，只拒绝当次请求。
 #[test]
-fn consumption_past_the_grace_window_is_a_replay() {
-    let now = OffsetDateTime::UNIX_EPOCH + Duration::days(10);
-    let stale = now.unix_timestamp() - REFRESH_ROTATION_CONCURRENCY_GRACE_SECONDS - 1;
-
-    assert_eq!(
-        classify_tombstone(&tombstone(TombstoneState::Consumed, stale), now),
-        TombstoneDisposition::Replay
-    );
+fn dead_credentials_do_not_trigger_another_revocation() {
+    for state in [
+        TombstoneState::ExplicitRevoke,
+        TombstoneState::FamilyRevoked,
+    ] {
+        assert_eq!(
+            classify_tombstone(&tombstone(state, 0), "cx_client"),
+            TombstoneDisposition::AlreadyDead,
+            "{state:?} must not be treated as a replay"
+        );
+    }
 }
 
-/// 升级前写入的墓碑没有 `recorded_at`（默认 0），必须仍然按 replay 处理。
+/// Issue #110：墓碑归属校验先于状态判定，否则任何 Client 都能提交别人的
+/// 旧 token 来摧毁对方的 grant。
 #[test]
-fn legacy_consumption_tombstone_is_a_replay() {
-    let now = OffsetDateTime::UNIX_EPOCH + Duration::days(10);
-
-    assert_eq!(
-        classify_tombstone(&tombstone(TombstoneState::Consumed, 0), now),
-        TombstoneDisposition::Replay
-    );
-}
-
-#[test]
-fn non_consumption_tombstones_never_trigger_replay_revocation() {
-    let now = OffsetDateTime::UNIX_EPOCH + Duration::days(10);
-
-    assert_eq!(
-        classify_tombstone(
-            &tombstone(TombstoneState::ExplicitRevoke, now.unix_timestamp()),
-            now,
-        ),
-        TombstoneDisposition::ExplicitRevoke
-    );
-    assert_eq!(
-        classify_tombstone(
-            &tombstone(TombstoneState::FamilyRevoked, now.unix_timestamp()),
-            now,
-        ),
-        TombstoneDisposition::FamilyRevoked
-    );
+fn a_foreign_client_can_never_revoke_someone_elses_family() {
+    for state in [
+        TombstoneState::Consumed,
+        TombstoneState::ExplicitRevoke,
+        TombstoneState::FamilyRevoked,
+    ] {
+        assert_eq!(
+            classify_tombstone(&tombstone(state, 0), "cx_other_client"),
+            TombstoneDisposition::ForeignClient,
+            "{state:?} submitted by a foreign client must not revoke anything"
+        );
+    }
 }
