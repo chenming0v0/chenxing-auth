@@ -201,7 +201,9 @@ export function OAuthProvidersPanel({ onMessage }: SettingsPanelProps) {
         <DataTable
           minWidth={820}
           columns={['图标', '名称', 'Slug', '状态', 'Client ID', 'Client Secret', { label: '操作', align: 'right' }]}
-          empty={loading ? '正在加载 OAuth 提供商。' : providers?.length ? null : (
+          /* 加载空行只在「首次加载且尚无数据」时出现；reload 期间 providers 仍持有旧数据，
+             此时只渲染数据行，不叠加空行，避免两套内容同时出现（Issue #388）。 */
+          empty={loading && !providers ? '正在加载 OAuth 提供商。' : providers?.length ? null : (
             <EmptyState
               icon="link"
               title="尚未配置外部身份提供商"

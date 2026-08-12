@@ -432,3 +432,23 @@ describe('OAuthProvidersPanel 更新成功但状态切换失败（Issue #277）'
     await waitFor(() => expect(screen.queryByRole('button', { name: '重试启用' })).toBeNull())
   })
 })
+
+describe('OAuthProvidersPanel 加载与空态（Issue #388）', () => {
+  it('reload 期间只保留数据行，不再叠加「正在加载」空行', async () => {
+    renderPanel()
+    await screen.findByText('GitLab')
+    /* 让 reload 的 GET 挂起，构造「loading === true 且 providers 仍持有旧数据」的窗口。
+       行内操作（POST）仍走原 handle，只有列表刷新挂起。 */
+    const pending = new Promise<Response>(() => {})
+    vi.stubGlobal('fetch', (path: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (method === 'GET') return pending
+      const raw = typeof init?.body === 'string' ? init.body : '{}'
+      return Promise.resolve(handle(path, method, JSON.parse(raw) as Record<string, unknown>))
+    })
+    fireEvent.click(screen.getByRole('button', { name: '禁用' }))
+    // 加载窗口内：数据行必须还在，加载空行不得同时出现
+    await waitFor(() => expect(screen.queryByText('正在加载 OAuth 提供商。')).toBeNull())
+    expect(screen.getByText('GitLab')).toBeTruthy()
+  })
+})
