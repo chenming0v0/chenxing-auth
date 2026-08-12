@@ -275,24 +275,38 @@ export function BootstrapPage() {
   const [done, setDone] = useState(false)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
+  // busy 要等 React 渲染后才生效，ref 在同一个事件循环内同步关闭重复提交窗口（#397）。
+  const submitLockRef = useRef(false)
   const [username, setUsername] = useState('')
+
+  function acquireSubmitLock(): boolean {
+    if (submitLockRef.current) return false
+    submitLockRef.current = true
+    return true
+  }
+
+  function releaseSubmitLock() {
+    submitLockRef.current = false
+    setBusy(false)
+  }
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    setMessage('')
-    const passwordLength = passwordCodePointLength(password)
-    if (passwordLength < PASSWORD_MIN_LENGTH) {
-      setMessage(`密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`)
-      return
-    }
-    if (passwordLength > PASSWORD_MAX_LENGTH) {
-      setMessage(`密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`)
-      return
-    }
-    setBusy(true)
+    if (!acquireSubmitLock()) return
     try {
+      setMessage('')
+      const passwordLength = passwordCodePointLength(password)
+      if (passwordLength < PASSWORD_MIN_LENGTH) {
+        setMessage(`密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`)
+        return
+      }
+      if (passwordLength > PASSWORD_MAX_LENGTH) {
+        setMessage(`密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`)
+        return
+      }
+      setBusy(true)
       await apiFetch('/api/v1/admin/bootstrap', {
         method: 'POST',
         redirectOn401: false,
@@ -304,7 +318,7 @@ export function BootstrapPage() {
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '初始化未完成，请稍后重试。')
     } finally {
-      setBusy(false)
+      releaseSubmitLock()
     }
   }
 
