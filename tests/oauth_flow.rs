@@ -10,9 +10,12 @@ use chenxing_auth::sessions::domain::Session;
 use chenxing_auth::{
     api,
     oauth::{
-        authorization::ValidatedAuthorizationRequest, code::AuthorizationCode,
-        handlers::issue_authorization_code_result, refresh::RefreshToken,
-        refresh_store::RefreshTokenStore, store::AuthorizationCodeStore,
+        authorization::ValidatedAuthorizationRequest,
+        code::AuthorizationCode,
+        handlers::issue_authorization_code_result,
+        refresh::RefreshToken,
+        refresh_store::{RefreshTokenStore, RotationOutcome},
+        store::AuthorizationCodeStore,
     },
     state::AppState,
 };
@@ -565,42 +568,15 @@ async fn post_refresh(router: &axum::Router, basic: &str, refresh_value: &str) -
         .status()
 }
 
-/// 把墓碑的消费时刻往前挪出并发窗口，模拟「同一个旧 token 在很久之后被重放」。
+/// Issue #293：提交一个已经被消费掉的 refresh token 一律撤销整个 family，
+/// 不存在「刚刚消费过所以算并发」的宽限窗口。
 ///
-/// 一小时远大于 `REFRESH_ROTATION_CONCURRENCY_GRACE_SECONDS`，窗口调整后
-/// 这个测试不需要跟着改。
-async fn age_refresh_tombstone(state: &AppState, refresh_value: &str) {
-    let mut tombstone = state
-        .refresh_tokens
-        .read_tombstone(refresh_value)
-        .await
-        .expect("read tombstone")
-        .expect("rotation must leave a tombstone");
-    tombstone.recorded_at -= 3_600;
-    let mut connection = state
-        .redis
-        .get_multiplexed_async_connection()
-        .await
-        .expect("Redis connection");
-    let _: () = connection
-        .set_ex(
-            format!(
-                "cx:refresh:tombstone:{}",
-                URL_SAFE_NO_PAD.encode(Sha256::digest(refresh_value.as_bytes()))
-            ),
-            serde_json::to_string(&tombstone).expect("tombstone JSON"),
-            600,
-        )
-        .await
-        .expect("age tombstone");
-}
-
-/// Issue #278：并发刷新的落败请求可能在 `find` 处就看不到 token（胜者已经轮换
-/// 完成）。这条路径以前被无条件当成 replay，正常的并发刷新会随机撤销整个
-/// family，把胜者刚拿到的新 token 一起杀掉。窗口内只拒绝当次请求；
-/// 窗口之外的同一个旧 token 仍必须触发 family 撤销。
+/// 这个窗口曾经存在（Issue #278），代价是攻击者窃取凭据后只要紧跟着合法客户端
+/// 的刷新提交同一个值，就能得到一次不触发 family 撤销的免费尝试；而 family
+/// 撤销是检测凭据泄露的唯一手段。单次使用就按单次使用执行：正常客户端轮换后
+/// 手里已经是新值，重复提交旧值要么是客户端并发 bug，要么是泄露。
 #[tokio::test]
-async fn concurrent_refresh_keeps_the_family_but_stale_replay_still_revokes_it() {
+async fn resubmitting_a_consumed_refresh_token_revokes_the_family() {
     let (state, database, key_directory) = test_state("oauth_flow").await;
     let setup_router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
@@ -619,16 +595,17 @@ async fn concurrent_refresh_keeps_the_family_but_stale_replay_still_revokes_it()
         .save(&original)
         .await
         .expect("save original refresh token");
-    // 直接用 store 模拟 CAS 胜者：original 被消费、rotated 成为 family 的活成员。
-    assert!(
+    // 直接用 store 模拟一次已经完成的轮换：original 被消费、rotated 成为活成员。
+    assert_eq!(
         state
             .refresh_tokens
             .rotate_if_matches(&original.value, &original, &rotated)
             .await
-            .expect("simulate the concurrent CAS winner")
+            .expect("simulate a completed rotation"),
+        RotationOutcome::Rotated
     );
 
-    // 落败请求提交 original：只拒绝这一次，family 必须完好。
+    // 再次提交 original：立刻按 replay 处置，整个 family 一起失效。
     assert_eq!(
         post_refresh(&setup_router, &basic, &original.value).await,
         StatusCode::BAD_REQUEST
@@ -638,25 +615,15 @@ async fn concurrent_refresh_keeps_the_family_but_stale_replay_still_revokes_it()
             .refresh_tokens
             .find(&rotated.value)
             .await
-            .expect("find the winner token")
-            .is_some(),
-        "a concurrent refresh must not revoke the winner's token"
-    );
-
-    // 同一个 original 在并发窗口之外重放：这才是真正的 replay，撤销整个 family。
-    age_refresh_tombstone(&state, &original.value).await;
-    assert_eq!(
-        post_refresh(&setup_router, &basic, &original.value).await,
-        StatusCode::BAD_REQUEST
-    );
-    assert!(
-        state
-            .refresh_tokens
-            .find(&rotated.value)
-            .await
-            .expect("find the winner token after replay")
+            .expect("find the successor token")
             .is_none(),
-        "a stale replay must still revoke the whole token family"
+        "resubmitting a consumed token must revoke the whole token family"
+    );
+
+    // 重复提交是幂等的：family 已经撤销，只得到普通 invalid_grant。
+    assert_eq!(
+        post_refresh(&setup_router, &basic, &original.value).await,
+        StatusCode::BAD_REQUEST
     );
 
     chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")

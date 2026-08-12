@@ -34,12 +34,18 @@ return 1
 /// `find` 返回 `None`，此时通过墓碑才能知道「这是一个已被正常消费的
 /// token 被重放」，进而撤销整个 family。
 ///
+/// 写入前先检查目标 family 的撤销墓志（`KEYS[7]`）。撤销与轮换是并发的：
+/// 撤销脚本按 family 索引清空成员之后，一个还在飞行中的轮换请求可能紧接着
+/// 把新成员写回同一个 family，让「已撤销」的 grant 重新拥有可兑换凭据。
+/// 墓志的生命周期覆盖 family 的绝对上限，因此这个检查是该竞态的收口点。
+///
 /// - `KEYS[1]` 旧 token 主键
 /// - `KEYS[2]` 新 token 主键
 /// - `KEYS[3]` client 索引键
 /// - `KEYS[4]` 旧 family 索引键
 /// - `KEYS[5]` 新 family 索引键
 /// - `KEYS[6]` 墓碑键
+/// - `KEYS[7]` 新 family 的撤销墓志键
 /// - `ARGV[1]` 预期旧 token JSON（CAS 比较值）
 /// - `ARGV[2]` 新 token JSON
 /// - `ARGV[3]` 新主键 TTL（秒）
@@ -51,8 +57,12 @@ return 1
 /// - `ARGV[9]` 旧 family_id，空表示旧格式 token
 /// - `ARGV[10]` 新 family_id，空表示不写 family 索引
 ///
-/// 返回 `1` 轮换成功，`0` 表示 CAS 失败（旧 token 已被消费或被并发轮换）。
+/// 返回 `1` 轮换成功，`0` 表示 CAS 失败（旧 token 已被消费或被并发轮换），
+/// `-1` 表示目标 family 已被撤销，不允许再写入任何成员。
 pub const ROTATE_WITH_TOMBSTONE_SCRIPT: &str = r#"
+if redis.call('EXISTS', KEYS[7]) == 1 then
+    return -1
+end
 local current = redis.call('GET', KEYS[1])
 if current ~= ARGV[1] then
     return 0
@@ -154,29 +164,37 @@ redis.call('SETEX', KEYS[4], ARGV[4], ARGV[3])
 return 1
 "#;
 
-/// 撤销整个 Token Family（RFC 9700 §4.14.2 的重放响应）。
+/// 原子撤销整个 Token Family（RFC 9700 §4.14.2 的重放响应，以及显式
+/// `/oauth/revoke` 的撤销单元）。
 ///
-/// 逐个删除 family 索引里的 token 主键，同时给每个成员写墓碑，
-/// 使后续任何成员的重放依然能被识别并记录审计。
+/// 三件事在同一次脚本内完成，缺一不可：
+///
+/// 1. 删除 family 索引里的每个成员并给它写墓碑，让后续任意成员的提交都能被
+///    识别为「已撤销」而不是未知 token。
+/// 2. 删除调用方提交的那个 token 主键。它可能已经不在索引里（replay 的旧
+///    token），也可能正是唯一的活成员（显式撤销）。
+/// 3. 写下 family 级撤销墓志（`KEYS[3]`）。它既是幂等标记，也是轮换脚本的
+///    准入检查依据：撤销之后任何飞行中的轮换都无法再往这个 family 写入成员。
+///
+/// 墓志存在即代表该 family 已经被清空过，此时直接返回 `-1`，不再重复执行
+/// 撤销与审计。并发 replay 因此只有第一个请求触发「检测到重放」。
 ///
 /// - `KEYS[1]` family 索引键
 /// - `KEYS[2]` client 索引键
+/// - `KEYS[3]` family 撤销墓志键
+/// - `KEYS[4]` 调用方提交的 token 主键
+/// - `KEYS[5]` 调用方提交的 token 墓碑键
 /// - `ARGV[1]` token 主键前缀
 /// - `ARGV[2]` 墓碑键前缀
-/// - `ARGV[3]` 墓碑 JSON
+/// - `ARGV[3]` 墓碑 JSON（`family_revoked` 或 `explicit_revoke`）
 /// - `ARGV[4]` 墓碑 TTL（秒）
-/// - `ARGV[5]` 触发 replay 的 token_hash，可为空
+/// - `ARGV[5]` 墓志 TTL（秒），必须覆盖 family 的绝对生命周期上限
+/// - `ARGV[6]` 调用方提交的 token_hash
 ///
-/// 返回被删除的 token 数量。
+/// 返回被删除的 token 数量，或 `-1` 表示该 family 此前已被撤销。
 pub const REVOKE_FAMILY_SCRIPT: &str = r#"
-if ARGV[5] ~= '' then
-    local replay_tombstone = redis.call('GET', ARGV[2] .. ARGV[5])
-    if replay_tombstone then
-        local decoded = cjson.decode(replay_tombstone)
-        if decoded['state'] == 'family_revoked' or decoded['state'] == 'explicit_revoke' then
-            return 0
-        end
-    end
+if redis.call('EXISTS', KEYS[3]) == 1 then
+    return -1
 end
 local members = redis.call('SMEMBERS', KEYS[1])
 local removed = 0
@@ -188,9 +206,12 @@ for _, token_hash in ipairs(members) do
     redis.call('SETEX', ARGV[2] .. token_hash, ARGV[4], ARGV[3])
 end
 redis.call('DEL', KEYS[1])
-if ARGV[5] ~= '' then
-    redis.call('SETEX', ARGV[2] .. ARGV[5], ARGV[4], ARGV[3])
+if redis.call('DEL', KEYS[4]) == 1 then
+    removed = removed + 1
 end
+redis.call('SREM', KEYS[2], ARGV[6])
+redis.call('SETEX', KEYS[5], ARGV[4], ARGV[3])
+redis.call('SETEX', KEYS[3], ARGV[5], ARGV[3])
 return removed
 "#;
 

@@ -1,36 +1,30 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use redis::{AsyncCommands, Script};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::{
     refresh::{REFRESH_TOKEN_ABSOLUTE_TTL_DAYS, REFRESH_TOKEN_SLIDING_TTL_DAYS, RefreshToken},
     refresh_store_scripts::{
-        REMOVE_WITH_TOMBSTONE_SCRIPT, REMOVE_WITHOUT_TOMBSTONE_SCRIPT, REVOKE_CLIENT_TOKENS_SCRIPT,
-        REVOKE_FAMILY_SCRIPT, ROTATE_WITH_TOMBSTONE_SCRIPT, SAVE_WITH_INDEXES_SCRIPT,
-        TAKE_IF_MATCHES_SCRIPT,
+        REMOVE_WITH_TOMBSTONE_SCRIPT, REMOVE_WITHOUT_TOMBSTONE_SCRIPT,
+        ROTATE_WITH_TOMBSTONE_SCRIPT, SAVE_WITH_INDEXES_SCRIPT, TAKE_IF_MATCHES_SCRIPT,
     },
 };
-use crate::{clock::SharedClock, redis_client::RedisClient};
+use crate::redis_client::RedisClient;
+
+// 墓碑类型定义在 `refresh_tombstone`，但调用方历来从 `refresh_store` 导入，
+// 这里保持那条路径可用。
+pub use super::refresh_tombstone::{Tombstone, TombstoneState};
+
+#[path = "refresh_store_revocation.rs"]
+mod revocation;
+pub use revocation::FamilyRevocation;
 
 /// 绝对生命周期 TTL（从 `refresh.rs` 常量计算，保证单一信源）。
 const ABSOLUTE_TTL_SECONDS: u64 = (REFRESH_TOKEN_ABSOLUTE_TTL_DAYS * 24 * 60 * 60) as u64;
 
 /// 墓碑的 TTL（旧 token 被消费后需要保留一段时间以检测重放）。
 const TOMBSTONE_TTL_SECONDS: u64 = (REFRESH_TOKEN_SLIDING_TTL_DAYS * 24 * 60 * 60) as u64;
-
-/// 判定「并发轮换」与「凭据重放」的时间窗口。
-///
-/// 窗口锚定在墓碑的 `recorded_at`（旧 token 被消费的时刻），不随后续请求
-/// 刷新，因此攻击者无法靠反复提交旧凭据把 family 撤销无限推后：过了这一次
-/// 消费后的 N 秒，任何再次提交都会被判为 replay。
-///
-/// 窗口内的提交一律只拒绝当次请求（不撤销 family）。这里不区分「读到过 live
-/// token 后输掉 CAS」和「读时 token 已消失」——同一批并发请求落到哪条路径
-/// 只取决于它们与 CAS 胜者的相对时序，把后者当成 replay 会让正常的并发刷新
-/// 随机炸掉整个 family（Issue #278）。
-pub const REFRESH_ROTATION_CONCURRENCY_GRACE_SECONDS: i64 = 5;
 
 /// 索引 TTL：client / family 索引的过期时间设为绝对上限，防止无界增长。
 const INDEX_TTL_SECONDS: u64 = ABSOLUTE_TTL_SECONDS;
@@ -46,73 +40,55 @@ const CLIENT_IDX_PREFIX: &str = "cx:refresh:client_idx:";
 const FAMILY_IDX_PREFIX: &str = "cx:refresh:family_idx:";
 /// 墓碑前缀（用于重放检测）。
 const TOMBSTONE_PREFIX: &str = "cx:refresh:tombstone:";
-
-/// 墓碑状态。
+/// Family 级撤销墓志前缀。
 ///
-/// `Consumed` 表示 token 被正常单次消费/轮换，是 replay 检测的候选；
-/// `ExplicitRevoke` 表示主动撤销，不应被当成凭据重放；
-/// `FamilyRevoked` 表示 family 已经完成撤销，重复提交不应再次执行撤销脚本。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TombstoneState {
-    #[default]
-    Consumed,
-    ExplicitRevoke,
-    FamilyRevoked,
+/// 墓志与 family 索引分开存放：索引在撤销时被删空，而墓志必须在成员消失后
+/// 继续存在，用来挡住飞行中的轮换请求把新成员写回已撤销的 family。
+const FAMILY_REVOKED_PREFIX: &str = "cx:refresh:family_revoked:";
+
+/// 撤销单元的键集合。
+///
+/// 旧格式 token 没有 `family_id`。这类 token 不能共用同一个空后缀键——否则
+/// 撤销任意一个旧 token 都会给所有旧 token 写上同一个墓志，把它们连坐撤销。
+/// 因此为它们按 token 哈希合成一个「单成员 family」：索引集合不存在（撤销时
+/// 只有提交的那一个 token 被删），墓志按 token 独立。
+pub(super) struct FamilyScope {
+    index_key: String,
+    revoked_key: String,
 }
 
-/// 墓碑载荷（存入 Redis，供重放检测时校验 client_id 和消费状态）。
-///
-/// 墓碑携带 `client_id` 是为了防范跨客户端 DoS：若不校验，
-/// Client A 提交 Client B 已过期的 token，就能触发 B 的 family 撤销，
-/// 把重放防御变成摧毁合法凭据的工具（Issue #110）。`recorded_at` 只保存
-/// Unix 秒级时间戳，不保存 refresh token 原值。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tombstone {
-    pub family_id: String,
-    pub client_id: String,
-    pub user_id: String,
-    #[serde(default)]
-    pub state: TombstoneState,
-    #[serde(default)]
-    pub recorded_at: i64,
-}
-
-impl Tombstone {
-    fn for_token(token: &RefreshToken, state: TombstoneState, now: time::OffsetDateTime) -> Self {
-        Self {
-            family_id: token.family_id.clone(),
-            client_id: token.client_id.clone(),
-            user_id: token.user_id.clone(),
-            state,
-            recorded_at: now.unix_timestamp(),
-        }
-    }
-
-    /// 该墓碑是否近到足以解释一次并发轮换竞争。
-    ///
-    /// 窗口取绝对值：多实例部署的时钟不保证单调一致，`recorded_at` 可能略微
-    /// 领先于本机的 `now`。把这种偏移当成「很久以前的消费」会误判 replay 并
-    /// 撤销正常 family，所以两侧都给同样的容忍度。
-    pub fn is_recent_consumption(&self, now: time::OffsetDateTime) -> bool {
-        if self.state != TombstoneState::Consumed {
-            return false;
-        }
-        let Some(skew) = now
-            .unix_timestamp()
-            .checked_sub(self.recorded_at)
-            .and_then(i64::checked_abs)
-        else {
-            return false;
+impl FamilyScope {
+    pub(super) fn new(family_id: &str, token_hash: &str) -> Self {
+        let discriminator = if family_id.is_empty() {
+            format!("legacy-token:{token_hash}")
+        } else {
+            family_id.to_owned()
         };
-        skew <= REFRESH_ROTATION_CONCURRENCY_GRACE_SECONDS
+        Self {
+            index_key: format!("{FAMILY_IDX_PREFIX}{discriminator}"),
+            revoked_key: format!("{FAMILY_REVOKED_PREFIX}{discriminator}"),
+        }
     }
+}
+
+/// 一次轮换尝试的结果。
+///
+/// 三种结果的处置完全不同，不能压缩成 `bool`：`CasMismatch` 说明这个 token
+/// 已经被别人消费（Issue #293：这就是重放），`FamilyRevoked` 说明整个 grant
+/// 已经死亡，重试也不会成功。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RotationOutcome {
+    /// 轮换成功，新 token 已经可兑换。
+    Rotated,
+    /// CAS 失败：旧 token 已经不是 Redis 里的当前值。
+    CasMismatch,
+    /// 目标 family 已被撤销，拒绝写入任何新成员。
+    FamilyRevoked,
 }
 
 #[derive(Clone)]
 pub struct RefreshTokenStore {
     client: RedisClient,
-    clock: SharedClock,
 }
 
 #[derive(Debug, Error)]
@@ -127,17 +103,7 @@ impl RefreshTokenStore {
     pub fn new(client: impl Into<RedisClient>) -> Self {
         Self {
             client: client.into(),
-            clock: SharedClock::system(),
         }
-    }
-
-    /// 注入共享时钟（`AppState` 构造时调用）。
-    ///
-    /// 墓碑的 `recorded_at` 和主键 TTL 都由它决定，因此固定时钟可以直接驱动
-    /// 「并发窗口内」与「replay」的判定边界，无需真实等待 5 秒。
-    pub fn with_clock(mut self, clock: SharedClock) -> Self {
-        self.clock = clock;
-        self
     }
 
     // ── 计算 token hash（用于主键与索引成员）─────────────────────────────
@@ -151,7 +117,11 @@ impl RefreshTokenStore {
 
     // ── 主键 / 索引键 / 墓碑键的构造 ──────────────────────────────────────
     fn token_key(value: &str) -> String {
-        format!("{TOKEN_KEY_PREFIX}{}", Self::token_hash(value))
+        Self::token_key_for_hash(&Self::token_hash(value))
+    }
+
+    fn token_key_for_hash(hash: &str) -> String {
+        format!("{TOKEN_KEY_PREFIX}{hash}")
     }
 
     fn client_idx_key(client_id: &str) -> String {
@@ -163,26 +133,43 @@ impl RefreshTokenStore {
     }
 
     fn tombstone_key(value: &str) -> String {
-        format!("{TOMBSTONE_PREFIX}{}", Self::token_hash(value))
+        Self::tombstone_key_for_hash(&Self::token_hash(value))
     }
 
-    /// 按注入时钟计算主键 TTL，算式见 [`effective_ttl_at`]。
+    fn tombstone_key_for_hash(hash: &str) -> String {
+        format!("{TOMBSTONE_PREFIX}{hash}")
+    }
+
+    /// 计算主键 TTL：`min(滑动窗口剩余, 绝对到期剩余)`，至少 1 秒。
     ///
-    /// 单独留一个读时钟的入口，测试才能确认 store 真的用的是自己那份句柄，
-    /// 而不是"测试自己算出 now 再传进纯函数"这种绕过注入的验证方式。
-    fn effective_ttl(&self, token: &RefreshToken) -> u64 {
-        effective_ttl_at(token, self.clock.now())
+    /// Issue #109 的核心修复点。旧实现每次轮换都无条件 `SETEX` 30 天，
+    /// 只要客户端 30 天内用一次，Redis 侧的有效期就无限向后滑动，
+    /// 形成永不过期的凭据。现在 TTL 被绝对截止时间夹住，
+    /// 即使持续轮换，Redis 也会在首次签发后 180 天让键自然消失。
+    fn effective_ttl(token: &RefreshToken) -> u64 {
+        let now = time::OffsetDateTime::now_utc();
+        let abs_remaining = (token.absolute_deadline() - now).whole_seconds();
+        let slide_remaining = (token.expires_at - now).whole_seconds();
+        // 已过期的 token 给 1 秒 TTL：让键立刻自然消失，
+        // 而不是用 0/负数触发 Redis 的参数错误。
+        let ttl = abs_remaining.min(slide_remaining).max(1);
+        u64::try_from(ttl).unwrap_or(1)
     }
 
     // ── 读写操作 ─────────────────────────────────────────────────────────
 
+    /// 保存一个新签发的 Refresh Token。
+    ///
+    /// 只用于授权码兑换：那里的 family 是刚生成的，不可能处于已撤销状态。
+    /// 往既有 family 追加成员的唯一入口是 [`Self::rotate_if_matches`]，
+    /// 它会检查 family 撤销墓志。
     pub async fn save(&self, token: &RefreshToken) -> Result<(), RefreshTokenStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload = serde_json::to_string(token)?;
         let hash = Self::token_hash(&token.value);
-        let ttl = self.effective_ttl(token);
+        let ttl = Self::effective_ttl(token);
         let _: i32 = Script::new(SAVE_WITH_INDEXES_SCRIPT)
-            .key(Self::token_key(&token.value))
+            .key(Self::token_key_for_hash(&hash))
             .key(Self::client_idx_key(&token.client_id))
             .key(Self::family_idx_key(&token.family_id))
             .arg(payload)
@@ -204,16 +191,13 @@ impl RefreshTokenStore {
         };
         let token: RefreshToken = serde_json::from_str(&payload)?;
         let hash = Self::token_hash(value);
-        let tombstone = serde_json::to_string(&Tombstone::for_token(
-            &token,
-            TombstoneState::Consumed,
-            self.clock.now(),
-        ))?;
+        let tombstone =
+            serde_json::to_string(&Tombstone::for_token(&token, TombstoneState::Consumed))?;
         let _: i32 = Script::new(REMOVE_WITH_TOMBSTONE_SCRIPT)
             .key(&key)
             .key(Self::client_idx_key(&token.client_id))
             .key(Self::family_idx_key(&token.family_id))
-            .key(Self::tombstone_key(value))
+            .key(Self::tombstone_key_for_hash(&hash))
             .arg(&hash)
             .arg(tombstone)
             .arg(TOMBSTONE_TTL_SECONDS)
@@ -233,6 +217,11 @@ impl RefreshTokenStore {
             .map_err(RefreshTokenStoreError::from)
     }
 
+    /// 删除单个 token 并清理索引，不写 replay 墓碑。
+    ///
+    /// 唯一的生产调用方是授权码兑换的补偿路径：那里要销毁一个客户端从未收到的
+    /// Refresh Token，它不是被消费的凭据，也不是重放证据。客户端主动撤销走
+    /// [`Self::revoke_family_on_explicit_revoke`]，语义是撤销整个 grant。
     pub async fn remove(&self, value: &str) -> Result<(), RefreshTokenStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         // 先读取 payload 以便清理索引（找不到时幂等成功）
@@ -241,13 +230,11 @@ impl RefreshTokenStore {
         if let Some(payload) = payload {
             let token: RefreshToken = serde_json::from_str(&payload)?;
             let hash = Self::token_hash(value);
-            // 主动撤销和补偿删除不写 replay tombstone。否则提交一个已经被
-            // 主动撤销的 token 会被误判为重放，进而触发 family DoS。
             let _: i32 = Script::new(REMOVE_WITHOUT_TOMBSTONE_SCRIPT)
                 .key(&key)
                 .key(Self::client_idx_key(&token.client_id))
                 .key(Self::family_idx_key(&token.family_id))
-                .key(Self::tombstone_key(value))
+                .key(Self::tombstone_key_for_hash(&hash))
                 .arg(&hash)
                 .arg(INDEX_TTL_SECONDS)
                 .arg(&token.family_id)
@@ -265,20 +252,17 @@ impl RefreshTokenStore {
         let expected = serde_json::to_string(token)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let hash = Self::token_hash(value);
-        let tombstone = serde_json::to_string(&Tombstone::for_token(
-            token,
-            TombstoneState::Consumed,
-            self.clock.now(),
-        ))?;
+        let tombstone =
+            serde_json::to_string(&Tombstone::for_token(token, TombstoneState::Consumed))?;
         // CAS 消费、索引清理和墓碑写入在同一个 Lua 脚本内完成，
         // 避免「已删除但墓碑未写」的中间状态漏掉后续重放检测。
         let deleted: i32 = Script::new(TAKE_IF_MATCHES_SCRIPT)
-            .key(Self::token_key(value))
+            .key(Self::token_key_for_hash(&hash))
             .key(Self::client_idx_key(&token.client_id))
             .key(Self::family_idx_key(&token.family_id))
-            .key(Self::tombstone_key(value))
+            .key(Self::tombstone_key_for_hash(&hash))
             .arg(expected)
-            .arg(hash)
+            .arg(&hash)
             .arg(tombstone)
             .arg(TOMBSTONE_TTL_SECONDS)
             .arg(INDEX_TTL_SECONDS)
@@ -288,43 +272,51 @@ impl RefreshTokenStore {
         Ok(deleted == 1)
     }
 
+    /// 原子轮换：CAS 消费旧 token、写入新 token、写旧 token 的消费墓碑。
+    ///
+    /// 写入前检查目标 family 的撤销墓志。撤销和轮换是并发的，没有这道检查时，
+    /// 一个在撤销脚本之后才落地的轮换会把新成员写回已经撤销的 grant，
+    /// 让 `/oauth/revoke` 的效果被一次竞态抹掉（Issue #295）。
     pub async fn rotate_if_matches(
         &self,
         value: &str,
         token: &RefreshToken,
         replacement: &RefreshToken,
-    ) -> Result<bool, RefreshTokenStoreError> {
+    ) -> Result<RotationOutcome, RefreshTokenStoreError> {
         let expected = serde_json::to_string(token)?;
         let replacement_payload = serde_json::to_string(replacement)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let old_hash = Self::token_hash(value);
         let new_hash = Self::token_hash(&replacement.value);
-        // 墓碑时刻与新 token 的 TTL 取同一次时钟读取：两者描述的是同一次轮换，
-        // 分开读会在时钟跳变时产生自相矛盾的记录。
-        let now = self.clock.now();
         let tombstone =
-            serde_json::to_string(&Tombstone::for_token(token, TombstoneState::Consumed, now))?;
-        let new_ttl = effective_ttl_at(replacement, now);
+            serde_json::to_string(&Tombstone::for_token(token, TombstoneState::Consumed))?;
+        let new_ttl = Self::effective_ttl(replacement);
+        let target_family = FamilyScope::new(&replacement.family_id, &new_hash);
         let rotated: i32 = Script::new(ROTATE_WITH_TOMBSTONE_SCRIPT)
-            .key(Self::token_key(value))
-            .key(Self::token_key(&replacement.value))
+            .key(Self::token_key_for_hash(&old_hash))
+            .key(Self::token_key_for_hash(&new_hash))
             .key(Self::client_idx_key(&token.client_id))
             .key(Self::family_idx_key(&token.family_id))
             .key(Self::family_idx_key(&replacement.family_id))
-            .key(Self::tombstone_key(value))
+            .key(Self::tombstone_key_for_hash(&old_hash))
+            .key(&target_family.revoked_key)
             .arg(expected)
             .arg(replacement_payload)
             .arg(new_ttl)
             .arg(INDEX_TTL_SECONDS)
-            .arg(old_hash)
-            .arg(new_hash)
+            .arg(&old_hash)
+            .arg(&new_hash)
             .arg(tombstone)
             .arg(TOMBSTONE_TTL_SECONDS)
             .arg(&token.family_id) // ARGV[9]
             .arg(&replacement.family_id) // ARGV[10]
             .invoke_async(&mut connection)
             .await?;
-        Ok(rotated == 1)
+        Ok(match rotated {
+            1 => RotationOutcome::Rotated,
+            -1 => RotationOutcome::FamilyRevoked,
+            _ => RotationOutcome::CasMismatch,
+        })
     }
 
     /// 原子回滚一次已提交的轮换：删除新 token 并恢复旧 token。
@@ -337,151 +329,17 @@ impl RefreshTokenStore {
     /// 这里复用轮换脚本做反向 CAS：只有当前活 token 仍是 `issued` 时才换回
     /// `previous`，索引与墓碑在同一次脚本内一致更新。
     ///
-    /// 返回 `false` 表示新 token 已不在（被并发消费或已过期），此时旧 token
-    /// 不会被复活——恢复它会让同一 family 出现两个活凭据。
+    /// 非 `Rotated` 的结果都表示不能复活 `previous`：新 token 已被并发消费，
+    /// 或者整个 family 已经被撤销。此时恢复旧 token 会让已死的 grant
+    /// 重新出现可兑换凭据。
     pub async fn rollback_rotation(
         &self,
         issued: &RefreshToken,
         previous: &RefreshToken,
-    ) -> Result<bool, RefreshTokenStoreError> {
+    ) -> Result<RotationOutcome, RefreshTokenStoreError> {
         self.rotate_if_matches(&issued.value, issued, previous)
             .await
     }
-
-    // ── 重放检测相关操作（RFC 9700 §4.14.2）──────────────────────────────
-
-    /// 读取墓碑（如果存在）。
-    ///
-    /// 用于区分「token 不存在因为从未签发」和「token 曾合法存在但已被消费/
-    /// 轮换」两种情况。`Consumed` 是重放候选，`FamilyRevoked` 只表示该
-    /// family 已经处理过；没有墓碑的未知 token 是普通无效 token。
-    pub async fn read_tombstone(
-        &self,
-        value: &str,
-    ) -> Result<Option<Tombstone>, RefreshTokenStoreError> {
-        let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let payload: Option<String> = connection.get(Self::tombstone_key(value)).await?;
-        payload
-            .map(|p| serde_json::from_str(&p))
-            .transpose()
-            .map_err(RefreshTokenStoreError::from)
-    }
-
-    /// 撤销整个 Token Family（RFC 9700 §4.14.2）。
-    ///
-    /// 当检测到重放时调用；删除该 family 中所有仍然存活的 token，
-    /// 并给每个成员写墓碑，使后续重放依然可被识别和审计。
-    ///
-    /// 只删除 `token_hash` 满足 `{TOKEN_KEY_PREFIX}{hash}` 格式的键，
-    /// 不影响其他 client 的数据。
-    ///
-    /// 返回被撤销的 token 数量（审计用）。
-    pub async fn revoke_family(
-        &self,
-        family_id: &str,
-        client_id: &str,
-        user_id: &str,
-    ) -> Result<u64, RefreshTokenStoreError> {
-        self.revoke_family_internal(family_id, client_id, user_id, None)
-            .await
-    }
-
-    /// 撤销 family，并把触发 replay 的墓碑原子标记为 `family_revoked`。
-    ///
-    /// `replayed_value` 只用于计算哈希并定位墓碑，不会进入 Redis payload 或日志。
-    /// 标记由同一个 Lua 脚本完成，使并发 replay 中只有第一个请求执行 family
-    /// 撤销；后续请求只得到普通 invalid_grant。
-    pub async fn revoke_family_after_replay(
-        &self,
-        family_id: &str,
-        client_id: &str,
-        user_id: &str,
-        replayed_value: &str,
-    ) -> Result<u64, RefreshTokenStoreError> {
-        self.revoke_family_internal(family_id, client_id, user_id, Some(replayed_value))
-            .await
-    }
-
-    async fn revoke_family_internal(
-        &self,
-        family_id: &str,
-        client_id: &str,
-        user_id: &str,
-        replayed_value: Option<&str>,
-    ) -> Result<u64, RefreshTokenStoreError> {
-        let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let tombstone_json = serde_json::to_string(&Tombstone {
-            family_id: family_id.to_owned(),
-            client_id: client_id.to_owned(),
-            user_id: user_id.to_owned(),
-            state: TombstoneState::FamilyRevoked,
-            recorded_at: self.clock.now().unix_timestamp(),
-        })?;
-        let replayed_hash = replayed_value.map(Self::token_hash).unwrap_or_default();
-        let removed: i64 = Script::new(REVOKE_FAMILY_SCRIPT)
-            .key(Self::family_idx_key(family_id))
-            .key(Self::client_idx_key(client_id))
-            .arg(TOKEN_KEY_PREFIX)
-            .arg(TOMBSTONE_PREFIX)
-            .arg(tombstone_json)
-            .arg(TOMBSTONE_TTL_SECONDS)
-            .arg(replayed_hash)
-            .invoke_async(&mut connection)
-            .await?;
-        Ok(removed.max(0) as u64)
-    }
-
-    /// 撤销某个 Client 的全部 Refresh Token（Issue #62：Secret 轮换时调用）。
-    ///
-    /// 每个 Lua 批次最多处理 128 个索引成员，并重复到 client 索引清空。
-    /// payload 解析或 family 索引清理失败时，脚本不会确认对应的 client
-    /// 成员，调用方修复数据后可再次执行撤销。
-    ///
-    /// 故意不写墓碑：Secret 轮换不是凭据泄露信号，旧 token 后续应静默返回
-    /// `invalid_grant`，不触发「检测到重放」的审计噪声。
-    ///
-    /// 返回被撤销的 token 数量。
-    pub async fn revoke_client_tokens(
-        &self,
-        client_id: &str,
-    ) -> Result<u64, RefreshTokenStoreError> {
-        let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let client_idx_key = Self::client_idx_key(client_id);
-        let mut removed = 0_u64;
-
-        loop {
-            let (batch_removed, remaining): (i64, i64) = Script::new(REVOKE_CLIENT_TOKENS_SCRIPT)
-                .key(&client_idx_key)
-                .arg(TOKEN_KEY_PREFIX)
-                .arg(FAMILY_IDX_PREFIX)
-                .arg(TOMBSTONE_PREFIX)
-                .arg(CLIENT_REVOKE_BATCH_SIZE)
-                .invoke_async(&mut connection)
-                .await?;
-            removed = removed.saturating_add(batch_removed.max(0) as u64);
-            if remaining <= 0 {
-                return Ok(removed);
-            }
-        }
-    }
-}
-
-/// 计算主键 TTL：`min(滑动窗口剩余, 绝对到期剩余)`，至少 1 秒。
-///
-/// Issue #109 的核心修复点。旧实现每次轮换都无条件 `SETEX` 30 天，
-/// 只要客户端 30 天内用一次，Redis 侧的有效期就无限向后滑动，
-/// 形成永不过期的凭据。现在 TTL 被绝对截止时间夹住，
-/// 即使持续轮换，Redis 也会在首次签发后 180 天让键自然消失。
-///
-/// 与 [`RefreshTokenStore::effective_ttl`] 的区别只是时间来源：轮换路径需要让
-/// 墓碑时刻和新 token 的 TTL 共用同一次时钟读取，所以时间由调用方传入。
-fn effective_ttl_at(token: &RefreshToken, now: time::OffsetDateTime) -> u64 {
-    let abs_remaining = (token.absolute_deadline() - now).whole_seconds();
-    let slide_remaining = (token.expires_at - now).whole_seconds();
-    // 已过期的 token 给 1 秒 TTL：让键立刻自然消失，
-    // 而不是用 0/负数触发 Redis 的参数错误。
-    let ttl = abs_remaining.min(slide_remaining).max(1);
-    u64::try_from(ttl).unwrap_or(1)
 }
 
 #[cfg(test)]

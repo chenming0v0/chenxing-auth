@@ -11,7 +11,9 @@ use chenxing_auth::{
     },
     config::{AuthEncryptionKey, AuthEncryptionKeyRing},
     oauth::{
-        code::AuthorizationCode, refresh::RefreshToken, refresh_store::RefreshTokenStore,
+        code::AuthorizationCode,
+        refresh::RefreshToken,
+        refresh_store::{RefreshTokenStore, RotationOutcome},
         store::AuthorizationCodeStore,
     },
     sessions::{
@@ -715,11 +717,12 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
         .save(&rotatable)
         .await
         .expect("save rotatable refresh token");
-    assert!(
-        !refreshes
+    assert_eq!(
+        refreshes
             .rotate_if_matches(&rotatable.value, &mismatched, &rotated)
             .await
-            .expect("mismatched refresh rotation")
+            .expect("mismatched refresh rotation"),
+        RotationOutcome::CasMismatch
     );
     assert!(
         refreshes
@@ -728,11 +731,12 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
             .expect("find refresh after mismatched rotation")
             .is_some()
     );
-    assert!(
+    assert_eq!(
         refreshes
             .rotate_if_matches(&rotatable.value, &rotatable, &rotated)
             .await
-            .expect("matching refresh rotation")
+            .expect("matching refresh rotation"),
+        RotationOutcome::Rotated
     );
     assert!(
         refreshes
@@ -748,8 +752,8 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
             .expect("find rotated refresh")
             .is_some()
     );
-    assert!(
-        !refreshes
+    assert_eq!(
+        refreshes
             .rotate_if_matches(
                 &rotatable.value,
                 &rotatable,
@@ -760,7 +764,8 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
                 )
             )
             .await
-            .expect("duplicate refresh rotation")
+            .expect("duplicate refresh rotation"),
+        RotationOutcome::CasMismatch
     );
 
     let session_key = format!(

@@ -3,9 +3,12 @@ use crate::{state::AppState, users::domain::UserId};
 
 use super::super::{
     refresh::RefreshToken,
-    refresh_store::{Tombstone, TombstoneState},
+    refresh_store::{FamilyRevocation, RotationOutcome, Tombstone, TombstoneState},
     session::active_user_id,
-    token_security::{record_token_event, record_token_event_best_effort},
+    token_security::{
+        record_token_event, record_token_event_best_effort,
+        record_token_event_with_metadata_best_effort,
+    },
 };
 
 /// Exchange a refresh token after the token endpoint has authenticated the client.
@@ -22,7 +25,7 @@ pub(super) async fn exchange_refresh_token(
     let refresh = match state.refresh_tokens.find(refresh_value).await {
         Ok(Some(refresh)) => refresh,
         Ok(None) => {
-            // A missing token may be either unknown or a replay of a normally rotated token.
+            // A missing token may be either unknown or a replay of a consumed token.
             return handle_missing_refresh_token(state, client_id, refresh_value).await;
         }
         Err(store_error) => {
@@ -31,7 +34,10 @@ pub(super) async fn exchange_refresh_token(
         }
     };
 
-    if refresh.validate(client_id, state.clock.now()).is_err() {
+    if refresh
+        .validate(client_id, time::OffsetDateTime::now_utc())
+        .is_err()
+    {
         return record_and_return_invalid(
             state,
             Some(&refresh.user_id),
@@ -80,7 +86,7 @@ pub(super) async fn exchange_refresh_token(
     let scopes = select_scopes(request.scope.as_deref(), &refresh.scopes)?;
     // rotate() inherits issued_at and family_id so absolute lifetime and replay revocation
     // semantics survive rotation.
-    let next_refresh = refresh.rotate_at(scopes.clone(), state.clock.now());
+    let next_refresh = refresh.rotate(scopes.clone());
     let token = issue_token_response(
         state,
         &refresh.user_id,
@@ -99,7 +105,7 @@ pub(super) async fn exchange_refresh_token(
         .rotate_if_matches(refresh_value, &refresh, &next_refresh)
         .await
     {
-        Ok(true) => {
+        Ok(RotationOutcome::Rotated) => {
             if record_token_event(
                 state,
                 Some(&refresh.user_id),
@@ -115,61 +121,27 @@ pub(super) async fn exchange_refresh_token(
             }
             Ok(token)
         }
-        Ok(false) => {
-            // A lost CAS race is classified from the matching tombstone: a recent consumed
-            // marker is a bounded concurrency race, while an old one is a replay signal.
-            let tombstone = match state.refresh_tokens.read_tombstone(refresh_value).await {
-                Ok(tombstone) => tombstone,
-                Err(store_error) => {
-                    tracing::error!(error = %store_error, "failed to read refresh token tombstone");
-                    return Err(OAuthError::temporarily_unavailable().into());
-                }
-            };
-            match tombstone {
-                Some(tombstone) if tombstone.client_id == client_id => {
-                    match classify_tombstone(&tombstone, state.clock.now()) {
-                        TombstoneDisposition::ConcurrentRace => {
-                            record_and_return_invalid(
-                                state,
-                                Some(&refresh.user_id),
-                                client_id,
-                                "token_race",
-                            )
-                            .await
-                        }
-                        TombstoneDisposition::Replay => {
-                            revoke_family_after_replay(state, client_id, refresh_value, &tombstone)
-                                .await
-                        }
-                        TombstoneDisposition::ExplicitRevoke
-                        | TombstoneDisposition::FamilyRevoked => {
-                            record_and_return_invalid(
-                                state,
-                                Some(&refresh.user_id),
-                                client_id,
-                                "token_revoked",
-                            )
-                            .await
-                        }
-                    }
-                }
-                _ => {
-                    // A missing tombstone is a narrow race in which the family cannot be
-                    // located, so reject only this request.
-                    tracing::warn!(
-                        client_id = %client_id,
-                        "refresh rotation lost CAS race but tombstone is missing; \
-                         cannot revoke family"
-                    );
-                    record_and_return_invalid(
-                        state,
-                        Some(&refresh.user_id),
-                        client_id,
-                        "token_race",
-                    )
-                    .await
-                }
-            }
+        // Losing the CAS means this exact token was already consumed between the lookup and
+        // the swap. That is a replay, not a benign race: two parties held the same credential
+        // and the loser must not keep a usable grant (Issue #293). The token payload we read
+        // is server-side state, so the family is located without trusting the tombstone.
+        Ok(RotationOutcome::CasMismatch) => {
+            revoke_family_after_replay(
+                state,
+                ReplayContext {
+                    client_id,
+                    user_id: &refresh.user_id,
+                    family_id: &refresh.family_id,
+                    replayed_value: refresh_value,
+                },
+            )
+            .await
+        }
+        // The grant died while this request was in flight. Nothing to revoke and nothing to
+        // report as a leak: the family tombstone already recorded whatever killed it.
+        Ok(RotationOutcome::FamilyRevoked) => {
+            record_and_return_invalid(state, Some(&refresh.user_id), client_id, "token_revoked")
+                .await
         }
         Err(store_error) => {
             tracing::error!(error = %store_error, "failed to atomically rotate refresh token");
@@ -216,75 +188,80 @@ async fn handle_missing_refresh_token(
     client_id: &str,
     refresh_value: &str,
 ) -> Result<TokenResponse, RefreshExchangeError> {
-    // 并发刷新落到这条路径还是 CAS loser 路径，只取决于本请求的 find 发生在
-    // 胜者的轮换之前还是之后——两者都是同一批并发请求。分类只看墓碑本身，
-    // 不看请求走了哪条路（Issue #278）。
-    match state.refresh_tokens.read_tombstone(refresh_value).await {
-        Ok(Some(tombstone)) if tombstone.client_id == client_id => {
-            match classify_tombstone(&tombstone, state.clock.now()) {
-                TombstoneDisposition::Replay => {
-                    revoke_family_after_replay(state, client_id, refresh_value, &tombstone).await
-                }
-                TombstoneDisposition::ConcurrentRace => {
-                    record_and_return_invalid(
-                        state,
-                        Some(&tombstone.user_id),
-                        client_id,
-                        "token_race",
-                    )
-                    .await
-                }
-                TombstoneDisposition::ExplicitRevoke | TombstoneDisposition::FamilyRevoked => {
-                    record_and_return_invalid(
-                        state,
-                        Some(&tombstone.user_id),
-                        client_id,
-                        "token_revoked",
-                    )
-                    .await
-                }
-            }
+    let tombstone = match state.refresh_tokens.read_tombstone(refresh_value).await {
+        Ok(tombstone) => tombstone,
+        Err(store_error) => {
+            tracing::error!(error = %store_error, "failed to read refresh token tombstone");
+            return Err(OAuthError::temporarily_unavailable().into());
         }
-        Ok(Some(_)) => {
+    };
+    // 没有墓碑说明这个值从未被本服务签发，或者已经超出重放检测窗口。
+    let Some(tombstone) = tombstone else {
+        return record_and_return_invalid(state, None, client_id, "invalid_token").await;
+    };
+    match classify_tombstone(&tombstone, client_id) {
+        TombstoneDisposition::Replay => {
+            revoke_family_after_replay(
+                state,
+                ReplayContext {
+                    client_id,
+                    user_id: &tombstone.user_id,
+                    family_id: &tombstone.family_id,
+                    replayed_value: refresh_value,
+                },
+            )
+            .await
+        }
+        TombstoneDisposition::AlreadyDead => {
+            record_and_return_invalid(state, Some(&tombstone.user_id), client_id, "token_revoked")
+                .await
+        }
+        TombstoneDisposition::ForeignClient => {
             // Do not record the submitted token value; it is a credential.
             tracing::warn!(
+                event = "refresh.replay_client_mismatch",
                 client_id = %client_id,
                 "refresh token replay attempt with mismatched client_id; \
                  refusing without revoking the owning family"
             );
             record_and_return_invalid(state, None, client_id, "invalid_token").await
         }
-        // No tombstone means an unknown token or one outside the replay-detection window.
-        Ok(None) => record_and_return_invalid(state, None, client_id, "invalid_token").await,
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to read refresh token tombstone");
-            Err(OAuthError::temporarily_unavailable().into())
-        }
     }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum TombstoneDisposition {
-    ConcurrentRace,
+    /// 已消费的凭据被再次提交：RFC 9700 §4.14.2 的重放，撤销整个 family。
     Replay,
-    ExplicitRevoke,
-    FamilyRevoked,
+    /// 凭据已经因主动撤销或 family 撤销而死亡，只拒绝当次请求。
+    AlreadyDead,
+    /// 提交者不是凭据的归属 Client，拒绝且绝不撤销别人的 family。
+    ForeignClient,
 }
 
-/// 把墓碑映射成处置方式（RFC 9700 §4.14.2 的 replay 判定）。
+/// 把墓碑映射成处置方式（RFC 9700 §4.14.2 的重放判定）。
 ///
-/// 只依赖墓碑状态和消费时刻，不依赖调用方走了哪条缺失路径：并发刷新中的
-/// 落败请求可能在 CAS 处失败，也可能在 `find` 处就已经看不到 token，
-/// 按路径区分只会让正常并发随机触发 family 撤销。
-fn classify_tombstone(tombstone: &Tombstone, now: time::OffsetDateTime) -> TombstoneDisposition {
+/// 判定只有两个输入：墓碑归属的 Client 和墓碑状态。这里**没有**时间窗口。
+///
+/// 曾经存在过一个 5 秒宽限窗口，把窗口内重复提交同一个已消费 token 当成
+/// 「正常并发刷新」而放过。它的代价是：攻击者窃取凭据后只要在合法客户端刷新
+/// 后的 5 秒内跟着提交同一个 token，就能得到一次「不撤销 family」的免费尝试，
+/// 而 family 撤销正是检测凭据泄露的唯一手段（Issue #293）。窗口两侧都不安全
+/// ——它同时也让「客户端自己并发提交同一 token」这种客户端 bug 被静默容忍。
+///
+/// 现在的语义是单次使用的字面含义：`Consumed` 墓碑 + 再次提交 = 重放。
+/// 正常客户端永远不会重复提交同一个 refresh token，因为轮换后它手里已经是
+/// 新值；重复提交要么是客户端并发 bug，要么是凭据泄露，两者都应该让 grant
+/// 失效并要求重新授权。
+fn classify_tombstone(tombstone: &Tombstone, client_id: &str) -> TombstoneDisposition {
+    if tombstone.client_id != client_id {
+        return TombstoneDisposition::ForeignClient;
+    }
     match tombstone.state {
-        // 消费墓碑落在并发窗口内：拒绝当次请求，但不撤销 family。
-        TombstoneState::Consumed if tombstone.is_recent_consumption(now) => {
-            TombstoneDisposition::ConcurrentRace
-        }
         TombstoneState::Consumed => TombstoneDisposition::Replay,
-        TombstoneState::ExplicitRevoke => TombstoneDisposition::ExplicitRevoke,
-        TombstoneState::FamilyRevoked => TombstoneDisposition::FamilyRevoked,
+        TombstoneState::ExplicitRevoke | TombstoneState::FamilyRevoked => {
+            TombstoneDisposition::AlreadyDead
+        }
     }
 }
 
@@ -305,15 +282,19 @@ async fn rollback_rotation(
         .rollback_rotation(issued, previous)
         .await
     {
-        Ok(true) => {}
-        // 新 token 已经不在（并发消费或已过期）。此时恢复 previous 会造出第二个
-        // 活凭据，只能让客户端重新走授权流程。
-        Ok(false) => tracing::warn!(
+        Ok(RotationOutcome::Rotated) => {}
+        // 新 token 已经不在（并发消费或已过期），或整个 family 已被撤销。
+        // 两种情况下恢复 previous 都会给已死的 grant 造出一个活凭据，
+        // 只能让客户端重新走授权流程。
+        Ok(outcome) => tracing::warn!(
+            event = "refresh.rotation_rollback_skipped",
             client_id = %client_id,
             family_id = %issued.family_id,
-            "refresh rotation rollback skipped: the issued token is already gone"
+            outcome = ?outcome,
+            "refresh rotation rollback skipped: the issued token can no longer be swapped back"
         ),
         Err(store_error) => tracing::error!(
+            event = "refresh.rotation_rollback_failed",
             error = %store_error,
             client_id = %client_id,
             family_id = %issued.family_id,
@@ -322,46 +303,109 @@ async fn rollback_rotation(
     }
 }
 
+/// 一次重放处置所需的、全部来自服务端状态的上下文。
+///
+/// `family_id` / `user_id` 只能来自 token payload 或墓碑，绝不能取自请求参数：
+/// 否则任何 Client 都能指定别人的 family 触发撤销。
+struct ReplayContext<'a> {
+    client_id: &'a str,
+    user_id: &'a str,
+    family_id: &'a str,
+    replayed_value: &'a str,
+}
+
+/// 检测到重放后撤销整个 family，并把结果落成可检索的安全事件。
+///
+/// 撤销失败必须 fail closed（Issue #292）。此前的实现只打一条日志就继续返回
+/// `invalid_grant`，于是「family 撤销没做成」和「这个 token 确实无效」在协议
+/// 层完全同形：攻击者拿到的仍是标准的 invalid_grant，而被泄露的 family 里
+/// 其它成员还活着，运维侧也没有任何区别于日常拒绝的信号。现在返回
+/// `temporarily_unavailable`，明确告诉调用方这是服务端状态未收敛，
+/// 并记录独立的审计事件供检索。
 async fn revoke_family_after_replay(
     state: &AppState,
-    client_id: &str,
-    replayed_value: &str,
-    tombstone: &Tombstone,
+    context: ReplayContext<'_>,
 ) -> Result<TokenResponse, RefreshExchangeError> {
-    match state
+    let revocation = match state
         .refresh_tokens
         .revoke_family_after_replay(
-            &tombstone.family_id,
-            client_id,
-            &tombstone.user_id,
-            replayed_value,
+            context.family_id,
+            context.client_id,
+            context.user_id,
+            context.replayed_value,
         )
         .await
     {
-        Ok(revoked) => {
-            tracing::warn!(
-                client_id = %client_id,
-                family_id = %tombstone.family_id,
-                revoked_refresh_tokens = revoked,
-                "refresh token replay detected; revoked entire token family"
-            );
-        }
+        Ok(revocation) => revocation,
         Err(store_error) => {
             tracing::error!(
+                event = "refresh.family_revocation_failed",
                 error = %store_error,
-                client_id = %client_id,
-                family_id = %tombstone.family_id,
-                "failed to revoke refresh token family after replay detection"
+                client_id = %context.client_id,
+                family_id = %context.family_id,
+                "refresh token replay detected but the family revocation failed; \
+                 refusing the request without pretending the grant is merely invalid"
             );
+            record_token_event_with_metadata_best_effort(
+                state,
+                Some(context.user_id),
+                "token_refresh_failure",
+                Some(context.client_id),
+                serde_json::json!({
+                    "reason": "refresh_family_revocation_failed",
+                    "family_id": context.family_id,
+                }),
+            )
+            .await;
+            return Err(OAuthError::temporarily_unavailable().into());
         }
+    };
+    report_replay(state, &context, revocation).await;
+    Err(OAuthError::invalid_refresh_grant().into())
+}
+
+/// 记录重放处置结果。
+///
+/// 审计写入用 best-effort：family 撤销已经不可逆地完成，把审计故障翻译成另一个
+/// HTTP 状态只会诱导调用方重试一个不会改变结果的请求。`audit.best_effort_failure`
+/// 与这里的 tracing 事件共同保留人工补录所需的上下文。
+async fn report_replay(
+    state: &AppState,
+    context: &ReplayContext<'_>,
+    revocation: FamilyRevocation,
+) {
+    if revocation.already_revoked {
+        // 同一次重放的并发请求，或对一个已死 family 的再次提交：
+        // 撤销早已完成，不重复上报安全事件。
+        record_token_event_best_effort(
+            state,
+            Some(context.user_id),
+            "token_refresh_failure",
+            Some(context.client_id),
+            "token_revoked",
+        )
+        .await;
+        return;
     }
-    record_and_return_invalid(
+    tracing::warn!(
+        event = "refresh.replay_detected",
+        client_id = %context.client_id,
+        family_id = %context.family_id,
+        revoked_refresh_tokens = revocation.revoked_tokens,
+        "refresh token replay detected; revoked entire token family"
+    );
+    record_token_event_with_metadata_best_effort(
         state,
-        Some(&tombstone.user_id),
-        client_id,
-        "refresh_replay_detected",
+        Some(context.user_id),
+        "token_refresh_failure",
+        Some(context.client_id),
+        serde_json::json!({
+            "reason": "refresh_replay_detected",
+            "family_id": context.family_id,
+            "revoked_refresh_tokens": revocation.revoked_tokens,
+        }),
     )
-    .await
+    .await;
 }
 
 async fn record_and_return_invalid(
