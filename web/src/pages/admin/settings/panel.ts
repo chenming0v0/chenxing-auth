@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiFetch } from '../../../api'
+import { setNavigationBlocker } from '../../../router'
 
 export type SettingsMessageTone = 'success' | 'warning'
 export type SettingsMessageSink = (message: string, tone?: SettingsMessageTone) => void
 
-/** 所有设置面板的统一入参：面板只向工作区上报结果，不自己渲染全局消息条。 */
-export type SettingsPanelProps = { onMessage: SettingsMessageSink }
+/** 所有设置面板的统一入参：面板只向工作区上报结果与未保存草稿状态，不自己渲染全局消息条。 */
+export type SettingsPanelProps = {
+  onMessage: SettingsMessageSink
+  /**
+   * 未保存草稿上报（#381）：dirty 为 true 表示面板存在尚未保存的编辑。
+   * 引用必须跨渲染稳定（与 #268 的 onMessage 同约束），否则面板 effect 会重跑。
+   */
+  onDirtyChange: (dirty: boolean) => void
+}
 
 export type FlashMessage = { text: string; tone: SettingsMessageTone }
 
@@ -21,6 +29,44 @@ export function useFlashMessage(): { flash: SettingsMessageSink; message: FlashM
     setMessage({ text, tone })
   }, [])
   return { flash, message }
+}
+
+/** 面板草稿与已保存基线的结构比较；这些状态都是纯 JSON 形状的 API 值。 */
+export function settingsEqual<T>(left: T, right: T): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+/**
+ * dirty 上报的公共通道（#381）：dirty 变化时通知工作区；卸载时上报 false，
+ * 让工作区的聚合计数不会因面板卸载（如 OAuth 面板按权限条件渲染）残留脏标记。
+ * `onDirtyChange` 必须跨渲染稳定，effect 才不会每次渲染重跑。
+ */
+export function useDirtyReport(dirty: boolean, onDirtyChange: (dirty: boolean) => void) {
+  useEffect(() => {
+    onDirtyChange(dirty)
+    return () => onDirtyChange(false)
+  }, [dirty, onDirtyChange])
+}
+
+const DRAFT_LEAVE_MESSAGE = '有未保存的设置修改，离开后这些修改将丢失。确定离开吗？'
+
+/**
+ * 工作区侧的未保存草稿离开守卫（#381）：dirty 为 true 时，
+ * - SPA 路由跳转前用 window.confirm 拦截（navigate 的单例拦截器，见 router.tsx）；
+ * - 刷新/关闭页面交给浏览器原生 beforeunload 提示（文案由浏览器决定，不可定制）。
+ * 注意：浏览器前进/后退按钮直接触发 popstate、不经过 navigate，无法被这里拦截。
+ */
+export function useDraftLeaveGuard(dirty: boolean) {
+  useEffect(() => {
+    if (!dirty) return
+    setNavigationBlocker(() => window.confirm(DRAFT_LEAVE_MESSAGE))
+    const onBeforeUnload = (event: BeforeUnloadEvent) => { event.preventDefault() }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => {
+      setNavigationBlocker(null)
+      window.removeEventListener('beforeunload', onBeforeUnload)
+    }
+  }, [dirty])
 }
 
 type SettingsResourceOptions<T> = {

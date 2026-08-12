@@ -51,7 +51,7 @@ function pendingMessage(pending: PendingStatusChange): string {
   return `${head}原因：${pending.reason}配置无需重新填写，可直接重试${label}。`
 }
 
-export function OAuthProvidersPanel({ onMessage }: SettingsPanelProps) {
+export function OAuthProvidersPanel({ onMessage, onDirtyChange }: SettingsPanelProps) {
   const [providers, setProviders] = useState<OAuthProviderSummary[] | null>(null)
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<OAuthProviderSummary | null>(null)
@@ -281,6 +281,7 @@ export function OAuthProvidersPanel({ onMessage }: SettingsPanelProps) {
           onSubmit={(form) => void save(form)}
           onClose={() => setOpen(false)}
           onMessage={onMessage}
+          onDirtyChange={onDirtyChange}
         />
       ) : null}
     </>

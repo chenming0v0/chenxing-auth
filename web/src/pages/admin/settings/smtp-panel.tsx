@@ -1,10 +1,12 @@
 import { useState, type FormEvent } from 'react'
 import { apiFetch, type SmtpSetting } from '../../../api'
 import { Button, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '../../../components/ui'
-import { useSettingsResource, type SettingsPanelProps } from './panel'
+import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
-export function SmtpPanel({ onMessage }: SettingsPanelProps) {
+export function SmtpPanel({ onMessage, onDirtyChange }: SettingsPanelProps) {
   const [setting, setSetting] = useState<SmtpSetting | null>(null)
+  /* 上次成功加载/保存的基线：当前编辑与它不一致即视为有未保存草稿（#381）。 */
+  const [savedSetting, setSavedSetting] = useState<SmtpSetting | null>(null)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -12,8 +14,14 @@ export function SmtpPanel({ onMessage }: SettingsPanelProps) {
     path: '/api/v1/admin/settings/smtp',
     onMessage,
     failureMessage: 'SMTP 设置加载失败。',
-    apply: setSetting,
+    apply: (value) => {
+      setSetting(value)
+      setSavedSetting(value)
+    },
   })
+
+  const dirty = Boolean(savedSetting && (password !== '' || !settingsEqual(setting, savedSetting)))
+  useDirtyReport(dirty, onDirtyChange)
 
   function updateSetting(patch: Partial<SmtpSetting>) {
     if (busy) return
@@ -38,6 +46,7 @@ export function SmtpPanel({ onMessage }: SettingsPanelProps) {
         }),
       })
       setSetting(value)
+      setSavedSetting(value)
       setPassword('')
       onMessage('SMTP 设置已保存。')
     } catch (reason) {

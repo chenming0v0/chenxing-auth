@@ -7,7 +7,7 @@ import {
 } from '../../../api'
 import { Button, Field, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
 import { SelectField } from '../../../components/select'
-import { useSettingsResource, type SettingsPanelProps } from './panel'
+import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
 function splitOrigins(value: string): string[] {
   return value.replace(/,/g, ' ').split(/\s+/).map((item) => item.trim()).filter(Boolean)
@@ -81,8 +81,10 @@ export function validatePasskeyOrigins(
   return { origins }
 }
 
-export function PasskeyPanel({ onMessage }: SettingsPanelProps) {
+export function PasskeyPanel({ onMessage, onDirtyChange }: SettingsPanelProps) {
   const [setting, setSetting] = useState<PasskeySetting | null>(null)
+  /* 上次成功加载/保存的基线：当前编辑与它不一致即视为有未保存草稿（#381）。 */
+  const [savedSetting, setSavedSetting] = useState<PasskeySetting | null>(null)
   const [originsText, setOriginsText] = useState('')
   const [originsError, setOriginsError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -93,10 +95,16 @@ export function PasskeyPanel({ onMessage }: SettingsPanelProps) {
     failureMessage: 'Passkey 设置加载失败。',
     apply: (value) => {
       setSetting(value)
+      setSavedSetting(value)
       setOriginsText(value.allowed_origins.join(', '))
       setOriginsError(null)
     },
   })
+
+  const dirty = Boolean(savedSetting && (
+    !settingsEqual(setting, savedSetting) || originsText !== savedSetting.allowed_origins.join(', ')
+  ))
+  useDirtyReport(dirty, onDirtyChange)
 
   function updateSetting(patch: Partial<PasskeySetting>) {
     if (busy) return
@@ -123,6 +131,7 @@ export function PasskeyPanel({ onMessage }: SettingsPanelProps) {
         body: JSON.stringify(payload),
       })
       setSetting(value)
+      setSavedSetting(value)
       setOriginsText(value.allowed_origins.join(', '))
       setOriginsError(null)
       onMessage('Passkey 设置已保存。')

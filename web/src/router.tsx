@@ -2,7 +2,20 @@ import { useEffect, useState, type AnchorHTMLAttributes, type MouseEvent, type R
 
 function currentPath() { return window.location.pathname }
 
+/**
+ * 路由级导航拦截器：本项目没有 react-router，这是 useBlocker 的自制等价物。
+ * navigate 是 Link 点击与程序化跳转的唯一入口，跳转前询问已注册的拦截器，
+ * 返回 false 时放弃本次导航。设置页用它实现「有未保存草稿时离开需确认」。
+ * 同一时刻只允许一个拦截器（当前只有设置页需要注册）。
+ */
+let navigationBlocker: (() => boolean) | null = null
+
+export function setNavigationBlocker(blocker: (() => boolean) | null) {
+  navigationBlocker = blocker
+}
+
 export function navigate(to: string) {
+  if (navigationBlocker && !navigationBlocker()) return
   window.history.pushState({}, '', to)
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
