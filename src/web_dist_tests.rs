@@ -326,7 +326,9 @@ fn a_bundle_from_another_build_is_rejected() {
 fn the_embedded_shell_references_a_hashed_script() {
     let references = root_absolute_references(EMBEDDED_INDEX_HTML);
     assert!(
-        references.iter().any(|reference| reference.ends_with(".js")),
+        references
+            .iter()
+            .any(|reference| reference.ends_with(".js")),
         "the embedded shell must reference a script asset: {references:?}"
     );
 }

@@ -152,11 +152,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                 Ok(blocked) => blocked,
                 Err(_) => return self.policy.unavailable_bool("check", &dimensions),
             };
-            Ok(log_blocked_dimension(
-                blocked,
-                &dimensions,
-                limits.window(),
-            ))
+            Ok(log_blocked_dimension(blocked, &dimensions, limits.window()))
         })
     }
 

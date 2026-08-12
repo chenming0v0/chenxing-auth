@@ -4,7 +4,9 @@ use ::redis::AsyncCommands;
 
 use super::RedisAuthFailureLimiter;
 use crate::auth_limiter::domain::{AUTH_FAILURE_WINDOW_SECONDS, AuthFailureLimits};
-use crate::auth_limiter::{AuthFailureLimiter, AuthLimiterFailurePolicy, FailureDimension, metrics};
+use crate::auth_limiter::{
+    AuthFailureLimiter, AuthLimiterFailurePolicy, FailureDimension, metrics,
+};
 use crate::settings::{SecurityLimitsSetting, SettingsService};
 
 fn redis_url() -> String {

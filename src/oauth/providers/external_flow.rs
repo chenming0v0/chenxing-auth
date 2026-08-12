@@ -87,7 +87,9 @@ impl ExternalOAuthService {
             ClientAuthMethod::RequestBody => {
                 form.push(("client_id", provider.client_id.as_str()));
                 form.push(("client_secret", secret.as_str()));
-                self.http().post(provider.token_endpoint.clone()).form(&form)
+                self.http()
+                    .post(provider.token_endpoint.clone())
+                    .form(&form)
             }
         };
         let response = request
