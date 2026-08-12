@@ -435,6 +435,7 @@ dependencies = [
  "cookie",
  "dotenvy",
  "hmac 0.12.1",
+ "idna",
  "image",
  "jsonwebtoken",
  "oxide-auth-axum",

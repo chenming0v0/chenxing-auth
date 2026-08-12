@@ -25,11 +25,21 @@ use chenxing_auth::{
     consents::ConsentService,
     oauth::revocation::TokenRevocationStore,
     users::{
-        credentials::hash_password, domain::ValidatedRegistration, repository as user_repository,
+        credentials::hash_password, domain::ValidatedRegistration, email::EmailAddress,
+        repository as user_repository,
     },
 };
 use redis::AsyncCommands;
 use uuid::Uuid;
+
+/// 测试夹具的邮箱构造。
+///
+/// `ValidatedRegistration.email` 是 `EmailAddress`（Issue #302），构造它必须经过
+/// 唯一的规范化入口——夹具也不例外，否则测试会绕开被测的那条规则。
+fn email_address(raw: impl AsRef<str>) -> EmailAddress {
+    let raw = raw.as_ref();
+    EmailAddress::parse(raw).unwrap_or_else(|error| panic!("fixture email {raw:?}: {error}"))
+}
 
 async fn database() -> chenxing_auth::sqlx::PgPool {
     let database_url = env::var("DATABASE_URL")
@@ -51,7 +61,7 @@ async fn seed_user_and_client(
         pool,
         ValidatedRegistration {
             username: format!("consent-user-{suffix}"),
-            email: format!("consent-{suffix}@example.com"),
+            email: email_address(format!("consent-{suffix}@example.com")),
             password: "correct horse battery".to_owned(),
             display_name: Some("Consent User".to_owned()),
         },

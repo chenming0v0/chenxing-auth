@@ -14,6 +14,7 @@ use std::fmt;
 use time::OffsetDateTime;
 
 use super::domain::{UserId, UserRole, UserStatus};
+use super::email::EmailAddress;
 
 mod avatar;
 mod lookup;
@@ -42,7 +43,9 @@ pub use write::{
 pub struct NewUser {
     pub id: UserId,
     pub username: String,
-    pub email: String,
+    /// 已规范化的邮箱。保留 [`EmailAddress`] 而不是落库后的展示字符串，
+    /// 让调用方在构造响应时仍能取到匹配值（例如写审计或限流键）。
+    pub email: EmailAddress,
     pub password_hash: String,
     pub display_name: Option<String>,
     pub role: UserRole,
@@ -67,7 +70,13 @@ impl fmt::Debug for NewUser {
 
 pub struct UserCredentials {
     pub id: UserId,
+    /// 展示值，用于响应与外发邮件。
     pub email: String,
+    /// 匹配值，即 `users.canonical_email`。
+    ///
+    /// 限流与审计的账号维度必须用它：同一账号的多种邮箱书写会规范化到同一个
+    /// 匹配值，用展示值分桶会让攻击者靠变换大小写重置失败计数（Issue #302）。
+    pub canonical_email: String,
     pub password_hash: String,
     pub password_login_enabled: bool,
     pub status: String,
@@ -94,6 +103,7 @@ impl fmt::Debug for UserCredentials {
         f.debug_struct("UserCredentials")
             .field("id", &self.id)
             .field("email", &self.email)
+            .field("canonical_email", &self.canonical_email)
             .field("password_hash", &"<redacted>")
             .field("password_login_enabled", &self.password_login_enabled)
             .field("status", &self.status)
@@ -144,7 +154,10 @@ mod credentials_binding_tests {
     fn credentials(session_epoch: i64) -> UserCredentials {
         UserCredentials {
             id: 11,
-            email: "user@example.test".to_owned(),
+            // 展示值保留本地部分大小写，匹配值折叠它：两列的差异是本 fixture
+            // 刻意携带的（Issue #302）。
+            email: "User@example.test".to_owned(),
+            canonical_email: "user@example.test".to_owned(),
             password_hash: "argon2-hash".to_owned(),
             password_login_enabled: true,
             status: "active".to_owned(),
@@ -188,5 +201,9 @@ mod credentials_binding_tests {
         assert!(!rendered.contains("argon2-hash"), "{rendered}");
         assert!(rendered.contains("<redacted>"), "{rendered}");
         assert!(rendered.contains("session_epoch: 9"), "{rendered}");
+        // 两个邮箱值都保留：排查"展示值对得上、匹配值对不上"这类规范化漂移时，
+        // 只看一个值是看不出问题的（Issue #302）。
+        assert!(rendered.contains("User@example.test"), "{rendered}");
+        assert!(rendered.contains("user@example.test"), "{rendered}");
     }
 }

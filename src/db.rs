@@ -119,7 +119,63 @@ pub async fn check_ready(database: &Database) -> Result<(), crate::sqlx::Error> 
 }
 
 pub async fn migrate(database: &Database) -> Result<(), crate::sqlx::migrate::MigrateError> {
-    embedded_migrator().run(database).await
+    embedded_migrator().run(database).await?;
+    verify_canonical_emails(database).await
+}
+
+/// 校验 `users.canonical_email` 与应用层的规范化结果一致（Issue #302）。
+///
+/// 迁移 0024 的回填在 SQL 里做，而 SQL 无法验证 Punycode 的有效性——那需要真正
+/// 解码再跑一遍 UTS-46，在 PL/pgSQL 里重实现等于把"规范化只有一处实现"这个前提
+/// 亲手推翻。于是把这一步留给唯一的权威实现：迁移之后，用 `EmailAddress` 复核。
+///
+/// **只查 `xn--` 行**。纯 ASCII 且结构合法的行，`lower()` 与应用层逐字节相等，
+/// 这一点由迁移的回填判据保证，不需要每次启动都全表复核；`xn--` 是判据覆盖不到的
+/// 唯一形态，而它在实际数据里罕见甚至为空，索引扫描的代价可以忽略。
+///
+/// 不一致时**拒绝启动**。这类行的匹配值一旦落错，登录会静默失败，而错误看起来
+/// 像"密码不对"——放行是把一个可诊断的启动故障换成一个查不出原因的线上故障。
+async fn verify_canonical_emails(
+    database: &Database,
+) -> Result<(), crate::sqlx::migrate::MigrateError> {
+    let rows: Vec<(i64, String, String)> = crate::sqlx::query_as(
+        "SELECT id, email, canonical_email FROM users
+         WHERE canonical_email LIKE 'xn--%' OR canonical_email LIKE '%.xn--%'
+         ORDER BY id",
+    )
+    .fetch_all(database)
+    .await?;
+
+    let mut offending = Vec::new();
+    for (id, email, canonical_email) in rows {
+        let recomputed = crate::users::email::EmailAddress::parse(&email)
+            .ok()
+            .map(|parsed| parsed.into_canonical());
+        if recomputed.as_deref() != Some(canonical_email.as_str()) {
+            offending.push(id);
+        }
+    }
+
+    if offending.is_empty() {
+        return Ok(());
+    }
+
+    // 只报 id，不报地址本身：这条消息会进启动日志，而地址是个人数据。
+    tracing::error!(
+        user_ids = ?offending,
+        "users.canonical_email disagrees with the application canonicalizer; refusing to start"
+    );
+    Err(crate::sqlx::migrate::MigrateError::Execute(
+        crate::sqlx::Error::Protocol(format!(
+            "canonical_email mismatch for {} user row(s): id in {:?}. \
+             These rows carry an internationalized domain whose stored matching value \
+             differs from what the application computes, so their owners cannot log in. \
+             Fix users.email (and canonical_email) for each id, then restart. \
+             See migrations/0025_user_canonical_email.sql for the procedure.",
+            offending.len(),
+            offending,
+        )),
+    ))
 }
 
 fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
@@ -310,6 +366,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!(
                 "../migrations/0024_runtime_users_sequence_update.sql"
             )),
+            false,
+        ),
+        Migration::new(
+            25,
+            Cow::Borrowed("canonical email uniqueness"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../migrations/0025_user_canonical_email.sql")),
             false,
         ),
     ];

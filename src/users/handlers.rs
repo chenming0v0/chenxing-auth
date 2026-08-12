@@ -150,7 +150,17 @@ pub async fn login_user(
     Json(input): Json<LoginInput>,
 ) -> Response {
     let totp_code = input.totp_code.clone();
-    let identifier = input.identifier.trim().to_ascii_lowercase();
+    // 审计的 `account_ref` 必须与限流的账号维度用同一个键（Issue #302）。
+    // 补丁前这里独立做 `trim().to_ascii_lowercase()`，Unicode 域名下算出的串与
+    // `canonical_email` 不同，于是同一个账号按不同书写登录会留下两个不同的
+    // `account_ref`，按账号检索审计就漏事件。
+    //
+    // 解析失败时回落到 trim 后的原样输入：那条路径必然返回 401 且不落审计
+    // （`InvalidLoginInput` 分支不记录事件），回落值只用于日志级别的可读性。
+    let identifier = match super::domain::parse_login_identifier(input.identifier.trim()) {
+        Ok(identifier) => identifier.limiter_key().to_owned(),
+        Err(_) => input.identifier.trim().to_owned(),
+    };
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
         &headers,

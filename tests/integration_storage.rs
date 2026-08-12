@@ -21,6 +21,7 @@ use chenxing_auth::{
     users::{
         credentials::hash_password,
         domain::{UserRole, UserStatus, ValidatedRegistration},
+        email::EmailAddress,
         repository::{self as user_repository, NewUser},
     },
 };
@@ -28,6 +29,15 @@ use redis::AsyncCommands;
 use sha2::Digest;
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// 测试夹具的邮箱构造。
+///
+/// `ValidatedRegistration.email` 是 `EmailAddress`（Issue #302），构造它必须经过
+/// 唯一的规范化入口——夹具也不例外，否则测试会绕开被测的那条规则。
+fn email_address(raw: impl AsRef<str>) -> EmailAddress {
+    let raw = raw.as_ref();
+    EmailAddress::parse(raw).unwrap_or_else(|error| panic!("fixture email {raw:?}: {error}"))
+}
 
 async fn database() -> chenxing_auth::sqlx::PgPool {
     let database_url = env::var("DATABASE_URL")
@@ -49,7 +59,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
         &pool,
         ValidatedRegistration {
             username: format!("storage-user-{suffix}"),
-            email: email.clone(),
+            email: email_address(email.clone()),
             password: "correct horse battery".to_owned(),
             display_name: Some("Storage User".to_owned()),
         },
@@ -60,11 +70,24 @@ async fn postgres_repositories_round_trip_users_and_clients() {
     .await
     .expect("insert user");
 
-    let credentials = user_repository::find_credentials_by_email(&pool, &email)
+    let credentials = user_repository::find_credentials_by_email(&pool, &email_address(&email))
         .await
         .expect("find credentials")
         .expect("stored credentials");
     assert_eq!(credentials.id, user.id);
+    assert_eq!(credentials.email, email);
+    assert_eq!(credentials.canonical_email, email.to_ascii_lowercase());
+
+    // Issue #302：按匹配值查找，所以任意等价书写都能命中同一行。
+    // 补丁前这条断言会失败：查询比较的是未完全规范化的展示值。
+    let uppercase = user_repository::find_credentials_by_email(
+        &pool,
+        &email_address(email.to_ascii_uppercase()),
+    )
+    .await
+    .expect("find credentials by an equivalent spelling")
+    .expect("equivalent spelling must resolve to the same account");
+    assert_eq!(uppercase.id, user.id);
     let profile = user_repository::find_profile_by_id(&pool, user.id)
         .await
         .expect("find profile")
@@ -151,7 +174,10 @@ async fn postgres_transaction_user_insert_and_missing_client_paths_work() {
     let user = NewUser {
         id: 0,
         username: format!("transaction-user-{}", Uuid::new_v4().simple()),
-        email: format!("transaction-{}@example.com", Uuid::new_v4().simple()),
+        email: email_address(format!(
+            "transaction-{}@example.com",
+            Uuid::new_v4().simple()
+        )),
         password_hash: "hash".to_owned(),
         display_name: None,
         role: UserRole::User,
@@ -188,7 +214,7 @@ async fn password_change_commits_password_and_session_revocation_together() {
         &pool,
         ValidatedRegistration {
             username: format!("password-commit-{suffix}"),
-            email,
+            email: email_address(email),
             password: old_password.to_owned(),
             display_name: None,
         },
@@ -295,7 +321,7 @@ async fn password_change_rolls_back_when_session_epoch_update_fails() {
         &pool,
         ValidatedRegistration {
             username: format!("password-rollback-{suffix}"),
-            email,
+            email: email_address(email),
             password: old_password.to_owned(),
             display_name: None,
         },
@@ -389,7 +415,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         &pool,
         ValidatedRegistration {
             username: format!("owner-{}", Uuid::new_v4().simple()),
-            email: format!("owner-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!("owner-{}@example.com", Uuid::new_v4().simple())),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -401,7 +427,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         &pool,
         ValidatedRegistration {
             username: format!("other-{}", Uuid::new_v4().simple()),
-            email: format!("other-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!("other-{}@example.com", Uuid::new_v4().simple())),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -491,7 +517,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         &pool,
         ValidatedRegistration {
             username: format!("orphan-{}", Uuid::new_v4().simple()),
-            email: format!("orphan-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!("orphan-{}@example.com", Uuid::new_v4().simple())),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -766,7 +792,10 @@ async fn session_revocation_generation_rejects_restored_old_payloads() {
         &pool,
         ValidatedRegistration {
             username: format!("generation-{}", Uuid::new_v4().simple()),
-            email: format!("generation-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "generation-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -827,7 +856,10 @@ async fn session_find_rejects_metadata_revocation_even_when_redis_payload_exists
         &pool,
         ValidatedRegistration {
             username: format!("metadata-revoke-{}", Uuid::new_v4().simple()),
-            email: format!("metadata-revoke-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "metadata-revoke-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -870,7 +902,10 @@ async fn session_find_uses_database_identity_for_cached_payloads() {
         &pool,
         ValidatedRegistration {
             username: format!("metadata-identity-{}", Uuid::new_v4().simple()),
-            email: format!("metadata-identity-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "metadata-identity-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -882,7 +917,10 @@ async fn session_find_uses_database_identity_for_cached_payloads() {
         &pool,
         ValidatedRegistration {
             username: format!("metadata-other-{}", Uuid::new_v4().simple()),
-            email: format!("metadata-other-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "metadata-other-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -921,10 +959,10 @@ async fn session_save_keeps_metadata_pending_when_redis_connection_fails() {
         &pool,
         ValidatedRegistration {
             username: format!("metadata-connection-failure-{}", Uuid::new_v4().simple()),
-            email: format!(
+            email: email_address(format!(
                 "metadata-connection-failure-{}@example.com",
                 Uuid::new_v4().simple()
-            ),
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1005,7 +1043,10 @@ async fn session_save_commits_metadata_and_replays_redis_after_connection_failur
         &pool,
         ValidatedRegistration {
             username: format!("outbox-save-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-save-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-save-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1100,7 +1141,10 @@ async fn session_outbox_claims_new_events_but_not_future_events() {
         &pool,
         ValidatedRegistration {
             username: format!("outbox-clock-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-clock-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-clock-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1202,7 +1246,10 @@ async fn session_sync_projection_does_not_resurrect_a_concurrently_revoked_row()
         &pool,
         ValidatedRegistration {
             username: format!("outbox-race-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-race-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-race-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1282,7 +1329,10 @@ async fn session_revoke_keeps_database_authoritative_until_redis_recovers() {
         &pool,
         ValidatedRegistration {
             username: format!("outbox-revoke-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-revoke-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-revoke-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1383,7 +1433,10 @@ async fn session_revoke_for_user_commits_revocation_before_redis_delivery() {
         &pool,
         ValidatedRegistration {
             username: format!("outbox-single-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-single-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-single-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1448,7 +1501,10 @@ async fn session_revoke_all_commits_all_rows_before_redis_delivery() {
         &pool,
         ValidatedRegistration {
             username: format!("outbox-all-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-all-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-all-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1536,7 +1592,10 @@ async fn session_revoke_all_outbox_cleans_redis_after_user_deletion() {
         &pool,
         ValidatedRegistration {
             username: format!("outbox-delete-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-delete-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-delete-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1627,7 +1686,10 @@ async fn concurrent_save_and_revoke_all_keep_the_epoch_boundary_monotonic() {
         &pool,
         ValidatedRegistration {
             username: format!("epoch-race-{}", Uuid::new_v4().simple()),
-            email: format!("epoch-race-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "epoch-race-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1728,7 +1790,7 @@ async fn session_projection_is_encrypted_and_old_key_remains_readable() {
         &pool,
         ValidatedRegistration {
             username: format!("key-ring-{}", Uuid::new_v4().simple()),
-            email: format!("key-ring-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!("key-ring-{}@example.com", Uuid::new_v4().simple())),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1809,7 +1871,10 @@ async fn session_find_renews_idle_activity_without_extending_absolute_expiry() {
         &pool,
         ValidatedRegistration {
             username: format!("idle-renew-{}", Uuid::new_v4().simple()),
-            email: format!("idle-renew-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "idle-renew-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1876,7 +1941,10 @@ async fn session_save_revokes_the_oldest_active_session_at_the_user_cap() {
         &pool,
         ValidatedRegistration {
             username: format!("session-cap-{}", Uuid::new_v4().simple()),
-            email: format!("session-cap-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "session-cap-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -2087,7 +2155,7 @@ async fn session_revocation_epoch_marker_expires_with_the_absolute_session_ttl()
         &pool,
         ValidatedRegistration {
             username: format!("epoch-ttl-{}", Uuid::new_v4().simple()),
-            email: format!("epoch-ttl-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!("epoch-ttl-{}@example.com", Uuid::new_v4().simple())),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },

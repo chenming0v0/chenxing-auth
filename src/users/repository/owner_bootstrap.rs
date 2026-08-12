@@ -10,6 +10,7 @@ use crate::sqlx::{PgPool, Postgres};
 use time::OffsetDateTime;
 
 use crate::users::domain::{UserCreation, UserId};
+use crate::users::email::EmailAddress;
 
 use super::{NewUser, UserProfile};
 
@@ -71,12 +72,13 @@ pub async fn insert_user_after_owner(
     // 保留墙钟（Issue #299 的明确例外）：行创建时间，不参与生命周期判定。
     let created_at = OffsetDateTime::now_utc();
     let id: UserId = crate::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, display_name, role, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+        "INSERT INTO users (username, email, canonical_email, password_hash, display_name, role, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
          RETURNING id",
     )
     .bind(&username)
-    .bind(&email)
+    .bind(email.display())
+    .bind(email.canonical())
     .bind(&password_hash)
     .bind(&display_name)
     .bind(role.as_str())
@@ -101,7 +103,7 @@ pub async fn insert_user_after_owner(
 pub async fn bootstrap_owner(
     pool: &PgPool,
     username: &str,
-    email: &str,
+    email: &EmailAddress,
     password_hash: &str,
 ) -> Result<BootstrapOwnerOutcome, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
@@ -120,11 +122,12 @@ pub async fn bootstrap_owner(
         .execute(&mut *transaction)
         .await?;
     let id: UserId = crate::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, role, status, created_at, updated_at)
-         VALUES ($1, $2, $3, 'owner', 'active', NOW(), NOW()) RETURNING id",
+        "INSERT INTO users (username, email, canonical_email, password_hash, role, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'owner', 'active', NOW(), NOW()) RETURNING id",
     )
     .bind(username)
-    .bind(email)
+    .bind(email.display())
+    .bind(email.canonical())
     .bind(password_hash)
     .fetch_one(&mut *transaction)
     .await?;

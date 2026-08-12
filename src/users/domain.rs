@@ -3,6 +3,7 @@ use std::fmt;
 use thiserror::Error;
 
 use super::credentials::MAX_PASSWORD_LENGTH;
+use super::email::{EmailAddress, MAX_EMAIL_LENGTH};
 
 pub const MIN_PASSWORD_LENGTH: usize = 10;
 pub const MIN_USERNAME_LENGTH: usize = 3;
@@ -10,14 +11,15 @@ pub const MAX_USERNAME_LENGTH: usize = 64;
 
 /// 登录标识符长度上界（字符数，Issue #259）。
 ///
-/// 254 是 RFC 5321 对邮件地址的长度上限，用户名上界（64）被它完全覆盖，
-/// 因此一个常量同时约束"邮箱或用户名"两种标识符形态。
+/// 取值与 [`MAX_EMAIL_LENGTH`] 相同（RFC 5321 的 254），用户名上界（64）被它
+/// 完全覆盖，因此一个常量同时约束"邮箱或用户名"两种标识符形态。别名到邮箱侧的
+/// 常量而不是再写一个字面量：两个上界必须同步，写两遍就会漂移。
 ///
-/// 这个上界必须在标识符进入 SQL 之前生效。`find_credentials_by_identifier` 用
-/// `WHERE email = $1 OR username = $1` 查询，绑定参数虽然不存在注入问题，但把
-/// 数 MB 的字符串交给 Postgres 逐行比较，等于用一个请求换取一次全表扫描级的
-/// 无谓开销。审计侧同理：标识符会被哈希成 `account_ref`，哈希输入越大越亏。
-pub const MAX_IDENTIFIER_LENGTH: usize = 254;
+/// 这个上界必须在标识符进入 SQL 之前生效。凭据查询会把标识符绑进 SQL，绑定参数
+/// 虽然不存在注入问题，但把数 MB 的字符串交给 Postgres 逐行比较，等于用一个请求
+/// 换取一次全表扫描级的无谓开销。审计侧同理：标识符会被哈希成 `account_ref`，
+/// 哈希输入越大越亏。
+pub const MAX_IDENTIFIER_LENGTH: usize = MAX_EMAIL_LENGTH;
 pub const RESERVED_USERNAMES: &[&str] = &[
     "admin",
     "administrator",
@@ -187,9 +189,39 @@ impl AuthenticatedUser {
     }
 }
 
+/// 登录标识符的两种形态。
+///
+/// 补丁前是一个 `String`，仓储层用 `WHERE email = $1 OR username = $1` 同时试两列。
+/// 现在邮箱的匹配列是 `canonical_email` 而用户名仍是 `username`，两列的规范化
+/// 规则完全不同（一个走 IDNA，一个走 ASCII 小写 + 字符白名单），一个字符串再也
+/// 无法同时代表两者。
+///
+/// 用枚举而不是"两个 Option"：标识符含 `@` 就必须是邮箱，不含就必须是用户名，
+/// 二者互斥。枚举让这个互斥性由类型保证，仓储层因此不需要判断"该查哪一列"。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum LoginIdentifier {
+    /// 已规范化的邮箱；匹配用 [`EmailAddress::canonical`]。
+    Email(EmailAddress),
+    /// 已规范化的用户名（ASCII 小写）。
+    Username(String),
+}
+
+impl LoginIdentifier {
+    /// 限流与审计使用的账号维度键。
+    ///
+    /// 用匹配值而不是原始输入：`USER@ÉXAMPLE.COM` 与 `user@xn--xample-9ua.com`
+    /// 指向同一个账号，若按原始输入分桶，攻击者只要变换书写就能重置失败计数。
+    pub fn limiter_key(&self) -> &str {
+        match self {
+            Self::Email(email) => email.canonical(),
+            Self::Username(username) => username,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct ValidatedLogin {
-    pub identifier: String,
+    pub identifier: LoginIdentifier,
     pub password: String,
 }
 
@@ -223,7 +255,9 @@ pub enum LoginError {
 #[derive(Clone, PartialEq, Eq)]
 pub struct ValidatedRegistration {
     pub username: String,
-    pub email: String,
+    /// 已规范化的邮箱。持有 [`EmailAddress`] 而不是 `String`，是为了让"展示值与
+    /// 匹配值必须成对写库"这件事由类型保证：仓储层拿不到只有一个值的注册意图。
+    pub email: EmailAddress,
     pub password: String,
     pub display_name: Option<String>,
 }
@@ -281,17 +315,12 @@ pub enum RegistrationError {
     DisplayNameTooLong,
 }
 
-pub fn normalize_email(email: &str) -> String {
-    email.trim().to_ascii_lowercase()
-}
-
 pub fn validate_registration(
     input: RegistrationInput,
 ) -> Result<ValidatedRegistration, RegistrationError> {
-    let email = normalize_email(&input.email);
-    if !is_valid_email(&email) {
-        return Err(RegistrationError::InvalidEmail);
-    }
+    // 规范化与校验是同一步：`EmailAddress::parse` 成功即两个值都已算出，
+    // 不存在"校验通过但忘了规范化"的中间状态（Issue #302）。
+    let email = EmailAddress::parse(&input.email).map_err(|_| RegistrationError::InvalidEmail)?;
     validate_password_length(&input.password)?;
 
     let display_name = validate_display_name(input.display_name)?;
@@ -340,9 +369,9 @@ pub fn validate_display_name(
 
 /// 登录输入校验（Issue #259 补齐长度上界）。
 ///
-/// 长度上界先于形态判定：长度检查是 O(n) 且不分配，而归一化会为标识符复制一份
-/// 新串。超长标识符在这里被挡掉，后面的 `trim().to_ascii_lowercase()` 就不会为
-/// 一个数 MB 的输入分配内存，`is_valid_email` 也不会对它做全串扫描。
+/// 长度上界先于形态判定：长度检查是 O(n) 且不分配，而规范化会为标识符复制一份
+/// 新串。超长标识符在这里被挡掉，`EmailAddress::parse` 的 UTS-46 处理就不会为
+/// 一个数 MB 的输入分配 Unicode 映射缓冲区。
 ///
 /// 三个上界的作用点各不相同：
 /// - 标识符上界挡住进入 SQL 与审计哈希的超长串；
@@ -358,10 +387,7 @@ pub fn validate_login(input: LoginInput) -> Result<ValidatedLogin, LoginError> {
     if input.identifier.chars().count() > MAX_IDENTIFIER_LENGTH {
         return Err(LoginError::InvalidIdentifier);
     }
-    let identifier = input.identifier.trim().to_ascii_lowercase();
-    if !is_valid_email(&identifier) && validate_username(&identifier).is_none() {
-        return Err(LoginError::InvalidIdentifier);
-    }
+    let identifier = parse_login_identifier(input.identifier.trim())?;
     if input.password.is_empty() {
         return Err(LoginError::EmptyPassword);
     }
@@ -373,6 +399,22 @@ pub fn validate_login(input: LoginInput) -> Result<ValidatedLogin, LoginError> {
         identifier,
         password: input.password,
     })
+}
+
+/// 判定标识符形态并按对应规则规范化。
+///
+/// `@` 是判据：用户名字符白名单（`[a-z0-9._-]`）不含 `@`，所以含 `@` 的输入不可能
+/// 是合法用户名。先分流再规范化，而不是"两种规则都试一遍取先成功的"——后者会让
+/// 一个输入在两条规范化路径上产生两个不同的键，取哪个取决于判定顺序。
+pub fn parse_login_identifier(identifier: &str) -> Result<LoginIdentifier, LoginError> {
+    if identifier.contains('@') {
+        return EmailAddress::parse(identifier)
+            .map(LoginIdentifier::Email)
+            .map_err(|_| LoginError::InvalidIdentifier);
+    }
+    validate_username(identifier)
+        .map(LoginIdentifier::Username)
+        .ok_or(LoginError::InvalidIdentifier)
 }
 
 pub fn validate_username(username: &str) -> Option<String> {
@@ -390,24 +432,6 @@ pub fn validate_username(username: &str) -> Option<String> {
         return None;
     }
     Some(username)
-}
-
-pub fn is_valid_email(email: &str) -> bool {
-    if email.chars().count() > MAX_IDENTIFIER_LENGTH {
-        return false;
-    }
-    let mut parts = email.split('@');
-    let Some(local) = parts.next() else {
-        return false;
-    };
-    let Some(domain) = parts.next() else {
-        return false;
-    };
-    parts.next().is_none()
-        && !local.is_empty()
-        && !domain.is_empty()
-        && domain.contains('.')
-        && !email.chars().any(char::is_whitespace)
 }
 
 #[cfg(test)]

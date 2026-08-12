@@ -332,9 +332,11 @@ async fn admin_user_and_client_queries_filter_and_page_in_the_database() {
         (&other_username, "active", "admin"),
     ] {
         chenxing_auth::sqlx::query(
+            // canonical_email 用 lower(email)：夹具邮箱都是纯 ASCII 且结构合法，
+            // 这正是迁移 0024 声明的"SQL 可自证等于应用层匹配值"的形态。
             "INSERT INTO users
-             (username, email, password_hash, role, status, created_at, updated_at)
-             VALUES ($1, $2, 'test-hash', $3, $4, NOW(), NOW())",
+             (username, email, canonical_email, password_hash, role, status, created_at, updated_at)
+             VALUES ($1, $2, lower($2), 'test-hash', $3, $4, NOW(), NOW())",
         )
         .bind(username)
         .bind(format!("{username}@example.com"))
@@ -477,8 +479,8 @@ async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() 
     let expired_username = format!("query-plan-user-expired-{suffix}");
 
     chenxing_auth::sqlx::query(
-        "INSERT INTO users (username, email, password_hash)
-         VALUES ($1, $2, 'test-hash')",
+        "INSERT INTO users (username, email, canonical_email, password_hash)
+         VALUES ($1, $2, lower($2), 'test-hash')",
     )
     .bind(&default_username)
     .bind(format!("{default_username}@example.com"))
@@ -486,8 +488,8 @@ async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() 
     .await
     .expect("insert default query user");
     chenxing_auth::sqlx::query(
-        "INSERT INTO users (username, email, password_hash, plan_id, plan_expires_at)
-         VALUES ($1, $2, 'test-hash', $3, NOW() + INTERVAL '1 day')",
+        "INSERT INTO users (username, email, canonical_email, password_hash, plan_id, plan_expires_at)
+         VALUES ($1, $2, lower($2), 'test-hash', $3, NOW() + INTERVAL '1 day')",
     )
     .bind(&assigned_username)
     .bind(format!("{assigned_username}@example.com"))
@@ -496,8 +498,8 @@ async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() 
     .await
     .expect("insert assigned query user");
     chenxing_auth::sqlx::query(
-        "INSERT INTO users (username, email, password_hash, plan_id, plan_expires_at)
-         VALUES ($1, $2, 'test-hash', $3, NOW() - INTERVAL '1 minute')",
+        "INSERT INTO users (username, email, canonical_email, password_hash, plan_id, plan_expires_at)
+         VALUES ($1, $2, lower($2), 'test-hash', $3, NOW() - INTERVAL '1 minute')",
     )
     .bind(&expired_username)
     .bind(format!("{expired_username}@example.com"))

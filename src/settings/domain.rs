@@ -3,7 +3,7 @@ use std::fmt;
 use thiserror::Error;
 use url::Url;
 
-use crate::users::domain::is_valid_email;
+use crate::users::email::{EmailAddress, is_valid_email};
 
 const MAX_RP_NAME_LENGTH: usize = 128;
 const MAX_RP_ID_LENGTH: usize = 253;
@@ -229,22 +229,19 @@ impl EmailPolicySetting {
     pub fn validate(self) -> Result<Self, SettingsValidationError> {
         let mut allowed_domains = Vec::new();
         for domain in self.allowed_domains {
-            let domain = domain.trim().to_ascii_lowercase();
+            let domain = domain.trim();
             if domain.is_empty() {
                 continue;
             }
-            if domain.chars().count() > MAX_DOMAIN_LENGTH
-                || domain.starts_with('.')
-                || domain.ends_with('.')
-                || domain.contains("..")
-                || domain.contains('@')
-                || !domain.contains('.')
-                || !domain.chars().all(|character| {
-                    character.is_ascii_alphanumeric() || character == '-' || character == '.'
-                })
-            {
+            if domain.chars().count() > MAX_DOMAIN_LENGTH || domain.contains('@') {
                 return Err(SettingsValidationError::InvalidEmailDomain);
             }
+            // 白名单存 IDNA 匹配形态：管理员填 `éxample.com` 与填
+            // `xn--xample-9ua.com` 必须落到同一个键，否则同一个域名的两种写法里
+            // 只有一种能命中（Issue #302）。空标签、根点、超长标签和非法
+            // Punycode 都由 `canonical_domain` 一并拒绝，不再手写字符白名单。
+            let domain = crate::users::email::canonical_domain(domain)
+                .map_err(|_| SettingsValidationError::InvalidEmailDomain)?;
             if !allowed_domains.contains(&domain) {
                 allowed_domains.push(domain);
             }
@@ -262,17 +259,21 @@ impl EmailPolicySetting {
         })
     }
 
-    pub fn allows_email(&self, email: &str) -> bool {
-        let email = email.trim().to_ascii_lowercase();
-        let Some((local, domain)) = email.split_once('@') else {
-            return false;
-        };
-        if self.alias_restriction_enabled && local.contains('+') {
+    /// 判定一个已规范化的邮箱是否被策略放行。
+    ///
+    /// 入参是 [`EmailAddress`] 而不是 `&str`：白名单比较的是 IDNA 匹配域名，
+    /// 自己再 `to_ascii_lowercase` 一遍会在 Unicode 域名上算出与 `canonical_email`
+    /// 不同的键，白名单就永远不命中（Issue #302）。域名的规范化规则只有一处，
+    /// 就是 `EmailAddress`。
+    pub fn allows_email(&self, email: &EmailAddress) -> bool {
+        // 别名限制看匹配值的本地部分：匹配值不剥离 `+`，因此这里能看到真实别名。
+        if self.alias_restriction_enabled && email.canonical_local_part().contains('+') {
             return false;
         }
         if !self.whitelist_enabled {
             return true;
         }
+        let domain = email.canonical_domain();
         self.allowed_domains.iter().any(|allowed| domain == allowed)
     }
 }
@@ -429,6 +430,60 @@ fn is_valid_sender(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn email(raw: &str) -> EmailAddress {
+        EmailAddress::parse(raw).unwrap_or_else(|error| panic!("{raw:?} must parse: {error}"))
+    }
+
+    /// Issue #302：白名单存 IDNA 匹配形态，Unicode 与 Punycode 两种填写等价。
+    #[test]
+    fn whitelist_domains_are_canonicalized_to_the_matching_form() {
+        let policy = EmailPolicySetting {
+            whitelist_enabled: true,
+            alias_restriction_enabled: false,
+            allowed_domains: vec!["ÉXAMPLE.COM".to_owned(), "xn--xample-9ua.com".to_owned()],
+        }
+        .validate()
+        .expect("unicode whitelist domain must be accepted");
+
+        // 两种填写去重成同一个键。
+        assert_eq!(
+            policy.allowed_domains,
+            vec!["xn--xample-9ua.com".to_owned()]
+        );
+        // 邮箱侧的任意等价书写都能命中它。
+        for raw in [
+            "user@éxample.com",
+            "user@ÉXAMPLE.COM",
+            "user@xn--xample-9ua.com",
+        ] {
+            assert!(policy.allows_email(&email(raw)), "{raw}");
+        }
+        assert!(!policy.allows_email(&email("user@other.example")));
+    }
+
+    #[test]
+    fn structurally_invalid_whitelist_domains_are_rejected() {
+        for domain in [
+            "example",
+            ".example.com",
+            "example.com.",
+            "example..com",
+            "user@example.com",
+        ] {
+            let error = EmailPolicySetting {
+                whitelist_enabled: true,
+                alias_restriction_enabled: false,
+                allowed_domains: vec![domain.to_owned()],
+            }
+            .validate()
+            .expect_err("invalid whitelist domain must be rejected");
+            assert!(
+                matches!(error, SettingsValidationError::InvalidEmailDomain),
+                "{domain}"
+            );
+        }
+    }
+
     #[test]
     fn validates_passkey_and_email_policy() {
         let passkey = PasskeySetting {
@@ -455,9 +510,11 @@ mod tests {
         .validate()
         .expect("policy");
         assert_eq!(policy.allowed_domains, vec!["gmail.com".to_owned()]);
-        assert!(policy.allows_email("user@gmail.com"));
-        assert!(!policy.allows_email("user+tag@gmail.com"));
-        assert!(!policy.allows_email("user@tempmail.com"));
+        assert!(policy.allows_email(&email("user@gmail.com")));
+        assert!(!policy.allows_email(&email("user+tag@gmail.com")));
+        assert!(!policy.allows_email(&email("user@tempmail.com")));
+        // 大小写变体走同一个匹配域名，命中同一条白名单。
+        assert!(policy.allows_email(&email("User@GMAIL.com")));
     }
 
     #[test]

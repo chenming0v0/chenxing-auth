@@ -4,7 +4,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::domain::{ClientAuthMethod, ProviderRecord, ValidatedProviderInput};
-use crate::users::domain::{UserId, UserStatus, normalize_email};
+use crate::users::domain::{UserId, UserStatus};
+use crate::users::email::EmailAddress;
 
 #[derive(Debug, Clone)]
 pub struct ExternalIdentity {
@@ -168,12 +169,11 @@ pub async fn find_identity(
 pub async fn create_user_with_identity(
     pool: &PgPool,
     provider_id: i64,
-    email: &str,
+    email: &EmailAddress,
     display_name: Option<&str>,
     subject: &str,
     password_hash: &str,
 ) -> Result<UserId, CreateIdentityError> {
-    let email = normalize_email(email);
     let mut transaction = pool.begin().await?;
     crate::sqlx::query("SELECT pg_advisory_xact_lock(7341928)")
         .execute(&mut *transaction)
@@ -197,9 +197,11 @@ pub async fn create_user_with_identity(
         return Ok(user_id);
     }
 
+    // 按匹配值查重（Issue #302）：IdP 换一种书写返回同一个邮箱时，这里必须仍然
+    // 认出"已注册"，否则会绕过展示值上的 UNIQUE 建出第二个账号。
     let existing_user: Option<UserId> =
-        crate::sqlx::query_scalar("SELECT id FROM users WHERE email = $1 FOR UPDATE")
-            .bind(&email)
+        crate::sqlx::query_scalar("SELECT id FROM users WHERE canonical_email = $1 FOR UPDATE")
+            .bind(email.canonical())
             .fetch_optional(&mut *transaction)
             .await?;
     if existing_user.is_some() {
@@ -221,17 +223,20 @@ pub async fn create_user_with_identity(
     let now = OffsetDateTime::now_utc();
     let user_id: UserId = crate::sqlx::query_scalar(
         "INSERT INTO users
-         (username, email, password_hash, password_login_enabled, display_name, status, created_at)
-         VALUES ($1, $2, $3, FALSE, $4, 'active', $5)
+         (username, email, canonical_email, password_hash, password_login_enabled, display_name, status, created_at)
+         VALUES ($1, $2, $3, $4, FALSE, $5, 'active', $6)
          RETURNING id",
     )
     .bind(username)
-    .bind(&email)
+    .bind(email.display())
+    .bind(email.canonical())
     .bind(password_hash)
     .bind(display_name)
     .bind(now)
     .fetch_one(&mut *transaction)
     .await?;
+    // 外部身份表上的 email 是建号那一刻的展示快照，没有唯一约束也不参与匹配；
+    // 身份的唯一键是 (provider_id, subject)。
     crate::sqlx::query(
         "INSERT INTO oauth_external_identities
          (provider_id, user_id, subject, email, created_at, updated_at)
@@ -240,7 +245,7 @@ pub async fn create_user_with_identity(
     .bind(provider_id)
     .bind(user_id)
     .bind(subject)
-    .bind(&email)
+    .bind(email.display())
     .bind(now)
     .execute(&mut *transaction)
     .await?;

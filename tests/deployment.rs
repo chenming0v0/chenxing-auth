@@ -448,6 +448,8 @@ fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("0023_consent_state_version.sql"));
     assert!(DB_MODULE.contains("runtime users sequence update grant"));
     assert!(DB_MODULE.contains("0024_runtime_users_sequence_update.sql"));
+    assert!(DB_MODULE.contains("canonical email uniqueness"));
+    assert!(DB_MODULE.contains("0025_user_canonical_email.sql"));
     let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -482,7 +484,46 @@ fn database_uses_explicit_unified_baseline_migrations() {
             std::ffi::OsString::from("0022_session_outbox_retention.sql"),
             std::ffi::OsString::from("0023_consent_state_version.sql"),
             std::ffi::OsString::from("0024_runtime_users_sequence_update.sql"),
+            std::ffi::OsString::from("0025_user_canonical_email.sql"),
         ]
+    );
+}
+
+/// Issue #302：canonical 迁移必须在无法自证或存在冲突时 fail loudly。
+///
+/// 断言写在迁移文本上，因为要守住的是"迁移自带失败路径与操作员手册"这个约定：
+/// 静默回填一个猜出来的值，或者静默把两个账号合并成一个，都是不可接受的，
+/// 而这两件事只有在真实存量数据上才会显现，光靠集成测试环境覆盖不到。
+#[test]
+fn canonical_email_migration_fails_loudly_instead_of_merging_accounts() {
+    let migration = include_str!("../migrations/0025_user_canonical_email.sql");
+    for marker in [
+        // 两条 fail-loudly 路径都必须存在。
+        "cannot derive canonical_email",
+        "canonical email conflict group",
+        "RAISE EXCEPTION",
+        // 唯一约束必须是命名约束：应用层按名字翻错误码。
+        "users_canonical_email_key",
+        "SET NOT NULL",
+        // 回填判据的关键前提。
+        "octet_length(email) = length(email)",
+        // 回滚剧本。
+        "DROP CONSTRAINT users_canonical_email_key",
+        "DROP COLUMN canonical_email",
+    ] {
+        assert!(
+            migration.contains(marker),
+            "canonical email migration is missing marker: {marker}"
+        );
+    }
+    assert!(
+        !migration.contains("DROP TABLE"),
+        "the migration must not drop data-bearing tables"
+    );
+    // 绝不允许出现"删掉冲突行"这类静默合并手段。
+    assert!(
+        !migration.contains("DELETE FROM users"),
+        "the migration must not delete conflicting accounts"
     );
 }
 

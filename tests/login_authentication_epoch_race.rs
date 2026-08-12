@@ -27,12 +27,22 @@ use chenxing_auth::{
     users::{
         credentials::hash_password,
         domain::{AuthenticatedUser, LoginInput, ValidatedRegistration},
+        email::EmailAddress,
         repository::{self as user_repository, PasswordChangeOutcome},
         service::UserServiceError,
     },
 };
 use tokio::sync::Barrier;
 use uuid::Uuid;
+
+/// 测试夹具的邮箱构造。
+///
+/// `ValidatedRegistration.email` 是 `EmailAddress`（Issue #302），构造它必须经过
+/// 唯一的规范化入口——夹具也不例外，否则测试会绕开被测的那条规则。
+fn email_address(raw: impl AsRef<str>) -> EmailAddress {
+    let raw = raw.as_ref();
+    EmailAddress::parse(raw).unwrap_or_else(|error| panic!("fixture email {raw:?}: {error}"))
+}
 
 const PASSWORD: &str = "correct horse battery";
 const REPLACEMENT_PASSWORD: &str = "replacement horse battery";
@@ -85,7 +95,7 @@ async fn setup() -> Harness {
         &database,
         ValidatedRegistration {
             username: identifier.clone(),
-            email: format!("{identifier}@example.com"),
+            email: email_address(format!("{identifier}@example.com")),
             password: PASSWORD.to_owned(),
             display_name: None,
         },

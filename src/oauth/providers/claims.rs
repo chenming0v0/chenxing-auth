@@ -8,7 +8,7 @@
 use serde_json::Value;
 
 use super::domain::ProviderValidationError;
-use crate::users::domain::{is_valid_email, normalize_email};
+use crate::users::email::EmailAddress;
 
 const MAX_CLAIM_PATH_LENGTH: usize = 128;
 
@@ -54,7 +54,11 @@ impl ClaimMapping {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalUser {
     pub subject: String,
-    pub email: String,
+    /// 已规范化的邮箱（Issue #302）。外部 IdP 返回的书写形态不可控——同一个
+    /// 邮箱可能这次返回 `User@Example.com`、下次返回 `user@example.com`。持有
+    /// [`EmailAddress`] 让建号路径与本地注册共用同一个匹配值，因此 IdP 的书写
+    /// 变化不会绕过"邮箱已注册"判定去建第二个账号。
+    pub email: EmailAddress,
     pub name: Option<String>,
     pub email_verified: bool,
 }
@@ -68,8 +72,7 @@ impl ExternalUser {
             .filter(|value| !value.trim().is_empty())
             .ok_or(ProviderValidationError::MissingSubject)?;
         let email = claim_string(claims, &mapping.email)
-            .map(|value| normalize_email(&value))
-            .filter(|value| is_valid_email(value))
+            .and_then(|value| EmailAddress::parse(&value).ok())
             .ok_or(ProviderValidationError::InvalidEmail)?;
         // Fail-closed：claim 缺失、类型不是 bool、或值为 false，一律拒绝。
         // 未验证的邮箱能建号意味着任何人都能用别人的邮箱在本平台开户。

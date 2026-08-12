@@ -768,8 +768,9 @@ async fn list_users_enforces_server_side_limit() {
 
     // 直接批量插入，避免 Argon2 哈希让测试变慢；password_hash 不参与本用例校验。
     chenxing_auth::sqlx::query(
-        "INSERT INTO users (username, email, password_hash, role, status)
+        "INSERT INTO users (username, email, canonical_email, password_hash, role, status)
          SELECT 'bulk-' || $1::text || '-' || series.i,
+                'bulk-' || $1::text || '-' || series.i || '@example.com',
                 'bulk-' || $1::text || '-' || series.i || '@example.com',
                 'unused-hash',
                 'user',

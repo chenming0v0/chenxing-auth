@@ -148,8 +148,42 @@ fn external_user_requires_valid_email_and_subject() {
     .expect("claims");
 
     assert_eq!(user.subject, "subject-1");
-    assert_eq!(user.email, "person@example.com");
+    assert_eq!(user.email.display(), "person@example.com");
+    assert_eq!(user.email.canonical(), "person@example.com");
     assert!(user.email_verified);
+}
+
+/// Issue #302：外部 IdP 的邮箱走同一个规范化入口。
+///
+/// IdP 返回的书写形态不可控。若这里不规范化，同一个邮箱在 IdP 换一种大小写或
+/// Unicode 形态返回时会绕过"邮箱已注册"判定，建出第二个账号。
+#[test]
+fn external_user_canonicalizes_the_provider_email() {
+    let user = ExternalUser::from_claims(
+        &json!({
+            "sub": "subject-1",
+            "email": "Person@ÉXAMPLE.COM",
+            "email_verified": true
+        }),
+        &mapping(),
+    )
+    .expect("claims");
+
+    assert_eq!(user.email.display(), "Person@xn--xample-9ua.com");
+    assert_eq!(user.email.canonical(), "person@xn--xample-9ua.com");
+}
+
+/// 无法规范化的邮箱 claim 被拒绝，不建号。
+#[test]
+fn external_user_rejects_uncanonicalizable_email() {
+    for value in ["person@localhost", "person", "person@", "@example.com"] {
+        let error = ExternalUser::from_claims(
+            &json!({"sub": "subject-1", "email": value, "email_verified": true}),
+            &mapping(),
+        )
+        .expect_err("uncanonicalizable email must be rejected");
+        assert_eq!(error, ProviderValidationError::InvalidEmail, "{value}");
+    }
 }
 
 #[test]

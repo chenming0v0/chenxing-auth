@@ -48,7 +48,9 @@ impl UserService {
             return Err(UserServiceError::InvalidCredentials);
         };
 
-        let dimensions = self.password_change_dimensions(&credentials.email, source_ip)?;
+        // 与登录同一个账号维度键：匹配值，不是展示值（Issue #302）。
+        let dimensions =
+            self.password_change_dimensions(&credentials.canonical_email, source_ip)?;
         if !self.limiter.reserve(dimensions.clone()).await? {
             return Err(UserServiceError::RateLimited);
         }

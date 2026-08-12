@@ -176,11 +176,16 @@ pub async fn find_session_epoch(
         .await
 }
 
-pub async fn find_user_email(
+/// 读取账号的邮箱匹配值，用作限流的账号维度键。
+///
+/// 取 `canonical_email` 而不是 `email`（Issue #302）：第一因子（`users` 服务）用的
+/// 是匹配值，第二因子若用展示值，同一个账号在两个阶段会落到两个不同的配额桶。
+/// 两者必须是同一个键，否则"账号维度"这个说法就不成立。
+pub async fn find_user_canonical_email(
     pool: &PgPool,
     user_id: UserId,
 ) -> Result<Option<String>, crate::sqlx::Error> {
-    crate::sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+    crate::sqlx::query_scalar("SELECT canonical_email FROM users WHERE id = $1")
         .bind(user_id)
         .fetch_optional(pool)
         .await
