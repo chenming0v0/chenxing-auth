@@ -76,9 +76,13 @@ describe('FactorOrchestrator', () => {
     expect(screen.getByText('创建并绑定 Passkey')).toBeTruthy()
   })
 
-  it('warns when no supported factor is returned', () => {
-    renderOrchestrator(pendingWith(['sms']))
+  it('warns when no supported factor is returned and offers a way back to login (#334)', () => {
+    const onRelogin = vi.fn()
+    renderOrchestrator(pendingWith(['sms']), onRelogin)
     expect(screen.getByText('当前账号没有可用的认证因子，请重新登录。')).toBeTruthy()
+    // 死胡同分支必须有出口：展示「重新登录」按钮且点击通知登录页清理 pending
+    fireEvent.click(screen.getByRole('button', { name: /重新登录/ }))
+    expect(onRelogin).toHaveBeenCalledTimes(1)
   })
 })
 

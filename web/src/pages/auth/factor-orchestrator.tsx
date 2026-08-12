@@ -26,8 +26,9 @@ const FACTOR_LABELS: Record<FactorMethod, { icon: string; title: string; hint: s
  * 因子编排器。后端可以同时返回多个可用方法，这里负责：单一方法直通、
  * 多方法先选择再进入对应流程。首次绑定与已绑定登录的差异只体现在
  * PasskeyStep 的 register 开关和 TotpStep 内部的 setupRequired 判断上。
- * login_ticket 失效时整个 MFA 会话作废，编排器切换到「重新登录」恢复视图，
- * 由 onRelogin 通知登录页清理 pending/setup 状态。
+ * login_ticket 失效、或后端未返回任何本前端已实现的因子时，MFA 流程都无法
+ * 继续，编排器切换到「重新登录」恢复视图，由 onRelogin 通知登录页清理
+ * pending/setup 状态、回到登录表单（#334）。
  */
 export function FactorOrchestrator({
   pending, busy, onComplete, onBusy, onMessage, onRelogin,
@@ -47,17 +48,16 @@ export function FactorOrchestrator({
   const setupRequired = pending.status === 'factor_setup_required'
   const active = methods.length === 1 ? methods[0] : selected
 
-  if (invalidated) {
+  // login_ticket 失效与无可用因子都会让 MFA 流程无法继续，渲染同一恢复视图：
+  // 提示 + 「重新登录」按钮。无因子分支此前只有文案没有按钮，而 pending 未清、
+  // 登录表单与页脚链接都被隐藏，用户被锁死在登录页（#334）。
+  if (invalidated || methods.length === 0) {
     return (
       <div className="space-y-4">
-        <Notice tone="warning">验证流程已失效，请重新登录。</Notice>
+        <Notice tone="warning">{invalidated ? '验证流程已失效，请重新登录。' : '当前账号没有可用的认证因子，请重新登录。'}</Notice>
         <Button type="button" icon="log-in" onClick={onRelogin} className="w-full">重新登录</Button>
       </div>
     )
-  }
-
-  if (methods.length === 0) {
-    return <Notice tone="warning">当前账号没有可用的认证因子，请重新登录。</Notice>
   }
 
   if (!active) {
