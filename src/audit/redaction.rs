@@ -152,12 +152,24 @@ fn contains_sensitive_assignment(value: &str) -> bool {
             continue;
         }
         if let Ok(key) = std::str::from_utf8(&bytes[key_start..key_end])
-            && is_sensitive_key(key)
+            && is_sensitive_assignment_key(key)
         {
             return true;
         }
     }
     false
+}
+
+/// 值内嵌赋值的键名按「规范化后以敏感词结尾」匹配。
+///
+/// Cookie 串里的凭据键常带服务名前缀（`chenxing_session=`），完整词表匹配不到；
+/// 而计数 / 配置字段是敏感词开头（`token_count`、`password_configured`），后缀
+/// 匹配恰好区分两类。键名脱敏仍走完整词表（[`is_sensitive_key`]），不受影响。
+fn is_sensitive_assignment_key(key: &str) -> bool {
+    let normalized = normalize_key(key);
+    SENSITIVE_METADATA_KEYS
+        .iter()
+        .any(|sensitive_key| normalized.ends_with(sensitive_key))
 }
 
 fn is_embedded_key_byte(byte: u8) -> bool {
