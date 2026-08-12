@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
 import {
@@ -164,16 +164,29 @@ export function OAuthConsentPage() {
   const { user } = useAuth()
   const { pending, message, setMessage } = usePendingAuthorization(requestId)
   const [submitting, setSubmitting] = useState(false)
+  // #406：持有进行中的决策请求；组件卸载时 abort，让 fetch 挂起的 resolve/reject
+  // 不再继续执行 scrubLocationQuery / window.location.assign，避免覆盖用户主动
+  // 发起的导航，也避免对已卸载组件调用 setMessage / setSubmitting（错误信息丢失）。
+  const decideAbortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    return () => { decideAbortRef.current?.abort() }
+  }, [])
 
   async function decide(decision: 'approve' | 'deny') {
     if (!requestId || submitting) return
     setMessage('')
     setSubmitting(true)
+    const controller = new AbortController()
+    decideAbortRef.current = controller
     try {
       const response = await apiFetch<AuthorizationDecisionResponse>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}`, {
         method: 'POST',
         body: JSON.stringify({ decision }),
+        signal: controller.signal,
       })
+      // 卸载若发生在 fetch resolve 与导航之间，signal 已被 abort，此窗口内必须放弃全部副作用
+      if (controller.signal.aborted) return
       const target = safeRedirectTarget(response.redirect_to)
       if (!target) {
         setMessage('授权跳转地址无效，已阻止本次跳转，请重新发起授权。')
@@ -185,6 +198,7 @@ export function OAuthConsentPage() {
       scrubLocationQuery()
       window.location.assign(target)
     } catch (error) {
+      if (controller.signal.aborted) return
       setMessage(error instanceof Error ? error.message : '授权请求处理失败。')
       setSubmitting(false)
     }
