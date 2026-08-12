@@ -235,31 +235,6 @@ impl AuthorizationCode {
     // 授权码的元数据字段多，打包成结构体带来的名义上的"清晰度"不抵消每次调用
     // 都要构造临时结构体的冗余；客户端只有 authorization_code_handlers 一处，故维持现状。
     #[allow(clippy::too_many_arguments)]
-    pub fn new_with_nonce_and_ttl(
-        client_id: String,
-        redirect_uri: String,
-        user_id: String,
-        scopes: Vec<String>,
-        code_challenge: String,
-        nonce: Option<String>,
-        session_token: Option<String>,
-        ttl_seconds: u64,
-    ) -> Self {
-        Self::new_with_nonce_and_ttl_at(
-            client_id,
-            redirect_uri,
-            user_id,
-            scopes,
-            code_challenge,
-            nonce,
-            session_token,
-            ttl_seconds,
-            SystemClock.now(),
-        )
-    }
-
-    /// Pure constructor variant with an explicit issuance time.
-    #[allow(clippy::too_many_arguments)]
     pub fn new_with_nonce_and_ttl_at(
         client_id: String,
         redirect_uri: String,
@@ -285,8 +260,11 @@ impl AuthorizationCode {
     }
 
     /// Construct from a digest already carried by the validated OAuth request.
+    ///
+    /// 签发时刻由调用方传入（Token 授权路径经 `AppState` 的共享时钟），
+    /// 保证 `created_at` / `expires_at` 与 store 保存时的 TTL 计算同源。
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_with_nonce_and_ttl_with_session_hash(
+    pub(crate) fn new_with_nonce_and_ttl_with_session_hash_at(
         client_id: String,
         redirect_uri: String,
         user_id: String,
@@ -295,6 +273,7 @@ impl AuthorizationCode {
         nonce: Option<String>,
         session_token_hash: Option<String>,
         ttl_seconds: u64,
+        now: OffsetDateTime,
     ) -> Self {
         Self::new_with_nonce_and_ttl_at_hashed(
             client_id,
@@ -305,7 +284,7 @@ impl AuthorizationCode {
             nonce,
             session_token_hash,
             ttl_seconds,
-            SystemClock.now(),
+            now,
         )
     }
 

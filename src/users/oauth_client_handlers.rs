@@ -356,7 +356,7 @@ async fn add_quota(
     for client in clients {
         let quota = state
             .oauth_quotas
-            .snapshot(&client.client_id, quota_limits)
+            .snapshot_at(&client.client_id, quota_limits, state.clock.now())
             .await
             .map_err(|_| error::internal())?;
         items.push(OwnedClientResponse {
@@ -379,7 +379,7 @@ async fn owned_registered_response(
 ) -> Result<RegisteredOwnedClientResponse, Response> {
     let quota = state
         .oauth_quotas
-        .snapshot(&client.client_id, quota_limits)
+        .snapshot_at(&client.client_id, quota_limits, state.clock.now())
         .await
         .map_err(|_| error::internal())?;
     Ok(RegisteredOwnedClientResponse {

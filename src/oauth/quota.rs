@@ -80,6 +80,11 @@ impl OAuthQuotaStore {
             .map(|consumption| consumption.result)
     }
 
+    /// 用进程默认时钟消费配额。
+    ///
+    /// 请求路径必须走 [`Self::consume_with_limits_and_reservation_at`] 并传入
+    /// `AppState` 的共享时钟，否则周期键与同请求内的其它时间判定不同源；
+    /// 这里保留墙钟只服务于不需要注入时钟的测试调用点。
     pub async fn consume_with_limits_and_reservation(
         &self,
         client_id: &str,
@@ -160,6 +165,9 @@ impl OAuthQuotaStore {
 
     /// Read usage from Redis and attach the effective plan's limits.
     /// `limits = None` 表示没有生效套餐：仍然回报真实用量，但不给出上限。
+    ///
+    /// 用进程默认时钟读取用量快照。请求路径必须走 [`Self::snapshot_at`] 并传入
+    /// `AppState` 的共享时钟；这里保留墙钟只服务于不需要注入时钟的测试调用点。
     pub async fn snapshot(
         &self,
         client_id: &str,

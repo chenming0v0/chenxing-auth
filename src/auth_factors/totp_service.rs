@@ -12,7 +12,7 @@ use crate::{
         },
         domain::FactorMethod,
         repository,
-        totp::verify_totp_code_current_timestep,
+        totp::verify_totp_code_now_timestep,
     },
     auth_limiter::{FailureDimension, LimiterDimension},
     users::domain::UserId,
@@ -60,7 +60,7 @@ impl AuthFactorService {
         // 直接借用 decrypted.plaintext：它是 Zeroizing<Vec<u8>>，drop 时自动清零。
         // 旧写法 clone + fill(0) 只擦除了克隆副本，原始明文缓冲区反而活得更久
         // （后面还要传给 reencrypt_totp_secret_if_needed），等于没有真正擦除。
-        let timestep = verify_totp_code_current_timestep(&decrypted.plaintext, code);
+        let timestep = verify_totp_code_now_timestep(&decrypted.plaintext, code, self.clock.now());
         let Some(timestep) = timestep else {
             if !self.record_failure(dimensions).await?.reached.is_empty() {
                 return Err(AuthFactorServiceError::RateLimited);
@@ -96,9 +96,9 @@ impl AuthFactorService {
         let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(TotpConfirmation::InvalidTicket);
         };
-        if !ticket.is_active_at(time::OffsetDateTime::now_utc())
-            || !ticket.supports(FactorMethod::Totp)
-        {
+        // ticket 的签发时刻由 store 用同一个时钟盖下（store.rs），有效期判定
+        // 必须同源，否则固定时钟下「刚签发的 ticket 已过期」会成为真实矛盾。
+        if !ticket.is_active_at(self.clock.now()) || !ticket.supports(FactorMethod::Totp) {
             return Ok(TotpConfirmation::InvalidTicket);
         }
         let account_key = self.account_key(ticket.user_id).await?;
@@ -137,7 +137,7 @@ impl AuthFactorService {
                     return Err(error.into());
                 }
             };
-        let valid = verify_totp_code_current_timestep(&decrypted.plaintext, code);
+        let valid = verify_totp_code_now_timestep(&decrypted.plaintext, code, self.clock.now());
         let Some(timestep) = valid else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {
