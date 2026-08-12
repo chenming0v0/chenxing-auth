@@ -146,7 +146,10 @@ export function Drawer({ title, description, onClose, onSubmit, busy = false, fo
           </div>
           <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={requestClose} disabled={busy}><Icon name="x" size={16} /></button>
         </div>
-        <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
+        {/* noValidate：抽屉的校验文案一律由 React 侧渲染（Field errorText + aria-describedby），
+            原生约束校验会在提交前拦截（如 type="email" 的畸形值、required 空值），
+            让浏览器气泡顶替应用自己的错误提示，甚至让 onSubmit 根本不触发。 */}
+        <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit} noValidate>
           <div className="chenxing-drawer-body space-y-4">{children}</div>
           <div className="chenxing-drawer-footer">{footer}</div>
         </form>
