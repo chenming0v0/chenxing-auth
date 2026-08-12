@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::code::AuthorizationCode;
+use super::quota::QuotaRefundCancel;
 use crate::{clock::SharedClock, redis_client::RedisClient};
 
 #[derive(Clone)]
@@ -92,17 +93,52 @@ impl AuthorizationCodeStore {
         value: &str,
         code: &AuthorizationCode,
     ) -> Result<bool, AuthorizationCodeStoreError> {
+        self.take_if_matches_with_quota_cancel(value, code, None)
+            .await
+    }
+
+    /// 原子消费授权码（CAS），并在同一个 Lua 事务里取消关联的待退配额条目。
+    ///
+    /// 兑换成功时配额必须保留（计数保留是正确行为），因此取消待退条目必须与
+    /// 授权码的删除原子完成：分成两步会让后台退款 worker 有机会在两步之间
+    /// 看到条目，把「已兑换」的配额退掉（Issue #341）。
+    ///
+    /// `quota_cancel = None`（授权码没有计量配额，或兑换旧格式在途授权码）时
+    /// 行为与 [`Self::take_if_matches`] 完全一致。
+    pub async fn take_if_matches_with_quota_cancel(
+        &self,
+        value: &str,
+        code: &AuthorizationCode,
+        quota_cancel: Option<QuotaRefundCancel>,
+    ) -> Result<bool, AuthorizationCodeStoreError> {
         let expected = serde_json::to_string(code)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
+        // 没有待退条目时 KEYS[2] 用授权码键占位（脚本在 ARGV[2] 为空时不会
+        // 引用它），member 传空串即退化为纯 CAS。
+        let code_key = Self::key(value);
+        let zset_key: &str = quota_cancel
+            .as_ref()
+            .map(|cancel| cancel.zset_key.as_str())
+            .unwrap_or(&code_key);
+        let member = quota_cancel
+            .as_ref()
+            .map(|cancel| cancel.member.as_str())
+            .unwrap_or("");
         let deleted: i32 = Script::new(
             r#"local current = redis.call('GET', KEYS[1])
-               if current == ARGV[1] then
-                   return redis.call('DEL', KEYS[1])
+               if current ~= ARGV[1] then
+                   return 0
                end
-               return 0"#,
+               redis.call('DEL', KEYS[1])
+               if ARGV[2] ~= '' then
+                   redis.call('ZREM', KEYS[2], ARGV[2])
+               end
+               return 1"#,
         )
-        .key(Self::key(value))
+        .key(code_key.as_str())
+        .key(zset_key)
         .arg(expected)
+        .arg(member)
         .invoke_async(&mut connection)
         .await?;
         Ok(deleted == 1)

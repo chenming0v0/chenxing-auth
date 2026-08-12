@@ -1,5 +1,5 @@
 use redis::Script;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::{Date, Month, OffsetDateTime, Time};
 use uuid::Uuid;
@@ -8,6 +8,12 @@ use super::quota_scripts::{CONSUME_SCRIPT, REFUND_SCRIPT};
 use crate::clock::{Clock, SystemClock};
 use crate::plans::domain::AuthQuotaLimits;
 use crate::redis_client::RedisClient;
+
+#[path = "quota_refund.rs"]
+mod quota_refund;
+
+/// 过期未兑换的授权码配额归还由后台 worker 执行（Issue #341）。
+pub use quota_refund::{QUOTA_REFUND_WORKER_INTERVAL, QuotaRefundCancel};
 
 #[derive(Clone)]
 pub struct OAuthQuotaStore {
@@ -36,12 +42,28 @@ pub enum QuotaConsumeResult {
 /// A successful quota reservation owns one increment in each period counter.
 /// The period keys are retained so compensation cannot be redirected by a
 /// clock boundary between consumption and refund.
+///
+/// 序列化能力服务于「过期未兑换则退款」台账（Issue #341）：签发时把
+/// reservation 存进 Redis，后台 worker 到期后凭它执行 [`OAuthQuotaStore::refund`]。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QuotaReservation {
     day_key: String,
     month_key: String,
     day_reservations_key: String,
     month_reservations_key: String,
     id: String,
+    /// 月度计数器键的过期时刻（Unix 秒）。
+    ///
+    /// 待退记录必须活到月边界之后，才能覆盖「签发于 23:59、过期于次日 00:00
+    /// 之后」的跨周期授权码；月计数器随该键一起过期，退款脚本对已过期的
+    /// 周期自然退化为空操作。
+    month_expires_at: i64,
+}
+
+impl QuotaReservation {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
 }
 pub struct QuotaConsumption {
     pub result: QuotaConsumeResult,
@@ -60,6 +82,8 @@ pub enum OAuthQuotaError {
     InvalidResponse,
     #[error("quota limit is too large for Redis")]
     InvalidLimit,
+    #[error("quota reservation serialization failed: {0}")]
+    Serialization(#[from] serde_json::Error),
 }
 
 impl OAuthQuotaStore {
@@ -141,6 +165,7 @@ impl OAuthQuotaStore {
                 day_reservations_key,
                 month_reservations_key,
                 id: reservation_id,
+                month_expires_at: next_month,
             }),
             QuotaConsumeResult::DailyExceeded | QuotaConsumeResult::MonthlyExceeded => None,
         };
