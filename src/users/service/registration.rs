@@ -10,6 +10,7 @@ use crate::users::{
         PublicUser, RegistrationInput, UserCreation, UserId, UserRole, UserStatus,
         validate_registration,
     },
+    email::EmailAddress,
     repository::{self, NewUser},
 };
 
@@ -130,7 +131,7 @@ impl UserService {
 
     pub(super) async fn ensure_email_policy_allows(
         &self,
-        email: &str,
+        email: &EmailAddress,
     ) -> Result<(), UserServiceError> {
         crate::users::email_policy::ensure_email_policy_allows(&self.pool, email).await
     }
@@ -140,11 +141,14 @@ impl UserService {
 ///
 /// (role, status) 取自 `NewUser` 而不是调用方的入参，响应因此必然与数据库一致。
 /// `password_hash` 在此被丢弃，不进入任何响应。
+///
+/// `email` 取展示值：对外 API 契约里的 `email` 字段一直是给人看的那一串，
+/// 匹配值 `canonical_email` 不进任何响应（Issue #302）。
 fn public_user(user: NewUser) -> PublicUser {
     PublicUser {
         id: user.id,
         username: user.username,
-        email: user.email,
+        email: user.email.into_display(),
         display_name: user.display_name,
         status: user.status.as_str().to_owned(),
         role: user.role,

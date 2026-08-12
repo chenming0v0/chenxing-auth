@@ -325,6 +325,15 @@ impl AuditEvent {
 }
 
 /// 返回不包含原始用户名或邮箱的稳定账户引用。
+///
+/// 这里的 `trim().to_ascii_lowercase()` 是**兜底**，不是邮箱规范化。调用方应当
+/// 传入已经规范化的标识符（邮箱走 `EmailAddress::canonical()`，用户名走
+/// `validate_username`），因为对 Unicode 域名而言，本函数的 ASCII 小写与真正的
+/// IDNA 匹配值不同——同一个账号会因此得到两个不同的 `account_ref`，按账号检索
+/// 审计就漏事件（Issue #302）。
+///
+/// 之所以仍保留兜底而不改成只接受规范化输入：登录标识符解析失败的路径也需要
+/// 一个可写入的引用，而那种输入本身就不存在"规范形态"。
 pub fn stable_account_reference(identifier: &str) -> String {
     let normalized = identifier.trim().to_ascii_lowercase();
     format!(

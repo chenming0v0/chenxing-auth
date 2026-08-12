@@ -6,6 +6,7 @@ use axum::{
 use chenxing_auth::admin::bootstrap_guard::{BOOTSTRAP_ATTEMPT_LIMIT, attempt_scope};
 use chenxing_auth::oauth::providers::repository::CreateIdentityError;
 use chenxing_auth::oauth::providers::repository::create_user_with_identity;
+use chenxing_auth::users::email::EmailAddress;
 use chenxing_auth::{api, config::Config, state::AppState};
 use serde_json::Value;
 use std::net::{IpAddr, SocketAddr};
@@ -15,6 +16,12 @@ use uuid::Uuid;
 mod db_isolation;
 #[path = "support/key_directory.rs"]
 mod key_directory;
+
+/// 测试夹具的邮箱构造（Issue #302）。规范化只有一个入口，夹具也走它。
+fn email_address(raw: impl AsRef<str>) -> EmailAddress {
+    let raw = raw.as_ref();
+    EmailAddress::parse(raw).unwrap_or_else(|error| panic!("fixture email {raw:?}: {error}"))
+}
 
 async fn setup() -> (
     axum::Router,
@@ -207,8 +214,8 @@ async fn owner_bootstrap_rejects_a_non_empty_database_without_an_owner() {
     let (router, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     chenxing_auth::sqlx::query(
-        "INSERT INTO users (username, email, password_hash, created_at, updated_at)
-         VALUES ($1, $2, 'test-hash', NOW(), NOW())",
+        "INSERT INTO users (username, email, canonical_email, password_hash, created_at, updated_at)
+         VALUES ($1, $2, lower($2), 'test-hash', NOW(), NOW())",
     )
     .bind(format!("existing-{suffix}"))
     .bind(format!("existing-{suffix}@example.com"))
@@ -430,8 +437,8 @@ async fn external_identity_creation_cannot_consume_id_before_owner_bootstrap() {
     let (_, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     chenxing_auth::sqlx::query(
-        "INSERT INTO users (username, email, password_hash, created_at, updated_at)
-         VALUES ($1, $2, 'test-hash', NOW(), NOW())",
+        "INSERT INTO users (username, email, canonical_email, password_hash, created_at, updated_at)
+         VALUES ($1, $2, lower($2), 'test-hash', NOW(), NOW())",
     )
     .bind(format!("existing-{suffix}"))
     .bind(format!("existing-{suffix}@example.com"))
@@ -453,7 +460,7 @@ async fn external_identity_creation_cannot_consume_id_before_owner_bootstrap() {
     let result = create_user_with_identity(
         &database,
         provider_id,
-        &format!("external-{suffix}@example.com"),
+        &email_address(format!("external-{suffix}@example.com")),
         Some("External"),
         "external-subject",
         "unusable-hash",
@@ -482,9 +489,9 @@ async fn concurrent_external_identity_creation_rejects_duplicate_email() {
     let suffix = Uuid::new_v4().simple().to_string();
     let owner_email = format!("owner-{suffix}@example.com");
     chenxing_auth::sqlx::query(
-        "INSERT INTO users (id, username, email, password_hash, role, created_at, updated_at)
+        "INSERT INTO users (id, username, email, canonical_email, password_hash, role, created_at, updated_at)
          OVERRIDING SYSTEM VALUE
-         VALUES (1, $1, $2, 'test-hash', 'owner', NOW(), NOW())",
+         VALUES (1, $1, $2, lower($2), 'test-hash', 'owner', NOW(), NOW())",
     )
     .bind(format!("owner-{suffix}"))
     .bind(owner_email)
@@ -507,8 +514,10 @@ async fn concurrent_external_identity_creation_rejects_duplicate_email() {
     .fetch_one(&database)
     .await
     .expect("insert provider");
-    let email = format!("external-{suffix}@example.com");
-    let email_variant = format!("  EXTERNAL-{suffix}@EXAMPLE.COM  ");
+    // 同一个邮箱的两种书写：一种带空白与大写，一种是规范形态。两者规范化后
+    // 匹配值相同，因此并发建号只能成功一次（Issue #302 让这条由数据库约束保证）。
+    let email = email_address(format!("external-{suffix}@example.com"));
+    let email_variant = email_address(format!("  EXTERNAL-{suffix}@EXAMPLE.COM  "));
 
     let (first, second) = tokio::join!(
         create_user_with_identity(
@@ -538,17 +547,20 @@ async fn concurrent_external_identity_creation_rejects_duplicate_email() {
         1
     );
 
+    // 按匹配值计数：胜者是哪一路由调度决定，两路的展示值不同（一路保留了大写的
+    // 本地部分），但匹配值必然相同，因此只有匹配值能给出确定的断言。
     let user_count: i64 =
-        chenxing_auth::sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE email = $1")
-            .bind(&email)
+        chenxing_auth::sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE canonical_email = $1")
+            .bind(email.canonical())
             .fetch_one(&database)
             .await
             .expect("count external users");
     assert_eq!(user_count, 1);
+    assert_eq!(email.canonical(), email_variant.canonical());
     let identity_count: i64 = chenxing_auth::sqlx::query_scalar(
-        "SELECT COUNT(*) FROM oauth_external_identities WHERE email = $1",
+        "SELECT COUNT(*) FROM oauth_external_identities WHERE lower(email) = $1",
     )
-    .bind(&email)
+    .bind(email.canonical())
     .fetch_one(&database)
     .await
     .expect("count external identities");
@@ -571,9 +583,9 @@ async fn concurrent_external_identity_creation_reuses_the_same_identity() {
     let (_, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     chenxing_auth::sqlx::query(
-        "INSERT INTO users (id, username, email, password_hash, role, created_at, updated_at)
+        "INSERT INTO users (id, username, email, canonical_email, password_hash, role, created_at, updated_at)
          OVERRIDING SYSTEM VALUE
-         VALUES (1, $1, $2, 'test-hash', 'owner', NOW(), NOW())",
+         VALUES (1, $1, $2, lower($2), 'test-hash', 'owner', NOW(), NOW())",
     )
     .bind(format!("owner-{suffix}"))
     .bind(format!("owner-{suffix}@example.com"))
@@ -596,7 +608,7 @@ async fn concurrent_external_identity_creation_reuses_the_same_identity() {
     .fetch_one(&database)
     .await
     .expect("insert provider");
-    let email = format!("external-same-{suffix}@example.com");
+    let email = email_address(format!("external-same-{suffix}@example.com"));
 
     let (first, second) = tokio::join!(
         create_user_with_identity(

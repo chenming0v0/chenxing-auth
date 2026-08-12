@@ -2,6 +2,8 @@ pub mod avatar_handlers;
 pub mod avatar_image;
 pub mod credentials;
 pub mod domain;
+/// 邮箱规范化的唯一入口（Issue #302）。所有写路径与登录匹配都必须经过它。
+pub mod email;
 mod email_policy;
 pub mod entitlements_handlers;
 pub mod handlers;

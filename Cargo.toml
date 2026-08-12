@@ -14,6 +14,11 @@ base64 = "0.22"
 cookie = "0.18"
 dotenvy = "0.15"
 hmac = "0.12"
+# 邮箱域名的 UTS-46 IDNA 规范化（Issue #302）。不是新增依赖：`url` 已经依赖
+# idna 1.1，这里只是把传递依赖显式化，避免"改了 url 的版本就悄悄换掉认证中枢
+# 的邮箱唯一性语义"。default-features 关掉后按需只开 std + compiled_data，
+# 与 url 启用的 feature 集合兼容，不产生第二份编译产物。
+idna = { version = "1.1", default-features = false, features = ["std", "compiled_data"] }
 # 头像二次压缩只需要 PNG/JPEG/WebP 解码与 JPEG 编码。关闭 default-features 把
 # 其余格式的解码器排除在攻击面之外：上传字节是不可信输入，每个启用的解码器
 # 都是一份额外的 CVE 暴露面。

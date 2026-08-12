@@ -96,7 +96,10 @@ impl UserService {
                 )
                 .await;
         };
-        let account_key = credentials.email.clone();
+        // 账号维度用匹配值而不是展示值（Issue #302）：同一账号的多种邮箱书写
+        // （大小写、Unicode/Punycode 等价形态）规范化到同一个 `canonical_email`，
+        // 按展示值分桶会让攻击者变换书写就换到一个新的失败计数桶。
+        let account_key = credentials.canonical_email.clone();
         let account_dimensions = vec![(FailureDimension::Account, account_key)];
         let account_reserved = match self.reserve_dimensions(account_dimensions.clone()).await {
             Ok(reserved) => reserved,

@@ -93,8 +93,8 @@ async fn browser_session(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -
 /// 这里只需要一行 `status='active'` 的用户供 session 解析，密码哈希不参与断言。
 async fn seed_user(database: &chenxing_auth::sqlx::PgPool, name: &str, role: &str) -> i64 {
     chenxing_auth::sqlx::query_scalar::<_, i64>(
-        "INSERT INTO users (username, email, password_hash, role, status)
-         VALUES ($1, $2, 'not-a-real-hash', $3, 'active')
+        "INSERT INTO users (username, email, canonical_email, password_hash, role, status)
+         VALUES ($1, $2, lower($2), 'not-a-real-hash', $3, 'active')
          RETURNING id",
     )
     .bind(name)

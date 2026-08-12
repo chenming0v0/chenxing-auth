@@ -188,8 +188,8 @@ async fn session_authenticated_setting_mutation_records_user_actor() {
     let username = format!("settings-owner-{}", Uuid::new_v4().simple());
     let email = format!("{username}@example.com");
     let user_id: i64 = sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, role, created_at, updated_at)
-         VALUES ($1, $2, 'test-hash', 'owner', NOW(), NOW())
+        "INSERT INTO users (username, email, canonical_email, password_hash, role, created_at, updated_at)
+         VALUES ($1, $2, lower($2), 'test-hash', 'owner', NOW(), NOW())
          RETURNING id",
     )
     .bind(&username)

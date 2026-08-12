@@ -8,10 +8,19 @@ use chenxing_auth::{
     config::Config,
     sessions::{cookies, domain::Session, store::SessionStore},
     state::AppState,
-    users::{domain::ValidatedRegistration, repository as user_repository},
+    users::{domain::ValidatedRegistration, email::EmailAddress, repository as user_repository},
 };
 use tower::ServiceExt;
 use uuid::Uuid;
+
+/// 测试夹具的邮箱构造。
+///
+/// `ValidatedRegistration.email` 是 `EmailAddress`（Issue #302），构造它必须经过
+/// 唯一的规范化入口——夹具也不例外，否则测试会绕开被测的那条规则。
+fn email_address(raw: impl AsRef<str>) -> EmailAddress {
+    let raw = raw.as_ref();
+    EmailAddress::parse(raw).unwrap_or_else(|error| panic!("fixture email {raw:?}: {error}"))
+}
 
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
@@ -65,7 +74,7 @@ async fn revoke_fixture(label: &str) -> RevokeFixture {
         &database,
         ValidatedRegistration {
             username: format!("{label}-{suffix}"),
-            email: format!("{label}-{suffix}@example.com"),
+            email: email_address(format!("{label}-{suffix}@example.com")),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },

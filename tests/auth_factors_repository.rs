@@ -47,8 +47,8 @@ async fn totp_factor_round_trip_returns_ciphertext_only() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let user_id: i64 = chenxing_auth::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, status, created_at)
-         VALUES ($1, $2, $3, 'active', NOW())
+        "INSERT INTO users (username, email, canonical_email, password_hash, status, created_at)
+         VALUES ($1, $2, lower($2), $3, 'active', NOW())
          RETURNING id",
     )
     .bind(format!("factor-{suffix}"))
@@ -103,9 +103,9 @@ async fn passkey_insert_is_idempotent_and_rejects_cross_user_collisions() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let user_ids: Vec<i64> = chenxing_auth::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, status, created_at)
-         VALUES ($1, $2, 'test-hash', 'active', NOW()),
-                ($3, $4, 'test-hash', 'active', NOW())
+        "INSERT INTO users (username, email, canonical_email, password_hash, status, created_at)
+         VALUES ($1, $2, lower($2), 'test-hash', 'active', NOW()),
+                ($3, $4, lower($4), 'test-hash', 'active', NOW())
          RETURNING id",
     )
     .bind(format!("passkey-{suffix}-a"))
@@ -165,8 +165,8 @@ async fn first_factor_race_allows_only_one_factor_type_to_win() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple();
     let user_id: i64 = chenxing_auth::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, status, created_at)
-         VALUES ($1, $2, 'test-hash', 'active', NOW())
+        "INSERT INTO users (username, email, canonical_email, password_hash, status, created_at)
+         VALUES ($1, $2, lower($2), 'test-hash', 'active', NOW())
          RETURNING id",
     )
     .bind(format!("first-factor-{suffix}"))

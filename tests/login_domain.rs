@@ -1,7 +1,15 @@
 use chenxing_auth::users::{
     credentials::MAX_PASSWORD_LENGTH,
-    domain::{LoginInput, MAX_IDENTIFIER_LENGTH, validate_login},
+    domain::{LoginIdentifier, LoginInput, MAX_IDENTIFIER_LENGTH, validate_login},
 };
+
+/// 取标识符的匹配值。
+///
+/// 两种形态的匹配值口径不同（邮箱走 IDNA，用户名走 ASCII 小写 + 白名单），
+/// 断言统一比这个值，因为它就是仓储层与限流层实际使用的键（Issue #302）。
+fn matched(identifier: &LoginIdentifier) -> &str {
+    identifier.limiter_key()
+}
 
 #[test]
 fn login_normalizes_email() {
@@ -12,7 +20,8 @@ fn login_normalizes_email() {
     })
     .expect("valid login input");
 
-    assert_eq!(login.identifier, "user@example.com");
+    assert_eq!(matched(&login.identifier), "user@example.com");
+    assert!(matches!(login.identifier, LoginIdentifier::Email(_)));
 }
 
 #[test]
@@ -36,7 +45,8 @@ fn login_accepts_a_username_identifier() {
     })
     .expect("username identifier must be accepted");
 
-    assert_eq!(login.identifier, "chenxing-user");
+    assert_eq!(matched(&login.identifier), "chenxing-user");
+    assert!(matches!(login.identifier, LoginIdentifier::Username(_)));
 }
 
 /// Issue #259 的核心回归：超长口令必须在进入 Argon2 之前被拒绝。
@@ -100,8 +110,8 @@ fn login_does_not_apply_the_registration_minimum() {
 
 /// 超长标识符在进入 SQL 与审计哈希之前被拒绝（Issue #259）。
 ///
-/// `is_valid_email` 只要求"有 @、域名含点、无空白"，对长度没有约束，
-/// 所以数 MB 的伪邮箱可以通过形态判定并被绑定进凭据查询。
+/// 形态判定本身不含长度约束（有 @、域名合法即可通过），所以数 MB 的伪邮箱
+/// 可以通过判定并被绑定进凭据查询。
 #[test]
 fn login_rejects_an_identifier_beyond_the_upper_bound() {
     let local = "a".repeat(MAX_IDENTIFIER_LENGTH);
@@ -143,7 +153,10 @@ fn login_accepts_an_identifier_at_the_upper_bound() {
     })
     .expect("an identifier at the upper bound must be accepted");
 
-    assert_eq!(login.identifier.chars().count(), MAX_IDENTIFIER_LENGTH);
+    assert_eq!(
+        matched(&login.identifier).chars().count(),
+        MAX_IDENTIFIER_LENGTH
+    );
 }
 
 /// 空口令的错误语义保持不变，不被新增的上界判定改写。

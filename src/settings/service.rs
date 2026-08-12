@@ -9,6 +9,7 @@ use super::{
 use crate::{
     config::AuthEncryptionKey,
     oauth::providers::secrets::{SecretError, SecretManager},
+    users::email::EmailAddress,
 };
 use thiserror::Error;
 
@@ -230,44 +231,60 @@ impl SettingsService {
     }
 }
 
+/// 发件人邮箱的规范化。
+///
+/// 走 [`EmailAddress`] 这一个入口（Issue #302），取展示值：这个地址会进入 SMTP
+/// 的 `From` 头，需要的是给人看的形态，而域名已经被规范化成可传输的 ASCII。
+/// 它不是账号标识符，因此不需要匹配值。
 fn normalize_email(value: Option<String>) -> Result<Option<String>, SettingsServiceError> {
     let Some(value) = value else {
         return Ok(None);
     };
-    let value = value.trim().to_ascii_lowercase();
-    if value.is_empty() {
+    if value.trim().is_empty() {
         return Ok(None);
     }
-    if !crate::users::domain::is_valid_email(&value) {
-        return Err(SettingsServiceError::InvalidEmail);
-    }
-    Ok(Some(value))
+    EmailAddress::parse(&value)
+        .map(|email| Some(email.into_display()))
+        .map_err(|_| SettingsServiceError::InvalidEmail)
 }
 
+/// 从 `Name <a@b>` 或裸邮箱里取出规范化后的展示值。
 fn extract_email(value: &str) -> Option<String> {
     let value = value.trim();
-    if crate::users::domain::is_valid_email(value) {
-        return Some(value.to_ascii_lowercase());
+    if let Ok(email) = EmailAddress::parse(value) {
+        return Some(email.into_display());
     }
     let start = value.find('<')?;
     let end = value[start + 1..].find('>')?;
-    let email = value[start + 1..start + 1 + end]
-        .trim()
-        .to_ascii_lowercase();
-    crate::users::domain::is_valid_email(&email).then_some(email)
+    EmailAddress::parse(&value[start + 1..start + 1 + end])
+        .ok()
+        .map(EmailAddress::into_display)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_email;
+    use super::{extract_email, normalize_email};
 
     #[test]
     fn normalizes_and_clears_registration_sender_email() {
+        // 展示值保留本地部分大小写，域名统一成 IDNA ASCII 小写（Issue #302）。
         assert_eq!(
             normalize_email(Some("  Sender@Example.COM ".to_owned())).unwrap(),
-            Some("sender@example.com".to_owned())
+            Some("Sender@example.com".to_owned())
         );
         assert_eq!(normalize_email(Some("  ".to_owned())).unwrap(), None);
         assert!(normalize_email(Some("invalid".to_owned())).is_err());
+    }
+
+    #[test]
+    fn normalizes_unicode_sender_domain_to_punycode() {
+        assert_eq!(
+            normalize_email(Some("Sender@ÉXAMPLE.COM".to_owned())).unwrap(),
+            Some("Sender@xn--xample-9ua.com".to_owned())
+        );
+        assert_eq!(
+            extract_email("辰星 <Sender@ÉXAMPLE.COM>"),
+            Some("Sender@xn--xample-9ua.com".to_owned())
+        );
     }
 }

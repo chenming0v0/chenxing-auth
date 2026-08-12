@@ -19,13 +19,16 @@ pub async fn insert_user(
     let email = registration.email;
     let display_name = registration.display_name;
     let created_at = OffsetDateTime::now_utc();
+    // 展示值与匹配值同一条 INSERT 写入（Issue #302）：两列由同一个 `EmailAddress`
+    // 拆出，不存在只写一列或两列来自不同规范化规则的可能。
     let id: UserId = crate::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, display_name, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'active', $5, $5)
+        "INSERT INTO users (username, email, canonical_email, password_hash, display_name, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, 'active', $6, $6)
          RETURNING id",
     )
     .bind(&username)
-    .bind(&email)
+    .bind(email.display())
+    .bind(email.canonical())
     .bind(&password_hash)
     .bind(&display_name)
     .bind(created_at)
@@ -51,12 +54,13 @@ pub async fn insert_user_in_transaction(
     user: &NewUser,
 ) -> Result<UserId, crate::sqlx::Error> {
     crate::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, display_name, status, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'active', $5, $5)
+        "INSERT INTO users (username, email, canonical_email, password_hash, display_name, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, 'active', $6, $6)
          RETURNING id",
     )
     .bind(&user.username)
-    .bind(&user.email)
+    .bind(user.email.display())
+    .bind(user.email.canonical())
     .bind(&user.password_hash)
     .bind(&user.display_name)
     .bind(user.created_at)

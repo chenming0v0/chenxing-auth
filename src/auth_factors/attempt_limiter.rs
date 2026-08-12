@@ -18,7 +18,7 @@ impl AuthFactorService {
         &self,
         user_id: UserId,
     ) -> Result<String, AuthFactorServiceError> {
-        repository::find_user_email(&self.pool, user_id)
+        repository::find_user_canonical_email(&self.pool, user_id)
             .await?
             .ok_or(AuthFactorServiceError::UserNotFound)
     }

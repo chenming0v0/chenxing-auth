@@ -229,10 +229,10 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
 
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let ids: Vec<i64> = chenxing_auth::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, created_at, updated_at)
-         VALUES ($1, $2, 'test-hash', NOW(), NOW()),
-                ($3, $4, 'test-hash', NOW(), NOW()),
-                ($5, $6, 'test-hash', NOW(), NOW())
+        "INSERT INTO users (username, email, canonical_email, password_hash, created_at, updated_at)
+         VALUES ($1, $2, lower($2), 'test-hash', NOW(), NOW()),
+                ($3, $4, lower($4), 'test-hash', NOW(), NOW()),
+                ($5, $6, lower($6), 'test-hash', NOW(), NOW())
          RETURNING id",
     )
     .bind(format!("schema-a-{suffix}"))
