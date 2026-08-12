@@ -71,8 +71,7 @@ impl Config {
         let auth_encryption_key = auth_encryption_keys.active_key().clone();
         // APP_ISSUER 写入 JWT iss claim 和 Discovery；缺失时选择启动即失败而不是回退到 host:port。
         let issuer_url = required_env("APP_ISSUER")?;
-        let issuer =
-            url::Url::parse(&issuer_url).map_err(|_| ConfigError::InvalidValue("APP_ISSUER"))?;
+        let issuer = parse_root_http_url(&issuer_url, "APP_ISSUER")?;
         let webauthn_rp_id = env::var("WEBAUTHN_RP_ID")
             .unwrap_or_else(|_| issuer.host_str().unwrap_or_default().to_owned());
         let webauthn_origin = env::var("WEBAUTHN_ORIGIN").unwrap_or_else(|_| issuer_url.clone());
@@ -286,16 +285,7 @@ impl Config {
         if request_timeout_seconds == 0 {
             return Err(ConfigError::InvalidValue("REQUEST_TIMEOUT_SECONDS"));
         }
-        let issuer =
-            url::Url::parse(&issuer_url).map_err(|_| ConfigError::InvalidValue("APP_ISSUER"))?;
-        if !matches!(issuer.scheme(), "http" | "https")
-            || issuer.host_str().is_none()
-            || issuer.path() != "/"
-            || issuer.query().is_some()
-            || issuer.fragment().is_some()
-        {
-            return Err(ConfigError::InvalidValue("APP_ISSUER"));
-        }
+        let issuer = parse_root_http_url(&issuer_url, "APP_ISSUER")?;
         validate_cookie_security(&issuer, cookie_secure)?;
         if cookie_secure && issuer.scheme() == "http" {
             tracing::warn!(
@@ -326,16 +316,7 @@ impl Config {
         if webauthn_rp_id.trim().is_empty() {
             return Err(ConfigError::InvalidValue("WEBAUTHN_RP_ID"));
         }
-        let origin = url::Url::parse(&webauthn_origin)
-            .map_err(|_| ConfigError::InvalidValue("WEBAUTHN_ORIGIN"))?;
-        if !matches!(origin.scheme(), "http" | "https")
-            || origin.host_str().is_none()
-            || origin.path() != "/"
-            || origin.query().is_some()
-            || origin.fragment().is_some()
-        {
-            return Err(ConfigError::InvalidValue("WEBAUTHN_ORIGIN"));
-        }
+        parse_root_http_url(&webauthn_origin, "WEBAUTHN_ORIGIN")?;
         // Issue #305：告警必须如实说明这只关掉一条通道。旧文案声称「all admin APIs
         // are disabled」，但代码里空 Token 只让 `AdminAuthenticator::is_valid` 恒假，
         // 也就是只拒绝 Bearer 系统 Token；浏览器 Session 通道（HttpOnly Session
@@ -391,10 +372,25 @@ impl Config {
     }
 
     pub(crate) fn validate_cookie_security(&self) -> Result<(), ConfigError> {
-        let issuer = url::Url::parse(&self.issuer_url)
-            .map_err(|_| ConfigError::InvalidValue("APP_ISSUER"))?;
+        let issuer = parse_root_http_url(&self.issuer_url, "APP_ISSUER")?;
         validate_cookie_security(&issuer, self.cookie_secure)
     }
+}
+
+fn parse_root_http_url(value: &str, name: &'static str) -> Result<url::Url, ConfigError> {
+    let url = url::Url::parse(value).map_err(|_| ConfigError::InvalidValue(name))?;
+    // URL userinfo 是凭据材料；错误只报告配置项名称，绝不携带原始值。
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ConfigError::InvalidValue(name));
+    }
+    Ok(url)
 }
 
 fn validate_cookie_security(issuer: &url::Url, cookie_secure: bool) -> Result<(), ConfigError> {
@@ -413,3 +409,7 @@ fn is_loopback_http_issuer(issuer: &url::Url) -> bool {
                     .is_ok_and(|address| address.is_loopback())
         })
 }
+
+#[cfg(test)]
+#[path = "config_construction_tests.rs"]
+mod tests;
