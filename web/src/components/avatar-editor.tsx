@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { Button, Icon } from './ui'
 import { useDrawerFocus } from './drawer'
 import {
@@ -163,7 +164,7 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
     }, 'image/png')
   }
 
-  return (
+  return createPortal(
     <div className="chenxing-drawer-overlay is-open" onClick={() => { if (!busy) onCancel() }}>
       <div
         ref={containerRef}
@@ -245,6 +246,7 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
           <Button icon="check" onClick={confirm} disabled={busy}>{busy ? '上传中…' : '使用这张'}</Button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

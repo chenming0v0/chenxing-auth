@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type FormEventHandler, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { activateDrawerModal } from './drawer-modal-effects'
 import { Icon } from './ui'
 
@@ -126,7 +127,7 @@ export function Drawer({ title, description, onClose, onSubmit, busy = false, fo
     if (!busy) onClose()
   }
 
-  return (
+  return createPortal(
     <div className="chenxing-drawer-overlay is-open" onClick={requestClose}>
       <div
         ref={containerRef}
@@ -150,6 +151,7 @@ export function Drawer({ title, description, onClose, onSubmit, busy = false, fo
           <div className="chenxing-drawer-footer">{footer}</div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
