@@ -107,8 +107,13 @@ impl RefreshTokenStore {
         state: TombstoneState,
     ) -> Result<FamilyRevocation, RefreshTokenStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let tombstone_json =
-            serde_json::to_string(&Tombstone::for_family(family_id, client_id, user_id, state))?;
+        let tombstone_json = serde_json::to_string(&Tombstone::for_family(
+            family_id,
+            client_id,
+            user_id,
+            state,
+            self.clock.now(),
+        ))?;
         let submitted_hash = Self::token_hash(submitted_value);
         let scope = FamilyScope::new(family_id, &submitted_hash);
         let removed: i64 = Script::new(REVOKE_FAMILY_SCRIPT)

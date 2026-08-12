@@ -10,7 +10,7 @@ use super::{
         ROTATE_WITH_TOMBSTONE_SCRIPT, SAVE_WITH_INDEXES_SCRIPT, TAKE_IF_MATCHES_SCRIPT,
     },
 };
-use crate::redis_client::RedisClient;
+use crate::{clock::SharedClock, redis_client::RedisClient};
 
 // 墓碑类型定义在 `refresh_tombstone`，但调用方历来从 `refresh_store` 导入，
 // 这里保持那条路径可用。
@@ -89,6 +89,7 @@ pub enum RotationOutcome {
 #[derive(Clone)]
 pub struct RefreshTokenStore {
     client: RedisClient,
+    clock: SharedClock,
 }
 
 #[derive(Debug, Error)]
@@ -103,7 +104,17 @@ impl RefreshTokenStore {
     pub fn new(client: impl Into<RedisClient>) -> Self {
         Self {
             client: client.into(),
+            clock: SharedClock::system(),
         }
+    }
+
+    /// 注入共享时钟（`AppState` 构造时调用）。
+    ///
+    /// 墓碑的 `recorded_at` 和主键 TTL 都由它决定，因此固定时钟可以直接驱动
+    /// 「并发窗口内」与「replay」的判定边界，无需真实等待。
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.clock = clock;
+        self
     }
 
     // ── 计算 token hash（用于主键与索引成员）─────────────────────────────
@@ -146,14 +157,8 @@ impl RefreshTokenStore {
     /// 只要客户端 30 天内用一次，Redis 侧的有效期就无限向后滑动，
     /// 形成永不过期的凭据。现在 TTL 被绝对截止时间夹住，
     /// 即使持续轮换，Redis 也会在首次签发后 180 天让键自然消失。
-    fn effective_ttl(token: &RefreshToken) -> u64 {
-        let now = time::OffsetDateTime::now_utc();
-        let abs_remaining = (token.absolute_deadline() - now).whole_seconds();
-        let slide_remaining = (token.expires_at - now).whole_seconds();
-        // 已过期的 token 给 1 秒 TTL：让键立刻自然消失，
-        // 而不是用 0/负数触发 Redis 的参数错误。
-        let ttl = abs_remaining.min(slide_remaining).max(1);
-        u64::try_from(ttl).unwrap_or(1)
+    fn effective_ttl(&self, token: &RefreshToken) -> u64 {
+        effective_ttl_at(token, self.clock.now())
     }
 
     // ── 读写操作 ─────────────────────────────────────────────────────────
@@ -167,7 +172,7 @@ impl RefreshTokenStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload = serde_json::to_string(token)?;
         let hash = Self::token_hash(&token.value);
-        let ttl = Self::effective_ttl(token);
+        let ttl = self.effective_ttl(token);
         let _: i32 = Script::new(SAVE_WITH_INDEXES_SCRIPT)
             .key(Self::token_key_for_hash(&hash))
             .key(Self::client_idx_key(&token.client_id))
@@ -191,8 +196,11 @@ impl RefreshTokenStore {
         };
         let token: RefreshToken = serde_json::from_str(&payload)?;
         let hash = Self::token_hash(value);
-        let tombstone =
-            serde_json::to_string(&Tombstone::for_token(&token, TombstoneState::Consumed))?;
+        let tombstone = serde_json::to_string(&Tombstone::for_token(
+            &token,
+            TombstoneState::Consumed,
+            self.clock.now(),
+        ))?;
         let _: i32 = Script::new(REMOVE_WITH_TOMBSTONE_SCRIPT)
             .key(&key)
             .key(Self::client_idx_key(&token.client_id))
@@ -252,8 +260,11 @@ impl RefreshTokenStore {
         let expected = serde_json::to_string(token)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let hash = Self::token_hash(value);
-        let tombstone =
-            serde_json::to_string(&Tombstone::for_token(token, TombstoneState::Consumed))?;
+        let tombstone = serde_json::to_string(&Tombstone::for_token(
+            token,
+            TombstoneState::Consumed,
+            self.clock.now(),
+        ))?;
         // CAS 消费、索引清理和墓碑写入在同一个 Lua 脚本内完成，
         // 避免「已删除但墓碑未写」的中间状态漏掉后续重放检测。
         let deleted: i32 = Script::new(TAKE_IF_MATCHES_SCRIPT)
@@ -288,9 +299,12 @@ impl RefreshTokenStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let old_hash = Self::token_hash(value);
         let new_hash = Self::token_hash(&replacement.value);
-        let tombstone =
-            serde_json::to_string(&Tombstone::for_token(token, TombstoneState::Consumed))?;
-        let new_ttl = Self::effective_ttl(replacement);
+        let tombstone = serde_json::to_string(&Tombstone::for_token(
+            token,
+            TombstoneState::Consumed,
+            self.clock.now(),
+        ))?;
+        let new_ttl = self.effective_ttl(replacement);
         let target_family = FamilyScope::new(&replacement.family_id, &new_hash);
         let rotated: i32 = Script::new(ROTATE_WITH_TOMBSTONE_SCRIPT)
             .key(Self::token_key_for_hash(&old_hash))
@@ -340,6 +354,24 @@ impl RefreshTokenStore {
         self.rotate_if_matches(&issued.value, issued, previous)
             .await
     }
+}
+
+/// 计算主键 TTL：`min(滑动窗口剩余, 绝对到期剩余)`，至少 1 秒。
+///
+/// Issue #109 的核心修复点。旧实现每次轮换都无条件 `SETEX` 30 天，
+/// 只要客户端 30 天内用一次，Redis 侧的有效期就无限向后滑动，
+/// 形成永不过期的凭据。现在 TTL 被绝对截止时间夹住，
+/// 即使持续轮换，Redis 也会在首次签发后 180 天让键自然消失。
+///
+/// 与 [`RefreshTokenStore::effective_ttl`] 的区别只是时间来源：轮换路径需要让
+/// 墓碑时刻和新 token 的 TTL 共用同一次时钟读取，所以时间由调用方传入。
+fn effective_ttl_at(token: &RefreshToken, now: time::OffsetDateTime) -> u64 {
+    let abs_remaining = (token.absolute_deadline() - now).whole_seconds();
+    let slide_remaining = (token.expires_at - now).whole_seconds();
+    // 已过期的 token 给 1 秒 TTL：让键立刻自然消失，
+    // 而不是用 0/负数触发 Redis 的参数错误。
+    let ttl = abs_remaining.min(slide_remaining).max(1);
+    u64::try_from(ttl).unwrap_or(1)
 }
 
 #[cfg(test)]

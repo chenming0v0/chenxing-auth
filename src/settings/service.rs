@@ -456,5 +456,4 @@ mod tests {
             Some("Sender@xn--xample-9ua.com".to_owned())
         );
     }
-    }
 }

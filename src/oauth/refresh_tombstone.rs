@@ -45,13 +45,17 @@ pub struct Tombstone {
 }
 
 impl Tombstone {
-    pub(super) fn for_token(token: &RefreshToken, state: TombstoneState) -> Self {
+    pub(super) fn for_token(
+        token: &RefreshToken,
+        state: TombstoneState,
+        now: time::OffsetDateTime,
+    ) -> Self {
         Self {
             family_id: token.family_id.clone(),
             client_id: token.client_id.clone(),
             user_id: token.user_id.clone(),
             state,
-            recorded_at: time::OffsetDateTime::now_utc().unix_timestamp(),
+            recorded_at: now.unix_timestamp(),
         }
     }
 
@@ -60,13 +64,14 @@ impl Tombstone {
         client_id: &str,
         user_id: &str,
         state: TombstoneState,
+        now: time::OffsetDateTime,
     ) -> Self {
         Self {
             family_id: family_id.to_owned(),
             client_id: client_id.to_owned(),
             user_id: user_id.to_owned(),
             state,
-            recorded_at: time::OffsetDateTime::now_utc().unix_timestamp(),
+            recorded_at: now.unix_timestamp(),
         }
     }
 }
