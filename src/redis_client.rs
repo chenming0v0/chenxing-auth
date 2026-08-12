@@ -45,7 +45,15 @@ impl RedisClient {
             .get_or_try_init(|| async {
                 let config = ConnectionManagerConfig::new()
                     .set_connection_timeout(REDIS_CONNECTION_TIMEOUT)
-                    .set_response_timeout(REDIS_RESPONSE_TIMEOUT);
+                    .set_response_timeout(REDIS_RESPONSE_TIMEOUT)
+                    // 初始连接失败必须快速返回，让 fail-open / fail-closed 策略接管，
+                    // 而不是进入重试退避。redis 0.29 把 backon 的 factor 当作乘法因子
+                    // （backon 1.6 语义：每次延迟 ×factor，起步 min_delay = 1s），
+                    // 默认 factor = 100 使退避序列变成 1s → 100s → 10000s → …，
+                    // 一个坏端点会把认证任务拖住数分钟到数年，违背上面的超时意图。
+                    // 掉线后的恢复不依赖退避：每条命令失败都会触发一次新的连接尝试，
+                    // Redis 恢复后下一条命令即自动重连成功。
+                    .set_number_of_retries(0);
                 ConnectionManager::new_with_config(self.client.clone(), config).await
             })
             .await?;
