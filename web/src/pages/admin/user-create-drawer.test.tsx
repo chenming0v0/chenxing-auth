@@ -101,6 +101,30 @@ describe('UserCreateDrawer 客户端校验', () => {
     expect(screen.getByText('邮箱格式不正确，例如 name@example.com。')).toBeTruthy()
   })
 
+  it('拒绝服务端同样会拒的畸形邮箱：域名首尾点、连续点、超长标签', () => {
+    renderDrawer()
+    const malformed = [
+      'stardust@example.',        // 域名尾点
+      'stardust@.example.com',    // 域名首点
+      'stardust@example..com',        // 连续点
+      `stardust@${'x'.repeat(64)}.com`, // 标签超过 63 字符
+    ]
+    for (const email of malformed) {
+      fill({ email })
+      submit()
+      expect(requests).toEqual([])
+      expect(screen.getByText('邮箱格式不正确，例如 name@example.com。')).toBeTruthy()
+    }
+  })
+
+  it('Unicode 域名不做 IDNA 判定，放行交给服务端', async () => {
+    renderDrawer()
+    // 前端只做结构预检；IDNA/Punycode 合法性由服务端 EmailAddress::parse 判定
+    fill({ email: 'stardust@éxample.com' })
+    submit()
+    await waitFor(() => expect(requests.length).toBe(1))
+  })
+
   it('拒绝少于 10 个字符的密码', () => {
     renderDrawer()
     fill({ password: 'short' })
