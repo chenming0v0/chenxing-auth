@@ -14,6 +14,7 @@ tags:
   - name: User Auth/Account
   - name: User Auth/MFA
   - name: User Auth/Sessions
+  - name: User Auth/Security Events
   - name: User Auth/OAuth Clients
   - name: User Auth/Authorized Apps
   - name: User Entitlements
@@ -435,6 +436,25 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SessionListResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/security-events:
+    get:
+      tags: [User Auth/Security Events]
+      summary: 查询当前用户安全事件
+      operationId: listCurrentUserSecurityEvents
+      description: 仅查询 actor_user_id 为当前用户的热表与归档审计事件，并只返回非敏感白名单字段。
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200':
+          description: 按创建时间倒序排列的当前用户安全事件
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PagedSecurityEvents' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
   /api/v1/auth/sessions/{session_id}:
     delete:
       tags: [User Auth/Sessions]
@@ -2173,6 +2193,25 @@ components:
         page: { type: integer, minimum: 1 }
         page_size: { type: integer, minimum: 1, maximum: 100 }
         total: { type: integer, format: int64, minimum: 0 }
+    PagedSecurityEvents:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/SecurityEvent' } }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, format: int64, minimum: 0 }
+    SecurityEvent:
+      type: object
+      description: 用户可见的审计事件白名单；不包含 actor、resource_id 或 metadata。
+      required: [id, action, resource_type, client_id, client_name, created_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        action: { type: string }
+        resource_type: { type: string }
+        client_id: { type: string, nullable: true }
+        client_name: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
     AuditEvent:
       type: object
       required: [id, actor_type, actor_id, action, resource_type, resource_id, metadata, created_at]

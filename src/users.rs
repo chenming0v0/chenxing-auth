@@ -10,6 +10,7 @@ pub mod handlers;
 pub mod oauth_client_handlers;
 pub mod query_repository;
 pub mod repository;
+pub mod security_event_handlers;
 pub mod service;
 pub mod ui_auth;
 pub mod ui_handlers;
