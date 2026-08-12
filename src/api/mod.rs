@@ -109,7 +109,15 @@ mod tests {
 
     async fn isolated_pool(binary_name: &str, database_url: &str) -> crate::sqlx::PgPool {
         let schema = test_schema_name(binary_name);
-        let mut bootstrap = PgConnection::connect(database_url)
+        // 建 schema 是 owner 的活：角色分离部署下 DATABASE_URL 指向受限的运行时角色，
+        // owner 连接串优先 MIGRATION_DATABASE_URL（与 tests/support/db_isolation.rs 的
+        // owner_database_url 保持同一策略）；单角色环境回落 database_url，行为不变。
+        let owner_url = std::env::var("MIGRATION_DATABASE_URL")
+            .ok()
+            .map(|url| url.trim().to_owned())
+            .filter(|url| !url.is_empty())
+            .unwrap_or_else(|| database_url.to_owned());
+        let mut bootstrap = PgConnection::connect(&owner_url)
             .await
             .expect("db_isolation: bootstrap connection");
         crate::sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
@@ -123,6 +131,10 @@ mod tests {
         drop(bootstrap);
 
         let schema_for_pool = schema;
+        // 迁移和连接 pool 都走 owner 连接：迁移会 CREATE TABLE，而受限的运行时角色
+        // 对新 schema 没有 USAGE 权限，`SET search_path` 会被 PostgreSQL 静默忽略，
+        // 导致迁移报 "no schema has been selected to create in"。与
+        // tests/support/db_isolation.rs 的 schema_scoped_pool 保持同一策略。
         let pool = crate::sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)
             .after_connect(move |connection, _meta| {
@@ -134,7 +146,7 @@ mod tests {
                     Ok(())
                 })
             })
-            .connect(database_url)
+            .connect(&owner_url)
             .await
             .expect("db_isolation: pool connect");
 
