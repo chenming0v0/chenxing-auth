@@ -193,7 +193,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
           </div>
         ) : null}
 
-        {query.get('registered') ? <div className="mt-5"><Notice tone="success">注册成功，请使用新账号登录。</Notice></div> : null}
+        {query.get('registered') === '1' ? <div className="mt-5"><Notice tone="success">注册成功，请使用新账号登录。</Notice></div> : null}
         {externalError ? <div className="mt-5"><Notice tone="warning">{externalLoginErrorMessage(externalError)}</Notice></div> : null}
         {message ? <div className="mt-5"><Notice tone="warning">{message}</Notice></div> : null}
 
