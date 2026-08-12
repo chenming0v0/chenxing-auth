@@ -108,7 +108,7 @@ pub async fn list_users(
 
 /// `POST /api/v1/admin/users/{user_id}/{status}`。
 ///
-/// 顺序固定为：基线 `ManageUsers` → 解析状态 → 写事务锁住目标并判定 Owner 档位。
+/// 顺序固定为：基线 `ManageUsers` → 自我操作检查 → 解析状态 → 写事务锁住目标并判定 Owner 档位。
 /// 目标角色与状态写入共用事务，消除并发晋升 Owner 的旧快照窗口（Issue #323）。
 /// 状态串是与资源无关的语法输入，在查询目标之前解析，因此非法状态恒为
 /// 400 `invalid_status`，不再和「用户不存在」共用一个错误码（Issue #283）。
@@ -122,6 +122,14 @@ pub async fn set_user_status(
         Err(response) => return response,
     };
     let actor = authorization.actor();
+    // 自我操作保护：把 `disabled` 落到自己身上会在事务内撤销自己的全部会话，
+    // 立即失去管理面且无自助恢复路径，与 set_user_role 的自我角色检查保持一致（Issue #336）。
+    if actor.user_id() == Some(user_id) {
+        return error::forbidden(
+            "self_status_change_forbidden",
+            "users cannot change their own status",
+        );
+    }
     let Some(status) = UserStatus::parse(&status) else {
         return error::bad_request("invalid_status", "status is invalid");
     };

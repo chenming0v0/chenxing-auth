@@ -938,7 +938,7 @@ paths:
     post:
       tags: [Admin Users]
       summary: 设置用户状态
-      description: 基线权限为 manage_users；目标用户为 Owner 时额外要求 manage_roles。权限检查先于资源查询，低权限调用者不能据响应枚举用户或 Owner 身份。非法状态返回 400 invalid_status，不存在用户返回 404 user_not_found。
+      description: 基线权限为 manage_users；目标用户为 Owner 时额外要求 manage_roles。权限检查先于资源查询，低权限调用者不能据响应枚举用户或 Owner 身份。非法状态返回 400 invalid_status，不存在用户返回 404 user_not_found。管理员不能修改自己的状态，自我操作返回 403 self_status_change_forbidden。
       operationId: setUserStatus
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
