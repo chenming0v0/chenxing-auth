@@ -7,11 +7,8 @@ use serde::Deserialize;
 use std::{fmt, net::SocketAddr};
 
 use super::{
-    client_auth::{ClientCredentialError, resolve_client_credentials},
-    form,
-    response::with_no_store_headers,
-    token::decode_access_token,
-    token_security::enforce_source_qps_with_policy,
+    client_auth::resolve_client_credentials, form, response::with_no_store_headers,
+    token::decode_access_token, token_security::enforce_source_qps_with_policy,
 };
 use crate::{audit::AuditEvent, error, state::AppState};
 
@@ -80,10 +77,9 @@ async fn revoke_inner(state: AppState, headers: HeaderMap, request: RevocationRe
         request.client_secret.as_deref(),
     ) {
         Ok(credentials) => credentials,
-        Err(ClientCredentialError::MultipleMethods | ClientCredentialError::Invalid) => {
-            return error::oauth_invalid_client();
-        }
-        Err(ClientCredentialError::Missing) => {
+        // 缺失、格式错误、超长或方式混用都是客户端认证失败，统一 invalid_client
+        // （Issue #353：超长凭据必须在解析层被拒，不能流入 Argon2 / DB 绑定）。
+        Err(_) => {
             return error::oauth_invalid_client();
         }
     };

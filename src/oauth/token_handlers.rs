@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 
 pub use super::token_use_case::TokenRequest;
 use super::{
-    client_auth::{ClientCredentialError, resolve_client_credentials},
+    client_auth::resolve_client_credentials,
     form,
     refresh_grant::exchange_refresh_token,
     response,
@@ -67,8 +67,9 @@ async fn token_inner(
         request.client_secret.as_deref(),
     ) {
         Ok(credentials) => credentials,
-        Err(ClientCredentialError::MultipleMethods | ClientCredentialError::Invalid)
-        | Err(ClientCredentialError::Missing) => return error::oauth_invalid_client(),
+        // 缺失、格式错误、超长或方式混用都是客户端认证失败，按 RFC 6749
+        // 统一返回 invalid_client（Issue #353：超长凭据必须在解析层被拒）。
+        Err(_) => return error::oauth_invalid_client(),
     };
     request.client_id = Some(credentials.client_id.clone());
     request.client_secret = credentials.client_secret.clone();
