@@ -37,6 +37,14 @@ pub enum DbError {
     PoolSettings(#[from] PoolSettingsError),
     #[error("database error")]
     Database(#[from] crate::sqlx::Error),
+    /// 口令探测连不上数据库（TCP/TLS/DNS 等连接层故障）。连接层故障证明不了口令
+    /// 状态，不能据此覆盖写——那会静默撤销运维侧的口令轮换（Issue #411）。
+    /// 错误消息刻意不携带底层错误文本：sqlx 的连接错误可能内嵌连接串。
+    #[error("runtime database role password probe could not reach the database; the role password was left unchanged")]
+    RuntimePasswordProbeUnreachable(#[source] crate::sqlx::Error),
+    /// 口令探测超时。同样属于"无法确认口令状态"，不覆盖写（Issue #411）。
+    #[error("runtime database role password probe timed out; the role password was left unchanged")]
+    RuntimePasswordProbeTimedOut(#[source] tokio::time::error::Elapsed),
 }
 
 fn normalize_migration_sql(sql: &'static str) -> Cow<'static, str> {

@@ -10,7 +10,7 @@ fn unmanaged_policy_never_touches_the_runtime_password() {
         for probe in [
             None,
             Some(PasswordProbe::Accepted),
-            Some(PasswordProbe::NotAccepted),
+            Some(PasswordProbe::Rejected),
         ] {
             assert_eq!(
                 runtime_password_action(RuntimePasswordPolicy::Unmanaged, role_existed, probe),
@@ -34,22 +34,15 @@ fn accepted_password_is_left_alone() {
 }
 
 #[test]
-fn rejected_password_is_rewritten() {
+fn explicitly_rejected_password_is_rewritten() {
+    // 只有服务端明确拒绝认证（SQLSTATE 28P01 / 28000）才算"口令不可用"，
+    // 此时写入 URL 携带的口令正是 Managed 模式的职责。
     assert_eq!(
         runtime_password_action(
             RuntimePasswordPolicy::Managed,
             true,
-            Some(PasswordProbe::NotAccepted)
+            Some(PasswordProbe::Rejected)
         ),
-        PasswordAction::Write
-    );
-}
-
-#[test]
-fn unreachable_probe_falls_back_to_writing_the_password() {
-    // 探测缺失（库暂时连不上、超时）时退回历史行为，不引入新的启动失败模式。
-    assert_eq!(
-        runtime_password_action(RuntimePasswordPolicy::Managed, true, None),
         PasswordAction::Write
     );
 }
@@ -117,4 +110,77 @@ fn runtime_password_rejects_invalid_utf8_without_disclosure() {
 
     assert!(!rendered.contains("secret"));
     assert!(!rendered.contains(encoded_password));
+}
+
+/// 测试专用的数据库错误：`PgDatabaseError` 没有公开构造器，用一个最小
+/// `DatabaseError` 实现模拟服务端返回的 SQLSTATE。
+#[derive(Debug)]
+struct ProbeError {
+    code: Option<&'static str>,
+}
+
+impl std::fmt::Display for ProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "database error (code {:?})", self.code)
+    }
+}
+
+impl std::error::Error for ProbeError {}
+
+impl crate::sqlx::DatabaseError for ProbeError {
+    fn message(&self) -> &str {
+        "authentication failed"
+    }
+
+    fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.code.map(std::borrow::Cow::Borrowed)
+    }
+
+    fn kind(&self) -> sqlx_core::error::ErrorKind {
+        sqlx_core::error::ErrorKind::Other
+    }
+
+    fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+        self
+    }
+
+    fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+        self
+    }
+
+    fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+        self
+    }
+}
+
+fn database_error(code: Option<&'static str>) -> crate::sqlx::Error {
+    crate::sqlx::Error::Database(Box::new(ProbeError { code }))
+}
+
+#[test]
+fn explicit_auth_rejection_codes_are_password_rejections() {
+    // Issue #411：只有 SQLSTATE 28P01（口令错误）/ 28000（认证规格被拒）才是
+    // 口令不可用的证据。
+    for code in ["28P01", "28000"] {
+        assert!(
+            super::is_password_rejection(&database_error(Some(code))),
+            "{code} must count as a password rejection"
+        );
+    }
+}
+
+#[test]
+fn connection_level_failures_are_not_password_rejections() {
+    // 连接层故障（IO/TLS/DNS）与超时证明不了口令状态：把它们当作认证被拒，
+    // 就会让一次网络抖动覆盖掉运维刚轮换的口令（Issue #411）。
+    assert!(!super::is_password_rejection(&crate::sqlx::Error::Io(
+        std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connection refused")
+    )));
+}
+
+#[test]
+fn non_auth_database_errors_are_not_password_rejections() {
+    // 服务端其他拒绝（如 too many connections）同样不是口令错误。
+    assert!(!super::is_password_rejection(&database_error(Some("53300"))));
+    assert!(!super::is_password_rejection(&database_error(None)));
 }

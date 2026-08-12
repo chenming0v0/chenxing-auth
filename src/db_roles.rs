@@ -6,9 +6,11 @@
 //! 运维在数据库侧独立轮换过该口令时，下一次 migrate 会静默把它覆盖回旧值——
 //! 一次例行迁移就能把线上应用的数据库凭据打回去，而日志里看不出发生过覆盖。
 //!
-//! 现在先用运行时 URL 自己去登录探测一次：口令已经可用就完全不碰角色，只有登录
-//! 不被接受（或角色刚被创建，本来就还没有口令）才写入，并且写入时打 warn。口令
-//! 完全由外部密钥托管管理的部署可以用 `MIGRATION_MANAGE_RUNTIME_PASSWORD=false`
+//! 现在先用运行时 URL 自己去登录探测一次：口令已经可用就完全不碰角色；只有服务端
+//! 明确拒绝认证（SQLSTATE 28P01 / 28000）才写入，并且写入时打 warn。连接层故障
+//! （连不上、TLS、DNS、超时）证明不了口令状态，直接中止本次口令管理并报错退出，
+//! 绝不覆盖——一次网络抖动就会把运维侧刚轮换的口令静默打回去（Issue #411）。
+//! 口令完全由外部密钥托管管理的部署可以用 `MIGRATION_MANAGE_RUNTIME_PASSWORD=false`
 //! 让 migrate 一步都不碰。
 //!
 //! URL crate 返回的是仍带百分号编码的口令组件，而 sqlx 建连前会把它解码。写入角色
@@ -26,7 +28,8 @@ use super::{DbError, RUNTIME_DATABASE_ROLE};
 /// migrate 对运行时角色口令的管理方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimePasswordPolicy {
-    /// 由 migrate 保证运行时 URL 里的口令可用（探测失败才写入）。
+    /// 由 migrate 保证运行时 URL 里的口令可用（仅服务端明确拒绝认证才写入，
+    /// 连接层故障直接报错中止，见模块文档 Issue #411）。
     Managed,
     /// migrate 完全不碰口令：角色与口令由外部密钥托管或运维流程负责。
     Unmanaged,
@@ -37,8 +40,9 @@ pub enum RuntimePasswordPolicy {
 pub enum PasswordProbe {
     /// 运行时 URL 里的口令已经能登录，不需要改动。
     Accepted,
-    /// 登录未被接受（口令不对、角色刚创建还没口令，或库暂时连不上）。
-    NotAccepted,
+    /// 服务端明确拒绝了认证（SQLSTATE 28P01 口令错误 / 28000 认证规格被拒），
+    /// 口令确实不可用。连接层故障不属于这里：那是"无法确认状态"，直接报错中止。
+    Rejected,
 }
 
 /// 对运行时角色口令要做的动作。
@@ -55,8 +59,8 @@ pub enum PasswordAction {
 /// 登录探测的超时。
 ///
 /// 探测只是一次 TCP + 认证握手，正常在毫秒级完成。5s 足以覆盖容器冷启动，
-/// 又不会让 migrate 在网络不可达时长时间挂住。超时按 `NotAccepted` 处理，
-/// 退回历史行为（写入口令），不引入新的失败模式。
+/// 又不会让 migrate 在网络不可达时长时间挂住。超时属于"无法确认口令状态"，
+/// 与连接层故障同样处理：中止口令管理并报错，不做覆盖写（Issue #411）。
 const PASSWORD_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 置备固定的运行时角色。
@@ -83,9 +87,10 @@ pub async fn configure_runtime_role(
     }
 
     // 只有角色本来就存在且由 migrate 管理口令时才值得探测：刚创建的角色必然
-    // 还没有可用口令，探测纯属浪费一次握手。
+    // 还没有可用口令，探测纯属浪费一次握手。探测的连接层故障在这里用 `?`
+    // 直接中止，绝不落到下面的动作判定里（Issue #411）。
     let probe = match (policy, role_existed) {
-        (RuntimePasswordPolicy::Managed, true) => Some(probe_password(runtime_database_url).await),
+        (RuntimePasswordPolicy::Managed, true) => Some(probe_password(runtime_database_url).await?),
         _ => None,
     };
 
@@ -133,9 +138,12 @@ pub(crate) fn runtime_password_action(
         RuntimePasswordPolicy::Managed => match (role_existed, probe) {
             (false, _) => PasswordAction::Write,
             (true, Some(PasswordProbe::Accepted)) => PasswordAction::Keep,
-            // 探测缺失或被拒都写入：宁可重设一次可恢复的口令，也不要让应用
-            // 因为登录不上而起不来。重设会打 warn，运维能看到。
-            (true, _) => PasswordAction::Write,
+            // 只有服务端明确拒绝认证（SQLSTATE 28P01 / 28000）才写入：这才是
+            // "运行时 URL 的口令确实不可用"。重设会打 warn，运维能看到。
+            (true, Some(PasswordProbe::Rejected)) => PasswordAction::Write,
+            // 不可达：Managed 且角色已存在时必然执行探测，探测的连接层故障已在
+            // `configure_runtime_role` 作为错误提前返回。保留该分支维持 match 完整。
+            (true, None) => PasswordAction::Write,
         },
     }
 }
@@ -198,7 +206,11 @@ fn has_valid_percent_encoding(value: &[u8]) -> bool {
 }
 
 /// 用运行时 URL 真正登录一次，判断口令是否已经可用。
-async fn probe_password(runtime_database_url: &str) -> PasswordProbe {
+///
+/// 只有服务端明确拒绝认证才返回 `Rejected`；连接层故障（连不上、TLS、DNS）与
+/// 超时返回 `Err`，由调用方中止口令管理——这些错误证明不了口令状态，据此覆盖写
+/// 会把运维侧刚轮换的口令静默打回去（Issue #411）。
+async fn probe_password(runtime_database_url: &str) -> Result<PasswordProbe, DbError> {
     let attempt = tokio::time::timeout(
         PASSWORD_PROBE_TIMEOUT,
         PgConnection::connect(runtime_database_url),
@@ -208,11 +220,23 @@ async fn probe_password(runtime_database_url: &str) -> PasswordProbe {
         Ok(Ok(connection)) => {
             // 探测连接立刻归还，不留在服务端占额度。关闭失败无关判定结果。
             let _ = connection.close().await;
-            PasswordProbe::Accepted
+            Ok(PasswordProbe::Accepted)
         }
-        // 认证被拒、TLS 失败、连不上、超时都归为"不能确认口令可用"。
-        Ok(Err(_)) | Err(_) => PasswordProbe::NotAccepted,
+        Ok(Err(error)) if is_password_rejection(&error) => Ok(PasswordProbe::Rejected),
+        Ok(Err(error)) => Err(DbError::RuntimePasswordProbeUnreachable(error)),
+        Err(elapsed) => Err(DbError::RuntimePasswordProbeTimedOut(elapsed)),
     }
+}
+
+/// 只有服务端明确拒绝认证（SQLSTATE 28P01 口令错误 / 28000 认证规格被拒）才证明
+/// 口令不可用。连接层错误（TCP/TLS/DNS/超时）不携带任何口令信息，不能作为判定依据。
+fn is_password_rejection(error: &crate::sqlx::Error) -> bool {
+    use crate::sqlx::DatabaseError as _;
+    matches!(
+        error,
+        crate::sqlx::Error::Database(database_error)
+            if matches!(database_error.code().as_deref(), Some("28P01" | "28000"))
+    )
 }
 
 pub(crate) fn quote_ident(identifier: &str) -> String {
