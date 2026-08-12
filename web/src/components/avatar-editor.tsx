@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { Button, Icon } from './ui'
 import { useDrawerFocus } from './drawer'
@@ -108,11 +108,25 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
     dragRef.current = null
   }
 
-  function onWheel(event: ReactWheelEvent<HTMLDivElement>) {
+  // React 17+ 把合成 onWheel 以 passive 方式注册在 root 容器上，其中的
+  // preventDefault() 会被浏览器静默忽略，滚轮缩放时取景框所在的可滚动容器
+  // （抽屉 body）仍会跟着滚动。因此改用原生非 passive 监听器注册在取景框上。
+  // 监听器只在挂载时注册一次，通过 ref 转发每帧最新的闭包，避免读到陈旧的
+  // busy / transform。
+  const wheelHandlerRef = useRef<(event: WheelEvent) => void>(() => {})
+  wheelHandlerRef.current = (event: WheelEvent) => {
     if (busy) return
     event.preventDefault()
     applyTransform({ ...transform, scale: transform.scale - event.deltaY * 0.002 })
   }
+
+  useLayoutEffect(() => {
+    const element = viewportRef.current
+    if (!element) return
+    const handler = (event: WheelEvent) => wheelHandlerRef.current(event)
+    element.addEventListener('wheel', handler, { passive: false })
+    return () => element.removeEventListener('wheel', handler)
+  }, [])
 
   function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
     if (busy) return
@@ -200,7 +214,6 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
             onPointerMove={onPointerMove}
             onPointerUp={endDrag}
             onPointerCancel={endDrag}
-            onWheel={onWheel}
             onKeyDown={onKeyDown}
           >
             <img
