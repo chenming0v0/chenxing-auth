@@ -467,7 +467,9 @@ describe('OAuthProvidersPanel 重试提示隔离（Issue #367）', () => {
     await screen.findByRole('button', { name: '重试启用' })
 
     // 重新编辑同一 provider：开关反映已禁用状态，不请求状态切换，直接保存
+    // mock 后端不更新 provider 状态，client_secret_configured 仍为 false，需重新填写 secret 才能通过表单校验
     await openEditRow('Gitea')
+    fireEvent.change(screen.getByLabelText('Client Secret *'), { target: { value: 'new-secret-2' } })
     save()
     await waitFor(() => expect(requests.filter((r) => r.method === 'PUT').length).toBe(2))
 
