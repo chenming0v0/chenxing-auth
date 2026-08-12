@@ -45,7 +45,7 @@ afterEach(() => {
 })
 
 async function renderPanel() {
-  render(<EmailPolicyPanel onMessage={vi.fn()} />)
+  render(<EmailPolicyPanel onMessage={vi.fn()} onDirtyChange={() => {}} />)
   await screen.findByText('corp.example')
 }
 
@@ -108,7 +108,7 @@ describe('EmailPolicyPanel 域名输入', () => {
   it('白名单启用但列表为空时显示原因并阻止保存', async () => {
     policy.allowed_domains = []
     const onMessage = vi.fn()
-    render(<EmailPolicyPanel onMessage={onMessage} />)
+    render(<EmailPolicyPanel onMessage={onMessage} onDirtyChange={() => {}} />)
     await screen.findByText('白名单已启用但允许域名列表为空，无法保存。请至少添加一个域名，或关闭白名单。')
     save()
 

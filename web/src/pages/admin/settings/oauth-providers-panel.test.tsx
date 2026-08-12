@@ -114,7 +114,7 @@ afterEach(() => {
 
 function renderPanel() {
   const onMessage = vi.fn()
-  render(<OAuthProvidersPanel onMessage={onMessage} />)
+  render(<OAuthProvidersPanel onMessage={onMessage} onDirtyChange={() => {}} />)
   return onMessage
 }
 

@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { apiFetch, type SecurityLimitsSetting } from '../../../api'
 import { Button, Field, HudPanel, Icon, Notice } from '../../../components/ui'
-import { useSettingsResource, type SettingsPanelProps } from './panel'
+import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
 type FieldKey = keyof SecurityLimitsSetting
 type FieldSpec = { key: FieldKey; label: string; hint: string; maximum: number }
@@ -102,16 +102,25 @@ export function validateSecurityLimitInput(
   return { value: numeric }
 }
 
-export function SecurityLimitsPanel({ onMessage }: SettingsPanelProps) {
+export function SecurityLimitsPanel({ onMessage, onDirtyChange }: SettingsPanelProps) {
   const [draft, setDraft] = useState<Record<string, string> | null>(null)
+  /* 上次成功加载/保存的基线：当前草稿与它不一致即视为有未保存修改（#381）。 */
+  const [savedDraft, setSavedDraft] = useState<Record<string, string> | null>(null)
   const [busy, setBusy] = useState(false)
 
   const { loading } = useSettingsResource<SecurityLimitsSetting>({
     path: '/api/v1/admin/settings/security-limits',
     onMessage,
     failureMessage: '安全限流配置加载失败。',
-    apply: (value) => setDraft(toDraft(value)),
+    apply: (value) => {
+      const next = toDraft(value)
+      setDraft(next)
+      setSavedDraft(next)
+    },
   })
+
+  const dirty = Boolean(savedDraft && !settingsEqual(draft, savedDraft))
+  useDirtyReport(dirty, onDirtyChange)
 
   function updateDraft(key: FieldKey, value: string) {
     if (busy) return
@@ -136,7 +145,9 @@ export function SecurityLimitsPanel({ onMessage }: SettingsPanelProps) {
         method: 'PUT',
         body: JSON.stringify(payload),
       })
-      setDraft(toDraft(updated))
+      const next = toDraft(updated)
+      setDraft(next)
+      setSavedDraft(next)
       onMessage('安全限流配置已保存，重启服务后生效。', 'warning')
     } catch (reason) {
       onMessage(reason instanceof Error ? reason.message : '安全限流配置保存失败。', 'warning')

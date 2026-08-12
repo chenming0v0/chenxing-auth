@@ -1,7 +1,7 @@
 import { useState, type FormEvent, type KeyboardEvent } from 'react'
 import { apiFetch, type EmailPolicySetting } from '../../../api'
 import { Button, Chip, Field, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
-import { useSettingsResource, type SettingsPanelProps } from './panel'
+import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
 const MAX_ALLOWED_DOMAINS = 128
 const MAX_DOMAIN_LENGTH = 253
@@ -31,7 +31,7 @@ function hasConfiguredDomain(domains: string[]): boolean {
   return domains.some((domain) => Boolean(normalizeDomain(domain)))
 }
 
-export function EmailPolicyPanel({ onMessage }: SettingsPanelProps) {
+export function EmailPolicyPanel({ onMessage, onDirtyChange }: SettingsPanelProps) {
   const [setting, setSetting] = useState<EmailPolicySetting | null>(null)
   const [savedSetting, setSavedSetting] = useState<EmailPolicySetting | null>(null)
   const [draftDomain, setDraftDomain] = useState('')
@@ -47,6 +47,10 @@ export function EmailPolicyPanel({ onMessage }: SettingsPanelProps) {
       setSavedSetting(value)
     },
   })
+
+  /* 编辑与基线不一致、或输入框里还躺着未添加的域名，都算未保存草稿（#381）。 */
+  const dirty = Boolean(savedSetting && (!settingsEqual(setting, savedSetting) || draftDomain !== ''))
+  useDirtyReport(dirty, onDirtyChange)
 
   function addDomain() {
     if (busy || !setting) return

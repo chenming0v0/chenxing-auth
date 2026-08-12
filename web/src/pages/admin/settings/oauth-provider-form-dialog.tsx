@@ -2,6 +2,7 @@ import { useMemo, useState, type FormEvent } from 'react'
 import type { OAuthProviderInput, OAuthProviderSummary } from '../../../api'
 import { Button, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '../../../components/ui'
 import { SelectField } from '../../../components/select'
+import { useDirtyReport } from './panel'
 
 export type ProviderForm = {
   name: string
@@ -126,6 +127,8 @@ type DialogProps = {
   onSubmit: (form: ProviderForm) => void
   onClose: () => void
   onMessage: (message: string, tone?: 'success' | 'warning') => void
+  /** 未保存草稿上报（#381）：与面板的 onDirtyChange 同约束，必须跨渲染稳定。 */
+  onDirtyChange: (dirty: boolean) => void
 }
 
 /**
@@ -133,10 +136,22 @@ type DialogProps = {
  * 请求编排、部分成功状态与列表刷新都留在 OAuthProvidersPanel，
  * 这样「创建成功但启用失败」的重试动作不依赖弹层是否仍然挂载。
  */
-export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMessage }: DialogProps) {
+export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMessage, onDirtyChange }: DialogProps) {
   const [template, setTemplate] = useState('custom')
   const [form, setForm] = useState<ProviderForm>(() => toForm(editing))
+  /* 挂载时的表单快照即基线：弹层由 key 驱动每次打开都重新挂载，因此基线天然按次刷新。 */
+  const [initialForm] = useState<ProviderForm>(() => toForm(editing))
   const title = useMemo(() => (editing ? '编辑 OAuth 提供商' : '添加 OAuth 提供商'), [editing])
+
+  /* 表单全部字段是标量，JSON 比较即可判定是否有未保存修改（#381）。 */
+  const dirty = useMemo(() => JSON.stringify(form) !== JSON.stringify(initialForm), [form, initialForm])
+  useDirtyReport(dirty, onDirtyChange)
+
+  /** 用户主动关闭弹层时先确认未保存草稿；保存成功由父组件直接卸载，不经过这里。 */
+  function requestClose() {
+    if (dirty && !window.confirm('关闭后将丢失未保存的修改，确定关闭吗？')) return
+    onClose()
+  }
 
   function applyTemplate(next: string) {
     setTemplate(next)
@@ -172,7 +187,7 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
             </h2>
             <p className="chenxing-caption mt-1.5">配置 OAuth 2.0 授权码流程 + UserInfo 的外部身份提供商</p>
           </div>
-          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onClose}>
+          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={requestClose}>
             <Icon name="x" size={16} />
           </button>
         </div>
@@ -251,7 +266,7 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <ToggleRow title="启用供应商" checked={form.enabled} onChange={(enabled) => setForm({ ...form, enabled })} />
           <div className="flex items-center gap-3">
-            <Button type="button" variant="ghost" onClick={onClose}>取消</Button>
+            <Button type="button" variant="ghost" onClick={requestClose}>取消</Button>
             <Button type="submit" icon="save" disabled={busy}>保存</Button>
           </div>
         </div>
