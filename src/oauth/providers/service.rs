@@ -13,11 +13,6 @@ use super::{
     secrets::{SecretError, SecretManager},
 };
 use crate::users::domain::{UserId, UserStatus};
-use argon2::{
-    Argon2,
-    password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
-};
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::Client;
 use std::fmt;
 use thiserror::Error;
@@ -180,15 +175,13 @@ impl ExternalOAuthService {
             }
             return Ok(identity.user_id);
         }
-        let password_hash =
-            unusable_password_hash().map_err(|_| ExternalOAuthError::RemoteRequest)?;
         repository::create_user_with_identity(
             &self.pool,
             provider.id,
             &external.email,
             external.name.as_deref(),
             &external.subject,
-            &password_hash,
+            UNUSABLE_PASSWORD_HASH,
         )
         .await
         .map_err(|error| match error {
@@ -231,14 +224,70 @@ impl ExternalOAuthService {
     }
 }
 
-fn unusable_password_hash() -> Result<String, argon2::password_hash::Error> {
-    let salt = SaltString::generate(&mut OsRng);
-    Argon2::default()
-        .hash_password(
-            URL_SAFE_NO_PAD
-                .encode(rand::random::<[u8; 32]>())
-                .as_bytes(),
-            &salt,
-        )
-        .map(|hash| hash.to_string())
+/// 外部用户「不可用口令」的编译期哈希（Issue #342）。
+///
+/// 外部 IdP 身份落地时 `users.password_hash` 列不能为空，但这里不需要也不应该有
+/// 真实口令：旧实现每次建号现场生成随机 32 字节口令并跑一次完整 Argon2
+/// （19 MiB 内存、约 50 ms），口令随即被丢弃，哈希永不参与校验。这个计算发生在
+/// 回调 handler 的 async 路径上，直接阻塞 Tokio worker；攻击者轮换 IP 即可让
+/// 并发外部登录饱和全部 worker（每次新 IdP subject 触发一次哈希）。
+///
+/// 因此改用编译期常量：格式合法、原像不可知的 PHC 串。结构与
+/// `users::credentials::FALLBACK_DUMMY_PASSWORD_HASH` 相同——argon2id、v=19、
+/// m=19456、t=2、p=1（与 `Argon2::default()` 一致），salt 与 digest 全零，没有
+/// 口令能哈希出全零摘要，任何校验恒定失败。这正是「不可用」的语义：即使将来
+/// `password_login_enabled` 被意外置真，外部用户也无法用口令登录。建号路径因此
+/// 零计算成本，不再占用 worker 或阻塞线程池。
+const UNUSABLE_PASSWORD_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+#[cfg(test)]
+mod tests {
+    use super::UNUSABLE_PASSWORD_HASH;
+    use argon2::{
+        Argon2,
+        password_hash::{PasswordHash, PasswordVerifier},
+    };
+
+    /// Issue #342 的回归锁：常量必须是合法 PHC 串。若它无法被 `PasswordHash::new`
+    /// 解析，将来任何校验路径都会在解析处提前失败，不变量悄悄变味。
+    #[test]
+    fn unusable_password_hash_is_a_valid_phc_string() {
+        let parsed = PasswordHash::new(UNUSABLE_PASSWORD_HASH)
+            .expect("unusable password hash must be parseable");
+        assert_eq!(parsed.algorithm.as_str(), "argon2id");
+        assert!(parsed.salt.is_some(), "hash must carry a salt");
+        assert!(parsed.hash.is_some(), "hash must carry a digest");
+    }
+
+    /// 常量参数必须与 `Argon2::default()` 一致（argon2id、v=19、m=19456、t=2、p=1）。
+    /// 若将来有人真的拿它做口令校验，计算代价必须等于默认参数，不能把
+    /// 「校验外部用户口令」意外变成廉价快路径。
+    #[test]
+    fn unusable_password_hash_matches_default_argon2_cost() {
+        let parsed = PasswordHash::new(UNUSABLE_PASSWORD_HASH).expect("valid PHC string");
+        let params: std::collections::HashMap<_, _> = parsed
+            .params
+            .iter()
+            .map(|(key, value)| (key.as_str().to_owned(), value.to_string()))
+            .collect();
+        assert_eq!(params.get("m").map(String::as_str), Some("19456"));
+        assert_eq!(params.get("t").map(String::as_str), Some("2"));
+        assert_eq!(params.get("p").map(String::as_str), Some("1"));
+        assert_eq!(parsed.version, Some(19));
+    }
+
+    /// 「不可用」的核心不变量：任何候选口令都校验失败。随机口令在建号时即被
+    /// 丢弃，常量哈希的原像不可知，登录路径即使放开也不可能命中。
+    #[test]
+    fn unusable_password_hash_never_accepts_a_password() {
+        let parsed = PasswordHash::new(UNUSABLE_PASSWORD_HASH).expect("valid PHC string");
+        for candidate in ["", "password", "oauth_external_user"] {
+            assert!(
+                !Argon2::default()
+                    .verify_password(candidate.as_bytes(), &parsed)
+                    .is_ok(),
+                "candidate {candidate:?} must not verify against the unusable hash"
+            );
+        }
+    }
 }
