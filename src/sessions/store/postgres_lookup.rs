@@ -67,8 +67,37 @@ pub(in crate::sessions::store) async fn find_with_metadata(
     } else {
         // 库里载荷为 NULL：回退到 Redis 取载荷。
         // 这条路径在 outbox 同步延迟或载荷迁移升级时会走到。
-        let mut connection = store.client.get_multiplexed_async_connection().await?;
-        let Some(payload): Option<Vec<u8>> = connection.get(store.key(token)).await? else {
+        //
+        // Redis 只是投影（Postgres 权威）：连接或读取失败时按
+        // 「取不到载荷 = 会话不存在」容错——与 `decode_payload` 的解密失败
+        // 语义一致（见 mod.rs），记录 warn 便于观测。不能把投影故障当存储
+        // 错误传播，否则 Redis 故障会让所有升级遗留会话（载荷为 NULL）的
+        // 校验直接 500 拒绝服务。这里只提前返回、不提交事务，行锁随回滚释放。
+        let mut connection = match store.client.get_multiplexed_async_connection().await {
+            Ok(connection) => connection,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    session_id = id,
+                    stage = "connect",
+                    "redis session payload fallback failed; treating session as absent"
+                );
+                return Ok(None);
+            }
+        };
+        let payload: Option<Vec<u8>> = match connection.get(store.key(token)).await {
+            Ok(payload) => payload,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    session_id = id,
+                    stage = "read",
+                    "redis session payload fallback failed; treating session as absent"
+                );
+                return Ok(None);
+            }
+        };
+        let Some(payload) = payload else {
             return Ok(None);
         };
         store.decode_payload(&payload)?
