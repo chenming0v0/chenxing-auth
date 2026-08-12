@@ -37,12 +37,10 @@ enum Exempt {
     /// OAuth 前端信道：协议要求浏览器顶层导航直达，授权码只回落到已注册
     /// 的 redirect_uri，真正的授权决定在带 CSRF 校验的决定端点完成。
     FrontChannelProtocol,
-    /// 纯重定向到 SPA 路由：不读凭据、不改状态。
-    RedirectOnly,
 }
 
 /// 状态改变路由的 CSRF 豁免白名单：`(路径, 方法, 依据)`。
-const EXEMPTIONS: [(&str, &str, Exempt); 13] = [
+const EXEMPTIONS: [(&str, &str, Exempt); 12] = [
     // —— OAuth 协议端点 ——
     ("/oauth/authorize", "post", Exempt::FrontChannelProtocol),
     ("/oauth/token", "post", Exempt::NonBrowserCredential),
@@ -70,8 +68,6 @@ const EXEMPTIONS: [(&str, &str, Exempt); 13] = [
         "post",
         Exempt::PreAuthTicket,
     ),
-    // —— 重定向 shim ——
-    ("/admin/login", "post", Exempt::RedirectOnly),
 ];
 
 /// `PreAuthTicket` 豁免中仅换取挑战、不落地凭据变更的 start 端点。
