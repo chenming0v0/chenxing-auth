@@ -179,9 +179,6 @@ impl AuthFactorService {
         {
             return Ok(TotpConfirmation::InvalidCode);
         }
-        self.limiter
-            .clear(FailureDimension::Ticket, ticket_id)
-            .await?;
         match self
             .reencrypt_totp_secret_if_needed(ticket.user_id, &encrypted_secret, &decrypted)
             .await
@@ -206,6 +203,11 @@ impl AuthFactorService {
         {
             return Ok(TotpConfirmation::InvalidTicket);
         }
+        // 清零必须发生在 ticket 原子消费成功之后（#339）：ticket 是一次性且绑定 holder
+        // 的，take 失败说明本请求是并发竞态的败者，登录并未完成，不能擦除失败历史。
+        self.limiter
+            .clear(FailureDimension::Ticket, ticket_id)
+            .await?;
         Ok(TotpConfirmation::Completed(ticket.authenticated()))
     }
 
