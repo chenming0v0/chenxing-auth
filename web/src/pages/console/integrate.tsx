@@ -6,17 +6,39 @@ import { Button, CopyValue, EmptyState, Field, HudPanel, Icon, Notice, TextAreaF
 import { formatQuota, splitValues } from './developer-shared'
 import { entitlementState, SelfServiceClosedBlock, useEntitlements } from './shared'
 
-const LOCALHOST_REDIRECT_URI_MESSAGE = 'localhost 不能作为 HTTP Redirect URI；本地开发请改用 http://127.0.0.1:端口/... 或 http://[::1]:端口/...，生产环境请使用 HTTPS。'
+const REDIRECT_URI_RULE_MESSAGE = '仅允许 HTTPS；本地 HTTP 回调必须使用 127.0.0.1 或 [::1]，不接受 localhost、通配符与危险协议。'
 
-function includesHttpLocalhost(redirectUris: string[]): boolean {
-  return redirectUris.some((value) => {
-    try {
-      const url = new URL(value)
-      return url.protocol === 'http:' && url.hostname === 'localhost'
-    } catch {
-      return false
-    }
-  })
+// 前端镜像后端 src/clients/domain.rs::validate_redirect_uri 的规则集；前端只做即时反馈，服务端仍是权威校验。
+function redirectUriProblem(value: string): string | null {
+  if (value.includes('*')) return '不接受通配符'
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return '不是合法的 URL'
+  }
+  const { protocol, hostname, hash, username, password } = url
+  if (protocol !== 'https:' && (protocol !== 'http:' || !isLoopbackHostname(hostname))) {
+    return '仅允许 HTTPS，或 HTTP 回环地址（127.0.0.1 / [::1]）'
+  }
+  if (hash) return '不允许包含 fragment'
+  if (username || password) return '不允许包含用户名或密码'
+  return null
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  // WHATWG URL 把 IPv6 host 序列化为带方括号形式，如 "[::1]"
+  if (hostname === '[::1]') return true
+  const octets = hostname.split('.')
+  return octets.length === 4 && octets[0] === '127' && octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
+}
+
+function findInvalidRedirectUri(redirectUris: string[]): { value: string; reason: string } | null {
+  for (const value of redirectUris) {
+    const reason = redirectUriProblem(value)
+    if (reason !== null) return { value, reason }
+  }
+  return null
 }
 
 export function IntegratePage() {
@@ -77,8 +99,9 @@ export function IntegratePage() {
       setMessage('请填写应用名称、至少一个 Redirect URI 和 Scope。')
       return
     }
-    if (includesHttpLocalhost(input.redirect_uris)) {
-      setMessage(LOCALHOST_REDIRECT_URI_MESSAGE)
+    const invalid = findInvalidRedirectUri(input.redirect_uris)
+    if (invalid) {
+      setMessage(`「${invalid.value}」${invalid.reason}。${REDIRECT_URI_RULE_MESSAGE}`)
       return
     }
     setBusy(true)
@@ -284,7 +307,7 @@ export function IntegratePage() {
           {message ? <Notice tone="warning">{message}</Notice> : null}
           <HudPanel className="space-y-4 !p-5">
             <Field label="应用名称" placeholder="例如：星尘控制台" value={name} onChange={(event) => setName(event.target.value)} required />
-            <TextAreaField label="Redirect URI" placeholder="每行一个严格匹配的 URI" value={redirectUris} onChange={(event) => setRedirectUris(event.target.value)} required hint="仅允许 HTTPS；本地 HTTP 回调必须使用 127.0.0.1 或 [::1]，不接受 localhost 与通配符。" />
+            <TextAreaField label="Redirect URI" placeholder="每行一个严格匹配的 URI" value={redirectUris} onChange={(event) => setRedirectUris(event.target.value)} required hint={REDIRECT_URI_RULE_MESSAGE} />
             <TextAreaField label="Scope" value={scopes} onChange={(event) => setScopes(event.target.value)} required hint="用空格、逗号或换行分隔。" />
           </HudPanel>
         </Drawer>

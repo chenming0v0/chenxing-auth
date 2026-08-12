@@ -39,19 +39,36 @@ describe('IntegratePage documentation link', () => {
 })
 
 describe('IntegratePage Redirect URI guidance', () => {
-  it('explains the loopback IP requirement before submitting an HTTP localhost URI', async () => {
+  it.each([
+    ['http://localhost:8080/callback', /仅允许 HTTPS，或 HTTP 回环地址/],
+    ['http://example.com/callback', /仅允许 HTTPS，或 HTTP 回环地址/],
+    ['ftp://example.com/callback', /仅允许 HTTPS，或 HTTP 回环地址/],
+    ['javascript:alert(1)', /仅允许 HTTPS，或 HTTP 回环地址/],
+    ['not a url', /不是合法的 URL/],
+  ] as const)('rejects %s without submitting', async (uri: string, reason: RegExp) => {
     render(<IntegratePage />)
     fireEvent.click(screen.getAllByRole('button', { name: '注册新应用' })[0])
     fireEvent.change(screen.getByLabelText('应用名称'), { target: { value: '本地调试应用' } })
-    fireEvent.change(screen.getByLabelText('Redirect URI'), {
-      target: { value: 'http://localhost:8080/callback' },
-    })
+    fireEvent.change(screen.getByLabelText('Redirect URI'), { target: { value: uri } })
     fireEvent.click(screen.getByRole('button', { name: '创建应用' }))
 
-    const message = await screen.findByText(/localhost 不能作为 HTTP Redirect URI/)
+    const message = await screen.findByText(reason)
     expect(message.textContent).toContain('127.0.0.1')
     expect(message.textContent).toContain('[::1]')
     expect(apiFetchMock.mock.calls.some(([path, init]) =>
       path === '/api/v1/auth/oauth-clients' && init?.method === 'POST')).toBe(false)
+  })
+
+  it('accepts HTTPS and loopback HTTP URIs', () => {
+    render(<IntegratePage />)
+    fireEvent.click(screen.getAllByRole('button', { name: '注册新应用' })[0])
+    fireEvent.change(screen.getByLabelText('应用名称'), { target: { value: '本地调试应用' } })
+    fireEvent.change(screen.getByLabelText('Redirect URI'), {
+      target: { value: 'https://example.com/callback\nhttp://127.0.0.1:8080/cb\nhttp://[::1]:3000/cb' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '创建应用' }))
+
+    expect(apiFetchMock.mock.calls.some(([path, init]) =>
+      path === '/api/v1/auth/oauth-clients' && init?.method === 'POST')).toBe(true)
   })
 })
