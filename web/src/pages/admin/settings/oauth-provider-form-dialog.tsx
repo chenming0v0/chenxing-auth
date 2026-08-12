@@ -161,6 +161,9 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
 
   function submit(event: FormEvent) {
     event.preventDefault()
+    /* 防重入：保存请求在途时忽略重复提交（Issue #369）。busy 期间保存按钮已禁用，
+       但 Enter 隐式提交仍会触发表单提交，这里与面板 save() 的入口守卫呼应。 */
+    if (busy) return
     /* Client Secret 的必填语义只由这里承担，字段上不挂原生 required（Issue #403）：
        原生约束校验在 onSubmit 之前拦截，会用浏览器英文气泡遮蔽下面的中文警告；
        且编辑已配置的 provider 时留空表示「保持原值」，本来就无法用原生 required 表达。 */
@@ -187,11 +190,13 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
             </h2>
             <p className="chenxing-caption mt-1.5">配置 OAuth 2.0 授权码流程 + UserInfo 的外部身份提供商</p>
           </div>
-          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={requestClose}>
+          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={requestClose} disabled={busy}>
             <Icon name="x" size={16} />
           </button>
         </div>
-        <div className="mt-5 grid gap-4">
+        {/* busy 期间整体禁用表单字段（Issue #369）：fieldset 按规范禁用内部全部原生控件，
+            SelectField 的 trigger 与 Switch 同为 button 也在其列，与其它设置面板一致。 */}
+        <fieldset disabled={busy} className="mt-5 grid gap-4 border-0 p-0 m-0 min-w-0">
           {/* Issue #296：信任模型必须写在填表的地方。管理员在这里决定信任哪个外部身份源，
               而本平台对该身份源做了什么校验、没做什么校验，是这个决定的前提。 */}
           <Notice>
@@ -261,12 +266,12 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
             ]}
           />
           {editing?.callback_uri ? <Field label="Callback URI" value={editing.callback_uri} readOnly /> : null}
-        </div>
+        </fieldset>
         <div className="chenxing-divider my-5" />
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <ToggleRow title="启用供应商" checked={form.enabled} onChange={(enabled) => setForm({ ...form, enabled })} />
+          <ToggleRow title="启用供应商" checked={form.enabled} disabled={busy} onChange={(enabled) => setForm({ ...form, enabled })} />
           <div className="flex items-center gap-3">
-            <Button type="button" variant="ghost" onClick={requestClose}>取消</Button>
+            <Button type="button" variant="ghost" onClick={requestClose} disabled={busy}>取消</Button>
             <Button type="submit" icon="save" disabled={busy}>保存</Button>
           </div>
         </div>
