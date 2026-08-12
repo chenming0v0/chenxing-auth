@@ -156,11 +156,15 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
    * login_ticket 失效后从 MFA 步骤回到登录表单。pending 置空会卸载整个
    * 因子编排器，其内部的 setup/选中/验证码状态随之销毁；已填凭据保留，
    * 用户直接重新提交即可，不打断登录流程也不把用户卡死。
+   * authTab 同时复位到 'account'（#385）：MFA 流程可能从「Auth 登录」页签
+   * 发起，pending 清空后若页签仍停在 'auth'，渲染会落到外部身份源列表，
+   * 账号登录表单被隐藏，用户看到提示却找不到表单。
    */
   function resetToLogin() {
     releaseSubmitLock()
     setMessage('验证流程已失效，请重新登录。')
     setPending(null)
+    setAuthTab('account')
   }
 
   async function submit(event: FormEvent) {
