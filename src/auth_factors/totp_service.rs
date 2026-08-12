@@ -18,6 +18,23 @@ use crate::{
     users::domain::UserId,
 };
 
+/// 惰性重加密的处置结果（#360）。
+///
+/// 调用方必须区分 `Missing`：CAS 失败且因子行已不存在时，验证只对
+/// 「读取时刻的那份密文」成立，该密文已不再对应任何现存因子，不能按
+/// 「因子仍然存在」继续完成认证。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TotpReencryptionOutcome {
+    /// 密文已用当前密钥加密，无需迁移。
+    NotNeeded,
+    /// 本次 CAS 写入成功，已替换为当前密钥的密文。
+    Reencrypted,
+    /// 并发请求已完成同一种子的重加密：本次无事可做，验证依然有效。
+    Superseded,
+    /// 因子已被并发重置/删除：验证结果对现存账号状态不再成立。
+    Missing,
+}
+
 impl AuthFactorService {
     pub async fn verify_totp(
         &self,
@@ -73,15 +90,22 @@ impl AuthFactorService {
         {
             return Ok(FactorVerification::Rejected);
         }
-        if let Err(error) = self
+        match self
             .reencrypt_totp_secret_if_needed(user_id, &encrypted_secret, &decrypted)
             .await
         {
-            tracing::warn!(
-                event = "auth_factor.totp.lazy_reencryption_failed",
-                error = %error,
-                "TOTP verification succeeded but key rotation migration was deferred"
-            );
+            // 因子已被并发重置/删除：码虽然对「读取时的那份密文」成立，但该
+            // 因子已不存在。按「因子不存在」拒绝，且不记失败——码本身是对的，
+            // 额度已在 claim 时归还（#360）。
+            Ok(TotpReencryptionOutcome::Missing) => return Ok(FactorVerification::Rejected),
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    event = "auth_factor.totp.lazy_reencryption_failed",
+                    error = %error,
+                    "TOTP verification succeeded but key rotation migration was deferred"
+                );
+            }
         }
         Ok(FactorVerification::Accepted)
     }
@@ -158,15 +182,21 @@ impl AuthFactorService {
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
-        if let Err(error) = self
+        match self
             .reencrypt_totp_secret_if_needed(ticket.user_id, &encrypted_secret, &decrypted)
             .await
         {
-            tracing::warn!(
-                event = "auth_factor.totp.lazy_reencryption_failed",
-                error = %error,
-                "TOTP verification succeeded but key rotation migration was deferred"
-            );
+            // 因子已被并发重置/删除：与「读不到因子」同一语义（InvalidTicket），
+            // 但不记失败——码本身是对的，额度已在 claim 时归还（#360）。
+            Ok(TotpReencryptionOutcome::Missing) => return Ok(TotpConfirmation::InvalidTicket),
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    event = "auth_factor.totp.lazy_reencryption_failed",
+                    error = %error,
+                    "TOTP verification succeeded but key rotation migration was deferred"
+                );
+            }
         }
         if self
             .tickets
@@ -239,24 +269,29 @@ impl AuthFactorService {
         Ok(())
     }
 
+    /// 惰性重加密：仅在密文使用非当前密钥时用当前密钥环重加密并 CAS 写入。
     pub(super) async fn reencrypt_totp_secret_if_needed(
         &self,
         user_id: UserId,
         current_ciphertext: &[u8],
         decrypted: &DecryptedTotpSecret,
-    ) -> Result<(), AuthFactorServiceError> {
+    ) -> Result<TotpReencryptionOutcome, AuthFactorServiceError> {
         if !decrypted.needs_reencryption {
-            return Ok(());
+            return Ok(TotpReencryptionOutcome::NotNeeded);
         }
         let replacement =
             encrypt_totp_secret_with_ring(&self.encryption_keys, &decrypted.plaintext)?;
-        repository::update_totp_factor_if_current(
+        let outcome = repository::update_totp_factor_if_current(
             &self.pool,
             user_id,
             current_ciphertext,
             &replacement,
         )
         .await?;
-        Ok(())
+        Ok(match outcome {
+            repository::TotpCasUpdateOutcome::Updated => TotpReencryptionOutcome::Reencrypted,
+            repository::TotpCasUpdateOutcome::Superseded => TotpReencryptionOutcome::Superseded,
+            repository::TotpCasUpdateOutcome::Missing => TotpReencryptionOutcome::Missing,
+        })
     }
 }

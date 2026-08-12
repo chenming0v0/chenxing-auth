@@ -88,12 +88,27 @@ pub async fn insert_totp_factor_for_passkey_recovery(
     Ok(FirstFactorPersistenceResult::Stored)
 }
 
+/// 惰性重加密的 CAS 更新结果（#360）。
+///
+/// `bool` 会把「因子已被并发重置/删除」和「并发重加密的无害竞争」压成同一个
+/// `false`，调用方于是无从得知读到的密文是否还对应任何现存因子，会继续按
+/// 旧密文的明文种子完成认证。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TotpCasUpdateOutcome {
+    /// 本次写入了替换密文。
+    Updated,
+    /// 行还在，但密文已被并发写入者替换（同一种子的重加密竞争）：无事可做。
+    Superseded,
+    /// 行已不存在：因子被并发重置/删除，读到的密文不再代表任何现存因子。
+    Missing,
+}
+
 pub async fn update_totp_factor_if_current(
     pool: &PgPool,
     user_id: UserId,
     current_ciphertext: &[u8],
     replacement_ciphertext: &[u8],
-) -> Result<bool, crate::sqlx::Error> {
+) -> Result<TotpCasUpdateOutcome, crate::sqlx::Error> {
     let result = crate::sqlx::query(
         "UPDATE user_totp_factors
          SET encrypted_secret = $3, updated_at = NOW()
@@ -104,7 +119,23 @@ pub async fn update_totp_factor_if_current(
     .bind(replacement_ciphertext)
     .execute(pool)
     .await?;
-    Ok(result.rows_affected() == 1)
+    if result.rows_affected() == 1 {
+        return Ok(TotpCasUpdateOutcome::Updated);
+    }
+    // CAS 未命中后再查一次存在性，区分「已被并发重加密」（行还在）与
+    // 「已被重置/删除」（行没了）。检查与删除之间的残余竞争只会把结果偏向
+    // `Missing`，方向是安全的：宁可拒绝，也不按已消失的因子放行。
+    let exists: bool = crate::sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM user_totp_factors WHERE user_id = $1)",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(if exists {
+        TotpCasUpdateOutcome::Superseded
+    } else {
+        TotpCasUpdateOutcome::Missing
+    })
 }
 
 pub async fn find_totp_secret(
