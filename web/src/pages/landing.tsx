@@ -183,9 +183,9 @@ export function LandingPage() {
                 ))}
               </ul>
               <div className="cx-hero-in mt-10 flex flex-wrap items-center gap-3" style={d(1120)}>
-                <Link to="/register" className="chenxing-btn-primary cx-btn-shine text-base"><Icon name="sparkles" size={16} />创建辰星通行证</Link>
-                <Link to="/oauth/consent" className="chenxing-btn-ghost cx-btn-invert text-base"><Icon name="zap" size={16} />体验授权流程</Link>
-                <Link to="/console/playground" className="chenxing-btn-ghost cx-btn-invert text-base"><Icon name="terminal" size={16} />OAuth 连接测试</Link>
+                <Link to="/register" className="chenxing-btn-primary text-base"><Icon name="sparkles" size={16} />创建辰星通行证</Link>
+                <Link to="/oauth/consent" className="chenxing-btn-ghost text-base"><Icon name="zap" size={16} />体验授权流程</Link>
+                <Link to="/console/playground" className="chenxing-btn-ghost text-base"><Icon name="terminal" size={16} />OAuth 连接测试</Link>
               </div>
             </div>
 
@@ -327,8 +327,8 @@ export function LandingPage() {
                 </h2>
                 <p className="chenxing-caption mx-auto mt-4 max-w-xl leading-[1.9]">注册开发者账号，创建你的第一个 OAuth 客户端，把辰星通行证接入到你的项目里。</p>
                 <div className="mt-9 flex flex-wrap justify-center gap-3">
-                  <Link to="/register" className="chenxing-btn-primary cx-btn-shine"><Icon name="lock" size={16} />立即创建通行证</Link>
-                  <Link to="/login" className="chenxing-btn-ghost cx-btn-invert">已有通行证 · 登录</Link>
+                  <Link to="/register" className="chenxing-btn-primary"><Icon name="lock" size={16} />立即创建通行证</Link>
+                  <Link to="/login" className="chenxing-btn-ghost">已有通行证 · 登录</Link>
                 </div>
               </div>
             </HudPanel>
