@@ -117,6 +117,24 @@ export function Select({
     return () => document.removeEventListener('mousedown', onPointerDown)
   }, [open])
 
+  /* Escape must close the popup no matter where focus sits. A click on popup
+     padding or the scrollbar (options beyond max-height) lands on a
+     non-focusable div: the trigger blurs, focus falls to <body>, and the
+     trigger's own onKeyDown never sees the key again. Listen on document
+     while open and hand focus back to the trigger (same convention as the
+     shell menus), so the combobox keyboard context is restored. */
+  useEffect(() => {
+    if (!open) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setOpen(false)
+      triggerRef.current?.focus()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open])
+
   useEffect(() => () => window.clearTimeout(typeahead.current.timer), [])
 
   /* keep the keyboard cursor in view without stealing focus from the trigger */
@@ -228,6 +246,11 @@ export function Select({
               id={`${baseId}-listbox`}
               role="listbox"
               className="chenxing-select-popup"
+              /* mousedown 的默认行为会把焦点从 trigger 挪走：padding 和滚动条都
+                 命中这个不可聚焦的 div，焦点掉到 <body> 后 trigger 的键盘处理
+                 全部失效。preventDefault 让焦点始终留在 trigger（ARIA combobox
+                 约定），option 的 click 事件不受影响，仍正常提交。 */
+              onMouseDown={(event) => event.preventDefault()}
               style={{
                 left: position.left,
                 width: position.width,
