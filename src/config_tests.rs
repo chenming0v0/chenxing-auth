@@ -71,6 +71,21 @@ fn session_ttl_of_zero_is_still_rejected() {
     assert_eq!(error, ConfigError::InvalidValue("SESSION_TTL_SECONDS"));
 }
 
+/// #363：极端 TTL（超过 `OffsetDateTime` 可表示范围）必须在启动期被拒绝，
+/// 而不是拖到登录时才以 panic 暴露。
+#[test]
+fn out_of_range_session_ttl_is_rejected_at_startup() {
+    let error = Config::from_values(
+        "127.0.0.1".to_owned(),
+        3000,
+        "postgres://localhost/chenxing_auth".to_owned(),
+        "redis://localhost".to_owned(),
+        MAX_SESSION_TTL_SECONDS + 1,
+    )
+    .expect_err("session TTL beyond the representable range must be rejected");
+    assert_eq!(error, ConfigError::InvalidValue("SESSION_TTL_SECONDS"));
+}
+
 #[test]
 fn insecure_cookies_are_allowed_only_for_loopback_http() {
     let mut config = config_with_session_ttl(3600);

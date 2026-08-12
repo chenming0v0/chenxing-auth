@@ -24,6 +24,7 @@ mod config_security;
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 pub use crate::sessions::domain::{
     DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS, DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,
+    MAX_SESSION_TTL_SECONDS,
 };
 
 const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 30;

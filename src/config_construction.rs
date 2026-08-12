@@ -20,7 +20,7 @@ use super::config_security::{
 };
 use super::{
     Config, ConfigError, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
-    DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,
+    DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS, MAX_SESSION_TTL_SECONDS,
 };
 
 struct ConfigValues {
@@ -300,6 +300,11 @@ impl Config {
             return Err(ConfigError::MissingValue("REDIS_URL"));
         }
         if session_ttl_seconds == 0 {
+            return Err(ConfigError::InvalidValue("SESSION_TTL_SECONDS"));
+        }
+        // #363：TTL 超过 `OffsetDateTime` 可表示范围（±9999 年）时，`now + ttl`
+        // 会在运行期 panic。这里启动期 fail-fast，避免极端配置下每个登录请求 500。
+        if session_ttl_seconds > MAX_SESSION_TTL_SECONDS {
             return Err(ConfigError::InvalidValue("SESSION_TTL_SECONDS"));
         }
         if session_idle_timeout_seconds == 0 {
