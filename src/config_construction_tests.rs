@@ -1,6 +1,6 @@
 use super::*;
 
-fn assert_userinfo_is_rejected(name: &'static str, credential_urls: [(&str, &str); 2]) {
+fn assert_userinfo_is_rejected(name: &'static str, credential_urls: [(&str, &str); 3]) {
     for (value, credential) in credential_urls {
         let parsed = url::Url::parse(value).expect("userinfo fixture must be a valid URL");
         assert!(!parsed.username().is_empty() || parsed.password().is_some());
@@ -25,6 +25,8 @@ fn app_issuer_rejects_url_userinfo_without_echoing_credentials() {
                 "https://:issuer-password@auth.example.com",
                 "issuer-password",
             ),
+            // issue-408 实证形态：完整 user:pass@ 双凭据
+            ("http://user:pass@auth.example.com/", "pass"),
         ],
     );
 
@@ -41,6 +43,8 @@ fn webauthn_origin_rejects_url_userinfo_without_echoing_credentials() {
                 "https://:origin-password@auth.example.com",
                 "origin-password",
             ),
+            // issue-408 实证形态：完整 user:pass@ 双凭据
+            ("https://admin:s3cret@auth.example.com/", "s3cret"),
         ],
     );
 
