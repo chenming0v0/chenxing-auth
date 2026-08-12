@@ -128,7 +128,8 @@ export function OAuthProvidersPanel({ onMessage }: SettingsPanelProps) {
         setPending(failure)
         onMessage(pendingMessage(failure), 'warning')
       } else {
-        setPending(null)
+        // 成功路径不能盲清 pending：横幅可能属于另一个还没修好的 provider。
+        // 是否消失只由随后 reload → apply → reconcile 对照列表裁决（Issue #367）。
         onMessage(target ? 'OAuth 提供商已更新。' : 'OAuth 提供商已创建。')
       }
       await reload()

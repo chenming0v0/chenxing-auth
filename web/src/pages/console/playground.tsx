@@ -38,6 +38,16 @@ export function PlaygroundPage() {
     setMessage('')
   }
 
+  function updateRedirectUri(value: string) {
+    setRedirectUri(value)
+    setResult(null)
+  }
+
+  function updateScope(value: string) {
+    setScope(value)
+    setResult(null)
+  }
+
   async function generate() {
     const client = clients.find((item) => item.client_id === selectedId)
     if (!client || !redirectUri || !scope.trim()) {
@@ -109,8 +119,8 @@ export function PlaygroundPage() {
               options={clients.map((client) => ({ value: client.client_id, label: client.client_name }))}
             />
             <Field label="Client ID" className="chenxing-mono text-sm" readOnly value={selectedId} />
-            <Field label="Redirect URI" className="chenxing-mono text-sm" value={redirectUri} onChange={(event) => setRedirectUri(event.target.value)} />
-            <Field label="Scope" value={scope} onChange={(event) => setScope(event.target.value)} />
+            <Field label="Redirect URI" className="chenxing-mono text-sm" value={redirectUri} onChange={(event) => updateRedirectUri(event.target.value)} />
+            <Field label="Scope" value={scope} onChange={(event) => updateScope(event.target.value)} />
             <Field label="Response Type" className="chenxing-mono text-sm" readOnly value="code" />
             <Field label="Code Challenge Method" className="chenxing-mono text-sm" readOnly value="S256" />
           </div>

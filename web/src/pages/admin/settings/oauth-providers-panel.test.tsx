@@ -430,3 +430,24 @@ describe('OAuthProvidersPanel 更新成功但状态切换失败（Issue #277）'
     await waitFor(() => expect(screen.queryByRole('button', { name: '重试启用' })).toBeNull())
   })
 })
+
+describe('OAuthProvidersPanel 保存成功不得清掉其它 provider 的重试提示（Issue #367）', () => {
+  it('创建 Okta 启用失败后，再保存 GitLab 仍保留 Okta 的重试横幅', async () => {
+    enableFailures.set('okta', 1)
+    renderPanel()
+    await screen.findByText('GitLab')
+    openCreate()
+    fillCreateForm()
+    save()
+
+    await screen.findByRole('button', { name: '重试启用' })
+    expect(screen.getByText('Okta').closest('tr')?.textContent).toContain('启用失败')
+
+    await openEditRow('GitLab')
+    save()
+
+    await waitFor(() => expect(requests.some((r) => r.method === 'PUT')).toBe(true))
+    expect(await screen.findByRole('button', { name: '重试启用' })).toBeTruthy()
+    expect(screen.getByText('Okta').closest('tr')?.textContent).toContain('启用失败')
+  })
+})

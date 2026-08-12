@@ -1,0 +1,98 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ReactNode } from 'react'
+import { PlaygroundPage } from './playground'
+import type { OwnedOAuthClient } from '../../api'
+
+const CLIENT: OwnedOAuthClient = {
+  id: 1,
+  client_id: 'cx-client-demo',
+  client_name: '演示应用',
+  redirect_uris: ['https://app.example.com/callback'],
+  scopes: ['openid'],
+  status: 'active',
+  quota: { daily_limit: null, daily_used: 0, monthly_limit: null, monthly_used: 0 },
+}
+
+const { apiFetchMock } = vi.hoisted(() => ({
+  apiFetchMock: vi.fn(async (_path: string, _init?: RequestInit): Promise<unknown> => ({ items: [CLIENT] })),
+}))
+
+vi.mock('../../api', () => ({
+  apiFetch: apiFetchMock,
+}))
+
+vi.mock('../../components/shells', () => ({
+  ConsoleLayout: ({ children }: { children: ReactNode }) => <>{children}</>,
+}))
+
+vi.mock('./shared', () => ({
+  entitlementState: () => ({
+    kind: 'ready',
+    plan: { code: 'basic', name: '基础版', description: null, validity: 'permanent' },
+    data: { plan: { code: 'basic', name: '基础版', description: null, validity: 'permanent' }, entitlements: [] },
+  }),
+  SelfServiceClosedBlock: ({ children }: { children: ReactNode }) => <>{children}</>,
+  useEntitlements: () => ({ data: null, error: '', loading: false, retry: vi.fn() }),
+}))
+
+beforeEach(() => {
+  apiFetchMock.mockClear()
+  apiFetchMock.mockResolvedValue({ items: [CLIENT] })
+  if (!globalThis.crypto.subtle?.digest) {
+    vi.stubGlobal('crypto', {
+      ...globalThis.crypto,
+      getRandomValues: (bytes: Uint8Array) => {
+        bytes.fill(7)
+        return bytes
+      },
+      subtle: {
+        digest: async () => new Uint8Array(32).fill(9).buffer,
+      },
+    })
+  }
+})
+
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
+
+async function generateAuthorizeUrl() {
+  render(<PlaygroundPage />)
+  await screen.findByDisplayValue('https://app.example.com/callback')
+  fireEvent.click(screen.getByRole('button', { name: '生成授权 URL' }))
+  await screen.findByRole('link', { name: /打开授权端点/ })
+}
+
+describe('PlaygroundPage 参数变更作废过期授权结果（Issue #368）', () => {
+  it('生成后展示 Authorize URL 与 PKCE', async () => {
+    await generateAuthorizeUrl()
+    expect(screen.getByText('code_verifier')).toBeTruthy()
+    expect(screen.getByText('Authorize URL')).toBeTruthy()
+    const link = screen.getByRole('link', { name: /打开授权端点/ })
+    expect(link.getAttribute('href')).toContain('redirect_uri=https%3A%2F%2Fapp.example.com%2Fcallback')
+    expect(link.getAttribute('href')).toContain('scope=openid')
+  })
+
+  it('修改 Redirect URI 后清掉授权结果', async () => {
+    await generateAuthorizeUrl()
+    fireEvent.change(screen.getByLabelText('Redirect URI'), {
+      target: { value: 'https://app.example.com/other' },
+    })
+    await waitFor(() => {
+      expect(screen.queryByRole('link', { name: /打开授权端点/ })).toBeNull()
+      expect(screen.queryByText('Authorize URL')).toBeNull()
+    })
+    expect(screen.getByRole('button', { name: '生成授权 URL' })).toBeTruthy()
+  })
+
+  it('修改 Scope 后清掉授权结果', async () => {
+    await generateAuthorizeUrl()
+    fireEvent.change(screen.getByLabelText('Scope'), { target: { value: 'openid profile' } })
+    await waitFor(() => {
+      expect(screen.queryByRole('link', { name: /打开授权端点/ })).toBeNull()
+      expect(screen.queryByText('Authorize URL')).toBeNull()
+    })
+  })
+})
