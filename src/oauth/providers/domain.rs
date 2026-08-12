@@ -192,6 +192,23 @@ impl fmt::Debug for ProviderRecord {
     }
 }
 
+/// 判定字符串能否作为外部 OAuth provider 的 slug。
+///
+/// slug 会拼进回调 URL 和 Set-Cookie 的 Path 属性，因此只放行安全字符集
+/// （ASCII 小写字母、数字、`-`、`_`）并限制长度。管理员创建 provider 与
+/// `/auth/external/{slug}` 系列路由共用这一条规则；路由侧必须在把路径参数
+/// 用于任何 Cookie、日志或审计之前先拒绝非法 slug（Issue #344）。
+pub fn is_valid_provider_slug(slug: &str) -> bool {
+    !slug.is_empty()
+        && slug.chars().count() <= MAX_SLUG_LENGTH
+        && slug.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || character == '-'
+                || character == '_'
+        })
+}
+
 impl ProviderInput {
     /// 校验并收敛输入。`policy` 是出网边界策略（Issue #343）：生产策略拒绝回环
     /// 端点，开发策略放行回环与明文 `http`。校验端点之外的规则与策略无关。
@@ -204,15 +221,7 @@ impl ProviderInput {
             return Err(ProviderValidationError::InvalidName);
         }
         let slug = self.slug.trim().to_owned();
-        if slug.is_empty()
-            || slug.chars().count() > MAX_SLUG_LENGTH
-            || !slug.chars().all(|character| {
-                character.is_ascii_lowercase()
-                    || character.is_ascii_digit()
-                    || character == '-'
-                    || character == '_'
-            })
-        {
+        if !is_valid_provider_slug(&slug) {
             return Err(ProviderValidationError::InvalidSlug);
         }
         let authorization_endpoint = validate_endpoint(&self.authorization_endpoint, policy)?;

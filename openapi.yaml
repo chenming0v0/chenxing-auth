@@ -645,6 +645,7 @@ paths:
       responses:
         '302': { description: 重定向到外部授权端点, headers: { Set-Cookie: { $ref: '#/components/headers/SetCookie' } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /auth/external/{slug}/callback:
     get:
       tags: [User Auth/Browser Login]
@@ -664,6 +665,7 @@ paths:
       responses:
         '302': { description: 登录成功或失败后的页面重定向, headers: { Set-Cookie: { $ref: '#/components/headers/SetCookie' } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /oauth/authorize:
     get:
       tags: [OAuth/OIDC]

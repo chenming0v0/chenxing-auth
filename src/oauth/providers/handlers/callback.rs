@@ -3,6 +3,7 @@ use crate::{
     error,
     oauth::{
         providers::{
+            domain::is_valid_provider_slug,
             error_helpers::{
                 append_external_state_clear, external_binding_failure, external_callback_path,
                 external_error, external_error_with_request,
@@ -47,6 +48,17 @@ pub async fn external_callback(
     headers: HeaderMap,
     Query(query): Query<ExternalCallbackQuery>,
 ) -> Response {
+    // slug 会拼进 Set-Cookie 的 Path 属性，进入错误处理前必须按 provider slug
+    // 规则校验：Axum 的 Path 会做百分号解码，未校验的路径参数（如 `%0d%0a`
+    // 解码出的 CR/LF）会让清除状态 Cookie 的失败路径在 HeaderValue 校验处变成
+    // 无条件 500（Issue #344）。日志不记录 slug 原值，避免回显攻击者可控的控制字符。
+    if !is_valid_provider_slug(&slug) {
+        tracing::info!("rejected external OAuth callback with an invalid provider slug");
+        return error::not_found(
+            "oauth_provider_not_found",
+            "external OAuth provider not found",
+        );
+    }
     let callback_path = external_callback_path(&slug);
     let Some(returned_state) = query.state.as_deref().filter(|value| !value.is_empty()) else {
         return external_error(&state, &slug, "oauth_login_failed").await;
