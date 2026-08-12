@@ -146,8 +146,9 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
 
   function submit(event: FormEvent) {
     event.preventDefault()
-    /* Client Secret 是唯一不能靠 required 属性守住的字段：编辑已配置的 provider 时留空
-       表示「保持原值」，其余情况留空必须拦在请求之前，否则会写出一个登录必然失败的配置。 */
+    /* Client Secret 的必填语义只由这里承担，字段上不挂原生 required（Issue #403）：
+       原生约束校验在 onSubmit 之前拦截，会用浏览器英文气泡遮蔽下面的中文警告；
+       且编辑已配置的 provider 时留空表示「保持原值」，本来就无法用原生 required 表达。 */
     if (!editing) {
       if (!form.client_secret.trim()) {
         onMessage('创建提供商时必须填写 Client Secret。', 'warning')
@@ -207,7 +208,6 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
             onChange={(event) => setForm({ ...form, client_secret: event.target.value })}
             placeholder={editing ? (editing.client_secret_configured ? '留空保持不变，输入新值替换' : '尚未配置，请输入 Client Secret') : '仅保存时使用，保存后不再回显'}
             hint={editing ? (editing.client_secret_configured ? '已配置 Client Secret：留空保持不变，输入新值替换。保存后不会回显明文。' : '当前未配置 Client Secret，登录该提供商将失败。请输入密钥，保存后不会回显明文。') : '密钥将加密存储，保存后不会回显明文。'}
-            required={!editing || !editing.client_secret_configured}
           />
           {editing && !editing.client_secret_configured ? (
             <Notice tone="warning">尚未配置 Client Secret，用户通过该提供商登录将失败。请输入密钥后保存。</Notice>

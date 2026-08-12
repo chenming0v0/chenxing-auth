@@ -184,12 +184,14 @@ describe('OAuthProvidersPanel Client Secret 状态展示', () => {
     expect(screen.getByText('已配置 Client Secret：留空保持不变，输入新值替换。保存后不会回显明文。')).toBeTruthy()
   })
 
-  it('编辑未配置提供商时给出明确警告并标记必填', async () => {
+  it('编辑未配置提供商时给出明确警告，必填校验走自定义分支而非原生 required（Issue #403）', async () => {
     renderPanel()
     await screen.findByText('Gitea')
     await openEditRow('Gitea')
     const input = screen.getByLabelText('Client Secret *') as HTMLInputElement
-    expect(input.required).toBe(true)
+    /* 原生 required 会在 onSubmit 之前拦截提交，用浏览器英文气泡遮蔽中文警告；
+       必填语义由 submit() 中的自定义校验承担，这里断言原生属性未启用。 */
+    expect(input.required).toBe(false)
     expect(screen.getByText('尚未配置 Client Secret，用户通过该提供商登录将失败。请输入密钥后保存。')).toBeTruthy()
   })
 })
