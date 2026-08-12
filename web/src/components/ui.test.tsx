@@ -142,4 +142,26 @@ describe('Button aria-disabled', () => {
     screen.getByRole('button', { name: '注册新应用' }).click()
     expect(clicks).toBe(1)
   })
+
+  it('does not bubble the click to a parent handler when aria-disabled (#402)', () => {
+    let parentClicks = 0
+    render(
+      <div onClick={() => { parentClicks += 1 }}>
+        <Button aria-disabled onClick={() => {}}>注册新应用</Button>
+      </div>,
+    )
+    screen.getByRole('button', { name: '注册新应用' }).click()
+    expect(parentClicks).toBe(0)
+  })
+
+  it('still bubbles to a parent handler when not aria-disabled', () => {
+    let parentClicks = 0
+    render(
+      <div onClick={() => { parentClicks += 1 }}>
+        <Button onClick={() => {}}>注册新应用</Button>
+      </div>,
+    )
+    screen.getByRole('button', { name: '注册新应用' }).click()
+    expect(parentClicks).toBe(1)
+  })
 })

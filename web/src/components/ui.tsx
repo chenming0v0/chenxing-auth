@@ -96,14 +96,17 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 export function Button({ variant = 'primary', icon, children, className = '', ...props }: ButtonProps) {
   /* aria-disabled="true" 表示「禁用但保持可聚焦」：键盘和屏幕阅读器仍能到达按钮
      并读出 aria-describedby 关联的禁用原因，但点击与提交必须被拦住。
-     依据 WCAG 2.1 SC 1.3.1 / 4.1.2：状态要能被辅助技术获取，不只靠视觉变淡。 */
+     依据 WCAG 2.1 SC 1.3.1 / 4.1.2：状态要能被辅助技术获取，不只靠视觉变淡。
+     拦点击必须同时 stopPropagation：原生 disabled 按钮不派发 click、不冒泡，
+     而 aria-disabled 按钮的 click（鼠标点击或键盘 Enter/Space 激活）照常冒泡，
+     只 preventDefault 拦不住父级（可点击卡片、行）的 onClick，禁用态会误触发父级动作。 */
   const inert = props['aria-disabled'] === true || props['aria-disabled'] === 'true'
   return (
     <button
       type="button"
       className={`chenxing-btn-${variant} ${className}`}
       {...props}
-      onClick={inert ? (event) => event.preventDefault() : props.onClick}
+      onClick={inert ? (event) => { event.preventDefault(); event.stopPropagation() } : props.onClick}
     >
       {icon ? <Icon name={icon} size={16} /> : null}
       {children}
