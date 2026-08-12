@@ -10,15 +10,18 @@ import logoSrc from '../../assets/logo.png'
 
 const PASSWORD_MIN_LENGTH = 10
 const PASSWORD_MAX_LENGTH = 128
+// 服务端 validate_display_name 先 trim 再按 code point 计数，上限 128。
+const DISPLAY_NAME_MAX_LENGTH = 128
 // HTML maxLength counts UTF-16 code units; two units per code point is the safe upper bound.
 const PASSWORD_MAX_INPUT_LENGTH = PASSWORD_MAX_LENGTH * 2
+const DISPLAY_NAME_MAX_INPUT_LENGTH = DISPLAY_NAME_MAX_LENGTH * 2
 
-function passwordCodePointLength(value: string): number {
+function codePointLength(value: string): number {
   return Array.from(value).length
 }
 
-function limitPasswordInput(value: string): string {
-  return Array.from(value).slice(0, PASSWORD_MAX_LENGTH).join('')
+function limitByCodePoints(value: string, maxLength: number): string {
+  return Array.from(value).slice(0, maxLength).join('')
 }
 
 export function ConsoleProfile() {
@@ -48,6 +51,12 @@ export function ConsoleProfile() {
   async function updateProfile(event: FormEvent) {
     event.preventDefault()
     setNotice(null)
+    // 与服务端 validate_display_name 同款复核：先 trim 再按 code point 计数。
+    // 输入虽已被 limitByCodePoints 截断，提交前仍兜底检查一次（粘贴/自动填充可绕过 maxLength）。
+    if (codePointLength(displayName.trim()) > DISPLAY_NAME_MAX_LENGTH) {
+      warn(`显示名称不能超过 ${DISPLAY_NAME_MAX_LENGTH} 个字符。`)
+      return
+    }
     setBusy(true)
     try {
       await apiFetch<UserMe>('/api/v1/auth/me', { method: 'PATCH', body: JSON.stringify({ display_name: displayName || null }) })
@@ -61,7 +70,7 @@ export function ConsoleProfile() {
   async function updatePassword(event: FormEvent) {
     event.preventDefault()
     setNotice(null)
-    const newPasswordLength = passwordCodePointLength(newPassword)
+    const newPasswordLength = codePointLength(newPassword)
     if (newPasswordLength < PASSWORD_MIN_LENGTH) { warn(`新密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`); return }
     if (newPasswordLength > PASSWORD_MAX_LENGTH) { warn(`新密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`); return }
     if (newPassword !== confirmPassword) { warn('两次输入的新密码不一致。'); return }
@@ -128,7 +137,7 @@ export function ConsoleProfile() {
               <Icon name="user" className="text-[var(--chenxing-cyan)]" size={18} />
             </div>
             <form className="space-y-4" onSubmit={updateProfile}>
-              <Field label="显示名称" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+              <Field label="显示名称" value={displayName} onChange={(event) => setDisplayName(limitByCodePoints(event.target.value, DISPLAY_NAME_MAX_LENGTH))} maxLength={DISPLAY_NAME_MAX_INPUT_LENGTH} hint={`最多 ${DISPLAY_NAME_MAX_LENGTH} 个 Unicode 字符。`} />
               <Field label="用户名" value={user?.username || ''} readOnly />
               <Field label="邮箱地址" type="email" value={user?.email || ''} readOnly hint="邮箱修改需要单独的验证流程。" />
               <Button type="submit" icon="check" disabled={busy}>保存资料</Button>
@@ -142,8 +151,8 @@ export function ConsoleProfile() {
             {showPassword ? (
               <form className="space-y-4" onSubmit={updatePassword}>
                 <PasswordField label="当前密码" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required />
-                <PasswordField label="新密码" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(limitPasswordInput(event.target.value))} maxLength={PASSWORD_MAX_INPUT_LENGTH} required hint={`长度为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个 Unicode 字符。`} />
-                <PasswordField label="确认新密码" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(limitPasswordInput(event.target.value))} maxLength={PASSWORD_MAX_INPUT_LENGTH} required error={passwordCodePointLength(confirmPassword) > 0 && confirmPassword !== newPassword} hint={passwordCodePointLength(confirmPassword) > 0 && confirmPassword !== newPassword ? '两次输入的新密码不一致。' : '再次输入新密码以确认。'} />
+                <PasswordField label="新密码" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(limitByCodePoints(event.target.value, PASSWORD_MAX_LENGTH))} maxLength={PASSWORD_MAX_INPUT_LENGTH} required hint={`长度为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个 Unicode 字符。`} />
+                <PasswordField label="确认新密码" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(limitByCodePoints(event.target.value, PASSWORD_MAX_LENGTH))} maxLength={PASSWORD_MAX_INPUT_LENGTH} required error={codePointLength(confirmPassword) > 0 && confirmPassword !== newPassword} hint={codePointLength(confirmPassword) > 0 && confirmPassword !== newPassword ? '两次输入的新密码不一致。' : '再次输入新密码以确认。'} />
                 <div className="flex flex-wrap gap-3">
                   <Button type="submit" icon="key-round" disabled={busy}>确认修改</Button>
                   <Button type="button" variant="ghost" onClick={() => setShowPassword(false)}>取消</Button>
