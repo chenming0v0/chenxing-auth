@@ -211,18 +211,28 @@ export function AuthorizedApps() {
   const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
   const warn = (text: string) => notify(text, 'warning')
 
-  async function loadApps(): Promise<boolean> {
+  /* 整页加载：重置 loading 与提示，失败时给出警告。 */
+  async function loadApps(): Promise<void> {
     setLoading(true)
     setNotice(null)
     try {
       const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
       setApps(response.items)
-      return true
     } catch (reason) {
       warn(reason instanceof Error ? reason.message : '应用列表加载失败。')
-      return false
     } finally {
       setLoading(false)
+    }
+  }
+
+  /* 静默刷新：不重置 loading、不覆盖提示。撤销成功的提示必须先于刷新写入，
+     刷新失败时旧列表与新提示并存，成功事实不被掩盖；下次进入页面列表自然一致。 */
+  async function refreshAppsSilently(): Promise<void> {
+    try {
+      const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
+      setApps(response.items)
+    } catch {
+      // 静默失败：保留旧列表，撤销成功的提示不被刷新错误覆盖。
     }
   }
 
@@ -234,7 +244,11 @@ export function AuthorizedApps() {
     setNotice(null)
     try {
       await apiFetch<void>(`/api/v1/auth/authorized-apps/${encodeURIComponent(app.client_id)}`, { method: 'DELETE' })
-      if (await loadApps()) notify('应用授权已撤销。', 'success')
+      /* 撤销成功与列表刷新解耦：DELETE 成功就无条件提示成功，刷新失败不再掩盖成功事实。
+         旧实现用 loadApps 的返回值决定是否提示，刷新失败时用户只看到
+         “应用列表加载失败”，误以为撤销失败而重复点击，触发多余的重复 DELETE。 */
+      notify('应用授权已撤销。', 'success')
+      await refreshAppsSilently()
     } catch (reason) {
       warn(reason instanceof Error ? reason.message : '应用授权撤销失败。')
     } finally {
