@@ -8,8 +8,8 @@ const RP_ID = 'auth.clya.top'
 
 describe('validatePasskeyOrigins', () => {
   it('accepts https origins whose host equals the rp_id or is a subdomain', () => {
-    expect(validatePasskeyOrigins('https://auth.clya.top, https://app.clya.top', RP_ID, false)).toEqual({
-      origins: ['https://auth.clya.top', 'https://app.clya.top'],
+    expect(validatePasskeyOrigins('https://auth.clya.top, https://app.auth.clya.top', RP_ID, false)).toEqual({
+      origins: ['https://auth.clya.top', 'https://app.auth.clya.top'],
     })
     expect(validatePasskeyOrigins('https://api.auth.clya.top:8443 https://auth.clya.top', RP_ID, false)).toEqual({
       origins: ['https://api.auth.clya.top:8443', 'https://auth.clya.top'],
@@ -43,7 +43,7 @@ describe('validatePasskeyOrigins', () => {
 
   it('rejects empty input and too many origins', () => {
     expect(validatePasskeyOrigins('', RP_ID, false)).toEqual({ error: '请至少填写一个 Origin。' })
-    const tooMany = Array.from({ length: 33 }, (_, index) => `https://sub${index}.clya.top`).join(' ')
+    const tooMany = Array.from({ length: 33 }, (_, index) => `https://sub${index}.auth.clya.top`).join(' ')
     expect(validatePasskeyOrigins(tooMany, RP_ID, false)).toEqual({
       error: 'Origin 数量不能超过 32 个。',
     })
