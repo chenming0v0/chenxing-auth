@@ -10,7 +10,10 @@ export type DataTableColumn =
   | {
       label: ReactNode
       align?: 'left' | 'right' | 'center'
-      /** label 不是字符串时用于 React key */
+      /**
+       * label 不是字符串（或为空串）时的 key 基础名；
+       * 组件会追加列下标保证唯一，见 columnKey。
+       */
       key?: string
     }
 
@@ -31,9 +34,17 @@ type DataTableProps = {
 
 const alignClass = { left: '', right: 'text-right', center: 'text-center' } as const
 
+/**
+ * React key 必须唯一：列名（或显式 key）只作可读基础名，
+ * 统一追加下标消歧，否则两个同名列（如重复的「操作」）会触发
+ * React duplicate key 警告并导致 DOM 复用错乱。
+ */
 function columnKey(column: DataTableColumn, index: number): string {
-  if (typeof column === 'string') return column || `col-${index}`
-  return column.key ?? (typeof column.label === 'string' ? column.label : `col-${index}`)
+  const base =
+    typeof column === 'string'
+      ? column || 'col'
+      : column.key ?? (typeof column.label === 'string' ? column.label : 'col')
+  return `${base}-${index}`
 }
 
 /**
