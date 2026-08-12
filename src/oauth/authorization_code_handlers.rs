@@ -99,7 +99,7 @@ pub async fn issue_authorization_code_result(
     let client_id = validated.client_id.clone();
     // 签发时刻必须来自共享时钟：store 保存时用 `self.clock.now()` 计算 Redis TTL，
     // 这里另读墙钟会让注入时钟下「TTL 被夹断为 1 秒」成为真实矛盾。
-    let code = AuthorizationCode::new_with_nonce_and_ttl_with_session_hash_at(
+    let mut code = AuthorizationCode::new_with_nonce_and_ttl_with_session_hash_at(
         validated.client_id,
         validated.redirect_uri.clone(),
         user_id.clone(),
@@ -112,10 +112,6 @@ pub async fn issue_authorization_code_result(
         state.clock.now(),
     );
     let state_value = validated.state;
-    if let Err(store_error) = state.authorization_codes.save(&code).await {
-        tracing::error!(error = %store_error, "failed to store OAuth authorization code");
-        return Err(error::oauth_temporarily_unavailable());
-    }
     // 把同意缓存同步到数据库当前的权威状态（Issue #276）。
     //
     // 旧实现在这里删除缓存键。删除只能让下一次判定回源，无法阻止一个「先提交 DB
@@ -183,6 +179,39 @@ pub async fn issue_authorization_code_result(
     } else {
         None
     };
+    // 配额消耗成功后，把 reservation 记入「过期未兑换则退款」台账，并把 id
+    // 写进授权码 payload：兑换成功时 CAS 会在同一个 Lua 事务里原子取消该条目，
+    // 过期未兑换时由后台 worker 退还配额（Issue #341）。
+    if let Some(reservation) = quota_reservation.as_ref() {
+        code.quota_reservation_id = Some(reservation.id().to_owned());
+        if let Err(error_value) = state
+            .oauth_quotas
+            .schedule_refund(reservation, code.expires_at.unix_timestamp())
+            .await
+        {
+            tracing::error!(error = %error_value, "failed to schedule OAuth authorization quota refund");
+            remove_authorization_code_after_failure(
+                state,
+                &code,
+                &client_id,
+                quota_reservation.as_ref(),
+            )
+            .await;
+            return Err(error::oauth_temporarily_unavailable());
+        }
+    }
+    if let Err(store_error) = state.authorization_codes.save(&code).await {
+        tracing::error!(error = %store_error, "failed to store OAuth authorization code");
+        // 授权码从未交给客户端：本次签发失败不占用配额，退还 reservation。
+        remove_authorization_code_after_failure(
+            state,
+            &code,
+            &client_id,
+            quota_reservation.as_ref(),
+        )
+        .await;
+        return Err(error::oauth_temporarily_unavailable());
+    }
     if state
         .audit
         .record_blocking(AuditEvent::new(

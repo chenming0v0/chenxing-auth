@@ -1,5 +1,6 @@
 use chenxing_auth::{
-    api, audit::AuditService, config::Config, db, keys::DEFAULT_KEY_SYNC_INTERVAL, state::AppState,
+    api, audit::AuditService, config::Config, db, keys::DEFAULT_KEY_SYNC_INTERVAL,
+    oauth::quota::QUOTA_REFUND_WORKER_INTERVAL, state::AppState,
 };
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -72,6 +73,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .clone()
             .run_disk_sync_worker(DEFAULT_KEY_SYNC_INTERVAL),
     );
+    // 过期未兑换的授权码要退还签发时消耗的套餐配额（Issue #341）。消费与兑换
+    // 都发生在请求路径上，唯独「过期」没有请求会经过，只能由后台任务兜底。
+    let quota_refund_worker = tokio::spawn(
+        state
+            .oauth_quotas
+            .clone()
+            .run_refund_worker(state.clock.clone(), QUOTA_REFUND_WORKER_INTERVAL),
+    );
     let app = api::router(state);
     let address = format!("{}:{}", config.host, config.port);
     let listener = TcpListener::bind(&address).await?;
@@ -85,6 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     session_outbox_worker.abort();
     key_sync_worker.abort();
+    quota_refund_worker.abort();
 
     Ok(())
 }

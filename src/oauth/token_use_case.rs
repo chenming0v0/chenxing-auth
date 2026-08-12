@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
 
-use super::{refresh::RefreshToken, session::active_user_epoch};
+use super::{quota::QuotaRefundCancel, refresh::RefreshToken, session::active_user_epoch};
 use crate::{clients::service::AuthenticatedClient, state::AppState};
 
 #[path = "refresh_use_case.rs"]
@@ -307,9 +307,16 @@ pub async fn exchange_code(
             .await;
         }
     };
+    // 有计量配额的授权码在签发时登记了「过期未兑换则退款」台账条目；兑换成功
+    // 意味着配额应当保留，CAS 脚本在同一原子步骤里取消该条目（Issue #341）。
+    // 旧格式在途授权码没有 reservation id，走纯 CAS，行为与历史一致。
+    let quota_cancel = code
+        .quota_reservation_id
+        .as_deref()
+        .map(QuotaRefundCancel::for_reservation);
     match state
         .authorization_codes
-        .take_if_matches(code_value, &code)
+        .take_if_matches_with_quota_cancel(code_value, &code, quota_cancel)
         .await
     {
         Ok(true) => {}

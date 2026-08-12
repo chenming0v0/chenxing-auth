@@ -40,6 +40,17 @@ pub struct AuthorizationCode {
     ///   `"session_token_hash":null`，就永远匹配不上原始载荷，旧授权码将无法被消费。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_token_hash: Option<String>,
+    /// 签发时配额消耗对应的 reservation id（Issue #341）。
+    ///
+    /// 授权码过期未兑换时，后台 worker 凭这个 id 退还配额；兑换成功时
+    /// `take_if_matches` 的 CAS 脚本在同一个原子步骤里把它对应的台账条目
+    /// 取消。`None` 表示该授权码没有计量配额（admin Client、无生效套餐）。
+    ///
+    /// 序列化约定与 `session_token_hash` 相同：`#[serde(default)]` 保证升级
+    /// 期间在途的旧授权码可读，`skip_serializing_if` 保证无值时不写键、
+    /// CAS 的逐字节相等判定不被破坏。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quota_reservation_id: Option<String>,
     pub scopes: Vec<String>,
     pub code_challenge: String,
     pub nonce: Option<String>,
@@ -59,6 +70,10 @@ impl fmt::Debug for AuthorizationCode {
                 "session_token_hash",
                 &self.session_token_hash.as_ref().map(|_| "<redacted>"),
             )
+            .field(
+                "quota_reservation_id",
+                &self.quota_reservation_id.as_ref().map(|_| "<redacted>"),
+            )
             .field("scopes", &self.scopes)
             .field("code_challenge", &"<redacted>")
             .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
@@ -77,6 +92,8 @@ struct AuthorizationCodePayload {
     user_id: String,
     #[serde(default)]
     session_token_hash: Option<String>,
+    #[serde(default)]
+    quota_reservation_id: Option<String>,
     scopes: Vec<String>,
     code_challenge: String,
     nonce: Option<String>,
@@ -97,6 +114,10 @@ impl fmt::Debug for AuthorizationCodePayload {
             .field(
                 "session_token_hash",
                 &self.session_token_hash.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "quota_reservation_id",
+                &self.quota_reservation_id.as_ref().map(|_| "<redacted>"),
             )
             .field("scopes", &self.scopes)
             .field("code_challenge", &"<redacted>")
@@ -129,6 +150,7 @@ impl<'de> Deserialize<'de> for AuthorizationCode {
             redirect_uri: payload.redirect_uri,
             user_id: payload.user_id,
             session_token_hash: payload.session_token_hash,
+            quota_reservation_id: payload.quota_reservation_id,
             scopes: payload.scopes,
             code_challenge: payload.code_challenge,
             nonce: payload.nonce,
@@ -306,6 +328,7 @@ impl AuthorizationCode {
             redirect_uri,
             user_id,
             session_token_hash,
+            quota_reservation_id: None,
             scopes,
             code_challenge,
             nonce,
