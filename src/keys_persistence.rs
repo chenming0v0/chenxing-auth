@@ -244,6 +244,76 @@ pub(super) fn remove_key(directory: &Path, key_id: &str) -> Result<(), KeyManage
     retirement::clear(directory, key_id)
 }
 
+/// 丢弃所有可发现的持久化私钥材料。
+///
+/// 仅用于 journal 损坏的恢复路径。记录没有完整性校验，保留任何旧 key 都可能把真正
+/// 已吊销的 key 重新发布；删除整个 keyset 虽会使旧 token 失效，却是唯一不猜测私钥
+/// 身份的安全收敛方式。路径来自目录枚举，内容从不读入内存或日志。
+pub(super) fn discard_all_key_material(directory: &Path) -> Result<(), KeyManagerError> {
+    let mut key_paths = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let path = entry?.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let is_current_key = file_name.starts_with(KEY_FILE_PREFIX)
+            && file_name.ends_with(KEY_FILE_SUFFIX);
+        if is_current_key || file_name == LEGACY_KEY_FILE {
+            key_paths.push(path);
+        }
+    }
+    for path in key_paths {
+        match remove_secure_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+/// 为 journal 恢复建立一个明确存在的 active key，且永不选择 `revoked_key_id`。
+///
+/// 优先复用最新的现存材料，避免无谓作废旧 token；没有候选才生成新 key。扫描只读取
+/// 文件名与 mtime，不把私钥内容复制到恢复日志或临时容器。active 指针写好后 journal
+/// 才会被调用方清除，因此中途崩溃仍可重放。
+pub(super) fn establish_recovery_active_key(
+    directory: &Path,
+    revoked_key_id: Option<&str>,
+) -> Result<String, KeyManagerError> {
+    if let Some(revoked_key_id) = revoked_key_id {
+        validate_key_id(revoked_key_id)?;
+    }
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(directory)? {
+        let path = entry?.path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(key_id) = file_name
+            .strip_prefix(KEY_FILE_PREFIX)
+            .and_then(|value| value.strip_suffix(KEY_FILE_SUFFIX))
+        else {
+            continue;
+        };
+        validate_key_id(key_id)?;
+        if Some(key_id) != revoked_key_id {
+            candidates.push((modified_time(&path)?, key_id.to_owned()));
+        }
+    }
+
+    if let Some((_, key_id)) = candidates.into_iter().max() {
+        persist_active_key_id(directory, &key_id)?;
+        retirement::clear(directory, &key_id)?;
+        return Ok(key_id);
+    }
+
+    let (key_id, der) = generate_rsa_key()?;
+    persist_key(directory, &key_id, &der)?;
+    persist_active_key_id(directory, &key_id)?;
+    Ok(key_id)
+}
+
 /// 判断某个 `kid` 的私钥材料是否在盘上，且确实是普通文件。
 ///
 /// 非普通文件（符号链接、目录）一律报错而不是当成"不存在"：密钥目录里出现这种
@@ -264,6 +334,15 @@ pub(super) fn has_key_material(directory: &Path, key_id: &str) -> Result<bool, K
 /// 读取盘上声明的 active `kid`；文件不存在时返回 `None`。
 pub(super) fn declared_active_key_id(directory: &Path) -> Result<Option<String>, KeyManagerError> {
     read_optional_key_id(&directory.join(ACTIVE_KEY_ID_FILE))
+}
+
+/// 删除失效的 active `kid` 指针。不存在同样算成功；非普通文件仍然 fail-closed。
+pub(super) fn clear_active_key_id(directory: &Path) -> Result<(), KeyManagerError> {
+    match remove_secure_file(&directory.join(ACTIVE_KEY_ID_FILE)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub(super) fn persist_active_key_id(directory: &Path, key_id: &str) -> Result<(), KeyManagerError> {
