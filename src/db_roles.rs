@@ -231,7 +231,6 @@ async fn probe_password(runtime_database_url: &str) -> Result<PasswordProbe, DbE
 /// 只有服务端明确拒绝认证（SQLSTATE 28P01 口令错误 / 28000 认证规格被拒）才证明
 /// 口令不可用。连接层错误（TCP/TLS/DNS/超时）不携带任何口令信息，不能作为判定依据。
 fn is_password_rejection(error: &crate::sqlx::Error) -> bool {
-    use crate::sqlx::DatabaseError as _;
     matches!(
         error,
         crate::sqlx::Error::Database(database_error)
