@@ -30,7 +30,8 @@ function PlansManager() {
   const [plans, setPlans] = useState<AdminPlan[] | null>(null)
   const [error, setError] = useState('')
   const [editor, setEditor] = useState<EditorState>(null)
-  const [busyId, setBusyId] = useState<number | null>(null)
+  // 行级 busy：多行操作可同时在途，先完成的行只清除自己的标记，不会像单值 busy 那样提前解禁其他行
+  const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set())
 
   const reload = useCallback(() => {
     void apiFetch<AdminPlan[]>('/api/v1/admin/plans')
@@ -44,7 +45,7 @@ function PlansManager() {
     // 归档默认套餐会直接关闭全站自助接入，确认文案必须说明这个后果
     const defaultWarning = plan.is_default ? '这是当前的默认套餐，归档后全站自助接入将关闭，用户无法自行创建 OAuth 应用。' : ''
     if (operation === 'archive' && !window.confirm(`确认归档套餐「${plan.name}」吗？${defaultWarning}归档后不能再分配给用户，已挂载的 ${plan.assigned_users} 个用户将在到期或重新分配后回退默认套餐。`)) return
-    setBusyId(plan.id)
+    setBusyIds((prev) => new Set(prev).add(plan.id))
     setError('')
     try {
       await apiFetch<void>(`/api/v1/admin/plans/${plan.id}/${operation}`, { method: 'POST' })
@@ -52,7 +53,7 @@ function PlansManager() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '套餐状态更新失败。')
     } finally {
-      setBusyId(null)
+      setBusyIds((prev) => { const next = new Set(prev); next.delete(plan.id); return next })
     }
   }
 
@@ -147,12 +148,12 @@ function PlansManager() {
                   </td>
                   <td className="text-right">
                       <div className="inline-flex items-center gap-3">
-                        <button type="button" className="chenxing-link chenxing-row-action" disabled={busyId === plan.id} onClick={() => setEditor({ mode: 'edit', plan })}>编辑</button>
+                        <button type="button" className="chenxing-link chenxing-row-action" disabled={busyIds.has(plan.id)} onClick={() => setEditor({ mode: 'edit', plan })}>编辑</button>
                         {/* 默认套餐不再受服务端保护：可以归档，也可以取消默认（代价是关闭自助接入） */}
                         <button
                           type="button"
                           className={`chenxing-link chenxing-row-action${archived ? '' : ' text-[var(--chenxing-error)]'}`}
-                          disabled={busyId === plan.id}
+                          disabled={busyIds.has(plan.id)}
                           onClick={() => void changeStatus(plan)}
                         >
                           {archived ? '恢复' : '归档'}
