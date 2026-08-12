@@ -20,6 +20,10 @@
 //! | [`AdminRead`] | Session Cookie 或系统 Token，随后 `authorize()` 校验权限 | 管理读端点 |
 //! | [`AdminWrite`] | 同上，且 `authorize()` 额外无条件校验 CSRF | 管理写端点 |
 //!
+//! 管理提取器是「管理面开关」的执行点：`ADMIN_TOKEN` 为空时（AGENTS.md，Issue #348）
+//! [`AdminCaller::resolve`] 拒绝所有请求，两条管理通道一并关闭，唯一例外是
+//! 不存在 Owner 时公开的首个 Owner 引导端点（它不使用本层提取器）。
+//!
 //! # 两种拒绝时机
 //!
 //! [`SessionWrite`] 在提取阶段就拒绝，因此 CSRF 校验发生在请求体解析之前 ——
@@ -146,9 +150,10 @@ where
 /// - [`Self::SystemToken`]：配置的系统 `ADMIN_TOKEN`，非浏览器自动附带的凭据，
 ///   因此豁免 CSRF，权限等价于 Owner。
 ///
-/// `ADMIN_TOKEN` 为空只关闭后者：`AdminAuthenticator::is_valid` 恒假，
-/// 任何 Bearer 请求都会落到 Session 分支并按普通会话认证。已认证且角色足够的
-/// 管理员因此仍然可以使用管理 API —— 空 Token 不是「关闭管理面」的开关。
+/// `ADMIN_TOKEN` 为空时整个管理面关闭（AGENTS.md，Issue #348）：`is_valid` 恒假
+/// 关掉 Bearer 通道，[`AdminCaller::resolve`] 顶部的 fail-closed 检查同时拒绝
+/// Session 通道——空 Token 是「管理面关闭」的开关，而不是「只关自动化通道」。
+/// 唯一例外是不存在 Owner 时公开的首个 Owner 引导端点，它不经过本提取器。
 #[derive(Debug)]
 enum AdminCaller {
     Session(Box<UserContext>),
@@ -157,6 +162,11 @@ enum AdminCaller {
 
 impl AdminCaller {
     async fn resolve(state: &AppState, parts: &Parts) -> Result<Self, Response> {
+        // AGENTS.md：ADMIN_TOKEN 为空时必须拒绝所有已初始化的管理 API（Issue #348）。
+        // 两条通道统一拒绝，响应不区分调用者，避免把配置状态变成探测预言机。
+        if state.config.admin_token.is_empty() {
+            return Err(error::admin_disabled());
+        }
         if is_admin_request(state, &parts.headers) {
             return Ok(Self::SystemToken);
         }
