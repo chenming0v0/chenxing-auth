@@ -2,6 +2,16 @@
 //!
 //! 常量时间校验拆到 [`constant_time`]（src-line-limit），对外仍从本模块
 //! 再导出 `verify_client_credentials_constant_time`，调用路径不变。
+//!
+//! 凭据匹配的单一入口是 [`verify_client_credentials_constant_time`]，它要求调用方
+//! 提供与数据库同源的 `StoredClientCredentials` 快照（见
+//! `ClientService::authenticate_credentials` → `find_client_credentials`），由
+//! `policy_gate_ok` 依据快照里的真实 `status` 执行状态门。
+//!
+//! 历史上曾存在 `credentials_match` 帮助函数，自行合成快照并把 `status` 硬编码为
+//! `"active"`，从构造上绕过了状态门——disabled client 一旦被接入该路径即可通过
+//! 认证（Issue #352）。该函数已删除：任何合成 `StoredClientCredentials` 的调用方
+//! 都必须显式给出状态，使状态门无法被无声绕过。
 
 use argon2::{
     Argon2,
@@ -12,7 +22,7 @@ use uuid::Uuid;
 
 use super::{
     domain::{ClientAuthMethod, ClientRegistrationInput},
-    repository::{ClientCredential, StoredClientCredentials},
+    repository::ClientCredential,
     service::ClientServiceError,
 };
 
@@ -128,33 +138,26 @@ pub async fn verify_client_secret(secret: &str, encoded_hash: &str) -> bool {
     }
 }
 
-/// 校验 Client 凭据是否匹配（Issue #63 #66 合并重构）。
-///
-/// 返回 `true` 当且仅当：
-/// 1. 认证方式与数据库存储一致；
-/// 2. 公开客户端（`auth_method = none`）且请求未携带 secret；
-/// 3. 或机密客户端且 secret 通过 Argon2 哈希校验。
-///
-/// 任何不匹配（auth_method 不符、secret 存在性矛盾、哈希校验失败）都返回 `false`，
-/// 避免在认证失败路径上泄露 Client 配置细节（时序攻击防护）。
-pub async fn credentials_match(
-    auth_method: ClientAuthMethod,
-    client_secret: Option<&str>,
-    stored_hash: Option<&str>,
-) -> bool {
-    let stored = StoredClientCredentials {
-        client_secret_hash: stored_hash.map(str::to_owned),
-        auth_method: auth_method.as_str().to_owned(),
-        status: "active".to_owned(),
-        client_secret_version: 0,
-        allow_legacy_refresh_tokens: false,
-    };
-    verify_client_credentials_constant_time(auth_method, client_secret, Some(&stored)).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clients::repository::StoredClientCredentials;
+
+    /// 构造与 `find_client_credentials` 同构的存储快照；status 必须显式给出，
+    /// 不允许任何帮助函数替调用方假设 `"active"`（Issue #352）。
+    fn stored_credentials(
+        auth_method: &str,
+        status: &str,
+        hash: Option<&str>,
+    ) -> StoredClientCredentials {
+        StoredClientCredentials {
+            client_secret_hash: hash.map(str::to_owned),
+            auth_method: auth_method.to_owned(),
+            status: status.to_owned(),
+            client_secret_version: 0,
+            allow_legacy_refresh_tokens: false,
+        }
+    }
 
     /// 构造注册请求 JSON，可选附加 auth_method 字段
     fn registration_json(auth_method: Option<&str>) -> String {
@@ -228,22 +231,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn credentials_match_accepts_public_client_without_secret() {
-        // 公开客户端：请求不带 secret、数据库不存 hash（Issue #66）
-        assert!(credentials_match(ClientAuthMethod::None, None, None).await);
+    async fn constant_time_verify_accepts_public_client_without_secret() {
+        // 公开客户端：请求不带 secret、存储快照无 hash（Issue #66）
+        let stored = stored_credentials("none", "active", None);
+        assert!(
+            verify_client_credentials_constant_time(ClientAuthMethod::None, None, Some(&stored))
+                .await
+        );
     }
 
     #[tokio::test]
-    async fn credentials_match_rejects_public_client_with_leaked_hash() {
+    async fn constant_time_verify_rejects_public_client_with_leaked_hash() {
         // 若公开客户端在数据库里遗留了 hash（配置迁移错误），拒绝认证（fail closed）
-        assert!(!credentials_match(ClientAuthMethod::None, None, Some("leaked-hash")).await);
+        let stored = stored_credentials("none", "active", Some("leaked-hash"));
+        assert!(
+            !verify_client_credentials_constant_time(ClientAuthMethod::None, None, Some(&stored))
+                .await
+        );
     }
 
     #[tokio::test]
-    async fn credentials_match_rejects_mismatched_secret_presence() {
+    async fn constant_time_verify_rejects_mismatched_secret_presence() {
         // 机密客户端请求带 secret，但数据库没 hash（或反之），都拒绝
-        assert!(!credentials_match(ClientAuthMethod::Basic, Some("secret"), None).await);
-        assert!(!credentials_match(ClientAuthMethod::Basic, None, Some("hash")).await);
+        let stored = stored_credentials("client_secret_basic", "active", None);
+        assert!(
+            !verify_client_credentials_constant_time(
+                ClientAuthMethod::Basic,
+                Some("secret"),
+                Some(&stored)
+            )
+            .await
+        );
+        let stored = stored_credentials("client_secret_basic", "active", Some("hash"));
+        assert!(
+            !verify_client_credentials_constant_time(ClientAuthMethod::Basic, None, Some(&stored))
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn constant_time_verify_rejects_disabled_client_with_valid_credential_shape() {
+        // Issue #352 回归：状态门必须由存储快照的真实 status 决定。
+        // 该公开客户端在 secret 维度完全合法（请求无 secret、快照无 hash），
+        // 仅凭 status = disabled 也必须拒绝——合成快照时硬编码 active 即绕过此门。
+        let stored = stored_credentials("none", "disabled", None);
+        assert!(
+            !verify_client_credentials_constant_time(ClientAuthMethod::None, None, Some(&stored))
+                .await
+        );
     }
 
     #[test]
