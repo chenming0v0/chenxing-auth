@@ -4,7 +4,6 @@ use axum::{
     http::{Request, StatusCode},
 };
 use base64::Engine;
-use chenxing_auth::auth_factors::repository::{self, PasskeyPersistenceResult};
 use chenxing_auth::auth_limiter::FailureDimension;
 use chenxing_auth::{api, config::Config, state::AppState};
 use redis::AsyncCommands;
@@ -158,17 +157,21 @@ fn test_passkey(credential_id: &[u8]) -> Passkey {
 
 async fn insert_test_passkey(database: &chenxing_auth::sqlx::PgPool, user_id: i64) {
     let credential_id = Uuid::new_v4().into_bytes().to_vec();
-    assert_eq!(
-        repository::insert_passkey(
-            database,
-            user_id,
-            &credential_id,
-            &test_passkey(&credential_id),
-        )
-        .await
-        .expect("insert test passkey"),
-        PasskeyPersistenceResult::Stored
-    );
+    // 测试种数据直插 SQL，避免依赖已被移除的 repository::insert_passkey。
+    // credential 必须是可解码的 Passkey JSON：authentication/start 会经 list_passkeys 反序列化。
+    let credential =
+        serde_json::to_value(&test_passkey(&credential_id)).expect("serialize test passkey");
+    chenxing_auth::sqlx::query(
+        "INSERT INTO user_passkeys
+            (user_id, credential_id, credential, created_at, updated_at)
+         VALUES ($1, $2, $3, NOW(), NOW())",
+    )
+    .bind(user_id)
+    .bind(credential_id)
+    .bind(credential)
+    .execute(database)
+    .await
+    .expect("insert test passkey");
 }
 
 async fn create_user(router: &Router, email: &str) -> String {

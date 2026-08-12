@@ -114,7 +114,7 @@ async fn totp_factor_round_trip_returns_ciphertext_only() {
 }
 
 #[tokio::test]
-async fn passkey_insert_is_idempotent_and_rejects_cross_user_collisions() {
+async fn passkey_first_factor_insert_rejects_repeat_and_cross_user_collisions() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let user_ids: Vec<i64> = chenxing_auth::sqlx::query_scalar(
@@ -134,16 +134,17 @@ async fn passkey_insert_is_idempotent_and_rejects_cross_user_collisions() {
     let passkey = test_passkey(&credential_id);
 
     assert_eq!(
-        repository::insert_passkey(&pool, user_ids[0], &credential_id, &passkey)
+        repository::insert_passkey_if_empty(&pool, user_ids[0], &credential_id, &passkey)
             .await
             .expect("insert passkey"),
         repository::PasskeyPersistenceResult::Stored
     );
+    // 账号已有首因子，重复注册被 if_empty 守卫拒绝；行数不变，幂等性由数据库保证。
     assert_eq!(
-        repository::insert_passkey(&pool, user_ids[0], &credential_id, &passkey)
+        repository::insert_passkey_if_empty(&pool, user_ids[0], &credential_id, &passkey)
             .await
             .expect("repeat passkey insert"),
-        repository::PasskeyPersistenceResult::Stored
+        repository::PasskeyPersistenceResult::Conflict
     );
     let stored = repository::list_passkeys(&pool, user_ids[0])
         .await
@@ -161,11 +162,19 @@ async fn passkey_insert_is_idempotent_and_rejects_cross_user_collisions() {
         .expect("count passkeys"),
         1
     );
+    // 另一个账号无首因子，但 credential_id 唯一约束触发 DO NOTHING，同样拒绝。
     assert_eq!(
-        repository::insert_passkey(&pool, user_ids[1], &credential_id, &passkey)
+        repository::insert_passkey_if_empty(&pool, user_ids[1], &credential_id, &passkey)
             .await
             .expect("cross-user collision result"),
         repository::PasskeyPersistenceResult::Conflict
+    );
+    assert!(
+        repository::list_passkeys(&pool, user_ids[1])
+            .await
+            .expect("list second user passkeys")
+            .is_empty(),
+        "colliding credential must not be stored for the second user"
     );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = ANY($1)")
