@@ -28,6 +28,8 @@ use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 mod journal;
 #[path = "keys_persistence.rs"]
 mod persistence;
+#[path = "keys_retirement.rs"]
+mod retirement;
 #[path = "keys_revocation.rs"]
 mod revocation;
 #[path = "keys_rotation.rs"]
@@ -90,7 +92,18 @@ type PrivateKeyDer = Zeroizing<Vec<u8>>;
 struct KeyMaterial {
     /// `Zeroizing` 的 clone 仍带清零语义，轮换时克隆的旧材料副本也会被擦除。
     der: PrivateKeyDer,
+    /// 材料诞生的时刻。只用于“kid 文件丢失时哪个材料最新”这类身份判断，
+    /// 不参与保留窗口计算。
     created_at: OffsetDateTime,
+    /// 停止签发、降级为只验证的时刻。`None` 表示这个 key 仍在役。
+    ///
+    /// 保留窗口从这里起算而不是从 `created_at` 起算（Issue #298）：在役时长完全
+    /// 由运维的轮换节奏决定，可以远超保留窗口，用创建时刻起算会让长期在役的 key
+    /// 在轮换那一瞬间就越过窗口，把它最后一刻签发、尚未到 `exp` 的令牌一起作废。
+    ///
+    /// 不变量：这个字段为 `None` 当且仅当该 key 是 active key。持久化模式下由
+    /// `retirement::reconcile` 在目录锁内双向维持，内存模式下由轮换与吊销维持。
+    retired_at: Option<OffsetDateTime>,
 }
 /// 手写 `Debug`：派生实现会整段打印私钥 DER，一旦 `KeyMaterial` 被记进日志或断言失败信息，
 /// 就等于泄漏签名私钥。（`Zeroizing` 本身也未实现 `Debug`，无法派生。）
@@ -100,6 +113,7 @@ impl std::fmt::Debug for KeyMaterial {
             .debug_struct("KeyMaterial")
             .field("der", &"<redacted>")
             .field("created_at", &self.created_at)
+            .field("retired_at", &self.retired_at)
             .finish()
     }
 }
@@ -383,44 +397,83 @@ fn generate_rsa_key() -> Result<(String, PrivateKeyDer), KeyManagerError> {
     Ok((format!("cx-{}", uuid::Uuid::new_v4().simple()), der))
 }
 
+/// 构造一份在役材料。退役时刻由轮换、吊销或磁盘记录后续填入。
 fn key_material(der: PrivateKeyDer, created_at: OffsetDateTime) -> KeyMaterial {
-    KeyMaterial { der, created_at }
+    KeyMaterial {
+        der,
+        created_at,
+        retired_at: None,
+    }
 }
 
-/// 按保留窗口裁剪旧密钥材料，active key 无论多旧都保留。
+/// 把某个 `kid` 标记为已退役，返回生效的退役时刻。
 ///
-/// 不区分持久化模式和纯内存模式（Issue #285）：保留窗口是"旧公钥还要能验多久"
-/// 这条协议约束，与材料存在硬盘上还是只存在内存里无关。曾经只在有目录时裁剪，
-/// 于是 `KeyManager::generate()` 起来的内存实例每轮换一次就多发布一个公钥，
-/// JWKS 随进程存活时间无界增长，早已过期的验证密钥永远不下线。
+/// 已有退役时刻时保持不变并原样返回：窗口起点必须单调，否则重复轮换或重复加载
+/// 会不断把它往后推，旧公钥永远不下线。调用方用返回值落盘，因此内存与磁盘写的
+/// 始终是同一个时刻。
+fn mark_retired(
+    materials: &mut BTreeMap<String, KeyMaterial>,
+    key_id: &str,
+    now: OffsetDateTime,
+) -> Option<OffsetDateTime> {
+    let material = materials.get_mut(key_id)?;
+    Some(*material.retired_at.get_or_insert(now))
+}
+
+/// 按保留窗口裁剪已退役的密钥材料，返回被移除的 `kid`。
+///
+/// active key 无论多旧都保留：它仍在签发。调用方用返回值删除对应的磁盘文件，
+/// 因此“哪些 key 过期了”只在这里判断一次，内存与磁盘不会各算一遍（过去磁盘侧
+/// 用文件 mtime 独立判断，与内存判据不同）。
+///
+/// 不区分持久化模式和纯内存模式（Issue #285）：保留窗口是“旧公钥还要能验多久”
+/// 这条协议约束，与材料存在硬盘上还是只存在内存里无关。
 fn prune_materials(
     active_key_id: &str,
     materials: &mut BTreeMap<String, KeyMaterial>,
     retention: Duration,
     now: OffsetDateTime,
-) {
-    materials.retain(|key_id, material| {
-        key_id == active_key_id || within_retention_at(material.created_at, retention, now)
-    });
+) -> Vec<String> {
+    let expired: Vec<String> = materials
+        .iter()
+        .filter(|(key_id, material)| {
+            key_id.as_str() != active_key_id
+                && !retirement_window_open_at(material.retired_at, retention, now)
+        })
+        .map(|(key_id, _)| key_id.clone())
+        .collect();
+    for key_id in &expired {
+        let _ = materials.remove(key_id);
+    }
+    expired
 }
 
-fn within_retention_at(
-    created_at: OffsetDateTime,
+/// 判断一个已退役的 key 是否仍在保留窗口内。
+///
+/// 窗口是左闭右开的 `[retired_at, retired_at + retention)`：令牌最迟在退役那一刻
+/// 签发，`exp` 因此不晚于 `retired_at + max_token_ttl`。配置校验保证
+/// `retention >= max_token_ttl`，所以在窗口右端点移除公钥时，它签发的令牌均已过期。
+fn retirement_window_open_at(
+    retired_at: Option<OffsetDateTime>,
     retention: Duration,
     now: OffsetDateTime,
 ) -> bool {
+    // 尚未退役的 key 不受保留窗口约束。持久化模式下 `retirement::reconcile` 已经
+    // 在锁内给每个非 active key 盖上退役时刻，因此这里的 `None` 只可能是 active
+    // key 本身，或内存模式下刚刚生成的新 key。
+    let Some(retired_at) = retired_at else {
+        return true;
+    };
     let Ok(retention) = TimeDuration::try_from(retention) else {
         return false;
     };
-    // created_at 晚于 now 说明这个 key 是在该时间快照之后写入的：并发轮换各自在
-    // 抢锁之前捕获 now，后执行的轮换可能持有更早的快照。晚于参照时刻创建的 key
-    // 不可能已经超过自创建起算的保留期，必须保留。
-    // 这也符合"轮换时保留必要的旧公钥验证窗口"：宁可多留一瞬，不可误删仍在 JWKS
-    // 中公布的验证密钥。
-    if now < created_at {
+    // retired_at 晚于 now 说明退役发生在该时间快照之后：并发轮换各自在抢锁之前
+    // 捕获 now，后执行的轮换可能持有更早的快照。晚于参照时刻退役的 key 不可能
+    // 已经走完保留期，必须保留。宁可多留一瞬，不可误删仍在 JWKS 中公布的公钥。
+    if now < retired_at {
         return true;
     }
-    now - created_at <= retention
+    now - retired_at < retention
 }
 
 #[cfg(test)]

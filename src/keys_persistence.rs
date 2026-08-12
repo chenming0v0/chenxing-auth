@@ -10,12 +10,12 @@ use crate::key_storage::{
 
 use super::{
     KeyManagerError, KeyMaterial, generate_rsa_key, journal, key_material, prune_materials,
-    within_retention_at,
+    retirement,
 };
 
 pub(super) const ACTIVE_KEY_ID_FILE: &str = "active-rs256.kid";
 const LEGACY_KEY_FILE: &str = "active-rs256.pkcs1.der";
-const KEY_FILE_PREFIX: &str = "rs256-";
+pub(super) const KEY_FILE_PREFIX: &str = "rs256-";
 const KEY_FILE_SUFFIX: &str = ".pkcs1.der";
 
 /// 在共享目录锁内读取一份完整的密钥快照。
@@ -35,7 +35,9 @@ pub(super) fn load_materials(
     // 读回内存并重新发布进 JWKS（Issue #284）。
     journal::recover(directory)?;
     let declared_active_id = declared_active_key_id(directory)?;
-    cleanup_expired_key_files(directory, declared_active_id.as_deref(), retention, now)?;
+    // 先把材料连同退役时刻整份读进来，再判断谁是 active、谁过期。过期判定必须在
+    // 确定 active kid 之后进行：`declared_active_id` 可能缺失，此时 active 由最新
+    // 材料推定，用它之前的值裁剪会误删真正的 active key（Issue #298）。
     let mut key_files = discover_key_files(directory)?;
 
     let migrated_id = if key_files.is_empty() {
@@ -89,12 +91,34 @@ pub(super) fn load_materials(
         }
     };
 
-    prune_materials(&active_key_id, &mut key_files, retention, now);
+    // 落实“active key 没有退役记录，其余都有记录”这条不变量后再裁剪：升级前的历史
+    // 目录和崩溃遗留的半成品都在这里自愈，因此下面的裁剪对每个非 active key 都有
+    // 明确的退役时刻可用，不需要退回按创建时刻推断。
+    retirement::reconcile(directory, &active_key_id, &mut key_files, now)?;
+    let expired = prune_materials(&active_key_id, &mut key_files, retention, now);
+    remove_expired_key_files(directory, &expired);
     // prune_materials 永不删除 active key，这里只是守住该不变量。
     if !key_files.contains_key(&active_key_id) {
         return Err(KeyManagerError::MissingActiveKeyMaterial);
     }
     Ok((active_key_id, key_files))
+}
+
+/// 删除已越过保留窗口的密钥材料与其退役记录。
+///
+/// 判据来自 `prune_materials`：内存里已经不再发布这些 `kid`，磁盘删除只是回收。
+/// 因此单个文件删不掉时告警继续，而不是让整个加载失败——公钥已经下线，残留文件
+/// 会在下一次加载被重新发现、重新判定过期、再次尝试删除，不会重新进入 JWKS。
+fn remove_expired_key_files(directory: &Path, expired: &[String]) {
+    for key_id in expired {
+        if let Err(error) = remove_key(directory, key_id) {
+            tracing::warn!(
+                key_id = %key_id,
+                error = %error,
+                "failed to reclaim an expired signing key file"
+            );
+        }
+    }
 }
 
 /// 空目录的首次初始化：生成、落盘并写入 kid。
@@ -128,36 +152,11 @@ fn discover_key_files(directory: &Path) -> Result<BTreeMap<String, KeyMaterial>,
         validate_key_id(&key_id)?;
         let created_at = OffsetDateTime::from(modified_time(&path)?);
         let der = Zeroizing::new(fs::read(path)?);
-        keys.insert(key_id, key_material(der, created_at));
+        let mut material = key_material(der, created_at);
+        retirement::load_into(directory, &key_id, &mut material)?;
+        keys.insert(key_id, material);
     }
     Ok(keys)
-}
-
-pub(super) fn cleanup_expired_key_files(
-    directory: &Path,
-    active_key_id: Option<&str>,
-    retention: Duration,
-    now: OffsetDateTime,
-) -> Result<(), KeyManagerError> {
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if !file_name.starts_with(KEY_FILE_PREFIX) || !file_name.ends_with(KEY_FILE_SUFFIX) {
-            continue;
-        }
-        let key_id = file_name
-            .strip_prefix(KEY_FILE_PREFIX)
-            .and_then(|value| value.strip_suffix(KEY_FILE_SUFFIX))
-            .ok_or(KeyManagerError::InvalidKeyId)?;
-        validate_key_id(key_id)?;
-        let created_at = OffsetDateTime::from(modified_time(&path)?);
-        if active_key_id != Some(key_id) && !within_retention_at(created_at, retention, now) {
-            fs::remove_file(path)?;
-        }
-    }
-    Ok(())
 }
 
 /// 迁移旧版单文件私钥。返回迁移后落盘的 key id；没有旧文件时返回 `None`。
@@ -227,17 +226,22 @@ pub(super) fn persist_key(
     Ok(())
 }
 
-/// 删除私钥材料。材料已不存在同样算成功。
+/// 删除私钥材料及其退役记录。材料已不存在同样算成功。
 ///
 /// 幂等是吊销恢复路径的前提：`journal::recover` 可能在材料已被删除、只剩记录
 /// 未清除时再跑一次，此时把 `NotFound` 当错误会让目录永远卡在待恢复状态。
+///
+/// 记录随材料一起删除，否则目录里会积累无主的退役记录，让运维误以为某个 `kid`
+/// 仍在保留窗口内。先删材料：材料是凭据，记录只是元数据，中间崩溃留下的孤立记录
+/// 由 `retirement::reconcile` 收拾。
 pub(super) fn remove_key(directory: &Path, key_id: &str) -> Result<(), KeyManagerError> {
     validate_key_id(key_id)?;
     match remove_secure_file(&directory.join(key_file_name(key_id))) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
+    retirement::clear(directory, key_id)
 }
 
 /// 判断某个 `kid` 的私钥材料是否在盘上，且确实是普通文件。

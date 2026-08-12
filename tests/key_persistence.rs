@@ -128,6 +128,117 @@ async fn revoking_a_persisted_active_key_switches_before_removing_it() {
     let _ = fs::remove_dir_all(directory);
 }
 
+/// Issue #298：长期在役的 key 退役后必须拿到完整的保留窗口。
+///
+/// 夹具把 key 文件的 mtime 推到远早于 retention 的过去，模拟“在役数周才轮换”。
+/// 按创建时刻裁剪的旧实现会在轮换的同一瞬间删掉它，把它最后一刻签发、尚未到
+/// `exp` 的令牌一起作废；正确实现从退役时刻起算，公钥必须继续发布。
+#[tokio::test]
+async fn a_long_lived_key_stays_verifiable_after_it_is_rotated_out() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let retention = Duration::from_secs(60);
+    let manager =
+        KeyManager::load_or_generate_with_retention(&directory, retention).expect("initial key");
+    let long_lived_key_id = manager.key_id();
+    let long_lived_path = directory.join(format!("rs256-{long_lived_key_id}.pkcs1.der"));
+    age_file(&long_lived_path, Duration::from_secs(30 * 24 * 60 * 60));
+
+    // 重新加载让远古 mtime 生效，并确认它仍然是 active：在役 key 不受窗口约束。
+    let manager = KeyManager::load_or_generate_with_retention(&directory, retention)
+        .expect("reload with an aged key file");
+    assert_eq!(manager.key_id(), long_lived_key_id);
+
+    let old_token = issue_access_token(
+        &manager,
+        "https://auth.example.com",
+        "user-1",
+        "cx_project",
+        &["openid".to_owned()],
+        3600,
+    )
+    .expect("token signed just before retirement");
+    manager
+        .rotate()
+        .await
+        .expect("rotate the long-lived key out");
+
+    assert!(
+        long_lived_path.exists(),
+        "a key retired this instant must keep its full retention window"
+    );
+    assert!(manager.verification_key_for(&long_lived_key_id).is_some());
+    assert_eq!(manager.jwks().keys.len(), 2);
+    decode_access_token(
+        &manager,
+        "https://auth.example.com",
+        "cx_project",
+        &old_token,
+    )
+    .expect("a token signed before retirement must stay verifiable");
+
+    let reloaded = KeyManager::load_or_generate_with_retention(&directory, retention)
+        .expect("reload after rotation");
+    assert!(
+        reloaded.verification_key_for(&long_lived_key_id).is_some(),
+        "the retirement instant must survive a reload"
+    );
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+/// 退役记录必须随材料一起回收，否则目录里会积累无主记录。
+#[tokio::test]
+async fn retirement_records_are_collected_with_their_key_material() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let manager = KeyManager::load_or_generate(&directory).expect("initial key");
+    let retired_key_id = manager.key_id();
+    manager.rotate().await.expect("rotated signing key");
+    let record_path = directory.join(format!("rs256-{retired_key_id}.retired"));
+    assert!(
+        record_path.exists(),
+        "rotation must record the retirement instant"
+    );
+
+    manager
+        .revoke(&retired_key_id)
+        .await
+        .expect("revoke the retired key");
+
+    assert!(
+        !record_path.exists(),
+        "revocation must collect the retirement record with the material"
+    );
+
+    let _ = fs::remove_dir_all(directory);
+}
+
+/// 吊销 active key 会把一个已退役的 key 重新推上役，它的记录必须消失。
+#[tokio::test]
+async fn a_key_that_becomes_active_again_loses_its_retirement_record() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let manager = KeyManager::load_or_generate(&directory).expect("initial key");
+    let previous_key_id = manager.key_id();
+    manager.rotate().await.expect("rotated signing key");
+    let active_key_id = manager.key_id();
+    let previous_record = directory.join(format!("rs256-{previous_key_id}.retired"));
+    assert!(previous_record.exists(), "fixture must start retired");
+
+    manager
+        .revoke(&active_key_id)
+        .await
+        .expect("revoke the active key");
+
+    assert_eq!(manager.key_id(), previous_key_id);
+    let reloaded = KeyManager::load_or_generate(&directory).expect("reload after revocation");
+    assert_eq!(reloaded.key_id(), previous_key_id);
+    assert!(
+        !previous_record.exists(),
+        "a key that is active again must not keep a retirement record"
+    );
+
+    let _ = fs::remove_dir_all(directory);
+}
+
 #[tokio::test]
 async fn zero_retention_reclaims_old_private_key_after_rotation() {
     let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
@@ -565,6 +676,18 @@ async fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> b
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     condition()
+}
+
+/// 把文件 mtime 推到过去，模拟“这个 key 已经在役很久了”。
+///
+/// mtime 是创建时刻的唯一来源，因此这是让加载看到一个远古 key 的唯一办法。
+fn age_file(path: &std::path::Path, age: Duration) {
+    let file = fs::File::options()
+        .write(true)
+        .open(path)
+        .expect("open key file");
+    file.set_modified(std::time::SystemTime::now() - age)
+        .expect("set key file mtime");
 }
 
 fn persisted_key_count(directory: &std::path::Path) -> usize {

@@ -21,7 +21,7 @@ use std::{fs, path::Path};
 
 use crate::key_storage::atomic_write;
 
-use super::{KeyManagerError, persistence};
+use super::{KeyManagerError, persistence, retirement};
 
 /// 吊销意图记录文件。
 ///
@@ -121,6 +121,9 @@ pub(super) fn recover(directory: &Path) -> Result<(), KeyManagerError> {
             return Err(KeyManagerError::MissingActiveKeyMaterial);
         }
         persistence::persist_active_key_id(directory, &pending.active_key_id)?;
+        // 替代密钥重新在役，它的退役记录必须消失，否则重新在役的 key 会带着上一轮
+        // 的窗口起点，下次退役时保留窗口已被提前用掉（Issue #298）。
+        retirement::clear(directory, &pending.active_key_id)?;
     }
 
     persistence::remove_key(directory, &pending.revoked_key_id)?;

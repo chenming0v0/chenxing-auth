@@ -17,7 +17,8 @@ use crate::oauth::token::{decode_access_token, issue_access_token};
 
 use super::{
     DEFAULT_KEY_RETENTION_SECONDS, KeyManager, KeyMaterial, KeySyncOutcome,
-    MINIMUM_KEY_SYNC_INTERVAL, key_material, prune_materials, within_retention_at,
+    MINIMUM_KEY_SYNC_INTERVAL, key_material, mark_retired, prune_materials,
+    retirement_window_open_at,
 };
 
 const TEST_NOW_UNIX_SECONDS: i64 = 1_700_000_000;
@@ -26,10 +27,24 @@ fn test_now() -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(TEST_NOW_UNIX_SECONDS).expect("valid test timestamp")
 }
 
-/// 构造指定“年龄”的密钥材料，用于保留窗口测试。
+/// 构造指定“年龄”的在役材料。在役 key 不受保留窗口约束，年龄只影响身份判断。
 fn aged(byte: u8, age_seconds: u64) -> KeyMaterial {
     let created_at = test_now() - TimeDuration::seconds(age_seconds as i64);
     key_material(Zeroizing::new(vec![byte]), created_at)
+}
+
+/// 构造一份已退役材料：`retired_seconds_ago` 前停止签发。
+///
+/// 创建时刻刻意设得远早于退役时刻（早一年），以证明裁剪只看退役时刻——按创建
+/// 时刻起算的旧实现会把这些材料全部误判为过期（Issue #298）。
+fn retired(byte: u8, retired_seconds_ago: u64) -> KeyMaterial {
+    let retired_at = test_now() - TimeDuration::seconds(retired_seconds_ago as i64);
+    let mut material = key_material(
+        Zeroizing::new(vec![byte]),
+        retired_at - TimeDuration::days(365),
+    );
+    material.retired_at = Some(retired_at);
+    material
 }
 
 #[test]
@@ -56,7 +71,7 @@ fn prune_materials_applies_retention_without_a_directory() {
     let expired = "cx-expired".to_owned();
     let mut map = BTreeMap::new();
     map.insert(active.clone(), aged(1, 0));
-    map.insert(expired.clone(), aged(2, 999_999));
+    map.insert(expired.clone(), retired(2, 999_999));
 
     prune_materials(&active, &mut map, Duration::from_secs(1), test_now());
 
@@ -76,8 +91,8 @@ fn prune_materials_retains_active_and_recent_removes_expired() {
 
     let mut map = BTreeMap::new();
     map.insert(active.clone(), aged(1, 0));
-    map.insert(recent.clone(), aged(2, 60));
-    map.insert(expired.clone(), aged(3, 7200));
+    map.insert(recent.clone(), retired(2, 60));
+    map.insert(expired.clone(), retired(3, 7200));
 
     prune_materials(&active, &mut map, retention, test_now());
 
@@ -98,41 +113,96 @@ fn prune_materials_never_removes_active_key_even_if_stale() {
     assert!(map.contains_key(&active), "active key always retained");
 }
 
-/// 边界：恰好等于 retention 的旧 key 仍在窗口内，多一秒才下线。
+/// 边界：保留窗口是左闭右开的 `[retired_at, retired_at + retention)`。
+///
+/// 右端点排他是安全的：令牌最迟在退役那一刻签发，`exp` 不晚于
+/// `retired_at + max_token_ttl`，而配置校验保证 `retention >= max_token_ttl`。
 #[test]
-fn prune_materials_keeps_a_key_exactly_at_the_retention_boundary() {
+fn prune_materials_keeps_a_key_until_its_retirement_window_closes() {
     let active = "cx-active".to_owned();
+    let inside = "cx-inside".to_owned();
     let boundary = "cx-boundary".to_owned();
-    let past_boundary = "cx-past-boundary".to_owned();
     let retention = Duration::from_secs(600);
 
     let mut map = BTreeMap::new();
     map.insert(active.clone(), aged(1, 0));
-    map.insert(boundary.clone(), aged(2, 600));
-    map.insert(past_boundary.clone(), aged(3, 601));
+    map.insert(inside.clone(), retired(2, 599));
+    map.insert(boundary.clone(), retired(3, 600));
 
     prune_materials(&active, &mut map, retention, test_now());
 
-    assert!(map.contains_key(&boundary), "恰好到期仍在验证窗口内");
-    assert!(!map.contains_key(&past_boundary));
+    assert!(map.contains_key(&inside), "窗口尚未走完必须保留");
+    assert!(!map.contains_key(&boundary), "窗口右端点排他");
+}
+
+/// Issue #298 的核心回归：长期在役的 key 退役后必须拿到一个完整的保留窗口。
+///
+/// 这个 key 创建于一年前、远超 retention，但它刚刚才退役。按创建时刻起算的旧实现
+/// 会立刻删掉它，把它在最后一刻签发、尚未到 `exp` 的令牌一起作废。
+#[test]
+fn prune_materials_grants_a_long_lived_key_a_full_window_from_retirement() {
+    let active = "cx-active".to_owned();
+    let long_lived = "cx-long-lived".to_owned();
+    let retention = Duration::from_secs(3600);
+
+    let mut map = BTreeMap::new();
+    map.insert(active.clone(), aged(1, 0));
+    map.insert(long_lived.clone(), retired(2, 0));
+
+    prune_materials(&active, &mut map, retention, test_now());
+
+    assert!(
+        map.contains_key(&long_lived),
+        "保留窗口必须从退役时刻起算，而不是创建时刻"
+    );
 }
 
 /// 并发轮换各自在抢锁前捕获 now，后执行者可能持有更早的快照：晚于参照时刻
-/// 创建的 key 不可能已过期，必须保留，否则会删掉仍在 JWKS 里公布的公钥。
+/// 退役的 key 不可能已过期，必须保留，否则会删掉仍在 JWKS 里公布的公钥。
 #[test]
-fn prune_materials_keeps_keys_created_after_the_reference_instant() {
+fn prune_materials_keeps_keys_retired_after_the_reference_instant() {
     let active = "cx-active".to_owned();
     let future = "cx-future".to_owned();
     let mut map = BTreeMap::new();
     map.insert(active.clone(), aged(1, 0));
-    map.insert(
-        future.clone(),
-        key_material(Zeroizing::new(vec![2]), test_now() + TimeDuration::hours(1)),
-    );
+    let mut future_material = key_material(Zeroizing::new(vec![2]), test_now());
+    future_material.retired_at = Some(test_now() + TimeDuration::hours(1));
+    map.insert(future.clone(), future_material);
 
     prune_materials(&active, &mut map, Duration::ZERO, test_now());
 
-    assert!(map.contains_key(&future), "未来创建的 key 不得被裁剪");
+    assert!(map.contains_key(&future), "未来退役的 key 不得被裁剪");
+}
+
+/// 退役时刻必须单调：重复轮换或重复加载不能把窗口起点不断往后推，
+/// 否则旧公钥永远不下线。
+#[test]
+fn mark_retired_keeps_the_first_retirement_instant() {
+    let key_id = "cx-key".to_owned();
+    let mut map = BTreeMap::new();
+    map.insert(key_id.clone(), aged(1, 0));
+
+    let first = mark_retired(&mut map, &key_id, test_now()).expect("first retirement");
+    let second =
+        mark_retired(&mut map, &key_id, test_now() + TimeDuration::hours(1)).expect("restamp");
+
+    assert_eq!(first, test_now());
+    assert_eq!(second, first, "退役时刻不得被后续调用推后");
+    assert_eq!(map[&key_id].retired_at, Some(first));
+}
+
+/// 在役 key 不带退役时刻，因此不受保留窗口约束。
+#[test]
+fn prune_materials_returns_the_removed_key_ids() {
+    let active = "cx-active".to_owned();
+    let expired = "cx-expired".to_owned();
+    let mut map = BTreeMap::new();
+    map.insert(active.clone(), aged(1, 0));
+    map.insert(expired.clone(), retired(2, 7200));
+
+    let removed = prune_materials(&active, &mut map, Duration::from_secs(60), test_now());
+
+    assert_eq!(removed, vec![expired], "磁盘删除依赖这份返回值");
 }
 
 /// 零保留窗口下内存模式也必须只留 active key，JWKS 不随轮换增长。
@@ -142,7 +212,7 @@ fn prune_materials_with_zero_retention_keeps_only_the_active_key() {
     let previous = "cx-previous".to_owned();
     let mut map = BTreeMap::new();
     map.insert(active.clone(), aged(1, 0));
-    map.insert(previous.clone(), aged(2, 1));
+    map.insert(previous.clone(), retired(2, 0));
 
     prune_materials(&active, &mut map, Duration::ZERO, test_now());
 
@@ -150,7 +220,8 @@ fn prune_materials_with_zero_retention_keeps_only_the_active_key() {
     assert!(map.contains_key(&active));
 }
 
-/// 内存模式的 JWKS 必须有界：跨过保留窗口的轮换会让旧公钥真正下线（Issue #285）。
+/// 内存模式的 JWKS 必须有界（Issue #285），同时每个退役 key 都要拿到完整窗口
+/// （Issue #298）：稳态下发布集合是“active + 仍在窗口内的已退役 key”。
 #[tokio::test]
 async fn in_memory_rotation_keeps_the_published_key_set_bounded() {
     let manager = KeyManager::generate().expect("key generation");
@@ -166,22 +237,26 @@ async fn in_memory_rotation_keeps_the_published_key_set_bounded() {
     assert_eq!(within_window.published_key_count, 2);
     assert!(manager.verification_key_for(&initial_key_id).is_some());
 
-    // 跨过保留窗口后再轮换：两个旧 key 都已过期，只剩新的 active key。
-    // 余量取 60 秒，避免第二个 key 恰好落在"年龄 == retention"的保留边界上。
+    // 跨过第一个 key 的保留窗口后再轮换：它下线，但刚退役的第二个 key 必须留下。
+    // 余量取 60 秒，避开窗口右端点。
     let beyond_window = manager
         .rotate_at(now + retention + TimeDuration::seconds(60))
         .await
         .expect("rotation beyond the retention window");
     assert_eq!(
-        beyond_window.published_key_count, 1,
-        "in-memory JWKS must not grow without bound"
+        beyond_window.published_key_count, 2,
+        "JWKS must stay bounded at active + keys still inside their window"
     );
-    assert_eq!(manager.jwks().keys.len(), 1);
-    assert!(manager.verification_key_for(&initial_key_id).is_none());
+    assert_eq!(manager.jwks().keys.len(), 2);
+    assert!(
+        manager.verification_key_for(&initial_key_id).is_none(),
+        "the first key's retirement window has closed"
+    );
     assert!(
         manager
             .verification_key_for(&within_window.key_id)
-            .is_none()
+            .is_some(),
+        "a key that just retired keeps a full verification window (Issue #298)"
     );
     assert_eq!(manager.key_id(), beyond_window.key_id);
     assert!(
@@ -193,20 +268,25 @@ async fn in_memory_rotation_keeps_the_published_key_set_bounded() {
 }
 
 #[test]
-fn within_retention_at_handles_the_exact_expiry_boundary() {
+fn retirement_window_open_at_handles_the_exact_expiry_boundary() {
     let now = test_now();
     let retention = Duration::from_secs(60);
 
-    assert!(within_retention_at(
-        now - TimeDuration::seconds(60),
+    assert!(retirement_window_open_at(
+        Some(now - TimeDuration::seconds(59)),
         retention,
         now
     ));
-    assert!(!within_retention_at(
-        now - TimeDuration::seconds(61),
-        retention,
-        now
-    ));
+    assert!(
+        !retirement_window_open_at(Some(now - TimeDuration::seconds(60)), retention, now),
+        "窗口右端点排他"
+    );
+}
+
+/// 尚未退役的 key 不受保留窗口约束：它仍在签发，删掉就直接断签名链路。
+#[test]
+fn retirement_window_open_at_never_closes_for_an_active_key() {
+    assert!(retirement_window_open_at(None, Duration::ZERO, test_now()));
 }
 
 #[test]
