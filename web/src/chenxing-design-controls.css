@@ -54,7 +54,11 @@
   top: 0;
   right: 0;
   bottom: 0;
+  /* 100vh 按大视口（地址栏收起）计算；移动端地址栏可见时会把抽屉底部
+     推出可视区，footer 操作按钮够不到。dvh 跟随当前可视视口，底部始终可见。
+     与 index.css 中 .chenxing-menu 的兜底写法一致：不支持 dvh 的浏览器保留 vh。 */
   height: 100vh;
+  height: 100dvh;
   z-index: var(--chenxing-z-dialog);
   display: flex;
   flex-direction: column;
@@ -97,6 +101,8 @@
   gap: 0.75rem;
   flex-shrink: 0;
   padding: 1rem 1.5rem;
+  /* 底部操作按钮不能被 iPhone 底部横条（home indicator）遮住 */
+  padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--chenxing-border);
   background: rgba(4, 7, 14, 0.6);
 }
