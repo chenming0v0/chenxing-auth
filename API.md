@@ -378,7 +378,7 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 - `PUT /api/v1/admin/oauth/providers/{slug}`：更新配置；`client_secret` 省略时保留原 Secret。
 - `POST /api/v1/admin/oauth/providers/{slug}/enable`、`/disable`：启用或停用。
 
-提供商的授权、Token、UserInfo 地址必须使用 HTTPS，且 IP 字面量和连接时 DNS 解析结果都必须是公网可路由地址；私网、链路本地、CGNAT、ULA、IPv6 站点本地（`fec0::/10`）、文档与保留前缀，以及混合公私网解析均被拒绝。IPv6 侧只放行 `2000::/3` 全局单播中未被 IANA 特殊用途占用的部分，未分配空间默认拒绝。仅 `localhost`、IPv4 loopback 或 `[::1]` 可使用 HTTP 进行本机测试。
+提供商的授权、Token、UserInfo 地址必须使用 HTTPS，且 IP 字面量和连接时 DNS 解析结果都必须是公网可路由地址；私网、链路本地、CGNAT、ULA、IPv6 站点本地（`fec0::/10`）、文档与保留前缀，以及混合公私网解析均被拒绝。IPv6 侧只放行 `2000::/3` 全局单播中未被 IANA 特殊用途占用的部分，未分配空间默认拒绝。仅 `localhost`、IPv4 loopback 或 `[::1]` 可在显式开启 `OAUTH_PROVIDER_LOOPBACK_ENABLED=true` 后使用 HTTP 进行本机测试（Issue #343）；该开关默认关闭，生产环境必须保持关闭——回环端点会收到解密后的 Client Secret 与用户 Access Token。
 
 校验挂在实际连接使用的 DNS resolver 上，避免先解析后连接造成 DNS rebinding 时间窗。provider 专用 HTTP 客户端显式禁用系统代理：`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 一律不生效，因此上述地址筛查始终作用于真正的连接目标，不依赖运维配置 `NO_PROXY`。需要经代理访问外部 IdP 的部署应使用出网网关，而不是给服务进程设置代理环境变量。
 

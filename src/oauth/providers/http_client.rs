@@ -10,7 +10,8 @@
 //!    代码里关掉。需要经代理访问外部 IdP 的部署应改用出网网关，而不是让本服务
 //!    把连接目标的决定权交给环境变量。
 //! 2. `dns_resolver(PublicEndpointResolver)` —— 解析结果即建连地址，不留 DNS
-//!    rebinding 时间窗。
+//!    rebinding 时间窗；回环例外是否放行由传入的 [`EndpointPolicy`] 决定
+//!    （Issue #343）。
 //! 3. `redirect(none)` —— 重定向会把请求带到未经校验的新目标，等于绕过端点校验。
 //! 4. `timeout` —— 外部 IdP 不可控，必须有上界。
 //!
@@ -21,7 +22,7 @@ use std::{sync::Arc, time::Duration};
 
 use reqwest::Client;
 
-use super::endpoint_policy::PublicEndpointResolver;
+use super::endpoint_policy::{EndpointPolicy, PublicEndpointResolver};
 
 /// 外部 IdP 请求超时。token 与 userinfo 都在浏览器回调路径上，不能无限等待。
 pub const EXTERNAL_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -29,7 +30,8 @@ pub const EXTERNAL_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// 构造 provider 专用出网客户端。
 ///
 /// 失败只可能来自 TLS 后端初始化，调用方按「远端请求不可用」处理即可。
-pub fn build_provider_http_client() -> reqwest::Result<Client> {
+/// `policy` 决定回环例外是否放行：生产策略下回环解析结果直接让连接失败。
+pub fn build_provider_http_client(policy: EndpointPolicy) -> reqwest::Result<Client> {
     Client::builder()
         .timeout(EXTERNAL_HTTP_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
@@ -38,7 +40,8 @@ pub fn build_provider_http_client() -> reqwest::Result<Client> {
         .no_proxy()
         // Issue #291：域名端点的实际指向只有解析后才知道。把筛查放进解析器，
         // 交出的地址就是随后建连使用的地址，不留 DNS rebinding 时间窗。
-        .dns_resolver(Arc::new(PublicEndpointResolver))
+        // Issue #343：回环例外由策略门控，生产策略下 `localhost` 同样不可达。
+        .dns_resolver(Arc::new(PublicEndpointResolver::new(policy)))
         .build()
 }
 
@@ -50,6 +53,6 @@ mod tests {
     /// 代理是否真的被禁用由 `tests/oauth_provider_proxy_boundary.rs` 用真实连接证明。
     #[test]
     fn provider_client_builds() {
-        build_provider_http_client().expect("provider http client");
+        build_provider_http_client(EndpointPolicy::PRODUCTION).expect("provider http client");
     }
 }
