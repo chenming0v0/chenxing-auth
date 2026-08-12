@@ -135,8 +135,16 @@ where
 
 /// 管理端调用者身份，权限尚未校验。
 ///
-/// 两种来源：浏览器 Session Cookie，或配置的系统 `ADMIN_TOKEN`。
-/// 后者不是浏览器自动附带的凭据，因此不涉及 CSRF。
+/// 两条独立通道，任一成立即可继续到权限校验（Issue #305）：
+///
+/// - [`Self::Session`]：浏览器 HttpOnly Session Cookie，写操作另需 CSRF 双 Cookie
+///   与 `X-CSRF-Token` 绑定，权限由用户角色决定。
+/// - [`Self::SystemToken`]：配置的系统 `ADMIN_TOKEN`，非浏览器自动附带的凭据，
+///   因此豁免 CSRF，权限等价于 Owner。
+///
+/// `ADMIN_TOKEN` 为空只关闭后者：`AdminAuthenticator::is_valid` 恒假，
+/// 任何 Bearer 请求都会落到 Session 分支并按普通会话认证。已认证且角色足够的
+/// 管理员因此仍然可以使用管理 API —— 空 Token 不是「关闭管理面」的开关。
 #[derive(Debug)]
 enum AdminCaller {
     Session(Box<UserContext>),

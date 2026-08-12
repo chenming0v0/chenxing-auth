@@ -1711,14 +1711,14 @@ paths:
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
-    adminBearer: { type: http, scheme: bearer }
+    adminBearer: { type: http, scheme: bearer, description: 系统 ADMIN_TOKEN 自动化通道，权限等价于 Owner 且无用户 ID，不需要浏览器 CSRF。ADMIN_TOKEN 为空时本通道整体关闭（任何 Bearer 请求都被拒绝），但 sessionCookie 管理通道不受影响；不存在 Owner 时公开的首个 Owner 初始化接口不属于本通道 }
     basicClientAuth: { type: http, scheme: basic }
     sessionCookie: { type: apiKey, in: cookie, name: __Host-chenxing_session, description: HTTPS 浏览器部署使用的 host-only Session Cookie；仅 loopback HTTP 本地开发使用不带前缀的兼容名称 }
     chenxingSession: { type: apiKey, in: header, name: X-Chenxing-Session, description: 仅开发兼容配置 OAUTH_SESSION_HEADER_ENABLED=true 时可用；不能替代 pending、Session 绑定、CSRF 或 consent }
   parameters:
     ClientId: { name: client_id, in: query, required: true, schema: { type: string } }
     SessionResponseMode: { name: X-Chenxing-Session-Mode, in: header, required: false, description: 非浏览器兼容模式。仅在 SESSION_TOKEN_RESPONSE_ENABLED=true 且值为 token 时将 session_id 放入 JSON；浏览器不得发送此请求头。, schema: { type: string, enum: [token] } }
-    CsrfHeader: { name: X-CSRF-Token, in: header, required: true, description: 浏览器 Session 写操作必需；ADMIN_TOKEN Bearer 请求不需要, schema: { type: string } }
+    CsrfHeader: { name: X-CSRF-Token, in: header, required: true, description: 浏览器 Session 写操作必需；ADMIN_TOKEN Bearer 请求不需要。ADMIN_TOKEN 为空时只关闭 Bearer 通道，浏览器 Session 管理请求仍需本请求头并仍然可用, schema: { type: string } }
     Page: { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
     PageSize: { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
     Search: { name: search, in: query, required: false, schema: { type: string, maxLength: 128 } }

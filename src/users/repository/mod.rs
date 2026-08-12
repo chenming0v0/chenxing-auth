@@ -28,7 +28,8 @@ pub use lookup::{
     find_profile_by_id, list_users,
 };
 pub use owner_bootstrap::{
-    BootstrapOwnerOutcome, bootstrap_owner, insert_user_after_owner, owner_exists,
+    BootstrapOwnerError, BootstrapOwnerOutcome, bootstrap_owner, insert_user_after_owner,
+    owner_exists,
 };
 pub use role_guard::{OwnerGuardOutcome, set_user_role, set_user_status_guarded};
 pub use write::{

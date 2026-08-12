@@ -336,8 +336,18 @@ impl Config {
         {
             return Err(ConfigError::InvalidValue("WEBAUTHN_ORIGIN"));
         }
+        // Issue #305：告警必须如实说明这只关掉一条通道。旧文案声称「all admin APIs
+        // are disabled」，但代码里空 Token 只让 `AdminAuthenticator::is_valid` 恒假，
+        // 也就是只拒绝 Bearer 系统 Token；浏览器 Session 通道（HttpOnly Session
+        // Cookie + CSRF 双 Cookie 绑定 + 角色权限）不受影响，管理面依然可用。
+        // 按旧文案理解会得出「不配 Token 就等于关闭管理面」的错误安全结论。
         if admin_token.is_empty() {
-            tracing::warn!("ADMIN_TOKEN not set: all admin APIs are disabled until configured");
+            tracing::warn!(
+                "ADMIN_TOKEN not set: the system Bearer token channel for admin APIs is \
+                 disabled. Authenticated browser sessions with sufficient roles and valid \
+                 CSRF binding can still use the admin APIs; the first-owner bootstrap \
+                 endpoint stays public while no owner exists."
+            );
         }
         // #111：未配置可信代理时告警。生产反向代理部署必须设置 TRUSTED_PROXIES，
         // 否则按源限流退化为代理内网 IP 作 key，全服务共享额度（自我 DoS 风险）。

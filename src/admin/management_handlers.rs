@@ -8,7 +8,9 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    authorization::{AdminActor, authorize_user_write},
+    authorization::{
+        AdminActor, OwnerGuardedOperation, authorize_user_write, record_owner_guard_denial,
+    },
     domain::AdminPermission,
 };
 use crate::{
@@ -143,10 +145,21 @@ pub async fn set_user_status(
         }
         // 状态串已在上面解析过，`false` 只剩一种含义：目标用户在授权与写入之间消失。
         Ok(false) => error::not_found("user_not_found", "user was not found"),
-        Err(crate::users::service::UserServiceError::LastOwnerRequired) => error::conflict(
-            "last_owner_required",
-            "at least one active owner is required",
-        ),
+        // 有权限的调用者试图禁用最后一个活跃 Owner：这是安全相关决策，必须留痕（Issue #304）。
+        Err(crate::users::service::UserServiceError::LastOwnerRequired) => {
+            record_owner_guard_denial(
+                &state,
+                actor,
+                user_id,
+                OwnerGuardedOperation::UserStatusUpdate,
+                status.as_str(),
+            )
+            .await;
+            error::conflict(
+                "last_owner_required",
+                "at least one active owner is required",
+            )
+        }
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to update user status");
             error::internal()
@@ -190,10 +203,21 @@ pub async fn set_user_role(
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::not_found("user_not_found", "user was not found"),
-        Err(crate::users::service::UserServiceError::LastOwnerRequired) => error::conflict(
-            "last_owner_required",
-            "at least one active owner is required",
-        ),
+        // 降级最后一个活跃 Owner 与禁用它同档，走同一条留痕路径（Issue #304）。
+        Err(crate::users::service::UserServiceError::LastOwnerRequired) => {
+            record_owner_guard_denial(
+                &state,
+                actor,
+                user_id,
+                OwnerGuardedOperation::UserRoleUpdate,
+                role.as_str(),
+            )
+            .await;
+            error::conflict(
+                "last_owner_required",
+                "at least one active owner is required",
+            )
+        }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update user role");
             error::internal()

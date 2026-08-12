@@ -44,7 +44,12 @@ impl AdminAuthenticator {
     /// 再执行常量时间比较。无论候选令牌长短，外部观察者无法通过响应时间推断
     /// 配置令牌的长度。
     pub fn is_valid(&self, candidate: &str) -> bool {
-        // AGENTS.md 硬性要求：ADMIN_TOKEN 为空时必须拒绝所有已初始化的管理 API
+        // ADMIN_TOKEN 为空时，系统 Bearer Token 通道整体关闭：没有任何候选值能通过。
+        //
+        // 这只关掉两条管理通道中的一条（Issue #305）。浏览器 Session 通道不经过这里
+        // —— 它由 `api::extract::AdminCaller::Session` 校验 HttpOnly Session Cookie、
+        // CSRF 双 Cookie 绑定和角色权限，因此空 Token 不会让已认证的管理员失去管理面。
+        // 不存在 Owner 时公开的首个 Owner 初始化接口同样不经过这里，例外语义不变。
         if self.token.is_empty() {
             return false;
         }
