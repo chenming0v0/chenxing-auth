@@ -45,7 +45,12 @@ pub(super) fn validate_token_and_key_lifetimes(
         MAX_TOKEN_TTL_SECONDS,
     )?;
 
-    // Every token signed by an old key must remain verifiable until the token expires.
+    // 旧 key 签发的令牌必须在过期前一直可验证。
+    //
+    // 这条比较只在保留窗口从**退役时刻**起算时才成立（Issue #298）：令牌最迟在退役
+    // 那一刻签发，`exp` 因此不晚于 `retired_at + max_token_ttl`，而公钥保留到
+    // `retired_at + grace`。窗口起点若是创建时刻，长期在役的 key 会在轮换瞬间就越过
+    // 窗口，`grace >= max_token_ttl` 无法保证任何事情。
     if key_rotation_grace_seconds < access_token_ttl_seconds.max(id_token_ttl_seconds) {
         return Err(ConfigError::InvalidValue("KEY_ROTATION_GRACE_SECONDS"));
     }

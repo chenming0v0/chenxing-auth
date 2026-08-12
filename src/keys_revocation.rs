@@ -59,6 +59,13 @@ pub(super) fn revoke_blocking_at(
     } else {
         active_key_id.clone()
     };
+    // 吊销 active key 时替代者是一个已退役的 key，它从这一刻起重新在役，因此必须
+    // 清掉它的退役时刻。留着会让它下次退役时沿用上一轮的起点，保留窗口被提前用掉
+    // （Issue #298）。磁盘侧的记录由 `commit_to_disk` 之后的加载 reconcile 清除，
+    // 内存这份要就地改，否则本实例在下次加载前一直带着错误的窗口起点。
+    if let Some(material) = materials.get_mut(&next_active_key_id) {
+        material.retired_at = None;
+    }
     let next_state = build_key_state(
         directory.clone(),
         retention,

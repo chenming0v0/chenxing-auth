@@ -6,7 +6,7 @@ use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 
 use super::{
     KeyManager, KeyManagerError, KeyRotation, build_key_state, generate_rsa_key, key_material,
-    persistence, prune_materials,
+    mark_retired, persistence, prune_materials, retirement,
 };
 
 /// 轮换：生成新签名密钥，写入共享目录，并替换内存快照。
@@ -22,11 +22,12 @@ pub(super) fn rotate_blocking_at(
         .rotation_lock
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (directory, retention, mut materials) = {
+    let (directory, retention, mut previous_active_key_id, mut materials) = {
         let state = manager.read_state();
         (
             state.directory.clone(),
             state.retention,
+            state.active_key_id.clone(),
             state.private_materials.clone(),
         )
     };
@@ -38,13 +39,19 @@ pub(super) fn rotate_blocking_at(
         None => None,
     };
     if let Some(directory) = directory.as_ref() {
-        let (_, disk_materials) = persistence::load_materials(directory, retention, now, true)?;
+        let (disk_active_key_id, disk_materials) =
+            persistence::load_materials(directory, retention, now, true)?;
+        // 退役的是磁盘上当前在役的那个 key，不是本实例内存里的：别的实例可能已经
+        // 轮换过，本实例的内存快照还没同步。
+        previous_active_key_id = disk_active_key_id;
         materials = disk_materials;
     }
 
     let (key_id, der) = generate_rsa_key()?;
+    // 旧 active key 从这一刻起只用于验证，保留窗口从这一刻起算（Issue #298）。
+    let retired_at = mark_retired(&mut materials, &previous_active_key_id, now);
     materials.insert(key_id.clone(), key_material(der.clone(), now));
-    prune_materials(&key_id, &mut materials, retention, now);
+    let expired = prune_materials(&key_id, &mut materials, retention, now);
     let next_state = build_key_state(directory.clone(), retention, key_id.clone(), materials)?;
 
     if let Some(directory) = directory.as_ref()
@@ -55,17 +62,38 @@ pub(super) fn rotate_blocking_at(
         return Err(error);
     }
 
+    // 退役记录必须写在切换 active kid 之后。反过来写，崩溃会留下“仍在役的 key 带着
+    // 退役记录”，它的保留窗口从一个过早的时刻起算，正是 Issue #298 要消除的情况。
+    // 这一步失败只告警：active kid 已经前进，旧 key 已不在役，下一次加载的
+    // `retirement::reconcile` 会补一条从那时起算的记录，窗口只会更长不会更短。
+    if let Some(directory) = directory.as_ref()
+        && let Some(retired_at) = retired_at
+        && let Err(error) = retirement::stamp(directory, &previous_active_key_id, retired_at)
+    {
+        tracing::warn!(
+            key_id = %previous_active_key_id,
+            error = %error,
+            "failed to record the retirement instant of the previous signing key; \
+             it will be restamped on the next key directory load"
+        );
+    }
+
     let published_key_count = next_state.jwks.keys.len();
     {
         let mut state = manager.write_state();
         *state = next_state;
     }
 
-    if let Some(directory) = directory.as_ref()
-        && let Err(error) =
-            persistence::cleanup_expired_key_files(directory, Some(&key_id), retention, now)
-    {
-        tracing::warn!(error = %error, "failed to collect expired signing keys");
+    if let Some(directory) = directory.as_ref() {
+        for expired_key_id in &expired {
+            if let Err(error) = persistence::remove_key(directory, expired_key_id) {
+                tracing::warn!(
+                    key_id = %expired_key_id,
+                    error = %error,
+                    "failed to collect an expired signing key"
+                );
+            }
+        }
     }
     Ok(KeyRotation {
         key_id,
