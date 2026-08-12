@@ -1,5 +1,3 @@
-use std::fs;
-
 use time::OffsetDateTime;
 
 use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
@@ -58,7 +56,16 @@ pub(super) fn rotate_blocking_at(
         && let Err(error) = persistence::persist_key(directory, &key_id, &der)
             .and_then(|_| persistence::persist_active_key_id(directory, &key_id))
     {
-        let _ = fs::remove_file(directory.join(persistence::key_file_name(&key_id)));
+        // 回滚刚落盘的私钥材料：active kid 没写成，轮换没有生效，盘上不许留下从未
+        // 进入 JWKS 的孤儿私钥。删除必须与其余路径一致走 secure 检查（拒绝符号链接/
+        // 非普通文件，fail-closed）；回滚失败只告警，主错误仍是上面那个。
+        if let Err(rollback_error) = persistence::remove_key(directory, &key_id) {
+            tracing::warn!(
+                key_id = %key_id,
+                error = %rollback_error,
+                "failed to roll back the newly persisted signing key after an interrupted rotation"
+            );
+        }
         return Err(error);
     }
 
