@@ -61,12 +61,21 @@ impl UserService {
     /// 审计失败会连带回滚用户创建，收敛成 [`UserServiceError::AuditUnavailable`]。
     ///
     /// `source_ip` 已由可信代理解析器取得，用于事后追溯「谁抢到了 Owner」。
+    ///
+    /// 已初始化判定必须在 Argon2 之前：哈希是 19 MiB 内存的计算成本，已初始化
+    /// 实例上的每次探测都不该为一次注定被拒的请求付这笔账（Issue #346）。
     pub async fn bootstrap_owner(
         &self,
         input: RegistrationInput,
         source_ip: Option<&str>,
     ) -> Result<BootstrapOwnerResult, UserServiceError> {
         let mut registration = validate_registration(input)?;
+        // 便宜判定先于慢哈希：限流只有 5 次/窗口/IP 的额度，`MissingSourceIpPolicy::Skip`
+        // 部署下甚至为零，不能指望它兜底。这只是快速路径 —— 并发引导的权威判定仍在
+        // 仓储事务的 advisory lock 内重新执行，预检放行不会制造「两个 Owner」的竞态窗口。
+        if self.owner_initialized().await? {
+            return Ok(BootstrapOwnerResult::AlreadyConfigured);
+        }
         let password = std::mem::take(&mut registration.password);
         let password_hash = hash_password(password)
             .await
