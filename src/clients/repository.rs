@@ -282,8 +282,17 @@ pub async fn list_clients(
     .map(|rows| rows.into_iter().map(to_listed_client).collect())
 }
 
+/// 查询 Client（可选 owner / status / 搜索过滤），返回当前页与总数。
+///
+/// - `owner_user_id = None`：管理端视图，不按 owner 过滤。
+/// - `owner_user_id = Some(id)`：只统计/返回该用户拥有的 Client（Issue #415）。
+/// - `search` / `status` 为 `None` 时对应过滤条件不生效。
+///
+/// COUNT 与页数据在同一 REPEATABLE READ 事务里读取，保证总数与行来自同一
+/// MVCC 快照，翻页时不会出现总数与内容不一致。
 pub async fn query_clients(
     pool: &PgPool,
+    owner_user_id: Option<UserId>,
     search: Option<&str>,
     status: Option<&str>,
     limit: i64,
@@ -305,10 +314,12 @@ pub async fn query_clients(
         .await?;
     let total = crate::sqlx::query_scalar(
         "SELECT COUNT(*) FROM oauth_clients
-         WHERE ($1::text IS NULL OR status = $1)
-           AND ($2::text IS NULL OR client_id LIKE $2 ESCAPE E'\\\\'
-                OR client_name LIKE $2 ESCAPE E'\\\\')",
+         WHERE ($1::bigint IS NULL OR owner_user_id = $1)
+           AND ($2::text IS NULL OR status = $2)
+           AND ($3::text IS NULL OR client_id LIKE $3 ESCAPE E'\\\\'
+                OR client_name LIKE $3 ESCAPE E'\\\\')",
     )
+    .bind(owner_user_id)
     .bind(status)
     .bind(search_pattern.as_deref())
     .fetch_one(&mut *transaction)
@@ -316,11 +327,13 @@ pub async fn query_clients(
     let rows = crate::sqlx::query_as::<_, ClientRow>(&format!(
         "SELECT {LIST_COLUMNS}
          FROM oauth_clients
-         WHERE ($1::text IS NULL OR status = $1)
-           AND ($2::text IS NULL OR client_id LIKE $2 ESCAPE E'\\\\'
-                OR client_name LIKE $2 ESCAPE E'\\\\')
-         ORDER BY created_at DESC, id DESC LIMIT $3 OFFSET $4"
+         WHERE ($1::bigint IS NULL OR owner_user_id = $1)
+           AND ($2::text IS NULL OR status = $2)
+           AND ($3::text IS NULL OR client_id LIKE $3 ESCAPE E'\\\\'
+                OR client_name LIKE $3 ESCAPE E'\\\\')
+         ORDER BY created_at DESC, id DESC LIMIT $4 OFFSET $5"
     ))
+    .bind(owner_user_id)
     .bind(status)
     .bind(search_pattern.as_deref())
     .bind(limit)
