@@ -168,7 +168,9 @@ impl AppState {
             SecurityLimitsSetting::from(&config.security_limits),
         );
 
-        // 安全阈值从 SettingsService 读取，数据库中的管理修改可以立即被执行路径看到。
+        // 安全阈值从 SettingsService 读取。稳态下命中它的进程内缓存，认证热路径不再
+        // 逐次查询 `app_settings`（#300）；管理接口写入后主动刷新该缓存，因此同一进程
+        // 内的执行路径立即看到新阈值，多实例部署由缓存 TTL 收敛。
         let auth_limiter: Arc<dyn AuthFailureLimiter> =
             Arc::new(RedisAuthFailureLimiter::with_settings(
                 redis.clone(),

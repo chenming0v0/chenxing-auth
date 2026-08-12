@@ -144,7 +144,12 @@ src/
 
 日常开发推荐工作流：每日首次启动运行 `./dev.sh`，后续代码修改后只需 `Ctrl+C` 停止前后端再重新运行 `./dev-services.sh`，无需反复重启数据库容器。停止 Docker 服务使用 `docker compose down`。
 
-认证失败限流由 Redis Lua 脚本在单次原子操作中完成计数、窗口 TTL 和阈值判定。生产默认使用 `AUTH_LIMITER_FAILURE_POLICY=fail-closed`：Redis 不可用时认证请求不会被放行，并记录结构化 `auth_limiter.redis_unavailable` 事件；只有在明确接受降级风险时才使用 `fail-open`。`AUTH_LIMITER_MISSING_SOURCE_IP=reject` 是生产默认值，防止没有可信 `ConnectInfo` 的请求共用全局 `unknown` 桶；`skip` 只跳过 IP 维度，仍保留 account、ticket 限流，并应仅用于明确配置的测试或受控入口。限流日志只记录维度、窗口和不可逆 key hash，不记录账户、ticket、IP 原文或认证凭据。
+认证失败限流由 Redis Lua 脚本在单次原子操作中完成计数、窗口 TTL 和阈值判定。生产默认使用 `AUTH_LIMITER_FAILURE_POLICY=fail-closed`：Redis 不可用时认证请求不会被放行，并记录结构化 `auth_limiter.redis_unavailable` 事件；只有在明确接受降级风险时才使用 `fail-open`。
+
+`AUTH_LIMITER_MISSING_SOURCE_IP=reject` 是生产默认值，防止没有可信 `ConnectInfo` 的请求共用全局 `unknown` 桶；`skip` 只跳过 IP 维度，仍保留 account、ticket 限流，并应仅用于明确配置的测试或受控入口。限流日志只记录维度、窗口和不可逆 key hash，不记录账户、ticket、IP 原文或认证凭据。
+
+限流阈值来自 `app_settings.security_limits`，但认证热路径不逐次查询数据库：`SettingsService` 在进程内缓存一份已校验的阈值，TTL 5 秒，管理接口写入成功后主动刷新本实例缓存，多实例部署由 TTL 收敛。阈值读取失败时使用最后一次成功加载的值，从未成功加载过则使用启动期环境变量默认值，并按同一个 `AUTH_LIMITER_FAILURE_POLICY` 处置：`fail-open` 带着该降级阈值继续限流（阈值仍然生效，认证不返回 500），`fail-closed` 明确拒绝认证。两种情况都记录结构化 `auth_limiter.settings_unavailable` 事件，字段包含 `policy`、`limits_source` 和 `operation`；读取失败后有 1 秒重试退避，故障期间不会每个认证请求都再打一次数据库。`clear` 与 `release` 不读取阈值，因此成功认证后的计数清理与在途配额归还不受 settings 故障影响。
+
 迁移编号在合并时必须保持唯一且连续：sessions lane 使用 `0006_session_epochs.sql` 和 `0014_session_idle_policy.sql`，plans lane 使用 `0007_plan_default_invariant.sql`，本 lane 的管理员查询索引使用 `0008_admin_query_indexes.sql`，审计不可变性和归档边界使用 `0013_audit_append_only_retention.sql`。不要复用已占用的编号或修改已有迁移的 SQL 内容。
 
 本次统一身份数据库重构使用新的单一基线迁移，不支持保留旧开发数据滚动升级。旧数据库中的 `_sqlx_migrations` 记录也不能被这条新基线自动转换；生产环境部署遇到迁移失败时必须先备份并执行经过批准的数据迁移或重建方案。首次在本地切换到该版本时，请确认 Compose 项目为本仓库的 `chenxing-auth` 后执行 `docker compose down -v`，再运行 `docker compose up -d postgres redis`；该操作会删除本地 PostgreSQL/Redis 开发数据，生产环境不得照此操作。

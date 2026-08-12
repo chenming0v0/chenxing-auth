@@ -1,6 +1,7 @@
 pub mod domain;
 pub mod repository;
 pub mod security_limits;
+pub mod security_limits_cache;
 pub mod service;
 
 pub use domain::{
@@ -8,6 +9,10 @@ pub use domain::{
     SmtpSetting, SmtpSettingUpdate,
 };
 pub use security_limits::SecurityLimitsSetting;
+pub use security_limits_cache::{
+    CachedSecurityLimits, SECURITY_LIMITS_CACHE_TTL, SECURITY_LIMITS_ERROR_BACKOFF,
+    SecurityLimitsCache, SecurityLimitsSource,
+};
 pub use service::{SettingsService, SettingsServiceError};
 
 pub const REGISTRATION_EMAIL_FROM_KEY: &str = "registration_email_from";

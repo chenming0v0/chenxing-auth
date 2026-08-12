@@ -4,7 +4,8 @@ use ::redis::AsyncCommands;
 
 use super::RedisAuthFailureLimiter;
 use crate::auth_limiter::domain::{AUTH_FAILURE_WINDOW_SECONDS, AuthFailureLimits};
-use crate::auth_limiter::{AuthFailureLimiter, AuthLimiterFailurePolicy, FailureDimension};
+use crate::auth_limiter::{AuthFailureLimiter, AuthLimiterFailurePolicy, FailureDimension, metrics};
+use crate::settings::{SecurityLimitsSetting, SettingsService};
 
 fn redis_url() -> String {
     std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned())
@@ -349,7 +350,7 @@ async fn redis_failure_policy_is_explicit_and_observable() {
     );
     let fail_closed =
         RedisAuthFailureLimiter::with_failure_policy(client, AuthLimiterFailurePolicy::FailClosed);
-    let before = super::metrics().redis_errors;
+    let before = metrics().redis_errors;
     assert!(
         !fail_open
             .is_limited(FailureDimension::Account, "failure-policy-open")
@@ -392,5 +393,93 @@ async fn redis_failure_policy_is_explicit_and_observable() {
             .await
             .is_err()
     );
-    assert!(super::metrics().redis_errors >= before + 6);
+    assert!(metrics().redis_errors >= before + 6);
+}
+
+/// 阈值来源不可用时的限流器行为（#300）。
+///
+/// Redis 正常、settings 数据库不可达：fail-open 必须继续用最后已知安全值限流，
+/// 认证不因为一次配置读取失败而 500。这里用一个 `account_limit = 2` 的启动期默认，
+/// 两次失败之后必须真的锁住——证明降级路径不是「不限流」，而是「按已知阈值限流」。
+#[tokio::test]
+async fn fail_open_still_enforces_limits_when_settings_are_unavailable() {
+    let settings = SettingsService::unreachable_for_tests(SecurityLimitsSetting {
+        account_failure_limit: 2,
+        ..SecurityLimitsSetting::default()
+    });
+    let limiter = RedisAuthFailureLimiter::with_settings(
+        ::redis::Client::open(redis_url()).expect("Redis URL"),
+        AuthLimiterFailurePolicy::FailOpen,
+        settings,
+    );
+    let account = unique_value("settings-degraded-account");
+    let before = metrics().settings_errors;
+
+    assert!(
+        !limiter
+            .record_failure(FailureDimension::Account, &account)
+            .await
+            .expect("fail-open must not surface the settings failure"),
+        "the first of two failures must not reach the limit"
+    );
+    assert!(
+        limiter
+            .record_failure(FailureDimension::Account, &account)
+            .await
+            .expect("fail-open must not surface the settings failure"),
+        "the degraded limits must still be enforced, not skipped"
+    );
+    assert!(
+        limiter
+            .is_limited(FailureDimension::Account, &account)
+            .await
+            .expect("fail-open check"),
+        "the account must be locked by the last known safe limits"
+    );
+    assert!(
+        metrics().settings_errors > before,
+        "every degraded limits read must be observable"
+    );
+}
+
+/// fail-closed 下 settings 不可用必须明确拒绝，即使 Redis 正常。
+/// 这是与上一个测试成对的另一半：只验证 fail-open 会掩盖策略根本没生效的情况。
+#[tokio::test]
+async fn fail_closed_rejects_when_settings_are_unavailable() {
+    let settings = SettingsService::unreachable_for_tests(SecurityLimitsSetting::default());
+    let limiter = RedisAuthFailureLimiter::with_settings(
+        ::redis::Client::open(redis_url()).expect("Redis URL"),
+        AuthLimiterFailurePolicy::FailClosed,
+        settings,
+    );
+    let account = unique_value("settings-closed-account");
+    let dimensions = vec![(FailureDimension::Account, account.clone())];
+    let before = metrics().settings_errors;
+
+    assert!(
+        limiter
+            .is_limited(FailureDimension::Account, &account)
+            .await
+            .is_err()
+    );
+    assert!(limiter.reserve(dimensions.clone()).await.is_err());
+    assert!(limiter.record_failures(dimensions.clone()).await.is_err());
+    assert!(
+        limiter
+            .record_reserved_failures(dimensions.clone())
+            .await
+            .is_err()
+    );
+    assert!(metrics().settings_errors >= before + 4);
+
+    // `clear` 与 `release` 不读取阈值：成功认证之后不能因为配置读取失败而把用户
+    // 继续锁在限流里，也不能把在途配额挂到 TTL 过期。
+    limiter
+        .clear(FailureDimension::Account, &account)
+        .await
+        .expect("clear must not depend on the settings store");
+    limiter
+        .release(dimensions)
+        .await
+        .expect("release must not depend on the settings store");
 }
