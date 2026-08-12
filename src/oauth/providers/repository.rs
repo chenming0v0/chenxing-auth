@@ -25,14 +25,19 @@ pub async fn insert_provider(
     // 保留墙钟（Issue #299 的明确例外）：Provider 配置行的 created_at/updated_at，
     // 不参与任何过期判定。外部登录 State 的 TTL 走 Redis `TIME`（见 state_store）。
     let now = OffsetDateTime::now_utc();
-    crate::sqlx::query_scalar::<_, i64>(
+    // 单条 INSERT ... RETURNING 直接拿回完整行：不做「先插再查」，既消除
+    // 查询返回 None 时的 expect panic（Issue #345），也消除 INSERT 与 SELECT
+    // 之间并发删除/清理造成的时间窗，同时省一次往返。
+    let row = crate::sqlx::query_as::<_, ProviderRow>(
         "INSERT INTO oauth_providers
          (name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
           client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
           name_claim, email_verified_claim, client_auth_method, pkce_enabled,
           status, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'disabled', $15, $15)
-         RETURNING id",
+         RETURNING id, name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
+                   client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
+                   name_claim, email_verified_claim, client_auth_method, pkce_enabled, status",
     )
     .bind(&input.name)
     .bind(&input.slug)
@@ -51,9 +56,7 @@ pub async fn insert_provider(
     .bind(now)
     .fetch_one(pool)
     .await?;
-    find_by_slug(pool, &input.slug)
-        .await
-        .map(|record| record.expect("inserted provider must be queryable"))
+    parse_provider_row(row)
 }
 
 pub async fn list_providers(pool: &PgPool) -> Result<Vec<ProviderRecord>, crate::sqlx::Error> {
