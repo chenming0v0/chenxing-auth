@@ -4,12 +4,14 @@ use axum::{
 };
 
 /// `/admin/login` is a legacy URL. The React login page lives at a different
-/// path, so both GET and POST preserve the query while forwarding to `/login`.
+/// path, so GET preserves the query while forwarding to `/login`.
+///
+/// POST is intentionally not registered: the legacy form-login flow no longer
+/// exists (the React page logs in through `/api/v1/auth/login`), and axum
+/// answers any unregistered method with `405 Method Not Allowed`. A redirect
+/// for POST would be a 303, which silently drops the form body and turns the
+/// request into a GET — the failure mode this handler avoids.
 pub async fn login_page(OriginalUri(uri): OriginalUri) -> Response {
-    redirect_to("/login", &uri)
-}
-
-pub async fn login_submit(OriginalUri(uri): OriginalUri) -> Response {
     redirect_to("/login", &uri)
 }
 

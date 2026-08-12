@@ -31,7 +31,7 @@ use crate::{
     },
     admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
     admin::user_creation::create_user,
-    admin::web_handlers::{login_page, login_submit},
+    admin::web_handlers::login_page,
     auth_factors::handlers::{
         confirm_totp_setup, finish_passkey_authentication, finish_passkey_registration, login_totp,
         start_passkey_authentication, start_passkey_registration, start_totp_setup,
@@ -197,7 +197,7 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
             "/api/v1/admin/oauth/providers/{slug}/enable",
             post(enable_provider),
         )
-        .route("/admin/login", get(login_page).post(login_submit))
+        .route("/admin/login", get(login_page))
         .route("/admin/settings/oauth", get(oauth_settings))
         .route(
             "/api/v1/auth/external-providers",

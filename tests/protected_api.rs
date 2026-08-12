@@ -117,7 +117,11 @@ async fn admin_routes_forward_to_the_react_spa() {
 }
 
 #[tokio::test]
-async fn admin_login_post_redirects_to_react_login() {
+async fn admin_login_post_is_rejected_with_405() {
+    // POST /admin/login used to be a 303 redirect, which silently dropped the
+    // form body and turned the request into a GET (issue #357). The legacy
+    // form-login flow no longer exists, so POST must be rejected explicitly
+    // instead of pretending to accept credentials.
     let (router, key_directory) = test_router().await;
     let response = router
         .oneshot(
@@ -130,10 +134,17 @@ async fn admin_login_post_redirects_to_react_login() {
         .await
         .expect("admin login response");
 
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert_eq!(
-        response.headers()[axum::http::header::LOCATION],
-        "/login?returnTo=%2Fadmin%2Fusers%3Fpage%3D2&state=login-state"
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert!(
+        !response.headers().contains_key(LOCATION),
+        "{:?}",
+        response.headers()
+    );
+    assert!(
+        response.headers()[axum::http::header::ALLOW]
+            .to_str()
+            .is_ok_and(|allow| allow.contains("GET")),
+        "405 must advertise the allowed methods"
     );
     let _ = std::fs::remove_dir_all(key_directory);
 }
