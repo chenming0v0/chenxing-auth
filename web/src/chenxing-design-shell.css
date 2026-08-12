@@ -228,7 +228,14 @@
 
 /* 桌面内联锚点导航：与中央微标签互补——微标签只在收拢态出现，链接只在
    页面顶部的全宽展开态出现，两者永不同框，也就永不打架。胶囊态宽度放不下
-   一排链接，导航职责交还汉堡菜单。 */
+   一排链接，导航职责交还汉堡菜单。
+   收拢态必须 visibility:hidden 而不能只 opacity:0：opacity 和 pointer-events
+   都不影响键盘可达性，只淡出会让这些 <a> 仍留在 Tab 顺序里、按 Enter 会被
+   静默导航到看不见的目标（WCAG 2.4.7 可见焦点违规）。visibility 翻转延迟与
+   淡出时长对齐——收拢时先淡出、结束后才移出 Tab 顺序，展开时立即可见让淡入
+   可见；隐藏元素不参与 Tab 顺序，也就无法被聚焦或激活。用 visibility 而非
+   display:none 是因为链接在行内 flex 布局里占位，display:none 会让微标签与
+   右侧动作区瞬间左移，且无法过渡。 */
 .chenxing-topbar-links {
   display: none;
 }
@@ -239,12 +246,19 @@
     gap: calc(1.75 * var(--cx-u));
     margin-left: calc(2 * var(--cx-u));
     opacity: 0;
+    visibility: hidden;
     pointer-events: none;
-    transition: opacity 0.35s ease;
+    transition:
+      opacity 0.35s ease,
+      visibility 0s linear 0.35s;
   }
   .chenxing-topbar[data-expanded]:not([data-open]) .chenxing-topbar-links {
     opacity: 1;
+    visibility: visible;
     pointer-events: auto;
+    transition:
+      opacity 0.35s ease,
+      visibility 0s linear 0s;
   }
   .chenxing-topbar-links a {
     font-family: var(--chenxing-font-body);
