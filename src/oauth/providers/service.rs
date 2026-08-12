@@ -7,7 +7,7 @@
 use super::{
     claims::ExternalUser,
     domain::{ProviderInput, ProviderRecord, ProviderSummary, ProviderValidationError},
-    endpoint_policy::validate_endpoint_url,
+    endpoint_policy::{EndpointPolicy, validate_endpoint_url},
     http_client::build_provider_http_client,
     repository::{self, CreateIdentityError},
     secrets::{SecretError, SecretManager},
@@ -22,6 +22,8 @@ pub struct ExternalOAuthService {
     pool: crate::sqlx::PgPool,
     secrets: SecretManager,
     http: Client,
+    /// 出网边界策略：决定回环/明文例外是否放行（Issue #343）。
+    policy: EndpointPolicy,
 }
 
 #[derive(Debug, Error)]
@@ -81,14 +83,17 @@ impl ExternalOAuthService {
     pub fn new(
         pool: crate::sqlx::PgPool,
         secrets: SecretManager,
+        policy: EndpointPolicy,
     ) -> Result<Self, ExternalOAuthError> {
         // 出网边界（禁用系统代理、解析筛查、禁重定向、超时）全部固定在
         // `http_client` 里，调用点不参与配置，回归测试可以拿到同一份客户端。
-        let http = build_provider_http_client().map_err(|_| ExternalOAuthError::RemoteRequest)?;
+        let http =
+            build_provider_http_client(policy).map_err(|_| ExternalOAuthError::RemoteRequest)?;
         Ok(Self {
             pool,
             secrets,
             http,
+            policy,
         })
     }
 
@@ -110,7 +115,7 @@ impl ExternalOAuthService {
         &self,
         input: ProviderInput,
     ) -> Result<ProviderSummary, ExternalOAuthError> {
-        let validated = input.validate()?;
+        let validated = input.validate(self.policy)?;
         let ciphertext = self.encrypt_secret(validated.client_secret.as_deref())?;
         Ok(
             repository::insert_provider(&self.pool, &validated, ciphertext)
@@ -124,7 +129,7 @@ impl ExternalOAuthService {
         slug: &str,
         input: ProviderInput,
     ) -> Result<bool, ExternalOAuthError> {
-        let validated = input.validate()?;
+        let validated = input.validate(self.policy)?;
         let ciphertext = match validated.client_secret.as_deref() {
             Some(secret) => self.encrypt_secret(Some(secret))?,
             None => self.find(slug).await?.client_secret_ciphertext,
@@ -149,9 +154,9 @@ impl ExternalOAuthService {
         if status == "active" {
             let provider = self.find(slug).await?;
             provider.claim_mapping()?;
-            validate_endpoint_url(&provider.authorization_endpoint)?;
-            validate_endpoint_url(&provider.token_endpoint)?;
-            validate_endpoint_url(&provider.userinfo_endpoint)?;
+            validate_endpoint_url(&provider.authorization_endpoint, self.policy)?;
+            validate_endpoint_url(&provider.token_endpoint, self.policy)?;
+            validate_endpoint_url(&provider.userinfo_endpoint, self.policy)?;
         }
         Ok(repository::set_status(&self.pool, slug, status).await?)
     }
@@ -209,6 +214,12 @@ impl ExternalOAuthService {
     /// 调用点自己建 Client 都会绕过 #291/#294 的出网边界。
     pub(super) fn http(&self) -> &Client {
         &self.http
+    }
+
+    /// 出网边界策略。协议交互模块（[`super::external_flow`]）校验端点时必须
+    /// 使用与保存/启用时相同的策略，否则回环门控（Issue #343）会被绕过。
+    pub(super) fn endpoint_policy(&self) -> EndpointPolicy {
+        self.policy
     }
 
     pub(super) fn decrypt_secret(

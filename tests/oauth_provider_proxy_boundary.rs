@@ -21,7 +21,9 @@
 
 use std::{net::SocketAddr, time::Duration};
 
-use chenxing_auth::oauth::providers::http_client::build_provider_http_client;
+use chenxing_auth::oauth::providers::{
+    endpoint_policy::EndpointPolicy, http_client::build_provider_http_client,
+};
 use tokio::net::TcpListener;
 
 /// 代理环境变量指向的目标主机。`.invalid` 是 RFC 2606 保留 TLD，保证不存在真实
@@ -77,7 +79,7 @@ fn provider_client_construction_keeps_all_egress_guards() {
     const HTTP_CLIENT: &str = include_str!("../src/oauth/providers/http_client.rs");
     for guard in [
         ".no_proxy()",
-        ".dns_resolver(Arc::new(PublicEndpointResolver))",
+        ".dns_resolver(Arc::new(PublicEndpointResolver::new(policy)))",
         ".redirect(reqwest::redirect::Policy::none())",
         ".timeout(EXTERNAL_HTTP_TIMEOUT)",
     ] {
@@ -117,7 +119,8 @@ async fn provider_client_ignores_system_proxy_environment() {
     drain(&listener).await;
 
     // 被测：生产构造必须完全绕开代理，走本地解析器并在解析阶段失败。
-    let hardened = build_provider_http_client().expect("provider http client");
+    let hardened =
+        build_provider_http_client(EndpointPolicy::PRODUCTION).expect("provider http client");
     assert!(
         !hits_proxy(&hardened, &listener).await,
         "provider 客户端读取了系统代理：SSRF 筛查的地址不再是实际连接目标"

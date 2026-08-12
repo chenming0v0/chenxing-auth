@@ -4,6 +4,7 @@ use chenxing_auth::oauth::providers::{
         ClientAuthMethod, PROVIDER_TRUST_MODEL, ProviderInput, ProviderRecord,
         ProviderValidationError,
     },
+    endpoint_policy::EndpointPolicy,
 };
 use serde_json::json;
 use url::Url;
@@ -56,7 +57,9 @@ fn provider_record() -> ProviderRecord {
 
 #[test]
 fn provider_input_accepts_standard_https_configuration() {
-    let provider = valid_input().validate().expect("valid provider");
+    let provider = valid_input()
+        .validate(EndpointPolicy::PRODUCTION)
+        .expect("valid provider");
 
     assert_eq!(provider.slug, "enterprise-sso");
     assert_eq!(provider.client_auth_method, ClientAuthMethod::Basic);
@@ -80,7 +83,12 @@ fn provider_input_defaults_pkce_to_enabled() {
     }))
     .expect("provider input without pkce_enabled");
     assert!(input.pkce_enabled);
-    assert!(input.validate().expect("valid provider").pkce_enabled);
+    assert!(
+        input
+            .validate(EndpointPolicy::PRODUCTION)
+            .expect("valid provider")
+            .pkce_enabled
+    );
 }
 
 /// 个别外部 IdP 不支持 RFC 7636，必须能显式关闭，而不是全局禁用 PKCE。
@@ -88,7 +96,12 @@ fn provider_input_defaults_pkce_to_enabled() {
 fn provider_input_allows_explicitly_disabling_pkce() {
     let mut input = valid_input();
     input.pkce_enabled = false;
-    assert!(!input.validate().expect("valid provider").pkce_enabled);
+    assert!(
+        !input
+            .validate(EndpointPolicy::PRODUCTION)
+            .expect("valid provider")
+            .pkce_enabled
+    );
 }
 
 #[test]
@@ -96,45 +109,58 @@ fn provider_input_rejects_unsafe_slug_and_endpoint() {
     let mut input = valid_input();
     input.slug = "../admin".to_owned();
     assert_eq!(
-        input.validate().expect_err("invalid slug"),
+        input
+            .validate(EndpointPolicy::PRODUCTION)
+            .expect_err("invalid slug"),
         ProviderValidationError::InvalidSlug
     );
 
     let mut input = valid_input();
     input.authorization_endpoint = "javascript:alert(1)".to_owned();
     assert_eq!(
-        input.validate().expect_err("invalid endpoint"),
+        input
+            .validate(EndpointPolicy::PRODUCTION)
+            .expect_err("invalid endpoint"),
         ProviderValidationError::InvalidEndpoint
     );
 }
 
+/// 远端明文 http 一律拒绝；回环明文 http 只在开发策略下放行（Issue #343）。
 #[test]
 fn provider_input_rejects_remote_http_but_allows_loopback_http() {
     let mut input = valid_input();
     input.authorization_endpoint = "http://sso.example.com/oauth/authorize".to_owned();
     assert_eq!(
-        input.validate().expect_err("remote HTTP endpoint"),
+        input
+            .validate(EndpointPolicy::PRODUCTION)
+            .expect_err("remote HTTP endpoint"),
         ProviderValidationError::InvalidEndpoint
     );
 
     let mut input = valid_input();
     input.token_endpoint = "http://sso.example.com/oauth/token".to_owned();
     assert_eq!(
-        input.validate().expect_err("remote HTTP endpoint"),
+        input
+            .validate(EndpointPolicy::PRODUCTION)
+            .expect_err("remote HTTP endpoint"),
         ProviderValidationError::InvalidEndpoint
     );
 
     let mut input = valid_input();
     input.userinfo_endpoint = "http://sso.example.com/oauth/userinfo".to_owned();
     assert_eq!(
-        input.validate().expect_err("remote HTTP endpoint"),
+        input
+            .validate(EndpointPolicy::PRODUCTION)
+            .expect_err("remote HTTP endpoint"),
         ProviderValidationError::InvalidEndpoint
     );
 
     let mut input = valid_input();
     input.authorization_endpoint = "http://localhost.example.com/oauth/authorize".to_owned();
     assert_eq!(
-        input.validate().expect_err("non-loopback localhost suffix"),
+        input
+            .validate(EndpointPolicy::PRODUCTION)
+            .expect_err("non-loopback localhost suffix"),
         ProviderValidationError::InvalidEndpoint
     );
 
@@ -142,7 +168,9 @@ fn provider_input_rejects_remote_http_but_allows_loopback_http() {
     input.authorization_endpoint = "http://127.0.0.1:8080/oauth/authorize".to_owned();
     input.token_endpoint = "http://[::1]:8080/oauth/token".to_owned();
     input.userinfo_endpoint = "http://localhost:8080/oauth/userinfo".to_owned();
-    input.validate().expect("loopback HTTP endpoints");
+    input
+        .validate(EndpointPolicy::DEV_LOOPBACK)
+        .expect("loopback HTTP endpoints");
 }
 
 #[test]
@@ -158,7 +186,10 @@ fn claim_extraction_supports_nested_paths_without_coercing_objects() {
 }
 
 fn mapping() -> ClaimMapping {
-    valid_input().validate().expect("provider").claims
+    valid_input()
+        .validate(EndpointPolicy::PRODUCTION)
+        .expect("provider")
+        .claims
 }
 
 #[test]
@@ -265,7 +296,9 @@ fn provider_input_rejects_missing_or_blank_email_verified_claim() {
         let mut input = valid_input();
         input.email_verified_claim = claim;
         assert_eq!(
-            input.validate().expect_err("missing email_verified_claim"),
+            input
+                .validate(EndpointPolicy::PRODUCTION)
+                .expect_err("missing email_verified_claim"),
             ProviderValidationError::MissingEmailVerifiedClaim
         );
     }
@@ -287,7 +320,9 @@ fn provider_input_without_email_verified_claim_field_is_rejected() {
     .expect("provider input without email_verified_claim");
 
     assert_eq!(
-        input.validate().expect_err("missing email_verified_claim"),
+        input
+            .validate(EndpointPolicy::PRODUCTION)
+            .expect_err("missing email_verified_claim"),
         ProviderValidationError::MissingEmailVerifiedClaim
     );
 }
@@ -297,7 +332,10 @@ fn provider_input_without_email_verified_claim_field_is_rejected() {
 fn email_verified_claim_supports_nested_path() {
     let mut input = valid_input();
     input.email_verified_claim = Some("profile.email_verified".to_owned());
-    let mapping = input.validate().expect("provider").claims;
+    let mapping = input
+        .validate(EndpointPolicy::PRODUCTION)
+        .expect("provider")
+        .claims;
 
     ExternalUser::from_claims(
         &json!({

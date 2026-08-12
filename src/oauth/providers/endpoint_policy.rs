@@ -21,7 +21,9 @@
 //! 地址的字面量，也不能解析到这些地址。
 //!
 //! 开发例外：仅回环主机（`localhost`、`127.0.0.0/8`、`::1`）可用，且允许 `http`，
-//! 用于本机联调外部 IdP。生产部署不应存在回环端点的 provider。
+//! 用于本机联调外部 IdP。例外由 `OAUTH_PROVIDER_LOOPBACK_ENABLED` 显式开启
+//! （Issue #343）：未开启时回环端点在任意环境一律拒绝，生产部署不会因为开发便利
+//! 而出现「向本机服务泄露 client secret / 用户 access token」的出网路径。
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -31,10 +33,42 @@ use url::{Host, Url};
 
 use super::domain::ProviderValidationError;
 
+/// 端点出网边界策略。
+///
+/// 生产与开发只在一个维度上不同：是否允许回环例外。回环例外同时包含两层——
+/// 静态校验放行回环主机（含明文 `http`），以及解析筛查放行 `localhost` 解析到
+/// 回环地址。两者必须一起门控，否则只关静态层、解析层仍放行 `localhost`，
+/// `https://localhost` 这类端点就会绕过生产边界。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndpointPolicy {
+    /// 允许回环主机与明文 `http` 的开发例外，仅限本机联调。
+    allow_loopback: bool,
+}
+
+impl EndpointPolicy {
+    /// 生产边界：远端端点必须 `https` 且地址公网可路由，回环一律拒绝。
+    pub const PRODUCTION: Self = Self {
+        allow_loopback: false,
+    };
+    /// 开发例外：回环主机可用且允许明文 `http`（本机 IdP 通常没有可信证书）。
+    pub const DEV_LOOPBACK: Self = Self {
+        allow_loopback: true,
+    };
+
+    /// 由配置值构造：`OAUTH_PROVIDER_LOOPBACK_ENABLED` 为 `true` 时得到开发例外。
+    pub fn new(allow_loopback: bool) -> Self {
+        Self { allow_loopback }
+    }
+
+    pub fn allow_loopback(self) -> bool {
+        self.allow_loopback
+    }
+}
+
 /// 端点主机按出网风险分成三类，`validate_endpoint_url` 只需要对这三类表态。
 #[derive(Debug, Clone, Copy)]
 enum EndpointHostClass {
-    /// 回环：明确的开发例外。
+    /// 回环：仅在开发策略下放行的例外。
     Loopback,
     /// 公网可路由的 IP 字面量，或需要在连接前筛查解析结果的域名。
     Public,
@@ -55,7 +89,10 @@ pub enum EndpointAddressError {
 ///
 /// 除地址判定外还拒绝 URL 里的凭据和 fragment：两者都不属于服务端到服务端的
 /// 端点，出现即说明配置来源不可信。
-pub fn validate_endpoint_url(url: &Url) -> Result<(), ProviderValidationError> {
+pub fn validate_endpoint_url(
+    url: &Url,
+    policy: EndpointPolicy,
+) -> Result<(), ProviderValidationError> {
     // 形态先判：scheme、凭据、fragment 与地址空间无关，错在这里说明配置来源不可信。
     if !matches!(url.scheme(), "http" | "https")
         || !url.username().is_empty()
@@ -67,8 +104,11 @@ pub fn validate_endpoint_url(url: &Url) -> Result<(), ProviderValidationError> {
     let host = url.host().ok_or(ProviderValidationError::InvalidEndpoint)?;
     match classify_host(&host) {
         EndpointHostClass::Forbidden => Err(ProviderValidationError::PrivateEndpoint),
-        // 开发例外：回环端点允许明文，本机 IdP 通常没有可信证书。
-        EndpointHostClass::Loopback => Ok(()),
+        // 开发例外（Issue #343 门控）：回环端点允许明文，本机 IdP 通常没有可信
+        // 证书。未开启例外时回环与私网同等对待——本服务会向端点发送解密后的
+        // client secret 和用户 access token，生产部署不允许这样的目标。
+        EndpointHostClass::Loopback if policy.allow_loopback() => Ok(()),
+        EndpointHostClass::Loopback => Err(ProviderValidationError::PrivateEndpoint),
         // 生产边界：远端端点必须 https。域名的实际指向由解析器筛查兜底。
         EndpointHostClass::Public if url.scheme() == "https" => Ok(()),
         EndpointHostClass::Public => Err(ProviderValidationError::InvalidEndpoint),
@@ -238,12 +278,14 @@ fn embedded_ipv4(address: Ipv6Addr) -> Option<Ipv4Addr> {
 pub fn screen_resolved_addresses(
     host: &str,
     addresses: Vec<SocketAddr>,
+    policy: EndpointPolicy,
 ) -> Result<Vec<SocketAddr>, EndpointAddressError> {
     if addresses.is_empty() {
         return Err(EndpointAddressError::Unresolved);
     }
-    // 回环开发例外只对 `localhost` 生效；任何其他域名解析到回环都是绕过尝试。
-    let loopback_allowed = host.eq_ignore_ascii_case("localhost");
+    // 回环开发例外只对 `localhost` 生效，且必须由策略显式开启（Issue #343）：
+    // 生产策略下任何解析到回环的结果都是绕过尝试；其他域名解析到回环同理。
+    let loopback_allowed = policy.allow_loopback() && host.eq_ignore_ascii_case("localhost");
     let all_allowed = addresses.iter().all(|address| {
         let ip = address.ip();
         if ip.is_loopback() {
@@ -262,19 +304,30 @@ pub fn screen_resolved_addresses(
 /// provider 出网客户端专用的 DNS 解析器：解析结果不通过筛查就不建连。
 ///
 /// IP 字面量不经过这里（reqwest 直接连），由 [`validate_endpoint_url`] 覆盖。
-#[derive(Debug, Default, Clone, Copy)]
-pub struct PublicEndpointResolver;
+/// 回环放行与否由构造时给定的 [`EndpointPolicy`] 决定，生产策略下 `localhost`
+/// 解析到回环同样拒绝。
+#[derive(Debug, Clone, Copy)]
+pub struct PublicEndpointResolver {
+    policy: EndpointPolicy,
+}
+
+impl PublicEndpointResolver {
+    pub fn new(policy: EndpointPolicy) -> Self {
+        Self { policy }
+    }
+}
 
 impl Resolve for PublicEndpointResolver {
     fn resolve(&self, name: Name) -> Resolving {
         let host = name.as_str().to_owned();
+        let policy = self.policy;
         Box::pin(async move {
             // 端口 0 只用于触发解析，实际端口由 reqwest 按 URL 覆盖。
             let resolved = tokio::net::lookup_host((host.as_str(), 0))
                 .await
                 .map_err(|_| EndpointAddressError::Unresolved);
             let screened = resolved
-                .and_then(|addresses| screen_resolved_addresses(&host, addresses.collect()))
+                .and_then(|addresses| screen_resolved_addresses(&host, addresses.collect(), policy))
                 .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
             Ok(Box::new(screened.into_iter()) as Addrs)
         })

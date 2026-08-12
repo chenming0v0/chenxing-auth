@@ -12,7 +12,8 @@ use crate::{
     db::Database,
     keys::{KeyManager, KeyManagerError},
     oauth::providers::{
-        secrets::SecretManager, service::ExternalOAuthService, state_store::ExternalLoginStateStore,
+        endpoint_policy::EndpointPolicy, secrets::SecretManager, service::ExternalOAuthService,
+        state_store::ExternalLoginStateStore,
     },
     oauth::quota::OAuthQuotaStore,
     oauth::rate_limit::QpsRateLimiter,
@@ -241,7 +242,12 @@ impl AppState {
         let admin = AdminAuthenticator::new(config.admin_token.clone());
         let audit = AuditService::new(database.clone()).with_clock(clock.clone());
         // 复用已加载的 secret_manager，避免第二次 load_or_generate 创建独立副本。
-        let external_oauth = ExternalOAuthService::new(database.clone(), secret_manager)?;
+        // 出网边界策略来自配置（Issue #343）：回环/明文例外默认关闭。
+        let external_oauth = ExternalOAuthService::new(
+            database.clone(),
+            secret_manager,
+            EndpointPolicy::new(config.oauth_provider_loopback_enabled),
+        )?;
         let external_login_states =
             ExternalLoginStateStore::new_with_settings(redis.clone(), settings.clone());
 

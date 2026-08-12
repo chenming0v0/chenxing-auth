@@ -13,14 +13,14 @@ use std::net::{IpAddr, SocketAddr};
 use chenxing_auth::oauth::providers::{
     domain::{ClientAuthMethod, ProviderInput, ProviderValidationError},
     endpoint_policy::{
-        EndpointAddressError, is_public_endpoint_address, screen_resolved_addresses,
-        validate_endpoint_url,
+        EndpointAddressError, EndpointPolicy, is_public_endpoint_address,
+        screen_resolved_addresses, validate_endpoint_url,
     },
 };
 use url::Url;
 
-fn endpoint(value: &str) -> Result<(), ProviderValidationError> {
-    validate_endpoint_url(&Url::parse(value).expect("endpoint URL"))
+fn endpoint(value: &str, policy: EndpointPolicy) -> Result<(), ProviderValidationError> {
+    validate_endpoint_url(&Url::parse(value).expect("endpoint URL"), policy)
 }
 
 fn provider_input(authorization_endpoint: &str) -> ProviderInput {
@@ -82,7 +82,7 @@ fn https_endpoint_rejects_private_and_special_address_literals() {
         "https://[2002:5db8:d822::]/oauth/token",
     ] {
         assert_eq!(
-            endpoint(value).expect_err(value),
+            endpoint(value, EndpointPolicy::PRODUCTION).expect_err(value),
             ProviderValidationError::PrivateEndpoint,
             "{value} 必须按非公网地址拒绝"
         );
@@ -94,7 +94,7 @@ fn https_endpoint_rejects_private_and_special_address_literals() {
 fn provider_input_rejects_private_https_endpoint() {
     assert_eq!(
         provider_input("https://10.0.0.5/oauth/authorize")
-            .validate()
+            .validate(EndpointPolicy::PRODUCTION)
             .expect_err("private https endpoint"),
         ProviderValidationError::PrivateEndpoint
     );
@@ -108,16 +108,42 @@ fn https_endpoint_accepts_public_hosts() {
         "https://93.184.216.34/oauth/token",
         "https://[2606:4700:4700::1111]/oauth/token",
     ] {
-        endpoint(value).unwrap_or_else(|error| panic!("{value} 应放行，却得到 {error}"));
+        endpoint(value, EndpointPolicy::PRODUCTION)
+            .unwrap_or_else(|error| panic!("{value} 应放行，却得到 {error}"));
     }
     provider_input("https://sso.example.com/oauth/authorize")
-        .validate()
+        .validate(EndpointPolicy::PRODUCTION)
         .expect("public https provider");
 }
 
-/// 保留的开发例外：回环主机可用，且允许 http（本机 IdP 通常没有可信证书）。
+/// Issue #343：生产策略（默认）下回环端点一律拒绝，包括明文 http 与 https。
+/// 回环端点是「管理员可控出网目标」中唯一会被服务端主动发送凭据的目标，
+/// 不能因为开发便利而默认放行。
 #[test]
-fn loopback_endpoint_remains_a_development_exception() {
+fn production_policy_rejects_loopback_endpoints() {
+    for value in [
+        "http://localhost:8080/oauth/token",
+        "http://127.0.0.1:8080/oauth/token",
+        "http://[::1]:8080/oauth/token",
+        "https://localhost:8443/oauth/token",
+        "https://127.0.0.1:8443/oauth/token",
+        "https://[::1]:8443/oauth/token",
+    ] {
+        assert_eq!(
+            endpoint(value, EndpointPolicy::PRODUCTION).expect_err(value),
+            ProviderValidationError::PrivateEndpoint,
+            "{value} 在生产策略下必须按非公网地址拒绝"
+        );
+    }
+    provider_input("http://127.0.0.1:8080/oauth/authorize")
+        .validate(EndpointPolicy::PRODUCTION)
+        .expect_err("loopback provider must not save under production policy");
+}
+
+/// 开发例外必须显式开启（Issue #343）：`DEV_LOOPBACK` 策略下回环主机可用，
+/// 且允许 http（本机 IdP 通常没有可信证书）。
+#[test]
+fn dev_policy_keeps_loopback_as_explicit_development_exception() {
     for value in [
         "http://localhost:8080/oauth/token",
         "http://127.0.0.1:8080/oauth/token",
@@ -125,7 +151,8 @@ fn loopback_endpoint_remains_a_development_exception() {
         "https://localhost:8443/oauth/token",
         "https://127.0.0.1:8443/oauth/token",
     ] {
-        endpoint(value).unwrap_or_else(|error| panic!("{value} 应放行，却得到 {error}"));
+        endpoint(value, EndpointPolicy::DEV_LOOPBACK)
+            .unwrap_or_else(|error| panic!("{value} 在开发策略下应放行，却得到 {error}"));
     }
 }
 
@@ -142,7 +169,7 @@ fn remote_http_and_malformed_endpoints_stay_rejected() {
         "https://sso.example.com/oauth/token#fragment",
     ] {
         assert_eq!(
-            endpoint(value).expect_err(value),
+            endpoint(value, EndpointPolicy::PRODUCTION).expect_err(value),
             ProviderValidationError::InvalidEndpoint,
             "{value} 必须按形态非法拒绝"
         );
@@ -160,8 +187,12 @@ fn resolution_screening_rejects_private_answers() {
         // Issue #294：站点本地同样必须在解析层被拦，而不只是字面量层。
         "fec0::1",
     ] {
-        let error = screen_resolved_addresses("internal.corp.example", addresses(&[value]))
-            .expect_err("private resolution");
+        let error = screen_resolved_addresses(
+            "internal.corp.example",
+            addresses(&[value]),
+            EndpointPolicy::PRODUCTION,
+        )
+        .expect_err("private resolution");
         assert!(
             matches!(error, EndpointAddressError::NonPublicAddress),
             "{value} 必须按非公网解析结果拒绝，却得到 {error}"
@@ -169,14 +200,34 @@ fn resolution_screening_rejects_private_answers() {
     }
 }
 
-/// 回环例外只认 `localhost`：任何其他域名解析到回环都是绕过尝试。
+/// 回环例外只认 `localhost`，且必须由开发策略显式开启（Issue #343）：
+/// 生产策略下 `localhost` 解析到回环同样拒绝，任何其他域名解析到回环
+/// 都是绕过尝试。
 #[test]
 fn resolution_screening_confines_loopback_to_localhost() {
-    screen_resolved_addresses("localhost", addresses(&["127.0.0.1", "::1"]))
-        .expect("localhost resolves to loopback");
+    // 开发策略：`localhost` 解析到回环放行。
+    screen_resolved_addresses(
+        "localhost",
+        addresses(&["127.0.0.1", "::1"]),
+        EndpointPolicy::DEV_LOOPBACK,
+    )
+    .expect("localhost resolves to loopback under dev policy");
 
-    let error = screen_resolved_addresses("rebind.example.com", addresses(&["127.0.0.1"]))
-        .expect_err("loopback resolution for a public domain");
+    // 生产策略：`localhost` 解析到回环必须拒绝——这是回环例外的解析层门控。
+    let error = screen_resolved_addresses(
+        "localhost",
+        addresses(&["127.0.0.1", "::1"]),
+        EndpointPolicy::PRODUCTION,
+    )
+    .expect_err("loopback resolution under production policy");
+    assert!(matches!(error, EndpointAddressError::NonPublicAddress));
+
+    let error = screen_resolved_addresses(
+        "rebind.example.com",
+        addresses(&["127.0.0.1"]),
+        EndpointPolicy::DEV_LOOPBACK,
+    )
+    .expect_err("loopback resolution for a public domain");
     assert!(matches!(error, EndpointAddressError::NonPublicAddress));
 }
 
@@ -184,12 +235,16 @@ fn resolution_screening_confines_loopback_to_localhost() {
 #[test]
 fn resolution_screening_rejects_mixed_answers_and_empty_results() {
     let mixed = addresses(&["93.184.216.34", "10.0.0.5"]);
-    let error =
-        screen_resolved_addresses("split.example.com", mixed).expect_err("mixed resolution");
+    let error = screen_resolved_addresses("split.example.com", mixed, EndpointPolicy::PRODUCTION)
+        .expect_err("mixed resolution");
     assert!(matches!(error, EndpointAddressError::NonPublicAddress));
 
-    let error =
-        screen_resolved_addresses("missing.example.com", Vec::new()).expect_err("empty resolution");
+    let error = screen_resolved_addresses(
+        "missing.example.com",
+        Vec::new(),
+        EndpointPolicy::PRODUCTION,
+    )
+    .expect_err("empty resolution");
     assert!(matches!(error, EndpointAddressError::Unresolved));
 }
 
@@ -198,7 +253,12 @@ fn resolution_screening_rejects_mixed_answers_and_empty_results() {
 fn resolution_screening_accepts_public_answers() {
     let resolved = addresses(&["93.184.216.34", "2606:4700:4700::1111"]);
     assert_eq!(
-        screen_resolved_addresses("sso.example.com", resolved.clone()).expect("public resolution"),
+        screen_resolved_addresses(
+            "sso.example.com",
+            resolved.clone(),
+            EndpointPolicy::PRODUCTION
+        )
+        .expect("public resolution"),
         resolved
     );
 }

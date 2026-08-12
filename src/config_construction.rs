@@ -36,6 +36,7 @@ struct ConfigValues {
     cookie_secure: bool,
     oauth_session_header_enabled: bool,
     session_token_response_enabled: bool,
+    oauth_provider_loopback_enabled: bool,
     database_url: String,
     redis_url: String,
     session_ttl_seconds: u64,
@@ -105,6 +106,15 @@ impl Config {
                 .as_deref()
                 .unwrap_or("false"),
         )?;
+        // Issue #343：回环/明文 http 开发例外默认关闭（生产 fail-closed），
+        // 只在本机联调外部 IdP 时显式开启。
+        let oauth_provider_loopback_enabled = parse_bool(
+            "OAUTH_PROVIDER_LOOPBACK_ENABLED",
+            env::var("OAUTH_PROVIDER_LOOPBACK_ENABLED")
+                .ok()
+                .as_deref()
+                .unwrap_or("false"),
+        )?;
         let session_ttl_seconds = parse_u64(
             "SESSION_TTL_SECONDS",
             env::var("SESSION_TTL_SECONDS")
@@ -162,6 +172,7 @@ impl Config {
             cookie_secure,
             oauth_session_header_enabled,
             session_token_response_enabled,
+            oauth_provider_loopback_enabled,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -221,6 +232,8 @@ impl Config {
             cookie_secure: true,
             oauth_session_header_enabled: true,
             session_token_response_enabled: false,
+            // 测试构造默认走生产边界：需要回环例外的用例显式设置。
+            oauth_provider_loopback_enabled: false,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -255,6 +268,7 @@ impl Config {
             cookie_secure,
             oauth_session_header_enabled,
             session_token_response_enabled,
+            oauth_provider_loopback_enabled,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -331,6 +345,17 @@ impl Config {
                  exists."
             );
         }
+        // Issue #343：回环/明文 http 例外是开发开关，开启后本服务会把解密后的
+        // client secret 和用户 access token 发给回环端点。生产开启等于给「管理员
+        // 可控出网目标」开回环口子，告警语义与实现一致。
+        if oauth_provider_loopback_enabled {
+            tracing::warn!(
+                "OAUTH_PROVIDER_LOOPBACK_ENABLED=true: provider endpoints may target \
+                 loopback hosts over plaintext http. This is a development-only \
+                 exception; decrypted client secrets and user access tokens are sent \
+                 to these endpoints. Keep disabled in production."
+            );
+        }
         // #111：未配置可信代理时告警。生产反向代理部署必须设置 TRUSTED_PROXIES，
         // 否则按源限流退化为代理内网 IP 作 key，全服务共享额度（自我 DoS 风险）。
         if trusted_proxies.is_empty() {
@@ -351,6 +376,7 @@ impl Config {
             cookie_secure,
             oauth_session_header_enabled,
             session_token_response_enabled,
+            oauth_provider_loopback_enabled,
             database_url,
             redis_url,
             session_ttl_seconds,

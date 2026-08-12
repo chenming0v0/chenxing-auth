@@ -39,7 +39,7 @@ impl ExternalOAuthService {
         state: &str,
         code_verifier: &str,
     ) -> Result<String, ExternalOAuthError> {
-        validate_endpoint_url(&provider.authorization_endpoint)?;
+        validate_endpoint_url(&provider.authorization_endpoint, self.endpoint_policy())?;
         let mut url = provider.authorization_endpoint.clone();
         {
             let mut query = url.query_pairs_mut();
@@ -68,7 +68,7 @@ impl ExternalOAuthService {
         code: &str,
         code_verifier: &str,
     ) -> Result<ExternalToken, ExternalOAuthError> {
-        validate_endpoint_url(&provider.token_endpoint)?;
+        validate_endpoint_url(&provider.token_endpoint, self.endpoint_policy())?;
         let secret = self.decrypt_secret(provider)?;
         let mut form = vec![
             ("grant_type", "authorization_code"),
@@ -112,7 +112,7 @@ impl ExternalOAuthService {
         provider: &ProviderRecord,
         token: &ExternalToken,
     ) -> Result<ExternalUser, ExternalOAuthError> {
-        validate_endpoint_url(&provider.userinfo_endpoint)?;
+        validate_endpoint_url(&provider.userinfo_endpoint, self.endpoint_policy())?;
         let response = self
             .http()
             .get(provider.userinfo_endpoint.clone())
@@ -164,16 +164,25 @@ pub fn parse_token_response(payload: &Value) -> Result<ExternalToken, ExternalOA
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::oauth::providers::{client_pkce::generate_code_verifier, secrets::SecretManager};
+    use crate::oauth::providers::{
+        client_pkce::generate_code_verifier, endpoint_policy::EndpointPolicy,
+        secrets::SecretManager,
+    };
     use url::Url;
 
     /// 构造仅用于 URL 拼装测试的 service：`connect_lazy` 不会真正连接数据库，
-    /// 而 `authorization_url` 是纯函数，不触碰连接池。
+    /// 而 `authorization_url` 是纯函数，不触碰连接池。生产策略下回环端点被拒，
+    /// 与本模块用例（全部使用公网 https 端点）一致。
     fn service() -> ExternalOAuthService {
         let pool = crate::sqlx::PgPoolOptions::new()
             .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
             .expect("lazy pool");
-        ExternalOAuthService::new(pool, SecretManager::from_key([7_u8; 32])).expect("service")
+        ExternalOAuthService::new(
+            pool,
+            SecretManager::from_key([7_u8; 32]),
+            EndpointPolicy::PRODUCTION,
+        )
+        .expect("service")
     }
 
     fn provider(pkce_enabled: bool) -> ProviderRecord {

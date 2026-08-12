@@ -3,7 +3,10 @@ use std::fmt;
 use thiserror::Error;
 use url::Url;
 
-use super::{claims::ClaimMapping, endpoint_policy::validate_endpoint_url};
+use super::{
+    claims::ClaimMapping,
+    endpoint_policy::{EndpointPolicy, validate_endpoint_url},
+};
 
 const MAX_NAME_LENGTH: usize = 128;
 const MAX_SLUG_LENGTH: usize = 64;
@@ -190,7 +193,12 @@ impl fmt::Debug for ProviderRecord {
 }
 
 impl ProviderInput {
-    pub fn validate(self) -> Result<ValidatedProviderInput, ProviderValidationError> {
+    /// 校验并收敛输入。`policy` 是出网边界策略（Issue #343）：生产策略拒绝回环
+    /// 端点，开发策略放行回环与明文 `http`。校验端点之外的规则与策略无关。
+    pub fn validate(
+        self,
+        policy: EndpointPolicy,
+    ) -> Result<ValidatedProviderInput, ProviderValidationError> {
         let name = self.name.trim().to_owned();
         if name.is_empty() || name.chars().count() > MAX_NAME_LENGTH {
             return Err(ProviderValidationError::InvalidName);
@@ -207,9 +215,9 @@ impl ProviderInput {
         {
             return Err(ProviderValidationError::InvalidSlug);
         }
-        let authorization_endpoint = validate_endpoint(&self.authorization_endpoint)?;
-        let token_endpoint = validate_endpoint(&self.token_endpoint)?;
-        let userinfo_endpoint = validate_endpoint(&self.userinfo_endpoint)?;
+        let authorization_endpoint = validate_endpoint(&self.authorization_endpoint, policy)?;
+        let token_endpoint = validate_endpoint(&self.token_endpoint, policy)?;
+        let userinfo_endpoint = validate_endpoint(&self.userinfo_endpoint, policy)?;
         let client_id = self.client_id.trim().to_owned();
         if client_id.is_empty() || client_id.chars().count() > 512 {
             return Err(ProviderValidationError::InvalidClientId);
@@ -311,9 +319,9 @@ pub enum ProviderValidationError {
     EmailNotVerified,
 }
 
-fn validate_endpoint(value: &str) -> Result<Url, ProviderValidationError> {
+fn validate_endpoint(value: &str, policy: EndpointPolicy) -> Result<Url, ProviderValidationError> {
     let url = Url::parse(value.trim()).map_err(|_| ProviderValidationError::InvalidEndpoint)?;
-    validate_endpoint_url(&url)?;
+    validate_endpoint_url(&url, policy)?;
     Ok(url)
 }
 

@@ -90,6 +90,12 @@ pub struct Config {
     pub oauth_session_header_enabled: bool,
     /// Allows opted-in non-browser clients to receive session token in JSON.
     pub session_token_response_enabled: bool,
+    /// 是否允许外部 IdP 端点使用回环主机与明文 http（Issue #343）。
+    ///
+    /// 默认关闭（生产 fail-closed）：未开启时回环端点一律拒绝，开启只用于本机
+    /// 联调外部 IdP。开启后本服务会把解密后的 client secret 和用户 access token
+    /// 发送到这些端点，绝不能在生产开启。
+    pub oauth_provider_loopback_enabled: bool,
     pub database_url: String,
     pub redis_url: String,
     pub session_ttl_seconds: u64,
@@ -139,6 +145,10 @@ impl fmt::Debug for Config {
             .field(
                 "session_token_response_enabled",
                 &self.session_token_response_enabled,
+            )
+            .field(
+                "oauth_provider_loopback_enabled",
+                &self.oauth_provider_loopback_enabled,
             )
             .field("database_url", &"<redacted>")
             .field("redis_url", &"<redacted>")
