@@ -219,8 +219,9 @@
 
 /* console shells already show the brand in the sidebar, so there the topbar copy
    belongs to the condensed capsule only and fades out at page top (kept in layout
-   so the centered status stays centered) */
-.chenxing-topbar[data-expanded][data-hide-brand-when-expanded] .chenxing-topbar-brand {
+   so the centered status stays centered). When the menu is open, show the brand
+   even at page top so users can see where they are. */
+.chenxing-topbar[data-expanded][data-hide-brand-when-expanded]:not([data-open]) .chenxing-topbar-brand {
   opacity: 0;
   pointer-events: none;
 }
