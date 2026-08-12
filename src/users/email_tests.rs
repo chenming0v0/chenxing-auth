@@ -104,6 +104,12 @@ fn structurally_invalid_addresses_are_rejected() {
         ("user", EmailError::MalformedStructure),
         ("user@a@example.com", EmailError::MalformedStructure),
         ("@example.com", EmailError::EmptyLocalPart),
+        // RFC 5321 dot-string：本地部分不得前导、尾随或连续点号（Issue #347）。
+        (".foo@example.com", EmailError::InvalidLocalPart),
+        ("foo.@example.com", EmailError::InvalidLocalPart),
+        ("foo..bar@example.com", EmailError::InvalidLocalPart),
+        ("..@example.com", EmailError::InvalidLocalPart),
+        (".@example.com", EmailError::InvalidLocalPart),
         ("user@", EmailError::InvalidDomain),
         // 单标签域名：保留补丁前"域名必须含点"的边界。
         ("user@localhost", EmailError::InvalidDomain),
@@ -122,6 +128,33 @@ fn structurally_invalid_addresses_are_rejected() {
         ("user@exa mple.com", EmailError::ForbiddenCharacter),
     ] {
         assert_eq!(EmailAddress::parse(raw), Err(expected), "{raw:?}");
+    }
+}
+
+/// Issue #347：本地部分按 RFC 5321 dot-string 校验，但合法的单点号形态不受影响。
+///
+/// 拒绝的不是"含点号的地址"而是"畸形的点号排列"：`a.b@` 与 `ab@` 是否等价是
+/// provider 的语义，认证中枢不替它猜测（见 `email.rs` 文件头注释），因此合法的
+/// 单点号地址继续放行，只有违反协议的排列被挡在入口。
+#[test]
+fn local_part_dot_string_rule_rejects_malformed_placement_only() {
+    // 合法：单点号与多点号分隔的 Atom 都是合法 dot-string。
+    assert_eq!(parse("u.ser@example.com").canonical_local_part(), "u.ser");
+    assert_eq!(parse("a.b.c@example.com").canonical_local_part(), "a.b.c");
+    // ASCII 大小写折叠不改变点号排列，规则对两种形态一致生效。
+    assert_eq!(parse("U.Ser@example.com").canonical(), "u.ser@example.com");
+    for raw in [
+        ".foo@example.com",
+        "foo.@example.com",
+        "foo..bar@example.com",
+        "..@example.com",
+        ".@example.com",
+    ] {
+        assert_eq!(
+            EmailAddress::parse(raw),
+            Err(EmailError::InvalidLocalPart),
+            "{raw}"
+        );
     }
 }
 
