@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
-import { apiFetch, type AuthorizedOAuthApp, type SessionItem, type UserMe } from '../../api'
+import { apiFetch, ApiError, type AuthorizedOAuthApp, type SessionItem, type UserMe } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, PasswordField } from '../../components/ui'
 import { ProfileAvatar, type MessageTone } from './profile-avatar'
@@ -37,6 +37,9 @@ export function ConsoleProfile() {
      每加一条成功提示都得记得让文案命中那个子串，是等着出错的写法。 */
   const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
   const [busy, setBusy] = useState(false)
+  /* 撤销在途的会话 id。与 AuthorizedApps 的 busyClientId 同款约定：
+     null 表示无在途请求，非 null 期间所有撤销按钮禁用，防止快速连点并发 DELETE。 */
+  const [busySessionId, setBusySessionId] = useState<string | null>(null)
   const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
   const warn = (text: string) => notify(text, 'warning')
 
@@ -86,14 +89,21 @@ export function ConsoleProfile() {
 
   async function revokeSession(session: SessionItem) {
     if (!window.confirm(session.current ? '撤销当前会话后需要重新登录，继续吗？' : '确认撤销这个会话吗？')) return
+    setBusySessionId(session.id)
     setNotice(null)
     try {
       await apiFetch<void>(`/api/v1/auth/sessions/${session.id}`, { method: 'DELETE' })
-      if (session.current) { clear(); navigate('/login?returnTo=%2Fconsole%2Fprofile'); return }
-      loadSessions()
     } catch (error) {
-      warn(error instanceof Error ? error.message : '会话撤销失败。')
+      // 404 表示会话已不存在（重复撤销或他处已撤销），与撤销成功等价，不算失败。
+      if (!(error instanceof ApiError && error.status === 404)) {
+        warn(error instanceof Error ? error.message : '会话撤销失败。')
+        return
+      }
+    } finally {
+      setBusySessionId(null)
     }
+    if (session.current) { clear(); navigate('/login?returnTo=%2Fconsole%2Fprofile'); return }
+    loadSessions()
   }
 
   const name = user?.display_name || user?.username || '用户'
@@ -179,7 +189,7 @@ export function ConsoleProfile() {
                     <p className="chenxing-caption chenxing-mono">创建于 {formatDate(session.created_at)} · 到期 {formatDate(session.expires_at)}</p>
                   </div>
                   {session.current ? <Badge tone="success">当前</Badge> : null}
-                  <Button variant="danger" icon="x" onClick={() => void revokeSession(session)}>撤销</Button>
+                  <Button variant="danger" icon="x" disabled={busySessionId !== null} onClick={() => void revokeSession(session)}>撤销</Button>
                 </div>
               ))}
             </div>
