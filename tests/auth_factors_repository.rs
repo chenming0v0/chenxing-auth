@@ -74,21 +74,36 @@ async fn totp_factor_round_trip_returns_ciphertext_only() {
             .expect("list factor methods"),
         vec!["totp".to_owned()]
     );
-    assert!(
+    assert_eq!(
         repository::update_totp_factor_if_current(&pool, user_id, &encrypted, &[9, 8, 7])
             .await
-            .expect("conditional TOTP update")
+            .expect("conditional TOTP update"),
+        repository::TotpCasUpdateOutcome::Updated
     );
-    assert!(
-        !repository::update_totp_factor_if_current(&pool, user_id, &encrypted, &[6, 5, 4])
+    assert_eq!(
+        repository::update_totp_factor_if_current(&pool, user_id, &encrypted, &[6, 5, 4])
             .await
-            .expect("stale conditional TOTP update")
+            .expect("stale conditional TOTP update"),
+        repository::TotpCasUpdateOutcome::Superseded
     );
     assert_eq!(
         repository::find_totp_secret(&pool, user_id)
             .await
             .expect("find migrated TOTP factor"),
         Some(vec![9, 8, 7])
+    );
+    // #360：CAS 未命中必须能区分「行还在但密文已换」与「因子已被重置/删除」。
+    assert_eq!(
+        repository::delete_totp_factor(&pool, user_id)
+            .await
+            .expect("delete TOTP factor"),
+        true
+    );
+    assert_eq!(
+        repository::update_totp_factor_if_current(&pool, user_id, &[9, 8, 7], &[5, 5, 5])
+            .await
+            .expect("CAS against deleted factor"),
+        repository::TotpCasUpdateOutcome::Missing
     );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
