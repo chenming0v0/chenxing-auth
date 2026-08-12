@@ -271,18 +271,31 @@ export function GlobalTopbar({
   const nav = useNavDisclosure()
   const account = useNavDisclosure()
   
-  /* 配额数据：仅在账户菜单打开时加载 */
+  /* 配额数据：仅在账户菜单打开时加载。
+     竞态与 stale 防护（#386）：
+     - 每次 effect 运行持有独立的 cancelled 守卫，关闭/重开时上一轮 in-flight
+       回调（成功与失败分支）作废，旧响应不能覆盖新一轮状态——最新请求胜出；
+     - 关闭菜单即清空 entitlements，下次打开先渲染空态，不再闪现上一轮的旧配额。 */
   const [entitlements, setEntitlements] = useState<{ daily: EntitlementItem | null; monthly: EntitlementItem | null } | null>(null)
-  
+
   useEffect(() => {
-    if (!account.open) return
-    void getEntitlements().then((data) => {
-      const daily = data.entitlements.find((item) => item.key === 'daily_auth') ?? null
-      const monthly = data.entitlements.find((item) => item.key === 'monthly_auth') ?? null
-      setEntitlements({ daily, monthly })
-    }).catch(() => {
-      setEntitlements({ daily: null, monthly: null })
-    })
+    if (!account.open) {
+      setEntitlements(null)
+      return
+    }
+    let cancelled = false
+    void getEntitlements()
+      .then((data) => {
+        if (cancelled) return
+        const daily = data.entitlements.find((item) => item.key === 'daily_auth') ?? null
+        const monthly = data.entitlements.find((item) => item.key === 'monthly_auth') ?? null
+        setEntitlements({ daily, monthly })
+      })
+      .catch(() => {
+        if (cancelled) return
+        setEntitlements({ daily: null, monthly: null })
+      })
+    return () => { cancelled = true }
   }, [account.open])
   
   // 点击头像时：关闭汉堡菜单，打开账户抽屉
