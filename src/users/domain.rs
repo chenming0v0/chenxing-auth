@@ -69,6 +69,16 @@ impl UserStatus {
             Self::Disabled => "disabled",
         }
     }
+
+    /// 守卫口径下的「活跃」判定：只要状态不是明确的 `disabled` 就算活跃。
+    ///
+    /// 未知状态串（手工改库、未来新增状态值、大小写漂移）按 fail-closed 处理：
+    /// 宁可拒绝降级/禁用，也不允许静默移除最后一个可用 Owner。
+    /// 该谓词必须与 `role_guard::lock_owner_scope` 的 SQL 谓词
+    /// `status <> 'disabled'` 保持一致（Issue #358）。
+    pub fn is_active(value: &str) -> bool {
+        Self::parse(value) != Some(Self::Disabled)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

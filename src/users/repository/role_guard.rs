@@ -7,6 +7,10 @@
 //! 判定顺序固定：先 `FOR UPDATE` 锁住全部活跃 Owner 行，再锁目标行。
 //! 两个并发请求各自降级两个仅存 Owner 中的一个时，锁序保证后者能看到前者的结果，
 //! 不会出现"两个请求各自认为还剩一个 Owner"的竞态。
+//!
+//! 「活跃」的判定口径在 [`UserStatus::is_active`] 与 `lock_owner_scope` 的 SQL 谓词
+//! `status <> 'disabled'` 之间必须保持一致（Issue #358）：任何未明确禁用的状态串都按
+//! 活跃处理，防止异常状态数据绕过守卫、静默移除最后一个可用 Owner。
 
 use crate::sqlx::PgPool;
 
@@ -40,12 +44,16 @@ pub enum OwnerGuardOutcome {
 /// 读取当前活跃 Owner 数量与目标用户的 (role, status)，两者都加行锁。
 ///
 /// 返回 `None` 表示目标用户不存在。调用方负责回滚事务。
+///
+/// 计数谓词 `status <> 'disabled'` 必须与 [`UserStatus::is_active`] 的 Rust 判定
+/// 保持一致（Issue #358）：两者都用「非明确禁用」定义活跃，异常状态串按活跃计入，
+/// 避免数据异常时把最后一个可用 Owner 计为零、绕过守卫。
 async fn lock_owner_scope(
     transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
     id: UserId,
 ) -> Result<(usize, Option<(String, String)>), crate::sqlx::Error> {
     let active_owners: Vec<(UserId,)> = crate::sqlx::query_as(
-        "SELECT id FROM users WHERE role = 'owner' AND status = 'active' ORDER BY id FOR UPDATE",
+        "SELECT id FROM users WHERE role = 'owner' AND status <> 'disabled' ORDER BY id FOR UPDATE",
     )
     .fetch_all(&mut **transaction)
     .await?;
@@ -70,7 +78,7 @@ pub async fn set_user_role(
     };
     if current_role == "owner"
         && role != UserRole::Owner
-        && UserStatus::parse(&status) == Some(UserStatus::Active)
+        && UserStatus::is_active(&status)
         && active_owner_count <= 1
     {
         transaction.rollback().await?;
@@ -108,9 +116,10 @@ pub async fn set_user_status_guarded(
         transaction.rollback().await?;
         return Ok(OwnerGuardOutcome::ManageRolesRequired);
     }
-    let current_status = UserStatus::parse(&current_status);
+    // 守卫判定用原始状态串走 fail-closed 口径（Issue #358）：状态异常时按活跃处理，
+    // 阻止静默移除最后一个可用 Owner。
     if role == "owner"
-        && current_status == Some(UserStatus::Active)
+        && UserStatus::is_active(&current_status)
         && status == UserStatus::Disabled
         && active_owner_count <= 1
     {
@@ -118,6 +127,7 @@ pub async fn set_user_status_guarded(
         return Ok(OwnerGuardOutcome::LastOwnerRequired);
     }
     // 禁用即撤销该用户全部会话：否则被禁用的账号仍能用既有 Cookie 继续访问。
+    let current_status = UserStatus::parse(&current_status);
     if current_status != Some(status) && status == UserStatus::Disabled {
         crate::sessions::store::revoke_all_for_user_in_transaction(&mut transaction, id).await?;
     }
