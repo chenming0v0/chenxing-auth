@@ -9,7 +9,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { PendingAuthorization } from '../api'
+import { installCsrfCookie } from '../test/csrf-cookie'
 import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './oauth'
+
+// 确认页的绑定与决策都是走 apiFetch 的状态变更请求，需要 CSRF cookie 才能发出。
+installCsrfCookie()
 
 // OAuthConsentPage 依赖 useAuth 提供当前用户；mock 掉 auth-state，
 // 避免 AuthProvider 挂载时额外发出 /auth/me 与 /admin/bootstrap/status 请求。
@@ -225,7 +229,7 @@ describe('OAuthConsentPage 不可伪造身份锚点（#199）', () => {
  * 而不是丢掉 request_id 在登录页与确认页之间打转。
  */
 describe('OAuthConsentPage 会话恢复与登录跳转（#270）', () => {
-  // bind 是状态变更请求，需要 CSRF cookie 才能发出；由 src/test/setup.ts 统一注入。
+  // bind 是状态变更请求，需要 CSRF cookie 才能发出；本文件已通过 installCsrfCookie() 显式注入。
   it('读取待授权请求前先绑定当前会话', async () => {
     window.history.replaceState({}, '', '/oauth/consent?request_id=req-270')
     const calls: Array<{ path: string; method?: string }> = []

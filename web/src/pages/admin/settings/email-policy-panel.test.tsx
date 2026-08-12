@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { EmailPolicySetting } from '../../../api'
+import { installCsrfCookie } from '../../../test/csrf-cookie'
 import { EmailPolicyPanel } from './email-policy-panel'
+
+// 保存走 PUT /api/v1/admin/settings/email-policy 的 apiFetch，需要 CSRF cookie 才能发出。
+installCsrfCookie()
 
 type CapturedRequest = { method: string; body?: Record<string, unknown> }
 

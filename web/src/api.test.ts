@@ -158,7 +158,8 @@ describe('apiFetch', () => {
   beforeEach(() => {
     fetchMock = createFetchMock()
     vi.stubGlobal('fetch', fetchMock)
-    document.cookie = '__Host-chenxing_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
+    // __Host- 前缀要求 Secure 属性，缺了它 tough-cookie 会静默丢弃，清不掉残留 cookie。
+    document.cookie = '__Host-chenxing_csrf=; Secure; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
     document.cookie = 'chenxing_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
     // 401 重定向的 returnTo 取自当前地址：固定起点让用例互不影响。
     window.history.replaceState({}, '', '/')
@@ -220,6 +221,15 @@ describe('apiFetch', () => {
     const headers = headersOf(fetchMock)
     expect(headers.get('X-CSRF-Token')).toBe('token-abc')
     expect(headers.get('Content-Type')).toBe('application/json')
+  })
+
+  it('prefers the production __Host- cookie over the legacy fallback name', async () => {
+    // 两条都存在时只能带 __Host- 的值，否则回退名会顶掉生产优先路径（#374）。
+    document.cookie = '__Host-chenxing_csrf=secure-token; Secure; path=/'
+    document.cookie = 'chenxing_csrf=fallback-token'
+    fetchMock.mockResolvedValue(stubResponse({ status: 200, body: {} }))
+    await apiFetch('/api/v1/auth/login', { method: 'POST', body: '{}' })
+    expect(headersOf(fetchMock).get('X-CSRF-Token')).toBe('secure-token')
   })
 
   it('fails before fetch when a state-changing request has no CSRF cookie', async () => {
