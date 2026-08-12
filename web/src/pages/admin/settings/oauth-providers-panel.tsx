@@ -107,6 +107,10 @@ export function OAuthProvidersPanel({ onMessage, onDirtyChange }: SettingsPanelP
   }
 
   async function save(form: ProviderForm) {
+    /* 防重入：保存请求在途时忽略重复提交（Issue #369）。弹层内 Enter 隐式提交会绕过
+       已禁用的保存按钮直达 onSubmit，只有这里的入口守卫能拦下第二条在途请求
+       （创建场景会撞出第二次 POST）。与其它设置面板的 save() 守卫保持一致。 */
+    if (busy) return
     const target = editing
     setBusy(true)
     try {
