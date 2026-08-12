@@ -101,7 +101,7 @@ pub async fn current_entitlements(State(state): State<AppState>, session: Sessio
     for client in &clients {
         match state
             .oauth_quotas
-            .snapshot(&client.client_id, Some(quota_limits))
+            .snapshot_at(&client.client_id, Some(quota_limits), state.clock.now())
             .await
         {
             Ok(snapshot) => {

@@ -97,7 +97,9 @@ pub async fn issue_authorization_code_result(
             error::oauth_temporarily_unavailable()
         })?;
     let client_id = validated.client_id.clone();
-    let code = AuthorizationCode::new_with_nonce_and_ttl_with_session_hash(
+    // 签发时刻必须来自共享时钟：store 保存时用 `self.clock.now()` 计算 Redis TTL，
+    // 这里另读墙钟会让注入时钟下「TTL 被夹断为 1 秒」成为真实矛盾。
+    let code = AuthorizationCode::new_with_nonce_and_ttl_with_session_hash_at(
         validated.client_id,
         validated.redirect_uri.clone(),
         user_id.clone(),
@@ -107,6 +109,7 @@ pub async fn issue_authorization_code_result(
         // 授权码绑定签发时的会话摘要：会话撤销后 Token 端点会拒绝兑换。
         validated.session_token_hash,
         limits.authorization_code_ttl_seconds,
+        state.clock.now(),
     );
     let state_value = validated.state;
     if let Err(store_error) = state.authorization_codes.save(&code).await {
@@ -149,7 +152,7 @@ pub async fn issue_authorization_code_result(
         let limits = effective.plan.auth_quota_limits();
         let consumption = match state
             .oauth_quotas
-            .consume_with_limits_and_reservation(&client_id, limits)
+            .consume_with_limits_and_reservation_at(&client_id, limits, state.clock.now())
             .await
         {
             Ok(consumption) => consumption,

@@ -1,8 +1,6 @@
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 use totp_rs::{Algorithm, Secret, TOTP};
 
-use crate::clock::{Clock, SystemClock};
-
 use super::domain::validate_totp_code;
 
 const TOTP_DIGITS: usize = 6;
@@ -126,18 +124,6 @@ pub fn verify_totp_code_at_timestep(secret: &[u8], code: &str, timestamp: u64) -
     }
 
     bool::from(matched).then_some(matched_step)
-}
-
-pub fn verify_totp_code_current(secret: &[u8], code: &str) -> bool {
-    verify_totp_code_current_timestep(secret, code).is_some()
-}
-
-/// 用进程默认时钟校验 TOTP。
-///
-/// 生产路径经 `AuthFactorService`，它调用 [`verify_totp_code_now_timestep`] 并
-/// 传入 `AppState` 的共享时钟。这个包装留给不持有时钟的调用点。
-pub fn verify_totp_code_current_timestep(secret: &[u8], code: &str) -> Option<u64> {
-    verify_totp_code_now_timestep(secret, code, SystemClock.now())
 }
 
 /// 以显式「现在」校验 TOTP，并返回被接受的 timestep。
