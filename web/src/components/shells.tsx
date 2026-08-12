@@ -533,8 +533,11 @@ export function AuthPanel({ children, className = 'w-full max-w-md' }: { childre
 function ConsoleNavGroups() {
   const { user } = useAuth()
   const location = useLocation()
+  /* 管理/系统分组只对已登录的管理角色显示；user 为 null 时必须显式排除，
+     与 NavMenu 的 showAdmin 判定保持一致（user?.role !== 'user' 在 null 时恒真） */
+  const showAdmin = user != null && user.role !== 'user'
   const visible = navGroups.filter(
-    (group) => group.label === '账户' || group.label === '开发者' || user?.role !== 'user',
+    (group) => group.label === '账户' || group.label === '开发者' || showAdmin,
   )
   return (
     <>
