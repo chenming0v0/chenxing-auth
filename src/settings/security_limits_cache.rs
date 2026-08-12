@@ -69,12 +69,20 @@ struct CacheState {
     loaded_at: Option<Instant>,
     /// 最后一次读取失败的时刻，用于退避。
     failed_at: Option<Instant>,
+    /// 写代际：管理路径每次权威写入（`store`）递增。热路径在发起读库前捕获、
+    /// 完成后 CAS 比对，加载期间被管理员写入覆盖的旧快照因此被丢弃（#413）。
+    generation: u64,
 }
 
 /// 已校验 `SecurityLimitsSetting` 的进程内缓存。
 ///
 /// 由 `SettingsService` 持有并随其 `Clone` 共享（`Arc` 在服务侧），所以管理接口写入后
 /// 主动刷新对同一进程内的全部读取路径立即生效。
+///
+/// 并发一致性（#413）：管理路径的权威写入走带代际推进的 [`Self::store`]；热路径的
+/// 过期重新加载走「先捕获 [`Self::generation`]，读库完成后
+/// [`Self::store_if_generation_unchanged`] CAS 回填」。管理员写入落在加载窗口内时，
+/// 加载结果被丢弃，旧阈值不会覆盖刚写入的新值。
 #[derive(Debug)]
 pub struct SecurityLimitsCache {
     state: RwLock<CacheState>,
@@ -101,6 +109,7 @@ impl SecurityLimitsCache {
                 value: startup_default,
                 loaded_at: None,
                 failed_at: None,
+                generation: 0,
             }),
             ttl,
             error_backoff,
@@ -124,12 +133,43 @@ impl SecurityLimitsCache {
         })
     }
 
-    /// 记录一次成功加载。清除失败标记，让下一次故障重新走完整重试路径。
+    /// 记录一次权威写入：覆盖当前值并推进代际。
+    ///
+    /// 管理接口保存与测试预置走这里。代际递增让任何早于本次写入开始、晚于本次
+    /// 写入完成才落地的过期加载被 [`Self::store_if_generation_unchanged`] 丢弃，
+    /// 管理员刚收紧的阈值不会被并发加载的旧值回填（#413）。
     pub fn store(&self, value: SecurityLimitsSetting) {
         let mut state = self.write();
         state.value = value;
         state.loaded_at = Some(Instant::now());
         state.failed_at = None;
+        state.generation += 1;
+    }
+
+    /// 当前代际的快照。热路径在发起数据库读取前捕获，读取结束后用
+    /// [`Self::store_if_generation_unchanged`] 回填，使回填与管理员写入之间具备
+    /// CAS 语义（#413）。
+    pub fn generation(&self) -> u64 {
+        self.read().generation
+    }
+
+    /// 仅在代际仍是 `expected_generation` 时回填一次成功加载，返回是否生效。
+    ///
+    /// 加载发起后管理员若写入过新值，代际已推进，本次加载的旧值被丢弃：缓存保留
+    /// 管理员写入的新值，而不是被旧快照覆盖。失败的 CAS 不修改任何状态（#413）。
+    pub fn store_if_generation_unchanged(
+        &self,
+        expected_generation: u64,
+        value: SecurityLimitsSetting,
+    ) -> bool {
+        let mut state = self.write();
+        if state.generation != expected_generation {
+            return false;
+        }
+        state.value = value;
+        state.loaded_at = Some(Instant::now());
+        state.failed_at = None;
+        true
     }
 
     /// 记录一次失败加载，并给出应当使用的最后已知安全值或启动期默认值。
@@ -263,6 +303,56 @@ mod tests {
         cache.record_failure();
         assert!(cache.backoff_fallback().is_some());
         cache.store(tightened());
+        assert!(cache.backoff_fallback().is_none());
+        assert_eq!(cache.fresh(), Some(tightened()));
+    }
+
+    /// #413：管理员写入推进代际后，早于写入开始、晚于写入完成的过期加载必须被丢弃，
+    /// 不得把宽松的旧阈值回填覆盖管理员刚收紧的新值。
+    #[test]
+    fn a_stale_reload_cannot_overwrite_a_newer_authoritative_store() {
+        let cache = SecurityLimitsCache::with_durations(
+            SecurityLimitsSetting::default(),
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        );
+        // 热路径在发起读库前捕获代际。
+        let stale_generation = cache.generation();
+        // 管理员写入收紧阈值（account_failure_limit 10 -> 3），推进代际。
+        cache.store(tightened());
+        // 过期加载完成，试图用宽松的旧值回填——必须被丢弃，缓存保留新值。
+        assert!(!cache.store_if_generation_unchanged(
+            stale_generation,
+            SecurityLimitsSetting::default(),
+        ));
+        assert_eq!(cache.fresh(), Some(tightened()));
+    }
+
+    /// 没有并发写入时，CAS 回填正常生效，语义与权威写入一致。
+    #[test]
+    fn a_reload_without_concurrent_writes_updates_the_cache() {
+        let cache = SecurityLimitsCache::with_durations(
+            SecurityLimitsSetting::default(),
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        );
+        let generation = cache.generation();
+        assert!(cache.store_if_generation_unchanged(generation, tightened()));
+        assert_eq!(cache.fresh(), Some(tightened()));
+    }
+
+    /// CAS 回填生效时与权威写入一样清除失败退避标记。
+    #[test]
+    fn a_cas_store_clears_the_failure_backoff() {
+        let cache = SecurityLimitsCache::with_durations(
+            SecurityLimitsSetting::default(),
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        );
+        cache.record_failure();
+        assert!(cache.backoff_fallback().is_some());
+        let generation = cache.generation();
+        assert!(cache.store_if_generation_unchanged(generation, tightened()));
         assert!(cache.backoff_fallback().is_none());
         assert_eq!(cache.fresh(), Some(tightened()));
     }
