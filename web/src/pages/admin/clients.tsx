@@ -91,7 +91,7 @@ function ClientsTable({ access }: { access: AdminAccess }) {
       <DataTable
         minWidth={920}
         columns={['Client', 'Owner', 'Redirect URI', '状态', { label: '操作', align: 'right' }]}
-        empty={result?.items.length ? null : result ? '没有匹配 Client' : '正在加载 Client'}
+        empty={result?.items.length ? null : result ? '没有匹配 Client' : error ? null : '正在加载 Client'}
       >
         {result?.items.map((client) => (
           <tr key={client.client_id}>
