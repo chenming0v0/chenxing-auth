@@ -121,7 +121,7 @@ VALUES ('basic', '基础版', '默认套餐', 2, 2500, 50000, NULL, TRUE, 'activ
 1. `current_user(&state, &headers)` 拿 user_id。
 2. `state.plans.effective_plan_for_user(user_id)` 拿套餐。
 3. 组装 `entitlements` 数组：
-   - `oauth_clients`：`state.clients.list_for_user(user_id).len()` 作 used，plan.oauth_clients_limit 作 limit。
+   - `oauth_clients`：`state.clients.list_all_for_user(user_id).len()` 作 used（分页循环拉全该用户全部 client，见 Issue #415），plan.oauth_clients_limit 作 limit。
    - `daily_auth` / `monthly_auth`：遍历该用户的 client，`oauth_quotas.snapshot(client_id)` 求和 used，plan 的 limit 作 limit。
    - `max_qps`：used = plan.max_qps，无 limit 字段（前端只显示数字）。
 4. 在 `src/api.rs` 注册 `GET /api/v1/auth/entitlements`。

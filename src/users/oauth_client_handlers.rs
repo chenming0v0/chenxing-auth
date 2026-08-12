@@ -1,10 +1,10 @@
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 use crate::{
@@ -59,6 +59,17 @@ impl fmt::Debug for RegisteredOwnedClientResponse {
 #[derive(Debug, Serialize)]
 struct OwnedClientListResponse {
     items: Vec<OwnedClientResponse>,
+    /// 当前用户拥有的 Client 总数（不随分页变化），供前端渲染分页与「还有更多」提示。
+    total: i64,
+}
+
+/// list_owned_clients 专用查询参数，与管理端 `ClientListQuery` 一致（Issue #415）。
+#[derive(Debug, Deserialize)]
+pub struct OwnedClientListQuery {
+    /// 返回条数，默认 200，最大 200，超限自动 clamp。
+    pub limit: Option<i64>,
+    /// 跳过条数，默认 0，用于手动翻页。
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,7 +77,11 @@ struct AuthorizedAppListResponse {
     items: Vec<crate::consents::AuthorizedApp>,
 }
 
-pub async fn list_owned_clients(State(state): State<AppState>, session: SessionRead) -> Response {
+pub async fn list_owned_clients(
+    State(state): State<AppState>,
+    session: SessionRead,
+    Query(query): Query<OwnedClientListQuery>,
+) -> Response {
     let effective = match state.plans.effective_plan_for_user(session.user_id).await {
         Ok(effective) => effective,
         Err(error_value) => {
@@ -76,15 +91,24 @@ pub async fn list_owned_clients(State(state): State<AppState>, session: SessionR
     };
     // 读路径不设闸门：没有生效套餐时照常列出既有 Client，配额上限留空。
     let quota_limits = effective.map(|effective| effective.plan.auth_quota_limits());
-    let clients = match state.clients.list_for_user(session.user_id).await {
-        Ok(clients) => clients,
+    // 分页 + 总数：超过 200 个 Client 时不再静默截断，翻页即可访问全部（Issue #415）。
+    let (clients, total) = match state
+        .clients
+        .list_for_user(session.user_id, query.limit, query.offset)
+        .await
+    {
+        Ok(result) => result,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to list owned OAuth clients");
             return error::internal();
         }
     };
     match add_quota(&state, clients, quota_limits).await {
-        Ok(items) => (StatusCode::OK, Json(OwnedClientListResponse { items })).into_response(),
+        Ok(items) => (
+            StatusCode::OK,
+            Json(OwnedClientListResponse { items, total }),
+        )
+            .into_response(),
         Err(response) => response,
     }
 }

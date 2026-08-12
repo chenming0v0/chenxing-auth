@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::OffsetDateTime;
 
+/// `oauth_clients_limit` 的合理上界（Issue #415）。
+///
+/// 远超任何真实套餐档位（种子套餐为 1–2），同时把单用户 Client 规模约束在
+/// 用户端列表分页（每页最多 200）可完整枚举的范围内，杜绝「配额 > 列表上限」
+/// 这一配置可达的静默截断状态。
+pub const MAX_OAUTH_CLIENTS_LIMIT: i32 = 1000;
+
 /// 套餐的持久化模型。`monthly_auth_limit` / `max_qps` 为 `NULL` 表示无限 / 不限。
 #[derive(Debug, Clone, Serialize)]
 pub struct Plan {
@@ -141,7 +148,9 @@ pub fn validate_plan_input(input: PlanInput) -> Result<ValidatedPlanInput, PlanE
     {
         return Err(PlanError::InvalidDescription);
     }
-    if input.oauth_clients_limit < 0 {
+    // 无上界校验时，配额可配到 i32 上限（约 21 亿），远超用户端列表 200 条/页的分页
+    // 能力，超出部分对 owner 不可见也不可管理；加上界封死该状态（Issue #415）。
+    if !(0..=MAX_OAUTH_CLIENTS_LIMIT).contains(&input.oauth_clients_limit) {
         return Err(PlanError::InvalidOauthClientsLimit);
     }
     if input.daily_auth_limit < 0 {
@@ -168,7 +177,9 @@ pub fn validate_plan_input(input: PlanInput) -> Result<ValidatedPlanInput, PlanE
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthQuotaLimits, Plan, PlanError, PlanInput, validate_plan_input};
+    use super::{
+        AuthQuotaLimits, MAX_OAUTH_CLIENTS_LIMIT, Plan, PlanError, PlanInput, validate_plan_input,
+    };
     use time::OffsetDateTime;
 
     fn input() -> PlanInput {
@@ -281,6 +292,14 @@ mod tests {
     fn rejects_negative_limits_and_zero_qps() {
         let mut value = input();
         value.oauth_clients_limit = -1;
+        assert_eq!(
+            validate_plan_input(value),
+            Err(PlanError::InvalidOauthClientsLimit)
+        );
+
+        // 超过上界的配额同样被拒绝（Issue #415）
+        let mut value = input();
+        value.oauth_clients_limit = MAX_OAUTH_CLIENTS_LIMIT + 1;
         assert_eq!(
             validate_plan_input(value),
             Err(PlanError::InvalidOauthClientsLimit)
