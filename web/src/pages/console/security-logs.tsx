@@ -34,11 +34,20 @@ function SecurityLogList() {
   useEffect(() => {
     let active = true
     setState({ kind: 'loading' })
+    /* 数据到达后统一落地：若当前页已越界（接口 404 预览切换到真实数据后总量缩水、
+       管理员删除日志等），先收敛回最后一页重新请求，避免卡在越界页码的空列表（#372）。
+       收敛后 page 严格变小且不低于 1，配合 active 标志不会自循环。 */
+    const apply = (data: Paged<SecurityEvent>, kind: 'ready' | 'preview') => {
+      if (!active) return
+      const totalPages = Math.max(1, Math.ceil(data.total / data.page_size))
+      if (page > totalPages) { setPage(totalPages); return }
+      setState({ kind, data })
+    }
     void apiFetch<Paged<SecurityEvent>>(`/api/v1/auth/security-events?page=${page}&page_size=${PAGE_SIZE}`)
-      .then((data) => { if (active) setState({ kind: 'ready', data }) })
+      .then((data) => apply(data, 'ready'))
       .catch((reason: unknown) => {
         if (!active) return
-        if (reason instanceof ApiError && reason.status === 404) { setState({ kind: 'preview', data: previewPage(page) }); return }
+        if (reason instanceof ApiError && reason.status === 404) { apply(previewPage(page), 'preview'); return }
         setState({ kind: 'error', message: reason instanceof Error ? reason.message : '安全日志加载失败。' })
       })
     return () => { active = false }
