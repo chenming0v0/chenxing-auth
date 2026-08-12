@@ -183,7 +183,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
       <DataTable
         minWidth={1080}
         columns={['ID', '用户名', '状态', '角色', '套餐', '创建时间', { label: '操作', align: 'right' }]}
-        empty={result?.items.length ? null : result ? '没有匹配用户' : '正在加载用户'}
+        empty={result?.items.length ? null : result ? '没有匹配用户' : error ? null : '正在加载用户'}
       >
         {result?.items.map((user) => {
           const isSelf = user.id === access.data?.user_id
