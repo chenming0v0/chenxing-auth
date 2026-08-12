@@ -147,6 +147,23 @@ pub fn forbidden(code: &'static str, message: impl Into<String>) -> Response {
         .into_response()
 }
 
+/// `ADMIN_TOKEN` 未配置时管理面整体关闭的统一拒绝响应（AGENTS.md，Issue #348）。
+///
+/// 用 403 而不是 401：即使携带有效凭据（系统 Token 或管理 Session）也无法访问，
+/// 401 会误导调用方去重新登录。所有调用者拿到同一响应，也避免把「是否配置了
+/// `ADMIN_TOKEN`」变成按调用通道区分的探测预言机。
+pub fn admin_disabled() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ErrorResponse {
+            code: "admin_disabled".to_owned(),
+            message: "administrator API is disabled because ADMIN_TOKEN is not configured"
+                .to_owned(),
+        }),
+    )
+        .into_response()
+}
+
 pub fn not_found(code: &'static str, message: impl Into<String>) -> Response {
     (
         StatusCode::NOT_FOUND,

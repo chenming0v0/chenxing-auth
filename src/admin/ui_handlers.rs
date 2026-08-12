@@ -83,11 +83,18 @@ struct AdminUserQueryItem {
 ///
 /// 因此保留双身份分支：系统 Token 直接视为 Owner；浏览器会话用 `Option<SessionRead>`
 /// 探测——两种凭据各自缺失都是正常输入，只有「两者都不成立」才是 401。
+/// `ADMIN_TOKEN` 为空时整个管理面关闭（Issue #348），本端点与其它管理端点一样
+/// 直接返回 403 `admin_disabled`，不进入身份探测。
 pub async fn admin_me(
     State(state): State<AppState>,
     headers: HeaderMap,
     session: Option<SessionRead>,
 ) -> Response {
+    // 与 AdminRead/AdminWrite 提取器同一 fail-closed 门槛（Issue #348）：
+    // 本端点不经过提取器，需要在这里补上。
+    if state.config.admin_token.is_empty() {
+        return error::admin_disabled();
+    }
     if is_admin_request(&state, &headers) {
         return (
             axum::http::StatusCode::OK,

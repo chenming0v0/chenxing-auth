@@ -45,10 +45,10 @@ pub(super) fn admin_token_from_env() -> Result<String, ConfigError> {
 }
 
 fn validate_admin_token(token: &str) -> Result<(), ConfigError> {
-    // An empty value is a supported deployment: it disables only the system Bearer
-    // token channel (issue #305). Browser sessions with a sufficient role and valid
-    // CSRF binding keep working, and the first-owner bootstrap endpoint stays public
-    // while no owner exists, so an unset token must not fail startup.
+    // An empty value is a supported deployment: it disables the entire admin API
+    // surface — both the system Bearer channel and the browser-session channel
+    // (issue #348). The first-owner bootstrap endpoint stays public while no owner
+    // exists, so an unset token must not fail startup.
     if token.is_empty() {
         return Ok(());
     }
