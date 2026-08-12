@@ -146,6 +146,8 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
 
   function submit(event: FormEvent) {
     event.preventDefault()
+    // Save 的 disabled 挡不住输入框里的 Enter 隐式提交；busy 时必须直接丢掉这次 submit。
+    if (busy) return
     /* Client Secret 是唯一不能靠 required 属性守住的字段：编辑已配置的 provider 时留空
        表示「保持原值」，其余情况留空必须拦在请求之前，否则会写出一个登录必然失败的配置。 */
     if (!editing) {
@@ -171,10 +173,11 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
             </h2>
             <p className="chenxing-caption mt-1.5">配置 OAuth 2.0 授权码流程 + UserInfo 的外部身份提供商</p>
           </div>
-          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onClose}>
+          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onClose} disabled={busy}>
             <Icon name="x" size={16} />
           </button>
         </div>
+        <fieldset disabled={busy} className="min-w-0 border-0 p-0">
         <div className="mt-5 grid gap-4">
           {/* Issue #296：信任模型必须写在填表的地方。管理员在这里决定信任哪个外部身份源，
               而本平台对该身份源做了什么校验、没做什么校验，是这个决定的前提。 */}
@@ -251,10 +254,11 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <ToggleRow title="启用供应商" checked={form.enabled} onChange={(enabled) => setForm({ ...form, enabled })} />
           <div className="flex items-center gap-3">
-            <Button type="button" variant="ghost" onClick={onClose}>取消</Button>
+            <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>取消</Button>
             <Button type="submit" icon="save" disabled={busy}>保存</Button>
           </div>
         </div>
+        </fieldset>
       </HudPanel>
     </div>
   )

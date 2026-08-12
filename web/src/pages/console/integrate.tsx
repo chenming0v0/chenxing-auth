@@ -20,7 +20,8 @@ function includesHttpLocalhost(redirectUris: string[]): boolean {
 }
 
 export function IntegratePage() {
-  const [clients, setClients] = useState<OwnedOAuthClient[]>([])
+  // null = 尚未加载；[] 才是确认空列表。刷新保留旧值，避免闪 EmptyState（#371）。
+  const [clients, setClients] = useState<OwnedOAuthClient[] | null>(null)
   const [secret, setSecret] = useState<{ clientId: string; value: string } | null>(null)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
@@ -40,7 +41,10 @@ export function IntegratePage() {
   const load = () => {
     void apiFetch<{ items: OwnedOAuthClient[] }>('/api/v1/auth/oauth-clients')
       .then((response) => setClients(response.items))
-      .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。'))
+      .catch((reason: unknown) => {
+        setClients((current) => current ?? [])
+        setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。')
+      })
   }
   useEffect(() => { load() }, [])
 
@@ -193,7 +197,7 @@ export function IntegratePage() {
 
       <HudPanel as="section" className="mt-6">
         <div className="flex items-center justify-between gap-4">
-          <h2 className="chenxing-h2 flex items-center gap-3">我的接入应用<span className="chenxing-chip">{clients.length} 个应用</span></h2>
+          <h2 className="chenxing-h2 flex items-center gap-3">我的接入应用<span className="chenxing-chip">{clients === null ? '加载中' : `${clients.length} 个应用`}</span></h2>
         </div>
         <div className="chenxing-app-grid mt-5 hidden px-4 pb-2 lg:grid">
           <span className="chenxing-label !mb-0">ID</span>
@@ -202,7 +206,7 @@ export function IntegratePage() {
           <span className="chenxing-label !mb-0">状态</span>
           <span className="chenxing-label !mb-0 text-right">操作</span>
         </div>
-        {clients.map((client, index) => (
+        {clients?.map((client, index) => (
           <article key={client.client_id} className="chenxing-app-grid chenxing-app-row mt-2 lg:mt-0" onClick={() => openEdit(client)}>
             <span className="chenxing-mono text-sm text-[var(--chenxing-muted-foreground)]">{String(index + 1).padStart(2, '0')}</span>
             <div className="min-w-0">
@@ -229,7 +233,9 @@ export function IntegratePage() {
             </div>
           </article>
         ))}
-        {!clients.length ? (
+        {clients === null ? (
+          <div className="mt-6"><Notice>正在加载接入应用。</Notice></div>
+        ) : !clients.length ? (
           <div className="mt-6">
             {selfServiceClosed ? (
               <EmptyState

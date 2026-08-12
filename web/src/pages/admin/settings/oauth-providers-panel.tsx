@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { apiFetch, type OAuthProviderSummary } from '../../../api'
 import { Badge, Button, EmptyState, Icon, Notice } from '../../../components/ui'
 import { DataTable, TablePanel } from '../../../components/data-table'
@@ -56,6 +56,8 @@ export function OAuthProvidersPanel({ onMessage }: SettingsPanelProps) {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<OAuthProviderSummary | null>(null)
   const [busy, setBusy] = useState(false)
+  // setBusy 要等下一帧才进 render；同一事件循环里的二次 submit / Enter 必须靠 ref 拦住。
+  const busyRef = useRef(false)
   const [pending, setPending] = useState<PendingStatusChange | null>(null)
 
   /* reload 引用稳定，因此保存与启停后的刷新只重取本面板列表，
@@ -107,7 +109,9 @@ export function OAuthProvidersPanel({ onMessage }: SettingsPanelProps) {
   }
 
   async function save(form: ProviderForm) {
+    if (busyRef.current) return
     const target = editing
+    busyRef.current = true
     setBusy(true)
     try {
       const slug = await persist(form, target)
@@ -136,13 +140,15 @@ export function OAuthProvidersPanel({ onMessage }: SettingsPanelProps) {
     } catch (reason) {
       onMessage(errorText(reason, 'OAuth 提供商保存失败。'), 'warning')
     } finally {
+      busyRef.current = false
       setBusy(false)
     }
   }
 
   /** 只重放状态切换，不再触碰创建与更新接口。 */
   async function retryPending() {
-    if (!pending) return
+    if (!pending || busyRef.current) return
+    busyRef.current = true
     setBusy(true)
     try {
       const status = await applyStatus(pending.slug, pending.action)
@@ -156,17 +162,20 @@ export function OAuthProvidersPanel({ onMessage }: SettingsPanelProps) {
       }
       await reload()
     } finally {
+      busyRef.current = false
       setBusy(false)
     }
   }
 
   async function toggleStatus(provider: OAuthProviderSummary) {
+    if (busyRef.current) return
     const action: StatusAction = provider.status === 'active' ? 'disable' : 'enable'
     const label = actionLabel(action)
     const consequence = action === 'disable'
       ? '禁用后，用户将无法再通过该提供商登录。'
       : '启用后，用户可以重新通过该提供商登录。'
     if (!window.confirm(`确认${label} ${provider.name} 吗？\n${consequence}`)) return
+    busyRef.current = true
     setBusy(true)
     try {
       const status = await applyStatus(provider.slug, action)
@@ -174,6 +183,7 @@ export function OAuthProvidersPanel({ onMessage }: SettingsPanelProps) {
       else onMessage(status.reason, 'warning')
       await reload()
     } finally {
+      busyRef.current = false
       setBusy(false)
     }
   }

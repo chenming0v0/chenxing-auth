@@ -8,7 +8,8 @@ import { entitlementState, useEntitlements } from './shared'
 
 export function PlaygroundPage() {
   const selfServiceClosed = entitlementState(useEntitlements()).kind === 'closed'
-  const [clients, setClients] = useState<OwnedOAuthClient[]>([])
+  // null = 尚未拿到列表，不能当成「没有应用」去渲染 EmptyState（Issue #371）。
+  const [clients, setClients] = useState<OwnedOAuthClient[] | null>(null)
   const [selectedId, setSelectedId] = useState('')
   const [redirectUri, setRedirectUri] = useState('')
   const [scope, setScope] = useState('openid')
@@ -26,11 +27,14 @@ export function PlaygroundPage() {
           setScope(first.scopes.join(' '))
         }
       })
-      .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。'))
+      .catch((reason: unknown) => {
+        setClients([])
+        setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。')
+      })
   }, [])
 
   function selectClient(clientId: string) {
-    const client = clients.find((item) => item.client_id === clientId)
+    const client = clients?.find((item) => item.client_id === clientId)
     setSelectedId(clientId)
     setRedirectUri(client?.redirect_uris[0] || '')
     setScope(client?.scopes.join(' ') || 'openid')
@@ -49,7 +53,7 @@ export function PlaygroundPage() {
   }
 
   async function generate() {
-    const client = clients.find((item) => item.client_id === selectedId)
+    const client = clients?.find((item) => item.client_id === selectedId)
     if (!client || !redirectUri || !scope.trim()) {
       setMessage('请选择应用并填写服务端允许的 Redirect URI 和 Scope。')
       return
@@ -84,7 +88,11 @@ export function PlaygroundPage() {
       <PageIntro eyebrow="// Playground" title="授权测试" description="用真实的授权码 + PKCE 流程验证你的接入配置。" />
       {message ? <div className="mb-4"><Notice tone="warning">{message}</Notice></div> : null}
 
-      {!clients.length ? (
+      {clients === null ? (
+        <HudPanel className="flex min-h-[20rem] flex-col items-center justify-center text-center">
+          <Notice>正在加载可用于测试的应用。</Notice>
+        </HudPanel>
+      ) : !clients.length ? (
         <HudPanel className="flex min-h-[20rem] flex-col items-center justify-center text-center">
           {/* 未开放自助接入时不引导用户去一个不能提交的注册入口 */}
           {selfServiceClosed ? (

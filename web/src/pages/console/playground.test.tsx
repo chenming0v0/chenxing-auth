@@ -65,6 +65,23 @@ async function generateAuthorizeUrl() {
   await screen.findByRole('link', { name: /打开授权端点/ })
 }
 
+describe('PlaygroundPage 加载期间不闪空态（Issue #371）', () => {
+  it('fetch 未完成时显示加载占位，不渲染「需要先注册一个应用」', () => {
+    apiFetchMock.mockImplementation(() => new Promise(() => {}))
+    render(<PlaygroundPage />)
+    expect(screen.getByText('正在加载可用于测试的应用。')).toBeTruthy()
+    expect(screen.queryByText('需要先注册一个应用')).toBeNull()
+    expect(screen.queryByRole('link', { name: /前往接入应用/ })).toBeNull()
+  })
+
+  it('确认没有应用后才展示空态', async () => {
+    apiFetchMock.mockResolvedValue({ items: [] })
+    render(<PlaygroundPage />)
+    expect(await screen.findByText('需要先注册一个应用')).toBeTruthy()
+    expect(screen.queryByText('正在加载可用于测试的应用。')).toBeNull()
+  })
+})
+
 describe('PlaygroundPage 参数变更作废过期授权结果（Issue #368）', () => {
   it('生成后展示 Authorize URL 与 PKCE', async () => {
     await generateAuthorizeUrl()
