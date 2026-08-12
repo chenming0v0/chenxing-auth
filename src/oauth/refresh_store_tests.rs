@@ -3,7 +3,11 @@
 //! 拆成独立文件而不是内联 `mod tests`：墓碑分类的注释密度较高，内联后
 //! `refresh_store.rs` 会越过 500 行的源文件门槛。
 
-use super::{Tombstone, TombstoneState};
+use super::{RefreshTokenStore, Tombstone, TombstoneState};
+use crate::clock::SharedClock;
+use crate::oauth::refresh::{
+    REFRESH_TOKEN_ABSOLUTE_TTL_DAYS, REFRESH_TOKEN_SLIDING_TTL_DAYS, RefreshToken,
+};
 use time::{Duration, OffsetDateTime};
 
 /// 升级前写入的墓碑没有 `state` / `recorded_at`：必须默认为 `Consumed`，
@@ -55,4 +59,80 @@ fn clock_skew_in_either_direction_stays_inside_the_grace_window() {
     assert!(tombstone(now.unix_timestamp() + grace).is_recent_consumption(now));
     assert!(!tombstone(now.unix_timestamp() - grace - 1).is_recent_consumption(now));
     assert!(!tombstone(i64::MIN).is_recent_consumption(now));
+}
+
+// ── 固定时钟驱动的 TTL 边界（Issue #299）────────────────────────────────────
+//
+// 主键 TTL 是 `min(滑动剩余, 绝对剩余)`。以前这段判定读进程墙钟，只能靠
+// "180 天后再跑一次"来验证绝对上限真的收紧了 TTL。注入固定时钟后，
+// 两条上限的交叉点可以直接构造出来。
+
+const ISSUED_AT: OffsetDateTime = OffsetDateTime::UNIX_EPOCH;
+
+fn store_at(now: OffsetDateTime) -> RefreshTokenStore {
+    // 地址故意不可用：这些用例只读 TTL 计算，不发任何 Redis 命令。
+    // 一旦实现改成"先连接再算 TTL"，用例会以连接错误的形式暴露出来。
+    RefreshTokenStore::new(redis::Client::open("redis://127.0.0.1:1").expect("unreachable Redis"))
+        .with_clock(SharedClock::fixed(now))
+}
+
+fn sliding_window_seconds() -> u64 {
+    (REFRESH_TOKEN_SLIDING_TTL_DAYS * 24 * 60 * 60) as u64
+}
+
+fn token_issued_at(now: OffsetDateTime) -> RefreshToken {
+    RefreshToken::new_at(
+        "cx_client".to_owned(),
+        "7".to_owned(),
+        vec!["openid".to_owned()],
+        now,
+    )
+}
+
+/// 刚签发的 token：TTL 由滑动窗口决定，绝对上限还远。
+#[test]
+fn fresh_token_ttl_follows_the_sliding_window() {
+    let token = token_issued_at(ISSUED_AT);
+    let ttl = store_at(ISSUED_AT).effective_ttl(&token);
+
+    assert_eq!(ttl, sliding_window_seconds());
+}
+
+/// Issue #109 的核心：持续轮换会把 `expires_at` 一直往后推，但 TTL 必须被
+/// 首次签发后 180 天的绝对截止夹住。固定时钟把「绝对上限反超滑动窗口」的那一刻
+/// 直接构造出来，不需要等真实时间。
+#[test]
+fn ttl_is_clamped_by_the_absolute_deadline_near_expiry() {
+    // 站在绝对截止前一天：此时滑动窗口（30 天）比绝对剩余（1 天）宽。
+    let now = ISSUED_AT + Duration::days(REFRESH_TOKEN_ABSOLUTE_TTL_DAYS - 1);
+    let rotated = token_issued_at(ISSUED_AT).rotate_at(vec!["openid".to_owned()], now);
+
+    let ttl = store_at(now).effective_ttl(&rotated);
+
+    assert_eq!(ttl, 24 * 60 * 60, "绝对截止必须收紧 TTL");
+    assert!(ttl < sliding_window_seconds(), "滑动窗口不得越过绝对上限");
+}
+
+/// 越过绝对截止之后 TTL 收敛到 1 秒：键立刻自然消失，而不是给 Redis 传负数。
+#[test]
+fn ttl_collapses_to_one_second_past_the_absolute_deadline() {
+    let past_deadline = ISSUED_AT + Duration::days(REFRESH_TOKEN_ABSOLUTE_TTL_DAYS + 1);
+    let token = token_issued_at(ISSUED_AT);
+
+    assert_eq!(store_at(past_deadline).effective_ttl(&token), 1);
+}
+
+/// 同一个 store、两个固定时钟：到期前后的判定差异不依赖真实等待。
+///
+/// 这是 Issue #299 验收标准里"refresh 的过期边界可测"的直接体现。
+#[test]
+fn validation_flips_exactly_at_the_sliding_deadline() {
+    let token = token_issued_at(ISSUED_AT);
+    let deadline = token.expires_at;
+
+    let before = SharedClock::fixed(deadline - Duration::seconds(1));
+    let at = SharedClock::fixed(deadline);
+
+    assert!(token.is_valid_for("cx_client", before.now()));
+    assert!(!token.is_valid_for("cx_client", at.now()));
 }

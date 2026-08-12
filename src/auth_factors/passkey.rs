@@ -53,9 +53,7 @@ impl AuthFactorService {
         let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(None);
         };
-        if !ticket.is_active_at(time::OffsetDateTime::now_utc())
-            || !ticket.supports(FactorMethod::Passkey)
-        {
+        if !ticket.is_active_at(self.clock.now()) || !ticket.supports(FactorMethod::Passkey) {
             return Ok(None);
         }
         // 限流检查必须在 list_factor_methods / list_passkeys 之前：challenge 端点用同一个
@@ -117,9 +115,7 @@ impl AuthFactorService {
         let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(PasskeyConfirmation::InvalidTicket);
         };
-        if !ticket.is_active_at(time::OffsetDateTime::now_utc())
-            || !ticket.supports(FactorMethod::Passkey)
-        {
+        if !ticket.is_active_at(self.clock.now()) || !ticket.supports(FactorMethod::Passkey) {
             return Ok(PasskeyConfirmation::InvalidTicket);
         }
         let Some(pending) = self
@@ -224,9 +220,7 @@ impl AuthFactorService {
         let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(None);
         };
-        if !ticket.is_active_at(time::OffsetDateTime::now_utc())
-            || !ticket.supports(FactorMethod::Passkey)
-        {
+        if !ticket.is_active_at(self.clock.now()) || !ticket.supports(FactorMethod::Passkey) {
             return Ok(None);
         }
         // 同一个 ticket 可以反复请求 challenge，限流检查必须挡在 list_passkeys 之前。
@@ -275,9 +269,7 @@ impl AuthFactorService {
         let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(PasskeyConfirmation::InvalidTicket);
         };
-        if !ticket.is_active_at(time::OffsetDateTime::now_utc())
-            || !ticket.supports(FactorMethod::Passkey)
-        {
+        if !ticket.is_active_at(self.clock.now()) || !ticket.supports(FactorMethod::Passkey) {
             return Ok(PasskeyConfirmation::InvalidTicket);
         }
         let Some(pending) = self

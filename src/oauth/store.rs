@@ -4,11 +4,12 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::code::AuthorizationCode;
-use crate::redis_client::RedisClient;
+use crate::{clock::SharedClock, redis_client::RedisClient};
 
 #[derive(Clone)]
 pub struct AuthorizationCodeStore {
     client: RedisClient,
+    clock: SharedClock,
 }
 
 #[derive(Debug, Error)]
@@ -23,13 +24,20 @@ impl AuthorizationCodeStore {
     pub fn new(client: impl Into<RedisClient>) -> Self {
         Self {
             client: client.into(),
+            clock: SharedClock::system(),
         }
+    }
+
+    /// 注入共享时钟（`AppState` 构造时调用，测试用固定时钟驱动 TTL 边界）。
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.clock = clock;
+        self
     }
 
     pub async fn save(&self, code: &AuthorizationCode) -> Result<(), AuthorizationCodeStoreError> {
         // TTL 来自授权码本身的 expires_at，与配置的 security_limits.authorization_code_ttl_seconds
         // 保持一致（#121）。remaining_seconds 不足1时强制设为1而不是0（Redis 不接受0）。
-        let remaining = (code.expires_at - time::OffsetDateTime::now_utc()).whole_seconds();
+        let remaining = (code.expires_at - self.clock.now()).whole_seconds();
         let ttl = if remaining > 0 { remaining as u64 } else { 1 };
         self.save_with_ttl(code, ttl).await
     }

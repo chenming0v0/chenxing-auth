@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use time::{Duration, OffsetDateTime};
 
-use crate::users::domain::UserId;
+use crate::{
+    clock::{Clock, SystemClock},
+    users::domain::UserId,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +63,15 @@ impl LoginTicket {
         Self::new_with_epoch_and_holder(user_id, methods, session_epoch, None)
     }
 
+    pub fn new_with_epoch_at(
+        user_id: UserId,
+        methods: Vec<FactorMethod>,
+        session_epoch: i64,
+        now: OffsetDateTime,
+    ) -> Self {
+        Self::new_with_epoch_and_holder_at(user_id, methods, session_epoch, None, now)
+    }
+
     pub fn new_with_holder(
         user_id: UserId,
         methods: Vec<FactorMethod>,
@@ -68,20 +80,44 @@ impl LoginTicket {
         Self::new_with_epoch_and_holder(user_id, methods, 0, Some(holder_hash))
     }
 
+    /// 用进程默认时钟签发 ticket。
+    ///
+    /// 生产路径经 `LoginTicketStore`，它持有 `AppState` 的共享时钟并调用
+    /// [`Self::new_with_epoch_and_holder_at`]。这个包装留给直接构造 ticket 的
+    /// 测试夹具和兼容调用点。
     pub fn new_with_epoch_and_holder(
         user_id: UserId,
         methods: Vec<FactorMethod>,
         session_epoch: i64,
         holder_hash: Option<String>,
     ) -> Self {
-        let created_at = OffsetDateTime::now_utc();
+        Self::new_with_epoch_and_holder_at(
+            user_id,
+            methods,
+            session_epoch,
+            holder_hash,
+            SystemClock.now(),
+        )
+    }
+
+    /// 以显式签发时刻构造 ticket。
+    ///
+    /// `expires_at` 完全由 `now` 派生，因此固定时钟可以直接构造「刚好过期」的
+    /// ticket，`is_active_at` 的两侧都可测。
+    pub fn new_with_epoch_and_holder_at(
+        user_id: UserId,
+        methods: Vec<FactorMethod>,
+        session_epoch: i64,
+        holder_hash: Option<String>,
+        now: OffsetDateTime,
+    ) -> Self {
         Self {
             user_id,
             methods,
             holder_hash,
             session_epoch,
-            created_at,
-            expires_at: created_at + Self::TTL,
+            created_at: now,
+            expires_at: now + Self::TTL,
         }
     }
 
@@ -130,6 +166,49 @@ pub fn validate_totp_code(code: &str) -> Result<(), TotpCodeError> {
 #[cfg(test)]
 mod tests {
     use super::{FactorMethod, LoginTicket, effective_factor_methods, setup_factor_methods};
+    use crate::clock::SharedClock;
+    use time::{Duration, OffsetDateTime};
+
+    /// ticket 的签发时刻。固定值让 5 分钟窗口的两端都能手算。
+    const ISSUED_AT: OffsetDateTime = OffsetDateTime::UNIX_EPOCH;
+
+    /// Issue #299：MFA ticket 的过期边界必须由固定时钟驱动。
+    ///
+    /// `is_active_at` 用 `now < expires_at`，所以「差一秒」有效、「正好到点」失效。
+    /// 以前 ticket 的 `created_at` 取进程墙钟，构造一个"刚好过期"的 ticket 只能
+    /// 手改字段或真实等待 5 分钟；现在签发时刻本身就是参数。
+    #[test]
+    fn ticket_activity_flips_exactly_at_the_five_minute_deadline() {
+        let ticket = LoginTicket::new_with_epoch_at(42, vec![FactorMethod::Totp], 7, ISSUED_AT);
+        let deadline = ISSUED_AT + LoginTicket::TTL;
+
+        assert_eq!(ticket.created_at, ISSUED_AT);
+        assert_eq!(ticket.expires_at, deadline);
+        assert!(ticket.is_active_at(SharedClock::fixed(ISSUED_AT).now()));
+        assert!(ticket.is_active_at(SharedClock::fixed(deadline - Duration::seconds(1)).now()));
+        assert!(
+            !ticket.is_active_at(SharedClock::fixed(deadline).now()),
+            "到点必须失效，否则 5 分钟窗口是开区间"
+        );
+        assert!(!ticket.is_active_at(SharedClock::fixed(deadline + Duration::seconds(1)).now()));
+    }
+
+    /// holder 绑定的 ticket 走同一条时间派生路径，签发时刻不被忽略。
+    #[test]
+    fn holder_bound_ticket_derives_expiry_from_the_injected_issue_time() {
+        let issued_at = ISSUED_AT + Duration::days(365);
+        let ticket = LoginTicket::new_with_epoch_and_holder_at(
+            42,
+            vec![FactorMethod::Totp],
+            7,
+            Some("holder-digest".to_owned()),
+            issued_at,
+        );
+
+        assert_eq!(ticket.created_at, issued_at);
+        assert_eq!(ticket.expires_at, issued_at + LoginTicket::TTL);
+        assert!(ticket.matches_holder_hash("holder-digest"));
+    }
 
     /// Issue #274：ticket 携带的认证身份必须是签发时盖上的 epoch。
     ///

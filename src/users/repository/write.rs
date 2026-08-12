@@ -18,6 +18,10 @@ pub async fn insert_user(
     let username = registration.username;
     let email = registration.email;
     let display_name = registration.display_name;
+    // 保留墙钟（Issue #299 的明确例外）：这是行创建时间，不参与任何过期或撤销
+    // 判定。凭据生命周期（Session / 授权码 / Refresh / MFA）一律走 `AppState`
+    // 的共享时钟；把这里也改成注入时钟只会让 repository 层多背一个参数，
+    // 换不到任何可测性。
     let created_at = OffsetDateTime::now_utc();
     let id: UserId = crate::sqlx::query_scalar(
         "INSERT INTO users (username, email, password_hash, display_name, status, created_at, updated_at)

@@ -1,23 +1,28 @@
 use super::super::{
     code::AuthorizationCode,
-    id_token::{IdTokenProfile, issue_id_token_with_profile},
+    id_token::{IdTokenProfile, issue_id_token_with_profile_at},
     pkce::verify_s256,
     session::active_user_id,
-    token::issue_access_token,
+    token::issue_access_token_at,
 };
 use super::{OAuthError, TokenResponse};
 use crate::{sessions::domain::decode_session_token_hash, state::AppState, users::domain::UserId};
 
+/// 校验授权码的绑定、过期与 PKCE。
+///
+/// `now` 由调用方从共享时钟取得，因此过期判定可以被固定时钟精确驱动到
+/// `expires_at` 的两侧，而不必构造一个真的等了 5 分钟的授权码。
 pub(super) fn validate_code_binding(
     client_id: &str,
     redirect_uri: &str,
     code_verifier: &str,
     code: &AuthorizationCode,
+    now: time::OffsetDateTime,
 ) -> Result<(), OAuthError> {
     if code.client_id != client_id || code.redirect_uri != redirect_uri {
         return Err(OAuthError::invalid_grant());
     }
-    if verify_code_is_redeemable(code).is_err() {
+    if verify_code_is_redeemable(code, now).is_err() {
         return Err(OAuthError::invalid_grant());
     }
     if verify_s256(code_verifier, &code.code_challenge).is_err() {
@@ -46,13 +51,14 @@ pub(crate) async fn issue_token_response(
             return Err(OAuthError::temporarily_unavailable());
         }
     }
-    let access_token = match issue_access_token(
+    let access_token = match issue_access_token_at(
         &state.keys,
         &state.config.issuer_url,
         user_id,
         client_id,
         scopes,
         state.config.access_token_ttl_seconds,
+        state.clock.now(),
     ) {
         Ok(token) => token,
         Err(token_error) => {
@@ -94,7 +100,7 @@ async fn issue_id_token(
             return Err(OAuthError::temporarily_unavailable());
         }
     };
-    issue_id_token_with_profile(
+    issue_id_token_with_profile_at(
         &state.keys,
         &state.config.issuer_url,
         user_id,
@@ -113,6 +119,7 @@ async fn issue_id_token(
             auth_time,
         },
         state.config.id_token_ttl_seconds,
+        state.clock.now(),
     )
     .map(Some)
     .map_err(|token_error| {
@@ -140,7 +147,9 @@ pub(super) async fn authorization_code_session_auth_time(
         return Err(OAuthError::invalid_grant());
     };
     match state.sessions.find_by_token_hash(&session_hash).await {
-        Ok(Some(session)) if session.is_active() => Ok(Some(session.created_at.unix_timestamp())),
+        Ok(Some(session)) if session.is_active_at(state.clock.now()) => {
+            Ok(Some(session.created_at.unix_timestamp()))
+        }
         Ok(_) => {
             tracing::info!(
                 client_id = %code.client_id,
@@ -181,22 +190,24 @@ pub(super) async fn compensate_authorization_code_exchange(
         );
         return;
     }
-    let ttl_seconds = authorization_code_restore_ttl(code);
+    let ttl_seconds = authorization_code_restore_ttl(code, state.clock.now());
     if let Err(store_error) = state.authorization_codes.restore(code, ttl_seconds).await {
         tracing::warn!(error = %store_error, "failed to restore OAuth authorization code");
     }
 }
 
-fn authorization_code_restore_ttl(code: &AuthorizationCode) -> u64 {
-    let remaining_seconds = (code.expires_at - time::OffsetDateTime::now_utc()).whole_seconds();
+fn authorization_code_restore_ttl(code: &AuthorizationCode, now: time::OffsetDateTime) -> u64 {
+    let remaining_seconds = (code.expires_at - now).whole_seconds();
     if remaining_seconds <= 0 {
         return 1;
     }
     u64::try_from(remaining_seconds).unwrap_or(1)
 }
 
-fn verify_code_is_redeemable(code: &AuthorizationCode) -> Result<(), ()> {
+fn verify_code_is_redeemable(
+    code: &AuthorizationCode,
+    now: time::OffsetDateTime,
+) -> Result<(), ()> {
     let mut code = code.clone();
-    code.redeem_at(time::OffsetDateTime::now_utc())
-        .map_err(|_| ())
+    code.redeem_at(now).map_err(|_| ())
 }

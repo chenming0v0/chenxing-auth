@@ -207,7 +207,13 @@ pub async fn exchange_code(
         )
         .await;
     };
-    if let Err(error) = validate_code_binding(client_id, redirect_uri, code_verifier, &code) {
+    if let Err(error) = validate_code_binding(
+        client_id,
+        redirect_uri,
+        code_verifier,
+        &code,
+        state.clock.now(),
+    ) {
         return exchange_failure(
             state,
             Some(&code.user_id),
@@ -284,10 +290,11 @@ pub async fn exchange_code(
             .await;
         }
     }
-    let refresh = RefreshToken::new(
+    let refresh = RefreshToken::new_at(
         client_id.to_owned(),
         code.user_id.clone(),
         code.scopes.clone(),
+        state.clock.now(),
     );
     if let Err(store_error) = state.refresh_tokens.save(&refresh).await {
         tracing::error!(error = %store_error, "failed to store refresh token");

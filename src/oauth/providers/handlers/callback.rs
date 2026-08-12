@@ -180,7 +180,12 @@ pub async fn external_callback(
     };
     let ttl = std::time::Duration::from_secs(state.config.session_ttl_seconds);
     let idle_timeout = std::time::Duration::from_secs(state.config.session_idle_timeout_seconds);
-    let mut session = match Session::new_with_idle_timeout(user_id.to_string(), ttl, idle_timeout) {
+    let mut session = match Session::new_at_with_idle_timeout(
+        user_id.to_string(),
+        ttl,
+        idle_timeout,
+        state.clock.now(),
+    ) {
         Ok(session) => session,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to create external OAuth session");

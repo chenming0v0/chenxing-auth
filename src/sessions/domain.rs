@@ -131,6 +131,10 @@ impl SessionLookup {
             && idle_active_at(self.last_seen_at, self.idle_timeout, now)
     }
 
+    /// 用进程默认时钟判定活跃。
+    ///
+    /// 生产路径一律传入 `AppState` 的共享时钟（[`Self::is_active_at`]）；保留这个
+    /// 包装是为了让不持有状态的调用点和测试断言不必自己取时间。
     pub fn is_active(&self) -> bool {
         self.is_active_at(SystemClock.now())
     }
@@ -215,6 +219,10 @@ pub enum SessionError {
 }
 
 impl Session {
+    /// 用进程默认时钟创建会话。
+    ///
+    /// 生产的登录路径调用 [`Self::new_at_with_idle_timeout`] 并传入 `AppState`
+    /// 的共享时钟，使 `created_at` / `expires_at` 与后续的过期判定同源。
     pub fn new(user_id: String, ttl: Duration) -> Result<Self, SessionError> {
         Self::new_at(user_id, ttl, SystemClock.now())
     }
@@ -299,6 +307,10 @@ impl Session {
             .and_then(|timeout| idle_deadline(self.last_seen_at, timeout))
     }
 
+    /// 用进程默认时钟标记撤销。
+    ///
+    /// 生产的撤销走 store（Postgres 路径用 SQL `NOW()`，纯 Redis 路径写撤销
+    /// 水位），不经过这个方法；它留给直接操作 `Session` 值的调用点。
     pub fn revoke(&mut self) {
         self.revoke_at(SystemClock.now());
     }
@@ -307,6 +319,7 @@ impl Session {
         self.revoked_at = Some(now);
     }
 
+    /// 用进程默认时钟判定活跃，语义同 [`SessionLookup::is_active`]。
     pub fn is_active(&self) -> bool {
         self.is_active_at(SystemClock.now())
     }

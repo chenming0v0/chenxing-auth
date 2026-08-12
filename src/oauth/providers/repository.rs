@@ -21,6 +21,8 @@ pub async fn insert_provider(
     input: &ValidatedProviderInput,
     ciphertext: Vec<u8>,
 ) -> Result<ProviderRecord, crate::sqlx::Error> {
+    // 保留墙钟（Issue #299 的明确例外）：Provider 配置行的 created_at/updated_at，
+    // 不参与任何过期判定。外部登录 State 的 TTL 走 Redis `TIME`（见 state_store）。
     let now = OffsetDateTime::now_utc();
     crate::sqlx::query_scalar::<_, i64>(
         "INSERT INTO oauth_providers
@@ -110,6 +112,7 @@ pub async fn update_provider(
     .bind(&input.claims.email_verified)
     .bind(auth_method_value(input.client_auth_method))
     .bind(input.pkce_enabled)
+    // 保留墙钟（Issue #299 的明确例外）：配置行 updated_at。
     .bind(OffsetDateTime::now_utc())
     .execute(pool)
     .await?;
@@ -126,6 +129,7 @@ pub async fn set_status(
     )
     .bind(slug)
     .bind(status)
+    // 保留墙钟（Issue #299 的明确例外）：配置行 updated_at。
     .bind(OffsetDateTime::now_utc())
     .execute(pool)
     .await?;
@@ -213,6 +217,7 @@ pub async fn create_user_with_identity(
     }
 
     let username = format!("oauth_{}", Uuid::new_v4().simple());
+    // 保留墙钟（Issue #299 的明确例外）：新用户与身份绑定的行创建时间。
     let now = OffsetDateTime::now_utc();
     let user_id: UserId = crate::sqlx::query_scalar(
         "INSERT INTO users

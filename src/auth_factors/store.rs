@@ -1,11 +1,10 @@
 use redis::{AsyncCommands, ExistenceCheck, Script, SetExpiry, SetOptions};
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::domain::{FactorMethod, LoginTicket};
-use crate::{redis_client::RedisClient, users::domain::UserId};
+use crate::{clock::SharedClock, redis_client::RedisClient, users::domain::UserId};
 
 const LOGIN_TICKET_PREFIX: &str = "chenxing:auth:login-ticket:";
 const TOTP_REPLAY_PREFIX: &str = "chenxing:auth:totp-used:";
@@ -25,6 +24,7 @@ return payload
 pub struct LoginTicketStore {
     client: RedisClient,
     metadata: Option<crate::sqlx::PgPool>,
+    clock: SharedClock,
 }
 
 #[derive(Debug, Error)]
@@ -42,6 +42,7 @@ impl LoginTicketStore {
         Self {
             client: client.into(),
             metadata: None,
+            clock: SharedClock::system(),
         }
     }
 
@@ -49,7 +50,17 @@ impl LoginTicketStore {
         Self {
             client: client.into(),
             metadata: Some(metadata),
+            clock: SharedClock::system(),
         }
+    }
+
+    /// 注入共享时钟（`AuthFactorService` 构造时传入 `AppState` 的时钟）。
+    ///
+    /// ticket 的签发时刻与 `restore` 的剩余 TTL 都由它决定，因此固定时钟能把
+    /// 5 分钟窗口的两侧都测到。
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Compatibility constructor for direct store users. HTTP-issued tickets
@@ -70,7 +81,8 @@ impl LoginTicketStore {
         session_epoch: i64,
     ) -> Result<(String, LoginTicket), LoginTicketStoreError> {
         let ticket_id = Uuid::new_v4().to_string();
-        let ticket = LoginTicket::new_with_epoch(user_id, methods, session_epoch);
+        let ticket =
+            LoginTicket::new_with_epoch_at(user_id, methods, session_epoch, self.clock.now());
         self.save(&ticket_id, &ticket).await?;
         Ok((ticket_id, ticket))
     }
@@ -93,11 +105,12 @@ impl LoginTicketStore {
         holder_hash: String,
     ) -> Result<(String, LoginTicket), LoginTicketStoreError> {
         let ticket_id = Uuid::new_v4().to_string();
-        let ticket = LoginTicket::new_with_epoch_and_holder(
+        let ticket = LoginTicket::new_with_epoch_and_holder_at(
             user_id,
             methods,
             session_epoch,
             Some(holder_hash),
+            self.clock.now(),
         );
         self.save(&ticket_id, &ticket).await?;
         Ok((ticket_id, ticket))
@@ -154,7 +167,7 @@ impl LoginTicketStore {
         ticket_id: &str,
         ticket: LoginTicket,
     ) -> Result<(), LoginTicketStoreError> {
-        let ttl = (ticket.expires_at - OffsetDateTime::now_utc()).whole_seconds();
+        let ttl = (ticket.expires_at - self.clock.now()).whole_seconds();
         if ttl <= 0 {
             return Ok(());
         }

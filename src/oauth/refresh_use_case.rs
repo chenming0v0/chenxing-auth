@@ -31,10 +31,7 @@ pub(super) async fn exchange_refresh_token(
         }
     };
 
-    if refresh
-        .validate(client_id, time::OffsetDateTime::now_utc())
-        .is_err()
-    {
+    if refresh.validate(client_id, state.clock.now()).is_err() {
         return record_and_return_invalid(
             state,
             Some(&refresh.user_id),
@@ -83,7 +80,7 @@ pub(super) async fn exchange_refresh_token(
     let scopes = select_scopes(request.scope.as_deref(), &refresh.scopes)?;
     // rotate() inherits issued_at and family_id so absolute lifetime and replay revocation
     // semantics survive rotation.
-    let next_refresh = refresh.rotate(scopes.clone());
+    let next_refresh = refresh.rotate_at(scopes.clone(), state.clock.now());
     let token = issue_token_response(
         state,
         &refresh.user_id,
@@ -130,7 +127,7 @@ pub(super) async fn exchange_refresh_token(
             };
             match tombstone {
                 Some(tombstone) if tombstone.client_id == client_id => {
-                    match classify_tombstone(&tombstone, time::OffsetDateTime::now_utc()) {
+                    match classify_tombstone(&tombstone, state.clock.now()) {
                         TombstoneDisposition::ConcurrentRace => {
                             record_and_return_invalid(
                                 state,
@@ -224,7 +221,7 @@ async fn handle_missing_refresh_token(
     // 不看请求走了哪条路（Issue #278）。
     match state.refresh_tokens.read_tombstone(refresh_value).await {
         Ok(Some(tombstone)) if tombstone.client_id == client_id => {
-            match classify_tombstone(&tombstone, time::OffsetDateTime::now_utc()) {
+            match classify_tombstone(&tombstone, state.clock.now()) {
                 TombstoneDisposition::Replay => {
                     revoke_family_after_replay(state, client_id, refresh_value, &tombstone).await
                 }

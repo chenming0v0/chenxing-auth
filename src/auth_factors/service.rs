@@ -5,6 +5,7 @@ use webauthn_rs::prelude::WebauthnError;
 
 use crate::{
     auth_limiter::{AuthFailureLimiter, FailureDimension, MissingSourceIpPolicy},
+    clock::SharedClock,
     config::AuthEncryptionKeyRing,
     redis_client::RedisClient,
     settings::{SettingsService, SettingsServiceError},
@@ -76,6 +77,11 @@ pub struct AuthFactorService {
     missing_source_ip_policy: MissingSourceIpPolicy,
     encryption_keys: AuthEncryptionKeyRing,
     settings: SettingsService,
+    /// MFA 生命周期的时间来源：login ticket 的 5 分钟窗口和 TOTP 的当前 timestep。
+    ///
+    /// 失败计数窗口不用它——限流窗口一律取 Redis 的 `TIME`，见
+    /// `auth_limiter::redis_scripts`。
+    clock: SharedClock,
 }
 
 #[derive(Debug, Error)]
@@ -148,7 +154,18 @@ impl AuthFactorService {
             missing_source_ip_policy,
             encryption_keys,
             settings,
+            clock: SharedClock::system(),
         }
+    }
+
+    /// 注入共享时钟，并让内部的 ticket store 使用同一个来源。
+    ///
+    /// 两者必须同源：ticket 的签发时刻由 store 决定，而有效期判定在 service，
+    /// 各读一个时钟会让「刚签发的 ticket 已过期」这种自相矛盾成为可能。
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.tickets = self.tickets.with_clock(clock.clone());
+        self.clock = clock;
+        self
     }
 
     pub async fn available_methods(
