@@ -1,4 +1,4 @@
-//! 单元测试：吊销意图记录的崩溃恢复（Issue #284）。
+//! 单元测试：吊销意图记录的崩溃恢复（Issue #284、#311）。
 //!
 //! 覆盖的核心事实是"已提交的吊销不会复活"：无论崩溃发生在改写 active kid 之前
 //! 还是之后，加载都必须收敛到"被吊销的材料不在盘上、active kid 指向替代密钥"。
@@ -180,56 +180,148 @@ fn recovery_is_idempotent_when_only_the_record_is_left() {
     assert!(!directory.record_path().exists());
 }
 
-/// 记录指向的替代材料不在盘上：改写 kid 会造出 fail-closed 目录，必须先拒绝。
+/// 记录指向的替代材料已被裁剪时，从剩余材料选择安全 active，不能继续使用 revoked。
 #[test]
-fn recovery_fails_closed_when_the_replacement_material_is_missing() {
+fn recovery_adopts_a_surviving_key_when_the_recorded_replacement_is_missing() {
     let directory = TempKeyDir::new("missing-replacement");
     write_key(&directory, "cx-revoked");
+    write_key(&directory, "cx-survivor");
     write_active_key_id(&directory, "cx-revoked");
     write_record(&directory, "cx-revoked", "cx-replacement");
 
-    let error = load(&directory).expect_err("missing replacement must fail closed");
+    let active_key_id = load(&directory).expect("missing replacement must converge");
 
-    assert!(matches!(error, KeyManagerError::MissingActiveKeyMaterial));
-    assert_eq!(
-        read_active_key_id(&directory),
-        "cx-revoked",
-        "证据必须留在盘上，不得改写 kid"
-    );
-    assert!(
-        directory.key_path("cx-revoked").exists(),
-        "恢复失败时不得先删掉唯一还在的材料"
-    );
-    assert!(directory.record_path().exists(), "未完成的记录必须保留");
+    assert_eq!(active_key_id, "cx-survivor");
+    assert_eq!(read_active_key_id(&directory), "cx-survivor");
+    assert!(!directory.key_path("cx-revoked").exists());
+    assert!(!directory.record_path().exists());
 }
 
-/// 记录被篡改成"吊销的就是替代密钥"：执行它等于自己删自己，一律 fail-closed。
+/// 没有任何安全候选时生成全新 active；revoked 即使是唯一材料也绝不能复活。
 #[test]
-fn recovery_rejects_a_record_naming_the_same_key_twice() {
+fn recovery_generates_a_fresh_key_when_replacement_and_other_materials_are_missing() {
+    let directory = TempKeyDir::new("missing-all-replacements");
+    write_key(&directory, "cx-revoked");
+    write_active_key_id(&directory, "cx-revoked");
+    write_record(&directory, "cx-revoked", "cx-pruned");
+
+    let (active_key_id, materials) = load_materials(
+        directory.path(),
+        RETENTION,
+        OffsetDateTime::now_utc(),
+        false,
+    )
+    .expect("committed revocation permits a fresh safe key");
+
+    assert_ne!(active_key_id, "cx-revoked");
+    assert_ne!(active_key_id, "cx-pruned");
+    assert!(materials.contains_key(&active_key_id));
+    assert!(!materials.contains_key("cx-revoked"));
+    assert!(!directory.key_path("cx-revoked").exists());
+    assert!(!directory.record_path().exists());
+}
+
+/// replacement 已消失但 active 已前进到另一把现存 key：保留 current，不回退也不重置。
+#[test]
+fn recovery_keeps_a_usable_current_active_when_the_stale_replacement_is_missing() {
+    let directory = TempKeyDir::new("missing-stale-replacement");
+    write_key(&directory, "cx-revoked");
+    write_key(&directory, "cx-current");
+    write_active_key_id(&directory, "cx-current");
+    write_record(&directory, "cx-revoked", "cx-pruned");
+
+    let active_key_id = load(&directory).expect("usable current active must win");
+
+    assert_eq!(active_key_id, "cx-current");
+    assert_eq!(read_active_key_id(&directory), "cx-current");
+    assert!(!directory.key_path("cx-revoked").exists());
+    assert!(!directory.record_path().exists());
+}
+
+/// active 指针自身已失配时，仍存在的 journal replacement 是唯一明确的恢复目标。
+#[test]
+fn recovery_repairs_a_missing_current_active_from_the_pending_replacement() {
+    let directory = TempKeyDir::new("missing-current-active");
+    write_key(&directory, "cx-revoked");
+    write_key(&directory, "cx-replacement");
+    write_active_key_id(&directory, "cx-missing");
+    write_record(&directory, "cx-revoked", "cx-replacement");
+
+    let active_key_id = load(&directory).expect("journal replacement must repair active");
+
+    assert_eq!(active_key_id, "cx-replacement");
+    assert_eq!(read_active_key_id(&directory), "cx-replacement");
+    assert!(!directory.key_path("cx-revoked").exists());
+    assert!(!directory.record_path().exists());
+}
+
+/// active kid 内容损坏时不能盖过仍完整的 pending journal；丢弃指针并采用 replacement。
+#[test]
+fn recovery_repairs_an_invalid_active_key_id_from_the_pending_replacement() {
+    let directory = TempKeyDir::new("invalid-current-active");
+    write_key(&directory, "cx-revoked");
+    write_key(&directory, "cx-replacement");
+    fs::write(directory.active_key_id_path(), [0xff, 0xfe]).expect("invalid active key id");
+    write_record(&directory, "cx-revoked", "cx-replacement");
+
+    let active_key_id = load(&directory).expect("journal must replace an invalid active pointer");
+
+    assert_eq!(active_key_id, "cx-replacement");
+    assert_eq!(read_active_key_id(&directory), "cx-replacement");
+    assert!(!directory.key_path("cx-revoked").exists());
+    assert!(!directory.record_path().exists());
+}
+
+/// 自引用记录没有完整性保证：所有旧材料都不再可信，必须换成全新 keyset。
+#[test]
+fn recovery_discards_all_old_material_from_a_self_referential_record() {
     let directory = TempKeyDir::new("self-referential");
-    write_key(&directory, "cx-active");
-    write_active_key_id(&directory, "cx-active");
-    fs::write(directory.record_path(), "cx-active\ncx-active\n").expect("corrupt record");
+    write_key(&directory, "cx-revoked");
+    write_key(&directory, "cx-survivor");
+    write_active_key_id(&directory, "cx-revoked");
+    fs::write(directory.record_path(), "cx-revoked\ncx-revoked\n").expect("corrupt record");
 
-    let error = load(&directory).expect_err("self-referential record must fail closed");
+    let (active_key_id, materials) = load_materials(
+        directory.path(),
+        RETENTION,
+        OffsetDateTime::now_utc(),
+        false,
+    )
+    .expect("self-referential journal must converge to a fresh keyset");
 
-    assert!(matches!(error, KeyManagerError::InvalidKeyId));
-    assert!(directory.key_path("cx-active").exists());
-    assert!(directory.record_path().exists());
+    assert_ne!(active_key_id, "cx-revoked");
+    assert_ne!(active_key_id, "cx-survivor");
+    assert_eq!(materials.len(), 1);
+    assert!(materials.contains_key(&active_key_id));
+    assert!(!directory.key_path("cx-revoked").exists());
+    assert!(!directory.key_path("cx-survivor").exists());
+    assert!(!directory.record_path().exists());
 }
 
-/// 记录内容非法（空行、越界字符）同样 fail-closed，不猜测意图。
+/// 第一行也无法识别时不能猜哪个旧 key 被吊销：丢弃整个 keyset，再生成全新 active。
 #[test]
-fn recovery_rejects_a_malformed_record() {
+fn recovery_discards_all_old_material_when_the_revoked_target_is_unreadable() {
     let directory = TempKeyDir::new("malformed");
     write_key(&directory, "cx-active");
+    write_key(&directory, "cx-old");
     write_active_key_id(&directory, "cx-active");
-    fs::write(directory.record_path(), "../escape\n").expect("corrupt record");
+    fs::write(directory.record_path(), "../escape\ncx-active\n").expect("corrupt record");
 
-    let error = load(&directory).expect_err("malformed record must fail closed");
+    let (active_key_id, materials) = load_materials(
+        directory.path(),
+        RETENTION,
+        OffsetDateTime::now_utc(),
+        false,
+    )
+    .expect("unidentifiable journal must converge to a fresh keyset");
 
-    assert!(matches!(error, KeyManagerError::InvalidKeyId));
-    assert!(directory.key_path("cx-active").exists());
+    assert_ne!(active_key_id, "cx-active");
+    assert_ne!(active_key_id, "cx-old");
+    assert_eq!(materials.len(), 1);
+    assert!(materials.contains_key(&active_key_id));
+    assert!(!directory.key_path("cx-active").exists());
+    assert!(!directory.key_path("cx-old").exists());
+    assert!(!directory.record_path().exists());
 }
 
 /// 没有记录时加载路径完全不受影响。

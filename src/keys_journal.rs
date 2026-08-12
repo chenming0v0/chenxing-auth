@@ -14,12 +14,14 @@
 //! 因此这里先把意图落盘：记录存在就说明"这次吊销已经决定要做"，恢复路径可以
 //! 幂等地把剩下的步骤补完，既不会复活密钥，也不会把目录留在 fail-closed 状态。
 //!
-//! 记录本身用 `atomic_write` 写入（临时文件 + rename），因此盘上只会看到完整
-//! 记录或没有记录；读到内容但解析失败属于外部篡改，一律 fail-closed。
+//! 记录本身用 `atomic_write` 写入（临时文件 + rename），因此盘上通常只会看到完整
+//! 记录或没有记录。损坏记录不能永久阻断启动，也不能猜测其中仍有哪一段可信：安全
+//! 出口是丢弃整组旧材料并生成新 active key。现有 token 会失效，但可能已吊销的 key
+//! 不会被恢复为 active。
 
-use std::{fs, path::Path};
+use std::{fs, io::Read, path::Path};
 
-use crate::key_storage::atomic_write;
+use crate::key_storage::{atomic_write, remove_secure_file, secure_existing_file};
 
 use super::{KeyManagerError, persistence, retirement};
 
@@ -29,6 +31,7 @@ use super::{KeyManagerError, persistence, retirement};
 /// 前缀，因此不会被 `cleanup_stale_temporary_files` 当成中断的半成品删掉；
 /// 也不带 `rs256-` 前缀，因此不会被 `discover_key_files` 当成密钥材料读进来。
 const PENDING_REVOCATION_FILE: &str = "pending-revocation.record";
+const MAX_PENDING_REVOCATION_BYTES: u64 = 1024;
 
 /// 一次吊销的完整意图：吊销哪个 `kid`，完成后 active 应该是哪个 `kid`。
 ///
@@ -38,6 +41,38 @@ const PENDING_REVOCATION_FILE: &str = "pending-revocation.record";
 pub(super) struct PendingRevocation {
     revoked_key_id: String,
     active_key_id: String,
+}
+
+enum JournalRecord {
+    Pending(PendingRevocation),
+    Corrupt(CorruptJournal),
+}
+
+struct CorruptJournal {
+    reason: CorruptionReason,
+}
+
+#[derive(Clone, Copy)]
+enum CorruptionReason {
+    Oversized,
+    InvalidEncoding,
+    InvalidRevokedKeyId,
+    InvalidReplacementKeyId,
+    SelfReferential,
+    UnexpectedFields,
+}
+
+impl CorruptionReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Oversized => "oversized",
+            Self::InvalidEncoding => "invalid_encoding",
+            Self::InvalidRevokedKeyId => "invalid_revoked_key_id",
+            Self::InvalidReplacementKeyId => "invalid_replacement_key_id",
+            Self::SelfReferential => "self_referential",
+            Self::UnexpectedFields => "unexpected_fields",
+        }
+    }
 }
 
 impl PendingRevocation {
@@ -61,8 +96,8 @@ pub(super) fn record(directory: &Path, pending: &PendingRevocation) -> Result<()
     Ok(())
 }
 
-/// 读取待完成的吊销意图；没有记录时返回 `None`。
-fn read(directory: &Path) -> Result<Option<PendingRevocation>, KeyManagerError> {
+/// 读取待完成的吊销意图；内容损坏是可恢复状态，路径类型或 IO 异常仍然 fail-closed。
+fn read(directory: &Path) -> Result<Option<JournalRecord>, KeyManagerError> {
     let path = directory.join(PENDING_REVOCATION_FILE);
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
@@ -75,18 +110,22 @@ fn read(directory: &Path) -> Result<Option<PendingRevocation>, KeyManagerError> 
             "invalid secure storage path",
         )));
     }
-    let contents = fs::read_to_string(&path)?;
-    let mut lines = contents.lines();
-    let revoked_key_id = lines.next().unwrap_or_default().trim().to_owned();
-    let active_key_id = lines.next().unwrap_or_default().trim().to_owned();
-    let pending = PendingRevocation::new(revoked_key_id, active_key_id);
-    validate(&pending)?;
-    Ok(Some(pending))
+    secure_existing_file(&path)?;
+    if metadata.len() > MAX_PENDING_REVOCATION_BYTES {
+        return Ok(Some(JournalRecord::Corrupt(CorruptJournal {
+            reason: CorruptionReason::Oversized,
+        })));
+    }
+    let mut contents = Vec::new();
+    fs::File::open(&path)?
+        .take(MAX_PENDING_REVOCATION_BYTES + 1)
+        .read_to_end(&mut contents)?;
+    Ok(Some(parse(&contents)))
 }
 
 /// 删除吊销记录。文件已不存在同样算成功：目标状态就是"没有待完成的吊销"。
 fn clear(directory: &Path) -> Result<(), KeyManagerError> {
-    match fs::remove_file(directory.join(PENDING_REVOCATION_FILE)) {
+    match remove_secure_file(&directory.join(PENDING_REVOCATION_FILE)) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
@@ -99,36 +138,139 @@ fn clear(directory: &Path) -> Result<(), KeyManagerError> {
 /// `load_materials` 也调用本函数。因此"顺序正确"这件事只在这里实现一次，不存在
 /// 第二份需要跟着维护的补偿逻辑。
 ///
-/// 步骤顺序固定为：先把 active kid 指向替代密钥，再删除被吊销的材料，最后清除
-/// 记录。任何一步失败都保留记录，下一次加载会重新走同样的步骤。
+/// 恢复成功时目录里必有一个不等于 revoked 的 active key 及其材料；journal 最后才
+/// 清除，所以任何中断点都能从同一条记录继续，不会留下“记录已丢、active 仍缺失”的
+/// 新故障窗口。
 pub(super) fn recover(directory: &Path) -> Result<(), KeyManagerError> {
-    let Some(pending) = read(directory)? else {
+    let Some(record) = read(directory)? else {
         return Ok(());
     };
 
-    // active kid 仍指向被吊销的 key，才需要改写它。若已经指向别处（吊销非 active
-    // key，或吊销完成后又发生过轮换），改写会把 active 退回一个更旧的 kid。
-    if persistence::declared_active_key_id(directory)?.as_deref() == Some(&pending.revoked_key_id) {
-        // 替代材料必须真的在盘上：否则改写 kid 会造出"kid 指向缺失材料"的目录，
-        // 把一次可恢复的吊销升级成 Issue #264 的 fail-closed 故障。
-        if !persistence::has_key_material(directory, &pending.active_key_id)? {
-            tracing::error!(
+    match record {
+        JournalRecord::Pending(pending) => recover_pending(directory, &pending)?,
+        JournalRecord::Corrupt(corrupt) => recover_corrupt(directory, corrupt)?,
+    }
+    Ok(())
+}
+
+fn recover_pending(
+    directory: &Path,
+    pending: &PendingRevocation,
+) -> Result<(), KeyManagerError> {
+    let active_key_id = recoverable_active_key_id(directory)?;
+
+    // 已有另一个可用 active 说明目录在 journal 之后已经前进，绝不能回退到记录里的
+    // replacement。否则 current active 缺失、仍是 revoked 或 kid 文件本身不可用，
+    // 才按 journal 选择仍存在的 replacement。
+    let current_active_is_usable = match active_key_id.as_deref() {
+        Some(key_id) if key_id != pending.revoked_key_id => {
+            persistence::has_key_material(directory, key_id)?
+        }
+        _ => false,
+    };
+
+    if !current_active_is_usable {
+        if persistence::has_key_material(directory, &pending.active_key_id)? {
+            persistence::persist_active_key_id(directory, &pending.active_key_id)?;
+            retirement::clear(directory, &pending.active_key_id)?;
+        } else {
+            // replacement 可能已经被裁剪。revoked 是 journal 中仍可信的事实，所以先
+            // 从其他材料选择新 active（没有候选就生成），再删除 revoked。journal 在
+            // 最后才清除，崩溃重试也绝不能为了可用性继续使用 revoked。
+            let fallback_key_id = persistence::establish_recovery_active_key(
+                directory,
+                Some(pending.revoked_key_id.as_str()),
+            )?;
+            tracing::warn!(
                 revoked_key_id = %pending.revoked_key_id,
                 replacement_key_id = %pending.active_key_id,
-                "pending revocation names a replacement signing key whose material is missing; \
-                 refusing to complete the revocation"
+                fallback_key_id = %fallback_key_id,
+                "pending key revocation replacement is unavailable; selected a safe fallback"
             );
-            return Err(KeyManagerError::MissingActiveKeyMaterial);
+            persistence::remove_key(directory, &pending.revoked_key_id)?;
+            clear(directory)?;
+            return Ok(());
         }
-        persistence::persist_active_key_id(directory, &pending.active_key_id)?;
-        // 替代密钥重新在役，它的退役记录必须消失，否则重新在役的 key 会带着上一轮
-        // 的窗口起点，下次退役时保留窗口已被提前用掉（Issue #298）。
-        retirement::clear(directory, &pending.active_key_id)?;
     }
 
     persistence::remove_key(directory, &pending.revoked_key_id)?;
+    clear(directory)
+}
+
+fn recover_corrupt(directory: &Path, corrupt: CorruptJournal) -> Result<(), KeyManagerError> {
+    // journal 没有完整性校验，局部合法不代表该字段没被改写。保留任意旧材料都可能
+    // 把真正已吊销的 key 重新发布，因此损坏记录只有一个安全出口：丢弃整个旧 keyset
+    // 并立即生成新 key。日志只记录分类，不记录 journal 原文，避免把被篡改文件里的
+    // 任意字节带进日志。
+    persistence::discard_all_key_material(directory)?;
+    let replacement_key_id = persistence::establish_recovery_active_key(directory, None)?;
     clear(directory)?;
+    tracing::error!(
+        reason = corrupt.reason.as_str(),
+        replacement_key_id = %replacement_key_id,
+        "discarded all persisted signing keys because the revocation journal was corrupt"
+    );
     Ok(())
+}
+
+/// active kid 的内容损坏不应让一条可执行的 journal 永久卡死。这里只丢弃普通文件
+/// 中的非法值；路径是目录或符号链接时仍由持久化层 fail-closed。
+fn recoverable_active_key_id(directory: &Path) -> Result<Option<String>, KeyManagerError> {
+    match persistence::declared_active_key_id(directory) {
+        Ok(key_id) => Ok(key_id),
+        Err(error) if active_key_id_is_unreadable(&error) => {
+            tracing::warn!(
+                "active signing key id is invalid while recovering a revocation; \
+                 discarding the unusable pointer"
+            );
+            persistence::clear_active_key_id(directory)?;
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn active_key_id_is_unreadable(error: &KeyManagerError) -> bool {
+    matches!(error, KeyManagerError::InvalidKeyId)
+        || matches!(
+            error,
+            KeyManagerError::Io(error) if error.kind() == std::io::ErrorKind::InvalidData
+        )
+}
+
+fn parse(contents: &[u8]) -> JournalRecord {
+    if contents.len() as u64 > MAX_PENDING_REVOCATION_BYTES {
+        return corrupt(CorruptionReason::Oversized);
+    }
+    let Ok(contents) = std::str::from_utf8(contents) else {
+        return corrupt(CorruptionReason::InvalidEncoding);
+    };
+    let mut lines = contents.lines();
+    let revoked_key_id = lines.next().unwrap_or_default().trim();
+    let active_key_id = lines.next().unwrap_or_default().trim();
+    let has_unexpected_fields = lines.next().is_some();
+
+    if persistence::validate_key_id(revoked_key_id).is_err() {
+        return corrupt(CorruptionReason::InvalidRevokedKeyId);
+    }
+    if persistence::validate_key_id(active_key_id).is_err() {
+        return corrupt(CorruptionReason::InvalidReplacementKeyId);
+    }
+    if revoked_key_id == active_key_id {
+        return corrupt(CorruptionReason::SelfReferential);
+    }
+    if has_unexpected_fields {
+        return corrupt(CorruptionReason::UnexpectedFields);
+    }
+
+    JournalRecord::Pending(PendingRevocation::new(
+        revoked_key_id.to_owned(),
+        active_key_id.to_owned(),
+    ))
+}
+
+fn corrupt(reason: CorruptionReason) -> JournalRecord {
+    JournalRecord::Corrupt(CorruptJournal { reason })
 }
 
 /// 记录内容的合法性检查，读写两侧共用。
