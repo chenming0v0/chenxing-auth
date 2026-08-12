@@ -410,7 +410,7 @@
         .oauth-beam::after, .oauth-spin { animation: none; }
       }
       @media (max-width: 640px) {
-        .oauth-actions { justify-content: stretch; }
+        /* flex 容器没有 justify-content: stretch；按钮已由 flex: 1 1 auto 撑满整行，无需对齐声明 */
         .oauth-btn { flex: 1 1 auto; }
         .oauth-footer { flex-direction: column; align-items: flex-start; }
       }
