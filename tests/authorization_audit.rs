@@ -363,17 +363,17 @@ async fn last_owner_guard_denials_are_recorded_with_actor_target_and_operation()
     let (router, database, _key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let owner_id = seed_user(&database, &format!("owner-{suffix}"), "owner").await;
-    let (cookie, csrf) = browser_session(&database, owner_id).await;
 
-    // 唯一的活跃 Owner 试图禁用自己：守卫拒绝，必须留痕。
+    // 系统 Token 禁用唯一的活跃 Owner：守卫拒绝，必须留痕。
+    // 浏览器会话的 Owner 自我操作已被 self_status_change_forbidden 拦掉，
+    // 与角色变更一样改用系统 Token 触达守卫（Issue #336）。
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(format!("/api/v1/admin/users/{owner_id}/disabled"))
-                .header("cookie", &cookie)
-                .header("x-csrf-token", &csrf)
+                .header("authorization", "Bearer authz-audit-token")
                 .body(Body::empty())
                 .expect("disable last owner request"),
         )
@@ -386,8 +386,8 @@ async fn last_owner_guard_denials_are_recorded_with_actor_target_and_operation()
     assert_eq!(events.len(), 1, "禁用最后一个 Owner 必须留下一条审计事件");
     let event = &events[0];
     assert_eq!(event.action, GUARD_DENIED_ACTION);
-    assert_eq!(event.actor_type, "user");
-    assert_eq!(event.actor_id, Some(owner_id.to_string()));
+    assert_eq!(event.actor_type, "system_token");
+    assert_eq!(event.actor_id, None);
     assert_eq!(event.resource_type, "user");
     assert_eq!(
         event.resource_id,
@@ -454,15 +454,13 @@ async fn owner_guard_denial_metadata_carries_no_credentials() {
     let (router, database, _key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let owner_id = seed_user(&database, &format!("owner-{suffix}"), "owner").await;
-    let (cookie, csrf) = browser_session(&database, owner_id).await;
 
     let response = router
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(format!("/api/v1/admin/users/{owner_id}/disabled"))
-                .header("cookie", &cookie)
-                .header("x-csrf-token", &csrf)
+                .header("authorization", "Bearer authz-audit-token")
                 .body(Body::empty())
                 .expect("disable last owner request"),
         )
@@ -473,17 +471,10 @@ async fn owner_guard_denial_metadata_carries_no_credentials() {
     let events = guard_denial_events(&database).await;
     assert_eq!(events.len(), 1);
     let serialized = serde_json::to_string(&events[0]).expect("event serializes");
-    assert!(!serialized.contains(&csrf), "审计事件不得包含 CSRF 令牌");
-    for cookie_part in cookie.split("; ") {
-        let value = cookie_part
-            .split_once('=')
-            .map(|(_, value)| value)
-            .unwrap_or(cookie_part);
-        assert!(
-            !serialized.contains(value),
-            "审计事件不得包含会话 Cookie 值"
-        );
-    }
+    assert!(
+        !serialized.contains("authz-audit-token"),
+        "审计事件不得包含管理员令牌"
+    );
 }
 
 #[tokio::test]
