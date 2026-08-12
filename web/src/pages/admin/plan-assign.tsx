@@ -17,7 +17,7 @@ export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
-  // 每次打开抽屉都重新拉取套餐列表，不设模块级缓存：
+  // 每次打开抽屉都重新拉取套餐列表，不设模块级缓存（#373）：
   // 套餐的新建/归档/恢复/编辑发生在套餐管理页，注销换账号也没有失效入口，
   // 任何缓存都要额外维护失效点；抽屉按需挂载，拉取一次的成本可忽略，
   // 卸载时 active 守卫会丢弃在途响应，不存在跨账号写回。

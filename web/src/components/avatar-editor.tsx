@@ -48,6 +48,15 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
   const containerRef = useDrawerFocus(onCancel, busy)
   const viewportRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null)
+  // 原生 wheel 监听器只挂一次；必须从 ref 读最新取景状态，否则连滚会吃到过期 scale。
+  const transformRef = useRef(transform)
+  const edgeRef = useRef(edge)
+  const sourceRef = useRef(source)
+  const busyRef = useRef(busy)
+  transformRef.current = transform
+  edgeRef.current = edge
+  sourceRef.current = source
+  busyRef.current = busy
 
   // useLayoutEffect 而不是 useEffect：在浏览器绘制前完成首次测量，避免用兜底值
   // 渲染一帧再跳到实际尺寸。
@@ -71,13 +80,33 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
     return () => observer.disconnect()
   }, [])
 
+  // React 19 把 onWheel 注册成 passive，preventDefault 会被浏览器直接丢掉，
+  // 页面跟着滚。必须自己挂 { passive: false } 的原生监听（Issue #370）。
+  useLayoutEffect(() => {
+    const element = viewportRef.current
+    if (!element) return
+    const onWheel = (event: WheelEvent) => {
+      if (busyRef.current) return
+      event.preventDefault()
+      const current = transformRef.current
+      const next = { ...current, scale: current.scale - event.deltaY * 0.002 }
+      const clamped = { scale: clampScale(next.scale), ...clampOffset(sourceRef.current, edgeRef.current, next) }
+      transformRef.current = clamped
+      setTransform(clamped)
+    }
+    element.addEventListener('wheel', onWheel, { passive: false })
+    return () => element.removeEventListener('wheel', onWheel)
+  }, [])
+
   const preview = previewTransform(source, edge, transform)
   // 方向键步长跟随边长：固定步长在小取景框上会一步跨掉可平移余量的一大截。
   const keyStep = Math.max(4, Math.round(edge * 0.04))
 
   function applyTransform(next: CropTransform) {
     // 缩放会改变可平移余量，因此每次变换后都重新夹取，避免取景框露出图像外部。
-    setTransform({ scale: clampScale(next.scale), ...clampOffset(source, edge, next) })
+    const clamped = { scale: clampScale(next.scale), ...clampOffset(source, edge, next) }
+    transformRef.current = clamped
+    setTransform(clamped)
   }
 
   function onPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
@@ -107,26 +136,6 @@ export function AvatarEditor({ image, source, busy = false, onCancel, onConfirm 
     if (dragRef.current?.pointerId !== event.pointerId) return
     dragRef.current = null
   }
-
-  // React 17+ 把合成 onWheel 以 passive 方式注册在 root 容器上，其中的
-  // preventDefault() 会被浏览器静默忽略，滚轮缩放时取景框所在的可滚动容器
-  // （抽屉 body）仍会跟着滚动。因此改用原生非 passive 监听器注册在取景框上。
-  // 监听器只在挂载时注册一次，通过 ref 转发每帧最新的闭包，避免读到陈旧的
-  // busy / transform。
-  const wheelHandlerRef = useRef<(event: WheelEvent) => void>(() => {})
-  wheelHandlerRef.current = (event: WheelEvent) => {
-    if (busy) return
-    event.preventDefault()
-    applyTransform({ ...transform, scale: transform.scale - event.deltaY * 0.002 })
-  }
-
-  useLayoutEffect(() => {
-    const element = viewportRef.current
-    if (!element) return
-    const handler = (event: WheelEvent) => wheelHandlerRef.current(event)
-    element.addEventListener('wheel', handler, { passive: false })
-    return () => element.removeEventListener('wheel', handler)
-  }, [])
 
   function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
     if (busy) return

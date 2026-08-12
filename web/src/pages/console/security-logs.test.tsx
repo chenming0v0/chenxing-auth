@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { SecurityLogsPage } from './security-logs'
 import { ApiError } from '../../api'
@@ -74,6 +74,31 @@ describe('SecurityLogsPage', () => {
     render(<SecurityLogsPage />)
     const links = await screen.findAllByRole('link', { name: '查看日志 #2 详情' })
     for (const link of links) expect(link.getAttribute('href')).toBe('/console/logs?id=2')
+  })
+
+  it('接口上线后若当前页越界则收敛页码，不把空列表卡成空态（#372）', async () => {
+    // 预览 47 条 / 20 = 3 页。翻到第 3 页后接口上线，真实 total 只够 1 页。
+    apiFetchMock
+      .mockRejectedValueOnce(new ApiError('请求的资源不存在或已失效。', 404))
+      .mockRejectedValueOnce(new ApiError('请求的资源不存在或已失效。', 404))
+      .mockResolvedValueOnce({ items: [], page: 3, page_size: 20, total: 3 })
+      .mockResolvedValueOnce(sampleEvents)
+
+    render(<SecurityLogsPage />)
+    await screen.findByText(/示例数据预览/)
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+    await screen.findByText('第 2 / 3 页 · 共 47 条')
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+
+    await screen.findByText('共 3 条')
+    expect(screen.queryByText('暂无活动记录。')).toBeNull()
+    expect(screen.queryByText(/示例数据预览/)).toBeNull()
+    expect(screen.queryByText('第 3 / 1 页')).toBeNull()
+    expect(await screen.findAllByText('登录')).toHaveLength(2)
+    await waitFor(() => {
+      expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events?page=3&page_size=20')
+      expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events?page=1&page_size=20')
+    })
   })
 })
 

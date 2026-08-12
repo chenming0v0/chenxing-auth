@@ -227,10 +227,10 @@ export function IntegratePage() {
 
       <HudPanel as="section" className="mt-6">
         <div className="flex items-center justify-between gap-4">
-          <h2 className="chenxing-h2 flex items-center gap-3">我的接入应用<span className="chenxing-chip">{loading ? '—' : clients.length} 个应用</span></h2>
+          <h2 className="chenxing-h2 flex items-center gap-3">我的接入应用<span className="chenxing-chip">{loading ? '加载中' : `${clients.length} 个应用`}</span></h2>
         </div>
         {loading && !clients.length ? (
-          <div className="mt-6"><Notice tone="info">正在加载应用列表…</Notice></div>
+          <div className="mt-6"><Notice tone="info">正在加载接入应用。</Notice></div>
         ) : (
           <>
             <div className="chenxing-app-grid mt-5 hidden px-4 pb-2 lg:grid">

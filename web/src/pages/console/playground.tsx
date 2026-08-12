@@ -32,7 +32,7 @@ export function PlaygroundPage() {
   }, [])
 
   function selectClient(clientId: string) {
-    const client = clients.find((item) => item.client_id === clientId)
+    const client = clients?.find((item) => item.client_id === clientId)
     setSelectedId(clientId)
     setRedirectUri(client?.redirect_uris[0] || '')
     setScope(client?.scopes.join(' ') || 'openid')
@@ -52,7 +52,7 @@ export function PlaygroundPage() {
   }
 
   async function generate() {
-    const client = clients.find((item) => item.client_id === selectedId)
+    const client = clients?.find((item) => item.client_id === selectedId)
     if (!client || !redirectUri || !scope.trim()) {
       setMessage('请选择应用并填写服务端允许的 Redirect URI 和 Scope。')
       return
@@ -89,7 +89,7 @@ export function PlaygroundPage() {
 
       {loading ? (
         <HudPanel className="flex min-h-[20rem] flex-col items-center justify-center text-center">
-          <Notice tone="info">正在加载应用列表…</Notice>
+          <Notice tone="info">正在加载可用于测试的应用。</Notice>
         </HudPanel>
       ) : !clients.length ? (
         <HudPanel className="flex min-h-[20rem] flex-col items-center justify-center text-center">

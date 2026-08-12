@@ -55,7 +55,11 @@ pub(super) async fn exchange_refresh_token(
         .await;
     }
 
-    if refresh.validate(client_id, state.clock.now()).is_err() {
+    // 校验、轮换签发和 Redis TTL/墓碑共用同一次时钟读取。再读一次（或绕回墙钟）
+    // 会让「validate 刚放行」的后继 token 按另一个时刻写 TTL，键可能立刻过期
+    // （Issue #366）。
+    let now = state.clock.now();
+    if refresh.validate(client_id, now).is_err() {
         return record_and_return_invalid(
             state,
             Some(&refresh.user_id),
@@ -124,7 +128,7 @@ pub(super) async fn exchange_refresh_token(
     let next_refresh = refresh.rotate_at_with_client_secret_version(
         scopes.clone(),
         authenticated.client_secret_version(),
-        state.clock.now(),
+        now,
     );
     let token = issue_token_response(
         state,
@@ -156,7 +160,7 @@ pub(super) async fn exchange_refresh_token(
     // consumption boundary, and remains atomic with tombstone creation in the store.
     let rotation = state
         .refresh_tokens
-        .rotate_if_matches(refresh_value, &refresh, &next_refresh)
+        .rotate_if_matches_at(refresh_value, &refresh, &next_refresh, now)
         .await;
     let rotated = rotation
         .as_ref()

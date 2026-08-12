@@ -437,6 +437,57 @@ describe('OAuthProvidersPanel 更新成功但状态切换失败（Issue #277）'
   })
 })
 
+describe('OAuthProvidersPanel 保存中禁止重入（Issue #369）', () => {
+  it('第一次保存尚未返回时，再次提交和 Enter 都不会发出第二份请求', async () => {
+    let releasePut: ((value: Response) => void) | undefined
+    const hungPut = new Promise<Response>((resolve) => {
+      releasePut = resolve
+    })
+    vi.stubGlobal('fetch', (path: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      const raw = typeof init?.body === 'string' ? init.body : '{}'
+      const body = JSON.parse(raw) as Record<string, unknown>
+      requests.push({ path, method, body })
+      if (method === 'PUT') return hungPut
+      return Promise.resolve(handle(path, method, body))
+    })
+
+    renderPanel()
+    await screen.findByText('GitLab')
+    await openEditRow('GitLab')
+    save()
+    await waitFor(() => expect(requests.filter((r) => r.method === 'PUT').length).toBe(1))
+
+    save()
+    fireEvent.submit(screen.getByRole('button', { name: '保存' }).closest('form') as HTMLFormElement)
+    expect(requests.filter((r) => r.method === 'PUT').length).toBe(1)
+
+    releasePut?.(handle(`${PROVIDERS_PATH}/gitlab`, 'PUT', {}))
+    await waitFor(() => expect(screen.queryByText('编辑 OAuth 提供商')).toBeNull())
+  })
+})
+
+describe('OAuthProvidersPanel 保存成功不得清掉其它 provider 的重试提示（Issue #367）', () => {
+  it('创建 Okta 启用失败后，再保存 GitLab 仍保留 Okta 的重试横幅', async () => {
+    enableFailures.set('okta', 1)
+    renderPanel()
+    await screen.findByText('GitLab')
+    openCreate()
+    fillCreateForm()
+    save()
+
+    await screen.findByRole('button', { name: '重试启用' })
+    expect(screen.getByText('Okta').closest('tr')?.textContent).toContain('启用失败')
+
+    await openEditRow('GitLab')
+    save()
+
+    await waitFor(() => expect(requests.some((r) => r.method === 'PUT')).toBe(true))
+    expect(await screen.findByRole('button', { name: '重试启用' })).toBeTruthy()
+    expect(screen.getByText('Okta').closest('tr')?.textContent).toContain('启用失败')
+  })
+})
+
 describe('OAuthProvidersPanel 重试提示隔离（Issue #367）', () => {
   it('保存其它 provider 成功时不拿走已有重试提示', async () => {
     enableFailures.set('okta', 1)
