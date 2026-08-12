@@ -57,9 +57,12 @@ impl AuthFactorService {
             }
         };
         let Some(encrypted_secret) = encrypted_secret else {
-            if !self.record_failure(dimensions).await?.reached.is_empty() {
-                return Err(AuthFactorServiceError::RateLimited);
-            }
+            // 因子不存在 ≠ 用户失败（#340）：调用方刚从 `available_methods` 看到
+            // 因子，这里却读不到，是管理员重置/删除与读取之间的竞态，或客户端仍
+            // 按旧状态提交验证码。没有因子就没有可校验的密钥，重试永远失败，
+            // 不存在可爆破的目标；记入账号维度会烧掉与密码失败共享的额度，把
+            // 受害者从「TOTP 不可用」推进到「连密码登录都被限流」。
+            self.release_dimensions_for_missing_factor(dimensions).await;
             return Ok(FactorVerification::Rejected);
         };
         let decrypted =
@@ -139,14 +142,11 @@ impl AuthFactorService {
             }
         };
         let Some(encrypted_secret) = encrypted_secret else {
-            let record = self.record_failure(dimensions).await?;
-            if record.reached(FailureDimension::Ticket) {
-                self.invalidate_ticket(ticket_id, holder_hash).await?;
-                return Ok(TotpConfirmation::RateLimited);
-            }
-            if !record.reached.is_empty() {
-                return Ok(TotpConfirmation::RateLimited);
-            }
+            // 「读不到因子」与并发删除（Missing）同一语义（#360）：InvalidTicket，
+            // 且不记失败（#340）。因子不存在就不是用户输错码，记账只会烧掉与密码
+            // 失败共享的账号额度；ticket 也不在此作废——它可能还支持其他因子
+            // （如 passkey），留到 TTL 自然过期即可。
+            self.release_dimensions_for_missing_factor(dimensions).await;
             return Ok(TotpConfirmation::InvalidTicket);
         };
         let decrypted =

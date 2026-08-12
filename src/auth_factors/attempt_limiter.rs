@@ -91,6 +91,14 @@ impl AuthFactorService {
     ) {
         release_key_unavailable(self.limiter.as_ref(), dimensions).await;
     }
+
+    /// 账号不存在该因子时的归还路径：归还预留额度，**不记账**（#340）。
+    pub(super) async fn release_dimensions_for_missing_factor(
+        &self,
+        dimensions: Vec<LimiterDimension>,
+    ) {
+        release_factor_missing(self.limiter.as_ref(), dimensions).await;
+    }
 }
 
 /// kid 退役导致的不可验证：归还预留额度，**不记账**（#258）。
@@ -103,6 +111,21 @@ pub(super) async fn release_key_unavailable(
     dimensions: Vec<LimiterDimension>,
 ) {
     release_reserved(limiter, dimensions, "factor_key_unavailable").await;
+}
+
+/// 账号没有 TOTP 因子时的归还：归还预留额度，**不记账**（#340）。
+///
+/// 「因子不存在」不是一次用户失败：调用方刚从 `available_methods` 看到因子，
+/// 这里却读不到，是管理员重置/删除与读取之间的竞态，或客户端仍按旧状态提交
+/// 验证码。没有因子就没有可校验的密钥，重试永远失败，不存在可爆破的目标；
+/// 把它计入账号维度会烧掉与密码失败共享的额度，10 次后连密码登录也被锁
+/// 15 分钟——等于用限流惩罚受害者（与 #258 的 kid 退役同一原则）。抽成自由
+/// 函数是为了能用测试替身断言「只 release、绝不 record」。
+pub(super) async fn release_factor_missing(
+    limiter: &dyn AuthFailureLimiter,
+    dimensions: Vec<LimiterDimension>,
+) {
+    release_reserved(limiter, dimensions, "factor_missing").await;
 }
 
 #[cfg(test)]
