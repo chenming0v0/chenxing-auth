@@ -8,6 +8,10 @@ import type {
   SmtpSetting,
 } from '../../api'
 import { SettingsWorkspace } from './settings'
+import { installCsrfCookie } from '../../test/csrf-cookie'
+
+// 保存、密钥轮换、提供商启停都是走 apiFetch 的状态变更请求，需要 CSRF cookie 才能发出。
+installCsrfCookie()
 
 /* #268：工作区的消息状态曾经每次渲染重建 flash，任一面板发消息都会让全部面板的
    加载 effect 重跑，把用户在别的面板里没保存的编辑冲回服务端值。这里从页面层

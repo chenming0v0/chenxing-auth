@@ -2,6 +2,10 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/react'
 import { UsersTable } from './users'
 import type { PublicUser } from '../../api'
+import { installCsrfCookie } from '../../test/csrf-cookie'
+
+// 角色/状态变更都是走 apiFetch 的 POST，需要 CSRF cookie 才能发出。
+installCsrfCookie()
 
 // UsersTable 直接以 access 属性注入管理身份，绕过 AdminGate / useAdminAccess
 // 的网络请求，只测表格本身的交互。fetch 只响应查询与变更接口。

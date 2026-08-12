@@ -1,7 +1,11 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import type { OAuthProviderSummary } from '../../../api'
+import { installCsrfCookie } from '../../../test/csrf-cookie'
 import { OAuthProvidersPanel } from './oauth-providers-panel'
+
+// 提供商的增删改启停都是走 apiFetch 的状态变更请求，需要 CSRF cookie 才能发出。
+installCsrfCookie()
 
 type CapturedRequest = { path: string; method?: string; body: Record<string, unknown> }
 

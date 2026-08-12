@@ -1,6 +1,10 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { installCsrfCookie } from '../../test/csrf-cookie'
 import { UserCreateDrawer } from './user-create-drawer'
+
+// 建号 POST /api/v1/admin/users 走 apiFetch，需要 CSRF cookie 才能发出。
+installCsrfCookie()
 
 type CapturedRequest = { path: string; method?: string; body: Record<string, unknown> }
 

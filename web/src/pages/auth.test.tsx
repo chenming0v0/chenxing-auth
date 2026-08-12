@@ -2,7 +2,11 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 import { AuthPage, safeReturnTo } from './auth'
 import { navigate } from '../router'
+import { installCsrfCookie } from '../test/csrf-cookie'
 import type { UserMe } from '../api'
+
+// 登录后的会话绑定是走 apiFetch 的状态变更请求，需要 CSRF cookie 才能发出。
+installCsrfCookie()
 
 // AuthPage 依赖 useAuth。这里 mock 掉 auth-state，避免 AuthProvider 挂载时额外发出
 // /auth/me 与 /admin/bootstrap/status 请求，污染下面对请求 body 的断言。
@@ -334,7 +338,7 @@ describe('AuthPage OAuth 绑定失败不清除会话（#270）', () => {
 
   /**
    * 带 request_id 打开登录页并提交一次成功登录，bind 的响应由入参决定。
-   * bind 是状态变更请求，需要 CSRF cookie 才能发出；由 src/test/setup.ts 统一注入。
+   * bind 是状态变更请求，需要 CSRF cookie 才能发出；本文件已通过 installCsrfCookie() 显式注入。
    */
   function submitLoginWithRequestId(bindResponse: Response) {
     window.history.replaceState({}, '', '/login?request_id=req-270')
