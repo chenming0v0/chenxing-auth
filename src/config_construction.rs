@@ -16,7 +16,8 @@ use super::config_parsing::{
 };
 use super::config_proxy::{TrustedProxies, trusted_proxies_from_env};
 use super::config_security::{
-    DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_TOKEN_TTL_SECONDS, validate_token_and_key_lifetimes,
+    DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_TOKEN_TTL_SECONDS, validate_session_lifetimes,
+    validate_token_and_key_lifetimes,
 };
 use super::{
     Config, ConfigError, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
@@ -299,15 +300,16 @@ impl Config {
         if redis_url.trim().is_empty() {
             return Err(ConfigError::MissingValue("REDIS_URL"));
         }
-        if session_ttl_seconds == 0 {
-            return Err(ConfigError::InvalidValue("SESSION_TTL_SECONDS"));
-        }
-        if session_idle_timeout_seconds == 0 {
-            return Err(ConfigError::InvalidValue("SESSION_IDLE_TIMEOUT_SECONDS"));
-        }
-        if session_max_concurrent_sessions == 0 {
-            return Err(ConfigError::InvalidValue("SESSION_MAX_CONCURRENT_SESSIONS"));
-        }
+        // #365：三个会话参数不仅有下界（0 表示「会话签发即过期 / 不允许多会话」），
+        // 还有上界——`SESSION_TTL_SECONDS` 直接成为 Redis `SET ... EX` 的 TTL，
+        // Redis 整数上限是 i64，u64::MAX 秒的配置会让每次会话写入报
+        // `ERR invalid expire time`（自伤型 DoS）。越界在这里拒绝，
+        // 报错指向配置项而不是 Redis。
+        validate_session_lifetimes(
+            session_ttl_seconds,
+            session_idle_timeout_seconds,
+            session_max_concurrent_sessions,
+        )?;
         validate_token_and_key_lifetimes(
             key_rotation_grace_seconds,
             access_token_ttl_seconds,

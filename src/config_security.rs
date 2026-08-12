@@ -8,6 +8,28 @@ const MAX_KEY_ROTATION_GRACE_SECONDS: u64 = 30 * 24 * 60 * 60;
 const MIN_TOKEN_TTL_SECONDS: u64 = 1;
 const MAX_TOKEN_TTL_SECONDS: u64 = 24 * 60 * 60;
 
+/// 会话绝对 TTL 上界（秒），#365。
+///
+/// 该值同时决定 Redis 会话键的 TTL 与撤销 tombstone 的存活时长
+/// （`SessionStore::revocation_ttl_seconds`），并会原样送进 Redis
+/// `SET ... EX`——Redis 整数上限是 i64，超限即报 `ERR invalid expire time`，
+/// 每次登录/会话写入都会失败。默认 7 天，90 天已远超任何真实部署需要；
+/// 更长只会拉长「被盗 Cookie 依然有效」的窗口和撤销标记的驻留时间。
+pub const MAX_SESSION_TTL_SECONDS: u64 = 90 * 24 * 60 * 60;
+
+/// 会话空闲超时上界（秒），#365。
+///
+/// idle 截止永远不能越过绝对 TTL，超过 30 天与绝对期限相比已是死配置；
+/// 且它参与 Redis 键 TTL 的 min 计算，同样受 Redis i64 上限约束。
+pub const MAX_SESSION_IDLE_TIMEOUT_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+/// 单用户最大并发会话数上界（个），#365。
+///
+/// 默认 5，上界取 1000：每个会话都是一行 PostgreSQL 记录 + 一条 Redis 键 +
+/// 一条 outbox 记录，无界配置会让脚本化登录无限堆叠会话，1000 已远超任何
+/// 真人设备组合。
+pub const MAX_SESSION_MAX_CONCURRENT_SESSIONS: u64 = 1_000;
+
 fn validate_range(
     name: &'static str,
     value: u64,
@@ -54,6 +76,37 @@ pub(super) fn validate_token_and_key_lifetimes(
     if key_rotation_grace_seconds < access_token_ttl_seconds.max(id_token_ttl_seconds) {
         return Err(ConfigError::InvalidValue("KEY_ROTATION_GRACE_SECONDS"));
     }
+    Ok(())
+}
+
+/// 浏览器会话三参数的上下界校验（#365）。
+///
+/// 与 `validate_token_and_key_lifetimes` 一样拒绝而不是回退：这些项本就拒绝 0，
+/// 越界同样是配置笔误，启动时报出配置项名，比错误拖到 Redis 调用时才暴露
+/// （`ERR invalid expire time`）容易排查得多。
+pub(super) fn validate_session_lifetimes(
+    session_ttl_seconds: u64,
+    session_idle_timeout_seconds: u64,
+    session_max_concurrent_sessions: u64,
+) -> Result<(), ConfigError> {
+    validate_range(
+        "SESSION_TTL_SECONDS",
+        session_ttl_seconds,
+        1,
+        MAX_SESSION_TTL_SECONDS,
+    )?;
+    validate_range(
+        "SESSION_IDLE_TIMEOUT_SECONDS",
+        session_idle_timeout_seconds,
+        1,
+        MAX_SESSION_IDLE_TIMEOUT_SECONDS,
+    )?;
+    validate_range(
+        "SESSION_MAX_CONCURRENT_SESSIONS",
+        session_max_concurrent_sessions,
+        1,
+        MAX_SESSION_MAX_CONCURRENT_SESSIONS,
+    )?;
     Ok(())
 }
 
@@ -158,6 +211,49 @@ mod tests {
         assert_eq!(
             validate_token_and_key_lifetimes(3_600, 3_600, 3_601),
             Err(ConfigError::InvalidValue("KEY_ROTATION_GRACE_SECONDS"))
+        );
+    }
+
+    #[test]
+    fn session_lifetimes_out_of_range_are_rejected_by_field() {
+        assert_eq!(
+            validate_session_lifetimes(0, 1_800, 5),
+            Err(ConfigError::InvalidValue("SESSION_TTL_SECONDS"))
+        );
+        assert_eq!(
+            validate_session_lifetimes(604_800, MAX_SESSION_IDLE_TIMEOUT_SECONDS + 1, 5),
+            Err(ConfigError::InvalidValue("SESSION_IDLE_TIMEOUT_SECONDS"))
+        );
+        assert_eq!(
+            validate_session_lifetimes(604_800, 1_800, MAX_SESSION_MAX_CONCURRENT_SESSIONS + 1),
+            Err(ConfigError::InvalidValue("SESSION_MAX_CONCURRENT_SESSIONS"))
+        );
+        // 饱和值（#365 的原始利用形态）：u64::MAX 秒的 TTL 通过启动校验后会把
+        // 超出 Redis i64 上限的 EX 送进 `SET ... EX`，每次会话写入都失败。
+        assert_eq!(
+            validate_session_lifetimes(u64::MAX, 1_800, 5),
+            Err(ConfigError::InvalidValue("SESSION_TTL_SECONDS"))
+        );
+        assert_eq!(
+            validate_session_lifetimes(604_800, u64::MAX, u64::MAX),
+            Err(ConfigError::InvalidValue("SESSION_IDLE_TIMEOUT_SECONDS"))
+        );
+    }
+
+    #[test]
+    fn documented_session_defaults_and_boundaries_are_valid() {
+        assert!(
+            validate_session_lifetimes(604_800, 1_800, 5).is_ok(),
+            "documented defaults must pass"
+        );
+        assert!(
+            validate_session_lifetimes(
+                MAX_SESSION_TTL_SECONDS,
+                MAX_SESSION_IDLE_TIMEOUT_SECONDS,
+                MAX_SESSION_MAX_CONCURRENT_SESSIONS,
+            )
+            .is_ok(),
+            "the upper bounds themselves must be accepted"
         );
     }
 }

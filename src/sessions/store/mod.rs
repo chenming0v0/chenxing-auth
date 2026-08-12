@@ -386,6 +386,9 @@ impl SessionStore {
     /// 取绝对 Session TTL 是安全的下限：任何会话键的存活窗口都不超过
     /// [`Self::redis_ttl_seconds`]，而后者同样被这个值封顶（见该函数注释），
     /// 因此"撤销标记先于被它拦截的会话键消失"不可能发生。
+    ///
+    /// 启动配置把 `SESSION_TTL_SECONDS` 封顶在 90 天（#365），所以这个值
+    /// 必然落在 Redis `EX` 的 i64 上限内，不会触发 `ERR invalid expire time`。
     pub(super) fn revocation_ttl_seconds(&self) -> u64 {
         self.policy.absolute_ttl.as_secs().max(1)
     }
