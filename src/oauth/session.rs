@@ -33,7 +33,7 @@ pub async fn session_for_headers(
     let Some(session) = state.sessions.find(&session_token).await? else {
         return Ok(None);
     };
-    if !session.is_active() {
+    if !session.is_active_at(state.clock.now()) {
         return Ok(None);
     }
     if active_user_id(state, &session.user_id).await?.is_none() {

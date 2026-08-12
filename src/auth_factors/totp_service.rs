@@ -11,7 +11,7 @@ use crate::{
         domain::{FactorMethod, LoginTicket},
         persistence::consume_then_persist,
         repository,
-        totp::{TotpEnrollment, verify_totp_code_current_timestep},
+        totp::{TotpEnrollment, verify_totp_code_now_timestep},
     },
     auth_limiter::{FailureDimension, LimiterDimension},
     users::domain::UserId,
@@ -76,7 +76,7 @@ impl AuthFactorService {
         // 直接借用 decrypted.plaintext：它是 Zeroizing<Vec<u8>>，drop 时自动清零。
         // 旧写法 clone + fill(0) 只擦除了克隆副本，原始明文缓冲区反而活得更久
         // （后面还要传给 reencrypt_totp_secret_if_needed），等于没有真正擦除。
-        let timestep = verify_totp_code_current_timestep(&decrypted.plaintext, code);
+        let timestep = verify_totp_code_now_timestep(&decrypted.plaintext, code, self.clock.now());
         let Some(timestep) = timestep else {
             if !self.record_failure(dimensions).await?.reached.is_empty() {
                 return Err(AuthFactorServiceError::RateLimited);
@@ -113,7 +113,7 @@ impl AuthFactorService {
             return Ok(None);
         };
         let factor_methods = repository::list_factor_methods(&self.pool, ticket.user_id).await?;
-        if !ticket.is_active_at(time::OffsetDateTime::now_utc())
+        if !ticket.is_active_at(self.clock.now())
             || !ticket.supports(FactorMethod::Totp)
             || !self.can_start_totp_enrollment(&factor_methods).await?
         {
@@ -153,9 +153,7 @@ impl AuthFactorService {
         let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(TotpConfirmation::InvalidTicket);
         };
-        if !ticket.is_active_at(time::OffsetDateTime::now_utc())
-            || !ticket.supports(FactorMethod::Totp)
-        {
+        if !ticket.is_active_at(self.clock.now()) || !ticket.supports(FactorMethod::Totp) {
             return Ok(TotpConfirmation::InvalidTicket);
         }
         // 没有待确认的注册是一个独立事实，不能和「ticket 无效」共用一个变体：
@@ -195,7 +193,7 @@ impl AuthFactorService {
                     return Err(error.into());
                 }
             };
-        let valid = verify_totp_code_current_timestep(&decrypted.plaintext, code);
+        let valid = verify_totp_code_now_timestep(&decrypted.plaintext, code, self.clock.now());
         let Some(_) = valid else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {
@@ -269,9 +267,7 @@ impl AuthFactorService {
         let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(TotpConfirmation::InvalidTicket);
         };
-        if !ticket.is_active_at(time::OffsetDateTime::now_utc())
-            || !ticket.supports(FactorMethod::Totp)
-        {
+        if !ticket.is_active_at(self.clock.now()) || !ticket.supports(FactorMethod::Totp) {
             return Ok(TotpConfirmation::InvalidTicket);
         }
         let account_key = self.account_key(ticket.user_id).await?;
@@ -310,7 +306,7 @@ impl AuthFactorService {
                     return Err(error.into());
                 }
             };
-        let valid = verify_totp_code_current_timestep(&decrypted.plaintext, code);
+        let valid = verify_totp_code_now_timestep(&decrypted.plaintext, code, self.clock.now());
         let Some(timestep) = valid else {
             let record = self.record_failure(dimensions).await?;
             if record.reached(FailureDimension::Ticket) {

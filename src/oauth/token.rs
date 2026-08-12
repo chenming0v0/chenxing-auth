@@ -2,7 +2,10 @@ use jsonwebtoken::{Algorithm, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::keys::KeyManager;
+use crate::{
+    clock::{Clock, SystemClock},
+    keys::KeyManager,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccessTokenClaims {
@@ -73,6 +76,10 @@ fn invalid_token_error() -> jsonwebtoken::errors::Error {
     jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidToken)
 }
 
+/// 用进程默认时钟签发 Access Token。
+///
+/// 生产的 Token 端点走 [`issue_access_token_at`] 并传入 `AppState` 的共享时钟；
+/// 这个包装保留给不持有 `AppState` 的调用点（密钥轮换测试、独立签名工具）。
 pub fn issue_access_token(
     keys: &KeyManager,
     issuer: &str,
@@ -81,8 +88,31 @@ pub fn issue_access_token(
     scopes: &[String],
     lifetime_seconds: u64,
 ) -> Result<String, TokenError> {
-    let now = time::OffsetDateTime::now_utc().unix_timestamp();
-    let now = usize::try_from(now).map_err(|_| TokenError::InvalidLifetime)?;
+    issue_access_token_at(
+        keys,
+        issuer,
+        subject,
+        audience,
+        scopes,
+        lifetime_seconds,
+        SystemClock.now(),
+    )
+}
+
+/// 以显式签发时刻签发 Access Token。
+///
+/// `iat` / `exp` 都由 `now` 派生，因此固定时钟可以精确构造「刚好过期」和
+/// 「还差一秒过期」两种令牌，用于验证端点的过期判定。
+pub fn issue_access_token_at(
+    keys: &KeyManager,
+    issuer: &str,
+    subject: &str,
+    audience: &str,
+    scopes: &[String],
+    lifetime_seconds: u64,
+    now: time::OffsetDateTime,
+) -> Result<String, TokenError> {
+    let now = usize::try_from(now.unix_timestamp()).map_err(|_| TokenError::InvalidLifetime)?;
     let lifetime = usize::try_from(lifetime_seconds).map_err(|_| TokenError::InvalidLifetime)?;
     let claims = AccessTokenClaims {
         iss: issuer.trim_end_matches('/').to_owned(),

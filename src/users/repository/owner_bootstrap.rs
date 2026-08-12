@@ -68,6 +68,7 @@ pub async fn insert_user_after_owner(
     let username = registration.username;
     let email = registration.email;
     let display_name = registration.display_name;
+    // 保留墙钟（Issue #299 的明确例外）：行创建时间，不参与生命周期判定。
     let created_at = OffsetDateTime::now_utc();
     let id: UserId = crate::sqlx::query_scalar(
         "INSERT INTO users (username, email, password_hash, display_name, role, status, created_at, updated_at)

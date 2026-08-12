@@ -216,7 +216,11 @@ impl SessionStore {
                 let payload = self.encrypt_payload(&serde_json::to_vec(&stored_payload)?)?;
                 // 投影 TTL 同样被撤销水位 TTL 封顶：水位在撤销时刻带 `EX` 写入，
                 // 只有会话键活得不比水位久，旧会话才不可能在水位过期后被放行。
-                let remaining = expires_at - OffsetDateTime::now_utc();
+                //
+                // `expires_at` 来自上面那条 SQL（权威时间是数据库事务时间），
+                // 但 TTL 是要写给 Redis 的相对秒数，必须用与判定同源的进程时钟
+                // 相减，否则注入固定时钟的测试算不出确定的 TTL。
+                let remaining = expires_at - self.clock.now();
                 let seconds = remaining.whole_seconds().max(1) as u64;
                 let ttl = seconds.min(self.revocation_ttl_seconds());
                 let _: i64 = Script::new(CONDITIONAL_SESSION_SET)

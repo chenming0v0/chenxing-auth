@@ -176,6 +176,8 @@ pub async fn insert_client(
     client_id: String,
     credential: ClientCredential,
 ) -> Result<NewClient, crate::sqlx::Error> {
+    // 保留墙钟（Issue #299 的明确例外）：Client 行的创建时间，不是凭据有效期。
+    // Client Secret 本身没有过期语义，撤销通过 `revoke_client_tokens` 表达。
     let created_at = OffsetDateTime::now_utc();
     let id = insert_client_row(
         pool,
@@ -222,6 +224,7 @@ pub async fn insert_owned_client(
         return Err(ClientInsertError::QuotaExceeded);
     }
 
+    // 保留墙钟（Issue #299 的明确例外）：同上，行创建时间。
     let created_at = OffsetDateTime::now_utc();
     let id = insert_client_row(
         &mut *transaction,

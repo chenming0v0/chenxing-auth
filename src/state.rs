@@ -6,6 +6,7 @@ use crate::{
     auth_factors::service::AuthFactorService,
     auth_limiter::{AuthFailureLimiter, RedisAuthFailureLimiter},
     clients::service::ClientService,
+    clock::SharedClock,
     config::Config,
     consents::ConsentService,
     db::Database,
@@ -29,6 +30,16 @@ use crate::{
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
+    /// 所有生命周期判定的时间来源。
+    ///
+    /// 这一个句柄被克隆给授权码 / Refresh Token / Session / MFA / 套餐 / 审计，
+    /// 因此一次请求内的全部过期判定看到同一个「现在」。测试用
+    /// [`AppState::with_clock`] 换成固定时钟，即可把到期边界推到两侧而不必真实
+    /// 等待。
+    ///
+    /// 不覆盖的时间来源：Redis Lua 里的 `TIME`（限流 / State / 授权请求存储需要
+    /// 跨实例一致）、SQL 里的 `NOW()`（事务时间）、`key_lock` 的文件 mtime。
+    pub clock: SharedClock,
     pub database: Database,
     pub redis: RedisClient,
     pub sessions: SessionStore,
@@ -97,6 +108,30 @@ impl AppState {
         Self::new_with_pool(config, database).await
     }
 
+    /// 用另一个时钟重建全部时间敏感的 store 与 service。
+    ///
+    /// 必须重建而不是只替换 `self.clock`：store 在构造时各自克隆了一份句柄，
+    /// 单改字段会留下一半旧时钟，正是那种"看起来注入了、实际没生效"的假象。
+    ///
+    /// 用途是集成测试：先用 `new_with_pool` 建好状态，再换成固定时钟驱动
+    /// 授权码、Refresh Token、Session 和 MFA 的到期边界。
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.authorization_codes = self.authorization_codes.clone().with_clock(clock.clone());
+        self.refresh_tokens = self.refresh_tokens.clone().with_clock(clock.clone());
+        // ClientService 持有一份用于 secret 轮换撤销的 RefreshTokenStore 克隆，
+        // 必须同步替换，否则轮换路径仍读旧时钟。
+        self.clients = self
+            .clients
+            .clone()
+            .with_refresh_tokens(self.refresh_tokens.clone());
+        self.sessions = self.sessions.clone().with_clock(clock.clone());
+        self.factors = self.factors.clone().with_clock(clock.clone());
+        self.plans = self.plans.clone().with_clock(clock.clone());
+        self.audit = self.audit.clone().with_clock(clock.clone());
+        self.clock = clock;
+        self
+    }
+
     /// 使用外部提供的数据库连接池构建 AppState，不再内部调用 `db::connect`。
     ///
     /// 主要用途：测试中传入 schema 隔离的 pool（见 `tests/support/db_isolation.rs`），
@@ -109,6 +144,8 @@ impl AppState {
     ) -> Result<Self, StateError> {
         config.validate_cookie_security()?;
         let redis = RedisClient::open(config.redis_url.as_str())?;
+        // 时钟在这里构造一次，往下克隆给每个需要判定过期的 store 与 service。
+        let clock = SharedClock::system();
 
         // 密钥目录的读写和 RSA 生成是同步阻塞调用，直接在 async 上下文执行会占住
         // 当前 worker（`current_thread` 调度器下会让整个运行时停摆）。搬到阻塞线程池，
@@ -147,7 +184,8 @@ impl AppState {
             Duration::from_secs(config.session_idle_timeout_seconds),
             config.session_max_concurrent_sessions,
         )
-        .with_absolute_ttl(Duration::from_secs(config.session_ttl_seconds));
+        .with_absolute_ttl(Duration::from_secs(config.session_ttl_seconds))
+        .with_clock(clock.clone());
         let users = UserService::with_source_ip_policy(
             database.clone(),
             auth_limiter.clone(),
@@ -160,9 +198,11 @@ impl AppState {
             config.auth_encryption_keys.clone(),
             settings.clone(),
             config.missing_source_ip_policy,
-        );
-        let authorization_codes = AuthorizationCodeStore::new(redis.clone());
-        let refresh_tokens = RefreshTokenStore::new(redis.clone());
+        )
+        .with_clock(clock.clone());
+        let authorization_codes =
+            AuthorizationCodeStore::new(redis.clone()).with_clock(clock.clone());
+        let refresh_tokens = RefreshTokenStore::new(redis.clone()).with_clock(clock.clone());
         // Issue #62：Secret 轮换必须能撤销该 Client 已签发的 Refresh Token，
         // 否则轮换只换掉哈希，攻击者手里的 token 依然能换出新 Access Token。
         let clients =
@@ -174,9 +214,9 @@ impl AppState {
         let revocations = TokenRevocationStore::new_with_pool(redis.clone(), database.clone());
         let oauth_quotas = OAuthQuotaStore::new(redis.clone());
         let qps = QpsRateLimiter::new(redis.clone());
-        let plans = PlanService::new(database.clone());
+        let plans = PlanService::new(database.clone()).with_clock(clock.clone());
         let admin = AdminAuthenticator::new(config.admin_token.clone());
-        let audit = AuditService::new(database.clone());
+        let audit = AuditService::new(database.clone()).with_clock(clock.clone());
         // 复用已加载的 secret_manager，避免第二次 load_or_generate 创建独立副本。
         let external_oauth = ExternalOAuthService::new(database.clone(), secret_manager)?;
         let external_login_states =
@@ -184,6 +224,7 @@ impl AppState {
 
         Ok(Self {
             config,
+            clock,
             database,
             redis,
             sessions,

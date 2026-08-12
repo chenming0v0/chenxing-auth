@@ -9,12 +9,18 @@ use super::{
     },
     repository::{self, PlanAssignmentResult, PlanRepositoryError},
 };
+use crate::clock::SharedClock;
 use crate::sqlx::PgPool;
 use crate::users::domain::UserId;
 
 #[derive(Clone)]
 pub struct PlanService {
     pool: PgPool,
+    /// 只用于「到期时间是否已过」这一类入参校验。
+    ///
+    /// 生效套餐的权威判定在 SQL 里比较 `plan_expires_at > NOW()`（见
+    /// `repository`），那是数据库事务时间，不改读进程时钟。
+    clock: SharedClock,
 }
 
 #[derive(Debug, Error)]
@@ -44,7 +50,16 @@ pub struct EffectivePlan {
 
 impl PlanService {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            clock: SharedClock::system(),
+        }
+    }
+
+    /// 注入共享时钟（`AppState` 构造时调用）。
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.clock = clock;
+        self
     }
 
     pub async fn list(&self) -> Result<Vec<PlanWithUsers>, PlanServiceError> {
@@ -110,7 +125,7 @@ impl PlanService {
         plan_id: i64,
         expires_at: Option<OffsetDateTime>,
     ) -> Result<(), PlanServiceError> {
-        if expires_at.is_some_and(|value| value <= OffsetDateTime::now_utc()) {
+        if expires_at.is_some_and(|value| value <= self.clock.now()) {
             return Err(PlanServiceError::Validation(PlanError::ExpiryInPast));
         }
         let Some(plan) = repository::find_by_id(&self.pool, plan_id).await? else {

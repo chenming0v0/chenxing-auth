@@ -140,7 +140,7 @@ pub(super) async fn save_redis_only(
     let payload = store.encrypt_payload(&serde_json::to_vec(&stored_payload)?)?;
     let mut connection = store.client.get_multiplexed_async_connection().await?;
     let created_at = timestamp_watermark(session.created_at);
-    let ttl_seconds = store.redis_ttl_seconds(session, ttl, OffsetDateTime::now_utc());
+    let ttl_seconds = store.redis_ttl_seconds(session, ttl, store.clock.now());
     let stored: i64 = Script::new(REDIS_ONLY_SESSION_SET)
         .key(store.redis_only_revocation_key(&session.user_id))
         .key(store.key(&session.token))
@@ -171,7 +171,7 @@ pub(super) async fn find_redis_only(
     // Redis 键由令牌哈希派生，能读到这条记录就说明调用方持有该令牌。
     let mut session = stored_payload.into_session(token.to_owned());
     session.set_idle_timeout(store.policy.idle_timeout);
-    let now = OffsetDateTime::now_utc();
+    let now = store.clock.now();
     if !session.is_active_at(now) {
         return Ok(None);
     }
@@ -223,7 +223,7 @@ pub(super) async fn find_redis_only_by_token_hash(
     };
     let mut session = stored_payload.into_session(String::new());
     session.set_idle_timeout(store.policy.idle_timeout);
-    let now = OffsetDateTime::now_utc();
+    let now = store.clock.now();
     if !session.is_active_at(now) {
         return Ok(None);
     }
@@ -284,7 +284,7 @@ pub(super) async fn revoke_all_redis_only(
     let mut connection = store.client.get_multiplexed_async_connection().await?;
     let _: i64 = Script::new(REDIS_ONLY_ADVANCE_WATERMARK)
         .key(store.redis_only_revocation_key(&user_id.to_string()))
-        .arg(timestamp_watermark(OffsetDateTime::now_utc()))
+        .arg(timestamp_watermark(store.clock.now()))
         .arg(store.revocation_ttl_seconds())
         .invoke_async(&mut connection)
         .await?;

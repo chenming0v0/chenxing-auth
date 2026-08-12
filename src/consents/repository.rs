@@ -143,6 +143,8 @@ impl ConsentRepository for PgConsentRepository {
         .bind(user_id)
         .bind(client_id)
         .bind(serde_json::to_value(scopes).expect("scope list is serializable"))
+        // 保留墙钟（Issue #299 的明确例外）：`updated_at` 只用于列表排序展示，
+        // 授权是否有效由 `revoked_at IS NULL` 判定，与时间比较无关。
         .bind(OffsetDateTime::now_utc())
         .fetch_optional(&self.pool)
         .await?;
@@ -202,6 +204,8 @@ impl ConsentRepository for PgConsentRepository {
         )
         .bind(user_id)
         .bind(client_id)
+        // 保留墙钟（Issue #299 的明确例外）：`revoked_at` 是撤销事实的时间戳，
+        // 判定用的是它是否为 NULL，而不是与当前时间比较。
         .bind(OffsetDateTime::now_utc())
         .fetch_optional(&self.pool)
         .await?;

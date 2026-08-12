@@ -19,7 +19,10 @@ use super::{
     SessionOutboxPolicy, crypto,
     domain::{Session, SessionLookup, SessionPayload, SessionPolicy, session_token_hash_bytes},
 };
-use crate::{config::AuthEncryptionKeyRing, redis_client::RedisClient, users::domain::UserId};
+use crate::{
+    clock::SharedClock, config::AuthEncryptionKeyRing, redis_client::RedisClient,
+    users::domain::UserId,
+};
 
 mod postgres;
 mod redis_only;
@@ -42,6 +45,11 @@ pub struct SessionStore {
     pub(super) encryption_keys: Option<AuthEncryptionKeyRing>,
     pub(super) policy: SessionPolicy,
     pub(super) outbox_policy: SessionOutboxPolicy,
+    /// 会话有效期、idle 判定和 Redis TTL 的时间来源。
+    ///
+    /// Postgres 路径的权威判定仍用 SQL 的 `NOW()`（见 `postgres.rs`）：那些
+    /// 判定必须与行锁处在同一个事务时间里，不能改读进程时钟。
+    pub(super) clock: SharedClock,
 }
 
 #[derive(Debug, Error)]
@@ -110,6 +118,7 @@ impl SessionStore {
             encryption_keys: None,
             policy: SessionPolicy::default(),
             outbox_policy: SessionOutboxPolicy::default(),
+            clock: SharedClock::system(),
         }
     }
 
@@ -123,6 +132,7 @@ impl SessionStore {
             )),
             policy: SessionPolicy::default(),
             outbox_policy: SessionOutboxPolicy::default(),
+            clock: SharedClock::system(),
         }
     }
 
@@ -150,6 +160,7 @@ impl SessionStore {
             encryption_keys: Some(encryption_keys),
             policy: SessionPolicy::default(),
             outbox_policy: SessionOutboxPolicy::default(),
+            clock: SharedClock::system(),
         }
     }
 
@@ -184,6 +195,15 @@ impl SessionStore {
     /// 清理永远不删"或"配了 0 次尝试导致每个事件立刻进 dead-letter"的组合。
     pub fn with_outbox_policy(mut self, outbox_policy: SessionOutboxPolicy) -> Self {
         self.outbox_policy = outbox_policy.sanitized();
+        self
+    }
+
+    /// 注入共享时钟（`AppState` 构造时调用）。
+    ///
+    /// 固定时钟可以把 idle 续期阈值和绝对过期推到边界两侧，因此
+    /// 「idle 刚好超时」这类用例不需要真实等待 30 分钟。
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.clock = clock;
         self
     }
 

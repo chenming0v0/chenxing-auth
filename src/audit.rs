@@ -37,6 +37,8 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use tokio::time::sleep;
 
+use crate::clock::{Clock, SharedClock, SystemClock};
+
 pub mod repository;
 #[cfg(test)]
 mod unit_tests;
@@ -48,6 +50,7 @@ const AUDIT_RETRY_DELAY: Duration = Duration::from_millis(25);
 #[derive(Clone)]
 pub struct AuditService {
     pool: crate::sqlx::PgPool,
+    clock: SharedClock,
 }
 
 #[derive(Debug, Error)]
@@ -62,10 +65,26 @@ pub enum AuditError {
 
 impl AuditService {
     pub fn new(pool: crate::sqlx::PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            clock: SharedClock::system(),
+        }
     }
 
+    /// 注入共享时钟（`AppState` 构造时调用）。
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// 落库前重新盖上审计时刻。
+    ///
+    /// `AuditEvent::new` 在构造时先盖一次进程默认时钟，是为了让直接构造事件的
+    /// 调用点不必显式取时间；但服务是这个时间戳的权威来源，因此这里用注入的
+    /// 共享时钟覆盖它。两者在生产中都是墙钟、差值在微秒级；在测试里则保证
+    /// 落库时刻与其它生命周期判定看到同一个固定时钟。
     pub async fn record(&self, mut event: AuditEvent) -> Result<(), AuditError> {
+        event.created_at = self.clock.now();
         event.redact_metadata_in_place();
         if let Err(error) = event.validate() {
             tracing::error!(error = %error, action = %event.action, "rejected audit event");
@@ -220,6 +239,11 @@ pub struct AuditEvent {
 }
 
 impl AuditEvent {
+    /// 构造审计事件。
+    ///
+    /// `created_at` 在这里只是一个构造期占位：真正落库的时刻由
+    /// [`AuditService::record`] 用注入的共享时钟重新盖上。保留这次墙钟读取，
+    /// 是为了让不经过服务的调用点（序列化、诊断输出）也拿到合理的时间。
     pub fn new(
         actor_type: String,
         actor_id: Option<String>,
@@ -227,6 +251,28 @@ impl AuditEvent {
         resource_type: String,
         resource_id: Option<String>,
         metadata: Value,
+    ) -> Self {
+        Self::new_at(
+            actor_type,
+            actor_id,
+            action,
+            resource_type,
+            resource_id,
+            metadata,
+            SystemClock.now(),
+        )
+    }
+
+    /// 以显式时刻构造审计事件。
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_at(
+        actor_type: String,
+        actor_id: Option<String>,
+        action: String,
+        resource_type: String,
+        resource_id: Option<String>,
+        metadata: Value,
+        now: OffsetDateTime,
     ) -> Self {
         Self {
             id: 0,
@@ -236,7 +282,7 @@ impl AuditEvent {
             resource_type,
             resource_id,
             metadata: redact_metadata(metadata),
-            created_at: OffsetDateTime::now_utc(),
+            created_at: now,
         }
     }
 

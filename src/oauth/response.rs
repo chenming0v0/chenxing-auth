@@ -10,9 +10,9 @@ use serde::Serialize;
 use std::fmt;
 
 use super::{
-    id_token::{IdTokenProfile, issue_id_token_with_profile},
+    id_token::{IdTokenProfile, issue_id_token_with_profile_at},
     session::active_user_id,
-    token::issue_access_token,
+    token::issue_access_token_at,
 };
 use crate::{error, state::AppState};
 
@@ -98,13 +98,14 @@ async fn issue_token_response_inner(
             return error::oauth_temporarily_unavailable();
         }
     }
-    let token = match issue_access_token(
+    let token = match issue_access_token_at(
         &state.keys,
         &state.config.issuer_url,
         user_id,
         client_id,
         scopes,
         state.config.access_token_ttl_seconds,
+        state.clock.now(),
     ) {
         Ok(token) => token,
         Err(token_error) => {
@@ -153,7 +154,7 @@ async fn issue_id_token(
             return Err(error::oauth_temporarily_unavailable());
         }
     };
-    let id_token = issue_id_token_with_profile(
+    let id_token = issue_id_token_with_profile_at(
         &state.keys,
         &state.config.issuer_url,
         user_id,
@@ -172,6 +173,7 @@ async fn issue_id_token(
             auth_time,
         },
         state.config.id_token_ttl_seconds,
+        state.clock.now(),
     )
     .map(Some)
     .map_err(|token_error| {
