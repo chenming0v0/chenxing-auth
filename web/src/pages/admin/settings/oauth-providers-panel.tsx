@@ -181,8 +181,8 @@ export function OAuthProvidersPanel({ onMessage }: SettingsPanelProps) {
     <>
       <TablePanel
         icon="link"
-        title="自定义 OAuth 提供商"
-        description="支持 GitHub Enterprise、GitLab、Gitea、Keycloak 等兼容 OAuth 2.0 的身份提供商"
+        title="自定义 OAuth 2.0 提供商"
+        description="按 OAuth 2.0 授权码流程 + UserInfo 接入 GitHub Enterprise、GitLab、Gitea、Keycloak 等身份提供商。身份字段只取自 UserInfo 响应，本平台不验证 ID Token。"
         action={<Button icon="plus" onClick={openCreate}>添加 OAuth 提供商</Button>}
         notice={pending ? (
           <Notice tone="warning">
@@ -205,7 +205,7 @@ export function OAuthProvidersPanel({ onMessage }: SettingsPanelProps) {
             <EmptyState
               icon="link"
               title="尚未配置外部身份提供商"
-              description="添加兼容 OAuth 2.0 的发行者后，用户可在登录页选择外部身份。"
+              description="添加提供 OAuth 2.0 授权码流程和 UserInfo 端点的发行者后，用户可在登录页选择外部身份。"
               action={<Button icon="plus" onClick={openCreate}>添加 OAuth 提供商</Button>}
             />
           )}

@@ -72,10 +72,14 @@ fn https_endpoint_rejects_private_and_special_address_literals() {
         // RFC 4193 ULA 与 RFC 4291 链路本地单播
         "https://[fc00::1]/oauth/token",
         "https://[fe80::1]/oauth/token",
+        // RFC 3879 站点本地 fec0::/10：已废弃但仍出现在存量内网配置里（Issue #294）
+        "https://[fec0::1]/oauth/token",
         // IPv4-mapped / NAT64 / 6to4 都不能成为绕过口
         "https://[::ffff:10.0.0.1]/oauth/token",
         "https://[64:ff9b::a00:1]/oauth/token",
+        // 6to4 整段拒绝：RFC 7526 已废弃该机制，内嵌的 IPv4 是公网也不放行
         "https://[2002:0a00:0001::]/oauth/token",
+        "https://[2002:5db8:d822::]/oauth/token",
     ] {
         assert_eq!(
             endpoint(value).expect_err(value),
@@ -148,7 +152,14 @@ fn remote_http_and_malformed_endpoints_stay_rejected() {
 /// 盲 SSRF 的实际入口：域名形态完全合法，指向由 DNS 决定。
 #[test]
 fn resolution_screening_rejects_private_answers() {
-    for value in ["10.0.0.5", "169.254.169.254", "192.168.1.1", "fc00::1"] {
+    for value in [
+        "10.0.0.5",
+        "169.254.169.254",
+        "192.168.1.1",
+        "fc00::1",
+        // Issue #294：站点本地同样必须在解析层被拦，而不只是字面量层。
+        "fec0::1",
+    ] {
         let error = screen_resolved_addresses("internal.corp.example", addresses(&[value]))
             .expect_err("private resolution");
         assert!(
@@ -215,6 +226,64 @@ fn address_classification_marks_only_public_unicast_as_public() {
         "2001:db8::1",
         "100::1",
         "ff02::1",
+    ] {
+        assert!(
+            !is_public_endpoint_address(value.parse().expect("IP address")),
+            "{value} 不应判为公网"
+        );
+    }
+}
+
+/// Issue #294：IPv6 侧改成「只放行 2000::/3 里未被特殊用途占用的部分」。
+///
+/// 这个用例钉住的是判定方向本身：未分配空间默认拒绝。原先逐段排除私网的写法把
+/// `fec0::/10` 之类漏成了公网，而漏掉的段永远是 IANA 下一次分配的那一段。
+#[test]
+fn ipv6_screening_allows_only_assigned_global_unicast() {
+    for value in [
+        // 全局单播里正常分配的地址必须继续可用
+        "2606:4700:4700::1111",
+        "2001:4860:4860::8888",
+        "2400:cb00::1",
+        // NAT64 合成地址按内嵌 IPv4 判定：公网目标继续放行，否则 DNS64 部署不可用
+        "64:ff9b::5db8:d822",
+        "::ffff:93.184.216.34",
+    ] {
+        assert!(
+            is_public_endpoint_address(value.parse().expect("IP address")),
+            "{value} 应判为公网"
+        );
+    }
+    for value in [
+        // RFC 3879 站点本地（已废弃，仍见于存量内网配置）
+        "fec0::1",
+        "feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        // RFC 4193 ULA 与 RFC 4291 链路本地
+        "fc00::1",
+        "fd12:3456::1",
+        "fe80::1",
+        // RFC 6890 IETF 协议分配 2001::/23：Teredo、基准测试、ORCHID、AMT
+        "2001::1",
+        "2001:2::1",
+        "2001:20::1",
+        "2001:3::1",
+        // 文档用地址：RFC 3849 与 RFC 9637。第二个是 3fff::/20 的末地址，
+        // 用它钉住前缀长度——写成 3fff:ffff:: 就落到 /20 之外了。
+        "2001:db8::1",
+        "3fff::1",
+        "3fff:fff:ffff:ffff:ffff:ffff:ffff:ffff",
+        // RFC 9602 SRv6 SID
+        "5f00::1",
+        // RFC 7526 已废弃的 6to4，即使内嵌公网 IPv4 也不放行
+        "2002::1",
+        "2002:5db8:d822::1",
+        // 2000::/3 之外的未分配空间与特殊段，一律拒绝
+        "4000::1",
+        "8000::1",
+        "c000::1",
+        "100::1",
+        "ff02::1",
+        "::",
     ] {
         assert!(
             !is_public_endpoint_address(value.parse().expect("IP address")),

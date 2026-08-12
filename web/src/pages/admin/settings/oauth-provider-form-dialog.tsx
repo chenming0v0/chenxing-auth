@@ -169,13 +169,19 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
               <Icon name="link" className="text-[var(--chenxing-cyan)]" size={18} />
               {title}
             </h2>
-            <p className="chenxing-caption mt-1.5">配置兼容 OAuth 2.0 的外部身份提供商</p>
+            <p className="chenxing-caption mt-1.5">配置 OAuth 2.0 授权码流程 + UserInfo 的外部身份提供商</p>
           </div>
           <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onClose}>
             <Icon name="x" size={16} />
           </button>
         </div>
         <div className="mt-5 grid gap-4">
+          {/* Issue #296：信任模型必须写在填表的地方。管理员在这里决定信任哪个外部身份源，
+              而本平台对该身份源做了什么校验、没做什么校验，是这个决定的前提。 */}
+          <Notice>
+            信任模型：OAuth 2.0 + UserInfo。用户的 sub、email 和邮箱验证状态只来自该提供商的 UserInfo 响应；
+            本平台不解析也不验证令牌响应中的 ID Token，因此请只接入 UserInfo 内容可信的提供商。
+          </Notice>
           {!editing ? (
             <SelectField
               label="预设模板"
@@ -209,7 +215,14 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
           <Field label="Authorization Endpoint *" value={form.authorization_endpoint} onChange={(event) => setForm({ ...form, authorization_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/authorize" required />
           <Field label="Token Endpoint *" value={form.token_endpoint} onChange={(event) => setForm({ ...form, token_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/token" required />
           <Field label="UserInfo Endpoint *" value={form.userinfo_endpoint} onChange={(event) => setForm({ ...form, userinfo_endpoint: event.target.value })} placeholder="https://idp.example.com/oauth/userinfo" required />
-          <Field label="Scopes *" value={form.scopes} onChange={(event) => setForm({ ...form, scopes: event.target.value })} placeholder="openid profile email" required />
+          <Field
+            label="Scopes *"
+            value={form.scopes}
+            onChange={(event) => setForm({ ...form, scopes: event.target.value })}
+            placeholder="openid profile email"
+            hint="发往该提供商的 scope。可以包含 openid（多数提供商需要它才开放 UserInfo 端点），但本平台只用它换取可调用 UserInfo 的 access token，不会验证随之返回的 ID Token。"
+            required
+          />
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Subject Claim" value={form.subject_claim} onChange={(event) => setForm({ ...form, subject_claim: event.target.value })} />
             <Field label="Email Claim" value={form.email_claim} onChange={(event) => setForm({ ...form, email_claim: event.target.value })} />

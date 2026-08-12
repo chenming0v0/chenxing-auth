@@ -234,6 +234,26 @@ describe('OAuthProvidersPanel Client Secret 提交语义', () => {
   })
 })
 
+describe('OAuthProvidersPanel 信任模型披露（Issue #296）', () => {
+  it('面板说明写清 OAuth 2.0 + UserInfo，不宣称 OIDC', async () => {
+    renderPanel()
+    await screen.findByText('GitLab')
+    expect(screen.getByText(/身份字段只取自 UserInfo 响应，本平台不验证 ID Token/)).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '自定义 OAuth 2.0 提供商' })).toBeTruthy()
+  })
+
+  it('表单弹层给出信任模型提示，并说明 openid scope 的实际作用', async () => {
+    renderPanel()
+    await screen.findByText('GitLab')
+    await openEditRow('GitLab')
+    expect(screen.getByText(/信任模型：OAuth 2.0 \+ UserInfo/)).toBeTruthy()
+    const scopes = screen.getByLabelText('Scopes *') as HTMLInputElement
+    expect(screen.getByText(/不会验证随之返回的 ID Token/)).toBeTruthy()
+    // 约束必须通过 aria-describedby 关联到控件，读屏用户才拿得到。
+    expect(scopes.getAttribute('aria-describedby')).toBeTruthy()
+  })
+})
+
 describe('OAuthProvidersPanel Email Verified Claim', () => {
   it('表单字段标记必填，并说明缺失时会拒绝登录', async () => {
     renderPanel()

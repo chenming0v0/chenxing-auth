@@ -69,11 +69,28 @@ impl fmt::Debug for ProviderInput {
     }
 }
 
+/// 自定义 provider 的身份信任模型标识（Issue #296）。
+///
+/// 语义是明确且收敛的：**OAuth 2.0 授权码流程 + UserInfo 端点**。身份事实
+/// （`sub`、`email`、`email_verified`）全部来自用 access token 经 TLS 取回的
+/// UserInfo 响应；令牌响应里的 `id_token` 不被解析，也不参与身份判定。
+///
+/// 之所以把它作为响应字段而不是只写在文档里：这是 API 消费方唯一能据此判断
+/// 「本平台对这个 provider 做了什么校验」的信号。文档会过期，字段不会。
+///
+/// 本平台自身作为 OP 对下游 Client 仍然签发并支持 OIDC ID Token；这个常量只描述
+/// 上游自定义 provider 这一侧。要新增 OIDC 依赖方模式（固定 issuer/JWKS/算法策略、
+/// 验证签名与 `iss`/`aud`/`exp`/`iat`/`nonce`/`kid`），应当新增一个取值，而不是
+/// 放宽这个取值的含义。
+pub const PROVIDER_TRUST_MODEL: &str = "oauth2_userinfo";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderSummary {
     pub id: i64,
     pub name: String,
     pub slug: String,
+    /// 恒为 [`PROVIDER_TRUST_MODEL`]。见该常量的说明：这里不存在 OIDC 模式。
+    pub trust_model: &'static str,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
     pub userinfo_endpoint: String,
@@ -244,6 +261,7 @@ impl ProviderRecord {
             id: self.id,
             name: self.name.clone(),
             slug: self.slug.clone(),
+            trust_model: PROVIDER_TRUST_MODEL,
             authorization_endpoint: self.authorization_endpoint.to_string(),
             token_endpoint: self.token_endpoint.to_string(),
             userinfo_endpoint: self.userinfo_endpoint.to_string(),

@@ -112,7 +112,9 @@ src/
 - 用户列表、用户启停、角色管理、特权用户列表、审计查询和管理后台入口
 - `/oauth/revoke` RFC 7009 风格 Token 撤销以及 Discovery 中的撤销端点
 - `BusinessExtension` 扩展 trait 与结构化业务 Claim 类型
-- 配置驱动的自定义 OAuth/OIDC 提供商管理、加密 Client Secret、外部身份绑定和浏览器回调登录
+- 配置驱动的自定义 OAuth 2.0 提供商管理、加密 Client Secret、外部身份绑定和浏览器回调登录
+
+自定义外部提供商按 **OAuth 2.0 授权码流程 + UserInfo** 信任模型接入：身份字段只来自用 access token 经 TLS 取回的 UserInfo 响应，令牌响应中的 `id_token` 不被解析也不参与身份判定。本平台**作为 OP 对下游 Client 完整支持 OIDC**，但在上游自定义提供商这一侧**不是 OIDC 依赖方**，不保存 issuer/JWKS/算法策略，也不执行 ID Token 签名与 `iss`/`aud`/`exp`/`nonce` 校验。管理 API 用 `trust_model: "oauth2_userinfo"` 显式声明这一边界。
 
 后续增强方向：
 
@@ -120,6 +122,7 @@ src/
 2. 增加更多真实 OIDC Provider/Client 互操作测试和限流策略。
 3. 将签名私钥接入外部受保护密钥存储，并增加密钥撤销策略。
 4. 为业务子项目提供经过评审的具体扩展实现。
+5. 为自定义外部提供商增加 OIDC 依赖方模式：固定 issuer/JWKS/允许算法与 nonce 策略，验证 ID Token 签名、`kid`、`iss`、`aud`、`exp`、`iat` 与 nonce，并校验 UserInfo `sub` 与已验证 ID Token 一致。在该模式落地前，产品与 API 只声明 OAuth 2.0 + UserInfo。
 
 ## 本地开发
 
@@ -171,6 +174,7 @@ src/
 
 - 用户已授权应用的聚合列表 API（当前页面明确展示后端能力边界）
 - 大规模第三方 OAuth/OIDC 互操作认证矩阵
+- 自定义外部提供商的 OIDC 依赖方模式（ID Token 签名与 `iss`/`aud`/`exp`/`nonce` 验证）；当前只提供 OAuth 2.0 + UserInfo 信任模型
 - 密钥撤销策略和外部受保护密钥存储
 - 生产级限流、告警和密钥托管集成
 

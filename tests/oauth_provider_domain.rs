@@ -1,8 +1,12 @@
 use chenxing_auth::oauth::providers::{
     claims::{ClaimMapping, ExternalUser, extract_claim},
-    domain::{ClientAuthMethod, ProviderInput, ProviderValidationError},
+    domain::{
+        ClientAuthMethod, PROVIDER_TRUST_MODEL, ProviderInput, ProviderRecord,
+        ProviderValidationError,
+    },
 };
 use serde_json::json;
+use url::Url;
 
 fn valid_input() -> ProviderInput {
     ProviderInput {
@@ -24,6 +28,29 @@ fn valid_input() -> ProviderInput {
         email_verified_claim: Some("email_verified".to_owned()),
         client_auth_method: ClientAuthMethod::Basic,
         pkce_enabled: true,
+    }
+}
+
+fn provider_record() -> ProviderRecord {
+    ProviderRecord {
+        id: 1,
+        name: "企业 SSO".to_owned(),
+        slug: "enterprise-sso".to_owned(),
+        authorization_endpoint: Url::parse("https://sso.example.com/oauth/authorize")
+            .expect("authorize URL"),
+        token_endpoint: Url::parse("https://sso.example.com/oauth/token").expect("token URL"),
+        userinfo_endpoint: Url::parse("https://sso.example.com/oauth/userinfo")
+            .expect("userinfo URL"),
+        client_id: "client-id".to_owned(),
+        client_secret_ciphertext: vec![1, 2, 3],
+        scopes: vec!["openid".to_owned(), "email".to_owned()],
+        subject_claim: "sub".to_owned(),
+        email_claim: "email".to_owned(),
+        name_claim: Some("name".to_owned()),
+        email_verified_claim: Some("email_verified".to_owned()),
+        client_auth_method: ClientAuthMethod::Basic,
+        pkce_enabled: true,
+        status: "active".to_owned(),
     }
 }
 
@@ -277,5 +304,66 @@ fn claim_mapping_rejects_invalid_paths() {
         ClaimMapping::new("sub".to_owned(), "email".to_owned(), None, None)
             .expect_err("missing email_verified"),
         ProviderValidationError::MissingEmailVerifiedClaim
+    );
+}
+
+/// Issue #296：自定义 provider 的信任模型必须在 API 响应里说清楚，不能只写在文档里。
+///
+/// 取值恒为 `oauth2_userinfo`：身份事实来自 UserInfo 响应，令牌响应里的 `id_token`
+/// 不被解析也不参与判定。管理端和接入方据此判断「本平台对这个 provider 做了什么
+/// 校验」；这个用例同时锁住取值和它出现在序列化结果里的键名。
+#[test]
+fn provider_summary_declares_oauth_userinfo_trust_model() {
+    let provider = provider_record();
+    assert_eq!(provider.summary().trust_model, PROVIDER_TRUST_MODEL);
+    assert_eq!(PROVIDER_TRUST_MODEL, "oauth2_userinfo");
+
+    let serialized = serde_json::to_value(provider.summary()).expect("summary JSON");
+    assert_eq!(serialized["trust_model"], json!("oauth2_userinfo"));
+    // 契约里不存在任何 OIDC 依赖方字段：出现它们就意味着有人在没有验证实现的
+    // 前提下重新对外宣称 OIDC。
+    for absent in ["issuer", "jwks_uri", "id_token_signed_response_alg"] {
+        assert!(
+            serialized.get(absent).is_none(),
+            "{absent} 不应出现在 provider 契约里：当前没有 ID Token 验证边界"
+        );
+    }
+}
+
+/// Issue #296：OAuth-only 语义必须同时出现在契约、文档和管理界面里。
+///
+/// 这条边界的实际风险不是代码写错，而是四份材料各说各话：代码只信 UserInfo，
+/// 文档却宣称 OIDC，管理员照文档选了个 UserInfo 不可信的 IdP。所以把「OpenAPI
+/// 声明 trust_model」「API.md 说明 id_token 不参与判定」「管理界面写清信任模型」
+/// 三件事一起钉住，任何一份漏改都会让这个用例失败。
+#[test]
+fn oauth_only_semantics_stay_consistent_across_contract_docs_and_ui() {
+    const OPENAPI: &str = include_str!("../openapi.yaml");
+    const API_DOC: &str = include_str!("../API.md");
+    const PROVIDER_PANEL: &str =
+        include_str!("../web/src/pages/admin/settings/oauth-providers-panel.tsx");
+    const PROVIDER_DIALOG: &str =
+        include_str!("../web/src/pages/admin/settings/oauth-provider-form-dialog.tsx");
+
+    for marker in ["trust_model", PROVIDER_TRUST_MODEL] {
+        assert!(
+            OPENAPI.contains(marker),
+            "openapi.yaml 缺少 OAuth-only 契约标记：{marker}"
+        );
+    }
+    for marker in [PROVIDER_TRUST_MODEL, "不被解析", "OAuth 2.0 + UserInfo"] {
+        assert!(
+            API_DOC.contains(marker),
+            "API.md 未说明 OAuth-only 信任模型：{marker}"
+        );
+    }
+    // 管理员在这两处做「信任哪个外部身份源」的决定，边界必须写在他眼前。
+    assert!(
+        PROVIDER_PANEL.contains("不验证 ID Token"),
+        "提供商面板未说明本平台不验证 ID Token"
+    );
+    assert!(
+        PROVIDER_DIALOG.contains("信任模型：OAuth 2.0 + UserInfo"),
+        "提供商表单未给出信任模型提示"
     );
 }
