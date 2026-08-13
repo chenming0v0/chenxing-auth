@@ -68,11 +68,15 @@ impl StaleCredentialCode {
 /// login ticket，会话写入会在持锁事务内确认它携带的 `session_epoch` 仍是当前值
 /// （Issue #274）。版本漂移只可能由"改密并撤销全部会话"造成，因此按认证失败处理，
 /// 不回落成"用当前 epoch 重签"。
+///
+/// `source_ip` 必须已经过可信代理解析；User-Agent 从这里直接提取。两者写入审计
+/// metadata，供安全日志详情展示（Issue #308）。
 pub async fn issue_user_session(
     state: &AppState,
     authenticated: AuthenticatedUser,
     factor: &str,
     headers: &HeaderMap,
+    source_ip: Option<&str>,
     stale_credential: StaleCredentialCode,
 ) -> Response {
     let user_id = authenticated.id;
@@ -129,7 +133,11 @@ pub async fn issue_user_session(
             "login".to_owned(),
             "session".to_owned(),
             Some(session.id.to_string()),
-            serde_json::json!({"result": "success", "factor": factor}),
+            crate::audit::with_request_context(
+                serde_json::json!({"result": "success", "factor": factor}),
+                source_ip,
+                crate::api::user_agent(headers).as_deref(),
+            ),
         ))
         .await
         .is_err()

@@ -32,6 +32,8 @@ pub async fn issue_authorization_code_result(
     state: &AppState,
     user_id: String,
     validated: ValidatedAuthorizationRequest,
+    source_ip: Option<&str>,
+    user_agent: Option<&str>,
 ) -> Result<AuthorizationCodeIssue, Response> {
     match active_user_id(state, &user_id).await {
         Ok(Some(_)) => {}
@@ -44,7 +46,11 @@ pub async fn issue_authorization_code_result(
                     "authorization_denied".to_owned(),
                     "oauth_authorization".to_owned(),
                     None,
-                    serde_json::json!({"reason": "user_disabled"}),
+                    crate::audit::with_request_context(
+                        serde_json::json!({"reason": "user_disabled"}),
+                        source_ip,
+                        user_agent,
+                    ),
                 ))
                 .await;
             return Err(error::oauth_unauthorized(
@@ -170,7 +176,11 @@ pub async fn issue_authorization_code_result(
                         "rate_limit_triggered".to_owned(),
                         "oauth_quota".to_owned(),
                         None,
-                        serde_json::json!({"reason": "oauth_quota"}),
+                        crate::audit::with_request_context(
+                            serde_json::json!({"reason": "oauth_quota"}),
+                            source_ip,
+                            user_agent,
+                        ),
                     ))
                     .await;
                 return Ok(AuthorizationCodeIssue::QuotaExceeded);
@@ -220,7 +230,11 @@ pub async fn issue_authorization_code_result(
             "authorization_code_issue".to_owned(),
             "oauth_client".to_owned(),
             Some(code.client_id.clone()),
-            serde_json::json!({"scopes": code.scopes}),
+            crate::audit::with_request_context(
+                serde_json::json!({"scopes": code.scopes}),
+                source_ip,
+                user_agent,
+            ),
         ))
         .await
         .is_err()
@@ -357,9 +371,11 @@ pub async fn issue_authorization_code(
     state: &AppState,
     user_id: String,
     validated: ValidatedAuthorizationRequest,
+    source_ip: Option<&str>,
+    user_agent: Option<&str>,
 ) -> Response {
     let pending = pending_from_validated(&validated);
-    match issue_authorization_code_result(state, user_id, validated).await {
+    match issue_authorization_code_result(state, user_id, validated, source_ip, user_agent).await {
         Ok(AuthorizationCodeIssue::Redirect(redirect)) => Redirect::to(&redirect).into_response(),
         Ok(AuthorizationCodeIssue::QuotaExceeded) => authorization_quota_redirect(&pending),
         Err(response) => response,

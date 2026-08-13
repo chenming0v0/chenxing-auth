@@ -20,18 +20,39 @@ pub(super) async fn totp_confirmation_response(
                 authenticated,
                 "totp",
                 headers,
+                source_ip,
                 StaleCredentialCode::InvalidFactor,
             )
             .await
         }
         TotpConfirmation::InvalidCode => {
-            mfa_failure_response(state, None, "totp_invalid", source_ip).await
+            mfa_failure_response(
+                state,
+                None,
+                "totp_invalid",
+                source_ip,
+                crate::api::user_agent(headers).as_deref(),
+            )
+            .await
         }
         TotpConfirmation::KeyUnavailable => {
-            factor_key_unavailable_response(state, None, source_ip).await
+            factor_key_unavailable_response(
+                state,
+                None,
+                source_ip,
+                crate::api::user_agent(headers).as_deref(),
+            )
+            .await
         }
         TotpConfirmation::RateLimited => {
-            mfa_failure_response(state, None, "totp_rate_limited", source_ip).await
+            mfa_failure_response(
+                state,
+                None,
+                "totp_rate_limited",
+                source_ip,
+                crate::api::user_agent(headers).as_deref(),
+            )
+            .await
         }
         // `NoPendingEnrollment` 只在登录端点的回落判断逻辑里出现，不会传到这里。
         // 注册确认端点把它当 `InvalidTicket` 处理。
@@ -55,15 +76,30 @@ pub(super) async fn passkey_confirmation_response(
                 authenticated,
                 "passkey",
                 headers,
+                source_ip,
                 StaleCredentialCode::InvalidFactor,
             )
             .await
         }
         PasskeyConfirmation::InvalidCredential(user_id) => {
-            mfa_failure_response(state, Some(user_id), "passkey_invalid", source_ip).await
+            mfa_failure_response(
+                state,
+                Some(user_id),
+                "passkey_invalid",
+                source_ip,
+                crate::api::user_agent(headers).as_deref(),
+            )
+            .await
         }
         PasskeyConfirmation::RateLimited(user_id) => {
-            mfa_failure_response(state, Some(user_id), "passkey_rate_limited", source_ip).await
+            mfa_failure_response(
+                state,
+                Some(user_id),
+                "passkey_rate_limited",
+                source_ip,
+                crate::api::user_agent(headers).as_deref(),
+            )
+            .await
         }
         PasskeyConfirmation::InvalidTicket => {
             error::bad_request("invalid_login_ticket", "login ticket is invalid")
@@ -78,8 +114,9 @@ pub(super) async fn mfa_failure_response(
     actor_id: Option<UserId>,
     reason: &str,
     source_ip: Option<&str>,
+    user_agent: Option<&str>,
 ) -> Response {
-    record_mfa_event(state, actor_id, reason, source_ip).await;
+    record_mfa_event(state, actor_id, reason, source_ip, user_agent).await;
     error::unauthorized("invalid_factor", "authentication factor is invalid")
 }
 
@@ -100,6 +137,7 @@ pub(crate) async fn factor_key_unavailable_response(
     state: &AppState,
     actor_id: Option<UserId>,
     source_ip: Option<&str>,
+    user_agent: Option<&str>,
 ) -> Response {
     state
         .audit
@@ -116,6 +154,7 @@ pub(crate) async fn factor_key_unavailable_response(
             "totp_key_retired",
             None,
             source_ip,
+            user_agent,
         ))
         .await;
     error::service_unavailable(
@@ -143,6 +182,7 @@ async fn record_mfa_event(
     actor_id: Option<UserId>,
     reason: &str,
     source_ip: Option<&str>,
+    user_agent: Option<&str>,
 ) {
     state
         .audit
@@ -159,6 +199,7 @@ async fn record_mfa_event(
             reason,
             None,
             source_ip,
+            user_agent,
         ))
         .await;
 }

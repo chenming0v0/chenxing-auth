@@ -887,6 +887,8 @@ async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
             owner_user_id: Some(user_id),
             session_token_hash: None,
         },
+        None,
+        None,
     )
     .await
     .expect_err("authorization code persistence failure");

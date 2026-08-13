@@ -208,6 +208,7 @@ fn authentication_failure_keeps_stable_account_reference_and_canonical_ip() {
         "invalid_credentials",
         Some("  Alice@Example.COM "),
         Some("2001:0db8:0:0:0:0:0:1"),
+        None,
     );
 
     assert_eq!(

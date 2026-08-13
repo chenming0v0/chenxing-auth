@@ -63,6 +63,23 @@ pub(crate) fn source_ip(
     trusted_proxies.resolve_client_ip(peer, headers)
 }
 
+/// 提取请求 User-Agent，用于安全日志的请求上下文（Issue #308）。
+///
+/// UA 是客户端可伪造的任意长度头部，不能整段进审计：截断到 512 字符，非 UTF-8
+/// 或无 UA 的请求返回 `None`。安全日志里它只与源 IP 一起出现，供用户核对
+/// 「谁在什么时候用什么设备访问了我的账户」。
+pub(crate) fn user_agent(headers: &HeaderMap) -> Option<String> {
+    const MAX_USER_AGENT_CHARS: usize = 512;
+    let value = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())?;
+    Some(match value.char_indices().nth(MAX_USER_AGENT_CHARS) {
+        Some((index, _)) => value[..index].to_owned(),
+        None => value.to_owned(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

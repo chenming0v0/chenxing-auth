@@ -170,6 +170,8 @@ pub async fn login_user(
         &headers,
         &state.config.trusted_proxies,
     );
+    // UA 与源 IP 一起进入认证失败审计（Issue #308），只解析一次。
+    let user_agent = crate::api::user_agent(&headers);
     // `authenticated` 绑定了本次口令校验所依据的 session_epoch（Issue #274）。
     // 之后签发 ticket 或 Session 都用它，不再重新读当前 epoch。
     let authenticated = match state.users.authenticate(input, source_ip.as_deref()).await {
@@ -182,6 +184,7 @@ pub async fn login_user(
                 "invalid_credentials",
                 Some(&identifier),
                 source_ip.as_deref(),
+                user_agent.as_deref(),
             )
             .await;
             return error::unauthorized(
@@ -203,6 +206,7 @@ pub async fn login_user(
                 "login",
                 Some(&identifier),
                 source_ip.as_deref(),
+                user_agent.as_deref(),
             )
             .await;
             return error::unauthorized(
@@ -255,6 +259,7 @@ pub async fn login_user(
                     "totp_rate_limited",
                     None,
                     source_ip.as_deref(),
+                    user_agent.as_deref(),
                 )
                 .await;
                 return error::unauthorized("invalid_factor", "authentication factor is invalid");
@@ -271,6 +276,7 @@ pub async fn login_user(
                     authenticated,
                     "totp",
                     &headers,
+                    source_ip.as_deref(),
                     StaleCredentialCode::InvalidCredentials,
                 )
                 .await;
@@ -279,7 +285,13 @@ pub async fn login_user(
             // 且 service 层已归还预留额度，不烧账号/IP 失败计数（#258）。
             FactorVerification::KeyUnavailable => {
                 let source_ip = source_ip.as_deref();
-                return factor_key_unavailable_response(&state, Some(user_id), source_ip).await;
+                return factor_key_unavailable_response(
+                    &state,
+                    Some(user_id),
+                    source_ip,
+                    crate::api::user_agent(&headers).as_deref(),
+                )
+                .await;
             }
             FactorVerification::Rejected => {
                 record_security_event(
@@ -289,6 +301,7 @@ pub async fn login_user(
                     "totp_invalid",
                     None,
                     source_ip.as_deref(),
+                    user_agent.as_deref(),
                 )
                 .await;
                 return error::unauthorized("invalid_factor", "authentication factor is invalid");
@@ -313,6 +326,7 @@ pub async fn login_user(
                 "passkey_disabled",
                 None,
                 source_ip.as_deref(),
+                user_agent.as_deref(),
             )
             .await;
         }
@@ -346,6 +360,7 @@ pub async fn login_user(
                 "credentials_superseded",
                 Some(&identifier),
                 source_ip.as_deref(),
+                user_agent.as_deref(),
             )
             .await;
             return error::unauthorized(
@@ -390,11 +405,23 @@ pub async fn login_user(
 /// Session Cookie、CSRF Cookie 与 `X-CSRF-Token` 三者绑定。撤销是状态变更，
 /// 校验一旦以「请求是否带 Cookie 头」为条件，攻击者只要改走开发期兼容的
 /// `x-chenxing-session` 请求头（不发 Cookie 头）就能完整跳过 CSRF 防护。
-pub async fn revoke_session(State(state): State<AppState>, session: SessionWrite) -> Response {
+pub async fn revoke_session(
+    State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    session: SessionWrite,
+) -> Response {
     // 撤销目标就是调用者自身的 Cookie 会话，令牌只来自已校验的会话上下文
     let user_id = session.session.user_id.clone();
     let session_id = session.session.id;
     let session_token = session.session.token.clone();
+    // 请求上下文（源 IP / UA）进入撤销审计，供安全日志详情展示（Issue #308）。
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    let user_agent = crate::api::user_agent(&headers);
 
     match state.sessions.revoke(&session_token).await {
         Ok(()) => {
@@ -406,7 +433,11 @@ pub async fn revoke_session(State(state): State<AppState>, session: SessionWrite
                     "session_revoke".to_owned(),
                     "session".to_owned(),
                     Some(session_id.to_string()),
-                    serde_json::json!({"result": "success"}),
+                    crate::audit::with_request_context(
+                        serde_json::json!({"result": "success"}),
+                        source_ip.as_deref(),
+                        user_agent.as_deref(),
+                    ),
                 ))
                 .await;
             let mut response = StatusCode::NO_CONTENT.into_response();
@@ -432,6 +463,7 @@ async fn record_security_event(
     reason: &str,
     attempted_identifier: Option<&str>,
     source_ip: Option<&str>,
+    user_agent: Option<&str>,
 ) {
     state
         .audit
@@ -448,6 +480,7 @@ async fn record_security_event(
             reason,
             attempted_identifier,
             source_ip,
+            user_agent,
         ))
         .await;
 }

@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Query, State, rejection::QueryRejection},
+    extract::{Path, Query, State, rejection::QueryRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -85,4 +85,37 @@ fn invalid_pagination() -> Response {
         "invalid_pagination",
         "page must be positive and page_size must be between 1 and 100",
     )
+}
+
+/// `GET /api/v1/auth/security-events/{id}`：单个安全事件详情（Issue #308）。
+///
+/// 鉴权与列表接口同一尺度（普通 Session Cookie）。事件不存在或不属于当前用户时
+/// 一律 404，不区分「查不到」与「不是你的」，避免把事件 id 变成枚举探测面。
+/// 详情字段全部来自白名单（分级映射 + metadata 请求上下文提取），不透出 metadata
+/// 原文、令牌、密钥或内部资源标识。
+pub async fn get_security_event(
+    State(state): State<AppState>,
+    session: SessionRead,
+    Path(event_id): Path<i64>,
+) -> Response {
+    // 非正 id 不可能对应任何审计行，与「查不到」同响应。
+    if event_id < 1 {
+        return security_event_not_found();
+    }
+    match state
+        .audit
+        .query_security_event(session.user_id, event_id)
+        .await
+    {
+        Ok(Some(event)) => (StatusCode::OK, Json(event)).into_response(),
+        Ok(None) => security_event_not_found(),
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to query user security event detail");
+            error::internal()
+        }
+    }
+}
+
+fn security_event_not_found() -> Response {
+    error::not_found("security_event_not_found", "security event is not found")
 }
