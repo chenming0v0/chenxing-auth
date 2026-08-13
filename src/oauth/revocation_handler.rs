@@ -7,8 +7,9 @@ use serde::Deserialize;
 use std::{fmt, net::SocketAddr};
 
 use super::{
-    client_auth::resolve_client_credentials, form, response::with_no_store_headers,
-    token::decode_access_token, token_security::enforce_source_qps_with_policy,
+    client_auth::resolve_client_credentials, form, refresh::RefreshToken,
+    response::with_no_store_headers, token::decode_access_token,
+    token_security::enforce_source_qps_with_policy,
 };
 use crate::{audit::AuditEvent, error, state::AppState};
 
@@ -267,7 +268,10 @@ async fn resolve_revocable_grant(
     match state.refresh_tokens.find(token).await {
         Ok(Some(refresh)) if refresh.client_id == client_id => {
             return Ok(Some(RevocableGrant {
-                family_id: refresh.family_id,
+                // 旧格式 token 的 payload 里 family 是空串：用 token 值派生
+                // 家族标识，与轮换后继所在家族一致，撤销才不是空操作
+                // （Issue #313）。
+                family_id: refresh.family_identifier(),
                 user_id: refresh.user_id,
             }));
         }
@@ -281,7 +285,10 @@ async fn resolve_revocable_grant(
     }
     match state.refresh_tokens.read_tombstone(token).await {
         Ok(Some(tombstone)) if tombstone.client_id == client_id => Ok(Some(RevocableGrant {
-            family_id: tombstone.family_id,
+            // 升级前写入的旧墓碑可能没有 family_id（旧格式轮换不记录后继
+            // 家族）：由提交值哈希派生，命中轮换后继所在的同一撤销域
+            // （Issue #313）。
+            family_id: RefreshToken::resolve_family_identifier(&tombstone.family_id, token),
             user_id: tombstone.user_id,
         })),
         Ok(_) => Ok(None),
