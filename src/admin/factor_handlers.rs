@@ -28,7 +28,6 @@ use crate::{
     audit::AuditEvent,
     auth_factors::service::TotpResetOutcome,
     error,
-    sessions::store::SessionStoreError,
     state::AppState,
     users::domain::UserId,
 };
@@ -133,9 +132,9 @@ pub async fn auth_factor_key_health(State(state): State<AppState>, admin: AdminR
 /// 降级为「只有密码」，下次登录进入 `factor_setup_required`，谁掌握密码谁就能注册
 /// 新的 TOTP。它是账号接管链条上的一环，必须与普通用户管理分权。
 ///
-/// 顺序是先撤销凭据、再删除因子。反过来的话，删除成功而撤销失败会留下一批
-/// 「因子已重置但旧凭据仍然有效」的会话与 Refresh Token；按当前顺序，撤销失败
-/// 时因子还在，整个操作可以安全重试。`revoke_all_for_user` 推进该用户的
+/// 撤销会话与删除因子由 `AuthFactorService::reset_totp_factor` 在同一事务内原子
+/// 完成（Issue #331）：`Missing`/`UnknownUser` 时整体回滚，不会留下「会话已撤、
+/// 因子未删」的中间态。`revoke_all_for_user_in_transaction` 推进该用户的
 /// `session_epoch`：Cookie 会话与全部已签发 Refresh Token 在同一水位上一起
 /// 失效（Issue #409），不会留下「TOTP 已重置、旧 Refresh Token 仍能换取
 /// access token」的恢复通道后门。
@@ -151,29 +150,6 @@ pub async fn reset_user_totp_factor(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    // 先确认存在再撤销会话：账号本来就没有 TOTP 时不应该顺手把它踢下线。
-    match state.factors.account_factor_status(user_id).await {
-        Ok(Some(status)) if status.totp.is_some() => {}
-        Ok(Some(_)) => {
-            return error::not_found("totp_factor_not_found", "TOTP factor was not found");
-        }
-        Ok(None) => return error::not_found("user_not_found", "user was not found"),
-        Err(factor_error) => {
-            tracing::error!(error = %factor_error, "failed to load factor status before reset");
-            return error::internal();
-        }
-    }
-    match state.sessions.revoke_all_for_user(user_id).await {
-        Ok(()) => {}
-        // 账号在本次请求期间被删除：如实回 404，不要伪装成服务端故障。
-        Err(SessionStoreError::UserNotFound) => {
-            return error::not_found("user_not_found", "user was not found");
-        }
-        Err(session_error) => {
-            tracing::error!(error = %session_error, "failed to revoke sessions before factor reset");
-            return error::internal();
-        }
-    }
     let outcome = match state.factors.reset_totp_factor(user_id).await {
         Ok(outcome) => outcome,
         Err(factor_error) => {
@@ -183,7 +159,8 @@ pub async fn reset_user_totp_factor(
     };
     let key_state = match outcome {
         TotpResetOutcome::Removed { key_state } => key_state,
-        // 两种竞态：并发重置抢先删除，或账号在本次请求期间被删除。
+        // 两种竞态（并发重置抢先、账号被并发删除）在事务内整体回滚，会话保持
+        // 原样；如实回 404，不要伪装成服务端故障。
         TotpResetOutcome::Missing => {
             return error::not_found("totp_factor_not_found", "TOTP factor was not found");
         }
