@@ -14,7 +14,7 @@ import { Button, Notice } from './components/ui'
 
 function AppContent() {
   const path = usePathname()
-  const { status, user, bootstrap, refresh } = useAuth()
+  const { status, user, bootstrap, refresh, refreshBootstrap } = useAuth()
 
   useEffect(() => {
     document.title = getDocumentTitle(path)
@@ -31,6 +31,23 @@ function AppContent() {
           <Notice tone="info">
             {bootstrap === 'loading' ? '正在检查系统初始化状态，请稍候。' : '正在检查登录状态，请稍候。'}
           </Notice>
+        </AuthPanel>
+      </AuthShell>
+    )
+  }
+
+  // 瞬态故障（网络错误 / 5xx）后初始化状态未知：不渲染任何页面，提供重试。
+  // 不能在此处回退到 ready——未初始化系统会被踢到 /login，而登录又被后端拒绝。
+  if (bootstrap === 'error') {
+    return (
+      <AuthShell status="系统状态检查失败">
+        <AuthPanel>
+          <div className="space-y-4">
+            <Notice tone="warning">暂时无法确认系统初始化状态，请检查后端服务或网络连接后重试。</Notice>
+            <Button type="button" icon="refresh-cw" className="w-full" onClick={() => void refreshBootstrap()}>
+              重新检查系统状态
+            </Button>
+          </div>
         </AuthPanel>
       </AuthShell>
     )
