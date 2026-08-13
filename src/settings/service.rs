@@ -356,8 +356,16 @@ impl SettingsService {
             password_ciphertext,
         };
         repository::set_smtp(&self.pool, &stored).await?;
-        if let Some(email) = extract_email(&setting.from_address) {
-            repository::set_registration_email_from(&self.pool, Some(&email)).await?;
+        // 镜像同步必须双向（#321）：非空 from 写入独立键；from 清空时删除该键。
+        // `validate` 已保证非空 from 可解析，`None` 分支只可能来自显式清空。只写
+        // 不删会让读取路径（`registration_email_from`，SMTP from 为空时回退到独立
+        // 键）命中残留旧地址，已停用的发件人在注册邮件里复活；与
+        // `set_registration_email_from` 清除时同步清 SMTP from 的方向对称。
+        match extract_email(&setting.from_address) {
+            Some(email) => {
+                repository::set_registration_email_from(&self.pool, Some(&email)).await?
+            }
+            None => repository::set_registration_email_from(&self.pool, None).await?,
         }
         Ok(setting)
     }
