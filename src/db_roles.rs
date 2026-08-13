@@ -79,7 +79,7 @@ pub(super) async fn ensure_runtime_role(
              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chenxing_runtime') THEN
                  BEGIN
                      CREATE ROLE chenxing_runtime LOGIN;
-                 EXCEPTION WHEN duplicate_object THEN
+                 EXCEPTION WHEN duplicate_object OR unique_violation THEN
                      NULL;
                  END;
              END IF;
