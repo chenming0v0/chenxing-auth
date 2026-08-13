@@ -208,13 +208,16 @@ mod tests {
     use crate::oauth::code::AuthorizationCode;
     use crate::oauth::store::AuthorizationCodeStore;
     use crate::plans::domain::AuthQuotaLimits;
-    use std::sync::{Mutex, MutexGuard};
     use time::{Duration, OffsetDateTime};
+    use tokio::sync::{Mutex, MutexGuard};
     use uuid::Uuid;
 
     /// 两个用例共享全局待退台账 ZSET（`PENDING_REFUNDS_ZSET`），并行执行会互相
-    /// 污染计数；用进程内互斥串行化，并在用例开头清空共享键，消除并行与残留干扰。
-    static REFUND_TESTS_LOCK: Mutex<()> = Mutex::new(());
+    /// 污染计数。nextest 每个测试独立进程运行，进程内互斥锁无法跨进程串行化，
+    /// 跨进程互斥由 `.config/nextest.toml` 的 `quota-refund-serial` 测试组承担；
+    /// 这里的锁继续保护 llvm-cov / 裸 cargo test 等单进程运行器，用例开头清空
+    /// 共享键则消除上一轮残留的干扰。
+    static REFUND_TESTS_LOCK: Mutex<()> = Mutex::const_new(());
 
     fn store() -> OAuthQuotaStore {
         let url =
@@ -229,10 +232,11 @@ mod tests {
     }
 
     /// 串行化待退台账相关用例并清空共享 ZSET，返回持有的互斥锁。
+    ///
+    /// 用例全程持有锁跨越 await，std 互斥锁的守卫跨 await 会触发
+    /// clippy::await_holding_lock，因此用 tokio 的异步互斥锁。
     async fn lock_refund_tests() -> MutexGuard<'static, ()> {
-        let guard = REFUND_TESTS_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = REFUND_TESTS_LOCK.lock().await;
         let url =
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
         let client = redis::Client::open(url).expect("Redis URL");

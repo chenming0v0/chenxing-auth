@@ -129,8 +129,9 @@ impl AuthFactorService {
     /// 只读检查的竞态窗口。advisory 锁与改密、会话签发、因子注册共用（#274），
     /// 本事务与它们严格串行，不存在"读到旧 epoch 又按旧水位放行"的中间态。
     ///
-    /// 失败计数清理放在事务提交之后，是 best-effort：因子已经删除，这个既成事实
-    /// 不能因为 Redis 暂时不可用而被改写成 500，否则调用方会重复执行恢复动作。
+    /// 失败计数与一次性时间步 claim 的清理放在事务提交之后，是 best-effort：因子
+    /// 已经删除，这个既成事实不能因为 Redis 暂时不可用而被改写成 500，否则调用方
+    /// 会重复执行恢复动作。
     pub async fn reset_totp_factor(
         &self,
         user_id: UserId,
@@ -160,6 +161,16 @@ impl AuthFactorService {
                 event = "auth_factor.totp.reset_limiter_not_cleared",
                 error = %error,
                 "TOTP factor was reset but its failure counters were not cleared"
+            );
+        }
+        // 一次性时间步 claim 也一起清掉：旧 claim 保护的是已删除因子的验证码，
+        // 留着只会挡住同一时间步窗口内的重新注册（#301 之后注册确认也 claim）。
+        // 与失败计数一样放在提交后 best-effort——因子删除已是既成事实。
+        if let Err(error) = self.tickets.clear_totp_replay(user_id).await {
+            tracing::error!(
+                event = "auth_factor.totp.reset_replay_claims_not_cleared",
+                error = %error,
+                "TOTP factor was reset but its replay claims were not cleared"
             );
         }
         Ok(TotpResetOutcome::Removed { key_state })

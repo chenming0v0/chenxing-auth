@@ -197,18 +197,17 @@ pub(super) async fn compensate_authorization_code_exchange(
     // CAS 消费时已经原子取消了待退台账条目；恢复后的授权码仍可能过期未兑换，
     // 必须把条目重新登记，否则配额会在这一条补偿路径上泄漏（Issue #341）。
     // 记录键没有被 CAS 删除，因此这里只需要把 ZSET 成员加回来。
-    if let Some(reservation_id) = code.quota_reservation_id.as_deref() {
-        if let Err(error_value) = state
+    if let Some(reservation_id) = code.quota_reservation_id.as_deref()
+        && let Err(error_value) = state
             .oauth_quotas
             .reschedule_refund(reservation_id, code.expires_at.unix_timestamp())
             .await
-        {
-            tracing::warn!(
-                error = %error_value,
-                client_id = %code.client_id,
-                "failed to reschedule OAuth authorization quota refund after compensation"
-            );
-        }
+    {
+        tracing::warn!(
+            error = %error_value,
+            client_id = %code.client_id,
+            "failed to reschedule OAuth authorization quota refund after compensation"
+        );
     }
 }
 

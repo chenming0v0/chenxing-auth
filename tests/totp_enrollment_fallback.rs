@@ -57,7 +57,13 @@ async fn setup() -> (
         .await
         .expect("test state");
     let router = api::router(state.clone());
-    oauth_flow::ensure_owner_bootstrapped(&router, "totp_enrollment_fallback").await;
+    oauth_flow::ensure_owner_bootstrapped(
+        &router,
+        &database,
+        "totp_enrollment_fallback",
+        "totp_enrollment_fallback",
+    )
+    .await;
     db_isolation::isolate_user_ids(&database, "totp_enrollment_fallback").await;
     (router, state, database, key_directory, email)
 }

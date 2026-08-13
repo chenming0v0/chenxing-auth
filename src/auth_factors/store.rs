@@ -311,4 +311,28 @@ impl LoginTicketStore {
     pub fn totp_replay_key(user_id: UserId, timestep: u64) -> String {
         format!("{TOTP_REPLAY_PREFIX}{user_id}:{timestep}")
     }
+
+    /// 删除该用户全部 TOTP 一次性时间步 claim。
+    ///
+    /// 因子被管理端重置后，旧 claim 保护的验证码已无可验证的因子，继续保留只会
+    /// 挡住同一时间步窗口内的重新注册（#301 之后注册确认也 claim 时间步）。
+    /// claim 键按 `{user_id}:{timestep}` 分布、timestep 不可枚举，所以用 SCAN；
+    /// 这是低频的管理动作，扫描成本可接受。
+    pub async fn clear_totp_replay(&self, user_id: UserId) -> Result<(), LoginTicketStoreError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let mut keys: Vec<String> = Vec::new();
+        {
+            // AsyncIter 持有 connection 的可变借用，必须在这个块里耗尽并 drop。
+            let mut iter = connection
+                .scan_match(format!("{TOTP_REPLAY_PREFIX}{user_id}:*"))
+                .await?;
+            while let Some(key) = iter.next_item().await {
+                keys.push(key);
+            }
+        }
+        if !keys.is_empty() {
+            let _: usize = connection.del(keys).await?;
+        }
+        Ok(())
+    }
 }

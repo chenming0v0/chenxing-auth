@@ -45,7 +45,7 @@ async fn disabled_user_session_cannot_authorize_or_submit_consent() {
     let (state, database, key_directory) = test_state("oauth_flow").await;
     let router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&router, &suffix).await;
+    ensure_owner_bootstrapped(&router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&router, &suffix).await;
     let (client_id, _client_secret) = create_test_client(&router, "flow-admin-token").await;
     let mut session =
@@ -161,7 +161,7 @@ async fn disabled_user_cannot_exchange_oauth_credentials_without_consuming_them(
     let (state, database, key_directory) = test_state("oauth_flow").await;
     let router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&router, &suffix).await;
+    ensure_owner_bootstrapped(&router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&router, "flow-admin-token").await;
     let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -277,7 +277,7 @@ async fn refresh_token_remains_reusable_when_access_token_issuance_fails() {
     let (mut state, database, key_directory) = test_state("oauth_flow").await;
     let setup_router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&setup_router, &suffix).await;
+    ensure_owner_bootstrapped(&setup_router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
     let refresh = RefreshToken::new(
@@ -418,7 +418,7 @@ async fn totp_reset_revocation_invalidates_outstanding_refresh_tokens() {
     let (state, database, key_directory) = test_state("oauth_flow").await;
     let router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&router, &suffix).await;
+    ensure_owner_bootstrapped(&router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&router, "flow-admin-token").await;
     let basic = STANDARD.encode(format!("{client_id}:{client_secret}"));
@@ -557,7 +557,7 @@ async fn authorization_code_is_restored_when_token_issuance_fails() {
     let (mut state, database, key_directory) = test_state("oauth_flow").await;
     let setup_router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&setup_router, &suffix).await;
+    ensure_owner_bootstrapped(&setup_router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
     let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -700,7 +700,7 @@ async fn resubmitting_a_consumed_refresh_token_revokes_the_family() {
     let (state, database, key_directory) = test_state("oauth_flow").await;
     let setup_router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&setup_router, &suffix).await;
+    ensure_owner_bootstrapped(&setup_router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
     let basic = STANDARD.encode(format!("{client_id}:{client_secret}"));
@@ -768,7 +768,7 @@ async fn authorization_code_stays_consumed_when_refresh_cleanup_fails() {
     let (mut state, database, key_directory) = test_state("oauth_flow").await;
     let setup_router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&setup_router, &suffix).await;
+    ensure_owner_bootstrapped(&setup_router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
     let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -839,7 +839,7 @@ async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
     let (mut state, database, key_directory) = test_state("oauth_flow").await;
     let setup_router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&setup_router, &suffix).await;
+    ensure_owner_bootstrapped(&setup_router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
     let (client_id, _client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
     chenxing_auth::sqlx::query("UPDATE oauth_clients SET owner_user_id = $1 WHERE client_id = $2")

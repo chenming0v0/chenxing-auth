@@ -148,14 +148,21 @@ async fn postgres_repositories_round_trip_users_and_clients() {
         .expect("update client")
     );
     assert!(
+        client_repository::update_client_secret(&pool, None, &client_id, "new-hash")
+            .await
+            .expect("update client secret")
+    );
+    assert!(
         client_repository::set_client_status(&pool, None, &client_id, "disabled")
             .await
             .expect("disable client")
     );
+    // Issue #416：已禁用 Client 拒绝轮换 Secret，与认证路径 status 门对齐；
+    // 仓库层以 Ok(false) 表达「没有可轮换的版本」。
     assert!(
-        client_repository::update_client_secret(&pool, None, &client_id, "new-hash")
+        !client_repository::update_client_secret(&pool, None, &client_id, "post-disable-hash")
             .await
-            .expect("update client secret")
+            .expect("update client secret on disabled client")
     );
 
     chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE id = $1")

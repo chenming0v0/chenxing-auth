@@ -72,7 +72,7 @@ fn cookie_header(response: &axum::response::Response) -> String {
 async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_headers() {
     let (router, database, key_directory) = test_router("oauth_token_flow").await;
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&router, &suffix).await;
+    ensure_owner_bootstrapped(&router, &database, "oauth_token_flow", &suffix).await;
     let email = format!("flow-{suffix}@example.com");
     let username = format!("flow-{suffix}");
     let password = "correct horse battery";

@@ -1,0 +1,12 @@
+# 配额退款测试共享 Redis 的待退台账 ZSET（PENDING_REFUNDS_ZSET），每个用例开头
+# DEL 清空该键。nextest 每个测试独立进程运行，quota_refund.rs 里的进程内互斥锁
+# （REFUND_TESTS_LOCK）无法跨进程串行化，两个用例的 DEL/ZADD 会互相擦除对方刚
+# 登记的条目，导致 worker 扫描计数随机归零。测试组把这两个用例限到全局单并发，
+# 恢复「串行化 + 清空共享键」的意图；进程内互斥锁继续保护 llvm-cov / 裸
+# cargo test 等单进程运行器。
+[test-groups]
+quota-refund-serial = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'test(oauth::quota::quota_refund::tests::)'
+test-group = 'quota-refund-serial'

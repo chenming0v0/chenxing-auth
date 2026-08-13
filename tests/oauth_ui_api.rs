@@ -43,7 +43,7 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
             .await
             .expect("state"),
     );
-    oauth_flow::ensure_owner_bootstrapped(&router, "oauth_ui_api").await;
+    oauth_flow::ensure_owner_bootstrapped(&router, &database, "oauth_ui_api", "oauth_ui_api").await;
     (router, database, key_directory)
 }
 

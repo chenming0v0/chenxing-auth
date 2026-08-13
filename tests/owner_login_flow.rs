@@ -20,7 +20,7 @@ async fn owner_login_issues_shared_session_and_csrf_cookies() {
     let (state, database, key_directory) = test_state("owner_login_flow").await;
     let router = api::router(state);
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&router, &suffix).await;
+    ensure_owner_bootstrapped(&router, &database, "owner_login_flow", &suffix).await;
     let username = format!("oauth-owner-{suffix}");
     let email = format!("{username}@example.com");
     let password = "correct horse battery";

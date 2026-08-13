@@ -36,7 +36,7 @@ async fn authorization_code_rejected_after_session_revocation_and_code_not_consu
     let (state, database, key_directory) = test_state("oauth_session_binding").await;
     let router = chenxing_auth::api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&router, &suffix).await;
+    ensure_owner_bootstrapped(&router, &database, "oauth_session_binding", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&router, "flow-admin-token").await;
 

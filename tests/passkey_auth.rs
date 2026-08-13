@@ -46,7 +46,7 @@ async fn setup() -> (
             .await
             .expect("test state"),
     );
-    oauth_flow::ensure_owner_bootstrapped(&router, "passkey_auth").await;
+    oauth_flow::ensure_owner_bootstrapped(&router, &database, "passkey_auth", "passkey_auth").await;
     (router, database, key_directory, email)
 }
 
@@ -160,7 +160,7 @@ async fn insert_test_passkey(database: &chenxing_auth::sqlx::PgPool, user_id: i6
     // 测试种数据直插 SQL，避免依赖已被移除的 repository::insert_passkey。
     // credential 必须是可解码的 Passkey JSON：authentication/start 会经 list_passkeys 反序列化。
     let credential =
-        serde_json::to_value(&test_passkey(&credential_id)).expect("serialize test passkey");
+        serde_json::to_value(test_passkey(&credential_id)).expect("serialize test passkey");
     chenxing_auth::sqlx::query(
         "INSERT INTO user_passkeys
             (user_id, credential_id, credential, created_at, updated_at)

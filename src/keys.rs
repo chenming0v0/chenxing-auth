@@ -409,3 +409,11 @@ fn generate_rsa_key() -> Result<(String, PrivateKeyDer), KeyManagerError> {
 #[cfg(test)]
 #[path = "keys_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "keys_rotation_tests.rs"]
+mod rotation_tests;
+
+#[cfg(test)]
+#[path = "keys_revocation_tests.rs"]
+mod revocation_tests;

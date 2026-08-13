@@ -27,6 +27,10 @@ async fn test_router() -> (Router, std::path::PathBuf) {
         3600,
     )
     .expect("config");
+    // Issue #348：ADMIN_TOKEN 为空时管理面整体关闭，未认证请求拿到的是 403
+    // admin_disabled 而不是守卫的 401。这两个用例的意图是「请求落到 AdminWrite
+    // 守卫并被拒绝」，因此显式启用管理面（非空 Token），让守卫真正执行。
+    config.admin_token = "api-test-admin".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (

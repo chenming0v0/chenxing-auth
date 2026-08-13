@@ -66,7 +66,7 @@ async fn setup() -> (
         .await
         .expect("state");
     let router = api::router(state.clone());
-    oauth_flow::ensure_owner_bootstrapped(&router, BINARY).await;
+    oauth_flow::ensure_owner_bootstrapped(&router, &database, BINARY, BINARY).await;
     (router, state, database, key_directory)
 }
 

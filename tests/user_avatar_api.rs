@@ -46,7 +46,8 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
             .await
             .expect("state"),
     );
-    oauth_flow::ensure_owner_bootstrapped(&router, "user_avatar_api").await;
+    oauth_flow::ensure_owner_bootstrapped(&router, &database, "user_avatar_api", "user_avatar_api")
+        .await;
     db_isolation::isolate_user_ids(&database, "user_avatar_api").await;
     (router, database, key_directory)
 }

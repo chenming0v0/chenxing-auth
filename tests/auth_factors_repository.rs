@@ -93,11 +93,10 @@ async fn totp_factor_round_trip_returns_ciphertext_only() {
         Some(vec![9, 8, 7])
     );
     // #360：CAS 未命中必须能区分「行还在但密文已换」与「因子已被重置/删除」。
-    assert_eq!(
+    assert!(
         repository::delete_totp_factor(&pool, user_id)
             .await
-            .expect("delete TOTP factor"),
-        true
+            .expect("delete TOTP factor")
     );
     assert_eq!(
         repository::update_totp_factor_if_current(&pool, user_id, &[9, 8, 7], &[5, 5, 5])

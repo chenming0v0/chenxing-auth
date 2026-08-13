@@ -46,7 +46,7 @@ async fn setup() -> Harness {
     let (state, database, key_directory) = test_state("client_secret_token_race").await;
     let router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&router, &suffix).await;
+    ensure_owner_bootstrapped(&router, &database, "client_secret_token_race", &suffix).await;
     let (user_id, _, _, _) = register_test_user(&router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&router, "flow-admin-token").await;
     Harness {

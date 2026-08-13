@@ -63,7 +63,13 @@ async fn setup() -> Harness {
         .await
         .expect("test state");
     let router = api::router(state.clone());
-    oauth_flow::ensure_owner_bootstrapped(&router, "totp_factor_race").await;
+    oauth_flow::ensure_owner_bootstrapped(
+        &router,
+        &database,
+        "totp_factor_race",
+        "totp_factor_race",
+    )
+    .await;
     Harness {
         router,
         state,

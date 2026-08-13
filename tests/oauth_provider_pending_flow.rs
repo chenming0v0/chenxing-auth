@@ -110,6 +110,10 @@ async fn setup(
     .expect("config");
     config.admin_token = "provider-pending-admin".to_owned();
     config.cookie_secure = false;
+    // Issue #343：本用例的 provider 端点是本机 mock 服务器（127.0.0.1 回环），
+    // 必须显式开启开发期回环例外；生产边界由 oauth_provider_endpoint_policy.rs
+    // 的「默认拒绝回环」用例单独覆盖。
+    config.oauth_provider_loopback_enabled = true;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let router = api::router(
         AppState::new_with_pool(config, database.clone())
@@ -153,7 +157,13 @@ async fn setup(
         .await
         .expect("enable response");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    oauth_flow::ensure_owner_bootstrapped(&router, "oauth_provider_pending_flow").await;
+    oauth_flow::ensure_owner_bootstrapped(
+        &router,
+        &database,
+        "oauth_provider_pending_flow",
+        "oauth_provider_pending_flow",
+    )
+    .await;
     (router, database, key_directory, slug)
 }
 
