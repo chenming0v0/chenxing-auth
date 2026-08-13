@@ -294,9 +294,9 @@ mod tests {
         let parsed = PasswordHash::new(UNUSABLE_PASSWORD_HASH).expect("valid PHC string");
         for candidate in ["", "password", "oauth_external_user"] {
             assert!(
-                !Argon2::default()
+                Argon2::default()
                     .verify_password(candidate.as_bytes(), &parsed)
-                    .is_ok(),
+                    .is_err(),
                 "candidate {candidate:?} must not verify against the unusable hash"
             );
         }
