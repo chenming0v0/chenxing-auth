@@ -1,6 +1,4 @@
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use redis::{AsyncCommands, Script};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use super::{
@@ -52,6 +50,10 @@ const FAMILY_REVOKED_PREFIX: &str = "cx:refresh:family_revoked:";
 /// 撤销任意一个旧 token 都会给所有旧 token 写上同一个墓志，把它们连坐撤销。
 /// 因此为它们按 token 哈希合成一个「单成员 family」：索引集合不存在（撤销时
 /// 只有提交的那一个 token 被删），墓志按 token 独立。
+///
+/// 回退后缀 `legacy-token:{hash}` 与旧格式 token 轮换后继的派生家族
+/// （`RefreshToken::family_identifier`，Issue #313）是同一个键空间：从活
+/// payload、墓碑还是轮换后继定位，撤销都命中同一撤销域。
 pub(super) struct FamilyScope {
     index_key: String,
     revoked_key: String,
@@ -123,7 +125,7 @@ impl RefreshTokenStore {
     // 原始 token 值不进入 Redis keyspace，也不进入索引成员，
     // 避免 keyspace dump 或慢查询日志泄露可用凭据。
     fn token_hash(value: &str) -> String {
-        URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()))
+        super::refresh::refresh_token_hash(value)
     }
 
     // ── 主键 / 索引键 / 墓碑键的构造 ──────────────────────────────────────
@@ -288,8 +290,12 @@ impl RefreshTokenStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let old_hash = Self::token_hash(value);
         let new_hash = Self::token_hash(&replacement.value);
+        // 墓碑携带后继 token 的家族而不是旧 payload 里的 family_id：旧格式
+        // token 轮换时 payload 里还是空串，而家族已经由旧值派生（rotate_at），
+        // 用后继家族才能让墓碑定位到的撤销命中轮换后继（Issue #313）。
+        // 新格式轮换两者同族，行为不变。
         let tombstone =
-            serde_json::to_string(&Tombstone::for_token(token, TombstoneState::Consumed, now))?;
+            serde_json::to_string(&Tombstone::for_rotation(token, &replacement.family_id, now))?;
         let new_ttl = effective_ttl_at(replacement, now);
         let target_family = FamilyScope::new(&replacement.family_id, &new_hash);
         let rotated: i32 = Script::new(ROTATE_WITH_TOMBSTONE_SCRIPT)

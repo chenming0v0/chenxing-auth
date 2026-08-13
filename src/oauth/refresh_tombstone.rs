@@ -59,6 +59,26 @@ impl Tombstone {
         }
     }
 
+    /// 轮换消费墓碑：家族记录**后继 token** 的 family_id。
+    ///
+    /// 旧格式 token 轮换时，旧 payload 里的 `family_id` 还是空串（家族在
+    /// `rotate_at` 里由旧值派生）。墓碑若沿用空串，通过墓碑定位到的撤销会
+    /// 落在「只有已死旧值」的单成员域上，轮换后继继续存活（Issue #313）。
+    /// 新格式轮换中后继与旧 token 同族，此构造器行为与 `for_token` 一致。
+    pub(super) fn for_rotation(
+        token: &RefreshToken,
+        replacement_family_id: &str,
+        now: time::OffsetDateTime,
+    ) -> Self {
+        Self {
+            family_id: replacement_family_id.to_owned(),
+            client_id: token.client_id.clone(),
+            user_id: token.user_id.clone(),
+            state: TombstoneState::Consumed,
+            recorded_at: now.unix_timestamp(),
+        }
+    }
+
     pub(super) fn for_family(
         family_id: &str,
         client_id: &str,

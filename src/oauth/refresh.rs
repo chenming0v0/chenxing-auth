@@ -1,10 +1,21 @@
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt;
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::clock::{Clock, SystemClock};
+
+/// 计算 Refresh Token 值的 SHA-256 + URL-safe base64 哈希。
+///
+/// 原始 token 值不进入 Redis keyspace、索引成员或日志，避免 keyspace dump 或
+/// 慢查询日志泄露可用凭据。`refresh_store` 的主键、索引与墓碑键共用此函数，
+/// 与 `revocation.rs` / `sessions::store` 的既有哈希约定保持一致。
+pub(crate) fn refresh_token_hash(value: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()))
+}
 
 /// Refresh Token 的绝对有效期上限（RFC 9700 §4.14.2 建议限制长期凭据的生命周期）。
 ///
@@ -43,8 +54,10 @@ pub struct RefreshToken {
     /// 成员被重放时，撤销整个家族（攻击者和合法客户端各持一个轮换后的 token，
     /// 只拒绝当次请求会让攻击者继续用手里那个）。
     ///
-    /// 旧格式 token 缺失时反序列化为空字符串；首次轮换时会分配新的 family_id，
-    /// 之后该 token 独立成家（无法关联撤销历史上同源的 token，但不影响新流程）。
+    /// 旧格式 token 缺失时反序列化为空字符串；首次轮换时家族由 token 值哈希
+    /// 确定性派生（`legacy-token:{hash}`，见 [`Self::family_identifier`]），
+    /// 与存储层对空 family 的撤销域回退是同一个键空间，因此无论从活 payload、
+    /// 墓碑还是轮换后继定位，撤销都命中同一家族（Issue #313）。
     ///
     /// `skip_serializing_if` 保证旧 token 的 CAS 兼容性（同 `issued_at` 约束）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -126,6 +139,36 @@ mod tests {
         // 否则撤销与轮换的竞态会把已撤销的 grant 重新救活。
         assert_eq!(rotated.session_epoch, token.session_epoch);
     }
+
+    /// Issue #313：旧格式 token（空 `family_id`）轮换后，后继必须留在由旧值
+    /// 哈希派生的家族里，让撤销/重放路径从任何入口（活 payload、墓碑、CAS
+    /// 陈旧 payload）都能命中它，而不是落入全新家族。
+    #[test]
+    fn legacy_token_rotation_stays_in_the_derived_family() {
+        let created_at = OffsetDateTime::UNIX_EPOCH + Duration::days(1);
+        let mut token = RefreshToken::new_at_with_client_secret_version(
+            "client".to_owned(),
+            "user".to_owned(),
+            vec!["openid".to_owned()],
+            7,
+            3,
+            created_at,
+        );
+        // 模拟旧格式 payload：family_id 缺失，反序列化为空串。
+        token.family_id.clear();
+
+        let rotated = token.rotate_at(vec!["openid".to_owned()], created_at + Duration::days(2));
+
+        assert!(!rotated.family_id.is_empty());
+        assert_eq!(rotated.family_id, token.family_identifier());
+        assert_eq!(
+            rotated.family_id,
+            format!("legacy-token:{}", super::refresh_token_hash(&token.value))
+        );
+        // 家族随轮换链一路继承，后续轮换不再派生新家族。
+        let second = rotated.rotate_at(vec!["openid".to_owned()], created_at + Duration::days(3));
+        assert_eq!(second.family_id, rotated.family_id);
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -190,7 +233,9 @@ impl RefreshToken {
     /// 轮换 token（RFC 9700 §4.14.2：旧 token 单次使用，返回新 token）。
     ///
     /// 继承 `issued_at` 和 `family_id` 以维持家族关系和绝对生命周期；
-    /// 更新 `created_at` / `expires_at` 以重置滑动窗口。
+    /// 更新 `created_at` / `expires_at` 以重置滑动窗口。旧格式 token 的
+    /// 家族由 token 值确定性派生（[`Self::family_identifier`]），使轮换后继
+    /// 仍留在原 token 的撤销域内（Issue #313）。
     ///
     /// 墙钟便捷入口，只给测试和夹具用。生产刷新路径必须走
     /// [`Self::rotate_at`] / [`Self::rotate_at_with_client_secret_version`]，
@@ -213,12 +258,7 @@ impl RefreshToken {
             expires_at: sliding_deadline.min(absolute_deadline),
             revoked_at: None,
             issued_at: Some(issued_at),
-            family_id: if self.family_id.is_empty() {
-                // 旧格式 token 首次轮换时生成新家族 ID
-                Uuid::new_v4().simple().to_string()
-            } else {
-                self.family_id.clone()
-            },
+            family_id: self.family_identifier(),
             client_secret_version: self.client_secret_version,
             session_epoch: self.session_epoch,
         }
@@ -267,6 +307,35 @@ impl RefreshToken {
     /// 假定该 token 就是原始签发，而非已轮换多次的后继）。
     pub fn issued_at(&self) -> OffsetDateTime {
         self.issued_at.unwrap_or(self.created_at)
+    }
+
+    /// 旧格式 token（空 `family_id`）的家族标识：由 token 值哈希确定性派生。
+    ///
+    /// 派生值 `legacy-token:{hash}` 与存储层 `FamilyScope` 对空 family 的
+    /// 回退后缀完全一致，因此活 token 撤销、墓碑撤销和 CAS 陈旧 payload
+    /// 三条路径解析到的都是同一个撤销域。
+    pub fn legacy_family_id(&self) -> String {
+        format!("legacy-token:{}", refresh_token_hash(&self.value))
+    }
+
+    /// 撤销/重放路径使用的家族标识（RFC 9700 §4.14.2 的撤销单元）。
+    ///
+    /// 新格式 token 返回存储的 `family_id`；旧格式（空串）返回
+    /// [`Self::legacy_family_id`] 的派生值。
+    pub fn family_identifier(&self) -> String {
+        Self::resolve_family_identifier(&self.family_id, &self.value)
+    }
+
+    /// 把存储态（payload / 墓碑）里的 `family_id` 解析为撤销路径的家族标识。
+    ///
+    /// 新格式直接返回；旧格式（空串，包括升级前写入的旧墓碑）由 token 值
+    /// 哈希派生，保证撤销/重放定位到的家族与轮换后继一致（Issue #313）。
+    pub fn resolve_family_identifier(family_id: &str, token_value: &str) -> String {
+        if family_id.is_empty() {
+            format!("legacy-token:{}", refresh_token_hash(token_value))
+        } else {
+            family_id.to_owned()
+        }
     }
 
     /// 返回凭据家族的绝对截止时刻（首次签发 + 180 天）。
