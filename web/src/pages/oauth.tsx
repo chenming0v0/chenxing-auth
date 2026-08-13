@@ -45,7 +45,9 @@ function usePendingAuthorization(requestId: string | null): {
       .catch((reason: unknown) => {
         if (!active) return
         if (reason instanceof ApiError && reason.status === 401) {
-          navigate(loginRecoveryTarget(window.location.pathname, window.location.search))
+          // 会话失效是守卫性重定向（#326）：replace 当前条目，避免后退键
+          // 回到 401 页面再次触发跳转，形成「登录页 ↔ 确认页」历史陷阱。
+          navigate(loginRecoveryTarget(window.location.pathname, window.location.search), { replace: true })
           return
         }
         setMessage(reason instanceof Error ? reason.message : '授权请求已失效。')

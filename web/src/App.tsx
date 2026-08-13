@@ -53,23 +53,23 @@ function AppContent() {
 
   // Fresh database / no Owner yet: force the first-light bootstrap window.
   if (bootstrap === 'required' && !bootstrapPath) {
-    return <Navigate to="/bootstrap" />
+    return <Navigate to="/bootstrap" replace />
   }
 
   // Owner already exists: bootstrap page becomes a dead end.
   if (bootstrap === 'ready' && bootstrapPath) {
-    return <Navigate to="/login" />
+    return <Navigate to="/login" replace />
   }
 
   if (protectedPath && status !== 'authenticated') {
     // loginRecoveryTarget 会把 OAuth 的 request_id 提到顶层查询参数（#270）：
     // 登录页只读自己的 request_id 决定登录后是否重新绑定待授权请求，
     // 埋在 returnTo 里读不到，用户会在登录页与确认页之间反复跳转。
-    return <Navigate to={loginRecoveryTarget(window.location.pathname, window.location.search)} />
+    return <Navigate to={loginRecoveryTarget(window.location.pathname, window.location.search)} replace />
   }
 
   if (adminPath && status === 'authenticated' && user?.role === 'user') {
-    return <Navigate to="/console" />
+    return <Navigate to="/console" replace />
   }
 
   const pages: Record<string, ReactNode> = {
@@ -95,7 +95,7 @@ function AppContent() {
     '/admin/settings': <AdminSettings />,
   }
 
-  return pages[path] ?? <Navigate to="/" />
+  return pages[path] ?? <Navigate to="/" replace />
 }
 
 export default function App() {
