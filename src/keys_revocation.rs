@@ -3,15 +3,19 @@
 //! 吊销 active key 要同时改动两处磁盘事实（active kid 与私钥材料），因此磁盘部分
 //! 不在这里手写顺序，而是交给 `journal`：先把意图落盘，再由同一个恢复函数执行。
 //! 崩溃恢复走的是完全相同的代码路径，不存在第二份补偿逻辑（Issue #284）。
+//!
+//! journal 记录落盘即是提交点：此后即使立即收敛被瞬时 IO 失败打断，内存也必须
+//! 切换到不含被吊销 key 的计划快照，绝不能继续用它签发——本实例签出的 token 在
+//! 其余已收敛的实例上会全部验不过（Issue #315）。
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path, time::Duration};
 
 use time::OffsetDateTime;
 
 use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 
 use super::{
-    KeyManager, KeyManagerError, KeyMaterial, KeyRevocation, build_key_state, journal,
+    KeyManager, KeyManagerError, KeyMaterial, KeyRevocation, KeyState, build_key_state, journal,
     newest_key_id, persistence,
 };
 
@@ -81,36 +85,26 @@ pub(super) fn revoke_blocking_at(
         materials,
     )?;
     let (next_active_key_id, next_state) = match directory.as_ref() {
-        Some(directory) => {
-            let (disk_active_key_id, disk_materials) = commit_to_disk(
+        Some(directory) => snapshot_after_commit(
+            directory,
+            retention,
+            skew_allowance,
+            &planned_active_key_id,
+            planned_state,
+            commit_to_disk(
                 directory,
                 retention,
                 skew_allowance,
                 now,
                 &key_id,
                 &planned_active_key_id,
-            )?;
-            let state = if planned_state.matches_disk_snapshot(&disk_active_key_id, &disk_materials)
-            {
-                planned_state
-            } else {
-                // 仅异常恢复会走这里：以 journal 收敛后的实际 active/materials 为准，
-                // 不能发布调用前推算的陈旧快照。
-                build_key_state(
-                    Some(directory.clone()),
-                    retention,
-                    skew_allowance,
-                    disk_active_key_id.clone(),
-                    disk_materials,
-                )?
-            };
-            (disk_active_key_id, state)
-        }
+            )?,
+        )?,
         None => (planned_active_key_id, planned_state),
     };
 
-    // 只有磁盘完全收敛且可构造完整状态后才替换内存快照。瞬时 IO 失败会留下 journal，
-    // 下一次加载继续执行；不会把半完成的磁盘快照发布到请求热路径。
+    // 快照选择见 `snapshot_after_commit`：无论磁盘是否立即收敛，这里发布的快照都
+    // 不再包含被吊销的 key，不会把已吊销的密钥留在签发热路径上（Issue #315）。
     let published_key_count = next_state.jwks.keys.len();
     *manager.write_state() = next_state;
     Ok(KeyRevocation {
@@ -120,32 +114,82 @@ pub(super) fn revoke_blocking_at(
     })
 }
 
+/// 一次吊销提交到磁盘后的收敛结果。
+pub(super) enum CommitOutcome {
+    /// 磁盘已完全收敛到吊销后的快照。
+    Converged(String, BTreeMap<String, KeyMaterial>),
+    /// 吊销已提交（journal 记录已落盘），但本次立即收敛被瞬时 IO 失败打断；
+    /// 恢复会在下一次加载继续执行。
+    Pending,
+}
+
+/// 决定吊销提交后发布的内存快照与 active kid。
+///
+/// 磁盘收敛成功时发布读回的实际快照，失败时发布计划快照：吊销已经提交，内存
+/// 绝不能继续把被吊销的 key 当作 active 签发，否则其余已收敛的实例会拒绝这批
+/// token（Issue #315）。计划快照与 journal 意图一致，磁盘由下一次加载补完，
+/// 后台同步随后把内存对齐到最终事实。
+pub(super) fn snapshot_after_commit(
+    directory: &Path,
+    retention: Duration,
+    skew_allowance: Duration,
+    planned_active_key_id: &str,
+    planned_state: KeyState,
+    outcome: CommitOutcome,
+) -> Result<(String, KeyState), KeyManagerError> {
+    match outcome {
+        CommitOutcome::Converged(disk_active_key_id, disk_materials) => {
+            let state = if planned_state.matches_disk_snapshot(&disk_active_key_id, &disk_materials)
+            {
+                planned_state
+            } else {
+                // 仅异常恢复会走这里：以 journal 收敛后的实际 active/materials 为准，
+                // 不能发布调用前推算的陈旧快照。
+                build_key_state(
+                    Some(directory.to_path_buf()),
+                    retention,
+                    skew_allowance,
+                    disk_active_key_id.clone(),
+                    disk_materials,
+                )?
+            };
+            Ok((disk_active_key_id, state))
+        }
+        CommitOutcome::Pending => Ok((planned_active_key_id.to_owned(), planned_state)),
+    }
+}
+
 /// 落盘一次吊销：写意图记录，随后立即执行恢复流程把它做完。
 ///
 /// 刻意不在这里手写"先写 kid 再删材料"的顺序，而是复用 `journal::recover`：
 /// 正常路径与重启恢复因此共用同一段实现，顺序约束只需要在一处正确。
 ///
-/// 记录落盘即视为提交。随后通过完整加载执行 recovery 并读回实际快照，使正常吊销
-/// 与启动恢复共享同一个状态机；瞬时失败由下一次加载继续收敛。
+/// 记录落盘即视为提交：`Err` 只可能来自记录写入之前，此时磁盘没有任何改动；
+/// 记录写入之后即使收敛失败，吊销也已经决定，返回 `CommitOutcome::Pending`，
+/// 由下一次加载继续收敛。调用方对 Pending 必须发布计划快照，不得继续用被吊销
+/// 的 key 签发（Issue #315）。
 fn commit_to_disk(
-    directory: &std::path::Path,
-    retention: std::time::Duration,
-    skew_allowance: std::time::Duration,
+    directory: &Path,
+    retention: Duration,
+    skew_allowance: Duration,
     now: OffsetDateTime,
     revoked_key_id: &str,
     next_active_key_id: &str,
-) -> Result<(String, BTreeMap<String, KeyMaterial>), KeyManagerError> {
+) -> Result<CommitOutcome, KeyManagerError> {
     let pending =
         journal::PendingRevocation::new(revoked_key_id.to_owned(), next_active_key_id.to_owned());
     journal::record(directory, &pending)?;
-    persistence::load_materials(directory, retention, skew_allowance, now, false).map_err(|error| {
-        tracing::error!(
-            key_id = %revoked_key_id,
-            replacement_key_id = %next_active_key_id,
-            error = %error,
-            "failed to converge the key directory after committing a revocation; \
-             recovery will be retried on the next key directory load"
-        );
-        error
-    })
+    match persistence::load_materials(directory, retention, skew_allowance, now, false) {
+        Ok((active_key_id, key_files)) => Ok(CommitOutcome::Converged(active_key_id, key_files)),
+        Err(error) => {
+            tracing::warn!(
+                key_id = %revoked_key_id,
+                replacement_key_id = %next_active_key_id,
+                error = %error,
+                "revocation committed but the key directory did not converge; \
+                 publishing the planned snapshot and retrying convergence on the next load"
+            );
+            Ok(CommitOutcome::Pending)
+        }
+    }
 }
