@@ -46,8 +46,9 @@ pub use config_limits::SecurityLimits;
 pub use config_parsing::{AuthEncryptionKey, AuthEncryptionKeyRing};
 pub use config_proxy::TrustedProxies;
 pub use config_security::{
-    DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_TOKEN_TTL_SECONDS,
-    MAX_SESSION_IDLE_TIMEOUT_SECONDS, MAX_SESSION_MAX_CONCURRENT_SESSIONS, MAX_SESSION_TTL_SECONDS,
+    DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
+    DEFAULT_TOKEN_TTL_SECONDS, MAX_SESSION_IDLE_TIMEOUT_SECONDS,
+    MAX_SESSION_MAX_CONCURRENT_SESSIONS, MAX_SESSION_TTL_SECONDS,
 };
 
 // `config_limits` 的测试通过这个路径复用 key ring 解析器；非测试构建没有其他调用方。
@@ -85,6 +86,13 @@ pub struct Config {
     /// 主机上没有前端产物而无法执行。
     pub web_dist_dir: String,
     pub key_rotation_grace_seconds: u64,
+    /// 跨实例时钟偏差容忍（秒），Issue #316。
+    ///
+    /// `retired_at` 由退役实例的时钟写入，保留窗口判断却在当前加载实例的时钟上
+    /// 进行。该值把窗口关闭边界推到 `retired_at + grace + allowance`，保证时钟偏快
+    /// 的实例不会在真实窗口结束前删除共享密钥文件。默认 3600（1 小时），上限是
+    /// `KEY_ROTATION_GRACE_SECONDS`；单实例部署可设为 0。
+    pub key_rotation_skew_allowance_seconds: u64,
     pub cookie_secure: bool,
     /// Development-only compatibility for the OAuth session header.
     pub oauth_session_header_enabled: bool,
@@ -136,6 +144,10 @@ impl fmt::Debug for Config {
             .field(
                 "key_rotation_grace_seconds",
                 &self.key_rotation_grace_seconds,
+            )
+            .field(
+                "key_rotation_skew_allowance_seconds",
+                &self.key_rotation_skew_allowance_seconds,
             )
             .field("cookie_secure", &self.cookie_secure)
             .field(

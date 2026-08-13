@@ -31,6 +31,8 @@ mod journal;
 mod keys_material;
 #[path = "keys_persistence.rs"]
 mod persistence;
+#[path = "keys_prune.rs"]
+mod prune;
 #[path = "keys_retirement.rs"]
 mod retirement;
 #[path = "keys_revocation.rs"]
@@ -40,14 +42,21 @@ mod rotation;
 #[path = "keys_sync.rs"]
 mod sync;
 
-use keys_material::{
-    KeyMaterial, PrivateKeyDer, compare_recency, key_material, mark_retired, newest_key_id,
-    prune_materials,
-};
+use keys_material::{KeyMaterial, PrivateKeyDer, compare_recency, key_material, newest_key_id};
 
 pub use sync::{DEFAULT_KEY_SYNC_INTERVAL, KeySyncOutcome, MINIMUM_KEY_SYNC_INTERVAL};
 
 pub const DEFAULT_KEY_RETENTION_SECONDS: u64 = 604_800;
+
+/// 跨实例时钟偏差容忍（秒）的默认值（Issue #316）。
+///
+/// `retired_at` 由退役实例的时钟写入，保留窗口判断却发生在当前加载实例的时钟上。
+/// 时钟偏快的实例会把 `now - retired_at` 算大，在真实窗口关闭前就判定过期并删除
+/// 共享目录里的密钥文件——不可逆，且影响所有实例。该容忍值让窗口关闭边界变成
+/// `retired_at + retention + skew_allowance`，快钟实例至多**晚**删、绝不提前删。
+/// 默认 1 小时：NTP 同步的实例间偏差在秒级，1 小时覆盖全部现实部署，代价只是
+/// 旧私钥多驻留 1/168 个默认窗口。
+pub const DEFAULT_KEY_RETENTION_SKEW_ALLOWANCE_SECONDS: u64 = 3_600;
 
 /// 签名密钥的内存权威副本。
 ///
@@ -69,6 +78,10 @@ pub struct KeyManager {
 struct KeyState {
     directory: Option<PathBuf>,
     retention: Duration,
+    /// 跨实例时钟偏差容忍（Issue #316）：窗口关闭边界是
+    /// `retired_at + retention + skew_allowance`，保证时钟偏快的实例不会在真实
+    /// 保留窗口结束前删除共享密钥文件。
+    skew_allowance: Duration,
     active_key_id: String,
     active_encoding_key: EncodingKey,
     private_materials: BTreeMap<String, KeyMaterial>,
@@ -163,13 +176,30 @@ impl KeyManager {
         directory: impl AsRef<Path>,
         retention: Duration,
     ) -> Result<Self, KeyManagerError> {
+        Self::load_or_generate_with_retention_and_skew_allowance(
+            directory,
+            retention,
+            Duration::ZERO,
+        )
+    }
+    pub fn load_or_generate_with_retention_and_skew_allowance(
+        directory: impl AsRef<Path>,
+        retention: Duration,
+        skew_allowance: Duration,
+    ) -> Result<Self, KeyManagerError> {
         let now = SystemClock.now();
         let directory = directory.as_ref().to_path_buf();
         ensure_secure_directory(&directory)?;
         let _storage_lock = KeyStorageLock::acquire(&directory)?;
         let (active_key_id, key_files) =
-            persistence::load_materials(&directory, retention, now, true)?;
-        Self::from_materials(Some(directory), retention, active_key_id, key_files)
+            persistence::load_materials(&directory, retention, skew_allowance, now, true)?;
+        Self::from_materials(
+            Some(directory),
+            retention,
+            skew_allowance,
+            active_key_id,
+            key_files,
+        )
     }
     pub async fn rotate(&self) -> Result<KeyRotation, KeyManagerError> {
         self.rotate_at(SystemClock.now()).await
@@ -280,6 +310,8 @@ impl KeyManager {
         Self::from_materials(
             directory,
             Duration::from_secs(DEFAULT_KEY_RETENTION_SECONDS),
+            // 纯内存模式没有第二个实例，不存在跨实例时钟偏差。
+            Duration::ZERO,
             active_key_id,
             materials,
         )
@@ -288,6 +320,7 @@ impl KeyManager {
     fn from_materials(
         directory: Option<PathBuf>,
         retention: Duration,
+        skew_allowance: Duration,
         active_key_id: String,
         materials: BTreeMap<String, KeyMaterial>,
     ) -> Result<Self, KeyManagerError> {
@@ -295,6 +328,7 @@ impl KeyManager {
             state: Arc::new(RwLock::new(build_key_state(
                 directory,
                 retention,
+                skew_allowance,
                 active_key_id,
                 materials,
             )?)),
@@ -323,6 +357,7 @@ fn invalid_decoding_key_error() -> jsonwebtoken::errors::Error {
 fn build_key_state(
     directory: Option<PathBuf>,
     retention: Duration,
+    skew_allowance: Duration,
     active_key_id: String,
     private_materials: BTreeMap<String, KeyMaterial>,
 ) -> Result<KeyState, KeyManagerError> {
@@ -348,6 +383,7 @@ fn build_key_state(
     Ok(KeyState {
         directory,
         retention,
+        skew_allowance,
         active_key_id,
         active_encoding_key: EncodingKey::from_rsa_der(active_der),
         private_materials,

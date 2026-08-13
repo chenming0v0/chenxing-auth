@@ -65,6 +65,7 @@ fn load(directory: &TempKeyDir) -> Result<String, KeyManagerError> {
     load_materials(
         directory.path(),
         RETENTION,
+        Duration::ZERO,
         OffsetDateTime::now_utc(),
         false,
     )
@@ -128,6 +129,7 @@ fn recovery_removes_material_left_by_a_revocation_interrupted_after_the_switch()
     let (active_key_id, materials) = load_materials(
         directory.path(),
         RETENTION,
+        Duration::ZERO,
         OffsetDateTime::now_utc(),
         false,
     )
@@ -221,6 +223,7 @@ fn recovery_generates_a_fresh_key_when_replacement_and_other_materials_are_missi
     let (active_key_id, materials) = load_materials(
         directory.path(),
         RETENTION,
+        Duration::ZERO,
         OffsetDateTime::now_utc(),
         false,
     )
@@ -297,6 +300,7 @@ fn recovery_discards_all_old_material_from_a_self_referential_record() {
     let (active_key_id, materials) = load_materials(
         directory.path(),
         RETENTION,
+        Duration::ZERO,
         OffsetDateTime::now_utc(),
         false,
     )
@@ -323,6 +327,7 @@ fn recovery_discards_all_old_material_when_the_revoked_target_is_unreadable() {
     let (active_key_id, materials) = load_materials(
         directory.path(),
         RETENTION,
+        Duration::ZERO,
         OffsetDateTime::now_utc(),
         false,
     )
@@ -363,6 +368,7 @@ fn the_record_file_is_outside_the_key_and_temporary_namespaces() {
     let (active_key_id, materials) = load_materials(
         directory.path(),
         RETENTION,
+        Duration::ZERO,
         OffsetDateTime::now_utc(),
         false,
     )
@@ -448,6 +454,7 @@ fn rotation_recovery_discards_all_old_material_from_a_corrupt_record() {
     let (active_key_id, materials) = load_materials(
         directory.path(),
         RETENTION,
+        Duration::ZERO,
         OffsetDateTime::now_utc(),
         false,
     )
@@ -474,6 +481,7 @@ fn the_rotation_record_file_is_outside_the_key_and_temporary_namespaces() {
     let (active_key_id, materials) = load_materials(
         directory.path(),
         RETENTION,
+        Duration::ZERO,
         OffsetDateTime::now_utc(),
         false,
     )

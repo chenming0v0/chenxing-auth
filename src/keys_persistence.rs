@@ -9,8 +9,8 @@ use crate::key_storage::{
 };
 
 use super::{
-    KeyManagerError, KeyMaterial, generate_rsa_key, journal, key_material, newest_key_id,
-    prune_materials, retirement,
+    KeyManagerError, KeyMaterial, generate_rsa_key, journal, key_material, newest_key_id, prune,
+    retirement,
 };
 
 pub(super) const ACTIVE_KEY_ID_FILE: &str = "active-rs256.kid";
@@ -22,9 +22,15 @@ const KEY_FILE_SUFFIX: &str = ".pkcs1.der";
 ///
 /// `active-rs256.kid` 只决定选择哪个材料，私钥材料本身始终从同一份
 /// `key_files` 快照构造，调用方不会再分别读取 kid 和私钥。
+///
+/// `skew_allowance` 是跨实例时钟偏差容忍（Issue #316）：`retired_at` 由退役实例
+/// 的时钟写入，本实例的 `now` 可能偏快，裁剪必须等 `now` 越过
+/// `retired_at + retention + skew_allowance` 才允许发生，否则会提前删除仍被其他
+/// 实例用于验签的公钥文件。
 pub(super) fn load_materials(
     directory: &Path,
     retention: Duration,
+    skew_allowance: Duration,
     now: OffsetDateTime,
     generate_if_empty: bool,
 ) -> Result<(String, BTreeMap<String, KeyMaterial>), KeyManagerError> {
@@ -95,7 +101,13 @@ pub(super) fn load_materials(
     // 目录和崩溃遗留的半成品都在这里自愈，因此下面的裁剪对每个非 active key 都有
     // 明确的退役时刻可用，不需要退回按创建时刻推断。
     retirement::reconcile(directory, &active_key_id, &mut key_files, now)?;
-    let expired = prune_materials(&active_key_id, &mut key_files, retention, now);
+    let expired = prune::prune_materials(
+        &active_key_id,
+        &mut key_files,
+        retention,
+        skew_allowance,
+        now,
+    );
     remove_expired_key_files(directory, &expired);
     // prune_materials 永不删除 active key，这里只是守住该不变量。
     if !key_files.contains_key(&active_key_id) {

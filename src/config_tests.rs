@@ -56,6 +56,12 @@ fn test_constructors_default_to_safe_values() {
     // #303：静态根默认是相对路径，绝不是空值——空值会在启动期被拒绝。
     assert_eq!(config.web_dist_dir, crate::web_dist::DEFAULT_WEB_DIST_DIR);
     assert!(!config.web_dist_dir.trim().is_empty());
+    // Issue #316：跨实例时钟偏差容忍默认开启（多实例部署的安全默认），
+    // 且不改变保留窗口本身的默认值。
+    assert_eq!(
+        config.key_rotation_skew_allowance_seconds,
+        DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS
+    );
 }
 
 #[test]
