@@ -3,7 +3,8 @@
 //! 这两块都不碰 Redis：scope 选择是纯函数，墓碑分类只依赖墓碑内容和当前时刻。
 //! 涉及真实 Redis 语义的并发轮换与 family 撤销由集成测试覆盖。
 
-use super::{TombstoneDisposition, classify_tombstone, select_scopes};
+use super::replay::{TombstoneDisposition, classify_tombstone};
+use super::select_scopes;
 use crate::oauth::refresh_store::{Tombstone, TombstoneState};
 use crate::oauth::{refresh::RefreshToken, token_use_case::OAuthError};
 use time::{Duration, OffsetDateTime};

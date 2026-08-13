@@ -2,17 +2,23 @@ use super::{OAuthError, RefreshExchangeError, TokenRequest, TokenResponse, issue
 use crate::{clients::service::AuthenticatedClient, state::AppState, users::domain::UserId};
 
 use super::super::{
-    refresh::RefreshToken,
-    refresh_store::RotationOutcome,
-    session::active_user_epoch,
-    token_security::{record_token_event, record_token_event_best_effort},
+    refresh::RefreshToken, refresh_store::RotationOutcome, session::active_user_epoch,
+    token_security::record_token_event,
+};
+
+/// 凭据已不在 Redis 时的处置（墓碑分类、重放撤销、审计）拆在子模块里，
+/// 保持兑换主流程可审查（沿用 `refresh_store_revocation.rs` 的模式）。
+#[path = "refresh_use_case_tombstone.rs"]
+mod tombstone;
+use tombstone::{
+    handle_missing_refresh_token, handle_vanished_refresh_token, record_and_return_invalid,
+    revoke_family_after_cas_mismatch,
 };
 
 // 重放处置（墓碑分类与 family 撤销）拆在独立文件：安全语义说明密度较高，
 // 混在主用例里会让本文件越过源文件长度门槛。
 #[path = "refresh_use_case_replay.rs"]
 mod replay;
-use replay::{ReplayContext, TombstoneDisposition, classify_tombstone, revoke_family_after_replay};
 
 /// Exchange a refresh token after the token endpoint has authenticated the client.
 pub(super) async fn exchange_refresh_token(
@@ -196,26 +202,19 @@ pub(super) async fn exchange_refresh_token(
             }
             Ok(token)
         }
-        // Losing the CAS means this exact token was already consumed between the lookup and
-        // the swap. That is a replay, not a benign race: two parties held the same credential
-        // and the loser must not keep a usable grant (Issue #293). The token payload we read
-        // is server-side state, so the family is located without trusting the tombstone.
+        // 键仍在但值不匹配：这个 token 一定是在查找与交换之间被另一个持有者
+        // 消费了。那是重放，不是良性竞态：两个持有者拿着同一份凭据，输家不能
+        // 保留可用的 grant（Issue #293）。键消失的歧义情况（可能是过期/驱逐/
+        // 时钟偏差）由 KeyMissing 分支查墓碑区分，不走这里。
         Ok(RotationOutcome::CasMismatch) => {
-            // 旧格式 token 的 payload 里 family 是空串，但家族可以由 token 值
-            // 确定性派生（Issue #313）。CAS 失败说明轮换已经把后继写进了那个
-            // 家族，撤销必须命中后继——否则只删这个已死的旧值，泄露凭据的
-            // 家族撤销被绕过。
-            let family_id = refresh.family_identifier();
-            revoke_family_after_replay(
-                state,
-                ReplayContext {
-                    client_id,
-                    user_id: &refresh.user_id,
-                    family_id: &family_id,
-                    replayed_value: refresh_value,
-                },
-            )
-            .await
+            revoke_family_after_cas_mismatch(state, client_id, &refresh, refresh_value).await
+        }
+        // 键在 `find` 与 CAS 之间消失了（Issue #312）。脚本只回答「键不在」，
+        // 不回答「为什么」：已被并发消费是重放，过期/驱逐/时钟偏差是良性。
+        // 区分依据是墓碑，交给专门的处置函数；没有 `Consumed` 墓碑时绝不能
+        // 撤销整个 family。
+        Ok(RotationOutcome::KeyMissing) => {
+            handle_vanished_refresh_token(state, client_id, refresh_value, &refresh).await
         }
         // The grant died while this request was in flight. Nothing to revoke and nothing to
         // report as a leak: the family tombstone already recorded whatever killed it.
@@ -263,56 +262,6 @@ fn select_scopes(
     Ok(requested)
 }
 
-async fn handle_missing_refresh_token(
-    state: &AppState,
-    client_id: &str,
-    refresh_value: &str,
-) -> Result<TokenResponse, RefreshExchangeError> {
-    let tombstone = match state.refresh_tokens.read_tombstone(refresh_value).await {
-        Ok(tombstone) => tombstone,
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to read refresh token tombstone");
-            return Err(OAuthError::temporarily_unavailable().into());
-        }
-    };
-    // 没有墓碑说明这个值从未被本服务签发，或者已经超出重放检测窗口。
-    let Some(tombstone) = tombstone else {
-        return record_and_return_invalid(state, None, client_id, "invalid_token").await;
-    };
-    match classify_tombstone(&tombstone, client_id) {
-        TombstoneDisposition::Replay => {
-            // 升级前写入的旧墓碑没有 family_id（旧格式轮换不记录后继家族）：
-            // 由提交值哈希派生家族标识，与轮换时写入后继的家族一致（#313）。
-            let family_id =
-                RefreshToken::resolve_family_identifier(&tombstone.family_id, refresh_value);
-            revoke_family_after_replay(
-                state,
-                ReplayContext {
-                    client_id,
-                    user_id: &tombstone.user_id,
-                    family_id: &family_id,
-                    replayed_value: refresh_value,
-                },
-            )
-            .await
-        }
-        TombstoneDisposition::AlreadyDead => {
-            record_and_return_invalid(state, Some(&tombstone.user_id), client_id, "token_revoked")
-                .await
-        }
-        TombstoneDisposition::ForeignClient => {
-            // Do not record the submitted token value; it is a credential.
-            tracing::warn!(
-                event = "refresh.replay_client_mismatch",
-                client_id = %client_id,
-                "refresh token replay attempt with mismatched client_id; \
-                 refusing without revoking the owning family"
-            );
-            record_and_return_invalid(state, None, client_id, "invalid_token").await
-        }
-    }
-}
-
 /// 撤销一次已经落库、但响应没能发出去的轮换（Issue #290）。
 ///
 /// 客户端只会收到错误响应，它手里仍然是 `previous`，所以必须让 `previous`
@@ -349,23 +298,6 @@ async fn rollback_rotation(
             "failed to roll back refresh rotation after audit persistence failure"
         ),
     }
-}
-
-async fn record_and_return_invalid(
-    state: &AppState,
-    user_id: Option<&str>,
-    client_id: &str,
-    reason: &str,
-) -> Result<TokenResponse, RefreshExchangeError> {
-    record_token_event_best_effort(
-        state,
-        user_id,
-        "token_refresh_failure",
-        Some(client_id),
-        reason,
-    )
-    .await;
-    Err(OAuthError::invalid_refresh_grant().into())
 }
 
 #[cfg(test)]

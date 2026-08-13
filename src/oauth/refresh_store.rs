@@ -75,15 +75,20 @@ impl FamilyScope {
 
 /// 一次轮换尝试的结果。
 ///
-/// 三种结果的处置完全不同，不能压缩成 `bool`：`CasMismatch` 说明这个 token
-/// 已经被别人消费（Issue #293：这就是重放），`FamilyRevoked` 说明整个 grant
+/// 四种结果的处置完全不同，不能压缩成 `bool`：`CasMismatch` 说明键仍在但
+/// 值已变，这个 token 必定已被别人消费（Issue #293：这就是重放）；
+/// `KeyMissing` 说明键已消失，可能是重放也可能是过期/驱逐/时钟偏差，
+/// 必须查墓碑才能区分（Issue #312）；`FamilyRevoked` 说明整个 grant
 /// 已经死亡，重试也不会成功。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RotationOutcome {
     /// 轮换成功，新 token 已经可兑换。
     Rotated,
-    /// CAS 失败：旧 token 已经不是 Redis 里的当前值。
+    /// CAS 失败：键仍在，但旧 token 已经不是 Redis 里的当前值。
     CasMismatch,
+    /// 旧 token 的键已不存在。歧义结果：可能已被消费（重放），也可能只是
+    /// 过期/驱逐/时钟偏差（良性）。调用方必须查墓碑区分，不得直接按重放处置。
+    KeyMissing,
     /// 目标 family 已被撤销，拒绝写入任何新成员。
     FamilyRevoked,
 }
@@ -321,6 +326,9 @@ impl RefreshTokenStore {
         Ok(match rotated {
             1 => RotationOutcome::Rotated,
             -1 => RotationOutcome::FamilyRevoked,
+            // 键已不存在：可能是已被消费（重放），也可能只是过期/驱逐/时钟
+            // 偏差。是否按重放处置由调用方查墓碑决定（Issue #312）。
+            2 => RotationOutcome::KeyMissing,
             _ => RotationOutcome::CasMismatch,
         })
     }
@@ -335,9 +343,9 @@ impl RefreshTokenStore {
     /// 这里复用轮换脚本做反向 CAS：只有当前活 token 仍是 `issued` 时才换回
     /// `previous`，索引与墓碑在同一次脚本内一致更新。
     ///
-    /// 非 `Rotated` 的结果都表示不能复活 `previous`：新 token 已被并发消费，
-    /// 或者整个 family 已经被撤销。此时恢复旧 token 会让已死的 grant
-    /// 重新出现可兑换凭据。
+    /// 非 `Rotated` 的结果都表示不能复活 `previous`：新 token 已被并发消费、
+    /// 已经消失（过期/驱逐），或者整个 family 已经被撤销。此时恢复旧 token
+    /// 会让已死的 grant 重新出现可兑换凭据。
     pub async fn rollback_rotation(
         &self,
         issued: &RefreshToken,
