@@ -2,7 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
 
-use super::{quota::QuotaRefundCancel, refresh::RefreshToken, session::active_user_epoch};
+use super::{
+    grant_gate::{GrantGateError, effective_grant_scopes},
+    quota::QuotaRefundCancel,
+    refresh::RefreshToken,
+    session::active_user_epoch,
+};
 use crate::{clients::service::AuthenticatedClient, state::AppState};
 
 #[path = "refresh_use_case.rs"]
@@ -276,6 +281,28 @@ pub async fn exchange_code(
             .await;
         }
     };
+    // 授权码在 TTL 内可能跨越用户撤销授权、管理员禁用 Client 或缩减注册
+    // scope。此前这里完全没有同意门禁，撤销应用后仍能换出 AT + RT（Issue
+    // #417）；scope 也不复核当前注册集合（Issue #421）。闸门与 refresh /
+    // UserInfo 共用同一实现，放在 CAS 之前：授权失效不该先烧掉授权码，存储
+    // 故障更不该。
+    let scopes = match effective_grant_scopes(state, &code.user_id, client_id, &code.scopes).await {
+        Ok(scopes) => scopes,
+        Err(gate_error) => {
+            let error = match gate_error {
+                GrantGateError::Denied(_) => OAuthError::invalid_grant(),
+                GrantGateError::Unavailable(_) => OAuthError::temporarily_unavailable(),
+            };
+            return exchange_failure(
+                state,
+                Some(&code.user_id),
+                Some(client_id),
+                gate_error.reason(),
+                error,
+            )
+            .await;
+        }
+    };
     // Keep this shared row lock until the Refresh Token is indexed in Redis.
     // Secret rotation's UPDATE takes a conflicting row lock, so it either
     // commits first and makes this snapshot stale, or waits and subsequently
@@ -354,10 +381,12 @@ pub async fn exchange_code(
             .await;
         }
     }
+    // 后继凭据携带**收窄后**的集合。写回原始 `code.scopes` 会让下一次 refresh
+    // 重新带上已经不再注册的 scope，闸门的收窄效果只维持一次兑换（#421）。
     let refresh = RefreshToken::new_at_with_client_secret_version(
         client_id.to_owned(),
         code.user_id.clone(),
-        code.scopes.clone(),
+        scopes.clone(),
         authenticated.client_secret_version(),
         user_epoch,
         state.clock.now(),
@@ -400,7 +429,7 @@ pub async fn exchange_code(
         state,
         &code.user_id,
         client_id,
-        &code.scopes,
+        &scopes,
         Some(refresh.value.clone()),
         code.nonce.as_deref(),
         auth_time,
@@ -421,7 +450,7 @@ pub async fn exchange_code(
         }
     };
     if let Err(audit_error) =
-        record_token_exchange_success(state, &code.user_id, client_id, &code.scopes).await
+        record_token_exchange_success(state, &code.user_id, client_id, &scopes).await
     {
         compensate_authorization_code_exchange(state, &code, &refresh.value).await;
         tracing::error!(

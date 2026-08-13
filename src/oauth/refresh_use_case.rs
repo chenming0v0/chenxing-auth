@@ -1,8 +1,11 @@
 use super::{OAuthError, RefreshExchangeError, TokenRequest, TokenResponse, issue_token_response};
-use crate::{clients::service::AuthenticatedClient, state::AppState, users::domain::UserId};
+use crate::{clients::service::AuthenticatedClient, state::AppState};
 
 use super::super::{
-    refresh::RefreshToken, refresh_store::RotationOutcome, session::active_user_epoch,
+    grant_gate::{GrantGateError, effective_grant_scopes},
+    refresh::RefreshToken,
+    refresh_store::RotationOutcome,
+    session::active_user_epoch,
     token_security::record_token_event,
 };
 
@@ -77,34 +80,24 @@ pub(super) async fn exchange_refresh_token(
         )
         .await;
     }
-    match state
-        .revocations
-        .is_consent_revoked(&refresh.user_id, client_id)
-        .await
-    {
-        Ok(true) => return Err(OAuthError::invalid_refresh_grant().into()),
-        Ok(false) => {}
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to check OAuth consent revocation");
-            return Err(OAuthError::temporarily_unavailable().into());
-        }
-    }
-
-    let Ok(user_id) = refresh.user_id.parse::<UserId>() else {
-        return Err(OAuthError::invalid_refresh_grant().into());
-    };
-    match state
-        .consents
-        .has_scopes(user_id, client_id, &refresh.scopes)
-        .await
-    {
-        Ok(true) => {}
-        Ok(false) => return Err(OAuthError::invalid_refresh_grant().into()),
-        Err(database_error) => {
-            tracing::error!(error = %database_error, "failed to check refresh token consent");
-            return Err(OAuthError::temporarily_unavailable().into());
-        }
-    }
+    // 兑换时刻的授权准入：撤销状态、Client 可用性、当前注册 scope 与同意覆盖
+    // 由 `grant_gate` 统一判定，三条兑换路径共用同一实现。此前这里只查
+    // consent，不复核 Client 当前注册的 scope，管理员缩减 scope 后旧授权仍按
+    // 旧集合续签（Issue #421）。
+    //
+    // `granted` 是本次兑换允许的上界：闸门收窄后的集合才是 `select_scopes`
+    // 可选择的范围。
+    let granted =
+        match effective_grant_scopes(state, &refresh.user_id, client_id, &refresh.scopes).await {
+            Ok(granted) => granted,
+            Err(GrantGateError::Denied(reason)) => {
+                return record_and_return_invalid(state, Some(&refresh.user_id), client_id, reason)
+                    .await;
+            }
+            Err(GrantGateError::Unavailable(_)) => {
+                return Err(OAuthError::temporarily_unavailable().into());
+            }
+        };
     // Issue #409：凭据代际比对（见 `RefreshToken::is_bound_to_session_epoch`）。
     // `session_epoch` 是「撤销该用户全部凭据」的单一水位，会话校验每次查找都
     // 在比对；TOTP 重置只踢 Cookie 会话、旧 Refresh Token 仍可兑换的漏洞，
@@ -128,7 +121,7 @@ pub(super) async fn exchange_refresh_token(
         return record_and_return_invalid(state, Some(&refresh.user_id), client_id, reason).await;
     }
 
-    let scopes = select_scopes(request.scope.as_deref(), &refresh.scopes)?;
+    let scopes = select_scopes(request.scope.as_deref(), &granted)?;
     // Rotation inherits issued_at/family_id/session_epoch and stamps the
     // authenticated Client Secret generation, including for legacy unversioned
     // tokens. The inherited epoch keeps the successor in the same credential

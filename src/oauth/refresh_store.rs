@@ -34,6 +34,12 @@ const CLIENT_REVOKE_BATCH_SIZE: u64 = 128;
 const TOKEN_KEY_PREFIX: &str = "chenxing:oauth:refresh:";
 /// Client 索引前缀。
 const CLIENT_IDX_PREFIX: &str = "cx:refresh:client_idx:";
+/// Grant 索引前缀（`{user_id}:{client_id}`）。
+///
+/// 用户「断开应用」的撤销单元是 grant，不是 client、也不是单个 family
+/// （Issue #418）。按 client 索引撤销会连坐该 Client 的其他用户；按 family
+/// 撤销则只覆盖一条轮换链，而同一 grant 可能因为多次授权存在多个 family。
+const GRANT_IDX_PREFIX: &str = "cx:refresh:grant_idx:";
 /// Family 索引前缀（RFC 9700 §4.14.2 撤销单元）。
 const FAMILY_IDX_PREFIX: &str = "cx:refresh:family_idx:";
 /// 墓碑前缀（用于重放检测）。
@@ -146,6 +152,13 @@ impl RefreshTokenStore {
         format!("{CLIENT_IDX_PREFIX}{client_id}")
     }
 
+    /// Grant 索引键。分隔符用 `:`，与 Lua 侧 `ARGV[5] .. user_id .. ':' ..
+    /// client_id` 的拼装必须完全一致：`user_id` 是数字主键的十进制串，不含
+    /// 冒号，因此拼接无歧义。
+    fn grant_idx_key(user_id: &str, client_id: &str) -> String {
+        format!("{GRANT_IDX_PREFIX}{user_id}:{client_id}")
+    }
+
     fn family_idx_key(family_id: &str) -> String {
         format!("{FAMILY_IDX_PREFIX}{family_id}")
     }
@@ -184,6 +197,7 @@ impl RefreshTokenStore {
             .key(Self::token_key_for_hash(&hash))
             .key(Self::client_idx_key(&token.client_id))
             .key(Self::family_idx_key(&token.family_id))
+            .key(Self::grant_idx_key(&token.user_id, &token.client_id))
             .arg(payload)
             .arg(ttl)
             .arg(INDEX_TTL_SECONDS)
@@ -225,6 +239,7 @@ impl RefreshTokenStore {
                 .key(&key)
                 .key(Self::client_idx_key(&token.client_id))
                 .key(Self::family_idx_key(&token.family_id))
+                .key(Self::grant_idx_key(&token.user_id, &token.client_id))
                 .arg(&hash)
                 .arg(INDEX_TTL_SECONDS)
                 .arg(&token.family_id)
@@ -254,6 +269,7 @@ impl RefreshTokenStore {
             .key(Self::client_idx_key(&token.client_id))
             .key(Self::family_idx_key(&token.family_id))
             .key(Self::tombstone_key_for_hash(&hash))
+            .key(Self::grant_idx_key(&token.user_id, &token.client_id))
             .arg(expected)
             .arg(&hash)
             .arg(tombstone)
@@ -311,6 +327,12 @@ impl RefreshTokenStore {
             .key(Self::family_idx_key(&replacement.family_id))
             .key(Self::tombstone_key_for_hash(&old_hash))
             .key(&target_family.revoked_key)
+            // 轮换前后属于同一个 grant：用后继的归属拼键，保证 grant 索引跟着
+            // 轮换链走，撤销总能看到当前活成员。
+            .key(Self::grant_idx_key(
+                &replacement.user_id,
+                &replacement.client_id,
+            ))
             .arg(expected)
             .arg(replacement_payload)
             .arg(new_ttl)

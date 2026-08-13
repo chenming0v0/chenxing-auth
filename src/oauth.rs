@@ -11,6 +11,7 @@ pub mod consent;
 pub mod consent_cache;
 mod consent_cache_scripts;
 mod form;
+mod grant_gate;
 pub mod handlers;
 pub mod id_token;
 pub mod pkce;

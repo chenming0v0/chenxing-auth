@@ -679,6 +679,21 @@ async fn no_default_plan_keeps_existing_user_clients_working() {
     clear_all_plans(&env.database).await;
     assert_eq!(active_default_plan_count(&env.database).await, 0);
 
+    // 授权码兑换在 CAS 前校验 consent（Issue #417），`issue_authorization_code_result`
+    // 直发路径不写 consent 行，补上以匹配生产 approve 流程。
+    chenxing_auth::sqlx::query(
+        "INSERT INTO user_consents (user_id, client_id, scopes, updated_at)
+         SELECT $1, id, $3, $4 FROM oauth_clients WHERE client_id = $2
+         ON CONFLICT (user_id, client_id) DO UPDATE SET scopes = EXCLUDED.scopes, updated_at = EXCLUDED.updated_at",
+    )
+    .bind(user_id)
+    .bind(&client_id)
+    .bind(serde_json::json!(["openid", "profile"]))
+    .bind(time::OffsetDateTime::now_utc())
+    .execute(&env.database)
+    .await
+    .expect("save code exchange consent");
+
     let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     let issued = issue_authorization_code_result(
         &env.state,
@@ -789,6 +804,21 @@ async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
     assert!(owner.is_none(), "admin client must not have an owner");
 
     clear_all_plans(&env.database).await;
+
+    // 授权码兑换在 CAS 前校验 consent（Issue #417），`issue_authorization_code_result`
+    // 直发路径不写 consent 行，补上以匹配生产 approve 流程。
+    chenxing_auth::sqlx::query(
+        "INSERT INTO user_consents (user_id, client_id, scopes, updated_at)
+         SELECT $1, id, $3, $4 FROM oauth_clients WHERE client_id = $2
+         ON CONFLICT (user_id, client_id) DO UPDATE SET scopes = EXCLUDED.scopes, updated_at = EXCLUDED.updated_at",
+    )
+    .bind(user_id)
+    .bind(&client_id)
+    .bind(serde_json::json!(["openid", "profile"]))
+    .bind(time::OffsetDateTime::now_utc())
+    .execute(&env.database)
+    .await
+    .expect("save code exchange consent");
 
     let verifier = "M25iVq8lYCr2Wl4nkPdz0oVYtIdYs1JRLmS3xN8sYAo";
     let issued = issue_authorization_code_result(

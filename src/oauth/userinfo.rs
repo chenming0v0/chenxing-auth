@@ -12,7 +12,9 @@ use std::net::SocketAddr;
 use crate::{
     error,
     oauth::{
-        response::with_no_store_headers, token::decode_userinfo_token,
+        grant_gate::{GrantGateError, effective_grant_scopes},
+        response::with_no_store_headers,
+        token::decode_userinfo_token,
         token_security::enforce_source_qps_with_policy,
     },
     state::AppState,
@@ -149,35 +151,24 @@ async fn userinfo_inner(
     let Ok(user_id) = claims.sub.parse::<crate::users::domain::UserId>() else {
         return error::oauth_invalid_bearer("access token is invalid");
     };
-    match state
-        .revocations
-        .is_consent_revoked(&claims.sub, &claims.aud)
-        .await
-    {
-        Ok(true) => return error::oauth_invalid_bearer("access token is invalid"),
-        Ok(false) => {}
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to check UserInfo consent revocation");
-            return error::oauth_temporarily_unavailable();
-        }
-    }
-    let scopes = claims
+    let presented = claims
         .scope
         .split_whitespace()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    match state
-        .consents
-        .has_scopes(user_id, &claims.aud, &scopes)
-        .await
-    {
-        Ok(true) => {}
-        Ok(false) => return error::oauth_invalid_bearer("access token is invalid"),
-        Err(database_error) => {
-            tracing::error!(error = %database_error, "failed to check UserInfo consent");
-            return error::oauth_temporarily_unavailable();
+    // Access Token 的默认寿命是 3600 秒，期间用户可能撤销授权、管理员可能禁用
+    // Client 或缩减其注册 scope。此前这里只查 consent：禁用客户端后 AT 仍能
+    // 拉用户信息（Issue #420），缩减 scope 后 claim 仍按旧集合返回（#421）。
+    //
+    // 返回的是收窄后的集合，下面按它决定放出哪些 claim——只拒绝整个请求并不
+    // 等于收窄权限。
+    let scopes = match effective_grant_scopes(&state, &claims.sub, &claims.aud, &presented).await {
+        Ok(scopes) => scopes,
+        Err(GrantGateError::Denied(_)) => {
+            return error::oauth_invalid_bearer("access token is invalid");
         }
-    }
+        Err(GrantGateError::Unavailable(_)) => return error::oauth_temporarily_unavailable(),
+    };
     let Some(profile) = (match state.users.find_profile(user_id).await {
         Ok(profile) => profile,
         Err(database_error) => {

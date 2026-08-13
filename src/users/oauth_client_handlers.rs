@@ -158,6 +158,32 @@ pub async fn revoke_authorized_app(
     let Some(state_version) = revoked else {
         return StatusCode::NO_CONTENT.into_response();
     };
+    // Issue #418：撤销必须销毁凭据，而不是只留一条 consent 记录等下一次兑换被
+    // 挡住。check-on-use 的问题是它把「断开」变成「赌 AT 的剩余寿命，并指望
+    // 每条兑换路径都记得查 consent」。这里按 grant 删掉全部 Refresh Token。
+    //
+    // 顺序在 DB 撤销之后：DB 是权威事实，先删凭据再写 DB 会在 DB 失败时留下
+    // 「凭据没了但授权还在」的状态。反过来则只是清理滞后，下一次撤销或
+    // 兑换检查仍会兜住。
+    let revoked_tokens = match state
+        .refresh_tokens
+        .revoke_grant_tokens(&session.user_id.to_string(), &client_id)
+        .await
+    {
+        Ok(revoked_tokens) => Some(revoked_tokens),
+        Err(error_value) => {
+            // 不回 500：DB 撤销已经生效，consent 检查仍会拒绝这些凭据的兑换。
+            // 但这属于「撤销没有完全落地」，必须留下可检索的证据。
+            tracing::error!(
+                error = %error_value,
+                user_id = %session.user_id,
+                client_id = %client_id,
+                "failed to destroy refresh tokens after OAuth consent revocation; \
+                 the grant stays revoked in the database and exchanges remain blocked"
+            );
+            None
+        }
+    };
     // DB 写入成功，尝试写入 Redis 缓存结论（best-effort）。
     //
     // Issue #276：必须带上这次撤销的 `state_version`。缓存更新是版本化条件写，
@@ -186,7 +212,12 @@ pub async fn revoke_authorized_app(
             "oauth_consent".to_owned(),
             Some(client_id),
             crate::audit::with_request_context(
-                serde_json::json!({"result": "success"}),
+                // 凭据清理结果进审计（Issue #418 验收项）：`null` 表示清理未能
+                // 完成，撤销事实仍然成立，但需要人工确认残留。
+                serde_json::json!({
+                    "result": "success",
+                    "revoked_refresh_tokens": revoked_tokens,
+                }),
                 source_ip.as_deref(),
                 user_agent.as_deref(),
             ),
