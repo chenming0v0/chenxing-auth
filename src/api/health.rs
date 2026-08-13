@@ -71,6 +71,17 @@ pub(super) async fn health_ready(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
+/// 未配置固定 Issuer 时唯一保留的应用状态探针。
+///
+/// 返回 503 让前端停在可恢复错误态；不能返回 bootstrap=false，否则旧前端会展示
+/// Owner 创建表单，而该写端点在受限模式下刻意不存在。
+pub(super) async fn issuer_not_configured() -> Response {
+    crate::error::service_unavailable(
+        "issuer_not_configured",
+        "configure the persistent application issuer and restart the service",
+    )
+}
+
 async fn redis_ready(client: &RedisClient) -> Result<(), redis::RedisError> {
     let mut connection = client.get_multiplexed_async_connection().await?;
     let _: String = redis::cmd("PING").query_async(&mut connection).await?;

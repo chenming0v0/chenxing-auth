@@ -21,14 +21,15 @@ use super::config_security::{
 };
 use super::{
     Config, ConfigError, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
-    DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,
+    DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS, normalize_issuer_url,
 };
 
 struct ConfigValues {
     host: String,
     port: u16,
     request_timeout_seconds: u64,
-    issuer_url: String,
+    issuer_url: Option<String>,
+    legacy_issuer_import: Option<String>,
     admin_token: String,
     key_directory: String,
     web_dist_dir: String,
@@ -72,12 +73,14 @@ impl Config {
         let redis_url = required_env("REDIS_URL")?;
         let auth_encryption_keys = parse_auth_encryption_key_ring()?;
         let auth_encryption_key = auth_encryption_keys.active_key().clone();
-        // APP_ISSUER 写入 JWT iss claim 和 Discovery；缺失时选择启动即失败而不是回退到 host:port。
-        let issuer_url = required_env("APP_ISSUER")?;
-        let issuer = parse_root_http_url(&issuer_url, "APP_ISSUER")?;
-        let webauthn_rp_id = env::var("WEBAUTHN_RP_ID")
-            .unwrap_or_else(|_| issuer.host_str().unwrap_or_default().to_owned());
-        let webauthn_origin = env::var("WEBAUTHN_ORIGIN").unwrap_or_else(|_| issuer_url.clone());
+        // 新部署允许先启动依赖与初始化前端，再把固定 Issuer 写入数据库。旧部署的
+        // APP_ISSUER 仍作为一次性导入来源，真正的优先级在 main 启动路径解析。
+        let legacy_issuer_import = env::var("APP_ISSUER")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let webauthn_rp_id = env::var("WEBAUTHN_RP_ID").unwrap_or_else(|_| "localhost".to_owned());
+        let webauthn_origin =
+            env::var("WEBAUTHN_ORIGIN").unwrap_or_else(|_| "http://localhost".to_owned());
         let client_registration_limits = client_registration_limits_from_env()?;
         let admin_token = admin_token_from_env()?;
         let key_directory = env::var("KEY_DIRECTORY").unwrap_or_else(|_| "data/keys".to_owned());
@@ -173,7 +176,8 @@ impl Config {
             host,
             port,
             request_timeout_seconds,
-            issuer_url: issuer_url.clone(),
+            issuer_url: None,
+            legacy_issuer_import,
             admin_token,
             key_directory,
             web_dist_dir,
@@ -234,7 +238,8 @@ impl Config {
             host,
             port,
             request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
-            issuer_url: issuer_url.clone(),
+            issuer_url: Some(issuer_url.clone()),
+            legacy_issuer_import: None,
             admin_token: String::new(),
             key_directory: "data/keys".to_owned(),
             web_dist_dir: DEFAULT_WEB_DIST_DIR.to_owned(),
@@ -273,6 +278,7 @@ impl Config {
             port,
             request_timeout_seconds,
             issuer_url,
+            legacy_issuer_import,
             admin_token,
             key_directory,
             web_dist_dir,
@@ -313,11 +319,23 @@ impl Config {
         if request_timeout_seconds == 0 {
             return Err(ConfigError::InvalidValue("REQUEST_TIMEOUT_SECONDS"));
         }
-        let issuer = parse_root_http_url(&issuer_url, "APP_ISSUER")?;
-        validate_cookie_security(&issuer, cookie_secure)?;
-        if cookie_secure && issuer.scheme() == "http" {
+        let issuer_url = issuer_url
+            .map(|value| normalize_issuer_url(&value))
+            .transpose()?;
+        let issuer = issuer_url
+            .as_deref()
+            .map(|value| parse_root_http_url(value, "APP_ISSUER"))
+            .transpose()?;
+        if let Some(issuer) = issuer.as_ref() {
+            validate_cookie_security(issuer, cookie_secure)?;
+        }
+        if cookie_secure
+            && issuer
+                .as_ref()
+                .is_some_and(|issuer| issuer.scheme() == "http")
+        {
             tracing::warn!(
-                issuer_scheme = %issuer.scheme(),
+                issuer_scheme = "http",
                 "COOKIE_SECURE=true with an HTTP APP_ISSUER: browsers may reject the Secure cookies"
             );
         }
@@ -382,7 +400,9 @@ impl Config {
             host,
             port,
             request_timeout_seconds,
-            issuer_url,
+            issuer_configured: issuer_url.is_some(),
+            issuer_url: issuer_url.unwrap_or_default(),
+            legacy_issuer_import,
             admin_token,
             key_directory,
             web_dist_dir,
@@ -414,12 +434,18 @@ impl Config {
     }
 
     pub(crate) fn validate_cookie_security(&self) -> Result<(), ConfigError> {
+        if !self.issuer_configured {
+            return Ok(());
+        }
         let issuer = parse_root_http_url(&self.issuer_url, "APP_ISSUER")?;
         validate_cookie_security(&issuer, self.cookie_secure)
     }
 }
 
-fn parse_root_http_url(value: &str, name: &'static str) -> Result<url::Url, ConfigError> {
+pub(super) fn parse_root_http_url(
+    value: &str,
+    name: &'static str,
+) -> Result<url::Url, ConfigError> {
     let url = url::Url::parse(value).map_err(|_| ConfigError::InvalidValue(name))?;
     // URL userinfo 是凭据材料；错误只报告配置项名称，绝不携带原始值。
     if !matches!(url.scheme(), "http" | "https")
@@ -435,7 +461,10 @@ fn parse_root_http_url(value: &str, name: &'static str) -> Result<url::Url, Conf
     Ok(url)
 }
 
-fn validate_cookie_security(issuer: &url::Url, cookie_secure: bool) -> Result<(), ConfigError> {
+pub(super) fn validate_cookie_security(
+    issuer: &url::Url,
+    cookie_secure: bool,
+) -> Result<(), ConfigError> {
     if cookie_secure || is_loopback_http_issuer(issuer) {
         return Ok(());
     }

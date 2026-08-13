@@ -74,6 +74,8 @@ pub enum StateError {
     WebDist(#[from] WebDistError),
     #[error("database configuration is invalid: {0}")]
     Database(#[from] crate::db::DbError),
+    #[error("issuer configuration could not be resolved: {0}")]
+    Issuer(#[from] crate::settings::IssuerSettingError),
     #[error("redis configuration is invalid: {0}")]
     Redis(#[from] redis::RedisError),
     #[error("key manager initialization failed: {0}")]
@@ -117,8 +119,16 @@ impl StartupKeyMaterial {
 }
 
 impl AppState {
+    /// 使用懒加载数据库池构建状态，保留请求期报告数据库故障的既有语义。
     pub async fn new(config: Config) -> Result<Self, StateError> {
         let database = crate::db::connect(&config)?;
+        Self::new_with_pool(config, database).await
+    }
+
+    /// 生产启动路径：监听前解析持久化 Issuer，不改变 [`Self::new`] 的懒加载语义。
+    pub async fn new_with_persisted_issuer(mut config: Config) -> Result<Self, StateError> {
+        let database = crate::db::connect(&config)?;
+        crate::settings::issuer::resolve(&mut config, &database).await?;
         Self::new_with_pool(config, database).await
     }
 
@@ -151,7 +161,7 @@ impl AppState {
     /// 主要用途：测试中传入 schema 隔离的 pool（见 `tests/support/db_isolation.rs`），
     /// 保证应用层与测试层共用同一个 pool（相同的 `search_path` / schema）。
     ///
-    /// 生产路径使用 `AppState::new`，它调用 `db::connect` 后委托到此方法。
+    /// 生产路径额外解析持久化 Issuer；测试可使用 `new` 或传入隔离 pool。
     pub async fn new_with_pool(
         config: Config,
         database: crate::db::Database,

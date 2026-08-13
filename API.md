@@ -287,6 +287,12 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ## 管理 API
 
+运行期 Issuer 保存在 PostgreSQL `app_settings`。数据库尚未设置 Issuer 时，服务只提供
+`/health*`、静态前端和 `GET /api/v1/admin/bootstrap/status`；后者返回 `503
+issuer_not_configured`，其余认证、管理、OAuth/OIDC、Discovery 与 JWKS 路由不注册。
+运维通过容器内命令 `chenxing-auth configure-issuer https://auth.example.com` 首次写入，
+然后重启应用。相同值可幂等重试，不同值会被拒绝，不能从请求 Host 推导。
+
 管理员 Bearer Token 请求头：`Authorization: Bearer <ADMIN_TOKEN>`。初始化完成后，管理 API 有两条独立通道，任一通过即可继续按角色判定权限：系统 `ADMIN_TOKEN` Bearer（权限等价于 Owner，无用户 ID，豁免浏览器 CSRF），或普通用户 Session。浏览器写操作使用 `__Host-chenxing_session`、`__Host-chenxing_csrf` Cookie 和 `X-CSRF-Token` 三者绑定（loopback HTTP 开发环境使用对应的不带前缀名称）。
 
 `ADMIN_TOKEN` 为空时整个管理面关闭：Bearer 与浏览器 Session 两条通道都被拒绝，已初始化的管理接口统一返回 403 `admin_disabled`。不存在 Owner 时公开的首个 Owner 初始化接口（`POST /api/v1/admin/bootstrap`）不属于这两条通道，无论是否配置 `ADMIN_TOKEN` 都保持公开。
@@ -295,7 +301,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ### `POST /api/v1/admin/bootstrap`
 
-仅用于初始化首个 Owner，无需认证。只有不存在 Owner 时请求才会成功；初始化使用数据库并发锁保证最多创建一个 Owner，成功后不可重复初始化。请求按可信源 IP 限制为每分钟 5 次，缺少可信源地址或 Redis 限流不可用时按配置 fail closed。请求必须包含用户名、邮箱和密码，首个 Owner 的用户 ID 为 `1`，成功后不自动创建 Session。
+仅用于 Issuer 已配置后的首个 Owner 初始化，无需认证。只有不存在 Owner 时请求才会成功；初始化使用数据库并发锁保证最多创建一个 Owner，成功后不可重复初始化。请求按可信源 IP 限制为每分钟 5 次，缺少可信源地址或 Redis 限流不可用时按配置 fail closed。请求必须包含用户名、邮箱和密码，首个 Owner 的用户 ID 为 `1`，成功后不自动创建 Session。
 
 ```json
 {"username":"chenxing-owner","email":"owner@example.com","password":"at-least-10-chars"}
@@ -305,7 +311,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ### `GET /api/v1/admin/bootstrap/status`
 
-仅未初始化时公开返回 `{"initialized":false}`，供 Web 前端显示 Owner 初始化界面。实例已有 Owner 后返回与未知路径一致的 `404 not_found`，不再向匿名扫描者确认初始化状态；数据库故障返回 500。
+Issuer 未配置时返回 `503 issuer_not_configured`。Issuer 已配置但 Owner 尚未初始化时公开返回 `{"initialized":false}`，供 Web 前端显示 Owner 初始化界面。实例已有 Owner 后返回与未知路径一致的 `404 not_found`，不再向匿名扫描者确认初始化状态；数据库故障返回 500。
 
 ### 注册邮件发件地址
 

@@ -29,21 +29,22 @@ pub fn router(state: AppState) -> Router {
     let hsts_enabled = security_headers::hsts_enabled(&state.config.issuer_url);
     let request_timeout = Duration::from_secs(state.config.request_timeout_seconds);
 
-    // 静态根来自 AppState 里那份启动期已校验的路径，请求路径上不再读环境变量。
     let static_service = static_files::static_service(&state.web_dist);
-
-    routes::register(Router::new(), request_timeout)
-        // 静态资源与 SPA 回退挂在 fallback 上：fallback_service 只在上面所有
-        // 路由都不匹配时才生效，所以 /api/*、/health 等不会被静态服务抢走。
-        .fallback_service(static_service)
-        .with_state(state)
-        .layer(TraceLayer::new_for_http().make_span_with(request_span))
-        .layer(map_response(|response: Response| async move {
-            crate::error::map_request_timeout(response)
-        }))
-        .layer(map_response(move |response: Response| {
-            security_headers::apply(response, hsts_enabled)
-        }))
+    routes::register(
+        Router::new(),
+        request_timeout,
+        state.config.issuer_configured,
+    )
+    // fallback 只处理未匹配路径，协议和健康路由不会被静态服务抢走。
+    .fallback_service(static_service)
+    .with_state(state)
+    .layer(TraceLayer::new_for_http().make_span_with(request_span))
+    .layer(map_response(|response: Response| async move {
+        crate::error::map_request_timeout(response)
+    }))
+    .layer(map_response(move |response: Response| {
+        security_headers::apply(response, hsts_enabled)
+    }))
 }
 
 /// 从请求对端地址和头部解析真实客户端 IP。

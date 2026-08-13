@@ -1,7 +1,9 @@
 use std::path::Path;
 
 const BUILD_WORKFLOW: &str = include_str!("../.github/workflows/build.yml");
+const CI_WORKFLOW: &str = include_str!("../.github/workflows/ci.yml");
 const INSTALL_SCRIPT: &str = include_str!("../deploy/install.sh");
+const REMOTE_INSTALL_SCRIPT: &str = include_str!("../install.sh");
 const PRODUCTION_COMPOSE: &str = include_str!("../docker-compose.prod.yml");
 const DB_MODULE: &str = include_str!("../src/db.rs");
 const DB_POOL_MODULE: &str = include_str!("../src/db_pool.rs");
@@ -37,6 +39,22 @@ fn release_workflow_publishes_versioned_archives_and_checksums() {
         assert!(
             BUILD_WORKFLOW.contains(marker),
             "release workflow is missing marker: {marker}"
+        );
+    }
+}
+
+#[test]
+fn ci_validates_the_remote_installer_without_weakening_coverage() {
+    for marker in [
+        "bash -n install.sh",
+        "bash install.sh --prepare-only",
+        "chenxing-remote-install",
+        "config --quiet",
+        "--fail-under-lines 75",
+    ] {
+        assert!(
+            CI_WORKFLOW.contains(marker),
+            "CI workflow is missing deployment or coverage marker: {marker}"
         );
     }
 }
@@ -422,6 +440,56 @@ fn installer_validates_compose_and_reports_application_logs() {
 }
 
 #[test]
+fn remote_installer_uses_published_images_and_keeps_download_progress_visible() {
+    for marker in [
+        "ghcr.io/chenming0v0/chenxing-auth:latest",
+        "postgres:16-alpine",
+        "redis:7-alpine",
+        "docker pull \"$CHENXING_IMAGE\"",
+        "docker pull \"$POSTGRES_IMAGE\"",
+        "docker pull \"$REDIS_IMAGE\"",
+        "compose run --rm app migrate",
+        "compose up -d app",
+        "configure-issuer https://auth.example.com",
+        "--prepare-only",
+    ] {
+        assert!(
+            REMOTE_INSTALL_SCRIPT.contains(marker),
+            "remote installer is missing marker: {marker}"
+        );
+    }
+    for pull in [
+        "docker pull \"$CHENXING_IMAGE\"",
+        "docker pull \"$POSTGRES_IMAGE\"",
+        "docker pull \"$REDIS_IMAGE\"",
+    ] {
+        let line = REMOTE_INSTALL_SCRIPT
+            .lines()
+            .find(|line| line.trim() == pull)
+            .expect("visible pull command");
+        assert!(!line.contains("--quiet"));
+        assert!(!line.contains("/dev/null"));
+    }
+}
+
+#[test]
+fn remote_installer_generates_and_preserves_deployment_secrets() {
+    for marker in [
+        "openssl rand -base64 32",
+        "openssl rand -hex 32",
+        "chmod 600 \"$ENV_FILE\"",
+        "检测到已有 .env，将保留数据库密码、Token 和加密密钥",
+        "AUTH_ENCRYPTION_KEY 必须是 Base64 编码的 32 字节密钥",
+    ] {
+        assert!(
+            REMOTE_INSTALL_SCRIPT.contains(marker),
+            "remote installer is missing secret marker: {marker}"
+        );
+    }
+    assert!(!REMOTE_INSTALL_SCRIPT.contains("APP_ISSUER="));
+}
+
+#[test]
 fn production_probes_use_readiness_and_keep_liveness_separate() {
     assert!(PRODUCTION_COMPOSE.contains("/health/ready"));
     assert!(!PRODUCTION_COMPOSE.contains("http://127.0.0.1:3000/health\"]"));
@@ -455,6 +523,7 @@ fn installer_rejects_implicit_localhost_and_checks_discovery_contract() {
 fn deployment_files_are_present_at_repository_root() {
     assert!(Path::new(".github/workflows/build.yml").is_file());
     assert!(Path::new("deploy/install.sh").is_file());
+    assert!(Path::new("install.sh").is_file());
     assert!(Path::new("docker-compose.prod.yml").is_file());
     assert!(Path::new("Dockerfile").is_file());
     assert!(Path::new("Dockerfile.runtime").is_file());

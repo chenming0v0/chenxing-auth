@@ -4,7 +4,7 @@ info:
   version: 1.0.0
   description: |
     辰星通行证用户认证、OAuth 2.0/OIDC 和统一用户管理 API。
-    当前定义以仓库实际路由为准。生产环境请将服务器地址替换为固定的 APP_ISSUER。
+    当前定义以仓库实际路由为准。运行期 Issuer 持久化在 PostgreSQL；未配置时仅健康检查、静态前端和初始化状态可用，其他协议路由不注册。
 servers:
   - url: http://127.0.0.1:3000
     description: 本地开发
@@ -852,7 +852,7 @@ paths:
     post:
       tags: [Admin Auth]
       summary: 初始化首个 Owner 用户
-      description: 未初始化实例允许匿名调用；按可信源 IP 限制为每分钟 5 次。缺少可信源地址时遵循服务端 missing_source_ip_policy，限流依赖不可用时 fail closed。
+      description: Issuer 已配置但 Owner 尚未初始化时允许匿名调用；按可信源 IP 限制为每分钟 5 次。缺少可信源地址时遵循服务端 missing_source_ip_policy，限流依赖不可用时 fail closed。
       operationId: bootstrapAdmin
       requestBody:
         required: true
@@ -873,7 +873,7 @@ paths:
     get:
       tags: [Admin Auth]
       summary: 查询未初始化状态
-      description: 仅未初始化时返回 initialized=false；实例已有 Owner 后返回与未知路径一致的 404，避免向匿名调用者暴露初始化状态。
+      description: Issuer 未配置时返回 503 issuer_not_configured；Issuer 已配置且 Owner 未初始化时返回 initialized=false；实例已有 Owner 后返回与未知路径一致的 404。
       operationId: adminBootstrapStatus
       responses:
         '200':
@@ -883,6 +883,7 @@ paths:
               schema: { $ref: '#/components/schemas/BootstrapStatusResponse' }
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalServerError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/auth/me:
     get:
       tags: [Admin Auth]

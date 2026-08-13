@@ -1,6 +1,12 @@
 use chenxing_auth::{
-    api, audit::AuditService, config::Config, db, keys::DEFAULT_KEY_SYNC_INTERVAL,
-    oauth::quota::QUOTA_REFUND_WORKER_INTERVAL, state::AppState,
+    api,
+    audit::AuditService,
+    config::Config,
+    db,
+    keys::DEFAULT_KEY_SYNC_INTERVAL,
+    oauth::quota::QUOTA_REFUND_WORKER_INTERVAL,
+    settings::{InitializeIssuerOutcome, issuer},
+    state::AppState,
 };
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -14,7 +20,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_target(false)
         .init();
 
-    match std::env::args().nth(1).as_deref() {
+    let mut arguments = std::env::args().skip(1);
+    match arguments.next().as_deref() {
         Some("migrate") => {
             // 角色姿态先解析再连库：单角色部署（未配置 MIGRATION_DATABASE_URL）在
             // 这里就被拒绝，不会先跑完迁移再报错（Issue #281）。
@@ -60,41 +67,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             return Ok(());
         }
+        Some("configure-issuer") => {
+            let value = arguments.next().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "usage: chenxing-auth configure-issuer https://auth.example.com",
+                )
+            })?;
+            if arguments.next().is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "configure-issuer accepts exactly one URL",
+                )
+                .into());
+            }
+            let database = db::connect(&config)?;
+            match issuer::initialize(&database, &value).await? {
+                InitializeIssuerOutcome::Created => {
+                    info!("issuer configured; restart the application to enable all routes")
+                }
+                InitializeIssuerOutcome::AlreadyConfigured => {
+                    info!("issuer already has the requested value")
+                }
+                InitializeIssuerOutcome::Conflict => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        "issuer is already configured with a different value; explicit data migration is required",
+                    )
+                    .into());
+                }
+            }
+            return Ok(());
+        }
         _ => {}
     }
 
-    let state = AppState::new(config.clone()).await?;
-    let session_outbox_worker = tokio::spawn(state.sessions.clone().run_outbox_worker());
-    // 密钥热路径只读内存快照，与共享 KEY_DIRECTORY 的一致性由这个后台任务负责：
-    // 磁盘 IO 隔离在阻塞线程池，抢不到目录锁时跳过本轮而不影响任何请求（Issue #257）。
-    let key_sync_worker = tokio::spawn(
-        state
-            .keys
-            .clone()
-            .run_disk_sync_worker(DEFAULT_KEY_SYNC_INTERVAL),
-    );
-    // 过期未兑换的授权码要退还签发时消耗的套餐配额（Issue #341）。消费与兑换
-    // 都发生在请求路径上，唯独「过期」没有请求会经过，只能由后台任务兜底。
-    let quota_refund_worker = tokio::spawn(
-        state
-            .oauth_quotas
-            .clone()
-            .run_refund_worker(state.clock.clone(), QUOTA_REFUND_WORKER_INTERVAL),
-    );
+    let state = AppState::new_with_persisted_issuer(config.clone()).await?;
+    let issuer_configured = state.config.issuer_configured;
+    let workers = issuer_configured.then(|| {
+        // 协议路由关闭时不运行任何认证后台任务；配置 Issuer 并重启后再统一启用。
+        let session_outbox = tokio::spawn(state.sessions.clone().run_outbox_worker());
+        // 密钥热路径只读内存快照，与共享 KEY_DIRECTORY 的一致性由这个后台任务负责：
+        // 磁盘 IO 隔离在阻塞线程池，抢不到目录锁时跳过本轮而不影响任何请求（Issue #257）。
+        let key_sync = tokio::spawn(
+            state
+                .keys
+                .clone()
+                .run_disk_sync_worker(DEFAULT_KEY_SYNC_INTERVAL),
+        );
+        // 过期未兑换的授权码要退还签发时消耗的套餐配额（Issue #341）。消费与兑换
+        // 都发生在请求路径上，唯独「过期」没有请求会经过，只能由后台任务兜底。
+        let quota_refund = tokio::spawn(
+            state
+                .oauth_quotas
+                .clone()
+                .run_refund_worker(state.clock.clone(), QUOTA_REFUND_WORKER_INTERVAL),
+        );
+        [session_outbox, key_sync, quota_refund]
+    });
     let app = api::router(state);
     let address = format!("{}:{}", config.host, config.port);
     let listener = TcpListener::bind(&address).await?;
 
-    info!(address = %address, "辰星认证中枢 started");
+    info!(address = %address, issuer_configured, "辰星认证中枢 started");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;
-    session_outbox_worker.abort();
-    key_sync_worker.abort();
-    quota_refund_worker.abort();
+    for worker in workers.into_iter().flatten() {
+        worker.abort();
+    }
 
     Ok(())
 }

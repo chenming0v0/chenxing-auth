@@ -63,10 +63,29 @@ use crate::{
 
 use super::{
     discovery::{jwks, openid_configuration},
-    health::{health, health_live, health_ready},
+    health::{health, health_live, health_ready, issuer_not_configured},
 };
 
-pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> Router<AppState> {
+/// Issuer 尚未落库时的最小路由面。
+///
+/// 静态 React 产物由 `api::router` 的 fallback 提供；这里除此之外只保留容器探针和
+/// 一个明确的初始化状态。认证、管理、OAuth/OIDC、JWKS 都不进入路由表。
+fn register_unconfigured(router: Router<AppState>) -> Router<AppState> {
+    router
+        .route("/api/v1/admin/bootstrap/status", get(issuer_not_configured))
+        .route("/health", get(health))
+        .route("/health/live", get(health_live))
+        .route("/health/ready", get(health_ready))
+}
+
+pub(super) fn register(
+    router: Router<AppState>,
+    request_timeout: Duration,
+    issuer_configured: bool,
+) -> Router<AppState> {
+    if !issuer_configured {
+        return register_unconfigured(router);
+    }
     router
         .route(
             "/.well-known/openid-configuration",
