@@ -9,8 +9,8 @@ use crate::key_storage::{
 };
 
 use super::{
-    KeyManagerError, KeyMaterial, generate_rsa_key, journal, key_material, prune_materials,
-    retirement,
+    KeyManagerError, KeyMaterial, generate_rsa_key, journal, key_material, newest_key_id,
+    prune_materials, retirement,
 };
 
 pub(super) const ACTIVE_KEY_ID_FILE: &str = "active-rs256.kid";
@@ -274,9 +274,10 @@ pub(super) fn discard_all_key_material(directory: &Path) -> Result<(), KeyManage
 
 /// 为 journal 恢复建立一个明确存在的 active key，且永不选择 `revoked_key_id`。
 ///
-/// 优先复用最新的现存材料，避免无谓作废旧 token；没有候选才生成新 key。扫描只读取
-/// 文件名与 mtime，不把私钥内容复制到恢复日志或临时容器。active 指针写好后 journal
-/// 才会被调用方清除，因此中途崩溃仍可重放。
+/// 优先复用最近在役的现存材料（判据与 `newest_key_id` 一致：退役时刻最新者，
+/// 绝不退回 mtime，见 Issue #318），避免无谓作废旧 token；没有候选才生成新 key。
+/// 扫描只读取文件名、mtime 与退役记录，不把私钥内容复制到恢复日志或临时容器。
+/// active 指针写好后 journal 才会被调用方清除，因此中途崩溃仍可重放。
 pub(super) fn establish_recovery_active_key(
     directory: &Path,
     revoked_key_id: Option<&str>,
@@ -298,11 +299,18 @@ pub(super) fn establish_recovery_active_key(
         };
         validate_key_id(key_id)?;
         if Some(key_id) != revoked_key_id {
-            candidates.push((modified_time(&path)?, key_id.to_owned()));
+            let retired_at = retirement::read_retired_at(directory, key_id)?;
+            candidates.push((retired_at, modified_time(&path)?, key_id.to_owned()));
         }
     }
 
-    if let Some((_, key_id)) = candidates.into_iter().max() {
+    if let Some((_, _, key_id)) =
+        candidates
+            .into_iter()
+            .max_by(|(a_retired_at, a_mtime, _), (b_retired_at, b_mtime, _)| {
+                super::compare_recency(*a_retired_at, *a_mtime, *b_retired_at, *b_mtime)
+            })
+    {
         persist_active_key_id(directory, &key_id)?;
         retirement::clear(directory, &key_id)?;
         return Ok(key_id);
@@ -367,13 +375,6 @@ fn read_optional_key_id(path: &Path) -> Result<Option<String>, KeyManagerError> 
     let key_id = fs::read_to_string(path)?.trim().to_owned();
     validate_key_id(&key_id)?;
     Ok(Some(key_id))
-}
-
-fn newest_key_id(key_files: &BTreeMap<String, KeyMaterial>) -> Option<String> {
-    key_files
-        .iter()
-        .max_by_key(|(_, material)| material.created_at)
-        .map(|(key_id, _)| key_id.clone())
 }
 
 pub(super) fn key_file_name(key_id: &str) -> String {

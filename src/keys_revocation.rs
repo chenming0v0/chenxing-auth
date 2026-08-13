@@ -11,7 +11,8 @@ use time::OffsetDateTime;
 use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 
 use super::{
-    KeyManager, KeyManagerError, KeyMaterial, KeyRevocation, build_key_state, journal, persistence,
+    KeyManager, KeyManagerError, KeyMaterial, KeyRevocation, build_key_state, journal,
+    newest_key_id, persistence,
 };
 
 pub(super) fn revoke_blocking_at(
@@ -55,6 +56,10 @@ pub(super) fn revoke_blocking_at(
     }
     let _ = materials.remove(&key_id);
     let planned_active_key_id = if active_key_id == key_id {
+        // 替代者按退役时刻选取（`newest_key_id`），绝不按 mtime（Issue #318）。
+        // 残余边界：升级前崩溃遗留的孤儿 key 若已被旧版 `reconcile` 盖上退役
+        // 记录，无法与合法退役 key 区分；本修复保证轮换/吊销的新写入不会再
+        // 制造这种孤儿。
         newest_key_id(&materials).ok_or(KeyManagerError::NoActiveKeyReplacement)?
     } else {
         active_key_id.clone()
@@ -133,11 +138,4 @@ fn commit_to_disk(
         );
         error
     })
-}
-
-fn newest_key_id(materials: &BTreeMap<String, KeyMaterial>) -> Option<String> {
-    materials
-        .iter()
-        .max_by_key(|(_, material)| material.created_at)
-        .map(|(key_id, _)| key_id.clone())
 }

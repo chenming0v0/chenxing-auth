@@ -3,8 +3,8 @@ use time::OffsetDateTime;
 use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 
 use super::{
-    KeyManager, KeyManagerError, KeyRotation, build_key_state, generate_rsa_key, key_material,
-    mark_retired, persistence, prune_materials, retirement,
+    KeyManager, KeyManagerError, KeyRotation, build_key_state, generate_rsa_key, journal,
+    key_material, mark_retired, persistence, prune_materials, retirement,
 };
 
 /// 轮换：生成新签名密钥，写入共享目录，并替换内存快照。
@@ -52,21 +52,38 @@ pub(super) fn rotate_blocking_at(
     let expired = prune_materials(&key_id, &mut materials, retention, now);
     let next_state = build_key_state(directory.clone(), retention, key_id.clone(), materials)?;
 
-    if let Some(directory) = directory.as_ref()
-        && let Err(error) = persistence::persist_key(directory, &key_id, &der)
+    if let Some(directory) = directory.as_ref() {
+        // 先把轮换意图落盘，再动私钥材料（Issue #318）：崩溃后加载路径据此把
+        // 轮换补完或回滚，盘上不会留下从未进入 JWKS 的孤儿私钥——孤儿文件 mtime
+        // 最新，会被吊销逻辑选为新签名密钥。记录失败说明目录不可写，此时轮换
+        // 什么都不该发生。
+        journal::record_rotation(
+            directory,
+            &journal::PendingRotation::new(key_id.clone(), previous_active_key_id.clone()),
+        )?;
+        if let Err(error) = persistence::persist_key(directory, &key_id, &der)
             .and_then(|_| persistence::persist_active_key_id(directory, &key_id))
-    {
-        // 回滚刚落盘的私钥材料：active kid 没写成，轮换没有生效，盘上不许留下从未
-        // 进入 JWKS 的孤儿私钥。删除必须与其余路径一致走 secure 检查（拒绝符号链接/
-        // 非普通文件，fail-closed）；回滚失败只告警，主错误仍是上面那个。
-        if let Err(rollback_error) = persistence::remove_key(directory, &key_id) {
-            tracing::warn!(
-                key_id = %key_id,
-                error = %rollback_error,
-                "failed to roll back the newly persisted signing key after an interrupted rotation"
-            );
+        {
+            // 回滚刚落盘的私钥材料与意图记录：active kid 没写成，轮换没有生效。
+            // 删除必须与其余路径一致走 secure 检查（拒绝符号链接/非普通文件，
+            // fail-closed）；回滚失败只告警，主错误仍是上面那个。即使只删掉了
+            // 材料、没删掉记录，下一次加载也会按"材料缺失"把意图回滚掉。
+            if let Err(rollback_error) = persistence::remove_key(directory, &key_id) {
+                tracing::warn!(
+                    key_id = %key_id,
+                    error = %rollback_error,
+                    "failed to roll back the newly persisted signing key after an interrupted rotation"
+                );
+            }
+            if let Err(clear_error) = journal::clear_rotation(directory) {
+                tracing::warn!(
+                    key_id = %key_id,
+                    error = %clear_error,
+                    "failed to discard the rotation intent after rolling back the signing key"
+                );
+            }
+            return Err(error);
         }
-        return Err(error);
     }
 
     // 退役记录必须写在切换 active kid 之后。反过来写，崩溃会留下“仍在役的 key 带着
@@ -82,6 +99,18 @@ pub(super) fn rotate_blocking_at(
             error = %error,
             "failed to record the retirement instant of the previous signing key; \
              it will be restamped on the next key directory load"
+        );
+    }
+
+    // 意图记录最后清除：active kid 与退役记录都已落盘，轮换结果不会再变。清除
+    // 失败只告警——记录残留会让下一次加载做一次幂等的补完，结果完全相同。
+    if let Some(directory) = directory.as_ref()
+        && let Err(error) = journal::clear_rotation(directory)
+    {
+        tracing::warn!(
+            key_id = %key_id,
+            error = %error,
+            "failed to clear the rotation intent after the rotation completed"
         );
     }
 
