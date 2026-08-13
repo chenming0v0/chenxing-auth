@@ -53,23 +53,27 @@ function AppContent() {
 
   // Fresh database / no Owner yet: force the first-light bootstrap window.
   if (bootstrap === 'required' && !bootstrapPath) {
-    return <Navigate to="/bootstrap" />
+    return <Navigate replace to="/bootstrap" />
   }
 
   // Owner already exists: bootstrap page becomes a dead end.
   if (bootstrap === 'ready' && bootstrapPath) {
-    return <Navigate to="/login" />
+    return <Navigate replace to="/login" />
   }
 
-  if (protectedPath && status !== 'authenticated') {
+  // 未认证用户一律不得进入受保护路径，包括管理后台（#327）：
+  // 此前 /admin/* 不在拦截范围，未登录直接访问会渲染管理页 UI 骨架，
+  // 泄露页面结构与菜单，尽管 API 请求本身会 401。
+  if ((protectedPath || adminPath) && status !== 'authenticated') {
     // loginRecoveryTarget 会把 OAuth 的 request_id 提到顶层查询参数（#270）：
     // 登录页只读自己的 request_id 决定登录后是否重新绑定待授权请求，
     // 埋在 returnTo 里读不到，用户会在登录页与确认页之间反复跳转。
-    return <Navigate to={loginRecoveryTarget(window.location.pathname, window.location.search)} />
+    return <Navigate replace to={loginRecoveryTarget(window.location.pathname, window.location.search)} />
   }
 
+  // 已认证的普通用户无权进入管理后台，送回用户控制台。
   if (adminPath && status === 'authenticated' && user?.role === 'user') {
-    return <Navigate to="/console" />
+    return <Navigate replace to="/console" />
   }
 
   const pages: Record<string, ReactNode> = {
@@ -95,7 +99,7 @@ function AppContent() {
     '/admin/settings': <AdminSettings />,
   }
 
-  return pages[path] ?? <Navigate to="/" />
+  return pages[path] ?? <Navigate replace to="/" />
 }
 
 export default function App() {
