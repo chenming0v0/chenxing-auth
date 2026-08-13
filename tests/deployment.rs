@@ -30,6 +30,7 @@ fn release_workflow_publishes_versioned_archives_and_checksums() {
         "(cd dist && sha256sum * > SHA256SUMS)",
         "Verify downloaded release assets",
         "gh release download",
+        "--repo \"${GITHUB_REPOSITORY}\"",
         "sha256sum -c SHA256SUMS",
         "if: startsWith(github.ref, 'refs/tags/v')",
     ] {

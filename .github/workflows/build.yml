@@ -154,7 +154,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p verified-download
-          gh release download "${{ github.ref_name }}" --dir verified-download --pattern '*' --clobber
+          gh release download "${{ github.ref_name }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir verified-download \
+            --pattern '*' \
+            --clobber
           (cd verified-download && sha256sum -c SHA256SUMS)
 
   container:
