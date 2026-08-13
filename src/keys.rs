@@ -464,8 +464,13 @@ fn retirement_window_open_at(
     let Some(retired_at) = retired_at else {
         return true;
     };
+    // `std::time::Duration` 可表示到 u64 秒（约 5840 亿年），而 `time::Duration` 以
+    // i64 纳秒计，上界约 292 年。转换失败只可能因为 retention 超出可表示范围，
+    // 此时配置意图是「保留足够久」：必须按窗口永不关闭处理（fail-safe）。若退回
+    // false 会把退役公钥立即判为过期删除，它签发的未过期令牌随之全部失效
+    // （Issue #317）——误删旧公钥的代价远高于多留一段时间。
     let Ok(retention) = TimeDuration::try_from(retention) else {
-        return false;
+        return true;
     };
     // retired_at 晚于 now 说明退役发生在该时间快照之后：并发轮换各自在抢锁之前
     // 捕获 now，后执行的轮换可能持有更早的快照。晚于参照时刻退役的 key 不可能
