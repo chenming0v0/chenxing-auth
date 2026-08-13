@@ -39,7 +39,7 @@ async fn concurrent_secret_writes_have_one_compare_and_swap_winner() {
             .allow_legacy_refresh_tokens,
         "new Clients must never open the legacy token compatibility window"
     );
-    // Simulate a Client row that existed before migration 0026. Its unversioned
+    // Simulate an explicitly enabled legacy compatibility window. Unversioned
     // Refresh Tokens remain compatible only until the next Secret rotation.
     chenxing_auth::sqlx::query(
         "UPDATE oauth_clients SET allow_legacy_refresh_tokens = TRUE WHERE client_id = $1",

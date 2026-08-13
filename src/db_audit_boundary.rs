@@ -2,13 +2,13 @@
 //!
 //! ## 边界为什么必须在启动期校验（Issue #281）
 //!
-//! 迁移 0019 把审计 append-only 从"触发器"升级为"PostgreSQL 权限"，做法是让
+//! 当前数据库基线把审计 append-only 从"触发器"升级为"PostgreSQL 权限"，做法是让
 //! 迁移角色持有审计表 owner，再对 `chenxing_runtime` 执行
 //! `REVOKE UPDATE, DELETE, TRUNCATE`。这条边界只在"运行时角色 ≠ 表 owner"时成立：
 //! owner 在 PostgreSQL 里隐含全部表权限，REVOKE 对自己无效。
 //!
 //! 因此未配置 `MIGRATION_DATABASE_URL` 的部署（迁移与运行时共用同一角色）里，
-//! 0019 的 REVOKE 一行都没生效，审计边界退回只剩触发器一层——而触发器的归档
+//! 基线的 REVOKE 一行都没生效，审计边界退回只剩触发器一层——而触发器的归档
 //! 旁路标记是会话级 GUC，任何能连库的会话都能设置。这种降级过去是静默的：
 //! migrate 正常成功，日志里看不出边界已经不存在。
 //!
@@ -66,7 +66,7 @@ pub enum AuditBoundaryVerdict {
 pub enum AuditBoundaryError {
     #[error(
         "runtime database role {role} can still UPDATE/DELETE/TRUNCATE the audit tables, so the \
-         append-only boundary from migration 0019 is not in effect. Configure \
+         append-only boundary from the current baseline is not in effect. Configure \
          MIGRATION_DATABASE_URL with the owner role and keep DATABASE_URL on {expected_role}, or \
          set AUDIT_ROLE_SEPARATION=allow-single-role to accept a trigger-only audit boundary"
     )]
@@ -127,7 +127,7 @@ pub async fn verify_audit_append_only_boundary(
                 role = runtime_role,
                 policy = separation.as_str(),
                 "AUDIT APPEND-ONLY IS TRIGGER-ONLY: the runtime role owns or was granted \
-                 UPDATE/DELETE/TRUNCATE on the audit tables, so migration 0019's REVOKE has no \
+                 UPDATE/DELETE/TRUNCATE on the audit tables, so the baseline REVOKE has no \
                  effect. The archive bypass marker is a session GUC that any session holding \
                  this role can set. Do not run production this way: set MIGRATION_DATABASE_URL \
                  to the owner role and keep DATABASE_URL on the runtime role"

@@ -2,7 +2,7 @@
 
 //! 套餐测试前提的共享脚手架。
 //!
-//! `migrations/0002_plans.sql` 为部署提供 `basic` 种子，但测试不能把迁移或
+//! `migrations/0001_initial.sql` 为部署提供 `basic` 种子，但测试不能把迁移或
 //! 其他测试留下的行当作前提。因此每个需要套餐的测试必须**显式声明自己的状态**。
 //!
 //! 两类前提：
@@ -14,7 +14,7 @@
 use chenxing_auth::sqlx::PgPool;
 use uuid::Uuid;
 
-/// `migrations/0002_plans.sql` 默认套餐种子的 code。
+/// `migrations/0001_initial.sql` 默认套餐种子的 code。
 pub const DEFAULT_PLAN_CODE: &str = "basic";
 
 /// 默认套餐种子的限额，测试断言也以此为契约。

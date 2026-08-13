@@ -6,8 +6,8 @@
 //!    `users_canonical_email_key` 拒绝。补丁前 `UNIQUE (email)` 只看展示值，
 //!    大小写不同就能各自注册一个账号。
 //! 2. **登录按匹配值查行**。同一个邮箱的任意等价书写都要解析到同一行。
-//! 3. **迁移的回填结果与应用层的规范化逐字节相等**。这条是回填判据的正确性证明：
-//!    判据在 SQL 里，权威实现在 Rust 里，只有实际比一遍才知道两者是否一致。
+//! 3. **纯 ASCII 地址的 SQL 小写结果与应用层规范化逐字节相等**。测试夹具会直接
+//!    比较两者，避免测试或维护 SQL 写入错误的匹配值。
 //! 4. **启动期复核会拦下 SQL 无法自证的行**。`xn--` 域名的 Punycode 有效性
 //!    在 PL/pgSQL 里验证不了，所以 `db::migrate` 之后用 `EmailAddress` 复核；
 //!    落错的行会让其所有者静默无法登录，因此必须拒绝启动而不是放行。
@@ -206,16 +206,15 @@ async fn username_login_still_matches_only_the_username_column() {
     assert_eq!(credentials.id, user_id);
 }
 
-/// 迁移 0025 的回填结果必须与应用层的规范化逐字节相等。
+/// 纯 ASCII 地址的 `lower(email)` 必须与应用层规范化逐字节相等。
 ///
-/// 回填判据写在 SQL 里，权威实现在 Rust 里。这个用例把判据覆盖范围内的各种形态
-/// 都插一遍，然后逐行比对——判据一旦漂移（例如放宽了某个字符类），这里立刻失败。
+/// 应用层是权威实现；这个用例覆盖测试和维护 SQL 会使用的保守 ASCII 范围。
 #[tokio::test]
-async fn migration_backfill_agrees_with_the_application_canonicalizer() {
+async fn ascii_lowercase_agrees_with_the_application_canonicalizer() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple().to_string();
 
-    // 全部是"纯 ASCII + 结构合法"的形态，即迁移声明可自证的范围。
+    // 全部是纯 ASCII 且结构合法的形态。
     let raw_emails = [
         format!("plain-{suffix}@example.com"),
         format!("MiXeD-{suffix}@Example.COM"),
@@ -229,7 +228,7 @@ async fn migration_backfill_agrees_with_the_application_canonicalizer() {
     ];
 
     for (index, raw) in raw_emails.iter().enumerate() {
-        // 用 lower(email) 写入，与迁移的回填表达式完全一致。
+        // 用 lower(email) 模拟测试夹具或维护 SQL 的保守写法。
         chenxing_auth::sqlx::query(
             "INSERT INTO users (username, email, canonical_email, password_hash, status)
              VALUES ($1, $2, lower($2), 'unusable-hash', 'active')",
@@ -269,7 +268,7 @@ async fn startup_verification_rejects_a_wrong_idna_matching_value() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple().to_string();
 
-    // `xn--a-ecp` 通过了迁移的字符集前提，但不是有效的 Punycode：
+    // `xn--a-ecp` 形态看似是 Punycode，但并不是有效编码：
     // 应用层的 `EmailAddress::parse` 会拒绝它，于是复核必须报错。
     let broken = format!("broken-{suffix}@xn--a-ecp.example");
     insert_raw(&pool, &format!("broken-{suffix}"), &broken, &broken)

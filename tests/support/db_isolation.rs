@@ -98,7 +98,7 @@ pub async fn isolated_pool_with_max_connections(
         .expect("db_isolation: create schema");
     drop(bootstrap);
 
-    // 迁移和应用都走 owner 连接。表 owner 必须是迁移角色，否则 0019 的 REVOKE
+    // 迁移和应用都走 owner 连接。表 owner 必须是迁移角色，否则基线的 REVOKE
     // 对运行时角色不成立。
     //
     // 应用 pool 刻意不用运行时角色：`chenxing_runtime` 是集群全局对象，

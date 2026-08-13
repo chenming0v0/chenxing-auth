@@ -435,9 +435,8 @@ async fn runtime_role_cannot_delete_audit_and_uses_security_definer_archive() {
 }
 
 /// Owner 初始化要求 `users.id` 从 1 开始，`bootstrap_owner` 因此在插入前调
-/// `setval`，而 `setval` 要序列的 UPDATE 权限。迁移 0019 只授了 `USAGE, SELECT`，
-/// 角色分离部署下第一个 Owner 直接建不出来（`permission denied for sequence`），
-/// 由 0024 补授。这里直接查权限位，不改集群全局的运行时角色口令。
+/// `setval`，而 `setval` 要序列的 UPDATE 权限。完整基线只对 users identity
+/// 序列补授这一权限。这里直接查权限位，不改集群全局的运行时角色口令。
 #[tokio::test]
 async fn runtime_role_can_advance_the_users_sequence_but_not_audit_sequences() {
     let pool = database().await;

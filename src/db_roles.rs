@@ -65,6 +65,32 @@ pub enum PasswordAction {
 /// 与连接层故障同样处理：中止口令管理并报错，不做覆盖写（Issue #411）。
 const PASSWORD_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Ensure the cluster-level runtime role exists before the transactional schema baseline runs.
+///
+/// PostgreSQL role creation cannot live in the SQLx migration transaction. The nested duplicate
+/// handler keeps concurrent per-schema migrations idempotent without weakening the schema
+/// transaction itself.
+pub(super) async fn ensure_runtime_role(
+    database: &super::Database,
+) -> Result<(), crate::sqlx::Error> {
+    crate::sqlx::query(
+        "DO $$
+         BEGIN
+             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'chenxing_runtime') THEN
+                 BEGIN
+                     CREATE ROLE chenxing_runtime LOGIN;
+                 EXCEPTION WHEN duplicate_object THEN
+                     NULL;
+                 END;
+             END IF;
+         END
+         $$",
+    )
+    .execute(database)
+    .await?;
+    Ok(())
+}
+
 /// 置备固定的运行时角色。
 ///
 /// 审计表 owner 留在迁移角色手上，运行时角色只拿到显式 GRANT 的权限。
@@ -80,12 +106,7 @@ pub async fn configure_runtime_role(
             .fetch_one(database)
             .await?;
     if !role_existed {
-        crate::sqlx::query(&format!(
-            "CREATE ROLE {} LOGIN",
-            quote_ident(RUNTIME_DATABASE_ROLE)
-        ))
-        .execute(database)
-        .await?;
+        ensure_runtime_role(database).await?;
     }
 
     // 只有角色本来就存在且由 migrate 管理口令时才值得探测：刚创建的角色必然

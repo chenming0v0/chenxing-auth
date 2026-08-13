@@ -333,7 +333,7 @@ async fn admin_user_and_client_queries_filter_and_page_in_the_database() {
     ] {
         chenxing_auth::sqlx::query(
             // canonical_email 用 lower(email)：夹具邮箱都是纯 ASCII 且结构合法，
-            // 这正是迁移 0024 声明的"SQL 可自证等于应用层匹配值"的形态。
+            // 与应用层 canonicalizer 的结果一致。
             "INSERT INTO users
              (username, email, canonical_email, password_hash, role, status, created_at, updated_at)
              VALUES ($1, $2, lower($2), 'test-hash', $3, $4, NOW(), NOW())",

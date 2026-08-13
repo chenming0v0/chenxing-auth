@@ -83,7 +83,7 @@ fn setting_the_same_role_on_both_urls_is_still_a_single_role_deployment() {
 
 #[test]
 fn separated_roles_require_the_fixed_runtime_role_name() {
-    // 迁移 0019 的 GRANT/REVOKE 写死 chenxing_runtime，别的角色名拿不到那条边界。
+    // 基线的 GRANT/REVOKE 写死 chenxing_runtime，别的角色名拿不到那条边界。
     let error = plan(
         "postgres://app:app-secret@127.0.0.1:5432/chenxing_auth",
         Some(OWNER_URL),

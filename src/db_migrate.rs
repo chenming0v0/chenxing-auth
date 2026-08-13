@@ -6,7 +6,7 @@
 //! ## 三个环境变量
 //!
 //! - `MIGRATION_DATABASE_URL`：迁移/owner 连接。缺失时回落到 `DATABASE_URL`，
-//!   此时迁移角色与运行时角色是同一个，迁移 0019 的 REVOKE 不产生任何效果。
+//!   此时迁移角色与运行时角色是同一个，基线的 REVOKE 不产生任何效果。
 //! - `AUDIT_ROLE_SEPARATION`：`require`（默认）或 `allow-single-role`。默认值让
 //!   上面那种降级部署直接失败，而不是静默继续（Issue #281）。
 //! - `MIGRATION_MANAGE_RUNTIME_PASSWORD`：默认 `true`。设为 `false` 时 migrate
@@ -27,12 +27,12 @@ pub enum MigrationPlanError {
     MissingMigrationRole,
     #[error(
         "DATABASE_URL must use the {expected} role when MIGRATION_DATABASE_URL is set, because \
-         migration 0019 grants and revokes audit privileges for that exact role"
+         the database baseline grants and revokes audit privileges for that exact role"
     )]
     UnexpectedRuntimeRole { expected: &'static str },
     #[error(
         "MIGRATION_DATABASE_URL is not configured, so migrations and the application would share \
-         one database role. Migration 0019's REVOKE on the audit tables has no effect against the \
+         one database role. The baseline REVOKE on the audit tables has no effect against the \
          table owner, which leaves the audit append-only guarantee to the trigger alone. Set \
          MIGRATION_DATABASE_URL to the owner role and keep DATABASE_URL on the runtime role, or \
          set {env}=allow-single-role to accept a trigger-only audit boundary"
@@ -179,7 +179,7 @@ impl MigrationPlan {
                 policy = self.separation.as_str(),
                 env = MIGRATION_DATABASE_URL_ENV,
                 "MIGRATIONS AND THE APPLICATION SHARE ONE DATABASE ROLE: that role owns the \
-                 audit tables, so migration 0019's REVOKE cannot restrict it and audit \
+                 audit tables, so the baseline REVOKE cannot restrict it and audit \
                  append-only is enforced by the trigger alone. This is not a supported \
                  production posture"
             );

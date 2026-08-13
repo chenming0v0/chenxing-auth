@@ -153,15 +153,15 @@ src/
 
 限流阈值来自 `app_settings.security_limits`，但认证热路径不逐次查询数据库：`SettingsService` 在进程内缓存一份已校验的阈值，TTL 5 秒，管理接口写入成功后主动刷新本实例缓存，多实例部署由 TTL 收敛。阈值读取失败时使用最后一次成功加载的值，从未成功加载过则使用启动期环境变量默认值，并按同一个 `AUTH_LIMITER_FAILURE_POLICY` 处置：`fail-open` 带着该降级阈值继续限流（阈值仍然生效，认证不返回 500），`fail-closed` 明确拒绝认证。两种情况都记录结构化 `auth_limiter.settings_unavailable` 事件，字段包含 `policy`、`limits_source` 和 `operation`；读取失败后有 1 秒重试退避，故障期间不会每个认证请求都再打一次数据库。`clear` 与 `release` 不读取阈值，因此成功认证后的计数清理与在途配额归还不受 settings 故障影响。
 
-迁移编号在合并时必须保持唯一且连续：sessions lane 使用 `0006_session_epochs.sql` 和 `0014_session_idle_policy.sql`，plans lane 使用 `0007_plan_default_invariant.sql`，本 lane 的管理员查询索引使用 `0008_admin_query_indexes.sql`，审计不可变性和归档边界使用 `0013_audit_append_only_retention.sql`。不要复用已占用的编号或修改已有迁移的 SQL 内容。
+数据库当前使用 `migrations/0001_initial.sql` 这一份完整基线。它直接声明最终的 13 张表、约束、索引、触发器、种子数据和运行时角色权限。首次生产发布前，结构变化直接修改这份基线并重建开发数据库，不追加迁移文件；首次生产发布后必须冻结基线字节，再从 `0002` 开始追加迁移。
 
 本次统一身份数据库重构使用新的单一基线迁移，不支持保留旧开发数据滚动升级。旧数据库中的 `_sqlx_migrations` 记录也不能被这条新基线自动转换；生产环境部署遇到迁移失败时必须先备份并执行经过批准的数据迁移或重建方案。首次在本地切换到该版本时，请确认 Compose 项目为本仓库的 `chenxing-auth` 后执行 `docker compose down -v`，再运行 `docker compose up -d postgres redis`；该操作会删除本地 PostgreSQL/Redis 开发数据，生产环境不得照此操作。
 
 审计事件由 `audit_events` 和 `audit_events_archive` 两张表保存。迁移创建的数据库触发器拒绝两张表的 `UPDATE`、`DELETE` 和 `TRUNCATE`；migration/owner role 与 `chenxing_runtime` 分离后，runtime role 对两张审计表没有任何修改权限，归档只通过固定 `search_path` 的最小权限 `SECURITY DEFINER` 函数完成。触发器保留为纵深防御，不再作为唯一边界。归档先复制后删除，且只删除已成功复制的行；归档表本身永久保留并拒绝修改。审计查询会合并两张表。
 
-角色分离必须真的配置出来才成立：PostgreSQL 里表 owner 隐含全部表权限，因此当 `MIGRATION_DATABASE_URL` 缺失、迁移与运行时共用同一角色时，迁移 `0019` 的 `REVOKE` 一行都不生效，审计 append-only 退回只剩触发器一层，而触发器的归档旁路标记是会话级 GUC，任何持有该角色的会话都能设置。`cargo run -- migrate` 因此在连库前先校验角色配置，迁移后再用 `has_table_privilege` 实测运行时角色此刻能不能 `UPDATE`/`DELETE`/`TRUNCATE` 审计表——这个函数把 owner 隐含权限、角色继承和 superuser 旁路都算在内，问的是实际权限而不是迁移文件写了什么。默认策略 `AUDIT_ROLE_SEPARATION=require` 下不满足即拒绝；只有显式设置 `AUDIT_ROLE_SEPARATION=allow-single-role` 才允许单角色部署，且每次 migrate 都会打出强告警。生产环境不得使用该开关。
+角色分离必须真的配置出来才成立：PostgreSQL 里表 owner 隐含全部表权限，因此当 `MIGRATION_DATABASE_URL` 缺失、迁移与运行时共用同一角色时，基线里的 `REVOKE` 一行都不生效，审计 append-only 退回只剩触发器一层，而触发器的归档旁路标记是会话级 GUC，任何持有该角色的会话都能设置。`cargo run -- migrate` 因此在连库前先校验角色配置，迁移后再用 `has_table_privilege` 实测运行时角色此刻能不能 `UPDATE`/`DELETE`/`TRUNCATE` 审计表——这个函数把 owner 隐含权限、角色继承和 superuser 旁路都算在内，问的是实际权限而不是迁移文件写了什么。默认策略 `AUDIT_ROLE_SEPARATION=require` 下不满足即拒绝；只有显式设置 `AUDIT_ROLE_SEPARATION=allow-single-role` 才允许单角色部署，且每次 migrate 都会打出强告警。生产环境不得使用该开关。
 
-运行时角色对序列的权限只放开一个对象：`users.id` 的 identity 序列。Owner 初始化要求第一个 Owner 的 `id` 为 1，`bootstrap_owner` 因此在插入前调 `setval`，而 `setval` 在 PostgreSQL 里要求序列的 `UPDATE` 权限。迁移 `0019` 只授了 `USAGE, SELECT`，所以角色分离部署下第一个 Owner 会以 `permission denied for sequence users_id_seq` 失败（接口表现为 500 `could not persist user`），由 `0024` 单独补授这一个序列。审计表的序列保持只读，append-only 边界不受影响。
+运行时角色对序列的权限只放开一个对象：`users.id` 的 identity 序列。Owner 初始化要求第一个 Owner 的 `id` 为 1，`bootstrap_owner` 因此在插入前调 `setval`，而 `setval` 在 PostgreSQL 里要求序列的 `UPDATE` 权限；完整基线只授这一个序列。审计表的序列保持只读，append-only 边界不受影响。
 
 运行时角色口令由 migrate 保证可用，但不会被无条件重写：migrate 先用 `DATABASE_URL` 真正登录一次，口令已经可用就完全不碰角色，只有登录不被接受或角色刚被创建才写入并记录告警。口令完全由外部密钥托管管理时设置 `MIGRATION_MANAGE_RUNTIME_PASSWORD=false`，migrate 便不再执行任何 `ALTER ROLE ... PASSWORD`。
 
@@ -195,7 +195,7 @@ src/
 ./deploy/install.sh
 ```
 
-脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码、runtime 数据库密码和 `ADMIN_TOKEN`，先校验生产 Compose 配置，再启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。已有 `.env` 不会被覆盖，但缺少 runtime 角色凭据时会自动追加；`APP_ISSUER` 是必填项，生产环境必须设置为固定的 HTTPS 地址（例如 `https://auth.example.com`），未设置或为空时服务启动即失败，并将 `.env` 作为秘密文件保护。升级 v1.0.6 数据库时，安装脚本会先运行 `deploy/repair-v106-checksum.sql` 修复被原地修改的迁移元数据。健康检查失败时脚本会输出 Compose 状态和应用日志，便于定位启动问题。
+脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码、runtime 数据库密码和 `ADMIN_TOKEN`，先校验生产 Compose 配置，再启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。已有 `.env` 不会被覆盖，但缺少 runtime 角色凭据时会自动追加；`APP_ISSUER` 是必填项，生产环境必须设置为固定的 HTTPS 地址（例如 `https://auth.example.com`），未设置或为空时服务启动即失败，并将 `.env` 作为秘密文件保护。当前基线不自动转换旧 `_sqlx_migrations` 记录；健康检查失败时脚本会输出 Compose 状态和应用日志，便于定位启动问题。
 
 生产 Compose 文件为 `docker-compose.prod.yml`。数据库、Redis、JWK 密钥和内嵌 Web 都由应用容器提供，应用容器以非 root 用户运行。TLS 终止可以交给服务器网关，但 Web/API 本身不依赖反向代理。
 

@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use sha2::{Digest, Sha384};
-
 const BUILD_WORKFLOW: &str = include_str!("../.github/workflows/build.yml");
 const INSTALL_SCRIPT: &str = include_str!("../deploy/install.sh");
 const PRODUCTION_COMPOSE: &str = include_str!("../docker-compose.prod.yml");
@@ -18,7 +16,7 @@ const STATIC_FILES_MODULE: &str = include_str!("../src/api/static_files.rs");
 const WEB_DIST_MODULE: &str = include_str!("../src/web_dist.rs");
 const CONFIG_CONSTRUCTION_MODULE: &str = include_str!("../src/config_construction.rs");
 const STATE_MODULE: &str = include_str!("../src/state.rs");
-const AUDIT_RUNTIME_MIGRATION: &str = include_str!("../migrations/0019_audit_runtime_role.sql");
+const DATABASE_BASELINE: &str = include_str!("../migrations/0001_initial.sql");
 
 /// Where both production images place the built frontend bundle.
 const WEB_DIST_IMAGE_PATH: &str = "/usr/local/share/chenxing-auth/web/dist";
@@ -409,7 +407,6 @@ fn installer_validates_compose_and_reports_application_logs() {
     for marker in [
         "docker compose --env-file .env -f docker-compose.prod.yml config",
         "docker compose --env-file .env -f docker-compose.prod.yml logs app",
-        "deploy/repair-v106-checksum.sql",
         "POSTGRES_RUNTIME_USER",
         "POSTGRES_RUNTIME_PASSWORD",
         "MIGRATION_DATABASE_URL",
@@ -457,66 +454,37 @@ fn installer_rejects_implicit_localhost_and_checks_discovery_contract() {
 fn deployment_files_are_present_at_repository_root() {
     assert!(Path::new(".github/workflows/build.yml").is_file());
     assert!(Path::new("deploy/install.sh").is_file());
-    assert!(Path::new("deploy/repair-v106-checksum.sql").is_file());
     assert!(Path::new("docker-compose.prod.yml").is_file());
     assert!(Path::new("Dockerfile").is_file());
     assert!(Path::new("Dockerfile.runtime").is_file());
 }
 
 #[test]
-fn database_uses_explicit_unified_baseline_migrations() {
-    assert!(DB_MODULE.contains("unified identity baseline"));
-    assert!(DB_MODULE.contains("plans and entitlements"));
-    assert!(DB_MODULE.contains("session outbox consistency"));
-    assert!(DB_MODULE.contains("session outbox deleted target cleanup"));
-    assert!(DB_MODULE.contains("session outbox event user retention"));
-    assert!(DB_MODULE.contains("session revocation epochs"));
+fn database_uses_one_transactional_current_baseline() {
+    assert!(DB_MODULE.contains("current schema baseline"));
     assert!(DB_MODULE.contains("include_str!(\"../migrations/0001_initial.sql\")"));
-    assert!(DB_MODULE.contains("include_str!(\"../migrations/0002_plans.sql\")"));
-    assert!(DB_MODULE.contains("0003_session_outbox.sql"));
-    assert!(DB_MODULE.contains("0004_relax_deleted_session_outbox_target.sql"));
-    assert!(DB_MODULE.contains("0005_session_outbox_event_user.sql"));
-    assert!(DB_MODULE.contains("0006_session_epochs.sql"));
-    assert!(DB_MODULE.contains("plan default invariant"));
-    assert!(DB_MODULE.contains("0007_plan_default_invariant.sql"));
-    assert!(DB_MODULE.contains("admin query indexes"));
-    assert!(DB_MODULE.contains("0008_admin_query_indexes.sql"));
-    assert!(DB_MODULE.contains("system settings seeds"));
-    assert!(DB_MODULE.contains("0009_system_settings.sql"));
-    assert!(DB_MODULE.contains("durable consent revocation"));
-    assert!(DB_MODULE.contains("0010_consent_revoked_at.sql"));
-    assert!(DB_MODULE.contains("external provider PKCE toggle"));
-    assert!(DB_MODULE.contains("0011_oauth_provider_pkce.sql"));
-    assert!(DB_MODULE.contains("restore basic plan seed"));
-    assert!(DB_MODULE.contains("0012_restore_basic_plan.sql"));
-    assert!(DB_MODULE.contains("audit append-only retention"));
-    assert!(DB_MODULE.contains("0013_audit_append_only_retention.sql"));
-    assert!(DB_MODULE.contains("session idle policy"));
-    assert!(DB_MODULE.contains("0014_session_idle_policy.sql"));
-    assert!(DB_MODULE.contains("admin search indexes"));
-    assert!(DB_MODULE.contains("0015_admin_search_indexes.sql"));
-    assert!(DB_MODULE.contains("client secret rotation compare-and-swap version"));
-    assert!(DB_MODULE.contains("0016_client_secret_rotation_version.sql"));
-    assert!(DB_MODULE.contains("relax plan default policy"));
-    assert!(DB_MODULE.contains("0017_relax_plan_default_policy.sql"));
-    assert!(DB_MODULE.contains("seed security limits"));
-    assert!(DB_MODULE.contains("0018_seed_security_limits.sql"));
-    assert!(DB_MODULE.contains("audit runtime role separation"));
-    assert!(DB_MODULE.contains("0019_audit_runtime_role.sql"));
-    assert!(DB_MODULE.contains("external provider requires email_verified claim"));
-    assert!(DB_MODULE.contains("0021_oauth_provider_require_email_verified_claim.sql"));
-    assert!(DB_MODULE.contains("session outbox retention and dead letters"));
-    assert!(DB_MODULE.contains("0022_session_outbox_retention.sql"));
-    assert!(DB_MODULE.contains("consent state version for cache staleness detection"));
-    assert!(DB_MODULE.contains("0023_consent_state_version.sql"));
-    assert!(DB_MODULE.contains("runtime users sequence update grant"));
-    assert!(DB_MODULE.contains("0024_runtime_users_sequence_update.sql"));
-    assert!(DB_MODULE.contains("canonical email uniqueness"));
-    assert!(DB_MODULE.contains("0025_user_canonical_email.sql"));
-    assert!(DB_MODULE.contains("client secret refresh generation boundary"));
-    assert!(DB_MODULE.contains("0026_client_secret_refresh_generation.sql"));
-    assert!(DB_MODULE.contains("canonical email constraint scope repair"));
-    assert!(DB_MODULE.contains("0027_repair_canonical_email_constraint_scope.sql"));
+    assert_eq!(
+        DB_MODULE.matches("Migration::new(").count(),
+        1,
+        "the development baseline must be registered exactly once"
+    );
+    assert!(
+        DB_MODULE.contains(
+            "normalize_migration_sql(include_str!(\"../migrations/0001_initial.sql\")),\n        false,"
+        ),
+        "the schema baseline must remain transactional"
+    );
+
+    let ensure_role = DB_MODULE
+        .find("roles::ensure_runtime_role(database).await?;")
+        .expect("runtime role must be provisioned before the schema baseline");
+    let run_baseline = DB_MODULE
+        .find("embedded_migrator().run(database).await?;")
+        .expect("schema baseline must run");
+    assert!(ensure_role < run_baseline);
+    assert!(DB_ROLES_MODULE.contains("CREATE ROLE chenxing_runtime LOGIN"));
+    assert!(!DATABASE_BASELINE.contains("CREATE ROLE"));
+
     let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -526,151 +494,73 @@ fn database_uses_explicit_unified_baseline_migrations() {
     migrations.sort();
     assert_eq!(
         migrations,
-        vec![
-            std::ffi::OsString::from("0001_initial.sql"),
-            std::ffi::OsString::from("0002_plans.sql"),
-            std::ffi::OsString::from("0003_session_outbox.sql"),
-            std::ffi::OsString::from("0004_relax_deleted_session_outbox_target.sql"),
-            std::ffi::OsString::from("0005_session_outbox_event_user.sql"),
-            std::ffi::OsString::from("0006_session_epochs.sql"),
-            std::ffi::OsString::from("0007_plan_default_invariant.sql"),
-            std::ffi::OsString::from("0008_admin_query_indexes.sql"),
-            std::ffi::OsString::from("0009_system_settings.sql"),
-            std::ffi::OsString::from("0010_consent_revoked_at.sql"),
-            std::ffi::OsString::from("0011_oauth_provider_pkce.sql"),
-            std::ffi::OsString::from("0012_restore_basic_plan.sql"),
-            std::ffi::OsString::from("0013_audit_append_only_retention.sql"),
-            std::ffi::OsString::from("0014_session_idle_policy.sql"),
-            std::ffi::OsString::from("0015_admin_search_indexes.sql"),
-            std::ffi::OsString::from("0016_client_secret_rotation_version.sql"),
-            std::ffi::OsString::from("0017_relax_plan_default_policy.sql"),
-            std::ffi::OsString::from("0018_seed_security_limits.sql"),
-            std::ffi::OsString::from("0019_audit_runtime_role.sql"),
-            std::ffi::OsString::from("0020_user_avatar.sql"),
-            std::ffi::OsString::from("0021_oauth_provider_require_email_verified_claim.sql"),
-            std::ffi::OsString::from("0022_session_outbox_retention.sql"),
-            std::ffi::OsString::from("0023_consent_state_version.sql"),
-            std::ffi::OsString::from("0024_runtime_users_sequence_update.sql"),
-            std::ffi::OsString::from("0025_user_canonical_email.sql"),
-            std::ffi::OsString::from("0026_client_secret_refresh_generation.sql"),
-            std::ffi::OsString::from("0027_repair_canonical_email_constraint_scope.sql"),
-        ]
+        vec![std::ffi::OsString::from("0001_initial.sql")]
     );
-}
 
-/// Issue #302：canonical 迁移必须在无法自证或存在冲突时 fail loudly。
-///
-/// 断言写在迁移文本上，因为要守住的是"迁移自带失败路径与操作员手册"这个约定：
-/// 静默回填一个猜出来的值，或者静默把两个账号合并成一个，都是不可接受的，
-/// 而这两件事只有在真实存量数据上才会显现，光靠集成测试环境覆盖不到。
-#[test]
-fn canonical_email_migration_fails_loudly_instead_of_merging_accounts() {
-    let migration = include_str!("../migrations/0025_user_canonical_email.sql");
-    for marker in [
-        // 两条 fail-loudly 路径都必须存在。
-        "cannot derive canonical_email",
-        "canonical email conflict group",
-        "RAISE EXCEPTION",
-        // 唯一约束必须是命名约束：应用层按名字翻错误码。
-        "users_canonical_email_key",
-        "SET NOT NULL",
-        // 回填判据的关键前提。
-        "octet_length(email) = length(email)",
-        // 回滚剧本。
-        "DROP CONSTRAINT users_canonical_email_key",
-        "DROP COLUMN canonical_email",
+    assert_eq!(
+        DATABASE_BASELINE.matches("CREATE TABLE ").count(),
+        13,
+        "the baseline must declare the complete 13-table schema"
+    );
+    for table in [
+        "plans",
+        "users",
+        "oauth_clients",
+        "user_consents",
+        "user_sessions",
+        "user_totp_factors",
+        "user_passkeys",
+        "oauth_providers",
+        "oauth_external_identities",
+        "audit_events",
+        "app_settings",
+        "session_outbox",
+        "audit_events_archive",
     ] {
         assert!(
-            migration.contains(marker),
-            "canonical email migration is missing marker: {marker}"
+            DATABASE_BASELINE.contains(&format!("CREATE TABLE {table} (")),
+            "baseline is missing table {table}"
+        );
+    }
+
+    for forbidden in ["ADD COLUMN", "DROP CONSTRAINT", "DROP TABLE"] {
+        assert!(
+            !DATABASE_BASELINE.contains(forbidden),
+            "current-state baseline must not contain historical operation: {forbidden}"
         );
     }
     assert!(
-        !migration.contains("DROP TABLE"),
-        "the migration must not drop data-bearing tables"
-    );
-    // 绝不允许出现"删掉冲突行"这类静默合并手段。
-    assert!(
-        !migration.contains("DELETE FROM users"),
-        "the migration must not delete conflicting accounts"
+        !DATABASE_BASELINE
+            .lines()
+            .any(|line| line.trim_start().starts_with("UPDATE ")),
+        "a fresh baseline must not carry old-row repair updates"
     );
 }
 
 #[test]
-fn canonical_email_constraint_repair_is_bound_to_the_current_users_table() {
-    let migration = include_str!("../migrations/0027_repair_canonical_email_constraint_scope.sql");
+fn current_baseline_declares_final_security_and_consistency_invariants() {
     for marker in [
-        "conrelid = 'users'::regclass",
-        "users_canonical_email_key",
-        "UNIQUE (canonical_email)",
+        "canonical_email TEXT NOT NULL",
+        "CONSTRAINT users_canonical_email_key UNIQUE (canonical_email)",
+        "allow_legacy_refresh_tokens BOOLEAN NOT NULL DEFAULT FALSE",
+        "client_secret_version BIGINT NOT NULL DEFAULT 0",
+        "state_version BIGINT NOT NULL DEFAULT 1",
+        "CONSTRAINT oauth_providers_active_requires_email_verified_claim",
+        "CONSTRAINT session_outbox_state_check",
+        "WHERE processed_at IS NULL AND dead_lettered_at IS NULL",
+        "CREATE TRIGGER audit_events_append_only_trigger",
+        "CREATE TRIGGER audit_events_archive_append_only_trigger",
+        "GRANT UPDATE ON SEQUENCE %s TO chenxing_runtime",
     ] {
         assert!(
-            migration.contains(marker),
-            "canonical email constraint repair is missing marker: {marker}"
+            DATABASE_BASELINE.contains(marker),
+            "database baseline is missing invariant: {marker}"
         );
     }
     assert!(
-        !migration.contains("DELETE FROM users"),
-        "the repair must fail on duplicates instead of deleting accounts"
+        !DATABASE_BASELINE.contains("allow_legacy_refresh_tokens BOOLEAN NOT NULL DEFAULT TRUE"),
+        "fresh clients must never start in legacy-token compatibility mode"
     );
-}
-
-/// Issue #275：保留窗口迁移必须留下可执行的回滚说明。
-///
-/// 这条迁移引入了一个不可逆的语义：dead-letter 行退出重试。回滚会让它们重新被
-/// 领取，而 `dead_lettered_at` 一旦随列一起被丢弃就再也分不清"放弃了"和"还会重试"。
-/// 断言写在文本上，因为要守住的是"迁移文件自带回滚剧本"这个约定，不需要数据库。
-#[test]
-fn session_outbox_retention_migration_documents_its_rollback() {
-    let migration = include_str!("../migrations/0022_session_outbox_retention.sql");
-    for marker in [
-        "Rollback note",
-        "DROP INDEX session_outbox_processed_cleanup_idx;",
-        "DROP INDEX session_outbox_dead_letter_idx;",
-        "DROP CONSTRAINT session_outbox_state_check,",
-        "DROP COLUMN dead_lettered_at;",
-        "CREATE INDEX session_outbox_pending_idx",
-    ] {
-        assert!(
-            migration.contains(marker),
-            "retention migration is missing rollback marker: {marker}"
-        );
-    }
-    assert!(
-        !migration.contains("DROP TABLE"),
-        "retention migration must not drop data-bearing tables"
-    );
-}
-
-#[test]
-fn released_migration_bytes_are_immutable() {
-    let cases = [
-        (
-            "0002_plans.sql",
-            include_str!("../migrations/0002_plans.sql"),
-            "714a0ae3cfa29909ebe32dde11396f378bf7ad546adc2d4f19e2aec23e7040fe6ab9ac0aa50df2e66ddb9a633333cc8c",
-        ),
-        (
-            "0007_plan_default_invariant.sql",
-            include_str!("../migrations/0007_plan_default_invariant.sql"),
-            "f29a20be2d62a3d13429d4ed1ba461b0ecfa7699a5118cc8be80bed57b4de4701434f661d20ed5388dad203e69a15cb8",
-        ),
-        (
-            "0009_system_settings.sql",
-            include_str!("../migrations/0009_system_settings.sql"),
-            "6092ab9b2112079914a64f3e3951cd31230ff5f53a2b414169e2ca0e18ed36bf81a433f8a019e176116fdfde3b56d4c4",
-        ),
-    ];
-
-    for (name, sql, expected) in cases {
-        let normalized = sql.replace("\r\n", "\n");
-        let actual = Sha384::digest(normalized.as_bytes());
-        assert_eq!(
-            hex(&actual),
-            expected,
-            "published migration {name} must remain byte-identical"
-        );
-    }
 }
 
 #[test]
@@ -696,24 +586,7 @@ fn migration_checksum_manifest_lists_every_sql_file() {
 }
 
 #[test]
-fn client_secret_generation_migration_preserves_only_pre_upgrade_legacy_tokens() {
-    let migration = include_str!("../migrations/0026_client_secret_refresh_generation.sql");
-    for marker in [
-        "allow_legacy_refresh_tokens BOOLEAN NOT NULL DEFAULT TRUE",
-        "ALTER COLUMN allow_legacy_refresh_tokens SET DEFAULT FALSE",
-        "client_secret_version",
-        "upgrade every serving instance",
-        "drain token endpoints",
-    ] {
-        assert!(
-            migration.contains(marker),
-            "client secret generation migration is missing marker: {marker}"
-        );
-    }
-}
-
-#[test]
-fn audit_runtime_role_migration_enforces_least_privilege() {
+fn database_baseline_enforces_runtime_role_least_privilege() {
     for marker in [
         "chenxing_runtime",
         "GRANT USAGE ON SCHEMA",
@@ -724,13 +597,13 @@ fn audit_runtime_role_migration_enforces_least_privilege() {
         "REVOKE ALL ON FUNCTION",
     ] {
         assert!(
-            AUDIT_RUNTIME_MIGRATION.contains(marker),
-            "audit runtime migration is missing marker: {marker}"
+            DATABASE_BASELINE.contains(marker),
+            "database baseline is missing runtime privilege marker: {marker}"
         );
     }
 }
 
-/// Issue #281：0019 的 REVOKE 只在"运行时角色 ≠ 表 owner"时才是边界。
+/// Issue #281：基线的 REVOKE 只在"运行时角色 ≠ 表 owner"时才是边界。
 ///
 /// 断言写在源码文本上，因为这里要守住的是"迁移命令必须实测权限、不能只相信
 /// 迁移文件"这个结构决定。真实权限行为由 `database_schema` 的集成用例覆盖。
@@ -784,10 +657,6 @@ fn migrate_command_verifies_the_audit_boundary_instead_of_trusting_the_migration
             ".env.example must document the audit role separation controls: {marker}"
         );
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[test]

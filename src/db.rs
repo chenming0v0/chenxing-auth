@@ -129,19 +129,17 @@ pub async fn check_ready(database: &Database) -> Result<(), crate::sqlx::Error> 
 }
 
 pub async fn migrate(database: &Database) -> Result<(), crate::sqlx::migrate::MigrateError> {
+    roles::ensure_runtime_role(database).await?;
     embedded_migrator().run(database).await?;
     verify_canonical_emails(database).await
 }
 
 /// 校验 `users.canonical_email` 与应用层的规范化结果一致（Issue #302）。
 ///
-/// 迁移 0025 的回填在 SQL 里做，而 SQL 无法验证 Punycode 的有效性——那需要真正
-/// 解码再跑一遍 UTS-46，在 PL/pgSQL 里重实现等于把"规范化只有一处实现"这个前提
-/// 亲手推翻。于是把这一步留给唯一的权威实现：迁移之后，用 `EmailAddress` 复核。
-///
-/// **只查 `xn--` 行**。纯 ASCII 且结构合法的行，`lower()` 与应用层逐字节相等，
-/// 这一点由迁移的回填判据保证，不需要每次启动都全表复核；`xn--` 是判据覆盖不到的
-/// 唯一形态，而它在实际数据里罕见甚至为空，索引扫描的代价可以忽略。
+/// PostgreSQL 可以强制该列非空且唯一，却不能在不复制 UTS-46 实现的前提下证明它与
+/// 展示邮箱一致。因此显式 migrate 命令会用唯一的权威实现 `EmailAddress` 复核
+/// `xn--` 域名行。纯 ASCII 且结构合法的行由基线的应用写入契约保证，无需每次启动
+/// 都扫描整张用户表。
 ///
 /// 不一致时**拒绝启动**。这类行的匹配值一旦落错，登录会静默失败，而错误看起来
 /// 像"密码不对"——放行是把一个可诊断的启动故障换成一个查不出原因的线上故障。
@@ -185,8 +183,8 @@ async fn verify_canonical_emails(
             "canonical_email mismatch for {} user row(s): id in {:?}. \
              These rows carry an internationalized domain whose stored matching value \
              differs from what the application computes, so their owners cannot log in. \
-             Fix users.email (and canonical_email) for each id, then restart. \
-             See migrations/0025_user_canonical_email.sql for the procedure.",
+             Fix users.email and canonical_email for each id, then restart. \
+             The canonical value must come from the application EmailAddress parser.",
             offending.len(),
             offending,
         )),
@@ -196,219 +194,13 @@ async fn verify_canonical_emails(
 fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
     use crate::sqlx::migrate::{Migration, MigrationType, Migrator};
 
-    let migrations = vec![
-        Migration::new(
-            1,
-            Cow::Borrowed("unified identity baseline"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0001_initial.sql")),
-            false,
-        ),
-        Migration::new(
-            2,
-            Cow::Borrowed("plans and entitlements"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0002_plans.sql")),
-            false,
-        ),
-        Migration::new(
-            3,
-            Cow::Borrowed("session outbox consistency"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0003_session_outbox.sql")),
-            false,
-        ),
-        Migration::new(
-            4,
-            Cow::Borrowed("session outbox deleted target cleanup"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!(
-                "../migrations/0004_relax_deleted_session_outbox_target.sql"
-            )),
-            false,
-        ),
-        Migration::new(
-            5,
-            Cow::Borrowed("session outbox event user retention"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!(
-                "../migrations/0005_session_outbox_event_user.sql"
-            )),
-            false,
-        ),
-        Migration::new(
-            6,
-            Cow::Borrowed("session revocation epochs"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0006_session_epochs.sql")),
-            false,
-        ),
-        Migration::new(
-            7,
-            Cow::Borrowed("plan default invariant"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!(
-                "../migrations/0007_plan_default_invariant.sql"
-            )),
-            false,
-        ),
-        Migration::new(
-            8,
-            Cow::Borrowed("admin query indexes"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0008_admin_query_indexes.sql")),
-            false,
-        ),
-        Migration::new(
-            9,
-            Cow::Borrowed("system settings seeds"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0009_system_settings.sql")),
-            false,
-        ),
-        Migration::new(
-            10,
-            Cow::Borrowed("durable consent revocation"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0010_consent_revoked_at.sql")),
-            false,
-        ),
-        Migration::new(
-            11,
-            Cow::Borrowed("external provider PKCE toggle"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0011_oauth_provider_pkce.sql")),
-            false,
-        ),
-        Migration::new(
-            12,
-            Cow::Borrowed("restore basic plan seed"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0012_restore_basic_plan.sql")),
-            false,
-        ),
-        Migration::new(
-            13,
-            Cow::Borrowed("audit append-only retention"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!(
-                "../migrations/0013_audit_append_only_retention.sql"
-            )),
-            false,
-        ),
-        Migration::new(
-            14,
-            Cow::Borrowed("session idle policy"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0014_session_idle_policy.sql")),
-            false,
-        ),
-        Migration::new(
-            15,
-            Cow::Borrowed("admin search indexes"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0015_admin_search_indexes.sql")),
-            false,
-        ),
-        Migration::new(
-            16,
-            Cow::Borrowed("client secret rotation compare-and-swap version"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!(
-                "../migrations/0016_client_secret_rotation_version.sql"
-            )),
-            false,
-        ),
-        Migration::new(
-            17,
-            Cow::Borrowed("relax plan default policy"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!(
-                "../migrations/0017_relax_plan_default_policy.sql"
-            )),
-            false,
-        ),
-        Migration::new(
-            18,
-            Cow::Borrowed("seed security limits"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0018_seed_security_limits.sql")),
-            false,
-        ),
-        Migration::new(
-            19,
-            Cow::Borrowed("audit runtime role separation"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0019_audit_runtime_role.sql")),
-            true,
-        ),
-        Migration::new(
-            20,
-            Cow::Borrowed("user avatar storage"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0020_user_avatar.sql")),
-            false,
-        ),
-        Migration::new(
-            21,
-            Cow::Borrowed("external provider requires email_verified claim"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!(
-                "../migrations/0021_oauth_provider_require_email_verified_claim.sql"
-            )),
-            false,
-        ),
-        Migration::new(
-            22,
-            Cow::Borrowed("session outbox retention and dead letters"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!(
-                "../migrations/0022_session_outbox_retention.sql"
-            )),
-            false,
-        ),
-        Migration::new(
-            23,
-            Cow::Borrowed("consent state version for cache staleness detection"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0023_consent_state_version.sql")),
-            false,
-        ),
-        Migration::new(
-            24,
-            Cow::Borrowed("runtime users sequence update grant"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!(
-                "../migrations/0024_runtime_users_sequence_update.sql"
-            )),
-            false,
-        ),
-        Migration::new(
-            25,
-            Cow::Borrowed("canonical email uniqueness"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!("../migrations/0025_user_canonical_email.sql")),
-            false,
-        ),
-        Migration::new(
-            26,
-            Cow::Borrowed("client secret refresh generation boundary"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!(
-                "../migrations/0026_client_secret_refresh_generation.sql"
-            )),
-            false,
-        ),
-        Migration::new(
-            27,
-            Cow::Borrowed("canonical email constraint scope repair"),
-            MigrationType::Simple,
-            normalize_migration_sql(include_str!(
-                "../migrations/0027_repair_canonical_email_constraint_scope.sql"
-            )),
-            false,
-        ),
-    ];
+    let migrations = vec![Migration::new(
+        1,
+        Cow::Borrowed("current schema baseline"),
+        MigrationType::Simple,
+        normalize_migration_sql(include_str!("../migrations/0001_initial.sql")),
+        false,
+    )];
 
     Migrator {
         migrations: Cow::Owned(migrations),
