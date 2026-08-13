@@ -31,9 +31,14 @@ jobs:
       - name: Create and push tag
         env:
           VERSION: ${{ inputs.version }}
+          RELEASE_PAT: ${{ secrets.RELEASE_PAT }}
         run: |
           set -euo pipefail
+          if [[ -z "$RELEASE_PAT" ]]; then
+            echo "::error::RELEASE_PAT secret 未配置。用默认 GITHUB_TOKEN 推送标签不会触发下游工作流（GitHub 防递归规则），Build And Publish 的 Publish release assets job 永不执行，Release 不会生成。请配置 RELEASE_PAT（细粒度 PAT，contents: write 权限），或改用本地 git push 打标签。"
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "v$VERSION" -m "release: v$VERSION"
-          git push origin "v$VERSION"
+          git push "https://x-access-token:${RELEASE_PAT}@github.com/${GITHUB_REPOSITORY}.git" "v$VERSION"
