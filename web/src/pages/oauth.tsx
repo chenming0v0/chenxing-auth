@@ -24,6 +24,10 @@ function useRequestId(): string | null {
  * 可用会话（而不是绑定指向了旧会话）。此时必须带上 `request_id` 去登录页，
  * 登录页登录成功后才能重新绑定并回到确认页；丢掉它就会在登录页与确认页之间
  * 无限打转（#270）。
+ *
+ * 请求态（pending/message）在 requestId 变化时不会自动清空，调用方必须用
+ * `key={requestId}` 重挂载消费组件（#330）：否则旧请求的同意信息会在新请求
+ * 加载期间继续展示，用户看到的是 A、实际批准的是 B（consent spoofing）。
  */
 function usePendingAuthorization(requestId: string | null): {
   pending: PendingAuthorization | null
@@ -96,8 +100,15 @@ function scopeMeta(scope: string): { title: string; desc: string } {
 }
 
 export function OAuthAccountPage() {
-  const navigate = useNavigate()
   const requestId = useRequestId()
+  // #330：requestId 变化时以 key 强制重挂载内层组件，pending/message 等请求态
+  // 随旧实例一起销毁，杜绝旧请求的同意信息泄露到新请求（consent spoofing）。
+  // 重挂载发生在 render 阶段，新请求加载完成前页面不会出现任何旧请求的数据。
+  return <OAuthAccountContent key={requestId ?? 'no-request'} requestId={requestId} />
+}
+
+function OAuthAccountContent({ requestId }: { requestId: string | null }) {
+  const navigate = useNavigate()
   const { user } = useAuth()
   const { pending, message } = usePendingAuthorization(requestId)
 
@@ -161,6 +172,14 @@ export function OAuthAccountPage() {
 
 export function OAuthConsentPage() {
   const requestId = useRequestId()
+  // #330：与 OAuthAccountPage 同理，requestId 变化时重挂载内层组件，让
+  // pending/message/submitting 与进行中的 decide 一并随旧实例销毁；否则旧请求
+  // 的同意信息会在新请求加载期间继续展示（consent spoofing），且 A 上的
+  // submitting 会永久禁用 B 的按钮。
+  return <OAuthConsentContent key={requestId ?? 'no-request'} requestId={requestId} />
+}
+
+function OAuthConsentContent({ requestId }: { requestId: string | null }) {
   const { user } = useAuth()
   const { pending, message, setMessage } = usePendingAuthorization(requestId)
   const [submitting, setSubmitting] = useState(false)
