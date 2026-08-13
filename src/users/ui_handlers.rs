@@ -11,6 +11,7 @@ use super::domain::{RegistrationError, UserId};
 use super::ui_auth::UserContext;
 use crate::{
     api::extract::{SessionRead, SessionWrite},
+    audit::AuditEvent,
     error,
     sessions::cookies,
     state::AppState,
@@ -139,6 +140,24 @@ pub async fn change_current_user_password(
         .await
     {
         Ok(()) => {
+            // 改密是最高危的凭据变更（分级 critical，Issue #308），成功路径记录
+            // 请求上下文；失败路径由限流/认证层各自落审计。best-effort：改密结果
+            // 已不可逆，审计故障不应把已成功的改密伪装成 500 诱导重试。
+            state
+                .audit
+                .record_best_effort(AuditEvent::new(
+                    "user".to_owned(),
+                    Some(session.user_id.to_string()),
+                    "password_change".to_owned(),
+                    "password".to_owned(),
+                    None,
+                    crate::audit::with_request_context(
+                        serde_json::json!({"result": "success"}),
+                        source_ip.as_deref(),
+                        crate::api::user_agent(&headers).as_deref(),
+                    ),
+                ))
+                .await;
             let mut response = StatusCode::NO_CONTENT.into_response();
             if let Err(cookie_error) =
                 cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure)

@@ -1,11 +1,12 @@
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{ConnectInfo, Extension, Path, State},
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::net::SocketAddr;
 
 use super::{
     authorization::{AuthorizationRequest, validate_authorization_request_with_allowlist},
@@ -214,11 +215,19 @@ pub async fn bind_authorization_request(
 /// 伪造请求的 body 不会被解析。
 pub async fn decide_authorization_request(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     session: SessionWrite,
     Path(request_id): Path<String>,
     Json(input): Json<DecisionInput>,
 ) -> Response {
+    // 授权决定写入审计时需要请求上下文（源 IP / UA，Issue #308）。
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    let user_agent = crate::api::user_agent(&headers);
     let Some(decision) = parse_decision(&input.decision) else {
         return error::bad_request("invalid_decision", "authorization decision is invalid");
     };
@@ -260,7 +269,11 @@ pub async fn decide_authorization_request(
                 "authorization_denied".to_owned(),
                 "oauth_authorization".to_owned(),
                 Some(pending.client_id.clone()),
-                serde_json::json!({"reason": "user_denied"}),
+                crate::audit::with_request_context(
+                    serde_json::json!({"reason": "user_denied"}),
+                    source_ip.as_deref(),
+                    user_agent.as_deref(),
+                ),
             ))
             .await;
         return match error_redirect(&pending) {
@@ -322,7 +335,15 @@ pub async fn decide_authorization_request(
         restore_pending(&state, &consumed).await;
         return response;
     }
-    match issue_authorization_code_result(&state, session.user_id.to_string(), validated).await {
+    match issue_authorization_code_result(
+        &state,
+        session.user_id.to_string(),
+        validated,
+        source_ip.as_deref(),
+        user_agent.as_deref(),
+    )
+    .await
+    {
         Ok(AuthorizationCodeIssue::Redirect(redirect_to)) => (
             axum::http::StatusCode::OK,
             Json(DecisionResponse {

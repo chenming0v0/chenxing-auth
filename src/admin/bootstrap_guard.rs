@@ -140,6 +140,8 @@ pub(crate) async fn record_bootstrap_denial(
             reason,
             None,
             source_ip,
+            // 引导拒绝发生在管理员凭据路径，不进入用户安全日志，不采集 UA。
+            None,
         ))
         .await;
 }

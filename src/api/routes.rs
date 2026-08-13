@@ -54,7 +54,7 @@ use crate::{
         create_owned_client, disable_owned_client, enable_owned_client, list_authorized_apps,
         list_owned_clients, revoke_authorized_app, rotate_owned_client_secret, update_owned_client,
     },
-    users::security_event_handlers::list_security_events,
+    users::security_event_handlers::{get_security_event, list_security_events},
     users::ui_handlers::{
         auth_status, change_current_user_password, current_user_profile, list_user_sessions,
         revoke_user_session, update_current_user_profile,
@@ -123,6 +123,10 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
         .route("/api/v1/auth/password", post(change_current_user_password))
         .route("/api/v1/auth/entitlements", get(current_entitlements))
         .route("/api/v1/auth/security-events", get(list_security_events))
+        .route(
+            "/api/v1/auth/security-events/{event_id}",
+            get(get_security_event),
+        )
         .route("/api/v1/auth/sessions", get(list_user_sessions))
         .route(
             "/api/v1/auth/sessions/{session_id}",

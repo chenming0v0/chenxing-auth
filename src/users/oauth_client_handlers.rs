@@ -1,11 +1,12 @@
 use axum::{
     Json,
-    extract::{Path, Query, State},
-    http::StatusCode,
+    extract::{ConnectInfo, Extension, Path, Query, State},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::net::SocketAddr;
 
 use crate::{
     api::extract::{SessionRead, SessionWrite},
@@ -125,9 +126,18 @@ pub async fn list_authorized_apps(State(state): State<AppState>, session: Sessio
 
 pub async fn revoke_authorized_app(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     session: SessionWrite,
     Path(client_id): Path<String>,
 ) -> Response {
+    // 撤销审计需要请求上下文（源 IP / UA），供安全日志详情展示（Issue #308）。
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    let user_agent = crate::api::user_agent(&headers);
     // Issue #65 原子性修复：将撤销的权威写入（DB）与缓存失效（Redis）顺序调整，
     // 使 DB 成为单一原子事实，Redis 成为 best-effort 缓存。
     //
@@ -175,7 +185,11 @@ pub async fn revoke_authorized_app(
             "consent_revoke".to_owned(),
             "oauth_consent".to_owned(),
             Some(client_id),
-            serde_json::json!({"result": "success"}),
+            crate::audit::with_request_context(
+                serde_json::json!({"result": "success"}),
+                source_ip.as_deref(),
+                user_agent.as_deref(),
+            ),
         ))
         .await;
     StatusCode::NO_CONTENT.into_response()

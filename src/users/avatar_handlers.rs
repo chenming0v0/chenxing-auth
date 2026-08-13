@@ -6,10 +6,11 @@
 
 use axum::{
     body::Bytes,
-    extract::State,
-    http::{HeaderValue, StatusCode, header},
+    extract::{ConnectInfo, Extension, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use std::net::SocketAddr;
 
 use super::avatar_image::{AvatarImageError, MAX_UPLOAD_BYTES, MIN_SOURCE_EDGE};
 use super::service::AvatarServiceError;
@@ -34,10 +35,19 @@ const SERVABLE_MIME: [&str; 1] = [super::avatar_image::STORED_MIME];
 /// 序列中间无法编译。
 pub async fn upload_current_user_avatar(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     session: SessionWrite,
     body: Bytes,
 ) -> Response {
     let byte_count = body.len();
+    // 头像变更是账户资料操作，审计记录请求上下文（源 IP / UA，Issue #308）。
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    let user_agent = crate::api::user_agent(&headers);
     match state
         .users
         .update_avatar(session.user_id, body.to_vec())
@@ -52,7 +62,11 @@ pub async fn upload_current_user_avatar(
                     "user_avatar_update".to_owned(),
                     "user".to_owned(),
                     Some(session.user_id.to_string()),
-                    serde_json::json!({"result": "success", "upload_bytes": byte_count}),
+                    crate::audit::with_request_context(
+                        serde_json::json!({"result": "success", "upload_bytes": byte_count}),
+                        source_ip.as_deref(),
+                        user_agent.as_deref(),
+                    ),
                 ))
                 .await;
             profile_response(&session, profile)
@@ -65,8 +79,16 @@ pub async fn upload_current_user_avatar(
 /// `DELETE /api/v1/auth/me/avatar`：移除头像，前端回落到首字母占位符。
 pub async fn delete_current_user_avatar(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     session: SessionWrite,
 ) -> Response {
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    let user_agent = crate::api::user_agent(&headers);
     match state.users.clear_avatar(session.user_id).await {
         Ok(Some(profile)) => {
             state
@@ -77,7 +99,11 @@ pub async fn delete_current_user_avatar(
                     "user_avatar_remove".to_owned(),
                     "user".to_owned(),
                     Some(session.user_id.to_string()),
-                    serde_json::json!({"result": "success"}),
+                    crate::audit::with_request_context(
+                        serde_json::json!({"result": "success"}),
+                        source_ip.as_deref(),
+                        user_agent.as_deref(),
+                    ),
                 ))
                 .await;
             profile_response(&session, profile)

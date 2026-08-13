@@ -441,7 +441,7 @@ paths:
       tags: [User Auth/Security Events]
       summary: 查询当前用户安全事件
       operationId: listCurrentUserSecurityEvents
-      description: 仅查询 actor_user_id 为当前用户的热表与归档审计事件，并只返回非敏感白名单字段。
+      description: 仅查询 actor_user_id 为当前用户的热表与归档审计事件，并只返回非敏感白名单字段；每个事件携带服务端分级的 category 与 severity。
       security: [{ sessionCookie: [] }]
       parameters:
         - { $ref: '#/components/parameters/Page' }
@@ -454,6 +454,28 @@ paths:
               schema: { $ref: '#/components/schemas/PagedSecurityEvents' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
+  /api/v1/auth/security-events/{event_id}:
+    get:
+      tags: [User Auth/Security Events]
+      summary: 查询当前用户单个安全事件详情
+      operationId: getCurrentUserSecurityEvent
+      description: |
+        事件不存在或不属于当前用户时一律 404，不区分「查不到」与「不是你的」。
+        ip / ip_location / user_agent / ray_id 只从 metadata 白名单提取，不透出
+        metadata 原文；ip_location 与 ray_id 暂无数据来源，恒为 null。client 仅
+        OAuth 相关事件填充，Client 已删除时为 null。
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: event_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+      responses:
+        '200':
+          description: 单个安全事件详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecurityEventDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalServerError' }
   /api/v1/auth/sessions/{session_id}:
     delete:
@@ -2211,15 +2233,50 @@ components:
         total: { type: integer, format: int64, minimum: 0 }
     SecurityEvent:
       type: object
-      description: 用户可见的审计事件白名单；不包含 actor、resource_id 或 metadata。
-      required: [id, action, resource_type, client_id, client_name, created_at]
+      description: 用户可见的审计事件白名单；不包含 actor、resource_id 或 metadata。category 与 severity 由服务端单点映射，未映射的 action 回落 account/info。
+      required: [id, action, category, severity, resource_type, client_id, client_name, created_at]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         action: { type: string }
+        category: { $ref: '#/components/schemas/SecurityEventCategory' }
+        severity: { $ref: '#/components/schemas/SecurityEventSeverity' }
         resource_type: { type: string }
         client_id: { type: string, nullable: true }
         client_name: { type: string, nullable: true }
         created_at: { type: string, format: date-time }
+    SecurityEventCategory:
+      type: string
+      enum: [auth, session, authorization, account]
+      description: 事件类别，用于列表筛选。auth=登录与认证因子，session=会话生命周期，authorization=OAuth 授权，account=资料与凭据变更。
+    SecurityEventSeverity:
+      type: string
+      enum: [info, notice, warning, critical]
+      description: 事件等级，用于呈现与告警。info=常规活动，notice=成功的敏感操作，warning=需要用户留意，critical=高危变更。
+    SecurityEventDetail:
+      type: object
+      description: 单个安全事件详情。ip / user_agent 从 metadata 白名单提取；ip_location 与 ray_id 暂无数据来源，恒为 null；client 仅 OAuth 相关事件填充，Client 已删除时为 null。
+      required: [id, action, category, severity, resource_type, created_at, ip, ip_location, user_agent, ray_id, client]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        action: { type: string }
+        category: { $ref: '#/components/schemas/SecurityEventCategory' }
+        severity: { $ref: '#/components/schemas/SecurityEventSeverity' }
+        resource_type: { type: string }
+        created_at: { type: string, format: date-time }
+        ip: { type: string, nullable: true, description: 事件请求源 IP（来自 metadata source_ip 白名单提取） }
+        ip_location: { type: string, nullable: true, description: IP 归属地；离线归属地库未接入，恒为 null }
+        user_agent: { type: string, nullable: true, description: 事件请求 User-Agent（来自 metadata user_agent 白名单提取） }
+        ray_id: { type: string, nullable: true, description: 请求关联 ID；暂无对应概念，恒为 null }
+        client: { $ref: '#/components/schemas/SecurityEventClient' }
+    SecurityEventClient:
+      type: object
+      description: 详情接口中 OAuth Client 的公开摘要，只来自 oauth_clients 表自身列。
+      required: [client_id, client_name, created_at, status]
+      properties:
+        client_id: { type: string }
+        client_name: { type: string }
+        created_at: { type: string, format: date-time }
+        status: { type: string, enum: [active, disabled] }
     AuditEvent:
       type: object
       required: [id, actor_type, actor_id, action, resource_type, resource_id, metadata, created_at]

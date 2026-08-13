@@ -74,6 +74,7 @@ pub async fn start_passkey_registration(
                 Some(user_id),
                 "passkey_rate_limited",
                 source_ip.as_deref(),
+                crate::api::user_agent(&headers).as_deref(),
             )
             .await
         }

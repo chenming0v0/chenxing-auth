@@ -126,15 +126,21 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
     let validated = validated_request(&client_id, user_id);
 
     for _ in 0..2 {
-        let result =
-            issue_authorization_code_result(&env.state, user_id.to_string(), validated.clone())
-                .await
-                .expect("authorization within daily limit");
+        let result = issue_authorization_code_result(
+            &env.state,
+            user_id.to_string(),
+            validated.clone(),
+            None,
+            None,
+        )
+        .await
+        .expect("authorization within daily limit");
         assert!(matches!(result, AuthorizationCodeIssue::Redirect(_)));
     }
-    let result = issue_authorization_code_result(&env.state, user_id.to_string(), validated)
-        .await
-        .expect("authorization over daily limit");
+    let result =
+        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
+            .await
+            .expect("authorization over daily limit");
     assert!(matches!(result, AuthorizationCodeIssue::QuotaExceeded));
 
     env.cleanup().await;
@@ -163,8 +169,14 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
     env.state.authorization_codes = AuthorizationCodeStore::new(
         redis::Client::open("redis://127.0.0.1:1").expect("unavailable Redis URL"),
     );
-    let failed =
-        issue_authorization_code_result(&env.state, user_id.to_string(), validated.clone()).await;
+    let failed = issue_authorization_code_result(
+        &env.state,
+        user_id.to_string(),
+        validated.clone(),
+        None,
+        None,
+    )
+    .await;
     assert!(failed.is_err(), "authorization code persistence must fail");
 
     let limits = Some(AuthQuotaLimits {
@@ -182,9 +194,10 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
     assert_eq!(snapshot.monthly_used, 0);
 
     env.state.authorization_codes = AuthorizationCodeStore::new(env.state.redis.clone());
-    let retry = issue_authorization_code_result(&env.state, user_id.to_string(), validated)
-        .await
-        .expect("retry after quota refund");
+    let retry =
+        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
+            .await
+            .expect("retry after quota refund");
     assert!(matches!(retry, AuthorizationCodeIssue::Redirect(_)));
 
     let snapshot = env
@@ -223,10 +236,15 @@ async fn unlimited_monthly_plan_never_rejects_authorizations() {
     let validated = validated_request(&client_id, user_id);
 
     for _ in 0..6 {
-        let result =
-            issue_authorization_code_result(&env.state, user_id.to_string(), validated.clone())
-                .await
-                .expect("monthly quota is unlimited");
+        let result = issue_authorization_code_result(
+            &env.state,
+            user_id.to_string(),
+            validated.clone(),
+            None,
+            None,
+        )
+        .await
+        .expect("monthly quota is unlimited");
         assert!(matches!(result, AuthorizationCodeIssue::Redirect(_)));
     }
 
@@ -510,6 +528,8 @@ async fn unsetting_the_last_default_plan_closes_self_service() {
         &env.state,
         user_id.to_string(),
         validated_request(&existing_client_id, user_id),
+        None,
+        None,
     )
     .await
     .expect("existing client authorization must keep working without a default plan");
@@ -664,6 +684,8 @@ async fn no_default_plan_keeps_existing_user_clients_working() {
         &env.state,
         user_id.to_string(),
         validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier)),
+        None,
+        None,
     )
     .await
     .expect("authorization must succeed without any plan");
@@ -773,6 +795,8 @@ async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
         &env.state,
         user_id.to_string(),
         validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier)),
+        None,
+        None,
     )
     .await
     .expect("admin client authorization must succeed without any plan");

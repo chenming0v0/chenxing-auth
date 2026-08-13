@@ -18,12 +18,13 @@ use crate::{
     state::AppState,
 };
 use axum::{
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Extension, Path, Query, State},
     http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
 use std::fmt;
+use std::net::SocketAddr;
 
 #[derive(Deserialize)]
 pub struct ExternalCallbackQuery {
@@ -45,6 +46,7 @@ impl fmt::Debug for ExternalCallbackQuery {
 pub async fn external_callback(
     State(state): State<AppState>,
     Path(slug): Path<String>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     Query(query): Query<ExternalCallbackQuery>,
 ) -> Response {
@@ -60,6 +62,13 @@ pub async fn external_callback(
         );
     }
     let callback_path = external_callback_path(&slug);
+    // 登录成功审计需要请求上下文（源 IP / UA），在早退路径之前解析一次（Issue #308）。
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    let user_agent = crate::api::user_agent(&headers);
     let Some(returned_state) = query.state.as_deref().filter(|value| !value.is_empty()) else {
         return external_error(&state, &slug, "oauth_login_failed").await;
     };
@@ -268,7 +277,15 @@ pub async fn external_callback(
             "login".to_owned(),
             "session".to_owned(),
             Some(session.id.to_string()),
-            serde_json::json!({"result": "success", "channel": "external_oauth", "provider": slug}),
+            crate::audit::with_request_context(
+                serde_json::json!({
+                    "result": "success",
+                    "channel": "external_oauth",
+                    "provider": slug,
+                }),
+                source_ip.as_deref(),
+                user_agent.as_deref(),
+            ),
         ))
         .await
         .is_err()

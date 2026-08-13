@@ -54,11 +54,13 @@ use tokio::time::sleep;
 
 use crate::clock::{Clock, SharedClock, SystemClock};
 
+pub mod classification;
 mod redaction;
 pub mod repository;
 #[cfg(test)]
 mod unit_tests;
 
+pub use classification::{SecurityEventCategory, SecurityEventSeverity, classify};
 pub(crate) use redaction::redact_metadata;
 
 pub(crate) const AUDIT_ARCHIVE_BATCH_SIZE: i32 = 1_000;
@@ -243,6 +245,15 @@ impl AuditService {
         .await
     }
 
+    /// 查询单个安全事件详情；事件不存在或不属于该用户时返回 `None`。
+    pub async fn query_security_event(
+        &self,
+        actor_user_id: i64,
+        event_id: i64,
+    ) -> Result<Option<SecurityEventDetail>, crate::sqlx::Error> {
+        repository::query_security_event(&self.pool, actor_user_id, event_id).await
+    }
+
     pub async fn count(&self) -> Result<i64, crate::sqlx::Error> {
         repository::count_filtered(&self.pool, None, None).await
     }
@@ -268,20 +279,13 @@ fn is_retryable_database_error(error: &AuditError) -> bool {
     }
 }
 
-/// 用户可见的审计事件摘要。
+/// 用户可见的审计事件视图（摘要 / 详情 / 请求上下文白名单提取）。
 ///
-/// 这是显式白名单，不包含 actor、resource_id 或 metadata。OAuth Client 信息只由
-/// repository 从已知的 Client 资源类型提取，不能把任意审计资源标识误当成公开字段。
-#[derive(Debug, Clone, Serialize)]
-pub struct SecurityEvent {
-    pub id: i64,
-    pub action: String,
-    pub resource_type: String,
-    pub client_id: Option<String>,
-    pub client_name: Option<String>,
-    #[serde(with = "time::serde::rfc3339")]
-    pub created_at: OffsetDateTime,
-}
+/// 拆分到独立模块是为了让 `audit.rs` 保持以 [`AuditEvent`] 写入路径与
+/// [`AuditService`] 为主线的职责边界（Issue #308）。
+mod security_views;
+pub use security_views::{SecurityEvent, SecurityEventClient, SecurityEventDetail};
+pub(crate) use security_views::{security_event_request_context, with_request_context};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
@@ -366,6 +370,7 @@ impl AuditEvent {
             reason,
             None,
             None,
+            None,
         )
     }
 
@@ -384,6 +389,7 @@ impl AuditEvent {
         reason: impl Into<String>,
         attempted_identifier: Option<&str>,
         source_ip: Option<&str>,
+        user_agent: Option<&str>,
     ) -> Self {
         let mut metadata = Map::new();
         metadata.insert("result".to_owned(), Value::String("failure".to_owned()));
@@ -396,6 +402,12 @@ impl AuditEvent {
         }
         if let Some(source_ip) = source_ip.and_then(canonical_source_ip) {
             metadata.insert("source_ip".to_owned(), Value::String(source_ip));
+        }
+        if let Some(user_agent) = user_agent.filter(|value| !value.is_empty()) {
+            metadata.insert(
+                "user_agent".to_owned(),
+                Value::String(user_agent.to_owned()),
+            );
         }
         Self::new(
             actor_type,

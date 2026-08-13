@@ -80,6 +80,8 @@ async fn authorize_request(
     request: AuthorizationRequest,
 ) -> Response {
     let source_ip = crate::api::source_ip(peer, &headers, &state.config.trusted_proxies);
+    // UA 与源 IP 一起进入授权审计（Issue #308），只解析一次。
+    let user_agent = crate::api::user_agent(&headers);
     if let Some(response) = enforce_source_qps_with_policy(&state, source_ip.as_deref()).await {
         return response;
     }
@@ -146,7 +148,16 @@ async fn authorize_request(
         // 已登录但尚未授权：同样下发 holder Cookie 后进入确认页。会话在确认前
         // 过期或用户切换账号时，绑定端点需要 holder 才能受控重绑（#270）。
         Ok(false) => save_and_redirect_to_ui(&state, pending, UiDestination::Consent).await,
-        Ok(true) => issue_preconsented_request(&state, pending, user_id.to_string()).await,
+        Ok(true) => {
+            issue_preconsented_request(
+                &state,
+                pending,
+                user_id.to_string(),
+                source_ip.as_deref(),
+                user_agent.as_deref(),
+            )
+            .await
+        }
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to load user consent");
             error::oauth_temporarily_unavailable()
@@ -252,6 +263,8 @@ async fn issue_preconsented_request(
     state: &AppState,
     pending: PendingAuthorization,
     user_id: String,
+    source_ip: Option<&str>,
+    user_agent: Option<&str>,
 ) -> Response {
     if let Err(response) = save_pending(state, &pending).await {
         return response;
@@ -274,7 +287,7 @@ async fn issue_preconsented_request(
     };
 
     let validated = validated_pending_request(consumed.clone());
-    match issue_authorization_code_result(state, user_id, validated).await {
+    match issue_authorization_code_result(state, user_id, validated, source_ip, user_agent).await {
         Ok(AuthorizationCodeIssue::Redirect(redirect)) => Redirect::to(&redirect).into_response(),
         Ok(AuthorizationCodeIssue::QuotaExceeded) => {
             restore_pending_after_failure(state, &consumed).await;
