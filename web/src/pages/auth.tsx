@@ -244,6 +244,11 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
         ) : null}
 
         {query.get('registered') === '1' ? <div className="mt-5"><Notice tone="success">注册成功，请使用新账号登录。</Notice></div> : null}
+        {query.get('logout') === 'failed' ? (
+          <div className="mt-5">
+            <Notice tone="warning">未能完全登出：服务端会话撤销失败，本设备的登录状态可能仍然有效。请刷新页面后重新退出，或在浏览器中清除本站点 Cookie。</Notice>
+          </div>
+        ) : null}
         {externalError ? <div className="mt-5"><Notice tone="warning">{externalLoginErrorMessage(externalError)}</Notice></div> : null}
         {message ? <div className="mt-5"><Notice tone="warning">{message}</Notice></div> : null}
         {bindFailed ? (

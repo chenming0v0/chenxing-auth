@@ -479,7 +479,11 @@ export function GlobalTopbar({
                         className="chenxing-menu-item"
                         onClick={() => {
                           account.close()
-                          void logout().then(() => navigate('/login'))
+                          // logout 永不 reject（#325）：成功与失败都跳登录页，跳转行为一致；
+                          // 撤销失败时带 logout=failed 标记，登录页据此提示「未能完全登出」。
+                          void logout().then(({ revoked }) => {
+                            navigate(revoked ? '/login' : '/login?logout=failed')
+                          })
                         }}
                       >
                         <Icon name="log-out" className="text-[var(--chenxing-error)]" size={16} />退出
