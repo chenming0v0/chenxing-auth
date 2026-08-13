@@ -427,4 +427,5 @@ fn validate_pair(first_key_id: &str, second_key_id: &str) -> Result<(), KeyManag
 }
 
 #[cfg(test)]
+#[path = "journal_tests.rs"]
 mod tests;
