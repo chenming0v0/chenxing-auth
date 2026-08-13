@@ -84,7 +84,7 @@ export function FactorOrchestrator({
       {active === 'totp' ? (
         <TotpStep pending={pending} setup={totpSetup} busy={busy} onSetup={setTotpSetup} onComplete={onComplete} onBusy={onBusy} onMessage={onMessage} onTicketInvalid={() => setInvalidated(true)} />
       ) : (
-        <PasskeyStep pending={pending} register={setupRequired} busy={busy} onComplete={onComplete} onBusy={onBusy} onMessage={onMessage} />
+        <PasskeyStep pending={pending} register={setupRequired} busy={busy} onComplete={onComplete} onBusy={onBusy} onMessage={onMessage} onTicketInvalid={() => setInvalidated(true)} />
       )}
       {methods.length > 1 ? (
         <button
