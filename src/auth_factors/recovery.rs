@@ -20,6 +20,7 @@ use crate::{
         crypto::{SecretKeyState, classify_secret_key_state},
         repository,
     },
+    sessions::store::revoke_all_for_user_in_transaction,
     users::domain::UserId,
 };
 
@@ -114,35 +115,46 @@ impl AuthFactorService {
         Ok(Some(AccountFactorStatus { methods, totp }))
     }
 
-    /// 删除账号的 TOTP 因子，并清掉它累积的失败计数。
+    /// 删除账号的 TOTP 因子并撤销该账号的全部活跃凭据，两步在同一事务内完成。
     ///
-    /// 不清理失败计数的话，被锁死期间攒下的账户维度计数会在重置后继续挡住
-    /// 新一轮登录——用户看到的仍然是「被限流」，等于恢复动作只做了一半。
+    /// 凭据是靠旧因子签发的，重置因子等于降级 MFA，留着旧凭据就把恢复通道变成了
+    /// 后门；因此「撤销会话」与「删除因子」必须原子（Issue #331）。分两步各自提交
+    /// 的话，撤销成功而删除失败会留下「会话已撤、因子未删」的中间态——用户被踢
+    /// 下线而恢复动作没有完成，且没有补偿手段。同一事务内任一步失败即整体回滚：
+    /// `Missing`/`UnknownUser` 分支不会留下任何副作用，操作可以安全重试。
     ///
-    /// 调用方（管理 handler）负责在删除**之前**撤销该账号的活跃凭据：Cookie
-    /// 会话与已签发 Refresh Token 由 `session_epoch` 推进统一失效（Issue #409）。
-    /// 凭据是靠旧因子签发的，重置因子等于降级 MFA，留着旧凭据就把恢复通道
-    /// 变成了后门。
+    /// 实现顺序是先推进 `session_epoch` 撤销全部会话（Cookie 会话与已签发 Refresh
+    /// Token 在同一水位上一起失效，Issue #409），再删除因子。因子不存在时整体回滚，
+    /// epoch 推进与 outbox 事件全部撤销，账号的会话保持原样——不存在需要前置
+    /// 只读检查的竞态窗口。advisory 锁与改密、会话签发、因子注册共用（#274），
+    /// 本事务与它们严格串行，不存在"读到旧 epoch 又按旧水位放行"的中间态。
+    ///
+    /// 失败计数清理放在事务提交之后，是 best-effort：因子已经删除，这个既成事实
+    /// 不能因为 Redis 暂时不可用而被改写成 500，否则调用方会重复执行恢复动作。
     pub async fn reset_totp_factor(
         &self,
         user_id: UserId,
     ) -> Result<TotpResetOutcome, AuthFactorServiceError> {
-        if repository::find_session_epoch(&self.pool, user_id)
+        let mut transaction = self.pool.begin().await?;
+        if revoke_all_for_user_in_transaction(&mut transaction, user_id)
             .await?
             .is_none()
         {
+            // 账号在本次请求期间被删除（因子行随用户级联删除）：如实回
+            // UnknownUser，撤销动作没有推进任何东西。
+            transaction.rollback().await?;
             return Ok(TotpResetOutcome::UnknownUser);
         }
-        let Some((ciphertext, _)) = repository::find_totp_factor(&self.pool, user_id).await? else {
+        let Some((ciphertext, _)) =
+            repository::delete_totp_factor_in_transaction(&mut transaction, user_id).await?
+        else {
+            // 并发重置抢先删掉了同一份因子：整体回滚，撤销动作不留痕，
+            // 用户不会被莫名踢下线（#331）。
+            transaction.rollback().await?;
             return Ok(TotpResetOutcome::Missing);
         };
         let key_state = classify_secret_key_state(&self.encryption_keys, &ciphertext);
-        if !repository::delete_totp_factor(&self.pool, user_id).await? {
-            // 并发重置：另一个请求已经删掉了同一份因子。
-            return Ok(TotpResetOutcome::Missing);
-        }
-        // 失败计数清理是 best-effort：因子已经删除，这个既成事实不能因为
-        // Redis 暂时不可用而被改写成 500，否则调用方会重复执行恢复动作。
+        transaction.commit().await?;
         if let Err(error) = self.clear_account_failures(user_id).await {
             tracing::error!(
                 event = "auth_factor.totp.reset_limiter_not_cleared",

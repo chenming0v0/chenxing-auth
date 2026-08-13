@@ -175,6 +175,27 @@ pub async fn delete_totp_factor(
     Ok(result.rows_affected() == 1)
 }
 
+/// 在既有事务内删除 TOTP 因子并取回删除前的密文与更新时间（#331）。
+///
+/// 管理端重置因子必须与「撤销全部会话」同事务原子提交（Issue #331）：撤销成功而
+/// 删除失败会留下「会话已撤、因子未删」的中间态。`RETURNING` 让"这次删除是否真的
+/// 发生"变成可观察的事实——返回 `None` 时调用方整体回滚，撤销动作不留痕。
+/// 事务化变体不复用 `delete_totp_factor`，因为后者把"没删到"压成 `bool`，
+/// 调用方无法区分「账号没有 TOTP」与「删除失败」。
+pub async fn delete_totp_factor_in_transaction(
+    transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+    user_id: UserId,
+) -> Result<Option<(Vec<u8>, time::OffsetDateTime)>, crate::sqlx::Error> {
+    crate::sqlx::query_as::<_, (Vec<u8>, time::OffsetDateTime)>(
+        "DELETE FROM user_totp_factors
+         WHERE user_id = $1
+         RETURNING encrypted_secret, updated_at",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **transaction)
+    .await
+}
+
 pub async fn count_totp_factors(pool: &PgPool) -> Result<i64, crate::sqlx::Error> {
     crate::sqlx::query_scalar("SELECT COUNT(*) FROM user_totp_factors")
         .fetch_one(pool)
