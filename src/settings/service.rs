@@ -133,25 +133,28 @@ impl SettingsService {
         value: Option<String>,
     ) -> Result<Option<String>, SettingsServiceError> {
         let value = normalize_email(value)?;
-        repository::set_registration_email_from(&self.pool, value.as_deref()).await?;
+        // 独立值与 SMTP from 镜像必须一起落库：第二次写失败时若第一个键已持久化
+        // 会形成「独立值已更新、SMTP 残留旧地址」的半同步状态（#322），
+        // 用单事务保证要么都生效、要么都回滚。
+        let mut transaction = self.pool.begin().await?;
+        repository::set_registration_email_from(&mut *transaction, value.as_deref()).await?;
         match value.as_deref() {
             Some(email) => {
                 // 首次配置发件人时回填 SMTP from；SMTP from 已存在（由 SMTP 表单管理）则不动。
-                let mut smtp =
-                    repository::get_smtp(&self.pool)
-                        .await?
-                        .unwrap_or_else(|| StoredSmtpSetting {
-                            host: String::new(),
-                            port: 587,
-                            username: String::new(),
-                            from_address: String::new(),
-                            ssl_enabled: true,
-                            force_auth_login: false,
-                            password_ciphertext: None,
-                        });
+                let mut smtp = repository::get_smtp(&mut *transaction)
+                    .await?
+                    .unwrap_or_else(|| StoredSmtpSetting {
+                        host: String::new(),
+                        port: 587,
+                        username: String::new(),
+                        from_address: String::new(),
+                        ssl_enabled: true,
+                        force_auth_login: false,
+                        password_ciphertext: None,
+                    });
                 if smtp.from_address.trim().is_empty() {
                     smtp.from_address = email.to_owned();
-                    repository::set_smtp(&self.pool, &smtp).await?;
+                    repository::set_smtp(&mut *transaction, &smtp).await?;
                 }
             }
             None => {
@@ -159,14 +162,15 @@ impl SettingsService {
                 // `set_smtp` 也会把非空 from 同步进独立值），而读取路径 SMTP from 优先。
                 // 只清独立值会让残留旧地址继续生效；非空 SMTP from 即当前生效发件人，
                 // 清除请求必须一并清掉它，包括修复已处于「独立值已空、SMTP 残留」状态的行。
-                if let Some(mut smtp) = repository::get_smtp(&self.pool).await?
+                if let Some(mut smtp) = repository::get_smtp(&mut *transaction).await?
                     && !smtp.from_address.trim().is_empty()
                 {
                     smtp.from_address.clear();
-                    repository::set_smtp(&self.pool, &smtp).await?;
+                    repository::set_smtp(&mut *transaction, &smtp).await?;
                 }
             }
         }
+        transaction.commit().await?;
         Ok(value)
     }
 
@@ -336,7 +340,11 @@ impl SettingsService {
         update: SmtpSettingUpdate,
     ) -> Result<SmtpSetting, SettingsServiceError> {
         let (mut setting, password) = update.validate()?;
-        let existing = repository::get_smtp(&self.pool).await?;
+        // SMTP 与注册发件人镜像必须一起落库：第二次写失败时若第一个键已持久化
+        // 会形成「SMTP 已更新、镜像残留旧地址」的半同步状态（#322）。
+        // 事务内读取 existing，保证「未提供新密码则沿用旧密文」看到的是同一快照。
+        let mut transaction = self.pool.begin().await?;
+        let existing = repository::get_smtp(&mut *transaction).await?;
         let password_ciphertext = match password {
             Some(password) => Some(SecretManager::encode(&self.secrets.encrypt(&password)?)),
             None => existing
@@ -355,10 +363,11 @@ impl SettingsService {
             force_auth_login: setting.force_auth_login,
             password_ciphertext,
         };
-        repository::set_smtp(&self.pool, &stored).await?;
+        repository::set_smtp(&mut *transaction, &stored).await?;
         if let Some(email) = extract_email(&setting.from_address) {
-            repository::set_registration_email_from(&self.pool, Some(&email)).await?;
+            repository::set_registration_email_from(&mut *transaction, Some(&email)).await?;
         }
+        transaction.commit().await?;
         Ok(setting)
     }
 }
