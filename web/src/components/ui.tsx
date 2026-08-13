@@ -1,7 +1,7 @@
-import { createElement, useId, useState } from 'react'
+import { createElement, useEffect, useId, useRef, useState } from 'react'
 import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
 import {
-  Activity, AlertTriangle, ArrowDown, ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Box, CalendarClock, Check, ChevronDown,
+  Activity, AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Box, CalendarClock, Check, ChevronDown,
   ChevronsUpDown, Circle, CircleAlert, Code2, Copy, Crown, Database, Download, ExternalLink, Eye, EyeOff, Fingerprint,
   FlaskConical, Gauge, Globe, Info, KeyRound, LayoutDashboard, LayoutGrid, Layers, Link2, Lock, LockKeyhole,
   LogIn, LogOut, Mail, Menu, MoreHorizontal, Pencil, Plus, Power, Receipt, RefreshCw, Rocket, RotateCcw, Save, Search,
@@ -12,7 +12,7 @@ import logoUrl from '../assets/logo.png'
 import { initialOf } from '../data'
 
 const icons: Record<string, LucideIcon> = {
-  activity: Activity, 'alert-triangle': AlertTriangle, 'arrow-down': ArrowDown, 'arrow-right': ArrowRight, 'arrow-up-right': ArrowUpRight,
+  activity: Activity, 'alert-triangle': AlertTriangle, 'arrow-down': ArrowDown, 'arrow-left': ArrowLeft, 'arrow-right': ArrowRight, 'arrow-up-right': ArrowUpRight,
   'badge-check': BadgeCheck, 'book-open': BookOpen, box: Box, 'calendar-clock': CalendarClock, check: Check,
   'chevron-down': ChevronDown, 'chevrons-up-down': ChevronsUpDown, circle: Circle, 'circle-alert': CircleAlert,
   'code-2': Code2, copy: Copy, crown: Crown, database: Database, download: Download, 'external-link': ExternalLink,
@@ -96,14 +96,17 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 export function Button({ variant = 'primary', icon, children, className = '', ...props }: ButtonProps) {
   /* aria-disabled="true" 表示「禁用但保持可聚焦」：键盘和屏幕阅读器仍能到达按钮
      并读出 aria-describedby 关联的禁用原因，但点击与提交必须被拦住。
-     依据 WCAG 2.1 SC 1.3.1 / 4.1.2：状态要能被辅助技术获取，不只靠视觉变淡。 */
+     依据 WCAG 2.1 SC 1.3.1 / 4.1.2：状态要能被辅助技术获取，不只靠视觉变淡。
+     拦点击必须同时 stopPropagation：原生 disabled 按钮不派发 click、不冒泡，
+     而 aria-disabled 按钮的 click（鼠标点击或键盘 Enter/Space 激活）照常冒泡，
+     只 preventDefault 拦不住父级（可点击卡片、行）的 onClick，禁用态会误触发父级动作。 */
   const inert = props['aria-disabled'] === true || props['aria-disabled'] === 'true'
   return (
     <button
       type="button"
       className={`chenxing-btn-${variant} ${className}`}
       {...props}
-      onClick={inert ? (event) => event.preventDefault() : props.onClick}
+      onClick={inert ? (event) => { event.preventDefault(); event.stopPropagation() } : props.onClick}
     >
       {icon ? <Icon name={icon} size={16} /> : null}
       {children}
@@ -111,8 +114,8 @@ export function Button({ variant = 'primary', icon, children, className = '', ..
   )
 }
 
-export function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'neutral' | 'success' | 'warning' }) {
-  const cls = tone === 'success' ? 'chenxing-badge-success' : tone === 'warning' ? 'chenxing-badge-warning' : 'chenxing-badge'
+export function Badge({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'neutral' | 'success' | 'warning' | 'gold' }) {
+  const cls = tone === 'success' ? 'chenxing-badge-success' : tone === 'warning' ? 'chenxing-badge-warning' : tone === 'gold' ? 'chenxing-badge-gold' : 'chenxing-badge'
   return <span className={cls}>{children}</span>
 }
 
@@ -302,14 +305,94 @@ type CopyValueProps = {
   announceValue?: boolean
 }
 
+type CopyStatus = 'idle' | 'copied' | 'failed'
+
+/**
+ * 把文本复制进剪贴板，永不抛出，用返回值告知调用方是否成功。
+ *
+ * 优先使用异步剪贴板 API（仅安全上下文可用）；API 缺失、权限被拒或文档未聚焦时，
+ * 回退到隐藏 textarea + execCommand('copy')——它只依赖用户手势，不依赖权限。
+ * 两种途径都失败才返回 false，由组件显式反馈，绝不静默丢弃。
+ */
+async function copyTextToClipboard(value: string): Promise<boolean> {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(value)
+      return true
+    } catch {
+      // 权限被拒等场景：继续尝试 execCommand 回退，而不是直接放弃
+    }
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.top = '0'
+  textarea.style.left = '-9999px'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  const selection = window.getSelection()
+  const previousRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null
+  textarea.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  } finally {
+    textarea.remove()
+    if (selection && previousRange) {
+      selection.removeAllRanges()
+      selection.addRange(previousRange)
+    }
+  }
+  return ok
+}
+
 export function CopyValue({ value, ariaLabel, announceValue = false }: CopyValueProps) {
+  const [status, setStatus] = useState<CopyStatus>('idle')
+  const resetTimerRef = useRef<number | null>(null)
   const accessibleName = announceValue
     ? `${ariaLabel ?? '复制值'}：${value}`
     : ariaLabel ?? '复制值'
+  const statusText = status === 'copied' ? '已复制' : status === 'failed' ? '复制失败' : ''
+
+  useEffect(() => () => {
+    if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current)
+  }, [])
+
+  async function handleCopy() {
+    const ok = await copyTextToClipboard(value)
+    if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current)
+    resetTimerRef.current = null
+    setStatus(ok ? 'copied' : 'failed')
+    if (ok) {
+      // 成功反馈短暂展示后恢复常态；失败状态保留到下一次点击，
+      // 避免一次性凭据（Client Secret / TOTP 密钥）被误以为已复制。
+      resetTimerRef.current = window.setTimeout(() => setStatus('idle'), 1600)
+    }
+  }
+
   return (
-    <button type="button" className="cx-copy-row" onClick={() => void navigator.clipboard?.writeText(value)} title="复制" aria-label={accessibleName}>
+    <button
+      type="button"
+      className="cx-copy-row"
+      onClick={() => void handleCopy()}
+      title={statusText || '复制'}
+      aria-label={accessibleName}
+    >
       <span className="min-w-0 truncate">{value}</span>
-      <Icon name="copy" size={15} />
+      <span className="flex shrink-0 items-center gap-1.5">
+        {statusText ? (
+          <span
+            className={`chenxing-caption ${status === 'copied' ? 'text-[var(--chenxing-success)]' : 'text-[var(--chenxing-error)]'}`}
+            aria-live="polite"
+          >
+            {statusText}
+          </span>
+        ) : null}
+        <Icon name={status === 'copied' ? 'check' : status === 'failed' ? 'alert-triangle' : 'copy'} size={15} />
+      </span>
     </button>
   )
 }

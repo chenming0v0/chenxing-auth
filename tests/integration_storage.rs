@@ -11,7 +11,9 @@ use chenxing_auth::{
     },
     config::{AuthEncryptionKey, AuthEncryptionKeyRing},
     oauth::{
-        code::AuthorizationCode, refresh::RefreshToken, refresh_store::RefreshTokenStore,
+        code::AuthorizationCode,
+        refresh::RefreshToken,
+        refresh_store::{RefreshTokenStore, RotationOutcome},
         store::AuthorizationCodeStore,
     },
     sessions::{
@@ -21,6 +23,7 @@ use chenxing_auth::{
     users::{
         credentials::hash_password,
         domain::{UserRole, UserStatus, ValidatedRegistration},
+        email::EmailAddress,
         repository::{self as user_repository, NewUser},
     },
 };
@@ -28,6 +31,15 @@ use redis::AsyncCommands;
 use sha2::Digest;
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// 测试夹具的邮箱构造。
+///
+/// `ValidatedRegistration.email` 是 `EmailAddress`（Issue #302），构造它必须经过
+/// 唯一的规范化入口——夹具也不例外，否则测试会绕开被测的那条规则。
+fn email_address(raw: impl AsRef<str>) -> EmailAddress {
+    let raw = raw.as_ref();
+    EmailAddress::parse(raw).unwrap_or_else(|error| panic!("fixture email {raw:?}: {error}"))
+}
 
 async fn database() -> chenxing_auth::sqlx::PgPool {
     let database_url = env::var("DATABASE_URL")
@@ -49,7 +61,7 @@ async fn postgres_repositories_round_trip_users_and_clients() {
         &pool,
         ValidatedRegistration {
             username: format!("storage-user-{suffix}"),
-            email: email.clone(),
+            email: email_address(email.clone()),
             password: "correct horse battery".to_owned(),
             display_name: Some("Storage User".to_owned()),
         },
@@ -60,11 +72,24 @@ async fn postgres_repositories_round_trip_users_and_clients() {
     .await
     .expect("insert user");
 
-    let credentials = user_repository::find_credentials_by_email(&pool, &email)
+    let credentials = user_repository::find_credentials_by_email(&pool, &email_address(&email))
         .await
         .expect("find credentials")
         .expect("stored credentials");
     assert_eq!(credentials.id, user.id);
+    assert_eq!(credentials.email, email);
+    assert_eq!(credentials.canonical_email, email.to_ascii_lowercase());
+
+    // Issue #302：按匹配值查找，所以任意等价书写都能命中同一行。
+    // 补丁前这条断言会失败：查询比较的是未完全规范化的展示值。
+    let uppercase = user_repository::find_credentials_by_email(
+        &pool,
+        &email_address(email.to_ascii_uppercase()),
+    )
+    .await
+    .expect("find credentials by an equivalent spelling")
+    .expect("equivalent spelling must resolve to the same account");
+    assert_eq!(uppercase.id, user.id);
     let profile = user_repository::find_profile_by_id(&pool, user.id)
         .await
         .expect("find profile")
@@ -123,14 +148,21 @@ async fn postgres_repositories_round_trip_users_and_clients() {
         .expect("update client")
     );
     assert!(
+        client_repository::update_client_secret(&pool, None, &client_id, "new-hash")
+            .await
+            .expect("update client secret")
+    );
+    assert!(
         client_repository::set_client_status(&pool, None, &client_id, "disabled")
             .await
             .expect("disable client")
     );
+    // Issue #416：已禁用 Client 拒绝轮换 Secret，与认证路径 status 门对齐；
+    // 仓库层以 Ok(false) 表达「没有可轮换的版本」。
     assert!(
-        client_repository::update_client_secret(&pool, None, &client_id, "new-hash")
+        !client_repository::update_client_secret(&pool, None, &client_id, "post-disable-hash")
             .await
-            .expect("update client secret")
+            .expect("update client secret on disabled client")
     );
 
     chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE id = $1")
@@ -151,7 +183,10 @@ async fn postgres_transaction_user_insert_and_missing_client_paths_work() {
     let user = NewUser {
         id: 0,
         username: format!("transaction-user-{}", Uuid::new_v4().simple()),
-        email: format!("transaction-{}@example.com", Uuid::new_v4().simple()),
+        email: email_address(format!(
+            "transaction-{}@example.com",
+            Uuid::new_v4().simple()
+        )),
         password_hash: "hash".to_owned(),
         display_name: None,
         role: UserRole::User,
@@ -188,7 +223,7 @@ async fn password_change_commits_password_and_session_revocation_together() {
         &pool,
         ValidatedRegistration {
             username: format!("password-commit-{suffix}"),
-            email,
+            email: email_address(email),
             password: old_password.to_owned(),
             display_name: None,
         },
@@ -212,16 +247,18 @@ async fn password_change_commits_password_and_session_revocation_together() {
     .await
     .expect("insert session");
 
-    assert!(
+    assert_eq!(
         user_repository::change_password_and_revoke_all(
             &pool,
             user.id,
             &hash_password(new_password.to_owned())
                 .await
                 .expect("new password hash"),
+            0,
         )
         .await
-        .expect("change password")
+        .expect("change password"),
+        user_repository::PasswordChangeOutcome::Changed
     );
 
     let (stored_hash,): (String,) =
@@ -293,7 +330,7 @@ async fn password_change_rolls_back_when_session_epoch_update_fails() {
         &pool,
         ValidatedRegistration {
             username: format!("password-rollback-{suffix}"),
-            email,
+            email: email_address(email),
             password: old_password.to_owned(),
             display_name: None,
         },
@@ -329,6 +366,9 @@ async fn password_change_rolls_back_when_session_epoch_update_fails() {
         &hash_password(new_password.to_owned())
             .await
             .expect("new password hash"),
+        // 夹具把 epoch 直接置为 i64::MAX，认证 epoch 必须与之一致，
+        // 失败点才落在自增溢出上而不是版本比对上。
+        i64::MAX,
     )
     .await;
     assert!(result.is_err(), "epoch overflow must fail the transaction");
@@ -384,7 +424,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         &pool,
         ValidatedRegistration {
             username: format!("owner-{}", Uuid::new_v4().simple()),
-            email: format!("owner-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!("owner-{}@example.com", Uuid::new_v4().simple())),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -396,7 +436,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         &pool,
         ValidatedRegistration {
             username: format!("other-{}", Uuid::new_v4().simple()),
-            email: format!("other-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!("other-{}@example.com", Uuid::new_v4().simple())),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -486,7 +526,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         &pool,
         ValidatedRegistration {
             username: format!("orphan-{}", Uuid::new_v4().simple()),
-            email: format!("orphan-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!("orphan-{}@example.com", Uuid::new_v4().simple())),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -659,10 +699,18 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
     );
     assert!(
         refreshes
-            .take(&refresh.value)
+            .find(&refresh.value)
             .await
-            .expect("take missing refresh")
+            .expect("find consumed refresh")
             .is_none()
+    );
+    assert!(
+        refreshes
+            .read_tombstone(&refresh.value)
+            .await
+            .expect("read consumed refresh tombstone")
+            .is_some(),
+        "consuming a refresh token must leave a replay tombstone"
     );
 
     let rotatable = RefreshToken::new(
@@ -684,11 +732,12 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
         .save(&rotatable)
         .await
         .expect("save rotatable refresh token");
-    assert!(
-        !refreshes
+    assert_eq!(
+        refreshes
             .rotate_if_matches(&rotatable.value, &mismatched, &rotated)
             .await
-            .expect("mismatched refresh rotation")
+            .expect("mismatched refresh rotation"),
+        RotationOutcome::CasMismatch
     );
     assert!(
         refreshes
@@ -697,11 +746,12 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
             .expect("find refresh after mismatched rotation")
             .is_some()
     );
-    assert!(
+    assert_eq!(
         refreshes
             .rotate_if_matches(&rotatable.value, &rotatable, &rotated)
             .await
-            .expect("matching refresh rotation")
+            .expect("matching refresh rotation"),
+        RotationOutcome::Rotated
     );
     assert!(
         refreshes
@@ -717,8 +767,10 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
             .expect("find rotated refresh")
             .is_some()
     );
-    assert!(
-        !refreshes
+    // 消费后的旧 token 键已不存在（Issue #312）：store 层如实报告键消失，
+    // 是重放还是良性消失由用例层结合墓碑判定。
+    assert_eq!(
+        refreshes
             .rotate_if_matches(
                 &rotatable.value,
                 &rotatable,
@@ -729,7 +781,8 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
                 )
             )
             .await
-            .expect("duplicate refresh rotation")
+            .expect("duplicate refresh rotation"),
+        RotationOutcome::KeyMissing
     );
 
     let session_key = format!(
@@ -761,7 +814,10 @@ async fn session_revocation_generation_rejects_restored_old_payloads() {
         &pool,
         ValidatedRegistration {
             username: format!("generation-{}", Uuid::new_v4().simple()),
-            email: format!("generation-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "generation-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -822,7 +878,10 @@ async fn session_find_rejects_metadata_revocation_even_when_redis_payload_exists
         &pool,
         ValidatedRegistration {
             username: format!("metadata-revoke-{}", Uuid::new_v4().simple()),
-            email: format!("metadata-revoke-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "metadata-revoke-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -865,7 +924,10 @@ async fn session_find_uses_database_identity_for_cached_payloads() {
         &pool,
         ValidatedRegistration {
             username: format!("metadata-identity-{}", Uuid::new_v4().simple()),
-            email: format!("metadata-identity-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "metadata-identity-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -877,7 +939,10 @@ async fn session_find_uses_database_identity_for_cached_payloads() {
         &pool,
         ValidatedRegistration {
             username: format!("metadata-other-{}", Uuid::new_v4().simple()),
-            email: format!("metadata-other-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "metadata-other-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -916,10 +981,10 @@ async fn session_save_keeps_metadata_pending_when_redis_connection_fails() {
         &pool,
         ValidatedRegistration {
             username: format!("metadata-connection-failure-{}", Uuid::new_v4().simple()),
-            email: format!(
+            email: email_address(format!(
                 "metadata-connection-failure-{}@example.com",
                 Uuid::new_v4().simple()
-            ),
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -983,6 +1048,28 @@ fn session_revocation_marker(user_id: i64) -> String {
     format!("chenxing:session:revoked-epoch:{user_id}")
 }
 
+fn session_redis_key(token: &str) -> String {
+    format!(
+        "chenxing:session:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(session_token_hash_bytes(token))
+    )
+}
+
+async fn enqueue_session_sync(pool: &chenxing_auth::sqlx::PgPool, session_id: i64) {
+    let result = chenxing_auth::sqlx::query(
+        "INSERT INTO session_outbox
+             (operation, session_id, user_id, token_hash, generation)
+         SELECT 'sync_session', id, user_id, token_hash, session_epoch
+         FROM user_sessions
+         WHERE id = $1",
+    )
+    .bind(session_id)
+    .execute(pool)
+    .await
+    .expect("enqueue session sync fixture");
+    assert_eq!(result.rows_affected(), 1, "session fixture must exist");
+}
+
 fn unavailable_redis_client() -> redis::Client {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve Redis port");
     let port = listener
@@ -1000,7 +1087,10 @@ async fn session_save_commits_metadata_and_replays_redis_after_connection_failur
         &pool,
         ValidatedRegistration {
             username: format!("outbox-save-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-save-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-save-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1088,6 +1178,211 @@ async fn session_save_commits_metadata_and_replays_redis_after_connection_failur
         .expect("cleanup outbox save user");
 }
 
+/// Issue #314：升级期的 active + NULL 行仍以 Redis 作为唯一载荷来源。
+#[tokio::test]
+async fn session_sync_outbox_preserves_redis_fallback_for_active_null_payload() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("outbox-null-active-{}", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-null-active-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert active NULL-payload user");
+    let client = redis_client();
+    let store =
+        SessionStore::with_metadata_and_key(client.clone(), pool.clone(), session_store_key());
+    let mut session = Session::new(user.id.to_string(), Duration::from_secs(300)).expect("session");
+    store
+        .save(&mut session, Duration::from_secs(300))
+        .await
+        .expect("save active NULL-payload session");
+    store
+        .process_pending_outbox()
+        .await
+        .expect("project initial session payload");
+
+    let redis_key = session_redis_key(&session.token);
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let fallback_payload: Vec<u8> = connection
+        .get(&redis_key)
+        .await
+        .expect("initial Redis fallback payload");
+    chenxing_auth::sqlx::query("UPDATE user_sessions SET session_payload = NULL WHERE id = $1")
+        .bind(session.id)
+        .execute(&pool)
+        .await
+        .expect("simulate pre-backfill session row");
+    enqueue_session_sync(&pool, session.id).await;
+
+    assert_eq!(
+        store
+            .process_pending_outbox()
+            .await
+            .expect("process active NULL-payload sync"),
+        1
+    );
+    let retained_payload: Option<Vec<u8>> = connection
+        .get(&redis_key)
+        .await
+        .expect("read retained Redis fallback payload");
+    assert_eq!(
+        retained_payload.as_deref(),
+        Some(fallback_payload.as_slice())
+    );
+    assert!(
+        store
+            .find(&session.token)
+            .await
+            .expect("find session through Redis fallback")
+            .is_some(),
+        "an active migration row must not become a permanent 401"
+    );
+
+    let _: usize = connection
+        .del(&redis_key)
+        .await
+        .expect("cleanup active NULL-payload Redis key");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup active NULL-payload user");
+}
+
+/// Issue #314：NULL 只代表载荷 fallback，不得覆盖 PostgreSQL 的终态判定。
+#[tokio::test]
+async fn session_sync_outbox_deletes_null_payload_fallbacks_after_revoke_or_expiry() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("outbox-null-terminal-{}", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-null-terminal-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert terminal NULL-payload user");
+    let client = redis_client();
+    let store =
+        SessionStore::with_metadata_and_key(client.clone(), pool.clone(), session_store_key());
+    let mut revoked =
+        Session::new(user.id.to_string(), Duration::from_secs(300)).expect("revoked session");
+    let mut expired =
+        Session::new(user.id.to_string(), Duration::from_secs(300)).expect("expired session");
+    store
+        .save(&mut revoked, Duration::from_secs(300))
+        .await
+        .expect("save session to revoke");
+    store
+        .save(&mut expired, Duration::from_secs(300))
+        .await
+        .expect("save session to expire");
+    store
+        .process_pending_outbox()
+        .await
+        .expect("project terminal-state fixtures");
+
+    let revoked_key = session_redis_key(&revoked.token);
+    let expired_key = session_redis_key(&expired.token);
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    assert!(
+        connection
+            .exists::<_, bool>(&revoked_key)
+            .await
+            .expect("revoked fixture projection")
+    );
+    assert!(
+        connection
+            .exists::<_, bool>(&expired_key)
+            .await
+            .expect("expired fixture projection")
+    );
+
+    chenxing_auth::sqlx::query(
+        "UPDATE user_sessions
+         SET session_payload = NULL, revoked_at = NOW()
+         WHERE id = $1",
+    )
+    .bind(revoked.id)
+    .execute(&pool)
+    .await
+    .expect("make NULL-payload session revoked");
+    chenxing_auth::sqlx::query(
+        "UPDATE user_sessions
+         SET session_payload = NULL, expires_at = NOW() - INTERVAL '1 second'
+         WHERE id = $1",
+    )
+    .bind(expired.id)
+    .execute(&pool)
+    .await
+    .expect("make NULL-payload session expired");
+    enqueue_session_sync(&pool, revoked.id).await;
+    enqueue_session_sync(&pool, expired.id).await;
+
+    assert_eq!(
+        store
+            .process_pending_outbox()
+            .await
+            .expect("process terminal NULL-payload syncs"),
+        2
+    );
+    assert!(
+        !connection
+            .exists::<_, bool>(&revoked_key)
+            .await
+            .expect("revoked fallback deletion"),
+        "revocation must win over the NULL-payload fallback"
+    );
+    assert!(
+        !connection
+            .exists::<_, bool>(&expired_key)
+            .await
+            .expect("expired fallback deletion"),
+        "expiry must win over the NULL-payload fallback"
+    );
+    assert!(
+        store
+            .find(&revoked.token)
+            .await
+            .expect("find revoked NULL-payload session")
+            .is_none()
+    );
+    assert!(
+        store
+            .find(&expired.token)
+            .await
+            .expect("find expired NULL-payload session")
+            .is_none()
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup terminal NULL-payload user");
+}
+
 #[tokio::test]
 async fn session_outbox_claims_new_events_but_not_future_events() {
     let pool = database().await;
@@ -1095,7 +1390,10 @@ async fn session_outbox_claims_new_events_but_not_future_events() {
         &pool,
         ValidatedRegistration {
             username: format!("outbox-clock-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-clock-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-clock-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1197,7 +1495,10 @@ async fn session_sync_projection_does_not_resurrect_a_concurrently_revoked_row()
         &pool,
         ValidatedRegistration {
             username: format!("outbox-race-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-race-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-race-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1277,7 +1578,10 @@ async fn session_revoke_keeps_database_authoritative_until_redis_recovers() {
         &pool,
         ValidatedRegistration {
             username: format!("outbox-revoke-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-revoke-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-revoke-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1378,7 +1682,10 @@ async fn session_revoke_for_user_commits_revocation_before_redis_delivery() {
         &pool,
         ValidatedRegistration {
             username: format!("outbox-single-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-single-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-single-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1443,7 +1750,10 @@ async fn session_revoke_all_commits_all_rows_before_redis_delivery() {
         &pool,
         ValidatedRegistration {
             username: format!("outbox-all-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-all-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-all-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1531,7 +1841,10 @@ async fn session_revoke_all_outbox_cleans_redis_after_user_deletion() {
         &pool,
         ValidatedRegistration {
             username: format!("outbox-delete-{}", Uuid::new_v4().simple()),
-            email: format!("outbox-delete-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "outbox-delete-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1622,7 +1935,10 @@ async fn concurrent_save_and_revoke_all_keep_the_epoch_boundary_monotonic() {
         &pool,
         ValidatedRegistration {
             username: format!("epoch-race-{}", Uuid::new_v4().simple()),
-            email: format!("epoch-race-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "epoch-race-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1723,7 +2039,7 @@ async fn session_projection_is_encrypted_and_old_key_remains_readable() {
         &pool,
         ValidatedRegistration {
             username: format!("key-ring-{}", Uuid::new_v4().simple()),
-            email: format!("key-ring-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!("key-ring-{}@example.com", Uuid::new_v4().simple())),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1804,7 +2120,10 @@ async fn session_find_renews_idle_activity_without_extending_absolute_expiry() {
         &pool,
         ValidatedRegistration {
             username: format!("idle-renew-{}", Uuid::new_v4().simple()),
-            email: format!("idle-renew-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "idle-renew-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1871,7 +2190,10 @@ async fn session_save_revokes_the_oldest_active_session_at_the_user_cap() {
         &pool,
         ValidatedRegistration {
             username: format!("session-cap-{}", Uuid::new_v4().simple()),
-            email: format!("session-cap-{}@example.com", Uuid::new_v4().simple()),
+            email: email_address(format!(
+                "session-cap-{}@example.com",
+                Uuid::new_v4().simple()
+            )),
             password: "correct horse battery".to_owned(),
             display_name: None,
         },
@@ -1948,4 +2270,257 @@ async fn session_save_revokes_the_oldest_active_session_at_the_user_cap() {
         .execute(&pool)
         .await
         .expect("cleanup session cap user");
+}
+
+/// Issue #263：redis-only 路径的用户级撤销水位必须带过期时间。
+///
+/// 水位 TTL 取绝对 Session TTL。这里同时断言"水位不会先于它应当拦截的会话键消失"：
+/// 会话键 TTL 被同一上限封顶，因此 `session_ttl <= watermark_ttl` 必须成立。
+#[tokio::test]
+async fn redis_only_revocation_watermark_expires_with_the_absolute_session_ttl() {
+    let client = redis_client();
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let ttl = Duration::from_secs(120);
+    let store = SessionStore::with_redis_key(client.clone(), [0x63; 32]).with_absolute_ttl(ttl);
+    // redis-only 路径按字符串 user_id 命名水位键，而 revoke_all_for_user 取 i64。
+    // 用一个专属高位区间的 ID，避免与 schema 隔离出来的数据库用户共享 Redis 时碰撞。
+    let user_id: i64 = 4_263_000_000_000 + i64::from(std::process::id());
+    let watermark = format!("chenxing:session:revoked-before:{user_id}");
+    let _: usize = connection
+        .del(&watermark)
+        .await
+        .expect("clear watermark before advance");
+
+    let mut session = Session::new(user_id.to_string(), ttl).expect("session");
+    store.save(&mut session, ttl).await.expect("save session");
+    let session_key = format!(
+        "chenxing:session:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(session_token_hash_bytes(&session.token))
+    );
+    let session_ttl: i64 = connection
+        .ttl(&session_key)
+        .await
+        .expect("redis-only session key TTL");
+    assert!(
+        session_ttl > 0 && session_ttl <= 120,
+        "session key TTL must stay inside the absolute TTL, got {session_ttl}"
+    );
+
+    store
+        .revoke_all_for_user(user_id)
+        .await
+        .expect("advance redis-only watermark");
+    let watermark_ttl: i64 = connection
+        .ttl(&watermark)
+        .await
+        .expect("watermark TTL after the advance");
+    assert!(
+        watermark_ttl > 110 && watermark_ttl <= 120,
+        "watermark must expire with the absolute session TTL, got {watermark_ttl}"
+    );
+    assert!(
+        watermark_ttl >= session_ttl,
+        "watermark ({watermark_ttl}s) must outlive the session key it rejects ({session_ttl}s)"
+    );
+    assert!(
+        store
+            .find(&session.token)
+            .await
+            .expect("find session behind watermark")
+            .is_none(),
+        "attaching a TTL must not weaken revocation"
+    );
+
+    // 值不前进的分支同样要刷新 TTL：既覆盖乱序撤销，也让升级前留下的无 TTL 老键
+    // 被回收。把水位写成远未来的时刻并去掉 TTL，模拟历史老键。
+    let future = OffsetDateTime::now_utc() + time::Duration::days(1);
+    let legacy_watermark = future.unix_timestamp_nanos().to_string();
+    let _: () = connection
+        .set(&watermark, &legacy_watermark)
+        .await
+        .expect("write legacy watermark without a TTL");
+    assert_eq!(
+        connection
+            .ttl::<_, i64>(&watermark)
+            .await
+            .expect("legacy watermark TTL"),
+        -1,
+        "legacy watermark fixture must start without a TTL"
+    );
+    store
+        .revoke_all_for_user(user_id)
+        .await
+        .expect("refresh watermark without advancing it");
+    let refreshed_ttl: i64 = connection
+        .ttl(&watermark)
+        .await
+        .expect("watermark TTL after the refresh");
+    assert!(
+        refreshed_ttl > 110 && refreshed_ttl <= 120,
+        "a non-advancing revocation must still attach a TTL, got {refreshed_ttl}"
+    );
+    assert_eq!(
+        connection
+            .get::<_, String>(&watermark)
+            .await
+            .expect("watermark value after refresh"),
+        legacy_watermark,
+        "refreshing the TTL must not move the watermark backwards"
+    );
+
+    // 刷新只延长、不缩短：已经更久的存活窗口不能被砍短。
+    let _: bool = connection
+        .expire(&watermark, 600)
+        .await
+        .expect("stretch the watermark TTL");
+    store
+        .revoke_all_for_user(user_id)
+        .await
+        .expect("revoke against a longer watermark TTL");
+    let preserved_ttl: i64 = connection
+        .ttl(&watermark)
+        .await
+        .expect("watermark TTL after the longer window");
+    assert!(
+        preserved_ttl > 120,
+        "a TTL refresh must never shorten a longer window, got {preserved_ttl}"
+    );
+
+    let _: usize = connection
+        .del(&[watermark, session_key])
+        .await
+        .expect("cleanup redis-only watermark keys");
+}
+
+/// Issue #263：Postgres + outbox 路径的 `revoked-epoch` 水位同样必须带过期时间。
+#[tokio::test]
+async fn session_revocation_epoch_marker_expires_with_the_absolute_session_ttl() {
+    let pool = database().await;
+    let user = user_repository::insert_user(
+        &pool,
+        ValidatedRegistration {
+            username: format!("epoch-ttl-{}", Uuid::new_v4().simple()),
+            email: email_address(format!("epoch-ttl-{}@example.com", Uuid::new_v4().simple())),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        },
+        "hash".to_owned(),
+    )
+    .await
+    .expect("insert epoch ttl user");
+    let client = redis_client();
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let marker = session_revocation_marker(user.id);
+    let _: usize = connection
+        .del(&marker)
+        .await
+        .expect("clear reused user revocation marker");
+    let ttl = Duration::from_secs(120);
+    let store = SessionStore::with_metadata_and_key(client, pool.clone(), session_store_key())
+        .with_absolute_ttl(ttl);
+    let mut session = Session::new(user.id.to_string(), ttl).expect("session");
+    store.save(&mut session, ttl).await.expect("save session");
+    store
+        .process_pending_outbox()
+        .await
+        .expect("flush the save outbox");
+    let session_key = format!(
+        "chenxing:session:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(session_token_hash_bytes(&session.token))
+    );
+    let session_ttl: i64 = connection
+        .ttl(&session_key)
+        .await
+        .expect("projected session key TTL from outbox");
+    assert!(
+        session_ttl > 0 && session_ttl <= 120,
+        "outbox projection TTL must stay inside the absolute TTL, got {session_ttl}"
+    );
+
+    store
+        .revoke_all_for_user(user.id)
+        .await
+        .expect("revoke all sessions");
+    store
+        .process_pending_outbox()
+        .await
+        .expect("flush revoke outbox");
+    let marker_ttl: i64 = connection
+        .ttl(&marker)
+        .await
+        .expect("revocation epoch marker TTL after revoke");
+    assert!(
+        marker_ttl > 110 && marker_ttl <= 120,
+        "the epoch marker must expire with the absolute session TTL, got {marker_ttl}"
+    );
+    assert!(
+        marker_ttl >= session_ttl,
+        "marker ({marker_ttl}s) must outlive the projection it rejects ({session_ttl}s)"
+    );
+    assert!(
+        store
+            .find(&session.token)
+            .await
+            .expect("find revoked session")
+            .is_none(),
+        "attaching a TTL must not weaken revocation"
+    );
+
+    // 老键迁移与重复投递：epoch 不前进时也要补 TTL。
+    // 写一个高于当前 epoch 的值，强制走"不前进"分支。
+    let legacy_marker = "1000000";
+    let _: () = connection
+        .set(&marker, legacy_marker)
+        .await
+        .expect("write legacy epoch marker without a TTL");
+    assert_eq!(
+        connection
+            .ttl::<_, i64>(&marker)
+            .await
+            .expect("legacy epoch marker TTL"),
+        -1,
+        "legacy marker fixture must start without a TTL"
+    );
+    store
+        .revoke_all_for_user(user.id)
+        .await
+        .expect("second revoke all");
+    store
+        .process_pending_outbox()
+        .await
+        .expect("flush the second revoke outbox");
+    let refreshed_ttl: i64 = connection
+        .ttl(&marker)
+        .await
+        .expect("epoch marker TTL after the refresh");
+    assert!(
+        refreshed_ttl > 110 && refreshed_ttl <= 120,
+        "a non-advancing revocation must still attach a TTL, got {refreshed_ttl}"
+    );
+    assert_eq!(
+        connection
+            .get::<_, String>(&marker)
+            .await
+            .expect("marker value after refresh"),
+        legacy_marker,
+        "refreshing the TTL must not roll the epoch marker backwards"
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user.id)
+        .execute(&pool)
+        .await
+        .expect("cleanup epoch ttl user");
+    let _: usize = connection
+        .del(&[marker, session_key])
+        .await
+        .expect("cleanup epoch ttl keys");
 }

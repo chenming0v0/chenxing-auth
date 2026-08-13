@@ -62,42 +62,20 @@ POST   /api/v1/admin/users/{user_id}/plan  给用户分配套餐 body: { "plan_i
 
 ---
 
-## 1. 数据库迁移 `migrations/0002_plans.sql`
+## 1. 数据库基线 `migrations/0001_initial.sql`
 
-参考 `src/db.rs` 的 `embedded_migrator()`：**新增迁移必须在这里注册第 2 条 Migration**，否则不会执行。
+套餐表和 `basic` 种子已经写入当前完整基线。首次生产发布前，结构变化直接修改该基线并重建开发数据库；生产发布后新增迁移必须在 `src/db.rs` 的 `embedded_migrator()` 中显式注册，否则不会执行。
 
-```sql
-CREATE TABLE plans (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    code TEXT NOT NULL UNIQUE,
-    name TEXT NOT NULL,
-    description TEXT,
-    oauth_clients_limit INTEGER NOT NULL DEFAULT 2,
-    daily_auth_limit BIGINT NOT NULL DEFAULT 2500,
-    monthly_auth_limit BIGINT,          -- NULL = 无限
-    max_qps INTEGER,                    -- NULL = 不限
-    is_default BOOLEAN NOT NULL DEFAULT FALSE,
-    status TEXT NOT NULL DEFAULT 'active',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT plans_status_check CHECK (status IN ('active', 'archived'))
-);
-
--- 只允许一个默认套餐
-CREATE UNIQUE INDEX plans_single_default_idx ON plans (is_default) WHERE is_default = TRUE;
-
-ALTER TABLE users
-    ADD COLUMN plan_id BIGINT REFERENCES plans(id) ON DELETE SET NULL,
-    ADD COLUMN plan_expires_at TIMESTAMPTZ;   -- NULL = 永久有效
-
--- 种子：把现在的硬编码值作为默认「基础版」，保证迁移后行为不变
-INSERT INTO plans (code, name, description, oauth_clients_limit, daily_auth_limit, monthly_auth_limit, max_qps, is_default, status)
-VALUES ('basic', '基础版', '默认套餐', 2, 2500, 50000, NULL, TRUE, 'active');
-```
+最终基线中的 `plans` 表使用固定类型列保存四项限额，`users.plan_id` 以
+`ON DELETE SET NULL` 引用套餐，`plan_expires_at IS NULL` 表示永久有效。
+`plans_single_default_idx` 保证最多一个默认套餐，
+`plans_default_must_be_active` 禁止把归档套餐标成默认；基线同时写入
+`basic` 默认套餐（2 / 2500 / 50000 / 不限 QPS）。完整 SQL 只以
+`migrations/0001_initial.sql` 为准，不在文档中复制第二份可漂移的定义。
 
 > 决策：用**固定列**存限额（不是 JSONB），因为限额种类是固定的四项，类型安全、SQL 好写。若以后要支持任意 key 的权益，再加一张 `plan_entitlements(plan_id, key, value)` 附表，不影响现有列。
 
-当前合并迁移链中，sessions lane 使用 `migrations/0006_session_epochs.sql`；计划默认值约束使用后续的 `migrations/0007_plan_default_invariant.sql`。两者的迁移版本必须保持唯一且连续，已应用迁移不得通过复用旧版本号改写 checksum。
+当前基线已经直接包含 sessions、套餐默认值约束和所有后续结构。`migrations/checksums.sha256` 只校验磁盘上的当前 SQL 文件；已应用旧迁移链的数据库不能通过复用版本号或改写 checksum 伪装成新基线。
 
 ## 2. 新模块 `src/plans/`
 
@@ -121,7 +99,7 @@ VALUES ('basic', '基础版', '默认套餐', 2, 2500, 50000, NULL, TRUE, 'activ
 1. `current_user(&state, &headers)` 拿 user_id。
 2. `state.plans.effective_plan_for_user(user_id)` 拿套餐。
 3. 组装 `entitlements` 数组：
-   - `oauth_clients`：`state.clients.list_for_user(user_id).len()` 作 used，plan.oauth_clients_limit 作 limit。
+   - `oauth_clients`：`state.clients.list_all_for_user(user_id).len()` 作 used（分页循环拉全该用户全部 client，见 Issue #415），plan.oauth_clients_limit 作 limit。
    - `daily_auth` / `monthly_auth`：遍历该用户的 client，`oauth_quotas.snapshot(client_id)` 求和 used，plan 的 limit 作 limit。
    - `max_qps`：used = plan.max_qps，无 limit 字段（前端只显示数字）。
 4. 在 `src/api.rs` 注册 `GET /api/v1/auth/entitlements`。

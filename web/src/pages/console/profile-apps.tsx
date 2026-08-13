@@ -1,23 +1,27 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
-import { apiFetch, type AuthorizedOAuthApp, type SessionItem, type UserMe } from '../../api'
+import { apiFetch, ApiError, type AuthorizedOAuthApp, type SessionItem, type UserMe } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, PasswordField, logoUrl } from '../../components/ui'
+import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, PasswordField } from '../../components/ui'
 import { ProfileAvatar, type MessageTone } from './profile-avatar'
 import { formatDate } from '../../data'
+import logoSrc from '../../assets/logo.png'
 
 const PASSWORD_MIN_LENGTH = 10
 const PASSWORD_MAX_LENGTH = 128
+// 服务端 validate_display_name 先 trim 再按 code point 计数，上限 128。
+const DISPLAY_NAME_MAX_LENGTH = 128
 // HTML maxLength counts UTF-16 code units; two units per code point is the safe upper bound.
 const PASSWORD_MAX_INPUT_LENGTH = PASSWORD_MAX_LENGTH * 2
+const DISPLAY_NAME_MAX_INPUT_LENGTH = DISPLAY_NAME_MAX_LENGTH * 2
 
-function passwordCodePointLength(value: string): number {
+function codePointLength(value: string): number {
   return Array.from(value).length
 }
 
-function limitPasswordInput(value: string): string {
-  return Array.from(value).slice(0, PASSWORD_MAX_LENGTH).join('')
+function limitByCodePoints(value: string, maxLength: number): string {
+  return Array.from(value).slice(0, maxLength).join('')
 }
 
 export function ConsoleProfile() {
@@ -33,6 +37,9 @@ export function ConsoleProfile() {
      每加一条成功提示都得记得让文案命中那个子串，是等着出错的写法。 */
   const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
   const [busy, setBusy] = useState(false)
+  /* 撤销在途的会话 id。与 AuthorizedApps 的 busyClientId 同款约定：
+     null 表示无在途请求，非 null 期间所有撤销按钮禁用，防止快速连点并发 DELETE。 */
+  const [busySessionId, setBusySessionId] = useState<number | null>(null)
   const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
   const warn = (text: string) => notify(text, 'warning')
 
@@ -47,6 +54,12 @@ export function ConsoleProfile() {
   async function updateProfile(event: FormEvent) {
     event.preventDefault()
     setNotice(null)
+    // 与服务端 validate_display_name 同款复核：先 trim 再按 code point 计数。
+    // 输入虽已被 limitByCodePoints 截断，提交前仍兜底检查一次（粘贴/自动填充可绕过 maxLength）。
+    if (codePointLength(displayName.trim()) > DISPLAY_NAME_MAX_LENGTH) {
+      warn(`显示名称不能超过 ${DISPLAY_NAME_MAX_LENGTH} 个字符。`)
+      return
+    }
     setBusy(true)
     try {
       await apiFetch<UserMe>('/api/v1/auth/me', { method: 'PATCH', body: JSON.stringify({ display_name: displayName || null }) })
@@ -60,7 +73,7 @@ export function ConsoleProfile() {
   async function updatePassword(event: FormEvent) {
     event.preventDefault()
     setNotice(null)
-    const newPasswordLength = passwordCodePointLength(newPassword)
+    const newPasswordLength = codePointLength(newPassword)
     if (newPasswordLength < PASSWORD_MIN_LENGTH) { warn(`新密码至少需要 ${PASSWORD_MIN_LENGTH} 个字符。`); return }
     if (newPasswordLength > PASSWORD_MAX_LENGTH) { warn(`新密码不能超过 ${PASSWORD_MAX_LENGTH} 个字符。`); return }
     if (newPassword !== confirmPassword) { warn('两次输入的新密码不一致。'); return }
@@ -76,14 +89,21 @@ export function ConsoleProfile() {
 
   async function revokeSession(session: SessionItem) {
     if (!window.confirm(session.current ? '撤销当前会话后需要重新登录，继续吗？' : '确认撤销这个会话吗？')) return
+    setBusySessionId(session.id)
     setNotice(null)
     try {
       await apiFetch<void>(`/api/v1/auth/sessions/${session.id}`, { method: 'DELETE' })
-      if (session.current) { clear(); navigate('/login?returnTo=%2Fconsole%2Fprofile'); return }
-      loadSessions()
     } catch (error) {
-      warn(error instanceof Error ? error.message : '会话撤销失败。')
+      // 404 表示会话已不存在（重复撤销或他处已撤销），与撤销成功等价，不算失败。
+      if (!(error instanceof ApiError && error.status === 404)) {
+        warn(error instanceof Error ? error.message : '会话撤销失败。')
+        return
+      }
+    } finally {
+      setBusySessionId(null)
     }
+    if (session.current) { clear(); navigate('/login?returnTo=%2Fconsole%2Fprofile'); return }
+    loadSessions()
   }
 
   const name = user?.display_name || user?.username || '用户'
@@ -91,16 +111,22 @@ export function ConsoleProfile() {
   return (
     <ConsoleLayout>
       <section className="space-y-6 pt-2">
-        <HudPanel className="relative overflow-hidden">
-          <img src={logoUrl} className="pointer-events-none absolute -right-6 -top-6 h-40 w-40 object-contain opacity-10" alt="" />
+        <HudPanel className="is-starfield">
+          {/* 淡化 logo 只在卡片右上角露出一角：裁切层单独 overflow-hidden，
+              不能直接给面板加 overflow-hidden，否则会裁掉 ::before/::after 的青色角标。
+              辉光层参照原型设计：右上角一道径向泛光衬在 logo 底下，金色泛光营造温暖的辰星印记。 */}
+          <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--chenxing-radius-lg)]" aria-hidden="true">
+            <div className="absolute inset-0 bg-[radial-gradient(70%_140%_at_88%_0%,rgba(245,199,106,0.16),transparent_65%)]" />
+            <img src={logoSrc} alt="" className="absolute -right-6 -top-10 h-48 w-48 opacity-[0.07] blur-[1px]" />
+          </div>
           <div className="relative flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
             <div className="flex items-start gap-5">
               <ProfileAvatar user={user} name={name} onMessage={notify} refresh={refresh} />
               <div className="space-y-2.5 pt-1">
                 <div className="flex flex-wrap items-center gap-3">
                   <h1 className="chenxing-h1">{name}</h1>
-                  <Chip><Icon name="star" size={14} />{user?.role || 'user'}</Chip>
-                  <Badge tone="success"><Icon name="shield-check" size={14} />身份已验证</Badge>
+                  <Badge tone="gold"><Icon name="star" size={13} />{user?.role || 'user'}</Badge>
+                  <Badge tone="success"><Icon name="shield-check" size={13} />身份已验证</Badge>
                 </div>
                 <p className="chenxing-caption chenxing-mono">{user?.email}</p>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
@@ -121,7 +147,7 @@ export function ConsoleProfile() {
               <Icon name="user" className="text-[var(--chenxing-cyan)]" size={18} />
             </div>
             <form className="space-y-4" onSubmit={updateProfile}>
-              <Field label="显示名称" value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
+              <Field label="显示名称" value={displayName} onChange={(event) => setDisplayName(limitByCodePoints(event.target.value, DISPLAY_NAME_MAX_LENGTH))} maxLength={DISPLAY_NAME_MAX_INPUT_LENGTH} hint={`最多 ${DISPLAY_NAME_MAX_LENGTH} 个 Unicode 字符。`} />
               <Field label="用户名" value={user?.username || ''} readOnly />
               <Field label="邮箱地址" type="email" value={user?.email || ''} readOnly hint="邮箱修改需要单独的验证流程。" />
               <Button type="submit" icon="check" disabled={busy}>保存资料</Button>
@@ -135,8 +161,8 @@ export function ConsoleProfile() {
             {showPassword ? (
               <form className="space-y-4" onSubmit={updatePassword}>
                 <PasswordField label="当前密码" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required />
-                <PasswordField label="新密码" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(limitPasswordInput(event.target.value))} maxLength={PASSWORD_MAX_INPUT_LENGTH} required hint={`长度为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个 Unicode 字符。`} />
-                <PasswordField label="确认新密码" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(limitPasswordInput(event.target.value))} maxLength={PASSWORD_MAX_INPUT_LENGTH} required error={passwordCodePointLength(confirmPassword) > 0 && confirmPassword !== newPassword} hint={passwordCodePointLength(confirmPassword) > 0 && confirmPassword !== newPassword ? '两次输入的新密码不一致。' : '再次输入新密码以确认。'} />
+                <PasswordField label="新密码" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(limitByCodePoints(event.target.value, PASSWORD_MAX_LENGTH))} maxLength={PASSWORD_MAX_INPUT_LENGTH} required hint={`长度为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个 Unicode 字符。`} />
+                <PasswordField label="确认新密码" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(limitByCodePoints(event.target.value, PASSWORD_MAX_LENGTH))} maxLength={PASSWORD_MAX_INPUT_LENGTH} required error={codePointLength(confirmPassword) > 0 && confirmPassword !== newPassword} hint={codePointLength(confirmPassword) > 0 && confirmPassword !== newPassword ? '两次输入的新密码不一致。' : '再次输入新密码以确认。'} />
                 <div className="flex flex-wrap gap-3">
                   <Button type="submit" icon="key-round" disabled={busy}>确认修改</Button>
                   <Button type="button" variant="ghost" onClick={() => setShowPassword(false)}>取消</Button>
@@ -163,7 +189,7 @@ export function ConsoleProfile() {
                     <p className="chenxing-caption chenxing-mono">创建于 {formatDate(session.created_at)} · 到期 {formatDate(session.expires_at)}</p>
                   </div>
                   {session.current ? <Badge tone="success">当前</Badge> : null}
-                  <Button variant="danger" icon="x" onClick={() => void revokeSession(session)}>撤销</Button>
+                  <Button variant="danger" icon="x" disabled={busySessionId !== null} onClick={() => void revokeSession(session)}>撤销</Button>
                 </div>
               ))}
             </div>
@@ -178,22 +204,35 @@ export function ConsoleProfile() {
 
 export function AuthorizedApps() {
   const [apps, setApps] = useState<AuthorizedOAuthApp[]>([])
-  const [message, setMessage] = useState('')
+  /* 提示语连同语气一起存，撤销成功显式写 success，不用文案子串反推语气。 */
+  const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
   const [busyClientId, setBusyClientId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
+  const warn = (text: string) => notify(text, 'warning')
 
-  async function loadApps(): Promise<boolean> {
+  /* 整页加载：重置 loading 与提示，失败时给出警告。 */
+  async function loadApps(): Promise<void> {
     setLoading(true)
-    setMessage('')
+    setNotice(null)
     try {
       const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
       setApps(response.items)
-      return true
     } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。')
-      return false
+      warn(reason instanceof Error ? reason.message : '应用列表加载失败。')
     } finally {
       setLoading(false)
+    }
+  }
+
+  /* 静默刷新：不重置 loading、不覆盖提示。撤销成功的提示必须先于刷新写入，
+     刷新失败时旧列表与新提示并存，成功事实不被掩盖；下次进入页面列表自然一致。 */
+  async function refreshAppsSilently(): Promise<void> {
+    try {
+      const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
+      setApps(response.items)
+    } catch {
+      // 静默失败：保留旧列表，撤销成功的提示不被刷新错误覆盖。
     }
   }
 
@@ -202,12 +241,16 @@ export function AuthorizedApps() {
   async function revokeApp(app: AuthorizedOAuthApp) {
     if (!window.confirm(`确认撤销“${app.client_name}”的授权吗？撤销后，该应用将立即失去访问账户数据的权限，若要继续使用，必须重新授权。`)) return
     setBusyClientId(app.client_id)
-    setMessage('')
+    setNotice(null)
     try {
       await apiFetch<void>(`/api/v1/auth/authorized-apps/${encodeURIComponent(app.client_id)}`, { method: 'DELETE' })
-      if (await loadApps()) setMessage('应用授权已撤销。')
+      /* 撤销成功与列表刷新解耦：DELETE 成功就无条件提示成功，刷新失败不再掩盖成功事实。
+         旧实现用 loadApps 的返回值决定是否提示，刷新失败时用户只看到
+         “应用列表加载失败”，误以为撤销失败而重复点击，触发多余的重复 DELETE。 */
+      notify('应用授权已撤销。', 'success')
+      await refreshAppsSilently()
     } catch (reason) {
-      setMessage(reason instanceof Error ? reason.message : '应用授权撤销失败。')
+      warn(reason instanceof Error ? reason.message : '应用授权撤销失败。')
     } finally {
       setBusyClientId(null)
     }
@@ -223,7 +266,7 @@ export function AuthorizedApps() {
         description="管理已通过辰星通行证登录的第三方应用与其权限范围。"
         action={<Link className="chenxing-btn-ghost" to="/console/integrate">接入应用</Link>}
       />
-      {message ? <div className="mb-4"><Notice tone={message.includes('已撤销') ? 'success' : 'warning'}>{message}</Notice></div> : null}
+      {notice ? <div className="mb-4"><Notice tone={notice.tone}>{notice.text}</Notice></div> : null}
       <div className="mb-6 grid grid-cols-3 gap-3 sm:gap-4">
         <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">已授权应用</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading ? '—' : apps.length}</p></HudPanel>
         <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">开放权限域</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading ? '—' : openScopes}</p></HudPanel>
@@ -235,7 +278,7 @@ export function AuthorizedApps() {
             <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0 flex-1">
                 <div className="flex items-start gap-4">
-                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-[linear-gradient(135deg,var(--chenxing-primary),var(--chenxing-cyan))] text-[var(--chenxing-primary-foreground)] shadow-[var(--chenxing-shadow-cyan-float)]">
+                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-[rgba(125,211,252,0.4)] bg-[rgba(56,189,248,0.12)] text-[var(--chenxing-cyan)] shadow-[var(--chenxing-shadow-cyan-float)]">
                     <Icon name="box" size={22} />
                   </span>
                   <div className="min-w-0">

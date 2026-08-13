@@ -199,10 +199,12 @@ pub fn extract_authz_holder_cookie(headers: &HeaderMap) -> Option<String> {
     cookie_value(headers, AUTHZ_HOLDER_COOKIE)
 }
 
-pub fn session_id(headers: &HeaderMap) -> Option<String> {
-    session_header_id(headers).or_else(|| session_cookie_id(headers))
-}
-
+/// 开发期兼容头部 `X-Chenxing-Session` 的原始取值。
+///
+/// 本函数只取值，不决定是否接受它：那由 `oauth::session::session_id_from_headers`
+/// 按 `OAUTH_SESSION_HEADER_ENABLED` 判定，并在头部与 Cookie 冲突时拒绝请求。
+/// 仓库里不再提供「头部优先、无条件回退 Cookie」的便捷组合（Issue #306）——
+/// 那种组合会让任何调用点悄悄绕过配置开关和冲突检查。
 pub fn session_header_id(headers: &HeaderMap) -> Option<String> {
     headers
         .get("x-chenxing-session")
@@ -210,10 +212,7 @@ pub fn session_header_id(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub fn session_cookie_id(headers: &HeaderMap) -> Option<String> {
-    cookie_value(headers, SESSION_COOKIE)
-}
-
+/// 按传输安全性取会话 Cookie：HTTPS 用 `__Host-` 前缀名，本地 HTTP 用无前缀名。
 pub fn session_cookie_id_for_secure_transport(headers: &HeaderMap, secure: bool) -> Option<String> {
     cookie_value(headers, session_cookie_name(secure))
 }

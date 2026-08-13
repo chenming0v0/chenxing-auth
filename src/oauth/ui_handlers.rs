@@ -1,16 +1,18 @@
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{ConnectInfo, Extension, Path, State},
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::net::SocketAddr;
 
 use super::{
     authorization::{AuthorizationRequest, validate_authorization_request_with_allowlist},
     consent::{ConsentDecision, PendingAuthorization, parse_decision},
     handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
+    request_binding::{PendingRequestBinding, PendingRequestBindingError, bind_pending_request},
     session::session_for_headers,
 };
 use crate::{
@@ -129,81 +131,78 @@ pub async fn inspect_authorization_request(
         .into_response()
 }
 
-/// Bind a pending authorization request to the caller's session.
+/// 把待确认授权请求绑定到调用者当前的会话。
 ///
-/// The browser hits `/oauth/authorize` before any session exists, so the pending
-/// request is created with `session_token_hash: None` and the user is sent to the SPA
-/// login page. Once the SPA logs in over JSON, it calls this endpoint so the
-/// pending request is tied to the freshly-issued session — after which `inspect`
-/// and `decide` accept it. Mirrors the binding the server-rendered
-/// `complete_browser_login` used to perform.
+/// 浏览器在还没有会话时就会命中 `/oauth/authorize`，因此 pending 请求以
+/// `session_token_hash: None` 落盘并把用户送去 SPA 登录页；SPA 登录完成后调用
+/// 本端点补上绑定，`inspect` 与 `decide` 才会接受它。
 ///
-/// 绑定前必须通过授权请求持有者 Cookie 校验（#115）：仅凭有效会话 + `request_id`
-/// 不足以认领一条 pending 请求，否则拿到泄露 `request_id` 的攻击者可以把受害者
-/// 的授权请求绑到自己的会话上并批准，使受害者登录进攻击者账号。
+/// # 受控重绑（#270）
 ///
-/// `SessionWrite` 在提取阶段校验 Session Cookie、CSRF Cookie 与 `X-CSRF-Token`
-/// 三者绑定；持有者 Cookie 是叠加在其之上的第二层，两者都必须通过。
+/// 本端点接受**任何**通过 holder 与会话校验的调用者把请求绑到自己的会话上，
+/// 包括请求此前已绑定到别的会话摘要的情况。三层校验缺一不可：
+///
+/// 1. `SessionWrite`：Session Cookie + CSRF Cookie + `X-CSRF-Token` 三者绑定；
+/// 2. holder Cookie 与 pending 记录中的摘要匹配（#115）；
+/// 3. CAS 原子写入，与并发的 `bind` / `decide` 不互相覆盖。
+///
+/// 为什么放开「已绑定就拒绝」：`session_token_hash` 是派生状态而非所有权凭据，
+/// holder Cookie 才是所有权凭据。旧规则下会话过期重登或切换账号都会产生新会话，
+/// 而 URL 里的 `request_id` 不变，绑定恒定失败 → 前端跟着 401 反复跳登录页。
+/// 详见 [`crate::oauth::request_binding`] 的模块文档。
 pub async fn bind_authorization_request(
     State(state): State<AppState>,
     headers: HeaderMap,
     session: SessionWrite,
     Path(request_id): Path<String>,
 ) -> Response {
-    let Some(mut pending) = (match state.authorization_requests.find(&request_id).await {
-        Ok(pending) => pending,
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to load OAuth authorization request");
-            return error::oauth_temporarily_unavailable();
-        }
-    }) else {
-        return pending_expired();
-    };
-    // 持有者校验放在会话检查之前：包括幂等重试在内的每一次绑定调用都必须证明
-    // 自己就是发起授权的那个浏览器。这是叠加在 CSRF 校验之上的一层，
-    // 两者都必须通过。Cookie 值不进日志。
-    if !authz_holder_valid(&headers, &pending) {
-        tracing::warn!(
-            event = "oauth.authz_holder_rejected",
-            user_id = %session.user_id,
-            "rejected authorization request binding with missing or mismatched holder cookie"
-        );
-        return error::forbidden(
-            "authorization_holder_invalid",
-            "authorization request was not initiated by this browser",
-        );
-    }
-    // Only allow binding an unbound request, or re-binding one already owned by
-    // this same session (idempotent retry). Refuse to steal another session's request.
-    let current_session_hash = session_token_hash(&session.session.token);
-    match pending.session_token_hash.as_deref() {
-        None => {}
-        Some(existing) if existing == current_session_hash => {
-            return (axum::http::StatusCode::NO_CONTENT, ()).into_response();
-        }
-        Some(_) => {
-            return error::unauthorized(
-                "invalid_session",
-                "authorization request is bound to another session",
-            );
-        }
-    }
-    let original_pending = pending.clone();
-    pending.session_token_hash = Some(current_session_hash);
-    match state
-        .authorization_requests
-        .replace_if_matches(&request_id, &original_pending, &pending)
-        .await
+    let holder_hash = cookies::extract_authz_holder_cookie(&headers)
+        .as_deref()
+        .map(cookies::authz_holder_hash);
+    match bind_pending_request(
+        &state.authorization_requests,
+        &request_id,
+        &session.session.token,
+        holder_hash.as_deref(),
+    )
+    .await
     {
-        Ok(true) => {}
-        Ok(false) => {
-            return error::unauthorized(
-                "invalid_session",
-                "authorization request is bound to another session",
+        Ok(PendingRequestBinding::Unchanged | PendingRequestBinding::Bound) => {}
+        // 重绑意味着这条授权请求换了持有会话（会话过期重登或切换账号）。
+        // 授权码最终按重绑后的会话签发，因此这是一次需要可检索的身份变更。
+        Ok(PendingRequestBinding::Rebound) => {
+            state
+                .audit
+                .record_best_effort(AuditEvent::new(
+                    "user".to_owned(),
+                    Some(session.user_id.to_string()),
+                    "authorization_request_rebound".to_owned(),
+                    "oauth_authorization".to_owned(),
+                    None,
+                    serde_json::json!({"reason": "session_changed"}),
+                ))
+                .await;
+        }
+        Err(PendingRequestBindingError::Expired) => return pending_expired(),
+        Err(PendingRequestBindingError::HolderInvalid) => {
+            // Cookie 值与摘要都不进日志，只留可检索的事件名与调用者身份。
+            tracing::warn!(
+                event = "oauth.authz_holder_rejected",
+                user_id = %session.user_id,
+                "rejected authorization request binding with missing or mismatched holder cookie"
+            );
+            return error::forbidden(
+                "authorization_holder_invalid",
+                "authorization request was not initiated by this browser",
             );
         }
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to bind authorization request to session");
+        Err(PendingRequestBindingError::Contended) => {
+            return error::conflict(
+                "authorization_request_conflict",
+                "authorization request is being updated concurrently",
+            );
+        }
+        Err(PendingRequestBindingError::Storage) => {
             return error::oauth_temporarily_unavailable();
         }
     }
@@ -216,11 +215,19 @@ pub async fn bind_authorization_request(
 /// 伪造请求的 body 不会被解析。
 pub async fn decide_authorization_request(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     session: SessionWrite,
     Path(request_id): Path<String>,
     Json(input): Json<DecisionInput>,
 ) -> Response {
+    // 授权决定写入审计时需要请求上下文（源 IP / UA，Issue #308）。
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    let user_agent = crate::api::user_agent(&headers);
     let Some(decision) = parse_decision(&input.decision) else {
         return error::bad_request("invalid_decision", "authorization decision is invalid");
     };
@@ -262,7 +269,11 @@ pub async fn decide_authorization_request(
                 "authorization_denied".to_owned(),
                 "oauth_authorization".to_owned(),
                 Some(pending.client_id.clone()),
-                serde_json::json!({"reason": "user_denied"}),
+                crate::audit::with_request_context(
+                    serde_json::json!({"reason": "user_denied"}),
+                    source_ip.as_deref(),
+                    user_agent.as_deref(),
+                ),
             ))
             .await;
         return match error_redirect(&pending) {
@@ -298,6 +309,9 @@ pub async fn decide_authorization_request(
         restore_pending(&state, &consumed).await;
         return response;
     }
+    // `save` 返回本次重新授权的 `state_version`（Issue #276）。这里刻意不用它写缓存：
+    // 紧随其后的 `issue_authorization_code_result` 会按数据库权威状态同步缓存围栏，
+    // 两处都写只会让「谁的版本更新」多一个来源，而条件写的结论完全相同。
     if let Err(error_value) = state
         .consents
         .save(session.user_id, &consumed.client_id, &validated.scopes)
@@ -321,7 +335,15 @@ pub async fn decide_authorization_request(
         restore_pending(&state, &consumed).await;
         return response;
     }
-    match issue_authorization_code_result(&state, session.user_id.to_string(), validated).await {
+    match issue_authorization_code_result(
+        &state,
+        session.user_id.to_string(),
+        validated,
+        source_ip.as_deref(),
+        user_agent.as_deref(),
+    )
+    .await
+    {
         Ok(AuthorizationCodeIssue::Redirect(redirect_to)) => (
             axum::http::StatusCode::OK,
             Json(DecisionResponse {
@@ -425,22 +447,4 @@ fn pending_expired() -> Response {
         "authorization_request_expired",
         "authorization request is expired",
     )
-}
-
-/// 校验授权请求持有者 Cookie（#115）：
-/// - Cookie 存在 且 SHA-256(cookie值) == pending 中存储的哈希 → 通过
-/// - Cookie 不存在 或 pending 中无 holder_hash（旧记录）→ 拒绝（fail-secure）
-///
-/// 旧记录无 holder_hash 意味着升级前创建的授权请求：拒绝是有意为之，
-/// 用户重新发起授权即可获得完整保护。不留「无 holder 即放行」的绕过窗口。
-fn authz_holder_valid(headers: &HeaderMap, pending: &PendingAuthorization) -> bool {
-    match (
-        cookies::extract_authz_holder_cookie(headers).as_deref(),
-        pending.holder_hash.as_deref(),
-    ) {
-        (Some(cookie_value), Some(stored_hash)) => {
-            cookies::authz_holder_hash(cookie_value) == stored_hash
-        }
-        _ => false,
-    }
 }

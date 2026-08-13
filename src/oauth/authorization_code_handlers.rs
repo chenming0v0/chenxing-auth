@@ -32,6 +32,8 @@ pub async fn issue_authorization_code_result(
     state: &AppState,
     user_id: String,
     validated: ValidatedAuthorizationRequest,
+    source_ip: Option<&str>,
+    user_agent: Option<&str>,
 ) -> Result<AuthorizationCodeIssue, Response> {
     match active_user_id(state, &user_id).await {
         Ok(Some(_)) => {}
@@ -44,7 +46,11 @@ pub async fn issue_authorization_code_result(
                     "authorization_denied".to_owned(),
                     "oauth_authorization".to_owned(),
                     None,
-                    serde_json::json!({"reason": "user_disabled"}),
+                    crate::audit::with_request_context(
+                        serde_json::json!({"reason": "user_disabled"}),
+                        source_ip,
+                        user_agent,
+                    ),
                 ))
                 .await;
             return Err(error::oauth_unauthorized(
@@ -97,7 +103,9 @@ pub async fn issue_authorization_code_result(
             error::oauth_temporarily_unavailable()
         })?;
     let client_id = validated.client_id.clone();
-    let code = AuthorizationCode::new_with_nonce_and_ttl_with_session_hash(
+    // 签发时刻必须来自共享时钟：store 保存时用 `self.clock.now()` 计算 Redis TTL，
+    // 这里另读墙钟会让注入时钟下「TTL 被夹断为 1 秒」成为真实矛盾。
+    let mut code = AuthorizationCode::new_with_nonce_and_ttl_with_session_hash_at(
         validated.client_id,
         validated.redirect_uri.clone(),
         user_id.clone(),
@@ -107,18 +115,24 @@ pub async fn issue_authorization_code_result(
         // 授权码绑定签发时的会话摘要：会话撤销后 Token 端点会拒绝兑换。
         validated.session_token_hash,
         limits.authorization_code_ttl_seconds,
+        state.clock.now(),
     );
     let state_value = validated.state;
-    if let Err(store_error) = state.authorization_codes.save(&code).await {
-        tracing::error!(error = %store_error, "failed to store OAuth authorization code");
-        return Err(error::oauth_temporarily_unavailable());
-    }
+    // 把同意缓存同步到数据库当前的权威状态（Issue #276）。
+    //
+    // 旧实现在这里删除缓存键。删除只能让下一次判定回源，无法阻止一个「先提交 DB
+    // 撤销、后写 Redis」的并发请求随后把陈旧的撤销标记写进来；那个标记会让刚刚
+    // 重新授权的用户在 refresh / userinfo 上被持续拒绝。
+    //
+    // 改为写入带 `state_version` 的围栏值：版本化条件写会拒绝任何版本更低的
+    // 迟到写入。失败仍然回滚授权码并返回 503——授权码尚未交给客户端，
+    // 此时放弃本次授权不会烧掉任何已发出的凭据。
     if let Err(error_value) = state
         .revocations
-        .clear_consent(&code.user_id, &code.client_id)
+        .refresh_consent_cache(&code.user_id, &code.client_id)
         .await
     {
-        tracing::error!(error = %error_value, "failed to clear OAuth consent revocation marker");
+        tracing::error!(error = %error_value, "failed to sync OAuth consent state cache");
         remove_authorization_code_after_failure(state, &code, &client_id, None).await;
         return Err(error::oauth_temporarily_unavailable());
     }
@@ -140,7 +154,7 @@ pub async fn issue_authorization_code_result(
         let limits = effective.plan.auth_quota_limits();
         let consumption = match state
             .oauth_quotas
-            .consume_with_limits_and_reservation(&client_id, limits)
+            .consume_with_limits_and_reservation_at(&client_id, limits, state.clock.now())
             .await
         {
             Ok(consumption) => consumption,
@@ -162,7 +176,11 @@ pub async fn issue_authorization_code_result(
                         "rate_limit_triggered".to_owned(),
                         "oauth_quota".to_owned(),
                         None,
-                        serde_json::json!({"reason": "oauth_quota"}),
+                        crate::audit::with_request_context(
+                            serde_json::json!({"reason": "oauth_quota"}),
+                            source_ip,
+                            user_agent,
+                        ),
                     ))
                     .await;
                 return Ok(AuthorizationCodeIssue::QuotaExceeded);
@@ -171,6 +189,39 @@ pub async fn issue_authorization_code_result(
     } else {
         None
     };
+    // 配额消耗成功后，把 reservation 记入「过期未兑换则退款」台账，并把 id
+    // 写进授权码 payload：兑换成功时 CAS 会在同一个 Lua 事务里原子取消该条目，
+    // 过期未兑换时由后台 worker 退还配额（Issue #341）。
+    if let Some(reservation) = quota_reservation.as_ref() {
+        code.quota_reservation_id = Some(reservation.id().to_owned());
+        if let Err(error_value) = state
+            .oauth_quotas
+            .schedule_refund(reservation, code.expires_at.unix_timestamp())
+            .await
+        {
+            tracing::error!(error = %error_value, "failed to schedule OAuth authorization quota refund");
+            remove_authorization_code_after_failure(
+                state,
+                &code,
+                &client_id,
+                quota_reservation.as_ref(),
+            )
+            .await;
+            return Err(error::oauth_temporarily_unavailable());
+        }
+    }
+    if let Err(store_error) = state.authorization_codes.save(&code).await {
+        tracing::error!(error = %store_error, "failed to store OAuth authorization code");
+        // 授权码从未交给客户端：本次签发失败不占用配额，退还 reservation。
+        remove_authorization_code_after_failure(
+            state,
+            &code,
+            &client_id,
+            quota_reservation.as_ref(),
+        )
+        .await;
+        return Err(error::oauth_temporarily_unavailable());
+    }
     if state
         .audit
         .record_blocking(AuditEvent::new(
@@ -179,7 +230,11 @@ pub async fn issue_authorization_code_result(
             "authorization_code_issue".to_owned(),
             "oauth_client".to_owned(),
             Some(code.client_id.clone()),
-            serde_json::json!({"scopes": code.scopes}),
+            crate::audit::with_request_context(
+                serde_json::json!({"scopes": code.scopes}),
+                source_ip,
+                user_agent,
+            ),
         ))
         .await
         .is_err()
@@ -297,9 +352,8 @@ pub(crate) fn pending_from_validated(
         code_challenge: request.code_challenge.clone(),
         code_challenge_method: "S256".to_owned(),
         session_token_hash: request.session_token_hash.clone(),
-        // 持有者绑定只在未登录路径上有意义：已有会话的请求直接进入授权确认
-        // 或预授权直通，不经过绑定端点。未登录路径由 `save_and_redirect_to_login`
-        // 生成 holder 并回填这个字段（#115）。
+        // holder 由 `save_and_redirect_to_ui` 在交给 SPA 之前生成并回填（#115 / #270）。
+        // 这里留 None：预授权直通路径不经过 SPA 也不经过绑定端点，不需要 holder。
         holder_hash: None,
     }
 }
@@ -317,9 +371,11 @@ pub async fn issue_authorization_code(
     state: &AppState,
     user_id: String,
     validated: ValidatedAuthorizationRequest,
+    source_ip: Option<&str>,
+    user_agent: Option<&str>,
 ) -> Response {
     let pending = pending_from_validated(&validated);
-    match issue_authorization_code_result(state, user_id, validated).await {
+    match issue_authorization_code_result(state, user_id, validated, source_ip, user_agent).await {
         Ok(AuthorizationCodeIssue::Redirect(redirect)) => Redirect::to(&redirect).into_response(),
         Ok(AuthorizationCodeIssue::QuotaExceeded) => authorization_quota_redirect(&pending),
         Err(response) => response,

@@ -28,6 +28,8 @@ function ClientsTable({ access }: { access: AdminAccess }) {
   const [page, setPage] = useState(parsePageParam(params.get('page')))
   const [result, setResult] = useState<Paged<ClientSummary> | null>(null)
   const [error, setError] = useState('')
+  // 行级 busy：多行操作可同时在途，先完成的行只清除自己的标记，不会像单值 busy 那样提前解禁其他行
+  const [busy, setBusy] = useState<ReadonlySet<string>>(() => new Set())
   const [refreshKey, setRefreshKey] = useState(0)
   const pageSize = 20
 
@@ -59,17 +61,23 @@ function ClientsTable({ access }: { access: AdminAccess }) {
 
   async function setClientStatus(client: ClientSummary) {
     if (!access.data?.permissions.includes('manage_clients')) return
+    // 请求在途时按钮已 disabled，这里兜底拦截：双击的第二个 click 若在 re-render 前被派发，也不会发出并发请求。
+    if (busy.has(client.client_id)) return
     const action = client.status === 'active' ? 'disable' : 'enable'
     const actionLabel = action === 'disable' ? '禁用' : '启用'
     const consequence = action === 'disable'
       ? '禁用后，该 OAuth 应用将无法发起新的授权，也无法获取新的令牌。'
       : '启用后，该 OAuth 应用可以重新发起授权并获取令牌。'
     if (!window.confirm(`确认${actionLabel} ${client.client_name} 吗？\n${consequence}`)) return
+    setBusy((prev) => new Set(prev).add(client.client_id))
+    setError('')
     try {
       await apiFetch<void>(`/api/v1/admin/clients/${encodeURIComponent(client.client_id)}/${action}`, { method: 'POST' })
       setRefreshKey((value) => value + 1)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Client 状态更新失败。')
+    } finally {
+      setBusy((prev) => { const next = new Set(prev); next.delete(client.client_id); return next })
     }
   }
 
@@ -91,7 +99,7 @@ function ClientsTable({ access }: { access: AdminAccess }) {
       <DataTable
         minWidth={920}
         columns={['Client', 'Owner', 'Redirect URI', '状态', { label: '操作', align: 'right' }]}
-        empty={result?.items.length ? null : result ? '没有匹配 Client' : '正在加载 Client'}
+        empty={result?.items.length ? null : result ? '没有匹配 Client' : error ? null : '正在加载 Client'}
       >
         {result?.items.map((client) => (
           <tr key={client.client_id}>
@@ -103,7 +111,7 @@ function ClientsTable({ access }: { access: AdminAccess }) {
             <td><p className="chenxing-caption max-w-xs truncate">{client.redirect_uris.join(' · ')}</p></td>
             <td><Badge tone={client.status === 'active' ? 'success' : 'warning'}>{client.status}</Badge></td>
             <td className="text-right">
-              <Button variant={client.status === 'active' ? 'danger' : 'ghost'} icon={client.status === 'active' ? 'x' : 'check'} onClick={() => void setClientStatus(client)}>
+              <Button variant={client.status === 'active' ? 'danger' : 'ghost'} icon={client.status === 'active' ? 'x' : 'check'} onClick={() => void setClientStatus(client)} disabled={busy.has(client.client_id)}>
                 {client.status === 'active' ? '禁用' : '启用'}
               </Button>
             </td>

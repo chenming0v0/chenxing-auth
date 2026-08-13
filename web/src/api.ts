@@ -73,6 +73,8 @@ const safeMessages = new Map<string, string>([
   ['oauth_quota_exceeded', '当前 OAuth 授权额度已用尽。'],
   ['authorization_request_expired', '授权请求已过期，请重新发起。'],
   ['authorization_request_processed', '授权请求已经处理过。'],
+  ['authorization_request_conflict', '授权请求正在被其他标签页更新，请稍后重试。'],
+  ['authorization_holder_invalid', '这条授权请求不是在当前浏览器发起的，请回到应用重新开始授权。'],
   ['csrf_invalid', '请求校验失败，请刷新页面后重试。'],
   ['csrf_required', '请求校验失败，请刷新页面后重试。'],
   ['invalid_plan', '套餐参数不正确，请检查输入。'],
@@ -83,11 +85,13 @@ const safeMessages = new Map<string, string>([
   ['plan_archived', '已归档的套餐不能分配给用户。'],
   ['invalid_expiration', '到期时间格式不正确，请重新选择。'],
   ['oauth_provider_not_found', '该外部身份源不可用或已被停用。'],
+  ['invalid_oauth_provider', '外部身份源配置不完整，请检查 Endpoint、Scopes 和 Email Verified Claim。'],
   ['oauth_login_failed', '外部身份源登录未完成，请重试。'],
   ['oauth_login_rate_limited', '外部登录尝试过于频繁，请稍后重试。'],
   ['oauth_request_expired', '授权请求已过期，请重新发起。'],
   ['oauth_request_binding_failed', '授权请求绑定失败，请重新开始。'],
   ['oauth_account_link_required', '该外部账号尚未绑定辰星通行证，请先登录后在账号设置中绑定。'],
+  ['oauth_email_unverified', '外部身份源未确认该邮箱已验证，无法用它登录或建号。请先在该身份源完成邮箱验证。'],
   ['avatar_empty', '没有读取到图片内容，请重新选择。'],
   ['avatar_too_large', '图片超出大小上限，请更换一张。'],
   ['avatar_unsupported_format', '只支持 PNG、JPEG 或 WebP 图片。'],
@@ -110,10 +114,25 @@ export function safeErrorMessage(status: number, code?: string): string {
   return '请求未完成，请稍后重试。'
 }
 
+/**
+ * 构造「登录完成后能接着干原来的事」的登录页地址。
+ *
+ * OAuth 待授权请求的 `request_id` 必须提升为登录页自己的顶层查询参数（#270）：
+ * 登录页只读自己的 `request_id` 来决定登录后是否把新会话绑定到待授权请求。
+ * 埋在 `returnTo` 里它读不到，于是登录成功后直接跳回确认页，确认页拿着新会话
+ * 撞上旧的会话绑定再次 401，又被送回登录页——这就是 401 登录循环的成因。
+ *
+ * `returnTo` 照旧保留，非 OAuth 场景的回跳行为不变。
+ */
+export function loginRecoveryTarget(pathname: string, search: string): string {
+  const returnTo = `/login?returnTo=${encodeURIComponent(`${pathname}${search}`)}`
+  const requestId = new URLSearchParams(search).get('request_id')
+  return requestId ? `${returnTo}&request_id=${encodeURIComponent(requestId)}` : returnTo
+}
+
 function redirectToLogin(): void {
   if (typeof window === 'undefined' || window.location.pathname === '/login') return
-  const returnTo = `${window.location.pathname}${window.location.search}`
-  const target = `/login?returnTo=${encodeURIComponent(returnTo)}`
+  const target = loginRecoveryTarget(window.location.pathname, window.location.search)
   window.history.replaceState({}, '', target)
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
@@ -318,6 +337,32 @@ export type AuditEvent = {
   resource_id?: string | null
   created_at?: string
 }
+/** 用户级安全日志事件（GET /api/v1/auth/security-events，后端实现见 issue #307）。 */
+export type SecurityEvent = {
+  id: number
+  action: string
+  resource_type: string | null
+  client_id: string | null
+  client_name: string | null
+  created_at: string
+}
+/** 安全日志详情（GET /api/v1/auth/security-events/{id}，契约提案见 issue #308）。
+    敏感字段（ip/user_agent 等）后端未记录时为 null，前端默认打码展示。 */
+export type SecurityEventClient = {
+  client_id: string
+  client_name: string
+  created_at: string | null
+  status: string | null
+}
+export type SecurityEventDetail = SecurityEvent & {
+  category: string | null
+  severity: string | null
+  ip: string | null
+  ip_location: string | null
+  user_agent: string | null
+  ray_id: string | null
+  client: SecurityEventClient | null
+}
 export type RegistrationEmailSetting = { registration_email_from: string | null }
 export type PasskeyUserVerification = 'preferred' | 'required' | 'discouraged'
 export type PasskeyAuthenticatorAttachment = 'any' | 'platform' | 'cross_platform'
@@ -372,6 +417,12 @@ export type OAuthProviderSummary = {
   id: number
   name: string
   slug: string
+  /**
+   * 身份信任模型（Issue #296）。恒为 `oauth2_userinfo`：OAuth 2.0 授权码流程 + UserInfo 端点，
+   * `sub`/`email`/`email_verified` 全部来自 UserInfo 响应，令牌响应中的 `id_token` 不被解析，
+   * 本平台在这一侧不是 OIDC 依赖方。新增模式时后端会新增取值，而不是放宽这个取值的含义。
+   */
+  trust_model?: 'oauth2_userinfo' | string
   callback_uri?: string
   authorization_endpoint: string
   token_endpoint: string
@@ -398,7 +449,8 @@ export type OAuthProviderInput = {
   subject_claim?: string
   email_claim?: string
   name_claim?: string | null
-  email_verified_claim?: string | null
+  /** 必填：指向布尔型邮箱验证状态的 claim 路径。缺失时后端拒绝配置（Issue #261）。 */
+  email_verified_claim: string
   client_auth_method?: 'basic' | 'request_body'
 }
 export type AdminPlan = {
@@ -438,30 +490,83 @@ export type PendingAuthorization = {
 }
 export type AuthorizationDecisionResponse = { decision: 'approve' | 'deny'; redirect_to: string }
 
+function authorizationRequestPath(requestId: string, suffix = ''): string {
+  return `/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}${suffix}`
+}
+
+/**
+ * 把当前会话绑定到待授权请求。服务端语义是幂等的受控重绑：holder Cookie 与
+ * CSRF 校验通过时，无论此前绑的是哪个会话摘要，都会绑到当前会话（#270）。
+ *
+ * `redirectOn401: false`：401 的处置权交给调用方。默认的自动跳登录页会在
+ * 「登录成功但绑定失败」时把用户送回登录页，正是要避免的循环。
+ */
+export function bindAuthorizationRequest(requestId: string): Promise<void> {
+  return apiFetch<void>(authorizationRequestPath(requestId, '/bind'), {
+    method: 'POST',
+    redirectOn401: false,
+  })
+}
+
+/**
+ * 读取授权确认页所需数据，读之前先做一次绑定。
+ *
+ * 绑定放在前面是为了让「会话过期重登」和「切换账号」自愈：这两种情况下浏览器
+ * 持有的是新会话，而 pending 记录还指着旧会话摘要，直接读会 401。先绑再读，
+ * 新会话接管请求，读取随即成功。绑定幂等，重复调用没有副作用。
+ *
+ * 绑定失败不直接抛错：holder 缺失等情形下会话本身可能仍然有效且已绑定，
+ * 此时读取能成功，流程不该被拦断。只有读取也失败时才把绑定错误抛出去——
+ * 它比读取端的通用 401 更能说明真实原因。
+ */
+export async function loadAuthorizationRequest(requestId: string): Promise<PendingAuthorization> {
+  let bindError: unknown = null
+  try {
+    await bindAuthorizationRequest(requestId)
+  } catch (error) {
+    bindError = error
+  }
+  try {
+    return await apiFetch<PendingAuthorization>(authorizationRequestPath(requestId), {
+      redirectOn401: false,
+    })
+  } catch (error) {
+    throw bindError ?? error
+  }
+}
+
 let entitlementCache: EntitlementsResponse | null = null
 let entitlementRequest: Promise<EntitlementsResponse> | null = null
 /**
- * 缓存版本计数器。clearApiCache()（注销时调用）递增它，使注销前发出的 in-flight 请求
- * 在 resolve 后无法把上一个用户的权益数据写回缓存，避免跨用户泄露。
+ * 缓存版本计数器。clearApiCache()（注销时）和 getEntitlements(force=true) 递增它，
+ * 使版本号变化前发出的 in-flight 请求在 resolve 后无法把过期数据写回缓存：
+ * 注销场景避免跨用户泄露，强制刷新场景避免旧请求的响应覆盖新请求的响应。
  */
 let cacheGeneration = 0
 
 export function getEntitlements(force = false): Promise<EntitlementsResponse> {
-  if (force) entitlementCache = null
+  if (force) {
+    // 强制刷新必须绕过 in-flight 去重：清掉缓存与在途引用，真正发起新请求；
+    // 同时递增版本，让旧请求 resolve 后不能把过期数据写回缓存
+    entitlementCache = null
+    entitlementRequest = null
+    cacheGeneration += 1
+  }
   if (entitlementCache) return Promise.resolve(entitlementCache)
   if (!entitlementRequest) {
-    // 在发起请求时锁定版本，回调里比对以识别期间是否发生过注销
+    // 在发起请求时锁定版本，回调里比对以识别期间是否发生过注销或强制刷新
     const generation = cacheGeneration
-    entitlementRequest = apiFetch<EntitlementsResponse>('/api/v1/auth/entitlements')
+    const request = apiFetch<EntitlementsResponse>('/api/v1/auth/entitlements')
       .then((value) => {
         // 版本不匹配说明缓存已被清理：数据照常返回给当次调用者，但不写入缓存
         if (generation === cacheGeneration) entitlementCache = value
         return value
       })
       .finally(() => {
-        // 无条件清理 in-flight 引用，避免注销后的新请求复用上一个会话的 Promise
-        entitlementRequest = null
+        // 只清理自己的引用：force/注销后可能有更新的请求在途，旧请求收尾时不能把新请求的引用一并清掉
+        if (entitlementRequest === request) entitlementRequest = null
       })
+    entitlementRequest = request
   }
   return entitlementRequest
 }

@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
 
-use super::{refresh::RefreshToken, session::active_user_id};
-use crate::state::AppState;
+use super::{quota::QuotaRefundCancel, refresh::RefreshToken, session::active_user_epoch};
+use crate::{clients::service::AuthenticatedClient, state::AppState};
 
 #[path = "refresh_use_case.rs"]
 mod refresh_use_case;
@@ -142,6 +142,7 @@ pub enum RefreshExchangeError {
 pub async fn exchange_code(
     state: &AppState,
     request: TokenRequest,
+    authenticated: AuthenticatedClient,
 ) -> Result<TokenResponse, OAuthError> {
     let Some(code_value) = request.code.as_deref() else {
         return exchange_failure(
@@ -207,7 +208,23 @@ pub async fn exchange_code(
         )
         .await;
     };
-    if let Err(error) = validate_code_binding(client_id, redirect_uri, code_verifier, &code) {
+    if authenticated.client_id() != client_id {
+        return exchange_failure(
+            state,
+            Some(&code.user_id),
+            Some(client_id),
+            "authenticated_client_mismatch",
+            OAuthError::InvalidClient,
+        )
+        .await;
+    }
+    if let Err(error) = validate_code_binding(
+        client_id,
+        redirect_uri,
+        code_verifier,
+        &code,
+        state.clock.now(),
+    ) {
         return exchange_failure(
             state,
             Some(&code.user_id),
@@ -217,8 +234,11 @@ pub async fn exchange_code(
         )
         .await;
     }
-    match active_user_id(state, &code.user_id).await {
-        Ok(Some(_)) => {}
+    // 凭据代际与 active 判定同一次读取（Issue #409）：下面签发 Refresh Token
+    // 时会把当前 `session_epoch` stamp 进 payload。之后任何推进 epoch 的撤销
+    // 操作（改密 / 管理端 TOTP 重置 / 禁用）都会让这枚 token 在兑换时被拒绝。
+    let user_epoch = match active_user_epoch(state, &code.user_id).await {
+        Ok(Some(epoch)) => epoch,
         Ok(None) => {
             return exchange_failure(
                 state,
@@ -240,7 +260,7 @@ pub async fn exchange_code(
             )
             .await;
         }
-    }
+    };
     // Session binding is intentionally checked before the authorization-code CAS. A failed
     // request must not burn a valid code before binding, expiry, and PKCE all pass.
     let auth_time = match authorization_code_session_auth_time(state, &code).await {
@@ -256,13 +276,57 @@ pub async fn exchange_code(
             .await;
         }
     };
+    // Keep this shared row lock until the Refresh Token is indexed in Redis.
+    // Secret rotation's UPDATE takes a conflicting row lock, so it either
+    // commits first and makes this snapshot stale, or waits and subsequently
+    // revokes the token that this request persisted.
+    let issuance_guard = match state.clients.acquire_issuance_guard(&authenticated).await {
+        Ok(Some(guard)) => guard,
+        Ok(None) => {
+            return exchange_failure(
+                state,
+                Some(&code.user_id),
+                Some(client_id),
+                "client_secret_version_changed",
+                OAuthError::InvalidClient,
+            )
+            .await;
+        }
+        Err(database_error) => {
+            tracing::error!(
+                error = %database_error,
+                "failed to fence authorization-code token issuance"
+            );
+            return exchange_failure(
+                state,
+                Some(&code.user_id),
+                Some(client_id),
+                "client_secret_version_check_failed",
+                OAuthError::temporarily_unavailable(),
+            )
+            .await;
+        }
+    };
+    // 有计量配额的授权码在签发时登记了「过期未兑换则退款」台账条目；兑换成功
+    // 意味着配额应当保留，CAS 脚本在同一原子步骤里取消该条目（Issue #341）。
+    // 旧格式在途授权码没有 reservation id，走纯 CAS，行为与历史一致。
+    let quota_cancel = code
+        .quota_reservation_id
+        .as_deref()
+        .map(QuotaRefundCancel::for_reservation);
     match state
         .authorization_codes
-        .take_if_matches(code_value, &code)
+        .take_if_matches_with_quota_cancel(code_value, &code, quota_cancel)
         .await
     {
         Ok(true) => {}
         Ok(false) => {
+            if let Err(release_error) = issuance_guard.release().await {
+                tracing::warn!(
+                    error = %release_error,
+                    "failed to release Client credential issuance fence"
+                );
+            }
             return exchange_failure(
                 state,
                 Some(&code.user_id),
@@ -273,6 +337,12 @@ pub async fn exchange_code(
             .await;
         }
         Err(store_error) => {
+            if let Err(release_error) = issuance_guard.release().await {
+                tracing::warn!(
+                    error = %release_error,
+                    "failed to release Client credential issuance fence"
+                );
+            }
             tracing::error!(error = %store_error, "failed to consume OAuth authorization code");
             return exchange_failure(
                 state,
@@ -284,12 +354,21 @@ pub async fn exchange_code(
             .await;
         }
     }
-    let refresh = RefreshToken::new(
+    let refresh = RefreshToken::new_at_with_client_secret_version(
         client_id.to_owned(),
         code.user_id.clone(),
         code.scopes.clone(),
+        authenticated.client_secret_version(),
+        user_epoch,
+        state.clock.now(),
     );
     if let Err(store_error) = state.refresh_tokens.save(&refresh).await {
+        if let Err(release_error) = issuance_guard.release().await {
+            tracing::warn!(
+                error = %release_error,
+                "failed to release Client credential issuance fence"
+            );
+        }
         tracing::error!(error = %store_error, "failed to store refresh token");
         compensate_authorization_code_exchange(state, &code, &refresh.value).await;
         return exchange_failure(
@@ -297,6 +376,22 @@ pub async fn exchange_code(
             Some(&code.user_id),
             Some(client_id),
             "refresh_token_persistence_failed",
+            OAuthError::temporarily_unavailable(),
+        )
+        .await;
+    }
+    if let Err(release_error) = issuance_guard.release().await {
+        tracing::error!(
+            error = %release_error,
+            client_id = %client_id,
+            "failed to release Client credential issuance fence after storing refresh token"
+        );
+        compensate_authorization_code_exchange(state, &code, &refresh.value).await;
+        return exchange_failure(
+            state,
+            Some(&code.user_id),
+            Some(client_id),
+            "client_secret_version_fence_release_failed",
             OAuthError::temporarily_unavailable(),
         )
         .await;
@@ -351,8 +446,9 @@ pub async fn exchange_code(
 pub async fn exchange_refresh_token(
     state: &AppState,
     request: TokenRequest,
+    authenticated: AuthenticatedClient,
 ) -> Result<TokenResponse, RefreshExchangeError> {
-    refresh_use_case::exchange_refresh_token(state, request).await
+    refresh_use_case::exchange_refresh_token(state, request, authenticated).await
 }
 
 #[cfg(test)]

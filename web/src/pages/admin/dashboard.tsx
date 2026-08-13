@@ -1,14 +1,10 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { useLocation, useNavigate } from '../../router'
-import {
-  apiFetch, type AdminOverview, type AuditEvent, type ClientSummary,
-  type KeyRotationResponse, type Paged, type PublicUser, type RegistrationEmailSetting,
-} from '../../api'
+import { useEffect, useState } from 'react'
+import { apiFetch, type AdminOverview, type AuditEvent, type Paged } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { DataTable, TablePanel } from '../../components/data-table'
-import { formatDate, initialOf } from '../../data'
-import { AdminGate, useAdminAccess, type AdminAccess } from './shared'
+import { formatDate } from '../../data'
+import { AdminGate, useAdminAccess } from './shared'
 
 export function AdminDashboard() {
   const access = useAdminAccess()
@@ -74,44 +70,27 @@ export function AdminDashboard() {
                 <p className="chenxing-caption mt-1.5 text-[var(--chenxing-warning)]">安全与管理操作索引</p>
               </HudPanel>
             </div>
-            <div className="grid gap-6 xl:grid-cols-3">
-              <HudPanel className="xl:col-span-1">
-                <div className="mb-4">
-                  <h2 className="chenxing-h2">管理权限</h2>
-                  <p className="chenxing-caption mt-1">每项操作仍由服务端再次校验。</p>
-                </div>
-                <div className="space-y-2">
-                  {access.data?.permissions.map((permission) => (
-                    <div key={permission} className="flex items-center justify-between rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(255,255,255,0.02)] px-4 py-3">
-                      <span className="chenxing-mono text-sm">{permission}</span>
-                      <Badge tone="success">允许</Badge>
-                    </div>
-                  ))}
-                </div>
-              </HudPanel>
-              <TablePanel
-                className="xl:col-span-2"
-                icon="activity"
-                title="最近审计"
-                description="只展示非敏感索引字段。"
-                notice={auditError ? <Notice tone="warning">{auditError}</Notice> : null}
+            <TablePanel
+              icon="activity"
+              title="最近审计"
+              description="只展示非敏感索引字段。"
+              notice={auditError ? <Notice tone="warning">{auditError}</Notice> : null}
+            >
+              <DataTable
+                minWidth={720}
+                columns={['时间', '事件', '主体', { label: '资源', align: 'right' }]}
+                empty={audits.length ? null : auditError ? '最近审计暂时不可用。' : access.data?.permissions.includes('read_audit') ? '暂无审计事件。' : '暂无审计事件或缺少 read_audit 权限'}
               >
-                <DataTable
-                  minWidth={720}
-                  columns={['时间', '事件', '主体', { label: '资源', align: 'right' }]}
-                  empty={audits.length ? null : auditError ? '最近审计暂时不可用。' : access.data?.permissions.includes('read_audit') ? '暂无审计事件。' : '暂无审计事件或缺少 read_audit 权限'}
-                >
-                  {audits.map((event, index) => (
-                    <tr key={event.id ?? `${event.created_at}-${index}`}>
-                      <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(event.created_at)}</td>
-                      <td className="chenxing-body text-sm">{event.action || '—'}</td>
-                      <td className="chenxing-body text-sm">{event.actor_type || '—'}{event.actor_id ? ` · ${event.actor_id}` : ''}</td>
-                      <td className="text-right"><span className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{event.resource_type || '—'}</span></td>
-                    </tr>
-                  ))}
-                </DataTable>
-              </TablePanel>
-            </div>
+                {audits.map((event, index) => (
+                  <tr key={event.id ?? `${event.created_at}-${index}`}>
+                    <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(event.created_at)}</td>
+                    <td className="chenxing-body text-sm">{event.action || '—'}</td>
+                    <td className="chenxing-body text-sm">{event.actor_type || '—'}{event.actor_id ? ` · ${event.actor_id}` : ''}</td>
+                    <td className="text-right"><span className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{event.resource_type || '—'}</span></td>
+                  </tr>
+                ))}
+              </DataTable>
+            </TablePanel>
           </div>
         ) : null}
       </AdminGate>

@@ -8,7 +8,7 @@ use super::{
     service::EffectivePlan,
 };
 use crate::sqlx::{PgPool, Postgres, Transaction};
-use crate::users::domain::UserId;
+use crate::users::domain::{OwnerTargetAccess, UserId};
 
 /// 串行化 `is_default` 切换的 advisory lock，与用户引导锁区分开。
 const DEFAULT_PLAN_LOCK: i64 = 7341929;
@@ -25,6 +25,7 @@ pub enum PlanRepositoryError {
 pub enum PlanAssignmentResult {
     PlanNotFound,
     UserNotFound,
+    ManageRolesRequired,
     Assigned,
 }
 
@@ -322,8 +323,25 @@ pub async fn assign_to_user(
     user_id: UserId,
     plan_id: i64,
     expires_at: Option<OffsetDateTime>,
+    access: OwnerTargetAccess,
 ) -> Result<PlanAssignmentResult, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
+    // 先锁目标用户，再判定 Owner 档位；该锁一直持有到套餐写入提交。角色晋升与
+    // 套餐改写因此不可能穿过两个独立快照（Issue #323）。目标先于套餐判定也保留
+    // 既有错误优先级：Owner 权限不足仍是 403，而不是由套餐状态泄露 404/400。
+    let role: Option<String> =
+        crate::sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let Some(role) = role else {
+        transaction.rollback().await?;
+        return Ok(PlanAssignmentResult::UserNotFound);
+    };
+    if role == "owner" && !access.permits_owner() {
+        transaction.rollback().await?;
+        return Ok(PlanAssignmentResult::ManageRolesRequired);
+    }
     lock_default_plan_set(&mut transaction).await?;
     let Some(plan) = find_for_update(&mut transaction, plan_id).await? else {
         transaction.rollback().await?;
@@ -338,6 +356,8 @@ pub async fn assign_to_user(
     .bind(expires_at)
     .execute(&mut *transaction)
     .await?;
+    // 目标行从角色判定开始一直由本事务持锁，正常路径必然更新一行；仍保留防御性
+    // 判定，避免数据库触发器或未来 SQL 改动把零行更新误报成成功。
     if result.rows_affected() != 1 {
         transaction.rollback().await?;
         return Ok(PlanAssignmentResult::UserNotFound);

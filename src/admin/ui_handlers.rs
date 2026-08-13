@@ -14,7 +14,10 @@ use crate::{
     api::extract::{AdminRead, SessionRead},
     error,
     state::AppState,
-    users::domain::{UserRole, UserStatus},
+    users::{
+        domain::{UserRole, UserStatus},
+        service::UserServiceError,
+    },
 };
 
 #[derive(Debug, Deserialize)]
@@ -80,11 +83,18 @@ struct AdminUserQueryItem {
 ///
 /// 因此保留双身份分支：系统 Token 直接视为 Owner；浏览器会话用 `Option<SessionRead>`
 /// 探测——两种凭据各自缺失都是正常输入，只有「两者都不成立」才是 401。
+/// `ADMIN_TOKEN` 为空时整个管理面关闭（Issue #348），本端点与其它管理端点一样
+/// 直接返回 403 `admin_disabled`，不进入身份探测。
 pub async fn admin_me(
     State(state): State<AppState>,
     headers: HeaderMap,
     session: Option<SessionRead>,
 ) -> Response {
+    // 与 AdminRead/AdminWrite 提取器同一 fail-closed 门槛（Issue #348）：
+    // 本端点不经过提取器，需要在这里补上。
+    if state.config.admin_token.is_empty() {
+        return error::admin_disabled();
+    }
     if is_admin_request(&state, &headers) {
         return (
             axum::http::StatusCode::OK,
@@ -104,22 +114,43 @@ pub async fn admin_me(
     if !matches!(session.role, UserRole::Admin | UserRole::Owner) {
         return error::forbidden("admin_forbidden", "administrator authorization is required");
     }
-    let Some(profile) = state
-        .users
-        .find_profile(session.user_id)
-        .await
-        .ok()
-        .flatten()
-    else {
-        return error::unauthorized("invalid_session", "user account is invalid");
+    session_admin_me_response(
+        session.role,
+        state.users.find_profile(session.user_id).await,
+    )
+}
+
+/// 把档案查询结果映射成响应。
+///
+/// 三种结果必须区分开（Issue #289）：
+///
+/// - `Ok(Some)`：正常身份。
+/// - `Ok(None)`：账号不存在或已删除，会话确实无效 → 401。
+/// - `Err`：数据库故障 → 结构化日志 + 500。把它折叠进 401 会让 DB 故障伪装成
+///   「会话无效」，排障时被误判为认证问题，前端还会因为随机 401 反复退回登录页。
+///   与 `admin_overview` / `query_users` 的 DB 错误处理保持一致。
+fn session_admin_me_response(
+    role: UserRole,
+    profile: Result<Option<crate::users::repository::UserProfile>, UserServiceError>,
+) -> Response {
+    let profile = match profile {
+        Ok(Some(profile)) => profile,
+        Ok(None) => {
+            return error::unauthorized("invalid_session", "user account is invalid");
+        }
+        Err(error_value) => {
+            // UserServiceError 的 Display 不含 SQL 或连接串，可直接入日志。
+            tracing::error!(error = %error_value, "failed to load administrator profile");
+            return error::internal();
+        }
     };
     (
         axum::http::StatusCode::OK,
         Json(AdminMeResponse {
             user_id: Some(profile.id),
             username: Some(profile.username),
-            role: session.role.as_str(),
-            permissions: permissions(session.role),
+            role: role.as_str(),
+            permissions: permissions(role),
             status: UserStatus::Active.as_str(),
         }),
     )
@@ -316,6 +347,7 @@ fn permissions(role: AdminRole) -> Vec<&'static str> {
             "manage_identity_providers",
         ),
         (AdminPermission::ManageRoles, "manage_roles"),
+        (AdminPermission::ManageAuthFactors, "manage_auth_factors"),
     ]
     .into_iter()
     .filter_map(|(permission, name)| role.allows(permission).then_some(name))
@@ -323,30 +355,5 @@ fn permissions(role: AdminRole) -> Vec<&'static str> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{AdminUserQueryItem, AdminUserQueryPlan};
-    use crate::users::domain::UserRole;
-
-    #[test]
-    fn admin_query_times_serialize_as_rfc3339() {
-        let value = serde_json::to_value(AdminUserQueryItem {
-            id: 1,
-            username: "owner".to_owned(),
-            email: "owner@example.test".to_owned(),
-            display_name: None,
-            status: "active".to_owned(),
-            role: UserRole::Owner,
-            created_at: time::OffsetDateTime::UNIX_EPOCH,
-            plan: Some(AdminUserQueryPlan {
-                id: 1,
-                code: "default".to_owned(),
-                name: "Default".to_owned(),
-                expires_at: Some(time::OffsetDateTime::UNIX_EPOCH),
-            }),
-        })
-        .expect("admin query item serializes");
-
-        assert_eq!(value["created_at"], "1970-01-01T00:00:00Z");
-        assert_eq!(value["plan"]["expires_at"], "1970-01-01T00:00:00Z");
-    }
-}
+#[path = "ui_handlers_tests.rs"]
+mod tests;

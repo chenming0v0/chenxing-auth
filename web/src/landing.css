@@ -1,0 +1,339 @@
+/* ============================================================
+   landing.css — 落地页专属动效
+   只承载主页（landing.tsx）的动画与微交互；通用面板/按钮/表单
+   样式仍在 chenxing-design.css，不要在这里复制。
+   所有循环与入场动画都在文件末尾有 reduced-motion 兜底。
+   ============================================================ */
+
+/* ---------- 首屏入场编排 ----------
+   纯 CSS 一次性动画：hero 在首屏必然可见，不需要 JS 触发。
+   各元素经 --hero-delay 内联变量错位入场，形成从上到下的一串涟漪。 */
+@keyframes cx-hero-rise {
+  from { opacity: 0; transform: translateY(28px); filter: blur(8px); }
+  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
+.cx-hero-in {
+  animation: cx-hero-rise 0.9s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: var(--hero-delay, 0ms);
+}
+
+/* ---------- hero 悬浮 logo ----------
+   右上留白处的品牌水印上下缓浮，循环动画在 reduced-motion 下停用 */
+@keyframes cx-float {
+  0%, 100% { transform: translateY(-12px); }
+  50% { transform: translateY(12px); }
+}
+.cx-float {
+  animation: cx-float 4.5s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* ---------- ghost 按钮反色填充（lamalama 式 hover 反转） ---------- */
+.cx-btn-invert {
+  transition: background 0.25s ease, border-color 0.25s ease, color 0.25s ease, transform 0.15s;
+}
+.cx-btn-invert:hover {
+  background: var(--chenxing-foreground);
+  border-color: var(--chenxing-foreground);
+  color: #04121f;
+}
+
+/* ---------- 滚动渐现 ---------- */
+.cx-reveal {
+  opacity: 0;
+  transform: translateY(30px);
+  transition:
+    opacity 0.75s ease,
+    transform 0.75s cubic-bezier(0.16, 1, 0.3, 1);
+  transition-delay: var(--reveal-delay, 0ms);
+  will-change: opacity, transform;
+}
+.cx-reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ---------- 数据横幅 ---------- */
+.cx-stat-cell {
+  transition: background 0.35s ease, box-shadow 0.35s ease;
+}
+.cx-stat-cell:hover {
+  background: rgba(13, 24, 44, 0.9);
+  box-shadow: inset 0 0 32px rgba(56, 189, 248, 0.08);
+}
+.cx-stat-value {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 卡片悬浮抬升（landing 范围内的 HudPanel 增强） ---------- */
+.cx-lift {
+  transition:
+    transform 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+    border-color 0.4s ease,
+    box-shadow 0.4s ease;
+}
+.cx-lift:hover {
+  transform: translateY(-5px);
+  border-color: rgba(103, 232, 249, 0.34);
+  box-shadow:
+    var(--chenxing-shadow-card),
+    var(--chenxing-shadow-float),
+    0 0 36px rgba(56, 189, 248, 0.13);
+}
+
+/* ---------- 授权流程的连接光束 ----------
+   桌面上横贯四张卡片背后的一根细线，一道光从左到右循环掠过，
+   呼应「授权码从应用流向中枢再回跳」的叙事。 */
+.cx-steps-line {
+  position: absolute;
+  left: 3%;
+  right: 3%;
+  top: 50%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(103, 232, 249, 0.22) 18%, rgba(103, 232, 249, 0.22) 82%, transparent);
+  overflow: hidden;
+}
+.cx-steps-line::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 120px;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(103, 232, 249, 0.9), transparent);
+  animation: cx-beam-travel 4.5s linear infinite;
+}
+@keyframes cx-beam-travel {
+  from { left: -120px; }
+  to { left: 100%; }
+}
+
+/* ---------- 平台能力图标 ---------- */
+.cx-feature-icon {
+  transition: box-shadow 0.35s ease, background 0.35s ease, color 0.35s ease, transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.cx-lift:hover .cx-feature-icon {
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: 0 0 22px rgba(103, 232, 249, 0.35);
+  transform: translateY(-2px);
+}
+
+/* ---------- hero 特性行悬停 ----------
+   整行是可悬停的选中态：行底泛起一层微白圆角矩形并向外柔散（参考站行为），
+   行内图标底座同步稍亮，指针离开后一同退场。 */
+.cx-point-row {
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+}
+.cx-point-row:hover {
+  background: rgba(255, 255, 255, 0.055);
+  box-shadow: 0 0 24px rgba(56, 189, 248, 0.22);
+}
+.cx-point-row > span:first-child {
+  transition: background 0.3s ease;
+}
+.cx-point-row:hover > span:first-child {
+  background: rgba(255, 255, 255, 0.11);
+}
+
+/* ---------- CTA 极光 ----------
+   面板内的径向青光缓慢漂移呼吸，替代原来的静态渐变。 */
+@keyframes cx-aurora-drift {
+  from { transform: translate3d(-7%, -5%, 0) scale(1); opacity: 0.85; }
+  to { transform: translate3d(7%, 6%, 0) scale(1.15); opacity: 1; }
+}
+.cx-aurora {
+  background:
+    radial-gradient(55% 90% at 30% 0%, rgba(56, 189, 248, 0.22), transparent 68%),
+    radial-gradient(45% 80% at 72% 8%, rgba(103, 232, 249, 0.14), transparent 70%);
+  animation: cx-aurora-drift 11s ease-in-out infinite alternate;
+}
+
+/* ---------- 主 CTA 扫光 ----------
+   只在 landing 的主按钮上叠加：悬停时一道高光从左扫到右。 */
+.cx-btn-shine {
+  position: relative;
+  overflow: hidden;
+}
+.cx-btn-shine::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  /* 玻璃按钮上的扫光比实心底更显眼，alpha 压到 0.22 避免一道白闪 */
+  background: linear-gradient(115deg, transparent 32%, rgba(255, 255, 255, 0.22) 50%, transparent 68%);
+  transform: translateX(-130%);
+  transition: transform 0.75s ease;
+  pointer-events: none;
+}
+.cx-btn-shine:hover::after {
+  transform: translateX(130%);
+}
+
+/* 曲速星野的径向遮罩：中心清晰、边缘化入背景 */
+.cx-warp-mask {
+  -webkit-mask-image: radial-gradient(ellipse 78% 64% at 50% 44%, black 22%, transparent 76%);
+  mask-image: radial-gradient(ellipse 78% 64% at 50% 44%, black 22%, transparent 76%);
+}
+
+/* ---------- 协议术语跑马灯 ----------
+   内容在 DOM 里渲染两遍，轨道宽度 max-content，translateX(-50%) 无缝循环；
+   整体 aria-hidden，纯装饰不进无障碍树。 */
+.cx-marquee {
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, transparent, black 10%, black 90%, transparent);
+  mask-image: linear-gradient(90deg, transparent, black 10%, black 90%, transparent);
+}
+.cx-marquee-track {
+  display: flex;
+  width: max-content;
+  animation: cx-marquee-scroll 38s linear infinite;
+}
+@keyframes cx-marquee-scroll {
+  to { transform: translateX(-50%); }
+}
+
+/* ---------- 章节镂空水印 ----------
+   段落标题背后的巨大描边英文，强化 HUD 档案感；纯装饰。 */
+.cx-section-mark {
+  position: absolute;
+  right: -0.04em;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: var(--chenxing-font-display);
+  font-weight: 700;
+  font-size: clamp(72px, 11vw, 148px);
+  letter-spacing: 0.06em;
+  line-height: 1;
+  color: transparent;
+  -webkit-text-stroke: 1px rgba(147, 197, 253, 0.12);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ---------- 开场闸门 ----------
+   整屏盖板：计数进度条 + 右下角读数，100% 后整体上滑揭示页面。 */
+.cx-intro {
+  position: fixed;
+  inset: 0;
+  z-index: var(--chenxing-z-system);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--chenxing-background);
+  transition: transform 0.78s cubic-bezier(0.76, 0, 0.24, 1);
+}
+.cx-intro.is-leaving {
+  transform: translateY(-100%);
+}
+.cx-intro-tag {
+  position: absolute;
+  top: 1.2rem;
+  left: 1.4rem;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--chenxing-muted-foreground);
+}
+.cx-intro-count {
+  font-size: clamp(3rem, 9vw, 6.5rem);
+  line-height: 1;
+  letter-spacing: -0.02em;
+  color: var(--chenxing-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.cx-intro-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 100%;
+  height: 2px;
+  transform-origin: left center;
+  background: linear-gradient(90deg, var(--chenxing-primary), var(--chenxing-cyan));
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.6);
+  transition: transform 0.1s linear;
+}
+
+/* ---------- 逐行遮罩上跳（lamalama 式行揭示） ----------
+   首屏版：配合 --hero-delay 用一次性 keyframes；滚动版：Reveal variant="mask"。 */
+.cx-mask {
+  display: block;
+  overflow: hidden;
+}
+.cx-mask-inner {
+  display: block;
+  transform: translateY(112%);
+  animation: cx-mask-up 0.85s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: var(--hero-delay, 0ms);
+}
+/* animation 是简写：本规则在 foundation 的 .chenxing-text-shimmer 之后导入，
+   同特异性会整体覆盖流光动画。叠加两个类的元素必须显式声明两条动画共存。 */
+.cx-mask-inner.chenxing-text-shimmer {
+  animation:
+    cx-mask-up 0.85s cubic-bezier(0.16, 1, 0.3, 1) both,
+    chenxing-shimmer 6s linear infinite;
+  animation-delay: var(--hero-delay, 0ms), 0s;
+}
+@keyframes cx-mask-up {
+  to { transform: translateY(0); }
+}
+.cx-mask-scroll {
+  overflow: hidden;
+}
+.cx-mask-scroll-inner {
+  transform: translateY(108%);
+  transition: transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+  transition-delay: var(--reveal-delay, 0ms);
+}
+.cx-mask-scroll.is-visible .cx-mask-scroll-inner {
+  transform: translateY(0);
+}
+
+/* ---------- 打字机 / 终端光标 ---------- */
+.cx-caret {
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 0.15em;
+  vertical-align: -0.12em;
+  background: var(--chenxing-cyan);
+  box-shadow: 0 0 8px rgba(103, 232, 249, 0.6);
+  animation: cx-caret-blink 1.1s steps(2, start) infinite;
+}
+@keyframes cx-caret-blink {
+  to { visibility: hidden; }
+}
+
+/* ---------- 分割线左→右绘制 ---------- */
+.cx-draw-line {
+  height: 1px;
+  background: linear-gradient(90deg, rgba(103, 232, 249, 0.55), rgba(245, 199, 106, 0.4) 55%, rgba(147, 197, 253, 0.12));
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 1.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.cx-draw-line.is-visible {
+  transform: scaleX(1);
+}
+
+/* ---------- reduced motion ----------
+   停掉全部循环与入场动画：元素天然状态即「可见终态」，不需要补帧。
+   cx-reveal 直接常显，JS 侧的 CountUp 也会走 usePrefersReducedMotion 落终值。 */
+/* ---------- reduced motion ----------
+   只停无限循环的装饰动画（粒子、极光、跑马灯、光标闪烁）：
+   循环动画持续吃注意力，是 reduce 的本意。一次性入场编排（hero 入场、
+   reveal、遮罩升起、划线）是短促的单次微过渡，保留——此前一刀切全灭
+   导致开系统「减少动画」的用户整站静止。JS 侧 CountUp 仍走
+   usePrefersReducedMotion 直落终值，互不影响。 */
+@media (prefers-reduced-motion: reduce) {
+  .cx-steps-line::after,
+  .cx-aurora,
+  .cx-marquee-track,
+  .cx-caret {
+    animation: none;
+  }
+  .cx-caret {
+    visibility: visible;
+  }
+  .cx-aurora {
+    transform: none;
+  }
+}

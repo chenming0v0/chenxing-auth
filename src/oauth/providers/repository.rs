@@ -4,7 +4,8 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::domain::{ClientAuthMethod, ProviderRecord, ValidatedProviderInput};
-use crate::users::domain::{UserId, UserStatus, normalize_email};
+use crate::users::domain::{UserId, UserStatus};
+use crate::users::email::EmailAddress;
 
 #[derive(Debug, Clone)]
 pub struct ExternalIdentity {
@@ -21,15 +22,22 @@ pub async fn insert_provider(
     input: &ValidatedProviderInput,
     ciphertext: Vec<u8>,
 ) -> Result<ProviderRecord, crate::sqlx::Error> {
+    // 保留墙钟（Issue #299 的明确例外）：Provider 配置行的 created_at/updated_at，
+    // 不参与任何过期判定。外部登录 State 的 TTL 走 Redis `TIME`（见 state_store）。
     let now = OffsetDateTime::now_utc();
-    crate::sqlx::query_scalar::<_, i64>(
+    // 单条 INSERT ... RETURNING 直接拿回完整行：不做「先插再查」，既消除
+    // 查询返回 None 时的 expect panic（Issue #345），也消除 INSERT 与 SELECT
+    // 之间并发删除/清理造成的时间窗，同时省一次往返。
+    let row = crate::sqlx::query_as::<_, ProviderRow>(
         "INSERT INTO oauth_providers
          (name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
           client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
           name_claim, email_verified_claim, client_auth_method, pkce_enabled,
           status, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'disabled', $15, $15)
-         RETURNING id",
+         RETURNING id, name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
+                   client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
+                   name_claim, email_verified_claim, client_auth_method, pkce_enabled, status",
     )
     .bind(&input.name)
     .bind(&input.slug)
@@ -39,18 +47,16 @@ pub async fn insert_provider(
     .bind(&input.client_id)
     .bind(ciphertext)
     .bind(serde_json::to_value(&input.scopes).expect("scopes are serializable"))
-    .bind(&input.subject_claim)
-    .bind(&input.email_claim)
-    .bind(&input.name_claim)
-    .bind(&input.email_verified_claim)
+    .bind(&input.claims.subject)
+    .bind(&input.claims.email)
+    .bind(&input.claims.name)
+    .bind(&input.claims.email_verified)
     .bind(auth_method_value(input.client_auth_method))
     .bind(input.pkce_enabled)
     .bind(now)
     .fetch_one(pool)
     .await?;
-    find_by_slug(pool, &input.slug)
-        .await
-        .map(|record| record.expect("inserted provider must be queryable"))
+    parse_provider_row(row)
 }
 
 pub async fn list_providers(pool: &PgPool) -> Result<Vec<ProviderRecord>, crate::sqlx::Error> {
@@ -104,12 +110,13 @@ pub async fn update_provider(
     .bind(&input.client_id)
     .bind(ciphertext)
     .bind(serde_json::to_value(&input.scopes).expect("scopes are serializable"))
-    .bind(&input.subject_claim)
-    .bind(&input.email_claim)
-    .bind(&input.name_claim)
-    .bind(&input.email_verified_claim)
+    .bind(&input.claims.subject)
+    .bind(&input.claims.email)
+    .bind(&input.claims.name)
+    .bind(&input.claims.email_verified)
     .bind(auth_method_value(input.client_auth_method))
     .bind(input.pkce_enabled)
+    // 保留墙钟（Issue #299 的明确例外）：配置行 updated_at。
     .bind(OffsetDateTime::now_utc())
     .execute(pool)
     .await?;
@@ -126,6 +133,7 @@ pub async fn set_status(
     )
     .bind(slug)
     .bind(status)
+    // 保留墙钟（Issue #299 的明确例外）：配置行 updated_at。
     .bind(OffsetDateTime::now_utc())
     .execute(pool)
     .await?;
@@ -164,12 +172,11 @@ pub async fn find_identity(
 pub async fn create_user_with_identity(
     pool: &PgPool,
     provider_id: i64,
-    email: &str,
+    email: &EmailAddress,
     display_name: Option<&str>,
     subject: &str,
     password_hash: &str,
 ) -> Result<UserId, CreateIdentityError> {
-    let email = normalize_email(email);
     let mut transaction = pool.begin().await?;
     crate::sqlx::query("SELECT pg_advisory_xact_lock(7341928)")
         .execute(&mut *transaction)
@@ -193,9 +200,11 @@ pub async fn create_user_with_identity(
         return Ok(user_id);
     }
 
+    // 按匹配值查重（Issue #302）：IdP 换一种书写返回同一个邮箱时，这里必须仍然
+    // 认出"已注册"，否则会绕过展示值上的 UNIQUE 建出第二个账号。
     let existing_user: Option<UserId> =
-        crate::sqlx::query_scalar("SELECT id FROM users WHERE email = $1 FOR UPDATE")
-            .bind(&email)
+        crate::sqlx::query_scalar("SELECT id FROM users WHERE canonical_email = $1 FOR UPDATE")
+            .bind(email.canonical())
             .fetch_optional(&mut *transaction)
             .await?;
     if existing_user.is_some() {
@@ -213,20 +222,24 @@ pub async fn create_user_with_identity(
     }
 
     let username = format!("oauth_{}", Uuid::new_v4().simple());
+    // 保留墙钟（Issue #299 的明确例外）：新用户与身份绑定的行创建时间。
     let now = OffsetDateTime::now_utc();
     let user_id: UserId = crate::sqlx::query_scalar(
         "INSERT INTO users
-         (username, email, password_hash, password_login_enabled, display_name, status, created_at)
-         VALUES ($1, $2, $3, FALSE, $4, 'active', $5)
+         (username, email, canonical_email, password_hash, password_login_enabled, display_name, status, created_at)
+         VALUES ($1, $2, $3, $4, FALSE, $5, 'active', $6)
          RETURNING id",
     )
     .bind(username)
-    .bind(&email)
+    .bind(email.display())
+    .bind(email.canonical())
     .bind(password_hash)
     .bind(display_name)
     .bind(now)
     .fetch_one(&mut *transaction)
     .await?;
+    // 外部身份表上的 email 是建号那一刻的展示快照，没有唯一约束也不参与匹配；
+    // 身份的唯一键是 (provider_id, subject)。
     crate::sqlx::query(
         "INSERT INTO oauth_external_identities
          (provider_id, user_id, subject, email, created_at, updated_at)
@@ -235,7 +248,7 @@ pub async fn create_user_with_identity(
     .bind(provider_id)
     .bind(user_id)
     .bind(subject)
-    .bind(&email)
+    .bind(email.display())
     .bind(now)
     .execute(&mut *transaction)
     .await?;

@@ -7,7 +7,7 @@ use super::{AuthFactorService, AuthFactorServiceError};
 use crate::{
     auth_factors::repository,
     auth_limiter::{
-        FailureDimension, LimiterDimension, MissingSourceIpPolicy,
+        AuthFailureLimiter, FailureDimension, LimiterDimension, MissingSourceIpPolicy,
         domain::{FailureRecord, commit_reserved_failure, release_reserved},
     },
     users::domain::UserId,
@@ -18,7 +18,7 @@ impl AuthFactorService {
         &self,
         user_id: UserId,
     ) -> Result<String, AuthFactorServiceError> {
-        repository::find_user_email(&self.pool, user_id)
+        repository::find_user_canonical_email(&self.pool, user_id)
             .await?
             .ok_or(AuthFactorServiceError::UserNotFound)
     }
@@ -64,7 +64,7 @@ impl AuthFactorService {
     }
 
     /// 把已预留的尝试提交为一次失败。限流后端出错时预留额度会被尽力归还，
-    /// 不会悬挂到固定窗口过期。
+    /// 不会悬挂到 pending 计数器的 TTL 过期。
     pub(super) async fn record_failure(
         &self,
         dimensions: Vec<LimiterDimension>,
@@ -84,6 +84,48 @@ impl AuthFactorService {
     pub(super) async fn release_dimensions_after_error(&self, dimensions: Vec<LimiterDimension>) {
         release_reserved(self.limiter.as_ref(), dimensions, "attempt_failed").await;
     }
+
+    pub(super) async fn release_dimensions_for_key_unavailable(
+        &self,
+        dimensions: Vec<LimiterDimension>,
+    ) {
+        release_key_unavailable(self.limiter.as_ref(), dimensions).await;
+    }
+
+    /// 账号不存在该因子时的归还路径：归还预留额度，**不记账**（#340）。
+    pub(super) async fn release_dimensions_for_missing_factor(
+        &self,
+        dimensions: Vec<LimiterDimension>,
+    ) {
+        release_factor_missing(self.limiter.as_ref(), dimensions).await;
+    }
+}
+
+/// kid 退役导致的不可验证：归还预留额度，**不记账**（#258）。
+///
+/// 这不是用户的失败尝试，而是服务端缺少密钥材料。把它计入账户或 IP 计数会让
+/// 一次运维动作把用户从「TOTP 不可用」升级为「连密码登录都被限流」，等于用限流
+/// 惩罚受害者。抽成自由函数是为了能用测试替身断言「只 release、绝不 record」。
+pub(super) async fn release_key_unavailable(
+    limiter: &dyn AuthFailureLimiter,
+    dimensions: Vec<LimiterDimension>,
+) {
+    release_reserved(limiter, dimensions, "factor_key_unavailable").await;
+}
+
+/// 账号没有 TOTP 因子时的归还：归还预留额度，**不记账**（#340）。
+///
+/// 「因子不存在」不是一次用户失败：调用方刚从 `available_methods` 看到因子，
+/// 这里却读不到，是管理员重置/删除与读取之间的竞态，或客户端仍按旧状态提交
+/// 验证码。没有因子就没有可校验的密钥，重试永远失败，不存在可爆破的目标；
+/// 把它计入账号维度会烧掉与密码失败共享的额度，10 次后连密码登录也被锁
+/// 15 分钟——等于用限流惩罚受害者（与 #258 的 kid 退役同一原则）。抽成自由
+/// 函数是为了能用测试替身断言「只 release、绝不 record」。
+pub(super) async fn release_factor_missing(
+    limiter: &dyn AuthFailureLimiter,
+    dimensions: Vec<LimiterDimension>,
+) {
+    release_reserved(limiter, dimensions, "factor_missing").await;
 }
 
 #[cfg(test)]

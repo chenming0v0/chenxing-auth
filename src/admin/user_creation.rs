@@ -154,6 +154,13 @@ pub(crate) fn user_creation_error_response(error: UserServiceError) -> Response 
             "owner_bootstrap_required",
             "owner bootstrap must be completed before creating privileged users",
         ),
+        // Issue #304：同事务审计写入失败已让业务写入回滚，什么都没发生。
+        // 503 而不是 500：这是依赖暂时不可用，重试是正确动作，且与
+        // `bootstrap_unavailable`（限流器不可用）表达同一类语义。
+        UserServiceError::AuditUnavailable => error::service_unavailable(
+            "audit_unavailable",
+            "the operation was rolled back because its audit record could not be written; retry later",
+        ),
         UserServiceError::Database(ref error_value)
             if unique_violation(error_value, "users_username_key") =>
         {
@@ -162,8 +169,13 @@ pub(crate) fn user_creation_error_response(error: UserServiceError) -> Response 
                 "username is already registered",
             )
         }
+        // 两个约束名都映射到同一个响应（Issue #302）：`users_email_key` 拦的是
+        // 展示值完全相同，`users_canonical_email_key` 拦的是书写不同但指向同一个
+        // 邮箱（大小写、Unicode/Punycode 等价形态）。对客户端而言都是"这个邮箱
+        // 已经被注册了"，区分两者只会泄露"库里已存在的那一行长什么样"。
         UserServiceError::Database(ref error_value)
-            if unique_violation(error_value, "users_email_key") =>
+            if unique_violation(error_value, "users_email_key")
+                || unique_violation(error_value, "users_canonical_email_key") =>
         {
             error::conflict("email_already_registered", "email is already registered")
         }

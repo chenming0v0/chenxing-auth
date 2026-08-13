@@ -138,8 +138,9 @@ export const ACCEPTED_UPLOAD_TYPES = ['image/png', 'image/jpeg', 'image/webp'] a
 export function rejectFileBeforeDecode(file: File): LocalRejection | undefined {
   // 按源文件预算判定，不是上传预算：裁剪后的上传体与源文件大小几乎无关。
   if (file.size > MAX_SOURCE_FILE_BYTES) return 'source_too_large'
-  // 空 type 交给解码环节判定：某些系统选文件时不填 MIME，不能据此直接拒绝。
-  if (file.type && !ACCEPTED_UPLOAD_TYPES.includes(file.type as (typeof ACCEPTED_UPLOAD_TYPES)[number])) {
+  // 空 type 一律按未知格式拒绝：浏览器解码只验证「可解码」不验证格式，type 为空时
+  // 放行会让 BMP/GIF/SVG 等文件绕过预检进入裁剪流程。
+  if (!file.type || !ACCEPTED_UPLOAD_TYPES.includes(file.type as (typeof ACCEPTED_UPLOAD_TYPES)[number])) {
     return 'unsupported_format'
   }
   return undefined

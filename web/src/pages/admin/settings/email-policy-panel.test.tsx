@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { EmailPolicySetting } from '../../../api'
+import { installCsrfCookie } from '../../../test/csrf-cookie'
 import { EmailPolicyPanel } from './email-policy-panel'
+
+// 保存走 PUT /api/v1/admin/settings/email-policy 的 apiFetch，需要 CSRF cookie 才能发出。
+installCsrfCookie()
 
 type CapturedRequest = { method: string; body?: Record<string, unknown> }
 
@@ -45,7 +49,7 @@ afterEach(() => {
 })
 
 async function renderPanel() {
-  render(<EmailPolicyPanel onMessage={vi.fn()} />)
+  render(<EmailPolicyPanel onMessage={vi.fn()} onDirtyChange={() => {}} />)
   await screen.findByText('corp.example')
 }
 
@@ -108,7 +112,7 @@ describe('EmailPolicyPanel 域名输入', () => {
   it('白名单启用但列表为空时显示原因并阻止保存', async () => {
     policy.allowed_domains = []
     const onMessage = vi.fn()
-    render(<EmailPolicyPanel onMessage={onMessage} />)
+    render(<EmailPolicyPanel onMessage={onMessage} onDirtyChange={() => {}} />)
     await screen.findByText('白名单已启用但允许域名列表为空，无法保存。请至少添加一个域名，或关闭白名单。')
     save()
 

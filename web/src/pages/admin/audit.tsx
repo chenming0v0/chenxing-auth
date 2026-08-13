@@ -76,7 +76,7 @@ function AuditTable() {
       <DataTable
         minWidth={860}
         columns={['时间', '动作', '资源', '执行者']}
-        empty={result?.items.length ? null : result ? '暂无审计事件' : '正在加载审计事件'}
+        empty={result?.items.length ? null : result ? '暂无审计事件' : error ? null : '正在加载审计事件'}
       >
         {result?.items.map((event, index) => (
           <tr key={event.id ?? `${event.created_at}-${index}`}>

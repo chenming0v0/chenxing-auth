@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use redis::{AsyncCommands, Script};
 use std::fmt;
 use time::OffsetDateTime;
@@ -7,9 +5,31 @@ use time::OffsetDateTime;
 use super::store::{SessionStore, SessionStoreError};
 use crate::users::domain::UserId;
 
+#[path = "outbox_retention.rs"]
+mod retention;
+
+pub use retention::{OutboxCleanup, SessionOutboxPolicy};
+
 const OUTBOX_LEASE: time::Duration = time::Duration::minutes(5);
 const CONDITIONAL_SESSION_SET: &str = "local marker = redis.call('GET', KEYS[1])\nif marker and tonumber(marker) > tonumber(ARGV[1]) then return 0 end\nredis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])\nreturn 1";
-const ADVANCE_REVOCATION_EPOCH: &str = "local current = redis.call('GET', KEYS[1])\nif not current or tonumber(current) < tonumber(ARGV[1]) then redis.call('SET', KEYS[1], ARGV[1]) end\nreturn 1";
+/// 用户级撤销水位单调前进，并始终带上过期时间。
+///
+/// `ARGV[2]` 是水位 TTL（秒），取绝对 Session TTL。水位只需覆盖"可能被它拦截的
+/// 会话键"的存活窗口：会话键 TTL 同样被绝对 Session TTL 封顶，且写入时刻不晚于
+/// 本次水位写入时刻，所以旧会话不可能活到水位过期之后。
+///
+/// 值不前进时也要刷新 TTL：重复投递、乱序重试和升级前留下的无 TTL 老键都会走到
+/// 这条分支，只有在这里补 `EXPIRE` 才能让它们最终被回收。刷新只延长、不缩短，
+/// `TTL` 返回的 -1（无过期）天然小于目标值，不需要单独判断。
+const ADVANCE_REVOCATION_EPOCH: &str = r#"
+local current = redis.call('GET', KEYS[1])
+if not current or tonumber(current) < tonumber(ARGV[1]) then
+    redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+elseif redis.call('TTL', KEYS[1]) < tonumber(ARGV[2]) then
+    redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return 1
+"#;
 
 type ClaimedOutboxRow = (
     i64,
@@ -20,14 +40,7 @@ type ClaimedOutboxRow = (
     i32,
     i64,
 );
-type SessionProjectionRow = (
-    Option<Vec<u8>>,
-    bool,
-    OffsetDateTime,
-    OffsetDateTime,
-    i64,
-    UserId,
-);
+type SessionProjectionRow = (Option<Vec<u8>>, bool, i64, OffsetDateTime, i64, UserId);
 
 struct OutboxEntry {
     id: i64,
@@ -35,6 +48,7 @@ struct OutboxEntry {
     session_id: Option<i64>,
     user_id: Option<UserId>,
     token_hash: Option<Vec<u8>>,
+    /// 领取时自增后的尝试次数，从 1 开始。dead-letter 判定直接比较这个值。
     attempts: i32,
     generation: i64,
 }
@@ -62,9 +76,13 @@ impl SessionStore {
         while let Some(entry) = self.claim_outbox(pool).await? {
             match self.apply_outbox(pool, &entry).await {
                 Ok(()) => {
+                    // `dead_lettered_at = NULL` 处理一种租约边界情况：另一个实例
+                    // 的租约到期后本实例重新领取了同一行，而那个实例随后判定它
+                    // 用尽预算并写了 dead-letter。投递确实成功了，终态必须收敛到
+                    // processed；CHECK 约束也不允许两个终态时间戳同时非空。
                     crate::sqlx::query(
                         "UPDATE session_outbox
-                         SET processed_at = NOW(), last_error = NULL
+                         SET processed_at = NOW(), dead_lettered_at = NULL, last_error = NULL
                          WHERE id = $1",
                     )
                     .bind(entry.id)
@@ -73,39 +91,12 @@ impl SessionStore {
                     processed += 1;
                 }
                 Err(error_value) => {
-                    let delay_seconds = 2_i64
-                        .saturating_pow(entry.attempts.saturating_sub(1) as u32)
-                        .min(300);
-                    crate::sqlx::query(
-                        "UPDATE session_outbox
-                         SET available_at = NOW() + $2, last_error = $3
-                         WHERE id = $1",
-                    )
-                    .bind(entry.id)
-                    .bind(time::Duration::seconds(delay_seconds))
-                    .bind(error_value.to_string())
-                    .execute(pool)
-                    .await?;
-                    tracing::error!(
-                        outbox_id = entry.id,
-                        operation = %entry.operation,
-                        attempts = entry.attempts,
-                        error = %error_value,
-                        "session Redis projection failed; retry scheduled"
-                    );
+                    self.record_delivery_failure(pool, &entry, &error_value)
+                        .await?;
                 }
             }
         }
         Ok(processed)
-    }
-
-    pub async fn run_outbox_worker(self) {
-        loop {
-            if let Err(error_value) = self.process_pending_outbox().await {
-                tracing::error!(error = %error_value, "session outbox worker failed");
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
     }
 
     async fn claim_outbox(
@@ -113,11 +104,16 @@ impl SessionStore {
         pool: &crate::sqlx::PgPool,
     ) -> Result<Option<OutboxEntry>, SessionStoreError> {
         let mut transaction = pool.begin().await?;
+        // dead-letter 行被排除在领取之外，这是"不再无限重试"的实际执行点：
+        // `session_outbox_pending_idx` 的部分条件与这里的 WHERE 一致，坏行既不在
+        // 索引里，也不会被扫到。
         let row: Option<ClaimedOutboxRow> = crate::sqlx::query_as(
             "WITH next AS (
                  SELECT id
                  FROM session_outbox
-                 WHERE processed_at IS NULL AND available_at <= NOW()
+                 WHERE processed_at IS NULL
+                   AND dead_lettered_at IS NULL
+                   AND available_at <= NOW()
                  ORDER BY id
                  LIMIT 1
                  FOR UPDATE SKIP LOCKED
@@ -170,10 +166,10 @@ impl SessionStore {
                                     AND sessions.last_seen_at + $2 > NOW()
                                     AND sessions.session_epoch >= users.session_epoch
                                     AND users.status = 'active',
-                                LEAST(
+                                EXTRACT(EPOCH FROM LEAST(
                                     sessions.expires_at,
                                     sessions.last_seen_at + $2
-                                ),
+                                ) - NOW())::bigint,
                                 sessions.last_seen_at,
                                 sessions.session_epoch, sessions.user_id
                          FROM user_sessions AS sessions
@@ -185,21 +181,30 @@ impl SessionStore {
                 .bind(self.idle_timeout_interval())
                 .fetch_optional(&mut *transaction)
                 .await?;
-                let Some((payload, active, expires_at, last_seen_at, generation, user_id)) = row
+                let Some((payload, active, remaining_seconds, last_seen_at, generation, user_id)) =
+                    row
                 else {
                     let _: usize = connection.del(self.key_hash(token_hash)).await?;
                     transaction.commit().await?;
                     return Ok(());
                 };
-                if !active {
-                    let _: usize = connection.del(self.key_hash(token_hash)).await?;
-                    transaction.commit().await?;
-                    return Ok(());
-                }
-                let Some(payload) = payload else {
-                    let _: usize = connection.del(self.key_hash(token_hash)).await?;
-                    transaction.commit().await?;
-                    return Ok(());
+                let payload = match (active, payload) {
+                    // PostgreSQL is authoritative for lifecycle state. Never preserve a
+                    // fallback payload after revocation, expiry, idle timeout, epoch
+                    // revocation, or user disablement.
+                    (false, _) => {
+                        let _: usize = connection.del(self.key_hash(token_hash)).await?;
+                        transaction.commit().await?;
+                        return Ok(());
+                    }
+                    // During payload migration an active row can legitimately have no
+                    // PostgreSQL payload. Redis is then the only payload source used by
+                    // `find_with_metadata`; a sync event must leave that fallback intact.
+                    (true, None) => {
+                        transaction.commit().await?;
+                        return Ok(());
+                    }
+                    (true, Some(payload)) => payload,
                 };
                 // 始终重新加密投影：旧密钥写入的载荷在迁移期仍可读，且明文不落入 Redis。
                 // 解析后重新序列化会把升级前载荷中的明文 token 剥离，同时把权威
@@ -211,9 +216,14 @@ impl SessionStore {
                 };
                 stored_payload.last_seen_at = Some(last_seen_at);
                 let payload = self.encrypt_payload(&serde_json::to_vec(&stored_payload)?)?;
-                let ttl = (expires_at - OffsetDateTime::now_utc())
-                    .whole_seconds()
-                    .max(1) as u64;
+                // 投影 TTL 同样被撤销水位 TTL 封顶：水位在撤销时刻带 `EX` 写入，
+                // 只有会话键活得不比水位久，旧会话才不可能在水位过期后被放行。
+                //
+                // `remaining_seconds` 由 SQL 用数据库事务时间 `NOW()` 直接算出，
+                // 与上面 `active` 判定同源，不再混入进程时钟：进程钟领先会让
+                // TTL 被压到 1 秒、投影立即消失，落后则会让投影超期存活。
+                let seconds = remaining_seconds.max(1) as u64;
+                let ttl = seconds.min(self.revocation_ttl_seconds());
                 let _: i64 = Script::new(CONDITIONAL_SESSION_SET)
                     .key(self.revocation_key(&user_id.to_string()))
                     .key(self.key_hash(token_hash))
@@ -252,6 +262,7 @@ impl SessionStore {
                 let _: i64 = Script::new(ADVANCE_REVOCATION_EPOCH)
                     .key(self.revocation_key(&user_id.to_string()))
                     .arg(entry.generation)
+                    .arg(self.revocation_ttl_seconds())
                     .invoke_async(&mut connection)
                     .await?;
             }

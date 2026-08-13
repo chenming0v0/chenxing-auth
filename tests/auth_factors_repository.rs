@@ -47,8 +47,8 @@ async fn totp_factor_round_trip_returns_ciphertext_only() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let user_id: i64 = chenxing_auth::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, status, created_at)
-         VALUES ($1, $2, $3, 'active', NOW())
+        "INSERT INTO users (username, email, canonical_email, password_hash, status, created_at)
+         VALUES ($1, $2, lower($2), $3, 'active', NOW())
          RETURNING id",
     )
     .bind(format!("factor-{suffix}"))
@@ -74,21 +74,35 @@ async fn totp_factor_round_trip_returns_ciphertext_only() {
             .expect("list factor methods"),
         vec!["totp".to_owned()]
     );
-    assert!(
+    assert_eq!(
         repository::update_totp_factor_if_current(&pool, user_id, &encrypted, &[9, 8, 7])
             .await
-            .expect("conditional TOTP update")
+            .expect("conditional TOTP update"),
+        repository::TotpCasUpdateOutcome::Updated
     );
-    assert!(
-        !repository::update_totp_factor_if_current(&pool, user_id, &encrypted, &[6, 5, 4])
+    assert_eq!(
+        repository::update_totp_factor_if_current(&pool, user_id, &encrypted, &[6, 5, 4])
             .await
-            .expect("stale conditional TOTP update")
+            .expect("stale conditional TOTP update"),
+        repository::TotpCasUpdateOutcome::Superseded
     );
     assert_eq!(
         repository::find_totp_secret(&pool, user_id)
             .await
             .expect("find migrated TOTP factor"),
         Some(vec![9, 8, 7])
+    );
+    // #360：CAS 未命中必须能区分「行还在但密文已换」与「因子已被重置/删除」。
+    assert!(
+        repository::delete_totp_factor(&pool, user_id)
+            .await
+            .expect("delete TOTP factor")
+    );
+    assert_eq!(
+        repository::update_totp_factor_if_current(&pool, user_id, &[9, 8, 7], &[5, 5, 5])
+            .await
+            .expect("CAS against deleted factor"),
+        repository::TotpCasUpdateOutcome::Missing
     );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
@@ -99,13 +113,13 @@ async fn totp_factor_round_trip_returns_ciphertext_only() {
 }
 
 #[tokio::test]
-async fn passkey_insert_is_idempotent_and_rejects_cross_user_collisions() {
+async fn passkey_first_factor_insert_rejects_repeat_and_cross_user_collisions() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let user_ids: Vec<i64> = chenxing_auth::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, status, created_at)
-         VALUES ($1, $2, 'test-hash', 'active', NOW()),
-                ($3, $4, 'test-hash', 'active', NOW())
+        "INSERT INTO users (username, email, canonical_email, password_hash, status, created_at)
+         VALUES ($1, $2, lower($2), 'test-hash', 'active', NOW()),
+                ($3, $4, lower($4), 'test-hash', 'active', NOW())
          RETURNING id",
     )
     .bind(format!("passkey-{suffix}-a"))
@@ -119,16 +133,17 @@ async fn passkey_insert_is_idempotent_and_rejects_cross_user_collisions() {
     let passkey = test_passkey(&credential_id);
 
     assert_eq!(
-        repository::insert_passkey(&pool, user_ids[0], &credential_id, &passkey)
+        repository::insert_passkey_if_empty(&pool, user_ids[0], &credential_id, &passkey)
             .await
             .expect("insert passkey"),
         repository::PasskeyPersistenceResult::Stored
     );
+    // 账号已有首因子，重复注册被 if_empty 守卫拒绝；行数不变，幂等性由数据库保证。
     assert_eq!(
-        repository::insert_passkey(&pool, user_ids[0], &credential_id, &passkey)
+        repository::insert_passkey_if_empty(&pool, user_ids[0], &credential_id, &passkey)
             .await
             .expect("repeat passkey insert"),
-        repository::PasskeyPersistenceResult::Stored
+        repository::PasskeyPersistenceResult::Conflict
     );
     let stored = repository::list_passkeys(&pool, user_ids[0])
         .await
@@ -146,11 +161,19 @@ async fn passkey_insert_is_idempotent_and_rejects_cross_user_collisions() {
         .expect("count passkeys"),
         1
     );
+    // 另一个账号无首因子，但 credential_id 唯一约束触发 DO NOTHING，同样拒绝。
     assert_eq!(
-        repository::insert_passkey(&pool, user_ids[1], &credential_id, &passkey)
+        repository::insert_passkey_if_empty(&pool, user_ids[1], &credential_id, &passkey)
             .await
             .expect("cross-user collision result"),
         repository::PasskeyPersistenceResult::Conflict
+    );
+    assert!(
+        repository::list_passkeys(&pool, user_ids[1])
+            .await
+            .expect("list second user passkeys")
+            .is_empty(),
+        "colliding credential must not be stored for the second user"
     );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = ANY($1)")
@@ -165,8 +188,8 @@ async fn first_factor_race_allows_only_one_factor_type_to_win() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple();
     let user_id: i64 = chenxing_auth::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, status, created_at)
-         VALUES ($1, $2, 'test-hash', 'active', NOW())
+        "INSERT INTO users (username, email, canonical_email, password_hash, status, created_at)
+         VALUES ($1, $2, lower($2), 'test-hash', 'active', NOW())
          RETURNING id",
     )
     .bind(format!("first-factor-{suffix}"))

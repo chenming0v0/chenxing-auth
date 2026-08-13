@@ -131,6 +131,9 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
         response.status(),
         StatusCode::CREATED | StatusCode::CONFLICT
     ));
+    // bootstrap 会把 users 序列重置回 1，必须重新施加用户 ID 偏移，否则注册
+    // 用户拿到小号 ID，TOTP 时间步 claim 键在共享 Redis 上跨测试碰撞（#301）。
+    db_isolation::isolate_user_ids(&database, "browser_flow").await;
 
     let email = format!("browser-{suffix}@example.com");
     let username = format!("browser-{suffix}");

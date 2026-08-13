@@ -105,20 +105,6 @@ export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarP
     }
   }
 
-  async function remove() {
-    if (!window.confirm('确认移除当前头像吗？移除后将显示名称首字母。')) return
-    setBusy(true)
-    try {
-      await apiFetch<UserMe>('/api/v1/auth/me/avatar', { method: 'DELETE' })
-      await refresh()
-      onMessage('头像已移除。', 'success')
-    } catch (error) {
-      onMessage(error instanceof Error ? error.message : '头像移除失败。', 'warning')
-    } finally {
-      setBusy(false)
-    }
-  }
-
   return (
     <div className="flex shrink-0 flex-col items-center gap-2">
       <div className="relative">
@@ -146,11 +132,6 @@ export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarP
           onChange={(event) => void onPick(event)}
         />
       </div>
-      {user?.avatar_updated_at ? (
-        <Button variant="ghost" className="!px-2 !py-1 !text-[11px]" onClick={() => void remove()} disabled={busy}>
-          移除头像
-        </Button>
-      ) : null}
       {loaded ? (
         <AvatarEditor
           image={loaded.image}

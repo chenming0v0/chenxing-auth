@@ -1,13 +1,65 @@
-import { useEffect, useLayoutEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
-import { apiFetch, type AuthorizationDecisionResponse, type PendingAuthorization } from '../api'
+import {
+  ApiError,
+  apiFetch,
+  loadAuthorizationRequest,
+  loginRecoveryTarget,
+  type AuthorizationDecisionResponse,
+  type PendingAuthorization,
+} from '../api'
 import { OAuthShell } from '../components/shells'
 import { BrandMark, HudPanel, Icon, Notice } from '../components/ui'
 import { initialOf } from '../data'
 
 function useRequestId(): string | null {
   return new URLSearchParams(useLocation().search).get('request_id')
+}
+
+/**
+ * 读取待授权请求，并把「会话不再有效」收敛成一次带 `request_id` 的登录跳转。
+ *
+ * `loadAuthorizationRequest` 已经先绑后读，因此走到 401 说明浏览器当前确实没有
+ * 可用会话（而不是绑定指向了旧会话）。此时必须带上 `request_id` 去登录页，
+ * 登录页登录成功后才能重新绑定并回到确认页；丢掉它就会在登录页与确认页之间
+ * 无限打转（#270）。
+ *
+ * 请求态（pending/message）在 requestId 变化时不会自动清空，调用方必须用
+ * `key={requestId}` 重挂载消费组件（#330）：否则旧请求的同意信息会在新请求
+ * 加载期间继续展示，用户看到的是 A、实际批准的是 B（consent spoofing）。
+ */
+function usePendingAuthorization(requestId: string | null): {
+  pending: PendingAuthorization | null
+  message: string
+  setMessage: (message: string) => void
+} {
+  const navigate = useNavigate()
+  const [pending, setPending] = useState<PendingAuthorization | null>(null)
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    if (!requestId) {
+      setMessage('授权请求缺少 request_id，请重新发起。')
+      return
+    }
+    let active = true
+    void loadAuthorizationRequest(requestId)
+      .then((value) => { if (active) setPending(value) })
+      .catch((reason: unknown) => {
+        if (!active) return
+        if (reason instanceof ApiError && reason.status === 401) {
+          // 会话失效是守卫性重定向（#326）：replace 当前条目，避免后退键
+          // 回到 401 页面再次触发跳转，形成「登录页 ↔ 确认页」历史陷阱。
+          navigate(loginRecoveryTarget(window.location.pathname, window.location.search), { replace: true })
+          return
+        }
+        setMessage(reason instanceof Error ? reason.message : '授权请求已失效。')
+      })
+    return () => { active = false }
+  }, [navigate, requestId])
+
+  return { pending, message, setMessage }
 }
 
 function appMark(name?: string) {
@@ -50,23 +102,17 @@ function scopeMeta(scope: string): { title: string; desc: string } {
 }
 
 export function OAuthAccountPage() {
-  const navigate = useNavigate()
   const requestId = useRequestId()
-  const { user } = useAuth()
-  const [pending, setPending] = useState<PendingAuthorization | null>(null)
-  const [message, setMessage] = useState('')
+  // #330：requestId 变化时以 key 强制重挂载内层组件，pending/message 等请求态
+  // 随旧实例一起销毁，杜绝旧请求的同意信息泄露到新请求（consent spoofing）。
+  // 重挂载发生在 render 阶段，新请求加载完成前页面不会出现任何旧请求的数据。
+  return <OAuthAccountContent key={requestId ?? 'no-request'} requestId={requestId} />
+}
 
-  useEffect(() => {
-    if (!requestId) {
-      setMessage('授权请求缺少 request_id，请重新发起。')
-      return
-    }
-    let active = true
-    void apiFetch<PendingAuthorization>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}`)
-      .then((value) => { if (active) setPending(value) })
-      .catch((reason: unknown) => { if (active) setMessage(reason instanceof Error ? reason.message : '授权请求已失效。') })
-    return () => { active = false }
-  }, [requestId])
+function OAuthAccountContent({ requestId }: { requestId: string | null }) {
+  const navigate = useNavigate()
+  const { user } = useAuth()
+  const { pending, message } = usePendingAuthorization(requestId)
 
   return (
     <OAuthShell>
@@ -128,32 +174,40 @@ export function OAuthAccountPage() {
 
 export function OAuthConsentPage() {
   const requestId = useRequestId()
+  // #330：与 OAuthAccountPage 同理，requestId 变化时重挂载内层组件，让
+  // pending/message/submitting 与进行中的 decide 一并随旧实例销毁；否则旧请求
+  // 的同意信息会在新请求加载期间继续展示（consent spoofing），且 A 上的
+  // submitting 会永久禁用 B 的按钮。
+  return <OAuthConsentContent key={requestId ?? 'no-request'} requestId={requestId} />
+}
+
+function OAuthConsentContent({ requestId }: { requestId: string | null }) {
   const { user } = useAuth()
-  const [pending, setPending] = useState<PendingAuthorization | null>(null)
-  const [message, setMessage] = useState('')
+  const { pending, message, setMessage } = usePendingAuthorization(requestId)
   const [submitting, setSubmitting] = useState(false)
+  // #406：持有进行中的决策请求；组件卸载时 abort，让 fetch 挂起的 resolve/reject
+  // 不再继续执行 scrubLocationQuery / window.location.assign，避免覆盖用户主动
+  // 发起的导航，也避免对已卸载组件调用 setMessage / setSubmitting（错误信息丢失）。
+  const decideAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
-    if (!requestId) {
-      setMessage('授权请求缺少 request_id，请重新发起。')
-      return
-    }
-    let active = true
-    void apiFetch<PendingAuthorization>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}`)
-      .then((value) => { if (active) setPending(value) })
-      .catch((reason: unknown) => { if (active) setMessage(reason instanceof Error ? reason.message : '授权请求已失效。') })
-    return () => { active = false }
-  }, [requestId])
+    return () => { decideAbortRef.current?.abort() }
+  }, [])
 
   async function decide(decision: 'approve' | 'deny') {
     if (!requestId || submitting) return
     setMessage('')
     setSubmitting(true)
+    const controller = new AbortController()
+    decideAbortRef.current = controller
     try {
       const response = await apiFetch<AuthorizationDecisionResponse>(`/api/v1/oauth/authorize/requests/${encodeURIComponent(requestId)}`, {
         method: 'POST',
         body: JSON.stringify({ decision }),
+        signal: controller.signal,
       })
+      // 卸载若发生在 fetch resolve 与导航之间，signal 已被 abort，此窗口内必须放弃全部副作用
+      if (controller.signal.aborted) return
       const target = safeRedirectTarget(response.redirect_to)
       if (!target) {
         setMessage('授权跳转地址无效，已阻止本次跳转，请重新发起授权。')
@@ -165,6 +219,7 @@ export function OAuthConsentPage() {
       scrubLocationQuery()
       window.location.assign(target)
     } catch (error) {
+      if (controller.signal.aborted) return
       setMessage(error instanceof Error ? error.message : '授权请求处理失败。')
       setSubmitting(false)
     }

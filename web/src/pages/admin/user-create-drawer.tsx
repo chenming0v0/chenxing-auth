@@ -59,12 +59,32 @@ function charCount(value: string): number {
   return Array.from(value).length
 }
 
-/** 与服务端 is_valid_email 同构：单个 @、两侧非空、域名含点、整体无空白。 */
+/* 邮箱校验对齐服务端 src/users/email.rs 的 EmailAddress::parse 里能用纯 JS 完整复刻的
+   结构规则：恰好一个 @、本地部分非空、全串无空白与控制字符、总长 ≤254；域名必须含点，
+   每个标签 1..=63 个字符、总长 ≤253（首尾点与连续点都是空标签），且不含 WHATWG
+   forbidden domain code points（对应服务端的 AsciiDenyList::URL）。
+   IDNA 规范化与 Punycode 合法性（Unicode 域名的映射、编码后的长度上限）需要 idna
+   实现，前端不复刻——这里只是结构预检，服务端仍是唯一判定方。 */
+const MAX_EMAIL_LENGTH = 254
+const MAX_DOMAIN_LENGTH = 253
+const MAX_LABEL_LENGTH = 63
+/** AsciiDenyList::URL 拒绝的 ASCII 集合中，空白与控制字符已在上方整体拦掉，剩下的在此列。 */
+const FORBIDDEN_DOMAIN_CHARS = new Set(['#', '%', '/', ':', '<', '>', '?', '@', '[', '\\', ']', '^', '{', '|', '}'])
+
 function looksLikeEmail(value: string): boolean {
-  const parts = value.split('@')
-  if (parts.length !== 2) return false
-  const [local, domain] = parts
-  return local.length > 0 && domain.length > 0 && domain.includes('.') && !/\s/.test(value)
+  if (charCount(value) > MAX_EMAIL_LENGTH) return false
+  // 空白与控制字符在邮箱里没有合法位置，与服务端 ForbiddenCharacter 判定一致。
+  if (/[\p{Cc}\s]/u.test(value)) return false
+  const at = value.indexOf('@')
+  if (at <= 0 || at !== value.lastIndexOf('@')) return false
+  const domain = value.slice(at + 1)
+  if (domain.length === 0 || charCount(domain) > MAX_DOMAIN_LENGTH) return false
+  // 域名至少一个点，且每个标签 1..=63 个字符：`a@b.`、`a@.b`、`a@b..c`
+  // 都会在标签拆分时出现空标签或缺点而被拒。
+  const labels = domain.split('.')
+  if (labels.length < 2) return false
+  if (labels.some((label) => label === '' || charCount(label) > MAX_LABEL_LENGTH)) return false
+  return ![...domain].some((character) => FORBIDDEN_DOMAIN_CHARS.has(character))
 }
 
 function validate(form: FormState): FieldErrors {

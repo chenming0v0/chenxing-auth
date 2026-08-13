@@ -1,8 +1,13 @@
-//! 同意撤销的持久性集成测试（Issue #64 / #65）。
+//! 同意撤销的持久性与写入交错集成测试（Issue #64 / #65 / #276）。
 //!
-//! 核心回归：**Redis 被清空后撤销必须仍然生效**。撤销前的实现把撤销标记只写在
-//! Redis 里，一次 FLUSH、无持久化的重启或故障转移到落后副本就会让标记消失，
-//! 已撤销的 refresh token 重新可用。
+//! 两条核心回归：
+//! 1. **Redis 被清空后撤销必须仍然生效**（#64 / #65）。撤销前的实现把撤销标记
+//!    只写在 Redis 里，一次 FLUSH、无持久化的重启或故障转移到落后副本就会让
+//!    标记消失，已撤销的 refresh token 重新可用。
+//! 2. **陈旧缓存不得否决数据库已重新授权的状态**（#276）。撤销与重新授权各自
+//!    「先写 DB，再写 Redis」，两条链路交错时 Redis 的写入顺序可以与 DB 的提交
+//!    顺序相反；迟到的撤销写入会留下与 `revoked_at IS NULL` 矛盾的标记，
+//!    而读路径命中缓存直接短路，refresh / userinfo 被持续拒绝。
 //!
 //! 需要 PostgreSQL 和 Redis：连接串取自 `DATABASE_URL` / `REDIS_URL`，
 //! 与 `tests/integration_storage.rs` 保持一致。
@@ -20,11 +25,21 @@ use chenxing_auth::{
     consents::ConsentService,
     oauth::revocation::TokenRevocationStore,
     users::{
-        credentials::hash_password, domain::ValidatedRegistration, repository as user_repository,
+        credentials::hash_password, domain::ValidatedRegistration, email::EmailAddress,
+        repository as user_repository,
     },
 };
 use redis::AsyncCommands;
 use uuid::Uuid;
+
+/// 测试夹具的邮箱构造。
+///
+/// `ValidatedRegistration.email` 是 `EmailAddress`（Issue #302），构造它必须经过
+/// 唯一的规范化入口——夹具也不例外，否则测试会绕开被测的那条规则。
+fn email_address(raw: impl AsRef<str>) -> EmailAddress {
+    let raw = raw.as_ref();
+    EmailAddress::parse(raw).unwrap_or_else(|error| panic!("fixture email {raw:?}: {error}"))
+}
 
 async fn database() -> chenxing_auth::sqlx::PgPool {
     let database_url = env::var("DATABASE_URL")
@@ -46,7 +61,7 @@ async fn seed_user_and_client(
         pool,
         ValidatedRegistration {
             username: format!("consent-user-{suffix}"),
-            email: format!("consent-{suffix}@example.com"),
+            email: email_address(format!("consent-{suffix}@example.com")),
             password: "correct horse battery".to_owned(),
             display_name: Some("Consent User".to_owned()),
         },
@@ -111,6 +126,7 @@ async fn revoking_consent_persists_revoked_at_in_postgres() {
             .revoke_for_user(user_id, &client_id)
             .await
             .expect("revoke consent")
+            .is_some()
     );
 
     // Issue #64：撤销事实必须持久化在数据库，而不只是 Redis 里的一个键
@@ -141,17 +157,18 @@ async fn revocation_survives_a_full_redis_flush() {
             .expect("check before revoke")
     );
 
-    // 按生产路径撤销：先写权威库，再失效缓存
-    assert!(
-        consents
-            .revoke_for_user(user_id, &client_id)
-            .await
-            .expect("revoke consent")
-    );
-    revocations
-        .revoke_consent(&user_key, &client_id)
+    // 按生产路径撤销：先写权威库，再带着这次撤销的版本号失效缓存
+    let revoked_version = consents
+        .revoke_for_user(user_id, &client_id)
         .await
-        .expect("cache revocation");
+        .expect("revoke consent")
+        .expect("revoke produces a state version");
+    assert!(
+        revocations
+            .revoke_consent(&user_key, &client_id, revoked_version)
+            .await
+            .expect("cache revocation")
+    );
     assert!(
         revocations
             .is_consent_revoked(&user_key, &client_id)
@@ -162,7 +179,7 @@ async fn revocation_survives_a_full_redis_flush() {
     // 模拟 Redis 丢数据：只删掉这一对的缓存键，等价于 FLUSH / 无持久化重启 /
     // 故障转移到落后副本的效果，但不影响并发执行的其他测试。
     revocations
-        .clear_consent(&user_key, &client_id)
+        .forget_consent_cache(&user_key, &client_id)
         .await
         .expect("simulate redis data loss");
 
@@ -180,11 +197,15 @@ async fn revocation_survives_a_full_redis_flush() {
         .get_multiplexed_async_connection()
         .await
         .expect("redis connection");
-    let cached: bool = connection
-        .exists(consent_cache_key(&user_key, &client_id))
+    let cached: Option<String> = connection
+        .get(consent_cache_key(&user_key, &client_id))
         .await
         .expect("read cache key");
-    assert!(cached, "authoritative lookup must back-fill the cache");
+    assert_eq!(
+        cached.as_deref(),
+        Some(format!("{revoked_version}:r").as_str()),
+        "authoritative lookup must back-fill the cache with the DB state version"
+    );
 }
 
 #[tokio::test]
@@ -200,12 +221,13 @@ async fn cache_only_store_loses_revocation_after_redis_flush() {
         .save(user_id, &client_id, &["openid".to_owned()])
         .await
         .expect("save consent");
-    consents
+    let revoked_version = consents
         .revoke_for_user(user_id, &client_id)
         .await
-        .expect("revoke consent");
+        .expect("revoke consent")
+        .expect("revoke produces a state version");
     revocations
-        .revoke_consent(&user_key, &client_id)
+        .revoke_consent(&user_key, &client_id, revoked_version)
         .await
         .expect("cache revocation");
     assert!(
@@ -216,7 +238,7 @@ async fn cache_only_store_loses_revocation_after_redis_flush() {
     );
 
     revocations
-        .clear_consent(&user_key, &client_id)
+        .forget_consent_cache(&user_key, &client_id)
         .await
         .expect("simulate redis data loss");
 
@@ -327,30 +349,278 @@ async fn revoking_twice_is_idempotent_and_keeps_the_first_timestamp() {
         .save(user_id, &client_id, &["openid".to_owned()])
         .await
         .expect("save consent");
-    assert!(
-        consents
-            .revoke_for_user(user_id, &client_id)
-            .await
-            .expect("first revoke")
-    );
+    let first_version = consents
+        .revoke_for_user(user_id, &client_id)
+        .await
+        .expect("first revoke")
+        .expect("first revoke produces a version");
     let first = revoked_at(&pool, user_id, &client_id)
         .await
         .expect("first revoked_at");
 
-    // 第二次没有生效授权可撤销 -> false，handler 幂等返回 204
-    assert!(
-        !consents
+    // 第二次没有生效授权可撤销 -> None，handler 幂等返回 204
+    assert_eq!(
+        consents
             .revoke_for_user(user_id, &client_id)
             .await
-            .expect("second revoke")
+            .expect("second revoke"),
+        None
     );
     // 首次撤销时刻作为审计证据必须稳定，不被重复请求刷新
     assert_eq!(revoked_at(&pool, user_id, &client_id).await, Some(first));
+    // 版本号同样不被消耗：否则重复撤销会白白抬高版本，让后续合法的重新授权
+    // 写入被围栏挡住。
+    assert_eq!(
+        state_version(&pool, user_id, &client_id).await,
+        Some(first_version)
+    );
 }
 
-/// 复算 `TokenRevocationStore` 的缓存键，用于直接断言缓存回填。
+// ========== Issue #276：DB → Redis 双写交错 ==========
+
+/// 核心回归：撤销的 Redis 写入迟于重新授权时，缓存不得拒绝 refresh / userinfo。
 ///
-/// 与 `revocation.rs` 的 `consent_key` 保持一致：SHA-256("user:client") 的
+/// 复现的时序（每一步都是真实生产路径的一部分）：
+///
+/// ```text
+/// 1. 撤销   : soft_revoke            → DB v2, revoked_at = now()
+/// 2. 重新授权: upsert_consent         → DB v3, revoked_at IS NULL
+/// 3. 重新授权: refresh_consent_cache  → 缓存写入 v3 已授权围栏
+/// 4. 撤销   : revoke_consent(v2)      → 迟到，必须被围栏拒绝
+/// ```
+///
+/// 修复前第 4 步用裸 `SET` 覆盖缓存，之后 `is_consent_revoked` 命中即返回
+/// 「已撤销」并短路，refresh 与 userinfo 在 `revoked_at IS NULL` 的情况下
+/// 被持续拒绝，直到 180 天的键 TTL 到期。
+#[tokio::test]
+async fn late_revocation_cache_write_cannot_deny_a_reauthorized_consent() {
+    let pool = database().await;
+    let consents = ConsentService::new(pool.clone());
+    let revocations = TokenRevocationStore::new_with_pool(redis_client(), pool.clone());
+    let (user_id, client_id) = seed_user_and_client(&pool).await;
+    let user_key = user_id.to_string();
+
+    consents
+        .save(user_id, &client_id, &["openid".to_owned()])
+        .await
+        .expect("initial grant");
+
+    // 第 1 步：撤销的权威写入完成，但它的 Redis 写入被推迟（网络抖动 / 调度）
+    let revoked_version = consents
+        .revoke_for_user(user_id, &client_id)
+        .await
+        .expect("revoke consent")
+        .expect("revoke produces a state version");
+
+    // 第 2 步 + 第 3 步：用户重新授权，授权码签发路径同步缓存围栏
+    let reauthorized_version = consents
+        .save(user_id, &client_id, &["openid".to_owned()])
+        .await
+        .expect("re-authorize");
+    assert!(reauthorized_version > revoked_version);
+    revocations
+        .refresh_consent_cache(&user_key, &client_id)
+        .await
+        .expect("sync consent cache after re-authorization");
+
+    // 第 4 步：迟到的撤销写入落地。它携带的版本号比缓存里的旧，必须被拒绝。
+    assert!(
+        !revocations
+            .revoke_consent(&user_key, &client_id, revoked_version)
+            .await
+            .expect("late revocation cache write"),
+        "a revocation write older than the cached state must be rejected"
+    );
+
+    // 权威库的事实：已重新授权
+    assert!(
+        revoked_at(&pool, user_id, &client_id).await.is_none(),
+        "database must show the consent as re-authorized"
+    );
+    // refresh（refresh_use_case）和 userinfo 的第一道闸门：撤销判定
+    assert!(
+        !revocations
+            .is_consent_revoked(&user_key, &client_id)
+            .await
+            .expect("consent revocation check"),
+        "stale cache must not deny a consent whose revoked_at IS NULL"
+    );
+    // 第二道闸门：scope 判定（权威库直查，缓存无法替它放行）
+    assert!(
+        consents
+            .has_scopes(user_id, &client_id, &["openid".to_owned()])
+            .await
+            .expect("scope check"),
+        "re-authorized consent must satisfy the scope gate"
+    );
+}
+
+/// 反向交错：迟到的撤销写入先落盘，随后的重新授权同步必须纠正它。
+///
+/// 这条覆盖「重新授权的缓存同步发生在撤销写入之后」的顺序。围栏在这里不起作用
+/// （缓存里的版本更旧），纠正来自 `refresh_consent_cache` 按权威状态重写缓存。
+#[tokio::test]
+async fn cache_sync_corrects_a_revocation_marker_written_before_re_authorization() {
+    let pool = database().await;
+    let consents = ConsentService::new(pool.clone());
+    let revocations = TokenRevocationStore::new_with_pool(redis_client(), pool.clone());
+    let (user_id, client_id) = seed_user_and_client(&pool).await;
+    let user_key = user_id.to_string();
+
+    consents
+        .save(user_id, &client_id, &["openid".to_owned()])
+        .await
+        .expect("initial grant");
+    let revoked_version = consents
+        .revoke_for_user(user_id, &client_id)
+        .await
+        .expect("revoke consent")
+        .expect("revoke produces a state version");
+    assert!(
+        revocations
+            .revoke_consent(&user_key, &client_id, revoked_version)
+            .await
+            .expect("cache revocation")
+    );
+    assert!(
+        revocations
+            .is_consent_revoked(&user_key, &client_id)
+            .await
+            .expect("revoked before re-authorization")
+    );
+
+    // 重新授权：先写权威库，再同步缓存
+    consents
+        .save(user_id, &client_id, &["openid".to_owned()])
+        .await
+        .expect("re-authorize");
+    revocations
+        .refresh_consent_cache(&user_key, &client_id)
+        .await
+        .expect("sync consent cache after re-authorization");
+
+    assert!(
+        !revocations
+            .is_consent_revoked(&user_key, &client_id)
+            .await
+            .expect("consent revocation check"),
+        "cache sync must clear a revocation marker the database no longer agrees with"
+    );
+    assert!(
+        consents
+            .has_scopes(user_id, &client_id, &["openid".to_owned()])
+            .await
+            .expect("scope check")
+    );
+}
+
+/// 围栏不得延迟真正的新撤销：重新授权之后再撤销，必须立即生效。
+///
+/// 这是 #276 修复的安全边界。如果围栏做成「已授权的缓存值在 TTL 内一律优先」，
+/// 撤销就会被推迟到围栏过期，等于用一个 bug 换另一个更严重的 bug。
+#[tokio::test]
+async fn a_newer_revocation_after_re_authorization_takes_effect_immediately() {
+    let pool = database().await;
+    let consents = ConsentService::new(pool.clone());
+    let revocations = TokenRevocationStore::new_with_pool(redis_client(), pool.clone());
+    let (user_id, client_id) = seed_user_and_client(&pool).await;
+    let user_key = user_id.to_string();
+
+    consents
+        .save(user_id, &client_id, &["openid".to_owned()])
+        .await
+        .expect("initial grant");
+    consents
+        .revoke_for_user(user_id, &client_id)
+        .await
+        .expect("first revoke");
+    consents
+        .save(user_id, &client_id, &["openid".to_owned()])
+        .await
+        .expect("re-authorize");
+    revocations
+        .refresh_consent_cache(&user_key, &client_id)
+        .await
+        .expect("sync consent cache");
+
+    // 用户再次撤销：版本号比围栏更高，条件写必须接受
+    let newest_version = consents
+        .revoke_for_user(user_id, &client_id)
+        .await
+        .expect("second revoke")
+        .expect("second revoke produces a state version");
+    assert!(
+        revocations
+            .revoke_consent(&user_key, &client_id, newest_version)
+            .await
+            .expect("fresh revocation cache write"),
+        "a revocation newer than the cached fence must be accepted"
+    );
+
+    assert!(
+        revocations
+            .is_consent_revoked(&user_key, &client_id)
+            .await
+            .expect("consent revocation check"),
+        "a fresh revocation must take effect immediately, not after the fence expires"
+    );
+    assert!(
+        !consents
+            .has_scopes(user_id, &client_id, &["openid".to_owned()])
+            .await
+            .expect("scope check")
+    );
+}
+
+/// 缓存里的「已授权」围栏不得替数据库放行已撤销的同意。
+///
+/// 围栏只用于挡住陈旧写入。若 Redis 在撤销时不可用（写入丢失），围栏仍在，
+/// 但读路径不会把它当作放行凭据：它会回源 PostgreSQL 并得到「已撤销」。
+#[tokio::test]
+async fn an_active_fence_never_grants_access_to_a_revoked_consent() {
+    let pool = database().await;
+    let consents = ConsentService::new(pool.clone());
+    let revocations = TokenRevocationStore::new_with_pool(redis_client(), pool.clone());
+    let (user_id, client_id) = seed_user_and_client(&pool).await;
+    let user_key = user_id.to_string();
+
+    let granted_version = consents
+        .save(user_id, &client_id, &["openid".to_owned()])
+        .await
+        .expect("initial grant");
+    assert!(
+        revocations
+            .activate_consent(&user_key, &client_id, granted_version)
+            .await
+            .expect("record active fence")
+    );
+
+    // 撤销只写权威库；模拟 Redis 写入完全失败（缓存仍是「已授权」围栏）
+    consents
+        .revoke_for_user(user_id, &client_id)
+        .await
+        .expect("revoke consent")
+        .expect("revoke produces a state version");
+
+    assert!(
+        revocations
+            .is_consent_revoked(&user_key, &client_id)
+            .await
+            .expect("consent revocation check"),
+        "the read path must fall back to the database instead of trusting the active fence"
+    );
+    // 回源后缓存被纠正为「已撤销」，后续判定不必再查库
+    assert!(
+        revocations
+            .is_consent_revoked(&user_key, &client_id)
+            .await
+            .expect("second consent revocation check")
+    );
+}
+
+/// 复算 `ConsentStateCache` 的缓存键，用于直接断言缓存回填。
+///
+/// 与 `consent_cache.rs` 的 `key` 保持一致：SHA-256("user:client") 的
 /// URL-safe base64（无填充）。键格式属于内部实现，这里复制一份而不是暴露出来，
 /// 以免把缓存布局变成对外契约。
 fn consent_cache_key(user_id: &str, client_id: &str) -> String {
@@ -359,7 +629,26 @@ fn consent_cache_key(user_id: &str, client_id: &str) -> String {
 
     let digest = Sha256::digest(format!("{user_id}:{client_id}").as_bytes());
     format!(
-        "chenxing:oauth:consent-revoked:{}",
+        "chenxing:oauth:consent-state:{}",
         URL_SAFE_NO_PAD.encode(digest)
     )
+}
+
+/// 直接读 `state_version`，验证版本号真的随状态跃迁推进。
+async fn state_version(
+    pool: &chenxing_auth::sqlx::PgPool,
+    user_id: chenxing_auth::users::domain::UserId,
+    client_id: &str,
+) -> Option<i64> {
+    chenxing_auth::sqlx::query_as::<_, (i64,)>(
+        "SELECT c.state_version FROM user_consents c
+         JOIN oauth_clients oc ON oc.id = c.client_id
+         WHERE c.user_id = $1 AND oc.client_id = $2",
+    )
+    .bind(user_id)
+    .bind(client_id)
+    .fetch_optional(pool)
+    .await
+    .expect("read state_version")
+    .map(|(value,)| value)
 }

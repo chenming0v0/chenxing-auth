@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, within } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react'
 import { AuthShell, ConsoleLayout, OAuthShell } from './shells'
 import { navGroups } from '../data'
 
@@ -68,16 +68,24 @@ describe('ConsoleLayout 移动端导航可达性（#197）', () => {
     expect(within(sidebar).getByRole('link', { name: '套餐与权益' }).getAttribute('aria-current')).toBeNull()
   })
 
-  it('汉堡菜单里包含完整控制台导航，核心页全部可达', () => {
+  it('汉堡菜单只保留区域级入口：开发者/管理不再平铺分组', () => {
     const menu = openHamburgerMenu()
-    for (const item of allItems) {
-      expect(within(menu).getByRole('link', { name: item.label }).getAttribute('href')).toBe(item.path)
+    expect(within(menu).getByRole('link', { name: '控制台' }).getAttribute('href')).toBe('/console')
+    // 开发者入口默认落在「接入应用」，管理入口默认落在「仪表盘」
+    expect(within(menu).getByRole('link', { name: '开发者' }).getAttribute('href')).toBe('/console/integrate')
+    expect(within(menu).getByRole('link', { name: '管理' }).getAttribute('href')).toBe('/admin')
+    for (const flattened of ['总览', '接入应用', '套餐与权益', '仪表盘', '用户管理', '套餐管理', '系统设置']) {
+      expect(within(menu).queryByRole('link', { name: flattened })).toBeNull()
     }
+    // 分组列表已整体移出汉堡菜单，不再渲染 extra 容器
+    expect(menu.querySelector('.cx-nav-panel-extra')).toBeNull()
   })
 
-  it('汉堡菜单里的导航项与侧栏一样标记当前页', () => {
+  it('普通用户的汉堡菜单没有管理入口', () => {
+    mockUser.role = 'user'
     const menu = openHamburgerMenu()
-    expect(within(menu).getByRole('link', { name: '总览' }).getAttribute('aria-current')).toBe('page')
+    expect(within(menu).queryByRole('link', { name: '管理' })).toBeNull()
+    expect(within(menu).getByRole('link', { name: '开发者' })).toBeTruthy()
   })
 
   it('移动端底栏只承载核心页，且标记当前页', () => {
@@ -86,14 +94,36 @@ describe('ConsoleLayout 移动端导航可达性（#197）', () => {
     const hrefs = within(bottom).getAllByRole('link').map((link) => link.getAttribute('href'))
     expect(hrefs).toEqual(coreItems.map((item) => item.path))
     expect(within(bottom).getByRole('link', { name: '总览' }).getAttribute('aria-current')).toBe('page')
-    // 开发者/管理页不在底栏，属于汉堡菜单
+    // 开发者/管理页不在账户区底栏
     expect(within(bottom).queryByRole('link', { name: '接入应用' })).toBeNull()
+    expect(within(bottom).queryByRole('link', { name: '套餐与权益' })).toBeNull()
   })
 
-  it('点击汉堡菜单里的导航项后菜单关闭', () => {
+  it('开发者区底栏切换为接入应用/授权测试/套餐与权益', () => {
+    window.history.replaceState({}, '', '/console/integrate')
+    renderConsole()
+    const bottom = screen.getByRole('navigation', { name: '控制台快捷导航' })
+    const hrefs = within(bottom).getAllByRole('link').map((link) => link.getAttribute('href'))
+    expect(hrefs).toEqual(['/console/integrate', '/console/playground', '/console/plans'])
+    expect(within(bottom).getByRole('link', { name: '接入应用' }).getAttribute('aria-current')).toBe('page')
+    expect(within(bottom).queryByRole('link', { name: '总览' })).toBeNull()
+  })
+
+  it('管理区底栏切换为仪表盘/用户管理/套餐管理/系统设置', () => {
+    window.history.replaceState({}, '', '/admin/users')
+    renderConsole()
+    const bottom = screen.getByRole('navigation', { name: '控制台快捷导航' })
+    const hrefs = within(bottom).getAllByRole('link').map((link) => link.getAttribute('href'))
+    expect(hrefs).toEqual(['/admin', '/admin/users', '/admin/plans', '/admin/settings'])
+    expect(within(bottom).getByRole('link', { name: '用户管理' }).getAttribute('aria-current')).toBe('page')
+    expect(within(bottom).queryByRole('link', { name: '总览' })).toBeNull()
+  })
+
+  it('点击汉堡菜单里的导航项后菜单关闭', async () => {
     const menu = openHamburgerMenu()
-    fireEvent.click(within(menu).getByRole('link', { name: '套餐与权益' }))
-    expect(document.querySelector('[data-menu]')).toBeNull()
+    fireEvent.click(within(menu).getByRole('link', { name: '开发者' }))
+    // 关闭带 300ms 退出动画（遮罩淡出 + 面板收拢），卸载发生在动画结束后
+    await waitFor(() => expect(document.querySelector('[data-menu]')).toBeNull())
   })
 
   it('普通用户看不到管理/系统分组', () => {
@@ -134,24 +164,28 @@ describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
     expect(hamburgerId).not.toBe(accountId)
   })
 
-  it('Escape 关闭汉堡菜单并把焦点还给触发器按钮', () => {
+  it('Escape 关闭汉堡菜单并把焦点还给触发器按钮', async () => {
     renderConsole()
     const button = screen.getByRole('button', { name: '打开导航菜单' })
     fireEvent.click(button)
     expect(document.querySelector('[data-menu]')).toBeTruthy()
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(document.querySelector('[data-menu]')).toBeNull()
+    // 关闭带 300ms 退出动画，卸载发生在动画结束后
+    await waitFor(() => expect(document.querySelector('[data-menu]')).toBeNull())
     expect(document.activeElement).toBe(button)
   })
 
-  it('Escape 关闭账户菜单并把焦点还给头像按钮', () => {
+  it('Escape 关闭账户菜单并把焦点还给头像按钮', async () => {
     renderConsole()
     const button = screen.getByRole('button', { name: '账户菜单' })
     fireEvent.click(button)
     const panelId = button.getAttribute('aria-controls') as string
     expect(document.getElementById(panelId)).toBeTruthy()
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(document.getElementById(panelId)).toBeNull()
+    // 退出窗口（450ms）内面板保持渲染，供 .is-closing 逐项退出动画使用（#379）；
+    // 焦点已立刻还给触发器，卸载发生在动画结束后
+    expect(document.getElementById(panelId)).toBeTruthy()
+    await waitFor(() => expect(document.getElementById(panelId)).toBeNull())
     expect(document.activeElement).toBe(button)
   })
 
@@ -199,12 +233,13 @@ describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
     expect(document.activeElement).toBe(items[items.length - 1])
   })
 
-  it('点击导航项后菜单关闭（原有行为不变）', () => {
+  it('点击导航项后菜单关闭（原有行为不变）', async () => {
     const menu = openHamburgerMenu()
     const button = screen.getByRole('button', { name: '打开导航菜单' })
     expect(button.getAttribute('aria-expanded')).toBe('true')
-    fireEvent.click(within(menu).getByRole('link', { name: '套餐与权益' }))
-    expect(document.querySelector('[data-menu]')).toBeNull()
+    fireEvent.click(within(menu).getByRole('link', { name: '开发者' }))
+    // 关闭带 300ms 退出动画，卸载发生在动画结束后
+    await waitFor(() => expect(document.querySelector('[data-menu]')).toBeNull())
     expect(button.getAttribute('aria-expanded')).toBe('false')
   })
 })
@@ -220,7 +255,7 @@ describe('账户菜单用户信息不做成文档标题（#226）', () => {
     // 用户名仍在原位置以原样式渲染，只是语义从 h3 变成普通文本标签
     const nameLabel = within(panel).getByText('测试员')
     expect(nameLabel.tagName).toBe('P')
-    expect(nameLabel.className).toContain('text-sm font-semibold')
+    expect(nameLabel.className).toContain('text-base font-semibold')
   })
 })
 
@@ -269,7 +304,7 @@ describe('全局「跳到主内容」跳过链接（#225）', () => {
   })
 
   it('AuthShell 与 OAuthShell 同样渲染成对的跳过链接与锚点', () => {
-    const auth = render(<AuthShell status="星门在线"><div>登录内容</div></AuthShell>)
+    const auth = render(<AuthShell status="认证中枢"><div>登录内容</div></AuthShell>)
     assertSkipPair(auth.container)
     const oauth = render(<OAuthShell><div>授权内容</div></OAuthShell>)
     assertSkipPair(oauth.container)

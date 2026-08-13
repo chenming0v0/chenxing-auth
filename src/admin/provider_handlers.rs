@@ -83,16 +83,27 @@ pub async fn create_provider(
             "client_secret is required when creating a provider",
         );
     }
-    match state.external_oauth.create(input).await {
+    match state.external_oauth.create(input.clone()).await {
         Ok(provider) => {
-            record_provider_event(&state, actor, "oauth_provider_create", &provider.slug).await;
+            record_provider_event(
+                &state,
+                actor,
+                "oauth_provider_create",
+                &provider.slug,
+                serde_json::json!({
+                    "authorization_endpoint": input.authorization_endpoint,
+                    "token_endpoint": input.token_endpoint,
+                    "userinfo_endpoint": input.userinfo_endpoint,
+                }),
+            )
+            .await;
             (
                 StatusCode::CREATED,
                 Json(provider_response(&state, provider)),
             )
                 .into_response()
         }
-        Err(error_value) => provider_error_response(error_value),
+        Err(error_value) => provider_error_response(error_value, "create_provider"),
     }
 }
 
@@ -112,13 +123,24 @@ pub async fn update_provider(
     if input.slug != slug {
         return error::bad_request("invalid_oauth_provider", "provider slug cannot be changed");
     }
-    match state.external_oauth.update(&slug, input).await {
+    match state.external_oauth.update(&slug, input.clone()).await {
         Ok(true) => {
-            record_provider_event(&state, actor, "oauth_provider_update", &slug).await;
+            record_provider_event(
+                &state,
+                actor,
+                "oauth_provider_update",
+                &slug,
+                serde_json::json!({
+                    "authorization_endpoint": input.authorization_endpoint,
+                    "token_endpoint": input.token_endpoint,
+                    "userinfo_endpoint": input.userinfo_endpoint,
+                }),
+            )
+            .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::not_found("oauth_provider_not_found", "provider was not found"),
-        Err(error_value) => provider_error_response(error_value),
+        Err(error_value) => provider_error_response(error_value, "update_provider"),
     }
 }
 
@@ -155,16 +177,31 @@ async fn set_provider_status(
     };
     match state.external_oauth.set_status(slug, status).await {
         Ok(true) => {
-            record_provider_event(state, actor, &format!("oauth_provider_{status}"), slug).await;
+            record_provider_event(
+                state,
+                actor,
+                &format!("oauth_provider_{status}"),
+                slug,
+                serde_json::json!({"result": "success"}),
+            )
+            .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::not_found("oauth_provider_not_found", "provider was not found"),
-        Err(error_value) => provider_error_response(error_value),
+        Err(error_value) => provider_error_response(error_value, "set_provider_status"),
     }
 }
 
-fn provider_error_response(error_value: ExternalOAuthError) -> Response {
-    match error_value {
+/// `ExternalOAuthError` → HTTP 响应的统一映射。
+///
+/// 变体逐个显式列出、不写 `_` 兜底（与 `client_errors.rs` 同一约定）：新增错误
+/// 变体时必须在这里显式表态，否则编译失败，避免业务状态被静默归入 500。
+/// `MissingSecret`/`RemoteRequest`/`InvalidUserInfo`/`EmailNotVerified`/
+/// `EmailAlreadyRegistered`/`UserDisabled`/`OwnerBootstrapRequired` 只在外部登录
+/// 流程产生，admin CRUD 路径返回它们说明调用链出错，统一按内部故障处理并留下
+/// 结构化日志。
+fn provider_error_response(error_value: ExternalOAuthError, operation: &'static str) -> Response {
+    match &error_value {
         ExternalOAuthError::Validation(validation_error) => {
             error::bad_request("invalid_oauth_provider", validation_error.to_string())
         }
@@ -182,19 +219,38 @@ fn provider_error_response(error_value: ExternalOAuthError) -> Response {
                 "provider slug is already registered",
             )
         }
-        ExternalOAuthError::Database(database_error) => {
-            tracing::error!(error = %database_error, "external OAuth provider database operation failed");
-            error::internal()
-        }
-        ExternalOAuthError::Secret(secret_error) => {
-            tracing::error!(error = %secret_error, "external OAuth provider secret operation failed");
-            error::internal()
-        }
-        _ => error::internal(),
+        ExternalOAuthError::Database(_)
+        | ExternalOAuthError::Secret(_)
+        | ExternalOAuthError::MissingSecret
+        | ExternalOAuthError::RemoteRequest
+        | ExternalOAuthError::InvalidUserInfo
+        | ExternalOAuthError::EmailNotVerified
+        | ExternalOAuthError::EmailAlreadyRegistered
+        | ExternalOAuthError::UserDisabled
+        | ExternalOAuthError::OwnerBootstrapRequired => internal(&error_value, operation),
     }
 }
 
-async fn record_provider_event(state: &AppState, actor: AdminActor, action: &str, slug: &str) {
+/// 内部故障：留下可检索的结构化日志，对外只回笼统 500。
+///
+/// `ExternalOAuthError` 的 `Display` 已包含内层细节（如 sqlx 驱动错误），直接
+/// 记录即可，不需要逐变体拆包；日志不含凭据。
+fn internal(error_value: &ExternalOAuthError, operation: &'static str) -> Response {
+    tracing::error!(
+        error = %error_value,
+        operation,
+        "admin external OAuth provider operation failed"
+    );
+    error::internal()
+}
+
+async fn record_provider_event(
+    state: &AppState,
+    actor: AdminActor,
+    action: &str,
+    slug: &str,
+    details: serde_json::Value,
+) {
     let (actor_type, actor_id) = actor.audit_fields();
     state
         .audit
@@ -204,7 +260,7 @@ async fn record_provider_event(state: &AppState, actor: AdminActor, action: &str
             action.to_owned(),
             "oauth_provider".to_owned(),
             Some(slug.to_owned()),
-            serde_json::json!({"result": "success"}),
+            details,
         ))
         .await;
 }

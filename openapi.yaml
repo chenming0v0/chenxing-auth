@@ -14,6 +14,7 @@ tags:
   - name: User Auth/Account
   - name: User Auth/MFA
   - name: User Auth/Sessions
+  - name: User Auth/Security Events
   - name: User Auth/OAuth Clients
   - name: User Auth/Authorized Apps
   - name: User Entitlements
@@ -24,6 +25,7 @@ tags:
   - name: Admin Plans
   - name: Admin Clients
   - name: Admin OAuth Providers
+  - name: Admin Auth Factors
   - name: Admin Operations
 paths:
   /health:
@@ -94,6 +96,12 @@ paths:
     post:
       tags: [User Auth/Account]
       summary: 用户登录
+      description: |
+        错误码：
+        - 401 invalid_credentials / invalid_factor：口令或 TOTP 验证码错误，或已被限流。
+        - 503 factor_key_unavailable：请求带 `totp_code` 且该账号的 TOTP 种子由已退役的
+          加密 kid 保护，服务端无法解密。重试无效，需要管理员重置因子。该结果不消耗
+          认证失败额度。
       operationId: loginUser
       parameters:
         - { $ref: '#/components/parameters/SessionResponseMode' }
@@ -120,6 +128,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PendingLoginResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/totp/setup:
     post:
       tags: [User Auth/MFA]
@@ -141,6 +150,18 @@ paths:
     post:
       tags: [User Auth/MFA]
       summary: 确认 TOTP 并完成登录
+      description: |
+        验证码在同一时间步内只能使用一次，边界按「用户 + 时间步」判定，
+        与注册确认还是登录验证无关：注册成功消费掉的那个码不能再用于后续登录，
+        反之亦然。遇到这种冲突时等下一个验证码重试即可，ticket 和待确认注册都保留。
+
+        错误码：
+        - 400 invalid_login_ticket：ticket 无效、缺少 holder proof，或待确认注册
+          未绑定到该 ticket 的用户（fail closed，ticket 与待确认注册一并作废）。
+        - 401 invalid_factor：验证码错误、该时间步的验证码已被使用，或已被限流。
+        - 503 factor_key_unavailable：待确认注册的密文由已退役的加密 kid 保护，
+          服务端读不出种子。重试无效；重新调用 POST /api/v1/auth/totp/setup 即可
+          用当前 active key 重新开始绑定。该结果不消耗认证失败额度。
       operationId: confirmTotpSetup
       parameters:
         - { $ref: '#/components/parameters/SessionResponseMode' }
@@ -159,10 +180,22 @@ paths:
               schema: { $ref: '#/components/schemas/LoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/totp/login:
     post:
       tags: [User Auth/MFA]
       summary: 使用 TOTP 完成待处理登录
+      description: |
+        验证码在同一时间步内只能使用一次，边界按「用户 + 时间步」判定：
+        刚用于 TOTP 绑定确认的验证码不能再用于这个端点，换一张新的 login ticket
+        也不行。等下一个验证码重试即可，本次冲突不会作废 ticket。
+
+        错误码：
+        - 401 invalid_factor：验证码错误、该时间步的验证码已被使用，或已被限流。
+        - 503 factor_key_unavailable：已注册的 TOTP 种子由已退役的加密 kid 保护，
+          服务端无法解密。用户重试无效，必须由管理员调用
+          DELETE /api/v1/admin/users/{user_id}/auth-factors/totp 重置因子后重新绑定。
+          该结果不消耗认证失败额度，也不会把账号推向限流。
       operationId: loginTotp
       parameters:
         - { $ref: '#/components/parameters/SessionResponseMode' }
@@ -181,6 +214,7 @@ paths:
               schema: { $ref: '#/components/schemas/LoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/passkeys/register/start:
     post:
       tags: [User Auth/MFA]
@@ -402,6 +436,47 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/SessionListResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/security-events:
+    get:
+      tags: [User Auth/Security Events]
+      summary: 查询当前用户安全事件
+      operationId: listCurrentUserSecurityEvents
+      description: 仅查询 actor_user_id 为当前用户的热表与归档审计事件，并只返回非敏感白名单字段；每个事件携带服务端分级的 category 与 severity。
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/Page' }
+        - { $ref: '#/components/parameters/PageSize' }
+      responses:
+        '200':
+          description: 按创建时间倒序排列的当前用户安全事件
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PagedSecurityEvents' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
+  /api/v1/auth/security-events/{event_id}:
+    get:
+      tags: [User Auth/Security Events]
+      summary: 查询当前用户单个安全事件详情
+      operationId: getCurrentUserSecurityEvent
+      description: |
+        事件不存在或不属于当前用户时一律 404，不区分「查不到」与「不是你的」。
+        ip / ip_location / user_agent / ray_id 只从 metadata 白名单提取，不透出
+        metadata 原文；ip_location 与 ray_id 暂无数据来源，恒为 null。client 仅
+        OAuth 相关事件填充，Client 已删除时为 null。
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: event_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+      responses:
+        '200':
+          description: 单个安全事件详情
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SecurityEventDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
   /api/v1/auth/sessions/{session_id}:
     delete:
       tags: [User Auth/Sessions]
@@ -422,11 +497,15 @@ paths:
       summary: 查询当前用户的 OAuth 项目
       operationId: listOwnedOAuthClients
       security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: limit, in: query, required: false, description: 每页条数，默认 200，最大 200, schema: { type: integer, format: int32, minimum: 1, maximum: 200 } }
+        - { name: offset, in: query, required: false, description: 跳过条数，默认 0, schema: { type: integer, format: int64, minimum: 0 } }
       responses:
         '200':
           description: |
             只包含当前用户拥有的 OAuth 项目和配额使用量。
             没有生效套餐时照常列出既有项目，配额上限为 null，不会因此返回错误。
+            超出 200 条的项目通过 limit/offset 分页获取。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OwnedOAuthClientList' }
@@ -577,6 +656,10 @@ paths:
     get:
       tags: [User Auth/Browser Login]
       summary: 开始自定义外部 OAuth 登录
+      description: >-
+        自定义提供商按 OAuth 2.0 授权码流程 + UserInfo 信任模型接入，本平台在这一侧不是 OIDC 依赖方。
+        scopes 可包含 openid（多数 OIDC 提供商需要它才开放 UserInfo），但它只用于换取可调用 UserInfo 的
+        access token，不代表本平台执行了 OIDC 身份断言校验。
       operationId: startExternalOAuthLogin
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
@@ -584,10 +667,17 @@ paths:
       responses:
         '302': { description: 重定向到外部授权端点, headers: { Set-Cookie: { $ref: '#/components/headers/SetCookie' } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /auth/external/{slug}/callback:
     get:
       tags: [User Auth/Browser Login]
       summary: 自定义外部 OAuth 回调
+      description: >-
+        身份字段只来自用 access token 经 TLS 调用 userinfo_endpoint 得到的 JSON：sub、email、email_verified
+        全部按 provider 配置的 claim 路径从该响应读取。令牌响应中的 id_token 不被解析、不被存储、不参与身份判定
+        （本平台不为自定义提供商保存 issuer、JWKS、允许算法或 nonce 策略，不具备验证它的条件）。只返回 id_token
+        而没有 access_token 的令牌响应按失败处理，回跳 external_error=oauth_login_failed。email_verified 的
+        可信度上限就是外部 UserInfo 响应本身。
       operationId: externalOAuthCallback
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
@@ -597,6 +687,7 @@ paths:
       responses:
         '302': { description: 登录成功或失败后的页面重定向, headers: { Set-Cookie: { $ref: '#/components/headers/SetCookie' } } }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /oauth/authorize:
     get:
       tags: [OAuth/OIDC]
@@ -614,7 +705,7 @@ paths:
         - { name: code_challenge, in: query, required: true, schema: { type: string } }
         - { name: code_challenge_method, in: query, required: true, schema: { type: string, enum: [S256] } }
       responses:
-        '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页（未登录时附带 chenxing_authz_holder HttpOnly Cookie） }
+        '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页（跳转到 SPA 登录页或授权确认页时附带 chenxing_authz_holder HttpOnly Cookie，供后续绑定端点校验；已授权直通到 redirect_uri 的分支不下发） }
         '400': { $ref: '#/components/responses/OAuthBadRequest' }
         '401': { $ref: '#/components/responses/OAuthUnauthorized' }
         '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
@@ -661,7 +752,7 @@ paths:
   /api/v1/oauth/authorize/requests/{request_id}/bind:
     post:
       tags: [OAuth/OIDC]
-      summary: 将登录后的 Session 原子绑定到待授权请求
+      summary: 将当前 Session 原子绑定到待授权请求
       operationId: bindAuthorizationRequest
       security: [{ sessionCookie: [] }]
       description: |
@@ -669,19 +760,31 @@ paths:
         1. 有效的 Session Cookie（HTTPS 部署为 __Host-chenxing_session）
         2. CSRF 校验通过（HTTPS 部署为 __Host-chenxing_csrf Cookie + X-CSRF-Token 头）
         3. 授权持有者 Cookie 与 pending 记录中的摘要匹配（chenxing_authz_holder，防御 OAuth login CSRF / 请求固定攻击 #115）
-        
-        chenxing_authz_holder Cookie 由 `/oauth/authorize` 在创建未绑定 pending 请求时下发（HttpOnly, SameSite=Lax, path=/），
-        SHA-256 摘要存入 Redis 的 pending 记录。缺失该 Cookie 或摘要不匹配返回 403。
-        
+
+        chenxing_authz_holder Cookie 由 `/oauth/authorize` 在把浏览器交给 SPA（登录页或授权确认页）时下发
+        （HttpOnly, SameSite=Lax, path=/），SHA-256 摘要存入 Redis 的 pending 记录。
+        缺失该 Cookie 或摘要不匹配返回 403。
+
         升级前创建的旧 pending 记录无 holder 摘要，绑定时将被拒绝（fail-secure），用户需重新发起授权流程。
+
+        **受控重绑（#270）**：上述校验全部通过时，无论该 pending 请求此前绑定的是哪个 Session 摘要，
+        都会被重绑到调用者当前的 Session，写入走 CAS 保证原子性。
+        holder Cookie 才是所有权凭据，Session 绑定是派生状态，因此重绑不放宽任何安全边界：
+        没有 holder Cookie 的第三方即使持有有效 Session 也仍然被拒（403）。
+        这让「会话过期后重新登录」与「切换账号继续授权」可以自愈，
+        不再固定返回 401 并在登录页与授权确认页之间形成跳转循环。
+        授权码在最终 approve 时按当时持有的 Session 签发。
+
+        重绑会记录审计事件 `authorization_request_rebound`（resource_type `oauth_authorization`）。
       parameters:
         - { name: request_id, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
-        '204': { description: 绑定成功或同一 Session 的幂等重试 }
+        '204': { description: 绑定成功、重绑成功，或同一 Session 的幂等重试 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: 'pending 请求正被并发修改，CAS 无法收敛（authorization_request_conflict）；重试即可', content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
   /oauth/token:
     post:
@@ -749,6 +852,7 @@ paths:
     post:
       tags: [Admin Auth]
       summary: 初始化首个 Owner 用户
+      description: 未初始化实例允许匿名调用；按可信源 IP 限制为每分钟 5 次。缺少可信源地址时遵循服务端 missing_source_ip_policy，限流依赖不可用时 fail closed。
       operationId: bootstrapAdmin
       requestBody:
         required: true
@@ -763,10 +867,13 @@ paths:
               schema: { $ref: '#/components/schemas/BootstrapOwnerResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/bootstrap/status:
     get:
       tags: [Admin Auth]
-      summary: 查询 Owner 初始化状态
+      summary: 查询未初始化状态
+      description: 仅未初始化时返回 initialized=false；实例已有 Owner 后返回与未知路径一致的 404，避免向匿名调用者暴露初始化状态。
       operationId: adminBootstrapStatus
       responses:
         '200':
@@ -774,10 +881,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/BootstrapStatusResponse' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
   /api/v1/admin/auth/me:
     get:
       tags: [Admin Auth]
       summary: 查询当前管理身份和权限
+      description: ADMIN_TOKEN 未配置时整个管理面关闭，本端点对所有调用者返回 403 admin_disabled，不进入身份探测。
       operationId: adminMe
       security: [{ adminBearer: [] }, { sessionCookie: [] }]
       responses:
@@ -788,6 +898,7 @@ paths:
               schema: { $ref: '#/components/schemas/AdminMeResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
   /api/v1/admin/users:
     get:
       tags: [Admin Users]
@@ -851,6 +962,7 @@ paths:
     post:
       tags: [Admin Users]
       summary: 设置用户状态
+      description: 基线权限为 manage_users；目标用户为 Owner 时额外要求 manage_roles。权限检查先于资源查询，低权限调用者不能据响应枚举用户或 Owner 身份。非法状态返回 400 invalid_status，不存在用户返回 404 user_not_found。管理员不能修改自己的状态，自我操作返回 403 self_status_change_forbidden。
       operationId: setUserStatus
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
@@ -887,10 +999,103 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/admin/users/{user_id}/auth-factors:
+    get:
+      tags: [Admin Auth Factors]
+      summary: 查看账号的认证因子状态
+      description: |
+        返回该账号已注册的因子方法，以及 TOTP 密文相对当前 `AUTH_ENCRYPTION_KEYS` 的可读状态。
+
+        `totp.key_state` 的四个取值：
+        - `current`：由当前 active kid 加密。
+        - `rotatable`：由密钥环内的非 active key 加密，下次成功验证时自动迁移。
+        - `legacy`：无 kid 的历史信封，可读，需要迁移。
+        - `unavailable`：密文引用的 kid 已不在密钥环内，**账号无法通过 TOTP 登录**，
+          需要调用 DELETE /api/v1/admin/users/{user_id}/auth-factors/totp 重置。
+
+        响应只包含状态名，永不返回 kid、密文或 TOTP 种子。
+
+        权限：`manage_users`。
+      operationId: adminUserAuthFactors
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+      responses:
+        '200':
+          description: 账号因子状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountFactorStatusResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/admin/users/{user_id}/auth-factors/totp:
+    delete:
+      tags: [Admin Auth Factors]
+      summary: 重置账号的 TOTP 因子
+      description: |
+        删除该账号的 TOTP 因子并撤销它的全部会话。账号回到「无因子」状态，
+        下次密码登录返回 `factor_setup_required`，由用户重新完成 TOTP 绑定。
+
+        这是加密 kid 退役后唯一的恢复路径：种子已经无法解密，也就无法迁移，
+        只能丢弃不可读的密文。响应中的 `previous_key_state` 说明这次重置救的是
+        一个被锁死的账号（`unavailable`）还是移除了一个健康的因子。
+
+        权限：Owner 专属的 `manage_auth_factors`，**不是** `manage_users`。
+        重置因子把账号降级为「只有密码」，属于账号接管链条的一环，因此与普通
+        用户管理分权。浏览器 Session 写操作必须同时携带 HttpOnly Session Cookie、
+        CSRF Cookie 和 X-CSRF-Token。
+
+        错误码：
+        - 400：csrf_invalid
+        - 403：admin_forbidden
+        - 404：user_not_found、totp_factor_not_found
+      operationId: adminResetUserTotpFactor
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '200':
+          description: 已删除 TOTP 因子并撤销该账号的全部会话
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TotpFactorResetResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/admin/auth-factors/key-health:
+    get:
+      tags: [Admin Auth Factors]
+      summary: 因子加密密钥健康度
+      description: |
+        统计 TOTP 密文相对当前 `AUTH_ENCRYPTION_KEYS` 的分布。
+        **从 `AUTH_ENCRYPTION_KEYS` 移除旧 key 之前必须先看这个端点**：
+
+        - `unavailable > 0`：已经有账号读不出种子，处于锁死状态。
+        - `rotatable > 0`：仍有账号依赖非 active key，此刻退役该 key 会制造新的锁死账号。
+        - `legacy > 0`：仍有无 kid 的历史信封等待迁移。
+
+        单次扫描上限 10000 条；`truncated` 为真时统计只覆盖前 `scanned` 条。
+        响应只包含计数，不返回 kid 列表或密钥环结构。
+
+        权限：Owner 专属的 `rotate_keys`。
+      operationId: adminAuthFactorKeyHealth
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      responses:
+        '200':
+          description: 密文按可读状态的分布计数
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthFactorKeyHealthResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
   /api/v1/admin/users/{user_id}/plan:
     post:
       tags: [Admin Users]
       summary: 为用户分配套餐
+      description: 基线权限为 manage_users；目标用户为 Owner 时额外要求 manage_roles，且权限检查先于套餐和目标资源查询。
       operationId: assignPlanToUser
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
@@ -1052,6 +1257,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/admin/clients/{client_id}/disable:
     post:
       tags: [Admin Clients]
@@ -1062,6 +1268,7 @@ paths:
       responses:
         '204': { description: 操作成功 }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/admin/clients/{client_id}/enable:
     post:
       tags: [Admin Clients]
@@ -1072,6 +1279,7 @@ paths:
       responses:
         '204': { description: 操作成功 }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/admin/clients/{client_id}/rotate-secret:
     post:
       tags: [Admin Clients]
@@ -1411,7 +1619,7 @@ paths:
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       responses:
         '200':
-          description: 提供商摘要，不包含 Client Secret
+          description: 提供商摘要，不包含 Client Secret；trust_model 恒为 oauth2_userinfo
           content:
             application/json:
               schema: { type: array, items: { $ref: '#/components/schemas/OAuthProviderSummary' } }
@@ -1420,6 +1628,12 @@ paths:
     post:
       tags: [Admin OAuth Providers]
       summary: 创建自定义 OAuth 提供商
+      description: >-
+        提供商一律按 OAuth 2.0 + UserInfo 信任模型接入（trust_model = oauth2_userinfo）：不接受 issuer、
+        jwks_uri、允许算法或 nonce 策略配置，服务端也不验证 ID Token。三个远程端点必须使用 HTTPS，IP 字面量和
+        连接时 DNS 解析结果都必须是公网可路由地址；IPv6 只放行 2000::/3 全局单播中未被 IANA 特殊用途占用的部分，
+        站点本地 fec0::/10、文档与保留前缀以及未分配空间一律拒绝。仅 localhost/回环地址保留本机开发例外。
+        provider 专用 HTTP 客户端显式禁用系统代理，HTTP_PROXY/HTTPS_PROXY/ALL_PROXY 不生效。
       operationId: createOAuthProvider
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
@@ -1441,6 +1655,7 @@ paths:
     put:
       tags: [Admin OAuth Providers]
       summary: 更新自定义 OAuth 提供商
+      description: 更新时重新执行端点 scheme、IP 地址空间和连接时 DNS 解析边界校验；省略 Client Secret 时保留原值。
       operationId: updateOAuthProvider
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
@@ -1476,6 +1691,7 @@ paths:
       tags: [Admin OAuth Providers]
       summary: 启用自定义 OAuth 提供商
       operationId: enableOAuthProvider
+      description: 缺少可用 email_verified_claim 或端点不满足公网出网边界的 provider 无法启用，返回 400 invalid_oauth_provider。
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
@@ -1544,14 +1760,14 @@ paths:
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
-    adminBearer: { type: http, scheme: bearer }
+    adminBearer: { type: http, scheme: bearer, description: 系统 ADMIN_TOKEN 自动化通道，权限等价于 Owner 且无用户 ID，不需要浏览器 CSRF。ADMIN_TOKEN 为空时整个管理面关闭：Bearer 与 sessionCookie 两条通道都被拒绝，已初始化的管理接口统一返回 403 admin_disabled；唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口 }
     basicClientAuth: { type: http, scheme: basic }
     sessionCookie: { type: apiKey, in: cookie, name: __Host-chenxing_session, description: HTTPS 浏览器部署使用的 host-only Session Cookie；仅 loopback HTTP 本地开发使用不带前缀的兼容名称 }
     chenxingSession: { type: apiKey, in: header, name: X-Chenxing-Session, description: 仅开发兼容配置 OAUTH_SESSION_HEADER_ENABLED=true 时可用；不能替代 pending、Session 绑定、CSRF 或 consent }
   parameters:
     ClientId: { name: client_id, in: query, required: true, schema: { type: string } }
     SessionResponseMode: { name: X-Chenxing-Session-Mode, in: header, required: false, description: 非浏览器兼容模式。仅在 SESSION_TOKEN_RESPONSE_ENABLED=true 且值为 token 时将 session_id 放入 JSON；浏览器不得发送此请求头。, schema: { type: string, enum: [token] } }
-    CsrfHeader: { name: X-CSRF-Token, in: header, required: true, description: 浏览器 Session 写操作必需；ADMIN_TOKEN Bearer 请求不需要, schema: { type: string } }
+    CsrfHeader: { name: X-CSRF-Token, in: header, required: true, description: 浏览器 Session 写操作必需；ADMIN_TOKEN Bearer 请求不需要。ADMIN_TOKEN 为空时整个管理面关闭，管理请求一律 403 admin_disabled，本请求头不再生效, schema: { type: string } }
     Page: { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
     PageSize: { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
     Search: { name: search, in: query, required: false, schema: { type: string, maxLength: 128 } }
@@ -1561,11 +1777,12 @@ components:
   responses:
     BadRequest: { description: 请求错误, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Unauthorized: { description: 未认证或凭据无效, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-    Forbidden: { description: 无权限, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    Forbidden: { description: 无权限（admin_forbidden）；ADMIN_TOKEN 未配置时管理接口统一返回 admin_disabled, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Conflict: { description: 资源冲突（包括套餐 code 冲突、已归档套餐不能设为默认和 Passkey 禁用保护）, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     NotFound: { description: 资源不存在, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     TooManyRequests: { description: 认证、OAuth 配额或 QPS 限流触发, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     ServiceUnavailable: { description: 依赖或必要能力暂不可用, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    InternalServerError: { description: 服务端内部故障, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     OAuthBadRequest: { description: OAuth 请求错误，响应遵守 RFC 6749/7009, content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } } }
     OAuthUnauthorized:
       description: OAuth 客户端或 Bearer 凭据无效
@@ -1612,8 +1829,8 @@ components:
       type: object
       required: [identifier, password]
       properties:
-        identifier: { type: string, description: 用户名或邮箱 }
-        password: { type: string, format: password, minLength: 10 }
+        identifier: { type: string, maxLength: 254, description: 用户名或邮箱；超过 254 字符按凭据错误拒绝 }
+        password: { type: string, format: password, minLength: 10, maxLength: 128, description: 超过 128 字符按凭据错误拒绝，不返回独立错误码 }
         totp_code: { type: string, pattern: '^[0-9]{6}$' }
     PendingLoginResponse:
       type: object
@@ -1778,9 +1995,10 @@ components:
         quota: { $ref: '#/components/schemas/QuotaSnapshot' }
     OwnedOAuthClientList:
       type: object
-      required: [items]
+      required: [items, total]
       properties:
         items: { type: array, items: { $ref: '#/components/schemas/OwnedOAuthClient' } }
+        total: { type: integer, format: int64, minimum: 0, description: 当前用户拥有的 OAuth 项目总数，用于分页 }
     RegisteredOwnedOAuthClient:
       allOf:
         - $ref: '#/components/schemas/OwnedOAuthClient'
@@ -1804,7 +2022,9 @@ components:
         redirect_uri: { type: string, format: uri }
         code_verifier: { type: string }
         refresh_token: { type: string }
-        scope: { type: string }
+        scope:
+          type: string
+          description: refresh_token grant 可省略；空白字符串按省略处理并保留原授权 scope，非空值只能缩小原授权范围。
         client_id: { type: string }
         client_secret: { type: string, format: password }
     TokenResponse:
@@ -1908,8 +2128,59 @@ components:
         user_id: { type: integer, format: int64, minimum: 1, nullable: true }
         username: { type: string, nullable: true }
         role: { type: string, enum: [owner, admin] }
-        permissions: { type: array, items: { type: string } }
+        permissions:
+          type: array
+          description: |
+            当前调用者的权限名。`manage_auth_factors` 与 `rotate_keys` 仅 Owner 拥有。
+          items:
+            type: string
+            enum: [manage_users, manage_clients, rotate_keys, read_audit, manage_settings, manage_identity_providers, manage_roles, manage_auth_factors]
         status: { type: string }
+    TotpFactorStatus:
+      type: object
+      required: [key_state, readable, updated_at]
+      description: TOTP 因子相对当前密钥环的状态。不含 kid、密文和种子。
+      properties:
+        key_state:
+          type: string
+          enum: [current, rotatable, legacy, unavailable]
+          description: unavailable 表示密文引用的 kid 已不在 AUTH_ENCRYPTION_KEYS 内，账号已被锁死。
+        readable: { type: boolean, description: 密文是否仍可被当前密钥环解密 }
+        updated_at: { type: string, format: date-time }
+    AccountFactorStatusResponse:
+      type: object
+      required: [user_id, methods]
+      properties:
+        user_id: { type: integer, format: int64, minimum: 1 }
+        methods:
+          type: array
+          description: 已注册的因子方法名，去重后排序。
+          items: { type: string, enum: [passkey, totp] }
+        totp:
+          allOf: [{ $ref: '#/components/schemas/TotpFactorStatus' }]
+          nullable: true
+          description: 未注册 TOTP 时为 null。
+    TotpFactorResetResponse:
+      type: object
+      required: [user_id, previous_key_state, credentials_revoked]
+      properties:
+        user_id: { type: integer, format: int64, minimum: 1 }
+        previous_key_state:
+          type: string
+          enum: [current, rotatable, legacy, unavailable]
+          description: 删除前密文的可读状态。unavailable 表示这次重置解救了一个被密钥退役锁死的账号。
+        credentials_revoked: { type: boolean, description: 重置同时撤销了该账号的全部会话与 Refresh Token，固定为 true }
+    AuthFactorKeyHealthResponse:
+      type: object
+      required: [total, scanned, current, rotatable, legacy, unavailable, truncated]
+      properties:
+        total: { type: integer, format: int64, description: TOTP 密文总数 }
+        scanned: { type: integer, format: int64, description: 本次实际分类的条数，上限 10000 }
+        current: { type: integer, format: int64, description: 由 active kid 加密 }
+        rotatable: { type: integer, format: int64, description: 由密钥环内的非 active key 加密，退役该 key 会造成锁死 }
+        legacy: { type: integer, format: int64, description: 无 kid 的历史信封 }
+        unavailable: { type: integer, format: int64, description: kid 已不在密钥环内，这些账号当前无法通过 TOTP 登录 }
+        truncated: { type: boolean, description: 密文总数超过扫描上限，统计只覆盖前 scanned 条 }
     AdminOverview:
       type: object
       required: [users, oauth_clients, administrators, audit_events]
@@ -1952,6 +2223,60 @@ components:
         page: { type: integer, minimum: 1 }
         page_size: { type: integer, minimum: 1, maximum: 100 }
         total: { type: integer, format: int64, minimum: 0 }
+    PagedSecurityEvents:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/SecurityEvent' } }
+        page: { type: integer, minimum: 1 }
+        page_size: { type: integer, minimum: 1, maximum: 100 }
+        total: { type: integer, format: int64, minimum: 0 }
+    SecurityEvent:
+      type: object
+      description: 用户可见的审计事件白名单；不包含 actor、resource_id 或 metadata。category 与 severity 由服务端单点映射，未映射的 action 回落 account/info。
+      required: [id, action, category, severity, resource_type, client_id, client_name, created_at]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        action: { type: string }
+        category: { $ref: '#/components/schemas/SecurityEventCategory' }
+        severity: { $ref: '#/components/schemas/SecurityEventSeverity' }
+        resource_type: { type: string }
+        client_id: { type: string, nullable: true }
+        client_name: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+    SecurityEventCategory:
+      type: string
+      enum: [auth, session, authorization, account]
+      description: 事件类别，用于列表筛选。auth=登录与认证因子，session=会话生命周期，authorization=OAuth 授权，account=资料与凭据变更。
+    SecurityEventSeverity:
+      type: string
+      enum: [info, notice, warning, critical]
+      description: 事件等级，用于呈现与告警。info=常规活动，notice=成功的敏感操作，warning=需要用户留意，critical=高危变更。
+    SecurityEventDetail:
+      type: object
+      description: 单个安全事件详情。ip / user_agent 从 metadata 白名单提取；ip_location 与 ray_id 暂无数据来源，恒为 null；client 仅 OAuth 相关事件填充，Client 已删除时为 null。
+      required: [id, action, category, severity, resource_type, created_at, ip, ip_location, user_agent, ray_id, client]
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        action: { type: string }
+        category: { $ref: '#/components/schemas/SecurityEventCategory' }
+        severity: { $ref: '#/components/schemas/SecurityEventSeverity' }
+        resource_type: { type: string }
+        created_at: { type: string, format: date-time }
+        ip: { type: string, nullable: true, description: 事件请求源 IP（来自 metadata source_ip 白名单提取） }
+        ip_location: { type: string, nullable: true, description: IP 归属地；离线归属地库未接入，恒为 null }
+        user_agent: { type: string, nullable: true, description: 事件请求 User-Agent（来自 metadata user_agent 白名单提取） }
+        ray_id: { type: string, nullable: true, description: 请求关联 ID；暂无对应概念，恒为 null }
+        client: { $ref: '#/components/schemas/SecurityEventClient' }
+    SecurityEventClient:
+      type: object
+      description: 详情接口中 OAuth Client 的公开摘要，只来自 oauth_clients 表自身列。
+      required: [client_id, client_name, created_at, status]
+      properties:
+        client_id: { type: string }
+        client_name: { type: string }
+        created_at: { type: string, format: date-time }
+        status: { type: string, enum: [active, disabled] }
     AuditEvent:
       type: object
       required: [id, actor_type, actor_id, action, resource_type, resource_id, metadata, created_at]
@@ -1998,7 +2323,10 @@ components:
       properties:
         enabled: { type: boolean }
         rp_name: { type: string, maxLength: 128 }
-        rp_id: { type: string, maxLength: 253 }
+        rp_id:
+          type: string
+          maxLength: 253
+          description: 必须是至少包含一个点号的域名；localhost 是唯一允许的单标签本机开发例外。
         user_verification: { type: string, enum: [preferred, required, discouraged] }
         authenticator_attachment: { type: string, enum: [any, platform, cross_platform] }
         allow_insecure_origin: { type: boolean }
@@ -2041,8 +2369,11 @@ components:
     SecurityLimitsSetting:
       type: object
       description: >-
-        可配置的安全阈值与 TTL。全部 13 项必填且必须为正整数；0 或负数会被拒绝并返回 400
-        invalid_security_limits。授权码 TTL 超过 600 秒只告警不拒绝（RFC 6749 §4.1.2）。
+        可配置的安全阈值与 TTL。全部 13 项必填，且必须落在各自的 minimum..maximum 之间；
+        越界（含 0、负数与 i64::MAX 之类的极值）会被拒绝并返回 400 invalid_security_limits，
+        错误信息给出越界的字段名。阈值本身就是安全控制，因此上界与下界同样强制：例如
+        account_failure_limit 填极大值等于关掉账户锁定。授权码 TTL 上限 600 秒，取自
+        RFC 6749 §4.1.2 的 10 分钟建议。
       required:
         - unauthenticated_source_qps
         - authorization_code_ttl_seconds
@@ -2062,78 +2393,91 @@ components:
           type: integer
           format: int32
           minimum: 1
+          maximum: 1000
           default: 30
           description: 未认证来源在 OAuth /token 端点的 QPS 上限（次/秒）
         authorization_code_ttl_seconds:
           type: integer
           format: int64
           minimum: 1
+          maximum: 600
           default: 300
           description: 授权码有效期（秒）。RFC 6749 §4.1.2 建议不超过 600
         pending_request_ttl_seconds:
           type: integer
           format: int64
           minimum: 1
+          maximum: 3600
           default: 600
           description: 待决授权请求 TTL（秒），即用户停留在授权确认页的最长时间
         max_pending_requests_per_client:
           type: integer
           format: int64
           minimum: 1
+          maximum: 10000
           default: 20
           description: 单个 Client 的待决授权请求容量上限（个）
         max_pending_requests_global:
           type: integer
           format: int64
           minimum: 1
+          maximum: 1000000
           default: 1000
           description: 全局待决授权请求容量上限（个）
         auth_failure_window_seconds:
           type: integer
           format: int64
           minimum: 1
+          maximum: 86400
           default: 900
-          description: 认证失败计数的固定窗口时长（秒）
+          description: 认证失败计数的滑动窗口时长（秒）
         account_failure_limit:
           type: integer
           format: int64
           minimum: 1
+          maximum: 1000
           default: 10
-          description: 单窗口内账户维度的失败次数上限（次）
+          description: 任意一个滑动窗口内账户维度的失败次数上限（次）
         ip_failure_limit:
           type: integer
           format: int64
           minimum: 1
+          maximum: 10000
           default: 30
           description: 单窗口内源 IP 维度的失败次数上限（次）
         totp_ticket_failure_limit:
           type: integer
           format: int64
           minimum: 1
+          maximum: 100
           default: 5
           description: 单个 TOTP 登录 ticket 允许的累计失败次数（次）
         external_login_state_ttl_seconds:
           type: integer
           format: int64
           minimum: 1
+          maximum: 3600
           default: 600
           description: 外部 OAuth 登录 state 有效期（秒）
         external_login_state_rate_window_seconds:
           type: integer
           format: int64
           minimum: 1
+          maximum: 3600
           default: 60
           description: 外部 OAuth 登录 state 的源 IP 限流窗口（秒）
         external_login_state_rate_limit:
           type: integer
           format: int64
           minimum: 1
+          maximum: 10000
           default: 30
           description: 单窗口内单个源 IP 可创建的外部登录 state 数量上限（个）
         external_login_state_max_pending:
           type: integer
           format: int64
           minimum: 1
+          maximum: 1000000
           default: 10000
           description: 外部 OAuth 登录 state 的全局待决容量上限（个）
     AdminSummary:
@@ -2145,33 +2489,41 @@ components:
         status: { type: string }
     OAuthProviderCreateInput:
       type: object
-      required: [name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, client_secret, scopes]
+      required: [name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, client_secret, scopes, email_verified_claim]
       properties:
         name: { type: string, maxLength: 128 }
         slug: { type: string, pattern: '^[a-z0-9_-]+$', maxLength: 64 }
         authorization_endpoint:
           type: string
           format: uri
-          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+          description: HTTPS 公网端点；IP 字面量和连接时 DNS 解析结果不得落入私网、链路本地、CGNAT、ULA 或保留地址。仅 localhost/回环地址可用于本机 HTTP 测试。
         token_endpoint:
           type: string
           format: uri
-          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+          description: HTTPS 公网端点；IP 字面量和连接时 DNS 解析结果不得落入私网、链路本地、CGNAT、ULA 或保留地址。仅 localhost/回环地址可用于本机 HTTP 测试。
         userinfo_endpoint:
           type: string
           format: uri
-          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+          description: HTTPS 公网端点；IP 字面量和连接时 DNS 解析结果不得落入私网、链路本地、CGNAT、ULA 或保留地址。仅 localhost/回环地址可用于本机 HTTP 测试。
         client_id: { type: string }
         client_secret: { type: string, format: password, writeOnly: true }
-        scopes: { type: array, minItems: 1, items: { type: string } }
+        scopes:
+          type: array
+          minItems: 1
+          items: { type: string }
+          description: >-
+            发往外部 IdP 的 scope。可包含 openid（多数 OIDC 提供商需要它才开放 UserInfo 端点），但本平台只用它
+            换取可调用 UserInfo 的 access token，不会解析或验证随之返回的 id_token。
         subject_claim: { type: string, default: sub }
         email_claim: { type: string, default: email }
         name_claim: { type: string, nullable: true }
-        email_verified_claim: { type: string, nullable: true }
+        email_verified_claim:
+          type: string
+          description: 指向布尔型邮箱验证状态的 claim 路径。必填：缺失、空白、非 bool 或 false 时服务端拒绝身份解析与自动建号。
         client_auth_method: { type: string, enum: [basic, request_body], default: basic }
     OAuthProviderUpdateInput:
       type: object
-      required: [name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, scopes]
+      required: [name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, scopes, email_verified_claim]
       description: client_secret 可省略，省略时保留原值
       properties:
         name: { type: string, maxLength: 128 }
@@ -2179,29 +2531,47 @@ components:
         authorization_endpoint:
           type: string
           format: uri
-          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+          description: HTTPS 公网端点；IP 字面量和连接时 DNS 解析结果不得落入私网、链路本地、CGNAT、ULA 或保留地址。仅 localhost/回环地址可用于本机 HTTP 测试。
         token_endpoint:
           type: string
           format: uri
-          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+          description: HTTPS 公网端点；IP 字面量和连接时 DNS 解析结果不得落入私网、链路本地、CGNAT、ULA 或保留地址。仅 localhost/回环地址可用于本机 HTTP 测试。
         userinfo_endpoint:
           type: string
           format: uri
-          description: HTTPS endpoint, or HTTP only for localhost or an IP loopback test address.
+          description: HTTPS 公网端点；IP 字面量和连接时 DNS 解析结果不得落入私网、链路本地、CGNAT、ULA 或保留地址。仅 localhost/回环地址可用于本机 HTTP 测试。
         client_id: { type: string }
         client_secret: { type: string, format: password, writeOnly: true, nullable: true }
-        scopes: { type: array, minItems: 1, items: { type: string } }
+        scopes:
+          type: array
+          minItems: 1
+          items: { type: string }
+          description: >-
+            发往外部 IdP 的 scope。可包含 openid（多数 OIDC 提供商需要它才开放 UserInfo 端点），但本平台只用它
+            换取可调用 UserInfo 的 access token，不会解析或验证随之返回的 id_token。
         subject_claim: { type: string, default: sub }
         email_claim: { type: string, default: email }
         name_claim: { type: string, nullable: true }
-        email_verified_claim: { type: string, nullable: true }
+        email_verified_claim:
+          type: string
+          description: 指向布尔型邮箱验证状态的 claim 路径。必填：缺失、空白、非 bool 或 false 时服务端拒绝身份解析与自动建号。
         client_auth_method: { type: string, enum: [basic, request_body], default: basic }
     OAuthProviderSummary:
       type: object
+      description: >-
+        自定义提供商摘要。身份建立只依赖 UserInfo 响应；本平台不为该提供商验证 ID Token，
+        因此契约中不存在 issuer、jwks_uri 或 id_token 相关字段。
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         name: { type: string }
         slug: { type: string }
+        trust_model:
+          type: string
+          enum: [oauth2_userinfo]
+          description: >-
+            身份信任模型。恒为 oauth2_userinfo：OAuth 2.0 授权码流程 + UserInfo 端点，sub/email/email_verified
+            全部来自 UserInfo 响应，令牌响应中的 id_token 不被解析也不参与身份判定。本平台作为 OP 对下游 Client
+            仍完整支持 OIDC，该字段只描述上游自定义提供商这一侧。
         callback_uri: { type: string, format: uri }
         authorization_endpoint: { type: string, format: uri }
         token_endpoint: { type: string, format: uri }
@@ -2211,7 +2581,10 @@ components:
         subject_claim: { type: string }
         email_claim: { type: string }
         name_claim: { type: string, nullable: true }
-        email_verified_claim: { type: string, nullable: true }
+        email_verified_claim:
+          type: string
+          nullable: true
+          description: null 表示存量遗留配置，该 provider 无法判断邮箱验证状态，不能被启用，也不会放行外部登录。
         client_auth_method: { type: string, enum: [basic, request_body] }
         status: { type: string, enum: [active, disabled] }
         client_secret_configured: { type: boolean }
@@ -2286,7 +2659,7 @@ components:
         code: { type: string, maxLength: 64 }
         name: { type: string, maxLength: 128 }
         description: { type: string, nullable: true, maxLength: 512 }
-        oauth_clients_limit: { type: integer, format: int32, minimum: 0 }
+        oauth_clients_limit: { type: integer, format: int32, minimum: 0, maximum: 1000 }
         daily_auth_limit: { type: integer, format: int64, minimum: 0 }
         monthly_auth_limit: { type: integer, format: int64, nullable: true, minimum: 0 }
         max_qps: { type: integer, format: int32, nullable: true, minimum: 1 }

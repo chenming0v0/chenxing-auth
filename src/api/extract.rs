@@ -20,15 +20,24 @@
 //! | [`AdminRead`] | Session Cookie 或系统 Token，随后 `authorize()` 校验权限 | 管理读端点 |
 //! | [`AdminWrite`] | 同上，且 `authorize()` 额外无条件校验 CSRF | 管理写端点 |
 //!
+//! 管理提取器是「管理面开关」的执行点：`ADMIN_TOKEN` 为空时（AGENTS.md，Issue #348）
+//! [`AdminCaller::resolve`] 拒绝所有请求，两条管理通道一并关闭，唯一例外是
+//! 不存在 Owner 时公开的首个 Owner 引导端点（它不使用本层提取器）。
+//!
 //! # 两种拒绝时机
 //!
 //! [`SessionWrite`] 在提取阶段就拒绝，因此 CSRF 校验发生在请求体解析之前 ——
 //! 攻击者构造的 body 在鉴权通过前不会被反序列化。
 //!
 //! [`AdminWrite`] 把拒绝推迟到 [`AdminWrite::authorize`]，因为管理端的授权失败
-//! 审计需要记录「尝试的是哪个权限」，而权限在提取阶段还不可知：
-//! `set_user_status` 要先查目标用户角色才能决定需要 `ManageUsers` 还是 `ManageRoles`。
+//! 审计需要记录「尝试的是哪个权限」，而权限由 handler 在运行时给出。
 //! 不变量仍然成立 —— 拿到 [`AdminActor`] 的唯一途径是 `authorize()`，而它无条件校验 CSRF。
+//!
+//! 需要按目标资源抬高门槛的端点（禁用 Owner、改写 Owner 的套餐）**不得**把
+//! 「查资源决定权限」放在第一次 `authorize()` 之前：那会让权限门槛成为资源状态的
+//! 函数，403 的措辞变成资源存在性预言机（Issue #280）。正确顺序是先按与目标无关的
+//! 基线授权，再由写事务锁住目标并按实际角色消费授权档位。目标角色不得在事务外
+//! 预读，否则会在预读与写入之间产生 Owner 晋升竞态（Issue #323）。
 //!
 //! 类型让人难以写错，`tests/csrf_route_coverage.rs` 的路由级测试让写错的跑不过。
 
@@ -47,7 +56,10 @@ use crate::{
     },
     error,
     state::AppState,
-    users::ui_auth::{UserContext, current_user, user_csrf_valid},
+    users::{
+        domain::OwnerTargetAccess,
+        ui_auth::{UserContext, current_user, user_csrf_valid},
+    },
 };
 
 /// 已认证的浏览器会话，未校验 CSRF。用于读端点。
@@ -131,8 +143,17 @@ where
 
 /// 管理端调用者身份，权限尚未校验。
 ///
-/// 两种来源：浏览器 Session Cookie，或配置的系统 `ADMIN_TOKEN`。
-/// 后者不是浏览器自动附带的凭据，因此不涉及 CSRF。
+/// 两条独立通道，任一成立即可继续到权限校验（Issue #305）：
+///
+/// - [`Self::Session`]：浏览器 HttpOnly Session Cookie，写操作另需 CSRF 双 Cookie
+///   与 `X-CSRF-Token` 绑定，权限由用户角色决定。
+/// - [`Self::SystemToken`]：配置的系统 `ADMIN_TOKEN`，非浏览器自动附带的凭据，
+///   因此豁免 CSRF，权限等价于 Owner。
+///
+/// `ADMIN_TOKEN` 为空时整个管理面关闭（AGENTS.md，Issue #348）：`is_valid` 恒假
+/// 关掉 Bearer 通道，[`AdminCaller::resolve`] 顶部的 fail-closed 检查同时拒绝
+/// Session 通道——空 Token 是「管理面关闭」的开关，而不是「只关自动化通道」。
+/// 唯一例外是不存在 Owner 时公开的首个 Owner 引导端点，它不经过本提取器。
 #[derive(Debug)]
 enum AdminCaller {
     Session(Box<UserContext>),
@@ -141,6 +162,11 @@ enum AdminCaller {
 
 impl AdminCaller {
     async fn resolve(state: &AppState, parts: &Parts) -> Result<Self, Response> {
+        // AGENTS.md：ADMIN_TOKEN 为空时必须拒绝所有已初始化的管理 API（Issue #348）。
+        // 两条通道统一拒绝，响应不区分调用者，避免把配置状态变成探测预言机。
+        if state.config.admin_token.is_empty() {
+            return Err(error::admin_disabled());
+        }
         if is_admin_request(state, &parts.headers) {
             return Ok(Self::SystemToken);
         }
@@ -216,6 +242,19 @@ impl AdminWrite {
             return Err(error::bad_request("csrf_invalid", "CSRF token is invalid"));
         }
         self.caller.check_permission(state, permission).await
+    }
+
+    /// 调用者在完成基线授权后可携带到目标用户写事务的最高档位。
+    ///
+    /// 该方法只描述调用者，不读取目标；目标角色必须由写事务持行锁后判定（#323）。
+    pub(crate) fn owner_target_access(&self) -> OwnerTargetAccess {
+        match &self.caller {
+            AdminCaller::SystemToken => OwnerTargetAccess::ManageRoles,
+            AdminCaller::Session(context) if context.role.allows(AdminPermission::ManageRoles) => {
+                OwnerTargetAccess::ManageRoles
+            }
+            AdminCaller::Session(_) => OwnerTargetAccess::ManageUsers,
+        }
     }
 }
 

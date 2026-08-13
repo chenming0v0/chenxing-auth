@@ -5,6 +5,7 @@ use crate::{
     oauth::consent::pending_request_exists,
     oauth::providers::{
         client_pkce::generate_code_verifier,
+        domain::is_valid_provider_slug,
         error_helpers::{external_callback_path, external_error, external_error_with_state},
         state_store::ExternalLoginState,
     },
@@ -44,6 +45,16 @@ pub async fn start_external_login(
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
 ) -> Response {
+    // 与回调路由共用同一 slug 校验：非法路径参数不进 DB 查询，也不进审计与日志。
+    // 原始 slug 可能携带百分号解码出的控制字符，直接回显会变成日志注入
+    // （Issue #344），因此日志只记事件不记原值。
+    if !is_valid_provider_slug(&slug) {
+        tracing::info!("rejected external OAuth login with an invalid provider slug");
+        return error::not_found(
+            "oauth_provider_not_found",
+            "external OAuth provider not found",
+        );
+    }
     let provider = match state.external_oauth.find(&slug).await {
         Ok(provider) if provider.status == "active" => provider,
         Ok(_) => return external_error(&state, &slug, "oauth_provider_not_found").await,
@@ -52,6 +63,16 @@ pub async fn start_external_login(
             return external_error(&state, &slug, "oauth_login_failed").await;
         }
     };
+    // Fail-closed（Issue #261）：缺少 email_verified claim 的存量 provider 不可用。
+    // 在跳转外部 IdP 之前就拒绝，用户不会走完一整圈才在回调里失败。
+    if let Err(mapping_error) = provider.claim_mapping() {
+        tracing::error!(
+            error = %mapping_error,
+            provider = %slug,
+            "external OAuth provider is missing a usable email_verified claim"
+        );
+        return external_error(&state, &slug, "oauth_provider_not_found").await;
+    }
     if let Some(request_id) = query.request_id.as_deref()
         && !pending_request_exists(&state, request_id).await
     {

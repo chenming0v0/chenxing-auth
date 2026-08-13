@@ -2,11 +2,15 @@ use std::{future::Future, pin::Pin};
 
 use thiserror::Error;
 
-/// Fixed-window duration shared by account, IP, and login-ticket counters.
+/// Sliding-window duration shared by account, IP, and login-ticket counters.
+///
+/// 语义是「任意连续 15 分钟」，不是对齐到墙钟的 15 分钟分桶。曾经的 epoch 对齐
+/// 固定窗口让边界落在公开可预测的整点上：攻击者在边界前后各打满配额即可在两秒内
+/// 获得 2× 尝试次数，同一份计数也会因跨过整点而归零。
 pub const AUTH_FAILURE_WINDOW_SECONDS: i64 = 15 * 60;
-/// Account failures allowed in one window before the next attempt is blocked.
+/// Account failures allowed in any window before the next attempt is blocked.
 pub const ACCOUNT_FAILURE_LIMIT: i64 = 10;
-/// Source-IP failures allowed in one window before the next attempt is blocked.
+/// Source-IP failures allowed in any window before the next attempt is blocked.
 pub const IP_FAILURE_LIMIT: i64 = 30;
 /// TOTP failures allowed for one pending login ticket before it is invalidated.
 pub const TOTP_TICKET_FAILURE_LIMIT: i64 = 5;
@@ -15,10 +19,11 @@ pub const TOTP_TICKET_FAILURE_LIMIT: i64 = 5;
 ///
 /// 上面的常量保留为默认值，`FailureDimension::limit()` 也保持原语义不变——
 /// 大量集成测试按常量断言限流行为，改签名会连带破坏它们。生产限流器在每个原子
-/// Redis 操作前从 `SettingsService` 取得本结构体，因此调整阈值不再需要重启服务。
+/// Redis 操作前从 `SettingsService` 取得本结构体，因此调整阈值不再需要重启服务；
+/// 该读取命中进程内缓存，稳态下不查询 `app_settings`（#300，见 `policy.rs`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuthFailureLimits {
-    /// 固定窗口时长（秒）。账户、IP、ticket 三个维度共用。
+    /// 滑动窗口时长（秒）。账户、IP、ticket 三个维度共用。
     pub window_seconds: i64,
     pub account_limit: i64,
     pub ip_limit: i64,

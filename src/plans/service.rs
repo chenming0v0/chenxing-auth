@@ -4,17 +4,22 @@ use time::OffsetDateTime;
 pub use super::repository::PlanWithUsers;
 use super::{
     domain::{
-        Plan, PlanError, PlanInput, PlanMutationError, validate_plan_assignment,
-        validate_plan_input, validate_plan_update,
+        Plan, PlanError, PlanInput, PlanMutationError, validate_plan_input, validate_plan_update,
     },
     repository::{self, PlanAssignmentResult, PlanRepositoryError},
 };
+use crate::clock::SharedClock;
 use crate::sqlx::PgPool;
-use crate::users::domain::UserId;
+use crate::users::domain::{OwnerTargetAccess, UserId};
 
 #[derive(Clone)]
 pub struct PlanService {
     pool: PgPool,
+    /// 只用于「到期时间是否已过」这一类入参校验。
+    ///
+    /// 生效套餐的权威判定在 SQL 里比较 `plan_expires_at > NOW()`（见
+    /// `repository`），那是数据库事务时间，不改读进程时钟。
+    clock: SharedClock,
 }
 
 #[derive(Debug, Error)]
@@ -31,6 +36,8 @@ pub enum PlanServiceError {
     PlanArchived,
     #[error("user was not found")]
     UserNotFound,
+    #[error("managing an owner requires role management permission")]
+    ManageRolesRequired,
     #[error("database operation failed: {0}")]
     Database(#[from] crate::sqlx::Error),
 }
@@ -44,7 +51,16 @@ pub struct EffectivePlan {
 
 impl PlanService {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            clock: SharedClock::system(),
+        }
+    }
+
+    /// 注入共享时钟（`AppState` 构造时调用）。
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.clock = clock;
+        self
     }
 
     pub async fn list(&self) -> Result<Vec<PlanWithUsers>, PlanServiceError> {
@@ -109,20 +125,22 @@ impl PlanService {
         user_id: UserId,
         plan_id: i64,
         expires_at: Option<OffsetDateTime>,
+        access: OwnerTargetAccess,
     ) -> Result<(), PlanServiceError> {
-        if expires_at.is_some_and(|value| value <= OffsetDateTime::now_utc()) {
+        if expires_at.is_some_and(|value| value <= self.clock.now()) {
             return Err(PlanServiceError::Validation(PlanError::ExpiryInPast));
         }
-        let Some(plan) = repository::find_by_id(&self.pool, plan_id).await? else {
-            return Err(PlanServiceError::NotFound);
-        };
-        validate_plan_assignment(&plan).map_err(map_mutation_error)?;
-        match repository::assign_to_user(&self.pool, user_id, plan_id, expires_at)
+        // 套餐存在性与状态由仓储在目标用户锁定之后校验。事务外预查不但重复，
+        // 还会让 Owner 权限错误退化成套餐资源预言机。
+        match repository::assign_to_user(&self.pool, user_id, plan_id, expires_at, access)
             .await
             .map_err(map_repository_error)?
         {
             PlanAssignmentResult::PlanNotFound => return Err(PlanServiceError::NotFound),
             PlanAssignmentResult::UserNotFound => return Err(PlanServiceError::UserNotFound),
+            PlanAssignmentResult::ManageRolesRequired => {
+                return Err(PlanServiceError::ManageRolesRequired);
+            }
             PlanAssignmentResult::Assigned => {}
         }
         Ok(())

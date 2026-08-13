@@ -54,35 +54,41 @@ describe('Drawer', () => {
   })
 
   it('locks page scrolling and makes background branches inert while open', () => {
-    const trigger = openDrawer()
+    // 抽屉经 createPortal 渲染到 body，惰性分支是 body 下的 React 根容器
+    // （RTL render 的 container）；背景与触发按钮位于该分支内，按 inert 的
+    // 继承语义整体不可交互，自身不带属性。
+    const { container } = render(<DrawerHarness />)
+    const trigger = screen.getByText('打开抽屉')
     const background = screen.getByTestId('drawer-background')
+    trigger.focus()
+    fireEvent.click(trigger)
 
     expect(document.documentElement.style.overflow).toBe('hidden')
     expect(document.body.style.overflow).toBe('hidden')
+    expect(container.hasAttribute('inert')).toBe(true)
+    expect(container.getAttribute('aria-hidden')).toBe('true')
     for (const element of [background, trigger]) {
-      expect(element.hasAttribute('inert')).toBe(true)
-      expect(element.getAttribute('aria-hidden')).toBe('true')
+      expect(element.closest('[inert]')).toBe(container)
+      expect(element.closest('[aria-hidden]')).toBe(container)
     }
 
     fireEvent.click(screen.getByLabelText('关闭'))
 
     expect(document.documentElement.style.overflow).toBe('')
     expect(document.body.style.overflow).toBe('')
-    for (const element of [background, trigger]) {
-      expect(element.hasAttribute('inert')).toBe(false)
-      expect(element.hasAttribute('aria-hidden')).toBe(false)
-    }
+    expect(container.hasAttribute('inert')).toBe(false)
+    expect(container.hasAttribute('aria-hidden')).toBe(false)
   })
 
-  it('restores existing overflow declarations and background attributes exactly', () => {
+  it('restores existing overflow declarations and branch attributes exactly', () => {
     document.documentElement.style.setProperty('overflow', 'clip', 'important')
     document.body.style.setProperty('overflow', 'scroll')
-    render(<DrawerHarness />)
+    const { container } = render(<DrawerHarness />)
 
-    const background = screen.getByTestId('drawer-background')
+    // 预置属性写在惰性分支（React 根容器）上，关闭后必须逐项还原。
     const trigger = screen.getByText('打开抽屉')
-    background.setAttribute('inert', 'preserved')
-    background.setAttribute('aria-hidden', 'false')
+    container.setAttribute('inert', 'preserved')
+    container.setAttribute('aria-hidden', 'false')
     trigger.focus()
     fireEvent.click(trigger)
     fireEvent.click(screen.getByLabelText('关闭'))
@@ -91,10 +97,8 @@ describe('Drawer', () => {
     expect(document.documentElement.style.getPropertyPriority('overflow')).toBe('important')
     expect(document.body.style.getPropertyValue('overflow')).toBe('scroll')
     expect(document.body.style.getPropertyPriority('overflow')).toBe('')
-    expect(background.getAttribute('inert')).toBe('preserved')
-    expect(background.getAttribute('aria-hidden')).toBe('false')
-    expect(trigger.hasAttribute('inert')).toBe(false)
-    expect(trigger.hasAttribute('aria-hidden')).toBe(false)
+    expect(container.getAttribute('inert')).toBe('preserved')
+    expect(container.getAttribute('aria-hidden')).toBe('false')
   })
 
   it('moves focus into the drawer when it opens', () => {

@@ -150,14 +150,9 @@ for attempt in $(seq 1 30); do
     fi
     sleep 2
 done
-if [[ -f deploy/repair-v106-checksum.sql ]]; then
-    docker compose --env-file .env -f docker-compose.prod.yml exec -T postgres \
-        psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-        < deploy/repair-v106-checksum.sql
-fi
 if ! docker compose --env-file .env -f docker-compose.prod.yml run --rm --build app migrate; then
-    printf '%s\n' 'Database migration failed. This release uses a fresh unified SQLx baseline and does not roll old schemas forward automatically.' >&2
-    printf '%s\n' 'Back up the database and follow the documented reset/migration procedure before retrying.' >&2
+    printf '%s\n' 'Database migration failed. This release uses a fresh SQLx baseline and does not roll old schemas forward automatically.' >&2
+    printf '%s\n' 'Back up the database and recreate the development database, or follow an approved production data migration procedure, before retrying.' >&2
     exit 1
 fi
 docker compose --env-file .env -f docker-compose.prod.yml up -d --build app

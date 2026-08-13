@@ -43,7 +43,8 @@ async fn setup() -> (Router, sqlx::PgPool, std::path::PathBuf) {
             .await
             .expect("state"),
     );
-    oauth_flow::ensure_owner_bootstrapped(&router, "passkey_policy").await;
+    oauth_flow::ensure_owner_bootstrapped(&router, &database, "passkey_policy", "passkey_policy")
+        .await;
     (router, database, key_directory)
 }
 

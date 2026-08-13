@@ -4,8 +4,6 @@ import { Button, Field, HudPanel, Notice } from '../../components/ui'
 import { Drawer } from '../../components/drawer'
 import { SelectField } from '../../components/select'
 
-let planCache: AdminPlan[] | null = null
-
 /** 复用共享 Drawer 的套餐分配抽屉；分配走 POST /admin/users/{id}/plan。 */
 export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
   userId: number
@@ -13,17 +11,20 @@ export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
   onAssigned: () => void
   onClose: () => void
 }) {
-  const [plans, setPlans] = useState<AdminPlan[] | null>(planCache)
+  const [plans, setPlans] = useState<AdminPlan[] | null>(null)
   const [planId, setPlanId] = useState('')
   const [expiresAt, setExpiresAt] = useState('')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
 
+  // 每次打开抽屉都重新拉取套餐列表，不设模块级缓存（#373）：
+  // 套餐的新建/归档/恢复/编辑发生在套餐管理页，注销换账号也没有失效入口，
+  // 任何缓存都要额外维护失效点；抽屉按需挂载，拉取一次的成本可忽略，
+  // 卸载时 active 守卫会丢弃在途响应，不存在跨账号写回。
   useEffect(() => {
-    if (planCache) return
     let active = true
     void apiFetch<AdminPlan[]>('/api/v1/admin/plans')
-      .then((value) => { planCache = value; if (active) setPlans(value) })
+      .then((value) => { if (active) setPlans(value) })
       .catch((reason: unknown) => { if (active) setError(reason instanceof Error ? reason.message : '套餐列表加载失败。') })
     return () => { active = false }
   }, [])
@@ -51,8 +52,6 @@ export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
         expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
       }
       await apiFetch<void>(`/api/v1/admin/users/${userId}/plan`, { method: 'POST', body: JSON.stringify(input) })
-      // 分配会改变套餐的占用情况，缓存作废，下次打开重新拉取。
-      planCache = null
       onAssigned()
       onClose()
     } catch (reason) {

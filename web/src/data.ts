@@ -6,9 +6,9 @@ export const navGroups: NavGroup[] = [
     label: '账户',
     items: [
       { label: '总览', path: '/console', icon: 'layout-grid' },
-      { label: '套餐与权益', path: '/console/plans', icon: 'crown' },
       { label: '个人信息', path: '/console/profile', icon: 'user' },
       { label: '已授权应用', path: '/console/apps', icon: 'shield-check' },
+      { label: '安全日志', path: '/console/logs', icon: 'activity' },
     ],
   },
   {
@@ -16,6 +16,7 @@ export const navGroups: NavGroup[] = [
     items: [
       { label: '接入应用', path: '/console/integrate', icon: 'code-2' },
       { label: '授权测试', path: '/console/playground', icon: 'flask-conical' },
+      { label: '套餐与权益', path: '/console/plans', icon: 'crown' },
     ],
   },
   {
@@ -33,7 +34,7 @@ export const navGroups: NavGroup[] = [
 ]
 
 export const pageStatus: Record<string, string> = {
-  '/': '星门在线',
+  '/': '认证中枢',
   '/login': '统一登录',
   '/register': '创建通行证',
   '/bootstrap': '系统初始化',
@@ -44,6 +45,7 @@ export const pageStatus: Record<string, string> = {
   '/console/plans': '控制台 · 套餐与权益',
   '/console/profile': '控制台 · 个人信息',
   '/console/apps': '控制台 · 已授权应用',
+  '/console/logs': '控制台 · 安全日志',
   '/console/integrate': '控制台 · 接入应用',
   '/console/playground': '控制台 · 授权测试',
   '/admin': '管理 · 仪表盘',

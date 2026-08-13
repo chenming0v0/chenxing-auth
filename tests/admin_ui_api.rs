@@ -332,9 +332,11 @@ async fn admin_user_and_client_queries_filter_and_page_in_the_database() {
         (&other_username, "active", "admin"),
     ] {
         chenxing_auth::sqlx::query(
+            // canonical_email 用 lower(email)：夹具邮箱都是纯 ASCII 且结构合法，
+            // 与应用层 canonicalizer 的结果一致。
             "INSERT INTO users
-             (username, email, password_hash, role, status, created_at, updated_at)
-             VALUES ($1, $2, 'test-hash', $3, $4, NOW(), NOW())",
+             (username, email, canonical_email, password_hash, role, status, created_at, updated_at)
+             VALUES ($1, $2, lower($2), 'test-hash', $3, $4, NOW(), NOW())",
         )
         .bind(username)
         .bind(format!("{username}@example.com"))
@@ -477,8 +479,8 @@ async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() 
     let expired_username = format!("query-plan-user-expired-{suffix}");
 
     chenxing_auth::sqlx::query(
-        "INSERT INTO users (username, email, password_hash)
-         VALUES ($1, $2, 'test-hash')",
+        "INSERT INTO users (username, email, canonical_email, password_hash)
+         VALUES ($1, $2, lower($2), 'test-hash')",
     )
     .bind(&default_username)
     .bind(format!("{default_username}@example.com"))
@@ -486,8 +488,8 @@ async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() 
     .await
     .expect("insert default query user");
     chenxing_auth::sqlx::query(
-        "INSERT INTO users (username, email, password_hash, plan_id, plan_expires_at)
-         VALUES ($1, $2, 'test-hash', $3, NOW() + INTERVAL '1 day')",
+        "INSERT INTO users (username, email, canonical_email, password_hash, plan_id, plan_expires_at)
+         VALUES ($1, $2, lower($2), 'test-hash', $3, NOW() + INTERVAL '1 day')",
     )
     .bind(&assigned_username)
     .bind(format!("{assigned_username}@example.com"))
@@ -496,8 +498,8 @@ async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() 
     .await
     .expect("insert assigned query user");
     chenxing_auth::sqlx::query(
-        "INSERT INTO users (username, email, password_hash, plan_id, plan_expires_at)
-         VALUES ($1, $2, 'test-hash', $3, NOW() - INTERVAL '1 minute')",
+        "INSERT INTO users (username, email, canonical_email, password_hash, plan_id, plan_expires_at)
+         VALUES ($1, $2, lower($2), 'test-hash', $3, NOW() - INTERVAL '1 minute')",
     )
     .bind(&expired_username)
     .bind(format!("{expired_username}@example.com"))
@@ -551,6 +553,102 @@ async fn admin_user_query_returns_effective_plan_and_hides_expired_assignment() 
         .await
         .expect("cleanup query plan users");
     plan_fixtures::clear_all_plans(&database).await;
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+/// Issue #289：`admin_me` 拆开「账号不存在」与「数据库故障」后，端到端行为不变。
+///
+/// 这里守两条对外契约：Owner Cookie → 200 且带 `user_id` / `username`；
+/// 用户行被删除后 → 仍然是 401。
+///
+/// 两条 401/500 的分支判定本身由 `src/admin/ui_handlers_tests.rs` 的纯函数用例
+/// 覆盖，而不是这里：`Option<SessionRead>` 提取器已经查过一次档案，因此 handler
+/// 内的 `Ok(None)` 和 `Err` 只在提取与 handler 之间的竞态窗口里出现，
+/// 集成测试无法稳定构造。
+#[tokio::test]
+async fn admin_me_session_path_returns_identity_and_keeps_401_for_missing_account() {
+    let (router, database, key_directory) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let owner_username = format!("admin-me-owner-{suffix}");
+    let owner_email = format!("admin-me-owner-{suffix}@example.com");
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/bootstrap")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": owner_username,
+                        "email": owner_email,
+                        "password": "correct horse battery"
+                    })
+                    .to_string(),
+                ))
+                .expect("owner bootstrap request"),
+        )
+        .await
+        .expect("owner bootstrap response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let owner_id = json(response).await["id"]
+        .as_i64()
+        .expect("bootstrapped owner id");
+
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let (owner_cookies, _csrf, owner_token) =
+        browser_session(&database, &redis_url, owner_id).await;
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/auth/me")
+                .header("cookie", &owner_cookies)
+                .body(Body::empty())
+                .expect("owner session admin me request"),
+        )
+        .await
+        .expect("owner session admin me response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json(response).await;
+    assert_eq!(body["user_id"], owner_id);
+    assert_eq!(body["username"], owner_username);
+    assert_eq!(body["role"], "owner");
+
+    // 删掉用户行但留下 Redis 会话：档案查询返回 Ok(None)，这仍然是 401。
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(owner_id)
+        .execute(&database)
+        .await
+        .expect("delete owner row");
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/auth/me")
+                .header("cookie", &owner_cookies)
+                .body(Body::empty())
+                .expect("deleted owner admin me request"),
+        )
+        .await
+        .expect("deleted owner admin me response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let redis = redis::Client::open(redis_url).expect("Redis");
+    let mut redis_connection = redis
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let _: usize = redis::AsyncCommands::del(
+        &mut redis_connection,
+        format!(
+            "chenxing:session:{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(sha2::Sha256::digest(owner_token.as_bytes()))
+        ),
+    )
+    .await
+    .expect("cleanup session");
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

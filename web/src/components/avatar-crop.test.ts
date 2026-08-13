@@ -133,10 +133,11 @@ describe('local pre-flight checks', () => {
     expect(rejectExportSize(MAX_UPLOAD_BYTES)).toBeUndefined()
   })
 
-  it('rejects formats outside the allowlist but tolerates a missing MIME', () => {
+  it('rejects formats outside the allowlist and treats a missing MIME as unknown', () => {
     expect(rejectFileBeforeDecode(file(1024, 'image/gif'))).toBe('unsupported_format')
-    // 某些系统选文件时不填 type，此时留给解码环节判定而不是直接拒绝。
-    expect(rejectFileBeforeDecode(file(1024, ''))).toBeUndefined()
+    // 空 type 无法确认格式：放行会让 BMP/GIF/SVG 绕过预检（解码只验证「可解码」），
+    // 必须与未知格式一样拒绝。
+    expect(rejectFileBeforeDecode(file(1024, ''))).toBe('unsupported_format')
   })
 
   it('rejects sources below the minimum edge', () => {

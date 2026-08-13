@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::config::MAX_UNAUTHENTICATED_SOURCE_QPS;
+use crate::config::for_each_security_limit;
 
 use super::domain::SettingsValidationError;
 
@@ -67,265 +67,74 @@ impl From<&crate::config::SecurityLimits> for SecurityLimitsSetting {
 }
 
 impl SecurityLimitsSetting {
-    /// 校验语义与 `config_limits.rs` 的 `sanitized()` **有意不同**，原因是输入来源不同：
+    /// 校验管理 API 写入的取值：越界即拒绝，并回报越界的字段名。
+    ///
+    /// 取值范围与 `config_limits.rs` 的 `sanitized()` 共用同一张表
+    /// （`config_limit_bounds::for_each_security_limit!`），**动作**有意不同，因为
+    /// 输入来源不同：
     ///
     /// - 环境变量是启动期输入，此时没有人能看到错误提示。非法值只能回退默认，
     ///   否则服务会带着自毁配置起不来，运维还得先猜是哪个变量写错了。
     /// - 管理 API 是交互式输入，管理员正等着响应。非法值必须报错让他知道改哪一项，
     ///   静默改写会让人以为已经生效，等到真被攻击时才发现阈值根本不是自己设的。
     ///
-    /// u32/u64 字段 `== 0` 拒绝：QPS 为 0 表示拒绝所有请求、TTL 为 0 表示凭据签发即过期。
-    /// 未认证来源 QPS 还必须不超过 `MAX_UNAUTHENTICATED_SOURCE_QPS`，避免 Redis ZSET
-    /// 因过大的滑动窗口阈值无限增长。
-    /// i64 字段 `<= 0` 拒绝：负阈值在 Redis Lua 比较里等价于「立即触发限流」。
+    /// 下界统一是 1：QPS 为 0 表示拒绝所有请求、TTL 为 0 表示凭据签发即过期，
+    /// i64 阈值 `<= 0` 在 Redis Lua 比较里等价于「立即触发限流」。
     ///
-    /// 错误里带字段名，供 UI 提示具体是哪一项非法。
+    /// 上界同样必须拒绝：阈值本身就是安全控制，`account_failure_limit = i64::MAX`
+    /// 等于关掉账户锁定，而 UI 上看不出任何异常（#260）。
     pub fn validate(self) -> Result<Self, SettingsValidationError> {
-        // u32/u64 与 i64 的边界不同，但拒绝动作一致，用同一个宏按比较表达式区分。
-        macro_rules! reject {
-            ($($field:ident: $invalid:expr),+ $(,)?) => {
-                $(
-                    if $invalid(self.$field) {
-                        return Err(SettingsValidationError::InvalidSecurityLimit(
-                            stringify!($field),
-                        ));
-                    }
-                )+
+        // 下界统一是 1，故 `< 1` 同时覆盖无符号的 0 与有符号的非正数。
+        macro_rules! reject_if_out_of_range {
+            ($field:ident, $max:expr, $env:literal) => {
+                if self.$field < 1 || self.$field > $max {
+                    return Err(SettingsValidationError::InvalidSecurityLimit(stringify!(
+                        $field
+                    )));
+                }
             };
         }
-        let is_invalid_source_qps =
-            |value: u32| value == 0 || value > MAX_UNAUTHENTICATED_SOURCE_QPS;
-        let is_zero_u64 = |value: u64| value == 0;
-        let is_not_positive = |value: i64| value <= 0;
-
-        reject! {
-            unauthenticated_source_qps: is_invalid_source_qps,
-            authorization_code_ttl_seconds: is_zero_u64,
-            pending_request_ttl_seconds: is_zero_u64,
-            max_pending_requests_per_client: is_zero_u64,
-            max_pending_requests_global: is_zero_u64,
-            auth_failure_window_seconds: is_not_positive,
-            account_failure_limit: is_not_positive,
-            ip_failure_limit: is_not_positive,
-            totp_ticket_failure_limit: is_not_positive,
-            external_login_state_ttl_seconds: is_zero_u64,
-            external_login_state_rate_window_seconds: is_zero_u64,
-            external_login_state_rate_limit: is_not_positive,
-            external_login_state_max_pending: is_not_positive,
-        }
-
-        // 授权码是一次性凭据，RFC 6749 §4.1.2 建议 10 分钟以内。过长会拉长
-        // 「拿到授权码但还没兑换」的攻击窗口，但慢速客户端场景真实存在，只告警。
-        if self.authorization_code_ttl_seconds > 600 {
-            tracing::warn!(
-                authorization_code_ttl_seconds = self.authorization_code_ttl_seconds,
-                "authorization_code_ttl_seconds exceeds the 10 minute guidance in RFC 6749 §4.1.2"
-            );
-        }
+        for_each_security_limit!(reject_if_out_of_range);
 
         Ok(self)
+    }
+
+    /// 回读已持久化的取值时使用：越界项回退默认值并告警，不返回错误。
+    ///
+    /// 与 `validate()` 的差别只在动作，原因同样是输入来源——这里的输入是数据库里
+    /// 已经存在的行，可能是在上界收紧之前写入的合法值。回读路径被 OAuth 授权、
+    /// 令牌签发和失败限流器共用（9 个调用点），一旦返回错误，限流器按失败策略
+    /// 关闭、授权端点直接 500，等于让一条陈旧配置把整套协议流程打死；而且管理员
+    /// 连设置页都打不开，无法自行改回来。
+    ///
+    /// 回退目标是调用方传入的 `defaults`，而不是结构体自身的硬编码默认。回读路径的
+    /// 唯一调用方是 `SettingsService`，它把启动期环境配置（如 `ACCOUNT_FAILURE_LIMIT=50`）
+    /// 当作「数据库无行时的默认值」；行存在但某项越界时回落同一来源，两路默认才不会
+    /// 漂移（#361）。硬编码默认只属于 `Default`——那是环境变量本身没配时的启动值。
+    /// 回退方向是收紧而非放宽，因此降级路径不会产生新的安全缺口。
+    pub fn sanitized(mut self, defaults: &Self) -> Self {
+        macro_rules! reset_if_out_of_range {
+            ($field:ident, $max:expr, $env:literal) => {
+                if self.$field < 1 || self.$field > $max {
+                    tracing::warn!(
+                        configured = self.$field,
+                        maximum = $max,
+                        default = defaults.$field,
+                        concat!(
+                            "stored security limit ",
+                            stringify!($field),
+                            " is outside the supported range; falling back to default"
+                        )
+                    );
+                    self.$field = defaults.$field;
+                }
+            };
+        }
+        for_each_security_limit!(reset_if_out_of_range);
+        self
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 默认值必须逐字段等于 `config::SecurityLimits`，否则两处会各自漂移。
-    #[test]
-    fn security_limits_default_matches_config_limits() {
-        let setting = SecurityLimitsSetting::default();
-        let config = crate::config::SecurityLimits::default();
-        assert_eq!(
-            setting.unauthenticated_source_qps,
-            config.unauthenticated_source_qps
-        );
-        assert_eq!(
-            setting.authorization_code_ttl_seconds,
-            config.authorization_code_ttl_seconds
-        );
-        assert_eq!(
-            setting.pending_request_ttl_seconds,
-            config.pending_request_ttl_seconds
-        );
-        assert_eq!(
-            setting.max_pending_requests_per_client,
-            config.max_pending_requests_per_client
-        );
-        assert_eq!(
-            setting.max_pending_requests_global,
-            config.max_pending_requests_global
-        );
-        assert_eq!(
-            setting.auth_failure_window_seconds,
-            config.auth_failure_window_seconds
-        );
-        assert_eq!(setting.account_failure_limit, config.account_failure_limit);
-        assert_eq!(setting.ip_failure_limit, config.ip_failure_limit);
-        assert_eq!(
-            setting.totp_ticket_failure_limit,
-            config.totp_ticket_failure_limit
-        );
-        assert_eq!(
-            setting.external_login_state_ttl_seconds,
-            config.external_login_state_ttl_seconds
-        );
-        assert_eq!(
-            setting.external_login_state_rate_window_seconds,
-            config.external_login_state_rate_window_seconds
-        );
-        assert_eq!(
-            setting.external_login_state_rate_limit,
-            config.external_login_state_rate_limit
-        );
-        assert_eq!(
-            setting.external_login_state_max_pending,
-            config.external_login_state_max_pending
-        );
-    }
-
-    /// 与启动期解析不同，管理 API 必须拒绝并指出字段名，不能静默回退默认。
-    #[test]
-    fn security_limits_rejects_zero_and_negative_with_field_name() {
-        let cases: Vec<(SecurityLimitsSetting, &'static str)> = vec![
-            (
-                SecurityLimitsSetting {
-                    unauthenticated_source_qps: 0,
-                    ..Default::default()
-                },
-                "unauthenticated_source_qps",
-            ),
-            (
-                SecurityLimitsSetting {
-                    authorization_code_ttl_seconds: 0,
-                    ..Default::default()
-                },
-                "authorization_code_ttl_seconds",
-            ),
-            (
-                SecurityLimitsSetting {
-                    pending_request_ttl_seconds: 0,
-                    ..Default::default()
-                },
-                "pending_request_ttl_seconds",
-            ),
-            (
-                SecurityLimitsSetting {
-                    max_pending_requests_per_client: 0,
-                    ..Default::default()
-                },
-                "max_pending_requests_per_client",
-            ),
-            (
-                SecurityLimitsSetting {
-                    max_pending_requests_global: 0,
-                    ..Default::default()
-                },
-                "max_pending_requests_global",
-            ),
-            (
-                SecurityLimitsSetting {
-                    auth_failure_window_seconds: 0,
-                    ..Default::default()
-                },
-                "auth_failure_window_seconds",
-            ),
-            (
-                SecurityLimitsSetting {
-                    account_failure_limit: -1,
-                    ..Default::default()
-                },
-                "account_failure_limit",
-            ),
-            (
-                SecurityLimitsSetting {
-                    ip_failure_limit: 0,
-                    ..Default::default()
-                },
-                "ip_failure_limit",
-            ),
-            (
-                SecurityLimitsSetting {
-                    totp_ticket_failure_limit: -5,
-                    ..Default::default()
-                },
-                "totp_ticket_failure_limit",
-            ),
-            (
-                SecurityLimitsSetting {
-                    external_login_state_ttl_seconds: 0,
-                    ..Default::default()
-                },
-                "external_login_state_ttl_seconds",
-            ),
-            (
-                SecurityLimitsSetting {
-                    external_login_state_rate_window_seconds: 0,
-                    ..Default::default()
-                },
-                "external_login_state_rate_window_seconds",
-            ),
-            (
-                SecurityLimitsSetting {
-                    external_login_state_rate_limit: 0,
-                    ..Default::default()
-                },
-                "external_login_state_rate_limit",
-            ),
-            (
-                SecurityLimitsSetting {
-                    external_login_state_max_pending: -10,
-                    ..Default::default()
-                },
-                "external_login_state_max_pending",
-            ),
-        ];
-
-        for (invalid, field) in cases {
-            assert_eq!(
-                invalid.validate().expect_err("must be rejected"),
-                SettingsValidationError::InvalidSecurityLimit(field),
-                "expected {field} to be rejected"
-            );
-        }
-    }
-
-    #[test]
-    fn security_limits_rejects_excessive_source_qps() {
-        let invalid = SecurityLimitsSetting {
-            unauthenticated_source_qps: MAX_UNAUTHENTICATED_SOURCE_QPS + 1,
-            ..Default::default()
-        };
-        assert_eq!(
-            invalid
-                .validate()
-                .expect_err("excessive QPS must be rejected"),
-            SettingsValidationError::InvalidSecurityLimit("unauthenticated_source_qps")
-        );
-    }
-
-    /// 合法的非默认取值必须原样保留，否则配置项形同虚设。
-    #[test]
-    fn security_limits_preserves_valid_nondefault_values() {
-        let configured = SecurityLimitsSetting {
-            unauthenticated_source_qps: 5,
-            authorization_code_ttl_seconds: 60,
-            ip_failure_limit: 100,
-            ..Default::default()
-        };
-        let validated = configured.clone().validate().expect("valid values");
-        assert_eq!(validated, configured);
-    }
-
-    /// 授权码 TTL 过长只告警、不拒绝：与 `sanitized()` 的 RFC 6749 策略保持一致。
-    #[test]
-    fn security_limits_accepts_long_authorization_code_ttl_with_a_warning() {
-        let validated = SecurityLimitsSetting {
-            authorization_code_ttl_seconds: 3_600,
-            ..Default::default()
-        }
-        .validate()
-        .expect("long ttl only warns");
-        assert_eq!(validated.authorization_code_ttl_seconds, 3_600);
-    }
-}
+#[path = "security_limits_tests.rs"]
+mod tests;

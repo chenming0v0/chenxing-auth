@@ -1,6 +1,6 @@
 [package]
 name = "chenxing-auth"
-version = "1.0.8"
+version = "1.1.0"
 edition = "2024"
 description = "天穹辰星 · 辰星认证中枢"
 license = "MIT"
@@ -14,6 +14,11 @@ base64 = "0.22"
 cookie = "0.18"
 dotenvy = "0.15"
 hmac = "0.12"
+# 邮箱域名的 UTS-46 IDNA 规范化（Issue #302）。不是新增依赖：`url` 已经依赖
+# idna 1.1，这里只是把传递依赖显式化，避免"改了 url 的版本就悄悄换掉认证中枢
+# 的邮箱唯一性语义"。default-features 关掉后按需只开 std + compiled_data，
+# 与 url 启用的 feature 集合兼容，不产生第二份编译产物。
+idna = { version = "1.1", default-features = false, features = ["std", "compiled_data"] }
 # 头像二次压缩只需要 PNG/JPEG/WebP 解码与 JPEG 编码。关闭 default-features 把
 # 其余格式的解码器排除在攻击面之外：上传字节是不可信输入，每个启用的解码器
 # 都是一份额外的 CVE 暴露面。
@@ -21,7 +26,8 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 oxide-auth-axum = "0.6"
-redis = { version = "0.29", features = ["script", "tokio-comp"] }
+percent-encoding = "2"
+redis = { version = "0.29", features = ["connection-manager", "script", "tokio-comp"] }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
@@ -34,7 +40,7 @@ sqlx-postgres = { version = "0.8.6", default-features = false, features = ["json
 thiserror = "2"
 time = { version = "0.3", features = ["serde", "serde-well-known"] }
 totp-rs = { version = "5.7.2", default-features = false, features = ["gen_secret", "otpauth", "zeroize"] }
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "test-util", "time"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
 tower-http = { version = "0.6", features = ["fs", "timeout", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

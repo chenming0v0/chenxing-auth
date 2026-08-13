@@ -6,12 +6,14 @@ use crate::{
     auth_factors::service::AuthFactorService,
     auth_limiter::{AuthFailureLimiter, RedisAuthFailureLimiter},
     clients::service::ClientService,
+    clock::SharedClock,
     config::Config,
     consents::ConsentService,
     db::Database,
     keys::{KeyManager, KeyManagerError},
     oauth::providers::{
-        secrets::SecretManager, service::ExternalOAuthService, state_store::ExternalLoginStateStore,
+        endpoint_policy::EndpointPolicy, secrets::SecretManager, service::ExternalOAuthService,
+        state_store::ExternalLoginStateStore,
     },
     oauth::quota::OAuthQuotaStore,
     oauth::rate_limit::QpsRateLimiter,
@@ -24,11 +26,24 @@ use crate::{
     sessions::store::SessionStore,
     settings::{SecurityLimitsSetting, SettingsService},
     users::service::UserService,
+    web_dist::{WebDistError, WebDistRoot},
 };
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
+    /// 所有生命周期判定的时间来源。
+    ///
+    /// 这一个句柄被克隆给授权码 / Refresh Token / Session / MFA / 套餐 / 审计，
+    /// 因此一次请求内的全部过期判定看到同一个「现在」。测试用
+    /// [`AppState::with_clock`] 换成固定时钟，即可把到期边界推到两侧而不必真实
+    /// 等待。
+    ///
+    /// 不覆盖的时间来源：Redis Lua 里的 `TIME`（限流 / State / 授权请求存储需要
+    /// 跨实例一致）、SQL 里的 `NOW()`（事务时间）、`key_lock` 的文件 mtime。
+    pub clock: SharedClock,
+    /// 启动期已校验的前端产物根：静态文件服务的唯一来源（Issue #303）。
+    pub web_dist: WebDistRoot,
     pub database: Database,
     pub redis: RedisClient,
     pub sessions: SessionStore,
@@ -55,8 +70,10 @@ pub struct AppState {
 pub enum StateError {
     #[error("application configuration is invalid: {0}")]
     Config(#[from] crate::config::ConfigError),
+    #[error("static asset configuration is invalid: {0}")]
+    WebDist(#[from] WebDistError),
     #[error("database configuration is invalid: {0}")]
-    Database(#[from] crate::sqlx::Error),
+    Database(#[from] crate::db::DbError),
     #[error("redis configuration is invalid: {0}")]
     Redis(#[from] redis::RedisError),
     #[error("key manager initialization failed: {0}")]
@@ -65,10 +82,10 @@ pub enum StateError {
     ExternalOAuth(#[from] crate::oauth::providers::service::ExternalOAuthError),
     #[error("external OAuth secret initialization failed: {0}")]
     ExternalOAuthSecret(#[from] crate::oauth::providers::secrets::SecretError),
-    /// 密钥加载放在阻塞线程池执行，线程 panic 或被取消时只能观察到 JoinError。
-    /// 保留这个变体而不是 unwrap，启动失败时才不会丢掉真实原因。
-    #[error("key material initialization task failed: {0}")]
-    KeyMaterialTask(#[from] tokio::task::JoinError),
+    /// 静态根校验与密钥加载都放在阻塞线程池执行，线程 panic 或被取消时只能观察到
+    /// JoinError。保留这个变体而不是 unwrap，启动失败时才不会丢掉真实原因。
+    #[error("startup blocking task failed: {0}")]
+    StartupTask(#[from] tokio::task::JoinError),
 }
 
 /// 启动阶段一次性加载的密钥材料。
@@ -83,10 +100,18 @@ struct StartupKeyMaterial {
 
 impl StartupKeyMaterial {
     /// 同步加载全部密钥材料，只允许在 `spawn_blocking` 的阻塞线程里调用。
-    fn load(key_directory: &str, key_retention: Duration) -> Result<Self, StateError> {
+    fn load(
+        key_directory: &str,
+        key_retention: Duration,
+        key_skew_allowance: Duration,
+    ) -> Result<Self, StateError> {
         // 保持与历史实现一致的失败顺序：先 provider secret，再签名密钥。
         let secrets = SecretManager::load_or_generate(key_directory)?;
-        let keys = KeyManager::load_or_generate_with_retention(key_directory, key_retention)?;
+        let keys = KeyManager::load_or_generate_with_retention_and_skew_allowance(
+            key_directory,
+            key_retention,
+            key_skew_allowance,
+        )?;
         Ok(Self { keys, secrets })
     }
 }
@@ -95,6 +120,30 @@ impl AppState {
     pub async fn new(config: Config) -> Result<Self, StateError> {
         let database = crate::db::connect(&config)?;
         Self::new_with_pool(config, database).await
+    }
+
+    /// 用另一个时钟重建全部时间敏感的 store 与 service。
+    ///
+    /// 必须重建而不是只替换 `self.clock`：store 在构造时各自克隆了一份句柄，
+    /// 单改字段会留下一半旧时钟，正是那种"看起来注入了、实际没生效"的假象。
+    ///
+    /// 用途是集成测试：先用 `new_with_pool` 建好状态，再换成固定时钟驱动
+    /// 授权码、Refresh Token、Session 和 MFA 的到期边界。
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.authorization_codes = self.authorization_codes.clone().with_clock(clock.clone());
+        self.refresh_tokens = self.refresh_tokens.clone().with_clock(clock.clone());
+        // ClientService 持有一份用于 secret 轮换撤销的 RefreshTokenStore 克隆，
+        // 必须同步替换，否则轮换路径仍读旧时钟。
+        self.clients = self
+            .clients
+            .clone()
+            .with_refresh_tokens(self.refresh_tokens.clone());
+        self.sessions = self.sessions.clone().with_clock(clock.clone());
+        self.factors = self.factors.clone().with_clock(clock.clone());
+        self.plans = self.plans.clone().with_clock(clock.clone());
+        self.audit = self.audit.clone().with_clock(clock.clone());
+        self.clock = clock;
+        self
     }
 
     /// 使用外部提供的数据库连接池构建 AppState，不再内部调用 `db::connect`。
@@ -108,18 +157,37 @@ impl AppState {
         database: crate::db::Database,
     ) -> Result<Self, StateError> {
         config.validate_cookie_security()?;
+
+        // 静态根先解析：这是纯配置校验，放在生成 RSA 私钥和连 Redis 之前，配置错误
+        // 就不会等到副作用做完才暴露。canonicalize 与 stat 是阻塞 I/O，和密钥加载
+        // 一样搬到阻塞线程池。
+        let web_dist_setting = config.web_dist_dir.clone();
+        let key_directory_setting = config.key_directory.clone();
+        let web_dist = tokio::task::spawn_blocking(move || {
+            WebDistRoot::from_settings(&web_dist_setting, &key_directory_setting)
+        })
+        .await??;
+        tracing::info!(
+            event = "web_dist_resolved",
+            path = %web_dist.path().display(),
+            "静态资源根已校验"
+        );
+
         let redis = RedisClient::open(config.redis_url.as_str())?;
+        // 时钟在这里构造一次，往下克隆给每个需要判定过期的 store 与 service。
+        let clock = SharedClock::system();
 
         // 密钥目录的读写和 RSA 生成是同步阻塞调用，直接在 async 上下文执行会占住
         // 当前 worker（`current_thread` 调度器下会让整个运行时停摆）。搬到阻塞线程池，
         // 并按值 move 配置副本，闭包才满足 `'static + Send`。
         let key_directory = config.key_directory.clone();
         let key_retention = Duration::from_secs(config.key_rotation_grace_seconds);
+        let key_skew_allowance = Duration::from_secs(config.key_rotation_skew_allowance_seconds);
         let StartupKeyMaterial {
             keys,
             secrets: secret_manager,
         } = tokio::task::spawn_blocking(move || {
-            StartupKeyMaterial::load(&key_directory, key_retention)
+            StartupKeyMaterial::load(&key_directory, key_retention, key_skew_allowance)
         })
         .await??;
 
@@ -131,7 +199,9 @@ impl AppState {
             SecurityLimitsSetting::from(&config.security_limits),
         );
 
-        // 安全阈值从 SettingsService 读取，数据库中的管理修改可以立即被执行路径看到。
+        // 安全阈值从 SettingsService 读取。稳态下命中它的进程内缓存，认证热路径不再
+        // 逐次查询 `app_settings`（#300）；管理接口写入后主动刷新该缓存，因此同一进程
+        // 内的执行路径立即看到新阈值，多实例部署由缓存 TTL 收敛。
         let auth_limiter: Arc<dyn AuthFailureLimiter> =
             Arc::new(RedisAuthFailureLimiter::with_settings(
                 redis.clone(),
@@ -147,7 +217,8 @@ impl AppState {
             Duration::from_secs(config.session_idle_timeout_seconds),
             config.session_max_concurrent_sessions,
         )
-        .with_absolute_ttl(Duration::from_secs(config.session_ttl_seconds));
+        .with_absolute_ttl(Duration::from_secs(config.session_ttl_seconds))
+        .with_clock(clock.clone());
         let users = UserService::with_source_ip_policy(
             database.clone(),
             auth_limiter.clone(),
@@ -160,11 +231,13 @@ impl AppState {
             config.auth_encryption_keys.clone(),
             settings.clone(),
             config.missing_source_ip_policy,
-        );
-        let authorization_codes = AuthorizationCodeStore::new(redis.clone());
-        let refresh_tokens = RefreshTokenStore::new(redis.clone());
-        // Issue #62：Secret 轮换必须能撤销该 Client 已签发的 Refresh Token，
-        // 否则轮换只换掉哈希，攻击者手里的 token 依然能换出新 Access Token。
+        )
+        .with_clock(clock.clone());
+        let authorization_codes =
+            AuthorizationCodeStore::new(redis.clone()).with_clock(clock.clone());
+        let refresh_tokens = RefreshTokenStore::new(redis.clone()).with_clock(clock.clone());
+        // Secret 版本负责兑换时的硬失效；RefreshTokenStore 负责在轮换后立即
+        // 清理已经失效的 Redis 记录，避免它们一直占据索引与 TTL（#62/#310）。
         let clients =
             ClientService::with_limits(database.clone(), config.client_registration_limits.clone())
                 .with_refresh_tokens(refresh_tokens.clone());
@@ -174,16 +247,23 @@ impl AppState {
         let revocations = TokenRevocationStore::new_with_pool(redis.clone(), database.clone());
         let oauth_quotas = OAuthQuotaStore::new(redis.clone());
         let qps = QpsRateLimiter::new(redis.clone());
-        let plans = PlanService::new(database.clone());
+        let plans = PlanService::new(database.clone()).with_clock(clock.clone());
         let admin = AdminAuthenticator::new(config.admin_token.clone());
-        let audit = AuditService::new(database.clone());
+        let audit = AuditService::new(database.clone()).with_clock(clock.clone());
         // 复用已加载的 secret_manager，避免第二次 load_or_generate 创建独立副本。
-        let external_oauth = ExternalOAuthService::new(database.clone(), secret_manager)?;
+        // 出网边界策略来自配置（Issue #343）：回环/明文例外默认关闭。
+        let external_oauth = ExternalOAuthService::new(
+            database.clone(),
+            secret_manager,
+            EndpointPolicy::new(config.oauth_provider_loopback_enabled),
+        )?;
         let external_login_states =
             ExternalLoginStateStore::new_with_settings(redis.clone(), settings.clone());
 
         Ok(Self {
             config,
+            clock,
+            web_dist,
             database,
             redis,
             sessions,

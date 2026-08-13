@@ -39,7 +39,7 @@ fn expired_access_token_is_rejected_without_clock_leeway() {
             .expect("current timestamp is after epoch"),
         scope: "openid".to_owned(),
     };
-    let signing_key = keys.active_signing_key().expect("active signing key");
+    let signing_key = keys.active_signing_key();
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
     header.kid = Some(signing_key.key_id().to_owned());
     let token = jsonwebtoken::encode(&header, &claims, signing_key.encoding_key())

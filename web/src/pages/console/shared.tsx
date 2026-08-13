@@ -1,5 +1,9 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { getEntitlements, type EntitlementItem, type EntitlementsResponse } from '../../api'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import {
+  apiFetch, getEntitlements,
+  type AuthorizedOAuthApp, type EntitlementItem, type EntitlementsResponse,
+  type OwnedOAuthClient, type SessionItem,
+} from '../../api'
 import { Icon } from '../../components/ui'
 
 export function entitlementView(item: EntitlementItem) {
@@ -15,16 +19,67 @@ export function useEntitlements() {
   const [data, setData] = useState<EntitlementsResponse | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
-  const load = (force = false) => {
+  // 返回 Promise 而不是 void：调用方在同一个「重试」动作里串联多个 loader 时
+  // 需要知道这一次请求何时结束，否则无法保证重试顺序。
+  const load = useCallback((force = false) => {
     setLoading(true)
     setError('')
-    void getEntitlements(force)
+    return getEntitlements(force)
       .then(setData)
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '权益数据加载失败。'))
       .finally(() => setLoading(false))
-  }
-  useEffect(() => { load() }, [])
-  return { data, error, loading, retry: () => load(true) }
+  }, [])
+  useEffect(() => { void load() }, [load])
+  return { data, error, loading, retry: useCallback(() => load(true), [load]) }
+}
+
+export type AccountSummary = {
+  clients: OwnedOAuthClient[]
+  sessions: SessionItem[]
+  apps: AuthorizedOAuthApp[]
+}
+
+const EMPTY_SUMMARY: AccountSummary = { clients: [], sessions: [], apps: [] }
+
+/**
+ * 账户摘要（自有应用 / 会话 / 已授权应用）的可重复调用 loader。
+ *
+ * 必须是可重复调用的：三个接口任意一个失败时，页面上的「重试」要能真正重新请求它们，
+ * 而不是只重跑权益接口。requestId 保证并发重试里只有最后一次的结果落到 state。
+ */
+export function useAccountSummary() {
+  const [data, setData] = useState<AccountSummary>(EMPTY_SUMMARY)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const requestId = useRef(0)
+
+  const load = useCallback(() => {
+    const id = ++requestId.current
+    setLoading(true)
+    setError('')
+    return Promise.all([
+      apiFetch<{ items: OwnedOAuthClient[] }>('/api/v1/auth/oauth-clients'),
+      apiFetch<{ items: SessionItem[] }>('/api/v1/auth/sessions'),
+      apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps'),
+    ]).then(([clientResponse, sessionResponse, appResponse]) => {
+      if (id !== requestId.current) return
+      setData({ clients: clientResponse.items, sessions: sessionResponse.items, apps: appResponse.items })
+      setError('')
+    }).catch((reason: unknown) => {
+      if (id !== requestId.current) return
+      setError(reason instanceof Error ? reason.message : '账户摘要加载失败。')
+    }).finally(() => {
+      if (id === requestId.current) setLoading(false)
+    })
+  }, [])
+
+  useEffect(() => {
+    void load()
+    // 卸载后让 in-flight 响应失效，避免对已卸载组件 setState
+    return () => { requestId.current += 1 }
+  }, [load])
+
+  return { data, error, loading, retry: load }
 }
 
 /**

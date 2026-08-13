@@ -1,6 +1,7 @@
 /target/
 /data/
 /.env
+/ROOT.md
 *.log
 lcov.info
 __pycache__/
@@ -30,5 +31,9 @@ web/*.tsbuildinfo
 .slim/worktrees/
 .slim/worktrees.json
 
-# CI-staged native binaries for Dockerfile.runtime
+# CI-staged build context for Dockerfile.runtime
 container-binaries/
+container-web-dist/
+
+# 临时目录
+/temp/

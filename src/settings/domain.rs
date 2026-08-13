@@ -3,7 +3,8 @@ use std::fmt;
 use thiserror::Error;
 use url::Url;
 
-use crate::users::domain::is_valid_email;
+use super::smtp_sender::parse_smtp_sender;
+use crate::users::email::EmailAddress;
 
 const MAX_RP_NAME_LENGTH: usize = 128;
 const MAX_RP_ID_LENGTH: usize = 253;
@@ -192,21 +193,16 @@ impl PasskeySetting {
             return Err(SettingsValidationError::InvalidPasskeyRpName);
         }
         let rp_id = self.rp_id.trim().to_ascii_lowercase();
-        if rp_id.is_empty()
-            || rp_id.chars().count() > MAX_RP_ID_LENGTH
-            || rp_id.starts_with('.')
-            || rp_id.ends_with('.')
-            || rp_id.contains("..")
-            || !rp_id.chars().all(|character| {
-                character.is_ascii_alphanumeric() || character == '-' || character == '.'
-            })
-        {
+        if !is_registrable_rp_id(&rp_id) {
             return Err(SettingsValidationError::InvalidPasskeyRpId);
         }
         let allowed_origins = normalize_origins(self.allowed_origins, self.allow_insecure_origin)?;
         if allowed_origins.is_empty() {
             return Err(SettingsValidationError::InvalidPasskeyOrigin);
         }
+        // origin 白名单按「host 等于 rp_id 或是它的子域」判定。这条后缀规则只有在
+        // rp_id 是可注册域时才构成信任边界，因此 rp_id 的点号要求（见
+        // `is_registrable_rp_id`）是这里的前置条件，不能单独放宽。
         for origin in &allowed_origins {
             let url =
                 Url::parse(origin).map_err(|_| SettingsValidationError::InvalidPasskeyOrigin)?;
@@ -234,22 +230,19 @@ impl EmailPolicySetting {
     pub fn validate(self) -> Result<Self, SettingsValidationError> {
         let mut allowed_domains = Vec::new();
         for domain in self.allowed_domains {
-            let domain = domain.trim().to_ascii_lowercase();
+            let domain = domain.trim();
             if domain.is_empty() {
                 continue;
             }
-            if domain.chars().count() > MAX_DOMAIN_LENGTH
-                || domain.starts_with('.')
-                || domain.ends_with('.')
-                || domain.contains("..")
-                || domain.contains('@')
-                || !domain.contains('.')
-                || !domain.chars().all(|character| {
-                    character.is_ascii_alphanumeric() || character == '-' || character == '.'
-                })
-            {
+            if domain.chars().count() > MAX_DOMAIN_LENGTH || domain.contains('@') {
                 return Err(SettingsValidationError::InvalidEmailDomain);
             }
+            // 白名单存 IDNA 匹配形态：管理员填 `éxample.com` 与填
+            // `xn--xample-9ua.com` 必须落到同一个键，否则同一个域名的两种写法里
+            // 只有一种能命中（Issue #302）。空标签、根点、超长标签和非法
+            // Punycode 都由 `canonical_domain` 一并拒绝，不再手写字符白名单。
+            let domain = crate::users::email::canonical_domain(domain)
+                .map_err(|_| SettingsValidationError::InvalidEmailDomain)?;
             if !allowed_domains.contains(&domain) {
                 allowed_domains.push(domain);
             }
@@ -267,17 +260,21 @@ impl EmailPolicySetting {
         })
     }
 
-    pub fn allows_email(&self, email: &str) -> bool {
-        let email = email.trim().to_ascii_lowercase();
-        let Some((local, domain)) = email.split_once('@') else {
-            return false;
-        };
-        if self.alias_restriction_enabled && local.contains('+') {
+    /// 判定一个已规范化的邮箱是否被策略放行。
+    ///
+    /// 入参是 [`EmailAddress`] 而不是 `&str`：白名单比较的是 IDNA 匹配域名，
+    /// 自己再 `to_ascii_lowercase` 一遍会在 Unicode 域名上算出与 `canonical_email`
+    /// 不同的键，白名单就永远不命中（Issue #302）。域名的规范化规则只有一处，
+    /// 就是 `EmailAddress`。
+    pub fn allows_email(&self, email: &EmailAddress) -> bool {
+        // 别名限制看匹配值的本地部分：匹配值不剥离 `+`，因此这里能看到真实别名。
+        if self.alias_restriction_enabled && email.canonical_local_part().contains('+') {
             return false;
         }
         if !self.whitelist_enabled {
             return true;
         }
+        let domain = email.canonical_domain();
         self.allowed_domains.iter().any(|allowed| domain == allowed)
     }
 }
@@ -304,10 +301,10 @@ impl SmtpSettingUpdate {
             return Err(SettingsValidationError::InvalidSmtpUsername);
         }
         let from_address = self.from_address.trim().to_owned();
-        if from_address.chars().count() > MAX_SMTP_FROM_LENGTH {
-            return Err(SettingsValidationError::InvalidSmtpFrom);
-        }
-        if !from_address.is_empty() && !is_valid_sender(&from_address) {
+        if self.from_address.chars().any(char::is_control)
+            || from_address.chars().count() > MAX_SMTP_FROM_LENGTH
+            || (!from_address.is_empty() && parse_smtp_sender(&from_address).is_none())
+        {
             return Err(SettingsValidationError::InvalidSmtpFrom);
         }
         let password = match self.password {
@@ -331,6 +328,30 @@ impl SmtpSettingUpdate {
             password,
         ))
     }
+}
+
+/// WebAuthn rp_id 必须是可注册域（Issue #287）。
+///
+/// origin 校验用 `host == rp_id || host.ends_with(".{rp_id}")`。单标签 rp_id 会让
+/// 这条后缀规则退化成通配：`rp_id = "com"` 时 `https://evil.com` 也能进白名单。
+/// 因此要求至少含一个点号，与 `EmailPolicySetting` 的域名校验同一强度。
+///
+/// `localhost` 是唯一保留的例外：RFC 6761 保证它（以及 `*.localhost`）指向回环，
+/// 不存在被他人注册的可能，而本地开发依赖它——`Config` 在缺少 `WEBAUTHN_RP_ID`
+/// 时就会从 issuer host 填出这个值。
+fn is_registrable_rp_id(rp_id: &str) -> bool {
+    if rp_id.is_empty()
+        || rp_id.chars().count() > MAX_RP_ID_LENGTH
+        || rp_id.starts_with('.')
+        || rp_id.ends_with('.')
+        || rp_id.contains("..")
+        || !rp_id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '.'
+        })
+    {
+        return false;
+    }
+    rp_id.contains('.') || rp_id == "localhost"
 }
 
 fn normalize_origins(
@@ -392,83 +413,6 @@ fn is_loopback_host(url: &Url) -> bool {
     }
 }
 
-fn is_valid_sender(value: &str) -> bool {
-    if is_valid_email(value) {
-        return true;
-    }
-    let Some(start) = value.find('<') else {
-        return false;
-    };
-    let Some(end) = value[start + 1..].find('>') else {
-        return false;
-    };
-    let email = &value[start + 1..start + 1 + end];
-    is_valid_email(email)
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn validates_passkey_and_email_policy() {
-        let passkey = PasskeySetting {
-            enabled: true,
-            rp_name: "辰星认证中枢".to_owned(),
-            rp_id: "auth.clya.top".to_owned(),
-            user_verification: PasskeyUserVerification::Preferred,
-            authenticator_attachment: PasskeyAuthenticatorAttachment::Any,
-            allow_insecure_origin: false,
-            allowed_origins: vec!["https://auth.clya.top".to_owned()],
-        }
-        .validate()
-        .expect("passkey");
-        assert_eq!(
-            passkey.allowed_origins,
-            vec!["https://auth.clya.top".to_owned()]
-        );
-
-        let policy = EmailPolicySetting {
-            whitelist_enabled: true,
-            alias_restriction_enabled: true,
-            allowed_domains: vec!["Gmail.COM".to_owned(), "gmail.com".to_owned()],
-        }
-        .validate()
-        .expect("policy");
-        assert_eq!(policy.allowed_domains, vec!["gmail.com".to_owned()]);
-        assert!(policy.allows_email("user@gmail.com"));
-        assert!(!policy.allows_email("user+tag@gmail.com"));
-        assert!(!policy.allows_email("user@tempmail.com"));
-    }
-
-    #[test]
-    fn canonicalizes_default_and_explicit_origin_ports() {
-        let passkey = PasskeySetting {
-            enabled: true,
-            rp_name: "辰星认证中枢".to_owned(),
-            rp_id: "example.com".to_owned(),
-            user_verification: PasskeyUserVerification::Preferred,
-            authenticator_attachment: PasskeyAuthenticatorAttachment::Any,
-            allow_insecure_origin: true,
-            allowed_origins: vec![
-                "https://login.example.com".to_owned(),
-                "https://login.example.com:443".to_owned(),
-                "http://login.example.com:80".to_owned(),
-                "https://login.example.com:8443".to_owned(),
-                "http://login.example.com:8080".to_owned(),
-            ],
-        }
-        .validate()
-        .expect("passkey");
-
-        assert_eq!(
-            passkey.allowed_origins,
-            vec![
-                "https://login.example.com".to_owned(),
-                "http://login.example.com".to_owned(),
-                "https://login.example.com:8443".to_owned(),
-                "http://login.example.com:8080".to_owned(),
-            ]
-        );
-    }
-}
+#[path = "domain_tests.rs"]
+mod tests;

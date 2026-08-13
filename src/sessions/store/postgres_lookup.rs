@@ -67,8 +67,37 @@ pub(in crate::sessions::store) async fn find_with_metadata(
     } else {
         // 库里载荷为 NULL：回退到 Redis 取载荷。
         // 这条路径在 outbox 同步延迟或载荷迁移升级时会走到。
-        let mut connection = store.client.get_multiplexed_async_connection().await?;
-        let Some(payload): Option<Vec<u8>> = connection.get(store.key(token)).await? else {
+        //
+        // Redis 只是投影（Postgres 权威）：连接或读取失败时按
+        // 「取不到载荷 = 会话不存在」容错——与 `decode_payload` 的解密失败
+        // 语义一致（见 mod.rs），记录 warn 便于观测。不能把投影故障当存储
+        // 错误传播，否则 Redis 故障会让所有升级遗留会话（载荷为 NULL）的
+        // 校验直接 500 拒绝服务。这里只提前返回、不提交事务，行锁随回滚释放。
+        let mut connection = match store.client.get_multiplexed_async_connection().await {
+            Ok(connection) => connection,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    session_id = id,
+                    stage = "connect",
+                    "redis session payload fallback failed; treating session as absent"
+                );
+                return Ok(None);
+            }
+        };
+        let payload: Option<Vec<u8>> = match connection.get(store.key(token)).await {
+            Ok(payload) => payload,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    session_id = id,
+                    stage = "read",
+                    "redis session payload fallback failed; treating session as absent"
+                );
+                return Ok(None);
+            }
+        };
+        let Some(payload) = payload else {
             return Ok(None);
         };
         store.decode_payload(&payload)?
@@ -246,8 +275,12 @@ pub(in crate::sessions::store) async fn revoke_for_user(
         .ok_or(SessionStoreError::MetadataUnavailable)?;
     let mut transaction = pool.begin().await?;
     super::lock_user_session_scope(&mut transaction, user_id).await?;
-    let found: Option<(Vec<u8>,)> = crate::sqlx::query_as(
-        "SELECT token_hash
+    // `session_epoch` 与 token_hash 同行走读，写入 outbox 的 generation：
+    // 与其他撤销路径（revoke_by_token_hash、revoke_all_for_user_in_transaction）
+    // 一致，让 dead-letter 审计行能按真实 epoch 定位到会话。投递逻辑对
+    // revoke_session 只用 token_hash，该字段不改变行为。
+    let found: Option<(Vec<u8>, i64)> = crate::sqlx::query_as(
+        "SELECT token_hash, session_epoch
           FROM user_sessions
           WHERE id = $1
             AND user_id = $2
@@ -261,7 +294,7 @@ pub(in crate::sessions::store) async fn revoke_for_user(
     .bind(store.idle_timeout_interval())
     .fetch_optional(&mut *transaction)
     .await?;
-    let Some((hash,)) = found else {
+    let Some((hash, session_epoch)) = found else {
         transaction.rollback().await?;
         return Ok(false);
     };
@@ -272,11 +305,12 @@ pub(in crate::sessions::store) async fn revoke_for_user(
     crate::sqlx::query(
         "INSERT INTO session_outbox
              (operation, session_id, user_id, token_hash, generation)
-         VALUES ('revoke_session', $1, $2, $3, 0)",
+         VALUES ('revoke_session', $1, $2, $3, $4)",
     )
     .bind(session_id)
     .bind(user_id)
     .bind(&hash)
+    .bind(session_epoch)
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;

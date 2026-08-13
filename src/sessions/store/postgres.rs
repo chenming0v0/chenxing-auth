@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use super::{SessionStore, SessionStoreError};
+use super::{SessionEpochBinding, SessionStore, SessionStoreError};
 use crate::{
     sessions::domain::{Session, SessionPayload, session_token_hash_bytes},
     sqlx::{Postgres, Transaction},
@@ -20,10 +20,19 @@ pub(super) use lookup::{
     find_with_metadata, find_with_metadata_by_token_hash, list_for_user, revoke_for_user,
 };
 
+/// 写入会话元数据。
+///
+/// `binding` 为 [`SessionEpochBinding::Authenticated`] 时，epoch 比对发生在本事务
+/// 已经持有该用户的 advisory 锁与 `users` 行锁之后（Issue #274）。这一点是原子性的
+/// 全部来源：改密走的 `revoke_all_for_user_in_transaction` 需要同一把 advisory 锁，
+/// 因此两个事务只能串行——要么改密先提交、本次读到新 epoch 并拒绝写入，要么本次
+/// 先提交、改密随后把这条会话一起撤销。不存在"读到旧 epoch 又按新 epoch 落库"的
+/// 中间态。比对失败直接返回错误，事务连一行都没插入。
 pub(super) async fn save_with_metadata(
     store: &SessionStore,
     session: &mut Session,
     _ttl: Duration,
+    binding: SessionEpochBinding,
 ) -> Result<(), SessionStoreError> {
     let pool = store
         .metadata
@@ -46,6 +55,16 @@ pub(super) async fn save_with_metadata(
     };
     if UserStatus::parse(&status) != Some(UserStatus::Active) {
         return Err(SessionStoreError::UserDisabled);
+    }
+    if let SessionEpochBinding::Authenticated(authenticated_epoch) = binding
+        && authenticated_epoch != session_epoch
+    {
+        tracing::warn!(
+            event = "session.authentication_epoch_stale",
+            user_id,
+            "session issuance rejected because credentials were invalidated concurrently"
+        );
+        return Err(SessionStoreError::AuthenticationEpochChanged);
     }
     let active_count: i64 = crate::sqlx::query_scalar(
         "SELECT COUNT(*)
@@ -149,9 +168,18 @@ pub(super) async fn save_with_metadata(
 
 /// 按令牌哈希撤销单条会话。
 ///
-/// 撤销用 `COALESCE(revoked_at, NOW())` 而不是无条件覆盖：重复撤销不应该把
-/// 首次撤销时刻往后推，审计需要的是第一次生效的时间。
-/// 同时写入 outbox，由处理器把删除动作同步到 Redis 投影。
+/// `WHERE revoked_at IS NULL` 承担两件事。首先它保住原来 `COALESCE` 的语义：
+/// 已撤销的行不被再次写入，首次撤销时刻不会被往后推，审计要的是第一次生效的时间。
+/// 其次 `RETURNING` 把"这次调用是否真的改变了状态"变成可观察的事实——只有发生了
+/// 未撤销到已撤销的转变，才有新的 Redis 投影需要删除。
+///
+/// Issue #275：这里原本无条件插入 outbox 事件。重复登出、并发登出、以及对不存在
+/// 令牌的登出都会产生一个投递任务，而它要删的键早已不存在。这些事件必然"成功"，
+/// 于是变成纯粹的表增长；在退出接口被反复调用的部署里，它们是 outbox 里的多数。
+///
+/// 撤销事件带上 `session_id`、`user_id` 和 `session_epoch`：这些字段在同一条
+/// `RETURNING` 里就能拿到，让 dead-letter 行能被定位到具体用户和会话。投递逻辑
+/// 对 `revoke_session` 只用 `token_hash`，因此附带字段不改变行为。
 pub(super) async fn revoke_by_token_hash(
     store: &SessionStore,
     hash: &[u8],
@@ -161,21 +189,28 @@ pub(super) async fn revoke_by_token_hash(
         .as_ref()
         .ok_or(SessionStoreError::MetadataUnavailable)?;
     let mut transaction = pool.begin().await?;
-    crate::sqlx::query(
+    let revoked: Option<(i64, UserId, i64)> = crate::sqlx::query_as(
         "UPDATE user_sessions
-         SET revoked_at = COALESCE(revoked_at, NOW())
-         WHERE token_hash = $1",
+         SET revoked_at = NOW()
+         WHERE token_hash = $1 AND revoked_at IS NULL
+         RETURNING id, user_id, session_epoch",
     )
     .bind(hash)
-    .execute(&mut *transaction)
+    .fetch_optional(&mut *transaction)
     .await?;
-    crate::sqlx::query(
-        "INSERT INTO session_outbox (operation, token_hash)
-         VALUES ('revoke_session', $1)",
-    )
-    .bind(hash)
-    .execute(&mut *transaction)
-    .await?;
+    if let Some((session_id, user_id, session_epoch)) = revoked {
+        crate::sqlx::query(
+            "INSERT INTO session_outbox
+                 (operation, session_id, user_id, token_hash, generation)
+             VALUES ('revoke_session', $1, $2, $3, $4)",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .bind(hash)
+        .bind(session_epoch)
+        .execute(&mut *transaction)
+        .await?;
+    }
     transaction.commit().await?;
     Ok(())
 }

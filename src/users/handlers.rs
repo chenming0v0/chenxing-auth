@@ -12,8 +12,16 @@ use super::{
     service::UserServiceError,
 };
 use crate::{
-    api::extract::SessionWrite, audit::AuditEvent, auth_factors::session::issue_user_session,
-    error, sessions::cookies, state::AppState,
+    api::extract::SessionWrite,
+    audit::AuditEvent,
+    auth_factors::{
+        handlers::factor_key_unavailable_response,
+        service::FactorVerification,
+        session::{StaleCredentialCode, issue_user_session},
+    },
+    error,
+    sessions::cookies,
+    state::AppState,
 };
 
 #[derive(Debug, Serialize)]
@@ -128,6 +136,10 @@ pub async fn register_user(
         }
         Err(UserServiceError::SourceIpUnavailable) => error::internal(),
         Err(UserServiceError::LastOwnerRequired) => error::internal(),
+        Err(UserServiceError::ManageRolesRequired) => error::internal(),
+        // 公开注册没有同事务审计要求，这个变体到不了这里；保留分支只为让新增
+        // `UserServiceError` 变体在编译期被发现，而不是落进兜底的 500。
+        Err(UserServiceError::AuditUnavailable) => error::internal(),
         Err(UserServiceError::OwnerBootstrapRequired) => error::conflict(
             "owner_bootstrap_required",
             "owner bootstrap must be completed before public registration",
@@ -142,14 +154,28 @@ pub async fn login_user(
     Json(input): Json<LoginInput>,
 ) -> Response {
     let totp_code = input.totp_code.clone();
-    let identifier = input.identifier.trim().to_ascii_lowercase();
+    // 审计的 `account_ref` 必须与限流的账号维度用同一个键（Issue #302）。
+    // 补丁前这里独立做 `trim().to_ascii_lowercase()`，Unicode 域名下算出的串与
+    // `canonical_email` 不同，于是同一个账号按不同书写登录会留下两个不同的
+    // `account_ref`，按账号检索审计就漏事件。
+    //
+    // 解析失败时回落到 trim 后的原样输入：那条路径必然返回 401 且不落审计
+    // （`InvalidLoginInput` 分支不记录事件），回落值只用于日志级别的可读性。
+    let identifier = match super::domain::parse_login_identifier(input.identifier.trim()) {
+        Ok(identifier) => identifier.limiter_key().to_owned(),
+        Err(_) => input.identifier.trim().to_owned(),
+    };
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
         &headers,
         &state.config.trusted_proxies,
     );
-    let user_id = match state.users.authenticate(input, source_ip.as_deref()).await {
-        Ok(user_id) => user_id,
+    // UA 与源 IP 一起进入认证失败审计（Issue #308），只解析一次。
+    let user_agent = crate::api::user_agent(&headers);
+    // `authenticated` 绑定了本次口令校验所依据的 session_epoch（Issue #274）。
+    // 之后签发 ticket 或 Session 都用它，不再重新读当前 epoch。
+    let authenticated = match state.users.authenticate(input, source_ip.as_deref()).await {
+        Ok(authenticated) => authenticated,
         Err(UserServiceError::InvalidCredentials) => {
             record_security_event(
                 &state,
@@ -158,6 +184,7 @@ pub async fn login_user(
                 "invalid_credentials",
                 Some(&identifier),
                 source_ip.as_deref(),
+                user_agent.as_deref(),
             )
             .await;
             return error::unauthorized(
@@ -179,6 +206,7 @@ pub async fn login_user(
                 "login",
                 Some(&identifier),
                 source_ip.as_deref(),
+                user_agent.as_deref(),
             )
             .await;
             return error::unauthorized(
@@ -202,6 +230,7 @@ pub async fn login_user(
             return error::internal();
         }
     };
+    let user_id = authenticated.id;
 
     let methods = match state.factors.available_methods(user_id).await {
         Ok(methods) => methods,
@@ -211,7 +240,7 @@ pub async fn login_user(
         }
     };
     if methods.contains(&crate::auth_factors::domain::FactorMethod::Totp) && totp_code.is_some() {
-        let valid = match state
+        let verification = match state
             .factors
             .verify_totp(
                 user_id,
@@ -221,7 +250,7 @@ pub async fn login_user(
             )
             .await
         {
-            Ok(valid) => valid,
+            Ok(verification) => verification,
             Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
                 record_security_event(
                     &state,
@@ -230,6 +259,7 @@ pub async fn login_user(
                     "totp_rate_limited",
                     None,
                     source_ip.as_deref(),
+                    user_agent.as_deref(),
                 )
                 .await;
                 return error::unauthorized("invalid_factor", "authentication factor is invalid");
@@ -239,19 +269,44 @@ pub async fn login_user(
                 return error::internal();
             }
         };
-        if !valid {
-            record_security_event(
-                &state,
-                "mfa_failure",
-                Some(user_id),
-                "totp_invalid",
-                None,
-                source_ip.as_deref(),
-            )
-            .await;
-            return error::unauthorized("invalid_factor", "authentication factor is invalid");
+        match verification {
+            FactorVerification::Accepted => {
+                return issue_user_session(
+                    &state,
+                    authenticated,
+                    "totp",
+                    &headers,
+                    source_ip.as_deref(),
+                    StaleCredentialCode::InvalidCredentials,
+                )
+                .await;
+            }
+            // 密钥退役导致的不可验证不是一次凭据失败：单独的审计动作与 503，
+            // 且 service 层已归还预留额度，不烧账号/IP 失败计数（#258）。
+            FactorVerification::KeyUnavailable => {
+                let source_ip = source_ip.as_deref();
+                return factor_key_unavailable_response(
+                    &state,
+                    Some(user_id),
+                    source_ip,
+                    crate::api::user_agent(&headers).as_deref(),
+                )
+                .await;
+            }
+            FactorVerification::Rejected => {
+                record_security_event(
+                    &state,
+                    "mfa_failure",
+                    Some(user_id),
+                    "totp_invalid",
+                    None,
+                    source_ip.as_deref(),
+                    user_agent.as_deref(),
+                )
+                .await;
+                return error::unauthorized("invalid_factor", "authentication factor is invalid");
+            }
         }
-        return issue_user_session(&state, user_id, "totp", &headers).await;
     }
 
     let setup_required = methods.is_empty();
@@ -271,6 +326,7 @@ pub async fn login_user(
                 "passkey_disabled",
                 None,
                 source_ip.as_deref(),
+                user_agent.as_deref(),
             )
             .await;
         }
@@ -290,10 +346,28 @@ pub async fn login_user(
     let holder_hash = cookies::login_ticket_holder_hash(&holder);
     let (login_ticket, _) = match state
         .factors
-        .create_login_ticket(user_id, ticket_methods.clone(), &holder_hash)
+        .create_login_ticket(authenticated, ticket_methods.clone(), &holder_hash)
         .await
     {
         Ok(ticket) => ticket,
+        // 并发改密作废了本次口令：与其他凭据失败共用 401 invalid_credentials，
+        // 不签发任何 ticket，也不向调用方暴露"刚刚发生过改密"。
+        Err(crate::auth_factors::service::AuthFactorServiceError::AuthenticationEpochChanged) => {
+            record_security_event(
+                &state,
+                "login_failure",
+                Some(user_id),
+                "credentials_superseded",
+                Some(&identifier),
+                source_ip.as_deref(),
+                user_agent.as_deref(),
+            )
+            .await;
+            return error::unauthorized(
+                "invalid_credentials",
+                "username, email, or password is incorrect",
+            );
+        }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to create pending login ticket");
             return error::internal();
@@ -331,11 +405,23 @@ pub async fn login_user(
 /// Session Cookie、CSRF Cookie 与 `X-CSRF-Token` 三者绑定。撤销是状态变更，
 /// 校验一旦以「请求是否带 Cookie 头」为条件，攻击者只要改走开发期兼容的
 /// `x-chenxing-session` 请求头（不发 Cookie 头）就能完整跳过 CSRF 防护。
-pub async fn revoke_session(State(state): State<AppState>, session: SessionWrite) -> Response {
+pub async fn revoke_session(
+    State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    session: SessionWrite,
+) -> Response {
     // 撤销目标就是调用者自身的 Cookie 会话，令牌只来自已校验的会话上下文
     let user_id = session.session.user_id.clone();
     let session_id = session.session.id;
     let session_token = session.session.token.clone();
+    // 请求上下文（源 IP / UA）进入撤销审计，供安全日志详情展示（Issue #308）。
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    let user_agent = crate::api::user_agent(&headers);
 
     match state.sessions.revoke(&session_token).await {
         Ok(()) => {
@@ -347,7 +433,11 @@ pub async fn revoke_session(State(state): State<AppState>, session: SessionWrite
                     "session_revoke".to_owned(),
                     "session".to_owned(),
                     Some(session_id.to_string()),
-                    serde_json::json!({"result": "success"}),
+                    crate::audit::with_request_context(
+                        serde_json::json!({"result": "success"}),
+                        source_ip.as_deref(),
+                        user_agent.as_deref(),
+                    ),
                 ))
                 .await;
             let mut response = StatusCode::NO_CONTENT.into_response();
@@ -373,6 +463,7 @@ async fn record_security_event(
     reason: &str,
     attempted_identifier: Option<&str>,
     source_ip: Option<&str>,
+    user_agent: Option<&str>,
 ) {
     state
         .audit
@@ -389,6 +480,7 @@ async fn record_security_event(
             reason,
             attempted_identifier,
             source_ip,
+            user_agent,
         ))
         .await;
 }

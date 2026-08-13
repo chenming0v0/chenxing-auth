@@ -10,6 +10,7 @@ use crate::users::{
         PublicUser, RegistrationInput, UserCreation, UserId, UserRole, UserStatus,
         validate_registration,
     },
+    email::EmailAddress,
     repository::{self, NewUser},
 };
 
@@ -53,35 +54,64 @@ impl UserService {
         Ok(public_user(user))
     }
 
+    /// 创建首个 Owner。
+    ///
+    /// 成功审计不是事后动作：事件由本用例构造，并由仓储层在引导事务内写入
+    /// （Issue #304）。因此这里没有「创建成功但审计失败」的返回值 ——
+    /// 审计失败会连带回滚用户创建，收敛成 [`UserServiceError::AuditUnavailable`]。
+    ///
+    /// `source_ip` 已由可信代理解析器取得，用于事后追溯「谁抢到了 Owner」。
+    ///
+    /// 已初始化判定必须在 Argon2 之前：哈希是 19 MiB 内存的计算成本，已初始化
+    /// 实例上的每次探测都不该为一次注定被拒的请求付这笔账（Issue #346）。
     pub async fn bootstrap_owner(
         &self,
         input: RegistrationInput,
+        source_ip: Option<&str>,
     ) -> Result<BootstrapOwnerResult, UserServiceError> {
         let mut registration = validate_registration(input)?;
+        // 便宜判定先于慢哈希：限流只有 5 次/窗口/IP 的额度，`MissingSourceIpPolicy::Skip`
+        // 部署下甚至为零，不能指望它兜底。这只是快速路径 —— 并发引导的权威判定仍在
+        // 仓储事务的 advisory lock 内重新执行，预检放行不会制造「两个 Owner」的竞态窗口。
+        if self.owner_initialized().await? {
+            return Ok(BootstrapOwnerResult::AlreadyConfigured);
+        }
         let password = std::mem::take(&mut registration.password);
         let password_hash = hash_password(password)
             .await
             .map_err(|_| UserServiceError::PasswordHash)?;
-        Ok(
-            match repository::bootstrap_owner(
-                &self.pool,
-                &registration.username,
-                &registration.email,
-                &password_hash,
-            )
-            .await?
-            {
-                repository::BootstrapOwnerOutcome::Created(profile) => {
-                    BootstrapOwnerResult::Created(profile)
-                }
-                repository::BootstrapOwnerOutcome::AlreadyConfigured => {
-                    BootstrapOwnerResult::AlreadyConfigured
-                }
-                repository::BootstrapOwnerOutcome::RequiresEmptyDatabase => {
-                    BootstrapOwnerResult::RequiresEmptyDatabase
-                }
-            },
+        let outcome = repository::bootstrap_owner(
+            &self.pool,
+            &registration.username,
+            &registration.email,
+            &password_hash,
+            |profile| owner_bootstrap_audit_event(profile.id, source_ip),
         )
+        .await
+        .map_err(|error| match error {
+            repository::BootstrapOwnerError::Database(error) => UserServiceError::Database(error),
+            repository::BootstrapOwnerError::Audit(error) => {
+                // 审计已经在 AuditService/仓储层留下结构化失败日志，这里只需要把
+                // 「引导没有发生」这一事实原样上报，不把审计细节带进 HTTP 层。
+                tracing::error!(
+                    event = "owner_bootstrap.audit_unavailable",
+                    error = %error,
+                    "owner bootstrap was rolled back because its audit record could not be written"
+                );
+                UserServiceError::AuditUnavailable
+            }
+        })?;
+        Ok(match outcome {
+            repository::BootstrapOwnerOutcome::Created(profile) => {
+                BootstrapOwnerResult::Created(profile)
+            }
+            repository::BootstrapOwnerOutcome::AlreadyConfigured => {
+                BootstrapOwnerResult::AlreadyConfigured
+            }
+            repository::BootstrapOwnerOutcome::RequiresEmptyDatabase => {
+                BootstrapOwnerResult::RequiresEmptyDatabase
+            }
+        })
     }
 
     /// Owner 是否已初始化。
@@ -130,21 +160,43 @@ impl UserService {
 
     pub(super) async fn ensure_email_policy_allows(
         &self,
-        email: &str,
+        email: &EmailAddress,
     ) -> Result<(), UserServiceError> {
         crate::users::email_policy::ensure_email_policy_allows(&self.pool, email).await
     }
+}
+
+/// Owner 引导成功的审计事件。
+///
+/// `actor_type` 用 `bootstrap` 与拒绝路径
+/// （`crate::admin::bootstrap_guard::record_bootstrap_denial`）保持一致，
+/// 因此一次部署的整条引导时间线可以按同一个 actor 检索。
+///
+/// 元数据只含角色与来源 IP：`source_ip` 在审计脱敏白名单内，用户名、邮箱和口令
+/// 都不进审计 —— 前两者属于个人数据，后者是凭据。
+fn owner_bootstrap_audit_event(id: UserId, source_ip: Option<&str>) -> crate::audit::AuditEvent {
+    crate::audit::AuditEvent::new(
+        "bootstrap".to_owned(),
+        None,
+        "owner_bootstrap".to_owned(),
+        "user".to_owned(),
+        Some(id.to_string()),
+        serde_json::json!({"result": "success", "role": "owner", "source_ip": source_ip}),
+    )
 }
 
 /// 用落库结果构造对外视图。
 ///
 /// (role, status) 取自 `NewUser` 而不是调用方的入参，响应因此必然与数据库一致。
 /// `password_hash` 在此被丢弃，不进入任何响应。
+///
+/// `email` 取展示值：对外 API 契约里的 `email` 字段一直是给人看的那一串，
+/// 匹配值 `canonical_email` 不进任何响应（Issue #302）。
 fn public_user(user: NewUser) -> PublicUser {
     PublicUser {
         id: user.id,
         username: user.username,
-        email: user.email,
+        email: user.email.into_display(),
         display_name: user.display_name,
         status: user.status.as_str().to_owned(),
         role: user.role,

@@ -74,6 +74,108 @@ function Starfield({ opacity = 0.7 }: { opacity?: number }) {
   return <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" style={{ opacity }} aria-hidden="true" />
 }
 
+/**
+ * 曲速星野：星光从画面中心向外加速飞散成线条流光，仅用于落地页 hero。
+ * 与 Starfield 同一套约定：DPR 感知、resize 重建、reduced-motion 下只画一帧
+ * 静态星点（速度清零后拖线退化为圆点），不跑 RAF 循环。
+ */
+export function WarpField({ className = '', stars = 200 }: { className?: string; stars?: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    type Star = { x: number; y: number; z: number; pz: number; gold: boolean }
+    let width = 0
+    let height = 0
+    let raf = 0
+    let running = false
+    let field: Star[] = []
+    /* z 是深度（1 最远，趋 0 贴脸）；pz 是上一帧深度，两点连线即拖尾 */
+    const spawn = (): Star => ({
+      x: Math.random() * 2 - 1,
+      y: Math.random() * 2 - 1,
+      z: Math.random() * 0.8 + 0.2,
+      pz: 0,
+      gold: Math.random() < 0.18,
+    })
+    const reset = () => {
+      width = canvas.width = canvas.offsetWidth * devicePixelRatio
+      height = canvas.height = canvas.offsetHeight * devicePixelRatio
+      field = Array.from({ length: stars }, () => {
+        const star = spawn()
+        star.pz = star.z
+        return star
+      })
+    }
+    const project = (star: Star, z: number): [number, number] => [
+      width / 2 + (star.x / z) * width * 0.5,
+      height / 2 + (star.y / z) * height * 0.5,
+    ]
+    const respawn = (star: Star) => {
+      Object.assign(star, spawn())
+      star.pz = star.z
+    }
+    const paint = (animate: boolean) => {
+      ctx.clearRect(0, 0, width, height)
+      ctx.lineCap = 'round'
+      for (const star of field) {
+        if (animate) {
+          star.pz = star.z
+          star.z -= 0.006 + (1 - star.z) * 0.012
+          if (star.z <= 0.04) respawn(star)
+        }
+        const [x1, y1] = project(star, star.pz)
+        const [x2, y2] = project(star, star.z)
+        if (x2 < 0 || x2 > width || y2 < 0 || y2 > height) {
+          if (animate) respawn(star)
+          continue
+        }
+        const depth = 1 - star.z
+        ctx.strokeStyle = star.gold
+          ? `rgba(245, 199, 106, ${0.12 + depth * 0.5})`
+          : `rgba(165, 220, 255, ${0.1 + depth * 0.55})`
+        ctx.lineWidth = (0.4 + depth * 2) * devicePixelRatio
+        ctx.beginPath()
+        ctx.moveTo(x1, y1)
+        ctx.lineTo(x2, y2)
+        ctx.stroke()
+      }
+    }
+    const stop = () => {
+      running = false
+      cancelAnimationFrame(raf)
+      paint(false)
+    }
+    const start = () => {
+      if (running) return
+      running = true
+      const loop = () => {
+        paint(true)
+        raf = requestAnimationFrame(loop)
+      }
+      raf = requestAnimationFrame(loop)
+    }
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const sync = () => (mq.matches ? stop() : start())
+    const resize = () => {
+      reset()
+      if (!running) paint(false)
+    }
+    resize()
+    sync()
+    window.addEventListener('resize', resize)
+    mq.addEventListener('change', sync)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('resize', resize)
+      mq.removeEventListener('change', sync)
+    }
+  }, [stars])
+  return <canvas ref={canvasRef} className={className} aria-hidden="true" />
+}
+
 export function SpaceBackdrop({
   children,
   className = '',

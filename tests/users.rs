@@ -12,9 +12,43 @@ fn registration_normalizes_email_and_keeps_display_name() {
     })
     .expect("valid registration");
 
-    assert_eq!(result.email, "user@example.com");
+    // Issue #302：展示值保留用户写的本地部分大小写，只有域名被规范化；
+    // 匹配值折叠本地部分。补丁前两者都被压成小写，用户的邮箱拼写在没有必要的
+    // 地方被改写。
+    assert_eq!(result.email.display(), "User@example.com");
+    assert_eq!(result.email.canonical(), "user@example.com");
     assert_eq!(result.username, "chenxing-user");
     assert_eq!(result.display_name.as_deref(), Some("辰星用户"));
+}
+
+/// Issue #302：Unicode 域名的等价书写必须收敛到同一个匹配值。
+///
+/// 补丁前 `to_ascii_lowercase` 只动 ASCII 字节，`ÉXAMPLE.COM` 会留下
+/// `Éxample.com`，于是用户按常见小写形式再输入一次就匹配不上，
+/// 同时数据库那条 `UNIQUE (email)` 也拦不住重复注册。
+#[test]
+fn registration_canonicalizes_unicode_domains() {
+    let canonical = |email: &str| {
+        validate_registration(RegistrationInput {
+            username: "unicode-user".to_owned(),
+            email: email.to_owned(),
+            password: "correct horse battery".to_owned(),
+            display_name: None,
+        })
+        .expect("valid registration")
+        .email
+        .into_canonical()
+    };
+
+    let expected = "user@xn--xample-9ua.com";
+    for variant in [
+        "user@éxample.com",
+        "user@ÉXAMPLE.COM",
+        "USER@Éxample.com",
+        "user@xn--xample-9ua.com",
+    ] {
+        assert_eq!(canonical(variant), expected, "{variant}");
+    }
 }
 
 #[test]

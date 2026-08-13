@@ -1,4 +1,4 @@
-import { apiFetch, type LoginResponse, type PendingLoginResponse } from '../../api'
+import { apiFetch, ApiError, type LoginResponse, type PendingLoginResponse } from '../../api'
 import {
   assertPublicKeyCredential, decodeCreationOptions, decodeRequestOptions, passkeyErrorMessage,
   serializeAssertion, serializeAttestation, supportsWebAuthnCreate, supportsWebAuthnGet,
@@ -7,11 +7,20 @@ import {
 import { Button, Notice } from '../../components/ui'
 
 /**
+ * login_ticket 是 MFA 步骤的会话凭证，失效（过期、被消费或服务端撤销）后
+ * 后端统一返回 invalid_login_ticket。此时重试 passkey 只会反复失败，
+ * 必须把控制权交还上层展示「重新登录」恢复动作，不能把用户卡在步骤里。
+ */
+function isInvalidLoginTicket(error: unknown): boolean {
+  return error instanceof ApiError && error.code === 'invalid_login_ticket'
+}
+
+/**
  * 首次绑定走 registration，已绑定走 authentication。两条链路的差异只有
  * challenge 解码方向和序列化函数，因此共用同一个组件，由 register 决定分支。
  */
 export function PasskeyStep({
-  pending, register, busy, onComplete, onBusy, onMessage,
+  pending, register, busy, onComplete, onBusy, onMessage, onTicketInvalid,
 }: {
   pending: PendingLoginResponse
   register: boolean
@@ -19,6 +28,7 @@ export function PasskeyStep({
   onComplete: () => Promise<void>
   onBusy: (value: boolean) => boolean | void
   onMessage: (value: string) => void
+  onTicketInvalid: () => void
 }) {
   async function run() {
     if (register ? !supportsWebAuthnCreate() : !supportsWebAuthnGet()) {
@@ -31,6 +41,10 @@ export function PasskeyStep({
       await (register ? registerPasskey() : authenticatePasskey())
       await onComplete()
     } catch (error) {
+      if (isInvalidLoginTicket(error)) {
+        onTicketInvalid()
+        return
+      }
       onMessage(passkeyErrorMessage(error))
     } finally {
       onBusy(false)

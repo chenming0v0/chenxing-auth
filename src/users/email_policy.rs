@@ -1,6 +1,7 @@
 use crate::settings::{EMAIL_POLICY_KEY, EmailPolicySetting};
 use crate::sqlx::PgPool;
 
+use super::email::EmailAddress;
 use super::service::UserServiceError;
 
 /// 解析已存储的邮箱域名策略并判定单个邮箱是否放行。
@@ -16,7 +17,10 @@ use super::service::UserServiceError;
 ///
 /// 拒绝时统一返回 `EmailDomainNotAllowed`：对调用者而言判定结果就是"不允许"，
 /// 具体的解析失败原因只写进日志，不进 HTTP 响应，避免泄露内部结构与配置内容。
-fn evaluate_email_policy(raw: Option<String>, email: &str) -> Result<(), UserServiceError> {
+fn evaluate_email_policy(
+    raw: Option<String>,
+    email: &EmailAddress,
+) -> Result<(), UserServiceError> {
     let policy = match raw.filter(|value| !value.trim().is_empty()) {
         Some(value) => match serde_json::from_str::<EmailPolicySetting>(&value) {
             Ok(policy) => policy,
@@ -44,7 +48,7 @@ fn evaluate_email_policy(raw: Option<String>, email: &str) -> Result<(), UserSer
 
 pub(super) async fn ensure_email_policy_allows(
     pool: &PgPool,
-    email: &str,
+    email: &EmailAddress,
 ) -> Result<(), UserServiceError> {
     let raw = crate::sqlx::query_as::<_, (Option<String>,)>(
         "SELECT setting_value FROM app_settings WHERE setting_key = 'email_policy'",
@@ -58,6 +62,12 @@ pub(super) async fn ensure_email_policy_allows(
 mod tests {
     use super::*;
 
+    /// 策略判定的入参是已规范化的邮箱（Issue #302）：测试也走同一个入口，
+    /// 否则会绕过被测的那条规则。
+    fn email(raw: &str) -> EmailAddress {
+        EmailAddress::parse(raw).unwrap_or_else(|error| panic!("{raw:?} must parse: {error}"))
+    }
+
     fn whitelist_policy_json() -> String {
         serde_json::json!({
             "whitelist_enabled": true,
@@ -70,30 +80,39 @@ mod tests {
     #[test]
     fn missing_setting_falls_back_to_default_and_allows() {
         // 未配置是合法初始状态，default 不启用白名单。
-        assert!(evaluate_email_policy(None, "user@anywhere.example").is_ok());
+        assert!(evaluate_email_policy(None, &email("user@anywhere.example")).is_ok());
     }
 
     #[test]
     fn blank_setting_is_treated_as_unconfigured() {
-        assert!(evaluate_email_policy(Some("   ".to_owned()), "user@anywhere.example").is_ok());
+        assert!(
+            evaluate_email_policy(Some("   ".to_owned()), &email("user@anywhere.example")).is_ok()
+        );
     }
 
     #[test]
     fn valid_policy_allows_whitelisted_domain() {
-        assert!(evaluate_email_policy(Some(whitelist_policy_json()), "user@corp.example").is_ok());
+        assert!(
+            evaluate_email_policy(Some(whitelist_policy_json()), &email("user@corp.example"))
+                .is_ok()
+        );
     }
 
     #[test]
     fn valid_policy_rejects_domain_outside_whitelist() {
-        let error = evaluate_email_policy(Some(whitelist_policy_json()), "user@other.example")
-            .expect_err("domain outside the whitelist must be rejected");
+        let error =
+            evaluate_email_policy(Some(whitelist_policy_json()), &email("user@other.example"))
+                .expect_err("domain outside the whitelist must be rejected");
         assert!(matches!(error, UserServiceError::EmailDomainNotAllowed));
     }
 
     #[test]
     fn valid_policy_rejects_alias_when_alias_restriction_enabled() {
-        let error = evaluate_email_policy(Some(whitelist_policy_json()), "user+tag@corp.example")
-            .expect_err("alias address must be rejected");
+        let error = evaluate_email_policy(
+            Some(whitelist_policy_json()),
+            &email("user+tag@corp.example"),
+        )
+        .expect_err("alias address must be rejected");
         assert!(matches!(error, UserServiceError::EmailDomainNotAllowed));
     }
 
@@ -106,8 +125,9 @@ mod tests {
             "[]",
             r#"{"whitelist_enabled": "yes", "alias_restriction_enabled": false, "allowed_domains": []}"#,
         ] {
-            let error = evaluate_email_policy(Some(raw.to_owned()), "user@anywhere.example")
-                .expect_err("broken policy configuration must fail closed");
+            let error =
+                evaluate_email_policy(Some(raw.to_owned()), &email("user@anywhere.example"))
+                    .expect_err("broken policy configuration must fail closed");
             assert!(
                 matches!(error, UserServiceError::EmailDomainNotAllowed),
                 "unexpected error for {raw:?}"
@@ -119,7 +139,7 @@ mod tests {
     fn structural_drift_fails_closed() {
         // 字段改名 / 结构漂移：缺少必需字段时不得静默退回 default。
         let raw = serde_json::json!({ "domains": ["corp.example"] }).to_string();
-        let error = evaluate_email_policy(Some(raw), "user@anywhere.example")
+        let error = evaluate_email_policy(Some(raw), &email("user@anywhere.example"))
             .expect_err("structural drift must fail closed");
         assert!(matches!(error, UserServiceError::EmailDomainNotAllowed));
     }
@@ -128,7 +148,7 @@ mod tests {
     fn rejection_error_does_not_leak_raw_configuration() {
         let raw =
             r#"{"whitelist_enabled": "SECRET-MARKER", "allowed_domains": ["internal.example"]}"#;
-        let error = evaluate_email_policy(Some(raw.to_owned()), "user@anywhere.example")
+        let error = evaluate_email_policy(Some(raw.to_owned()), &email("user@anywhere.example"))
             .expect_err("broken policy configuration must fail closed");
         let rendered = error.to_string();
         assert!(

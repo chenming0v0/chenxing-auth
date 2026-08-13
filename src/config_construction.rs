@@ -2,6 +2,7 @@ use std::env;
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 use crate::clients::domain::ClientRegistrationLimits;
+use crate::web_dist::{DEFAULT_WEB_DIST_DIR, WEB_DIST_DIR_ENV};
 
 use super::config_admin::admin_token_from_env;
 use super::config_audit::{AuditRetentionConfig, audit_retention_from_env};
@@ -15,7 +16,8 @@ use super::config_parsing::{
 };
 use super::config_proxy::{TrustedProxies, trusted_proxies_from_env};
 use super::config_security::{
-    DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_TOKEN_TTL_SECONDS, validate_token_and_key_lifetimes,
+    DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
+    DEFAULT_TOKEN_TTL_SECONDS, validate_session_lifetimes, validate_token_and_key_lifetimes,
 };
 use super::{
     Config, ConfigError, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
@@ -29,10 +31,13 @@ struct ConfigValues {
     issuer_url: String,
     admin_token: String,
     key_directory: String,
+    web_dist_dir: String,
     key_rotation_grace_seconds: u64,
+    key_rotation_skew_allowance_seconds: u64,
     cookie_secure: bool,
     oauth_session_header_enabled: bool,
     session_token_response_enabled: bool,
+    oauth_provider_loopback_enabled: bool,
     database_url: String,
     redis_url: String,
     session_ttl_seconds: u64,
@@ -69,18 +74,29 @@ impl Config {
         let auth_encryption_key = auth_encryption_keys.active_key().clone();
         // APP_ISSUER 写入 JWT iss claim 和 Discovery；缺失时选择启动即失败而不是回退到 host:port。
         let issuer_url = required_env("APP_ISSUER")?;
-        let issuer =
-            url::Url::parse(&issuer_url).map_err(|_| ConfigError::InvalidValue("APP_ISSUER"))?;
+        let issuer = parse_root_http_url(&issuer_url, "APP_ISSUER")?;
         let webauthn_rp_id = env::var("WEBAUTHN_RP_ID")
             .unwrap_or_else(|_| issuer.host_str().unwrap_or_default().to_owned());
         let webauthn_origin = env::var("WEBAUTHN_ORIGIN").unwrap_or_else(|_| issuer_url.clone());
         let client_registration_limits = client_registration_limits_from_env()?;
         let admin_token = admin_token_from_env()?;
         let key_directory = env::var("KEY_DIRECTORY").unwrap_or_else(|_| "data/keys".to_owned());
+        // 未设置时用默认相对路径；设置成空值则保留空值，由启动期解析明确拒绝，
+        // 而不是静默回退（回退到工作目录会把 .env 和私钥变成可下载文件，#303）。
+        let web_dist_dir =
+            env::var(WEB_DIST_DIR_ENV).unwrap_or_else(|_| DEFAULT_WEB_DIST_DIR.to_owned());
         let key_rotation_grace_raw = env::var("KEY_ROTATION_GRACE_SECONDS")
             .unwrap_or_else(|_| DEFAULT_KEY_ROTATION_GRACE_SECONDS.to_string());
         let key_rotation_grace_seconds =
             parse_u64("KEY_ROTATION_GRACE_SECONDS", &key_rotation_grace_raw)?;
+        // Issue #316：跨实例时钟偏差容忍。默认 1 小时，上限校验在
+        // `validate_token_and_key_lifetimes`（不允许超过保留窗口本身）。
+        let key_rotation_skew_allowance_raw = env::var("KEY_ROTATION_SKEW_ALLOWANCE_SECONDS")
+            .unwrap_or_else(|_| DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS.to_string());
+        let key_rotation_skew_allowance_seconds = parse_u64(
+            "KEY_ROTATION_SKEW_ALLOWANCE_SECONDS",
+            &key_rotation_skew_allowance_raw,
+        )?;
         let cookie_secure = parse_bool(
             "COOKIE_SECURE",
             env::var("COOKIE_SECURE").ok().as_deref().unwrap_or("true"),
@@ -95,6 +111,15 @@ impl Config {
         let session_token_response_enabled = parse_bool(
             "SESSION_TOKEN_RESPONSE_ENABLED",
             env::var("SESSION_TOKEN_RESPONSE_ENABLED")
+                .ok()
+                .as_deref()
+                .unwrap_or("false"),
+        )?;
+        // Issue #343：回环/明文 http 开发例外默认关闭（生产 fail-closed），
+        // 只在本机联调外部 IdP 时显式开启。
+        let oauth_provider_loopback_enabled = parse_bool(
+            "OAUTH_PROVIDER_LOOPBACK_ENABLED",
+            env::var("OAUTH_PROVIDER_LOOPBACK_ENABLED")
                 .ok()
                 .as_deref()
                 .unwrap_or("false"),
@@ -151,10 +176,13 @@ impl Config {
             issuer_url: issuer_url.clone(),
             admin_token,
             key_directory,
+            web_dist_dir,
             key_rotation_grace_seconds,
+            key_rotation_skew_allowance_seconds,
             cookie_secure,
             oauth_session_header_enabled,
             session_token_response_enabled,
+            oauth_provider_loopback_enabled,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -209,10 +237,15 @@ impl Config {
             issuer_url: issuer_url.clone(),
             admin_token: String::new(),
             key_directory: "data/keys".to_owned(),
+            web_dist_dir: DEFAULT_WEB_DIST_DIR.to_owned(),
             key_rotation_grace_seconds: DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+            // 测试构造走生产默认：跨实例时钟偏差容忍取默认值（Issue #316）。
+            key_rotation_skew_allowance_seconds: DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
             cookie_secure: true,
             oauth_session_header_enabled: true,
             session_token_response_enabled: false,
+            // 测试构造默认走生产边界：需要回环例外的用例显式设置。
+            oauth_provider_loopback_enabled: false,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -242,10 +275,13 @@ impl Config {
             issuer_url,
             admin_token,
             key_directory,
+            web_dist_dir,
             key_rotation_grace_seconds,
+            key_rotation_skew_allowance_seconds,
             cookie_secure,
             oauth_session_header_enabled,
             session_token_response_enabled,
+            oauth_provider_loopback_enabled,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -277,16 +313,7 @@ impl Config {
         if request_timeout_seconds == 0 {
             return Err(ConfigError::InvalidValue("REQUEST_TIMEOUT_SECONDS"));
         }
-        let issuer =
-            url::Url::parse(&issuer_url).map_err(|_| ConfigError::InvalidValue("APP_ISSUER"))?;
-        if !matches!(issuer.scheme(), "http" | "https")
-            || issuer.host_str().is_none()
-            || issuer.path() != "/"
-            || issuer.query().is_some()
-            || issuer.fragment().is_some()
-        {
-            return Err(ConfigError::InvalidValue("APP_ISSUER"));
-        }
+        let issuer = parse_root_http_url(&issuer_url, "APP_ISSUER")?;
         validate_cookie_security(&issuer, cookie_secure)?;
         if cookie_secure && issuer.scheme() == "http" {
             tracing::warn!(
@@ -300,35 +327,48 @@ impl Config {
         if redis_url.trim().is_empty() {
             return Err(ConfigError::MissingValue("REDIS_URL"));
         }
-        if session_ttl_seconds == 0 {
-            return Err(ConfigError::InvalidValue("SESSION_TTL_SECONDS"));
-        }
-        if session_idle_timeout_seconds == 0 {
-            return Err(ConfigError::InvalidValue("SESSION_IDLE_TIMEOUT_SECONDS"));
-        }
-        if session_max_concurrent_sessions == 0 {
-            return Err(ConfigError::InvalidValue("SESSION_MAX_CONCURRENT_SESSIONS"));
-        }
+        // #365：三个会话参数不仅有下界（0 表示「会话签发即过期 / 不允许多会话」），
+        // 还有上界——`SESSION_TTL_SECONDS` 直接成为 Redis `SET ... EX` 的 TTL，
+        // Redis 整数上限是 i64，u64::MAX 秒的配置会让每次会话写入报
+        // `ERR invalid expire time`（自伤型 DoS）。越界在这里拒绝，
+        // 报错指向配置项而不是 Redis。
+        validate_session_lifetimes(
+            session_ttl_seconds,
+            session_idle_timeout_seconds,
+            session_max_concurrent_sessions,
+        )?;
         validate_token_and_key_lifetimes(
             key_rotation_grace_seconds,
+            key_rotation_skew_allowance_seconds,
             access_token_ttl_seconds,
             id_token_ttl_seconds,
         )?;
         if webauthn_rp_id.trim().is_empty() {
             return Err(ConfigError::InvalidValue("WEBAUTHN_RP_ID"));
         }
-        let origin = url::Url::parse(&webauthn_origin)
-            .map_err(|_| ConfigError::InvalidValue("WEBAUTHN_ORIGIN"))?;
-        if !matches!(origin.scheme(), "http" | "https")
-            || origin.host_str().is_none()
-            || origin.path() != "/"
-            || origin.query().is_some()
-            || origin.fragment().is_some()
-        {
-            return Err(ConfigError::InvalidValue("WEBAUTHN_ORIGIN"));
-        }
+        parse_root_http_url(&webauthn_origin, "WEBAUTHN_ORIGIN")?;
+        // Issue #348：AGENTS.md 规定 ADMIN_TOKEN 为空时必须拒绝所有已初始化的管理
+        // API，因此空 Token 关闭整个管理面——Bearer 与浏览器 Session 两条通道都被
+        // 拒绝（统一 403 admin_disabled），唯一例外是不存在 Owner 时公开的首个
+        // Owner 引导端点。告警文案与实现语义一致，避免部署者按旧理解误判。
         if admin_token.is_empty() {
-            tracing::warn!("ADMIN_TOKEN not set: all admin APIs are disabled until configured");
+            tracing::warn!(
+                "ADMIN_TOKEN not set: the admin API surface is disabled. Both the \
+                 system Bearer channel and the browser-session channel are rejected; \
+                 only the first-owner bootstrap endpoint stays public while no owner \
+                 exists."
+            );
+        }
+        // Issue #343：回环/明文 http 例外是开发开关，开启后本服务会把解密后的
+        // client secret 和用户 access token 发给回环端点。生产开启等于给「管理员
+        // 可控出网目标」开回环口子，告警语义与实现一致。
+        if oauth_provider_loopback_enabled {
+            tracing::warn!(
+                "OAUTH_PROVIDER_LOOPBACK_ENABLED=true: provider endpoints may target \
+                 loopback hosts over plaintext http. This is a development-only \
+                 exception; decrypted client secrets and user access tokens are sent \
+                 to these endpoints. Keep disabled in production."
+            );
         }
         // #111：未配置可信代理时告警。生产反向代理部署必须设置 TRUSTED_PROXIES，
         // 否则按源限流退化为代理内网 IP 作 key，全服务共享额度（自我 DoS 风险）。
@@ -345,10 +385,13 @@ impl Config {
             issuer_url,
             admin_token,
             key_directory,
+            web_dist_dir,
             key_rotation_grace_seconds,
+            key_rotation_skew_allowance_seconds,
             cookie_secure,
             oauth_session_header_enabled,
             session_token_response_enabled,
+            oauth_provider_loopback_enabled,
             database_url,
             redis_url,
             session_ttl_seconds,
@@ -371,10 +414,25 @@ impl Config {
     }
 
     pub(crate) fn validate_cookie_security(&self) -> Result<(), ConfigError> {
-        let issuer = url::Url::parse(&self.issuer_url)
-            .map_err(|_| ConfigError::InvalidValue("APP_ISSUER"))?;
+        let issuer = parse_root_http_url(&self.issuer_url, "APP_ISSUER")?;
         validate_cookie_security(&issuer, self.cookie_secure)
     }
+}
+
+fn parse_root_http_url(value: &str, name: &'static str) -> Result<url::Url, ConfigError> {
+    let url = url::Url::parse(value).map_err(|_| ConfigError::InvalidValue(name))?;
+    // URL userinfo 是凭据材料；错误只报告配置项名称，绝不携带原始值。
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(ConfigError::InvalidValue(name));
+    }
+    Ok(url)
 }
 
 fn validate_cookie_security(issuer: &url::Url, cookie_secure: bool) -> Result<(), ConfigError> {
@@ -393,3 +451,7 @@ fn is_loopback_http_issuer(issuer: &url::Url) -> bool {
                     .is_ok_and(|address| address.is_loopback())
         })
 }
+
+#[cfg(test)]
+#[path = "config_construction_tests.rs"]
+mod tests;

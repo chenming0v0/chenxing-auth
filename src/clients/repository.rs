@@ -6,6 +6,11 @@ use time::OffsetDateTime;
 use super::domain::{ClientAuthMethod, ValidatedClientRegistration};
 use crate::users::domain::UserId;
 
+#[path = "repository_credentials.rs"]
+mod credentials;
+pub use credentials::{
+    StoredClientCredentials, find_client_credentials, lock_client_credentials_if_version,
+};
 #[path = "repository_rotation.rs"]
 mod rotation;
 pub use rotation::{find_client_secret_version, update_client_secret_if_version};
@@ -72,25 +77,6 @@ pub struct StoredClient {
     pub scopes: Vec<String>,
     pub status: String,
     pub owner_user_id: Option<UserId>,
-}
-
-pub struct StoredClientCredentials {
-    pub client_secret_hash: Option<String>,
-    pub auth_method: String,
-    pub status: String,
-}
-
-impl fmt::Debug for StoredClientCredentials {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("StoredClientCredentials")
-            .field(
-                "client_secret_hash",
-                &self.client_secret_hash.as_ref().map(|_| "<redacted>"),
-            )
-            .field("auth_method", &self.auth_method)
-            .field("status", &self.status)
-            .finish()
-    }
 }
 
 #[derive(Debug)]
@@ -176,6 +162,8 @@ pub async fn insert_client(
     client_id: String,
     credential: ClientCredential,
 ) -> Result<NewClient, crate::sqlx::Error> {
+    // 保留墙钟（Issue #299 的明确例外）：Client 行的创建时间，不是凭据有效期。
+    // Client Secret 本身没有过期语义，撤销通过 `revoke_client_tokens` 表达。
     let created_at = OffsetDateTime::now_utc();
     let id = insert_client_row(
         pool,
@@ -222,6 +210,7 @@ pub async fn insert_owned_client(
         return Err(ClientInsertError::QuotaExceeded);
     }
 
+    // 保留墙钟（Issue #299 的明确例外）：同上，行创建时间。
     let created_at = OffsetDateTime::now_utc();
     let id = insert_client_row(
         &mut *transaction,
@@ -267,27 +256,6 @@ pub async fn find_client_by_id(
     })
 }
 
-pub async fn find_client_credentials(
-    pool: &PgPool,
-    client_id: &str,
-) -> Result<Option<StoredClientCredentials>, crate::sqlx::Error> {
-    crate::sqlx::query_as::<_, (Option<String>, String, String)>(
-        "SELECT client_secret_hash, auth_method, status FROM oauth_clients WHERE client_id = $1",
-    )
-    .bind(client_id)
-    .fetch_optional(pool)
-    .await
-    .map(|record| {
-        record.map(
-            |(client_secret_hash, auth_method, status)| StoredClientCredentials {
-                client_secret_hash,
-                auth_method,
-                status,
-            },
-        )
-    })
-}
-
 /// 列出 Client。
 ///
 /// - `owner_user_id = None`：管理端视图，返回全部 Client。
@@ -314,8 +282,17 @@ pub async fn list_clients(
     .map(|rows| rows.into_iter().map(to_listed_client).collect())
 }
 
+/// 查询 Client（可选 owner / status / 搜索过滤），返回当前页与总数。
+///
+/// - `owner_user_id = None`：管理端视图，不按 owner 过滤。
+/// - `owner_user_id = Some(id)`：只统计/返回该用户拥有的 Client（Issue #415）。
+/// - `search` / `status` 为 `None` 时对应过滤条件不生效。
+///
+/// COUNT 与页数据在同一 REPEATABLE READ 事务里读取，保证总数与行来自同一
+/// MVCC 快照，翻页时不会出现总数与内容不一致。
 pub async fn query_clients(
     pool: &PgPool,
+    owner_user_id: Option<UserId>,
     search: Option<&str>,
     status: Option<&str>,
     limit: i64,
@@ -337,10 +314,12 @@ pub async fn query_clients(
         .await?;
     let total = crate::sqlx::query_scalar(
         "SELECT COUNT(*) FROM oauth_clients
-         WHERE ($1::text IS NULL OR status = $1)
-           AND ($2::text IS NULL OR client_id LIKE $2 ESCAPE E'\\\\'
-                OR client_name LIKE $2 ESCAPE E'\\\\')",
+         WHERE ($1::bigint IS NULL OR owner_user_id = $1)
+           AND ($2::text IS NULL OR status = $2)
+           AND ($3::text IS NULL OR client_id LIKE $3 ESCAPE E'\\\\'
+                OR client_name LIKE $3 ESCAPE E'\\\\')",
     )
+    .bind(owner_user_id)
     .bind(status)
     .bind(search_pattern.as_deref())
     .fetch_one(&mut *transaction)
@@ -348,11 +327,13 @@ pub async fn query_clients(
     let rows = crate::sqlx::query_as::<_, ClientRow>(&format!(
         "SELECT {LIST_COLUMNS}
          FROM oauth_clients
-         WHERE ($1::text IS NULL OR status = $1)
-           AND ($2::text IS NULL OR client_id LIKE $2 ESCAPE E'\\\\'
-                OR client_name LIKE $2 ESCAPE E'\\\\')
-         ORDER BY created_at DESC, id DESC LIMIT $3 OFFSET $4"
+         WHERE ($1::bigint IS NULL OR owner_user_id = $1)
+           AND ($2::text IS NULL OR status = $2)
+           AND ($3::text IS NULL OR client_id LIKE $3 ESCAPE E'\\\\'
+                OR client_name LIKE $3 ESCAPE E'\\\\')
+         ORDER BY created_at DESC, id DESC LIMIT $4 OFFSET $5"
     ))
+    .bind(owner_user_id)
     .bind(status)
     .bind(search_pattern.as_deref())
     .bind(limit)

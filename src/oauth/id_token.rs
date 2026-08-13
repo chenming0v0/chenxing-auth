@@ -3,7 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
 
-use crate::keys::{KeyManager, KeyManagerError};
+use crate::{
+    clock::{Clock, SystemClock},
+    keys::KeyManager,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct IdTokenClaims {
@@ -73,8 +76,6 @@ pub enum IdTokenError {
     InvalidLifetime,
     #[error("ID token signing failed: {0}")]
     Signing(#[from] jsonwebtoken::errors::Error),
-    #[error("signing key state unavailable: {0}")]
-    KeyState(#[from] KeyManagerError),
 }
 
 pub fn issue_id_token(
@@ -98,6 +99,10 @@ pub fn issue_id_token(
     )
 }
 
+/// 用进程默认时钟签发 ID Token。
+///
+/// 生产路径走 [`issue_id_token_with_profile_at`] 并传入 `AppState` 的共享时钟；
+/// 这个包装保留给不持有 `AppState` 的调用点。
 pub fn issue_id_token_with_profile(
     keys: &KeyManager,
     issuer: &str,
@@ -106,8 +111,28 @@ pub fn issue_id_token_with_profile(
     profile: IdTokenProfile<'_>,
     lifetime_seconds: u64,
 ) -> Result<String, IdTokenError> {
-    let now = usize::try_from(time::OffsetDateTime::now_utc().unix_timestamp())
-        .map_err(|_| IdTokenError::InvalidLifetime)?;
+    issue_id_token_with_profile_at(
+        keys,
+        issuer,
+        subject,
+        audience,
+        profile,
+        lifetime_seconds,
+        SystemClock.now(),
+    )
+}
+
+/// 以显式签发时刻签发 ID Token。
+pub fn issue_id_token_with_profile_at(
+    keys: &KeyManager,
+    issuer: &str,
+    subject: &str,
+    audience: &str,
+    profile: IdTokenProfile<'_>,
+    lifetime_seconds: u64,
+    now: time::OffsetDateTime,
+) -> Result<String, IdTokenError> {
+    let now = usize::try_from(now.unix_timestamp()).map_err(|_| IdTokenError::InvalidLifetime)?;
     let lifetime = usize::try_from(lifetime_seconds).map_err(|_| IdTokenError::InvalidLifetime)?;
     let exp = now
         .checked_add(lifetime)
@@ -128,7 +153,7 @@ pub fn issue_id_token_with_profile(
         name: profile.name.map(str::to_owned),
     };
     let mut header = Header::new(Algorithm::RS256);
-    let signing_key = keys.active_signing_key().map_err(IdTokenError::KeyState)?;
+    let signing_key = keys.active_signing_key();
     header.kid = Some(signing_key.key_id().to_owned());
     encode(&header, &claims, signing_key.encoding_key()).map_err(IdTokenError::from)
 }

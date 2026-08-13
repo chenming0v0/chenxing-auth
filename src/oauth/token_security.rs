@@ -1,7 +1,10 @@
 use axum::response::Response;
 
 use super::client_auth::ClientCredentials;
-use crate::{audit::AuditEvent, auth_limiter::MissingSourceIpPolicy, error, state::AppState};
+use crate::{
+    audit::AuditEvent, auth_limiter::MissingSourceIpPolicy, clients::service::AuthenticatedClient,
+    error, state::AppState,
+};
 
 pub(crate) async fn enforce_source_qps_with_policy(
     state: &AppState,
@@ -114,21 +117,21 @@ pub(crate) async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Res
 pub(crate) async fn verify_client_credentials(
     state: &AppState,
     credentials: &ClientCredentials,
-) -> Option<Response> {
+) -> Result<AuthenticatedClient, Response> {
     match state
         .clients
-        .verify_credentials(
+        .authenticate_credentials(
             &credentials.client_id,
             credentials.auth_method,
             credentials.client_secret.as_deref(),
         )
         .await
     {
-        Ok(true) => None,
-        Ok(false) => Some(error::oauth_invalid_client()),
+        Ok(Some(authenticated)) => Ok(authenticated),
+        Ok(None) => Err(error::oauth_invalid_client()),
         Err(client_error) => {
             tracing::error!(error = %client_error, "failed to verify OAuth client credentials");
-            Some(error::oauth_temporarily_unavailable())
+            Err(error::oauth_temporarily_unavailable())
         }
     }
 }

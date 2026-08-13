@@ -20,6 +20,15 @@ impl UserService {
         Ok(repository::find_profile_by_id(&self.pool, id).await?)
     }
 
+    /// 读取 active 用户的当前 `session_epoch`（Issue #409）。
+    ///
+    /// Refresh Token 签发与兑换用它做凭据代际比对：token 内 stamp 的 epoch 与
+    /// 当前值不一致，说明期间发生过撤销该用户全部凭据的操作（改密、管理端
+    /// TOTP 重置、禁用）。`None` 表示用户不存在或不是 active 状态。
+    pub async fn active_session_epoch(&self, id: UserId) -> Result<Option<i64>, UserServiceError> {
+        Ok(repository::find_active_session_epoch(&self.pool, id).await?)
+    }
+
     pub async fn update_display_name(
         &self,
         id: UserId,
@@ -48,7 +57,9 @@ impl UserService {
             return Err(UserServiceError::InvalidCredentials);
         };
 
-        let dimensions = self.password_change_dimensions(&credentials.email, source_ip)?;
+        // 与登录同一个账号维度键：匹配值，不是展示值（Issue #302）。
+        let dimensions =
+            self.password_change_dimensions(&credentials.canonical_email, source_ip)?;
         if !self.limiter.reserve(dimensions.clone()).await? {
             return Err(UserServiceError::RateLimited);
         }
@@ -71,13 +82,27 @@ impl UserService {
         // non-authentication failures, so return the reservation before doing either.
         self.limiter.release(dimensions).await?;
 
+        // 认证 epoch 与被校验的 `password_hash` 同一次读取（Issue #274）：写入事务
+        // 内再比对一次，并发改密的败者不会用已作废的当前口令改出新口令。
+        let authenticated = credentials.authenticated();
         let password_hash = hash_password(new_password.to_owned())
             .await
             .map_err(|_| UserServiceError::PasswordHash)?;
-        if !repository::change_password_and_revoke_all(&self.pool, id, &password_hash).await? {
-            return Err(UserServiceError::InvalidCredentials);
+        match repository::change_password_and_revoke_all(
+            &self.pool,
+            id,
+            &password_hash,
+            authenticated.session_epoch,
+        )
+        .await?
+        {
+            repository::PasswordChangeOutcome::Changed => Ok(()),
+            // 两种失败对调用方是同一件事："你提供的当前口令不再有效"。
+            repository::PasswordChangeOutcome::UserMissing
+            | repository::PasswordChangeOutcome::EpochChanged => {
+                Err(UserServiceError::InvalidCredentials)
+            }
         }
-        Ok(())
     }
 
     fn password_change_dimensions(

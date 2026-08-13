@@ -1,7 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ApiError, apiFetch, clearApiCache, type UserMe } from './api'
 
-export type BootstrapState = 'loading' | 'required' | 'ready'
+export type BootstrapState = 'loading' | 'required' | 'ready' | 'error'
+
+/** logout 的撤销结果。revoked=false 表示服务端会话可能仍然有效（#325）。 */
+export type LogoutResult = {
+  revoked: boolean
+}
 
 type AuthContextValue = {
   user: UserMe | null
@@ -10,7 +15,7 @@ type AuthContextValue = {
   refresh: () => Promise<UserMe | null>
   refreshBootstrap: () => Promise<BootstrapState>
   clear: () => void
-  logout: () => Promise<void>
+  logout: () => Promise<LogoutResult>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -33,6 +38,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const refreshBootstrap = useCallback(async () => {
+    // 重试（错误面板的按钮）时回到 loading，界面显示检查中而不是旧错误。
+    setBootstrap('loading')
     try {
       const result = await apiFetch<{ initialized: boolean }>('/api/v1/admin/bootstrap/status', {
         redirectOn401: false,
@@ -40,10 +47,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const next: BootstrapState = result.initialized ? 'ready' : 'required'
       setBootstrap(next)
       return next
-    } catch {
-      // If bootstrap status is unavailable, keep the app usable instead of locking the UI.
-      setBootstrap('ready')
-      return 'ready'
+    } catch (error) {
+      // bootstrap_status 协议：未初始化返回 200 {initialized:false}；已初始化实例
+      // 刻意返回与未注册路由一致的 404（bootstrap_guard::hidden_bootstrap_status），
+      // 401 同理只可能来自已就绪实例。只有这两种是「已初始化」的确定信号。
+      // 网络错误（status === 0）和 5xx 是瞬态故障：若误判为 ready，未初始化系统
+      // 会被踢到 /login，而登录接口同样拒绝未初始化实例——用户被锁死（#324）。
+      // 瞬态故障进入 error 状态，由界面提供 refreshBootstrap() 重试入口。
+      if (error instanceof ApiError && (error.status === 404 || error.status === 401)) {
+        setBootstrap('ready')
+        return 'ready'
+      }
+      setBootstrap('error')
+      return 'error'
     }
   }, [])
 
@@ -94,12 +110,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 服务端不可达不等于会话仍有效，保守做法是始终清除本地状态。
   // finally 块中的 clear() 会递增 generationRef，使任何进行中的
   // refresh() 在 await 返回后检查代数时自动丢弃结果。
-  const logout = useCallback(async () => {
+  // 撤销失败**不向外抛错**（#325）：调用点漏接 .catch 会产生 unhandled
+  // rejection，且跳转行为与成功路径不一致。失败显式收进返回值 revoked，
+  // 由调用方决定提示用户「未能完全登出」；本函数自身永不 reject。
+  const logout = useCallback(async (): Promise<LogoutResult> => {
+    let revoked = false
     try {
       await apiFetch<void>('/api/v1/auth/session', { method: 'DELETE', redirectOn401: false })
+      revoked = true
+    } catch (error) {
+      // 401 表示服务端会话本就不存在（已过期或被并发撤销，见后端
+      // SessionWrite 提取器），没有复活风险，按已撤销处理，不误报警告。
+      if (error instanceof ApiError && error.status === 401) revoked = true
     } finally {
       clear()
     }
+    return { revoked }
   }, [clear])
 
   return (

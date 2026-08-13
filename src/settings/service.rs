@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{
     SecurityLimitsSetting,
     domain::{
@@ -5,10 +7,13 @@ use super::{
         SmtpSettingUpdate, StoredSmtpSetting,
     },
     repository,
+    security_limits_cache::{CachedSecurityLimits, SecurityLimitsCache, SecurityLimitsSource},
+    smtp_sender::parse_smtp_sender,
 };
 use crate::{
     config::AuthEncryptionKey,
     oauth::providers::secrets::{SecretError, SecretManager},
+    users::email::EmailAddress,
 };
 use thiserror::Error;
 
@@ -17,7 +22,11 @@ pub struct SettingsService {
     pool: crate::sqlx::PgPool,
     secrets: SecretManager,
     default_passkey: PasskeySetting,
+    /// 启动期默认阈值（来自环境变量配置），同时是缓存的初始「最后已知安全值」。
     default_security_limits: SecurityLimitsSetting,
+    /// 认证热路径共享的阈值缓存（#300）。`Arc` 让本服务的全部克隆共享同一份状态，
+    /// 因此管理接口写入后的主动刷新对同进程内所有读取路径立即生效。
+    security_limits_cache: Arc<SecurityLimitsCache>,
 }
 
 #[derive(Debug, Error)]
@@ -60,8 +69,39 @@ impl SettingsService {
             secrets,
             default_passkey: PasskeySetting::default()
                 .with_runtime_defaults(default_rp_id, default_origin),
+            security_limits_cache: Arc::new(SecurityLimitsCache::new(
+                default_security_limits.clone(),
+            )),
             default_security_limits,
         }
+    }
+
+    /// 用自定义 TTL / 退避的缓存替换默认缓存。仅用于测试缓存与降级路径。
+    #[cfg(test)]
+    pub(crate) fn with_security_limits_cache(mut self, cache: SecurityLimitsCache) -> Self {
+        self.security_limits_cache = Arc::new(cache);
+        self
+    }
+
+    /// 构造一个 settings 读取必然失败的服务：连接池指向不可达地址，
+    /// `connect_lazy` 不在构造时连接，第一次查询才失败。
+    ///
+    /// 用于验证阈值读取故障时的降级取值与 `AuthLimiterFailurePolicy` 分发（#300），
+    /// 不需要真实 PostgreSQL。`acquire_timeout` 必须显式压到 100ms：默认 30 秒会让
+    /// 每个降级用例干等半分钟。
+    #[cfg(test)]
+    pub(crate) fn unreachable_for_tests(default_security_limits: SecurityLimitsSetting) -> Self {
+        let pool = crate::sqlx::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_millis(100))
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .expect("lazy pool");
+        Self::with_security_limits(
+            pool,
+            SecretManager::from_key([0_u8; 32]),
+            "localhost",
+            "http://localhost",
+            default_security_limits,
+        )
     }
 
     pub fn from_encryption_key(
@@ -93,10 +133,15 @@ impl SettingsService {
         value: Option<String>,
     ) -> Result<Option<String>, SettingsServiceError> {
         let value = normalize_email(value)?;
-        repository::set_registration_email_from(&self.pool, value.as_deref()).await?;
-        if let Some(email) = value.as_deref() {
-            let mut smtp =
-                repository::get_smtp(&self.pool)
+        // 独立值与 SMTP from 镜像必须一起落库：第二次写失败时若第一个键已持久化
+        // 会形成「独立值已更新、SMTP 残留旧地址」的半同步状态（#322），
+        // 用单事务保证要么都生效、要么都回滚。
+        let mut transaction = self.pool.begin().await?;
+        repository::set_registration_email_from(&mut *transaction, value.as_deref()).await?;
+        match value.as_deref() {
+            Some(email) => {
+                // 首次配置发件人时回填 SMTP from；SMTP from 已存在（由 SMTP 表单管理）则不动。
+                let mut smtp = repository::get_smtp(&mut *transaction)
                     .await?
                     .unwrap_or_else(|| StoredSmtpSetting {
                         host: String::new(),
@@ -107,11 +152,25 @@ impl SettingsService {
                         force_auth_login: false,
                         password_ciphertext: None,
                     });
-            if smtp.from_address.trim().is_empty() {
-                smtp.from_address = email.to_owned();
-                repository::set_smtp(&self.pool, &smtp).await?;
+                if smtp.from_address.trim().is_empty() {
+                    smtp.from_address = email.to_owned();
+                    repository::set_smtp(&mut *transaction, &smtp).await?;
+                }
+            }
+            None => {
+                // 清除的对称处理（#414）：SMTP from 是注册发件人的镜像（设置路径会回填，
+                // `set_smtp` 也会把非空 from 同步进独立值），而读取路径 SMTP from 优先。
+                // 只清独立值会让残留旧地址继续生效；非空 SMTP from 即当前生效发件人，
+                // 清除请求必须一并清掉它，包括修复已处于「独立值已空、SMTP 残留」状态的行。
+                if let Some(mut smtp) = repository::get_smtp(&mut *transaction).await?
+                    && !smtp.from_address.trim().is_empty()
+                {
+                    smtp.from_address.clear();
+                    repository::set_smtp(&mut *transaction, &smtp).await?;
+                }
             }
         }
+        transaction.commit().await?;
         Ok(value)
     }
 
@@ -155,11 +214,86 @@ impl SettingsService {
         Ok(value)
     }
 
+    /// 读取安全阈值，命中未过期缓存时不查询数据库。
+    ///
+    /// 语义与 #300 之前保持一致：读取失败仍然返回 `Err`，调用方（管理接口、OAuth
+    /// 授权与令牌路径）继续按各自既有方式映射错误。差别只在稳态下不再每次往返数据库。
+    ///
+    /// 需要「故障时降级而不是报错」的调用方用 `cached_security_limits()`。
     pub async fn security_limits(&self) -> Result<SecurityLimitsSetting, SettingsServiceError> {
+        if let Some(cached) = self.security_limits_cache.fresh() {
+            return Ok(cached);
+        }
+        self.load_and_cache_security_limits().await
+    }
+
+    /// 认证限流热路径使用的读取：永远返回一份可用阈值，并说明它的来源。
+    ///
+    /// 失败时不返回 `Err`，而是给出最后已知安全值或启动期默认值并标记为降级，由
+    /// 调用方按 `AuthLimiterFailurePolicy` 决定放行还是拒绝（#300）。读取失败后进入
+    /// 退避窗口，故障期间不会每个请求都再打一次数据库。
+    pub async fn cached_security_limits(&self) -> CachedSecurityLimits {
+        if let Some(value) = self.security_limits_cache.fresh() {
+            return CachedSecurityLimits {
+                value,
+                source: SecurityLimitsSource::Cache,
+            };
+        }
+        if let Some(backed_off) = self.security_limits_cache.backoff_fallback() {
+            return backed_off;
+        }
+        match self.load_and_cache_security_limits().await {
+            Ok(value) => CachedSecurityLimits {
+                value,
+                source: SecurityLimitsSource::Loaded,
+            },
+            Err(error_value) => {
+                tracing::error!(
+                    event = "settings.security_limits_load_failed",
+                    error = %error_value,
+                    "failed to load security limits; falling back to the last known safe value"
+                );
+                self.security_limits_cache.record_failure()
+            }
+        }
+    }
+
+    /// 单次数据库读取，不涉及缓存。
+    ///
+    /// 回读用 `sanitized()` 而不是 `validate()`：这条路径被 OAuth 授权、令牌签发和
+    /// 失败限流器共用，返回错误会让一条在上界收紧之前写入的旧行把整套协议流程打死，
+    /// 管理员连设置页都打不开。越界项回退默认值（收紧方向）。
+    ///
+    /// 回退目标与「数据库无行」路径同源：都是 `self.default_security_limits`（启动期
+    /// 环境配置）。若各自回退到不同来源，运维设了 `ACCOUNT_FAILURE_LIMIT=50` 也会在
+    /// 旧行存在期间被静默丢回硬编码的 10（#361）。
+    async fn load_security_limits(&self) -> Result<SecurityLimitsSetting, SettingsServiceError> {
         match repository::get_security_limits(&self.pool).await? {
-            Some(value) => Ok(value.validate()?),
+            Some(value) => Ok(value.sanitized(&self.default_security_limits)),
             None => Ok(self.default_security_limits.clone()),
         }
+    }
+
+    /// 加载并把结果写回缓存；加载期间若有管理员写入（代际推进），本次结果被丢弃。
+    ///
+    /// #413：读库时刻与写缓存时刻分离，中间可插入管理员的写入。先捕获代际、完成后
+    /// CAS 回填，让旧快照无法覆盖新阈值。返回的仍是本次读到的值——它与读库时刻的
+    /// 数据库快照一致，仅不再回填缓存。
+    async fn load_and_cache_security_limits(
+        &self,
+    ) -> Result<SecurityLimitsSetting, SettingsServiceError> {
+        let generation = self.security_limits_cache.generation();
+        let value = self.load_security_limits().await?;
+        if !self
+            .security_limits_cache
+            .store_if_generation_unchanged(generation, value.clone())
+        {
+            tracing::debug!(
+                event = "settings.security_limits_stale_reload_discarded",
+                "discarding stale security limits reload: an administrator write landed while the load was in flight"
+            );
+        }
+        Ok(value)
     }
 
     pub async fn set_security_limits(
@@ -168,6 +302,12 @@ impl SettingsService {
     ) -> Result<SecurityLimitsSetting, SettingsServiceError> {
         let value = value.validate()?;
         repository::set_security_limits(&self.pool, &value).await?;
+        // 写入成功后主动刷新缓存，而不是只失效：新值已经校验过，等价于一次成功加载。
+        // 否则本实例在 TTL 内仍按旧阈值限流，管理员在设置页看不到自己的改动生效。
+        // 多实例部署里其他实例靠 TTL 收敛，窗口上界是 SECURITY_LIMITS_CACHE_TTL。
+        // `store` 会推进代际（#413）：早于本次写入开始、晚于本次写入完成才落地的
+        // 并发过期加载会因代际不匹配被丢弃，不会用旧阈值回填覆盖刚写入的新值。
+        self.security_limits_cache.store(value.clone());
         Ok(value)
     }
 
@@ -200,7 +340,11 @@ impl SettingsService {
         update: SmtpSettingUpdate,
     ) -> Result<SmtpSetting, SettingsServiceError> {
         let (mut setting, password) = update.validate()?;
-        let existing = repository::get_smtp(&self.pool).await?;
+        // SMTP 与注册发件人镜像必须一起落库：第二次写失败时若第一个键已持久化
+        // 会形成「SMTP 已更新、镜像残留旧地址」的半同步状态（#322）。
+        // 事务内读取 existing，保证「未提供新密码则沿用旧密文」看到的是同一快照。
+        let mut transaction = self.pool.begin().await?;
+        let existing = repository::get_smtp(&mut *transaction).await?;
         let password_ciphertext = match password {
             Some(password) => Some(SecretManager::encode(&self.secrets.encrypt(&password)?)),
             None => existing
@@ -219,52 +363,45 @@ impl SettingsService {
             force_auth_login: setting.force_auth_login,
             password_ciphertext,
         };
-        repository::set_smtp(&self.pool, &stored).await?;
-        if let Some(email) = extract_email(&setting.from_address) {
-            repository::set_registration_email_from(&self.pool, Some(&email)).await?;
+        repository::set_smtp(&mut *transaction, &stored).await?;
+        // 镜像同步必须双向（#321）：非空 from 写入独立键；from 清空时删除该键。
+        // `validate` 已保证非空 from 可解析，`None` 分支只可能来自显式清空。只写
+        // 不删会让读取路径（`registration_email_from`，SMTP from 为空时回退到独立
+        // 键）命中残留旧地址，已停用的发件人在注册邮件里复活；与
+        // `set_registration_email_from` 清除时同步清 SMTP from 的方向对称。
+        match extract_email(&setting.from_address) {
+            Some(email) => {
+                repository::set_registration_email_from(&mut *transaction, Some(&email)).await?
+            }
+            None => repository::set_registration_email_from(&mut *transaction, None).await?,
         }
+        transaction.commit().await?;
         Ok(setting)
     }
 }
 
+/// 发件人邮箱的规范化。
+///
+/// 走 [`EmailAddress`] 这一个入口（Issue #302），取展示值：这个地址会进入 SMTP
+/// 的 `From` 头，需要的是给人看的形态，而域名已经被规范化成可传输的 ASCII。
+/// 它不是账号标识符，因此不需要匹配值。
 fn normalize_email(value: Option<String>) -> Result<Option<String>, SettingsServiceError> {
     let Some(value) = value else {
         return Ok(None);
     };
-    let value = value.trim().to_ascii_lowercase();
-    if value.is_empty() {
+    if value.trim().is_empty() {
         return Ok(None);
     }
-    if !crate::users::domain::is_valid_email(&value) {
-        return Err(SettingsServiceError::InvalidEmail);
-    }
-    Ok(Some(value))
+    EmailAddress::parse(&value)
+        .map(|email| Some(email.into_display()))
+        .map_err(|_| SettingsServiceError::InvalidEmail)
 }
 
+/// 从 `Name <a@b>` 或裸邮箱里取出规范化后的展示值。
 fn extract_email(value: &str) -> Option<String> {
-    let value = value.trim();
-    if crate::users::domain::is_valid_email(value) {
-        return Some(value.to_ascii_lowercase());
-    }
-    let start = value.find('<')?;
-    let end = value[start + 1..].find('>')?;
-    let email = value[start + 1..start + 1 + end]
-        .trim()
-        .to_ascii_lowercase();
-    crate::users::domain::is_valid_email(&email).then_some(email)
+    parse_smtp_sender(value).map(EmailAddress::into_display)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::normalize_email;
-
-    #[test]
-    fn normalizes_and_clears_registration_sender_email() {
-        assert_eq!(
-            normalize_email(Some("  Sender@Example.COM ".to_owned())).unwrap(),
-            Some("sender@example.com".to_owned())
-        );
-        assert_eq!(normalize_email(Some("  ".to_owned())).unwrap(), None);
-        assert!(normalize_email(Some("invalid".to_owned())).is_err());
-    }
-}
+#[path = "service_tests.rs"]
+mod tests;

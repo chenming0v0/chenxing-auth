@@ -9,6 +9,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use super::client_errors::{
+    create_client_error_response, rotate_secret_error_response, set_client_status_error_response,
+    update_client_error_response,
+};
 use crate::{
     admin::domain::AdminPermission,
     api::extract::{AdminRead, AdminWrite},
@@ -123,33 +127,7 @@ pub async fn create_client(
             )
                 .into_response()
         }
-        Err(ClientServiceError::Validation(validation_error)) => {
-            error::bad_request("invalid_client_registration", validation_error.to_string())
-        }
-        Err(ClientServiceError::Database(database_error)) => {
-            if database_error
-                .as_database_error()
-                .and_then(|database_error| database_error.code())
-                .is_some_and(|code| code == "23505")
-            {
-                error::conflict(
-                    "client_id_conflict",
-                    "client registration conflicts with existing data",
-                )
-            } else {
-                tracing::error!(error = %database_error, "failed to create OAuth client");
-                error::internal()
-            }
-        }
-        Err(
-            ClientServiceError::SecretHash
-            | ClientServiceError::InvalidData
-            | ClientServiceError::QuotaExceeded
-            | ClientServiceError::SecretRotationConflict,
-        ) => {
-            tracing::error!("failed to create OAuth client secret");
-            error::internal()
-        }
+        Err(error_value) => create_client_error_response(&error_value),
     }
 }
 
@@ -222,19 +200,7 @@ pub async fn update_client(
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::not_found("client_not_found", "client was not found"),
-        Err(ClientServiceError::Validation(validation_error)) => {
-            error::bad_request("invalid_client_registration", validation_error.to_string())
-        }
-        Err(ClientServiceError::Database(database_error)) => {
-            tracing::error!(error = %database_error, "failed to update OAuth client");
-            error::internal()
-        }
-        Err(
-            ClientServiceError::SecretHash
-            | ClientServiceError::InvalidData
-            | ClientServiceError::QuotaExceeded
-            | ClientServiceError::SecretRotationConflict,
-        ) => error::internal(),
+        Err(error_value) => update_client_error_response(&error_value),
     }
 }
 
@@ -268,17 +234,7 @@ async fn set_client_status(
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::not_found("client_not_found", "client was not found"),
-        Err(ClientServiceError::Database(database_error)) => {
-            tracing::error!(error = %database_error, "failed to update OAuth client status");
-            error::internal()
-        }
-        Err(ClientServiceError::InvalidData) => {
-            error::bad_request("invalid_status", "status is invalid")
-        }
-        Err(ClientServiceError::Validation(_))
-        | Err(ClientServiceError::SecretHash)
-        | Err(ClientServiceError::QuotaExceeded)
-        | Err(ClientServiceError::SecretRotationConflict) => error::internal(),
+        Err(error_value) => set_client_status_error_response(&error_value),
     }
 }
 
@@ -335,10 +291,9 @@ pub async fn rotate_secret(
             }
             (StatusCode::OK, Json(secret)).into_response()
         }
-        Err(ClientServiceError::InvalidData) => {
-            error::not_found("client_not_found", "client was not found")
-        }
-        Err(ClientServiceError::SecretRotationConflict) => {
+        // 轮换冲突要留痕：这是并发轮换的可观测信号，响应体本身由映射函数给出，
+        // 与直接走映射的路径保持同一个状态码和错误码。
+        Err(error_value @ ClientServiceError::SecretRotationConflict) => {
             let (actor_type, actor_id) = actor.audit_fields();
             state
                 .audit
@@ -354,18 +309,9 @@ pub async fn rotate_secret(
                     }),
                 ))
                 .await;
-            error::conflict(
-                "client_secret_rotation_conflict",
-                "client secret was rotated by another concurrent request",
-            )
+            rotate_secret_error_response(&error_value)
         }
-        Err(ClientServiceError::Database(database_error)) => {
-            tracing::error!(error = %database_error, "failed to rotate OAuth client secret");
-            error::internal()
-        }
-        Err(ClientServiceError::SecretHash) => error::internal(),
-        Err(ClientServiceError::Validation(_)) => error::internal(),
-        Err(ClientServiceError::QuotaExceeded) => error::internal(),
+        Err(error_value) => rotate_secret_error_response(&error_value),
     }
 }
 

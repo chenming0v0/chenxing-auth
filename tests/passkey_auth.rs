@@ -3,11 +3,13 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
+use base64::Engine;
 use chenxing_auth::auth_limiter::FailureDimension;
 use chenxing_auth::{api, config::Config, state::AppState};
 use redis::AsyncCommands;
 use tower::ServiceExt;
 use uuid::Uuid;
+use webauthn_rs::prelude::Passkey;
 
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
@@ -44,7 +46,7 @@ async fn setup() -> (
             .await
             .expect("test state"),
     );
-    oauth_flow::ensure_owner_bootstrapped(&router, "passkey_auth").await;
+    oauth_flow::ensure_owner_bootstrapped(&router, &database, "passkey_auth", "passkey_auth").await;
     (router, database, key_directory, email)
 }
 
@@ -124,6 +126,54 @@ fn bogus_registration_credential() -> serde_json::Value {
     })
 }
 
+fn test_passkey(credential_id: &[u8]) -> Passkey {
+    let encode = |value: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value);
+    serde_json::from_value(serde_json::json!({
+        "cred": {
+            "cred_id": encode(credential_id),
+            "cred": {
+                "type_": "ES256",
+                "key": {
+                    "EC_EC2": {
+                        "curve": "SECP256R1",
+                        "x": encode(&[4; 32]),
+                        "y": encode(&[5; 32])
+                    }
+                }
+            },
+            "counter": 0,
+            "transports": null,
+            "user_verified": false,
+            "backup_eligible": false,
+            "backup_state": false,
+            "registration_policy": "required",
+            "extensions": {},
+            "attestation": {"data": "None", "metadata": "None"},
+            "attestation_format": "none"
+        }
+    }))
+    .expect("test passkey")
+}
+
+async fn insert_test_passkey(database: &chenxing_auth::sqlx::PgPool, user_id: i64) {
+    let credential_id = Uuid::new_v4().into_bytes().to_vec();
+    // 测试种数据直插 SQL，避免依赖已被移除的 repository::insert_passkey。
+    // credential 必须是可解码的 Passkey JSON：authentication/start 会经 list_passkeys 反序列化。
+    let credential =
+        serde_json::to_value(test_passkey(&credential_id)).expect("serialize test passkey");
+    chenxing_auth::sqlx::query(
+        "INSERT INTO user_passkeys
+            (user_id, credential_id, credential, created_at, updated_at)
+         VALUES ($1, $2, $3, NOW(), NOW())",
+    )
+    .bind(user_id)
+    .bind(credential_id)
+    .bind(credential)
+    .execute(database)
+    .await
+    .expect("insert test passkey");
+}
+
 async fn create_user(router: &Router, email: &str) -> String {
     let username = format!("passkey-limit-{}", Uuid::new_v4().simple());
     let response = router
@@ -161,6 +211,97 @@ async fn login_ticket(router: &Router, username: &str) -> (String, String) {
     let cookie = cookie_header(&response);
     assert!(json_response(response).await.get("login_ticket").is_none());
     (cookie_value(&cookie, "chenxing_login_ticket"), cookie)
+}
+
+/// #337：同一个 ticket 的 start 只能原子预留一份 challenge/state。
+///
+/// 并发败者和后续重复请求都必须明确拒绝，且不能改写胜者状态。删除 pending 后仍能
+/// 用同一 ticket 重新 start，证明这些拒绝没有消耗或悬挂失败额度。
+async fn assert_start_reserves_one_challenge(
+    router: &Router,
+    endpoint: &str,
+    ticket: &(String, String),
+    pending_key: &str,
+) {
+    let (first, second) = tokio::join!(
+        post_with_cookie(router, endpoint, serde_json::json!({}), &ticket.1),
+        post_with_cookie(router, endpoint, serde_json::json!({}), &ticket.1),
+    );
+    let (winner, loser) =
+        if first.status() == StatusCode::OK && second.status() == StatusCode::BAD_REQUEST {
+            (first, second)
+        } else if second.status() == StatusCode::OK && first.status() == StatusCode::BAD_REQUEST {
+            (second, first)
+        } else {
+            panic!(
+                "exactly one concurrent start must win, got {} and {}",
+                first.status(),
+                second.status()
+            );
+        };
+    let first_challenge = json_response(winner).await["publicKey"]["challenge"]
+        .as_str()
+        .expect("winner challenge")
+        .to_owned();
+    assert_eq!(
+        json_response(loser).await["code"],
+        "invalid_login_ticket",
+        "the concurrent loser must be explicitly rejected"
+    );
+
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let redis = redis::Client::open(redis_url).expect("Redis client");
+    let mut connection = redis
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let reserved_payload: String = connection
+        .get(pending_key)
+        .await
+        .expect("reserved passkey state");
+
+    for _ in 0..=ticket_failure_limit() {
+        let response = post_with_cookie(router, endpoint, serde_json::json!({}), &ticket.1).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_response(response).await["code"],
+            "invalid_login_ticket"
+        );
+    }
+    let payload_after_rejections: String = connection
+        .get(pending_key)
+        .await
+        .expect("passkey state after rejected starts");
+    assert_eq!(
+        payload_after_rejections, reserved_payload,
+        "a rejected start must not overwrite the reserved challenge state"
+    );
+
+    let _: usize = connection
+        .del(pending_key)
+        .await
+        .expect("release reserved passkey state");
+    let response = post_with_cookie(router, endpoint, serde_json::json!({}), &ticket.1).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "rejected starts must not burn failure quota"
+    );
+    let replacement_challenge = json_response(response).await["publicKey"]["challenge"]
+        .as_str()
+        .expect("replacement challenge")
+        .to_owned();
+    assert_ne!(replacement_challenge, first_challenge);
+    let replacement_payload: String = connection
+        .get(pending_key)
+        .await
+        .expect("replacement passkey state");
+    assert_ne!(replacement_payload, reserved_payload);
+    let _: usize = connection
+        .del(pending_key)
+        .await
+        .expect("cleanup passkey state");
 }
 
 /// 在一个 ticket 上耗尽 Passkey 注册失败额度，返回每次尝试的状态码。
@@ -288,6 +429,55 @@ async fn passkey_registration_start_returns_creation_challenge_for_login_ticket(
         .execute(&database)
         .await
         .expect("user cleanup");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn concurrent_registration_starts_reserve_one_challenge_without_burning_failures() {
+    let (router, database, key_directory, email) = setup().await;
+    let username = create_user(&router, &email).await;
+    let user_id = user_id_for_email(&database, &email).await;
+    let ticket = login_ticket(&router, &username).await;
+    let pending_key = format!("chenxing:auth:passkey-registration:{}", ticket.0);
+
+    assert_start_reserves_one_challenge(
+        &router,
+        "/api/v1/auth/passkeys/register/start",
+        &ticket,
+        &pending_key,
+    )
+    .await;
+    assert!(
+        mfa_failure_reasons(&database, user_id).await.is_empty(),
+        "rejected registration starts must not be recorded as failures"
+    );
+
+    cleanup_user(&database, user_id).await;
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn concurrent_authentication_starts_reserve_one_challenge_without_burning_failures() {
+    let (router, database, key_directory, email) = setup().await;
+    let username = create_user(&router, &email).await;
+    let user_id = user_id_for_email(&database, &email).await;
+    insert_test_passkey(&database, user_id).await;
+    let ticket = login_ticket(&router, &username).await;
+    let pending_key = format!("chenxing:auth:passkey-authentication:{}", ticket.0);
+
+    assert_start_reserves_one_challenge(
+        &router,
+        "/api/v1/auth/passkeys/authentication/start",
+        &ticket,
+        &pending_key,
+    )
+    .await;
+    assert!(
+        mfa_failure_reasons(&database, user_id).await.is_empty(),
+        "rejected authentication starts must not be recorded as failures"
+    );
+
+    cleanup_user(&database, user_id).await;
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

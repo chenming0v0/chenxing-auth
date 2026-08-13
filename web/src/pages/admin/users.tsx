@@ -75,7 +75,8 @@ export function UsersTable({ access }: { access: AdminAccess }) {
   const [page, setPage] = useState(parsePageParam(params.get('page')))
   const [result, setResult] = useState<Paged<PublicUser> | null>(null)
   const [error, setError] = useState('')
-  const [busy, setBusy] = useState<number | null>(null)
+  // 行级 busy：多行操作可同时在途，先完成的行只清除自己的标记，不会像单值 busy 那样提前解禁其他行
+  const [busy, setBusy] = useState<ReadonlySet<number>>(() => new Set())
   const [refreshKey, setRefreshKey] = useState(0)
   const [assignTarget, setAssignTarget] = useState<number | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
@@ -121,7 +122,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
       ? '禁用后将撤销该用户的全部会话，并阻止其登录。'
       : '启用后该用户可以重新登录。'
     if (!window.confirm(`确认将 ${user.display_name || user.username} 的状态改为「${nextStatusLabel}」吗？\n${consequence}`)) return
-    setBusy(user.id)
+    setBusy((prev) => new Set(prev).add(user.id))
     setError('')
     try {
       await apiFetch<void>(`/api/v1/admin/users/${user.id}/${nextStatus}`, { method: 'POST' })
@@ -129,7 +130,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '用户状态更新失败。')
     } finally {
-      setBusy(null)
+      setBusy((prev) => { const next = new Set(prev); next.delete(user.id); return next })
     }
   }
 
@@ -139,7 +140,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
     if (user.id === access.data?.user_id) return
     // 两步提交：先确认角色变更方向与 Owner 权限后果，确认后才发起请求。
     if (!window.confirm(roleChangeConfirmText(user, role))) return
-    setBusy(user.id)
+    setBusy((prev) => new Set(prev).add(user.id))
     setError('')
     try {
       await apiFetch<void>(`/api/v1/admin/users/${user.id}/role`, { method: 'POST', body: JSON.stringify({ role }) })
@@ -147,7 +148,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '用户角色更新失败。')
     } finally {
-      setBusy(null)
+      setBusy((prev) => { const next = new Set(prev); next.delete(user.id); return next })
     }
   }
 
@@ -182,7 +183,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
       <DataTable
         minWidth={1080}
         columns={['ID', '用户名', '状态', '角色', '套餐', '创建时间', { label: '操作', align: 'right' }]}
-        empty={result?.items.length ? null : result ? '没有匹配用户' : '正在加载用户'}
+        empty={result?.items.length ? null : result ? '没有匹配用户' : error ? null : '正在加载用户'}
       >
         {result?.items.map((user) => {
           const isSelf = user.id === access.data?.user_id
@@ -209,7 +210,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                       <Select
                         className="!text-sm"
                         value={user.role}
-                        disabled={!access.data?.permissions.includes('manage_roles') || isSelf || busy === user.id}
+                        disabled={!access.data?.permissions.includes('manage_roles') || isSelf || busy.has(user.id)}
                         onChange={(role) => void setRole(user, role)}
                         options={ROLE_OPTIONS}
                         aria-label={isSelf ? '角色（当前登录账号，不能修改自己的角色）' : '用户角色'}
@@ -236,7 +237,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                     <button
                       type="button"
                       className={`chenxing-link chenxing-row-action${user.status === 'active' ? ' text-[var(--chenxing-error)]' : ''}`}
-                      disabled={!access.data?.permissions.includes('manage_users') || busy === user.id}
+                      disabled={!access.data?.permissions.includes('manage_users') || busy.has(user.id)}
                       onClick={() => void setUserStatus(user)}
                     >
                       {user.status === 'active' ? '禁用' : '启用'}

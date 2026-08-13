@@ -18,9 +18,27 @@ use crate::{
     state::AppState,
 };
 
+/// 注册发件人的三态更新：缺失 = 非法请求，`null` = 清除，字符串 = 设置。
+///
+/// serde 对外层 `Option` 的特例化会把 JSON `null` 直接吞成 `None`（等同缺失），
+/// 内层 `Option` 永远收不到 `null`，`Some(None)` 这一「清除」态无从产生。
+/// 因此必须用 `deserialize_with` 把 null 转发给内层 Option：
+///
+/// - 字段缺失：`#[serde(default)]` 生效，`None` → handler 返回 `invalid_request`。
+/// - `null`：helper 得到 `Some(None)` → handler 清除。
+/// - `"a@b.c"`：helper 得到 `Some(Some("a@b.c"))` → handler 设置。
 #[derive(Debug, Deserialize)]
 pub struct UpdateRegistrationEmail {
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub registration_email_from: Option<Option<String>>,
+}
+
+/// 把 JSON `null` 转成 `Some(None)`，其余值正常解析。
+fn deserialize_tri_state<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Serialize)]

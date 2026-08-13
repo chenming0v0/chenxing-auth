@@ -27,6 +27,10 @@ async fn test_router() -> (Router, std::path::PathBuf) {
         3600,
     )
     .expect("config");
+    // Issue #348：ADMIN_TOKEN 为空时管理面整体关闭，未认证请求拿到的是 403
+    // admin_disabled 而不是守卫的 401。这两个用例的意图是「请求落到 AdminWrite
+    // 守卫并被拒绝」，因此显式启用管理面（非空 Token），让守卫真正执行。
+    config.admin_token = "api-test-admin".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
@@ -70,9 +74,10 @@ async fn liveness_endpoint_includes_security_headers_without_hsts_for_http_issue
         .expect("response from router");
 
     assert_eq!(response.headers()["x-frame-options"], "DENY");
+    // 健康检查返回 JSON，不是文档，拿到的是不可加载任何资源的严格策略。
     assert_eq!(
         response.headers()["content-security-policy"],
-        "frame-ancestors 'none'"
+        "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     );
     assert_eq!(response.headers()["x-content-type-options"], "nosniff");
     assert_eq!(response.headers()["referrer-policy"], "no-referrer");
@@ -82,6 +87,50 @@ async fn liveness_endpoint_includes_security_headers_without_hsts_for_http_issue
             .get("strict-transport-security")
             .is_none()
     );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn the_spa_shell_gets_a_document_csp_that_allows_its_real_assets() {
+    // #262：全局 CSP 曾只有 frame-ancestors，对脚本注入毫无约束。
+    // SPA 文档必须拿到一条覆盖 default/script/object/base/form/frame 的策略，
+    // 同时保留 React 产物真实需要的 data:（二维码）和 blob:（头像预览）图片源。
+    let (router, key_directory) = test_router().await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/console/developer")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let policy = response.headers()["content-security-policy"]
+        .to_str()
+        .expect("ASCII policy")
+        .to_owned();
+
+    for directive in [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self'",
+        "img-src 'self' data: blob:",
+        "object-src 'none'",
+        "frame-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    ] {
+        assert!(
+            policy.contains(directive),
+            "missing {directive} in {policy}"
+        );
+    }
+    assert!(!policy.contains("unsafe-inline"), "{policy}");
+    assert!(!policy.contains("unsafe-eval"), "{policy}");
+
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

@@ -70,6 +70,8 @@
 
 `identifier` 可以填写普通用户注册时的 `username` 或邮箱地址。为兼容旧客户端，服务端仍接受请求体中的 `email` 别名；新客户端应使用 `identifier`。
 
+`identifier` 上限 254 字符，`password` 上限 128 字符，与注册侧的口令长度上界一致。超出上界的请求在进入口令哈希、数据库查询和失败限流之前被拒绝，响应与凭据错误完全相同（`401` + `invalid_credentials`），不返回独立错误码，也不暴露账号是否存在。登录不校验口令长度下界，存量短口令仍可登录。
+
 首次登录或已绑定因子但尚未完成验证时响应 `202`，并设置短期 HttpOnly pending-login Cookie：
 
 ```json
@@ -96,6 +98,8 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 2. `POST /api/v1/auth/totp/setup/confirm`，请求 `{ "code":"123456" }`。验证码正确后保存加密秘钥、消费 ticket 并返回 Session Cookie；错误验证码不会消费 ticket。
 
 已有 TOTP 的待处理登录也可以调用 `POST /api/v1/auth/totp/login`，请求包含当前六位 `code`。验证码正确后消费 ticket 并返回 Session Cookie；无效或缺少 holder proof 的 ticket 返回 `400`，错误验证码返回 `401`。
+
+验证码在同一时间步内只能使用一次，边界按「用户 + 时间步」判定，与走的是绑定确认还是登录验证无关：绑定确认消费掉的验证码不能再用于 `POST /api/v1/auth/totp/login` 或带 `totp_code` 的密码登录，换一张新的 login ticket 也不行，反向同理。命中这种冲突时返回 `401`，ticket 和待确认注册都保留，等下一个验证码重试即可。
 
 ### Passkey / WebAuthn
 
@@ -127,6 +131,8 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 - `PATCH /api/v1/auth/me`：更新 `display_name`，需要用户 CSRF。
 - `POST /api/v1/auth/password`：校验当前密码并修改密码，成功返回 `204`，同时撤销该用户所有 Session。
 - `GET /api/v1/auth/entitlements`：返回当前生效套餐摘要（`code`、`name`、`description`、`validity`）和各项权益用量；`limit` 为 `null` 表示无限，缺失表示数值无上限概念（如 QPS）。
+- `GET /api/v1/auth/security-events?page=1&page_size=20`：分页返回当前用户在热表和归档表中的安全事件，包含 `id`、`action`、`category`、`severity`、`resource_type`、OAuth Client 摘要和时间；`page_size` 最大为 100。`category`/`severity` 由服务端单点映射，未映射的 action 回落 `account`/`info`。
+- `GET /api/v1/auth/security-events/{event_id}`：返回单个安全事件详情（`ip`/`user_agent` 只从 metadata 白名单提取，`ip_location`/`ray_id` 恒为 null，`client` 仅 OAuth 事件填充、Client 已删除时为 null）；事件不存在或不属于当前用户时一律 404，不区分「查不到」与「不是你的」。
 - `GET /api/v1/auth/sessions`：返回当前用户的 Session 元数据，不返回 Session 或 CSRF 秘密。
 - `DELETE /api/v1/auth/sessions/{session_id}`：撤销当前用户拥有的指定 Session，需要用户 CSRF。
 
@@ -159,11 +165,11 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 | `code_challenge_method` | 必须为 `S256` |
 | `nonce` | 使用 OIDC 时建议必填并随机生成，最多 512 个字符 |
 
-未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`，同时下发 `chenxing_authz_holder` HttpOnly Cookie（防御 OAuth login CSRF，见下文 bind 端点说明）；非 HTML 请求返回 `401 login_required`。首次授权会进入 `/oauth/consent?request_id=...`。
+未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`；已登录但尚未授权该 scope 组合的请求进入 `/oauth/consent?request_id=...`。两条交给 SPA 的路径都会下发 `chenxing_authz_holder` HttpOnly Cookie（防御 OAuth login CSRF，见下文 bind 端点说明）。非 HTML 请求返回 `401 login_required`。
 
 ### `POST /api/v1/oauth/authorize/requests/{request_id}/bind`
 
-将 SPA 登录后签发的 Session 绑定到 pending 授权请求。绑定完成后才能调用 inspect（GET）和 decide（POST）。
+将当前浏览器 Session 绑定到 pending 授权请求。绑定完成后才能调用 inspect（GET）和 decide（POST）。
 
 调用方必须同时提供：
 
@@ -175,11 +181,13 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 **`chenxing_authz_holder` Cookie 说明**：`request_id` 通过 URL 查询参数传递，可能通过 Referer、浏览器历史或分享链接泄露。没有持有者绑定，任何拿到 `request_id` 的已登录攻击者都可以把受害者的 pending 请求绑到自己的会话上并批准，使受害者登录进攻击者账号（OAuth login CSRF / 请求固定攻击）。
 
-`/oauth/authorize` 在创建未绑定 pending 请求时下发该 Cookie（`HttpOnly; SameSite=Lax; Path=/`），其 SHA-256 摘要存入 Redis。bind 端点比对 Cookie 值与摘要，不匹配返回 `403 authorization_holder_invalid`。
+`/oauth/authorize` 在把浏览器交给 SPA 时下发该 Cookie（`HttpOnly; SameSite=Lax; Path=/`），其 SHA-256 摘要存入 Redis。bind 端点比对 Cookie 值与摘要，不匹配返回 `403 authorization_holder_invalid`。
 
 升级前创建的旧 pending 记录无摘要，绑定时被拒绝（fail-secure），用户需重新发起授权流程。
 
-幂等：同一 Session + 同一持有者 Cookie 重复调用返回 `204`。
+**受控重绑（#270）**：上述三项校验全部通过时，无论该 pending 请求此前绑定的是哪个 Session 摘要，都会被重绑到调用者当前的 Session，写入走 CAS 保证原子性。持有者 Cookie 才是所有权凭据，Session 绑定是派生状态，因此重绑不放宽任何安全边界——没有持有者 Cookie 的第三方即使持有有效 Session 仍然被拒（`403`）。这让「会话过期后重新登录继续授权」和「切换账号继续授权」可以自愈；旧行为固定返回 `401 invalid_session`，前端跟着在登录页与授权确认页之间形成跳转循环。授权码在最终 approve 时按当时持有的 Session 签发。重绑记录审计事件 `authorization_request_rebound`。
+
+幂等：同一 Session + 同一持有者 Cookie 重复调用返回 `204`，载荷不变。持续并发修改导致 CAS 无法收敛时返回 `409 authorization_request_conflict`，重试即可。
 
 ### `GET /api/v1/oauth/authorize/requests/{request_id}` / `POST ...`
 
@@ -191,9 +199,25 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ### `GET /auth/external/{slug}` / `GET /auth/external/{slug}/callback`
 
-开始并完成自定义外部 OAuth 2.0/OIDC 登录。`slug` 来自管理员设置；开始请求可携带 `request_id` 以便登录后继续辰星的授权确认。系统使用一次性 Redis `state` 和 HttpOnly Cookie 绑定浏览器流程，回调成功后创建辰星 Session。
+开始并完成自定义外部 **OAuth 2.0** 登录。`slug` 来自管理员设置；开始请求可携带 `request_id` 以便登录后继续辰星的授权确认。系统使用一次性 Redis `state` 和 HttpOnly Cookie 绑定浏览器流程，回调成功后创建辰星 Session。
 
-外部 UserInfo 必须按配置提供合法 `email` 和唯一 `sub`；可选校验 `email_verified`。首次外部登录在邮箱不存在时创建辰星账号并绑定 `(provider, sub)`；如果邮箱已存在，不会自动接管或合并本地账号，而是返回 `oauth_account_link_required` 页面提示。
+#### 信任模型：OAuth 2.0 + UserInfo
+
+自定义提供商是 **OAuth 2.0 授权码流程 + UserInfo 端点**，本平台在这一侧**不是 OIDC 依赖方**。管理 API 的 `trust_model` 字段恒为 `oauth2_userinfo`，明确这一语义：
+
+- 身份字段来源只有一个：用 access token 经 TLS 调用 `userinfo_endpoint` 得到的 JSON。`sub`、`email`、`email_verified` 全部按 provider 配置的 claim 路径从该响应中读取。
+- 令牌响应里的 `id_token` **不被解析、不被存储、不参与身份判定**。本平台不为自定义提供商保存 issuer、JWKS、允许算法或 nonce 策略，因此不具备验证 ID Token 签名、`kid`、`iss`、`aud`、`exp`、`iat` 和 `nonce` 的条件；把一个未验证的 JWT 当身份断言使用比丢弃它危险得多。
+- 只返回 `id_token` 而没有 `access_token` 的令牌响应按失败处理，回跳 `external_error=oauth_login_failed`。
+- `scopes` 里可以包含 `openid`——多数 OIDC 提供商需要它才开放 UserInfo 端点——但它在本平台只起「换取可调用 UserInfo 的 access token」的作用，不代表本平台执行了 OIDC 身份断言校验。
+- `email_verified` 的可信度上限就是外部 UserInfo 响应本身。选择提供商时应确认该端点返回的验证状态是可信的。
+
+本平台**作为 OP 对下游 Client 仍然完整支持 OIDC**（Discovery、RS256 ID Token、nonce 绑定、UserInfo），上面的限定只针对上游自定义提供商这一侧。
+
+#### 身份字段校验
+
+外部 UserInfo 必须按配置提供合法 `email`、唯一 `sub` 和布尔型邮箱验证状态。`email_verified_claim` 是 provider 必填项：claim 缺失、类型不是布尔、或取值为 `false` 时拒绝身份解析和自动建号，回跳 `external_error=oauth_email_unverified`。缺少该配置的存量 provider 无法启用，也不会跳转外部 IdP，回跳 `external_error=oauth_provider_not_found`。
+
+首次外部登录在邮箱不存在时创建辰星账号并绑定 `(provider, sub)`；如果邮箱已存在，不会自动接管或合并本地账号，而是返回 `oauth_account_link_required` 页面提示。
 
 ### React SPA 授权确认 `/oauth/consent`
 
@@ -214,6 +238,8 @@ grant_type=authorization_code&code=...&redirect_uri=https%3A%2F%2Fapp.example%2F
 ```text
 grant_type=refresh_token&refresh_token=...
 ```
+
+刷新请求可用 `scope` 缩小原授权范围；省略或传空白字符串时保留原授权 Scope，不会把权限永久清空。
 
 成功响应 `200`：
 
@@ -261,13 +287,15 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ## 管理 API
 
-管理员 Bearer Token 请求头：`Authorization: Bearer <ADMIN_TOKEN>`。初始化完成后，管理 API 使用 Bearer Token 或普通用户 Session；`ADMIN_TOKEN` 为空时拒绝 Bearer Token 管理请求。浏览器写操作使用 `__Host-chenxing_session`、`__Host-chenxing_csrf` Cookie 和 `X-CSRF-Token` 三者绑定（loopback HTTP 开发环境使用对应的不带前缀名称）。
+管理员 Bearer Token 请求头：`Authorization: Bearer <ADMIN_TOKEN>`。初始化完成后，管理 API 有两条独立通道，任一通过即可继续按角色判定权限：系统 `ADMIN_TOKEN` Bearer（权限等价于 Owner，无用户 ID，豁免浏览器 CSRF），或普通用户 Session。浏览器写操作使用 `__Host-chenxing_session`、`__Host-chenxing_csrf` Cookie 和 `X-CSRF-Token` 三者绑定（loopback HTTP 开发环境使用对应的不带前缀名称）。
+
+`ADMIN_TOKEN` 为空时整个管理面关闭：Bearer 与浏览器 Session 两条通道都被拒绝，已初始化的管理接口统一返回 403 `admin_disabled`。不存在 Owner 时公开的首个 Owner 初始化接口（`POST /api/v1/admin/bootstrap`）不属于这两条通道，无论是否配置 `ADMIN_TOKEN` 都保持公开。
 
 角色为 `user`、`admin`、`owner`，权限按层级继承。管理员登录不再有独立接口、密码表、Session 或 Cookie；所有角色使用 `/api/v1/auth/login`。
 
 ### `POST /api/v1/admin/bootstrap`
 
-仅用于初始化首个 Owner，无需认证。只有不存在 Owner 时请求才会成功；初始化使用数据库并发锁保证最多创建一个 Owner，成功后不可重复初始化。请求必须包含用户名、邮箱和密码，首个 Owner 的用户 ID 为 `1`，成功后不自动创建 Session。
+仅用于初始化首个 Owner，无需认证。只有不存在 Owner 时请求才会成功；初始化使用数据库并发锁保证最多创建一个 Owner，成功后不可重复初始化。请求按可信源 IP 限制为每分钟 5 次，缺少可信源地址或 Redis 限流不可用时按配置 fail closed。请求必须包含用户名、邮箱和密码，首个 Owner 的用户 ID 为 `1`，成功后不自动创建 Session。
 
 ```json
 {"username":"chenxing-owner","email":"owner@example.com","password":"at-least-10-chars"}
@@ -277,7 +305,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ### `GET /api/v1/admin/bootstrap/status`
 
-公开查询初始化状态，响应为 `{"initialized":false}` 或 `{"initialized":true}`。Web 前端首次打开时先查询此接口；状态为未初始化时显示 Owner 初始化界面。
+仅未初始化时公开返回 `{"initialized":false}`，供 Web 前端显示 Owner 初始化界面。实例已有 Owner 后返回与未知路径一致的 `404 not_found`，不再向匿名扫描者确认初始化状态；数据库故障返回 500。
 
 ### 注册邮件发件地址
 
@@ -292,7 +320,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 - `GET /api/v1/admin/users?limit=50&offset=0`：列出用户，需要 `ManageUsers`。响应是用户数组。服务端强制分页：`limit` 默认 `50`，取值被 clamp 到 `[1, 200]`（与审计列表一致），`offset` 默认 `0`，负值按 `0` 处理。需要 `total` 和分页信封时用 `GET /api/v1/admin/users/query`。
 - `POST /api/v1/admin/users`：创建用户，提交 `{"username":"alice","email":"alice@example.com","password":"...","display_name":null,"role":"user","status":"active"}`。`display_name`、`role`、`status` 可省略，`role` 缺省 `user`，`status` 缺省 `active`。基线权限 `ManageUsers`；`role` 为 `admin` 或 `owner` 时额外要求 `ManageRoles`。成功 `201`，响应是公开用户字段，不含口令哈希或任何凭据材料。`400` 为 `invalid_role`、`invalid_status`、`invalid_username`、`invalid_email`、`password_too_short`、`password_too_long`、`display_name_too_long`、`email_domain_not_allowed`、`csrf_invalid`；`403` 为 `admin_forbidden`；`409` 为 `username_already_registered`、`email_already_registered`、`owner_bootstrap_required`。
-- `POST /api/v1/admin/users/{user_id}/{status}`：设置用户状态，需要 `ManageUsers`。状态由后端支持值决定，常用为 `active`、`disabled`；成功 `204`。
+- `POST /api/v1/admin/users/{user_id}/{status}`：设置用户状态，基线需要 `ManageUsers`，目标为 Owner 时额外需要 `ManageRoles`。授权先于资源查询，低权限调用者不能枚举用户或 Owner 身份。状态常用为 `active`、`disabled`；非法状态返回 `400 invalid_status`，用户不存在返回 `404 user_not_found`，成功 `204`。禁止修改自己的状态，自我操作返回 `403 self_status_change_forbidden`。
 
 用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`role`、`created_at`。按 `created_at DESC, id DESC` 排序。
 
@@ -313,9 +341,9 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 - `PUT /api/v1/admin/plans/{id}`：更新套餐，字段同创建，成功返回更新后的套餐。
 - `POST /api/v1/admin/plans/{id}/archive`：归档套餐；默认套餐不可归档，返回 `409 default_plan_protected`。
 - `POST /api/v1/admin/plans/{id}/restore`：恢复套餐。
-- `POST /api/v1/admin/users/{user_id}/plan`：为用户分配套餐，提交 `{"plan_id":1,"expires_at":"2026-12-31T00:00:00Z"}`；`expires_at` 传 `null` 或省略表示永久有效，归档套餐不可分配。
+- `POST /api/v1/admin/users/{user_id}/plan`：为用户分配套餐，提交 `{"plan_id":1,"expires_at":"2026-12-31T00:00:00Z"}`；`expires_at` 传 `null` 或省略表示永久有效，归档套餐不可分配。目标为 Owner 时除 `ManageUsers` 外还需要 `ManageRoles`。
 
-套餐 CRUD（create/update/archive/restore）需要 `ManageSettings` 权限；为用户分配套餐（`POST .../users/{user_id}/plan`）影响用户权益，需要 `ManageUsers` 权限。两种操作均记录审计事件。
+套餐 CRUD（create/update/archive/restore）需要 `ManageSettings` 权限；为普通用户分配套餐需要 `ManageUsers`，为 Owner 分配套餐还需要 `ManageRoles`。两种操作均记录审计事件。
 
 ### Client 管理
 
@@ -336,18 +364,24 @@ Client 自身注册的 scope 集合内。
 - `POST /api/v1/admin/clients/{client_id}/enable`：启用，成功 `204`。
 - `POST /api/v1/admin/clients/{client_id}/rotate-secret`：轮换 Secret，成功响应包含新的 `client_id` 和 `client_secret`，只显示新 Secret 一次。
 
+上述 Client 写操作触发套餐 Client 数量上限时返回 `409 quota_exceeded`；数据库或其他内部故障仍返回 500，不再伪装成配额或权限错误。
+
 Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`、`scopes`、`status`、`owner_user_id`。不返回 Secret 或其哈希。
 
 ### 自定义 OAuth 提供商管理
 
 管理界面在 React 控制台的 `/console/settings`（原 `GET /admin/settings/oauth` 仅转发到该页面），也可以直接使用以下 API。提供商默认停用，确认配置无误后再启用。
 
+提供商一律按 **OAuth 2.0 + UserInfo** 信任模型接入，摘要中的 `trust_model` 恒为 `oauth2_userinfo`；本平台不为自定义提供商验证 ID Token，也不接受 issuer/JWKS/算法策略配置。详见上文「信任模型：OAuth 2.0 + UserInfo」。
+
 - `POST /api/v1/admin/oauth/providers`：创建提供商。必须填写名称、唯一小写 `slug`、授权/Token/UserInfo 地址、Client ID/Secret、Scopes；Secret 只在请求中出现，服务端使用 `KEY_DIRECTORY/oauth-provider-secret.key` 以 AES-256-GCM 加密保存。
-- `GET /api/v1/admin/oauth/providers`：列出提供商摘要，包含 `callback_uri` 和 `client_secret_configured`，不返回 Secret 或密文。
+- `GET /api/v1/admin/oauth/providers`：列出提供商摘要，包含 `trust_model`、`callback_uri` 和 `client_secret_configured`，不返回 Secret 或密文。
 - `PUT /api/v1/admin/oauth/providers/{slug}`：更新配置；`client_secret` 省略时保留原 Secret。
 - `POST /api/v1/admin/oauth/providers/{slug}/enable`、`/disable`：启用或停用。
 
-提供商的授权、Token、UserInfo 地址必须使用 HTTPS；仅 `localhost`、IPv4 loopback 或 `[::1]` 可使用 HTTP 进行本机测试。远程 HTTP 地址会在保存时拒绝，运行时也会再次拒绝，避免通过明文链路发送 Client Secret 或 Access Token。
+提供商的授权、Token、UserInfo 地址必须使用 HTTPS，且 IP 字面量和连接时 DNS 解析结果都必须是公网可路由地址；私网、链路本地、CGNAT、ULA、IPv6 站点本地（`fec0::/10`）、文档与保留前缀，以及混合公私网解析均被拒绝。IPv6 侧只放行 `2000::/3` 全局单播中未被 IANA 特殊用途占用的部分，未分配空间默认拒绝。仅 `localhost`、IPv4 loopback 或 `[::1]` 可在显式开启 `OAUTH_PROVIDER_LOOPBACK_ENABLED=true` 后使用 HTTP 进行本机测试（Issue #343）；该开关默认关闭，生产环境必须保持关闭——回环端点会收到解密后的 Client Secret 与用户 Access Token。
+
+校验挂在实际连接使用的 DNS resolver 上，避免先解析后连接造成 DNS rebinding 时间窗。provider 专用 HTTP 客户端显式禁用系统代理：`HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 一律不生效，因此上述地址筛查始终作用于真正的连接目标，不依赖运维配置 `NO_PROXY`。需要经代理访问外部 IdP 的部署应使用出网网关，而不是给服务进程设置代理环境变量。
 
 提供商支持 `basic`（Token 请求 HTTP Basic）和 `request_body`（Token 表单）两种 Client 认证方式；Claim 路径支持点分隔对象路径，例如 `profile.email`。浏览器写操作需要普通 CSRF Cookie 与 `X-CSRF-Token`；Bearer Token 是现有自动化兼容方式。
 

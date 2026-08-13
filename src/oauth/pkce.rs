@@ -1,5 +1,6 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use thiserror::Error;
 
 /// S256 challenge 固定长度：32 字节 SHA-256 摘要经 base64url 无填充编码后为 43 字符
@@ -52,12 +53,17 @@ pub fn verify_s256(verifier: &str, challenge: &str) -> Result<(), PkceError> {
     {
         return Err(PkceError::InvalidCharacters);
     }
+    // challenge 必须先经过格式校验，确保后续比较两侧均为固定 43 字节，
+    // 避免 `subtle` 切片 `ct_eq` 在长度不等时短路返回 0 的行为成为时序侧信道。
+    validate_s256_challenge(challenge)?;
     let digest = Sha256::digest(verifier.as_bytes());
     let encoded = URL_SAFE_NO_PAD.encode(digest);
-    if encoded != challenge {
-        return Err(PkceError::Mismatch);
+    // 两侧均已校验为 43 字节 base64url，使用常量时间比较避免按首个差异位置提前返回。
+    if encoded.as_bytes().ct_eq(challenge.as_bytes()).into() {
+        Ok(())
+    } else {
+        Err(PkceError::Mismatch)
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -163,5 +169,28 @@ mod tests {
         let wrong_challenge = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
         let error = verify_s256(verifier, wrong_challenge).expect_err("不匹配应被拒绝");
         assert_eq!(error, PkceError::Mismatch);
+    }
+
+    /// 常量时间比较不应在首个差异位置提前返回。覆盖 challenge 各位置 mismatch，
+    /// 确保任意单字节差异都被拒绝，且错误类型一致。
+    #[test]
+    fn verify_s256_rejects_mismatch_at_every_position() {
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        let expected = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+        assert_eq!(expected.len(), S256_CHALLENGE_LENGTH);
+        for position in 0..S256_CHALLENGE_LENGTH {
+            let mut tampered: Vec<u8> = expected.bytes().collect();
+            // 翻转当前字节为不同的合法 base64url 字符，确保仍通过格式校验
+            let original = tampered[position];
+            tampered[position] = if original == b'A' { b'B' } else { b'A' };
+            let wrong_challenge = std::str::from_utf8(&tampered).expect("ASCII 字符");
+            let error =
+                verify_s256(verifier, wrong_challenge).expect_err("任意位置单字节差异都应被拒绝");
+            assert_eq!(
+                error,
+                PkceError::Mismatch,
+                "位置 {position} 应返回 Mismatch"
+            );
+        }
     }
 }

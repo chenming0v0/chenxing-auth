@@ -126,15 +126,21 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
     let validated = validated_request(&client_id, user_id);
 
     for _ in 0..2 {
-        let result =
-            issue_authorization_code_result(&env.state, user_id.to_string(), validated.clone())
-                .await
-                .expect("authorization within daily limit");
+        let result = issue_authorization_code_result(
+            &env.state,
+            user_id.to_string(),
+            validated.clone(),
+            None,
+            None,
+        )
+        .await
+        .expect("authorization within daily limit");
         assert!(matches!(result, AuthorizationCodeIssue::Redirect(_)));
     }
-    let result = issue_authorization_code_result(&env.state, user_id.to_string(), validated)
-        .await
-        .expect("authorization over daily limit");
+    let result =
+        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
+            .await
+            .expect("authorization over daily limit");
     assert!(matches!(result, AuthorizationCodeIssue::QuotaExceeded));
 
     env.cleanup().await;
@@ -163,8 +169,14 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
     env.state.authorization_codes = AuthorizationCodeStore::new(
         redis::Client::open("redis://127.0.0.1:1").expect("unavailable Redis URL"),
     );
-    let failed =
-        issue_authorization_code_result(&env.state, user_id.to_string(), validated.clone()).await;
+    let failed = issue_authorization_code_result(
+        &env.state,
+        user_id.to_string(),
+        validated.clone(),
+        None,
+        None,
+    )
+    .await;
     assert!(failed.is_err(), "authorization code persistence must fail");
 
     let limits = Some(AuthQuotaLimits {
@@ -182,9 +194,10 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
     assert_eq!(snapshot.monthly_used, 0);
 
     env.state.authorization_codes = AuthorizationCodeStore::new(env.state.redis.clone());
-    let retry = issue_authorization_code_result(&env.state, user_id.to_string(), validated)
-        .await
-        .expect("retry after quota refund");
+    let retry =
+        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
+            .await
+            .expect("retry after quota refund");
     assert!(matches!(retry, AuthorizationCodeIssue::Redirect(_)));
 
     let snapshot = env
@@ -223,10 +236,15 @@ async fn unlimited_monthly_plan_never_rejects_authorizations() {
     let validated = validated_request(&client_id, user_id);
 
     for _ in 0..6 {
-        let result =
-            issue_authorization_code_result(&env.state, user_id.to_string(), validated.clone())
-                .await
-                .expect("monthly quota is unlimited");
+        let result = issue_authorization_code_result(
+            &env.state,
+            user_id.to_string(),
+            validated.clone(),
+            None,
+            None,
+        )
+        .await
+        .expect("monthly quota is unlimited");
         assert!(matches!(result, AuthorizationCodeIssue::Redirect(_)));
     }
 
@@ -255,6 +273,8 @@ async fn qps_limiter_rejects_requests_over_the_plan_limit() {
 
     // 用 1 QPS 做顺序断言：第一发进入业务校验返回 400，第二发必被滑动窗口拒绝。
     // 这比并发三连更稳，也更直接验证 token 路径真正调用了 plan-backed limiter。
+    // 窗口由 `support::qps_window` 注入成 60s（生产仍是 1s），两发之间那次 19 MiB
+    // Argon2 校验再慢也不会把第一发挤出窗口。
     let plan = create_plan(
         &router,
         &suffix,
@@ -508,6 +528,8 @@ async fn unsetting_the_last_default_plan_closes_self_service() {
         &env.state,
         user_id.to_string(),
         validated_request(&existing_client_id, user_id),
+        None,
+        None,
     )
     .await
     .expect("existing client authorization must keep working without a default plan");
@@ -662,6 +684,8 @@ async fn no_default_plan_keeps_existing_user_clients_working() {
         &env.state,
         user_id.to_string(),
         validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier)),
+        None,
+        None,
     )
     .await
     .expect("authorization must succeed without any plan");
@@ -771,6 +795,8 @@ async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
         &env.state,
         user_id.to_string(),
         validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier)),
+        None,
+        None,
     )
     .await
     .expect("admin client authorization must succeed without any plan");
@@ -829,6 +855,43 @@ async fn assigning_a_plan_works_without_a_default_plan() {
     env.cleanup().await;
 }
 
+/// Issue #280：给 Owner 分配套餐要求 `ManageRoles`，但门槛充足时必须照常生效。
+///
+/// `authorization_audit` 守拒绝一侧（只有 `ManageUsers` 的 Admin 拿 403），
+/// 这里守放行一侧：抬档不能把「Owner 的套餐永远改不动」当成修复结果。
+#[tokio::test]
+async fn assigning_a_plan_to_an_owner_succeeds_with_role_management_permission() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let owner_id: i64 =
+        chenxing_auth::sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+            .bind(format!("plan-owner-{suffix}"))
+            .fetch_one(&env.database)
+            .await
+            .expect("bootstrapped owner id");
+
+    let plan = create_plan(&router, &suffix, plan_limits(3, 9, Some(90), None)).await;
+    let plan_id = plan["id"].as_i64().expect("plan id");
+
+    // ADMIN_TOKEN 是系统令牌，拥有全部权限，包含 ManageRoles。
+    assert_eq!(
+        assign_plan(&router, owner_id, plan_id, None).await,
+        StatusCode::NO_CONTENT,
+        "sufficient permission must still be able to assign a plan to an owner"
+    );
+    let assigned: Option<i64> =
+        chenxing_auth::sqlx::query_scalar("SELECT plan_id FROM users WHERE id = $1")
+            .bind(owner_id)
+            .fetch_one(&env.database)
+            .await
+            .expect("owner plan id");
+    assert_eq!(assigned, Some(plan_id));
+
+    env.cleanup().await;
+}
+
 /// 无生效套餐时 `enforce_qps` 里的 `effective?.plan.max_qps?` early-return
 /// 路径的专项覆盖。
 ///
@@ -879,7 +942,9 @@ async fn no_plan_skips_plan_qps_limiting_for_existing_clients() {
 
     // Step 3: 先证明套餐下 QPS 闸门是生效的。
     // 第一发：凭据正确、套餐 QPS 允许，进入业务校验 → 400 (code 缺失)。
-    // 第二发：滑动窗口 1s 内第二次 → 429。
+    // 第二发：同一个滑动窗口内第二次 → 429。
+    // 窗口由 `support::qps_window` 注入成 60s（生产仍是 1s），因此两发必然落在同一
+    // 窗口内，不再取决于 token 路径上那次 19 MiB Argon2 校验跑得有多快。
     // 这一步是关键：如果套餐 QPS 本来就不生效，第 5 步的「通过」就是假绿。
     let first = router
         .clone()
@@ -900,15 +965,16 @@ async fn no_plan_skips_plan_qps_limiting_for_existing_clients() {
     assert_eq!(
         second.status(),
         StatusCode::TOO_MANY_REQUESTS,
-        "second request within 1s must be rejected by plan QPS (429)"
+        "second request in the same window must be rejected by plan QPS (429)"
     );
 
     // Step 4: 清空所有套餐，模拟「平台无生效套餐」场景。
     clear_all_plans(&env.database).await;
 
     // Step 5: 连打多发确认按套餐 QPS 已跳过，不再出现 429 或 503。
-    // 不 sleep：让第 3 步的窗口条目可能还活着，这样如果有人把 `?` 改成
-    // `unwrap_or(0)` 导致限流仍然生效，第一发就会 429 并立即失败（强突变检测）。
+    // 不 sleep：60s 窗口让第 3 步写入的条目**必然**还活着（以前只是「可能」），
+    // 所以如果有人把 `?` 改成 `unwrap_or(0)` 导致限流仍然生效，第一发就会 429
+    // 并立即失败。窗口注入把这条突变检测从概率性变成确定性。
     for i in 0..3_u32 {
         let resp = router
             .clone()
@@ -941,13 +1007,18 @@ async fn no_plan_skips_plan_qps_limiting_for_existing_clients() {
     // 用唯一 IP 的 ConnectInfo 通过 HTTP 路径真实调用 enforce_source_qps，
     // 预先饱和窗口后发起 HTTP 请求，验证 token_inner 仍然调用 enforce_source_qps。
     // 如果有人删掉了 enforce_source_qps 调用，此请求会进入业务逻辑返回 400，测试失败。
-    let last_octet = (suffix
-        .bytes()
-        .fold(0_u64, |acc, b| acc.wrapping_add(b as u64))
-        % 254)
-        + 1;
-    let fake_ip_str = format!("203.0.113.{last_octet}");
-    let fake_ip: IpAddr = fake_ip_str.parse().expect("valid test IP");
+    // `chenxing:qps:source:{ip}` 是全局 Redis key，不受 schema 隔离保护。旧写法把
+    // 整个 suffix 折叠进 203.0.113.0/24 的 254 个槽位，既丢掉测试身份也会在并发或
+    // 重复运行时踩到别人的窗口。改用 IPv6 文档前缀 2001:db8::/32（RFC 3849）拼上本
+    // 测试 Uuid 的低 96 位：地址与这次运行一一对应，冲突概率可以忽略。
+    let uuid_tail = &suffix[suffix.len() - 24..];
+    let groups: Vec<&str> = (0..6).map(|i| &uuid_tail[i * 4..i * 4 + 4]).collect();
+    let fake_ip: IpAddr = format!("2001:db8:{}", groups.join(":"))
+        .parse()
+        .expect("valid IPv6 test address");
+    // 限流 key 用 `IpAddr::to_string()` 的规范形式，必须和 handler 侧
+    // （`api::source_ip` → `resolve_client_ip`）算出的字符串逐字节一致。
+    let fake_ip_str = fake_ip.to_string();
 
     // 预先饱和该 IP 的源 QPS 窗口（默认限制 30）。
     let source_qps_limit = env.state.config.security_limits.unauthenticated_source_qps;

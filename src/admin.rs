@@ -5,7 +5,10 @@ use subtle::ConstantTimeEq;
 
 pub mod auth_handlers;
 pub mod authorization;
+pub mod bootstrap_guard;
+mod client_errors;
 pub mod domain;
+pub mod factor_handlers;
 pub mod handlers;
 pub mod key_handlers;
 pub mod management_handlers;
@@ -41,7 +44,12 @@ impl AdminAuthenticator {
     /// 再执行常量时间比较。无论候选令牌长短，外部观察者无法通过响应时间推断
     /// 配置令牌的长度。
     pub fn is_valid(&self, candidate: &str) -> bool {
-        // AGENTS.md 硬性要求：ADMIN_TOKEN 为空时必须拒绝所有已初始化的管理 API
+        // ADMIN_TOKEN 为空时，系统 Bearer Token 通道整体关闭：没有任何候选值能通过。
+        //
+        // 这只是两条管理通道中的一条（Issue #305）。「空 Token = 整个管理面关闭」
+        // 由 `api::extract::AdminCaller::resolve` 的 fail-closed 检查保证（Issue #348）：
+        // ADMIN_TOKEN 为空时它会拒绝包括浏览器 Session 在内的全部管理请求。
+        // 不存在 Owner 时公开的首个 Owner 初始化接口不经过该提取器，例外语义不变。
         if self.token.is_empty() {
             return false;
         }

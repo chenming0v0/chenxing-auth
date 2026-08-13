@@ -185,3 +185,46 @@ async fn unrecorded_fail_open_result_releases_reservation() {
     assert!(!record.was_recorded());
     assert_eq!(limiter.calls(), vec!["record", "release"]);
 }
+
+#[tokio::test]
+// #258：kid 退役不是一次用户失败，绝不能记账。
+//
+// 记账会让一个纯粹的运维动作把用户从「TOTP 不可用」推进到「账号被限流」，
+// 于是连不带验证码的密码登录也被挡住。这里断言调用序列里只有 release。
+async fn retired_key_releases_reservation_without_recording_a_failure() {
+    let limiter = SuccessLimiter::new();
+    let dimensions = vec![
+        (FailureDimension::Account, "user@example.com".to_owned()),
+        (FailureDimension::SourceIp, "203.0.113.7".to_owned()),
+    ];
+
+    super::release_key_unavailable(limiter.as_ref(), dimensions).await;
+
+    assert_eq!(
+        limiter.calls(),
+        vec!["release"],
+        "an unavailable key must never consume failure quota"
+    );
+}
+
+#[tokio::test]
+// #340：账号没有 TOTP 因子不是一次用户失败，绝不能记账。
+//
+// 因子缺失是服务端状态与客户端认知的错位（管理员重置/删除后的陈旧提交、或
+// 因子列表读取与删除之间的竞态），不是用户输错码。记账会烧掉与密码失败共用
+// 的账号额度，10 次后连密码登录也被锁 15 分钟。这里断言调用序列里只有 release。
+async fn missing_factor_releases_reservation_without_recording_a_failure() {
+    let limiter = SuccessLimiter::new();
+    let dimensions = vec![
+        (FailureDimension::Account, "user@example.com".to_owned()),
+        (FailureDimension::SourceIp, "203.0.113.7".to_owned()),
+    ];
+
+    super::release_factor_missing(limiter.as_ref(), dimensions).await;
+
+    assert_eq!(
+        limiter.calls(),
+        vec!["release"],
+        "a missing factor must never consume failure quota"
+    );
+}

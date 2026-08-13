@@ -85,7 +85,9 @@ pub async fn current_entitlements(State(state): State<AppState>, session: Sessio
     let plan = effective.plan;
     let quota_limits = plan.auth_quota_limits();
 
-    let clients = match state.clients.list_for_user(session.user_id).await {
+    // 配额统计要遍历该用户全部 Client：分页拉全（单用户规模受套餐配额上界约束），
+    // 修复前 `list_for_user` 的 200 条硬上限会静默漏算超出的 Client（Issue #415）。
+    let clients = match state.clients.list_all_for_user(session.user_id).await {
         Ok(clients) => clients,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to list OAuth clients for entitlements");
@@ -99,7 +101,7 @@ pub async fn current_entitlements(State(state): State<AppState>, session: Sessio
     for client in &clients {
         match state
             .oauth_quotas
-            .snapshot(&client.client_id, Some(quota_limits))
+            .snapshot_at(&client.client_id, Some(quota_limits), state.clock.now())
             .await
         {
             Ok(snapshot) => {

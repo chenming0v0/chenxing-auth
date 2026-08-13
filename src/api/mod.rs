@@ -29,10 +29,13 @@ pub fn router(state: AppState) -> Router {
     let hsts_enabled = security_headers::hsts_enabled(&state.config.issuer_url);
     let request_timeout = Duration::from_secs(state.config.request_timeout_seconds);
 
+    // 静态根来自 AppState 里那份启动期已校验的路径，请求路径上不再读环境变量。
+    let static_service = static_files::static_service(&state.web_dist);
+
     routes::register(Router::new(), request_timeout)
         // 静态资源与 SPA 回退挂在 fallback 上：fallback_service 只在上面所有
         // 路由都不匹配时才生效，所以 /api/*、/health 等不会被静态服务抢走。
-        .fallback_service(static_files::static_service())
+        .fallback_service(static_service)
         .with_state(state)
         .layer(TraceLayer::new_for_http().make_span_with(request_span))
         .layer(map_response(|response: Response| async move {
@@ -47,7 +50,8 @@ pub fn router(state: AppState) -> Router {
 ///
 /// **安全规则**（#111）：
 /// - 未配置可信代理或对端不可信 → 用对端地址，忽略 XFF（防伪造）
-/// - 对端可信且有 XFF → 从右往左扫描，第一个不可信的 IP 是客户端
+/// - 对端可信且有 XFF → 先把所有 XFF 头部行按线序合并成一条链路（#269），
+///   再从右往左扫描，第一个不可信的 IP 是客户端
 ///
 /// 此函数收敛了项目中所有的源 IP 解析逻辑。注册、OAuth `/token`、TOTP、Passkey
 /// 和登录端点都调用它。未配置 `trusted_proxies` 时启动阶段已告警。
@@ -57,6 +61,23 @@ pub(crate) fn source_ip(
     trusted_proxies: &TrustedProxies,
 ) -> Option<String> {
     trusted_proxies.resolve_client_ip(peer, headers)
+}
+
+/// 提取请求 User-Agent，用于安全日志的请求上下文（Issue #308）。
+///
+/// UA 是客户端可伪造的任意长度头部，不能整段进审计：截断到 512 字符，非 UTF-8
+/// 或无 UA 的请求返回 `None`。安全日志里它只与源 IP 一起出现，供用户核对
+/// 「谁在什么时候用什么设备访问了我的账户」。
+pub(crate) fn user_agent(headers: &HeaderMap) -> Option<String> {
+    const MAX_USER_AGENT_CHARS: usize = 512;
+    let value = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())?;
+    Some(match value.char_indices().nth(MAX_USER_AGENT_CHARS) {
+        Some((index, _)) => value[..index].to_owned(),
+        None => value.to_owned(),
+    })
 }
 
 #[cfg(test)]
@@ -105,7 +126,15 @@ mod tests {
 
     async fn isolated_pool(binary_name: &str, database_url: &str) -> crate::sqlx::PgPool {
         let schema = test_schema_name(binary_name);
-        let mut bootstrap = PgConnection::connect(database_url)
+        // 建 schema 是 owner 的活：角色分离部署下 DATABASE_URL 指向受限的运行时角色，
+        // owner 连接串优先 MIGRATION_DATABASE_URL（与 tests/support/db_isolation.rs 的
+        // owner_database_url 保持同一策略）；单角色环境回落 database_url，行为不变。
+        let owner_url = std::env::var("MIGRATION_DATABASE_URL")
+            .ok()
+            .map(|url| url.trim().to_owned())
+            .filter(|url| !url.is_empty())
+            .unwrap_or_else(|| database_url.to_owned());
+        let mut bootstrap = PgConnection::connect(&owner_url)
             .await
             .expect("db_isolation: bootstrap connection");
         crate::sqlx::query(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
@@ -119,6 +148,10 @@ mod tests {
         drop(bootstrap);
 
         let schema_for_pool = schema;
+        // 迁移和连接 pool 都走 owner 连接：迁移会 CREATE TABLE，而受限的运行时角色
+        // 对新 schema 没有 USAGE 权限，`SET search_path` 会被 PostgreSQL 静默忽略，
+        // 导致迁移报 "no schema has been selected to create in"。与
+        // tests/support/db_isolation.rs 的 schema_scoped_pool 保持同一策略。
         let pool = crate::sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)
             .after_connect(move |connection, _meta| {
@@ -130,7 +163,7 @@ mod tests {
                     Ok(())
                 })
             })
-            .connect(database_url)
+            .connect(&owner_url)
             .await
             .expect("db_isolation: pool connect");
 
@@ -142,8 +175,9 @@ mod tests {
 
     /// 构造完整 Router 并发送一次请求。
     ///
-    /// 这些断言在有无 `web/dist` 的环境下都成立：`web/dist` 被 gitignore，
-    /// 测试不能依赖真实构建产物是否存在。
+    /// `web/dist` 虽然被 gitignore，但 build script 在编译期就保证了它存在
+    /// （`index.html` 是 `include_str!` 的输入），因此 `AppState::new_with_pool`
+    /// 里的启动期产物根校验（Issue #303）在测试环境下同样成立。
     async fn send_request(uri: &str, method: Method) -> Response {
         let request = Request::builder()
             .uri(uri)

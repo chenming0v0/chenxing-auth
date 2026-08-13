@@ -83,7 +83,7 @@ src/
 
 - Axum 服务入口和 `/health` 健康检查
 - 环境配置加载与启动校验
-- PostgreSQL 连接池边界和初始迁移
+- PostgreSQL 连接池边界、请求路径语句超时和初始迁移
 - Redis Client 边界
 - 用户注册输入校验和 Argon2 密码哈希
 - `POST /api/v1/users` 基础注册接口
@@ -112,7 +112,9 @@ src/
 - 用户列表、用户启停、角色管理、特权用户列表、审计查询和管理后台入口
 - `/oauth/revoke` RFC 7009 风格 Token 撤销以及 Discovery 中的撤销端点
 - `BusinessExtension` 扩展 trait 与结构化业务 Claim 类型
-- 配置驱动的自定义 OAuth/OIDC 提供商管理、加密 Client Secret、外部身份绑定和浏览器回调登录
+- 配置驱动的自定义 OAuth 2.0 提供商管理、加密 Client Secret、外部身份绑定和浏览器回调登录
+
+自定义外部提供商按 **OAuth 2.0 授权码流程 + UserInfo** 信任模型接入：身份字段只来自用 access token 经 TLS 取回的 UserInfo 响应，令牌响应中的 `id_token` 不被解析也不参与身份判定。本平台**作为 OP 对下游 Client 完整支持 OIDC**，但在上游自定义提供商这一侧**不是 OIDC 依赖方**，不保存 issuer/JWKS/算法策略，也不执行 ID Token 签名与 `iss`/`aud`/`exp`/`nonce` 校验。管理 API 用 `trust_model: "oauth2_userinfo"` 显式声明这一边界。
 
 后续增强方向：
 
@@ -120,6 +122,7 @@ src/
 2. 增加更多真实 OIDC Provider/Client 互操作测试和限流策略。
 3. 将签名私钥接入外部受保护密钥存储，并增加密钥撤销策略。
 4. 为业务子项目提供经过评审的具体扩展实现。
+5. 为自定义外部提供商增加 OIDC 依赖方模式：固定 issuer/JWKS/允许算法与 nonce 策略，验证 ID Token 签名、`kid`、`iss`、`aud`、`exp`、`iat` 与 nonce，并校验 UserInfo `sub` 与已验证 ID Token 一致。在该模式落地前，产品与 API 只声明 OAuth 2.0 + UserInfo。
 
 ## 本地开发
 
@@ -132,6 +135,8 @@ src/
 
 复制 `.env.example` 为 `.env`，按本地环境修改连接地址。使用 HTTP 本地开发时，将 `APP_ISSUER` 设置为 `http://127.0.0.1:3000`（或其他 loopback 地址）并将 `COOKIE_SECURE` 显式设为 `false`；HTTPS 或非 loopback 环境必须保持 `COOKIE_SECURE=true`。正常服务启动不会修改数据库结构；需要执行迁移时运行 `cargo run -- migrate`，生产 Docker 部署脚本会在启动应用前显式执行同一迁移命令。审计归档不在 Web 服务启动时自动运行，只有单独的 `cargo run -- audit-archive` 维护命令会搬运过期热表事件。
 
+数据库连接分成两个用途不同的池。请求路径使用的应用池会在每条新连接上设置服务端 `statement_timeout`，默认 `DB_STATEMENT_TIMEOUT_MS=5000`（允许 100 至 60000 毫秒）：`REQUEST_TIMEOUT_SECONDS` 只放弃 HTTP 响应，PostgreSQL 后端仍在执行，连接不会归还，因此语句上限必须由数据库自己执行，否则少量卡住的查询就能抽干连接池并让登录和令牌签发一起失败。该变量取值越界或不是整数时直接启动失败，不静默回退，避免运维以为自己配置的上限生效；设为 `0` 表示显式关闭（仅在数据库角色已带 `ALTER ROLE ... SET statement_timeout` 时使用），启动时会记录警告。`migrate` 和 `audit-archive` 走独立的维护池，不带 `statement_timeout`，长时间 DDL 和归档批次不会被中途取消。
+
 #### 快速启动
 
 项目根目录提供三份开发脚本：
@@ -142,16 +147,31 @@ src/
 
 日常开发推荐工作流：每日首次启动运行 `./dev.sh`，后续代码修改后只需 `Ctrl+C` 停止前后端再重新运行 `./dev-services.sh`，无需反复重启数据库容器。停止 Docker 服务使用 `docker compose down`。
 
-认证失败限流由 Redis Lua 脚本在单次原子操作中完成计数、窗口 TTL 和阈值判定。生产默认使用 `AUTH_LIMITER_FAILURE_POLICY=fail-closed`：Redis 不可用时认证请求不会被放行，并记录结构化 `auth_limiter.redis_unavailable` 事件；只有在明确接受降级风险时才使用 `fail-open`。`AUTH_LIMITER_MISSING_SOURCE_IP=reject` 是生产默认值，防止没有可信 `ConnectInfo` 的请求共用全局 `unknown` 桶；`skip` 只跳过 IP 维度，仍保留 account、ticket 限流，并应仅用于明确配置的测试或受控入口。限流日志只记录维度、窗口和不可逆 key hash，不记录账户、ticket、IP 原文或认证凭据。
-迁移编号在合并时必须保持唯一且连续：sessions lane 使用 `0006_session_epochs.sql` 和 `0014_session_idle_policy.sql`，plans lane 使用 `0007_plan_default_invariant.sql`，本 lane 的管理员查询索引使用 `0008_admin_query_indexes.sql`，审计不可变性和归档边界使用 `0013_audit_append_only_retention.sql`。不要复用已占用的编号或修改已有迁移的 SQL 内容。
+认证失败限流由 Redis Lua 脚本在单次原子操作中完成计数、窗口 TTL 和阈值判定。生产默认使用 `AUTH_LIMITER_FAILURE_POLICY=fail-closed`：Redis 不可用时认证请求不会被放行，并记录结构化 `auth_limiter.redis_unavailable` 事件；只有在明确接受降级风险时才使用 `fail-open`。
+
+`AUTH_LIMITER_MISSING_SOURCE_IP=reject` 是生产默认值，防止没有可信 `ConnectInfo` 的请求共用全局 `unknown` 桶；`skip` 只跳过 IP 维度，仍保留 account、ticket 限流，并应仅用于明确配置的测试或受控入口。限流日志只记录维度、窗口和不可逆 key hash，不记录账户、ticket、IP 原文或认证凭据。
+
+限流阈值来自 `app_settings.security_limits`，但认证热路径不逐次查询数据库：`SettingsService` 在进程内缓存一份已校验的阈值，TTL 5 秒，管理接口写入成功后主动刷新本实例缓存，多实例部署由 TTL 收敛。阈值读取失败时使用最后一次成功加载的值，从未成功加载过则使用启动期环境变量默认值，并按同一个 `AUTH_LIMITER_FAILURE_POLICY` 处置：`fail-open` 带着该降级阈值继续限流（阈值仍然生效，认证不返回 500），`fail-closed` 明确拒绝认证。两种情况都记录结构化 `auth_limiter.settings_unavailable` 事件，字段包含 `policy`、`limits_source` 和 `operation`；读取失败后有 1 秒重试退避，故障期间不会每个认证请求都再打一次数据库。`clear` 与 `release` 不读取阈值，因此成功认证后的计数清理与在途配额归还不受 settings 故障影响。
+
+数据库当前使用 `migrations/0001_initial.sql` 这一份完整基线。它直接声明最终的 13 张表、约束、索引、触发器、种子数据和运行时角色权限。首次生产发布前，结构变化直接修改这份基线并重建开发数据库，不追加迁移文件；首次生产发布后必须冻结基线字节，再从 `0002` 开始追加迁移。
 
 本次统一身份数据库重构使用新的单一基线迁移，不支持保留旧开发数据滚动升级。旧数据库中的 `_sqlx_migrations` 记录也不能被这条新基线自动转换；生产环境部署遇到迁移失败时必须先备份并执行经过批准的数据迁移或重建方案。首次在本地切换到该版本时，请确认 Compose 项目为本仓库的 `chenxing-auth` 后执行 `docker compose down -v`，再运行 `docker compose up -d postgres redis`；该操作会删除本地 PostgreSQL/Redis 开发数据，生产环境不得照此操作。
 
-审计事件由 `audit_events` 和 `audit_events_archive` 两张表保存。迁移创建的数据库触发器拒绝两张表的 `UPDATE`、`DELETE` 和 `TRUNCATE`；生产安装还会把 migration/owner role 与 `chenxing_runtime` 分离，runtime role 对两张审计表没有任何修改权限，归档只通过固定 `search_path` 的最小权限 `SECURITY DEFINER` 函数完成。触发器保留为纵深防御，不再作为唯一边界。归档先复制后删除，且只删除已成功复制的行；归档表本身永久保留并拒绝修改。审计查询会合并两张表。
+审计事件由 `audit_events` 和 `audit_events_archive` 两张表保存。迁移创建的数据库触发器拒绝两张表的 `UPDATE`、`DELETE` 和 `TRUNCATE`；migration/owner role 与 `chenxing_runtime` 分离后，runtime role 对两张审计表没有任何修改权限，归档只通过固定 `search_path` 的最小权限 `SECURITY DEFINER` 函数完成。触发器保留为纵深防御，不再作为唯一边界。归档先复制后删除，且只删除已成功复制的行；归档表本身永久保留并拒绝修改。审计查询会合并两张表。
+
+角色分离必须真的配置出来才成立：PostgreSQL 里表 owner 隐含全部表权限，因此当 `MIGRATION_DATABASE_URL` 缺失、迁移与运行时共用同一角色时，基线里的 `REVOKE` 一行都不生效，审计 append-only 退回只剩触发器一层，而触发器的归档旁路标记是会话级 GUC，任何持有该角色的会话都能设置。`cargo run -- migrate` 因此在连库前先校验角色配置，迁移后再用 `has_table_privilege` 实测运行时角色此刻能不能 `UPDATE`/`DELETE`/`TRUNCATE` 审计表——这个函数把 owner 隐含权限、角色继承和 superuser 旁路都算在内，问的是实际权限而不是迁移文件写了什么。默认策略 `AUDIT_ROLE_SEPARATION=require` 下不满足即拒绝；只有显式设置 `AUDIT_ROLE_SEPARATION=allow-single-role` 才允许单角色部署，且每次 migrate 都会打出强告警。生产环境不得使用该开关。
+
+运行时角色对序列的权限只放开一个对象：`users.id` 的 identity 序列。Owner 初始化要求第一个 Owner 的 `id` 为 1，`bootstrap_owner` 因此在插入前调 `setval`，而 `setval` 在 PostgreSQL 里要求序列的 `UPDATE` 权限；完整基线只授这一个序列。审计表的序列保持只读，append-only 边界不受影响。
+
+运行时角色口令由 migrate 保证可用，但不会被无条件重写：migrate 先用 `DATABASE_URL` 真正登录一次，口令已经可用就完全不碰角色，只有登录不被接受或角色刚被创建才写入并记录告警。口令完全由外部密钥托管管理时设置 `MIGRATION_MANAGE_RUNTIME_PASSWORD=false`，migrate 便不再执行任何 `ALTER ROLE ... PASSWORD`。
 
 `AUDIT_ARCHIVE_ENABLED` 默认是 `false`。明确设置为 `true` 后，`AUDIT_RETENTION_DAYS`（默认 2555 天，允许 1 至 36500 天）定义事件留在热表的最短时间；超过该窗口的事件只是被搬到永久归档表，不会被物理丢弃。Web 请求和正常服务进程不会执行清理，部署必须由一个外部 cron/systemd 任务定期运行 `cargo run -- audit-archive`（Docker 部署使用 `docker compose --env-file .env -f docker-compose.prod.yml run --rm app audit-archive`）。每次命令最多处理 1000 行，重复调用安全；命令日志只记录批次数和保留窗口，不记录 action、resource、metadata 或其他事件内容。不要让多个部署副本各自建立定时器，也不要在未确认合规窗口前缩短保留天数。回滚迁移前先停用调度器，并按迁移注释把归档行恢复到热表，再按逆序删除对象。
 
 `cargo build`/`cargo run` 在缺少 `web/dist/index.html` 时会通过 Cargo build script 自动安装并构建 Web。GitHub Actions 发布流水线会先构建一次前端产物，再在各目标平台复用；推送到 GHCR 的多架构镜像只打包已经编好的 Linux 二进制，不再在容器里二次 `cargo build`。本地 `docker compose` 仍使用源码版 `Dockerfile` 现场编译。启动后访问 `http://127.0.0.1:3000/` 即可同时使用 Web 和 API。
+
+二进制只在编译期内嵌 `index.html` 这一个 SPA shell，它引用的 JS、CSS、favicon 和字体仍然按文件从磁盘提供。因此两条生产镜像路径都会把构建好的 `web/dist` 一起装进镜像的 `/usr/local/share/chenxing-auth/web/dist`，并把 `WEB_DIST_DIR` 指向该目录：镜像的 WORKDIR 是可变状态目录，相对路径 `web/dist` 找不到产物，页面会只剩空壳。GHCR 镜像装入的是编译这批二进制时用的同一份 `web-dist` artifact——`index.html` 里的文件名带内容哈希，换成另一次构建的产物会让每个资源 404。直接使用 release 压缩包里的裸二进制时，需要自行提供 `web/dist` 并设置 `WEB_DIST_DIR`。
+
+`WEB_DIST_DIR` 在启动期解析完毕，不存在请求期回退：路径先 `canonicalize`（消掉 `..` 与符号链接），再逐条校验。留空、目录不存在、指向普通文件、指向文件系统根、等于或包含进程工作目录、与 `KEY_DIRECTORY` 有任何重叠（相等、包含、被包含），以及顶层出现源码/状态目录（`src`、`migrations`、`Cargo.toml`、`.git`、`target`、`node_modules`、`data`、`keys`）或秘密材料（`.env*`、`*.pem`、`*.key`、`*.der`、`*.kid` 等）时，服务直接以一条明确的配置错误拒绝启动，而不是把工作目录整体当静态根把 `.env` 和私钥暴露成可下载文件。目录还必须自证与本二进制同源：`index.html` 在盘上，且内嵌 shell 引用的每个根绝对资源都能在同一个根下找到——挂进另一次构建的产物会在启动时被拒绝，而不是等到每个资源 404 才被发现。`migrate` 与 `audit-archive` 子命令不托管静态资源，不受这条校验影响。
 
 ## API 文档
 
@@ -163,6 +183,7 @@ src/
 
 - 用户已授权应用的聚合列表 API（当前页面明确展示后端能力边界）
 - 大规模第三方 OAuth/OIDC 互操作认证矩阵
+- 自定义外部提供商的 OIDC 依赖方模式（ID Token 签名与 `iss`/`aud`/`exp`/`nonce` 验证）；当前只提供 OAuth 2.0 + UserInfo 信任模型
 - 密钥撤销策略和外部受保护密钥存储
 - 生产级限流、告警和密钥托管集成
 
@@ -174,7 +195,7 @@ src/
 ./deploy/install.sh
 ```
 
-脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码、runtime 数据库密码和 `ADMIN_TOKEN`，先校验生产 Compose 配置，再启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。已有 `.env` 不会被覆盖，但缺少 runtime 角色凭据时会自动追加；`APP_ISSUER` 是必填项，生产环境必须设置为固定的 HTTPS 地址（例如 `https://auth.example.com`），未设置或为空时服务启动即失败，并将 `.env` 作为秘密文件保护。升级 v1.0.6 数据库时，安装脚本会先运行 `deploy/repair-v106-checksum.sql` 修复被原地修改的迁移元数据。健康检查失败时脚本会输出 Compose 状态和应用日志，便于定位启动问题。
+脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码、runtime 数据库密码和 `ADMIN_TOKEN`，先校验生产 Compose 配置，再启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。已有 `.env` 不会被覆盖，但缺少 runtime 角色凭据时会自动追加；`APP_ISSUER` 是必填项，生产环境必须设置为固定的 HTTPS 地址（例如 `https://auth.example.com`），未设置或为空时服务启动即失败，并将 `.env` 作为秘密文件保护。当前基线不自动转换旧 `_sqlx_migrations` 记录；健康检查失败时脚本会输出 Compose 状态和应用日志，便于定位启动问题。
 
 生产 Compose 文件为 `docker-compose.prod.yml`。数据库、Redis、JWK 密钥和内嵌 Web 都由应用容器提供，应用容器以非 root 用户运行。TLS 终止可以交给服务器网关，但 Web/API 本身不依赖反向代理。
 
@@ -182,15 +203,17 @@ src/
 
 当前 `/oauth/authorize` 同时支持开发期 `X-Chenxing-Session` 和 HttpOnly Session Cookie；带 `Accept: text/html` 的浏览器流程会进入登录页和授权确认页。浏览器 Cookie 会话的状态变更必须携带 `X-CSRF-Token`，并与 CSRF Cookie 和 Session 中的 Token 一致。管理 API 复用普通用户 Session 和 CSRF Cookie，角色决定管理权限。
 
-`KEY_DIRECTORY` 默认指向 `data/keys`，该目录包含运行时私钥并已加入 `.gitignore`。Unix 下应用会将目录收紧为 `0700`，私钥、active `kid` 和 OAuth Provider 主密钥收紧为 `0600`，并在启动时修正已有过宽权限。密钥写入使用受限临时文件和原子替换。`KEY_ROTATION_GRACE_SECONDS` 默认是 `604800`（7 天），支持范围是 `1` 到 `2592000` 秒（30 天），且不能小于 access/ID token TTL：轮换后的旧公钥在该窗口内继续用于验签，窗口外的旧私钥会在启动或后续轮换时回收；设置为 `0` 或超出范围会使服务启动失败。`ADMIN_TOKEN` 为空时，管理 API 默认全部拒绝访问，唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口；此时启动日志会记录一条 `ADMIN_TOKEN not set` 警告，便于运维感知管理面不可用。
+`KEY_DIRECTORY` 默认指向 `data/keys`，该目录包含运行时私钥并已加入 `.gitignore`。Unix 下应用会将目录收紧为 `0700`，私钥、active `kid` 和 OAuth Provider 主密钥收紧为 `0600`，并在启动时修正已有过宽权限。密钥写入使用受限临时文件和原子替换。active `kid` 存在但它指向的私钥材料不在目录里时，服务 fail-closed：启动和刷新直接失败并记录一条不含密钥材料的 error 日志，既不覆盖 `kid` 也不生成替代密钥，避免静默作废全部已签发令牌并抹掉材料丢失的证据；只有目录既没有 `kid` 也没有任何私钥材料时才执行首次初始化。恢复方式是还原备份的私钥文件，或在确认可以接受全部已签发令牌失效后手动清空密钥目录。`KEY_ROTATION_GRACE_SECONDS` 默认是 `604800`（7 天），支持范围是 `1` 到 `2592000` 秒（30 天），且不能小于 access/ID token TTL：轮换后的旧公钥在该窗口内继续用于验签，窗口外的旧私钥会在启动或后续轮换时回收；设置为 `0` 或超出范围会使服务启动失败。`KEY_ROTATION_SKEW_ALLOWANCE_SECONDS` 默认是 `3600`（1 小时），支持范围是 `0` 到 `KEY_ROTATION_GRACE_SECONDS`：多实例共享密钥目录时，`retired_at` 由退役实例的时钟写入、窗口判断却发生在当前加载实例的时钟上，时钟偏快的实例会把窗口算短、提前删除仍被其他实例用于验签的公钥文件（不可逆）；该容忍值把窗口关闭边界推到 `retired_at + grace + allowance`，偏差不超过容忍值的实例只会晚删、绝不提前删，单实例部署可设为 `0`。签发、验签和 JWKS 三条请求热路径只读进程内的密钥快照，不在请求线程里读写密钥目录；与共享 `KEY_DIRECTORY` 的一致性由一个 5 秒周期的后台任务负责（验签遇到未知 `kid` 时会提前触发一次同步）。因此多实例共享同一目录时，某个实例的轮换或吊销最迟在一个同步周期后在其他实例生效，期间旧公钥仍在保留窗口内可验签。管理 API 有两条独立通道：系统 `ADMIN_TOKEN` Bearer，以及浏览器 HttpOnly Session Cookie（写操作还需 CSRF Cookie 与 `X-CSRF-Token` 绑定，权限按用户角色判定）。`ADMIN_TOKEN` 为空时只关闭 Bearer 通道——任何 Bearer 请求都会被拒绝，而已认证、角色足够且 CSRF 绑定有效的浏览器管理 Session 仍然可用；不存在 Owner 时公开的首个 Owner 初始化接口不受两条通道约束，例外语义不变。此时启动日志会记录一条 `ADMIN_TOKEN not set` 警告，说明被关闭的是 Bearer 自动化通道而不是整个管理面，便于运维不要据此误判管理面已停用。
 
 `APP_ISSUER` 是必填配置项，没有默认值：它是 OIDC 发行者标识，会写入 JWT 的 `iss` claim 和 Discovery 文档，必须是无 path、query 和 fragment 的绝对 URL，且不能从请求 Host 或反向代理输入推导。未设置、为空或格式非法时服务启动失败，不再回退到 `http://<APP_HOST>:<APP_PORT>`。
 
 HTTPS 部署的 Session 和 CSRF Cookie 使用 `__Host-chenxing_session` 与 `__Host-chenxing_csrf`，固定带 `Secure; Path=/` 且不带 `Domain`，由浏览器强制 host-only 约束。`COOKIE_SECURE=false` 只允许用于明确的 loopback HTTP 本地开发（`localhost`、`127.0.0.1` 或 `::1`）；在 HTTPS 或其他主机发行者下会导致启动失败。HTTP 发行者配合 `COOKIE_SECURE=true` 会记录启动警告，因为浏览器可能拒绝 Secure Cookie。
 
-Session payload 使用 AES-256-GCM 并携带 key id。`AUTH_ENCRYPTION_KEY` 保留为单密钥兼容写法。轮换时设置逗号分隔的 `kid=<key-id>:<standard-base64-32-byte-key>` 密钥环 `AUTH_ENCRYPTION_KEYS`，并设置 `AUTH_ENCRYPTION_ACTIVE_KID`；新 Session 只使用 active key，旧 key 只读。旧 key 必须保留到最长 Session TTL 加 outbox 重试窗口结束后再移除。回滚通过把旧 key 设为 `AUTH_ENCRYPTION_ACTIVE_KID` 并继续保留新 key 完成。移除 key 会故意使仅由该 key 加密的 Session 失效，请求返回 401 并清理浏览器 Cookie。Redis 只保存加密 payload，不保存 Session 或 CSRF 明文。
+Session payload 使用 AES-256-GCM 并携带 key id。`AUTH_ENCRYPTION_KEY` 保留为单密钥兼容写法。轮换时设置逗号分隔的 `kid=<key-id>:<standard-base64-32-byte-key>` 密钥环 `AUTH_ENCRYPTION_KEYS`，并设置 `AUTH_ENCRYPTION_ACTIVE_KID`；新 Session 只使用 active key，旧 key 只读。旧 key 必须保留到最长 Session TTL 加 outbox 重试窗口结束后再移除；该重试窗口现在有明确上限（10 次尝试，约 20 分钟），超出后事件进入 dead-letter 而不是无限重试。回滚通过把旧 key 设为 `AUTH_ENCRYPTION_ACTIVE_KID` 并继续保留新 key 完成。移除 key 会故意使仅由该 key 加密的 Session 失效，请求返回 401 并清理浏览器 Cookie。Redis 只保存加密 payload，不保存 Session 或 CSRF 明文。
 
-浏览器 Session 同时受绝对期限和空闲期限约束：`SESSION_TTL_SECONDS` 默认 7 天，是创建时固定的绝对截止时间；`SESSION_IDLE_TIMEOUT_SECONDS` 默认 1800 秒，成功认证请求在空闲窗口过半时更新 `last_seen_at`，但绝不会延长绝对截止时间。Redis 投影的 TTL 取这两个截止时间中较早者，PostgreSQL 是撤销、epoch 和空闲状态的权威来源。`SESSION_MAX_CONCURRENT_SESSIONS` 默认 5；新登录达到上限时，在同一用户事务锁内撤销最早的活跃 Session，再写入新 Session，并通过 outbox 删除旧 Redis 投影。Cookie 本身仍保留绝对生命周期，服务端 idle 校验负责缩短不活动凭据的有效窗口。
+浏览器 Session 同时受绝对期限和空闲期限约束：`SESSION_TTL_SECONDS` 默认 7 天，是创建时固定的绝对截止时间；`SESSION_IDLE_TIMEOUT_SECONDS` 默认 1800 秒，成功认证请求在空闲窗口过半时更新 `last_seen_at`，但绝不会延长绝对截止时间。Redis 投影的 TTL 取这两个截止时间中较早者，PostgreSQL 是撤销、epoch 和空闲状态的权威来源。`SESSION_MAX_CONCURRENT_SESSIONS` 默认 5；新登录达到上限时，在同一用户事务锁内撤销最早的活跃 Session，再写入新 Session，并通过 outbox 删除旧 Redis 投影。Cookie 本身仍保留绝对生命周期，服务端 idle 校验负责缩短不活动凭据的有效窗口。三个会话配置项都有启动期上下界校验（绝对 TTL 90 天、空闲 30 天、并发 1000），越界直接拒绝启动——`SESSION_TTL_SECONDS` 会原样进入 Redis `SET ... EX`，Redis 整数上限是 i64，无上界的饱和值会让每次会话写入失败（#365）。
+
+`session_outbox` 有明确的有界生命周期，分三个状态：待处理、已投递和 dead-letter。一个事件最多被投递 10 次（退避上限 5 分钟，覆盖约 20 分钟的真实故障窗口）；仍然失败则写入 `dead_lettered_at` 并退出待处理索引，不再被重试，`attempts` 和 `last_error` 作为审计记录保留。已投递事件保留 1 天，dead-letter 事件保留 30 天，都由 outbox worker 按 5 分钟间隔分批删除，每批每类上限 500 行，积压时连续清理直到收敛。撤销只在真正发生"未撤销 → 已撤销"转变时写入事件：重复登出和对不存在令牌的登出不产生投递任务。运维应监控 dead-letter 行——一条撤销事件进入 dead-letter 意味着对应的 Redis 投影可能仍然存在，需要人工确认，而 PostgreSQL 始终是认证判定的权威来源，投影残留不会让已撤销的会话通过认证。
 
 用户首次密码登录会通过短期 HttpOnly pending-login Cookie 进入因子流程；Redis 中的 `login_ticket` 绑定同一浏览器 holder，前端需要完成 TOTP 或 WebAuthn passkey 注册后才会获得 Session。后续登录需要密码加已绑定的 TOTP 或 passkey。生产环境应设置固定的 `WEBAUTHN_RP_ID` 和 `WEBAUTHN_ORIGIN`，默认从固定 `APP_ISSUER` 派生，不能从请求 Host 派生。
 

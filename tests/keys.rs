@@ -88,7 +88,7 @@ async fn revoking_a_non_active_key_removes_it_from_verification_and_jwks() {
 
     assert_eq!(revocation.key_id, revoked_key_id);
     assert_eq!(manager.jwks().keys.len(), 1);
-    assert!(manager.verification_key_for(&revoked_key_id).is_err());
+    assert!(manager.verification_key_for(&revoked_key_id).is_none());
 }
 
 #[tokio::test]
@@ -118,6 +118,6 @@ async fn revoking_the_active_key_switches_to_an_existing_key_atomically() {
 
     assert_eq!(revocation.active_key_id, previous_key_id);
     assert_eq!(manager.key_id(), previous_key_id);
-    assert!(manager.verification_key_for(&active_key_id).is_err());
+    assert!(manager.verification_key_for(&active_key_id).is_none());
     assert_eq!(manager.jwks().keys.len(), 1);
 }

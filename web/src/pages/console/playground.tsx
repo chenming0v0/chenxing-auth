@@ -9,6 +9,7 @@ import { entitlementState, useEntitlements } from './shared'
 export function PlaygroundPage() {
   const selfServiceClosed = entitlementState(useEntitlements()).kind === 'closed'
   const [clients, setClients] = useState<OwnedOAuthClient[]>([])
+  const [loading, setLoading] = useState(true)
   const [selectedId, setSelectedId] = useState('')
   const [redirectUri, setRedirectUri] = useState('')
   const [scope, setScope] = useState('openid')
@@ -27,10 +28,11 @@ export function PlaygroundPage() {
         }
       })
       .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。'))
+      .finally(() => setLoading(false))
   }, [])
 
   function selectClient(clientId: string) {
-    const client = clients.find((item) => item.client_id === clientId)
+    const client = clients?.find((item) => item.client_id === clientId)
     setSelectedId(clientId)
     setRedirectUri(client?.redirect_uris[0] || '')
     setScope(client?.scopes.join(' ') || 'openid')
@@ -38,8 +40,19 @@ export function PlaygroundPage() {
     setMessage('')
   }
 
+  // 参数变更后旧 result 立即失效：否则用户会用过期 redirect_uri/scope 的授权 URL 发起授权
+  function editRedirectUri(value: string) {
+    setRedirectUri(value)
+    setResult(null)
+  }
+
+  function editScope(value: string) {
+    setScope(value)
+    setResult(null)
+  }
+
   async function generate() {
-    const client = clients.find((item) => item.client_id === selectedId)
+    const client = clients?.find((item) => item.client_id === selectedId)
     if (!client || !redirectUri || !scope.trim()) {
       setMessage('请选择应用并填写服务端允许的 Redirect URI 和 Scope。')
       return
@@ -74,7 +87,11 @@ export function PlaygroundPage() {
       <PageIntro eyebrow="// Playground" title="授权测试" description="用真实的授权码 + PKCE 流程验证你的接入配置。" />
       {message ? <div className="mb-4"><Notice tone="warning">{message}</Notice></div> : null}
 
-      {!clients.length ? (
+      {loading ? (
+        <HudPanel className="flex min-h-[20rem] flex-col items-center justify-center text-center">
+          <Notice tone="info">正在加载可用于测试的应用。</Notice>
+        </HudPanel>
+      ) : !clients.length ? (
         <HudPanel className="flex min-h-[20rem] flex-col items-center justify-center text-center">
           {/* 未开放自助接入时不引导用户去一个不能提交的注册入口 */}
           {selfServiceClosed ? (
@@ -109,8 +126,8 @@ export function PlaygroundPage() {
               options={clients.map((client) => ({ value: client.client_id, label: client.client_name }))}
             />
             <Field label="Client ID" className="chenxing-mono text-sm" readOnly value={selectedId} />
-            <Field label="Redirect URI" className="chenxing-mono text-sm" value={redirectUri} onChange={(event) => setRedirectUri(event.target.value)} />
-            <Field label="Scope" value={scope} onChange={(event) => setScope(event.target.value)} />
+            <Field label="Redirect URI" className="chenxing-mono text-sm" value={redirectUri} onChange={(event) => editRedirectUri(event.target.value)} />
+            <Field label="Scope" value={scope} onChange={(event) => editScope(event.target.value)} />
             <Field label="Response Type" className="chenxing-mono text-sm" readOnly value="code" />
             <Field label="Code Challenge Method" className="chenxing-mono text-sm" readOnly value="S256" />
           </div>

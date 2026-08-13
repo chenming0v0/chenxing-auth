@@ -34,7 +34,7 @@ pub(crate) async fn current_user(
     else {
         return Err(invalid_session_response(state, "invalid_session"));
     };
-    if !session.is_active() {
+    if !session.is_active_at(state.clock.now()) {
         return Err(invalid_session_response(state, "invalid_session"));
     }
     let user_id = session

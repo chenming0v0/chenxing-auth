@@ -19,8 +19,8 @@ async fn password_epoch_change_invalidates_existing_login_ticket() {
     let redis = Client::open(redis_url).expect("Redis URL");
     let suffix = Uuid::new_v4().simple().to_string();
     let user_id: i64 = chenxing_auth::sqlx::query_scalar(
-        "INSERT INTO users (username, email, password_hash, status, created_at, updated_at)
-         VALUES ($1, $2, 'test-hash', 'active', NOW(), NOW()) RETURNING id",
+        "INSERT INTO users (username, email, canonical_email, password_hash, status, created_at, updated_at)
+         VALUES ($1, $2, lower($2), 'test-hash', 'active', NOW(), NOW()) RETURNING id",
     )
     .bind(format!("ticket-{suffix}"))
     .bind(format!("ticket-{suffix}@example.com"))

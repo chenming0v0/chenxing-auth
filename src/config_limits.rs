@@ -7,9 +7,8 @@ use crate::clients::domain::{
 };
 
 use super::ConfigError;
+use super::config_limit_bounds::for_each_security_limit;
 use super::config_parsing::{optional_i64, optional_u32, optional_u64};
-
-pub const MAX_UNAUTHENTICATED_SOURCE_QPS: u32 = 1_000;
 
 pub(super) fn parse_auth_limiter_failure_policy(
     name: &'static str,
@@ -114,7 +113,7 @@ pub struct SecurityLimits {
     pub max_pending_requests_per_client: u64,
     /// 全局待决授权请求容量上限。
     pub max_pending_requests_global: u64,
-    /// 认证失败计数的固定窗口时长（秒）。
+    /// 认证失败计数的滑动窗口时长（秒）。
     pub auth_failure_window_seconds: i64,
     /// 单窗口内账户维度的失败次数上限。
     pub account_failure_limit: i64,
@@ -153,94 +152,37 @@ impl Default for SecurityLimits {
 }
 
 impl SecurityLimits {
-    /// 校验并规整取值。**0 一律退回默认值**：QPS 为 0 表示拒绝所有请求、TTL 为 0
-    /// 表示凭据签发即过期，这两者都不是任何部署想要的策略，只可能是配置错误
-    /// （例如把变量设成空字符串后又被 shell 展开为 0）。静默接受会造成全站不可用，
-    /// 因此这里回退并告警，而不是让服务带着自毁配置启动。
+    /// 校验并规整取值，**任何越界项都退回默认值并告警**。
     ///
-    /// 未认证来源 QPS 还设有硬上限，避免每个请求都向 Redis 滑动窗口 ZSET 追加 member，
-    /// 让一个过大的阈值变成可利用的内存增长。
+    /// 下界：QPS 为 0 表示拒绝所有请求、TTL 为 0 表示凭据签发即过期，i64 阈值
+    /// `<= 0` 在 Redis Lua 比较里等价于「立即触发限流」。这些都不是任何部署想要的
+    /// 策略，只可能是配置错误（例如变量被设成空字符串后又被 shell 展开为 0）。
     ///
-    /// 明显危险但仍可能是有意选择的取值（如授权码 TTL 过长）只告警，不改写。
+    /// 上界：见 `config_limit_bounds`。阈值本身就是安全控制，允许写入极值等于允许
+    /// 静默关掉这项控制——`ACCOUNT_FAILURE_LIMIT=i64::MAX` 会让账户锁定永不触发。
+    ///
+    /// 环境变量是启动期输入，此时没有人在看错误提示，因此回退而不是拒绝启动：
+    /// 服务带着默认阈值起来仍然安全，带着自毁配置起不来才是故障。
     fn sanitized(mut self) -> Self {
         let defaults = Self::default();
-        macro_rules! reset_if_zero {
-            ($field:ident, $name:literal) => {
-                if self.$field == 0 {
+        // 下界统一是 1，故 `< 1` 同时覆盖无符号的 0 与有符号的非正数。
+        macro_rules! reset_if_out_of_range {
+            ($field:ident, $max:expr, $env:literal) => {
+                if self.$field < 1 || self.$field > $max {
                     tracing::warn!(
+                        configured = self.$field,
+                        maximum = $max,
                         default = defaults.$field,
                         concat!(
-                            $name,
-                            " is 0, which disables service; falling back to default"
+                            $env,
+                            " is outside the supported range; falling back to default"
                         )
                     );
                     self.$field = defaults.$field;
                 }
             };
         }
-        reset_if_zero!(unauthenticated_source_qps, "UNAUTHENTICATED_SOURCE_QPS");
-        reset_if_zero!(
-            authorization_code_ttl_seconds,
-            "AUTHORIZATION_CODE_TTL_SECONDS"
-        );
-        reset_if_zero!(pending_request_ttl_seconds, "PENDING_REQUEST_TTL_SECONDS");
-        reset_if_zero!(
-            max_pending_requests_per_client,
-            "MAX_PENDING_REQUESTS_PER_CLIENT"
-        );
-        reset_if_zero!(max_pending_requests_global, "MAX_PENDING_REQUESTS_GLOBAL");
-        reset_if_zero!(
-            external_login_state_ttl_seconds,
-            "EXTERNAL_LOGIN_STATE_TTL_SECONDS"
-        );
-        reset_if_zero!(
-            external_login_state_rate_window_seconds,
-            "EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS"
-        );
-
-        if self.unauthenticated_source_qps > MAX_UNAUTHENTICATED_SOURCE_QPS {
-            tracing::warn!(
-                configured = self.unauthenticated_source_qps,
-                maximum = MAX_UNAUTHENTICATED_SOURCE_QPS,
-                default = defaults.unauthenticated_source_qps,
-                "UNAUTHENTICATED_SOURCE_QPS exceeds the supported upper bound; falling back to default"
-            );
-            self.unauthenticated_source_qps = defaults.unauthenticated_source_qps;
-        }
-
-        // i64 维度同时拒绝 0 和负数：负阈值在 Redis Lua 比较里等价于「立即触发限流」。
-        macro_rules! reset_if_not_positive {
-            ($field:ident, $name:literal) => {
-                if self.$field <= 0 {
-                    tracing::warn!(
-                        default = defaults.$field,
-                        concat!($name, " must be positive; falling back to default")
-                    );
-                    self.$field = defaults.$field;
-                }
-            };
-        }
-        reset_if_not_positive!(auth_failure_window_seconds, "AUTH_FAILURE_WINDOW_SECONDS");
-        reset_if_not_positive!(account_failure_limit, "ACCOUNT_FAILURE_LIMIT");
-        reset_if_not_positive!(ip_failure_limit, "IP_FAILURE_LIMIT");
-        reset_if_not_positive!(totp_ticket_failure_limit, "TOTP_TICKET_FAILURE_LIMIT");
-        reset_if_not_positive!(
-            external_login_state_rate_limit,
-            "EXTERNAL_LOGIN_STATE_RATE_LIMIT"
-        );
-        reset_if_not_positive!(
-            external_login_state_max_pending,
-            "EXTERNAL_LOGIN_STATE_MAX_PENDING"
-        );
-
-        // 授权码是一次性凭据，RFC 6749 §4.1.2 建议 10 分钟以内。过长会拉长
-        // 「拿到授权码但还没兑换」的攻击窗口，但确实存在慢速客户端的场景，只告警。
-        if self.authorization_code_ttl_seconds > 600 {
-            tracing::warn!(
-                authorization_code_ttl_seconds = self.authorization_code_ttl_seconds,
-                "AUTHORIZATION_CODE_TTL_SECONDS exceeds the 10 minute guidance in RFC 6749"
-            );
-        }
+        for_each_security_limit!(reset_if_out_of_range);
         self
     }
 }
@@ -306,6 +248,17 @@ mod tests {
     use base64::{Engine, engine::general_purpose::STANDARD};
 
     use super::*;
+    // 生产代码里 `for_each_security_limit!` 用绝对路径引用上界常量，模块本身不导入它们；
+    // 测试要按名字断言，因此在测试作用域单独引入。
+    use crate::config::{
+        MAX_ACCOUNT_FAILURE_LIMIT, MAX_AUTH_FAILURE_WINDOW_SECONDS,
+        MAX_AUTHORIZATION_CODE_TTL_SECONDS, MAX_EXTERNAL_LOGIN_STATE_MAX_PENDING,
+        MAX_EXTERNAL_LOGIN_STATE_RATE_LIMIT, MAX_EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
+        MAX_EXTERNAL_LOGIN_STATE_TTL_SECONDS, MAX_IP_FAILURE_LIMIT,
+        MAX_PENDING_REQUEST_TTL_SECONDS, MAX_PENDING_REQUESTS_GLOBAL,
+        MAX_PENDING_REQUESTS_PER_CLIENT, MAX_TOTP_TICKET_FAILURE_LIMIT,
+        MAX_UNAUTHENTICATED_SOURCE_QPS,
+    };
 
     #[test]
     fn key_ring_parser_preserves_standard_base64_padding_for_multiple_keys() {
@@ -432,27 +385,92 @@ mod tests {
         assert_eq!(sanitized, configured);
     }
 
-    /// 授权码 TTL 过长只告警、不改写：慢速客户端场景真实存在。
+    /// 授权码 TTL 曾经「过长只告警、不改写」。#260 起改为硬上界：授权码是一次性
+    /// 凭据，兑换由客户端后端立即发起，超过 RFC 6749 §4.1.2 的 10 分钟只会拉长
+    /// 「已泄露但尚未兑换」的攻击窗口。
     #[test]
-    fn long_authorization_code_ttl_is_kept_with_a_warning() {
+    fn authorization_code_ttl_beyond_the_rfc_guidance_falls_back_to_the_default() {
         let sanitized = SecurityLimits {
-            authorization_code_ttl_seconds: 3_600,
-            ..SecurityLimits::default()
-        }
-        .sanitized();
-        assert_eq!(sanitized.authorization_code_ttl_seconds, 3_600);
-    }
-
-    #[test]
-    fn excessive_source_qps_falls_back_to_the_default() {
-        let sanitized = SecurityLimits {
-            unauthenticated_source_qps: MAX_UNAUTHENTICATED_SOURCE_QPS + 1,
+            authorization_code_ttl_seconds: MAX_AUTHORIZATION_CODE_TTL_SECONDS + 1,
             ..SecurityLimits::default()
         }
         .sanitized();
         assert_eq!(
-            sanitized.unauthenticated_source_qps,
-            SecurityLimits::default().unauthenticated_source_qps
+            sanitized.authorization_code_ttl_seconds,
+            SecurityLimits::default().authorization_code_ttl_seconds
         );
+
+        // 恰好等于上界仍然保留：600 是 RFC 建议的边界值，不是越界。
+        let sanitized = SecurityLimits {
+            authorization_code_ttl_seconds: MAX_AUTHORIZATION_CODE_TTL_SECONDS,
+            ..SecurityLimits::default()
+        }
+        .sanitized();
+        assert_eq!(
+            sanitized.authorization_code_ttl_seconds,
+            MAX_AUTHORIZATION_CODE_TTL_SECONDS
+        );
+    }
+
+    /// 每一项都必须有上界，否则环境变量就是绕过管理 API 校验的后门（#260）。
+    #[test]
+    fn every_out_of_range_value_falls_back_to_the_default() {
+        let defaults = SecurityLimits::default();
+        let sanitized = SecurityLimits {
+            unauthenticated_source_qps: MAX_UNAUTHENTICATED_SOURCE_QPS + 1,
+            authorization_code_ttl_seconds: MAX_AUTHORIZATION_CODE_TTL_SECONDS + 1,
+            pending_request_ttl_seconds: MAX_PENDING_REQUEST_TTL_SECONDS + 1,
+            max_pending_requests_per_client: MAX_PENDING_REQUESTS_PER_CLIENT + 1,
+            max_pending_requests_global: MAX_PENDING_REQUESTS_GLOBAL + 1,
+            auth_failure_window_seconds: MAX_AUTH_FAILURE_WINDOW_SECONDS + 1,
+            account_failure_limit: MAX_ACCOUNT_FAILURE_LIMIT + 1,
+            ip_failure_limit: MAX_IP_FAILURE_LIMIT + 1,
+            totp_ticket_failure_limit: MAX_TOTP_TICKET_FAILURE_LIMIT + 1,
+            external_login_state_ttl_seconds: MAX_EXTERNAL_LOGIN_STATE_TTL_SECONDS + 1,
+            external_login_state_rate_window_seconds: MAX_EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS
+                + 1,
+            external_login_state_rate_limit: MAX_EXTERNAL_LOGIN_STATE_RATE_LIMIT + 1,
+            external_login_state_max_pending: MAX_EXTERNAL_LOGIN_STATE_MAX_PENDING + 1,
+        }
+        .sanitized();
+        assert_eq!(sanitized, defaults);
+    }
+
+    /// 饱和取值（`i64::MAX` / `u64::MAX`）是 #260 报告的原始利用手法。
+    #[test]
+    fn saturated_values_fall_back_to_the_defaults() {
+        let defaults = SecurityLimits::default();
+        let sanitized = SecurityLimits {
+            unauthenticated_source_qps: u32::MAX,
+            authorization_code_ttl_seconds: u64::MAX,
+            pending_request_ttl_seconds: u64::MAX,
+            max_pending_requests_per_client: u64::MAX,
+            max_pending_requests_global: u64::MAX,
+            auth_failure_window_seconds: i64::MAX,
+            account_failure_limit: i64::MAX,
+            ip_failure_limit: i64::MAX,
+            totp_ticket_failure_limit: i64::MAX,
+            external_login_state_ttl_seconds: u64::MAX,
+            external_login_state_rate_window_seconds: u64::MAX,
+            external_login_state_rate_limit: i64::MAX,
+            external_login_state_max_pending: i64::MAX,
+        }
+        .sanitized();
+        assert_eq!(sanitized, defaults);
+    }
+
+    /// 默认值必须落在自己的上下界之内，否则默认配置会被自己的校验回退/拒绝。
+    #[test]
+    fn defaults_are_within_their_own_bounds() {
+        let defaults = SecurityLimits::default();
+        macro_rules! assert_within_bounds {
+            ($field:ident, $max:expr, $env:literal) => {
+                assert!(
+                    defaults.$field >= 1 && defaults.$field <= $max,
+                    concat!("default ", $env, " must be within its own bounds")
+                );
+            };
+        }
+        for_each_security_limit!(assert_within_bounds);
     }
 }

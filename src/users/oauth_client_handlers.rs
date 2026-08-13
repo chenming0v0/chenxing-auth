@@ -1,11 +1,12 @@
 use axum::{
     Json,
-    extract::{Path, State},
-    http::StatusCode,
+    extract::{ConnectInfo, Extension, Path, Query, State},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::net::SocketAddr;
 
 use crate::{
     api::extract::{SessionRead, SessionWrite},
@@ -59,6 +60,17 @@ impl fmt::Debug for RegisteredOwnedClientResponse {
 #[derive(Debug, Serialize)]
 struct OwnedClientListResponse {
     items: Vec<OwnedClientResponse>,
+    /// 当前用户拥有的 Client 总数（不随分页变化），供前端渲染分页与「还有更多」提示。
+    total: i64,
+}
+
+/// list_owned_clients 专用查询参数，与管理端 `ClientListQuery` 一致（Issue #415）。
+#[derive(Debug, Deserialize)]
+pub struct OwnedClientListQuery {
+    /// 返回条数，默认 200，最大 200，超限自动 clamp。
+    pub limit: Option<i64>,
+    /// 跳过条数，默认 0，用于手动翻页。
+    pub offset: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,7 +78,11 @@ struct AuthorizedAppListResponse {
     items: Vec<crate::consents::AuthorizedApp>,
 }
 
-pub async fn list_owned_clients(State(state): State<AppState>, session: SessionRead) -> Response {
+pub async fn list_owned_clients(
+    State(state): State<AppState>,
+    session: SessionRead,
+    Query(query): Query<OwnedClientListQuery>,
+) -> Response {
     let effective = match state.plans.effective_plan_for_user(session.user_id).await {
         Ok(effective) => effective,
         Err(error_value) => {
@@ -76,15 +92,24 @@ pub async fn list_owned_clients(State(state): State<AppState>, session: SessionR
     };
     // 读路径不设闸门：没有生效套餐时照常列出既有 Client，配额上限留空。
     let quota_limits = effective.map(|effective| effective.plan.auth_quota_limits());
-    let clients = match state.clients.list_for_user(session.user_id).await {
-        Ok(clients) => clients,
+    // 分页 + 总数：超过 200 个 Client 时不再静默截断，翻页即可访问全部（Issue #415）。
+    let (clients, total) = match state
+        .clients
+        .list_for_user(session.user_id, query.limit, query.offset)
+        .await
+    {
+        Ok(result) => result,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to list owned OAuth clients");
             return error::internal();
         }
     };
     match add_quota(&state, clients, quota_limits).await {
-        Ok(items) => (StatusCode::OK, Json(OwnedClientListResponse { items })).into_response(),
+        Ok(items) => (
+            StatusCode::OK,
+            Json(OwnedClientListResponse { items, total }),
+        )
+            .into_response(),
         Err(response) => response,
     }
 }
@@ -101,9 +126,18 @@ pub async fn list_authorized_apps(State(state): State<AppState>, session: Sessio
 
 pub async fn revoke_authorized_app(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     session: SessionWrite,
     Path(client_id): Path<String>,
 ) -> Response {
+    // 撤销审计需要请求上下文（源 IP / UA），供安全日志详情展示（Issue #308）。
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    let user_agent = crate::api::user_agent(&headers);
     // Issue #65 原子性修复：将撤销的权威写入（DB）与缓存失效（Redis）顺序调整，
     // 使 DB 成为单一原子事实，Redis 成为 best-effort 缓存。
     //
@@ -120,14 +154,18 @@ pub async fn revoke_authorized_app(
             return error::internal();
         }
     };
-    if !revoked {
-        // 记录不存在或已撤销：幂等返回 204
+    // 记录不存在或已撤销：幂等返回 204
+    let Some(state_version) = revoked else {
         return StatusCode::NO_CONTENT.into_response();
-    }
-    // DB 写入成功，尝试失效 Redis 缓存（best-effort）
+    };
+    // DB 写入成功，尝试写入 Redis 缓存结论（best-effort）。
+    //
+    // Issue #276：必须带上这次撤销的 `state_version`。缓存更新是版本化条件写，
+    // 如果用户在这两步之间已经重新授权（DB 版本更高），本次写入会被拒绝，
+    // 从而不会留下一个否决数据库新状态的陈旧撤销标记。被拒绝不是错误。
     if let Err(error_value) = state
         .revocations
-        .revoke_consent(&session.user_id.to_string(), &client_id)
+        .revoke_consent(&session.user_id.to_string(), &client_id, state_version)
         .await
     {
         tracing::warn!(
@@ -147,7 +185,11 @@ pub async fn revoke_authorized_app(
             "consent_revoke".to_owned(),
             "oauth_consent".to_owned(),
             Some(client_id),
-            serde_json::json!({"result": "success"}),
+            crate::audit::with_request_context(
+                serde_json::json!({"result": "success"}),
+                source_ip.as_deref(),
+                user_agent.as_deref(),
+            ),
         ))
         .await;
     StatusCode::NO_CONTENT.into_response()
@@ -352,7 +394,7 @@ async fn add_quota(
     for client in clients {
         let quota = state
             .oauth_quotas
-            .snapshot(&client.client_id, quota_limits)
+            .snapshot_at(&client.client_id, quota_limits, state.clock.now())
             .await
             .map_err(|_| error::internal())?;
         items.push(OwnedClientResponse {
@@ -375,7 +417,7 @@ async fn owned_registered_response(
 ) -> Result<RegisteredOwnedClientResponse, Response> {
     let quota = state
         .oauth_quotas
-        .snapshot(&client.client_id, quota_limits)
+        .snapshot_at(&client.client_id, quota_limits, state.clock.now())
         .await
         .map_err(|_| error::internal())?;
     Ok(RegisteredOwnedClientResponse {

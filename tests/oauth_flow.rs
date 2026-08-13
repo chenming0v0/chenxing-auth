@@ -10,8 +10,11 @@ use chenxing_auth::sessions::domain::Session;
 use chenxing_auth::{
     api,
     oauth::{
-        authorization::ValidatedAuthorizationRequest, code::AuthorizationCode,
-        handlers::issue_authorization_code_result, refresh::RefreshToken,
+        authorization::ValidatedAuthorizationRequest,
+        code::AuthorizationCode,
+        handlers::issue_authorization_code_result,
+        refresh::RefreshToken,
+        refresh_store::{RefreshTokenStore, RotationOutcome},
         store::AuthorizationCodeStore,
     },
     state::AppState,
@@ -42,7 +45,7 @@ async fn disabled_user_session_cannot_authorize_or_submit_consent() {
     let (state, database, key_directory) = test_state("oauth_flow").await;
     let router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&router, &suffix).await;
+    ensure_owner_bootstrapped(&router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&router, &suffix).await;
     let (client_id, _client_secret) = create_test_client(&router, "flow-admin-token").await;
     let mut session =
@@ -158,7 +161,7 @@ async fn disabled_user_cannot_exchange_oauth_credentials_without_consuming_them(
     let (state, database, key_directory) = test_state("oauth_flow").await;
     let router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&router, &suffix).await;
+    ensure_owner_bootstrapped(&router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&router, "flow-admin-token").await;
     let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -274,7 +277,7 @@ async fn refresh_token_remains_reusable_when_access_token_issuance_fails() {
     let (mut state, database, key_directory) = test_state("oauth_flow").await;
     let setup_router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&setup_router, &suffix).await;
+    ensure_owner_bootstrapped(&setup_router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
     let refresh = RefreshToken::new(
@@ -404,6 +407,126 @@ async fn refresh_token_remains_reusable_when_access_token_issuance_fails() {
         .expect("cleanup user");
     let _ = std::fs::remove_dir_all(key_directory);
 }
+
+/// Issue #409：管理端 TOTP 重置的撤销步（`reset_user_totp_factor` 调用的
+/// `revoke_all_for_user`）只推进 `session_epoch`，此前 Refresh Token 兑换不做
+/// 凭据代际判定，旧 Refresh Token 在重置后仍能持续换取 access token。修复后
+/// token 签发时 stamp 当前 epoch，兑换时与用户当前 epoch 比对：重置推进 epoch，
+/// 该用户全部已签发 Refresh Token 随之失效，且拒绝发生在消费之前。
+#[tokio::test]
+async fn totp_reset_revocation_invalidates_outstanding_refresh_tokens() {
+    let (state, database, key_directory) = test_state("oauth_flow").await;
+    let router = api::router(state.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    ensure_owner_bootstrapped(&router, &database, "oauth_flow", &suffix).await;
+    let (user_id, _username, _email, _password) = register_test_user(&router, &suffix).await;
+    let (client_id, client_secret) = create_test_client(&router, "flow-admin-token").await;
+    let basic = STANDARD.encode(format!("{client_id}:{client_secret}"));
+    chenxing_auth::sqlx::query(
+        "INSERT INTO user_consents (user_id, client_id, scopes, updated_at)
+         SELECT $1, id, $3, $4 FROM oauth_clients WHERE client_id = $2
+         ON CONFLICT (user_id, client_id) DO UPDATE SET scopes = EXCLUDED.scopes, updated_at = EXCLUDED.updated_at",
+    )
+    .bind(user_id)
+    .bind(&client_id)
+    .bind(serde_json::json!(["openid"]))
+    .bind(time::OffsetDateTime::now_utc())
+    .execute(&database)
+    .await
+    .expect("save refresh token consent");
+    let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let code = AuthorizationCode::new_with_nonce(
+        client_id.clone(),
+        "https://reset.example/callback".to_owned(),
+        user_id.to_string(),
+        vec!["openid".to_owned()],
+        challenge,
+        Some("reset-nonce".to_owned()),
+        None,
+    );
+    state
+        .authorization_codes
+        .save(&code)
+        .await
+        .expect("save authorization code");
+
+    // 真实授权码流程签发一枚 Refresh Token：它 stamp 了签发时刻的凭据代际。
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Freset.example%2Fcallback&code_verifier={verifier}",
+                    code.value
+                )))
+                .expect("code exchange request"),
+        )
+        .await
+        .expect("code exchange response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let refresh_value = json_body(response).await["refresh_token"]
+        .as_str()
+        .expect("issued refresh token")
+        .to_owned();
+
+    // 管理端 TOTP 重置的撤销步（admin/factor_handlers::reset_user_totp_factor）：
+    // revoke_all_for_user 推进 session_epoch，Cookie 会话与全部 Refresh Token
+    // 在同一凭据水位上一起失效。
+    state
+        .sessions
+        .revoke_all_for_user(user_id)
+        .await
+        .expect("revoke all user credentials");
+
+    // 重置后：签发于旧代际的 Refresh Token 必须被拒绝。
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=refresh_token&refresh_token={refresh_value}"
+                )))
+                .expect("rejected refresh request"),
+        )
+        .await
+        .expect("rejected refresh response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        json_body(response).await["error"].as_str(),
+        Some("invalid_grant")
+    );
+    // 代际拒绝发生在消费（CAS 轮换）之前：token 必须仍然存在，证明拒绝的
+    // 原因是凭据代际被撤销，而不是重放检测或 family 撤销删掉了它。
+    assert!(
+        state
+            .refresh_tokens
+            .find(&refresh_value)
+            .await
+            .expect("find rejected refresh token")
+            .is_some(),
+        "epoch rejection must not consume the refresh token"
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
+        .bind(client_id)
+        .execute(&database)
+        .await
+        .expect("cleanup client");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
 async fn refresh_token_count_for_client(state: &AppState, client_id: &str) -> usize {
     let mut connection = state
         .redis
@@ -434,7 +557,7 @@ async fn authorization_code_is_restored_when_token_issuance_fails() {
     let (mut state, database, key_directory) = test_state("oauth_flow").await;
     let setup_router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&setup_router, &suffix).await;
+    ensure_owner_bootstrapped(&setup_router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
     let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -534,12 +657,189 @@ async fn authorization_code_is_restored_when_token_issuance_fails() {
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
+/// 保留一个 TCP 端口号后立刻释放：得到一个几乎肯定连不上的 Redis 地址，
+/// 用来模拟「凭据已经写进 Redis，但补偿删除失败」。
+fn unavailable_redis_client() -> redis::Client {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("reserve Redis port");
+    let port = listener
+        .local_addr()
+        .expect("reserved Redis address")
+        .port();
+    drop(listener);
+    redis::Client::open(format!("redis://127.0.0.1:{port}/")).expect("Redis URL")
+}
+
+async fn post_refresh(router: &axum::Router, basic: &str, refresh_value: &str) -> StatusCode {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=refresh_token&refresh_token={refresh_value}"
+                )))
+                .expect("refresh request"),
+        )
+        .await
+        .expect("refresh response")
+        .status()
+}
+
+/// Issue #293：提交一个已经被消费掉的 refresh token 一律撤销整个 family，
+/// 不存在「刚刚消费过所以算并发」的宽限窗口。
+///
+/// 这个窗口曾经存在（Issue #278），代价是攻击者窃取凭据后只要紧跟着合法客户端
+/// 的刷新提交同一个值，就能得到一次不触发 family 撤销的免费尝试；而 family
+/// 撤销是检测凭据泄露的唯一手段。单次使用就按单次使用执行：正常客户端轮换后
+/// 手里已经是新值，重复提交旧值要么是客户端并发 bug，要么是泄露。
+#[tokio::test]
+async fn resubmitting_a_consumed_refresh_token_revokes_the_family() {
+    let (state, database, key_directory) = test_state("oauth_flow").await;
+    let setup_router = api::router(state.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    ensure_owner_bootstrapped(&setup_router, &database, "oauth_flow", &suffix).await;
+    let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
+    let (client_id, client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
+    let basic = STANDARD.encode(format!("{client_id}:{client_secret}"));
+    let original = RefreshToken::new(
+        client_id.clone(),
+        user_id.to_string(),
+        vec!["openid".to_owned()],
+    );
+    let rotated = original.rotate(vec!["openid".to_owned()]);
+    state
+        .refresh_tokens
+        .save(&original)
+        .await
+        .expect("save original refresh token");
+    // 直接用 store 模拟一次已经完成的轮换：original 被消费、rotated 成为活成员。
+    assert_eq!(
+        state
+            .refresh_tokens
+            .rotate_if_matches(&original.value, &original, &rotated)
+            .await
+            .expect("simulate a completed rotation"),
+        RotationOutcome::Rotated
+    );
+
+    // 再次提交 original：立刻按 replay 处置，整个 family 一起失效。
+    assert_eq!(
+        post_refresh(&setup_router, &basic, &original.value).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert!(
+        state
+            .refresh_tokens
+            .find(&rotated.value)
+            .await
+            .expect("find the successor token")
+            .is_none(),
+        "resubmitting a consumed token must revoke the whole token family"
+    );
+
+    // 重复提交是幂等的：family 已经撤销，只得到普通 invalid_grant。
+    assert_eq!(
+        post_refresh(&setup_router, &basic, &original.value).await,
+        StatusCode::BAD_REQUEST
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
+        .bind(client_id)
+        .execute(&database)
+        .await
+        .expect("cleanup client");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+/// Issue #290：补偿删除 Refresh Token 失败时必须 fail-closed，保持授权码已消费。
+///
+/// 否则同一次授权可以再换出第二个 Refresh Token，两者 family 不同，
+/// 任意一个被 replay 撤销都杀不掉另一个。
+#[tokio::test]
+async fn authorization_code_stays_consumed_when_refresh_cleanup_fails() {
+    let (mut state, database, key_directory) = test_state("oauth_flow").await;
+    let setup_router = api::router(state.clone());
+    let suffix = Uuid::new_v4().simple().to_string();
+    ensure_owner_bootstrapped(&setup_router, &database, "oauth_flow", &suffix).await;
+    let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
+    let (client_id, client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
+    let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let code = AuthorizationCode::new_with_nonce(
+        client_id.clone(),
+        "https://restore.example/callback".to_owned(),
+        user_id.to_string(),
+        vec!["openid".to_owned()],
+        challenge,
+        None,
+        None,
+    );
+    state
+        .authorization_codes
+        .save(&code)
+        .await
+        .expect("save authorization code");
+    let basic = STANDARD.encode(format!("{client_id}:{client_secret}"));
+
+    // Refresh Token store 不可用：授权码已被 CAS 消费，随后的补偿删除也失败。
+    let healthy_refresh_tokens = state.refresh_tokens.clone();
+    state.refresh_tokens = RefreshTokenStore::new(unavailable_redis_client());
+    let failing_router = api::router(state.clone());
+    let response = failing_router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("authorization", format!("Basic {basic}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "grant_type=authorization_code&code={}&redirect_uri=https%3A%2F%2Frestore.example%2Fcallback&code_verifier={verifier}",
+                    code.value
+                )))
+                .expect("failed code exchange request"),
+        )
+        .await
+        .expect("failed code exchange response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    state.refresh_tokens = healthy_refresh_tokens;
+    assert!(
+        state
+            .authorization_codes
+            .find(&code.value)
+            .await
+            .expect("look up the authorization code")
+            .is_none(),
+        "a failed refresh cleanup must not restore a redeemable authorization code"
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM oauth_clients WHERE client_id = $1")
+        .bind(client_id)
+        .execute(&database)
+        .await
+        .expect("cleanup client");
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
 #[tokio::test]
 async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
     let (mut state, database, key_directory) = test_state("oauth_flow").await;
     let setup_router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
-    ensure_owner_bootstrapped(&setup_router, &suffix).await;
+    ensure_owner_bootstrapped(&setup_router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
     let (client_id, _client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
     chenxing_auth::sqlx::query("UPDATE oauth_clients SET owner_user_id = $1 WHERE client_id = $2")
@@ -587,6 +887,8 @@ async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
             owner_user_id: Some(user_id),
             session_token_hash: None,
         },
+        None,
+        None,
     )
     .await
     .expect_err("authorization code persistence failure");

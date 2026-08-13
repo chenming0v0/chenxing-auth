@@ -1,8 +1,6 @@
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 use totp_rs::{Algorithm, Secret, TOTP};
 
-use crate::clock::{Clock, SystemClock};
-
 use super::domain::validate_totp_code;
 
 const TOTP_DIGITS: usize = 6;
@@ -128,12 +126,16 @@ pub fn verify_totp_code_at_timestep(secret: &[u8], code: &str, timestamp: u64) -
     bool::from(matched).then_some(matched_step)
 }
 
-pub fn verify_totp_code_current(secret: &[u8], code: &str) -> bool {
-    verify_totp_code_current_timestep(secret, code).is_some()
-}
-
-pub fn verify_totp_code_current_timestep(secret: &[u8], code: &str) -> Option<u64> {
-    let timestamp = u64::try_from(SystemClock.now().unix_timestamp()).ok()?;
+/// 以显式「现在」校验 TOTP，并返回被接受的 timestep。
+///
+/// timestep 直接决定 replay 键，因此固定时钟能让「同一步内重复提交」
+/// 这类用例完全确定，不受用例执行时刻落在哪个 30 秒窗口的影响。
+pub fn verify_totp_code_now_timestep(
+    secret: &[u8],
+    code: &str,
+    now: time::OffsetDateTime,
+) -> Option<u64> {
+    let timestamp = u64::try_from(now.unix_timestamp()).ok()?;
     verify_totp_code_at_timestep(secret, code, timestamp)
 }
 
@@ -156,6 +158,8 @@ fn build_totp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::SharedClock;
+    use time::{Duration, OffsetDateTime};
 
     /// RFC 6238 附录 B 的 SHA1 测试种子。
     const RFC_SECRET: &[u8] = b"12345678901234567890";
@@ -281,6 +285,53 @@ mod tests {
         assert_eq!(verify_totp_code_at_timestep(secret, "755224", 10), Some(0));
         assert_eq!(verify_totp_code_at_timestep(secret, "287082", 10), Some(1));
         assert_eq!(verify_totp_code_at_timestep(secret, "000000", 10), None);
+    }
+
+    /// Issue #299：TOTP 的"当前 timestep"必须能被固定时钟决定。
+    ///
+    /// 以前这条路径直接读进程墙钟，用例接受的 timestep 取决于它恰好跑在哪个
+    /// 30 秒窗口里。注入时钟后，replay 键对应的 timestep 完全确定。
+    #[test]
+    fn current_timestep_verification_follows_the_injected_clock() {
+        let enrollment = rfc_enrollment();
+        let secret = enrollment.secret_bytes();
+        let now = OffsetDateTime::from_unix_timestamp(ALIGNED_NOW as i64).expect("valid timestamp");
+        let clock = SharedClock::fixed(now);
+
+        assert_eq!(
+            verify_totp_code_now_timestep(secret, &enrollment.code_at(ALIGNED_NOW), clock.now()),
+            Some(ALIGNED_NOW / TOTP_STEP_SECONDS)
+        );
+    }
+
+    /// 时钟走出 skew 窗口后，同一个码必须被拒绝。
+    ///
+    /// 这是"不依赖真实等待即可测到期前后边界"的 TOTP 版本：窗口外的两侧都由
+    /// 固定时钟直接构造，不需要 sleep 60 秒。
+    #[test]
+    fn advancing_the_injected_clock_past_the_skew_window_rejects_the_code() {
+        let enrollment = rfc_enrollment();
+        let secret = enrollment.secret_bytes();
+        let code = enrollment.code_at(ALIGNED_NOW);
+        let issued_at =
+            OffsetDateTime::from_unix_timestamp(ALIGNED_NOW as i64).expect("valid timestamp");
+
+        // ±1 步仍在 skew 窗口内。
+        for offset in [-30_i64, 0, 30] {
+            let clock = SharedClock::fixed(issued_at + Duration::seconds(offset));
+            assert!(
+                verify_totp_code_now_timestep(secret, &code, clock.now()).is_some(),
+                "offset {offset}s 应仍在 skew 窗口内"
+            );
+        }
+        // 越过 ±1 步之后必须拒绝。
+        for offset in [-60_i64, 60] {
+            let clock = SharedClock::fixed(issued_at + Duration::seconds(offset));
+            assert!(
+                verify_totp_code_now_timestep(secret, &code, clock.now()).is_none(),
+                "offset {offset}s 应已越出 skew 窗口"
+            );
+        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import {
   apiFetch,
   type PasskeyAuthenticatorAttachment,
@@ -7,29 +7,104 @@ import {
 } from '../../../api'
 import { Button, Field, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
 import { SelectField } from '../../../components/select'
+import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
 function splitOrigins(value: string): string[] {
   return value.replace(/,/g, ' ').split(/\s+/).map((item) => item.trim()).filter(Boolean)
 }
 
-export function PasskeyPanel({ onMessage }: { onMessage: (message: string, tone?: 'success' | 'warning') => void }) {
-  const [setting, setSetting] = useState<PasskeySetting | null>(null)
-  const [originsText, setOriginsText] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [loading, setLoading] = useState(true)
+/** 与服务端 `is_loopback_host`（src/settings/domain.rs）同规则：http 回环例外。 */
+function isLoopbackHost(url: URL): boolean {
+  const host = url.hostname
+  if (host === 'localhost') return true
+  const ipv6 = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : null
+  if (ipv6 === '::1') return true
+  if (ipv6 !== null) return false
+  if (!host.startsWith('127.')) return false
+  return host.split('.').every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
+}
 
-  useEffect(() => {
-    let active = true
-    void apiFetch<PasskeySetting>('/api/v1/admin/settings/passkey')
-      .then((value) => {
-        if (!active) return
-        setSetting(value)
-        setOriginsText(value.allowed_origins.join(', '))
-      })
-      .catch((reason: unknown) => onMessage(reason instanceof Error ? reason.message : 'Passkey 设置加载失败。', 'warning'))
-      .finally(() => { if (active) setLoading(false) })
-    return () => { active = false }
-  }, [onMessage])
+export type PasskeyOriginsValidation = { origins: string[] } | { error: string }
+
+const MAX_ALLOWED_ORIGINS = 32
+
+/**
+ * Origin 白名单的前端校验，规则与服务端 `PasskeySetting::validate` +
+ * `normalize_origins`（src/settings/domain.rs）保持一致：
+ * - 非空，最多 32 个；
+ * - 每个必须是 `scheme://host[:port]` 形式的完整 Origin，不带路径、查询、片段或用户信息；
+ * - 协议仅 https；http 只在开启「允许不安全的 Origin」或 host 是回环地址时放行；
+ * - host（小写）必须等于 RP ID 或是它的子域。
+ * 提交前拦截，避免只能靠后端 400 的笼统报错定位是哪个 Origin 不合法。
+ */
+export function validatePasskeyOrigins(
+  text: string,
+  rpId: string,
+  allowInsecure: boolean,
+): PasskeyOriginsValidation {
+  const origins = splitOrigins(text)
+  if (origins.length === 0) return { error: '请至少填写一个 Origin。' }
+  if (origins.length > MAX_ALLOWED_ORIGINS) {
+    return { error: `Origin 数量不能超过 ${MAX_ALLOWED_ORIGINS} 个。` }
+  }
+  const rp = rpId.trim().toLowerCase()
+  if (!rp) return { error: '请先填写 RP ID：Origin 的 host 必须等于 RP ID 或是它的子域。' }
+  for (const origin of origins) {
+    const message = (reason: string) => `「${origin}」${reason}`
+    let url: URL
+    try {
+      url = new URL(origin)
+    } catch {
+      return { error: message('不是合法的 URL，请填写完整 Origin，例如 https://auth.clya.top。') }
+    }
+    // `javascript:`、`data:` 等无 host 的 scheme 会解析成功，必须显式要求 host。
+    if (!url.hostname || url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+      return { error: message('只能是 scheme://host[:port] 形式的 Origin，不能带路径、查询参数或片段。') }
+    }
+    if (url.username || url.password) {
+      return { error: message('不能包含用户名或密码。') }
+    }
+    const schemeOk = url.protocol === 'https:'
+      || (url.protocol === 'http:' && (allowInsecure || isLoopbackHost(url)))
+    if (!schemeOk) {
+      return {
+        error: message(allowInsecure
+          ? '的协议不受支持，仅允许 https 或 http。'
+          : '必须使用 https；http 仅允许 localhost 等本机地址，或开启「允许不安全的 Origin」。'),
+      }
+    }
+    const host = url.hostname.toLowerCase()
+    if (!(host === rp || host.endsWith(`.${rp}`))) {
+      return { error: message(`的 host 必须等于 RP ID（${rp}）或是它的子域。`) }
+    }
+  }
+  return { origins }
+}
+
+export function PasskeyPanel({ onMessage, onDirtyChange }: SettingsPanelProps) {
+  const [setting, setSetting] = useState<PasskeySetting | null>(null)
+  /* 上次成功加载/保存的基线：当前编辑与它不一致即视为有未保存草稿（#381）。 */
+  const [savedSetting, setSavedSetting] = useState<PasskeySetting | null>(null)
+  const [originsText, setOriginsText] = useState('')
+  const [originsError, setOriginsError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const { loading } = useSettingsResource<PasskeySetting>({
+    path: '/api/v1/admin/settings/passkey',
+    onMessage,
+    failureMessage: 'Passkey 设置加载失败。',
+    apply: (value) => {
+      setSetting(value)
+      setSavedSetting(value)
+      setOriginsText(value.allowed_origins.join(', '))
+      setOriginsError(null)
+    },
+  })
+
+  const dirty = Boolean(savedSetting && (
+    !settingsEqual(setting, savedSetting) || originsText !== savedSetting.allowed_origins.join(', ')
+  ))
+  useDirtyReport(dirty, onDirtyChange)
 
   function updateSetting(patch: Partial<PasskeySetting>) {
     if (busy) return
@@ -39,18 +114,26 @@ export function PasskeyPanel({ onMessage }: { onMessage: (message: string, tone?
   async function save(event: FormEvent) {
     event.preventDefault()
     if (busy || !setting) return
+    const validation = validatePasskeyOrigins(originsText, setting.rp_id, setting.allow_insecure_origin)
+    if ('error' in validation) {
+      setOriginsError(validation.error)
+      onMessage(validation.error, 'warning')
+      return
+    }
     setBusy(true)
     try {
       const payload: PasskeySetting = {
         ...setting,
-        allowed_origins: splitOrigins(originsText),
+        allowed_origins: validation.origins,
       }
       const value = await apiFetch<PasskeySetting>('/api/v1/admin/settings/passkey', {
         method: 'PUT',
         body: JSON.stringify(payload),
       })
       setSetting(value)
+      setSavedSetting(value)
       setOriginsText(value.allowed_origins.join(', '))
+      setOriginsError(null)
       onMessage('Passkey 设置已保存。')
     } catch (reason) {
       onMessage(reason instanceof Error ? reason.message : 'Passkey 设置保存失败。', 'warning')
@@ -124,9 +207,15 @@ export function PasskeyPanel({ onMessage }: { onMessage: (message: string, tone?
             <Field
               label="允许的 Origins"
               value={originsText}
-              onChange={(event) => { if (!busy) setOriginsText(event.target.value) }}
+              onChange={(event) => {
+                if (!busy) {
+                  setOriginsText(event.target.value)
+                  setOriginsError(null)
+                }
+              }}
               placeholder="https://auth.clya.top, https://app.clya.top"
-              hint="多个 Origin 可用逗号或空格分隔。"
+              hint="多个 Origin 用逗号或空格分隔。host 必须等于 RP ID 或是它的子域，仅 https（http 仅限本机地址或开启「允许不安全的 Origin」）。"
+              errorText={originsError ?? undefined}
             />
             <div>
               <Button type="submit" icon="save" disabled={busy}>保存 Passkey 设置</Button>

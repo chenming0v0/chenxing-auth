@@ -1,10 +1,21 @@
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt;
 use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::clock::{Clock, SystemClock};
+
+/// 计算 Refresh Token 值的 SHA-256 + URL-safe base64 哈希。
+///
+/// 原始 token 值不进入 Redis keyspace、索引成员或日志，避免 keyspace dump 或
+/// 慢查询日志泄露可用凭据。`refresh_store` 的主键、索引与墓碑键共用此函数，
+/// 与 `revocation.rs` / `sessions::store` 的既有哈希约定保持一致。
+pub(crate) fn refresh_token_hash(value: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()))
+}
 
 /// Refresh Token 的绝对有效期上限（RFC 9700 §4.14.2 建议限制长期凭据的生命周期）。
 ///
@@ -43,12 +54,43 @@ pub struct RefreshToken {
     /// 成员被重放时，撤销整个家族（攻击者和合法客户端各持一个轮换后的 token，
     /// 只拒绝当次请求会让攻击者继续用手里那个）。
     ///
-    /// 旧格式 token 缺失时反序列化为空字符串；首次轮换时会分配新的 family_id，
-    /// 之后该 token 独立成家（无法关联撤销历史上同源的 token，但不影响新流程）。
+    /// 旧格式 token 缺失时反序列化为空字符串；首次轮换时家族由 token 值哈希
+    /// 确定性派生（`legacy-token:{hash}`，见 [`Self::family_identifier`]），
+    /// 与存储层对空 family 的撤销域回退是同一个键空间，因此无论从活 payload、
+    /// 墓碑还是轮换后继定位，撤销都命中同一家族（Issue #313）。
     ///
     /// `skip_serializing_if` 保证旧 token 的 CAS 兼容性（同 `issued_at` 约束）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub family_id: String,
+    /// Client Secret generation that authenticated the original issuance.
+    ///
+    /// Every successor inherits this value. A token is redeemable only when it
+    /// matches the generation authenticated by the current request, so a token
+    /// left behind by a failed best-effort revocation is still inert after a
+    /// Secret rotation. Legacy payloads predate the field; they are accepted
+    /// under the currently authenticated generation and stamped on their first
+    /// rotation so an upgrade does not revoke otherwise healthy grants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret_version: Option<i64>,
+    /// 签发时用户 `users.session_epoch` 的快照（Issue #409）。
+    ///
+    /// `session_epoch` 是「撤销该用户全部凭据」的单一水位：改密、管理端 TOTP
+    /// 重置、禁用账号都通过 `revoke_all_for_user_in_transaction` 推进它，会话
+    /// 校验在每次查找时已经按它过滤（`sessions.session_epoch >= users.session_epoch`），
+    /// 而 Refresh Token 此前完全没有这道判定——TOTP 重置只踢掉 Cookie 会话，
+    /// 旧 Refresh Token 仍能持续换取 access token。签发时把 epoch 绑定进凭据，
+    /// 兑换时与当前值比对，任何推进 epoch 的撤销操作都会让该用户此前签发的
+    /// 全部 Refresh Token 立即失效。
+    ///
+    /// 轮换时**继承**而不是重新读取当前值：重新读取会让「兑换检查通过之后、
+    /// 轮换落地之前」发生的撤销被新 stamp 抹掉，等于把重置后的第一个兑换
+    /// 重新救活。同一 grant 的后继凭据必须属于同一代。
+    ///
+    /// 旧格式 payload 缺失此字段时反序列化为 `None`。`None` 在兑换路径
+    /// fail-closed（拒绝）：无法证明签发时刻的凭据不能继续信任，升级后
+    /// 客户端重新走一次授权流程换取新代际凭据即可。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_epoch: Option<i64>,
 }
 
 impl fmt::Debug for RefreshToken {
@@ -63,6 +105,8 @@ impl fmt::Debug for RefreshToken {
             .field("revoked_at", &self.revoked_at)
             .field("issued_at", &self.issued_at)
             .field("family_id", &self.family_id)
+            .field("client_secret_version", &self.client_secret_version)
+            .field("session_epoch", &self.session_epoch)
             .finish()
     }
 }
@@ -75,10 +119,12 @@ mod tests {
     #[test]
     fn explicit_time_constructor_and_rotation_are_deterministic() {
         let created_at = OffsetDateTime::UNIX_EPOCH + Duration::days(1);
-        let token = RefreshToken::new_at(
+        let token = RefreshToken::new_at_with_client_secret_version(
             "client".to_owned(),
             "user".to_owned(),
             vec!["openid".to_owned()],
+            7,
+            3,
             created_at,
         );
         let rotated_at = created_at + Duration::days(2);
@@ -88,6 +134,40 @@ mod tests {
         assert_eq!(rotated.created_at, rotated_at);
         assert_eq!(rotated.issued_at, token.issued_at);
         assert_eq!(rotated.family_id, token.family_id);
+        assert_eq!(rotated.client_secret_version, token.client_secret_version);
+        // Issue #409：凭据代际必须由轮换继承，轮换不能重新读取当前 epoch，
+        // 否则撤销与轮换的竞态会把已撤销的 grant 重新救活。
+        assert_eq!(rotated.session_epoch, token.session_epoch);
+    }
+
+    /// Issue #313：旧格式 token（空 `family_id`）轮换后，后继必须留在由旧值
+    /// 哈希派生的家族里，让撤销/重放路径从任何入口（活 payload、墓碑、CAS
+    /// 陈旧 payload）都能命中它，而不是落入全新家族。
+    #[test]
+    fn legacy_token_rotation_stays_in_the_derived_family() {
+        let created_at = OffsetDateTime::UNIX_EPOCH + Duration::days(1);
+        let mut token = RefreshToken::new_at_with_client_secret_version(
+            "client".to_owned(),
+            "user".to_owned(),
+            vec!["openid".to_owned()],
+            7,
+            3,
+            created_at,
+        );
+        // 模拟旧格式 payload：family_id 缺失，反序列化为空串。
+        token.family_id.clear();
+
+        let rotated = token.rotate_at(vec!["openid".to_owned()], created_at + Duration::days(2));
+
+        assert!(!rotated.family_id.is_empty());
+        assert_eq!(rotated.family_id, token.family_identifier());
+        assert_eq!(
+            rotated.family_id,
+            format!("legacy-token:{}", super::refresh_token_hash(&token.value))
+        );
+        // 家族随轮换链一路继承，后续轮换不再派生新家族。
+        let second = rotated.rotate_at(vec!["openid".to_owned()], created_at + Duration::days(3));
+        assert_eq!(second.family_id, rotated.family_id);
     }
 }
 
@@ -104,6 +184,10 @@ pub enum RefreshTokenError {
 }
 
 impl RefreshToken {
+    /// 墙钟便捷入口，只给测试和夹具用。
+    ///
+    /// 生产签发必须走 [`Self::new_at`] / [`Self::new_at_with_client_secret_version`]
+    /// 并传入注入的 `SharedClock`，让 TTL 和过期共用同一时间源（Issue #366）。
     pub fn new(client_id: String, user_id: String, scopes: Vec<String>) -> Self {
         Self::new_at(client_id, user_id, scopes, SystemClock.now())
     }
@@ -112,6 +196,23 @@ impl RefreshToken {
         client_id: String,
         user_id: String,
         scopes: Vec<String>,
+        now: OffsetDateTime,
+    ) -> Self {
+        // 测试便捷构造：绑定到 epoch 0（注册接口创建的用户默认从 0 开始）。
+        // 需要精确控制凭据代际的测试应使用完整构造器。
+        Self::new_at_with_client_secret_version(client_id, user_id, scopes, 0, 0, now)
+    }
+
+    /// Construct a token bound to the Client credential snapshot that passed
+    /// authentication at the token endpoint, and to the user's current
+    /// `session_epoch` (Issue #409: the credential generation the token was
+    /// issued under, checked again at every exchange).
+    pub fn new_at_with_client_secret_version(
+        client_id: String,
+        user_id: String,
+        scopes: Vec<String>,
+        client_secret_version: i64,
+        session_epoch: i64,
         now: OffsetDateTime,
     ) -> Self {
         Self {
@@ -124,13 +225,21 @@ impl RefreshToken {
             revoked_at: None,
             issued_at: Some(now),
             family_id: Uuid::new_v4().simple().to_string(),
+            client_secret_version: Some(client_secret_version),
+            session_epoch: Some(session_epoch),
         }
     }
 
     /// 轮换 token（RFC 9700 §4.14.2：旧 token 单次使用，返回新 token）。
     ///
     /// 继承 `issued_at` 和 `family_id` 以维持家族关系和绝对生命周期；
-    /// 更新 `created_at` / `expires_at` 以重置滑动窗口。
+    /// 更新 `created_at` / `expires_at` 以重置滑动窗口。旧格式 token 的
+    /// 家族由 token 值确定性派生（[`Self::family_identifier`]），使轮换后继
+    /// 仍留在原 token 的撤销域内（Issue #313）。
+    ///
+    /// 墙钟便捷入口，只给测试和夹具用。生产刷新路径必须走
+    /// [`Self::rotate_at`] / [`Self::rotate_at_with_client_secret_version`]，
+    /// 并传入与 `validate`、Redis TTL 相同的时刻（Issue #366）。
     pub fn rotate(&self, scopes: Vec<String>) -> Self {
         self.rotate_at(scopes, SystemClock.now())
     }
@@ -149,13 +258,47 @@ impl RefreshToken {
             expires_at: sliding_deadline.min(absolute_deadline),
             revoked_at: None,
             issued_at: Some(issued_at),
-            family_id: if self.family_id.is_empty() {
-                // 旧格式 token 首次轮换时生成新家族 ID
-                Uuid::new_v4().simple().to_string()
-            } else {
-                self.family_id.clone()
-            },
+            family_id: self.family_identifier(),
+            client_secret_version: self.client_secret_version,
+            session_epoch: self.session_epoch,
         }
+    }
+
+    /// Rotate and bind a legacy or current token to the generation authenticated
+    /// by the token endpoint. This is the production refresh path.
+    pub fn rotate_at_with_client_secret_version(
+        &self,
+        scopes: Vec<String>,
+        client_secret_version: i64,
+        now: OffsetDateTime,
+    ) -> Self {
+        let mut rotated = self.rotate_at(scopes, now);
+        rotated.client_secret_version = Some(client_secret_version);
+        rotated
+    }
+
+    /// Legacy payloads have no generation to compare. A database compatibility
+    /// bit admits them only until the Client's first post-upgrade Secret
+    /// rotation; their successor is always stamped.
+    pub fn is_bound_to_client_secret_version(
+        &self,
+        expected_version: i64,
+        allow_legacy_refresh_tokens: bool,
+    ) -> bool {
+        match self.client_secret_version {
+            Some(version) => version == expected_version,
+            None => allow_legacy_refresh_tokens,
+        }
+    }
+
+    /// 校验凭据代际（Issue #409）：token 签发时 stamp 的 `session_epoch` 必须
+    /// 等于用户当前值。`session_epoch` 是「撤销该用户全部凭据」的单一水位——
+    /// 改密、管理端 TOTP 重置、禁用账号都推进它，会话校验每次查找都在比对
+    /// （`sessions.session_epoch >= users.session_epoch`），Refresh Token 也必须
+    /// 一样。不一致说明签发后发生过撤销操作，凭据必须失效；旧格式 payload
+    /// 没有 epoch、无法证明签发时刻，同样 fail-closed 拒绝。
+    pub fn is_bound_to_session_epoch(&self, current_epoch: i64) -> bool {
+        self.session_epoch == Some(current_epoch)
     }
 
     /// 返回凭据的首次签发时刻（绝对有效期计算的起点）。
@@ -164,6 +307,35 @@ impl RefreshToken {
     /// 假定该 token 就是原始签发，而非已轮换多次的后继）。
     pub fn issued_at(&self) -> OffsetDateTime {
         self.issued_at.unwrap_or(self.created_at)
+    }
+
+    /// 旧格式 token（空 `family_id`）的家族标识：由 token 值哈希确定性派生。
+    ///
+    /// 派生值 `legacy-token:{hash}` 与存储层 `FamilyScope` 对空 family 的
+    /// 回退后缀完全一致，因此活 token 撤销、墓碑撤销和 CAS 陈旧 payload
+    /// 三条路径解析到的都是同一个撤销域。
+    pub fn legacy_family_id(&self) -> String {
+        format!("legacy-token:{}", refresh_token_hash(&self.value))
+    }
+
+    /// 撤销/重放路径使用的家族标识（RFC 9700 §4.14.2 的撤销单元）。
+    ///
+    /// 新格式 token 返回存储的 `family_id`；旧格式（空串）返回
+    /// [`Self::legacy_family_id`] 的派生值。
+    pub fn family_identifier(&self) -> String {
+        Self::resolve_family_identifier(&self.family_id, &self.value)
+    }
+
+    /// 把存储态（payload / 墓碑）里的 `family_id` 解析为撤销路径的家族标识。
+    ///
+    /// 新格式直接返回；旧格式（空串，包括升级前写入的旧墓碑）由 token 值
+    /// 哈希派生，保证撤销/重放定位到的家族与轮换后继一致（Issue #313）。
+    pub fn resolve_family_identifier(family_id: &str, token_value: &str) -> String {
+        if family_id.is_empty() {
+            format!("legacy-token:{}", refresh_token_hash(token_value))
+        } else {
+            family_id.to_owned()
+        }
     }
 
     /// 返回凭据家族的绝对截止时刻（首次签发 + 180 天）。

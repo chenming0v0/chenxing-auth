@@ -151,6 +151,8 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
         contender.clone()
     };
 
+    // #279：初始化完成后状态端点退化为通用 404，不再向匿名调用者确认实例已初始化。
+    // 端点语义的完整断言在 tests/bootstrap_invariant.rs。
     let response = router
         .clone()
         .oneshot(
@@ -161,8 +163,8 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
         )
         .await
         .expect("initialized status response");
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(json(response).await["initialized"], true);
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(json(response).await["code"], "not_found");
 
     let response = router
         .clone()
@@ -766,8 +768,9 @@ async fn list_users_enforces_server_side_limit() {
 
     // 直接批量插入，避免 Argon2 哈希让测试变慢；password_hash 不参与本用例校验。
     chenxing_auth::sqlx::query(
-        "INSERT INTO users (username, email, password_hash, role, status)
+        "INSERT INTO users (username, email, canonical_email, password_hash, role, status)
          SELECT 'bulk-' || $1::text || '-' || series.i,
+                'bulk-' || $1::text || '-' || series.i || '@example.com',
                 'bulk-' || $1::text || '-' || series.i || '@example.com',
                 'unused-hash',
                 'user',

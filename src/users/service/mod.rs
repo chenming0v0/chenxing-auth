@@ -58,6 +58,14 @@ pub enum UserServiceError {
     SourceIpUnavailable,
     #[error("last active owner is required")]
     LastOwnerRequired,
+    #[error("managing an owner requires role management permission")]
+    ManageRolesRequired,
+    /// 业务写入要求同事务审计，而审计写入失败，因此业务写入已回滚（Issue #304）。
+    ///
+    /// 对调用方的含义是「什么都没发生，可以重试」，与 [`Self::Database`] 区分开
+    /// 只为让运维一眼看出该查审计表还是业务表。
+    #[error("could not persist the audit record for this operation")]
+    AuditUnavailable,
     #[error("owner bootstrap is required before public registration")]
     OwnerBootstrapRequired,
     #[error("email domain is not allowed by policy")]

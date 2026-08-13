@@ -23,6 +23,65 @@ pub enum SecretCryptoError {
     UnknownKeyId,
 }
 
+/// 密文相对于当前密钥环的可读状态。
+///
+/// 只描述「能不能读」和「读完要不要重写」，**不携带 kid**。kid 是密钥材料的一部分，
+/// 一旦进入管理响应或审计元数据，就等于把密钥环的结构对外公开；运维要做的决策
+/// （旧 key 还能不能退役、哪些账号需要重置）只需要这四个状态就够了。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretKeyState {
+    /// 由当前 active kid 加密，无需迁移。
+    Current,
+    /// 由密钥环内的非 active key 加密：可读，下次成功验证时会懒迁移。
+    Rotatable,
+    /// 无 kid 的历史信封：可读（逐个 key 试解），需要迁移。
+    Legacy,
+    /// 密文声明的 kid 已不在密钥环内：**不可读**，账号被锁死，只能重置因子。
+    Unavailable,
+}
+
+impl SecretKeyState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Rotatable => "rotatable",
+            Self::Legacy => "legacy",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    /// 密钥环里还有对应 key，因此密文仍可解密。
+    pub const fn is_readable(self) -> bool {
+        !matches!(self, Self::Unavailable)
+    }
+}
+
+/// 只读取信封头部，判断密文能否被当前密钥环解密，不做解密也不接触明文。
+///
+/// 管理端的「密钥健康度」与「单账号因子状态」都靠它回答，因此它必须在
+/// **不解密**的前提下给出结论：批量扫描不应该把成千上万份 TOTP 种子解到内存里。
+/// 结构损坏的密文同样归入 `Unavailable`——对运维而言两者的处置动作一致（重置因子）。
+pub fn classify_secret_key_state(keys: &AuthEncryptionKeyRing, encrypted: &[u8]) -> SecretKeyState {
+    if !encrypted.starts_with(&ENVELOPE_MAGIC) {
+        return if is_legacy_ciphertext(encrypted) {
+            SecretKeyState::Legacy
+        } else {
+            SecretKeyState::Unavailable
+        };
+    }
+    let Ok((kid, _)) = envelope_metadata(encrypted) else {
+        return SecretKeyState::Unavailable;
+    };
+    if keys.key(&kid).is_none() {
+        return SecretKeyState::Unavailable;
+    }
+    if kid == keys.active_kid() {
+        SecretKeyState::Current
+    } else {
+        SecretKeyState::Rotatable
+    }
+}
+
 // DecryptedTotpSecret 包含解密后的 TOTP 种子明文。
 // plaintext 使用 Zeroizing 包装，确保在 drop 时通过 volatile 写入自动清零，
 // 防止敏感数据残留在堆内存、core dump 或交换分区中。
@@ -299,6 +358,74 @@ mod tests {
         let cloned = decrypted.clone();
         assert_eq!(cloned.plaintext.as_slice(), b"clone-me");
         assert_eq!(cloned, decrypted);
+    }
+
+    #[test]
+    fn key_state_classifies_ciphertext_without_decrypting() {
+        let old_ring = rotated_ring("old");
+        let rotated = rotated_ring("new");
+        let active = encrypt_totp_secret_with_ring(&rotated, b"secret").expect("encrypt secret");
+        let previous = encrypt_totp_secret_with_ring(&old_ring, b"secret").expect("encrypt secret");
+        let legacy = encrypt_totp_secret(&[1; 32], b"secret").expect("encrypt secret");
+
+        assert_eq!(
+            classify_secret_key_state(&rotated, &active),
+            SecretKeyState::Current
+        );
+        assert_eq!(
+            classify_secret_key_state(&rotated, &previous),
+            SecretKeyState::Rotatable
+        );
+        assert_eq!(
+            classify_secret_key_state(&rotated, &legacy),
+            SecretKeyState::Legacy
+        );
+    }
+
+    #[test]
+    fn retired_kid_is_reported_as_unavailable_not_as_a_bad_secret() {
+        // #258：kid 退役后密文不可读。分类必须把它和「可读但需迁移」区分开，
+        // 否则运维无法在移除旧 key 之前发现还有账号引用它。
+        let encrypted =
+            encrypt_totp_secret_with_ring(&rotated_ring("old"), b"secret").expect("encrypt secret");
+        let retired = AuthEncryptionKeyRing::from_entries(
+            "new".to_owned(),
+            vec![("new".to_owned(), AuthEncryptionKey::new([2; 32]))],
+        )
+        .expect("valid key ring");
+
+        let state = classify_secret_key_state(&retired, &encrypted);
+        assert_eq!(state, SecretKeyState::Unavailable);
+        assert!(!state.is_readable());
+        // 分类结论必须与真实解密行为一致。
+        assert!(matches!(
+            decrypt_totp_secret_with_ring(&retired, &encrypted),
+            Err(SecretCryptoError::UnknownKeyId)
+        ));
+    }
+
+    #[test]
+    fn key_state_never_exposes_the_kid() {
+        let encrypted =
+            encrypt_totp_secret_with_ring(&rotated_ring("old"), b"secret").expect("encrypt secret");
+        let rotated = rotated_ring("new");
+
+        let rendered = format!("{:?}", classify_secret_key_state(&rotated, &encrypted));
+        assert!(!rendered.contains("old"));
+        assert_eq!(SecretKeyState::Rotatable.as_str(), "rotatable");
+    }
+
+    #[test]
+    fn malformed_ciphertext_is_unavailable_rather_than_panicking() {
+        let rotated = rotated_ring("new");
+        assert_eq!(
+            classify_secret_key_state(&rotated, b"CX"),
+            SecretKeyState::Unavailable
+        );
+        assert_eq!(
+            classify_secret_key_state(&rotated, &[]),
+            SecretKeyState::Unavailable
+        );
     }
 
     #[test]

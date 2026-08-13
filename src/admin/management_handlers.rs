@@ -7,7 +7,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{authorization::AdminActor, domain::AdminPermission};
+use super::{
+    authorization::{
+        OwnerGuardedOperation, authorize_user_write, owner_write_permission_denied,
+        record_owner_guard_denial,
+    },
+    domain::AdminPermission,
+};
 use crate::{
     api::extract::{AdminRead, AdminWrite},
     error,
@@ -100,29 +106,38 @@ pub async fn list_users(
     }
 }
 
+/// `POST /api/v1/admin/users/{user_id}/{status}`。
+///
+/// 顺序固定为：基线 `ManageUsers` → 自我操作检查 → 解析状态 → 写事务锁住目标并判定 Owner 档位。
+/// 目标角色与状态写入共用事务，消除并发晋升 Owner 的旧快照窗口（Issue #323）。
+/// 状态串是与资源无关的语法输入，在查询目标之前解析，因此非法状态恒为
+/// 400 `invalid_status`，不再和「用户不存在」共用一个错误码（Issue #283）。
 pub async fn set_user_status(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path((user_id, status)): Path<(UserId, String)>,
 ) -> Response {
-    let required_permission = match state.users.find_profile(user_id).await {
-        Ok(Some(profile)) if profile.role == UserRole::Owner => AdminPermission::ManageRoles,
-        Ok(Some(_)) | Ok(None) => AdminPermission::ManageUsers,
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to load user before status update");
-            return error::internal();
-        }
-    };
-    let actor = match admin.authorize(&state, required_permission).await {
-        Ok(actor) => actor,
+    let authorization = match authorize_user_write(&state, &admin).await {
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
-    // The service uses `false` for both an invalid status and a missing user.
-    // Preserve the existing validation response so only a missing resource becomes 404.
+    let actor = authorization.actor();
+    // 自我操作保护：把 `disabled` 落到自己身上会在事务内撤销自己的全部会话，
+    // 立即失去管理面且无自助恢复路径，与 set_user_role 的自我角色检查保持一致（Issue #336）。
+    if actor.user_id() == Some(user_id) {
+        return error::forbidden(
+            "self_status_change_forbidden",
+            "users cannot change their own status",
+        );
+    }
     let Some(status) = UserStatus::parse(&status) else {
-        return error::bad_request("user_not_found", "user or status was not found");
+        return error::bad_request("invalid_status", "status is invalid");
     };
-    match state.users.set_status_guarded(user_id, status).await {
+    match state
+        .users
+        .set_status_guarded(user_id, status, authorization.access())
+        .await
+    {
         Ok(true) => {
             let (actor_type, actor_id) = actor.audit_fields();
             state
@@ -138,11 +153,26 @@ pub async fn set_user_status(
                 .await;
             StatusCode::NO_CONTENT.into_response()
         }
+        // 状态串已在上面解析过，`false` 只剩一种含义：目标用户不存在。
         Ok(false) => error::not_found("user_not_found", "user was not found"),
-        Err(crate::users::service::UserServiceError::LastOwnerRequired) => error::conflict(
-            "last_owner_required",
-            "at least one active owner is required",
-        ),
+        // 有权限的调用者试图禁用最后一个活跃 Owner：这是安全相关决策，必须留痕（Issue #304）。
+        Err(crate::users::service::UserServiceError::LastOwnerRequired) => {
+            record_owner_guard_denial(
+                &state,
+                actor,
+                user_id,
+                OwnerGuardedOperation::UserStatusUpdate,
+                status.as_str(),
+            )
+            .await;
+            error::conflict(
+                "last_owner_required",
+                "at least one active owner is required",
+            )
+        }
+        Err(crate::users::service::UserServiceError::ManageRolesRequired) => {
+            owner_write_permission_denied(&state, authorization).await
+        }
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to update user status");
             error::internal()
@@ -160,7 +190,7 @@ pub async fn set_user_role(
         Ok(actor_id) => actor_id,
         Err(response) => return response,
     };
-    if actor == AdminActor::User(user_id) {
+    if actor.user_id() == Some(user_id) {
         return error::forbidden(
             "self_role_change_forbidden",
             "users cannot change their own role",
@@ -186,10 +216,21 @@ pub async fn set_user_role(
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error::not_found("user_not_found", "user was not found"),
-        Err(crate::users::service::UserServiceError::LastOwnerRequired) => error::conflict(
-            "last_owner_required",
-            "at least one active owner is required",
-        ),
+        // 降级最后一个活跃 Owner 与禁用它同档，走同一条留痕路径（Issue #304）。
+        Err(crate::users::service::UserServiceError::LastOwnerRequired) => {
+            record_owner_guard_denial(
+                &state,
+                actor,
+                user_id,
+                OwnerGuardedOperation::UserRoleUpdate,
+                role.as_str(),
+            )
+            .await;
+            error::conflict(
+                "last_owner_required",
+                "at least one active owner is required",
+            )
+        }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update user role");
             error::internal()

@@ -16,13 +16,20 @@ use thiserror::Error;
 use time::OffsetDateTime;
 
 use super::{
-    crypto,
+    SessionOutboxPolicy, crypto,
     domain::{Session, SessionLookup, SessionPayload, SessionPolicy, session_token_hash_bytes},
 };
-use crate::{config::AuthEncryptionKeyRing, redis_client::RedisClient, users::domain::UserId};
+use crate::{
+    clock::SharedClock, config::AuthEncryptionKeyRing, redis_client::RedisClient,
+    users::domain::UserId,
+};
 
 mod postgres;
 mod redis_only;
+
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod tests;
 
 // 两个函数本体在 postgres 子模块，可见性保持 `pub(crate)`：
 // `users::repository` 通过 `crate::sessions::store::...` 调用，路径不变。
@@ -37,6 +44,12 @@ pub struct SessionStore {
     pub(super) metadata: Option<crate::sqlx::PgPool>,
     pub(super) encryption_keys: Option<AuthEncryptionKeyRing>,
     pub(super) policy: SessionPolicy,
+    pub(super) outbox_policy: SessionOutboxPolicy,
+    /// 会话有效期、idle 判定和 Redis TTL 的时间来源。
+    ///
+    /// Postgres 路径的权威判定仍用 SQL 的 `NOW()`（见 `postgres.rs`）：那些
+    /// 判定必须与行锁处在同一个事务时间里，不能改读进程时钟。
+    pub(super) clock: SharedClock,
 }
 
 #[derive(Debug, Error)]
@@ -63,6 +76,12 @@ pub enum SessionStoreError {
     UserNotFound,
     #[error("session was rejected by a revocation watermark")]
     SessionRevoked,
+    /// 认证时读到的 `session_epoch` 与写入时刻的当前值不一致（Issue #274）。
+    ///
+    /// 唯一的推进者是"改密并撤销全部会话"，因此这个错误的含义是明确的：
+    /// 本次认证依据的口令在签发完成前已被作废，会话不得建立。
+    #[error("authenticated session epoch is stale")]
+    AuthenticationEpochChanged,
     #[error("database operation failed: {0}")]
     Database(#[from] crate::sqlx::Error),
 }
@@ -74,6 +93,22 @@ pub struct SessionSummary {
     pub expires_at: OffsetDateTime,
 }
 
+/// 新会话与用户 `session_epoch` 的绑定方式（Issue #274）。
+///
+/// 两个变体不是同一件事的强弱版本，而是两类不同的登录来源：
+///
+/// - [`SessionEpochBinding::Current`]：签发依据与口令无关（外部 IdP 回调、
+///   管理侧或测试直接建会话）。改密撤销的是"口令泄露后建立的会话"，
+///   把一次刚完成的外部登录也拒掉既没有安全收益，也会造成无法自洽的失败。
+/// - [`SessionEpochBinding::Authenticated`]：签发依据是一次口令校验（或由该
+///   校验派生的 login ticket）。写入必须在同一事务内确认当前 epoch 仍等于
+///   认证时读到的值，否则并发改密后旧口令仍能换出有效会话。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionEpochBinding {
+    Current,
+    Authenticated(i64),
+}
+
 impl SessionStore {
     pub fn new(client: impl Into<RedisClient>) -> Self {
         Self {
@@ -82,6 +117,8 @@ impl SessionStore {
             metadata: None,
             encryption_keys: None,
             policy: SessionPolicy::default(),
+            outbox_policy: SessionOutboxPolicy::default(),
+            clock: SharedClock::system(),
         }
     }
 
@@ -94,6 +131,8 @@ impl SessionStore {
                 crate::config::AuthEncryptionKey::new(encryption_key),
             )),
             policy: SessionPolicy::default(),
+            outbox_policy: SessionOutboxPolicy::default(),
+            clock: SharedClock::system(),
         }
     }
 
@@ -120,6 +159,8 @@ impl SessionStore {
             metadata: Some(metadata),
             encryption_keys: Some(encryption_keys),
             policy: SessionPolicy::default(),
+            outbox_policy: SessionOutboxPolicy::default(),
+            clock: SharedClock::system(),
         }
     }
 
@@ -148,15 +189,74 @@ impl SessionStore {
         self
     }
 
+    /// 覆盖 outbox 终态策略（保留窗口、清理批量、最大尝试次数）。
+    ///
+    /// 取值经 [`SessionOutboxPolicy::sanitized`] 收敛，因此不存在"配了 0 批量导致
+    /// 清理永远不删"或"配了 0 次尝试导致每个事件立刻进 dead-letter"的组合。
+    pub fn with_outbox_policy(mut self, outbox_policy: SessionOutboxPolicy) -> Self {
+        self.outbox_policy = outbox_policy.sanitized();
+        self
+    }
+
+    /// 注入共享时钟（`AppState` 构造时调用）。
+    ///
+    /// 固定时钟可以把 idle 续期阈值和绝对过期推到边界两侧，因此
+    /// 「idle 刚好超时」这类用例不需要真实等待 30 分钟。
+    pub fn with_clock(mut self, clock: SharedClock) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// 写入一条采用当前 epoch 的会话。
+    ///
+    /// 只用于签发依据与口令无关的路径（外部 IdP 回调、管理侧、测试夹具）。
+    /// 口令登录与 login ticket 兑换必须走 [`Self::save_authenticated`]，
+    /// 否则并发改密的撤销语义会被绕过（Issue #274）。
     pub async fn save(
         &self,
         session: &mut Session,
         ttl: Duration,
     ) -> Result<(), SessionStoreError> {
+        self.save_bound(session, ttl, SessionEpochBinding::Current)
+            .await
+    }
+
+    /// 写入一条绑定认证 epoch 的会话。
+    ///
+    /// `authenticated_epoch` 必须是口令校验时与 `password_hash` 同一次读取取出的
+    /// 值。当前 epoch 已经前进时返回
+    /// [`SessionStoreError::AuthenticationEpochChanged`]，且事务回滚，不留下任何
+    /// 会话行或 outbox 事件——验证失败不产生有效凭据。
+    pub async fn save_authenticated(
+        &self,
+        session: &mut Session,
+        ttl: Duration,
+        authenticated_epoch: i64,
+    ) -> Result<(), SessionStoreError> {
+        self.save_bound(
+            session,
+            ttl,
+            SessionEpochBinding::Authenticated(authenticated_epoch),
+        )
+        .await
+    }
+
+    async fn save_bound(
+        &self,
+        session: &mut Session,
+        ttl: Duration,
+        binding: SessionEpochBinding,
+    ) -> Result<(), SessionStoreError> {
         session.set_idle_timeout(self.policy.idle_timeout);
         if self.metadata.is_some() {
-            postgres::save_with_metadata(self, session, ttl).await
+            postgres::save_with_metadata(self, session, ttl, binding).await
         } else {
+            // 纯 Redis 路径没有 users 表可读，无法校验 epoch。缺少校验能力时
+            // 拒绝签发，而不是降级成"当作校验通过"：后者会让一条本应被拒绝的
+            // 凭据在配置退化时静默生效。生产 AppState 始终带 Postgres 元数据。
+            if matches!(binding, SessionEpochBinding::Authenticated(_)) {
+                return Err(SessionStoreError::MetadataUnavailable);
+            }
             redis_only::save_redis_only(self, session, ttl).await
         }
     }
@@ -281,10 +381,26 @@ impl SessionStore {
         )
     }
 
+    /// 撤销标记（单条 tombstone 与用户级水位）的存活时长。
+    ///
+    /// 取绝对 Session TTL 是安全的下限：任何会话键的存活窗口都不超过
+    /// [`Self::redis_ttl_seconds`]，而后者同样被这个值封顶（见该函数注释），
+    /// 因此"撤销标记先于被它拦截的会话键消失"不可能发生。
+    ///
+    /// 启动配置把 `SESSION_TTL_SECONDS` 封顶在 90 天（#365），所以这个值
+    /// 必然落在 Redis `EX` 的 i64 上限内，不会触发 `ERR invalid expire time`。
     pub(super) fn revocation_ttl_seconds(&self) -> u64 {
         self.policy.absolute_ttl.as_secs().max(1)
     }
 
+    /// 会话键在 Redis 的存活秒数。
+    ///
+    /// 除了绝对过期与 idle 截止，这里还被 [`Self::revocation_ttl_seconds`] 封顶。
+    /// 这一层封顶是撤销水位 TTL 的安全前提：水位在撤销时刻 `T` 写入并带上
+    /// `EX = revocation_ttl`，而任何在 `T` 之前写入的会话键最晚也在
+    /// `写入时刻 + revocation_ttl <= T + revocation_ttl` 过期。水位不会先于它
+    /// 应当拦截的旧会话消失，旧会话也就不可能在水位过期后复活。
+    /// 调用方传入的 `absolute_ttl` 只能收紧、不能放宽这个上限。
     pub(super) fn redis_ttl_seconds(
         &self,
         session: &Session,
@@ -296,7 +412,10 @@ impl SessionStore {
             .idle_deadline()
             .map(|deadline| (deadline - now).whole_seconds().max(1) as u64)
             .unwrap_or(absolute);
-        absolute.min(idle).min(absolute_ttl.as_secs().max(1))
+        absolute
+            .min(idle)
+            .min(absolute_ttl.as_secs().max(1))
+            .min(self.revocation_ttl_seconds())
     }
 }
 

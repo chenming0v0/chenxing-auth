@@ -12,6 +12,9 @@ use tower::ServiceExt;
 #[path = "key_directory.rs"]
 mod key_directory;
 
+#[path = "qps_window.rs"]
+pub mod qps_window;
+
 /// `binary_name` 决定 schema 隔离边界，必须传调用方测试二进制自己的名字
 /// （见 `support/db_isolation.rs`）。共享同一个名字的二进制会共享数据库状态。
 ///
@@ -43,9 +46,11 @@ pub async fn test_state(
     config.admin_token = "flow-admin-token".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new_with_pool(config, database.clone())
+    let mut state = AppState::new_with_pool(config, database.clone())
         .await
         .expect("test state");
+    // QPS 窗口放大到 60s，限流断言不再依赖请求跑得够快（见 `qps_window`）。
+    qps_window::override_qps_window(&mut state);
     (state, database, key_directory)
 }
 
@@ -144,7 +149,12 @@ pub async fn register_test_user(router: &Router, suffix: &str) -> (i64, String, 
     (user_id, username, email, password.to_owned())
 }
 
-pub async fn ensure_owner_bootstrapped(router: &Router, suffix: &str) {
+pub async fn ensure_owner_bootstrapped(
+    router: &Router,
+    pool: &chenxing_auth::sqlx::PgPool,
+    binary_name: &str,
+    suffix: &str,
+) {
     let response = router
         .clone()
         .oneshot(
@@ -172,6 +182,11 @@ pub async fn ensure_owner_bootstrapped(router: &Router, suffix: &str) {
         "unexpected bootstrap response: {}",
         response.status()
     );
+    // bootstrap 会把 users 序列重置回 1（生产语义：首个 Owner 固定 id=1），
+    // 必须重新施加身份派生的用户 ID 偏移，否则后续创建的用户拿到小号 ID，
+    // 按 user_id 命名的 Redis 键（TOTP 时间步 claim、会话吊销）会在并行
+    // 测试之间碰撞。收敛到这一个入口，测试就无需各自记得调用。
+    crate::db_isolation::isolate_user_ids(pool, binary_name).await;
 }
 
 pub async fn create_test_client(router: &Router, token: &str) -> (String, String) {

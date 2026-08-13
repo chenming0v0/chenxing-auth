@@ -24,6 +24,9 @@ use tower::ServiceExt;
 #[path = "key_directory.rs"]
 mod key_directory;
 
+#[path = "qps_window.rs"]
+pub mod qps_window;
+
 #[path = "plan_fixtures.rs"]
 pub mod fixtures;
 
@@ -85,9 +88,11 @@ pub async fn test_state() -> PlanTestEnv {
     config.admin_token = ADMIN_TOKEN.to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let state = AppState::new_with_pool(config, database.clone())
+    let mut state = AppState::new_with_pool(config, database.clone())
         .await
         .expect("test state");
+    // QPS 窗口放大到 60s，套餐限流断言不再依赖两发请求跑得够快（见 `qps_window`）。
+    qps_window::override_qps_window(&mut state);
     PlanTestEnv {
         state,
         database,

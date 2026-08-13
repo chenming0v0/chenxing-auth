@@ -62,6 +62,9 @@ phase_test() {
     begin="$(now_ms)"
     log="$LOG_DIR/test.log"
 
+    info "测试期间通过用例保持静默；下方计时持续变化即仍在运行"
+    spinner_start "运行测试"
+
     if [ "$NEXTEST" -eq 1 ]; then
         local args=(run --all-features --no-pager --max-fail "$MAX_FAIL")
         # 关键的安静开关：通过的用例既不打状态行也不打输出，只有失败会显示。
@@ -86,6 +89,7 @@ phase_test() {
         cargo test --quiet "${fallback[@]}" >"$log" 2>&1
         status=$?
     fi
+    spinner_stop
 
     elapsed="$(( $(now_ms) - begin ))"
     summary_line="$(grep -aE '^[[:space:]]*Summary' "$log" 2>/dev/null | tail -1 \

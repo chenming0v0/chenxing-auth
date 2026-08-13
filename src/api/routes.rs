@@ -8,6 +8,7 @@ use tower_http::timeout::TimeoutLayer;
 
 use crate::{
     admin::auth_handlers::{bootstrap_admin, bootstrap_status, create_admin},
+    admin::factor_handlers::{auth_factor_key_health, reset_user_totp_factor, user_auth_factors},
     admin::handlers::{
         create_client, disable_client, enable_client, list_clients, rotate_secret, update_client,
     },
@@ -30,7 +31,7 @@ use crate::{
     },
     admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
     admin::user_creation::create_user,
-    admin::web_handlers::{login_page, login_submit},
+    admin::web_handlers::login_page,
     auth_factors::handlers::{
         confirm_totp_setup, finish_passkey_authentication, finish_passkey_registration, login_totp,
         start_passkey_authentication, start_passkey_registration, start_totp_setup,
@@ -53,6 +54,7 @@ use crate::{
         create_owned_client, disable_owned_client, enable_owned_client, list_authorized_apps,
         list_owned_clients, revoke_authorized_app, rotate_owned_client_secret, update_owned_client,
     },
+    users::security_event_handlers::{get_security_event, list_security_events},
     users::ui_handlers::{
         auth_status, change_current_user_password, current_user_profile, list_user_sessions,
         revoke_user_session, update_current_user_profile,
@@ -120,6 +122,11 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
         )
         .route("/api/v1/auth/password", post(change_current_user_password))
         .route("/api/v1/auth/entitlements", get(current_entitlements))
+        .route("/api/v1/auth/security-events", get(list_security_events))
+        .route(
+            "/api/v1/auth/security-events/{event_id}",
+            get(get_security_event),
+        )
         .route("/api/v1/auth/sessions", get(list_user_sessions))
         .route(
             "/api/v1/auth/sessions/{session_id}",
@@ -135,6 +142,19 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
             post(set_user_status),
         )
         .route("/api/v1/admin/users/{user_id}/role", post(set_user_role))
+        .route(
+            "/api/v1/admin/users/{user_id}/auth-factors",
+            get(user_auth_factors),
+        )
+        // 因子重置是 #258 的恢复出口：kid 退役后种子不可解，只能丢弃密文重新注册。
+        .route(
+            "/api/v1/admin/users/{user_id}/auth-factors/totp",
+            delete(reset_user_totp_factor),
+        )
+        .route(
+            "/api/v1/admin/auth-factors/key-health",
+            get(auth_factor_key_health),
+        )
         .route("/api/v1/admin/users/{user_id}/plan", post(assign_plan))
         .route("/api/v1/admin/plans", get(list_plans).post(create_plan))
         .route("/api/v1/admin/plans/{id}", axum::routing::put(update_plan))
@@ -181,7 +201,7 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
             "/api/v1/admin/oauth/providers/{slug}/enable",
             post(enable_provider),
         )
-        .route("/admin/login", get(login_page).post(login_submit))
+        .route("/admin/login", get(login_page))
         .route("/admin/settings/oauth", get(oauth_settings))
         .route(
             "/api/v1/auth/external-providers",

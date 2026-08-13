@@ -2,8 +2,32 @@ import { useEffect, useState, type AnchorHTMLAttributes, type MouseEvent, type R
 
 function currentPath() { return window.location.pathname }
 
-export function navigate(to: string) {
-  window.history.pushState({}, '', to)
+/**
+ * 路由级导航拦截器：本项目没有 react-router，这是 useBlocker 的自制等价物。
+ * navigate 是 Link 点击与程序化跳转的唯一入口，跳转前询问已注册的拦截器，
+ * 返回 false 时放弃本次导航。设置页用它实现「有未保存草稿时离开需确认」。
+ * 同一时刻只允许一个拦截器（当前只有设置页需要注册）。
+ *
+ * replace 选项（#326）：守卫重定向（未登录、无权限、未知路径）必须用
+ * replaceState 覆盖当前条目，否则用户按后退会回到刚被守卫踢走的页面，
+ * 再次触发重定向，永远回不到目标页之前的正常历史。
+ */
+let navigationBlocker: (() => boolean) | null = null
+
+export function setNavigationBlocker(blocker: (() => boolean) | null) {
+  navigationBlocker = blocker
+}
+
+export function navigate(to: string, options?: { replace?: boolean }) {
+  if (navigationBlocker && !navigationBlocker()) return
+  // 守卫重定向必须走 replaceState（#326）：push 会把被拦截的目标页留在历史里，
+  // 用户在登录页按后退又撞回该页、守卫再次跳转，形成永远回不去的重定向陷阱。
+  // 用户主动点击的链接仍用 pushState，保留正常的前进/后退语义。
+  if (options?.replace) {
+    window.history.replaceState({}, '', to)
+  } else {
+    window.history.pushState({}, '', to)
+  }
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
 
@@ -45,7 +69,7 @@ export function NavLink({ to, className, ...props }: NavLinkProps) {
   return <Link to={to} className={resolvedClass} aria-current={active ? 'page' : undefined} {...props} />
 }
 
-export function Navigate({ to }: { to: string }) {
-  useEffect(() => navigate(to), [to])
+export function Navigate({ to, replace = false }: { to: string; replace?: boolean }) {
+  useEffect(() => navigate(to, { replace }), [to, replace])
   return null
 }

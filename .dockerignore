@@ -11,4 +11,7 @@ deploy
 README.md
 AGENTS.md
 web/node_modules
+# Source builds (Dockerfile) build the bundle in the web-builder stage, so a
+# local web/dist must not enter the context and shadow it. Dockerfile.runtime
+# consumes the CI-staged container-web-dist/ instead, which stays included.
 web/dist

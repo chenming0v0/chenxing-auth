@@ -258,6 +258,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "backon"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
+dependencies = [
+ "fastrand",
+]
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -425,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "chenxing-auth"
-version = "1.0.8"
+version = "1.1.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -435,9 +444,11 @@ dependencies = [
  "cookie",
  "dotenvy",
  "hmac 0.12.1",
+ "idna",
  "image",
  "jsonwebtoken",
  "oxide-auth-axum",
+ "percent-encoding",
  "pkcs8",
  "qrcode",
  "rand 0.8.7",
@@ -912,6 +923,12 @@ dependencies = [
  "parking",
  "pin-project-lite",
 ]
+
+[[package]]
+name = "fastrand"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fdeflate"
@@ -2253,8 +2270,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1bc42f3a12fd4408ce64d8efef67048a924e543bd35c6591c0447fda9054695f"
 dependencies = [
  "arc-swap",
+ "backon",
  "bytes",
  "combine",
+ "futures-channel",
  "futures-util",
  "itoa",
  "num-bigint",
