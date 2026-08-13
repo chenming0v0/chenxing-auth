@@ -760,6 +760,8 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
             .expect("find rotated refresh")
             .is_some()
     );
+    // 消费后的旧 token 键已不存在（Issue #312）：store 层如实报告键消失，
+    // 是重放还是良性消失由用例层结合墓碑判定。
     assert_eq!(
         refreshes
             .rotate_if_matches(
@@ -773,7 +775,7 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
             )
             .await
             .expect("duplicate refresh rotation"),
-        RotationOutcome::CasMismatch
+        RotationOutcome::KeyMissing
     );
 
     let session_key = format!(

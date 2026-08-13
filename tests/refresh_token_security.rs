@@ -375,12 +375,13 @@ async fn rotation_rollback_restores_the_previous_token_atomically() {
     );
 
     // 新 token 已经不在时不得复活旧 token，否则同一 family 会出现两个活凭据。
+    // 键已消失（Issue #312），store 层不再把它误报成 CasMismatch。
     assert_eq!(
         store
             .rollback_rotation(&rotated, &original)
             .await
             .expect("repeat rollback"),
-        RotationOutcome::CasMismatch
+        RotationOutcome::KeyMissing
     );
     assert!(
         store

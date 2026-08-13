@@ -57,13 +57,21 @@ return 1
 /// - `ARGV[9]` 旧 family_id，空表示旧格式 token
 /// - `ARGV[10]` 新 family_id，空表示不写 family 索引
 ///
-/// 返回 `1` 轮换成功，`0` 表示 CAS 失败（旧 token 已被消费或被并发轮换），
-/// `-1` 表示目标 family 已被撤销，不允许再写入任何成员。
+/// 返回 `1` 轮换成功，`0` 表示 CAS 失败（键仍在但值已变：旧 token 已被并发
+/// 消费，必定是重放），`-1` 表示目标 family 已被撤销，不允许再写入任何成员。
+///
+/// `2` 表示旧 token 键已不存在（Issue #312）。这是歧义结果：可能是已被消费
+/// （重放），也可能是滑动/绝对期限边界过期、Redis 驱逐或应用与 Redis 时钟
+/// 偏差（良性）。脚本无法区分，调用方必须读取墓碑：存在 `Consumed` 墓碑才是
+/// 重放并撤销 family；没有墓碑则只是键消失，绝不能撤销整个 grant。
 pub const ROTATE_WITH_TOMBSTONE_SCRIPT: &str = r#"
 if redis.call('EXISTS', KEYS[7]) == 1 then
     return -1
 end
 local current = redis.call('GET', KEYS[1])
+if current == false then
+    return 2
+end
 if current ~= ARGV[1] then
     return 0
 end

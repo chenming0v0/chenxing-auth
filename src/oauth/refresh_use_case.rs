@@ -2,13 +2,19 @@ use super::{OAuthError, RefreshExchangeError, TokenRequest, TokenResponse, issue
 use crate::{clients::service::AuthenticatedClient, state::AppState, users::domain::UserId};
 
 use super::super::{
-    refresh::RefreshToken,
-    refresh_store::{FamilyRevocation, RotationOutcome, Tombstone, TombstoneState},
-    session::active_user_epoch,
-    token_security::{
-        record_token_event, record_token_event_best_effort,
-        record_token_event_with_metadata_best_effort,
-    },
+    refresh::RefreshToken, refresh_store::RotationOutcome, session::active_user_epoch,
+    token_security::record_token_event,
+};
+
+/// 凭据已不在 Redis 时的处置（墓碑分类、重放撤销、审计）拆在子模块里，
+/// 保持兑换主流程可审查（沿用 `refresh_store_revocation.rs` 的模式）。
+#[path = "refresh_use_case_tombstone.rs"]
+mod tombstone;
+#[cfg(test)]
+use tombstone::{TombstoneDisposition, classify_tombstone};
+use tombstone::{
+    handle_missing_refresh_token, handle_vanished_refresh_token, record_and_return_invalid,
+    revoke_family_after_cas_mismatch,
 };
 
 /// Exchange a refresh token after the token endpoint has authenticated the client.
@@ -193,21 +199,19 @@ pub(super) async fn exchange_refresh_token(
             }
             Ok(token)
         }
-        // Losing the CAS means this exact token was already consumed between the lookup and
-        // the swap. That is a replay, not a benign race: two parties held the same credential
-        // and the loser must not keep a usable grant (Issue #293). The token payload we read
-        // is server-side state, so the family is located without trusting the tombstone.
+        // 键仍在但值不匹配：这个 token 一定是在查找与交换之间被另一个持有者
+        // 消费了。那是重放，不是良性竞态：两个持有者拿着同一份凭据，输家不能
+        // 保留可用的 grant（Issue #293）。键消失的歧义情况（可能是过期/驱逐/
+        // 时钟偏差）由 KeyMissing 分支查墓碑区分，不走这里。
         Ok(RotationOutcome::CasMismatch) => {
-            revoke_family_after_replay(
-                state,
-                ReplayContext {
-                    client_id,
-                    user_id: &refresh.user_id,
-                    family_id: &refresh.family_id,
-                    replayed_value: refresh_value,
-                },
-            )
-            .await
+            revoke_family_after_cas_mismatch(state, client_id, &refresh, refresh_value).await
+        }
+        // 键在 `find` 与 CAS 之间消失了（Issue #312）。脚本只回答「键不在」，
+        // 不回答「为什么」：已被并发消费是重放，过期/驱逐/时钟偏差是良性。
+        // 区分依据是墓碑，交给专门的处置函数；没有 `Consumed` 墓碑时绝不能
+        // 撤销整个 family。
+        Ok(RotationOutcome::KeyMissing) => {
+            handle_vanished_refresh_token(state, client_id, refresh_value, &refresh).await
         }
         // The grant died while this request was in flight. Nothing to revoke and nothing to
         // report as a leak: the family tombstone already recorded whatever killed it.
@@ -255,88 +259,6 @@ fn select_scopes(
     Ok(requested)
 }
 
-async fn handle_missing_refresh_token(
-    state: &AppState,
-    client_id: &str,
-    refresh_value: &str,
-) -> Result<TokenResponse, RefreshExchangeError> {
-    let tombstone = match state.refresh_tokens.read_tombstone(refresh_value).await {
-        Ok(tombstone) => tombstone,
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to read refresh token tombstone");
-            return Err(OAuthError::temporarily_unavailable().into());
-        }
-    };
-    // 没有墓碑说明这个值从未被本服务签发，或者已经超出重放检测窗口。
-    let Some(tombstone) = tombstone else {
-        return record_and_return_invalid(state, None, client_id, "invalid_token").await;
-    };
-    match classify_tombstone(&tombstone, client_id) {
-        TombstoneDisposition::Replay => {
-            revoke_family_after_replay(
-                state,
-                ReplayContext {
-                    client_id,
-                    user_id: &tombstone.user_id,
-                    family_id: &tombstone.family_id,
-                    replayed_value: refresh_value,
-                },
-            )
-            .await
-        }
-        TombstoneDisposition::AlreadyDead => {
-            record_and_return_invalid(state, Some(&tombstone.user_id), client_id, "token_revoked")
-                .await
-        }
-        TombstoneDisposition::ForeignClient => {
-            // Do not record the submitted token value; it is a credential.
-            tracing::warn!(
-                event = "refresh.replay_client_mismatch",
-                client_id = %client_id,
-                "refresh token replay attempt with mismatched client_id; \
-                 refusing without revoking the owning family"
-            );
-            record_and_return_invalid(state, None, client_id, "invalid_token").await
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum TombstoneDisposition {
-    /// 已消费的凭据被再次提交：RFC 9700 §4.14.2 的重放，撤销整个 family。
-    Replay,
-    /// 凭据已经因主动撤销或 family 撤销而死亡，只拒绝当次请求。
-    AlreadyDead,
-    /// 提交者不是凭据的归属 Client，拒绝且绝不撤销别人的 family。
-    ForeignClient,
-}
-
-/// 把墓碑映射成处置方式（RFC 9700 §4.14.2 的重放判定）。
-///
-/// 判定只有两个输入：墓碑归属的 Client 和墓碑状态。这里**没有**时间窗口。
-///
-/// 曾经存在过一个 5 秒宽限窗口，把窗口内重复提交同一个已消费 token 当成
-/// 「正常并发刷新」而放过。它的代价是：攻击者窃取凭据后只要在合法客户端刷新
-/// 后的 5 秒内跟着提交同一个 token，就能得到一次「不撤销 family」的免费尝试，
-/// 而 family 撤销正是检测凭据泄露的唯一手段（Issue #293）。窗口两侧都不安全
-/// ——它同时也让「客户端自己并发提交同一 token」这种客户端 bug 被静默容忍。
-///
-/// 现在的语义是单次使用的字面含义：`Consumed` 墓碑 + 再次提交 = 重放。
-/// 正常客户端永远不会重复提交同一个 refresh token，因为轮换后它手里已经是
-/// 新值；重复提交要么是客户端并发 bug，要么是凭据泄露，两者都应该让 grant
-/// 失效并要求重新授权。
-fn classify_tombstone(tombstone: &Tombstone, client_id: &str) -> TombstoneDisposition {
-    if tombstone.client_id != client_id {
-        return TombstoneDisposition::ForeignClient;
-    }
-    match tombstone.state {
-        TombstoneState::Consumed => TombstoneDisposition::Replay,
-        TombstoneState::ExplicitRevoke | TombstoneState::FamilyRevoked => {
-            TombstoneDisposition::AlreadyDead
-        }
-    }
-}
-
 /// 撤销一次已经落库、但响应没能发出去的轮换（Issue #290）。
 ///
 /// 客户端只会收到错误响应，它手里仍然是 `previous`，所以必须让 `previous`
@@ -373,128 +295,6 @@ async fn rollback_rotation(
             "failed to roll back refresh rotation after audit persistence failure"
         ),
     }
-}
-
-/// 一次重放处置所需的、全部来自服务端状态的上下文。
-///
-/// `family_id` / `user_id` 只能来自 token payload 或墓碑，绝不能取自请求参数：
-/// 否则任何 Client 都能指定别人的 family 触发撤销。
-struct ReplayContext<'a> {
-    client_id: &'a str,
-    user_id: &'a str,
-    family_id: &'a str,
-    replayed_value: &'a str,
-}
-
-/// 检测到重放后撤销整个 family，并把结果落成可检索的安全事件。
-///
-/// 撤销失败必须 fail closed（Issue #292）。此前的实现只打一条日志就继续返回
-/// `invalid_grant`，于是「family 撤销没做成」和「这个 token 确实无效」在协议
-/// 层完全同形：攻击者拿到的仍是标准的 invalid_grant，而被泄露的 family 里
-/// 其它成员还活着，运维侧也没有任何区别于日常拒绝的信号。现在返回
-/// `temporarily_unavailable`，明确告诉调用方这是服务端状态未收敛，
-/// 并记录独立的审计事件供检索。
-async fn revoke_family_after_replay(
-    state: &AppState,
-    context: ReplayContext<'_>,
-) -> Result<TokenResponse, RefreshExchangeError> {
-    let revocation = match state
-        .refresh_tokens
-        .revoke_family_after_replay(
-            context.family_id,
-            context.client_id,
-            context.user_id,
-            context.replayed_value,
-        )
-        .await
-    {
-        Ok(revocation) => revocation,
-        Err(store_error) => {
-            tracing::error!(
-                event = "refresh.family_revocation_failed",
-                error = %store_error,
-                client_id = %context.client_id,
-                family_id = %context.family_id,
-                "refresh token replay detected but the family revocation failed; \
-                 refusing the request without pretending the grant is merely invalid"
-            );
-            record_token_event_with_metadata_best_effort(
-                state,
-                Some(context.user_id),
-                "token_refresh_failure",
-                Some(context.client_id),
-                serde_json::json!({
-                    "reason": "refresh_family_revocation_failed",
-                    "family_id": context.family_id,
-                }),
-            )
-            .await;
-            return Err(OAuthError::temporarily_unavailable().into());
-        }
-    };
-    report_replay(state, &context, revocation).await;
-    Err(OAuthError::invalid_refresh_grant().into())
-}
-
-/// 记录重放处置结果。
-///
-/// 审计写入用 best-effort：family 撤销已经不可逆地完成，把审计故障翻译成另一个
-/// HTTP 状态只会诱导调用方重试一个不会改变结果的请求。`audit.best_effort_failure`
-/// 与这里的 tracing 事件共同保留人工补录所需的上下文。
-async fn report_replay(
-    state: &AppState,
-    context: &ReplayContext<'_>,
-    revocation: FamilyRevocation,
-) {
-    if revocation.already_revoked {
-        // 同一次重放的并发请求，或对一个已死 family 的再次提交：
-        // 撤销早已完成，不重复上报安全事件。
-        record_token_event_best_effort(
-            state,
-            Some(context.user_id),
-            "token_refresh_failure",
-            Some(context.client_id),
-            "token_revoked",
-        )
-        .await;
-        return;
-    }
-    tracing::warn!(
-        event = "refresh.replay_detected",
-        client_id = %context.client_id,
-        family_id = %context.family_id,
-        revoked_refresh_tokens = revocation.revoked_tokens,
-        "refresh token replay detected; revoked entire token family"
-    );
-    record_token_event_with_metadata_best_effort(
-        state,
-        Some(context.user_id),
-        "token_refresh_failure",
-        Some(context.client_id),
-        serde_json::json!({
-            "reason": "refresh_replay_detected",
-            "family_id": context.family_id,
-            "revoked_refresh_tokens": revocation.revoked_tokens,
-        }),
-    )
-    .await;
-}
-
-async fn record_and_return_invalid(
-    state: &AppState,
-    user_id: Option<&str>,
-    client_id: &str,
-    reason: &str,
-) -> Result<TokenResponse, RefreshExchangeError> {
-    record_token_event_best_effort(
-        state,
-        user_id,
-        "token_refresh_failure",
-        Some(client_id),
-        reason,
-    )
-    .await;
-    Err(OAuthError::invalid_refresh_grant().into())
 }
 
 #[cfg(test)]
