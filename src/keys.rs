@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
-use time::{Duration as TimeDuration, OffsetDateTime};
+use time::OffsetDateTime;
 use tokio::sync::Notify;
 use zeroize::Zeroizing;
 
@@ -28,6 +28,8 @@ use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 mod journal;
 #[path = "keys_persistence.rs"]
 mod persistence;
+#[path = "keys_prune.rs"]
+mod prune;
 #[path = "keys_retirement.rs"]
 mod retirement;
 #[path = "keys_revocation.rs"]
@@ -40,6 +42,16 @@ mod sync;
 pub use sync::{DEFAULT_KEY_SYNC_INTERVAL, KeySyncOutcome, MINIMUM_KEY_SYNC_INTERVAL};
 
 pub const DEFAULT_KEY_RETENTION_SECONDS: u64 = 604_800;
+
+/// 跨实例时钟偏差容忍（秒）的默认值（Issue #316）。
+///
+/// `retired_at` 由退役实例的时钟写入，保留窗口判断却发生在当前加载实例的时钟上。
+/// 时钟偏快的实例会把 `now - retired_at` 算大，在真实窗口关闭前就判定过期并删除
+/// 共享目录里的密钥文件——不可逆，且影响所有实例。该容忍值让窗口关闭边界变成
+/// `retired_at + retention + skew_allowance`，快钟实例至多**晚**删、绝不提前删。
+/// 默认 1 小时：NTP 同步的实例间偏差在秒级，1 小时覆盖全部现实部署，代价只是
+/// 旧私钥多驻留 1/168 个默认窗口。
+pub const DEFAULT_KEY_RETENTION_SKEW_ALLOWANCE_SECONDS: u64 = 3_600;
 
 /// 签名密钥的内存权威副本。
 ///
@@ -61,6 +73,10 @@ pub struct KeyManager {
 struct KeyState {
     directory: Option<PathBuf>,
     retention: Duration,
+    /// 跨实例时钟偏差容忍（Issue #316）：窗口关闭边界是
+    /// `retired_at + retention + skew_allowance`，保证时钟偏快的实例不会在真实
+    /// 保留窗口结束前删除共享密钥文件。
+    skew_allowance: Duration,
     active_key_id: String,
     active_encoding_key: EncodingKey,
     private_materials: BTreeMap<String, KeyMaterial>,
@@ -190,13 +206,30 @@ impl KeyManager {
         directory: impl AsRef<Path>,
         retention: Duration,
     ) -> Result<Self, KeyManagerError> {
+        Self::load_or_generate_with_retention_and_skew_allowance(
+            directory,
+            retention,
+            Duration::ZERO,
+        )
+    }
+    pub fn load_or_generate_with_retention_and_skew_allowance(
+        directory: impl AsRef<Path>,
+        retention: Duration,
+        skew_allowance: Duration,
+    ) -> Result<Self, KeyManagerError> {
         let now = SystemClock.now();
         let directory = directory.as_ref().to_path_buf();
         ensure_secure_directory(&directory)?;
         let _storage_lock = KeyStorageLock::acquire(&directory)?;
         let (active_key_id, key_files) =
-            persistence::load_materials(&directory, retention, now, true)?;
-        Self::from_materials(Some(directory), retention, active_key_id, key_files)
+            persistence::load_materials(&directory, retention, skew_allowance, now, true)?;
+        Self::from_materials(
+            Some(directory),
+            retention,
+            skew_allowance,
+            active_key_id,
+            key_files,
+        )
     }
     pub async fn rotate(&self) -> Result<KeyRotation, KeyManagerError> {
         self.rotate_at(SystemClock.now()).await
@@ -307,6 +340,8 @@ impl KeyManager {
         Self::from_materials(
             directory,
             Duration::from_secs(DEFAULT_KEY_RETENTION_SECONDS),
+            // 纯内存模式没有第二个实例，不存在跨实例时钟偏差。
+            Duration::ZERO,
             active_key_id,
             materials,
         )
@@ -315,6 +350,7 @@ impl KeyManager {
     fn from_materials(
         directory: Option<PathBuf>,
         retention: Duration,
+        skew_allowance: Duration,
         active_key_id: String,
         materials: BTreeMap<String, KeyMaterial>,
     ) -> Result<Self, KeyManagerError> {
@@ -322,6 +358,7 @@ impl KeyManager {
             state: Arc::new(RwLock::new(build_key_state(
                 directory,
                 retention,
+                skew_allowance,
                 active_key_id,
                 materials,
             )?)),
@@ -350,6 +387,7 @@ fn invalid_decoding_key_error() -> jsonwebtoken::errors::Error {
 fn build_key_state(
     directory: Option<PathBuf>,
     retention: Duration,
+    skew_allowance: Duration,
     active_key_id: String,
     private_materials: BTreeMap<String, KeyMaterial>,
 ) -> Result<KeyState, KeyManagerError> {
@@ -375,6 +413,7 @@ fn build_key_state(
     Ok(KeyState {
         directory,
         retention,
+        skew_allowance,
         active_key_id,
         active_encoding_key: EncodingKey::from_rsa_der(active_der),
         private_materials,
@@ -404,76 +443,6 @@ fn key_material(der: PrivateKeyDer, created_at: OffsetDateTime) -> KeyMaterial {
         created_at,
         retired_at: None,
     }
-}
-
-/// 把某个 `kid` 标记为已退役，返回生效的退役时刻。
-///
-/// 已有退役时刻时保持不变并原样返回：窗口起点必须单调，否则重复轮换或重复加载
-/// 会不断把它往后推，旧公钥永远不下线。调用方用返回值落盘，因此内存与磁盘写的
-/// 始终是同一个时刻。
-fn mark_retired(
-    materials: &mut BTreeMap<String, KeyMaterial>,
-    key_id: &str,
-    now: OffsetDateTime,
-) -> Option<OffsetDateTime> {
-    let material = materials.get_mut(key_id)?;
-    Some(*material.retired_at.get_or_insert(now))
-}
-
-/// 按保留窗口裁剪已退役的密钥材料，返回被移除的 `kid`。
-///
-/// active key 无论多旧都保留：它仍在签发。调用方用返回值删除对应的磁盘文件，
-/// 因此“哪些 key 过期了”只在这里判断一次，内存与磁盘不会各算一遍（过去磁盘侧
-/// 用文件 mtime 独立判断，与内存判据不同）。
-///
-/// 不区分持久化模式和纯内存模式（Issue #285）：保留窗口是“旧公钥还要能验多久”
-/// 这条协议约束，与材料存在硬盘上还是只存在内存里无关。
-fn prune_materials(
-    active_key_id: &str,
-    materials: &mut BTreeMap<String, KeyMaterial>,
-    retention: Duration,
-    now: OffsetDateTime,
-) -> Vec<String> {
-    let expired: Vec<String> = materials
-        .iter()
-        .filter(|(key_id, material)| {
-            key_id.as_str() != active_key_id
-                && !retirement_window_open_at(material.retired_at, retention, now)
-        })
-        .map(|(key_id, _)| key_id.clone())
-        .collect();
-    for key_id in &expired {
-        let _ = materials.remove(key_id);
-    }
-    expired
-}
-
-/// 判断一个已退役的 key 是否仍在保留窗口内。
-///
-/// 窗口是左闭右开的 `[retired_at, retired_at + retention)`：令牌最迟在退役那一刻
-/// 签发，`exp` 因此不晚于 `retired_at + max_token_ttl`。配置校验保证
-/// `retention >= max_token_ttl`，所以在窗口右端点移除公钥时，它签发的令牌均已过期。
-fn retirement_window_open_at(
-    retired_at: Option<OffsetDateTime>,
-    retention: Duration,
-    now: OffsetDateTime,
-) -> bool {
-    // 尚未退役的 key 不受保留窗口约束。持久化模式下 `retirement::reconcile` 已经
-    // 在锁内给每个非 active key 盖上退役时刻，因此这里的 `None` 只可能是 active
-    // key 本身，或内存模式下刚刚生成的新 key。
-    let Some(retired_at) = retired_at else {
-        return true;
-    };
-    let Ok(retention) = TimeDuration::try_from(retention) else {
-        return false;
-    };
-    // retired_at 晚于 now 说明退役发生在该时间快照之后：并发轮换各自在抢锁之前
-    // 捕获 now，后执行的轮换可能持有更早的快照。晚于参照时刻退役的 key 不可能
-    // 已经走完保留期，必须保留。宁可多留一瞬，不可误删仍在 JWKS 中公布的公钥。
-    if now < retired_at {
-        return true;
-    }
-    now - retired_at < retention
 }
 
 #[cfg(test)]

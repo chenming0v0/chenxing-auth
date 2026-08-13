@@ -16,8 +16,8 @@ use super::config_parsing::{
 };
 use super::config_proxy::{TrustedProxies, trusted_proxies_from_env};
 use super::config_security::{
-    DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_TOKEN_TTL_SECONDS, validate_session_lifetimes,
-    validate_token_and_key_lifetimes,
+    DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
+    DEFAULT_TOKEN_TTL_SECONDS, validate_session_lifetimes, validate_token_and_key_lifetimes,
 };
 use super::{
     Config, ConfigError, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
@@ -33,6 +33,7 @@ struct ConfigValues {
     key_directory: String,
     web_dist_dir: String,
     key_rotation_grace_seconds: u64,
+    key_rotation_skew_allowance_seconds: u64,
     cookie_secure: bool,
     oauth_session_header_enabled: bool,
     session_token_response_enabled: bool,
@@ -88,6 +89,14 @@ impl Config {
             .unwrap_or_else(|_| DEFAULT_KEY_ROTATION_GRACE_SECONDS.to_string());
         let key_rotation_grace_seconds =
             parse_u64("KEY_ROTATION_GRACE_SECONDS", &key_rotation_grace_raw)?;
+        // Issue #316：跨实例时钟偏差容忍。默认 1 小时，上限校验在
+        // `validate_token_and_key_lifetimes`（不允许超过保留窗口本身）。
+        let key_rotation_skew_allowance_raw = env::var("KEY_ROTATION_SKEW_ALLOWANCE_SECONDS")
+            .unwrap_or_else(|_| DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS.to_string());
+        let key_rotation_skew_allowance_seconds = parse_u64(
+            "KEY_ROTATION_SKEW_ALLOWANCE_SECONDS",
+            &key_rotation_skew_allowance_raw,
+        )?;
         let cookie_secure = parse_bool(
             "COOKIE_SECURE",
             env::var("COOKIE_SECURE").ok().as_deref().unwrap_or("true"),
@@ -169,6 +178,7 @@ impl Config {
             key_directory,
             web_dist_dir,
             key_rotation_grace_seconds,
+            key_rotation_skew_allowance_seconds,
             cookie_secure,
             oauth_session_header_enabled,
             session_token_response_enabled,
@@ -229,6 +239,8 @@ impl Config {
             key_directory: "data/keys".to_owned(),
             web_dist_dir: DEFAULT_WEB_DIST_DIR.to_owned(),
             key_rotation_grace_seconds: DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+            // 测试构造走生产默认：跨实例时钟偏差容忍取默认值（Issue #316）。
+            key_rotation_skew_allowance_seconds: DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
             cookie_secure: true,
             oauth_session_header_enabled: true,
             session_token_response_enabled: false,
@@ -265,6 +277,7 @@ impl Config {
             key_directory,
             web_dist_dir,
             key_rotation_grace_seconds,
+            key_rotation_skew_allowance_seconds,
             cookie_secure,
             oauth_session_header_enabled,
             session_token_response_enabled,
@@ -326,6 +339,7 @@ impl Config {
         )?;
         validate_token_and_key_lifetimes(
             key_rotation_grace_seconds,
+            key_rotation_skew_allowance_seconds,
             access_token_ttl_seconds,
             id_token_ttl_seconds,
         )?;
@@ -373,6 +387,7 @@ impl Config {
             key_directory,
             web_dist_dir,
             key_rotation_grace_seconds,
+            key_rotation_skew_allowance_seconds,
             cookie_secure,
             oauth_session_header_enabled,
             session_token_response_enabled,

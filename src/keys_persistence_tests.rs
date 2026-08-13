@@ -51,10 +51,12 @@ impl Drop for TempKeyDir {
 }
 
 /// 保留窗口用真实时间：所有夹具文件都是刚写入的，稳定落在 `RETENTION` 之内。
+/// 无跨实例时钟偏差（单实例测试语义），容忍值取 0。
 fn load(directory: &TempKeyDir, generate_if_empty: bool) -> LoadResult {
     load_materials(
         directory.path(),
         RETENTION,
+        Duration::ZERO,
         OffsetDateTime::now_utc(),
         generate_if_empty,
     )

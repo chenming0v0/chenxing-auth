@@ -1,6 +1,8 @@
 use super::ConfigError;
 
 pub const DEFAULT_KEY_ROTATION_GRACE_SECONDS: u64 = crate::keys::DEFAULT_KEY_RETENTION_SECONDS;
+pub const DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS: u64 =
+    crate::keys::DEFAULT_KEY_RETENTION_SKEW_ALLOWANCE_SECONDS;
 pub const DEFAULT_TOKEN_TTL_SECONDS: u64 = 3_600;
 
 const MIN_KEY_ROTATION_GRACE_SECONDS: u64 = 1;
@@ -45,6 +47,7 @@ fn validate_range(
 
 pub(super) fn validate_token_and_key_lifetimes(
     key_rotation_grace_seconds: u64,
+    key_rotation_skew_allowance_seconds: u64,
     access_token_ttl_seconds: u64,
     id_token_ttl_seconds: u64,
 ) -> Result<(), ConfigError> {
@@ -53,6 +56,15 @@ pub(super) fn validate_token_and_key_lifetimes(
         key_rotation_grace_seconds,
         MIN_KEY_ROTATION_GRACE_SECONDS,
         MAX_KEY_ROTATION_GRACE_SECONDS,
+    )?;
+    // Issue #316：跨实例时钟偏差容忍。允许为 0（单实例部署没有跨实例偏差），
+    // 上限是保留窗口本身——容忍值超过窗口意味着运维对时钟失准的预期比密钥
+    // 保留期还长，基本是配置笔误，拒绝而不是静默接受。
+    validate_range(
+        "KEY_ROTATION_SKEW_ALLOWANCE_SECONDS",
+        key_rotation_skew_allowance_seconds,
+        0,
+        key_rotation_grace_seconds,
     )?;
     validate_range(
         "ACCESS_TOKEN_TTL_SECONDS",
@@ -120,9 +132,14 @@ mod tests {
             DEFAULT_KEY_ROTATION_GRACE_SECONDS,
             crate::keys::DEFAULT_KEY_RETENTION_SECONDS
         );
+        assert_eq!(
+            DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
+            crate::keys::DEFAULT_KEY_RETENTION_SKEW_ALLOWANCE_SECONDS
+        );
         assert!(
             validate_token_and_key_lifetimes(
                 DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+                DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
                 DEFAULT_TOKEN_TTL_SECONDS,
                 DEFAULT_TOKEN_TTL_SECONDS,
             )
@@ -131,6 +148,7 @@ mod tests {
         assert!(
             validate_token_and_key_lifetimes(
                 MIN_KEY_ROTATION_GRACE_SECONDS,
+                0,
                 MIN_TOKEN_TTL_SECONDS,
                 MIN_TOKEN_TTL_SECONDS,
             )
@@ -139,6 +157,7 @@ mod tests {
         assert!(
             validate_token_and_key_lifetimes(
                 MAX_KEY_ROTATION_GRACE_SECONDS,
+                DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
                 MAX_TOKEN_TTL_SECONDS,
                 MAX_TOKEN_TTL_SECONDS,
             )
@@ -151,6 +170,7 @@ mod tests {
         assert_eq!(
             validate_token_and_key_lifetimes(
                 0,
+                DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
                 DEFAULT_TOKEN_TTL_SECONDS,
                 DEFAULT_TOKEN_TTL_SECONDS,
             ),
@@ -159,6 +179,7 @@ mod tests {
         assert_eq!(
             validate_token_and_key_lifetimes(
                 DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+                DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
                 0,
                 DEFAULT_TOKEN_TTL_SECONDS,
             ),
@@ -167,6 +188,7 @@ mod tests {
         assert_eq!(
             validate_token_and_key_lifetimes(
                 DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+                DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
                 DEFAULT_TOKEN_TTL_SECONDS,
                 0,
             ),
@@ -179,6 +201,7 @@ mod tests {
         assert_eq!(
             validate_token_and_key_lifetimes(
                 MAX_KEY_ROTATION_GRACE_SECONDS + 1,
+                DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
                 DEFAULT_TOKEN_TTL_SECONDS,
                 DEFAULT_TOKEN_TTL_SECONDS,
             ),
@@ -186,7 +209,8 @@ mod tests {
         );
         assert_eq!(
             validate_token_and_key_lifetimes(
-                MAX_KEY_ROTATION_GRACE_SECONDS,
+                DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+                DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
                 MAX_TOKEN_TTL_SECONDS + 1,
                 DEFAULT_TOKEN_TTL_SECONDS,
             ),
@@ -194,7 +218,8 @@ mod tests {
         );
         assert_eq!(
             validate_token_and_key_lifetimes(
-                MAX_KEY_ROTATION_GRACE_SECONDS,
+                DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+                DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
                 DEFAULT_TOKEN_TTL_SECONDS,
                 MAX_TOKEN_TTL_SECONDS + 1,
             ),
@@ -205,12 +230,57 @@ mod tests {
     #[test]
     fn token_lifetimes_cannot_outlive_key_rotation_grace() {
         assert_eq!(
-            validate_token_and_key_lifetimes(3_600, 3_601, 3_600),
+            validate_token_and_key_lifetimes(
+                3_600,
+                DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
+                3_601,
+                3_600,
+            ),
             Err(ConfigError::InvalidValue("KEY_ROTATION_GRACE_SECONDS"))
         );
         assert_eq!(
-            validate_token_and_key_lifetimes(3_600, 3_600, 3_601),
+            validate_token_and_key_lifetimes(
+                3_600,
+                DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
+                3_600,
+                3_601,
+            ),
             Err(ConfigError::InvalidValue("KEY_ROTATION_GRACE_SECONDS"))
+        );
+    }
+
+    /// Issue #316：跨实例时钟偏差容忍可关闭（单实例部署），但不能超过保留窗口
+    /// 本身——容忍值大于窗口说明运维对时钟失准的预期比密钥保留期还长，是笔误。
+    #[test]
+    fn skew_allowance_must_not_exceed_the_rotation_grace_window() {
+        assert!(
+            validate_token_and_key_lifetimes(
+                DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+                0,
+                DEFAULT_TOKEN_TTL_SECONDS,
+                DEFAULT_TOKEN_TTL_SECONDS,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_token_and_key_lifetimes(
+                DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+                DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+                DEFAULT_TOKEN_TTL_SECONDS,
+                DEFAULT_TOKEN_TTL_SECONDS,
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            validate_token_and_key_lifetimes(
+                DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+                DEFAULT_KEY_ROTATION_GRACE_SECONDS + 1,
+                DEFAULT_TOKEN_TTL_SECONDS,
+                DEFAULT_TOKEN_TTL_SECONDS,
+            ),
+            Err(ConfigError::InvalidValue(
+                "KEY_ROTATION_SKEW_ALLOWANCE_SECONDS"
+            ))
         );
     }
 

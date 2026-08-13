@@ -63,9 +63,13 @@ impl KeyManager {
     /// 目录锁必须持有到内存写入完成：轮换在同一把锁内先写文件再写内存，
     /// 提前释放会让本函数用锁外读到的旧快照覆盖掉刚完成的轮换结果。
     pub fn sync_from_disk_blocking(&self) -> Result<KeySyncOutcome, KeyManagerError> {
-        let (directory, retention) = {
+        let (directory, retention, skew_allowance) = {
             let state = self.read_state();
-            (state.directory.clone(), state.retention)
+            (
+                state.directory.clone(),
+                state.retention,
+                state.skew_allowance,
+            )
         };
         let Some(directory) = directory else {
             return Ok(KeySyncOutcome::NotPersisted);
@@ -78,7 +82,7 @@ impl KeyManager {
         };
         let now = SystemClock.now();
         let (active_key_id, key_files) =
-            persistence::load_materials(&directory, retention, now, false)?;
+            persistence::load_materials(&directory, retention, skew_allowance, now, false)?;
         // 读锁绑定成独立语句后立即释放：下面的 `write_state` 是同一线程再取写锁，
         // 读锁若还活着就是自死锁。
         let unchanged = self
@@ -87,7 +91,13 @@ impl KeyManager {
         if unchanged {
             return Ok(KeySyncOutcome::Unchanged);
         }
-        let next_state = build_key_state(Some(directory), retention, active_key_id, key_files)?;
+        let next_state = build_key_state(
+            Some(directory),
+            retention,
+            skew_allowance,
+            active_key_id,
+            key_files,
+        )?;
         *self.write_state() = next_state;
         Ok(KeySyncOutcome::Updated)
     }

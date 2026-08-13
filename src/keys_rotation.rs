@@ -4,7 +4,7 @@ use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 
 use super::{
     KeyManager, KeyManagerError, KeyRotation, build_key_state, generate_rsa_key, key_material,
-    mark_retired, persistence, prune_materials, retirement,
+    persistence, prune, retirement,
 };
 
 /// 轮换：生成新签名密钥，写入共享目录，并替换内存快照。
@@ -20,11 +20,12 @@ pub(super) fn rotate_blocking_at(
         .rotation_lock
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (directory, retention, mut previous_active_key_id, mut materials) = {
+    let (directory, retention, skew_allowance, mut previous_active_key_id, mut materials) = {
         let state = manager.read_state();
         (
             state.directory.clone(),
             state.retention,
+            state.skew_allowance,
             state.active_key_id.clone(),
             state.private_materials.clone(),
         )
@@ -38,7 +39,7 @@ pub(super) fn rotate_blocking_at(
     };
     if let Some(directory) = directory.as_ref() {
         let (disk_active_key_id, disk_materials) =
-            persistence::load_materials(directory, retention, now, true)?;
+            persistence::load_materials(directory, retention, skew_allowance, now, true)?;
         // 退役的是磁盘上当前在役的那个 key，不是本实例内存里的：别的实例可能已经
         // 轮换过，本实例的内存快照还没同步。
         previous_active_key_id = disk_active_key_id;
@@ -47,10 +48,16 @@ pub(super) fn rotate_blocking_at(
 
     let (key_id, der) = generate_rsa_key()?;
     // 旧 active key 从这一刻起只用于验证，保留窗口从这一刻起算（Issue #298）。
-    let retired_at = mark_retired(&mut materials, &previous_active_key_id, now);
+    let retired_at = prune::mark_retired(&mut materials, &previous_active_key_id, now);
     materials.insert(key_id.clone(), key_material(der.clone(), now));
-    let expired = prune_materials(&key_id, &mut materials, retention, now);
-    let next_state = build_key_state(directory.clone(), retention, key_id.clone(), materials)?;
+    let expired = prune::prune_materials(&key_id, &mut materials, retention, skew_allowance, now);
+    let next_state = build_key_state(
+        directory.clone(),
+        retention,
+        skew_allowance,
+        key_id.clone(),
+        materials,
+    )?;
 
     if let Some(directory) = directory.as_ref()
         && let Err(error) = persistence::persist_key(directory, &key_id, &der)

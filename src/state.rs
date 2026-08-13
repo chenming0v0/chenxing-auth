@@ -100,10 +100,18 @@ struct StartupKeyMaterial {
 
 impl StartupKeyMaterial {
     /// 同步加载全部密钥材料，只允许在 `spawn_blocking` 的阻塞线程里调用。
-    fn load(key_directory: &str, key_retention: Duration) -> Result<Self, StateError> {
+    fn load(
+        key_directory: &str,
+        key_retention: Duration,
+        key_skew_allowance: Duration,
+    ) -> Result<Self, StateError> {
         // 保持与历史实现一致的失败顺序：先 provider secret，再签名密钥。
         let secrets = SecretManager::load_or_generate(key_directory)?;
-        let keys = KeyManager::load_or_generate_with_retention(key_directory, key_retention)?;
+        let keys = KeyManager::load_or_generate_with_retention_and_skew_allowance(
+            key_directory,
+            key_retention,
+            key_skew_allowance,
+        )?;
         Ok(Self { keys, secrets })
     }
 }
@@ -174,11 +182,12 @@ impl AppState {
         // 并按值 move 配置副本，闭包才满足 `'static + Send`。
         let key_directory = config.key_directory.clone();
         let key_retention = Duration::from_secs(config.key_rotation_grace_seconds);
+        let key_skew_allowance = Duration::from_secs(config.key_rotation_skew_allowance_seconds);
         let StartupKeyMaterial {
             keys,
             secrets: secret_manager,
         } = tokio::task::spawn_blocking(move || {
-            StartupKeyMaterial::load(&key_directory, key_retention)
+            StartupKeyMaterial::load(&key_directory, key_retention, key_skew_allowance)
         })
         .await??;
 

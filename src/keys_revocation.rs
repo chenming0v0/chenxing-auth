@@ -25,11 +25,12 @@ pub(super) fn revoke_blocking_at(
         .rotation_lock
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (directory, retention, mut active_key_id, mut materials) = {
+    let (directory, retention, skew_allowance, mut active_key_id, mut materials) = {
         let state = manager.read_state();
         (
             state.directory.clone(),
             state.retention,
+            state.skew_allowance,
             state.active_key_id.clone(),
             state.private_materials.clone(),
         )
@@ -45,7 +46,7 @@ pub(super) fn revoke_blocking_at(
     if let Some(directory) = directory.as_ref() {
         // 这次加载同时完成崩溃遗留的半成品吊销，因此下面看到的是一份已收敛的快照。
         let (disk_active_key_id, disk_materials) =
-            persistence::load_materials(directory, retention, now, false)?;
+            persistence::load_materials(directory, retention, skew_allowance, now, false)?;
         active_key_id = disk_active_key_id;
         materials = disk_materials;
     }
@@ -70,13 +71,20 @@ pub(super) fn revoke_blocking_at(
     let planned_state = build_key_state(
         directory.clone(),
         retention,
+        skew_allowance,
         planned_active_key_id.clone(),
         materials,
     )?;
     let (next_active_key_id, next_state) = match directory.as_ref() {
         Some(directory) => {
-            let (disk_active_key_id, disk_materials) =
-                commit_to_disk(directory, retention, now, &key_id, &planned_active_key_id)?;
+            let (disk_active_key_id, disk_materials) = commit_to_disk(
+                directory,
+                retention,
+                skew_allowance,
+                now,
+                &key_id,
+                &planned_active_key_id,
+            )?;
             let state = if planned_state.matches_disk_snapshot(&disk_active_key_id, &disk_materials)
             {
                 planned_state
@@ -86,6 +94,7 @@ pub(super) fn revoke_blocking_at(
                 build_key_state(
                     Some(directory.clone()),
                     retention,
+                    skew_allowance,
                     disk_active_key_id.clone(),
                     disk_materials,
                 )?
@@ -116,6 +125,7 @@ pub(super) fn revoke_blocking_at(
 fn commit_to_disk(
     directory: &std::path::Path,
     retention: std::time::Duration,
+    skew_allowance: std::time::Duration,
     now: OffsetDateTime,
     revoked_key_id: &str,
     next_active_key_id: &str,
@@ -123,7 +133,7 @@ fn commit_to_disk(
     let pending =
         journal::PendingRevocation::new(revoked_key_id.to_owned(), next_active_key_id.to_owned());
     journal::record(directory, &pending)?;
-    persistence::load_materials(directory, retention, now, false).map_err(|error| {
+    persistence::load_materials(directory, retention, skew_allowance, now, false).map_err(|error| {
         tracing::error!(
             key_id = %revoked_key_id,
             replacement_key_id = %next_active_key_id,
