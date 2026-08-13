@@ -208,8 +208,13 @@ mod tests {
     use crate::oauth::code::AuthorizationCode;
     use crate::oauth::store::AuthorizationCodeStore;
     use crate::plans::domain::AuthQuotaLimits;
+    use std::sync::{Mutex, MutexGuard};
     use time::{Duration, OffsetDateTime};
     use uuid::Uuid;
+
+    /// 两个用例共享全局待退台账 ZSET（`PENDING_REFUNDS_ZSET`），并行执行会互相
+    /// 污染计数；用进程内互斥串行化，并在用例开头清空共享键，消除并行与残留干扰。
+    static REFUND_TESTS_LOCK: Mutex<()> = Mutex::new(());
 
     fn store() -> OAuthQuotaStore {
         let url =
@@ -223,9 +228,30 @@ mod tests {
         AuthorizationCodeStore::new(redis::Client::open(url).expect("Redis URL"))
     }
 
+    /// 串行化待退台账相关用例并清空共享 ZSET，返回持有的互斥锁。
+    async fn lock_refund_tests() -> MutexGuard<'static, ()> {
+        let guard = REFUND_TESTS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+        let client = redis::Client::open(url).expect("Redis URL");
+        let mut connection = client
+            .get_multiplexed_async_connection()
+            .await
+            .expect("Redis connection");
+        let _: () = redis::cmd("DEL")
+            .arg(PENDING_REFUNDS_ZSET)
+            .query_async(&mut connection)
+            .await
+            .expect("clear shared pending-refunds zset");
+        guard
+    }
+
     /// 过期未兑换：worker 一轮扫描后 day/month 用量归还为 0（Issue #341 主路径）。
     #[tokio::test]
     async fn expired_unredeemed_code_refunds_quota() {
+        let _guard = lock_refund_tests().await;
         let store = store();
         let client_id = format!("quota-refund-expired-{}", Uuid::new_v4().simple());
         let limits = AuthQuotaLimits {
@@ -262,6 +288,7 @@ mod tests {
     /// 兑换成功：CAS 原子取消待退条目，worker 扫描不到条目，用量保留为 1。
     #[tokio::test]
     async fn redeemed_code_keeps_quota_and_cancels_pending_refund() {
+        let _guard = lock_refund_tests().await;
         let store = store();
         let codes = code_store();
         let client_id = format!("quota-refund-redeemed-{}", Uuid::new_v4().simple());
