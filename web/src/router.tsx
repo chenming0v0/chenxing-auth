@@ -14,9 +14,16 @@ export function setNavigationBlocker(blocker: (() => boolean) | null) {
   navigationBlocker = blocker
 }
 
-export function navigate(to: string) {
+export function navigate(to: string, options?: { replace?: boolean }) {
   if (navigationBlocker && !navigationBlocker()) return
-  window.history.pushState({}, '', to)
+  // 守卫重定向必须走 replaceState（#326）：push 会把被拦截的目标页留在历史里，
+  // 用户在登录页按后退又撞回该页、守卫再次跳转，形成永远回不去的重定向陷阱。
+  // 用户主动点击的链接仍用 pushState，保留正常的前进/后退语义。
+  if (options?.replace) {
+    window.history.replaceState({}, '', to)
+  } else {
+    window.history.pushState({}, '', to)
+  }
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
 
@@ -58,7 +65,7 @@ export function NavLink({ to, className, ...props }: NavLinkProps) {
   return <Link to={to} className={resolvedClass} aria-current={active ? 'page' : undefined} {...props} />
 }
 
-export function Navigate({ to }: { to: string }) {
-  useEffect(() => navigate(to), [to])
+export function Navigate({ to, replace = false }: { to: string; replace?: boolean }) {
+  useEffect(() => navigate(to, { replace }), [to, replace])
   return null
 }
