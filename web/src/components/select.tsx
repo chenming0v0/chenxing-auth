@@ -122,17 +122,26 @@ export function Select({
      non-focusable div: the trigger blurs, focus falls to <body>, and the
      trigger's own onKeyDown never sees the key again. Listen on document
      while open and hand focus back to the trigger (same convention as the
-     shell menus), so the combobox keyboard context is restored. */
+     shell menus), so the combobox keyboard context is restored.
+
+     Registered in the capture phase and stopped there: drawers (and any
+     other modal) close themselves from their own document-level Escape
+     listener, which runs later in the bubble phase. While the popup is
+     open, Escape belongs to it — closing the popup must not tear down the
+     enclosing drawer and throw away unsaved form state. Capture runs
+     before that bubble listener even when focus has fallen to <body>, so
+     both focus paths are covered. */
   useEffect(() => {
     if (!open) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       event.preventDefault()
+      event.stopPropagation()
       setOpen(false)
       triggerRef.current?.focus()
     }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => document.removeEventListener('keydown', onKeyDown, true)
   }, [open])
 
   useEffect(() => () => window.clearTimeout(typeahead.current.timer), [])
@@ -175,11 +184,8 @@ export function Select({
         if (!open) openAt(currentIndex >= 0 ? currentIndex : selectableIndex(0, 1))
         else if (activeIndex >= 0) commit(options[activeIndex])
         break
-      case 'Escape':
-        if (!open) return
-        event.preventDefault()
-        setOpen(false)
-        break
+      /* Escape 不在这里处理：打开时由 document 上的 capture 监听器接管
+         （stopPropagation 后此分支不可达），关闭时按常规冒泡让外层抽屉处理。 */
       case 'ArrowDown':
         event.preventDefault()
         if (!open) openAt(currentIndex >= 0 ? currentIndex : selectableIndex(0, 1))
