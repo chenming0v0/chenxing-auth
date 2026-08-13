@@ -15,10 +15,10 @@ use zeroize::Zeroizing;
 
 use crate::oauth::token::{decode_access_token, issue_access_token};
 
+use super::keys_material::retirement_window_open_at;
 use super::{
     DEFAULT_KEY_RETENTION_SECONDS, KeyManager, KeyMaterial, KeySyncOutcome,
-    MINIMUM_KEY_SYNC_INTERVAL, key_material, mark_retired, prune_materials,
-    retirement_window_open_at,
+    MINIMUM_KEY_SYNC_INTERVAL, key_material, mark_retired, newest_key_id, prune_materials,
 };
 
 const TEST_NOW_UNIX_SECONDS: i64 = 1_700_000_000;
@@ -45,6 +45,48 @@ fn retired(byte: u8, retired_seconds_ago: u64) -> KeyMaterial {
     );
     material.retired_at = Some(retired_at);
     material
+}
+
+/// 替代者选择按退役时刻排定：mtime 最新（模拟 `touch` 或崩溃遗留孤儿）的旧 key
+/// 不会胜出，最近退役的 key 才是“最近在役”的那个（Issue #318）。
+#[test]
+fn newest_key_id_ignores_creation_time_when_retirement_instants_differ() {
+    let now = test_now();
+    let mut touched = key_material(Zeroizing::new(vec![1]), now - TimeDuration::seconds(1));
+    touched.retired_at = Some(now - TimeDuration::seconds(3600));
+    let mut recently_retired =
+        key_material(Zeroizing::new(vec![2]), now - TimeDuration::seconds(600));
+    recently_retired.retired_at = Some(now - TimeDuration::seconds(60));
+    let mut materials = BTreeMap::new();
+    materials.insert("cx-touched".to_owned(), touched);
+    materials.insert("cx-recent".to_owned(), recently_retired);
+
+    assert_eq!(newest_key_id(&materials).as_deref(), Some("cx-recent"));
+}
+
+/// 从未退役（记录缺失）的 key 视为最新：它是最近还在役的那个。
+#[test]
+fn newest_key_id_prefers_a_never_retired_key_over_any_retired_one() {
+    let mut materials = BTreeMap::new();
+    materials.insert("cx-retired".to_owned(), retired(1, 1));
+    materials.insert("cx-never".to_owned(), aged(2, 1));
+
+    assert_eq!(newest_key_id(&materials).as_deref(), Some("cx-never"));
+}
+
+/// 退役时刻相同时退回创建时刻，保证次序确定。
+#[test]
+fn newest_key_id_falls_back_to_creation_time_for_an_equal_retirement_instant() {
+    let now = test_now();
+    let mut older = key_material(Zeroizing::new(vec![1]), now - TimeDuration::seconds(600));
+    older.retired_at = Some(now - TimeDuration::seconds(60));
+    let mut newer = key_material(Zeroizing::new(vec![2]), now - TimeDuration::seconds(1));
+    newer.retired_at = Some(now - TimeDuration::seconds(60));
+    let mut materials = BTreeMap::new();
+    materials.insert("cx-older".to_owned(), older);
+    materials.insert("cx-newer".to_owned(), newer);
+
+    assert_eq!(newest_key_id(&materials).as_deref(), Some("cx-newer"));
 }
 
 #[test]

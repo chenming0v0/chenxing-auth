@@ -40,7 +40,13 @@ pub(super) fn retirement_file_name(key_id: &str) -> String {
 /// 这个方向是安全的：缺少记录只会让 `reconcile` 重新盖一个更晚的退役时刻，从而
 /// 多留一个保留窗口；反过来把无法解析当成致命错误，则会因为一个非凭据的元数据
 /// 文件损坏而拒绝启动整个认证服务。
-fn read(directory: &Path, key_id: &str) -> Result<Option<OffsetDateTime>, KeyManagerError> {
+///
+/// `pub(super)` 供恢复路径（`establish_recovery_active_key`）做"最近在役"排序：
+/// 那是替代者选择的唯一可信依据，不能退回文件 mtime（Issue #318）。
+pub(super) fn read_retired_at(
+    directory: &Path,
+    key_id: &str,
+) -> Result<Option<OffsetDateTime>, KeyManagerError> {
     let path = directory.join(retirement_file_name(key_id));
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
@@ -104,7 +110,7 @@ pub(super) fn load_into(
     key_id: &str,
     material: &mut KeyMaterial,
 ) -> Result<(), KeyManagerError> {
-    material.retired_at = read(directory, key_id)?;
+    material.retired_at = read_retired_at(directory, key_id)?;
     Ok(())
 }
 

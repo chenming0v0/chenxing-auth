@@ -14,9 +14,10 @@ use std::{
 use time::OffsetDateTime;
 
 use super::{
-    KeyManagerError, PENDING_REVOCATION_FILE, PendingRevocation,
+    KeyManagerError, PENDING_REVOCATION_FILE, PENDING_ROTATION_FILE, PendingRevocation,
+    PendingRotation,
     persistence::{ACTIVE_KEY_ID_FILE, key_file_name, load_materials},
-    record,
+    record, record_rotation,
 };
 
 const RETENTION: Duration = Duration::from_secs(3600);
@@ -38,6 +39,10 @@ impl TempKeyDir {
 
     fn record_path(&self) -> PathBuf {
         self.0.join(PENDING_REVOCATION_FILE)
+    }
+
+    fn rotation_record_path(&self) -> PathBuf {
+        self.0.join(PENDING_ROTATION_FILE)
     }
 
     fn active_key_id_path(&self) -> PathBuf {
@@ -84,6 +89,14 @@ fn write_record(directory: &TempKeyDir, revoked_key_id: &str, active_key_id: &st
         &PendingRevocation::new(revoked_key_id.to_owned(), active_key_id.to_owned()),
     )
     .expect("pending revocation record");
+}
+
+fn write_rotation_record(directory: &TempKeyDir, new_key_id: &str, previous_key_id: &str) {
+    record_rotation(
+        directory.path(),
+        &PendingRotation::new(new_key_id.to_owned(), previous_key_id.to_owned()),
+    )
+    .expect("pending rotation record");
 }
 
 /// 崩溃在"记录已落盘、active kid 还没改写"之间。
@@ -361,4 +374,116 @@ fn the_record_file_is_outside_the_key_and_temporary_namespaces() {
         "记录文件不得被 discover_key_files 收进材料集合"
     );
     assert!(materials.contains_key("cx-replacement"));
+}
+
+/// 轮换崩溃在“意图已落盘、active kid 还没改写”之间（Issue #318）：新材料在盘上
+/// 就补完切换，绝不把未完成启用流程的材料留在盘上冒充“最新”。
+#[test]
+fn rotation_recovery_completes_a_rotation_interrupted_before_the_key_switch() {
+    let directory = TempKeyDir::new("rotation-before-switch");
+    write_key(&directory, "cx-previous");
+    write_key(&directory, "cx-new");
+    write_active_key_id(&directory, "cx-previous");
+    write_rotation_record(&directory, "cx-new", "cx-previous");
+
+    let active_key_id = load(&directory).expect("load must complete the pending rotation");
+
+    assert_eq!(active_key_id, "cx-new");
+    assert_eq!(read_active_key_id(&directory), "cx-new");
+    assert!(
+        directory.key_path("cx-previous").exists(),
+        "旧 key 必须保留完整验证窗口"
+    );
+    assert!(
+        !directory.rotation_record_path().exists(),
+        "记录做完后必须清除"
+    );
+}
+
+/// 崩溃发生在写私钥材料之前：轮换从未生效，加载回滚意图并保留旧 active。
+#[test]
+fn rotation_recovery_aborts_a_rotation_whose_material_was_never_persisted() {
+    let directory = TempKeyDir::new("rotation-never-persisted");
+    write_key(&directory, "cx-previous");
+    write_active_key_id(&directory, "cx-previous");
+    write_rotation_record(&directory, "cx-new", "cx-previous");
+
+    let active_key_id = load(&directory).expect("aborted rotation must not break the load");
+
+    assert_eq!(active_key_id, "cx-previous");
+    assert_eq!(read_active_key_id(&directory), "cx-previous");
+    assert!(!directory.key_path("cx-new").exists());
+    assert!(
+        !directory.rotation_record_path().exists(),
+        "回滚后意图记录必须清除，运维重试一次轮换即可"
+    );
+}
+
+/// 崩溃发生在“active kid 已改写”之后：切换已完成，恢复只清除意图记录。
+#[test]
+fn rotation_recovery_keeps_a_switch_that_already_completed() {
+    let directory = TempKeyDir::new("rotation-after-switch");
+    write_key(&directory, "cx-previous");
+    write_key(&directory, "cx-new");
+    write_active_key_id(&directory, "cx-new");
+    write_rotation_record(&directory, "cx-new", "cx-previous");
+
+    let active_key_id = load(&directory).expect("completed rotation must load cleanly");
+
+    assert_eq!(active_key_id, "cx-new");
+    assert_eq!(read_active_key_id(&directory), "cx-new");
+    assert!(directory.key_path("cx-previous").exists());
+    assert!(!directory.rotation_record_path().exists());
+}
+
+/// 轮换意图记录损坏时与吊销记录同样处理：丢弃整个 keyset，生成全新 active。
+#[test]
+fn rotation_recovery_discards_all_old_material_from_a_corrupt_record() {
+    let directory = TempKeyDir::new("rotation-corrupt");
+    write_key(&directory, "cx-active");
+    write_key(&directory, "cx-old");
+    write_active_key_id(&directory, "cx-active");
+    fs::write(directory.rotation_record_path(), "../escape\ncx-active\n").expect("corrupt record");
+
+    let (active_key_id, materials) = load_materials(
+        directory.path(),
+        RETENTION,
+        OffsetDateTime::now_utc(),
+        false,
+    )
+    .expect("corrupt rotation journal must converge to a fresh keyset");
+
+    assert_ne!(active_key_id, "cx-active");
+    assert_ne!(active_key_id, "cx-old");
+    assert_eq!(materials.len(), 1);
+    assert!(materials.contains_key(&active_key_id));
+    assert!(!directory.key_path("cx-active").exists());
+    assert!(!directory.key_path("cx-old").exists());
+    assert!(!directory.rotation_record_path().exists());
+}
+
+/// 轮换记录文件不能被误当成密钥材料或中断的原子写临时文件。
+#[test]
+fn the_rotation_record_file_is_outside_the_key_and_temporary_namespaces() {
+    let directory = TempKeyDir::new("rotation-namespace");
+    write_key(&directory, "cx-active");
+    write_active_key_id(&directory, "cx-active");
+    // kid 已指向记录里的新 key，恢复只做一次幂等清除。
+    write_rotation_record(&directory, "cx-active", "cx-previous");
+
+    let (active_key_id, materials) = load_materials(
+        directory.path(),
+        RETENTION,
+        OffsetDateTime::now_utc(),
+        false,
+    )
+    .expect("rotation record must not be read as key material");
+
+    assert_eq!(active_key_id, "cx-active");
+    assert!(
+        !materials.keys().any(|key_id| key_id.contains("rotation")),
+        "记录文件不得被 discover_key_files 收进材料集合"
+    );
+    assert!(materials.contains_key("cx-active"));
+    assert!(!directory.rotation_record_path().exists());
 }

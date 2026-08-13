@@ -11,7 +11,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use time::OffsetDateTime;
+use time::{Duration as TimeDuration, OffsetDateTime};
 
 use super::{
     ACTIVE_KEY_ID_FILE, KEY_FILE_PREFIX, KEY_FILE_SUFFIX, KeyManagerError, KeyMaterial,
@@ -212,6 +212,40 @@ fn missing_active_key_id_file_adopts_the_newest_material() {
     assert!(
         materials.contains_key("cx-older"),
         "older material stays published for verification"
+    );
+}
+
+/// kid 文件丢失时的替代者按退役时刻选取：mtime 最新（模拟 `touch` 或崩溃遗留
+/// 孤儿）的旧 key 不能胜出（Issue #318）。
+#[test]
+fn missing_active_key_id_file_adopts_the_most_recently_retired_material() {
+    let directory = TempKeyDir::new("missing-kid-file-retired");
+    write_key_file(&directory, "cx-touched", b"touched-material");
+    write_key_file(&directory, "cx-recent", b"recent-material");
+    // cx-touched 保持最新 mtime（刚写入），cx-recent 的 mtime 更旧，但它的退役
+    // 时刻更新——那才是真正的“最近在役”。
+    age_key_file(&directory, "cx-recent", 600);
+    let now = OffsetDateTime::now_utc();
+    super::retirement::stamp(
+        directory.path(),
+        "cx-recent",
+        now - TimeDuration::seconds(60),
+    )
+    .expect("stamp");
+    super::retirement::stamp(
+        directory.path(),
+        "cx-touched",
+        now - TimeDuration::seconds(300),
+    )
+    .expect("stamp");
+
+    let (active_key_id, materials) = load(&directory, false).expect("recover the active key id");
+
+    assert_eq!(active_key_id, "cx-recent");
+    assert_eq!(read_active_key_id(&directory), "cx-recent");
+    assert!(
+        materials.contains_key("cx-touched"),
+        "非 active 材料在保留窗口内仍发布用于验证"
     );
 }
 
