@@ -515,6 +515,8 @@ fn database_uses_explicit_unified_baseline_migrations() {
     assert!(DB_MODULE.contains("0025_user_canonical_email.sql"));
     assert!(DB_MODULE.contains("client secret refresh generation boundary"));
     assert!(DB_MODULE.contains("0026_client_secret_refresh_generation.sql"));
+    assert!(DB_MODULE.contains("canonical email constraint scope repair"));
+    assert!(DB_MODULE.contains("0027_repair_canonical_email_constraint_scope.sql"));
     let mut migrations = std::fs::read_dir("migrations")
         .expect("migrations directory")
         .filter_map(Result::ok)
@@ -551,6 +553,7 @@ fn database_uses_explicit_unified_baseline_migrations() {
             std::ffi::OsString::from("0024_runtime_users_sequence_update.sql"),
             std::ffi::OsString::from("0025_user_canonical_email.sql"),
             std::ffi::OsString::from("0026_client_secret_refresh_generation.sql"),
+            std::ffi::OsString::from("0027_repair_canonical_email_constraint_scope.sql"),
         ]
     );
 }
@@ -590,6 +593,25 @@ fn canonical_email_migration_fails_loudly_instead_of_merging_accounts() {
     assert!(
         !migration.contains("DELETE FROM users"),
         "the migration must not delete conflicting accounts"
+    );
+}
+
+#[test]
+fn canonical_email_constraint_repair_is_bound_to_the_current_users_table() {
+    let migration = include_str!("../migrations/0027_repair_canonical_email_constraint_scope.sql");
+    for marker in [
+        "conrelid = 'users'::regclass",
+        "users_canonical_email_key",
+        "UNIQUE (canonical_email)",
+    ] {
+        assert!(
+            migration.contains(marker),
+            "canonical email constraint repair is missing marker: {marker}"
+        );
+    }
+    assert!(
+        !migration.contains("DELETE FROM users"),
+        "the repair must fail on duplicates instead of deleting accounts"
     );
 }
 

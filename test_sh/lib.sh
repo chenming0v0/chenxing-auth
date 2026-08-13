@@ -66,7 +66,17 @@ spinner_stop() {
 }
 
 cleanup_on_exit() { spinner_stop; }
-trap cleanup_on_exit EXIT INT TERM
+
+abort_on_signal() {
+    local signal="$1" status="$2"
+    spinner_stop
+    err "收到 ${signal}，已终止；跳过后续阶段"
+    exit "$status"
+}
+
+trap cleanup_on_exit EXIT
+trap 'abort_on_signal SIGINT 130' INT
+trap 'abort_on_signal SIGTERM 143' TERM
 
 # ---------------------------------------------------------------- 汇总
 # 四个并行数组而不是一个结构体：bash 没有结构体，下标对齐已经够用。

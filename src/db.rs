@@ -135,7 +135,7 @@ pub async fn migrate(database: &Database) -> Result<(), crate::sqlx::migrate::Mi
 
 /// 校验 `users.canonical_email` 与应用层的规范化结果一致（Issue #302）。
 ///
-/// 迁移 0024 的回填在 SQL 里做，而 SQL 无法验证 Punycode 的有效性——那需要真正
+/// 迁移 0025 的回填在 SQL 里做，而 SQL 无法验证 Punycode 的有效性——那需要真正
 /// 解码再跑一遍 UTS-46，在 PL/pgSQL 里重实现等于把"规范化只有一处实现"这个前提
 /// 亲手推翻。于是把这一步留给唯一的权威实现：迁移之后，用 `EmailAddress` 复核。
 ///
@@ -150,7 +150,12 @@ async fn verify_canonical_emails(
 ) -> Result<(), crate::sqlx::migrate::MigrateError> {
     let rows: Vec<(i64, String, String)> = crate::sqlx::query_as(
         "SELECT id, email, canonical_email FROM users
-         WHERE canonical_email LIKE 'xn--%' OR canonical_email LIKE '%.xn--%'
+         WHERE EXISTS (
+             SELECT 1
+             FROM unnest(string_to_array(split_part(canonical_email, '@', 2), '.'))
+                  AS domain_label(label)
+             WHERE label LIKE 'xn--%'
+         )
          ORDER BY id",
     )
     .fetch_all(database)
@@ -391,6 +396,15 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             MigrationType::Simple,
             normalize_migration_sql(include_str!(
                 "../migrations/0026_client_secret_refresh_generation.sql"
+            )),
+            false,
+        ),
+        Migration::new(
+            27,
+            Cow::Borrowed("canonical email constraint scope repair"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!(
+                "../migrations/0027_repair_canonical_email_constraint_scope.sql"
             )),
             false,
         ),

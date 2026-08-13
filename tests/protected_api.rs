@@ -16,6 +16,8 @@ use uuid::Uuid;
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
 
+const TEST_ADMIN_TOKEN: &str = "test-admin-token-0123456789abcdef";
+
 fn get_request(uri: &str) -> Request<Body> {
     Request::builder()
         .uri(uri)
@@ -48,6 +50,7 @@ async fn test_router() -> (Router, std::path::PathBuf) {
     )
     .expect("test configuration");
     config.cookie_secure = false;
+    config.admin_token = TEST_ADMIN_TOKEN.to_owned();
     config.key_directory = key_directory.to_string_lossy().into_owned();
     (
         api::router(
@@ -69,12 +72,12 @@ async fn admin_router() -> (Router, String, std::path::PathBuf) {
     let mut config =
         Config::from_values("127.0.0.1".to_owned(), 3000, database_url, redis_url, 3600)
             .expect("test configuration");
-    config.admin_token = "admin-secret".to_owned();
+    config.admin_token = TEST_ADMIN_TOKEN.to_owned();
     config.key_directory = directory.to_string_lossy().into_owned();
     let state = AppState::new_with_pool(config, database)
         .await
         .expect("test state");
-    (api::router(state), "admin-secret".to_owned(), directory)
+    (api::router(state), TEST_ADMIN_TOKEN.to_owned(), directory)
 }
 
 #[tokio::test]

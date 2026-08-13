@@ -206,7 +206,7 @@ async fn username_login_still_matches_only_the_username_column() {
     assert_eq!(credentials.id, user_id);
 }
 
-/// 迁移 0024 的回填结果必须与应用层的规范化逐字节相等。
+/// 迁移 0025 的回填结果必须与应用层的规范化逐字节相等。
 ///
 /// 回填判据写在 SQL 里，权威实现在 Rust 里。这个用例把判据覆盖范围内的各种形态
 /// 都插一遍，然后逐行比对——判据一旦漂移（例如放宽了某个字符类），这里立刻失败。
