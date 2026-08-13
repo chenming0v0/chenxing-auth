@@ -1,4 +1,4 @@
-import { createElement, useId, useState } from 'react'
+import { createElement, useEffect, useId, useRef, useState } from 'react'
 import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react'
 import {
   Activity, AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUpRight, BadgeCheck, BookOpen, Box, CalendarClock, Check, ChevronDown,
@@ -305,14 +305,94 @@ type CopyValueProps = {
   announceValue?: boolean
 }
 
+type CopyStatus = 'idle' | 'copied' | 'failed'
+
+/**
+ * 把文本复制进剪贴板，永不抛出，用返回值告知调用方是否成功。
+ *
+ * 优先使用异步剪贴板 API（仅安全上下文可用）；API 缺失、权限被拒或文档未聚焦时，
+ * 回退到隐藏 textarea + execCommand('copy')——它只依赖用户手势，不依赖权限。
+ * 两种途径都失败才返回 false，由组件显式反馈，绝不静默丢弃。
+ */
+async function copyTextToClipboard(value: string): Promise<boolean> {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(value)
+      return true
+    } catch {
+      // 权限被拒等场景：继续尝试 execCommand 回退，而不是直接放弃
+    }
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.top = '0'
+  textarea.style.left = '-9999px'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  const selection = window.getSelection()
+  const previousRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null
+  textarea.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  } finally {
+    textarea.remove()
+    if (selection && previousRange) {
+      selection.removeAllRanges()
+      selection.addRange(previousRange)
+    }
+  }
+  return ok
+}
+
 export function CopyValue({ value, ariaLabel, announceValue = false }: CopyValueProps) {
+  const [status, setStatus] = useState<CopyStatus>('idle')
+  const resetTimerRef = useRef<number | null>(null)
   const accessibleName = announceValue
     ? `${ariaLabel ?? '复制值'}：${value}`
     : ariaLabel ?? '复制值'
+  const statusText = status === 'copied' ? '已复制' : status === 'failed' ? '复制失败' : ''
+
+  useEffect(() => () => {
+    if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current)
+  }, [])
+
+  async function handleCopy() {
+    const ok = await copyTextToClipboard(value)
+    if (resetTimerRef.current !== null) window.clearTimeout(resetTimerRef.current)
+    resetTimerRef.current = null
+    setStatus(ok ? 'copied' : 'failed')
+    if (ok) {
+      // 成功反馈短暂展示后恢复常态；失败状态保留到下一次点击，
+      // 避免一次性凭据（Client Secret / TOTP 密钥）被误以为已复制。
+      resetTimerRef.current = window.setTimeout(() => setStatus('idle'), 1600)
+    }
+  }
+
   return (
-    <button type="button" className="cx-copy-row" onClick={() => void navigator.clipboard?.writeText(value)} title="复制" aria-label={accessibleName}>
+    <button
+      type="button"
+      className="cx-copy-row"
+      onClick={() => void handleCopy()}
+      title={statusText || '复制'}
+      aria-label={accessibleName}
+    >
       <span className="min-w-0 truncate">{value}</span>
-      <Icon name="copy" size={15} />
+      <span className="flex shrink-0 items-center gap-1.5">
+        {statusText ? (
+          <span
+            className={`chenxing-caption ${status === 'copied' ? 'text-[var(--chenxing-success)]' : 'text-[var(--chenxing-error)]'}`}
+            aria-live="polite"
+          >
+            {statusText}
+          </span>
+        ) : null}
+        <Icon name={status === 'copied' ? 'check' : status === 'failed' ? 'alert-triangle' : 'copy'} size={15} />
+      </span>
     </button>
   )
 }
