@@ -289,6 +289,19 @@ fn retirement_window_open_at_never_closes_for_an_active_key() {
     assert!(retirement_window_open_at(None, Duration::ZERO, test_now()));
 }
 
+/// 超过 `time::Duration` 可表示范围（i64 纳秒上界约 292 年）的 retention 必须按
+/// 「窗口永不关闭」处理，不能退回「窗口已关闭」——否则退役公钥被立即从 JWKS
+/// 与磁盘删除，其签发的未过期令牌全部失效（Issue #317）。失败方向必须 fail-safe。
+#[test]
+fn retirement_window_open_at_fails_safe_when_retention_is_unrepresentable() {
+    let retention = Duration::from_secs(u64::MAX); // 约 5840 亿年，远超 i64 纳秒上界
+    assert!(retirement_window_open_at(
+        Some(test_now() - TimeDuration::days(1)),
+        retention,
+        test_now(),
+    ));
+}
+
 #[test]
 fn zeroizing_der_preserves_signing_and_public_key_derivation() {
     // 功能验证：der 被 Zeroizing 包装后，签名密钥构建与 JWT 验证链路不受影响。
