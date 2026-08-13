@@ -1,4 +1,5 @@
 pub mod domain;
+pub mod issuer;
 pub mod repository;
 pub mod security_limits;
 pub mod security_limits_cache;
@@ -9,6 +10,7 @@ pub use domain::{
     EmailPolicySetting, PasskeyAuthenticatorAttachment, PasskeySetting, PasskeyUserVerification,
     SmtpSetting, SmtpSettingUpdate,
 };
+pub use issuer::{InitializeIssuerOutcome, IssuerSettingError};
 pub use security_limits::SecurityLimitsSetting;
 pub use security_limits_cache::{
     CachedSecurityLimits, SECURITY_LIMITS_CACHE_TTL, SECURITY_LIMITS_ERROR_BACKOFF,

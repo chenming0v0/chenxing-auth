@@ -65,9 +65,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          bash -n install.sh
           bash -n deploy/install.sh
           cp .env.example .env
           docker compose --env-file .env -f docker-compose.prod.yml config --quiet
+          remote_install_dir="$RUNNER_TEMP/chenxing-remote-install"
+          CHENXING_INSTALL_DIR="$remote_install_dir" CHENXING_PORT=3000 \
+            bash install.sh --prepare-only
+          docker compose --env-file "$remote_install_dir/.env" \
+            -f "$remote_install_dir/compose.yml" config --quiet
       - name: Verify migration checksum manifest
         shell: bash
         run: |

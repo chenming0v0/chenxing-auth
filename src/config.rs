@@ -10,6 +10,8 @@ mod config_admin;
 mod config_audit;
 #[path = "config_construction.rs"]
 mod config_construction;
+#[path = "config_issuer.rs"]
+mod config_issuer;
 #[path = "config_limit_bounds.rs"]
 mod config_limit_bounds;
 #[path = "config_limits.rs"]
@@ -20,6 +22,8 @@ mod config_parsing;
 mod config_proxy;
 #[path = "config_security.rs"]
 mod config_security;
+
+pub use config_issuer::normalize_issuer_url;
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 // 会话配置上界常量 `MAX_SESSION_*` 统一来自 config_security（#365 政策封顶），
@@ -75,7 +79,16 @@ pub struct Config {
     pub port: u16,
     /// Maximum time for a matched application route to produce a response.
     pub request_timeout_seconds: u64,
+    /// 当前进程是否已经从数据库或旧版环境变量取得固定 Issuer。
+    ///
+    /// `false` 时 HTTP 层只注册健康检查、初始化状态和静态前端；任何认证、
+    /// OAuth/OIDC 或管理路由都不会存在。
+    pub issuer_configured: bool,
     pub issuer_url: String,
+    /// 旧部署的 APP_ISSUER 一次性导入候选。
+    ///
+    /// 该值不参与普通配置校验；只有数据库尚未保存 Issuer 时才会解析并写入。
+    pub(crate) legacy_issuer_import: Option<String>,
     pub admin_token: String,
     pub key_directory: String,
     /// 前端构建产物根（`WEB_DIST_DIR`）的原始配置值。
@@ -133,11 +146,17 @@ pub struct Config {
 
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let issuer_url = if self.issuer_configured {
+            debug_safe_url(&self.issuer_url)
+        } else {
+            "<unconfigured>".to_owned()
+        };
         f.debug_struct("Config")
             .field("host", &self.host)
             .field("port", &self.port)
             .field("request_timeout_seconds", &self.request_timeout_seconds)
-            .field("issuer_url", &debug_safe_url(&self.issuer_url))
+            .field("issuer_configured", &self.issuer_configured)
+            .field("issuer_url", &issuer_url)
             .field("admin_token", &"REDACTED")
             .field("key_directory", &self.key_directory)
             .field("web_dist_dir", &self.web_dist_dir)
