@@ -221,5 +221,5 @@ fn role_of(database_url: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-#[path = "db_migrate_tests.rs"]
+#[path = "migrate_tests.rs"]
 mod tests;

@@ -25,7 +25,7 @@ pub struct SecurityLimitsSetting {
 
 impl Default for SecurityLimitsSetting {
     fn default() -> Self {
-        // 取自 config_limits.rs 的 SecurityLimits::default()；
+        // 取自 config/limits.rs 的 SecurityLimits::default()；
         // security_limits_default_matches_config_limits 测试守住两处不漂移。
         Self {
             unauthenticated_source_qps: 30,
@@ -69,8 +69,8 @@ impl From<&crate::config::SecurityLimits> for SecurityLimitsSetting {
 impl SecurityLimitsSetting {
     /// 校验管理 API 写入的取值：越界即拒绝，并回报越界的字段名。
     ///
-    /// 取值范围与 `config_limits.rs` 的 `sanitized()` 共用同一张表
-    /// （`config_limit_bounds::for_each_security_limit!`），**动作**有意不同，因为
+    /// 取值范围与 `config/limits.rs` 的 `sanitized()` 共用同一张表
+    /// （`config::limit_bounds::for_each_security_limit!`），**动作**有意不同，因为
     /// 输入来源不同：
     ///
     /// - 环境变量是启动期输入，此时没有人能看到错误提示。非法值只能回退默认，

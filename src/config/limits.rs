@@ -7,8 +7,8 @@ use crate::clients::domain::{
 };
 
 use super::ConfigError;
-use super::config_limit_bounds::for_each_security_limit;
-use super::config_parsing::{optional_i64, optional_u32, optional_u64};
+use super::limit_bounds::for_each_security_limit;
+use super::parsing::{optional_i64, optional_u32, optional_u64};
 
 pub(super) fn parse_auth_limiter_failure_policy(
     name: &'static str,
@@ -158,7 +158,7 @@ impl SecurityLimits {
     /// `<= 0` 在 Redis Lua 比较里等价于「立即触发限流」。这些都不是任何部署想要的
     /// 策略，只可能是配置错误（例如变量被设成空字符串后又被 shell 展开为 0）。
     ///
-    /// 上界：见 `config_limit_bounds`。阈值本身就是安全控制，允许写入极值等于允许
+    /// 上界：见 `limit_bounds`。阈值本身就是安全控制，允许写入极值等于允许
     /// 静默关掉这项控制——`ACCOUNT_FAILURE_LIMIT=i64::MAX` 会让账户锁定永不触发。
     ///
     /// 环境变量是启动期输入，此时没有人在看错误提示，因此回退而不是拒绝启动：

@@ -405,5 +405,4 @@ pub(super) fn validate_key_id(key_id: &str) -> Result<(), KeyManagerError> {
 }
 
 #[cfg(test)]
-#[path = "keys_persistence_tests.rs"]
 mod tests;

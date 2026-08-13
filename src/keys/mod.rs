@@ -1,9 +1,9 @@
 //! JWK/JWKS 密钥的内存权威状态与协议读路径。
 //!
 //! 磁盘副作用拆到三个子模块，本文件只保留状态与只读访问：
-//! `keys_persistence.rs` 负责目录布局与文件读写，`keys_rotation.rs` 与
-//! `keys_revocation.rs` 是持锁写入，`keys_sync.rs` 是磁盘到内存的后台同步。
-//! 材料生命周期与"最近在役"选择等纯领域规则在 `keys_material.rs`。
+//! `persistence` 负责目录布局与文件读写，`rotation` 与
+//! `revocation` 是持锁写入，`sync` 是磁盘到内存的后台同步。
+//! 材料生命周期与"最近在役"选择等纯领域规则在 `material`。
 use aws_lc_rs::{
     encoding::AsDer,
     rsa::{KeyPair, KeySize},
@@ -25,24 +25,16 @@ use zeroize::Zeroizing;
 use crate::clock::{Clock, SystemClock};
 use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 
-#[path = "keys_journal.rs"]
 mod journal;
-#[path = "keys_material.rs"]
-mod keys_material;
-#[path = "keys_persistence.rs"]
+mod material;
 mod persistence;
-#[path = "keys_prune.rs"]
 mod prune;
-#[path = "keys_retirement.rs"]
 mod retirement;
-#[path = "keys_revocation.rs"]
 mod revocation;
-#[path = "keys_rotation.rs"]
 mod rotation;
-#[path = "keys_sync.rs"]
 mod sync;
 
-use keys_material::{KeyMaterial, PrivateKeyDer, compare_recency, key_material, newest_key_id};
+use material::{KeyMaterial, PrivateKeyDer, compare_recency, key_material, newest_key_id};
 
 pub use sync::{DEFAULT_KEY_SYNC_INTERVAL, KeySyncOutcome, MINIMUM_KEY_SYNC_INTERVAL};
 
@@ -407,13 +399,10 @@ fn generate_rsa_key() -> Result<(String, PrivateKeyDer), KeyManagerError> {
 }
 
 #[cfg(test)]
-#[path = "keys_tests.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "keys_rotation_tests.rs"]
 mod rotation_tests;
 
 #[cfg(test)]
-#[path = "keys_revocation_tests.rs"]
 mod revocation_tests;

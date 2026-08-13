@@ -273,5 +273,5 @@ pub(crate) fn quote_literal(value: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "db_roles_tests.rs"]
+#[path = "roles_tests.rs"]
 mod tests;

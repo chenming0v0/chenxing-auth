@@ -4,19 +4,15 @@ use crate::sqlx::{PgPool, PgPoolOptions};
 
 use crate::config::Config;
 
-#[path = "db_audit_boundary.rs"]
 mod audit_boundary;
-#[path = "db_migrate.rs"]
-mod migrate_plan;
-#[path = "db_pool.rs"]
+mod migrate;
 mod pool;
-#[path = "db_roles.rs"]
 mod roles;
 
 pub use audit_boundary::{
     AuditBoundaryError, AuditPrivileges, AuditRoleSeparation, verify_audit_append_only_boundary,
 };
-pub use migrate_plan::{
+pub use migrate::{
     AUDIT_ROLE_SEPARATION_ENV, MANAGE_RUNTIME_PASSWORD_ENV, MIGRATION_DATABASE_URL_ENV,
     MigrationPlan, MigrationPlanError,
 };
@@ -198,7 +194,7 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
         1,
         Cow::Borrowed("current schema baseline"),
         MigrationType::Simple,
-        normalize_migration_sql(include_str!("../migrations/0001_initial.sql")),
+        normalize_migration_sql(include_str!("../../migrations/0001_initial.sql")),
         false,
     )];
 

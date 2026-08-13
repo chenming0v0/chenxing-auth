@@ -177,5 +177,4 @@ fn remove_orphaned_records(
 }
 
 #[cfg(test)]
-#[path = "keys_retirement_tests.rs"]
 mod tests;

@@ -4,29 +4,20 @@ use thiserror::Error;
 
 use crate::clients::domain::ClientRegistrationLimits;
 
-#[path = "config_admin.rs"]
-mod config_admin;
-#[path = "config_audit.rs"]
-mod config_audit;
-#[path = "config_construction.rs"]
-mod config_construction;
-#[path = "config_issuer.rs"]
-mod config_issuer;
-#[path = "config_limit_bounds.rs"]
-mod config_limit_bounds;
-#[path = "config_limits.rs"]
-mod config_limits;
-#[path = "config_parsing.rs"]
-mod config_parsing;
-#[path = "config_proxy.rs"]
-mod config_proxy;
-#[path = "config_security.rs"]
-mod config_security;
+mod admin;
+mod audit;
+mod construction;
+mod issuer;
+mod limit_bounds;
+mod limits;
+mod parsing;
+mod proxy;
+mod security;
 
-pub use config_issuer::normalize_issuer_url;
+pub use issuer::normalize_issuer_url;
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
-// 会话配置上界常量 `MAX_SESSION_*` 统一来自 config_security（#365 政策封顶），
+// 会话配置上界常量 `MAX_SESSION_*` 统一来自 security（#365 政策封顶），
 // 领域层另有 `crate::sessions::domain::MAX_SESSION_TTL_SECONDS`（#363 运行期 fail-closed
 // 边界，表示 OffsetDateTime 可表示范围），二者不在此处重复导出。
 pub use crate::sessions::domain::{
@@ -35,29 +26,29 @@ pub use crate::sessions::domain::{
 
 const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 30;
 
-pub use config_audit::AuditRetentionConfig;
+pub use audit::AuditRetentionConfig;
 // 上界常量必须公开可达 `crate::config::MAX_*`：`for_each_security_limit!` 用绝对路径
 // 引用它们，才能在 config 之外（settings）的调用点正确解析。
-pub(crate) use config_limit_bounds::for_each_security_limit;
-pub use config_limit_bounds::{
+pub(crate) use limit_bounds::for_each_security_limit;
+pub use limit_bounds::{
     MAX_ACCOUNT_FAILURE_LIMIT, MAX_AUTH_FAILURE_WINDOW_SECONDS, MAX_AUTHORIZATION_CODE_TTL_SECONDS,
     MAX_EXTERNAL_LOGIN_STATE_MAX_PENDING, MAX_EXTERNAL_LOGIN_STATE_RATE_LIMIT,
     MAX_EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS, MAX_EXTERNAL_LOGIN_STATE_TTL_SECONDS,
     MAX_IP_FAILURE_LIMIT, MAX_PENDING_REQUEST_TTL_SECONDS, MAX_PENDING_REQUESTS_GLOBAL,
     MAX_PENDING_REQUESTS_PER_CLIENT, MAX_TOTP_TICKET_FAILURE_LIMIT, MAX_UNAUTHENTICATED_SOURCE_QPS,
 };
-pub use config_limits::SecurityLimits;
-pub use config_parsing::{AuthEncryptionKey, AuthEncryptionKeyRing};
-pub use config_proxy::TrustedProxies;
-pub use config_security::{
+pub use limits::SecurityLimits;
+pub use parsing::{AuthEncryptionKey, AuthEncryptionKeyRing};
+pub use proxy::TrustedProxies;
+pub use security::{
     DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
     DEFAULT_TOKEN_TTL_SECONDS, MAX_SESSION_IDLE_TIMEOUT_SECONDS,
     MAX_SESSION_MAX_CONCURRENT_SESSIONS, MAX_SESSION_TTL_SECONDS,
 };
 
-// `config_limits` 的测试通过这个路径复用 key ring 解析器；非测试构建没有其他调用方。
+// `limits` 的测试通过这个路径复用 key ring 解析器；非测试构建没有其他调用方。
 #[cfg(test)]
-pub(crate) use config_parsing::parse_auth_encryption_key_ring_value;
+pub(crate) use parsing::parse_auth_encryption_key_ring_value;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConfigError {
@@ -217,5 +208,4 @@ fn debug_safe_url(value: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "config_tests.rs"]
 mod tests;

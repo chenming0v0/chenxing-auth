@@ -1,6 +1,6 @@
 use std::env;
 
-use super::config_construction::{parse_root_http_url, validate_cookie_security};
+use super::construction::{parse_root_http_url, validate_cookie_security};
 use super::{Config, ConfigError};
 
 impl Config {

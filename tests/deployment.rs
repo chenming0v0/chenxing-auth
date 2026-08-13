@@ -5,18 +5,18 @@ const CI_WORKFLOW: &str = include_str!("../.github/workflows/ci.yml");
 const INSTALL_SCRIPT: &str = include_str!("../deploy/install.sh");
 const REMOTE_INSTALL_SCRIPT: &str = include_str!("../install.sh");
 const PRODUCTION_COMPOSE: &str = include_str!("../docker-compose.prod.yml");
-const DB_MODULE: &str = include_str!("../src/db.rs");
-const DB_POOL_MODULE: &str = include_str!("../src/db_pool.rs");
-const DB_AUDIT_BOUNDARY_MODULE: &str = include_str!("../src/db_audit_boundary.rs");
-const DB_ROLES_MODULE: &str = include_str!("../src/db_roles.rs");
-const DB_MIGRATE_MODULE: &str = include_str!("../src/db_migrate.rs");
+const DB_MODULE: &str = include_str!("../src/db/mod.rs");
+const DB_POOL_MODULE: &str = include_str!("../src/db/pool.rs");
+const DB_AUDIT_BOUNDARY_MODULE: &str = include_str!("../src/db/audit_boundary.rs");
+const DB_ROLES_MODULE: &str = include_str!("../src/db/roles.rs");
+const DB_MIGRATE_MODULE: &str = include_str!("../src/db/migrate.rs");
 const ENV_EXAMPLE: &str = include_str!("../.env.example");
 const DOCKERFILE: &str = include_str!("../Dockerfile");
 const RUNTIME_DOCKERFILE: &str = include_str!("../Dockerfile.runtime");
 const DOCKERIGNORE: &str = include_str!("../.dockerignore");
 const STATIC_FILES_MODULE: &str = include_str!("../src/api/static_files.rs");
 const WEB_DIST_MODULE: &str = include_str!("../src/web_dist.rs");
-const CONFIG_CONSTRUCTION_MODULE: &str = include_str!("../src/config_construction.rs");
+const CONFIG_CONSTRUCTION_MODULE: &str = include_str!("../src/config/construction.rs");
 const STATE_MODULE: &str = include_str!("../src/state.rs");
 const DATABASE_BASELINE: &str = include_str!("../migrations/0001_initial.sql");
 
@@ -532,7 +532,7 @@ fn deployment_files_are_present_at_repository_root() {
 #[test]
 fn database_uses_one_transactional_current_baseline() {
     assert!(DB_MODULE.contains("current schema baseline"));
-    assert!(DB_MODULE.contains("include_str!(\"../migrations/0001_initial.sql\")"));
+    assert!(DB_MODULE.contains("include_str!(\"../../migrations/0001_initial.sql\")"));
     assert_eq!(
         DB_MODULE.matches("Migration::new(").count(),
         1,
@@ -540,7 +540,7 @@ fn database_uses_one_transactional_current_baseline() {
     );
     assert!(
         DB_MODULE.contains(
-            "normalize_migration_sql(include_str!(\"../migrations/0001_initial.sql\")),\n        false,"
+            "normalize_migration_sql(include_str!(\"../../migrations/0001_initial.sql\")),\n        false,"
         ),
         "the schema baseline must remain transactional"
     );

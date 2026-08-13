@@ -64,7 +64,7 @@ POST   /api/v1/admin/users/{user_id}/plan  给用户分配套餐 body: { "plan_i
 
 ## 1. 数据库基线 `migrations/0001_initial.sql`
 
-套餐表和 `basic` 种子已经写入当前完整基线。首次生产发布前，结构变化直接修改该基线并重建开发数据库；生产发布后新增迁移必须在 `src/db.rs` 的 `embedded_migrator()` 中显式注册，否则不会执行。
+套餐表和 `basic` 种子已经写入当前完整基线。首次生产发布前，结构变化直接修改该基线并重建开发数据库；生产发布后新增迁移必须在 `src/db/mod.rs` 的 `embedded_migrator()` 中显式注册，否则不会执行。
 
 最终基线中的 `plans` 表使用固定类型列保存四项限额，`users.plan_id` 以
 `ON DELETE SET NULL` 引用套餐，`plan_expires_at IS NULL` 表示永久有效。

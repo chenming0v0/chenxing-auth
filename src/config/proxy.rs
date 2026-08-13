@@ -134,5 +134,5 @@ pub(super) fn trusted_proxies_from_env() -> Result<TrustedProxies, ConfigError> 
 }
 
 #[cfg(test)]
-#[path = "config_proxy_tests.rs"]
+#[path = "proxy_tests.rs"]
 mod tests;

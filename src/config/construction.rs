@@ -4,18 +4,18 @@ use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 use crate::clients::domain::ClientRegistrationLimits;
 use crate::web_dist::{DEFAULT_WEB_DIST_DIR, WEB_DIST_DIR_ENV};
 
-use super::config_admin::admin_token_from_env;
-use super::config_audit::{AuditRetentionConfig, audit_retention_from_env};
-use super::config_limits::{
+use super::admin::admin_token_from_env;
+use super::audit::{AuditRetentionConfig, audit_retention_from_env};
+use super::limits::{
     SecurityLimits, client_registration_limits_from_env, parse_auth_limiter_failure_policy,
     parse_missing_source_ip_policy, security_limits_from_env,
 };
-use super::config_parsing::{
+use super::parsing::{
     AuthEncryptionKey, AuthEncryptionKeyRing, optional_u64, parse_auth_encryption_key_ring,
     parse_bool, parse_u16, parse_u64, required_env,
 };
-use super::config_proxy::{TrustedProxies, trusted_proxies_from_env};
-use super::config_security::{
+use super::proxy::{TrustedProxies, trusted_proxies_from_env};
+use super::security::{
     DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
     DEFAULT_TOKEN_TTL_SECONDS, validate_session_lifetimes, validate_token_and_key_lifetimes,
 };
@@ -482,5 +482,5 @@ fn is_loopback_http_issuer(issuer: &url::Url) -> bool {
 }
 
 #[cfg(test)]
-#[path = "config_construction_tests.rs"]
+#[path = "construction_tests.rs"]
 mod tests;

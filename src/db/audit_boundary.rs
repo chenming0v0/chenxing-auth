@@ -212,5 +212,5 @@ async fn has_function_privilege(
 }
 
 #[cfg(test)]
-#[path = "db_audit_boundary_tests.rs"]
+#[path = "audit_boundary_tests.rs"]
 mod tests;
