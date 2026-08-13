@@ -85,6 +85,10 @@ impl PendingRevocation {
 }
 
 /// 把吊销意图落盘。返回成功即表示这次吊销已提交，崩溃后恢复路径会把它做完。
+///
+/// 提交点之后，调用方必须让内存快照立即放弃被吊销的 key 的签发权，即使本次
+/// 收敛被瞬时 IO 失败打断——磁盘恢复只是时间问题，而内存继续签名会立刻产出
+/// 其余实例验不过的 token（Issue #315）。
 pub(super) fn record(directory: &Path, pending: &PendingRevocation) -> Result<(), KeyManagerError> {
     validate(pending)?;
     let contents = format!("{}\n{}\n", pending.revoked_key_id, pending.active_key_id);
