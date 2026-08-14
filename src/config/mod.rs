@@ -43,9 +43,9 @@ pub use limits::SecurityLimits;
 pub use parsing::{AuthEncryptionKey, AuthEncryptionKeyRing};
 pub use proxy::TrustedProxies;
 pub use security::{
-    DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
-    DEFAULT_TOKEN_TTL_SECONDS, MAX_SESSION_IDLE_TIMEOUT_SECONDS,
-    MAX_SESSION_MAX_CONCURRENT_SESSIONS, MAX_SESSION_TTL_SECONDS,
+    DEFAULT_KEY_ACTIVATION_DELAY_SECONDS, DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+    DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS, DEFAULT_TOKEN_TTL_SECONDS,
+    MAX_SESSION_IDLE_TIMEOUT_SECONDS, MAX_SESSION_MAX_CONCURRENT_SESSIONS, MAX_SESSION_TTL_SECONDS,
 };
 
 // `limits` 的测试通过这个路径复用 key ring 解析器；非测试构建没有其他调用方。
@@ -96,6 +96,11 @@ pub struct Config {
     /// 的实例不会在真实窗口结束前删除共享密钥文件。默认 3600（1 小时），上限是
     /// `KEY_ROTATION_GRACE_SECONDS`；单实例部署可设为 0。
     pub key_rotation_skew_allowance_seconds: u64,
+    /// 新公钥进入 JWKS 之后、接管签发之前的等待秒数（Issue #454）。
+    ///
+    /// 默认覆盖 JWKS `max-age=60` 与一次 5 秒跨实例同步。0 表示立即激活。
+    /// 已落盘的 `activate_at` 优先于这个值，改配置不会改写进行中的轮换。
+    pub key_activation_delay_seconds: u64,
     pub cookie_secure: bool,
     /// Development-only compatibility for the OAuth session header.
     pub oauth_session_header_enabled: bool,
@@ -160,6 +165,10 @@ impl fmt::Debug for Config {
             .field(
                 "key_rotation_skew_allowance_seconds",
                 &self.key_rotation_skew_allowance_seconds,
+            )
+            .field(
+                "key_activation_delay_seconds",
+                &self.key_activation_delay_seconds,
             )
             .field("cookie_secure", &self.cookie_secure)
             .field(

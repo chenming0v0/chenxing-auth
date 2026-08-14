@@ -52,6 +52,8 @@ impl Config {
             web_dist_dir: DEFAULT_WEB_DIST_DIR.to_owned(),
             key_rotation_grace_seconds: DEFAULT_KEY_ROTATION_GRACE_SECONDS,
             key_rotation_skew_allowance_seconds: DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
+            // 测试套件必须立即激活，否则每个 rotate() 都要等 65 秒。生产 from_env 默认 65。
+            key_activation_delay_seconds: 0,
             cookie_secure: true,
             oauth_session_header_enabled: true,
             session_token_response_enabled: false,

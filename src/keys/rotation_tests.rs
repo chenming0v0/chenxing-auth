@@ -12,7 +12,8 @@ use crate::oauth::token::{decode_access_token, issue_access_token};
 
 use super::prune::retirement_window_open_at;
 use super::{
-    DEFAULT_KEY_RETENTION_SECONDS, KeyManager, KeySyncOutcome, MINIMUM_KEY_SYNC_INTERVAL, prune,
+    DEFAULT_KEY_RETENTION_SECONDS, JWKS_CACHE_MAX_AGE_SECONDS, KeyManager, KeySyncOutcome,
+    MINIMUM_KEY_SYNC_INTERVAL, prune,
 };
 
 const TEST_NOW_UNIX_SECONDS: i64 = 1_700_000_000;
@@ -248,4 +249,159 @@ async fn disk_sync_worker_returns_immediately_without_a_key_directory() {
     )
     .await
     .expect("worker must not schedule ticks without a key directory");
+}
+
+#[test]
+fn jwks_cache_max_age_matches_the_activation_window_lower_bound() {
+    assert_eq!(JWKS_CACHE_MAX_AGE_SECONDS, 60);
+}
+
+/// Issue #454：新公钥必须先出现在 JWKS 里，签发权仍留在旧 key。
+#[tokio::test]
+async fn rotation_publishes_the_new_key_before_it_starts_signing() {
+    let delay = Duration::from_secs(65);
+    let manager = KeyManager::generate_with_activation_delay(delay).expect("key generation");
+    let old_key_id = manager.key_id();
+    let stale_jwks: std::collections::BTreeSet<String> = manager
+        .jwks()
+        .keys
+        .iter()
+        .filter_map(|key| key.common.key_id.clone())
+        .collect();
+    let now = test_now();
+
+    let rotation = manager.rotate_at(now).await.expect("publish rotation");
+
+    assert_ne!(rotation.key_id, old_key_id);
+    assert_eq!(
+        manager.key_id(),
+        old_key_id,
+        "must keep signing with the old key"
+    );
+    assert_eq!(manager.active_signing_key().key_id(), old_key_id);
+    assert_eq!(
+        manager.published_key_id().as_deref(),
+        Some(rotation.key_id.as_str())
+    );
+    assert!(
+        manager.verification_key_for(&rotation.key_id).is_some(),
+        "new kid must be in JWKS before it signs"
+    );
+    assert!(
+        !stale_jwks.contains(&rotation.key_id),
+        "a cache that still holds the pre-rotation JWKS must not already contain the new kid"
+    );
+    assert_eq!(manager.jwks().keys.len(), 2);
+}
+
+/// 窗口到期后才切换签发；旧公钥继续留在验证集合里。
+#[tokio::test]
+async fn published_key_starts_signing_only_after_the_activation_window() {
+    let delay = Duration::from_secs(65);
+    let manager = KeyManager::generate_with_activation_delay(delay).expect("key generation");
+    let old_key_id = manager.key_id();
+    let now = test_now();
+    let rotation = manager.rotate_at(now).await.expect("publish rotation");
+
+    assert!(
+        !manager
+            .activate_published_at(now + TimeDuration::seconds(64))
+            .await
+            .expect("not due yet")
+    );
+    assert_eq!(manager.key_id(), old_key_id);
+
+    assert!(
+        manager
+            .activate_published_at(now + TimeDuration::seconds(65))
+            .await
+            .expect("window elapsed")
+    );
+    assert_eq!(manager.key_id(), rotation.key_id);
+    assert!(manager.published_key_id().is_none());
+    assert!(
+        manager.verification_key_for(&old_key_id).is_some(),
+        "old public key stays in the verification window"
+    );
+}
+
+/// 第二实例即使以 delay=0 加载，也必须遵守盘上的 `activate_at`。
+#[tokio::test]
+async fn a_second_instance_sees_the_published_kid_before_it_signs() {
+    let directory = std::env::temp_dir().join(format!(
+        "chenxing-activation-second-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let delay = Duration::from_secs(65);
+    let first = KeyManager::load_or_generate_with_lifecycle(
+        &directory,
+        Duration::from_secs(DEFAULT_KEY_RETENTION_SECONDS),
+        Duration::ZERO,
+        delay,
+    )
+    .expect("first instance");
+    let old_key_id = first.key_id();
+    let stale_jwks: std::collections::BTreeSet<String> = first
+        .jwks()
+        .keys
+        .iter()
+        .filter_map(|key| key.common.key_id.clone())
+        .collect();
+    // 必须用真实时钟：第二实例加载走 SystemClock，盘上的 activate_at 得在未来。
+    let now = OffsetDateTime::now_utc();
+    let rotation = first
+        .rotate_at(now)
+        .await
+        .expect("publish on first instance");
+
+    let second = KeyManager::load_or_generate_with_lifecycle(
+        &directory,
+        Duration::from_secs(DEFAULT_KEY_RETENTION_SECONDS),
+        Duration::ZERO,
+        Duration::ZERO,
+    )
+    .expect("second instance");
+
+    assert_eq!(second.key_id(), old_key_id);
+    assert_eq!(
+        second.published_key_id().as_deref(),
+        Some(rotation.key_id.as_str())
+    );
+    assert!(
+        second.verification_key_for(&rotation.key_id).is_some(),
+        "second instance must serve the new public key before anyone signs with it"
+    );
+    assert!(
+        !stale_jwks.contains(&rotation.key_id),
+        "an RP still holding the old JWKS document does not yet have the new kid"
+    );
+
+    assert!(
+        first
+            .activate_published_at(now + TimeDuration::seconds(65))
+            .await
+            .expect("promote on first instance")
+    );
+    let reloaded = KeyManager::load_or_generate(&directory).expect("reload after promotion");
+    assert_eq!(reloaded.key_id(), rotation.key_id);
+    assert!(reloaded.verification_key_for(&old_key_id).is_some());
+
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+/// 窗口内再次 rotate 是幂等的：不另造一把从未签发的密钥。
+#[tokio::test]
+async fn rotate_during_the_activation_window_is_idempotent() {
+    let manager = KeyManager::generate_with_activation_delay(Duration::from_secs(65))
+        .expect("key generation");
+    let now = test_now();
+    let first = manager.rotate_at(now).await.expect("first publish");
+    let second = manager.rotate_at(now).await.expect("second publish");
+
+    assert_eq!(first.key_id, second.key_id);
+    assert_eq!(manager.jwks().keys.len(), 2);
+    assert_eq!(
+        manager.published_key_id().as_deref(),
+        Some(first.key_id.as_str())
+    );
 }

@@ -16,8 +16,9 @@ use super::parsing::{
 };
 use super::proxy::{TrustedProxies, trusted_proxies_from_env};
 use super::security::{
-    DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
-    DEFAULT_TOKEN_TTL_SECONDS, validate_session_lifetimes, validate_token_and_key_lifetimes,
+    DEFAULT_KEY_ACTIVATION_DELAY_SECONDS, DEFAULT_KEY_ROTATION_GRACE_SECONDS,
+    DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS, DEFAULT_TOKEN_TTL_SECONDS,
+    validate_activation_delay, validate_session_lifetimes, validate_token_and_key_lifetimes,
 };
 use super::{Config, ConfigError, DEFAULT_REQUEST_TIMEOUT_SECONDS, normalize_issuer_url};
 
@@ -34,6 +35,7 @@ struct ConfigValues {
     web_dist_dir: String,
     key_rotation_grace_seconds: u64,
     key_rotation_skew_allowance_seconds: u64,
+    key_activation_delay_seconds: u64,
     cookie_secure: bool,
     oauth_session_header_enabled: bool,
     session_token_response_enabled: bool,
@@ -109,6 +111,11 @@ impl Config {
             "KEY_ROTATION_SKEW_ALLOWANCE_SECONDS",
             &key_rotation_skew_allowance_raw,
         )?;
+        // Issue #454：新公钥先进入 JWKS，等缓存与跨实例同步窗口过完再签发。
+        let key_activation_delay_raw = env::var("KEY_ACTIVATION_DELAY_SECONDS")
+            .unwrap_or_else(|_| DEFAULT_KEY_ACTIVATION_DELAY_SECONDS.to_string());
+        let key_activation_delay_seconds =
+            parse_u64("KEY_ACTIVATION_DELAY_SECONDS", &key_activation_delay_raw)?;
         let cookie_secure = parse_bool(
             "COOKIE_SECURE",
             env::var("COOKIE_SECURE").ok().as_deref().unwrap_or("true"),
@@ -192,6 +199,7 @@ impl Config {
             web_dist_dir,
             key_rotation_grace_seconds,
             key_rotation_skew_allowance_seconds,
+            key_activation_delay_seconds,
             cookie_secure,
             oauth_session_header_enabled,
             session_token_response_enabled,
@@ -231,6 +239,7 @@ impl Config {
             web_dist_dir,
             key_rotation_grace_seconds,
             key_rotation_skew_allowance_seconds,
+            key_activation_delay_seconds,
             cookie_secure,
             oauth_session_header_enabled,
             session_token_response_enabled,
@@ -310,6 +319,7 @@ impl Config {
             access_token_ttl_seconds,
             id_token_ttl_seconds,
         )?;
+        validate_activation_delay(key_activation_delay_seconds, key_rotation_grace_seconds)?;
         if webauthn_rp_id.trim().is_empty() {
             return Err(ConfigError::InvalidValue("WEBAUTHN_RP_ID"));
         }
@@ -359,6 +369,7 @@ impl Config {
             web_dist_dir,
             key_rotation_grace_seconds,
             key_rotation_skew_allowance_seconds,
+            key_activation_delay_seconds,
             cookie_secure,
             oauth_session_header_enabled,
             session_token_response_enabled,

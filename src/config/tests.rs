@@ -62,6 +62,8 @@ fn test_constructors_default_to_safe_values() {
         config.key_rotation_skew_allowance_seconds,
         DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS
     );
+    // 测试构造立即激活，避免套件被 65 秒传播窗口拖死。生产 from_env 默认 65。
+    assert_eq!(config.key_activation_delay_seconds, 0);
 }
 
 #[test]

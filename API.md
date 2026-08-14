@@ -417,7 +417,10 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 
 ### `POST /api/v1/admin/keys/rotate`
 
-轮换 RS256 签名密钥，需要 `RotateKeys`。响应：
+轮换 RS256 签名密钥，需要 `RotateKeys`。新公钥立即进入 JWKS；签发权仍留在旧
+active key，直到 `KEY_ACTIVATION_DELAY_SECONDS`（默认 65，覆盖 JWKS
+`max-age=60` 与一次跨实例同步）结束。响应里的 `key_id` 是新发布的密钥，
+窗口未到时它还不是当前签名密钥。响应：
 
 ```json
 {"key_id":"...","published_key_count":2}

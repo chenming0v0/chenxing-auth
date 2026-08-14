@@ -1,0 +1,220 @@
+//! 已发布、尚未签发的轮换密钥（Issue #454）。
+//!
+//! 轮换拆成两个持久化阶段：先把新公钥写入 JWKS（published），等到记录里的
+//! `activate_at` 之后才把签发权切过去（active）。截止时刻写在独立文件里，
+//! 重启和多实例恢复看的是同一份时间，而不是进程内 sleep。
+//!
+//! 记录文件刻意不复用 `pending-rotation.record`：那份 journal 仍只负责
+//! “材料落盘 / 回滚”的崩溃窗口，格式保持两行。旧二进制不认识本文件，
+//! 回滚时会忽略它并继续用旧 active 签发，不会把 3 行记录判成损坏后清空
+//! 整个 keyset。
+
+use std::{fs, io::Read, path::Path, time::Duration};
+
+use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
+
+use crate::key_storage::{atomic_write, remove_secure_file, secure_existing_file};
+
+use super::{KeyManager, KeyManagerError, persistence};
+
+/// JWKS 公开缓存的 `max-age`（秒）。传播窗口下界必须覆盖它，否则 RP 仍拿着
+/// 旧 JWKS 时新私钥已经开始签发。
+pub const JWKS_CACHE_MAX_AGE_SECONDS: u64 = 60;
+
+/// 默认激活等待：JWKS `max-age` + 一次跨实例同步周期。
+pub const DEFAULT_KEY_ACTIVATION_DELAY_SECONDS: u64 =
+    JWKS_CACHE_MAX_AGE_SECONDS + super::DEFAULT_KEY_SYNC_INTERVAL.as_secs();
+
+/// 激活等待上界（秒）。再长只会把轮换本身拖成拒绝服务，不能修复缓存。
+pub const MAX_KEY_ACTIVATION_DELAY_SECONDS: u64 = 300;
+
+const PENDING_ACTIVATION_FILE: &str = "pending-activation.record";
+const MAX_PENDING_RECORD_BYTES: u64 = 1024;
+
+/// 一份已发布、等待 `activate_at` 才接管签发的密钥。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PendingPublishedKey {
+    pub key_id: String,
+    pub previous_key_id: String,
+    pub activate_at: OffsetDateTime,
+}
+
+impl PendingPublishedKey {
+    pub(super) fn new(
+        key_id: String,
+        previous_key_id: String,
+        activate_at: OffsetDateTime,
+    ) -> Self {
+        Self {
+            key_id,
+            previous_key_id,
+            activate_at,
+        }
+    }
+
+    pub(super) fn is_due(&self, now: OffsetDateTime) -> bool {
+        now >= self.activate_at
+    }
+}
+
+/// `now + delay`；无法表示的 delay 退回 `now`（立即到期），由配置上界兜住。
+pub(super) fn activate_at(now: OffsetDateTime, delay: Duration) -> OffsetDateTime {
+    TimeDuration::try_from(delay)
+        .ok()
+        .and_then(|delay| now.checked_add(delay))
+        .unwrap_or(now)
+}
+
+/// 把“已发布、待激活”落盘。返回成功即表示新公钥必须进入 JWKS，签发权仍留在旧 key。
+pub(super) fn record(
+    directory: &Path,
+    pending: &PendingPublishedKey,
+) -> Result<(), KeyManagerError> {
+    persistence::validate_key_id(&pending.key_id)?;
+    persistence::validate_key_id(&pending.previous_key_id)?;
+    if pending.key_id == pending.previous_key_id {
+        return Err(KeyManagerError::InvalidKeyId);
+    }
+    let activate_at = pending
+        .activate_at
+        .format(&Rfc3339)
+        .map_err(|_| KeyManagerError::InvalidKeyId)?;
+    let contents = format!(
+        "{}\n{}\n{activate_at}\n",
+        pending.key_id, pending.previous_key_id
+    );
+    atomic_write(
+        &directory.join(PENDING_ACTIVATION_FILE),
+        contents.as_bytes(),
+        true,
+    )?;
+    Ok(())
+}
+
+pub(super) fn read(directory: &Path) -> Result<Option<PendingPublishedKey>, KeyManagerError> {
+    let path = directory.join(PENDING_ACTIVATION_FILE);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_file() {
+        return Err(KeyManagerError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "invalid secure storage path",
+        )));
+    }
+    secure_existing_file(&path)?;
+    if metadata.len() > MAX_PENDING_RECORD_BYTES {
+        return Err(KeyManagerError::InvalidKeyId);
+    }
+    let mut contents = Vec::new();
+    fs::File::open(&path)?
+        .take(MAX_PENDING_RECORD_BYTES + 1)
+        .read_to_end(&mut contents)?;
+    parse(&contents)
+}
+
+pub(super) fn clear(directory: &Path) -> Result<(), KeyManagerError> {
+    match remove_secure_file(&directory.join(PENDING_ACTIVATION_FILE)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// 窗口已到就把签发权切到已发布的 key；未到则原样留下记录。
+///
+/// 材料缺失时丢弃记录：没有公钥可发布，签发权绝不能切过去。
+pub(super) fn recover(directory: &Path, now: OffsetDateTime) -> Result<(), KeyManagerError> {
+    let pending = match read(directory) {
+        Ok(Some(pending)) => pending,
+        Ok(None) => return Ok(()),
+        Err(KeyManagerError::InvalidKeyId) => {
+            tracing::error!(
+                "discarding a corrupt pending-activation record; \
+                 the current active signing key is left unchanged"
+            );
+            clear(directory)?;
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+
+    if !persistence::has_key_material(directory, &pending.key_id)? {
+        tracing::warn!(
+            key_id = %pending.key_id,
+            "pending published signing key material is missing; discarding the activation record"
+        );
+        return clear(directory);
+    }
+    if !pending.is_due(now) {
+        return Ok(());
+    }
+    persistence::persist_active_key_id(directory, &pending.key_id)?;
+    clear(directory)
+}
+
+fn parse(contents: &[u8]) -> Result<Option<PendingPublishedKey>, KeyManagerError> {
+    let Ok(contents) = std::str::from_utf8(contents) else {
+        return Err(KeyManagerError::InvalidKeyId);
+    };
+    let mut lines = contents.lines();
+    let key_id = lines.next().unwrap_or_default().trim();
+    let previous_key_id = lines.next().unwrap_or_default().trim();
+    let activate_at = lines.next().unwrap_or_default().trim();
+    if lines.next().is_some() {
+        return Err(KeyManagerError::InvalidKeyId);
+    }
+    persistence::validate_key_id(key_id)?;
+    persistence::validate_key_id(previous_key_id)?;
+    if key_id == previous_key_id {
+        return Err(KeyManagerError::InvalidKeyId);
+    }
+    let activate_at =
+        OffsetDateTime::parse(activate_at, &Rfc3339).map_err(|_| KeyManagerError::InvalidKeyId)?;
+    Ok(Some(PendingPublishedKey::new(
+        key_id.to_owned(),
+        previous_key_id.to_owned(),
+        activate_at,
+    )))
+}
+
+impl KeyManager {
+    /// 当前已发布、尚未接管签发的 `kid`。没有 pending 轮换时返回 `None`。
+    pub fn published_key_id(&self) -> Option<String> {
+        self.read_state()
+            .pending
+            .as_ref()
+            .map(|pending| pending.key_id.clone())
+    }
+
+    /// 若 pending 轮换的 `activate_at` 已到，把签发权切过去。
+    ///
+    /// 磁盘模式走同一条加载恢复路径，因此重启、第二实例和本调用看到的是同一份
+    /// 截止时刻。返回 `true` 表示本次确实完成了激活。
+    pub async fn activate_published_at(
+        &self,
+        now: OffsetDateTime,
+    ) -> Result<bool, KeyManagerError> {
+        let manager = self.clone();
+        tokio::task::spawn_blocking(move || activate_published_blocking(&manager, now))
+            .await
+            .map_err(|_| KeyManagerError::KeyWorker)?
+    }
+}
+
+pub(super) fn activate_published_blocking(
+    manager: &KeyManager,
+    now: OffsetDateTime,
+) -> Result<bool, KeyManagerError> {
+    let _rotation_guard = manager
+        .rotation_lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    super::rotation::promote_if_due(manager, now)
+}
+
+#[cfg(test)]
+#[path = "activation_tests.rs"]
+mod tests;

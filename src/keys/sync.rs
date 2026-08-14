@@ -10,9 +10,10 @@
 //!   绝不能把锁竞争变成请求失败（Issue #257）。
 //!
 //! 多实例语义：各实例的内存快照最迟在一个同步周期后收敛到同一份磁盘事实。
-//! 同步间隔必须远小于 `key_rotation_grace_seconds`（旧公钥保留窗口），否则
-//! 别的实例可能仍在用已被回收的私钥签名。吊销同理：非本实例执行的吊销，
-//! 最长在一个同步周期后才在本实例生效。
+//! 轮换先发布公钥再激活，因此同步间隔必须短于 `KEY_ACTIVATION_DELAY_SECONDS`，
+//! 也必须远小于 `key_rotation_grace_seconds`（旧公钥保留窗口），否则别的实例
+//! 可能仍在用已被回收的私钥签名。吊销同理：非本实例执行的吊销，最长在一个
+//! 同步周期后才在本实例生效。
 
 use std::time::Duration;
 
@@ -21,7 +22,7 @@ use tokio::time::sleep;
 use crate::clock::{Clock, SystemClock};
 use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 
-use super::{KeyManager, KeyManagerError, build_key_state, persistence};
+use super::{KeyManager, KeyManagerError, activation, build_key_state, persistence};
 
 /// 后台同步周期。
 ///
@@ -63,12 +64,13 @@ impl KeyManager {
     /// 目录锁必须持有到内存写入完成：轮换在同一把锁内先写文件再写内存，
     /// 提前释放会让本函数用锁外读到的旧快照覆盖掉刚完成的轮换结果。
     pub fn sync_from_disk_blocking(&self) -> Result<KeySyncOutcome, KeyManagerError> {
-        let (directory, retention, skew_allowance) = {
+        let (directory, retention, skew_allowance, activation_delay) = {
             let state = self.read_state();
             (
                 state.directory.clone(),
                 state.retention,
                 state.skew_allowance,
+                state.activation_delay,
             )
         };
         let Some(directory) = directory else {
@@ -83,11 +85,14 @@ impl KeyManager {
         let now = SystemClock.now();
         let (active_key_id, key_files) =
             persistence::load_materials(&directory, retention, skew_allowance, now, false)?;
+        let pending = activation::read(&directory)?;
         // 读锁绑定成独立语句后立即释放：下面的 `write_state` 是同一线程再取写锁，
         // 读锁若还活着就是自死锁。
-        let unchanged = self
-            .read_state()
-            .matches_disk_snapshot(&active_key_id, &key_files);
+        let unchanged = self.read_state().matches_disk_snapshot(
+            &active_key_id,
+            &key_files,
+            pending.as_ref().map(|pending| pending.key_id.as_str()),
+        );
         if unchanged {
             return Ok(KeySyncOutcome::Unchanged);
         }
@@ -95,8 +100,10 @@ impl KeyManager {
             Some(directory),
             retention,
             skew_allowance,
+            activation_delay,
             active_key_id,
             key_files,
+            pending,
         )?;
         *self.write_state() = next_state;
         Ok(KeySyncOutcome::Updated)

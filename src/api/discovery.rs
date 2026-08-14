@@ -38,8 +38,9 @@ fn apply_public_cors(request_headers: &HeaderMap, response: &mut Response) {
 /// JWKS 缓存策略：公开缓存 60 秒，过期后必须重新验证。
 ///
 /// `must-revalidate` 阻止缓存在回源失败时返回陈旧 JWKS——陈旧公钥会让新签发的
-/// 令牌验签失败。60 秒远短于密钥保留窗口（默认 7 天），轮换后最迟 60 秒全网
-/// 看到新公钥；同时足够长，能挡住 RP 对 JWKS 的高频轮询。
+/// 令牌验签失败。60 秒远短于密钥保留窗口（默认 7 天）；轮换必须先把新公钥放进
+/// JWKS，再等这个缓存窗口（外加一次跨实例同步）结束后才切换签发，见
+/// `KEY_ACTIVATION_DELAY_SECONDS` 与 `keys::JWKS_CACHE_MAX_AGE_SECONDS`。
 const JWKS_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
 
 /// 为 JWKS 响应体计算确定性 ETag（RFC 7232 强 ETag）。

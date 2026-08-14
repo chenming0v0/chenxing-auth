@@ -30,8 +30,10 @@ fn committed_but_unconverged_revocation_publishes_the_planned_snapshot() {
         None,
         retention,
         Duration::ZERO,
+        Duration::ZERO,
         replacement.clone(),
         BTreeMap::from([(replacement.clone(), key_material(replacement_der, now))]),
+        None,
     )
     .expect("planned snapshot must be constructible");
 
@@ -69,8 +71,10 @@ fn converged_revocation_publishes_the_actual_disk_snapshot() {
         None,
         retention,
         Duration::ZERO,
+        Duration::ZERO,
         replacement.clone(),
         BTreeMap::from([(replacement.clone(), key_material(replacement_der, now))]),
+        None,
     )
     .expect("planned snapshot must be constructible");
     let disk_materials = BTreeMap::from([(fallback.clone(), key_material(fallback_der, now))]);
