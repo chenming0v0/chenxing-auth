@@ -13,6 +13,7 @@ pub mod handlers;
 pub mod issuer_settings_handlers;
 pub mod key_handlers;
 pub mod management_handlers;
+pub mod passkey_recovery;
 pub mod plan_handlers;
 pub mod provider_handlers;
 pub mod provider_web_handlers;

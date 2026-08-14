@@ -1125,6 +1125,45 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/admin/users/{user_id}/auth-factors/passkey:
+    delete:
+      tags: [Admin Auth Factors]
+      summary: 重置账号的全部 Passkey 凭据
+      description: |
+        删除该账号的全部 Passkey 凭据并撤销它的全部会话与已签发 Refresh Token。
+        Passkey-only 账号回到「无因子」状态，下次密码登录返回 `factor_setup_required`，
+        由用户重新完成因子绑定。仍绑定 TOTP 的账号保留 TOTP。
+
+        这是 Passkey-only 账号丢失全部认证器后的受控恢复路径。末位 Owner 丢失
+        全部 Passkey 时无法签发新的管理 Session：必须使用系统 `ADMIN_TOKEN`
+        Bearer 通道。该通道不依赖现有 Passkey 或用户 Session，避免形成闭环。
+
+        权限：Owner 专属的 `manage_auth_factors`，**不是** `manage_users`。
+        系统 `ADMIN_TOKEN` 权限等价于 Owner，无用户 ID，豁免浏览器 CSRF。
+        浏览器 Session 写操作必须同时携带 HttpOnly Session Cookie、CSRF Cookie
+        和 X-CSRF-Token。
+
+        响应只包含删除条数，永不返回 credential_id、公钥或 counter。
+
+        错误码：
+        - 400：csrf_invalid
+        - 403：admin_forbidden
+        - 404：user_not_found、passkey_factor_not_found
+      operationId: adminResetUserPasskeyFactor
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '200':
+          description: 已删除全部 Passkey 凭据并撤销该账号的全部会话
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeyFactorResetResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/admin/auth-factors/key-health:
     get:
       tags: [Admin Auth Factors]
@@ -1550,7 +1589,10 @@ paths:
         - sessionCookie: []
       responses:
         '200':
-          description: Passkey 设置
+          description: Passkey 设置。已持久化行无法用于热路径时带 X-Chenxing-Setting-Diagnostic。
+          headers:
+            X-Chenxing-Setting-Diagnostic:
+              $ref: '#/components/headers/SettingDiagnostic'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PasskeySetting' }
@@ -1596,7 +1638,10 @@ paths:
         - sessionCookie: []
       responses:
         '200':
-          description: 邮箱域名策略
+          description: 邮箱域名策略。已持久化行无法用于热路径时带 X-Chenxing-Setting-Diagnostic。
+          headers:
+            X-Chenxing-Setting-Diagnostic:
+              $ref: '#/components/headers/SettingDiagnostic'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EmailPolicySetting' }
@@ -1684,7 +1729,10 @@ paths:
         - sessionCookie: []
       responses:
         '200':
-          description: 当前安全限流阈值；无记录时返回默认值
+          description: 当前安全限流阈值；无记录时返回默认值。已持久化行无法用于热路径时带 X-Chenxing-Setting-Diagnostic。
+          headers:
+            X-Chenxing-Setting-Diagnostic:
+              $ref: '#/components/headers/SettingDiagnostic'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SecurityLimitsSetting' }
@@ -1881,6 +1929,12 @@ components:
     StatusFilter: { name: status, in: query, required: false, schema: { type: string, enum: [active, disabled] } }
   headers:
     SetCookie: { description: Session、CSRF 或 pending-login Cookie, schema: { type: string } }
+    SettingDiagnostic:
+      description: |
+        仅在已持久化设置无法用于热路径时出现。值为 `invalid`（取值越界或校验失败）
+        或 `corrupt`（JSON 不可读）。有效值和未配置行不返回此头。
+        响应头与 JSON body 都不包含配置原文、域名或阈值。
+      schema: { type: string, enum: [invalid, corrupt] }
   responses:
     BadRequest: { description: 请求错误, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Unauthorized: { description: 未认证或凭据无效, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
@@ -2286,6 +2340,13 @@ components:
           type: string
           enum: [current, rotatable, legacy, unavailable]
           description: 删除前密文的可读状态。unavailable 表示这次重置解救了一个被密钥退役锁死的账号。
+        credentials_revoked: { type: boolean, description: 重置同时撤销了该账号的全部会话与 Refresh Token，固定为 true }
+    PasskeyFactorResetResponse:
+      type: object
+      required: [user_id, removed, credentials_revoked]
+      properties:
+        user_id: { type: integer, format: int64, minimum: 1 }
+        removed: { type: integer, format: int64, minimum: 1, description: 本次清掉的 Passkey 凭据条数 }
         credentials_revoked: { type: boolean, description: 重置同时撤销了该账号的全部会话与 Refresh Token，固定为 true }
     AuthFactorKeyHealthResponse:
       type: object
@@ -2777,17 +2838,17 @@ components:
         client_secret: { type: string, format: password }
     Plan:
       type: object
-      description: 套餐定义；monthly_auth_limit / max_qps 为 null 表示无限 / 不限
+      description: 套餐定义；monthly_auth_limit / max_qps 为 null 表示无限 / 不限。日授权 0–1000000，月授权 0–31000000，QPS 1–10000。
       required: [id, code, name, oauth_clients_limit, daily_auth_limit, monthly_auth_limit, max_qps, is_default, status, created_at, updated_at, assigned_users]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         code: { type: string, maxLength: 64, description: 小写字母、数字、下划线或连字符，服务端自动归一化 }
         name: { type: string, maxLength: 128 }
         description: { type: string, nullable: true, maxLength: 512 }
-        oauth_clients_limit: { type: integer, format: int32, minimum: 0 }
-        daily_auth_limit: { type: integer, format: int64, minimum: 0 }
-        monthly_auth_limit: { type: integer, format: int64, nullable: true, minimum: 0 }
-        max_qps: { type: integer, format: int32, nullable: true, minimum: 1 }
+        oauth_clients_limit: { type: integer, format: int32, minimum: 0, maximum: 1000 }
+        daily_auth_limit: { type: integer, format: int64, minimum: 0, maximum: 1000000 }
+        monthly_auth_limit: { type: integer, format: int64, nullable: true, minimum: 0, maximum: 31000000 }
+        max_qps: { type: integer, format: int32, nullable: true, minimum: 1, maximum: 10000 }
         is_default: { type: boolean }
         status: { type: string, enum: [active, archived] }
         created_at: { type: string, format: date-time }
@@ -2802,9 +2863,9 @@ components:
         name: { type: string, maxLength: 128 }
         description: { type: string, nullable: true, maxLength: 512 }
         oauth_clients_limit: { type: integer, format: int32, minimum: 0, maximum: 1000 }
-        daily_auth_limit: { type: integer, format: int64, minimum: 0 }
-        monthly_auth_limit: { type: integer, format: int64, nullable: true, minimum: 0 }
-        max_qps: { type: integer, format: int32, nullable: true, minimum: 1 }
+        daily_auth_limit: { type: integer, format: int64, minimum: 0, maximum: 1000000 }
+        monthly_auth_limit: { type: integer, format: int64, nullable: true, minimum: 0, maximum: 31000000 }
+        max_qps: { type: integer, format: int32, nullable: true, minimum: 1, maximum: 10000 }
         is_default: { type: boolean }
     AssignPlanInput:
       type: object

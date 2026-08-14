@@ -288,3 +288,23 @@ fn legacy_key_without_active_key_id_gets_a_generated_key_id() {
     assert_eq!(read_active_key_id(&directory), active_key_id);
     assert!(!directory.legacy_key_file().exists());
 }
+
+/// Issue #457：active kid 被换成符号链接时必须 fail-closed，不能跟过去读攻击者文件。
+#[cfg(unix)]
+#[test]
+fn load_rejects_symlink_active_key_id() {
+    use std::os::unix::fs::symlink;
+
+    let directory = TempKeyDir::new("symlink-kid");
+    write_key_file(&directory, "cx-real", b"material");
+    write_active_key_id(&directory, "cx-real");
+
+    let kid = directory.active_key_id_file();
+    fs::remove_file(&kid).expect("remove kid");
+    let decoy = directory.path().join("decoy.kid");
+    fs::write(&decoy, "cx-attacker").expect("decoy");
+    symlink(&decoy, &kid).expect("plant symlink kid");
+
+    let error = load(&directory, false).expect_err("symlink kid must fail closed");
+    assert!(matches!(error, KeyManagerError::Io(_)));
+}

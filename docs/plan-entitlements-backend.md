@@ -75,12 +75,12 @@ POST   /api/v1/admin/users/{user_id}/plan  给用户分配套餐 body: { "plan_i
 
 > 决策：用**固定列**存限额（不是 JSONB），因为限额种类是固定的四项，类型安全、SQL 好写。若以后要支持任意 key 的权益，再加一张 `plan_entitlements(plan_id, key, value)` 附表，不影响现有列。
 
-当前基线已经直接包含 sessions、套餐默认值约束和所有后续结构。`migrations/checksums.sha256` 只校验磁盘上的当前 SQL 文件；已应用旧迁移链的数据库不能通过复用版本号或改写 checksum 伪装成新基线。
+当前基线已经直接包含 sessions、套餐默认值约束和所有后续结构。`migrations/0003_plan_quota_bounds.sql` 为日/月授权和 QPS 增加业务上界 CHECK；存量过大值会被封顶，负值/非正 QPS 会让迁移失败而不是改写成 0。`migrations/checksums.sha256` 只校验磁盘上的当前 SQL 文件；已应用旧迁移链的数据库不能通过复用版本号或改写 checksum 伪装成新基线。
 
 ## 2. 新模块 `src/plans/`
 
 照 `src/clients/`、`src/oauth/providers/` 的分层写：
-- `domain.rs` — `Plan` 结构体、`PlanInput`/`ValidatedPlanInput`、校验（name 非空、code 唯一格式、limit >= 0、default 唯一）、`PlanError`。
+- `domain.rs` — `Plan` 结构体、`PlanInput`/`ValidatedPlanInput`、校验（name 非空、code 唯一格式、`oauth_clients_limit` 0–1000、`daily_auth_limit` 0–1_000_000、`monthly_auth_limit` 0–31_000_000 或 null、`max_qps` 1–10_000 或 null）、`PlanError`。读侧不得把负值 clamp 成 0。
 - `repository.rs` — `list_plans`、`find_by_id`、`find_default`、`find_for_user(user_id)`（JOIN users.plan_id，取不到就回退 default）、`insert`、`update`、`set_status`、`assign_to_user`。注意 `is_default` 切换要在事务里先清掉旧默认（配合上面的唯一索引，用 `pg_advisory_xact_lock` 或先 `UPDATE plans SET is_default=FALSE`）。
 - `service.rs` — `PlanService { pool }`，包住 repository，暴露 `effective_plan_for_user(user_id) -> Plan`（含过期回退：`plan_expires_at` 过了就当默认套餐）。
 - 在 `src/lib.rs` 加 `pub mod plans;`。

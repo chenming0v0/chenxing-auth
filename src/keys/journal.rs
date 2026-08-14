@@ -24,17 +24,18 @@
 //! 出口是丢弃整组旧材料并生成新 active key。现有 token 会失效，但可能已吊销的 key
 //! 不会被恢复为 active。
 
-use std::{fs, io::Read, path::Path};
+use std::path::Path;
 
-use crate::key_storage::{atomic_write, remove_secure_file, secure_existing_file};
+use crate::key_storage::{atomic_write, read_secure_file_limited, remove_secure_file};
 
 use super::{KeyManagerError, activation, persistence, retirement};
 
 /// 吊销意图记录文件。
 ///
-/// 名字刻意落在两个既有命名空间之外：不带 `atomic_write` 的 `.chenxing-key-`
-/// 前缀，因此不会被 `cleanup_stale_temporary_files` 当成中断的半成品删掉；
-/// 也不带 `rs256-` 前缀，因此不会被 `discover_key_files` 当成密钥材料读进来。
+/// 名字刻意落在既有命名空间之外：不带 `atomic_write` 的临时文件前缀
+/// （`.chenxing-key-` / `.chenxing-secret-`），因此不会被
+/// `cleanup_stale_temporary_files` 当成中断的半成品删掉；也不带 `rs256-`
+/// 前缀，因此不会被 `discover_key_files` 当成密钥材料读进来。
 const PENDING_REVOCATION_FILE: &str = "pending-revocation.record";
 /// 轮换意图记录文件，命名约束与吊销记录相同（Issue #318）。
 const PENDING_ROTATION_FILE: &str = "pending-rotation.record";
@@ -172,25 +173,14 @@ fn read_record<T>(
     oversized: impl FnOnce() -> T,
 ) -> Result<Option<T>, KeyManagerError> {
     let path = directory.join(file_name);
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
+    let contents = match read_secure_file_limited(&path, MAX_PENDING_RECORD_BYTES) {
+        Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if !metadata.is_file() {
-        return Err(KeyManagerError::Io(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "invalid secure storage path",
-        )));
-    }
-    secure_existing_file(&path)?;
-    if metadata.len() > MAX_PENDING_RECORD_BYTES {
+    if contents.len() as u64 > MAX_PENDING_RECORD_BYTES {
         return Ok(Some(oversized()));
     }
-    let mut contents = Vec::new();
-    fs::File::open(&path)?
-        .take(MAX_PENDING_RECORD_BYTES + 1)
-        .read_to_end(&mut contents)?;
     Ok(Some(parse(&contents)))
 }
 

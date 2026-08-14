@@ -92,8 +92,10 @@ pub enum UserPermission {
     ManageIssuer,
     RotateKeys,
     ManageRoles,
-    /// 重置他人的认证因子。独立于 `ManageUsers`：删除一个账号的 TOTP 会把它降级到
-    /// 「只有密码」，是账号接管链条上的一环，因此按最小权限只授予 Owner。
+    /// 重置他人的认证因子。独立于 `ManageUsers`：删除一个账号的 TOTP 或 Passkey
+    /// 会把它降级到「只有密码」（或只剩另一个因子），是账号接管链条上的一环，
+    /// 因此按最小权限只授予 Owner。末位 Owner 丢失全部 Passkey 时不能走 Session
+    /// 通道，必须用系统 `ADMIN_TOKEN`（#460）。
     ManageAuthFactors,
 }
 

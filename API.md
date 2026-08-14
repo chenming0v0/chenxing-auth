@@ -342,6 +342,8 @@ Issuer 设置接口仅 Owner（`manage_issuer`）可用。GET 返回 `persisted`
 
 发件地址保存于 PostgreSQL 的 `app_settings` 表，不从环境变量、请求 Host 或前端状态推导。当前设置资源只保存地址本身；SMTP 连接参数、发送凭据和邮件模板属于后续邮件服务接入边界。
 
+`GET /api/v1/admin/settings/passkey`、`GET /api/v1/admin/settings/email-policy` 和 `GET /api/v1/admin/settings/security-limits` 的 JSON body 始终是设置对象本身。若库里的行无法用于安全热路径，响应额外带 `X-Chenxing-Setting-Diagnostic: invalid` 或 `corrupt`，便于管理员保存修复；有效值和未配置行不带该头。头和 body 都不回显损坏 JSON、域名或阈值。
+
 ### 用户管理
 
 - `GET /api/v1/admin/users?limit=50&offset=0`：列出用户，需要 `ManageUsers`。响应是用户数组。服务端强制分页：`limit` 默认 `50`，取值被 clamp 到 `[1, 200]`（与审计列表一致），`offset` 默认 `0`，负值按 `0` 处理。需要 `total` 和分页信封时用 `GET /api/v1/admin/users/query`。
@@ -349,6 +351,20 @@ Issuer 设置接口仅 Owner（`manage_issuer`）可用。GET 返回 `persisted`
 - `POST /api/v1/admin/users/{user_id}/{status}`：设置用户状态，基线需要 `ManageUsers`，目标为 Owner 时额外需要 `ManageRoles`。授权先于资源查询，低权限调用者不能枚举用户或 Owner 身份。状态常用为 `active`、`disabled`；非法状态返回 `400 invalid_status`，用户不存在返回 `404 user_not_found`，成功 `204`。禁止修改自己的状态，自我操作返回 `403 self_status_change_forbidden`。
 
 用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`role`、`created_at`。按 `created_at DESC, id DESC` 排序。
+
+### 认证因子恢复
+
+- `GET /api/v1/admin/users/{user_id}/auth-factors`：查看账号已绑定的因子方法；TOTP 另报 `key_state` / `readable`，不含 kid、密文或种子。需要 `ManageUsers`。
+- `DELETE /api/v1/admin/users/{user_id}/auth-factors/totp`：删除 TOTP 因子并撤销该账号全部 Session 与 Refresh Token。需要 Owner 专属的 `ManageAuthFactors`。
+- `DELETE /api/v1/admin/users/{user_id}/auth-factors/passkey`：删除该账号全部 Passkey 凭据并撤销全部 Session 与 Refresh Token。需要 `ManageAuthFactors`。Passkey-only 账号下次密码登录返回 `factor_setup_required`；仍绑定 TOTP 的账号保留 TOTP。
+
+末位 Owner 丢失全部 Passkey 时无法再签发管理 Session。这条恢复必须使用系统 `ADMIN_TOKEN` Bearer 通道：它不依赖现有 Passkey 或用户 Session，避免形成「要先有 Passkey 才能恢复 Passkey」的闭环。`ADMIN_TOKEN` 为空时整个管理面关闭，该逃生通道一并不可用。浏览器 Session 写操作仍须携带 Session Cookie、CSRF Cookie 和 `X-CSRF-Token`。Admin 角色返回 `403 admin_forbidden`。账号没有对应因子时返回 `404 totp_factor_not_found` / `passkey_factor_not_found`，且不会推进 `session_epoch`。
+
+Passkey 重置成功响应：
+
+```json
+{"user_id":1,"removed":2,"credentials_revoked":true}
+```
 
 ### 特权用户管理
 
@@ -363,7 +379,7 @@ Issuer 设置接口仅 Owner（`manage_issuer`）可用。GET 返回 `persisted`
 套餐定义 OAuth Client 数量、日/月授权配额和 QPS 上限；未显式分配套餐或套餐过期的用户回落到默认套餐。
 
 - `GET /api/v1/admin/plans`：列出全部套餐（含已归档），每个元素带 `assigned_users`，需要 `ManageSettings`。
-- `POST /api/v1/admin/plans`：创建套餐，提交 `code`、`name`、`description`、`oauth_clients_limit`、`daily_auth_limit`、`monthly_auth_limit`、`max_qps`、`is_default`；`code` 服务端归一化为小写。成功 `201`。
+- `POST /api/v1/admin/plans`：创建套餐，提交 `code`、`name`、`description`、`oauth_clients_limit`（0–1000）、`daily_auth_limit`（0–1000000）、`monthly_auth_limit`（0–31000000 或 `null` 表示无限）、`max_qps`（1–10000 或 `null` 表示不限）、`is_default`；`code` 服务端归一化为小写。成功 `201`。越界返回 `400 invalid_plan`。
 - `PUT /api/v1/admin/plans/{id}`：更新套餐，字段同创建，成功返回更新后的套餐。
 - `POST /api/v1/admin/plans/{id}/archive`：归档套餐；默认套餐不可归档，返回 `409 default_plan_protected`。
 - `POST /api/v1/admin/plans/{id}/restore`：恢复套餐。

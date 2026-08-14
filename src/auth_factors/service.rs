@@ -33,7 +33,10 @@ mod totp_enrollment;
 #[path = "totp_service.rs"]
 mod totp_service;
 
-pub use recovery::{AccountFactorStatus, EncryptionKeyHealth, TotpFactorStatus, TotpResetOutcome};
+pub use recovery::{
+    AccountFactorStatus, EncryptionKeyHealth, PasskeyResetOutcome, TotpFactorStatus,
+    TotpResetOutcome,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TotpConfirmation {

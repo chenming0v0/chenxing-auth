@@ -176,6 +176,21 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
         &["status", "is_default"],
     )
     .await;
+    assert_constraint_contains(
+        &pool,
+        "plans",
+        "plans_daily_auth_limit_check",
+        &["daily_auth_limit", "1000000"],
+    )
+    .await;
+    assert_constraint_contains(
+        &pool,
+        "plans",
+        "plans_monthly_auth_limit_check",
+        &["monthly_auth_limit", "31000000"],
+    )
+    .await;
+    assert_constraint_contains(&pool, "plans", "plans_max_qps_check", &["max_qps", "10000"]).await;
     assert_column(&pool, "user_sessions", "session_payload", "bytea", true).await;
     assert_column(
         &pool,
@@ -529,4 +544,36 @@ async fn audit_boundary_verification_accepts_the_runtime_role_and_rejects_the_ow
     .await
     .expect("the explicit switch downgrades the failure to a warning");
     assert!(degraded.can_mutate);
+}
+
+/// Issue #456：含引号、反斜杠的口令必须能经绑定参数写入，并且随后能登录。
+/// 这些字符会打穿旧的客户端 `quote_literal`（尤其 `standard_conforming_strings=off`）。
+#[tokio::test]
+async fn runtime_role_password_with_quotes_and_backslashes_can_login() {
+    let pool = database().await;
+    let database_url = env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let mut runtime_url = url::Url::parse(&database_url).expect("runtime database URL");
+    runtime_url
+        .set_username(chenxing_auth::db::RUNTIME_DATABASE_ROLE)
+        .expect("set runtime username");
+    let password = r#"o'brien\x";weird"#;
+    runtime_url
+        .set_password(Some(password))
+        .expect("set runtime password");
+
+    chenxing_auth::db::configure_runtime_role(
+        &pool,
+        runtime_url.as_str(),
+        chenxing_auth::db::RuntimePasswordPolicy::Managed,
+    )
+    .await
+    .expect("configure runtime role with quoted/backslash password");
+
+    let runtime_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(runtime_url.as_str())
+        .await
+        .expect("login with quoted/backslash password must succeed");
+    runtime_pool.close().await;
 }
