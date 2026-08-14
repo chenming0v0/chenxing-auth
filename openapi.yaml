@@ -2529,7 +2529,7 @@ components:
         rp_id:
           type: string
           maxLength: 253
-          description: 必须是至少包含一个点号的域名；localhost 是唯一允许的单标签本机开发例外。
+          description: 必须是可注册域（eTLD+1），公共后缀（co.uk、com.cn、github.io 等）会被拒绝；localhost 与 IPv4 是仅有的例外。Unicode 域名须用 Punycode 形式填写。
         user_verification: { type: string, enum: [preferred, required, discouraged] }
         authenticator_attachment: { type: string, enum: [any, platform, cross_platform] }
         allow_insecure_origin: { type: boolean }

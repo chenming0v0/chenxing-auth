@@ -51,6 +51,7 @@ uuid = { version = "1", features = ["serde", "v4"] }
 zeroize = { version = "1", features = ["derive"] }
 pkcs8 = { version = "0.10", features = ["std"] }
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+psl = "2"
 
 # Unix 密钥目录的 openat/openat2/fstat/fchmod。libc 已是传递依赖，这里只在
 # Unix 上显式化，非 Unix 构建不引入这组 syscall 绑定。
