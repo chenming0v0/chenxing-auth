@@ -1,11 +1,12 @@
-use std::{collections::BTreeMap, fs, path::Path, time::Duration};
+use std::{collections::BTreeMap, path::Path, time::Duration};
 
 use time::OffsetDateTime;
 use zeroize::Zeroizing;
 
 use crate::key_storage::{
-    atomic_write, cleanup_stale_temporary_files, ensure_secure_directory, modified_time,
-    remove_secure_file, secure_existing_file,
+    atomic_write, cleanup_stale_temporary_files, ensure_secure_directory, inspect_secure_file,
+    list_secure_names, modified_time, read_secure_file, read_secure_named, read_secure_to_string,
+    remove_secure_file,
 };
 
 use super::{
@@ -148,11 +149,8 @@ fn initialize_first_key(
 
 fn discover_key_files(directory: &Path) -> Result<BTreeMap<String, KeyMaterial>, KeyManagerError> {
     let mut keys = BTreeMap::new();
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
+    for entry in list_secure_names(directory)? {
+        let file_name = entry.name;
         if !file_name.starts_with(KEY_FILE_PREFIX) || !file_name.ends_with(KEY_FILE_SUFFIX) {
             continue;
         }
@@ -162,8 +160,10 @@ fn discover_key_files(directory: &Path) -> Result<BTreeMap<String, KeyMaterial>,
             .ok_or(KeyManagerError::InvalidKeyId)?
             .to_owned();
         validate_key_id(&key_id)?;
-        let created_at = OffsetDateTime::from(modified_time(&path)?);
-        let der = Zeroizing::new(fs::read(path)?);
+        // list 记下的 inode 必须和 openat 后 fstat 对上，否则中间被换成了另一份材料。
+        let file = read_secure_named(directory, &file_name, entry.inode)?;
+        let created_at = OffsetDateTime::from(file.modified);
+        let der = Zeroizing::new(file.contents);
         let mut material = key_material(der, created_at);
         retirement::load_into(directory, &key_id, &mut material)?;
         keys.insert(key_id, material);
@@ -182,47 +182,29 @@ fn migrate_legacy_key(
     now: OffsetDateTime,
 ) -> Result<Option<String>, KeyManagerError> {
     let legacy_path = directory.join(LEGACY_KEY_FILE);
-    let metadata = match fs::symlink_metadata(&legacy_path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+    match inspect_secure_file(&legacy_path) {
+        Ok(true) => {}
+        Ok(false) => return Ok(None),
         Err(error) => return Err(error.into()),
-    };
-    if !metadata.is_file() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "invalid secure storage path",
-        )
-        .into());
     }
-    secure_existing_file(&legacy_path)?;
     let key_id = match declared_active_id {
         Some(value) => value.to_owned(),
         None => format!("cx-{}", uuid::Uuid::new_v4().simple()),
     };
     validate_key_id(&key_id)?;
-    let der = Zeroizing::new(fs::read(&legacy_path)?);
+    let der = Zeroizing::new(read_secure_file(&legacy_path)?);
     persist_key(directory, &key_id, &der)?;
     persist_active_key_id(directory, &key_id)?;
-    fs::remove_file(&legacy_path)?;
+    remove_secure_file(&legacy_path)?;
     key_files.insert(key_id.clone(), key_material(der, now));
     Ok(Some(key_id))
 }
 
 fn remove_legacy_key(directory: &Path) -> Result<(), KeyManagerError> {
     let legacy_path = directory.join(LEGACY_KEY_FILE);
-    match fs::symlink_metadata(&legacy_path) {
-        Ok(metadata) if metadata.is_file() => {
-            secure_existing_file(&legacy_path)?;
-            fs::remove_file(legacy_path)?;
-        }
-        Ok(_) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "invalid secure storage path",
-            )
-            .into());
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+    match inspect_secure_file(&legacy_path) {
+        Ok(true) => remove_secure_file(&legacy_path)?,
+        Ok(false) => {}
         Err(error) => return Err(error.into()),
     }
     Ok(())
@@ -263,15 +245,12 @@ pub(super) fn remove_key(directory: &Path, key_id: &str) -> Result<(), KeyManage
 /// 身份的安全收敛方式。路径来自目录枚举，内容从不读入内存或日志。
 pub(super) fn discard_all_key_material(directory: &Path) -> Result<(), KeyManagerError> {
     let mut key_paths = Vec::new();
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
+    for entry in list_secure_names(directory)? {
+        let file_name = entry.name;
         let is_current_key =
             file_name.starts_with(KEY_FILE_PREFIX) && file_name.ends_with(KEY_FILE_SUFFIX);
         if is_current_key || file_name == LEGACY_KEY_FILE {
-            key_paths.push(path);
+            key_paths.push(directory.join(file_name));
         }
     }
     for path in key_paths {
@@ -298,11 +277,8 @@ pub(super) fn establish_recovery_active_key(
         validate_key_id(revoked_key_id)?;
     }
     let mut candidates = Vec::new();
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
+    for entry in list_secure_names(directory)? {
+        let file_name = entry.name;
         let Some(key_id) = file_name
             .strip_prefix(KEY_FILE_PREFIX)
             .and_then(|value| value.strip_suffix(KEY_FILE_SUFFIX))
@@ -312,7 +288,8 @@ pub(super) fn establish_recovery_active_key(
         validate_key_id(key_id)?;
         if Some(key_id) != revoked_key_id {
             let retired_at = retirement::read_retired_at(directory, key_id)?;
-            candidates.push((retired_at, modified_time(&path)?, key_id.to_owned()));
+            let mtime = read_secure_named(directory, &file_name, entry.inode)?.modified;
+            candidates.push((retired_at, mtime, key_id.to_owned()));
         }
     }
 
@@ -340,15 +317,7 @@ pub(super) fn establish_recovery_active_key(
 /// 路径说明目录已被篡改，静默跳过会让后续写入落到攻击者可控的位置。
 pub(super) fn has_key_material(directory: &Path, key_id: &str) -> Result<bool, KeyManagerError> {
     validate_key_id(key_id)?;
-    match fs::symlink_metadata(directory.join(key_file_name(key_id))) {
-        Ok(metadata) if metadata.is_file() => Ok(true),
-        Ok(_) => Err(KeyManagerError::Io(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "invalid secure storage path",
-        ))),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
-    }
+    inspect_secure_file(&directory.join(key_file_name(key_id))).map_err(Into::into)
 }
 
 /// 读取盘上声明的 active `kid`；文件不存在时返回 `None`。
@@ -372,19 +341,11 @@ pub(super) fn persist_active_key_id(directory: &Path, key_id: &str) -> Result<()
 }
 
 fn read_optional_key_id(path: &Path) -> Result<Option<String>, KeyManagerError> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
+    let key_id = match read_secure_to_string(path) {
+        Ok(contents) => contents.trim().to_owned(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if !metadata.is_file() {
-        return Err(KeyManagerError::Io(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "invalid secure storage path",
-        )));
-    }
-    secure_existing_file(path)?;
-    let key_id = fs::read_to_string(path)?.trim().to_owned();
     validate_key_id(&key_id)?;
     Ok(Some(key_id))
 }

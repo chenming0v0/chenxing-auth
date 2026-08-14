@@ -24,9 +24,9 @@
 //! 出口是丢弃整组旧材料并生成新 active key。现有 token 会失效，但可能已吊销的 key
 //! 不会被恢复为 active。
 
-use std::{fs, io::Read, path::Path};
+use std::path::Path;
 
-use crate::key_storage::{atomic_write, remove_secure_file, secure_existing_file};
+use crate::key_storage::{atomic_write, read_secure_file, remove_secure_file};
 
 use super::{KeyManagerError, persistence, retirement};
 
@@ -172,25 +172,14 @@ fn read_record<T>(
     oversized: impl FnOnce() -> T,
 ) -> Result<Option<T>, KeyManagerError> {
     let path = directory.join(file_name);
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
+    let contents = match read_secure_file(&path) {
+        Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if !metadata.is_file() {
-        return Err(KeyManagerError::Io(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "invalid secure storage path",
-        )));
-    }
-    secure_existing_file(&path)?;
-    if metadata.len() > MAX_PENDING_RECORD_BYTES {
+    if contents.len() as u64 > MAX_PENDING_RECORD_BYTES {
         return Ok(Some(oversized()));
     }
-    let mut contents = Vec::new();
-    fs::File::open(&path)?
-        .take(MAX_PENDING_RECORD_BYTES + 1)
-        .read_to_end(&mut contents)?;
     Ok(Some(parse(&contents)))
 }
 
