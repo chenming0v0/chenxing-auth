@@ -176,6 +176,21 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
         &["status", "is_default"],
     )
     .await;
+    assert_constraint_contains(
+        &pool,
+        "plans",
+        "plans_daily_auth_limit_check",
+        &["daily_auth_limit", "1000000"],
+    )
+    .await;
+    assert_constraint_contains(
+        &pool,
+        "plans",
+        "plans_monthly_auth_limit_check",
+        &["monthly_auth_limit", "31000000"],
+    )
+    .await;
+    assert_constraint_contains(&pool, "plans", "plans_max_qps_check", &["max_qps", "10000"]).await;
     assert_column(&pool, "user_sessions", "session_payload", "bytea", true).await;
     assert_column(
         &pool,

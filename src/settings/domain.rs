@@ -34,6 +34,11 @@ pub enum PasskeyAuthenticatorAttachment {
     CrossPlatform,
 }
 
+/// 管理 API 与运行时使用的 Passkey 配置。
+///
+/// 反序列化保持全字段必填：这是 PUT `/admin/settings/passkey` 的请求体。
+/// 数据库旧行的缺字段补齐在 `settings::persisted`，不要把 `#[serde(default)]`
+/// 加到这个类型上，否则漏字段的 PUT 会按默认值覆盖已保存的限制。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PasskeySetting {
     pub enabled: bool,
@@ -59,6 +64,10 @@ impl Default for PasskeySetting {
     }
 }
 
+/// 管理 API 与运行时使用的邮箱域名策略。
+///
+/// 反序列化保持全字段必填。回读缺字段的兼容转换见 `settings::persisted`：
+/// `whitelist_enabled` 缺失必须拒绝，不能按 `false` 补成「放行一切」。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct EmailPolicySetting {
     pub whitelist_enabled: bool,

@@ -163,7 +163,7 @@ src/
 
 运行时角色对序列的权限只放开一个对象：`users.id` 的 identity 序列。Owner 初始化要求第一个 Owner 的 `id` 为 1，`bootstrap_owner` 因此在插入前调 `setval`，而 `setval` 在 PostgreSQL 里要求序列的 `UPDATE` 权限；完整基线只授这一个序列。审计表的序列保持只读，append-only 边界不受影响。
 
-运行时角色口令由 migrate 保证可用，但不会被无条件重写：migrate 先用 `DATABASE_URL` 真正登录一次，口令已经可用就完全不碰角色，只有登录不被接受或角色刚被创建才写入并记录告警。口令完全由外部密钥托管管理时设置 `MIGRATION_MANAGE_RUNTIME_PASSWORD=false`，migrate 便不再执行任何 `ALTER ROLE ... PASSWORD`。
+运行时角色口令由 migrate 保证可用，但不会被无条件重写：migrate 先用 `DATABASE_URL` 真正登录一次，口令已经可用就完全不碰角色；只有服务端返回 SQLSTATE `28P01`（invalid_password）或角色刚被创建才写入并记录告警。`28000` 及其他 28 类授权错误（HBA、身份映射等）会 fail-safe 中止口令管理，绝不执行 `ALTER ROLE`。口令完全由外部密钥托管管理时设置 `MIGRATION_MANAGE_RUNTIME_PASSWORD=false`，migrate 便不再执行任何 `ALTER ROLE ... PASSWORD`。
 
 `AUDIT_ARCHIVE_ENABLED` 默认是 `false`。明确设置为 `true` 后，`AUDIT_RETENTION_DAYS`（默认 2555 天，允许 1 至 36500 天）定义事件留在热表的最短时间；超过该窗口的事件只是被搬到永久归档表，不会被物理丢弃。Web 请求和正常服务进程不会执行清理，部署必须由一个外部 cron/systemd 任务定期运行 `cargo run -- audit-archive`（Docker 部署使用 `docker compose --env-file .env -f docker-compose.prod.yml run --rm app audit-archive`）。每次命令最多处理 1000 行，重复调用安全；命令日志只记录批次数和保留窗口，不记录 action、resource、metadata 或其他事件内容。不要让多个部署副本各自建立定时器，也不要在未确认合规窗口前缩短保留天数。回滚迁移前先停用调度器，并按迁移注释把归档行恢复到热表，再按逆序删除对象。
 
