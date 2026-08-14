@@ -447,6 +447,7 @@ dependencies = [
  "idna",
  "image",
  "jsonwebtoken",
+ "libc",
  "oxide-auth-axum",
  "percent-encoding",
  "pkcs8",

@@ -15,11 +15,13 @@
 //! 都有记录。两个方向都会被修正，因此崩溃遗留的半成品、以及升级前就存在的历史
 //! 目录都会自愈，不需要一次性迁移脚本。
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, path::Path};
 
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-use crate::key_storage::{atomic_write, secure_existing_file};
+use crate::key_storage::{
+    atomic_write, list_secure_names, read_secure_to_string, remove_secure_file,
+};
 
 use super::{KeyManagerError, KeyMaterial, persistence};
 
@@ -48,21 +50,11 @@ pub(super) fn read_retired_at(
     key_id: &str,
 ) -> Result<Option<OffsetDateTime>, KeyManagerError> {
     let path = directory.join(retirement_file_name(key_id));
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
+    let contents = match read_secure_to_string(&path) {
+        Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    // 非普通文件说明目录被篡改：与密钥材料同样 fail-closed，不能静默当成“没有记录”
-    // 之后往这个路径上写。
-    if !metadata.is_file() {
-        return Err(KeyManagerError::Io(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "invalid secure storage path",
-        )));
-    }
-    secure_existing_file(&path)?;
-    let contents = fs::read_to_string(&path)?;
     match OffsetDateTime::parse(contents.trim(), &Rfc3339) {
         Ok(retired_at) => Ok(Some(retired_at)),
         Err(_) => {
@@ -97,7 +89,7 @@ pub(super) fn stamp(
 /// 删除退役记录。记录已不存在同样算成功：目标状态就是“这个 key 没有退役记录”。
 pub(super) fn clear(directory: &Path, key_id: &str) -> Result<(), KeyManagerError> {
     persistence::validate_key_id(key_id)?;
-    match fs::remove_file(directory.join(retirement_file_name(key_id))) {
+    match remove_secure_file(&directory.join(retirement_file_name(key_id))) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
@@ -153,11 +145,8 @@ fn remove_orphaned_records(
     directory: &Path,
     materials: &BTreeMap<String, KeyMaterial>,
 ) -> Result<(), KeyManagerError> {
-    for entry in fs::read_dir(directory)? {
-        let path = entry?.path();
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
+    for entry in list_secure_names(directory)? {
+        let file_name = entry.name;
         let Some(key_id) = file_name
             .strip_prefix(persistence::KEY_FILE_PREFIX)
             .and_then(|value| value.strip_suffix(RETIREMENT_FILE_SUFFIX))
@@ -167,7 +156,7 @@ fn remove_orphaned_records(
         if materials.contains_key(key_id) {
             continue;
         }
-        match fs::remove_file(&path) {
+        match remove_secure_file(&directory.join(file_name)) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),

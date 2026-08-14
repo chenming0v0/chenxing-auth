@@ -3,15 +3,12 @@ use aes_gcm::{
     aead::{Aead, KeyInit, rand_core::RngCore},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::key_storage::{
     KeyStorageLock, TemporaryFileKind, atomic_write_in, cleanup_stale_temporary_files_in,
-    ensure_secure_directory, secure_existing_file,
+    ensure_secure_directory, read_secure_file,
 };
 
 const SECRET_KEY_FILE: &str = "oauth-provider-secret.key";
@@ -46,30 +43,20 @@ impl SecretManager {
         let _lock = KeyStorageLock::acquire(&directory)?;
         cleanup_stale_temporary_files_in(&directory, TemporaryFileKind::ProviderSecret)?;
         let path = directory.join(SECRET_KEY_FILE);
-        let key = match fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_file() => {
-                secure_existing_file(&path)?;
-                fs::read(&path)?
-            }
-            Ok(_) => {
-                return Err(SecretError::Io(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "invalid secure storage path",
-                )));
-            }
+        let key = match read_secure_file(&path) {
+            Ok(key) => key,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let mut generated = vec![0_u8; KEY_LENGTH];
                 rand::rngs::OsRng.fill_bytes(&mut generated);
                 match atomic_write_in(TemporaryFileKind::ProviderSecret, &path, &generated, false) {
                     Ok(()) => generated,
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                        secure_existing_file(&path)?;
-                        fs::read(&path)?
+                        read_secure_file(&path)?
                     }
                     Err(error) => return Err(SecretError::Io(error)),
                 }
             }
-            Err(error) => return Err(SecretError::Io(error)),
+            Err(error) => return Err(error.into()),
         };
         let key: [u8; KEY_LENGTH] = key.try_into().map_err(|_| SecretError::InvalidKeyLength)?;
         Ok(Self {

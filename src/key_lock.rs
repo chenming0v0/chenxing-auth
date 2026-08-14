@@ -1,14 +1,13 @@
-use std::{
-    fs,
-    io::{self, ErrorKind},
-    path::Path,
-};
+use std::{io, path::Path};
+
+#[cfg(any(not(unix), test))]
+use std::{fs, io::ErrorKind};
 
 #[cfg(unix)]
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 
 #[cfg(unix)]
-use super::{PRIVATE_FILE_MODE, invalid_storage_path, secure_existing_file};
+use super::open_or_create_regular_file;
 
 const KEY_STORAGE_LOCK_FILE: &str = ".chenxing-key.lock";
 
@@ -91,21 +90,7 @@ impl Drop for KeyStorageLock {
 
 #[cfg(unix)]
 fn open_lock_file(directory: &Path) -> io::Result<File> {
-    let path = directory.join(KEY_STORAGE_LOCK_FILE);
-    match fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.is_file() => secure_existing_file(&path)?,
-        Ok(_) => return Err(invalid_storage_path()),
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
-    }
-
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true);
-    use std::os::unix::fs::OpenOptionsExt;
-    options.mode(PRIVATE_FILE_MODE);
-    let file = options.open(&path)?;
-    secure_existing_file(&path)?;
-    Ok(file)
+    open_or_create_regular_file(directory, KEY_STORAGE_LOCK_FILE)
 }
 
 #[cfg(unix)]
