@@ -21,7 +21,7 @@ Outbox processing is idempotent. A `sync_session` operation locks and reads the 
 
 ## Read flow
 
-With metadata enabled, `find` queries PostgreSQL by token hash and requires an unrevoked, unexpired row. New rows reconstruct the session from the encrypted payload and do not depend on Redis availability. Rows created before the encrypted payload migration may use Redis only as a legacy payload fallback. Redis-only stores retain their existing Redis behavior.
+With metadata enabled, `find` queries PostgreSQL by token hash and requires an unrevoked, unexpired row. The hot path is an unlocked read: new rows reconstruct the session from the encrypted PostgreSQL payload and do not depend on Redis availability. Rows created before the encrypted payload migration may use Redis only as a legacy payload fallback, and that Redis I/O must not run under a session row lock (Issue #432). `FOR UPDATE` is taken only for the short idle-renewal write that bumps `last_seen_at`, optionally backfills the durable payload, and enqueues `sync_session`; renewal re-validates activity under the lock so a concurrent revocation still wins. Redis-only stores retain their existing Redis behavior.
 
 ## Failure handling and observability
 

@@ -1,4 +1,4 @@
-//! `migrate` 子命令的角色配置：谁跑迁移、谁跑运行时、审计隔离策略。
+//! `migrate` 子命令与 Web 服务启动期共用的角色配置与审计隔离策略。
 //!
 //! 拆成独立模块的原因是这里全是启动期决策，可以在没有数据库的情况下完整单测；
 //! 真正需要数据库的权限校验在 [`super::audit_boundary`]。
@@ -184,6 +184,45 @@ impl MigrationPlan {
                  production posture"
             );
         }
+    }
+}
+
+/// Web 服务启动期的审计边界姿态。
+///
+/// Web 进程只使用 `DATABASE_URL`，因此这里只解析运行时角色和审计隔离策略；
+/// 真实权限仍由 `verify_audit_append_only_boundary` 在启动时查询数据库。
+#[derive(Clone, Debug)]
+pub struct RuntimeAuditPosture {
+    runtime_role: String,
+    separation: AuditRoleSeparation,
+}
+
+impl RuntimeAuditPosture {
+    pub fn from_env(runtime_database_url: &str) -> Result<Self, MigrationPlanError> {
+        Self::from_values(
+            runtime_database_url,
+            std::env::var(AUDIT_ROLE_SEPARATION_ENV).ok().as_deref(),
+        )
+    }
+
+    pub fn from_values(
+        runtime_database_url: &str,
+        separation: Option<&str>,
+    ) -> Result<Self, MigrationPlanError> {
+        let runtime_role =
+            role_of(runtime_database_url).ok_or(MigrationPlanError::MissingRuntimeRole)?;
+        Ok(Self {
+            runtime_role,
+            separation: parse_separation(separation)?,
+        })
+    }
+
+    pub fn runtime_role(&self) -> &str {
+        &self.runtime_role
+    }
+
+    pub fn separation(&self) -> AuditRoleSeparation {
+        self.separation
     }
 }
 

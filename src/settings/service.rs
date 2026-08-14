@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::{
-    SecurityLimitsSetting,
+    IssuerRuntime, SecurityLimitsSetting,
     domain::{
         EmailPolicySetting, PasskeySetting, SettingsValidationError, SmtpSetting,
         SmtpSettingUpdate, StoredSmtpSetting,
@@ -27,6 +27,7 @@ pub struct SettingsService {
     /// 认证热路径共享的阈值缓存（#300）。`Arc` 让本服务的全部克隆共享同一份状态，
     /// 因此管理接口写入后的主动刷新对同进程内所有读取路径立即生效。
     security_limits_cache: Arc<SecurityLimitsCache>,
+    issuer_runtime: Option<IssuerRuntime>,
 }
 
 #[derive(Debug, Error)]
@@ -73,7 +74,13 @@ impl SettingsService {
                 default_security_limits.clone(),
             )),
             default_security_limits,
+            issuer_runtime: None,
         }
+    }
+
+    pub fn with_issuer_runtime(mut self, issuer_runtime: IssuerRuntime) -> Self {
+        self.issuer_runtime = Some(issuer_runtime);
+        self
     }
 
     /// 用自定义 TTL / 退避的缓存替换默认缓存。仅用于测试缓存与降级路径。
@@ -175,12 +182,21 @@ impl SettingsService {
     }
 
     pub async fn passkey(&self) -> Result<PasskeySetting, SettingsServiceError> {
+        let runtime_default = self
+            .issuer_runtime
+            .as_ref()
+            .and_then(IssuerRuntime::current)
+            .map(|snapshot| {
+                PasskeySetting::default()
+                    .with_runtime_defaults(snapshot.webauthn_rp_id(), snapshot.webauthn_origin())
+            })
+            .unwrap_or_else(|| self.default_passkey.clone());
         repository::get_passkey(&self.pool)
             .await?
-            .unwrap_or_else(|| self.default_passkey.clone())
+            .unwrap_or_else(|| runtime_default.clone())
             .with_runtime_defaults(
-                &self.default_passkey.rp_id,
-                self.default_passkey
+                &runtime_default.rp_id,
+                runtime_default
                     .allowed_origins
                     .first()
                     .map(String::as_str)

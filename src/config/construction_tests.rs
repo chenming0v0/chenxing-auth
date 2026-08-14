@@ -50,3 +50,13 @@ fn webauthn_origin_rejects_url_userinfo_without_echoing_credentials() {
 
     assert!(parse_root_http_url("http://localhost:5175", "WEBAUTHN_ORIGIN").is_ok());
 }
+
+#[test]
+fn non_loopback_http_issuer_is_rejected_even_with_secure_cookies() {
+    let issuer = parse_root_http_url("http://auth.example.com", "APP_ISSUER")
+        .expect("issuer URL itself is syntactically valid");
+    assert_eq!(
+        validate_cookie_security(&issuer, true),
+        Err(ConfigError::InvalidValue("APP_ISSUER"))
+    );
+}

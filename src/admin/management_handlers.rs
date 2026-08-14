@@ -186,10 +186,11 @@ pub async fn set_user_role(
     Path(user_id): Path<UserId>,
     Json(input): Json<SetUserRoleInput>,
 ) -> Response {
-    let actor = match admin.authorize(&state, AdminPermission::ManageRoles).await {
-        Ok(actor_id) => actor_id,
+    let authorization = match authorize_user_write(&state, &admin).await {
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
+    let actor = authorization.actor();
     if actor.user_id() == Some(user_id) {
         return error::forbidden(
             "self_role_change_forbidden",
@@ -199,7 +200,11 @@ pub async fn set_user_role(
     let Some(role) = UserRole::parse(&input.role) else {
         return error::bad_request("invalid_role", "role is invalid");
     };
-    match state.users.set_role(user_id, role).await {
+    match state
+        .users
+        .set_role(user_id, role, authorization.access())
+        .await
+    {
         Ok(true) => {
             let (actor_type, actor_id) = actor.audit_fields();
             state
@@ -230,6 +235,9 @@ pub async fn set_user_role(
                 "last_owner_required",
                 "at least one active owner is required",
             )
+        }
+        Err(crate::users::service::UserServiceError::ManageRolesRequired) => {
+            owner_write_permission_denied(&state, authorization).await
         }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update user role");

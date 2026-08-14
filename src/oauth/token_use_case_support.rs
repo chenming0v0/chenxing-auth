@@ -6,7 +6,10 @@ use super::super::{
     token::issue_access_token_at,
 };
 use super::{OAuthError, TokenResponse};
-use crate::{sessions::domain::decode_session_token_hash, state::AppState, users::domain::UserId};
+use crate::{
+    config::IssuerUrl, sessions::domain::decode_session_token_hash, state::AppState,
+    users::domain::UserId,
+};
 
 /// 校验授权码的绑定、过期与 PKCE。
 ///
@@ -32,18 +35,22 @@ pub(super) fn validate_code_binding(
     Ok(())
 }
 
-/// Issue token data without constructing an HTTP response. This preserves the existing
-/// response helper's order: active user, access token, optional OIDC profile and ID token.
+/// Token issuance context shared by authorization-code and refresh exchanges.
+pub(crate) struct TokenIssueParams<'a> {
+    pub issuer: &'a IssuerUrl,
+    pub user_id: &'a str,
+    pub client_id: &'a str,
+    pub scopes: &'a [String],
+    pub refresh_token: Option<String>,
+    pub nonce: Option<&'a str>,
+    pub auth_time: Option<i64>,
+}
+
 pub(crate) async fn issue_token_response(
     state: &AppState,
-    user_id: &str,
-    client_id: &str,
-    scopes: &[String],
-    refresh_token: Option<String>,
-    nonce: Option<&str>,
-    auth_time: Option<i64>,
+    params: TokenIssueParams<'_>,
 ) -> Result<TokenResponse, OAuthError> {
-    match active_user_id(state, user_id).await {
+    match active_user_id(state, params.user_id).await {
         Ok(Some(_)) => {}
         Ok(None) => return Err(OAuthError::invalid_authorization_grant()),
         Err(database_error) => {
@@ -53,10 +60,10 @@ pub(crate) async fn issue_token_response(
     }
     let access_token = match issue_access_token_at(
         &state.keys,
-        &state.config.issuer_url,
-        user_id,
-        client_id,
-        scopes,
+        params.issuer.as_str(),
+        params.user_id,
+        params.client_id,
+        params.scopes,
         state.config.access_token_ttl_seconds,
         state.clock.now(),
     ) {
@@ -66,30 +73,29 @@ pub(crate) async fn issue_token_response(
             return Err(OAuthError::temporarily_unavailable());
         }
     };
-    let id_token = issue_id_token(state, user_id, client_id, scopes, nonce, auth_time).await?;
+    let id_token = issue_id_token(state, &params).await?;
     Ok(TokenResponse {
         access_token,
         token_type: "Bearer",
         expires_in: state.config.access_token_ttl_seconds,
-        scope: scopes.join(" "),
-        refresh_token,
+        scope: params.scopes.join(" "),
+        refresh_token: params.refresh_token,
         id_token,
     })
 }
 
 async fn issue_id_token(
     state: &AppState,
-    user_id: &str,
-    client_id: &str,
-    scopes: &[String],
-    nonce: Option<&str>,
-    auth_time: Option<i64>,
+    params: &TokenIssueParams<'_>,
 ) -> Result<Option<String>, OAuthError> {
-    if !scopes.iter().any(|scope| scope == "openid") {
+    if !params.scopes.iter().any(|scope| scope == "openid") {
         return Ok(None);
     }
-    let Ok(subject) = user_id.parse::<UserId>() else {
-        tracing::error!(user_id, "cannot issue ID token for invalid user id");
+    let Ok(subject) = params.user_id.parse::<UserId>() else {
+        tracing::error!(
+            user_id = params.user_id,
+            "cannot issue ID token for invalid user id"
+        );
         return Err(OAuthError::temporarily_unavailable());
     };
     let profile = match state.users.find_profile(subject).await {
@@ -102,21 +108,23 @@ async fn issue_id_token(
     };
     issue_id_token_with_profile_at(
         &state.keys,
-        &state.config.issuer_url,
-        user_id,
-        client_id,
+        params.issuer.as_str(),
+        params.user_id,
+        params.client_id,
         IdTokenProfile {
-            nonce,
-            email: scopes
+            nonce: params.nonce,
+            email: params
+                .scopes
                 .iter()
                 .any(|scope| scope == "email")
                 .then_some(profile.email.as_str()),
-            name: scopes
+            name: params
+                .scopes
                 .iter()
                 .any(|scope| scope == "profile")
                 .then_some(profile.display_name.as_deref())
                 .flatten(),
-            auth_time,
+            auth_time: params.auth_time,
         },
         state.config.id_token_ttl_seconds,
         state.clock.now(),

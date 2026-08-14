@@ -16,6 +16,7 @@ use std::sync::Arc;
 use chenxing_auth::{
     api,
     clients::{domain::ClientAuthMethod, service::AuthenticatedClient},
+    config::IssuerUrl,
     oauth::{
         code::AuthorizationCode,
         refresh::RefreshToken,
@@ -84,6 +85,15 @@ async fn authenticate(
         .await
         .expect("authenticate client")
         .expect("valid client credentials")
+}
+
+fn test_issuer(state: &AppState) -> IssuerUrl {
+    state
+        .issuer
+        .current()
+        .expect("test state has a loaded issuer")
+        .issuer()
+        .clone()
 }
 
 fn authorization_code(client_id: &str, user_id: i64) -> AuthorizationCode {
@@ -169,6 +179,7 @@ async fn authorization_code_cannot_persist_after_authenticated_secret_version_ch
         .save(&code)
         .await
         .expect("save authorization code");
+    save_consent(&harness).await;
 
     harness
         .state
@@ -181,6 +192,7 @@ async fn authorization_code_cannot_persist_after_authenticated_secret_version_ch
         &harness.state,
         code_request(&harness.client_id, &code.value),
         authenticated,
+        &test_issuer(&harness.state),
     )
     .await;
     assert_eq!(
@@ -260,6 +272,7 @@ async fn refresh_written_after_rotation_is_inert_even_if_revocation_already_ran(
 
     let stale_result = token_use_case::exchange_refresh_token(
         &harness.state,
+        &test_issuer(&harness.state),
         refresh_request(&harness.client_id, &stale_refresh.value),
         stale_authentication,
     )
@@ -274,6 +287,7 @@ async fn refresh_written_after_rotation_is_inert_even_if_revocation_already_ran(
     assert!(!current_authentication.allows_legacy_refresh_tokens());
     let current_result = token_use_case::exchange_refresh_token(
         &harness.state,
+        &test_issuer(&harness.state),
         refresh_request(&harness.client_id, &stale_refresh.value),
         current_authentication.clone(),
     )
@@ -287,6 +301,7 @@ async fn refresh_written_after_rotation_is_inert_even_if_revocation_already_ran(
     ));
     let legacy_result = token_use_case::exchange_refresh_token(
         &harness.state,
+        &test_issuer(&harness.state),
         refresh_request(&harness.client_id, &stale_legacy_refresh.value),
         current_authentication,
     )
@@ -357,6 +372,7 @@ async fn concurrent_rotation_leaves_no_live_refresh_from_either_issuance_path() 
         let state = harness.state.clone();
         let client_id = harness.client_id.clone();
         let authenticated = authenticated.clone();
+        let issuer = test_issuer(&state);
         let barrier = barrier.clone();
         code_tasks.push(tokio::spawn(async move {
             barrier.wait().await;
@@ -364,6 +380,7 @@ async fn concurrent_rotation_leaves_no_live_refresh_from_either_issuance_path() 
                 &state,
                 code_request(&client_id, &code.value),
                 authenticated,
+                &issuer,
             )
             .await
             {
@@ -395,11 +412,13 @@ async fn concurrent_rotation_leaves_no_live_refresh_from_either_issuance_path() 
         let state = harness.state.clone();
         let client_id = harness.client_id.clone();
         let authenticated = authenticated.clone();
+        let issuer = test_issuer(&state);
         let barrier = barrier.clone();
         refresh_tasks.push(tokio::spawn(async move {
             barrier.wait().await;
             match token_use_case::exchange_refresh_token(
                 &state,
+                &issuer,
                 refresh_request(&client_id, &refresh.value),
                 authenticated,
             )

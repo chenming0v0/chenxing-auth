@@ -12,7 +12,10 @@ fn config_preserves_explicit_issuer_url() {
     )
     .expect("valid issuer configuration");
 
-    assert_eq!(config.issuer_url, "http://localhost:3000");
+    assert_eq!(
+        config.issuer.as_ref().map(|i| i.as_str()),
+        Some("http://localhost:3000")
+    );
 }
 
 #[test]

@@ -73,7 +73,14 @@ fn is_protocol_path(path: &str) -> bool {
         || path.starts_with("/api/")
         || matches!(
             path,
-            "/oauth/authorize" | "/oauth/token" | "/oauth/revoke" | "/oauth/userinfo"
+            "/oauth/authorize"
+                | "/oauth/authorize/"
+                | "/oauth/token"
+                | "/oauth/token/"
+                | "/oauth/revoke"
+                | "/oauth/revoke/"
+                | "/oauth/userinfo"
+                | "/oauth/userinfo/"
         )
         || path == "/.well-known"
         || path.starts_with("/.well-known/")
@@ -119,9 +126,13 @@ mod tests {
         assert!(is_protocol_path("/api/v1/users"));
         for path in [
             "/oauth/authorize",
+            "/oauth/authorize/",
             "/oauth/token",
+            "/oauth/token/",
             "/oauth/revoke",
+            "/oauth/revoke/",
             "/oauth/userinfo",
+            "/oauth/userinfo/",
         ] {
             assert!(is_protocol_path(path), "{path}");
         }

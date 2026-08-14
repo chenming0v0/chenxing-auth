@@ -18,6 +18,11 @@ use crate::{
     state::AppState,
 };
 
+pub use super::issuer_settings_handlers::{
+    IssuerRecordResponse, IssuerSettingResponse, UpdateIssuerSetting, get_issuer_setting,
+    update_issuer_setting,
+};
+
 /// 注册发件人的三态更新：缺失 = 非法请求，`null` = 清除，字符串 = 设置。
 ///
 /// serde 对外层 `Option` 的特例化会把 JSON `null` 直接吞成 `None`（等同缺失），

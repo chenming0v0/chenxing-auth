@@ -47,7 +47,11 @@ impl ClientService {
         // writing Redis. Therefore every old-version token is indexed before
         // this UPDATE can commit and is visible to the cleanup below; a writer
         // arriving after commit fails its version fence instead (Issue #310).
-        self.revoke_refresh_tokens_after_rotation(client_id).await;
+        self.revoke_refresh_tokens_best_effort(
+            client_id,
+            RefreshTokenCleanupReason::SecretRotation,
+        )
+        .await;
         Ok(RotatedClientSecret {
             client_id: client_id.to_owned(),
             client_secret,
@@ -67,13 +71,18 @@ impl ClientService {
     ///
     /// 同理，撤销失败不改变函数返回值：调用方必须拿到新 secret，
     /// 否则该 Client 会因为「新 secret 已生效但调用者不知道」而完全无法认证。
-    async fn revoke_refresh_tokens_after_rotation(&self, client_id: &str) {
+    pub(super) async fn revoke_refresh_tokens_best_effort(
+        &self,
+        client_id: &str,
+        reason: RefreshTokenCleanupReason,
+    ) {
         let Some(store) = self.refresh_tokens.as_ref() else {
             // 未注入存储属于装配错误（生产路径一定会注入）。
             // 记 error 而不是静默积累无效凭据。
             tracing::error!(
                 client_id = %client_id,
-                "client secret rotated without refresh token store; \
+                reason = reason.as_str(),
+                "client lifecycle event without refresh token store; \
                  stale refresh token records could not be eagerly removed"
             );
             return;
@@ -82,18 +91,35 @@ impl ClientService {
             Ok(revoked) => {
                 tracing::info!(
                     client_id = %client_id,
+                    reason = reason.as_str(),
                     revoked_refresh_tokens = revoked,
-                    "revoked refresh tokens after client secret rotation"
+                    "revoked refresh tokens after client lifecycle event"
                 );
             }
             Err(store_error) => {
                 tracing::error!(
                     error = %store_error,
                     client_id = %client_id,
-                    "failed to revoke refresh tokens after client secret rotation; \
+                    reason = reason.as_str(),
+                    "failed to revoke refresh tokens after client lifecycle event; \
                      version-invalid token records will remain until expiry"
                 );
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RefreshTokenCleanupReason {
+    SecretRotation,
+    ClientDisabled,
+}
+
+impl RefreshTokenCleanupReason {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::SecretRotation => "secret_rotation",
+            Self::ClientDisabled => "client_disabled",
         }
     }
 }

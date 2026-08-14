@@ -1,4 +1,5 @@
 use crate::{
+    api::extract::RequestIssuer,
     audit::AuditEvent,
     error,
     oauth::{
@@ -45,6 +46,7 @@ impl fmt::Debug for ExternalCallbackQuery {
 
 pub async fn external_callback(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     Path(slug): Path<String>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
@@ -140,7 +142,7 @@ pub async fn external_callback(
             .await;
         }
     };
-    let callback = format!("{}{}", state.config.issuer_url, callback_path);
+    let callback = format!("{}{}", issuer.issuer().as_str(), callback_path);
     // 用发起授权时存入 state 的 verifier 兑换授权码（RFC 7636 §4.5）。
     // 空串表示本次登录未使用 PKCE：provider 关闭了开关，或这是升级前签发的旧 state。
     let token = match state
@@ -245,9 +247,12 @@ pub async fn external_callback(
         .request_id
         .as_deref()
         .filter(|value| !value.is_empty());
-    let holder_hash = cookies::extract_authz_holder_cookie(&headers)
-        .as_deref()
-        .map(cookies::authz_holder_hash);
+    let holder_hash = cookies::extract_authz_holder_cookie_for_secure_transport(
+        &headers,
+        state.config.cookie_secure,
+    )
+    .as_deref()
+    .map(cookies::authz_holder_hash);
     if let Some(request_id) = request_id
         && let Err(error_code) = bind_and_audit(
             &state,

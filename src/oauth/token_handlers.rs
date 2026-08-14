@@ -15,10 +15,11 @@ use super::{
     token_security::{enforce_qps, enforce_source_qps_with_policy, verify_client_credentials},
     token_use_case::{self, OAuthError},
 };
-use crate::{error, state::AppState};
+use crate::{api::extract::RequestIssuer, error, state::AppState};
 
 pub async fn token(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     headers: HeaderMap,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     form: Result<RawForm, RawFormRejection>,
@@ -48,12 +49,13 @@ pub async fn token(
         &state.config.trusted_proxies,
     );
     response::with_no_store_headers(
-        token_inner(state, headers, source_ip.as_deref(), request).await,
+        token_inner(state, issuer, headers, source_ip.as_deref(), request).await,
     )
 }
 
 async fn token_inner(
     state: AppState,
+    issuer: RequestIssuer,
     headers: HeaderMap,
     source_ip: Option<&str>,
     mut request: TokenRequest,
@@ -87,18 +89,21 @@ async fn token_inner(
         return response;
     }
     match request.grant_type.as_str() {
-        "authorization_code" => exchange_authorization_code(state, request, authenticated).await,
-        "refresh_token" => exchange_refresh_token(state, request, authenticated).await,
+        "authorization_code" => {
+            exchange_authorization_code(state, issuer, request, authenticated).await
+        }
+        "refresh_token" => exchange_refresh_token(state, issuer, request, authenticated).await,
         _ => error::oauth_bad_request("unsupported_grant_type", "grant type is unsupported"),
     }
 }
 
 async fn exchange_authorization_code(
     state: AppState,
+    issuer: RequestIssuer,
     request: TokenRequest,
     authenticated: crate::clients::service::AuthenticatedClient,
 ) -> Response {
-    match token_use_case::exchange_code(&state, request, authenticated).await {
+    match token_use_case::exchange_code(&state, request, authenticated, issuer.issuer()).await {
         Ok(token) => Json(token).into_response(),
         Err(error) => oauth_error_response(error),
     }

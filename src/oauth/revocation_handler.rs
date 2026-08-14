@@ -11,7 +11,7 @@ use super::{
     response::with_no_store_headers, token::decode_access_token,
     token_security::enforce_source_qps_with_policy,
 };
-use crate::{audit::AuditEvent, error, state::AppState};
+use crate::{api::extract::RequestIssuer, audit::AuditEvent, error, state::AppState};
 
 #[derive(Deserialize)]
 pub struct RevocationRequest {
@@ -37,6 +37,7 @@ impl fmt::Debug for RevocationRequest {
 
 pub async fn revoke(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     headers: HeaderMap,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     form: Result<RawForm, RawFormRejection>,
@@ -68,10 +69,15 @@ pub async fn revoke(
             ));
         }
     };
-    with_no_store_headers(revoke_inner(state, headers, request).await)
+    with_no_store_headers(revoke_inner(state, issuer, headers, request).await)
 }
 
-async fn revoke_inner(state: AppState, headers: HeaderMap, request: RevocationRequest) -> Response {
+async fn revoke_inner(
+    state: AppState,
+    issuer: RequestIssuer,
+    headers: HeaderMap,
+    request: RevocationRequest,
+) -> Response {
     let credentials = match resolve_client_credentials(
         &headers,
         request.client_id.as_deref(),
@@ -129,7 +135,7 @@ async fn revoke_inner(state: AppState, headers: HeaderMap, request: RevocationRe
 
     let access_token_found = if let Ok(claims) = decode_access_token(
         &state.keys,
-        &state.config.issuer_url,
+        issuer.issuer().as_str(),
         &credentials.client_id,
         &request.token,
     ) {

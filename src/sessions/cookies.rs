@@ -18,7 +18,7 @@ pub const EXTERNAL_STATE_COOKIE_PREFIX: &str = "chenxing_external_oauth_state_";
 const EXTERNAL_STATE_COOKIE_ID_BYTES: usize = 12;
 /// 授权请求持有者 Cookie：证明调用绑定端点的浏览器就是发起 `/oauth/authorize`
 /// 的那一个（#115）。只在服务端与 pending 记录中的摘要比对，值本身不进日志。
-pub const AUTHZ_HOLDER_COOKIE: &str = "chenxing_authz_holder";
+pub const AUTHZ_HOLDER_COOKIE: &str = "__Host-chenxing_authz_holder";
 const AUTHZ_HOLDER_BYTES: usize = 32;
 /// Pending login ticket cookie. The ticket is HttpOnly so normal browser code
 /// cannot copy the bearer value into a URL, log, or response body.
@@ -28,6 +28,7 @@ pub const LOGIN_TICKET_COOKIE: &str = "__Host-chenxing_login_ticket";
 pub const LOGIN_TICKET_HOLDER_COOKIE: &str = "__Host-chenxing_login_holder";
 const LOCAL_LOGIN_TICKET_COOKIE: &str = "chenxing_login_ticket";
 const LOCAL_LOGIN_TICKET_HOLDER_COOKIE: &str = "chenxing_login_holder";
+const LOCAL_AUTHZ_HOLDER_COOKIE: &str = "chenxing_authz_holder";
 const LOGIN_TICKET_HOLDER_BYTES: usize = 32;
 
 pub type CookieError = InvalidHeaderValue;
@@ -180,10 +181,11 @@ pub fn append_authz_holder_cookie(
     max_age_seconds: u64,
     secure: bool,
 ) -> Result<(), CookieError> {
+    let name = authz_holder_cookie_name(secure);
     headers.append(
         SET_COOKIE,
         build_cookie(
-            AUTHZ_HOLDER_COOKIE,
+            name,
             holder,
             max_age_seconds,
             secure,
@@ -194,9 +196,11 @@ pub fn append_authz_holder_cookie(
     Ok(())
 }
 
-/// 从请求 Cookie 头中提取授权持有者值（如存在）。
-pub fn extract_authz_holder_cookie(headers: &HeaderMap) -> Option<String> {
-    cookie_value(headers, AUTHZ_HOLDER_COOKIE)
+pub fn extract_authz_holder_cookie_for_secure_transport(
+    headers: &HeaderMap,
+    secure: bool,
+) -> Option<String> {
+    cookie_value(headers, authz_holder_cookie_name(secure))
 }
 
 /// 开发期兼容头部 `X-Chenxing-Session` 的原始取值。
@@ -261,6 +265,14 @@ pub const fn login_ticket_holder_cookie_name(secure: bool) -> &'static str {
         LOGIN_TICKET_HOLDER_COOKIE
     } else {
         LOCAL_LOGIN_TICKET_HOLDER_COOKIE
+    }
+}
+
+pub const fn authz_holder_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        AUTHZ_HOLDER_COOKIE
+    } else {
+        LOCAL_AUTHZ_HOLDER_COOKIE
     }
 }
 
@@ -359,8 +371,9 @@ mod tests {
     use axum::http::{HeaderMap, header::SET_COOKIE};
 
     use super::{
-        append_login_cookies, authz_holder_hash, login_ticket_holder_hash, new_authz_holder,
-        new_login_ticket_holder,
+        append_authz_holder_cookie, append_login_cookies, authz_holder_cookie_name,
+        authz_holder_hash, extract_authz_holder_cookie_for_secure_transport,
+        login_ticket_holder_hash, new_authz_holder, new_login_ticket_holder,
     };
 
     /// 回归 #115：holder 值生成应足够随机且长度合理。
@@ -397,6 +410,43 @@ mod tests {
         let hash1 = authz_holder_hash("holder_a");
         let hash2 = authz_holder_hash("holder_b");
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn authz_holder_cookie_name_and_reader_follow_transport_security() {
+        let holder = "holder";
+        assert_eq!(
+            authz_holder_cookie_name(true),
+            "__Host-chenxing_authz_holder"
+        );
+        assert_eq!(authz_holder_cookie_name(false), "chenxing_authz_holder");
+
+        for secure in [true, false] {
+            let mut response_headers = HeaderMap::new();
+            append_authz_holder_cookie(&mut response_headers, holder, 300, secure)
+                .expect("holder cookie");
+            let set_cookie = response_headers
+                .get(SET_COOKIE)
+                .expect("Set-Cookie header")
+                .to_str()
+                .expect("cookie header value");
+            let name = authz_holder_cookie_name(secure);
+            assert!(set_cookie.starts_with(&format!("{name}=")));
+
+            let mut request_headers = HeaderMap::new();
+            request_headers.insert(
+                axum::http::header::COOKIE,
+                set_cookie.split(';').next().unwrap().parse().unwrap(),
+            );
+            assert_eq!(
+                extract_authz_holder_cookie_for_secure_transport(&request_headers, secure),
+                Some(holder.to_owned())
+            );
+            assert_eq!(
+                extract_authz_holder_cookie_for_secure_transport(&request_headers, !secure),
+                None
+            );
+        }
     }
 
     #[test]

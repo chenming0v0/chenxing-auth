@@ -1,5 +1,8 @@
-use super::{OAuthError, RefreshExchangeError, TokenRequest, TokenResponse, issue_token_response};
-use crate::{clients::service::AuthenticatedClient, state::AppState};
+use super::{
+    OAuthError, RefreshExchangeError, TokenIssueParams, TokenRequest, TokenResponse,
+    issue_token_response,
+};
+use crate::{clients::service::AuthenticatedClient, config::IssuerUrl, state::AppState};
 
 use super::super::{
     grant_gate::{GrantGateError, effective_grant_scopes},
@@ -26,6 +29,7 @@ mod replay;
 /// Exchange a refresh token after the token endpoint has authenticated the client.
 pub(super) async fn exchange_refresh_token(
     state: &AppState,
+    issuer: &IssuerUrl,
     request: TokenRequest,
     authenticated: AuthenticatedClient,
 ) -> Result<TokenResponse, RefreshExchangeError> {
@@ -134,12 +138,15 @@ pub(super) async fn exchange_refresh_token(
     );
     let token = issue_token_response(
         state,
-        &refresh.user_id,
-        client_id,
-        &scopes,
-        Some(next_refresh.value.clone()),
-        None,
-        None,
+        TokenIssueParams {
+            issuer,
+            user_id: &refresh.user_id,
+            client_id,
+            scopes: &scopes,
+            refresh_token: Some(next_refresh.value.clone()),
+            nonce: None,
+            auth_time: None,
+        },
     )
     .await?;
 

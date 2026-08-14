@@ -88,6 +88,8 @@ pub enum UserPermission {
     ReadAudit,
     ManageSettings,
     ManageIdentityProviders,
+    /// 修改 OIDC 发行者信任锚，只授予 Owner。
+    ManageIssuer,
     RotateKeys,
     ManageRoles,
     /// 重置他人的认证因子。独立于 `ManageUsers`：删除一个账号的 TOTP 会把它降级到
@@ -128,6 +130,10 @@ impl UserRole {
             Self::Admin => "admin",
             Self::Owner => "owner",
         }
+    }
+
+    pub const fn is_privileged(self) -> bool {
+        matches!(self, Self::Admin | Self::Owner)
     }
 
     pub const fn allows(self, permission: UserPermission) -> bool {
@@ -478,22 +484,5 @@ pub struct PublicUser {
 }
 
 #[cfg(test)]
-mod public_user_tests {
-    use super::{PublicUser, UserRole};
-
-    #[test]
-    fn public_user_serializes_creation_time_as_rfc3339() {
-        let value = serde_json::to_value(PublicUser {
-            id: 1,
-            username: "owner".to_owned(),
-            email: "owner@example.test".to_owned(),
-            display_name: None,
-            status: "active".to_owned(),
-            role: UserRole::Owner,
-            created_at: time::OffsetDateTime::UNIX_EPOCH,
-        })
-        .expect("public user serializes");
-
-        assert_eq!(value["created_at"], "1970-01-01T00:00:00Z");
-    }
-}
+#[path = "domain_public_user_tests.rs"]
+mod public_user_tests;

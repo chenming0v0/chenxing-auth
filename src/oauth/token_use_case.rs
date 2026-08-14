@@ -8,7 +8,7 @@ use super::{
     refresh::RefreshToken,
     session::active_user_epoch,
 };
-use crate::{clients::service::AuthenticatedClient, state::AppState};
+use crate::{clients::service::AuthenticatedClient, config::IssuerUrl, state::AppState};
 
 #[path = "refresh_use_case.rs"]
 mod refresh_use_case;
@@ -17,7 +17,7 @@ mod token_exchange_audit;
 #[path = "token_use_case_support.rs"]
 mod token_use_case_support;
 use token_exchange_audit::{exchange_failure, record_token_exchange_success};
-pub(crate) use token_use_case_support::issue_token_response;
+pub(crate) use token_use_case_support::{TokenIssueParams, issue_token_response};
 use token_use_case_support::{
     authorization_code_session_auth_time, compensate_authorization_code_exchange,
     validate_code_binding,
@@ -148,6 +148,7 @@ pub async fn exchange_code(
     state: &AppState,
     request: TokenRequest,
     authenticated: AuthenticatedClient,
+    issuer: &IssuerUrl,
 ) -> Result<TokenResponse, OAuthError> {
     let Some(code_value) = request.code.as_deref() else {
         return exchange_failure(
@@ -427,12 +428,15 @@ pub async fn exchange_code(
     }
     let token = match issue_token_response(
         state,
-        &code.user_id,
-        client_id,
-        &scopes,
-        Some(refresh.value.clone()),
-        code.nonce.as_deref(),
-        auth_time,
+        TokenIssueParams {
+            issuer,
+            user_id: &code.user_id,
+            client_id,
+            scopes: &scopes,
+            refresh_token: Some(refresh.value.clone()),
+            nonce: code.nonce.as_deref(),
+            auth_time,
+        },
     )
     .await
     {
@@ -474,10 +478,11 @@ pub async fn exchange_code(
 /// Exchange a refresh token after the token endpoint has authenticated the client.
 pub async fn exchange_refresh_token(
     state: &AppState,
+    issuer: &IssuerUrl,
     request: TokenRequest,
     authenticated: AuthenticatedClient,
 ) -> Result<TokenResponse, RefreshExchangeError> {
-    refresh_use_case::exchange_refresh_token(state, request, authenticated).await
+    refresh_use_case::exchange_refresh_token(state, issuer, request, authenticated).await
 }
 
 #[cfg(test)]

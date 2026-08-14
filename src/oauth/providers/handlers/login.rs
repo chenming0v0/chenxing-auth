@@ -1,4 +1,5 @@
 use crate::{
+    api::extract::RequestIssuer,
     audit::AuditEvent,
     auth_limiter::MissingSourceIpPolicy,
     error,
@@ -40,6 +41,7 @@ impl fmt::Debug for ExternalLoginQuery {
 
 pub async fn start_external_login(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     Path(slug): Path<String>,
     Query(query): Query<ExternalLoginQuery>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
@@ -170,7 +172,7 @@ pub async fn start_external_login(
         return error::internal();
     }
     let callback_path = external_callback_path(&slug);
-    let callback = format!("{}{}", state.config.issuer_url, callback_path);
+    let callback = format!("{}{}", issuer.issuer().as_str(), callback_path);
     let authorization_url = match state.external_oauth.authorization_url(
         &provider,
         &callback,

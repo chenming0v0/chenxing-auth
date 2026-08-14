@@ -44,7 +44,12 @@ pub(super) async fn health_ready(State(state): State<AppState>) -> Response {
     );
     let database_ready = matches!(database_result, Ok(Ok(())));
     let redis_ready = matches!(redis_result, Ok(Ok(())));
-    if database_ready && redis_ready {
+    let issuer_ready = if database_ready {
+        issuer_converged(&state).await
+    } else {
+        false
+    };
+    if database_ready && redis_ready && issuer_ready {
         return (
             StatusCode::OK,
             Json(HealthResponse {
@@ -59,6 +64,7 @@ pub(super) async fn health_ready(State(state): State<AppState>) -> Response {
         event = "readiness_check_failed",
         database = database_ready,
         redis = redis_ready,
+        issuer = issuer_ready,
         "application dependencies are not ready"
     );
     (
@@ -71,15 +77,82 @@ pub(super) async fn health_ready(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
-/// 未配置固定 Issuer 时唯一保留的应用状态探针。
-///
-/// 返回 503 让前端停在可恢复错误态；不能返回 bootstrap=false，否则旧前端会展示
-/// Owner 创建表单，而该写端点在受限模式下刻意不存在。
-pub(super) async fn issuer_not_configured() -> Response {
-    crate::error::service_unavailable(
-        "issuer_not_configured",
-        "configure the persistent application issuer and restart the service",
+pub(super) async fn system_status(State(state): State<AppState>) -> Response {
+    let persisted = match crate::settings::issuer::load(&state.database).await {
+        Ok(persisted) => persisted,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load issuer bootstrap status");
+            return crate::error::service_unavailable(
+                "issuer_status_unavailable",
+                "the application issuer status is unavailable",
+            );
+        }
+    };
+    let runtime = state.issuer.state();
+    if persisted.is_none() && runtime.loaded().is_some() {
+        return crate::admin::auth_handlers::bootstrap_status(State(state)).await;
+    }
+    if persisted.is_none()
+        && matches!(
+            runtime.as_ref(),
+            crate::settings::IssuerRuntimeState::AwaitingIssuer
+        )
+    {
+        return crate::admin::auth_handlers::bootstrap_status(State(state)).await;
+    }
+    if let (Some(persisted), Some(loaded)) = (persisted.as_ref(), runtime.loaded())
+        && persisted.generation == loaded.generation()
+        && persisted.value == loaded.issuer().as_str()
+    {
+        return crate::admin::auth_handlers::bootstrap_status(State(state)).await;
+    }
+
+    let (code, message) = match (persisted.as_ref(), runtime.as_ref()) {
+        (None, crate::settings::IssuerRuntimeState::AwaitingIssuer) => (
+            "issuer_not_configured",
+            "configure the persistent application issuer",
+        ),
+        (_, crate::settings::IssuerRuntimeState::Invalid { .. }) => (
+            "issuer_runtime_invalid",
+            "the persisted application issuer is invalid",
+        ),
+        (Some(_), _) => (
+            "issuer_pending_reload",
+            "the persisted application issuer is waiting to be loaded",
+        ),
+        (None, _) => (
+            "issuer_state_mismatch",
+            "the application issuer state is inconsistent",
+        ),
+    };
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "code": code,
+            "message": message,
+            "issuer_persisted": persisted.is_some(),
+            "persisted_generation": persisted.as_ref().map(|record| record.generation),
+            "issuer_loaded": runtime.loaded().is_some(),
+            "loaded_generation": runtime.loaded_generation(),
+            "phase": runtime.phase(),
+        })),
     )
+        .into_response()
+}
+
+async fn issuer_converged(state: &AppState) -> bool {
+    let persisted = match crate::settings::issuer::load(&state.database).await {
+        Ok(persisted) => persisted,
+        Err(_) => return false,
+    };
+    match (persisted, state.issuer.state().loaded()) {
+        (None, None) => false,
+        (Some(persisted), Some(loaded)) => {
+            persisted.generation == loaded.generation()
+                && persisted.value == loaded.issuer().as_str()
+        }
+        _ => false,
+    }
 }
 
 async fn redis_ready(client: &RedisClient) -> Result<(), redis::RedisError> {

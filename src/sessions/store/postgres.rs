@@ -1,6 +1,7 @@
 //! Postgres 权威记录路径（生产部署配置）。
 //!
 //! 会话元数据写进 `user_sessions` 表，载荷优先从库里取，库里找不到时回退到 Redis。
+//! `find` 的 Redis 回退在行锁外执行（Issue #432）；`FOR UPDATE` 只包住 idle 续期写。
 //! 撤销通过更新 `revoked_at` 列表达，并将撤销通知写进 `session_outbox`，由
 //! outbox 处理器异步同步到 Redis。
 
@@ -13,12 +14,13 @@ use crate::{
     users::domain::{UserId, UserStatus},
 };
 
+#[path = "postgres_find.rs"]
+mod find;
 #[path = "postgres_lookup.rs"]
 mod lookup;
 
-pub(super) use lookup::{
-    find_with_metadata, find_with_metadata_by_token_hash, list_for_user, revoke_for_user,
-};
+pub(super) use find::{find_with_metadata, find_with_metadata_by_token_hash};
+pub(super) use lookup::{list_for_user, revoke_for_user};
 
 /// 写入会话元数据。
 ///

@@ -69,6 +69,24 @@ pub fn scopes_are_covered(stored: &[String], requested: &[String]) -> bool {
     requested.iter().all(|scope| stored.contains(scope))
 }
 
+pub fn normalize_scopes(scopes: &[String]) -> Vec<String> {
+    use std::collections::BTreeSet;
+
+    scopes
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+pub fn merge_scopes(existing: &[String], incoming: &[String]) -> Vec<String> {
+    let mut combined = Vec::with_capacity(existing.len() + incoming.len());
+    combined.extend_from_slice(existing);
+    combined.extend_from_slice(incoming);
+    normalize_scopes(&combined)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AuthorizedApp, ConsentServiceError, ConsentState, scopes_are_covered};

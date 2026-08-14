@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::{
     admin::{authorization::AdminActor, domain::AdminPermission},
-    api::extract::{AdminRead, AdminWrite},
+    api::extract::{AdminRead, AdminWrite, RequestIssuer},
     audit::AuditEvent,
     error,
     oauth::providers::{domain::ProviderInput, service::ExternalOAuthError},
@@ -23,13 +23,14 @@ struct ProviderSummaryResponse {
 }
 
 fn provider_response(
-    state: &AppState,
+    issuer: &RequestIssuer,
     provider: crate::oauth::providers::domain::ProviderSummary,
 ) -> ProviderSummaryResponse {
     ProviderSummaryResponse {
         callback_uri: format!(
             "{}/auth/external/{}/callback",
-            state.config.issuer_url, provider.slug
+            issuer.issuer().as_str(),
+            provider.slug
         ),
         provider,
     }
@@ -40,7 +41,11 @@ pub struct ProviderStatusPath {
     pub slug: String,
 }
 
-pub async fn list_providers(State(state): State<AppState>, admin: AdminRead) -> Response {
+pub async fn list_providers(
+    State(state): State<AppState>,
+    issuer: RequestIssuer,
+    admin: AdminRead,
+) -> Response {
     if let Err(response) = admin
         .authorize(&state, AdminPermission::ManageIdentityProviders)
         .await
@@ -53,7 +58,7 @@ pub async fn list_providers(State(state): State<AppState>, admin: AdminRead) -> 
             Json(
                 providers
                     .into_iter()
-                    .map(|provider| provider_response(&state, provider))
+                    .map(|provider| provider_response(&issuer, provider))
                     .collect::<Vec<_>>(),
             ),
         )
@@ -67,6 +72,7 @@ pub async fn list_providers(State(state): State<AppState>, admin: AdminRead) -> 
 
 pub async fn create_provider(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     admin: AdminWrite,
     Json(input): Json<ProviderInput>,
 ) -> Response {
@@ -99,7 +105,7 @@ pub async fn create_provider(
             .await;
             (
                 StatusCode::CREATED,
-                Json(provider_response(&state, provider)),
+                Json(provider_response(&issuer, provider)),
             )
                 .into_response()
         }

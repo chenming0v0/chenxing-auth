@@ -4,7 +4,12 @@ info:
   version: 1.0.0
   description: |
     辰星通行证用户认证、OAuth 2.0/OIDC 和统一用户管理 API。
-    当前定义以仓库实际路由为准。运行期 Issuer 持久化在 PostgreSQL；未配置时仅健康检查、静态前端和初始化状态可用，其他协议路由不注册。
+    当前定义以仓库实际路由为准。运行期 Issuer 持久化在 PostgreSQL；未配置时仅健康检查、静态前端和初始化状态可用，其他协议路由由运行时门禁拒绝。
+
+    请求超时（`REQUEST_TIMEOUT_SECONDS`）按路径分流错误信封（Issue #423）：
+    `/oauth/*` 协议端点返回 RFC 6749 `503 temporarily_unavailable`（`OAuthErrorResponse`），
+    不得改写为内部 API 信封；其余应用路由返回 `504` + `ErrorResponse`（`code=request_timeout`）。
+    健康检查与静态 SPA fallback 不套用该请求超时。
 servers:
   - url: http://127.0.0.1:3000
     description: 本地开发
@@ -45,9 +50,19 @@ paths:
       tags: [OAuth/OIDC]
       summary: OIDC Discovery
       operationId: openidConfiguration
+      description: |
+        返回 OIDC Discovery 文档。公开只读元数据，允许任意来源跨域读取
+        （`Access-Control-Allow-Origin: *`，不带凭据）。
       responses:
         '200':
           description: OIDC 配置
+          headers:
+            Access-Control-Allow-Origin:
+              description: 当请求带 Origin 时返回 `*`，允许 RP 跨域读取；无 Origin 时省略。
+              schema: { type: string }
+            Vary:
+              description: 始终为 `Origin`，避免共享缓存混用带/不带 Origin 的响应。
+              schema: { type: string }
           content:
             application/json:
               schema:
@@ -57,13 +72,50 @@ paths:
       tags: [OAuth/OIDC]
       summary: JWKS 公钥集合
       operationId: jwks
+      description: |
+        返回当前及验证过渡期公钥集合，只用于验证 JWT，不包含私钥。
+        公开只读元数据，CORS 与 Discovery 一致：请求带 Origin 时返回
+        `Access-Control-Allow-Origin: *`（不带凭据），且始终 `Vary: Origin`。
+        缓存策略为 `Cache-Control: public, max-age=60, must-revalidate`，RP 可在 60 秒内
+        直接使用共享缓存；过期后用 `If-None-Match` 发起条件请求，公钥集合未变时返回 304。
+        ETag 由 JWKS 字节的 SHA-256 派生，确定性且跨实例一致；密钥轮换或吊销后 ETag 改变。
+      parameters:
+        - { name: If-None-Match, in: header, required: false, description: RP 上次响应的 ETag，匹配时返回 304, schema: { type: string } }
       responses:
         '200':
           description: 公钥集合
+          headers:
+            Cache-Control:
+              description: '`public, max-age=60, must-revalidate`'
+              schema: { type: string }
+            ETag:
+              description: JWKS 字节 SHA-256 的强 ETag，用于条件请求。
+              schema: { type: string }
+            Access-Control-Allow-Origin:
+              description: 当请求带 Origin 时返回 `*`，允许 RP 跨域读取；无 Origin 时省略。
+              schema: { type: string }
+            Vary:
+              description: 始终为 `Origin`，避免共享缓存混用带/不带 Origin 的响应。
+              schema: { type: string }
           content:
             application/json:
               schema:
                 type: object
+        '304':
+          description: 公钥集合未变更，RP 可继续使用缓存副本
+          headers:
+            ETag:
+              description: 与 200 响应相同的 ETag。
+              schema: { type: string }
+            Cache-Control:
+              description: '`public, max-age=60, must-revalidate`'
+              schema: { type: string }
+            Access-Control-Allow-Origin:
+              description: 当请求带 Origin 时返回 `*`；无 Origin 时省略。
+              schema: { type: string }
+            Vary:
+              description: 始终为 `Origin`。
+              schema: { type: string }
   /api/v1/users:
     post:
       tags: [User Auth/Account]
@@ -694,7 +746,10 @@ paths:
       summary: OAuth 授权码入口
       operationId: authorize
       security: [{ sessionCookie: [] }, { chenxingSession: [] }, {}]
-      description: 未登录浏览器请求仅在 client、redirect_uri、scope、state 和 PKCE 完整校验后创建 pending。X-Chenxing-Session 仅在 OAUTH_SESSION_HEADER_ENABLED=true 的开发兼容配置中接受，不能绕过 Session 绑定、CSRF 或 consent。
+      description: |
+        未登录浏览器请求仅在 client、redirect_uri、scope、state 和 PKCE 完整校验后创建 pending。
+        X-Chenxing-Session 仅在 OAUTH_SESSION_HEADER_ENABLED=true 的开发兼容配置中接受，不能绕过 Session 绑定、CSRF 或 consent。
+        请求超时在中间件层返回 503 `temporarily_unavailable`（RFC 6749 JSON 信封；此时尚无可用的 redirect_uri 上下文做错误重定向），不会返回内部 API 的 504 `request_timeout`（Issue #423）。
       parameters:
         - { $ref: '#/components/parameters/ClientId' }
         - { name: redirect_uri, in: query, required: true, schema: { type: string, format: uri } }
@@ -705,7 +760,7 @@ paths:
         - { name: code_challenge, in: query, required: true, schema: { type: string } }
         - { name: code_challenge_method, in: query, required: true, schema: { type: string, enum: [S256] } }
       responses:
-        '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页（跳转到 SPA 登录页或授权确认页时附带 chenxing_authz_holder HttpOnly Cookie，供后续绑定端点校验；已授权直通到 redirect_uri 的分支不下发） }
+        '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页（跳转到 SPA 登录页或授权确认页时附带授权持有者 HttpOnly Cookie；HTTPS 名称为 __Host-chenxing_authz_holder，本地 HTTP 名称为 chenxing_authz_holder，供后续绑定端点校验；已授权直通到 redirect_uri 的分支不下发） }
         '400': { $ref: '#/components/responses/OAuthBadRequest' }
         '401': { $ref: '#/components/responses/OAuthUnauthorized' }
         '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
@@ -759,9 +814,9 @@ paths:
         绑定时必须同时满足：
         1. 有效的 Session Cookie（HTTPS 部署为 __Host-chenxing_session）
         2. CSRF 校验通过（HTTPS 部署为 __Host-chenxing_csrf Cookie + X-CSRF-Token 头）
-        3. 授权持有者 Cookie 与 pending 记录中的摘要匹配（chenxing_authz_holder，防御 OAuth login CSRF / 请求固定攻击 #115）
+        3. 授权持有者 Cookie 与 pending 记录中的摘要匹配（HTTPS 为 __Host-chenxing_authz_holder，本地 HTTP 为 chenxing_authz_holder，防御 OAuth login CSRF / 请求固定攻击 #115）
 
-        chenxing_authz_holder Cookie 由 `/oauth/authorize` 在把浏览器交给 SPA（登录页或授权确认页）时下发
+        授权持有者 Cookie 由 `/oauth/authorize` 在把浏览器交给 SPA（登录页或授权确认页）时下发；HTTPS 使用 `__Host-chenxing_authz_holder`，本地 HTTP 使用 `chenxing_authz_holder`
         （HttpOnly, SameSite=Lax, path=/），SHA-256 摘要存入 Redis 的 pending 记录。
         缺失该 Cookie 或摘要不匹配返回 403。
 
@@ -791,6 +846,9 @@ paths:
       tags: [OAuth/OIDC]
       summary: 交换授权码或刷新 Token
       operationId: token
+      description: |
+        表单编码。Client 认证为 HTTP Basic 或 body 二选一。
+        请求超时返回 503 `temporarily_unavailable`（RFC 6749 信封），不会返回内部 API 的 504 `request_timeout`（Issue #423）。
       security: [{ basicClientAuth: [] }]
       requestBody:
         required: true
@@ -1434,6 +1492,53 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/admin/settings/issuer:
+    get:
+      tags: [Admin]
+      summary: 查询 OIDC Issuer 状态
+      description: Owner 专属。返回持久化记录、当前进程加载快照和运行阶段，不返回秘密材料。
+      operationId: getIssuerSetting
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+      responses:
+        '200':
+          description: Issuer 的持久化与运行时状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IssuerSettingResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '500': { $ref: '#/components/responses/InternalError' }
+    put:
+      tags: [Admin]
+      summary: 创建或更新 OIDC Issuer
+      description: |
+        Owner 专属，浏览器会话需要 CSRF。value 必须是无 userinfo、路径、查询和片段的
+        http(s) 根 URL。expected_generation 用于 CAS 并发保护；修改已有值时 confirm 必须为 true。
+        写入与 issuer_configure/issuer_update 审计在同一事务中提交，当前进程立即热生效，其他副本按 generation 轮询收敛。
+      operationId: updateIssuerSetting
+      security:
+        - sessionCookie: []
+        - adminBearer: []
+      parameters:
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateIssuerSetting' }
+      responses:
+        '200':
+          description: Issuer 已持久化并加载到当前进程
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/IssuerSettingResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '500': { $ref: '#/components/responses/InternalError' }
   /api/v1/admin/settings/passkey:
     get:
       tags: [Admin]
@@ -1791,7 +1896,16 @@ components:
         WWW-Authenticate: { description: RFC 6749/6750 challenge, schema: { type: string } }
       content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } }
     OAuthTooManyRequests: { description: OAuth 限流或容量保护触发, content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } } }
-    OAuthServiceUnavailable: { description: OAuth 依赖暂时不可用, content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } } }
+    OAuthServiceUnavailable:
+      description: |
+        OAuth 依赖暂时不可用，或 `/oauth/*` 协议端点触发请求超时（Issue #423）。
+        响应始终为 RFC 6749 信封（`error=temporarily_unavailable`），不是内部 `{code, message}`。
+      content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } }
+    RequestTimeout:
+      description: |
+        非 `/oauth/*` 应用路由触发请求超时（Issue #423）。
+        OAuth 协议端点超时不使用本响应，见 `OAuthServiceUnavailable`。
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } }
   schemas:
     ErrorResponse:
       type: object
@@ -2318,6 +2432,31 @@ components:
       required: [initialized]
       properties:
         initialized: { type: boolean }
+    IssuerRecordResponse:
+      type: object
+      required: [value, generation, updated_at]
+      properties:
+        value: { type: string, format: uri, description: 无尾斜杠的规范化 OIDC 根 URL }
+        generation: { type: integer, format: int64, minimum: 1 }
+        updated_at: { type: string, format: date-time }
+    IssuerSettingResponse:
+      type: object
+      required: [persisted, loaded, phase]
+      properties:
+        persisted:
+          allOf: [{ $ref: '#/components/schemas/IssuerRecordResponse' }]
+          nullable: true
+        loaded:
+          allOf: [{ $ref: '#/components/schemas/IssuerRecordResponse' }]
+          nullable: true
+        phase: { type: string, enum: [awaiting_issuer, issuer_loaded, issuer_invalid] }
+    UpdateIssuerSetting:
+      type: object
+      required: [value, expected_generation, confirm]
+      properties:
+        value: { type: string, format: uri, maxLength: 2048 }
+        expected_generation: { type: integer, format: int64, minimum: 0 }
+        confirm: { type: boolean, description: 已有 Issuer 改值时必须为 true }
     PasskeySetting:
       type: object
       required: [enabled, rp_name, rp_id, user_verification, authenticator_attachment, allow_insecure_origin, allowed_origins]

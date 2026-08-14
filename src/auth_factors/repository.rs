@@ -278,6 +278,12 @@ pub async fn has_active_passkey_only_accounts(pool: &PgPool) -> Result<bool, cra
     .await
 }
 
+pub async fn has_passkeys(pool: &PgPool) -> Result<bool, crate::sqlx::Error> {
+    crate::sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM user_passkeys)")
+        .fetch_one(pool)
+        .await
+}
+
 pub async fn list_passkeys(
     pool: &PgPool,
     user_id: UserId,

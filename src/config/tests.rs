@@ -100,16 +100,4 @@ fn insecure_cookies_are_allowed_only_for_loopback_http() {
     let mut config = config_with_session_ttl(3600);
     config.cookie_secure = false;
     assert!(config.validate_cookie_security().is_ok());
-
-    config.issuer_url = "https://auth.example.com".to_owned();
-    assert_eq!(
-        config.validate_cookie_security(),
-        Err(ConfigError::InvalidValue("COOKIE_SECURE"))
-    );
-
-    config.issuer_url = "http://auth.example.com".to_owned();
-    assert_eq!(
-        config.validate_cookie_security(),
-        Err(ConfigError::InvalidValue("COOKIE_SECURE"))
-    );
 }

@@ -13,7 +13,11 @@
 {"code":"invalid_credentials","message":"email or password is incorrect"}
 ```
 
-- 常见状态码：`200` 成功，`201` 创建成功，`204` 成功且无响应体，`400` 参数或业务校验失败，`401` 未认证，`403` 无权限，`409` 冲突，`503` 依赖暂不可用，`500` 服务端错误。
+- OAuth 协议端点（`/oauth/*`，如 `/oauth/token`、`/oauth/authorize`、`/oauth/revoke`、`/oauth/userinfo`）的 JSON 错误遵守 RFC 6749，字段为 `error` / `error_description`，**不是**上面的内部 `{code, message}` 信封。内部授权确认 API（`/api/v1/oauth/*`）仍使用内部信封。
+- 请求超时（`REQUEST_TIMEOUT_SECONDS`，默认 30 秒；健康检查与静态 SPA fallback 不受此限制）按路径分流响应格式（Issue #423），避免全局超时层把协议错误改写成内部信封：
+  - `/oauth/*`：`503` + RFC 6749 `{"error":"temporarily_unavailable","error_description":"..."}`，与依赖暂不可用等协议错误一致。
+  - 其余已匹配的应用路由：`504` + `{"code":"request_timeout","message":"request timed out"}`。
+- 常见状态码：`200` 成功，`201` 创建成功，`204` 成功且无响应体，`400` 参数或业务校验失败，`401` 未认证，`403` 无权限，`409` 冲突，`503` 依赖暂不可用，`504` 非 OAuth 路由请求超时，`500` 服务端错误。
 - 不要在前端日志中记录密码、Client Secret、Session、授权码或 Token。
 
 ## 健康和 OIDC 元数据
@@ -30,9 +34,21 @@
 
 返回 OIDC Discovery 文档。前端/接入方应优先读取该文档，不要硬编码协议端点。当前至少包含 `issuer`、`authorization_endpoint`、`token_endpoint`、`userinfo_endpoint`、`jwks_uri`、`revocation_endpoint` 等标准字段。
 
+Discovery 是公开只读元数据，允许任意来源跨域读取：请求带 `Origin` 时响应 `Access-Control-Allow-Origin: *`；无论是否带 Origin 都响应 `Vary: Origin`，避免共享缓存混用 CORS 变体。该端点不读取 Cookie 或 Authorization，`*` 与不带凭据的请求兼容。
+
 ### `GET /.well-known/jwks.json`
 
 返回当前及验证过渡期公钥集合。只用于验证 JWT，不包含私钥。
+
+JWKS 是被 RP 高频轮询的公开端点，缓存策略为 `Cache-Control: public, max-age=60, must-revalidate`：
+
+- RP 可在 60 秒内直接使用共享缓存副本，不必每次回源；
+- 60 秒远短于密钥保留窗口（默认 7 天），轮换或吊销后最迟 60 秒全网看到新公钥；
+- `must-revalidate` 阻止缓存在回源失败时返回陈旧 JWKS——陈旧公钥会让新签发的令牌验签失败。
+
+响应携带确定性 ETag（JWKS 字节的 SHA-256 强 ETag，跨实例一致）。RP 应在本地缓存过期后用 `If-None-Match` 发起条件请求：公钥集合未变时返回 `304 Not Modified`（仍带 ETag 与 Cache-Control），避免重复传输完整 JWKS。密钥轮换或吊销改变公钥集合后 ETag 随之改变，RP 拿到新 ETag 和新 JWKS。
+
+JWKS 的 CORS 与 Discovery 一致：请求带 `Origin` 时 `Access-Control-Allow-Origin: *`（不带凭据），始终 `Vary: Origin`；200 与 304 均适用。
 
 ## 用户和浏览器 Session
 
@@ -165,7 +181,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 | `code_challenge_method` | 必须为 `S256` |
 | `nonce` | 使用 OIDC 时建议必填并随机生成，最多 512 个字符 |
 
-未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`；已登录但尚未授权该 scope 组合的请求进入 `/oauth/consent?request_id=...`。两条交给 SPA 的路径都会下发 `chenxing_authz_holder` HttpOnly Cookie（防御 OAuth login CSRF，见下文 bind 端点说明）。非 HTML 请求返回 `401 login_required`。
+未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`；已登录但尚未授权该 scope 组合的请求进入 `/oauth/consent?request_id=...`。两条交给 SPA 的路径都会下发授权持有者 HttpOnly Cookie：HTTPS 使用 `__Host-chenxing_authz_holder`，本地 HTTP 使用 `chenxing_authz_holder`（防御 OAuth login CSRF，见下文 bind 端点说明）。非 HTML 请求返回 `401 login_required`。
 
 ### `POST /api/v1/oauth/authorize/requests/{request_id}/bind`
 
@@ -177,9 +193,9 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 | --- | --- | --- |
 | Session Cookie `__Host-chenxing_session` | TOTP / 密码登录响应 | 身份认证 |
 | CSRF Cookie `__Host-chenxing_csrf` + `X-CSRF-Token` | 同上 | 防 CSRF |
-| 持有者 Cookie `chenxing_authz_holder` | `/oauth/authorize` 重定向响应 | **防 OAuth login CSRF（#115）** |
+| 持有者 Cookie `__Host-chenxing_authz_holder`（HTTPS）或 `chenxing_authz_holder`（本地 HTTP） | `/oauth/authorize` 重定向响应 | **防 OAuth login CSRF（#115）** |
 
-**`chenxing_authz_holder` Cookie 说明**：`request_id` 通过 URL 查询参数传递，可能通过 Referer、浏览器历史或分享链接泄露。没有持有者绑定，任何拿到 `request_id` 的已登录攻击者都可以把受害者的 pending 请求绑到自己的会话上并批准，使受害者登录进攻击者账号（OAuth login CSRF / 请求固定攻击）。
+**授权持有者 Cookie 说明**：HTTPS 使用 `__Host-chenxing_authz_holder`，本地 HTTP 使用 `chenxing_authz_holder`。`request_id` 通过 URL 查询参数传递，可能通过 Referer、浏览器历史或分享链接泄露。没有持有者绑定，任何拿到 `request_id` 的已登录攻击者都可以把受害者的 pending 请求绑到自己的会话上并批准，使受害者登录进攻击者账号（OAuth login CSRF / 请求固定攻击）。
 
 `/oauth/authorize` 在把浏览器交给 SPA 时下发该 Cookie（`HttpOnly; SameSite=Lax; Path=/`），其 SHA-256 摘要存入 Redis。bind 端点比对 Cookie 值与摘要，不匹配返回 `403 authorization_holder_invalid`。
 
@@ -253,6 +269,8 @@ grant_type=refresh_token&refresh_token=...
 
 Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限流，超限返回 `429 temporarily_unavailable`；套餐未配置 `max_qps`（`null`）时不限流。
 
+处理超时（见上文「基础约定」）时，`/oauth/token` 与其它 `/oauth/*` 协议端点返回 `503 temporarily_unavailable`（RFC 6749 信封），**不会**返回内部 API 的 `504 request_timeout`。
+
 #### ID Token Claims
 
 `id_token` 是 RS256 签名的 JWT，Header 携带 `kid`；公钥从 `/.well-known/jwks.json` 获取。Payload Claims：
@@ -287,11 +305,9 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ## 管理 API
 
-运行期 Issuer 保存在 PostgreSQL `app_settings`。数据库尚未设置 Issuer 时，服务只提供
-`/health*`、静态前端和 `GET /api/v1/admin/bootstrap/status`；后者返回 `503
-issuer_not_configured`，其余认证、管理、OAuth/OIDC、Discovery 与 JWKS 路由不注册。
-运维通过容器内命令 `chenxing-auth configure-issuer https://auth.example.com` 首次写入，
-然后重启应用。相同值可幂等重试，不同值会被拒绝，不能从请求 Host 推导。
+运行期 Issuer 保存在 PostgreSQL `app_settings`。数据库尚未设置 Issuer 时，服务仍提供
+`/health*`、静态前端、Owner 引导和 Owner 专属 Issuer 设置入口；其他认证、管理、OAuth/OIDC、Discovery 与 JWKS 路由由运行时门禁拒绝。
+运维可通过容器内命令 `chenxing-auth configure-issuer https://auth.example.com` 首次写入，也可由 Owner 在管理设置页配置；写入后当前进程热生效，其他副本按 generation 轮询收敛，不能从请求 Host 推导。
 
 管理员 Bearer Token 请求头：`Authorization: Bearer <ADMIN_TOKEN>`。初始化完成后，管理 API 有两条独立通道，任一通过即可继续按角色判定权限：系统 `ADMIN_TOKEN` Bearer（权限等价于 Owner，无用户 ID，豁免浏览器 CSRF），或普通用户 Session。浏览器写操作使用 `__Host-chenxing_session`、`__Host-chenxing_csrf` Cookie 和 `X-CSRF-Token` 三者绑定（loopback HTTP 开发环境使用对应的不带前缀名称）。
 
@@ -312,6 +328,10 @@ issuer_not_configured`，其余认证、管理、OAuth/OIDC、Discovery 与 JWKS
 ### `GET /api/v1/admin/bootstrap/status`
 
 Issuer 未配置时返回 `503 issuer_not_configured`。Issuer 已配置但 Owner 尚未初始化时公开返回 `{"initialized":false}`，供 Web 前端显示 Owner 初始化界面。实例已有 Owner 后返回与未知路径一致的 `404 not_found`，不再向匿名扫描者确认初始化状态；数据库故障返回 500。
+
+### `GET/PUT /api/v1/admin/settings/issuer`
+
+Issuer 设置接口仅 Owner（`manage_issuer`）可用。GET 返回 `persisted`、`loaded` 和 `phase`，用于区分数据库事实与当前进程状态。PUT 请求体为 `{"value":"https://auth.example.com","expected_generation":0,"confirm":false}`；Issuer 必须是无凭据、路径、查询和片段的 http(s) 根 URL。`expected_generation` 用于 CAS 并发保护，修改已有值时必须显式传 `confirm:true`。浏览器 Session 写入需要 CSRF；持久化和 `issuer_configure`/`issuer_update` 审计同事务提交，成功后当前进程立即热生效。
 
 ### 注册邮件发件地址
 

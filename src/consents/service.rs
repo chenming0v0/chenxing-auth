@@ -19,7 +19,9 @@ use crate::sqlx::PgPool;
 use crate::users::domain::UserId;
 
 use super::{
-    domain::{AuthorizedApp, ConsentServiceError, ConsentState, scopes_are_covered},
+    domain::{
+        AuthorizedApp, ConsentServiceError, ConsentState, normalize_scopes, scopes_are_covered,
+    },
     repository::{ConsentRepository, PgConsentRepository},
 };
 
@@ -79,8 +81,9 @@ impl<R: ConsentRepository> ConsentService<R> {
         client_id: &str,
         scopes: &[String],
     ) -> Result<i64, ConsentServiceError> {
+        let normalized = normalize_scopes(scopes);
         self.repository
-            .upsert_consent(user_id, client_id, scopes)
+            .upsert_consent(user_id, client_id, &normalized)
             .await?
             .ok_or(ConsentServiceError::ClientNotFound)
     }

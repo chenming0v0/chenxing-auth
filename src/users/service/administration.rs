@@ -40,8 +40,13 @@ impl UserService {
     /// 仓储层返回 [`repository::OwnerGuardOutcome`]，业务终局直接 match（Issue #126）。
     /// 旧实现靠 `sqlx::Error::Protocol` 的字符串内容判定"最后一个 Owner"，
     /// 改一次措辞就会静默放开守卫；现在由编译器保证全部终局都被处理。
-    pub async fn set_role(&self, id: UserId, role: UserRole) -> Result<bool, UserServiceError> {
-        translate_owner_guard(repository::set_user_role(&self.pool, id, role).await?)
+    pub async fn set_role(
+        &self,
+        id: UserId,
+        role: UserRole,
+        access: OwnerTargetAccess,
+    ) -> Result<bool, UserServiceError> {
+        translate_owner_guard(repository::set_user_role(&self.pool, id, role, access).await?)
     }
 
     /// 变更用户状态。

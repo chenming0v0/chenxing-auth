@@ -1,5 +1,6 @@
 pub mod domain;
 pub mod issuer;
+pub mod issuer_runtime;
 pub mod repository;
 pub mod security_limits;
 pub mod security_limits_cache;
@@ -11,6 +12,9 @@ pub use domain::{
     SmtpSetting, SmtpSettingUpdate,
 };
 pub use issuer::{InitializeIssuerOutcome, IssuerSettingError};
+pub use issuer_runtime::{
+    ISSUER_SYNC_INTERVAL, IssuerRuntime, IssuerRuntimeState, IssuerSnapshot, SystemPhase,
+};
 pub use security_limits::SecurityLimitsSetting;
 pub use security_limits_cache::{
     CachedSecurityLimits, SECURITY_LIMITS_CACHE_TTL, SECURITY_LIMITS_ERROR_BACKOFF,

@@ -7,7 +7,7 @@ use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 
 use crate::{
-    admin::auth_handlers::{bootstrap_admin, bootstrap_status, create_admin},
+    admin::auth_handlers::create_admin,
     admin::factor_handlers::{auth_factor_key_health, reset_user_totp_factor, user_auth_factors},
     admin::handlers::{
         create_client, disable_client, enable_client, list_clients, rotate_secret, update_client,
@@ -61,31 +61,9 @@ use crate::{
     },
 };
 
-use super::{
-    discovery::{jwks, openid_configuration},
-    health::{health, health_live, health_ready, issuer_not_configured},
-};
+use super::discovery::{jwks, openid_configuration};
 
-/// Issuer 尚未落库时的最小路由面。
-///
-/// 静态 React 产物由 `api::router` 的 fallback 提供；这里除此之外只保留容器探针和
-/// 一个明确的初始化状态。认证、管理、OAuth/OIDC、JWKS 都不进入路由表。
-fn register_unconfigured(router: Router<AppState>) -> Router<AppState> {
-    router
-        .route("/api/v1/admin/bootstrap/status", get(issuer_not_configured))
-        .route("/health", get(health))
-        .route("/health/live", get(health_live))
-        .route("/health/ready", get(health_ready))
-}
-
-pub(super) fn register(
-    router: Router<AppState>,
-    request_timeout: Duration,
-    issuer_configured: bool,
-) -> Router<AppState> {
-    if !issuer_configured {
-        return register_unconfigured(router);
-    }
+pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> Router<AppState> {
     router
         .route(
             "/.well-known/openid-configuration",
@@ -151,8 +129,6 @@ pub(super) fn register(
             "/api/v1/auth/sessions/{session_id}",
             axum::routing::delete(revoke_user_session),
         )
-        .route("/api/v1/admin/bootstrap/status", get(bootstrap_status))
-        .route("/api/v1/admin/bootstrap", post(bootstrap_admin))
         .route("/api/v1/admin/admins", get(list_admins).post(create_admin))
         .route("/api/v1/admin/auth/me", get(admin_me))
         .route("/api/v1/admin/users", get(list_users).post(create_user))
@@ -291,7 +267,4 @@ pub(super) fn register(
             StatusCode::GATEWAY_TIMEOUT,
             request_timeout,
         ))
-        .route("/health", get(health))
-        .route("/health/live", get(health_live))
-        .route("/health/ready", get(health_ready))
 }

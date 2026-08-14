@@ -179,6 +179,18 @@ impl AuditService {
             .await
     }
 
+    /// 在业务事务内写入审计事件。用于必须与受控配置写入同生共死的路径。
+    pub(crate) async fn record_in_transaction(
+        &self,
+        transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+        mut event: AuditEvent,
+    ) -> Result<(), AuditError> {
+        event.created_at = self.clock.now();
+        event.redact_metadata_in_place();
+        event.validate()?;
+        repository::insert_with(&mut **transaction, &event).await
+    }
+
     /// 落库失败时把事件的可检索字段原样打进结构化日志。
     ///
     /// `reason` 取自事件元数据：拒绝路径（授权不足、CSRF 失败、Owner 守卫拒绝）

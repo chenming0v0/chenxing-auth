@@ -190,6 +190,10 @@ impl AuthFactorService {
         Ok(repository::has_active_passkey_only_accounts(&self.pool).await?)
     }
 
+    pub async fn has_passkeys(&self) -> Result<bool, AuthFactorServiceError> {
+        Ok(repository::has_passkeys(&self.pool).await?)
+    }
+
     pub async fn is_passkey_recovery_required(
         &self,
         user_id: UserId,

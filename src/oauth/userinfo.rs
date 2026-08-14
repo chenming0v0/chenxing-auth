@@ -10,6 +10,7 @@ use axum::{
 use std::net::SocketAddr;
 
 use crate::{
+    api::extract::RequestIssuer,
     error,
     oauth::{
         grant_gate::{GrantGateError, effective_grant_scopes},
@@ -67,6 +68,7 @@ impl UserInfoClaims {
 
 pub async fn userinfo(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     headers: HeaderMap,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
 ) -> Response {
@@ -79,11 +81,12 @@ pub async fn userinfo(
         return with_no_store_headers(response);
     }
 
-    with_no_store_headers(userinfo_inner(state, headers, None).await)
+    with_no_store_headers(userinfo_inner(state, issuer, headers, None).await)
 }
 
 pub async fn userinfo_post(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     headers: HeaderMap,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     form: Result<RawForm, RawFormRejection>,
@@ -115,11 +118,14 @@ pub async fn userinfo_post(
             ));
         }
     };
-    with_no_store_headers(userinfo_inner(state, headers, request.access_token.as_deref()).await)
+    with_no_store_headers(
+        userinfo_inner(state, issuer, headers, request.access_token.as_deref()).await,
+    )
 }
 
 async fn userinfo_inner(
     state: AppState,
+    issuer: RequestIssuer,
     headers: HeaderMap,
     form_access_token: Option<&str>,
 ) -> Response {
@@ -133,7 +139,7 @@ async fn userinfo_inner(
             );
         }
     };
-    let claims = match decode_userinfo_token(&state.keys, &state.config.issuer_url, &token) {
+    let claims = match decode_userinfo_token(&state.keys, issuer.issuer().as_str(), &token) {
         Ok(claims) => claims,
         Err(token_error) => {
             tracing::info!(error = %token_error, "UserInfo access token rejected");
@@ -151,6 +157,16 @@ async fn userinfo_inner(
     let Ok(user_id) = claims.sub.parse::<crate::users::domain::UserId>() else {
         return error::oauth_invalid_bearer("access token is invalid");
     };
+    // Access tokens are self-contained, but client status is authoritative in PostgreSQL.
+    // Disabled clients lose UserInfo access immediately instead of waiting for JWT expiry.
+    match state.clients.find_registered(&claims.aud).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return error::oauth_invalid_bearer("access token is invalid"),
+        Err(service_error) => {
+            tracing::error!(error = %service_error, "failed to load OAuth client for UserInfo");
+            return error::oauth_temporarily_unavailable();
+        }
+    }
     let presented = claims
         .scope
         .split_whitespace()

@@ -14,7 +14,7 @@ pub use audit_boundary::{
 };
 pub use migrate::{
     AUDIT_ROLE_SEPARATION_ENV, MANAGE_RUNTIME_PASSWORD_ENV, MIGRATION_DATABASE_URL_ENV,
-    MigrationPlan, MigrationPlanError,
+    MigrationPlan, MigrationPlanError, RuntimeAuditPosture,
 };
 pub use pool::{PoolRole, PoolSettingsError};
 pub use roles::{RuntimePasswordPolicy, configure_runtime_role};
@@ -190,13 +190,22 @@ async fn verify_canonical_emails(
 fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
     use crate::sqlx::migrate::{Migration, MigrationType, Migrator};
 
-    let migrations = vec![Migration::new(
-        1,
-        Cow::Borrowed("current schema baseline"),
-        MigrationType::Simple,
-        normalize_migration_sql(include_str!("../../migrations/0001_initial.sql")),
-        false,
-    )];
+    let migrations = vec![
+        Migration::new(
+            1,
+            Cow::Borrowed("current schema baseline"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../../migrations/0001_initial.sql")),
+            false,
+        ),
+        Migration::new(
+            2,
+            Cow::Borrowed("controlled runtime issuer"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../../migrations/0002_issuer_runtime.sql")),
+            false,
+        ),
+    ];
 
     Migrator {
         migrations: Cow::Owned(migrations),

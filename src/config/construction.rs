@@ -19,10 +19,9 @@ use super::security::{
     DEFAULT_KEY_ROTATION_GRACE_SECONDS, DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
     DEFAULT_TOKEN_TTL_SECONDS, validate_session_lifetimes, validate_token_and_key_lifetimes,
 };
-use super::{
-    Config, ConfigError, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
-    DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS, normalize_issuer_url,
-};
+use super::{Config, ConfigError, DEFAULT_REQUEST_TIMEOUT_SECONDS, normalize_issuer_url};
+
+mod test_construction;
 
 struct ConfigValues {
     host: String,
@@ -51,6 +50,8 @@ struct ConfigValues {
     auth_encryption_keys: AuthEncryptionKeyRing,
     webauthn_rp_id: String,
     webauthn_origin: String,
+    webauthn_rp_id_explicit: bool,
+    webauthn_origin_explicit: bool,
     auth_limiter_failure_policy: AuthLimiterFailurePolicy,
     missing_source_ip_policy: MissingSourceIpPolicy,
     client_registration_limits: ClientRegistrationLimits,
@@ -78,9 +79,17 @@ impl Config {
         let legacy_issuer_import = env::var("APP_ISSUER")
             .ok()
             .filter(|value| !value.trim().is_empty());
-        let webauthn_rp_id = env::var("WEBAUTHN_RP_ID").unwrap_or_else(|_| "localhost".to_owned());
+        let webauthn_rp_id_override = env::var("WEBAUTHN_RP_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let webauthn_origin_override = env::var("WEBAUTHN_ORIGIN")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let webauthn_rp_id_explicit = webauthn_rp_id_override.is_some();
+        let webauthn_origin_explicit = webauthn_origin_override.is_some();
+        let webauthn_rp_id = webauthn_rp_id_override.unwrap_or_else(|| "localhost".to_owned());
         let webauthn_origin =
-            env::var("WEBAUTHN_ORIGIN").unwrap_or_else(|_| "http://localhost".to_owned());
+            webauthn_origin_override.unwrap_or_else(|| "http://localhost".to_owned());
         let client_registration_limits = client_registration_limits_from_env()?;
         let admin_token = admin_token_from_env()?;
         let key_directory = env::var("KEY_DIRECTORY").unwrap_or_else(|_| "data/keys".to_owned());
@@ -199,76 +208,14 @@ impl Config {
             auth_encryption_keys,
             webauthn_rp_id,
             webauthn_origin,
+            webauthn_rp_id_explicit,
+            webauthn_origin_explicit,
             auth_limiter_failure_policy,
             missing_source_ip_policy,
             client_registration_limits,
             trusted_proxies,
             security_limits,
             audit_retention,
-        })
-    }
-
-    pub fn from_values(
-        host: String,
-        port: u16,
-        database_url: String,
-        redis_url: String,
-        session_ttl_seconds: u64,
-    ) -> Result<Self, ConfigError> {
-        let issuer_url = format!("http://{host}:{port}");
-        Self::from_values_with_issuer(
-            host,
-            port,
-            issuer_url,
-            database_url,
-            redis_url,
-            session_ttl_seconds,
-        )
-    }
-
-    pub fn from_values_with_issuer(
-        host: String,
-        port: u16,
-        issuer_url: String,
-        database_url: String,
-        redis_url: String,
-        session_ttl_seconds: u64,
-    ) -> Result<Self, ConfigError> {
-        Self::from_values_with_log(ConfigValues {
-            host,
-            port,
-            request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
-            issuer_url: Some(issuer_url.clone()),
-            legacy_issuer_import: None,
-            admin_token: String::new(),
-            key_directory: "data/keys".to_owned(),
-            web_dist_dir: DEFAULT_WEB_DIST_DIR.to_owned(),
-            key_rotation_grace_seconds: DEFAULT_KEY_ROTATION_GRACE_SECONDS,
-            // 测试构造走生产默认：跨实例时钟偏差容忍取默认值（Issue #316）。
-            key_rotation_skew_allowance_seconds: DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS,
-            cookie_secure: true,
-            oauth_session_header_enabled: true,
-            session_token_response_enabled: false,
-            // 测试构造默认走生产边界：需要回环例外的用例显式设置。
-            oauth_provider_loopback_enabled: false,
-            database_url,
-            redis_url,
-            session_ttl_seconds,
-            session_idle_timeout_seconds: DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
-            session_max_concurrent_sessions: DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,
-            access_token_ttl_seconds: DEFAULT_TOKEN_TTL_SECONDS,
-            id_token_ttl_seconds: DEFAULT_TOKEN_TTL_SECONDS,
-            log_filter: "chenxing_auth=debug".to_owned(),
-            auth_encryption_key: AuthEncryptionKey::new([0_u8; 32]),
-            auth_encryption_keys: AuthEncryptionKeyRing::single(AuthEncryptionKey::new([0_u8; 32])),
-            webauthn_rp_id: "localhost".to_owned(),
-            webauthn_origin: format!("http://localhost:{port}"),
-            auth_limiter_failure_policy: AuthLimiterFailurePolicy::FailClosed,
-            missing_source_ip_policy: MissingSourceIpPolicy::Skip,
-            client_registration_limits: ClientRegistrationLimits::default(),
-            trusted_proxies: TrustedProxies::none(),
-            security_limits: SecurityLimits::default(),
-            audit_retention: AuditRetentionConfig::default(),
         })
     }
 
@@ -300,6 +247,8 @@ impl Config {
             auth_encryption_keys,
             webauthn_rp_id,
             webauthn_origin,
+            webauthn_rp_id_explicit,
+            webauthn_origin_explicit,
             auth_limiter_failure_policy,
             missing_source_ip_policy,
             client_registration_limits,
@@ -400,8 +349,10 @@ impl Config {
             host,
             port,
             request_timeout_seconds,
-            issuer_configured: issuer_url.is_some(),
-            issuer_url: issuer_url.unwrap_or_default(),
+            issuer: issuer_url
+                .as_deref()
+                .map(super::IssuerUrl::parse)
+                .transpose()?,
             legacy_issuer_import,
             admin_token,
             key_directory,
@@ -424,6 +375,8 @@ impl Config {
             auth_encryption_keys,
             webauthn_rp_id,
             webauthn_origin,
+            webauthn_rp_id_explicit,
+            webauthn_origin_explicit,
             auth_limiter_failure_policy,
             missing_source_ip_policy,
             client_registration_limits,
@@ -434,15 +387,13 @@ impl Config {
     }
 
     pub(crate) fn validate_cookie_security(&self) -> Result<(), ConfigError> {
-        if !self.issuer_configured {
-            return Ok(());
-        }
-        let issuer = parse_root_http_url(&self.issuer_url, "APP_ISSUER")?;
-        validate_cookie_security(&issuer, self.cookie_secure)
+        self.issuer.as_ref().map_or(Ok(()), |issuer| {
+            validate_cookie_security(issuer.parsed(), self.cookie_secure)
+        })
     }
 }
 
-pub(super) fn parse_root_http_url(
+pub(crate) fn parse_root_http_url(
     value: &str,
     name: &'static str,
 ) -> Result<url::Url, ConfigError> {
@@ -461,10 +412,13 @@ pub(super) fn parse_root_http_url(
     Ok(url)
 }
 
-pub(super) fn validate_cookie_security(
+pub(crate) fn validate_cookie_security(
     issuer: &url::Url,
     cookie_secure: bool,
 ) -> Result<(), ConfigError> {
+    if issuer.scheme() == "http" && !is_loopback_http_issuer(issuer) {
+        return Err(ConfigError::InvalidValue("APP_ISSUER"));
+    }
     if cookie_secure || is_loopback_http_issuer(issuer) {
         return Ok(());
     }

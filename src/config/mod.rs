@@ -14,7 +14,9 @@ mod parsing;
 mod proxy;
 mod security;
 
-pub use issuer::normalize_issuer_url;
+pub(crate) use construction::{parse_root_http_url, validate_cookie_security};
+
+pub use issuer::{IssuerUrl, normalize_issuer_url};
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 // 会话配置上界常量 `MAX_SESSION_*` 统一来自 security（#365 政策封顶），
@@ -70,12 +72,9 @@ pub struct Config {
     pub port: u16,
     /// Maximum time for a matched application route to produce a response.
     pub request_timeout_seconds: u64,
-    /// 当前进程是否已经从数据库或旧版环境变量取得固定 Issuer。
-    ///
-    /// `false` 时 HTTP 层只注册健康检查、初始化状态和静态前端；任何认证、
-    /// OAuth/OIDC 或管理路由都不会存在。
-    pub issuer_configured: bool,
-    pub issuer_url: String,
+    /// 启动时解析出的 Issuer 候选。进入 [`crate::state::AppState`] 后，运行期唯一
+    /// 权威是共享的 Issuer runtime；handler 不再读取这份静态配置。
+    pub issuer: Option<IssuerUrl>,
     /// 旧部署的 APP_ISSUER 一次性导入候选。
     ///
     /// 该值不参与普通配置校验；只有数据库尚未保存 Issuer 时才会解析并写入。
@@ -124,6 +123,10 @@ pub struct Config {
     pub auth_encryption_keys: AuthEncryptionKeyRing,
     pub webauthn_rp_id: String,
     pub webauthn_origin: String,
+    /// 是否由 WEBAUTHN_* 环境变量显式固定。未固定时，运行期默认值随 Issuer
+    /// generation 一起原子更新；显式覆盖永远优先。
+    pub webauthn_rp_id_explicit: bool,
+    pub webauthn_origin_explicit: bool,
     pub auth_limiter_failure_policy: AuthLimiterFailurePolicy,
     pub missing_source_ip_policy: MissingSourceIpPolicy,
     pub client_registration_limits: ClientRegistrationLimits,
@@ -137,17 +140,16 @@ pub struct Config {
 
 impl fmt::Debug for Config {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let issuer_url = if self.issuer_configured {
-            debug_safe_url(&self.issuer_url)
-        } else {
-            "<unconfigured>".to_owned()
-        };
+        let issuer_url = self
+            .issuer
+            .as_ref()
+            .map(|issuer| debug_safe_url(issuer.as_str()))
+            .unwrap_or_else(|| "<unconfigured>".to_owned());
         f.debug_struct("Config")
             .field("host", &self.host)
             .field("port", &self.port)
             .field("request_timeout_seconds", &self.request_timeout_seconds)
-            .field("issuer_configured", &self.issuer_configured)
-            .field("issuer_url", &issuer_url)
+            .field("issuer", &issuer_url)
             .field("admin_token", &"REDACTED")
             .field("key_directory", &self.key_directory)
             .field("web_dist_dir", &self.web_dist_dir)

@@ -84,7 +84,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let database = db::connect(&config)?;
             match issuer::initialize(&database, &value).await? {
                 InitializeIssuerOutcome::Created => {
-                    info!("issuer configured; restart the application to enable all routes")
+                    info!(
+                        "issuer configured; running instances will hot-load it through the issuer sync worker"
+                    )
                 }
                 InitializeIssuerOutcome::AlreadyConfigured => {
                     info!("issuer already has the requested value")
@@ -103,40 +105,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let state = AppState::new_with_persisted_issuer(config.clone()).await?;
-    let issuer_configured = state.config.issuer_configured;
-    let workers = issuer_configured.then(|| {
-        // 协议路由关闭时不运行任何认证后台任务；配置 Issuer 并重启后再统一启用。
-        let session_outbox = tokio::spawn(state.sessions.clone().run_outbox_worker());
-        // 密钥热路径只读内存快照，与共享 KEY_DIRECTORY 的一致性由这个后台任务负责：
-        // 磁盘 IO 隔离在阻塞线程池，抢不到目录锁时跳过本轮而不影响任何请求（Issue #257）。
-        let key_sync = tokio::spawn(
-            state
-                .keys
-                .clone()
-                .run_disk_sync_worker(DEFAULT_KEY_SYNC_INTERVAL),
-        );
-        // 过期未兑换的授权码要退还签发时消耗的套餐配额（Issue #341）。消费与兑换
-        // 都发生在请求路径上，唯独「过期」没有请求会经过，只能由后台任务兜底。
-        let quota_refund = tokio::spawn(
-            state
-                .oauth_quotas
-                .clone()
-                .run_refund_worker(state.clock.clone(), QUOTA_REFUND_WORKER_INTERVAL),
-        );
-        [session_outbox, key_sync, quota_refund]
-    });
+    // Migrations verify this boundary once, but grants can change before service startup.
+    // Recheck before workers or the listener start so the web process fails closed (#427).
+    let audit_posture = db::RuntimeAuditPosture::from_env(&config.database_url)?;
+    db::verify_audit_append_only_boundary(
+        &state.database,
+        audit_posture.runtime_role(),
+        audit_posture.separation(),
+    )
+    .await?;
+    // Route admission is runtime-gated, so background task startup cannot be frozen by
+    // the issuer state observed during construction. These workers are harmless while
+    // awaiting configuration and remain alive after a hot issuer promotion.
+    let issuer_sync = tokio::spawn(state.clone().run_issuer_sync_worker());
+    let session_outbox = tokio::spawn(state.sessions.clone().run_outbox_worker());
+    let key_sync = tokio::spawn(
+        state
+            .keys
+            .clone()
+            .run_disk_sync_worker(DEFAULT_KEY_SYNC_INTERVAL),
+    );
+    let quota_refund = tokio::spawn(
+        state
+            .oauth_quotas
+            .clone()
+            .run_refund_worker(state.clock.clone(), QUOTA_REFUND_WORKER_INTERVAL),
+    );
+    let workers = [issuer_sync, session_outbox, key_sync, quota_refund];
     let app = api::router(state);
     let address = format!("{}:{}", config.host, config.port);
     let listener = TcpListener::bind(&address).await?;
 
-    info!(address = %address, issuer_configured, "辰星认证中枢 started");
+    info!(address = %address, "辰星认证中枢 started");
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await?;
-    for worker in workers.into_iter().flatten() {
+    for worker in workers {
         worker.abort();
     }
 

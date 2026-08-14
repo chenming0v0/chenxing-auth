@@ -156,9 +156,12 @@ pub async fn bind_authorization_request(
     session: SessionWrite,
     Path(request_id): Path<String>,
 ) -> Response {
-    let holder_hash = cookies::extract_authz_holder_cookie(&headers)
-        .as_deref()
-        .map(cookies::authz_holder_hash);
+    let holder_hash = cookies::extract_authz_holder_cookie_for_secure_transport(
+        &headers,
+        state.config.cookie_secure,
+    )
+    .as_deref()
+    .map(cookies::authz_holder_hash);
     match bind_pending_request(
         &state.authorization_requests,
         &request_id,

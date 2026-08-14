@@ -25,8 +25,12 @@ async fn issuer_is_initialized_once_and_cannot_be_silently_replaced() {
         InitializeIssuerOutcome::Created
     );
     assert_eq!(
-        load(&database).await.expect("load persisted issuer"),
-        Some("https://auth.example.com".to_owned())
+        load(&database)
+            .await
+            .expect("load persisted issuer")
+            .as_ref()
+            .map(|record| record.value.as_str()),
+        Some("https://auth.example.com")
     );
 
     assert_eq!(
@@ -42,8 +46,12 @@ async fn issuer_is_initialized_once_and_cannot_be_silently_replaced() {
         InitializeIssuerOutcome::Conflict
     );
     assert_eq!(
-        load(&database).await.expect("load unchanged issuer"),
-        Some("https://auth.example.com".to_owned())
+        load(&database)
+            .await
+            .expect("load unchanged issuer")
+            .as_ref()
+            .map(|record| record.value.as_str()),
+        Some("https://auth.example.com")
     );
 }
 
@@ -70,13 +78,12 @@ async fn runtime_resolution_stays_restricted_until_the_persisted_issuer_exists()
         3600,
     )
     .expect("config");
-    config.issuer_configured = false;
-    config.issuer_url.clear();
+    config.issuer = None;
 
     resolve(&mut config, &database)
         .await
         .expect("resolve unconfigured issuer");
-    assert!(!config.issuer_configured);
+    assert!(config.issuer.is_none());
 
     initialize(&database, "https://auth.example.com")
         .await
@@ -84,6 +91,8 @@ async fn runtime_resolution_stays_restricted_until_the_persisted_issuer_exists()
     resolve(&mut config, &database)
         .await
         .expect("resolve persisted issuer");
-    assert!(config.issuer_configured);
-    assert_eq!(config.issuer_url, "https://auth.example.com");
+    assert_eq!(
+        config.issuer.as_ref().map(|issuer| issuer.as_str()),
+        Some("https://auth.example.com")
+    );
 }

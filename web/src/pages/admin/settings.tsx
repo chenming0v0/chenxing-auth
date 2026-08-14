@@ -8,6 +8,7 @@ import { OAuthProvidersPanel } from './settings/oauth-providers-panel'
 import { PasskeyPanel } from './settings/passkey-panel'
 import { SecurityLimitsPanel } from './settings/security-limits-panel'
 import { SmtpPanel } from './settings/smtp-panel'
+import { IssuerPanel } from './settings/issuer-panel'
 import { useDraftLeaveGuard, useFlashMessage } from './settings/panel'
 
 export function AdminSettings() {
@@ -57,6 +58,8 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
   const reportSmtpDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportSecurityLimitsDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportOAuthDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
+  const reportIssuerDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
+  const canManageIssuer = Boolean(access.data?.permissions.includes('manage_issuer'))
   /* 任一面板有草稿时，路由跳转与刷新/关页前都提示确认。 */
   useDraftLeaveGuard(dirty)
 
@@ -91,6 +94,7 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
           <p className="chenxing-caption mt-1.5">需要 `manage_identity_providers` 权限后才能管理外部身份提供商。</p>
         </HudPanel>
       )}
+      {canManageIssuer ? <IssuerPanel onMessage={flash} onDirtyChange={reportIssuerDirty} /> : null}
       <HudPanel>
         <h2 className="chenxing-h2 flex items-center gap-2">
           <Icon name="key-round" className="text-[var(--chenxing-cyan)]" size={18} />

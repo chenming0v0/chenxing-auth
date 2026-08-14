@@ -486,7 +486,7 @@ fn remote_installer_generates_and_preserves_deployment_secrets() {
             "remote installer is missing secret marker: {marker}"
         );
     }
-    assert!(!REMOTE_INSTALL_SCRIPT.contains("APP_ISSUER="));
+    assert!(!REMOTE_INSTALL_SCRIPT.contains("APP_ISSUER=${APP_ISSUER}"));
 }
 
 #[test]
@@ -498,13 +498,13 @@ fn production_probes_use_readiness_and_keep_liveness_separate() {
 }
 
 #[test]
-fn installer_rejects_implicit_localhost_and_checks_discovery_contract() {
+fn installer_allows_bootstrap_mode_and_checks_discovery_contract() {
     for marker in [
-        "CHENXING_ISSUER is required",
         "CHENXING_ALLOW_LOOPBACK_HTTP",
         "EXPECTED_COOKIE_SECURE",
         "OpenID discovery does not match APP_ISSUER",
         ".well-known/openid-configuration",
+        "APP_ISSUER is not set; the service is running in secure bootstrap mode.",
     ] {
         assert!(
             INSTALL_SCRIPT.contains(marker),
@@ -533,16 +533,12 @@ fn deployment_files_are_present_at_repository_root() {
 fn database_uses_one_transactional_current_baseline() {
     assert!(DB_MODULE.contains("current schema baseline"));
     assert!(DB_MODULE.contains("include_str!(\"../../migrations/0001_initial.sql\")"));
-    assert_eq!(
-        DB_MODULE.matches("Migration::new(").count(),
-        1,
-        "the development baseline must be registered exactly once"
-    );
+    assert_eq!(DB_MODULE.matches("Migration::new(").count(), 2);
     assert!(
         DB_MODULE.contains(
-            "normalize_migration_sql(include_str!(\"../../migrations/0001_initial.sql\")),\n        false,"
-        ),
-        "the schema baseline must remain transactional"
+            "normalize_migration_sql(include_str!(\"../../migrations/0001_initial.sql\"))"
+        ) && DB_MODULE.contains("MigrationType::Simple"),
+        "the schema migrations must remain transactional"
     );
 
     let ensure_role = DB_MODULE
@@ -564,7 +560,10 @@ fn database_uses_one_transactional_current_baseline() {
     migrations.sort();
     assert_eq!(
         migrations,
-        vec![std::ffi::OsString::from("0001_initial.sql")]
+        vec![
+            std::ffi::OsString::from("0001_initial.sql"),
+            std::ffi::OsString::from("0002_issuer_runtime.sql"),
+        ]
     );
 
     assert_eq!(

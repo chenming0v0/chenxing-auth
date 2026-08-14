@@ -24,7 +24,7 @@ use crate::{
     plans::service::PlanService,
     redis_client::RedisClient,
     sessions::store::SessionStore,
-    settings::{SecurityLimitsSetting, SettingsService},
+    settings::{IssuerRuntime, SecurityLimitsSetting, SettingsService, issuer::IssuerRecord},
     users::service::UserService,
     web_dist::{WebDistError, WebDistRoot},
 };
@@ -32,6 +32,9 @@ use crate::{
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
+    /// 运行期 OIDC Issuer 的唯一权威。路由 middleware 在请求入口取得完整快照并放入
+    /// request extensions，协议 handler 在整个请求内只使用那一份 generation。
+    pub issuer: IssuerRuntime,
     /// 所有生命周期判定的时间来源。
     ///
     /// 这一个句柄被克隆给授权码 / Refresh Token / Session / MFA / 套餐 / 审计，
@@ -128,8 +131,21 @@ impl AppState {
     /// 生产启动路径：监听前解析持久化 Issuer，不改变 [`Self::new`] 的懒加载语义。
     pub async fn new_with_persisted_issuer(mut config: Config) -> Result<Self, StateError> {
         let database = crate::db::connect(&config)?;
-        crate::settings::issuer::resolve(&mut config, &database).await?;
-        Self::new_with_pool(config, database).await
+        let (issuer, invalid_generation) =
+            match crate::settings::issuer::resolve(&mut config, &database).await {
+                Ok(issuer) => (issuer, None),
+                Err(crate::settings::IssuerSettingError::Invalid(_)) => {
+                    let generation = crate::settings::issuer::load_raw(&database)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|record| record.generation)
+                        .unwrap_or_default();
+                    (None, Some(generation))
+                }
+                Err(error) => return Err(error.into()),
+            };
+        Self::new_with_pool_and_issuer(config, database, issuer, invalid_generation).await
     }
 
     /// 用另一个时钟重建全部时间敏感的 store 与 service。
@@ -166,7 +182,25 @@ impl AppState {
         config: Config,
         database: crate::db::Database,
     ) -> Result<Self, StateError> {
+        let issuer = config.issuer.as_ref().map(|issuer| IssuerRecord {
+            value: issuer.as_str().to_owned(),
+            generation: 1,
+            updated_at: time::OffsetDateTime::now_utc(),
+        });
+        Self::new_with_pool_and_issuer(config, database, issuer, None).await
+    }
+
+    async fn new_with_pool_and_issuer(
+        config: Config,
+        database: crate::db::Database,
+        issuer_record: Option<IssuerRecord>,
+        invalid_generation: Option<i64>,
+    ) -> Result<Self, StateError> {
         config.validate_cookie_security()?;
+        let issuer = match invalid_generation {
+            Some(generation) => IssuerRuntime::new_invalid(&config, generation),
+            None => IssuerRuntime::new(&config, issuer_record.as_ref())?,
+        };
 
         // 静态根先解析：这是纯配置校验，放在生成 RSA 私钥和连 Redis 之前，配置错误
         // 就不会等到副作用做完才暴露。canonicalize 与 stat 是阻塞 I/O，和密钥加载
@@ -207,7 +241,8 @@ impl AppState {
             &config.webauthn_rp_id,
             &config.webauthn_origin,
             SecurityLimitsSetting::from(&config.security_limits),
-        );
+        )
+        .with_issuer_runtime(issuer.clone());
 
         // 安全阈值从 SettingsService 读取。稳态下命中它的进程内缓存，认证热路径不再
         // 逐次查询 `app_settings`（#300）；管理接口写入后主动刷新该缓存，因此同一进程
@@ -272,6 +307,7 @@ impl AppState {
 
         Ok(Self {
             config,
+            issuer,
             clock,
             web_dist,
             database,
@@ -295,5 +331,37 @@ impl AppState {
             external_oauth,
             external_login_states,
         })
+    }
+
+    /// 周期性回读 Issuer generation。通知只负责降低延迟，轮询才是 PgBouncer 与
+    /// 断线场景下的可靠收敛上界；读取失败保留最后一个合法快照。
+    pub async fn run_issuer_sync_worker(self) {
+        let mut interval = tokio::time::interval(crate::settings::ISSUER_SYNC_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            match crate::settings::issuer::load_raw(&self.database).await {
+                Ok(record) => match self.issuer.apply_raw(record.as_ref()) {
+                    Ok(Some(snapshot)) => tracing::info!(
+                        event = "issuer.runtime_applied",
+                        generation = snapshot.generation(),
+                        issuer = %snapshot.issuer(),
+                        "applied persisted issuer to the running instance"
+                    ),
+                    Ok(None) => {}
+                    Err(error_value) => tracing::error!(
+                        event = "issuer.runtime_invalid",
+                        generation = record.as_ref().map(|record| record.generation),
+                        error = %error_value,
+                        "persisted issuer is invalid; protocol routes are fail-closed"
+                    ),
+                },
+                Err(error_value) => tracing::warn!(
+                    event = "issuer.runtime_reload_failed",
+                    error = %error_value,
+                    "failed to reload issuer; retaining the last runtime state"
+                ),
+            }
+        }
     }
 }

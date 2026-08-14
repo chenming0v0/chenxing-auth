@@ -178,10 +178,10 @@ wait_for_postgres() {
 
 wait_for_application() {
     local attempt
-    printf '等待辰星认证中枢就绪'
+    printf '等待辰星认证中枢启动'
     for attempt in $(seq 1 60); do
         if compose exec -T app curl --fail --silent --max-time 5 \
-            http://127.0.0.1:3000/health/ready >/dev/null 2>&1; then
+            http://127.0.0.1:3000/health/live >/dev/null 2>&1; then
             printf ' 完成\n'
             return 0
         fi
@@ -241,6 +241,7 @@ POSTGRES_IMAGE="${POSTGRES_IMAGE_OVERRIDE:-$(read_env_value POSTGRES_IMAGE)}"
 REDIS_IMAGE="${REDIS_IMAGE_OVERRIDE:-$(read_env_value REDIS_IMAGE)}"
 export CHENXING_IMAGE POSTGRES_IMAGE REDIS_IMAGE
 APP_PORT="$(read_env_value APP_PORT)"
+APP_ISSUER="$(read_env_value APP_ISSUER)"
 POSTGRES_DB="$(read_env_value POSTGRES_DB)"
 POSTGRES_USER="$(read_env_value POSTGRES_USER)"
 AUTH_ENCRYPTION_KEY="$(read_env_value AUTH_ENCRYPTION_KEY)"
@@ -304,7 +305,10 @@ fi
 
 stage "部署完成"
 compose ps
-cat <<EOF
+if [[ -n "$APP_ISSUER" ]]; then
+    printf '%s\n' '已检测到 APP_ISSUER；可直接使用认证、管理和 OAuth/OIDC 功能。'
+else
+    cat <<EOF
 
 访问地址: http://服务器地址:${APP_PORT}
 安装目录: ${INSTALL_DIR}
@@ -315,8 +319,8 @@ cat <<EOF
   cd "${INSTALL_DIR}"
   docker compose --env-file .env -f compose.yml run --rm app \
     configure-issuer https://auth.example.com
-  docker compose --env-file .env -f compose.yml up -d --force-recreate app
 
-APP_ISSUER 会写入 PostgreSQL；再次配置不同地址会被拒绝。
+APP_ISSUER 会写入 PostgreSQL；后续变更需由 Owner 在管理设置页确认并通过 CAS 更新。
 管理员 Token 和全部随机密钥只保存在 ${ENV_FILE}，请备份并保持私密。
 EOF
+fi

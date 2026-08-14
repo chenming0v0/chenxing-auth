@@ -1,10 +1,12 @@
 use axum::{
     Router,
+    extract::{Request as AxumRequest, State},
     http::{HeaderMap, Request},
-    middleware::map_response,
+    middleware::{Next, from_fn, from_fn_with_state},
     response::Response,
+    routing::get,
 };
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tower_http::trace::TraceLayer;
 
 use crate::{config::TrustedProxies, state::AppState};
@@ -25,26 +27,107 @@ fn request_span<B>(request: &Request<B>) -> tracing::Span {
     )
 }
 
+/// 超时响应按请求路径分流到正确的协议错误格式。
+///
+/// `tower_http::timeout::TimeoutLayer` 在请求超时时返回空体 504 响应，不携带
+/// 任何路径信息。该中间件在调用下游前先记录请求路径，下游返回后若状态码是
+/// 504，则按路径选择响应格式：
+///
+/// - `/oauth/*` 协议端点返回 RFC 6749 `temporarily_unavailable`（503）。
+/// - 其余路径返回内部 API 信封 `{code, message}`（504 `request_timeout`）。
+///
+/// 路径判定在 `error::timeout_response_for_path` 中实现，本中间件只负责把
+/// 请求路径传递过去，不做路径解析。
+async fn map_request_timeout_by_path(request: AxumRequest, next: Next) -> Response {
+    let path = request.uri().path().to_owned();
+    let response = next.run(request).await;
+    if response.status() == axum::http::StatusCode::GATEWAY_TIMEOUT {
+        crate::error::timeout_response_for_path(&path)
+    } else {
+        response
+    }
+}
+
 pub fn router(state: AppState) -> Router {
-    let hsts_enabled = security_headers::hsts_enabled(&state.config.issuer_url);
     let request_timeout = Duration::from_secs(state.config.request_timeout_seconds);
+    let state_for_middleware = state.clone();
 
     let static_service = static_files::static_service(&state.web_dist);
-    routes::register(
-        Router::new(),
-        request_timeout,
-        state.config.issuer_configured,
-    )
-    // fallback 只处理未匹配路径，协议和健康路由不会被静态服务抢走。
-    .fallback_service(static_service)
-    .with_state(state)
-    .layer(TraceLayer::new_for_http().make_span_with(request_span))
-    .layer(map_response(|response: Response| async move {
-        crate::error::map_request_timeout(response)
-    }))
-    .layer(map_response(move |response: Response| {
-        security_headers::apply(response, hsts_enabled)
-    }))
+    let application = routes::register(Router::new(), request_timeout).route_layer(
+        from_fn_with_state(state_for_middleware.clone(), require_issuer),
+    );
+    let system = Router::new()
+        .route("/api/v1/admin/bootstrap/status", get(health::system_status))
+        // Bootstrap and issuer management must remain reachable while the issuer is
+        // absent; their own extractors still enforce owner/authentication/CSRF rules.
+        .route(
+            "/api/v1/admin/bootstrap",
+            axum::routing::post(crate::admin::auth_handlers::bootstrap_admin),
+        )
+        .route(
+            "/api/v1/admin/settings/issuer",
+            get(crate::admin::issuer_settings_handlers::get_issuer_setting)
+                .put(crate::admin::issuer_settings_handlers::update_issuer_setting),
+        )
+        .route("/health", get(health::health))
+        .route("/health/live", get(health::health_live))
+        .route("/health/ready", get(health::health_ready));
+    system
+        .merge(application)
+        // fallback 只处理未匹配路径，协议和健康路由不会被静态服务抢走。
+        .fallback_service(static_service)
+        .with_state(state)
+        .layer(TraceLayer::new_for_http().make_span_with(request_span))
+        .layer(from_fn(map_request_timeout_by_path))
+        .layer(from_fn_with_state(
+            state_for_middleware,
+            apply_security_headers,
+        ))
+}
+
+async fn require_issuer(
+    State(state): State<AppState>,
+    mut request: AxumRequest,
+    next: Next,
+) -> Response {
+    let runtime = state.issuer.state();
+    let Some(snapshot) = runtime.loaded() else {
+        return match runtime.as_ref() {
+            crate::settings::IssuerRuntimeState::AwaitingIssuer => {
+                crate::error::service_unavailable(
+                    "issuer_not_configured",
+                    "the application issuer is not configured",
+                )
+            }
+            crate::settings::IssuerRuntimeState::Invalid { .. } => {
+                crate::error::service_unavailable(
+                    "issuer_runtime_invalid",
+                    "the persisted application issuer could not be loaded",
+                )
+            }
+            crate::settings::IssuerRuntimeState::Ready(_) => unreachable!(),
+        };
+    };
+    request.extensions_mut().insert(snapshot.clone());
+    let mut response = next.run(request).await;
+    response.extensions_mut().insert(snapshot);
+    response
+}
+
+async fn apply_security_headers(
+    State(state): State<AppState>,
+    request: AxumRequest,
+    next: Next,
+) -> Response {
+    let response = next.run(request).await;
+    let request_snapshot = response
+        .extensions()
+        .get::<Arc<crate::settings::IssuerSnapshot>>()
+        .cloned();
+    let hsts_enabled = request_snapshot
+        .or_else(|| state.issuer.current())
+        .is_some_and(|snapshot| snapshot.issuer().is_https());
+    security_headers::apply(response, hsts_enabled).await
 }
 
 /// 从请求对端地址和头部解析真实客户端 IP。
@@ -296,5 +379,84 @@ mod tests {
         // 缺少该配置时 ServeDir 会直接返回 405，绕过统一的 404 语义。
         let response = send_request("/unknown-path", Method::POST).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// 超时中间件按请求路径分流响应格式（Issue #423）。
+    ///
+    /// `tower_http::timeout::TimeoutLayer` 在请求超时时返回空体 504，不携带
+    /// 路径信息。`map_request_timeout_by_path` 中间件在调用下游前记录路径，
+    /// 下游返回 504 时按路径选择响应格式。这里直接构造一个 504 响应并验证
+    /// 中间件按路径分流到正确的协议错误格式。
+    #[tokio::test]
+    async fn timeout_middleware_maps_oauth_paths_to_rfc6749_errors() {
+        // /oauth/token 超时必须返回 RFC 6749 temporarily_unavailable（503），
+        // 而不是内部 API 信封。OAuth 客户端按 error 字段识别失败原因。
+        let response = run_timeout_through_middleware("/oauth/token").await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("oauth timeout body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("oauth timeout JSON");
+        assert_eq!(body["error"], "temporarily_unavailable");
+        assert!(body["error_description"].as_str().is_some());
+        assert!(
+            body.get("code").is_none(),
+            "OAuth timeout must not leak API code"
+        );
+        assert!(
+            body.get("message").is_none(),
+            "OAuth timeout must not leak API message"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_middleware_maps_api_paths_to_the_internal_envelope() {
+        // /api/* 超时返回内部 API 信封 {code, message}，保持与既有 API 错误
+        // 响应一致。这是非 OAuth 协议端点的默认行为。
+        let response = run_timeout_through_middleware("/api/v1/auth/login").await;
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("api timeout body");
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("api timeout JSON");
+        assert_eq!(body["code"], "request_timeout");
+        assert_eq!(body["message"], "request timed out");
+        assert!(
+            body.get("error").is_none(),
+            "API timeout must not leak OAuth error"
+        );
+    }
+
+    #[tokio::test]
+    async fn timeout_middleware_preserves_non_timeout_responses() {
+        // 非 504 响应必须原样通过，中间件不能改写正常响应。
+        let response =
+            run_through_middleware_with_status("/oauth/token", StatusCode::INTERNAL_SERVER_ERROR)
+                .await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// 构造一个返回 504 的下游服务，套上超时映射中间件，验证路径分流。
+    ///
+    /// 这条路径不依赖数据库或 Redis：中间件的职责只是「下游返回 504 时按
+    /// 请求路径选择响应格式」，下游是什么不重要。
+    async fn run_timeout_through_middleware(path: &str) -> Response {
+        run_through_middleware_with_status(path, StatusCode::GATEWAY_TIMEOUT).await
+    }
+
+    async fn run_through_middleware_with_status(path: &str, status: StatusCode) -> Response {
+        use axum::{Router, routing::get};
+        let handler = move || async move { status };
+        let app: Router = Router::new()
+            .route(path, get(handler))
+            .layer(from_fn(map_request_timeout_by_path));
+        let request = Request::builder()
+            .uri(path)
+            .method(Method::GET)
+            .body(Body::empty())
+            .expect("valid request");
+        app.oneshot(request).await.expect("middleware response")
     }
 }

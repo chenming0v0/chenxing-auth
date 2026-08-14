@@ -247,14 +247,23 @@ async fn disabled_user_cannot_exchange_oauth_credentials_without_consuming_them(
         "disabled-user rejection must not consume the refresh token"
     );
 
+    let issuer = state
+        .issuer
+        .current()
+        .expect("test state has a loaded issuer");
+    let nonce = "disabled-nonce";
+    let scopes = ["openid".to_owned(), "profile".to_owned()];
     let response = chenxing_auth::oauth::response::issue_token_response(
         &state,
-        &user_id.to_string(),
-        &client_id,
-        &["openid".to_owned(), "profile".to_owned()],
-        None,
-        Some("disabled-nonce"),
-        None,
+        chenxing_auth::oauth::response::TokenIssueParams {
+            issuer: issuer.issuer(),
+            user_id: &user_id.to_string(),
+            client_id: &client_id,
+            scopes: &scopes,
+            refresh_token: None,
+            nonce: Some(nonce),
+            auth_time: None,
+        },
     )
     .await;
     assert_ne!(response.status(), StatusCode::OK);

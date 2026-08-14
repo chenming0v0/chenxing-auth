@@ -309,6 +309,21 @@ export type AdminMeResponse = {
   permissions: string[]
   status: string
 }
+export type IssuerRecordResponse = {
+  value: string
+  generation: number
+  updated_at: string
+}
+export type IssuerSettingResponse = {
+  persisted: IssuerRecordResponse | null
+  loaded: IssuerRecordResponse | null
+  phase: 'awaiting_issuer' | 'issuer_loaded' | 'issuer_invalid'
+}
+export type UpdateIssuerSetting = {
+  value: string
+  expected_generation: number
+  confirm: boolean
+}
 export type AdminOverview = { users: number; oauth_clients: number; administrators: number; audit_events: number }
 /** 管理端用户对象。该接口不返回头像版本号，因此显式排除，避免类型宣称后端没给的字段。 */
 export type PublicUser = Omit<UserMe, 'current_session_expires_at' | 'avatar_updated_at'> & { created_at: string }
