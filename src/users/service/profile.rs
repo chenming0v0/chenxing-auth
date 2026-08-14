@@ -7,7 +7,10 @@ use crate::{
     },
     users::{
         credentials::{hash_password, verify_password},
-        domain::{UserId, UserStatus, validate_display_name, validate_password_length},
+        domain::{
+            UserId, UserStatus, validate_authentication_password, validate_display_name,
+            validate_password_length,
+        },
         repository,
     },
 };
@@ -43,8 +46,10 @@ impl UserService {
 
     /// 修改口令。
     ///
-    /// 长度校验走与注册同一个 `validate_password_length`，上下界不允许在两条路径
-    /// 之间漂移（Issue #122）。校验通过后由仓储层在同一事务内改哈希并撤销全部会话。
+    /// 新口令走与注册同一个 `validate_password_length`，上下界不允许漂移（Issue #122）。
+    /// 当前口令走与登录同一个 [`validate_authentication_password`]：空或超长在查库、
+    /// 限流预留和 Argon2 之前拒绝，并归一为 [`UserServiceError::InvalidCredentials`]，
+    /// 避免长度成为可区分的 oracle（Issue #462）。
     pub async fn change_password(
         &self,
         id: UserId,
@@ -53,6 +58,9 @@ impl UserService {
         source_ip: Option<&str>,
     ) -> Result<(), UserServiceError> {
         validate_password_length(new_password).map_err(UserServiceError::Validation)?;
+        // 空/超长当前口令与口令错误对外同一条错误：长度不能成为 oracle。
+        validate_authentication_password(current_password)
+            .map_err(|_| UserServiceError::InvalidCredentials)?;
         let Some(credentials) = repository::find_credentials_by_id(&self.pool, id).await? else {
             return Err(UserServiceError::InvalidCredentials);
         };
@@ -142,5 +150,130 @@ impl UserService {
         } else {
             Err(UserServiceError::RateLimited)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use super::UserService;
+    use crate::auth_limiter::{AuthFailureLimiter, FailureDimension, domain::LimiterFuture};
+    use crate::users::credentials::MAX_PASSWORD_LENGTH;
+    use crate::users::domain::RegistrationError;
+    use crate::users::service::UserServiceError;
+
+    #[derive(Default)]
+    struct CountingLimiter {
+        calls: AtomicUsize,
+    }
+
+    impl CountingLimiter {
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Relaxed)
+        }
+    }
+
+    impl AuthFailureLimiter for CountingLimiter {
+        fn is_limited<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &str,
+        ) -> LimiterFuture<'a, bool> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async { Ok(false) })
+        }
+
+        fn record_failure<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &str,
+        ) -> LimiterFuture<'a, bool> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async { Ok(false) })
+        }
+
+        fn clear<'a>(
+            &'a self,
+            _dimension: FailureDimension,
+            _value: &str,
+        ) -> LimiterFuture<'a, ()> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    fn service(limiter: Arc<CountingLimiter>) -> UserService {
+        let pool = crate::sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://invalid-host/unused")
+            .expect("lazy pool");
+        UserService::new(pool, limiter)
+    }
+
+    /// Issue #462：超长当前口令必须在查库、限流预留和 Argon2 之前被拒绝。
+    ///
+    /// `limiter.calls() == 0` 证明没触达限流；结果是 `InvalidCredentials` 而不是
+    /// `Database` 证明没查库（连接池指向不可用主机）。Argon2 在这两步之后。
+    #[tokio::test]
+    async fn oversized_current_password_is_rejected_before_lookup_or_limiter() {
+        let limiter = Arc::new(CountingLimiter::default());
+        let result = service(limiter.clone())
+            .change_password(
+                1,
+                &"a".repeat(MAX_PASSWORD_LENGTH + 1),
+                "replacement-password",
+                Some("127.0.0.1"),
+            )
+            .await;
+
+        assert!(matches!(result, Err(UserServiceError::InvalidCredentials)));
+        assert_eq!(limiter.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn empty_current_password_is_rejected_before_lookup_or_limiter() {
+        let limiter = Arc::new(CountingLimiter::default());
+        let result = service(limiter.clone())
+            .change_password(1, "", "replacement-password", Some("127.0.0.1"))
+            .await;
+
+        assert!(matches!(result, Err(UserServiceError::InvalidCredentials)));
+        assert_eq!(limiter.calls(), 0);
+    }
+
+    /// 存量短口令不能被改密路径用注册下界挡掉，否则会锁死旧账号。
+    #[tokio::test]
+    async fn short_current_password_still_reaches_database() {
+        let limiter = Arc::new(CountingLimiter::default());
+        let result = service(limiter.clone())
+            .change_password(1, "short", "replacement-password", Some("127.0.0.1"))
+            .await;
+
+        assert!(matches!(result, Err(UserServiceError::Database(_))));
+        assert_eq!(limiter.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn new_password_policy_is_checked_before_current_password() {
+        let limiter = Arc::new(CountingLimiter::default());
+        let result = service(limiter.clone())
+            .change_password(
+                1,
+                &"a".repeat(MAX_PASSWORD_LENGTH + 1),
+                "too-short",
+                Some("127.0.0.1"),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(UserServiceError::Validation(
+                RegistrationError::PasswordTooShort
+            ))
+        ));
+        assert_eq!(limiter.calls(), 0);
     }
 }
