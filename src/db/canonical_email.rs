@@ -16,28 +16,22 @@ use super::Database;
 ///
 /// 必须扫完全表，又不能 `fetch_all` 整张用户表：一次加载会把迁移峰值内存绑死在
 /// 用户规模上。按 `id` 键集分页，工作集是当前批加上不一致的 id 列表。
+///
+/// 首批没有下界。`users.id` 是带符号 `BIGINT`，schema 也没有 `id > 0` 检查；
+/// 维护 SQL 可以用 `OVERRIDING SYSTEM VALUE` 写入任意值，包括负数和
+/// [`i64::MIN`]。从 `0` 或 `i64::MIN` 做 `id > $cursor` 都会漏掉键空间左端。
 const VERIFY_BATCH_SIZE: i64 = 500;
 
 pub(super) async fn verify(database: &Database) -> Result<(), crate::sqlx::migrate::MigrateError> {
-    let mut last_id = 0_i64;
+    let mut after_id = None;
     let mut offending = Vec::new();
 
     loop {
-        let rows: Vec<(i64, String, String)> = crate::sqlx::query_as(
-            "SELECT id, email, canonical_email FROM users
-             WHERE id > $1
-             ORDER BY id
-             LIMIT $2",
-        )
-        .bind(last_id)
-        .bind(VERIFY_BATCH_SIZE)
-        .fetch_all(database)
-        .await?;
-
+        let rows = fetch_user_email_batch(database, after_id).await?;
         let Some(next_id) = rows.last().map(|(id, _, _)| *id) else {
             break;
         };
-        last_id = next_id;
+        after_id = Some(next_id);
 
         offending.extend(
             rows.into_iter()
@@ -66,6 +60,36 @@ pub(super) async fn verify(database: &Database) -> Result<(), crate::sqlx::migra
             offending,
         )),
     ))
+}
+
+async fn fetch_user_email_batch(
+    database: &Database,
+    after_id: Option<i64>,
+) -> Result<Vec<(i64, String, String)>, crate::sqlx::Error> {
+    match after_id {
+        None => {
+            crate::sqlx::query_as(
+                "SELECT id, email, canonical_email FROM users
+                 ORDER BY id
+                 LIMIT $1",
+            )
+            .bind(VERIFY_BATCH_SIZE)
+            .fetch_all(database)
+            .await
+        }
+        Some(id) => {
+            crate::sqlx::query_as(
+                "SELECT id, email, canonical_email FROM users
+                 WHERE id > $1
+                 ORDER BY id
+                 LIMIT $2",
+            )
+            .bind(id)
+            .bind(VERIFY_BATCH_SIZE)
+            .fetch_all(database)
+            .await
+        }
+    }
 }
 
 /// 展示值经应用层规范化后是否与库存匹配值逐字节相同。

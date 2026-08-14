@@ -11,6 +11,7 @@
 //! 4. **启动期复核会拦下 SQL 无法自证的行**。PostgreSQL 证明不了匹配值与
 //!    `EmailAddress` 一致，所以 `db::migrate` 之后按主键分批扫完全表再重算；
 //!    只筛 `xn--` 会漏掉 Unicode 域名、错误的纯 ASCII 匹配值和本地部分差异。
+//!    键集分页必须覆盖完整 BIGINT，包括维护 SQL 写入的负 id。
 //!    落错的行会让其所有者静默无法登录，因此必须拒绝启动而不是放行。
 //!
 //! 单独一个二进制而不是塞进 `database_schema`：那个文件断言的是 schema 形状，
@@ -52,6 +53,31 @@ async fn insert_raw(
          VALUES ($1, $2, $3, 'unusable-hash', 'active')
          RETURNING id",
     )
+    .bind(username)
+    .bind(email)
+    .bind(canonical_email)
+    .fetch_one(pool)
+    .await
+}
+
+/// 绕过 identity 生成器，写入指定主键。
+///
+/// 基线没有 `id > 0` 约束。维护 SQL 用 `OVERRIDING SYSTEM VALUE` 就能放进负
+/// BIGINT，复核如果从 `0` 起游标，这类行会整行消失。
+async fn insert_raw_with_id(
+    pool: &chenxing_auth::sqlx::PgPool,
+    id: i64,
+    username: &str,
+    email: &str,
+    canonical_email: &str,
+) -> Result<i64, chenxing_auth::sqlx::Error> {
+    chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO users (id, username, email, canonical_email, password_hash, status)
+         OVERRIDING SYSTEM VALUE
+         VALUES ($1, $2, $3, $4, 'unusable-hash', 'active')
+         RETURNING id",
+    )
+    .bind(id)
     .bind(username)
     .bind(email)
     .bind(canonical_email)
@@ -418,4 +444,45 @@ async fn startup_verification_finds_ascii_mismatch_among_valid_idna_rows() {
     let broken = format!("Drift-{suffix}@example.com");
     assert_startup_rejects_then_recovers(&pool, &format!("drift-ascii-{suffix}"), &broken, &broken)
         .await;
+}
+
+/// 负主键行必须进入复核。夹具用 [`i64::MIN`]：它同时打中从 `0` 起游标和
+/// `id > i64::MIN` 两种漏扫。
+#[tokio::test]
+async fn startup_verification_rejects_mismatch_on_negative_user_id() {
+    let pool = database().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let username = format!("neg-id-{suffix}");
+    let display = format!("neg-{suffix}@Example.COM");
+
+    let inserted = insert_raw_with_id(&pool, i64::MIN, &username, &display, &display)
+        .await
+        .expect("maintenance SQL can insert a negative BIGINT id");
+    assert_eq!(inserted, i64::MIN);
+
+    let error = chenxing_auth::db::migrate(&pool)
+        .await
+        .expect_err("a negative-id mismatch must still refuse startup");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("canonical_email mismatch"),
+        "unexpected error: {rendered}"
+    );
+    assert!(
+        rendered.contains(&i64::MIN.to_string()),
+        "the startup error must name the negative id: {rendered}"
+    );
+    assert!(
+        !rendered.contains(&display),
+        "the startup error must not echo the address: {rendered}"
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(i64::MIN)
+        .execute(&pool)
+        .await
+        .expect("remove the negative-id row");
+    chenxing_auth::db::migrate(&pool)
+        .await
+        .expect("startup must proceed once the offending row is fixed");
 }
