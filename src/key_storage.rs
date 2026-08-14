@@ -12,8 +12,27 @@ pub(crate) use key_lock::KeyStorageLock;
 
 pub(crate) const PRIVATE_FILE_MODE: u32 = 0o600;
 pub(crate) const KEY_DIRECTORY_MODE: u32 = 0o700;
-const TEMPORARY_FILE_PREFIX: &str = ".chenxing-key-";
 const TEMPORARY_FILE_SUFFIX: &str = ".tmp";
+
+/// 原子写入临时文件的命名空间。
+///
+/// `KeyManager` 与 `SecretManager` 共享 `KEY_DIRECTORY`，但不能假设清理半成品时
+/// 对方已经持有同一把目录锁。两个子系统使用互不重叠的前缀，各自只删除自己的
+/// `.tmp`，这样一方正在写的临时文件不会被另一方当成崩溃残留清掉（Issue #458）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TemporaryFileKind {
+    SigningKey,
+    ProviderSecret,
+}
+
+impl TemporaryFileKind {
+    const fn prefix(self) -> &'static str {
+        match self {
+            Self::SigningKey => ".chenxing-key-",
+            Self::ProviderSecret => ".chenxing-secret-",
+        }
+    }
+}
 
 pub(crate) fn ensure_secure_directory(path: &Path) -> io::Result<()> {
     create_restricted_directory(path)?;
@@ -66,6 +85,20 @@ pub(crate) fn remove_secure_file(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn atomic_write(path: &Path, contents: &[u8], replace_existing: bool) -> io::Result<()> {
+    atomic_write_in(
+        TemporaryFileKind::SigningKey,
+        path,
+        contents,
+        replace_existing,
+    )
+}
+
+pub(crate) fn atomic_write_in(
+    kind: TemporaryFileKind,
+    path: &Path,
+    contents: &[u8],
+    replace_existing: bool,
+) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => secure_existing_file(path)?,
         Ok(_) => return Err(invalid_storage_path()),
@@ -75,7 +108,8 @@ pub(crate) fn atomic_write(path: &Path, contents: &[u8], replace_existing: bool)
 
     let parent = path.parent().ok_or_else(invalid_storage_path)?;
     let temporary = parent.join(format!(
-        "{TEMPORARY_FILE_PREFIX}{}{TEMPORARY_FILE_SUFFIX}",
+        "{}{}{TEMPORARY_FILE_SUFFIX}",
+        kind.prefix(),
         Uuid::new_v4().simple()
     ));
     let result = write_temporary(&temporary, path, contents, replace_existing);
@@ -85,18 +119,24 @@ pub(crate) fn atomic_write(path: &Path, contents: &[u8], replace_existing: bool)
     result
 }
 
-/// Remove temporary files left by an interrupted atomic write.
+/// 删除指定命名空间里、由中断的原子写入留下的临时文件。
 ///
-/// The name is deliberately restricted to the namespace owned by `atomic_write`; other files in
-/// the key directory, including valid persisted keys, are left untouched. Deletion still goes
-/// through the secure-file checks so a symlink or non-regular path fails closed.
+/// 只匹配该命名空间的前缀；目录里的持久化密钥、对方子系统的半成品、以及其它
+/// 文件一律不动。删除仍走安全文件检查，符号链接或非常规路径 fail-closed。
 pub(crate) fn cleanup_stale_temporary_files(directory: &Path) -> io::Result<()> {
+    cleanup_stale_temporary_files_in(directory, TemporaryFileKind::SigningKey)
+}
+
+pub(crate) fn cleanup_stale_temporary_files_in(
+    directory: &Path,
+    kind: TemporaryFileKind,
+) -> io::Result<()> {
     for entry in fs::read_dir(directory)? {
         let path = entry?.path();
         let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if is_atomic_write_temporary(file_name) {
+        if is_temporary_file(file_name, kind) {
             remove_secure_file(&path)?;
         }
     }
@@ -133,9 +173,9 @@ fn write_temporary(
     Ok(())
 }
 
-fn is_atomic_write_temporary(file_name: &str) -> bool {
+fn is_temporary_file(file_name: &str, kind: TemporaryFileKind) -> bool {
     file_name
-        .strip_prefix(TEMPORARY_FILE_PREFIX)
+        .strip_prefix(kind.prefix())
         .and_then(|name| name.strip_suffix(TEMPORARY_FILE_SUFFIX))
         .is_some_and(|unique| !unique.is_empty())
 }
@@ -184,95 +224,5 @@ fn invalid_storage_path() -> io::Error {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt;
-
-    /// 测试临时目录的 RAII 清理卫士
-    struct TempDirGuard(std::path::PathBuf);
-
-    impl TempDirGuard {
-        fn new(name: &str) -> Self {
-            let unique = Uuid::new_v4().simple();
-            let path = std::env::temp_dir().join(format!("chenxing-test-{name}-{unique}"));
-            Self(path)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempDirGuard {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    /// 读取目录实际权限位（低9位）
-    fn mode_of(path: &Path) -> io::Result<u32> {
-        Ok(fs::symlink_metadata(path)?.permissions().mode() & 0o777)
-    }
-
-    #[test]
-    fn test_ensure_secure_directory_creates_with_0700() {
-        // 验证新建目录从创建那一刻就是 0700，中间目录也应如此。
-        let guard = TempDirGuard::new("new-nested");
-        let nested = guard.path().join("parent").join("child");
-
-        ensure_secure_directory(&nested).expect("should create nested directory");
-
-        assert_eq!(
-            mode_of(&guard.path().join("parent")).expect("parent mode"),
-            0o700,
-            "中间目录应为 0700"
-        );
-        assert_eq!(
-            mode_of(&nested).expect("leaf mode"),
-            0o700,
-            "叶子目录应为 0700"
-        );
-    }
-
-    #[test]
-    fn test_ensure_secure_directory_tightens_existing_loose_dir() {
-        // 验证已存在的、权限宽松的目录会被收紧到 0700。
-        let guard = TempDirGuard::new("existing-loose");
-        fs::create_dir_all(guard.path()).expect("create with default umask");
-        fs::set_permissions(guard.path(), fs::Permissions::from_mode(0o755))
-            .expect("set loose permissions");
-
-        assert_eq!(
-            mode_of(guard.path()).expect("initial mode"),
-            0o755,
-            "初始应为宽松权限"
-        );
-
-        ensure_secure_directory(guard.path()).expect("should tighten existing directory");
-
-        assert_eq!(
-            mode_of(guard.path()).expect("tightened mode"),
-            0o700,
-            "应被收紧到 0700"
-        );
-    }
-
-    #[test]
-    fn test_ensure_secure_directory_rejects_symlink_to_dir() {
-        // 验证符号链接（即使指向合法目录）会被拒绝，防止私钥落入攻击者可控路径。
-        use std::os::unix::fs::symlink;
-
-        let guard = TempDirGuard::new("symlink-target");
-        fs::create_dir_all(guard.path()).expect("create base directory");
-
-        let real_dir = guard.path().join("real");
-        fs::create_dir(&real_dir).expect("create real directory");
-
-        let symlink_path = guard.path().join("link");
-        symlink(&real_dir, &symlink_path).expect("create symlink to directory");
-
-        let result = ensure_secure_directory(&symlink_path);
-        assert!(result.is_err(), "应拒绝符号链接");
-        assert_eq!(result.unwrap_err().kind(), ErrorKind::PermissionDenied);
-    }
-}
+#[path = "key_storage_tests.rs"]
+mod tests;

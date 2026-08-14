@@ -96,8 +96,9 @@ pub enum StateError {
 /// 启动阶段一次性加载的密钥材料。
 ///
 /// `KeyManager` 与 `SecretManager` 都直接读写 `KEY_DIRECTORY` 下的文件，缺失时
-/// 还会生成 RSA 2048 私钥，属于典型的阻塞 I/O 加 CPU 密集步骤。打包成一个结构体
-/// 是为了只做一次 `spawn_blocking` 往返，而不是每个密钥各跨一次线程。
+/// 还会生成材料。两者使用互不重叠的临时文件前缀，各自只清理自己的半成品，避免
+/// 一方正在写的 `.tmp` 被另一方当成崩溃残留删掉。打包成一个结构体是为了只做一次
+/// `spawn_blocking` 往返，而不是每个密钥各跨一次线程。
 struct StartupKeyMaterial {
     keys: KeyManager,
     secrets: SecretManager,
