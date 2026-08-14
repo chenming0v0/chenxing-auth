@@ -147,6 +147,8 @@ fn hashed_filename(filename: &str) -> bool {
                 .iter()
                 .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-')
     })
+}
+
 fn is_spa_document(path: &str) -> bool {
     path == "/" || path == "/index.html"
 }
