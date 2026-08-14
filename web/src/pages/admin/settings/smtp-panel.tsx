@@ -1,7 +1,21 @@
 import { useState, type FormEvent } from 'react'
-import { apiFetch, type SmtpSetting } from '../../../api'
+import { apiFetch, type SmtpPasswordAction, type SmtpSetting } from '../../../api'
 import { Button, Field, HudPanel, Icon, Notice, PasswordField, ToggleRow } from '../../../components/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, validateIntegerWithinRange, type SettingsPanelProps } from './panel'
+
+/** 第一方控制台始终显式发送 password_action，不走省略字段兼容路径。 */
+export function smtpPasswordWrite(
+  password: string,
+  clearSaved: boolean,
+): { password_action: SmtpPasswordAction; password?: string } {
+  if (password !== '') {
+    return { password_action: 'set', password }
+  }
+  if (clearSaved) {
+    return { password_action: 'clear' }
+  }
+  return { password_action: 'keep' }
+}
 
 /** 草稿里的端口以字符串保存：清空输入框时必须保留空串，而不是回填 0（#376）。 */
 type SmtpDraft = Omit<SmtpSetting, 'port'> & { port: string }
@@ -23,6 +37,7 @@ export function SmtpPanel({ onMessage, onDirtyChange }: SettingsPanelProps) {
   /* 上次成功加载/保存的基线：当前编辑与它不一致即视为有未保存草稿（#381）。 */
   const [savedDraft, setSavedDraft] = useState<SmtpDraft | null>(null)
   const [password, setPassword] = useState('')
+  const [clearSaved, setClearSaved] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const { loading } = useSettingsResource<SmtpSetting>({
@@ -36,7 +51,7 @@ export function SmtpPanel({ onMessage, onDirtyChange }: SettingsPanelProps) {
     },
   })
 
-  const dirty = Boolean(savedDraft && (password !== '' || !settingsEqual(draft, savedDraft)))
+  const dirty = Boolean(savedDraft && (password !== '' || clearSaved || !settingsEqual(draft, savedDraft)))
   useDirtyReport(dirty, onDirtyChange)
 
   function updateDraft(patch: Partial<SmtpDraft>) {
@@ -63,13 +78,14 @@ export function SmtpPanel({ onMessage, onDirtyChange }: SettingsPanelProps) {
           from_address: draft.from_address,
           ssl_enabled: draft.ssl_enabled,
           force_auth_login: draft.force_auth_login,
-          password: password || null,
+          ...smtpPasswordWrite(password, clearSaved),
         }),
       })
       const next = toDraft(value)
       setDraft(next)
       setSavedDraft(next)
       setPassword('')
+      setClearSaved(false)
       onMessage('SMTP 设置已保存。')
     } catch (reason) {
       onMessage(reason instanceof Error ? reason.message : 'SMTP 设置保存失败。', 'warning')
@@ -109,10 +125,35 @@ export function SmtpPanel({ onMessage, onDirtyChange }: SettingsPanelProps) {
                 <PasswordField
                   label="SMTP 访问凭证"
                   value={password}
-                  onChange={(event) => { if (!busy) setPassword(event.target.value) }}
+                  onChange={(event) => {
+                    if (busy) return
+                    setPassword(event.target.value)
+                    if (event.target.value !== '') setClearSaved(false)
+                  }}
                   placeholder={draft.password_configured ? '已配置，留空则保持不变' : '敏感信息不会回显到前端'}
-                  hint={draft.password_configured ? '当前已配置访问凭证，留空可保留原值。' : '保存后不会回显明文。'}
+                  hint={
+                    clearSaved
+                      ? '保存后将删除已保存的访问凭证。'
+                      : draft.password_configured
+                        ? '当前已配置访问凭证，留空可保留原值。'
+                        : '保存后不会回显明文。'
+                  }
                 />
+                {draft.password_configured ? (
+                  <div className="mt-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => {
+                        setPassword('')
+                        setClearSaved(true)
+                      }}
+                    >
+                      清除已保存凭证
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </div>
             <ToggleRow

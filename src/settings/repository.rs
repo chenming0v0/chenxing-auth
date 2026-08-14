@@ -1,7 +1,8 @@
 use super::{
     EMAIL_POLICY_KEY, PASSKEY_KEY, REGISTRATION_EMAIL_FROM_KEY, SECURITY_LIMITS_KEY, SMTP_KEY,
     SecurityLimitsSetting,
-    domain::{EmailPolicySetting, PasskeySetting, StoredSmtpSetting},
+    domain::{EmailPolicySetting, PasskeySetting},
+    smtp::StoredSmtpSetting,
 };
 
 /// 所有读写都接受任意 PostgreSQL 执行器：单键路径直接传 `&PgPool`，

@@ -2,11 +2,10 @@ use std::sync::Arc;
 
 use super::{
     IssuerRuntime, SecurityLimitsSetting,
-    domain::{
-        PasskeySetting, SettingsValidationError, SmtpSetting, SmtpSettingUpdate, StoredSmtpSetting,
-    },
+    domain::{PasskeySetting, SettingsValidationError},
     repository,
     security_limits_cache::{CachedSecurityLimits, SecurityLimitsCache, SecurityLimitsSource},
+    smtp::{SmtpPasswordAction, SmtpSetting, SmtpSettingUpdate, StoredSmtpSetting},
     smtp_sender::parse_smtp_sender,
 };
 use crate::{
@@ -293,19 +292,24 @@ impl SettingsService {
     pub async fn set_smtp(
         &self,
         update: SmtpSettingUpdate,
-    ) -> Result<SmtpSetting, SettingsServiceError> {
+    ) -> Result<(SmtpSetting, SmtpPasswordAction), SettingsServiceError> {
         let (mut setting, password) = update.validate()?;
+        let password_action = password.action();
         // SMTP 与注册发件人镜像必须一起落库：第二次写失败时若第一个键已持久化
         // 会形成「SMTP 已更新、镜像残留旧地址」的半同步状态（#322）。
-        // 事务内读取 existing，保证「未提供新密码则沿用旧密文」看到的是同一快照。
+        // 事务内读取 existing，保证 keep 看到的是同一快照，clear 也在同一事务里删密文。
         let mut transaction = self.pool.begin().await?;
         let existing = repository::get_smtp(&mut *transaction).await?;
-        let password_ciphertext = match password {
-            Some(password) => Some(SecretManager::encode(&self.secrets.encrypt(&password)?)),
-            None => existing
+        let password_ciphertext = password.next_ciphertext(
+            existing
                 .as_ref()
                 .and_then(|value| value.password_ciphertext.clone()),
-        };
+            |plaintext| {
+                self.secrets
+                    .encrypt(&plaintext)
+                    .map(|secret| SecretManager::encode(&secret))
+            },
+        )?;
         setting.password_configured = password_ciphertext
             .as_ref()
             .is_some_and(|value| !value.is_empty());
@@ -331,7 +335,7 @@ impl SettingsService {
             None => repository::set_registration_email_from(&mut *transaction, None).await?,
         }
         transaction.commit().await?;
-        Ok(setting)
+        Ok((setting, password_action))
     }
 }
 

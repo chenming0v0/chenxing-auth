@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { validateSmtpPort } from './smtp-panel'
+import { smtpPasswordWrite, validateSmtpPort } from './smtp-panel'
 
 describe('validateSmtpPort', () => {
   it('accepts integers in the u16 port range and serializes them as JSON numbers', () => {
@@ -29,5 +29,22 @@ describe('validateSmtpPort', () => {
     expect(validateSmtpPort('65536')).toEqual({
       error: '「SMTP 端口」超出范围，必须在 1 到 65535 之间。',
     })
+  })
+})
+
+describe('smtpPasswordWrite', () => {
+  it('sends explicit keep/set/clear and never treats empty string as keep', () => {
+    expect(smtpPasswordWrite('', false)).toEqual({ password_action: 'keep' })
+    expect(smtpPasswordWrite('super-secret-smtp', false)).toEqual({
+      password_action: 'set',
+      password: 'super-secret-smtp',
+    })
+    expect(smtpPasswordWrite('', true)).toEqual({ password_action: 'clear' })
+    expect(smtpPasswordWrite('super-secret-smtp', true)).toEqual({
+      password_action: 'set',
+      password: 'super-secret-smtp',
+    })
+    expect(smtpPasswordWrite('', false)).not.toHaveProperty('password')
+    expect(smtpPasswordWrite('', true)).not.toHaveProperty('password')
   })
 })
