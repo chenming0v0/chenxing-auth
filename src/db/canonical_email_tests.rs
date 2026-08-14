@@ -1,9 +1,6 @@
 use super::{VERIFY_BATCH_SIZE, canonical_email_matches};
 
-#[test]
-fn verify_batch_size_is_a_positive_page() {
-    assert!(VERIFY_BATCH_SIZE > 0);
-}
+const _: () = assert!(VERIFY_BATCH_SIZE > 0);
 
 #[test]
 fn matching_ascii_row_agrees_with_the_canonicalizer() {

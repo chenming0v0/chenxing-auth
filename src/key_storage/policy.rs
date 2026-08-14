@@ -5,11 +5,10 @@
 
 use std::io::{self, ErrorKind};
 
-/// 进程凭证：有效 uid/gid，不是真实 uid。密钥目录必须属于当前权限集。
+/// 进程凭证：有效 uid，不是真实 uid。密钥目录必须属于当前有效用户。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ProcessIdentity {
     pub uid: u32,
-    pub gid: u32,
 }
 
 /// 一次 fstat / 测试夹具看到的路径身份。`mode` 含 sticky/setgid（低 12 位）。
@@ -33,9 +32,9 @@ pub(crate) struct FileInode {
 /// KEY_DIRECTORY 叶子：必须是本进程的目录，且不含 group/other 权限位。
 ///
 /// 服务以 root 启动、目录却是别人预先建好的，是 Issue #457 的主攻击面。
-/// gid 也必须对上，避免 setgid 父目录把密钥目录挂到攻击者所在组。
+/// 只强制有效 uid：0700/0600 下主 gid 不是额外安全边界。
 pub(crate) fn leaf_directory_owned(path: PathIdentity, process: ProcessIdentity) -> bool {
-    !path.is_symlink && path.is_dir && path.uid == process.uid && path.gid == process.gid
+    !path.is_symlink && path.is_dir && path.uid == process.uid
 }
 
 pub(crate) fn leaf_directory_mode_restricted(mode: u32) -> bool {
@@ -61,9 +60,9 @@ pub(crate) fn ancestor_directory_trusted(path: PathIdentity, process: ProcessIde
     path.uid == 0 && path.mode & 0o1000 != 0
 }
 
-/// 密钥文件：普通文件、本进程所有。mode 由打开后的 fchmod 收紧，这里只看身份。
+/// 密钥文件：普通文件、本进程所有。mode 由打开后的 fchmod 收紧，这里只看 uid。
 pub(crate) fn regular_file_owned(path: PathIdentity, process: ProcessIdentity) -> bool {
-    !path.is_symlink && path.is_regular_file && path.uid == process.uid && path.gid == process.gid
+    !path.is_symlink && path.is_regular_file && path.uid == process.uid
 }
 
 pub(crate) fn same_file_inode(expected: FileInode, actual: FileInode) -> bool {
@@ -93,11 +92,8 @@ pub(crate) fn invalid_storage_path() -> io::Error {
 mod tests {
     use super::*;
 
-    const SELF: ProcessIdentity = ProcessIdentity {
-        uid: 1000,
-        gid: 1000,
-    };
-    const ROOT: ProcessIdentity = ProcessIdentity { uid: 0, gid: 0 };
+    const SELF: ProcessIdentity = ProcessIdentity { uid: 1000 };
+    const ROOT: ProcessIdentity = ProcessIdentity { uid: 0 };
 
     fn dir(uid: u32, gid: u32, mode: u32) -> PathIdentity {
         PathIdentity {
@@ -133,8 +129,8 @@ mod tests {
             "root 拥有的叶子对非 root 进程也不是可信密钥目录"
         );
         assert!(
-            !leaf_directory_trusted(dir(1000, 1001, 0o700), SELF),
-            "异 gid 必须拒绝"
+            leaf_directory_trusted(dir(1000, 1001, 0o700), SELF),
+            "同 uid 异 gid 可以接受：0700 下 gid 不是额外边界"
         );
     }
 
@@ -172,7 +168,10 @@ mod tests {
     fn regular_file_rejects_foreign_owner_and_non_files() {
         assert!(regular_file_owned(file(1000, 1000, 0o600), SELF));
         assert!(!regular_file_owned(file(0, 0, 0o600), SELF));
-        assert!(!regular_file_owned(file(1000, 1001, 0o600), SELF));
+        assert!(
+            regular_file_owned(file(1000, 1001, 0o600), SELF),
+            "同 uid 异 gid 文件可以接受"
+        );
         assert!(!regular_file_owned(dir(1000, 1000, 0o700), SELF));
     }
 

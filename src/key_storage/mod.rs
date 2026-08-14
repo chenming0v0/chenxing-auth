@@ -1,6 +1,6 @@
 //! 密钥目录的安全文件原语。
 //!
-//! Unix 上所有关键操作绑定目录 fd：校验 owner uid/gid 与祖先权限，
+//! Unix 上所有关键操作绑定目录 fd：校验 owner 有效 uid 与祖先权限，
 //! `openat2`/`openat` + `O_NOFOLLOW` 打开后再 `fstat` 同一 inode。
 //! 非 Unix 没有 POSIX owner / `O_NOFOLLOW`，保持路径级 create + 读写语义，
 //! 不假装做了同等检查。
@@ -15,7 +15,7 @@ use std::{
 #[cfg(not(unix))]
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Read, Write},
 };
 
 #[cfg(not(unix))]
@@ -84,26 +84,6 @@ pub(crate) fn ensure_secure_directory(path: &Path) -> io::Result<()> {
     }
 }
 
-pub(crate) fn secure_existing_file(path: &Path) -> io::Result<()> {
-    with_parent(path, |dir, name| {
-        #[cfg(unix)]
-        {
-            let _ = dir;
-            unix::SecureDir::open(path.parent().ok_or_else(invalid_storage_path)?)?
-                .tighten_regular_file(name)
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = dir;
-            let metadata = fs::symlink_metadata(path)?;
-            if !metadata.is_file() {
-                return Err(invalid_storage_path());
-            }
-            Ok(())
-        }
-    })
-}
-
 pub(crate) fn remove_secure_file(path: &Path) -> io::Result<()> {
     with_parent(path, |_, name| {
         #[cfg(unix)]
@@ -161,11 +141,15 @@ pub(crate) fn cleanup_stale_temporary_files_in(
 }
 
 pub(crate) fn modified_time(path: &Path) -> io::Result<SystemTime> {
-    Ok(read_secure_named_at(path, None)?.modified)
+    Ok(read_secure_named_at(path, None, None)?.modified)
 }
 
 pub(crate) fn read_secure_file(path: &Path) -> io::Result<Vec<u8>> {
-    Ok(read_secure_named_at(path, None)?.contents)
+    Ok(read_secure_named_at(path, None, None)?.contents)
+}
+
+pub(crate) fn read_secure_file_limited(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
+    Ok(read_secure_named_at(path, None, Some(max_bytes))?.contents)
 }
 
 pub(crate) fn read_secure_to_string(path: &Path) -> io::Result<String> {
@@ -178,9 +162,18 @@ pub(crate) fn read_secure_named(
     name: &str,
     expected: Option<FileInode>,
 ) -> io::Result<SecureFileData> {
+    read_secure_named_limited(directory, name, expected, None)
+}
+
+fn read_secure_named_limited(
+    directory: &Path,
+    name: &str,
+    expected: Option<FileInode>,
+    max_bytes: Option<u64>,
+) -> io::Result<SecureFileData> {
     #[cfg(unix)]
     {
-        unix::SecureDir::open(directory)?.read_named(name, expected)
+        unix::SecureDir::open(directory)?.read_named_limited(name, expected, max_bytes)
     }
     #[cfg(not(unix))]
     {
@@ -190,10 +183,19 @@ pub(crate) fn read_secure_named(
         if !metadata.is_file() {
             return Err(invalid_storage_path());
         }
-        Ok(SecureFileData {
-            contents: fs::read(&path)?,
-            modified: fs::metadata(&path)?.modified()?,
-        })
+        let mut file = File::open(&path)?;
+        let modified = file.metadata()?.modified()?;
+        let mut contents = Vec::new();
+        match max_bytes {
+            Some(limit) => {
+                file.take(limit.saturating_add(1))
+                    .read_to_end(&mut contents)?;
+            }
+            None => {
+                file.read_to_end(&mut contents)?;
+            }
+        }
+        Ok(SecureFileData { contents, modified })
     }
 }
 
@@ -256,9 +258,13 @@ pub(crate) fn open_or_create_regular_file(directory: &Path, name: &str) -> io::R
     }
 }
 
-fn read_secure_named_at(path: &Path, expected: Option<FileInode>) -> io::Result<SecureFileData> {
+fn read_secure_named_at(
+    path: &Path,
+    expected: Option<FileInode>,
+    max_bytes: Option<u64>,
+) -> io::Result<SecureFileData> {
     let (parent, name) = split_dir_and_name(path)?;
-    read_secure_named(parent, name, expected)
+    read_secure_named_limited(parent, name, expected, max_bytes)
 }
 
 fn split_dir_and_name(path: &Path) -> io::Result<(&Path, &str)> {

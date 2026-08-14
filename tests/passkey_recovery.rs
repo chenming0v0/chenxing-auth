@@ -26,8 +26,6 @@ use uuid::Uuid;
 
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
-#[path = "support/key_directory.rs"]
-mod key_directory;
 #[path = "support/oauth_flow.rs"]
 mod oauth_flow;
 
@@ -49,7 +47,7 @@ impl Harness {
         let redis_url =
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
         let database = db_isolation::isolated_pool("passkey_recovery", &database_url).await;
-        let key_directory = key_directory::isolated_key_directory("passkey-recovery");
+        let key_directory = oauth_flow::isolated_key_directory("passkey-recovery");
         let mut config = Config::from_values_with_issuer(
             "127.0.0.1".to_owned(),
             3000,

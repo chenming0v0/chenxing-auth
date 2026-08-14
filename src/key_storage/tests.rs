@@ -152,12 +152,13 @@ fn read_rejects_inode_replaced_between_list_and_open() {
 }
 
 #[test]
-fn secure_existing_file_tightens_mode_via_dirfd() {
+fn read_tightens_loose_mode_via_dirfd() {
     let guard = prepare_key_dir("tighten-file");
     let path = guard.path().join("active-rs256.kid");
     atomic_write(&path, b"kid", true).expect("write");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("loosen");
-    secure_existing_file(&path).expect("tighten");
+    assert_eq!(mode_of(&path).expect("loose mode"), 0o644);
+    assert_eq!(read_secure_file(&path).expect("read"), b"kid");
     assert_eq!(mode_of(&path).expect("file mode"), 0o600);
 }
 

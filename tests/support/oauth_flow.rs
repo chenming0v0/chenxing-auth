@@ -12,6 +12,10 @@ use tower::ServiceExt;
 #[path = "key_directory.rs"]
 mod key_directory;
 
+pub fn isolated_key_directory(label: &str) -> std::path::PathBuf {
+    key_directory::isolated_key_directory(label)
+}
+
 #[path = "qps_window.rs"]
 pub mod qps_window;
 

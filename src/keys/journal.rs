@@ -26,7 +26,7 @@
 
 use std::path::Path;
 
-use crate::key_storage::{atomic_write, read_secure_file, remove_secure_file};
+use crate::key_storage::{atomic_write, read_secure_file_limited, remove_secure_file};
 
 use super::{KeyManagerError, persistence, retirement};
 
@@ -173,7 +173,7 @@ fn read_record<T>(
     oversized: impl FnOnce() -> T,
 ) -> Result<Option<T>, KeyManagerError> {
     let path = directory.join(file_name);
-    let contents = match read_secure_file(&path) {
+    let contents = match read_secure_file_limited(&path, MAX_PENDING_RECORD_BYTES) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),

@@ -1,7 +1,8 @@
 //! Unix 密钥目录：沿路径用 dirfd + openat/openat2 前进，打开后 fstat。
 //!
 //! 路径级 lstat 再 open 有 TOCTOU。这里每一步都绑定已验证的目录 fd，
-//! 最终分量带 O_NOFOLLOW；Linux 上优先 openat2(RESOLVE_BENEATH|NO_SYMLINKS)。
+//! 最终分量带 O_NOFOLLOW。绝对路径走查用 openat2(NO_SYMLINKS|NO_MAGICLINKS)，
+//! 已验证目录内的单分量才加 RESOLVE_BENEATH。
 
 use std::{
     ffi::{CStr, OsStr, OsString},
@@ -19,8 +20,7 @@ use super::policy::{
     leaf_directory_owned, leaf_directory_trusted, regular_file_owned, require_same_inode,
 };
 use super::unix_sys::{
-    fchmod, from_file_fd, linkat, map_open_error, mkdirat, open_beneath, renameat, to_c_string,
-    unlinkat,
+    fchmod, linkat, map_open_error, mkdirat, open_beneath, open_path_component, renameat, unlinkat,
 };
 use super::{
     KEY_DIRECTORY_MODE, PRIVATE_FILE_MODE, SecureFileData, TEMPORARY_FILE_SUFFIX, TemporaryFileKind,
@@ -38,9 +38,8 @@ pub(crate) struct SecureDirEntry {
 
 pub(crate) fn current_process_identity() -> ProcessIdentity {
     ProcessIdentity {
-        // SAFETY: geteuid/getegid 无前置条件。
+        // SAFETY: geteuid 无前置条件。owner 只看有效 uid；0700/0600 下 gid 不是边界。
         uid: unsafe { libc::geteuid() },
-        gid: unsafe { libc::getegid() },
     }
 }
 
@@ -57,22 +56,27 @@ impl SecureDir {
         list_dir(&self.file)
     }
 
-    pub(crate) fn read_named(
+    pub(crate) fn read_named_limited(
         &self,
         name: &str,
         expected: Option<FileInode>,
+        max_bytes: Option<u64>,
     ) -> io::Result<SecureFileData> {
         let file = self.open_regular(name, libc::O_RDONLY, expected)?;
+        fchmod(&file, PRIVATE_FILE_MODE)?;
         let modified = file.metadata()?.modified()?;
         let mut contents = Vec::new();
         let mut file = file;
-        file.read_to_end(&mut contents)?;
+        match max_bytes {
+            Some(limit) => {
+                file.take(limit.saturating_add(1))
+                    .read_to_end(&mut contents)?;
+            }
+            None => {
+                file.read_to_end(&mut contents)?;
+            }
+        }
         Ok(SecureFileData { contents, modified })
-    }
-
-    pub(crate) fn tighten_regular_file(&self, name: &str) -> io::Result<()> {
-        let file = self.open_regular(name, libc::O_RDONLY, None)?;
-        fchmod(&file, PRIVATE_FILE_MODE)
     }
 
     pub(crate) fn inspect_regular_file(&self, name: &str) -> io::Result<bool> {
@@ -87,8 +91,7 @@ impl SecureDir {
         let file = self.open_regular(name, libc::O_RDONLY, None)?;
         drop(file);
         unlinkat(self.fd(), name)?;
-        let _ = self.file.sync_all();
-        Ok(())
+        self.file.sync_all()
     }
 
     pub(crate) fn atomic_write(
@@ -162,8 +165,7 @@ impl SecureDir {
             linkat(self.fd(), temporary, destination)?;
             let _ = unlinkat(self.fd(), temporary);
         }
-        let _ = self.file.sync_all();
-        Ok(())
+        self.file.sync_all()
     }
 
     fn create_exclusive(&self, name: &str) -> io::Result<File> {
@@ -196,7 +198,7 @@ impl SecureDir {
 
 fn walk(path: &Path, create: bool) -> io::Result<SecureDir> {
     let process = current_process_identity();
-    let (start, components) = open_start(path)?;
+    let (start, components, absolute) = open_start(path)?;
     validate_ancestors(&start, process)?;
     if components.is_empty() {
         return Err(invalid_storage_path());
@@ -204,12 +206,12 @@ fn walk(path: &Path, create: bool) -> io::Result<SecureDir> {
     let mut current = start;
     let last = components.len() - 1;
     for (index, name) in components.iter().enumerate() {
-        current = step(&current, name, process, create, index == last)?;
+        current = step(&current, name, process, create, index == last, absolute)?;
     }
     Ok(current)
 }
 
-fn open_start(path: &Path) -> io::Result<(SecureDir, Vec<OsString>)> {
+fn open_start(path: &Path) -> io::Result<(SecureDir, Vec<OsString>, bool)> {
     let mut components = Vec::new();
     let mut absolute = false;
     for component in path.components() {
@@ -226,7 +228,7 @@ fn open_start(path: &Path) -> io::Result<(SecureDir, Vec<OsString>)> {
         Path::new(".")
     };
     let start = open_dir_path(start_path)?;
-    Ok((start, components))
+    Ok((start, components, absolute))
 }
 
 fn validate_ancestors(start: &SecureDir, process: ProcessIdentity) -> io::Result<()> {
@@ -236,7 +238,7 @@ fn validate_ancestors(start: &SecureDir, process: ProcessIdentity) -> io::Result
         if !ancestor_directory_trusted(identity, process) {
             return Err(invalid_storage_path());
         }
-        let parent = open_dir_at(current.as_raw_fd(), OsStr::new(".."))?;
+        let parent = open_ancestor(&current)?;
         if same_file(&current, &parent.file)? {
             return Ok(());
         }
@@ -250,8 +252,9 @@ fn step(
     process: ProcessIdentity,
     create: bool,
     is_leaf: bool,
+    absolute: bool,
 ) -> io::Result<SecureDir> {
-    match open_dir_at(parent.fd(), name) {
+    match open_walk_dir(parent.fd(), name, absolute) {
         Ok(dir) => finish_dir(dir, process, is_leaf),
         Err(error) if error.kind() == ErrorKind::NotFound && create => {
             match mkdirat(parent.fd(), name, KEY_DIRECTORY_MODE) {
@@ -259,7 +262,7 @@ fn step(
                 Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(map_open_error(error)),
             }
-            finish_dir(open_dir_at(parent.fd(), name)?, process, true)
+            finish_dir(open_walk_dir(parent.fd(), name, absolute)?, process, true)
         }
         Err(error) => Err(map_open_error(error)),
     }
@@ -287,15 +290,32 @@ fn finish_dir(
 }
 
 fn open_dir_path(path: &Path) -> io::Result<SecureDir> {
-    let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
-    let c_path = to_c_string(path.as_os_str())?;
-    // SAFETY: c_path 是有效 C 字符串；失败时返回负 fd。
-    let fd = unsafe { libc::open(c_path.as_ptr(), flags) };
-    from_dir_fd(fd)
+    let file = open_path_component(
+        libc::AT_FDCWD,
+        path.as_os_str(),
+        libc::O_RDONLY | libc::O_DIRECTORY,
+        0,
+    )?;
+    Ok(SecureDir { file })
 }
 
-fn open_dir_at(dirfd: RawFd, name: &OsStr) -> io::Result<SecureDir> {
-    let file = open_beneath(dirfd, name, libc::O_RDONLY | libc::O_DIRECTORY, 0)?;
+fn open_ancestor(current: &File) -> io::Result<SecureDir> {
+    let file = open_path_component(
+        current.as_raw_fd(),
+        OsStr::new(".."),
+        libc::O_RDONLY | libc::O_DIRECTORY,
+        0,
+    )?;
+    Ok(SecureDir { file })
+}
+
+fn open_walk_dir(dirfd: RawFd, name: &OsStr, absolute: bool) -> io::Result<SecureDir> {
+    let flags = libc::O_RDONLY | libc::O_DIRECTORY;
+    let file = if absolute {
+        open_path_component(dirfd, name, flags, 0)?
+    } else {
+        open_beneath(dirfd, name, flags, 0)?
+    };
     Ok(SecureDir { file })
 }
 
@@ -339,12 +359,6 @@ fn same_file(left: &File, right: &File) -> io::Result<bool> {
     let left = left.metadata()?;
     let right = right.metadata()?;
     Ok(left.dev() == right.dev() && left.ino() == right.ino())
-}
-
-fn from_dir_fd(fd: RawFd) -> io::Result<SecureDir> {
-    Ok(SecureDir {
-        file: from_file_fd(fd)?,
-    })
 }
 
 fn list_dir(dir: &File) -> io::Result<Vec<SecureDirEntry>> {
@@ -404,7 +418,7 @@ pub(crate) fn read_named_for_test(
     name: &str,
     expected: FileInode,
 ) -> io::Result<SecureFileData> {
-    SecureDir::open(directory)?.read_named(name, Some(expected))
+    SecureDir::open(directory)?.read_named_limited(name, Some(expected), None)
 }
 
 #[cfg(test)]

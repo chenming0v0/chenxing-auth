@@ -1,7 +1,8 @@
 //! Unix 密钥目录的 dirfd 系统调用封装。
 //!
-//! Linux 优先 `openat2(RESOLVE_BENEATH|NO_SYMLINKS)`；老内核或非 Linux 回退
-//! `openat` + `O_NOFOLLOW`。名字必须是单分量，避免 openat 跟随中间符号链接。
+//! Linux 优先 `openat2`；老内核或非 Linux 回退 `openat` + `O_NOFOLLOW`。
+//! 绝对路径走查不用 `RESOLVE_BENEATH`（`/tmp/...` 相对 AT_FDCWD/`/` 不在
+//! cwd 之下）；已验证目录内的单分量才用 BENEATH。
 
 use std::{
     ffi::{CStr, CString, OsStr},
@@ -15,6 +16,25 @@ use std::{
 
 use super::policy::invalid_storage_path;
 
+/// openat2 的 resolve 范围。
+#[derive(Clone, Copy)]
+pub(super) enum OpenScope {
+    /// 已持有密钥目录内的单分量：必须落在 dirfd 之下。
+    Child,
+    /// 绝对路径分量、`/` / `.` 起点、或祖先 `..`：禁止跟随符号链接，不要求 beneath。
+    Path,
+}
+
+impl OpenScope {
+    fn resolve_flags(self) -> u64 {
+        let no_links = libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS;
+        match self {
+            Self::Child => no_links | libc::RESOLVE_BENEATH,
+            Self::Path => no_links,
+        }
+    }
+}
+
 pub(super) fn open_beneath(
     dirfd: RawFd,
     name: &OsStr,
@@ -22,30 +42,61 @@ pub(super) fn open_beneath(
     mode: u32,
 ) -> io::Result<File> {
     validate_basename(name)?;
+    open_at(dirfd, name, flags, mode, OpenScope::Child)
+}
+
+/// 打开 `/`、`.`、`..` 或绝对路径走查的单分量。不套 BENEATH。
+pub(super) fn open_path_component(
+    dirfd: RawFd,
+    name: &OsStr,
+    flags: libc::c_int,
+    mode: u32,
+) -> io::Result<File> {
+    validate_path_component(name)?;
+    open_at(dirfd, name, flags, mode, OpenScope::Path)
+}
+
+fn open_at(
+    dirfd: RawFd,
+    name: &OsStr,
+    flags: libc::c_int,
+    mode: u32,
+    scope: OpenScope,
+) -> io::Result<File> {
     let c_name = to_c_string(name)?;
     let flags = flags | libc::O_NOFOLLOW | libc::O_CLOEXEC;
     #[cfg(target_os = "linux")]
     {
-        match openat2_beneath(dirfd, &c_name, flags, mode) {
+        match openat2_with(dirfd, &c_name, flags, mode, scope.resolve_flags()) {
             Ok(file) => return Ok(file),
             Err(error) if fallback_to_openat(&error) => {}
             Err(error) => return Err(map_open_error(error)),
         }
     }
-    // SAFETY: dirfd 是活目录；c_name 是单分量 C 字符串。
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = scope;
+    }
+    // SAFETY: dirfd 是活目录或 AT_FDCWD；c_name 是有效 C 字符串。
     let fd = unsafe { libc::openat(dirfd, c_name.as_ptr(), flags, mode as libc::mode_t) };
     from_file_fd(fd)
 }
 
 #[cfg(target_os = "linux")]
-fn openat2_beneath(dirfd: RawFd, name: &CStr, flags: libc::c_int, mode: u32) -> io::Result<File> {
+fn openat2_with(
+    dirfd: RawFd,
+    name: &CStr,
+    flags: libc::c_int,
+    mode: u32,
+    resolve: u64,
+) -> io::Result<File> {
     // SAFETY: open_how 是 non_exhaustive，不能写结构体字面量。全部字段都是
     // 整数，全 0 是合法位型，也是 openat2 对未知/未用字段的约定值；随后只写入
     // 本内核 ABI 已文档化的 flags/mode/resolve。
     let mut how = unsafe { std::mem::zeroed::<libc::open_how>() };
     how.flags = flags as u64;
     how.mode = u64::from(mode);
-    how.resolve = libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS;
+    how.resolve = resolve;
     // SAFETY: how 指向本栈上的 open_how；name 是有效 C 字符串。
     let fd = unsafe {
         libc::syscall(
@@ -117,6 +168,18 @@ fn validate_basename(name: &OsStr) -> io::Result<()> {
     }
     let bytes = name.as_bytes();
     if bytes.contains(&b'/') || bytes.contains(&0) {
+        return Err(invalid_storage_path());
+    }
+    Ok(())
+}
+
+fn validate_path_component(name: &OsStr) -> io::Result<()> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.contains(&0) {
+        return Err(invalid_storage_path());
+    }
+    let special = name == "/" || name == "." || name == "..";
+    if !special && bytes.contains(&b'/') {
         return Err(invalid_storage_path());
     }
     Ok(())
