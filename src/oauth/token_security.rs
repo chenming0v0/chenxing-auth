@@ -90,7 +90,18 @@ pub(crate) async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Res
     // 没有生效套餐（平台未开放自助接入）时跳过按套餐的 QPS 限制：闸门只关新增
     // Client，已有集成不能因为系统缺套餐而被拒绝。每源 IP 限流仍然独立生效。
     let max_qps = effective?.plan.max_qps?;
-    match state.qps.allow(client_id, max_qps.max(1) as u32).await {
+    // CHECK 保证 1..=MAX_QPS；不要用 `.max(1)` 把非法 0/-N 伪装成合法限流。
+    let max_qps = match u32::try_from(max_qps) {
+        Ok(qps) if qps >= 1 => qps,
+        _ => {
+            tracing::error!(
+                max_qps,
+                "plan max_qps is not a positive u32; CHECK should have prevented this"
+            );
+            return Some(error::oauth_temporarily_unavailable());
+        }
+    };
+    match state.qps.allow(client_id, max_qps).await {
         Ok(true) => None,
         Ok(false) => {
             // Rate-limit denials should not depend on audit durability; log and still 429.

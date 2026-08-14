@@ -202,9 +202,11 @@ function StatCard({ label, icon, value, caption, mono = false, tone = 'normal' }
 }
 
 const CODE_PATTERN = /^[a-z0-9_-]{1,64}$/
-/** JSON 请求只能无损传递安全整数；i32 字段还受后端类型上界约束。 */
-const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER
-const MAX_I32 = 2_147_483_647
+/** 必须与 `src/plans/domain.rs` 的业务上界保持一致（Issue #415 / #459）。 */
+const MAX_OAUTH_CLIENTS_LIMIT = 1000
+const MAX_DAILY_AUTH_LIMIT = 1_000_000
+const MAX_MONTHLY_AUTH_LIMIT = 31_000_000
+const MAX_QPS = 10_000
 
 /** 复用共享 Drawer 的右侧编辑抽屉，焦点管理与「接入应用」抽屉一致。 */
 function PlanEditorDrawer({ initial, defaultOn = false, onSaved, onCancel }: {
@@ -230,7 +232,7 @@ function PlanEditorDrawer({ initial, defaultOn = false, onSaved, onCancel }: {
   function parseRequired(raw: string, label: string, minimum: number, maximum: number): number {
     const value = Number(raw.trim())
     if (!raw.trim() || !Number.isInteger(value) || value < minimum) throw new Error(`${label}必须是不小于 ${minimum} 的整数。`)
-    if (!Number.isSafeInteger(value)) throw new Error(`${label}超出 JavaScript 安全整数范围，最大为 ${MAX_SAFE_INTEGER}。`)
+    if (!Number.isSafeInteger(value)) throw new Error(`${label}超出 JavaScript 安全整数范围，最大为 ${Number.MAX_SAFE_INTEGER}。`)
     if (value > maximum) throw new Error(`${label}超出范围，必须在 ${minimum} 到 ${maximum} 之间。`)
     return value
   }
@@ -251,10 +253,10 @@ function PlanEditorDrawer({ initial, defaultOn = false, onSaved, onCancel }: {
         code: normalizedCode,
         name: name.trim(),
         description: description.trim() || null,
-        oauth_clients_limit: parseRequired(oauthClients, 'OAuth 应用数上限', 0, MAX_I32),
-        daily_auth_limit: parseRequired(dailyAuth, '每日授权上限', 0, MAX_SAFE_INTEGER),
-        monthly_auth_limit: parseOptional(monthlyAuth, '每月授权上限', 0, MAX_SAFE_INTEGER),
-        max_qps: parseOptional(maxQps, 'QPS 上限', 1, MAX_I32),
+        oauth_clients_limit: parseRequired(oauthClients, 'OAuth 应用数上限', 0, MAX_OAUTH_CLIENTS_LIMIT),
+        daily_auth_limit: parseRequired(dailyAuth, '每日授权上限', 0, MAX_DAILY_AUTH_LIMIT),
+        monthly_auth_limit: parseOptional(monthlyAuth, '每月授权上限', 0, MAX_MONTHLY_AUTH_LIMIT),
+        max_qps: parseOptional(maxQps, 'QPS 上限', 1, MAX_QPS),
         is_default: isDefault,
       }
     } catch (reason) {

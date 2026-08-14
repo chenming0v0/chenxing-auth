@@ -5,6 +5,7 @@ use crate::sqlx::{PgPool, PgPoolOptions};
 use crate::config::Config;
 
 mod audit_boundary;
+mod canonical_email;
 mod migrate;
 mod pool;
 mod roles;
@@ -33,8 +34,9 @@ pub enum DbError {
     PoolSettings(#[from] PoolSettingsError),
     #[error("database error")]
     Database(#[from] crate::sqlx::Error),
-    /// 口令探测连不上数据库（TCP/TLS/DNS 等连接层故障）。连接层故障证明不了口令
-    /// 状态，不能据此覆盖写——那会静默撤销运维侧的口令轮换（Issue #411）。
+    /// 口令探测未能证明口令不可用：连接层故障（TCP/TLS/DNS）或非口令授权失败
+    /// （SQLSTATE 28000 及其他 28 类，Issue #455）。这些情况都不能覆盖写——
+    /// 那会静默撤销运维侧的口令轮换（Issue #411）。
     /// 错误消息刻意不携带底层错误文本：sqlx 的连接错误可能内嵌连接串。
     #[error(
         "runtime database role password probe could not reach the database; the role password was left unchanged"
@@ -127,64 +129,7 @@ pub async fn check_ready(database: &Database) -> Result<(), crate::sqlx::Error> 
 pub async fn migrate(database: &Database) -> Result<(), crate::sqlx::migrate::MigrateError> {
     roles::ensure_runtime_role(database).await?;
     embedded_migrator().run(database).await?;
-    verify_canonical_emails(database).await
-}
-
-/// 校验 `users.canonical_email` 与应用层的规范化结果一致（Issue #302）。
-///
-/// PostgreSQL 可以强制该列非空且唯一，却不能在不复制 UTS-46 实现的前提下证明它与
-/// 展示邮箱一致。因此显式 migrate 命令会用唯一的权威实现 `EmailAddress` 复核
-/// `xn--` 域名行。纯 ASCII 且结构合法的行由基线的应用写入契约保证，无需每次启动
-/// 都扫描整张用户表。
-///
-/// 不一致时**拒绝启动**。这类行的匹配值一旦落错，登录会静默失败，而错误看起来
-/// 像"密码不对"——放行是把一个可诊断的启动故障换成一个查不出原因的线上故障。
-async fn verify_canonical_emails(
-    database: &Database,
-) -> Result<(), crate::sqlx::migrate::MigrateError> {
-    let rows: Vec<(i64, String, String)> = crate::sqlx::query_as(
-        "SELECT id, email, canonical_email FROM users
-         WHERE EXISTS (
-             SELECT 1
-             FROM unnest(string_to_array(split_part(canonical_email, '@', 2), '.'))
-                  AS domain_label(label)
-             WHERE label LIKE 'xn--%'
-         )
-         ORDER BY id",
-    )
-    .fetch_all(database)
-    .await?;
-
-    let mut offending = Vec::new();
-    for (id, email, canonical_email) in rows {
-        let recomputed = crate::users::email::EmailAddress::parse(&email)
-            .ok()
-            .map(|parsed| parsed.into_canonical());
-        if recomputed.as_deref() != Some(canonical_email.as_str()) {
-            offending.push(id);
-        }
-    }
-
-    if offending.is_empty() {
-        return Ok(());
-    }
-
-    // 只报 id，不报地址本身：这条消息会进启动日志，而地址是个人数据。
-    tracing::error!(
-        user_ids = ?offending,
-        "users.canonical_email disagrees with the application canonicalizer; refusing to start"
-    );
-    Err(crate::sqlx::migrate::MigrateError::Execute(
-        crate::sqlx::Error::Protocol(format!(
-            "canonical_email mismatch for {} user row(s): id in {:?}. \
-             These rows carry an internationalized domain whose stored matching value \
-             differs from what the application computes, so their owners cannot log in. \
-             Fix users.email and canonical_email for each id, then restart. \
-             The canonical value must come from the application EmailAddress parser.",
-            offending.len(),
-            offending,
-        )),
-    ))
+    canonical_email::verify(database).await
 }
 
 fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
@@ -203,6 +148,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             Cow::Borrowed("controlled runtime issuer"),
             MigrationType::Simple,
             normalize_migration_sql(include_str!("../../migrations/0002_issuer_runtime.sql")),
+            false,
+        ),
+        Migration::new(
+            3,
+            Cow::Borrowed("bounded plan quotas"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../../migrations/0003_plan_quota_bounds.sql")),
             false,
         ),
     ];

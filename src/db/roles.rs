@@ -7,11 +7,13 @@
 //! 一次例行迁移就能把线上应用的数据库凭据打回去，而日志里看不出发生过覆盖。
 //!
 //! 现在先用运行时 URL 自己去登录探测一次：口令已经可用就完全不碰角色；只有服务端
-//! 明确拒绝认证（SQLSTATE 28P01 / 28000）才写入，并且写入时打 warn。连接层故障
-//! （连不上、TLS、DNS、超时）证明不了口令状态，直接中止本次口令管理并报错退出，
+//! 明确返回 SQLSTATE 28P01（invalid_password）才写入，并且写入时打 warn。28000
+//! （invalid_authorization_specification）以及其余 28 类可由 HBA、身份映射等非口令
+//! 原因产生，必须 fail-safe：中止本次口令管理，绝不 ALTER ROLE（Issue #455）。
+//! 连接层故障（连不上、TLS、DNS、超时）同样证明不了口令状态，直接报错退出，
 //! 绝不覆盖——一次网络抖动就会把运维侧刚轮换的口令静默打回去（Issue #411）。
-//! 动作判定函数同样 fail-safe：任何拿不到"服务端明确拒绝"证据的路径都不得写入
-//! （Issue #349）。
+//! 动作判定函数同样 fail-safe：任何拿不到 28P01 证据的路径都不得写入
+//! （Issue #349 / #455）。
 //! 口令完全由外部密钥托管管理的部署可以用 `MIGRATION_MANAGE_RUNTIME_PASSWORD=false`
 //! 让 migrate 一步都不碰。
 //!
@@ -30,8 +32,8 @@ use super::{DbError, RUNTIME_DATABASE_ROLE};
 /// migrate 对运行时角色口令的管理方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimePasswordPolicy {
-    /// 由 migrate 保证运行时 URL 里的口令可用（仅服务端明确拒绝认证才写入，
-    /// 连接层故障直接报错中止，见模块文档 Issue #411）。
+    /// 由 migrate 保证运行时 URL 里的口令可用（仅 SQLSTATE 28P01 才写入，
+    /// 28000 / 其余 28 类与连接层故障一律报错中止，见模块文档 Issue #411 / #455）。
     Managed,
     /// migrate 完全不碰口令：角色与口令由外部密钥托管或运维流程负责。
     Unmanaged,
@@ -42,8 +44,8 @@ pub enum RuntimePasswordPolicy {
 pub enum PasswordProbe {
     /// 运行时 URL 里的口令已经能登录，不需要改动。
     Accepted,
-    /// 服务端明确拒绝了认证（SQLSTATE 28P01 口令错误 / 28000 认证规格被拒），
-    /// 口令确实不可用。连接层故障不属于这里：那是"无法确认状态"，直接报错中止。
+    /// 服务端明确拒绝了口令（SQLSTATE 28P01 invalid_password），口令确实不可用。
+    /// 28000、其余 28 类和连接层故障都不属于这里：那些证明不了口令错误，直接报错中止。
     Rejected,
 }
 
@@ -161,14 +163,14 @@ pub(crate) fn runtime_password_action(
         RuntimePasswordPolicy::Managed => match (role_existed, probe) {
             (false, _) => PasswordAction::Write,
             (true, Some(PasswordProbe::Accepted)) => PasswordAction::Keep,
-            // 只有服务端明确拒绝认证（SQLSTATE 28P01 / 28000）才写入：这才是
+            // 只有 SQLSTATE 28P01（invalid_password）才写入：这才是
             // "运行时 URL 的口令确实不可用"。重设会打 warn，运维能看到。
             (true, Some(PasswordProbe::Rejected)) => PasswordAction::Write,
-            // 探测结果缺失：Managed 且角色已存在时探测必然执行，连接层故障也在
-            // `configure_runtime_role` 作为错误提前返回，所以该分支当前不可达。
-            // 保留它维持 match 完整，但绝不能 Write——没有服务端明确拒绝的证据，
-            // 写入就是静默覆盖运维侧轮换过的口令（Issue #349/#411）。fail-safe：
-            // 拿不到探测结果时不碰口令。
+            // 探测结果缺失：Managed 且角色已存在时探测必然执行，连接层故障与
+            // 非口令 28 类也在 `configure_runtime_role` 作为错误提前返回，所以
+            // 该分支当前不可达。保留它维持 match 完整，但绝不能 Write——没有
+            // 28P01 证据就写入，等于静默覆盖运维侧轮换过的口令
+            // （Issue #349/#411/#455）。fail-safe：拿不到探测结果时不碰口令。
             (true, None) => PasswordAction::Skip,
         },
     }
@@ -233,9 +235,10 @@ fn has_valid_percent_encoding(value: &[u8]) -> bool {
 
 /// 用运行时 URL 真正登录一次，判断口令是否已经可用。
 ///
-/// 只有服务端明确拒绝认证才返回 `Rejected`；连接层故障（连不上、TLS、DNS）与
-/// 超时返回 `Err`，由调用方中止口令管理——这些错误证明不了口令状态，据此覆盖写
-/// 会把运维侧刚轮换的口令静默打回去（Issue #411）。
+/// 只有 SQLSTATE 28P01 才返回 `Rejected`；28000、其余 28 类、连接层故障
+/// （连不上、TLS、DNS）与超时一律返回 `Err`，由调用方中止口令管理——这些错误
+/// 证明不了口令不可用，据此覆盖写会把运维侧刚轮换的口令静默打回去
+/// （Issue #411 / #455）。
 async fn probe_password(runtime_database_url: &str) -> Result<PasswordProbe, DbError> {
     let attempt = tokio::time::timeout(
         PASSWORD_PROBE_TIMEOUT,
@@ -254,13 +257,17 @@ async fn probe_password(runtime_database_url: &str) -> Result<PasswordProbe, DbE
     }
 }
 
-/// 只有服务端明确拒绝认证（SQLSTATE 28P01 口令错误 / 28000 认证规格被拒）才证明
-/// 口令不可用。连接层错误（TCP/TLS/DNS/超时）不携带任何口令信息，不能作为判定依据。
+/// 只有 SQLSTATE 28P01（invalid_password）才证明口令不可用，可作为自动重置证据。
+///
+/// `28000` 是宽泛的 invalid_authorization_specification，HBA、身份映射等非口令
+/// 原因也会产生它。其余 28 类同样不是口令错误。把它们当成 Rejected 会让 migrate
+/// 把 `DATABASE_URL` 里的值写回，撤销运维侧独立轮换（Issue #455）。连接层错误
+/// （TCP/TLS/DNS/超时）不携带任何口令信息，也不能作为判定依据（Issue #411）。
 fn is_password_rejection(error: &crate::sqlx::Error) -> bool {
     matches!(
         error,
         crate::sqlx::Error::Database(database_error)
-            if matches!(database_error.code().as_deref(), Some("28P01" | "28000"))
+            if database_error.code().as_deref() == Some("28P01")
     )
 }
 

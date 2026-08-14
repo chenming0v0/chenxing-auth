@@ -35,7 +35,7 @@ fn accepted_password_is_left_alone() {
 
 #[test]
 fn explicitly_rejected_password_is_rewritten() {
-    // 只有服务端明确拒绝认证（SQLSTATE 28P01 / 28000）才算"口令不可用"，
+    // 只有 SQLSTATE 28P01（invalid_password）才算"口令不可用"，
     // 此时写入 URL 携带的口令正是 Managed 模式的职责。
     assert_eq!(
         runtime_password_action(
@@ -58,9 +58,9 @@ fn freshly_created_role_always_gets_the_password() {
 #[test]
 fn missing_probe_result_never_overwrites() {
     // Managed + 角色已存在 + 探测结果缺失在正常流程中不可达（探测必然执行，
-    // 连接层故障提前报错），但该状态必须 fail-safe：没有服务端明确拒绝
-    // （SQLSTATE 28P01 / 28000）的证据就写入，等于静默覆盖运维侧轮换过的
-    // 口令（Issue #349）。
+    // 连接层故障与非口令 28 类提前报错），但该状态必须 fail-safe：没有
+    // SQLSTATE 28P01 的证据就写入，等于静默覆盖运维侧轮换过的口令
+    // （Issue #349 / #455）。
     assert_eq!(
         runtime_password_action(RuntimePasswordPolicy::Managed, true, None),
         PasswordAction::Skip
@@ -170,13 +170,23 @@ fn database_error(code: Option<&'static str>) -> crate::sqlx::Error {
 }
 
 #[test]
-fn explicit_auth_rejection_codes_are_password_rejections() {
-    // Issue #411：只有 SQLSTATE 28P01（口令错误）/ 28000（认证规格被拒）才是
-    // 口令不可用的证据。
-    for code in ["28P01", "28000"] {
+fn only_invalid_password_sqlstate_is_auto_reset_evidence() {
+    // Issue #455：只有 SQLSTATE 28P01（invalid_password）才是自动重置证据。
+    assert!(
+        super::is_password_rejection(&database_error(Some("28P01"))),
+        "28P01 must count as a password rejection"
+    );
+}
+
+#[test]
+fn generic_authorization_sqlstates_never_reset_the_password() {
+    // 28000 是 invalid_authorization_specification，HBA / ident 映射等非口令
+    // 原因也会产生。其余 28 类同样不是口令证据。把它们当成 Rejected 会触发
+    // ALTER ROLE，撤销运维侧轮换（Issue #455）。
+    for code in ["28000", "28P02", "28P03"] {
         assert!(
-            super::is_password_rejection(&database_error(Some(code))),
-            "{code} must count as a password rejection"
+            !super::is_password_rejection(&database_error(Some(code))),
+            "{code} must fail-safe and never trigger ALTER ROLE"
         );
     }
 }

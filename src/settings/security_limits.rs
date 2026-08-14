@@ -6,8 +6,12 @@ use super::domain::SettingsValidationError;
 
 /// 安全限流阈值配置，对应 `config::SecurityLimits` 的 13 个字段。
 /// 字段类型与默认值必须与 `SecurityLimits` 保持一致，否则升级会静默改变限流行为。
+///
+/// 管理 API 反序列化保持全字段必填。数据库旧行缺字段时由 `settings::persisted`
+/// 按 `Default` 补齐（与 `config::SecurityLimits` 对齐的安全默认值），
+/// 不要在这个类型上加 `#[serde(default)]`：字段级 default 对整数会填 0，
+/// 容器级 default 则会让 PUT 漏字段把已收紧的阈值改回默认。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct SecurityLimitsSetting {
     pub unauthenticated_source_qps: u32,
     pub authorization_code_ttl_seconds: u64,
