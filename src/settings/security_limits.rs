@@ -74,14 +74,14 @@ impl From<&crate::config::SecurityLimits> for SecurityLimitsSetting {
 impl SecurityLimitsSetting {
     /// 校验管理 API 写入的取值：越界即拒绝，并回报越界的字段名。
     ///
-    /// 取值范围与 `config/limits.rs` 的 `sanitized()` 共用同一张表
-    /// （`config::limit_bounds::for_each_security_limit!`），**动作**有意不同，因为
-    /// 输入来源不同：
+    /// 取值范围与 `config/limits.rs` 的启动期 `sanitized()` 共用同一张表
+    /// （`config::limit_bounds::for_each_security_limit!`），**动作**有意不同：
     ///
     /// - 环境变量是启动期输入，此时没有人能看到错误提示。非法值只能回退默认，
     ///   否则服务会带着自毁配置起不来，运维还得先猜是哪个变量写错了。
-    /// - 管理 API 是交互式输入，管理员正等着响应。非法值必须报错让他知道改哪一项，
-    ///   静默改写会让人以为已经生效，等到真被攻击时才发现阈值根本不是自己设的。
+    /// - 已持久化值和管理 API 写入走同一套 `validate()`。热路径 fail-closed，
+    ///   管理读取用 `inspect` 把越界值原样交回去让人改（#448）。静默改写会让人
+    ///   以为阈值已经生效，等到真被攻击时才发现根本不是自己设的。
     ///
     /// 下界统一是 1：QPS 为 0 表示拒绝所有请求、TTL 为 0 表示凭据签发即过期，
     /// i64 阈值 `<= 0` 在 Redis Lua 比较里等价于「立即触发限流」。
@@ -102,41 +102,6 @@ impl SecurityLimitsSetting {
         for_each_security_limit!(reject_if_out_of_range);
 
         Ok(self)
-    }
-
-    /// 回读已持久化的取值时使用：越界项回退默认值并告警，不返回错误。
-    ///
-    /// 与 `validate()` 的差别只在动作，原因同样是输入来源——这里的输入是数据库里
-    /// 已经存在的行，可能是在上界收紧之前写入的合法值。回读路径被 OAuth 授权、
-    /// 令牌签发和失败限流器共用（9 个调用点），一旦返回错误，限流器按失败策略
-    /// 关闭、授权端点直接 500，等于让一条陈旧配置把整套协议流程打死；而且管理员
-    /// 连设置页都打不开，无法自行改回来。
-    ///
-    /// 回退目标是调用方传入的 `defaults`，而不是结构体自身的硬编码默认。回读路径的
-    /// 唯一调用方是 `SettingsService`，它把启动期环境配置（如 `ACCOUNT_FAILURE_LIMIT=50`）
-    /// 当作「数据库无行时的默认值」；行存在但某项越界时回落同一来源，两路默认才不会
-    /// 漂移（#361）。硬编码默认只属于 `Default`——那是环境变量本身没配时的启动值。
-    /// 回退方向是收紧而非放宽，因此降级路径不会产生新的安全缺口。
-    pub fn sanitized(mut self, defaults: &Self) -> Self {
-        macro_rules! reset_if_out_of_range {
-            ($field:ident, $max:expr, $env:literal) => {
-                if self.$field < 1 || self.$field > $max {
-                    tracing::warn!(
-                        configured = self.$field,
-                        maximum = $max,
-                        default = defaults.$field,
-                        concat!(
-                            "stored security limit ",
-                            stringify!($field),
-                            " is outside the supported range; falling back to default"
-                        )
-                    );
-                    self.$field = defaults.$field;
-                }
-            };
-        }
-        for_each_security_limit!(reset_if_out_of_range);
-        self
     }
 }
 

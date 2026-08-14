@@ -1589,7 +1589,10 @@ paths:
         - sessionCookie: []
       responses:
         '200':
-          description: Passkey 设置
+          description: Passkey 设置。已持久化行无法用于热路径时带 X-Chenxing-Setting-Diagnostic。
+          headers:
+            X-Chenxing-Setting-Diagnostic:
+              $ref: '#/components/headers/SettingDiagnostic'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PasskeySetting' }
@@ -1635,7 +1638,10 @@ paths:
         - sessionCookie: []
       responses:
         '200':
-          description: 邮箱域名策略
+          description: 邮箱域名策略。已持久化行无法用于热路径时带 X-Chenxing-Setting-Diagnostic。
+          headers:
+            X-Chenxing-Setting-Diagnostic:
+              $ref: '#/components/headers/SettingDiagnostic'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EmailPolicySetting' }
@@ -1723,7 +1729,10 @@ paths:
         - sessionCookie: []
       responses:
         '200':
-          description: 当前安全限流阈值；无记录时返回默认值
+          description: 当前安全限流阈值；无记录时返回默认值。已持久化行无法用于热路径时带 X-Chenxing-Setting-Diagnostic。
+          headers:
+            X-Chenxing-Setting-Diagnostic:
+              $ref: '#/components/headers/SettingDiagnostic'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SecurityLimitsSetting' }
@@ -1920,6 +1929,12 @@ components:
     StatusFilter: { name: status, in: query, required: false, schema: { type: string, enum: [active, disabled] } }
   headers:
     SetCookie: { description: Session、CSRF 或 pending-login Cookie, schema: { type: string } }
+    SettingDiagnostic:
+      description: |
+        仅在已持久化设置无法用于热路径时出现。值为 `invalid`（取值越界或校验失败）
+        或 `corrupt`（JSON 不可读）。有效值和未配置行不返回此头。
+        响应头与 JSON body 都不包含配置原文、域名或阈值。
+      schema: { type: string, enum: [invalid, corrupt] }
   responses:
     BadRequest: { description: 请求错误, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Unauthorized: { description: 未认证或凭据无效, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
