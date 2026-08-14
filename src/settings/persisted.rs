@@ -115,7 +115,7 @@ impl std::fmt::Display for PersistedDecodeError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum PersistedLoadError {
     Invalid(SettingsValidationError),
     Corrupt(PersistedDecodeError),
@@ -130,13 +130,13 @@ impl std::fmt::Display for PersistedLoadError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct SettingInspection<T> {
     pub value: T,
     pub diagnostic: Option<SettingDiagnostic>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum SettingDiagnostic {
     Invalid(SettingsValidationError),
     Corrupt,

@@ -217,13 +217,12 @@ async fn corrupt_stored_settings_return_defaults_and_corrupt_header() {
     let (router, database, key_directory) = setup().await;
     const MARKER: &str = "SECRET-MARKER";
 
-    for key in ["passkey", "email_policy", "security_limits"] {
-        store_setting(
-            &database,
-            key,
-            &format!(r#"{{"whitelist_enabled":"{MARKER}"}}"#),
-        )
-        .await;
+    for (key, field) in [
+        ("passkey", "enabled"),
+        ("email_policy", "whitelist_enabled"),
+        ("security_limits", "unauthenticated_source_qps"),
+    ] {
+        store_setting(&database, key, &format!(r#"{{"{field}":"{MARKER}"}}"#)).await;
     }
 
     for path in [
