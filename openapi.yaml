@@ -2121,8 +2121,12 @@ components:
       type: object
       required: [current_password, new_password]
       properties:
-        current_password: { type: string, format: password }
-        new_password: { type: string, format: password, minLength: 10 }
+        current_password:
+          type: string
+          format: password
+          maxLength: 128
+          description: 空口令或超过 128 字符按当前密码错误拒绝，不返回独立错误码
+        new_password: { type: string, format: password, minLength: 10, maxLength: 128 }
     SessionItem:
       type: object
       required: [id, created_at, expires_at, current]
