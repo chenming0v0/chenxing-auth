@@ -932,17 +932,20 @@ paths:
     get:
       tags: [Admin Auth]
       summary: 查询未初始化状态
-      description: Issuer 未配置时返回 503 issuer_not_configured；Issuer 已配置且 Owner 未初始化时返回 initialized=false；实例已有 Owner 后返回与未知路径一致的 404。
+      description: |
+        Owner 未初始化时返回 initialized=false，供前端显示初始化界面。
+        实例已有 Owner 后返回与未知路径一致的 404，不向匿名调用者确认初始化状态，
+        也不区分 Issuer 收敛异常。响应不含 generation、phase、issuer_persisted/persisted。
+        Issuer 诊断见 GET /api/v1/admin/settings/issuer。
       operationId: adminBootstrapStatus
       responses:
         '200':
-          description: 初始化状态
+          description: 未初始化，返回 initialized=false
           content:
             application/json:
               schema: { $ref: '#/components/schemas/BootstrapStatusResponse' }
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalServerError' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/auth/me:
     get:
       tags: [Admin Auth]
