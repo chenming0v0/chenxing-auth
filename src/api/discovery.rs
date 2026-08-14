@@ -7,8 +7,8 @@ use axum::{
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{
-            ACCESS_CONTROL_ALLOW_ORIGIN, CACHE_CONTROL, CONTENT_TYPE, ETAG, IF_NONE_MATCH, ORIGIN,
-            VARY,
+            ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_EXPOSE_HEADERS, CACHE_CONTROL,
+            CONTENT_TYPE, ETAG, IF_NONE_MATCH, ORIGIN, VARY,
         },
     },
     response::{IntoResponse, Response},
@@ -33,6 +33,19 @@ fn apply_public_cors(request_headers: &HeaderMap, response: &mut Response) {
     if request_headers.contains_key(ORIGIN) {
         headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
     }
+}
+
+/// JWKS 额外暴露 ETag：它不是 CORS 安全列表响应头，浏览器 JS 默认读不到。
+///
+/// 只挂在 JWKS 上，不进共享的 `apply_public_cors`——Discovery 没有 ETag，
+/// 其它路由也不该因此扩大 CORS 表面。200 与 304 都要写：条件请求命中后
+/// 跨域 RP 仍然要用这次响应里的 ETag 继续发 `If-None-Match`。
+fn apply_jwks_cors(request_headers: &HeaderMap, response: &mut Response) {
+    apply_public_cors(request_headers, response);
+    response.headers_mut().insert(
+        ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static("ETag"),
+    );
 }
 
 /// JWKS 缓存策略：公开缓存 60 秒，过期后必须重新验证。
@@ -119,7 +132,7 @@ pub(super) async fn jwks(State(state): State<AppState>, headers: HeaderMap) -> R
         let response_headers = response.headers_mut();
         response_headers.insert(ETAG, etag);
         response_headers.insert(CACHE_CONTROL, HeaderValue::from_static(JWKS_CACHE_CONTROL));
-        apply_public_cors(&headers, &mut response);
+        apply_jwks_cors(&headers, &mut response);
         return response;
     }
 
@@ -128,6 +141,6 @@ pub(super) async fn jwks(State(state): State<AppState>, headers: HeaderMap) -> R
     response_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     response_headers.insert(CACHE_CONTROL, HeaderValue::from_static(JWKS_CACHE_CONTROL));
     response_headers.insert(ETAG, etag);
-    apply_public_cors(&headers, &mut response);
+    apply_jwks_cors(&headers, &mut response);
     response
 }
