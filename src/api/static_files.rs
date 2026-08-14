@@ -15,10 +15,11 @@
 
 use axum::{
     Router,
+    body::Body,
     extract::Request,
     http::{
         HeaderValue, Method, StatusCode,
-        header::{CACHE_CONTROL, CONTENT_TYPE},
+        header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE},
     },
     middleware::{Next, from_fn},
     response::{IntoResponse, Response},
@@ -70,7 +71,8 @@ fn spa_fallback() -> MethodRouter<()> {
 
 /// `ServeDir` 未命中真实文件时的回退处理器，也是 `/index.html` 的唯一处理函数。
 async fn web_app(request: axum::extract::Request) -> Response {
-    if request.method() != Method::GET && request.method() != Method::HEAD {
+    let is_head = request.method() == Method::HEAD;
+    if request.method() != Method::GET && !is_head {
         return crate::error::not_found("not_found", "not found");
     }
 
@@ -82,29 +84,56 @@ async fn web_app(request: axum::extract::Request) -> Response {
         return crate::error::not_found("not_found", "not found");
     }
 
-    spa_shell()
+    if is_head {
+        spa_shell_head()
+    } else {
+        spa_shell()
+    }
 }
 
 fn spa_shell() -> Response {
-    (
+    spa_shell_response(true)
+}
+
+fn spa_shell_head() -> Response {
+    spa_shell_response(false)
+}
+
+fn spa_shell_response(include_body: bool) -> Response {
+    let mut response = (
         StatusCode::OK,
         [
             (CONTENT_TYPE, "text/html; charset=utf-8"),
             (CACHE_CONTROL, SPA_CACHE_CONTROL),
         ],
-        EMBEDDED_INDEX_HTML,
+        if include_body {
+            Body::from(EMBEDDED_INDEX_HTML)
+        } else {
+            Body::empty()
+        },
     )
-        .into_response()
+        .into_response();
+    response.headers_mut().insert(
+        CONTENT_LENGTH,
+        HeaderValue::from_str(&EMBEDDED_INDEX_HTML.len().to_string())
+            .expect("embedded HTML length is a valid header value"),
+    );
+    response
 }
 
-/// 命中带内容哈希的 `/assets/*` 且源站 200 时，才标一年 immutable。
+/// 命中带内容哈希的 `/assets/*` 且源站成功返回内容时，才标一年 immutable。
 ///
 /// 404 不能 immutable，否则缺失的 chunk 会被中间缓存钉死。非哈希路径
 /// （`/favicon.png`、`/fonts/*.woff2`、SPA shell）走各自的策略，这里不动。
 async fn cache_hashed_assets(request: Request, next: Next) -> Response {
     let hashed = is_content_hashed_asset(request.uri().path());
     let mut response = next.run(request).await;
-    if hashed && response.status() == StatusCode::OK {
+    if hashed
+        && matches!(
+            response.status(),
+            StatusCode::OK | StatusCode::PARTIAL_CONTENT | StatusCode::NOT_MODIFIED
+        )
+    {
         response.headers_mut().insert(
             CACHE_CONTROL,
             HeaderValue::from_static(HASHED_ASSET_CACHE_CONTROL),
