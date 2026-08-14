@@ -77,6 +77,8 @@ paths:
         返回当前及验证过渡期公钥集合，只用于验证 JWT，不包含私钥。
         公开只读元数据，CORS 与 Discovery 一致：请求带 Origin 时返回
         `Access-Control-Allow-Origin: *`（不带凭据），且始终 `Vary: Origin`。
+        另返回 `Access-Control-Expose-Headers: ETag`，让浏览器 JS 能读取 ETag 并发起
+        条件请求；200 与 304 均适用。该头只出现在 JWKS，不扩到其它路由。
         缓存策略为 `Cache-Control: public, max-age=60, must-revalidate`，RP 可在 60 秒内
         直接使用共享缓存；过期后用 `If-None-Match` 发起条件请求，公钥集合未变时返回 304。
         ETag 由 JWKS 字节的 SHA-256 派生，确定性且跨实例一致；密钥轮换或吊销后 ETag 改变。
@@ -94,6 +96,9 @@ paths:
               schema: { type: string }
             Access-Control-Allow-Origin:
               description: 当请求带 Origin 时返回 `*`，允许 RP 跨域读取；无 Origin 时省略。
+              schema: { type: string }
+            Access-Control-Expose-Headers:
+              description: 始终为 `ETag`，让浏览器 JS 能读取 ETag。
               schema: { type: string }
             Vary:
               description: 始终为 `Origin`，避免共享缓存混用带/不带 Origin 的响应。
@@ -113,6 +118,9 @@ paths:
               schema: { type: string }
             Access-Control-Allow-Origin:
               description: 当请求带 Origin 时返回 `*`；无 Origin 时省略。
+              schema: { type: string }
+            Access-Control-Expose-Headers:
+              description: 始终为 `ETag`，条件请求命中后浏览器 JS 仍能读取 ETag。
               schema: { type: string }
             Vary:
               description: 始终为 `Origin`。
