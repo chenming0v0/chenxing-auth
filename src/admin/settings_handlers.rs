@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::State,
-    http::StatusCode,
+    http::{HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -380,21 +380,34 @@ pub async fn update_security_limits_setting(
     }
 }
 
+/// 管理读取把可修复诊断放在这个响应头里，JSON body 保持设置对象本身。
+/// 取值只有 `invalid` / `corrupt`，不含配置原文。
+pub(crate) const SETTING_DIAGNOSTIC_HEADER: HeaderName =
+    HeaderName::from_static("x-chenxing-setting-diagnostic");
+
 fn respond_setting_inspection<T: Serialize>(
     setting_key: &'static str,
     inspection: SettingInspection<T>,
 ) -> Response {
+    let mut response = (StatusCode::OK, Json(inspection.value)).into_response();
     if let Some(diagnostic) = &inspection.diagnostic {
         tracing::warn!(
             event = "settings.admin_read_needs_repair",
             setting_key,
             diagnostic = diagnostic.as_str(),
-            detail = %diagnostic,
             "stored setting is readable for repair but must not be used on the security hot path"
         );
+        response.headers_mut().insert(
+            SETTING_DIAGNOSTIC_HEADER,
+            HeaderValue::from_static(diagnostic.as_str()),
+        );
     }
-    (StatusCode::OK, Json(inspection.value)).into_response()
+    response
 }
+
+#[cfg(test)]
+#[path = "settings_handlers_tests.rs"]
+mod tests;
 
 async fn record_setting_event(
     state: &AppState,
