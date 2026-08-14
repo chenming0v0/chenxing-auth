@@ -94,7 +94,7 @@ pub async fn create_provider(
             record_provider_event(
                 &state,
                 actor,
-                "oauth_provider_create",
+                crate::audit::AuditAction::OauthProviderCreate,
                 &provider.slug,
                 serde_json::json!({
                     "authorization_endpoint": input.authorization_endpoint,
@@ -134,7 +134,7 @@ pub async fn update_provider(
             record_provider_event(
                 &state,
                 actor,
-                "oauth_provider_update",
+                crate::audit::AuditAction::OauthProviderUpdate,
                 &slug,
                 serde_json::json!({
                     "authorization_endpoint": input.authorization_endpoint,
@@ -186,7 +186,11 @@ async fn set_provider_status(
             record_provider_event(
                 state,
                 actor,
-                &format!("oauth_provider_{status}"),
+                match status {
+                    "active" => crate::audit::AuditAction::OauthProviderActive,
+                    "disabled" => crate::audit::AuditAction::OauthProviderDisabled,
+                    _ => unreachable!("provider status is validated by the service"),
+                },
                 slug,
                 serde_json::json!({"result": "success"}),
             )
@@ -253,7 +257,7 @@ fn internal(error_value: &ExternalOAuthError, operation: &'static str) -> Respon
 async fn record_provider_event(
     state: &AppState,
     actor: AdminActor,
-    action: &str,
+    action: crate::audit::AuditAction,
     slug: &str,
     details: serde_json::Value,
 ) {
@@ -263,7 +267,7 @@ async fn record_provider_event(
         .record_best_effort(AuditEvent::new(
             actor_type.to_owned(),
             actor_id,
-            action.to_owned(),
+            action,
             "oauth_provider".to_owned(),
             Some(slug.to_owned()),
             details,

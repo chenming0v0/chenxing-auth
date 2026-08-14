@@ -130,7 +130,7 @@ pub async fn issue_user_session(
         .record_blocking(AuditEvent::new(
             "user".to_owned(),
             Some(user_id.to_string()),
-            "login".to_owned(),
+            crate::audit::AuditAction::Login,
             "session".to_owned(),
             Some(session.id.to_string()),
             crate::audit::with_request_context(

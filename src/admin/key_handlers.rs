@@ -47,7 +47,7 @@ pub async fn rotate_signing_key(State(state): State<AppState>, admin: AdminWrite
         .record_best_effort(AuditEvent::new(
             actor.actor_type().to_owned(),
             actor.user_id().map(|id| id.to_string()),
-            "signing_key_rotate".to_owned(),
+            crate::audit::AuditAction::SigningKeyRotate,
             "signing_key".to_owned(),
             Some(key_id.clone()),
             serde_json::json!({"published_key_count": published_key_count}),
@@ -104,7 +104,7 @@ pub async fn revoke_signing_key(
         .record_best_effort(AuditEvent::new(
             actor.actor_type().to_owned(),
             actor.user_id().map(|id| id.to_string()),
-            "signing_key_revoke".to_owned(),
+            crate::audit::AuditAction::SigningKeyRevoke,
             "signing_key".to_owned(),
             Some(key_id.clone()),
             serde_json::json!({

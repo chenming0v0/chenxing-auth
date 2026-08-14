@@ -125,9 +125,25 @@ impl AuthorizationCodeStore {
             .map(|cancel| cancel.member.as_str())
             .unwrap_or("");
         let deleted: i32 = Script::new(
-            r#"local current = redis.call('GET', KEYS[1])
-               if current ~= ARGV[1] then
-                   return 0
+            r#"local current_json = redis.call('GET', KEYS[1])
+               if not current_json then
+                    return 0
+               end
+               local current = cjson.decode(current_json)
+               local expected = cjson.decode(ARGV[1])
+               local fields = {
+                   'value', 'client_id', 'redirect_uri', 'user_id',
+                   'session_token_hash', 'quota_reservation_id', 'scopes',
+                   'code_challenge', 'nonce', 'created_at', 'expires_at', 'redeemed_at'
+               }
+               local function encoded(value)
+                   if value == nil then return 'null' end
+                   return cjson.encode(value)
+               end
+               for _, field in ipairs(fields) do
+                   if encoded(current[field]) ~= encoded(expected[field]) then
+                       return 0
+                   end
                end
                redis.call('DEL', KEYS[1])
                if ARGV[2] ~= '' then

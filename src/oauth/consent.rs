@@ -63,10 +63,8 @@ pub struct PendingAuthorization {
     /// 反序列化 helper 的 `#[serde(default)]` + `skip_serializing_if` 是 Redis 兼容性要求，不可删除：
     /// - `default`：升级期间在途的旧 pending JSON 没有这个键，缺了它反序列化会
     ///   直接失败，所有在途授权请求全部作废。
-    /// - `skip_serializing_if`：`take_if_matches` / `replace_if_matches` 用「重新
-    ///   序列化后与 Redis 中的字符串逐字节相等」做原子消费判定。旧载荷解析出
-    ///   `None` 后如果被写成 `"holder_hash":null`，就永远匹配不上原始载荷，
-    ///   升级前创建的 pending 请求将无法被批准或消费。
+    /// - `skip_serializing_if`：保持旧载荷表示稳定；`take_if_matches` /
+    ///   `replace_if_matches` 只比较已知协议字段，未知未来字段不参与 CAS。
     ///
     /// 缺失该字段的旧记录在绑定端点上 fail-secure：直接拒绝，不留「无 holder
     /// 即放行」的绕过窗口。代价是升级瞬间在途的授权请求需要重新发起。

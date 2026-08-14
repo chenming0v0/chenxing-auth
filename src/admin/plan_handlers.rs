@@ -82,7 +82,13 @@ pub async fn create_plan(
     };
     match state.plans.create(input).await {
         Ok(plan) => {
-            record_plan_event(&state, actor, "plan_create", &plan.code).await;
+            record_plan_event(
+                &state,
+                actor,
+                crate::audit::AuditAction::PlanCreate,
+                &plan.code,
+            )
+            .await;
             // 新建套餐尚无分配用户，直接返回 0
             (StatusCode::CREATED, Json(plan_response(plan, 0))).into_response()
         }
@@ -105,7 +111,13 @@ pub async fn update_plan(
     };
     match state.plans.update(id, input).await {
         Ok(updated) => {
-            record_plan_event(&state, actor, "plan_update", &updated.plan.code).await;
+            record_plan_event(
+                &state,
+                actor,
+                crate::audit::AuditAction::PlanUpdate,
+                &updated.plan.code,
+            )
+            .await;
             // assigned_users 由 repository.update 在同一事务中统计，与 list_plans 行为一致
             let response = plan_response(updated.plan, updated.assigned_users);
             (StatusCode::OK, Json(response)).into_response()
@@ -128,7 +140,14 @@ pub async fn archive_plan(
     };
     // 直接调用 archive，不经字符串分发；操作语义由调用点决定，而非运行时字符串比较
     let result = state.plans.archive(id).await;
-    finish_plan_status_change(&state, actor, result, "plan_archive", &id.to_string()).await
+    finish_plan_status_change(
+        &state,
+        actor,
+        result,
+        crate::audit::AuditAction::PlanArchive,
+        &id.to_string(),
+    )
+    .await
 }
 
 pub async fn restore_plan(
@@ -145,7 +164,14 @@ pub async fn restore_plan(
     };
     // 直接调用 restore，与 archive_plan 对称；不存在 silent fallthrough 的分支
     let result = state.plans.restore(id).await;
-    finish_plan_status_change(&state, actor, result, "plan_restore", &id.to_string()).await
+    finish_plan_status_change(
+        &state,
+        actor,
+        result,
+        crate::audit::AuditAction::PlanRestore,
+        &id.to_string(),
+    )
+    .await
 }
 
 /// 套餐状态变更的公共后处理：审计记录 + 响应。
@@ -154,7 +180,7 @@ async fn finish_plan_status_change(
     state: &AppState,
     actor: AdminActor,
     result: Result<(), PlanServiceError>,
-    action: &str,
+    action: crate::audit::AuditAction,
     resource_id: &str,
 ) -> Response {
     match result {
@@ -202,7 +228,13 @@ pub async fn assign_plan(
         .await
     {
         Ok(()) => {
-            record_plan_event(&state, actor, "user_plan_assign", &user_id.to_string()).await;
+            record_plan_event(
+                &state,
+                actor,
+                crate::audit::AuditAction::UserPlanAssign,
+                &user_id.to_string(),
+            )
+            .await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(PlanServiceError::ManageRolesRequired) => {
@@ -257,14 +289,19 @@ fn plan_error_response(error_value: PlanServiceError) -> Response {
     }
 }
 
-async fn record_plan_event(state: &AppState, actor: AdminActor, action: &str, resource_id: &str) {
+async fn record_plan_event(
+    state: &AppState,
+    actor: AdminActor,
+    action: crate::audit::AuditAction,
+    resource_id: &str,
+) {
     let (actor_type, actor_id) = actor.audit_fields();
     state
         .audit
         .record_best_effort(AuditEvent::new(
             actor_type.to_owned(),
             actor_id,
-            action.to_owned(),
+            action,
             "plan".to_owned(),
             Some(resource_id.to_owned()),
             serde_json::json!({"result": "success"}),

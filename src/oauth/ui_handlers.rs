@@ -181,7 +181,7 @@ pub async fn bind_authorization_request(
                 .record_best_effort(AuditEvent::new(
                     "user".to_owned(),
                     Some(session.user_id.to_string()),
-                    "authorization_request_rebound".to_owned(),
+                    crate::audit::AuditAction::AuthorizationRequestRebound,
                     "oauth_authorization".to_owned(),
                     None,
                     serde_json::json!({"reason": "session_changed"}),
@@ -271,7 +271,7 @@ pub async fn decide_authorization_request(
             .record_best_effort(AuditEvent::new(
                 "user".to_owned(),
                 Some(session.user_id.to_string()),
-                "authorization_denied".to_owned(),
+                crate::audit::AuditAction::AuthorizationDenied,
                 "oauth_authorization".to_owned(),
                 Some(pending.client_id.clone()),
                 crate::audit::with_request_context(

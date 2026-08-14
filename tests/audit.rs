@@ -7,7 +7,7 @@ fn audit_event_redacts_sensitive_values_from_metadata() {
     let event = AuditEvent::new(
         "user".to_owned(),
         Some("1".to_owned()),
-        "login".to_owned(),
+        chenxing_auth::audit::AuditAction::Login,
         "session".to_owned(),
         Some("session-1".to_owned()),
         serde_json::json!({"password": "do-not-store", "result": "success"}),
@@ -22,7 +22,7 @@ fn token_revoke_keeps_non_secret_token_type_metadata() {
     let event = AuditEvent::new(
         "oauth_client".to_owned(),
         None,
-        "token_revoke".to_owned(),
+        chenxing_auth::audit::AuditAction::TokenRevoke,
         "oauth_token".to_owned(),
         Some("client-1".to_owned()),
         serde_json::json!({"token_type": "refresh_token", "result": "success"}),
@@ -38,7 +38,7 @@ fn audit_event_redacts_nested_and_variant_sensitive_values() {
     let event = AuditEvent::new(
         "user".to_owned(),
         Some("1".to_owned()),
-        "token_refresh".to_owned(),
+        chenxing_auth::audit::AuditAction::TokenRefresh,
         "oauth_client".to_owned(),
         Some("client-1".to_owned()),
         serde_json::json!({
@@ -84,7 +84,7 @@ fn audit_event_redacts_exact_credential_keys_without_substring_false_positives()
     let event = AuditEvent::new(
         "system".to_owned(),
         None,
-        "metadata_boundary".to_owned(),
+        chenxing_auth::audit::AuditAction::Login,
         "audit".to_owned(),
         None,
         serde_json::json!({
@@ -152,7 +152,7 @@ fn audit_event_replaces_embedded_credential_assignments_as_a_whole() {
     let event = AuditEvent::new(
         "system".to_owned(),
         None,
-        "callback".to_owned(),
+        chenxing_auth::audit::AuditAction::Login,
         "oauth".to_owned(),
         None,
         serde_json::json!({
@@ -184,7 +184,7 @@ fn audit_event_replaces_embedded_credential_assignments_as_a_whole() {
 #[test]
 fn security_failure_event_has_a_stable_failure_contract() {
     let event = AuditEvent::security_failure(
-        "login_failure".to_owned(),
+        chenxing_auth::audit::AuditAction::LoginFailure,
         "anonymous".to_owned(),
         None,
         "external_oauth".to_owned(),
@@ -200,7 +200,7 @@ fn security_failure_event_has_a_stable_failure_contract() {
 #[test]
 fn authentication_failure_keeps_stable_account_reference_and_canonical_ip() {
     let event = AuditEvent::authentication_failure(
-        "login_failure".to_owned(),
+        chenxing_auth::audit::AuditAction::LoginFailure,
         "anonymous".to_owned(),
         None,
         "authentication".to_owned(),
@@ -226,7 +226,7 @@ fn invalid_actor_id_is_rejected_instead_of_becoming_null() {
     let event = AuditEvent::new(
         "user".to_owned(),
         Some("not-a-database-id".to_owned()),
-        "login".to_owned(),
+        chenxing_auth::audit::AuditAction::Login,
         "session".to_owned(),
         None,
         serde_json::json!({}),
@@ -245,7 +245,7 @@ async fn audit_write_failure_is_returned_to_the_caller() {
     let event = AuditEvent::new(
         "system".to_owned(),
         None,
-        "login".to_owned(),
+        chenxing_auth::audit::AuditAction::Login,
         "session".to_owned(),
         None,
         serde_json::json!({}),
@@ -261,7 +261,7 @@ async fn audit_write_failure_is_returned_to_the_caller() {
 fn authorization_denial_event_captures_actor_and_permission() {
     // Issue #73: 授权失败审计事件必须记录 actor、尝试访问的权限和失败原因
     let event = AuditEvent::security_failure(
-        "admin_authorization_denied".to_owned(),
+        chenxing_auth::audit::AuditAction::AdminAuthorizationDenied,
         "user".to_owned(),
         Some("42".to_owned()),
         "admin_permission".to_owned(),

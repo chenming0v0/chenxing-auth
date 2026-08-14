@@ -129,11 +129,16 @@ pub(super) async fn save_with_metadata(
         .execute(&mut *transaction)
         .await?;
     }
+    // The database row owns the session id.  A new payload uses the same id=0
+    // placeholder as the Redis-only store; PostgreSQL reads always overwrite
+    // it with the authoritative row id.
+    let stored_payload = SessionPayload::from(&*session);
+    let encrypted_payload = store.encrypt_payload(&serde_json::to_vec(&stored_payload)?)?;
     let id: i64 = crate::sqlx::query_scalar(
         "INSERT INTO user_sessions
              (token_hash, user_id, created_at, expires_at, last_seen_at,
               session_payload, session_epoch)
-         VALUES ($1, $2, $3, $4, $5, NULL, $6)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id",
     )
     .bind(&token_hash)
@@ -141,18 +146,11 @@ pub(super) async fn save_with_metadata(
     .bind(session.created_at)
     .bind(session.expires_at)
     .bind(session.last_seen_at)
+    .bind(encrypted_payload)
     .bind(session_epoch)
     .fetch_one(&mut *transaction)
     .await?;
     session.id = id;
-    // 载荷不含明文令牌：token_hash 列已足够定位记录，find() 也用请求令牌覆盖该字段。
-    let stored_payload = SessionPayload::from(&*session);
-    let encrypted_payload = store.encrypt_payload(&serde_json::to_vec(&stored_payload)?)?;
-    crate::sqlx::query("UPDATE user_sessions SET session_payload = $1 WHERE id = $2")
-        .bind(encrypted_payload)
-        .bind(id)
-        .execute(&mut *transaction)
-        .await?;
     crate::sqlx::query(
         "INSERT INTO session_outbox
              (operation, session_id, user_id, token_hash, generation)

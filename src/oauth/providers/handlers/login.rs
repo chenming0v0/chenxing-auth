@@ -155,7 +155,7 @@ pub async fn start_external_login(
             state
                 .audit
                 .record_best_effort(AuditEvent::security_failure(
-                    "login_rate_limited".to_owned(),
+                    crate::audit::AuditAction::LoginRateLimited,
                     "anonymous".to_owned(),
                     None,
                     "external_oauth".to_owned(),

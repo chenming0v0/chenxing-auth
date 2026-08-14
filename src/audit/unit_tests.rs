@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn audit_event_serializes_creation_time_as_rfc3339() {
-    let mut event = AuditEvent::new(
+    let mut event = AuditEvent::new_raw(
         "system".to_owned(),
         None,
         "test".to_owned(),

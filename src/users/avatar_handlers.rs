@@ -59,7 +59,7 @@ pub async fn upload_current_user_avatar(
                 .record_best_effort(AuditEvent::new(
                     "user".to_owned(),
                     Some(session.user_id.to_string()),
-                    "user_avatar_update".to_owned(),
+                    crate::audit::AuditAction::UserAvatarUpdate,
                     "user".to_owned(),
                     Some(session.user_id.to_string()),
                     crate::audit::with_request_context(
@@ -96,7 +96,7 @@ pub async fn delete_current_user_avatar(
                 .record_best_effort(AuditEvent::new(
                     "user".to_owned(),
                     Some(session.user_id.to_string()),
-                    "user_avatar_remove".to_owned(),
+                    crate::audit::AuditAction::UserAvatarRemove,
                     "user".to_owned(),
                     Some(session.user_id.to_string()),
                     crate::audit::with_request_context(

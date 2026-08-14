@@ -2,8 +2,11 @@ use axum::response::Response;
 
 use super::client_auth::ClientCredentials;
 use crate::{
-    audit::AuditEvent, auth_limiter::MissingSourceIpPolicy, clients::service::AuthenticatedClient,
-    error, state::AppState,
+    audit::{AuditAction, AuditEvent},
+    auth_limiter::MissingSourceIpPolicy,
+    clients::service::AuthenticatedClient,
+    error,
+    state::AppState,
 };
 
 pub(crate) async fn enforce_source_qps_with_policy(
@@ -48,7 +51,7 @@ pub(crate) async fn enforce_source_qps(state: &AppState, source_ip: &str) -> Opt
             record_token_event_best_effort(
                 state,
                 None,
-                "rate_limit_triggered",
+                AuditAction::RateLimitTriggered,
                 None,
                 "oauth_source_qps",
             )
@@ -108,7 +111,7 @@ pub(crate) async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Res
             record_token_event_best_effort(
                 state,
                 None,
-                "rate_limit_triggered",
+                AuditAction::RateLimitTriggered,
                 Some(client_id),
                 "oauth_qps",
             )
@@ -150,7 +153,7 @@ pub(crate) async fn verify_client_credentials(
 pub(crate) async fn record_token_event(
     state: &AppState,
     actor_id: Option<&str>,
-    action: &str,
+    action: AuditAction,
     client_id: Option<&str>,
     reason: &str,
 ) -> Result<(), crate::audit::AuditError> {
@@ -167,7 +170,7 @@ pub(crate) async fn record_token_event(
 pub(crate) async fn record_token_event_best_effort(
     state: &AppState,
     actor_id: Option<&str>,
-    action: &str,
+    action: AuditAction,
     client_id: Option<&str>,
     reason: &str,
 ) {
@@ -184,7 +187,7 @@ pub(crate) async fn record_token_event_best_effort(
 pub(crate) async fn record_token_event_with_metadata(
     state: &AppState,
     actor_id: Option<&str>,
-    action: &str,
+    action: AuditAction,
     client_id: Option<&str>,
     metadata: serde_json::Value,
 ) -> Result<(), crate::audit::AuditError> {
@@ -197,7 +200,7 @@ pub(crate) async fn record_token_event_with_metadata(
                 "oauth_client".to_owned()
             },
             actor_id.map(str::to_owned),
-            action.to_owned(),
+            action,
             client_id.map(str::to_owned),
             metadata,
         ))
@@ -207,7 +210,7 @@ pub(crate) async fn record_token_event_with_metadata(
 pub(crate) async fn record_token_event_with_metadata_best_effort(
     state: &AppState,
     actor_id: Option<&str>,
-    action: &str,
+    action: AuditAction,
     client_id: Option<&str>,
     metadata: serde_json::Value,
 ) {
@@ -220,7 +223,7 @@ pub(crate) async fn record_token_event_with_metadata_best_effort(
                 "oauth_client".to_owned()
             },
             actor_id.map(str::to_owned),
-            action.to_owned(),
+            action,
             client_id.map(str::to_owned),
             metadata,
         ))
@@ -230,7 +233,7 @@ pub(crate) async fn record_token_event_with_metadata_best_effort(
 fn token_event(
     actor_type: String,
     actor_id: Option<String>,
-    action: String,
+    action: AuditAction,
     resource_id: Option<String>,
     metadata: serde_json::Value,
 ) -> AuditEvent {

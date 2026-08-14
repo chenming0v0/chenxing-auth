@@ -635,6 +635,27 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
         "challenge".to_owned(),
     );
     codes.save(&code).await.expect("save authorization code");
+    let code_key = format!(
+        "chenxing:oauth:code:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(sha2::Sha256::digest(code.value.as_bytes()))
+    );
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let code_payload: String = connection.get(&code_key).await.expect("stored code JSON");
+    let mut code_json: serde_json::Value =
+        serde_json::from_str(&code_payload).expect("parse code JSON");
+    code_json["future_field"] = serde_json::json!({"version": 2});
+    let _: () = connection
+        .set_ex(
+            &code_key,
+            serde_json::to_string(&code_json).expect("encode code JSON"),
+            60,
+        )
+        .await
+        .expect("inject future code field");
     assert!(codes.find(&code.value).await.expect("find code").is_some());
     let mismatched = AuthorizationCode::new(
         code.client_id.clone(),
@@ -677,13 +698,33 @@ async fn redis_stores_cover_session_and_one_time_token_lifecycles() {
     );
     codes.take(&code.value).await.expect("remove restored code");
 
-    let refreshes = RefreshTokenStore::new(client);
+    let refreshes = RefreshTokenStore::new(client.clone());
     let refresh = RefreshToken::new(
         "storage-client".to_owned(),
         "storage-user".to_owned(),
         vec!["openid".to_owned()],
     );
     refreshes.save(&refresh).await.expect("save refresh token");
+    let refresh_key = format!(
+        "chenxing:oauth:refresh:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(sha2::Sha256::digest(refresh.value.as_bytes()))
+    );
+    let refresh_payload: String = connection
+        .get(&refresh_key)
+        .await
+        .expect("stored refresh JSON");
+    let mut refresh_json: serde_json::Value =
+        serde_json::from_str(&refresh_payload).expect("parse refresh JSON");
+    refresh_json["future_field"] = serde_json::json!(["v2"]);
+    let _: () = connection
+        .set_ex(
+            &refresh_key,
+            serde_json::to_string(&refresh_json).expect("encode refresh JSON"),
+            60,
+        )
+        .await
+        .expect("inject future refresh field");
     assert!(
         refreshes
             .find(&refresh.value)

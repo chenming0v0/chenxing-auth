@@ -23,9 +23,6 @@ use token_use_case_support::{
     validate_code_binding,
 };
 
-const TOKEN_EXCHANGE_ACTION: &str = "token_exchange";
-const TOKEN_EXCHANGE_FAILURE_ACTION: &str = "token_exchange_failure";
-
 #[derive(Deserialize)]
 pub struct TokenRequest {
     pub grant_type: String,

@@ -134,7 +134,7 @@ pub(crate) async fn record_bootstrap_denial(
     state
         .audit
         .record_best_effort(AuditEvent::authentication_failure(
-            "owner_bootstrap".to_owned(),
+            crate::audit::AuditAction::OwnerBootstrap,
             "bootstrap".to_owned(),
             None,
             "user".to_owned(),

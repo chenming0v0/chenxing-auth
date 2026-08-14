@@ -94,7 +94,7 @@ pub(super) async fn revoke_family_after_replay(
             record_token_event_with_metadata_best_effort(
                 state,
                 Some(context.user_id),
-                "token_refresh_failure",
+                crate::audit::AuditAction::TokenRefreshFailure,
                 Some(context.client_id),
                 serde_json::json!({
                     "reason": "refresh_family_revocation_failed",
@@ -125,7 +125,7 @@ async fn report_replay(
         record_token_event_best_effort(
             state,
             Some(context.user_id),
-            "token_refresh_failure",
+            crate::audit::AuditAction::TokenRefreshFailure,
             Some(context.client_id),
             "token_revoked",
         )
@@ -142,7 +142,7 @@ async fn report_replay(
     record_token_event_with_metadata_best_effort(
         state,
         Some(context.user_id),
-        "token_refresh_failure",
+        crate::audit::AuditAction::TokenRefreshFailure,
         Some(context.client_id),
         serde_json::json!({
             "reason": "refresh_replay_detected",

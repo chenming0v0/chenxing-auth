@@ -112,7 +112,7 @@ pub async fn update_registration_email(
     record_setting_event(
         &state,
         actor,
-        "registration_email_update",
+        crate::audit::AuditAction::RegistrationEmailUpdate,
         REGISTRATION_EMAIL_FROM_KEY,
         serde_json::json!({"configured": registration_email_from.is_some()}),
     )
@@ -181,7 +181,7 @@ pub async fn update_passkey_setting(
             record_setting_event(
                 &state,
                 actor,
-                "passkey_setting_update",
+                crate::audit::AuditAction::PasskeySettingUpdate,
                 "passkey",
                 serde_json::json!({
                     "enabled": setting.enabled,
@@ -236,7 +236,7 @@ pub async fn update_email_policy_setting(
             record_setting_event(
                 &state,
                 actor,
-                "email_policy_update",
+                crate::audit::AuditAction::EmailPolicyUpdate,
                 "email_policy",
                 serde_json::json!({
                     "whitelist_enabled": setting.whitelist_enabled,
@@ -290,7 +290,7 @@ pub async fn update_smtp_setting(
             record_setting_event(
                 &state,
                 actor,
-                "smtp_setting_update",
+                crate::audit::AuditAction::SmtpSettingUpdate,
                 "smtp",
                 serde_json::json!({
                     "host_configured": !setting.host.is_empty(),
@@ -350,7 +350,7 @@ pub async fn update_security_limits_setting(
             record_setting_event(
                 &state,
                 actor,
-                "security_limits_update",
+                crate::audit::AuditAction::SecurityLimitsUpdate,
                 SECURITY_LIMITS_KEY,
                 serde_json::json!({
                     "unauthenticated_source_qps": setting.unauthenticated_source_qps,
@@ -413,7 +413,7 @@ mod tests;
 async fn record_setting_event(
     state: &AppState,
     actor: super::authorization::AdminActor,
-    action: &str,
+    action: crate::audit::AuditAction,
     resource_id: &str,
     metadata: serde_json::Value,
 ) {
@@ -422,7 +422,7 @@ async fn record_setting_event(
         .record_best_effort(AuditEvent::new(
             actor.actor_type().to_owned(),
             actor.user_id().map(|id| id.to_string()),
-            action.to_owned(),
+            action,
             "setting".to_owned(),
             Some(resource_id.to_owned()),
             metadata,

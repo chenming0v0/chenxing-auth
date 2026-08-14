@@ -60,7 +60,7 @@ pub mod repository;
 #[cfg(test)]
 mod unit_tests;
 
-pub use classification::{SecurityEventCategory, SecurityEventSeverity, classify};
+pub use classification::{AuditAction, SecurityEventCategory, SecurityEventSeverity, classify};
 pub(crate) use redaction::redact_metadata;
 
 pub(crate) const AUDIT_ARCHIVE_BATCH_SIZE: i32 = 1_000;
@@ -321,7 +321,7 @@ impl AuditEvent {
     pub fn new(
         actor_type: String,
         actor_id: Option<String>,
-        action: String,
+        action: AuditAction,
         resource_type: String,
         resource_id: Option<String>,
         metadata: Value,
@@ -342,7 +342,7 @@ impl AuditEvent {
     pub fn new_at(
         actor_type: String,
         actor_id: Option<String>,
-        action: String,
+        action: AuditAction,
         resource_type: String,
         resource_id: Option<String>,
         metadata: Value,
@@ -352,11 +352,33 @@ impl AuditEvent {
             id: 0,
             actor_type,
             actor_id,
-            action,
+            action: action.as_str().to_owned(),
             resource_type,
             resource_id,
             metadata: redact_metadata(metadata),
             created_at: now,
+        }
+    }
+
+    /// Tests may construct historical or deliberately unknown actions.
+    #[cfg(test)]
+    pub fn new_raw(
+        actor_type: String,
+        actor_id: Option<String>,
+        action: impl Into<String>,
+        resource_type: String,
+        resource_id: Option<String>,
+        metadata: Value,
+    ) -> Self {
+        Self {
+            id: 0,
+            actor_type,
+            actor_id,
+            action: action.into(),
+            resource_type,
+            resource_id,
+            metadata: redact_metadata(metadata),
+            created_at: SystemClock.now(),
         }
     }
 
@@ -366,7 +388,7 @@ impl AuditEvent {
     }
 
     pub fn security_failure(
-        action: String,
+        action: AuditAction,
         actor_type: String,
         actor_id: Option<String>,
         resource_type: String,
@@ -393,7 +415,7 @@ impl AuditEvent {
     /// 这里再次 canonicalize，避免审计落入带端口或非标准 IPv6 表示。
     #[allow(clippy::too_many_arguments)]
     pub fn authentication_failure(
-        action: String,
+        action: AuditAction,
         actor_type: String,
         actor_id: Option<String>,
         resource_type: String,

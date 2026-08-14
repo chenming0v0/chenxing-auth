@@ -44,8 +44,8 @@ pub struct RefreshToken {
     /// 轮换时不变，用于计算凭据家族的总生命周期。旧格式 token 缺失此字段时，
     /// 反序列化为 `None`，`issued_at()` 方法会回退到 `created_at`（保守兼容）。
     ///
-    /// `skip_serializing_if` 确保旧 token 重新序列化后与原始 JSON 字节级一致，
-    /// 否则 `rotate_if_matches` 的 CAS 比较会因多出此字段而失败。
+    /// `skip_serializing_if` 保持旧 token 的序列化表示稳定；存储层 CAS 只比较
+    /// 已知协议字段，未知未来字段不会导致轮换失败。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issued_at: Option<OffsetDateTime>,
     /// Token Family ID（RFC 9700 §4.14.2：检测重放攻击的撤销单元）。
@@ -59,7 +59,7 @@ pub struct RefreshToken {
     /// 与存储层对空 family 的撤销域回退是同一个键空间，因此无论从活 payload、
     /// 墓碑还是轮换后继定位，撤销都命中同一家族（Issue #313）。
     ///
-    /// `skip_serializing_if` 保证旧 token 的 CAS 兼容性（同 `issued_at` 约束）。
+    /// `skip_serializing_if` 保持旧 token 的表示稳定（同 `issued_at` 约束）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub family_id: String,
     /// Client Secret generation that authenticated the original issuance.

@@ -178,7 +178,7 @@ fn owner_bootstrap_audit_event(id: UserId, source_ip: Option<&str>) -> crate::au
     crate::audit::AuditEvent::new(
         "bootstrap".to_owned(),
         None,
-        "owner_bootstrap".to_owned(),
+        crate::audit::AuditAction::OwnerBootstrap,
         "user".to_owned(),
         Some(id.to_string()),
         serde_json::json!({"result": "success", "role": "owner", "source_ip": source_ip}),

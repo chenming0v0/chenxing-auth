@@ -145,7 +145,10 @@ pub async fn set_user_status(
                 .record_best_effort(crate::audit::AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
-                    format!("user_{}", status.as_str()),
+                    match status {
+                        UserStatus::Active => crate::audit::AuditAction::UserActive,
+                        UserStatus::Disabled => crate::audit::AuditAction::UserDisabled,
+                    },
                     "user".to_owned(),
                     Some(user_id.to_string()),
                     serde_json::json!({"result":"success"}),
@@ -212,7 +215,7 @@ pub async fn set_user_role(
                 .record_best_effort(crate::audit::AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
-                    "user_role_update".to_owned(),
+                    crate::audit::AuditAction::UserRoleUpdate,
                     "user".to_owned(),
                     Some(user_id.to_string()),
                     serde_json::json!({"role": role.as_str()}),

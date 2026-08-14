@@ -111,7 +111,7 @@ pub async fn create_user(
                 .record_best_effort(AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
-                    "user_create".to_owned(),
+                    crate::audit::AuditAction::UserCreate,
                     "user".to_owned(),
                     Some(user.id.to_string()),
                     serde_json::json!({"role": role.as_str(), "status": status.as_str()}),

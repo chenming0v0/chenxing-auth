@@ -324,6 +324,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn future_fields_do_not_break_pending_compare_and_swap() {
+        let store = store();
+        let request = pending(
+            format!("pending-future-{}", uuid::Uuid::new_v4().simple()),
+            &format!("pending-future-client-{}", uuid::Uuid::new_v4().simple()),
+        );
+        store.save(&request).await.expect("save pending");
+
+        let redis_url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+        let redis_client = redis::Client::open(redis_url).expect("Redis URL");
+        let mut connection = redis_client
+            .get_multiplexed_async_connection()
+            .await
+            .expect("Redis connection");
+        let key = AuthorizationRequestStore::key(&request.request_id);
+        let payload: String = connection.get(&key).await.expect("stored pending JSON");
+        let mut json: serde_json::Value = serde_json::from_str(&payload).expect("parse pending");
+        json["future_field"] = serde_json::json!({"version": 2});
+        let _: () = connection
+            .set_ex(
+                &key,
+                serde_json::to_string(&json).expect("encode pending"),
+                60,
+            )
+            .await
+            .expect("inject future pending field");
+
+        let mut replacement = request.clone();
+        replacement.session_token_hash = Some("replacement-session".to_owned());
+        assert!(
+            store
+                .replace_if_matches(&request.request_id, &request, &replacement)
+                .await
+                .expect("replace pending with future field")
+        );
+
+        let replaced_payload: String = connection.get(&key).await.expect("replaced pending JSON");
+        let mut replaced_json: serde_json::Value =
+            serde_json::from_str(&replaced_payload).expect("parse replaced pending");
+        replaced_json["another_future_field"] = serde_json::json!(true);
+        let _: () = connection
+            .set_ex(
+                &key,
+                serde_json::to_string(&replaced_json).expect("encode replaced pending"),
+                60,
+            )
+            .await
+            .expect("inject second future pending field");
+        assert!(
+            store
+                .take_if_matches(&request.request_id, &replacement)
+                .await
+                .expect("take pending with future field")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
     async fn consuming_pending_releases_capacity_once() {
         let store = store();
         let client_id = format!("pending-release-{}", uuid::Uuid::new_v4().simple());

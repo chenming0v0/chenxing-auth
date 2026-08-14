@@ -85,7 +85,7 @@ pub async fn reset_user_passkey_factor(
         .record_best_effort(AuditEvent::new(
             actor_type.to_owned(),
             actor_id,
-            "user_passkey_factor_reset".to_owned(),
+            crate::audit::AuditAction::UserPasskeyFactorReset,
             "authentication_factor".to_owned(),
             Some(user_id.to_string()),
             serde_json::json!({

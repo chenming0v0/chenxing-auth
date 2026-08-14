@@ -208,7 +208,7 @@ pub async fn revoke_authorized_app(
         .record_best_effort(AuditEvent::new(
             "user".to_owned(),
             Some(session.user_id.to_string()),
-            "consent_revoke".to_owned(),
+            crate::audit::AuditAction::ConsentRevoke,
             "oauth_consent".to_owned(),
             Some(client_id),
             crate::audit::with_request_context(
@@ -369,7 +369,7 @@ pub async fn rotate_owned_client_secret(
                 .record_blocking(AuditEvent::new(
                     "user".to_owned(),
                     Some(session.user_id.to_string()),
-                    "client_secret_rotate".to_owned(),
+                    crate::audit::AuditAction::ClientSecretRotate,
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),
                     serde_json::json!({"result": "success"}),
@@ -390,7 +390,7 @@ pub async fn rotate_owned_client_secret(
                 .record_best_effort(AuditEvent::new(
                     "user".to_owned(),
                     Some(session.user_id.to_string()),
-                    "client_secret_rotate_conflict".to_owned(),
+                    crate::audit::AuditAction::ClientSecretRotateConflict,
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),
                     serde_json::json!({

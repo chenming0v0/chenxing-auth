@@ -190,7 +190,7 @@ pub(super) async fn exchange_refresh_token(
             if record_token_event(
                 state,
                 Some(&refresh.user_id),
-                "token_refresh",
+                crate::audit::AuditAction::TokenRefresh,
                 Some(client_id),
                 "success",
             )

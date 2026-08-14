@@ -325,7 +325,7 @@ async fn record_revocation_event(
                 "oauth_client".to_owned()
             },
             actor_id.map(str::to_owned),
-            "token_revoke".to_owned(),
+            crate::audit::AuditAction::TokenRevoke,
             "oauth_token".to_owned(),
             Some(client_id.to_owned()),
             metadata,

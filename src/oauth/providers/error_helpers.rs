@@ -42,7 +42,7 @@ async fn try_external_error_with_request(
     state
         .audit
         .record_best_effort(AuditEvent::security_failure(
-            "login_failure".to_owned(),
+            crate::audit::AuditAction::LoginFailure,
             "anonymous".to_owned(),
             None,
             "external_oauth".to_owned(),
@@ -79,7 +79,7 @@ pub(super) async fn external_binding_failure(
     state
         .audit
         .record_best_effort(AuditEvent::security_failure(
-            "login_failure".to_owned(),
+            crate::audit::AuditAction::LoginFailure,
             "user".to_owned(),
             Some(session.user_id.clone()),
             "external_oauth".to_owned(),

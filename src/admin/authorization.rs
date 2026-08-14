@@ -162,7 +162,7 @@ pub(crate) async fn record_owner_guard_denial(
         .record_best_effort(AuditEvent::new(
             actor_type.to_owned(),
             actor_id,
-            OWNER_GUARD_DENIED_ACTION.to_owned(),
+            crate::audit::AuditAction::AdminOwnerGuardDenied,
             "user".to_owned(),
             Some(target_user_id.to_string()),
             serde_json::json!({
@@ -194,7 +194,7 @@ pub(crate) async fn record_authz_denial(
     // AdminPermission 无 as_str()，Debug 输出（如 `ManageUsers`）作为稳定的可检索标识。
     let permission = format!("{permission:?}");
     let event = AuditEvent::security_failure(
-        "admin_authorization_denied".to_owned(),
+        crate::audit::AuditAction::AdminAuthorizationDenied,
         // 走到这里说明 current_user 已认证成功，actor_type 固定为 "user"
         "user".to_owned(),
         Some(user_id.to_string()),

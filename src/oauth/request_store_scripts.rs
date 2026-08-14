@@ -125,6 +125,23 @@ pub const PENDING_TAKE_IF_MATCHES_SCRIPT: &str = r#"
 local client_index_prefix = 'chenxing:oauth:pending:client-requests:'
 local client_count_prefix = 'chenxing:oauth:pending:client:'
 
+local function same_payload(current_json, expected_json)
+    local current = cjson.decode(current_json)
+    local expected = cjson.decode(expected_json)
+    local fields = {
+        'request_id', 'client_id', 'redirect_uri', 'scope', 'state', 'nonce',
+        'code_challenge', 'code_challenge_method', 'session_token_hash', 'holder_hash'
+    }
+    local function encoded(value)
+        if value == nil then return 'null' end
+        return cjson.encode(value)
+    end
+    for _, field in ipairs(fields) do
+        if encoded(current[field]) ~= encoded(expected[field]) then return false end
+    end
+    return true
+end
+
 local function sync_client_count(client_id)
     local index_key = client_index_prefix .. client_id
     local count = redis.call('SCARD', index_key)
@@ -167,7 +184,7 @@ if not current then
     release(ARGV[2], nil)
     return nil
 end
-if current ~= ARGV[1] then return nil end
+if not same_payload(current, ARGV[1]) then return nil end
 local client_id = cjson.decode(current)['client_id']
 redis.call('DEL', KEYS[1])
 release(ARGV[2], client_id)
@@ -177,6 +194,23 @@ return current
 pub const PENDING_REPLACE_SCRIPT: &str = r#"
 local client_index_prefix = 'chenxing:oauth:pending:client-requests:'
 local client_count_prefix = 'chenxing:oauth:pending:client:'
+
+local function same_payload(current_json, expected_json)
+    local current = cjson.decode(current_json)
+    local expected = cjson.decode(expected_json)
+    local fields = {
+        'request_id', 'client_id', 'redirect_uri', 'scope', 'state', 'nonce',
+        'code_challenge', 'code_challenge_method', 'session_token_hash', 'holder_hash'
+    }
+    local function encoded(value)
+        if value == nil then return 'null' end
+        return cjson.encode(value)
+    end
+    for _, field in ipairs(fields) do
+        if encoded(current[field]) ~= encoded(expected[field]) then return false end
+    end
+    return true
+end
 
 local function sync_client_count(client_id)
     local index_key = client_index_prefix .. client_id
@@ -220,7 +254,7 @@ if not current then
     release(ARGV[3], nil)
     return 0
 end
-if current ~= ARGV[1] then return 0 end
+if not same_payload(current, ARGV[1]) then return 0 end
 local current_client_id = cjson.decode(current)['client_id']
 local replacement_client_id = cjson.decode(ARGV[2])['client_id']
 if current_client_id ~= replacement_client_id then return 0 end

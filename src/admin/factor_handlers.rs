@@ -178,7 +178,7 @@ pub async fn reset_user_totp_factor(
         .record_best_effort(AuditEvent::new(
             actor_type.to_owned(),
             actor_id,
-            "user_totp_factor_reset".to_owned(),
+            crate::audit::AuditAction::UserTotpFactorReset,
             "authentication_factor".to_owned(),
             Some(user_id.to_string()),
             serde_json::json!({

@@ -178,7 +178,7 @@ pub async fn create_user_with_identity(
     password_hash: &str,
 ) -> Result<UserId, CreateIdentityError> {
     let mut transaction = pool.begin().await?;
-    crate::sqlx::query("SELECT pg_advisory_xact_lock(7341928)")
+    crate::sqlx::query("SELECT pg_advisory_xact_lock(0, 7341928)")
         .execute(&mut *transaction)
         .await?;
     let existing_identity: Option<(UserId, String)> = crate::sqlx::query_as(

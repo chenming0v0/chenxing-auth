@@ -281,7 +281,7 @@ pub async fn external_callback(
         .record_blocking(AuditEvent::new(
             "user".to_owned(),
             Some(user_id.to_string()),
-            "login".to_owned(),
+            crate::audit::AuditAction::Login,
             "session".to_owned(),
             Some(session.id.to_string()),
             crate::audit::with_request_context(
@@ -372,7 +372,7 @@ async fn bind_and_audit(
                 .record_best_effort(AuditEvent::new(
                     "user".to_owned(),
                     Some(user_id.to_string()),
-                    "authorization_request_rebound".to_owned(),
+                    crate::audit::AuditAction::AuthorizationRequestRebound,
                     "oauth_authorization".to_owned(),
                     None,
                     serde_json::json!({"reason": "session_changed", "channel": "external_oauth"}),

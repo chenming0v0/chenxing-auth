@@ -215,15 +215,14 @@ pub async fn update_issuer_setting(
     );
     let user_agent = crate::api::user_agent(&headers);
     let (actor_type, actor_id) = actor.audit_fields();
-    let action = if write.previous_value.is_some() {
-        "issuer_update"
-    } else {
-        "issuer_configure"
-    };
     let event = AuditEvent::new(
         actor_type.to_owned(),
         actor_id,
-        action.to_owned(),
+        if write.previous_value.is_some() {
+            crate::audit::AuditAction::IssuerUpdate
+        } else {
+            crate::audit::AuditAction::IssuerConfigure
+        },
         "setting".to_owned(),
         Some("app_issuer".to_owned()),
         crate::audit::with_request_context(
