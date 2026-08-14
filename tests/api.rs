@@ -79,6 +79,37 @@ async fn liveness_endpoint_reports_process_status_without_dependencies() {
 }
 
 #[tokio::test]
+async fn liveness_endpoint_does_not_expand_jwks_cors() {
+    // Issue #442：JWKS 的 ACEH / ACAO 不得扩到非 JWKS 路由。
+    let (router, key_directory) = test_router().await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/health/live")
+                .header("origin", "https://relying-party.example.com")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none()
+    );
+    assert!(
+        response
+            .headers()
+            .get("access-control-expose-headers")
+            .is_none()
+    );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
 async fn liveness_endpoint_includes_security_headers_without_hsts_for_http_issuer() {
     let (router, key_directory) = test_router().await;
     let response = router
@@ -420,6 +451,22 @@ async fn jwks_endpoint_allows_cross_origin_reads_without_credentials() {
         response.headers().get("vary").and_then(|v| v.to_str().ok()),
         Some("Origin")
     );
+    // Issue #442：ETag 不是 CORS 安全列表头，必须显式暴露，浏览器 JS 才能读取。
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|v| v.to_str().ok()),
+        Some("ETag")
+    );
+    assert!(
+        response
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .is_some(),
+        "cross-origin JWKS 200 must carry ETag so JS can cache it"
+    );
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
@@ -433,6 +480,13 @@ async fn jwks_endpoint_omits_cors_headers_when_request_has_no_origin() {
     assert_eq!(
         headers.get("vary").and_then(|v| v.to_str().ok()),
         Some("Origin")
+    );
+    // ACEH 不是跨域许可，只声明 ETag 可读；无 Origin 时同样写出，避免缓存变体遗漏。
+    assert_eq!(
+        headers
+            .get("access-control-expose-headers")
+            .and_then(|v| v.to_str().ok()),
+        Some("ETag")
     );
     let _ = std::fs::remove_dir_all(key_directory);
 }
@@ -471,6 +525,18 @@ async fn jwks_endpoint_304_response_carries_cors_headers_when_origin_present() {
         response.headers().get("vary").and_then(|v| v.to_str().ok()),
         Some("Origin")
     );
+    // Issue #442：304 同样必须暴露 ETag，否则跨域 RP 无法继续发 If-None-Match。
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|v| v.to_str().ok()),
+        Some("ETag")
+    );
+    assert_eq!(
+        response.headers().get("etag").and_then(|v| v.to_str().ok()),
+        Some(etag)
+    );
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
@@ -500,6 +566,13 @@ async fn discovery_endpoint_allows_cross_origin_reads_without_credentials() {
     assert_eq!(
         response.headers().get("vary").and_then(|v| v.to_str().ok()),
         Some("Origin")
+    );
+    // Issue #442：不要把 JWKS 的 ACEH 扩到 Discovery——它没有 ETag。
+    assert!(
+        response
+            .headers()
+            .get("access-control-expose-headers")
+            .is_none()
     );
     let _ = std::fs::remove_dir_all(key_directory);
 }

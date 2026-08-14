@@ -40,6 +40,7 @@ pub fn router(state: AppState) -> Router {
     // 超时与 application router 共用同一层，health 有自己的 2 秒预算，不能套进来。
     let system_api = Router::new()
         .route("/api/v1/admin/bootstrap/status", get(health::system_status))
+        // 匿名 status 只回答 initialized/uninitialized，不暴露 Issuer 收敛状态。
         .route(
             "/api/v1/admin/bootstrap",
             axum::routing::post(crate::admin::auth_handlers::bootstrap_admin),

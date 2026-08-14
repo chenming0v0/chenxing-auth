@@ -48,7 +48,7 @@ JWKS 是被 RP 高频轮询的公开端点，缓存策略为 `Cache-Control: pub
 
 响应携带确定性 ETag（JWKS 字节的 SHA-256 强 ETag，跨实例一致）。RP 应在本地缓存过期后用 `If-None-Match` 发起条件请求：公钥集合未变时返回 `304 Not Modified`（仍带 ETag 与 Cache-Control），避免重复传输完整 JWKS。密钥轮换或吊销改变公钥集合后 ETag 随之改变，RP 拿到新 ETag 和新 JWKS。
 
-JWKS 的 CORS 与 Discovery 一致：请求带 `Origin` 时 `Access-Control-Allow-Origin: *`（不带凭据），始终 `Vary: Origin`；200 与 304 均适用。
+JWKS 的 CORS 与 Discovery 一致：请求带 `Origin` 时 `Access-Control-Allow-Origin: *`（不带凭据），始终 `Vary: Origin`；200 与 304 均适用。另返回 `Access-Control-Expose-Headers: ETag`：`ETag` 不是 CORS 安全列表响应头，浏览器 JS 必须靠该头才能读取并用于后续 `If-None-Match`。该头只出现在 JWKS，不扩到 Discovery 或其它路由。
 
 ## 用户和浏览器 Session
 
@@ -145,7 +145,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 - `GET /api/v1/auth/status`：返回当前是否登录。
 - `GET /api/v1/auth/me`：返回当前用户资料和当前 Session 到期时间。
 - `PATCH /api/v1/auth/me`：更新 `display_name`，需要用户 CSRF。
-- `POST /api/v1/auth/password`：校验当前密码并修改密码，成功返回 `204`，同时撤销该用户所有 Session。
+- `POST /api/v1/auth/password`：校验当前密码并修改密码，成功返回 `204`，同时撤销该用户所有 Session。当前密码为空或超过 128 字符时与密码错误返回同一 `401 invalid_credentials`，不暴露长度。
 - `GET /api/v1/auth/entitlements`：返回当前生效套餐摘要（`code`、`name`、`description`、`validity`）和各项权益用量；`limit` 为 `null` 表示无限，缺失表示数值无上限概念（如 QPS）。
 - `GET /api/v1/auth/security-events?page=1&page_size=20`：分页返回当前用户在热表和归档表中的安全事件，包含 `id`、`action`、`category`、`severity`、`resource_type`、OAuth Client 摘要和时间；`page_size` 最大为 100。`category`/`severity` 由服务端单点映射，未映射的 action 回落 `account`/`info`。
 - `GET /api/v1/auth/security-events/{event_id}`：返回单个安全事件详情（`ip`/`user_agent` 只从 metadata 白名单提取，`ip_location`/`ray_id` 恒为 null，`client` 仅 OAuth 事件填充、Client 已删除时为 null）；事件不存在或不属于当前用户时一律 404，不区分「查不到」与「不是你的」。
@@ -327,7 +327,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ### `GET /api/v1/admin/bootstrap/status`
 
-Issuer 未配置时返回 `503 issuer_not_configured`。Issuer 已配置但 Owner 尚未初始化时公开返回 `{"initialized":false}`，供 Web 前端显示 Owner 初始化界面。实例已有 Owner 后返回与未知路径一致的 `404 not_found`，不再向匿名扫描者确认初始化状态；数据库故障返回 500。
+Owner 尚未初始化时公开返回 `{"initialized":false}`，供 Web 前端显示 Owner 初始化界面。实例已有 Owner 后返回与未知路径一致的 `404 not_found`，不再向匿名扫描者确认初始化状态，也不区分 Issuer 未配置、待重载或运行时无效等收敛异常。响应不含 `generation`、`phase`、`issuer_persisted` / `persisted` 等内部状态。Issuer 诊断只通过具备 `manage_issuer` 的 `GET /api/v1/admin/settings/issuer` 返回。数据库故障返回 500。
 
 ### `GET/PUT /api/v1/admin/settings/issuer`
 
