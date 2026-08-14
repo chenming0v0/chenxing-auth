@@ -33,8 +33,9 @@ pub enum DbError {
     PoolSettings(#[from] PoolSettingsError),
     #[error("database error")]
     Database(#[from] crate::sqlx::Error),
-    /// 口令探测连不上数据库（TCP/TLS/DNS 等连接层故障）。连接层故障证明不了口令
-    /// 状态，不能据此覆盖写——那会静默撤销运维侧的口令轮换（Issue #411）。
+    /// 口令探测未能证明口令不可用：连接层故障（TCP/TLS/DNS）或非口令授权失败
+    /// （SQLSTATE 28000 及其他 28 类，Issue #455）。这些情况都不能覆盖写——
+    /// 那会静默撤销运维侧的口令轮换（Issue #411）。
     /// 错误消息刻意不携带底层错误文本：sqlx 的连接错误可能内嵌连接串。
     #[error(
         "runtime database role password probe could not reach the database; the role password was left unchanged"
