@@ -140,7 +140,8 @@ fn is_quoted_character(character: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::parse_smtp_sender;
-    use crate::settings::domain::{SettingsValidationError, SmtpSettingUpdate};
+    use crate::settings::domain::SettingsValidationError;
+    use crate::settings::smtp::SmtpSettingUpdate;
 
     fn validate_sender(value: &str) -> Result<String, SettingsValidationError> {
         SmtpSettingUpdate {
@@ -150,6 +151,7 @@ mod tests {
             from_address: value.to_owned(),
             ssl_enabled: true,
             force_auth_login: false,
+            password_action: None,
             password: None,
         }
         .validate()

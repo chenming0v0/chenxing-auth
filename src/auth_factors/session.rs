@@ -201,6 +201,49 @@ pub async fn issue_user_session(
     response
 }
 
+/// 外部 OAuth 已经签发 Session 之后，清掉同浏览器残留的 pending-login 状态。
+///
+/// MFA 成功路径会清 ticket/holder Cookie 并消费 Redis ticket。外部登录以前只签发
+/// Session，同浏览器里上一轮密码 MFA 的 ticket 还能继续完成，等于跨账号接力。
+/// Cookie 清理复用 [`cookies::append_clear_login_ticket_cookies`]；Redis 删除是
+/// best-effort：ticket id 必须是 UUID，失败只记非敏感告警，靠 TTL 兜底，
+/// 绝不撤销已经成功的外部登录。
+pub async fn clear_pending_login_after_external_success(
+    state: &AppState,
+    request_headers: &HeaderMap,
+    response: &mut Response,
+) {
+    if let Err(cookie_error) = cookies::append_clear_login_ticket_cookies(
+        response.headers_mut(),
+        state.config.cookie_secure,
+    ) {
+        tracing::warn!(
+            error = %cookie_error,
+            "failed to clear leftover login ticket cookies after external OAuth login"
+        );
+    }
+
+    let Some(ticket_id) = leftover_login_ticket_id(request_headers, state.config.cookie_secure)
+    else {
+        return;
+    };
+    if let Err(error) = state.factors.discard_login_ticket(&ticket_id).await {
+        tracing::warn!(
+            error = %error,
+            "failed to delete leftover login ticket after external OAuth login"
+        );
+    }
+}
+
+fn leftover_login_ticket_id(headers: &HeaderMap, secure: bool) -> Option<String> {
+    let ticket_id = cookies::login_ticket_id_for_secure_transport(headers, secure)
+        .ok()
+        .flatten()?;
+    uuid::Uuid::parse_str(&ticket_id)
+        .ok()
+        .map(|id| id.to_string())
+}
+
 fn should_return_session_token(enabled: bool, headers: &HeaderMap) -> bool {
     enabled
         && headers
@@ -211,9 +254,11 @@ fn should_return_session_token(enabled: bool, headers: &HeaderMap) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{HeaderMap, HeaderValue, StatusCode};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode, header::COOKIE};
 
-    use super::{LoginResponse, StaleCredentialCode, should_return_session_token};
+    use super::{
+        LoginResponse, StaleCredentialCode, leftover_login_ticket_id, should_return_session_token,
+    };
 
     /// Issue #274：认证 epoch 漂移一律映射成 401，且只用调用端点已声明的错误码。
     ///
@@ -263,5 +308,29 @@ mod tests {
         .expect("login response serializes");
 
         assert_eq!(value["expires_at"], "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn leftover_login_ticket_id_requires_a_uuid() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(leftover_login_ticket_id(&headers, false), None);
+
+        headers.insert(
+            COOKIE,
+            HeaderValue::from_static("chenxing_login_ticket=not-a-uuid"),
+        );
+        assert_eq!(leftover_login_ticket_id(&headers, false), None);
+
+        let ticket_id = uuid::Uuid::new_v4();
+        headers.insert(
+            COOKIE,
+            HeaderValue::from_str(&format!("chenxing_login_ticket={ticket_id}"))
+                .expect("cookie header"),
+        );
+        assert_eq!(
+            leftover_login_ticket_id(&headers, false),
+            Some(ticket_id.to_string())
+        );
+        assert_eq!(leftover_login_ticket_id(&headers, true), None);
     }
 }

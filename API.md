@@ -14,9 +14,9 @@
 ```
 
 - OAuth 协议端点（`/oauth/*`，如 `/oauth/token`、`/oauth/authorize`、`/oauth/revoke`、`/oauth/userinfo`）的 JSON 错误遵守 RFC 6749，字段为 `error` / `error_description`，**不是**上面的内部 `{code, message}` 信封。内部授权确认 API（`/api/v1/oauth/*`）仍使用内部信封。
-- 请求超时（`REQUEST_TIMEOUT_SECONDS`，默认 30 秒；健康检查与静态 SPA fallback 不受此限制）和 Issuer 运行态门禁失败按协议边界分流响应格式（Issues #423、#441）：
+- 请求超时（`REQUEST_TIMEOUT_SECONDS`，默认 30 秒；健康检查与静态 SPA fallback 不受此限制）和 Issuer 运行态门禁失败按协议边界分流响应格式（Issues #423、#441、#451）：
   - 已注册的 `/oauth/authorize`、`/oauth/token`、`/oauth/revoke`、`/oauth/userinfo`：`503` + RFC 6749 `{"error":"temporarily_unavailable","error_description":"..."}`，与依赖暂不可用等协议错误一致；未知 `/oauth/*` 路径仍返回统一 404。
-  - 其余已匹配的应用路由：`504` + `{"code":"request_timeout","message":"request timed out"}`。
+  - 其余已匹配的应用路由，以及 system 路由（`/api/v1/admin/bootstrap`、`/api/v1/admin/bootstrap/status`、`/api/v1/admin/settings/issuer`）：`504` + `{"code":"request_timeout","message":"request timed out"}`。
 - 常见状态码：`200` 成功，`201` 创建成功，`204` 成功且无响应体，`400` 参数或业务校验失败，`401` 未认证，`403` 无权限，`409` 冲突，`503` 依赖暂不可用，`504` 非 OAuth 路由请求超时，`500` 服务端错误。
 - 不要在前端日志中记录密码、Client Secret、Session、授权码或 Token。
 
@@ -48,7 +48,7 @@ JWKS 是被 RP 高频轮询的公开端点，缓存策略为 `Cache-Control: pub
 
 响应携带确定性 ETag（JWKS 字节的 SHA-256 强 ETag，跨实例一致）。RP 应在本地缓存过期后用 `If-None-Match` 发起条件请求：公钥集合未变时返回 `304 Not Modified`（仍带 ETag 与 Cache-Control），避免重复传输完整 JWKS。密钥轮换或吊销改变公钥集合后 ETag 随之改变，RP 拿到新 ETag 和新 JWKS。
 
-JWKS 的 CORS 与 Discovery 一致：请求带 `Origin` 时 `Access-Control-Allow-Origin: *`（不带凭据），始终 `Vary: Origin`；200 与 304 均适用。
+JWKS 的 CORS 与 Discovery 一致：请求带 `Origin` 时 `Access-Control-Allow-Origin: *`（不带凭据），始终 `Vary: Origin`；200 与 304 均适用。另返回 `Access-Control-Expose-Headers: ETag`：`ETag` 不是 CORS 安全列表响应头，浏览器 JS 必须靠该头才能读取并用于后续 `If-None-Match`。该头只出现在 JWKS，不扩到 Discovery 或其它路由。
 
 ## 用户和浏览器 Session
 
@@ -145,7 +145,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 - `GET /api/v1/auth/status`：返回当前是否登录。
 - `GET /api/v1/auth/me`：返回当前用户资料和当前 Session 到期时间。
 - `PATCH /api/v1/auth/me`：更新 `display_name`，需要用户 CSRF。
-- `POST /api/v1/auth/password`：校验当前密码并修改密码，成功返回 `204`，同时撤销该用户所有 Session。
+- `POST /api/v1/auth/password`：校验当前密码并修改密码，成功返回 `204`，同时撤销该用户所有 Session。当前密码为空或超过 128 字符时与密码错误返回同一 `401 invalid_credentials`，不暴露长度。
 - `GET /api/v1/auth/entitlements`：返回当前生效套餐摘要（`code`、`name`、`description`、`validity`）和各项权益用量；`limit` 为 `null` 表示无限，缺失表示数值无上限概念（如 QPS）。
 - `GET /api/v1/auth/security-events?page=1&page_size=20`：分页返回当前用户在热表和归档表中的安全事件，包含 `id`、`action`、`category`、`severity`、`resource_type`、OAuth Client 摘要和时间；`page_size` 最大为 100。`category`/`severity` 由服务端单点映射，未映射的 action 回落 `account`/`info`。
 - `GET /api/v1/auth/security-events/{event_id}`：返回单个安全事件详情（`ip`/`user_agent` 只从 metadata 白名单提取，`ip_location`/`ray_id` 恒为 null，`client` 仅 OAuth 事件填充、Client 已删除时为 null）；事件不存在或不属于当前用户时一律 404，不区分「查不到」与「不是你的」。
@@ -215,7 +215,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ### `GET /auth/external/{slug}` / `GET /auth/external/{slug}/callback`
 
-开始并完成自定义外部 **OAuth 2.0** 登录。`slug` 来自管理员设置；开始请求可携带 `request_id` 以便登录后继续辰星的授权确认。系统使用一次性 Redis `state` 和 HttpOnly Cookie 绑定浏览器流程，回调成功后创建辰星 Session。
+开始并完成自定义外部 **OAuth 2.0** 登录。`slug` 来自管理员设置；开始请求可携带 `request_id` 以便登录后继续辰星的授权确认。系统使用一次性 Redis `state` 和 HttpOnly state Cookie 绑定浏览器流程，回调成功后创建辰星 Session。HTTPS 部署下发 `__Host-chenxing_external_oauth_state_<state 绑定标识>`，固定 `Secure; Path=/; HttpOnly; SameSite=Lax` 且不带 `Domain`；回调只接受这个 host-only Cookie，同站兄弟域投下的父域 `Domain` cookie 不会命中。仅 loopback HTTP 且 `COOKIE_SECURE=false` 时使用不带前缀的 `chenxing_external_oauth_state_*` 兼容名。流程结束或失败时按同一名称与属性清理该 Cookie。成功签发 Session 后会同时清理同浏览器残留的 pending-login ticket/holder Cookie；若请求里仍带有可解析的旧 ticket，服务端会尽力删除对应 Redis 记录。清理失败只记非敏感告警并由 TTL 兜底，不会撤销已经成功的外部登录。
 
 #### 信任模型：OAuth 2.0 + UserInfo
 
@@ -327,7 +327,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ### `GET /api/v1/admin/bootstrap/status`
 
-Issuer 未配置时返回 `503 issuer_not_configured`。Issuer 已配置但 Owner 尚未初始化时公开返回 `{"initialized":false}`，供 Web 前端显示 Owner 初始化界面。实例已有 Owner 后返回与未知路径一致的 `404 not_found`，不再向匿名扫描者确认初始化状态；数据库故障返回 500。
+Owner 尚未初始化时公开返回 `{"initialized":false}`，供 Web 前端显示 Owner 初始化界面。实例已有 Owner 后返回与未知路径一致的 `404 not_found`，不再向匿名扫描者确认初始化状态，也不区分 Issuer 未配置、待重载或运行时无效等收敛异常。响应不含 `generation`、`phase`、`issuer_persisted` / `persisted` 等内部状态。Issuer 诊断只通过具备 `manage_issuer` 的 `GET /api/v1/admin/settings/issuer` 返回。数据库故障返回 500。
 
 ### `GET/PUT /api/v1/admin/settings/issuer`
 
@@ -340,7 +340,19 @@ Issuer 设置接口仅 Owner（`manage_issuer`）可用。GET 返回 `persisted`
 - `GET /api/v1/admin/settings/registration-email`：读取当前发件地址，未配置时返回 `{"registration_email_from":null}`。
 - `PUT /api/v1/admin/settings/registration-email`：更新发件地址，提交 `{"registration_email_from":"no-reply@example.com"}`；传 `null` 或空字符串可清除配置，成功返回更新后的设置。
 
-发件地址保存于 PostgreSQL 的 `app_settings` 表，不从环境变量、请求 Host 或前端状态推导。当前设置资源只保存地址本身；SMTP 连接参数、发送凭据和邮件模板属于后续邮件服务接入边界。
+发件地址保存于 PostgreSQL 的 `app_settings` 表，不从环境变量、请求 Host 或前端状态推导。发件地址与 SMTP 设置双向镜像：SMTP `from_address` 非空时优先作为注册发件人。
+
+### `GET/PUT /api/v1/admin/settings/smtp`
+
+需要 `ManageSettings`。GET 返回 `host`、`port`、`username`、`from_address`、`ssl_enabled`、`force_auth_login`、`password_configured`。未配置密码时 `password_configured` 为 `false`。响应、日志和审计永不包含 `password` 或 `password_ciphertext`。
+
+PUT 用 `password_action` 表达密码三态，不要再靠空字符串猜测：
+
+- `keep`：保留已存密文；`password` 必须省略或 `null`。
+- `set`：加密替换密文；`password` 必须是非空字符串，最长 512 字符。
+- `clear`：在同一事务里删除已存密文；`password` 必须省略或 `null`。
+
+省略 `password_action` 只兼容旧客户端：此时省略或 `null` 的 `password` 视为 `keep`，非空 `password` 视为 `set`。空字符串不再等于 `keep`。`keep`/`clear` 携带任何 `password` 值、`set` 缺密码，或空字符串，一律 `400 invalid_smtp_setting`。成功响应与 GET 相同，审计只记录 `password_action` 和 `password_configured`。
 
 `GET /api/v1/admin/settings/passkey`、`GET /api/v1/admin/settings/email-policy` 和 `GET /api/v1/admin/settings/security-limits` 的 JSON body 始终是设置对象本身。若库里的行无法用于安全热路径，响应额外带 `X-Chenxing-Setting-Diagnostic: invalid` 或 `corrupt`，便于管理员保存修复；有效值和未配置行不带该头。头和 body 都不回显损坏 JSON、域名或阈值。
 

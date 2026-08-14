@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use thiserror::Error;
 use url::Url;
 
-use super::smtp_sender::parse_smtp_sender;
 use crate::users::email::EmailAddress;
 
 const MAX_RP_NAME_LENGTH: usize = 128;
@@ -11,10 +9,6 @@ const MAX_RP_ID_LENGTH: usize = 253;
 const MAX_ORIGINS: usize = 32;
 const MAX_DOMAINS: usize = 128;
 const MAX_DOMAIN_LENGTH: usize = 253;
-const MAX_SMTP_HOST_LENGTH: usize = 253;
-const MAX_SMTP_USERNAME_LENGTH: usize = 256;
-const MAX_SMTP_FROM_LENGTH: usize = 320;
-const MAX_SMTP_PASSWORD_LENGTH: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -75,86 +69,6 @@ pub struct EmailPolicySetting {
     pub allowed_domains: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SmtpSetting {
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub from_address: String,
-    pub ssl_enabled: bool,
-    pub force_auth_login: bool,
-    pub password_configured: bool,
-}
-
-impl Default for SmtpSetting {
-    fn default() -> Self {
-        Self {
-            host: String::new(),
-            port: 587,
-            username: String::new(),
-            from_address: String::new(),
-            ssl_enabled: true,
-            force_auth_login: false,
-            password_configured: false,
-        }
-    }
-}
-
-#[derive(Clone, Deserialize)]
-pub struct SmtpSettingUpdate {
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub from_address: String,
-    pub ssl_enabled: bool,
-    pub force_auth_login: bool,
-    /// Write-only. Omit or null to keep the existing password.
-    pub password: Option<String>,
-}
-
-impl fmt::Debug for SmtpSettingUpdate {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SmtpSettingUpdate")
-            .field("host", &self.host)
-            .field("port", &self.port)
-            .field("username", &self.username)
-            .field("from_address", &self.from_address)
-            .field("ssl_enabled", &self.ssl_enabled)
-            .field("force_auth_login", &self.force_auth_login)
-            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
-            .finish()
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct StoredSmtpSetting {
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub from_address: String,
-    pub ssl_enabled: bool,
-    pub force_auth_login: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password_ciphertext: Option<String>,
-}
-
-impl fmt::Debug for StoredSmtpSetting {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("StoredSmtpSetting")
-            .field("host", &self.host)
-            .field("port", &self.port)
-            .field("username", &self.username)
-            .field("from_address", &self.from_address)
-            .field("ssl_enabled", &self.ssl_enabled)
-            .field("force_auth_login", &self.force_auth_login)
-            .field(
-                "password_ciphertext",
-                &self.password_ciphertext.as_ref().map(|_| "<redacted>"),
-            )
-            .finish()
-    }
-}
-
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SettingsValidationError {
     #[error("passkey relying party name is invalid")]
@@ -175,6 +89,10 @@ pub enum SettingsValidationError {
     InvalidSmtpFrom,
     #[error("smtp password is invalid")]
     InvalidSmtpPassword,
+    #[error("smtp password action conflicts with password field")]
+    SmtpPasswordConflict,
+    #[error("smtp password is required when password_action is set")]
+    SmtpPasswordRequired,
     #[error("security limit field is invalid: {0}")]
     InvalidSecurityLimit(&'static str),
 }
@@ -285,57 +203,6 @@ impl EmailPolicySetting {
         }
         let domain = email.canonical_domain();
         self.allowed_domains.iter().any(|allowed| domain == allowed)
-    }
-}
-
-impl SmtpSettingUpdate {
-    pub fn validate(self) -> Result<(SmtpSetting, Option<String>), SettingsValidationError> {
-        let host = self.host.trim().to_owned();
-        if host.chars().count() > MAX_SMTP_HOST_LENGTH
-            || (!host.is_empty()
-                && (host.starts_with('.')
-                    || host.ends_with('.')
-                    || host.contains("..")
-                    || !host.chars().all(|character| {
-                        character.is_ascii_alphanumeric() || character == '-' || character == '.'
-                    })))
-        {
-            return Err(SettingsValidationError::InvalidSmtpHost);
-        }
-        if self.port == 0 {
-            return Err(SettingsValidationError::InvalidSmtpPort);
-        }
-        let username = self.username.trim().to_owned();
-        if username.chars().count() > MAX_SMTP_USERNAME_LENGTH {
-            return Err(SettingsValidationError::InvalidSmtpUsername);
-        }
-        let from_address = self.from_address.trim().to_owned();
-        if self.from_address.chars().any(char::is_control)
-            || from_address.chars().count() > MAX_SMTP_FROM_LENGTH
-            || (!from_address.is_empty() && parse_smtp_sender(&from_address).is_none())
-        {
-            return Err(SettingsValidationError::InvalidSmtpFrom);
-        }
-        let password = match self.password {
-            Some(value) if value.is_empty() => None,
-            Some(value) if value.chars().count() > MAX_SMTP_PASSWORD_LENGTH => {
-                return Err(SettingsValidationError::InvalidSmtpPassword);
-            }
-            Some(value) => Some(value),
-            None => None,
-        };
-        Ok((
-            SmtpSetting {
-                host,
-                port: self.port,
-                username,
-                from_address,
-                ssl_enabled: self.ssl_enabled,
-                force_auth_login: self.force_auth_login,
-                password_configured: false,
-            },
-            password,
-        ))
     }
 }
 

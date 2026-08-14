@@ -269,6 +269,23 @@ impl AuthFactorService {
             .map(|ticket| ticket.user_id))
     }
 
+    /// 尽力删掉一张残留 login ticket。
+    ///
+    /// 只接受 UUID：cookie 值会直接拼进 Redis key，伪造字符串不能拿来打任意键。
+    /// 解析失败返回 `Ok(false)`，调用方应视为没有可清的 ticket，而不是存储故障。
+    pub async fn discard_login_ticket(
+        &self,
+        ticket_id: &str,
+    ) -> Result<bool, AuthFactorServiceError> {
+        let Ok(ticket_id) = uuid::Uuid::parse_str(ticket_id) else {
+            return Ok(false);
+        };
+        self.tickets
+            .delete(&LoginTicketStore::key(&ticket_id.to_string()))
+            .await?;
+        Ok(true)
+    }
+
     async fn is_disabled_passkey_only(
         &self,
         methods: &[String],

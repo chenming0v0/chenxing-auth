@@ -1,6 +1,9 @@
 use chenxing_auth::users::{
     credentials::MAX_PASSWORD_LENGTH,
-    domain::{LoginIdentifier, LoginInput, MAX_IDENTIFIER_LENGTH, validate_login},
+    domain::{
+        LoginError, LoginIdentifier, LoginInput, MAX_IDENTIFIER_LENGTH,
+        validate_authentication_password, validate_login,
+    },
 };
 
 /// 取标识符的匹配值。
@@ -156,6 +159,24 @@ fn login_accepts_an_identifier_at_the_upper_bound() {
     assert_eq!(
         matched(&login.identifier).chars().count(),
         MAX_IDENTIFIER_LENGTH
+    );
+}
+
+/// 登录 `password` 与改密 `current_password` 共用同一条认证口令边界（Issue #462）。
+#[test]
+fn authentication_password_rejects_empty_and_oversized_inputs() {
+    assert_eq!(
+        validate_authentication_password(""),
+        Err(LoginError::EmptyPassword)
+    );
+    assert_eq!(
+        validate_authentication_password(&"a".repeat(MAX_PASSWORD_LENGTH + 1)),
+        Err(LoginError::PasswordTooLong)
+    );
+    assert_eq!(validate_authentication_password("short"), Ok(()));
+    assert_eq!(
+        validate_authentication_password(&"口".repeat(MAX_PASSWORD_LENGTH)),
+        Ok(())
     );
 }
 

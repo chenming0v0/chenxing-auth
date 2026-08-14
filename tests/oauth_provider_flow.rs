@@ -7,8 +7,10 @@ use axum::{
     routing::get,
 };
 use chenxing_auth::{
-    api, config::Config, sessions::cookies::EXTERNAL_STATE_COOKIE_PREFIX, state::AppState,
+    api, auth_factors::store::LoginTicketStore, config::Config,
+    sessions::cookies::EXTERNAL_STATE_COOKIE_PREFIX, state::AppState,
 };
+use redis::AsyncCommands;
 use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -525,6 +527,14 @@ async fn custom_provider_does_not_auto_link_existing_email() {
 
 /// 跑完一整轮外部登录：发起 → 外部 IdP 授权 → 回调。返回回调响应。
 async fn run_external_login(router: &axum::Router, slug: &str) -> axum::response::Response {
+    run_external_login_with_cookies(router, slug, None).await
+}
+
+async fn run_external_login_with_cookies(
+    router: &axum::Router,
+    slug: &str,
+    extra_cookies: Option<&str>,
+) -> axum::response::Response {
     let response = router
         .clone()
         .oneshot(
@@ -557,6 +567,10 @@ async fn run_external_login(router: &axum::Router, slug: &str) -> axum::response
         .find(|(key, _)| key == "state")
         .map(|(_, value)| value.into_owned())
         .expect("state");
+    let cookie = match extra_cookies {
+        Some(extra) => format!("{state_cookie}; {extra}"),
+        None => state_cookie,
+    };
     router
         .clone()
         .oneshot(
@@ -564,7 +578,7 @@ async fn run_external_login(router: &axum::Router, slug: &str) -> axum::response
                 .uri(format!(
                     "/auth/external/{slug}/callback?code=mock-code&state={state}"
                 ))
-                .header("cookie", state_cookie)
+                .header("cookie", cookie)
                 .body(Body::empty())
                 .expect("callback request"),
         )
@@ -706,5 +720,182 @@ async fn legacy_provider_without_email_verified_claim_cannot_enable_or_login() {
         !redirect.starts_with("http"),
         "不得把用户送到外部 IdP: {redirect}"
     );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+fn pending_cookie(response: &axum::response::Response) -> String {
+    response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().expect("cookie pair"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn cookie_pair_value(cookie: &str, name: &str) -> String {
+    cookie
+        .split("; ")
+        .find_map(|part| part.strip_prefix(&format!("{name}=")))
+        .expect("cookie value")
+        .to_owned()
+}
+
+fn assert_expired_login_ticket_cookies(response: &axum::response::Response) {
+    let ticket = set_cookie_header(response, "chenxing_login_ticket=");
+    let holder = set_cookie_header(response, "chenxing_login_holder=");
+    assert!(
+        ticket.contains("Max-Age=0"),
+        "login ticket cookie must be cleared: {ticket}"
+    );
+    assert!(
+        holder.contains("Max-Age=0"),
+        "login holder cookie must be cleared: {holder}"
+    );
+}
+
+async fn json_body(response: axum::response::Response) -> Value {
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    serde_json::from_slice(&body).expect("JSON response")
+}
+
+async fn login_ticket_exists(ticket_id: &str) -> bool {
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let client = redis::Client::open(redis_url).expect("Redis URL");
+    let mut connection = client
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    connection
+        .exists(LoginTicketStore::key(ticket_id))
+        .await
+        .expect("ticket exists")
+}
+
+async fn create_local_password_user(router: &axum::Router) -> (String, String, String) {
+    let suffix = Uuid::new_v4().simple().to_string();
+    let username = format!("local-{suffix}");
+    let email = format!("local-{suffix}@example.com");
+    let password = "correct horse battery";
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("authorization", "Bearer provider-flow-admin")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": username,
+                        "email": email,
+                        "password": password,
+                    })
+                    .to_string(),
+                ))
+                .expect("admin user creation request"),
+        )
+        .await
+        .expect("admin user creation response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    (username, email, password.to_owned())
+}
+
+async fn password_pending_cookies(router: &axum::Router, username: &str, password: &str) -> String {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"identifier": username, "password": password}).to_string(),
+                ))
+                .expect("login request"),
+        )
+        .await
+        .expect("login response");
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    pending_cookie(&response)
+}
+
+/// #465：同一浏览器先本地密码进入 MFA，再外部 OAuth 成功时必须清掉旧 ticket。
+#[tokio::test]
+async fn external_login_clears_leftover_password_mfa_ticket() {
+    let (mock, mock_state) = mock_server().await;
+    let external_email = mock_state.user_email.lock().await.clone();
+    let (router, _database, key_directory, slug) = setup(mock).await;
+    let (local_username, local_email, password) = create_local_password_user(&router).await;
+    let pending = password_pending_cookies(&router, &local_username, &password).await;
+    let ticket_id = cookie_pair_value(&pending, "chenxing_login_ticket");
+    assert!(
+        login_ticket_exists(&ticket_id).await,
+        "password login must persist a Redis ticket before external OAuth"
+    );
+
+    let response = run_external_login_with_cookies(&router, &slug, Some(&pending)).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        location(&response).contains("external=success"),
+        "unexpected callback location: {}",
+        location(&response)
+    );
+    assert_expired_login_ticket_cookies(&response);
+    assert!(
+        !login_ticket_exists(&ticket_id).await,
+        "leftover Redis ticket must be deleted or no longer consumable"
+    );
+
+    let session_cookie = set_cookie(&response, "chenxing_session=");
+    let me = json_body(
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/auth/me")
+                    .header("cookie", &session_cookie)
+                    .body(Body::empty())
+                    .expect("me request"),
+            )
+            .await
+            .expect("me response"),
+    )
+    .await;
+    assert_eq!(me["email"], external_email);
+    assert_ne!(me["email"], local_email);
+
+    let leftover = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/totp/setup")
+                .header("content-type", "application/json")
+                .header("cookie", &pending)
+                .body(Body::from("{}"))
+                .expect("totp setup request"),
+        )
+        .await
+        .expect("totp setup response");
+    assert_eq!(leftover.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json_body(leftover).await["code"], "invalid_login_ticket");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+/// #465：没有旧 ticket 时外部登录仍成功，并且同样下发过期的 ticket/holder Cookie。
+#[tokio::test]
+async fn external_login_without_old_ticket_still_clears_pending_cookies() {
+    let (mock, _mock_state) = mock_server().await;
+    let (router, _database, key_directory, slug) = setup(mock).await;
+    let response = run_external_login(&router, &slug).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(location(&response).contains("external=success"));
+    assert_expired_login_ticket_cookies(&response);
+    assert!(set_cookie_header_optional(&response, "chenxing_session=").is_some());
     let _ = std::fs::remove_dir_all(key_directory);
 }

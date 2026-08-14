@@ -235,7 +235,7 @@ Cookie 和 Passkey 绑定。旧部署的 `APP_ISSUER` 只在数据库还没有�
 
 `APP_ISSUER` 是 OIDC 发行者标识，会写入 JWT 的 `iss` claim 和 Discovery 文档，必须是无 path、query 和 fragment 的固定绝对 URL，且不能从请求 Host 或反向代理输入推导。运行期值保存在 PostgreSQL `app_settings`；未配置时服务进入受限模式，仅保留健康检查、初始化状态和静态前端，不注册认证、管理、OAuth/OIDC、Discovery 与 JWKS 路由。旧环境变量 `APP_ISSUER` 只在数据库为空时导入一次，不能覆盖已经持久化的值。
 
-HTTPS 部署的 Session 和 CSRF Cookie 使用 `__Host-chenxing_session` 与 `__Host-chenxing_csrf`，固定带 `Secure; Path=/` 且不带 `Domain`，由浏览器强制 host-only 约束。`COOKIE_SECURE=false` 只允许用于明确的 loopback HTTP 本地开发（`localhost`、`127.0.0.1` 或 `::1`）；在 HTTPS 或其他主机发行者下会导致启动失败。HTTP 发行者配合 `COOKIE_SECURE=true` 会记录启动警告，因为浏览器可能拒绝 Secure Cookie。
+HTTPS 部署的 Session 和 CSRF Cookie 使用 `__Host-chenxing_session` 与 `__Host-chenxing_csrf`，固定带 `Secure; Path=/` 且不带 `Domain`，由浏览器强制 host-only 约束。外部 OAuth state Cookie 同样遵守这条契约：生产名称为动态的 `__Host-chenxing_external_oauth_state_<state 绑定标识>`，回调只读取该 host-only 名，同站兄弟域投下的父域 `Domain` cookie（普通 `chenxing_external_oauth_state_*` 名）不会命中。`COOKIE_SECURE=false` 只允许用于明确的 loopback HTTP 本地开发（`localhost`、`127.0.0.1` 或 `::1`），此时才使用不带 `__Host-` 的兼容名称；在 HTTPS 或其他主机发行者下会导致启动失败，生产路径不会回退到普通名。HTTP 发行者配合 `COOKIE_SECURE=true` 会记录启动警告，因为浏览器可能拒绝 Secure Cookie。
 
 Session payload 使用 AES-256-GCM 并携带 key id。`AUTH_ENCRYPTION_KEY` 保留为单密钥兼容写法。轮换时设置逗号分隔的 `kid=<key-id>:<standard-base64-32-byte-key>` 密钥环 `AUTH_ENCRYPTION_KEYS`，并设置 `AUTH_ENCRYPTION_ACTIVE_KID`；新 Session 只使用 active key，旧 key 只读。旧 key 必须保留到最长 Session TTL 加 outbox 重试窗口结束后再移除；该重试窗口现在有明确上限（10 次尝试，约 20 分钟），超出后事件进入 dead-letter 而不是无限重试。回滚通过把旧 key 设为 `AUTH_ENCRYPTION_ACTIVE_KID` 并继续保留新 key 完成。移除 key 会故意使仅由该 key 加密的 Session 失效，请求返回 401 并清理浏览器 Cookie。Redis 只保存加密 payload，不保存 Session 或 CSRF 明文。
 

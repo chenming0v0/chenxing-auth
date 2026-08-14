@@ -77,6 +77,8 @@ paths:
         返回当前及验证过渡期公钥集合，只用于验证 JWT，不包含私钥。
         公开只读元数据，CORS 与 Discovery 一致：请求带 Origin 时返回
         `Access-Control-Allow-Origin: *`（不带凭据），且始终 `Vary: Origin`。
+        另返回 `Access-Control-Expose-Headers: ETag`，让浏览器 JS 能读取 ETag 并发起
+        条件请求；200 与 304 均适用。该头只出现在 JWKS，不扩到其它路由。
         缓存策略为 `Cache-Control: public, max-age=60, must-revalidate`，RP 可在 60 秒内
         直接使用共享缓存；过期后用 `If-None-Match` 发起条件请求，公钥集合未变时返回 304。
         ETag 由 JWKS 字节的 SHA-256 派生，确定性且跨实例一致；密钥轮换或吊销后 ETag 改变。
@@ -94,6 +96,9 @@ paths:
               schema: { type: string }
             Access-Control-Allow-Origin:
               description: 当请求带 Origin 时返回 `*`，允许 RP 跨域读取；无 Origin 时省略。
+              schema: { type: string }
+            Access-Control-Expose-Headers:
+              description: 始终为 `ETag`，让浏览器 JS 能读取 ETag。
               schema: { type: string }
             Vary:
               description: 始终为 `Origin`，避免共享缓存混用带/不带 Origin 的响应。
@@ -113,6 +118,9 @@ paths:
               schema: { type: string }
             Access-Control-Allow-Origin:
               description: 当请求带 Origin 时返回 `*`；无 Origin 时省略。
+              schema: { type: string }
+            Access-Control-Expose-Headers:
+              description: 始终为 `ETag`，条件请求命中后浏览器 JS 仍能读取 ETag。
               schema: { type: string }
             Vary:
               description: 始终为 `Origin`。
@@ -928,21 +936,26 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '504': { $ref: '#/components/responses/RequestTimeout' }
   /api/v1/admin/bootstrap/status:
     get:
       tags: [Admin Auth]
       summary: 查询未初始化状态
-      description: Issuer 未配置时返回 503 issuer_not_configured；Issuer 已配置且 Owner 未初始化时返回 initialized=false；实例已有 Owner 后返回与未知路径一致的 404。
+      description: |
+        Owner 未初始化时返回 initialized=false，供前端显示初始化界面。
+        实例已有 Owner 后返回与未知路径一致的 404，不向匿名调用者确认初始化状态，
+        也不区分 Issuer 收敛异常。响应不含 generation、phase、issuer_persisted/persisted。
+        Issuer 诊断见 GET /api/v1/admin/settings/issuer。
       operationId: adminBootstrapStatus
       responses:
         '200':
-          description: 初始化状态
+          description: 未初始化，返回 initialized=false
           content:
             application/json:
               schema: { $ref: '#/components/schemas/BootstrapStatusResponse' }
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalServerError' }
-        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '504': { $ref: '#/components/responses/RequestTimeout' }
   /api/v1/admin/auth/me:
     get:
       tags: [Admin Auth]
@@ -1550,6 +1563,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '504': { $ref: '#/components/responses/RequestTimeout' }
     put:
       tags: [Admin]
       summary: 创建或更新 OIDC Issuer
@@ -1579,6 +1593,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '504': { $ref: '#/components/responses/RequestTimeout' }
   /api/v1/admin/settings/passkey:
     get:
       tags: [Admin]
@@ -1709,7 +1724,7 @@ paths:
             schema: { $ref: '#/components/schemas/SmtpSettingUpdate' }
       responses:
         '200':
-          description: 已更新的 SMTP 设置；password 永不回显
+          description: 已更新的 SMTP 设置；只返回 password_configured，永不回显 password 或密文
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SmtpSetting' }
@@ -1959,7 +1974,8 @@ components:
       content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } }
     RequestTimeout:
       description: |
-        非 `/oauth/*` 应用路由触发请求超时（Issue #423）。
+        非 `/oauth/*` 应用路由或 system 路由（bootstrap、bootstrap/status、Issuer 管理）
+        触发请求超时（Issues #423、#451）。
         OAuth 协议端点超时不使用本响应，见 `OAuthServiceUnavailable`。
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } }
   schemas:
@@ -2113,8 +2129,12 @@ components:
       type: object
       required: [current_password, new_password]
       properties:
-        current_password: { type: string, format: password }
-        new_password: { type: string, format: password, minLength: 10 }
+        current_password:
+          type: string
+          format: password
+          maxLength: 128
+          description: 空口令或超过 128 字符按当前密码错误拒绝，不返回独立错误码
+        new_password: { type: string, format: password, minLength: 10, maxLength: 128 }
     SessionItem:
       type: object
       required: [id, created_at, expires_at, current]
@@ -2558,9 +2578,21 @@ components:
         ssl_enabled: { type: boolean }
         force_auth_login: { type: boolean }
         password_configured: { type: boolean }
+    SmtpPasswordAction:
+      type: string
+      enum: [keep, set, clear]
+      description: >-
+        SMTP 密码更新意图。keep 保留已存密文，set 加密替换，clear 原子删除已存密文。
+        响应、日志和审计只记录该枚举，永不回显 password 或 password_ciphertext。
     SmtpSettingUpdate:
       type: object
       required: [host, port, username, from_address, ssl_enabled, force_auth_login]
+      description: >-
+        SMTP 设置写入体。密码三态以 password_action 为准：keep 必须省略 password；
+        set 必须提供非空 password（最长 512）；clear 必须省略 password。
+        省略 password_action 仅兼容旧客户端——此时省略或 null 的 password 视为 keep，
+        非空 password 视为 set。空字符串不再等于 keep，与 action 冲突或 set 缺值返回
+        400 invalid_smtp_setting。GET/PUT 响应只有 password_configured，不含明文或密文。
       properties:
         host: { type: string }
         port: { type: integer, minimum: 1, maximum: 65535 }
@@ -2568,7 +2600,9 @@ components:
         from_address: { type: string }
         ssl_enabled: { type: boolean }
         force_auth_login: { type: boolean }
-        password: { type: string, format: password, nullable: true, writeOnly: true }
+        password_action:
+          $ref: '#/components/schemas/SmtpPasswordAction'
+        password: { type: string, format: password, nullable: true, writeOnly: true, maxLength: 512 }
     SecurityLimitsSetting:
       type: object
       description: >-

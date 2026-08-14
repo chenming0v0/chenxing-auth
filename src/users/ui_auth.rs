@@ -18,13 +18,18 @@ pub(crate) async fn current_user(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<UserContext, Response> {
-    let Some(session_token) =
-        cookies::session_cookie_id_for_secure_transport(headers, state.config.cookie_secure)
-    else {
-        return Err(error::unauthorized(
-            "login_required",
-            "an authenticated session is required",
-        ));
+    let session_token = match cookies::session_cookie_id_for_secure_transport(
+        headers,
+        state.config.cookie_secure,
+    ) {
+        Ok(Some(token)) => token,
+        Ok(None) => {
+            return Err(error::unauthorized(
+                "login_required",
+                "an authenticated session is required",
+            ));
+        }
+        Err(_) => return Err(invalid_session_response(state, "invalid_session")),
     };
     let Some(session) = state
         .sessions
@@ -86,7 +91,7 @@ fn invalid_session_response(state: &AppState, code: &'static str) -> Response {
 /// 调用方是 `crate::api::extract` 中的提取器，handler 不直接调用它 ——
 /// 让类型系统而非人工记忆来保证写端点走到这一步。
 pub(crate) fn user_csrf_valid(headers: &HeaderMap, session: &Session, secure: bool) -> bool {
-    let Some(cookie) = cookies::csrf_cookie_for_secure_transport(headers, secure) else {
+    let Ok(Some(cookie)) = cookies::csrf_cookie_for_secure_transport(headers, secure) else {
         return false;
     };
     let Some(header) = cookies::csrf_token(headers) else {
