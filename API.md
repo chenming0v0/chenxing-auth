@@ -327,7 +327,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ### `GET /api/v1/admin/bootstrap/status`
 
-Issuer 未配置时返回 `503 issuer_not_configured`。Issuer 已配置但 Owner 尚未初始化时公开返回 `{"initialized":false}`，供 Web 前端显示 Owner 初始化界面。实例已有 Owner 后返回与未知路径一致的 `404 not_found`，不再向匿名扫描者确认初始化状态；数据库故障返回 500。
+Owner 尚未初始化时公开返回 `{"initialized":false}`，供 Web 前端显示 Owner 初始化界面。实例已有 Owner 后返回与未知路径一致的 `404 not_found`，不再向匿名扫描者确认初始化状态，也不区分 Issuer 未配置、待重载或运行时无效等收敛异常。响应不含 `generation`、`phase`、`issuer_persisted` / `persisted` 等内部状态。Issuer 诊断只通过具备 `manage_issuer` 的 `GET /api/v1/admin/settings/issuer` 返回。数据库故障返回 500。
 
 ### `GET/PUT /api/v1/admin/settings/issuer`
 

@@ -60,6 +60,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/admin/bootstrap/status", get(health::system_status))
         // Bootstrap and issuer management must remain reachable while the issuer is
         // absent; their own extractors still enforce owner/authentication/CSRF rules.
+        // bootstrap/status is anonymous but only answers initialized/uninitialized.
         .route(
             "/api/v1/admin/bootstrap",
             axum::routing::post(crate::admin::auth_handlers::bootstrap_admin),
