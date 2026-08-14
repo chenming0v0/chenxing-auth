@@ -1,5 +1,6 @@
-use super::{
-    SecurityLimitsSetting, SettingsService, SettingsServiceError,
+use super::{SettingsService, SettingsServiceError};
+use crate::settings::{
+    SecurityLimitsSetting,
     domain::{EmailPolicySetting, PasskeySetting},
     persisted::{
         PersistedDecode, PersistedLoadError, PersistedSetting, SettingInspection, decode_persisted,
