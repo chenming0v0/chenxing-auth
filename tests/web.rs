@@ -1,7 +1,10 @@
 use axum::{
     Router,
     body::Body,
-    http::{Method, Request, StatusCode, header::CONTENT_TYPE},
+    http::{
+        Method, Request, StatusCode,
+        header::{CACHE_CONTROL, CONTENT_TYPE},
+    },
 };
 use chenxing_auth::{api, config::Config, state::AppState};
 use tower::ServiceExt;
@@ -27,6 +30,14 @@ async fn assert_spa_shell(router: Router, uri: &str) {
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok()),
         Some("text/html; charset=utf-8"),
+        "{uri}"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-cache"),
         "{uri}"
     );
 }
@@ -128,6 +139,71 @@ async fn unknown_non_get_paths_return_json_not_found() {
     assert_json_not_found(router.clone(), Method::PUT, "/oauth/does-not-exist").await;
     assert_json_not_found(router.clone(), Method::DELETE, "/oauth/account").await;
     assert_spa_shell(router, "/console/developer").await;
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+fn embedded_hashed_script_path() -> &'static str {
+    let html = chenxing_auth::web_dist::EMBEDDED_INDEX_HTML;
+    let marker = "src=\"";
+    let mut rest = html;
+    while let Some(start) = rest.find(marker) {
+        rest = &rest[start + marker.len()..];
+        let Some(end) = rest.find('"') else { break };
+        let value = &rest[..end];
+        if value.starts_with("/assets/") && value.ends_with(".js") {
+            return value;
+        }
+        rest = &rest[end + 1..];
+    }
+    panic!("embedded SPA shell has no hashed script");
+}
+
+/// 内容哈希 assets 可以永久缓存；根上没有哈希的图标不能 immutable。
+#[tokio::test]
+async fn content_hashed_assets_are_immutable_and_unhashed_files_are_not() {
+    let (router, key_directory) = test_router().await;
+    let hashed = embedded_hashed_script_path();
+
+    let hashed_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(hashed)
+                .body(Body::empty())
+                .expect("hashed asset request"),
+        )
+        .await
+        .expect("hashed asset response");
+    assert_eq!(hashed_response.status(), StatusCode::OK, "{hashed}");
+    assert_eq!(
+        hashed_response
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("public, max-age=31536000, immutable"),
+        "{hashed}"
+    );
+
+    let favicon = router
+        .oneshot(
+            Request::builder()
+                .uri("/favicon.png")
+                .body(Body::empty())
+                .expect("favicon request"),
+        )
+        .await
+        .expect("favicon response");
+    assert_eq!(favicon.status(), StatusCode::OK);
+    let cache = favicon
+        .headers()
+        .get(CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        !cache.contains("immutable"),
+        "unhashed favicon must not be immutable: {cache}"
+    );
 
     let _ = std::fs::remove_dir_all(key_directory);
 }

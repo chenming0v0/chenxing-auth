@@ -320,6 +320,13 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("text/html; charset=utf-8")
         );
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
     }
 
     #[tokio::test]
@@ -349,6 +356,13 @@ mod tests {
         let response = send_request("/health/live", Method::GET).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(content_type(&response), Some("application/json"));
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
     }
 
     #[tokio::test]

@@ -1,7 +1,10 @@
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode, header::CONTENT_TYPE},
+    http::{
+        Request, StatusCode,
+        header::{CACHE_CONTROL, CONTENT_TYPE},
+    },
 };
 use chenxing_auth::{api, config::Config, state::AppState};
 use tower::ServiceExt;
@@ -75,6 +78,13 @@ async fn liveness_endpoint_reports_process_status_without_dependencies() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
@@ -200,6 +210,13 @@ async fn readiness_endpoint_returns_a_dependency_agnostic_failure_body() {
         response.status(),
         StatusCode::OK | StatusCode::SERVICE_UNAVAILABLE
     ));
+    assert_eq!(
+        response
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("readiness body");
@@ -207,6 +224,41 @@ async fn readiness_endpoint_returns_a_dependency_agnostic_failure_body() {
     assert!(!body.contains("postgres"));
     assert!(!body.contains("redis://"));
     assert!(!body.contains("127.0.0.1"));
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+/// Issue #445：三个探针都禁止缓存。隔离 schema 没有持久化 Issuer，
+/// `/health` 与 `/health/ready` 因此走 503；`/health/live` 不碰依赖，始终 200。
+#[tokio::test]
+async fn health_probes_are_not_stored_on_ok_and_unavailable() {
+    let (router, key_directory) = test_router().await;
+
+    for (path, expected) in [
+        ("/health/live", StatusCode::OK),
+        ("/health", StatusCode::SERVICE_UNAVAILABLE),
+        ("/health/ready", StatusCode::SERVICE_UNAVAILABLE),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("health request"),
+            )
+            .await
+            .expect("health response");
+        assert_eq!(response.status(), expected, "{path}");
+        assert_eq!(
+            response
+                .headers()
+                .get(CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store"),
+            "{path}"
+        );
+    }
+
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

@@ -3,13 +3,16 @@
 use axum::{
     Json,
     extract::State,
-    http::StatusCode,
+    http::{StatusCode, header::CACHE_CONTROL},
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
 use std::time::Duration;
 
 use crate::{redis_client::RedisClient, state::AppState};
+
+/// 探针结果随依赖即时变化，禁止被中间缓存存成成功或失败。
+const HEALTH_CACHE_CONTROL: &str = "no-store";
 
 #[derive(Debug, Serialize)]
 pub struct HealthResponse {
@@ -19,12 +22,21 @@ pub struct HealthResponse {
 
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
+fn health_response(status: StatusCode, status_text: &'static str) -> Response {
+    (
+        status,
+        [(CACHE_CONTROL, HEALTH_CACHE_CONTROL)],
+        Json(HealthResponse {
+            status: status_text,
+            service: crate::SERVICE_NAME,
+        }),
+    )
+        .into_response()
+}
+
 /// 存活探针：只报告进程本身，不触碰任何外部依赖。
-pub(super) async fn health_live() -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: "ok",
-        service: crate::SERVICE_NAME,
-    })
+pub(super) async fn health_live() -> Response {
+    health_response(StatusCode::OK, "ok")
 }
 
 pub(super) async fn health(State(state): State<AppState>) -> Response {
@@ -50,14 +62,7 @@ pub(super) async fn health_ready(State(state): State<AppState>) -> Response {
         false
     };
     if database_ready && redis_ready && issuer_ready {
-        return (
-            StatusCode::OK,
-            Json(HealthResponse {
-                status: "ok",
-                service: crate::SERVICE_NAME,
-            }),
-        )
-            .into_response();
+        return health_response(StatusCode::OK, "ok");
     }
 
     tracing::warn!(
@@ -67,14 +72,7 @@ pub(super) async fn health_ready(State(state): State<AppState>) -> Response {
         issuer = issuer_ready,
         "application dependencies are not ready"
     );
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(HealthResponse {
-            status: "unavailable",
-            service: crate::SERVICE_NAME,
-        }),
-    )
-        .into_response()
+    health_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable")
 }
 
 /// 匿名引导状态。只回答 Owner 是否已初始化，不暴露 Issuer 收敛内部状态。
@@ -104,4 +102,28 @@ async fn redis_ready(client: &RedisClient) -> Result<(), redis::RedisError> {
     let mut connection = client.get_multiplexed_async_connection().await?;
     let _: String = redis::cmd("PING").query_async(&mut connection).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_ok_and_unavailable_are_not_stored() {
+        for (status, text) in [
+            (StatusCode::OK, "ok"),
+            (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+        ] {
+            let response = health_response(status, text);
+            assert_eq!(response.status(), status, "{text}");
+            assert_eq!(
+                response
+                    .headers()
+                    .get(CACHE_CONTROL)
+                    .and_then(|value| value.to_str().ok()),
+                Some(HEALTH_CACHE_CONTROL),
+                "{text}"
+            );
+        }
+    }
 }
