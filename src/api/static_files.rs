@@ -50,7 +50,7 @@ fn spa_fallback() -> MethodRouter<()> {
 /// `ServeDir` 未命中真实文件时的回退处理器。
 async fn web_app(request: axum::extract::Request) -> Response {
     if request.method() != Method::GET && request.method() != Method::HEAD {
-        return (StatusCode::NOT_FOUND, "not found").into_response();
+        return crate::error::not_found("not_found", "not found");
     }
 
     let path = request.uri().path();

@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode, header::CONTENT_TYPE},
+    http::{Method, Request, StatusCode, header::CONTENT_TYPE},
 };
 use chenxing_auth::{api, config::Config, state::AppState};
 use tower::ServiceExt;
@@ -31,10 +31,11 @@ async fn assert_spa_shell(router: Router, uri: &str) {
     );
 }
 
-async fn assert_json_not_found(router: Router, uri: &str) {
+async fn assert_json_not_found(router: Router, method: Method, uri: &str) {
     let response = router
         .oneshot(
             Request::builder()
+                .method(method.clone())
                 .uri(uri)
                 .body(Body::empty())
                 .expect("protocol 404 request"),
@@ -44,9 +45,9 @@ async fn assert_json_not_found(router: Router, uri: &str) {
     assert_ne!(
         response.status(),
         StatusCode::OK,
-        "{uri} must not be SPA 200"
+        "{method} {uri} must not be SPA 200"
     );
-    assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {uri}");
     assert_eq!(
         response
             .headers()
@@ -54,14 +55,14 @@ async fn assert_json_not_found(router: Router, uri: &str) {
             .and_then(|value| value.to_str().ok())
             .map(|value| value.split(';').next().unwrap_or(value)),
         Some("application/json"),
-        "{uri}"
+        "{method} {uri}"
     );
 
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("protocol 404 body");
     let error: serde_json::Value = serde_json::from_slice(&body).expect("JSON error");
-    assert_eq!(error["code"], "not_found", "{uri}");
+    assert_eq!(error["code"], "not_found", "{method} {uri}");
 }
 
 async fn test_router() -> (axum::Router, std::path::PathBuf) {
@@ -112,7 +113,21 @@ async fn rust_forwards_root_and_spa_paths_to_the_compiled_react_app() {
         "/oauth/does-not-exist/",
         "/oauth/consent/xxx",
     ] {
-        assert_json_not_found(router.clone(), uri).await;
+        assert_json_not_found(router.clone(), Method::GET, uri).await;
     }
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+/// 未知路径或已注册 SPA 路径上的非 GET/HEAD 必须走统一 JSON 信封，
+/// 不能落到 text/plain，也不能回退成 SPA shell。
+#[tokio::test]
+async fn unknown_non_get_paths_return_json_not_found() {
+    let (router, key_directory) = test_router().await;
+
+    assert_json_not_found(router.clone(), Method::POST, "/api/v1/does-not-exist").await;
+    assert_json_not_found(router.clone(), Method::PUT, "/oauth/does-not-exist").await;
+    assert_json_not_found(router.clone(), Method::DELETE, "/oauth/account").await;
+    assert_spa_shell(router, "/console/developer").await;
+
     let _ = std::fs::remove_dir_all(key_directory);
 }
