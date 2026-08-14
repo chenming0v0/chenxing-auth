@@ -92,6 +92,9 @@ async fn require_issuer(
 ) -> Response {
     let runtime = state.issuer.state();
     let Some(snapshot) = runtime.loaded() else {
+        if crate::error::is_oauth_protocol_path(request.uri().path()) {
+            return crate::error::oauth_temporarily_unavailable();
+        }
         return match runtime.as_ref() {
             crate::settings::IssuerRuntimeState::AwaitingIssuer => {
                 crate::error::service_unavailable(

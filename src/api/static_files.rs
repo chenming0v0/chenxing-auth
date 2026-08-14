@@ -71,17 +71,11 @@ async fn web_app(request: axum::extract::Request) -> Response {
 fn is_protocol_path(path: &str) -> bool {
     path == "/api"
         || path.starts_with("/api/")
-        || matches!(
-            path,
-            "/oauth/authorize"
-                | "/oauth/authorize/"
-                | "/oauth/token"
-                | "/oauth/token/"
-                | "/oauth/revoke"
-                | "/oauth/revoke/"
-                | "/oauth/userinfo"
-                | "/oauth/userinfo/"
-        )
+        || ((path == "/oauth" || path.starts_with("/oauth/"))
+            && !matches!(
+                path,
+                "/oauth/account" | "/oauth/consent" | "/oauth/redirect"
+            ))
         || path == "/.well-known"
         || path.starts_with("/.well-known/")
         || path.starts_with("/health/")
@@ -139,7 +133,9 @@ mod tests {
         assert!(is_protocol_path("/.well-known/openid-configuration"));
         assert!(is_protocol_path("/health/ready"));
 
-        // 其他路径交给文件服务或 SPA 处理
+        assert!(is_protocol_path("/oauth/not-registered"));
+
+        // 这三个 OAuth 浏览器流程页面是明确注册的 SPA 路由。
         for path in ["/oauth/account", "/oauth/consent", "/oauth/redirect"] {
             assert!(!is_protocol_path(path), "{path}");
         }

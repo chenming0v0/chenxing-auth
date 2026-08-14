@@ -1,9 +1,9 @@
 use axum::{
     Router,
     body::{Body, to_bytes},
-    http::{Method, Request, StatusCode},
+    http::{Method, Request, StatusCode, header::CONTENT_TYPE},
 };
-use chenxing_auth::{api, config::Config, state::AppState};
+use chenxing_auth::{api, config::Config, settings::IssuerRuntime, state::AppState};
 use tower::ServiceExt;
 
 #[path = "support/db_isolation.rs"]
@@ -11,7 +11,7 @@ mod db_isolation;
 #[path = "support/key_directory.rs"]
 mod key_directory;
 
-async fn unconfigured_router() -> (Router, std::path::PathBuf) {
+async fn restricted_router(invalid: bool) -> (Router, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -24,19 +24,18 @@ async fn unconfigured_router() -> (Router, std::path::PathBuf) {
     config.issuer = None;
     config.cookie_secure = true;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(
-            AppState::new_with_pool(config, database)
-                .await
-                .expect("unconfigured state"),
-        ),
-        key_directory,
-    )
+    let mut state = AppState::new_with_pool(config, database)
+        .await
+        .expect("restricted state");
+    if invalid {
+        state.issuer = IssuerRuntime::new_invalid(&state.config, 1);
+    }
+    (api::router(state), key_directory)
 }
 
 #[tokio::test]
 async fn missing_issuer_keeps_health_and_spa_but_disables_application_routes() {
-    let (router, key_directory) = unconfigured_router().await;
+    let (router, key_directory) = restricted_router(false).await;
 
     for path in ["/health/live", "/login"] {
         let response = router
@@ -112,4 +111,67 @@ async fn missing_issuer_keeps_health_and_spa_but_disables_application_routes() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
     let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn issuer_gate_uses_oauth_envelope_only_for_registered_protocol_endpoints() {
+    for invalid in [false, true] {
+        let (router, key_directory) = restricted_router(invalid).await;
+
+        for (method, path) in [
+            (Method::GET, "/oauth/authorize"),
+            (Method::POST, "/oauth/token"),
+            (Method::POST, "/oauth/revoke"),
+            (Method::GET, "/oauth/userinfo"),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .expect("OAuth request"),
+                )
+                .await
+                .expect("OAuth response");
+            assert_eq!(
+                response.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "invalid={invalid}, path={path}"
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get(CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.split(';').next()),
+                Some("application/json"),
+                "invalid={invalid}, path={path}"
+            );
+            let body: serde_json::Value = serde_json::from_slice(
+                &to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .expect("OAuth response body"),
+            )
+            .expect("OAuth response JSON");
+            assert_eq!(body["error"], "temporarily_unavailable");
+            assert!(body["error_description"].as_str().is_some());
+            assert!(body.get("code").is_none());
+            assert!(body.get("message").is_none());
+        }
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/oauth/not-registered")
+                    .body(Body::empty())
+                    .expect("unknown OAuth path request"),
+            )
+            .await
+            .expect("unknown OAuth path response");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let _ = std::fs::remove_dir_all(key_directory);
+    }
 }

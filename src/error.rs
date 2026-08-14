@@ -59,8 +59,8 @@ pub(crate) fn request_timeout() -> Response {
 /// （`api::map_request_timeout_by_path` 中间件）捕获请求路径后调用本函数，按
 /// 协议边界选择响应格式：
 ///
-/// - `/oauth/*` 路径返回 RFC 6749 错误（503 `temporarily_unavailable`），与
-///   OAuth 协议端点的其他错误响应一致。
+/// - 已注册的 OAuth 协议端点返回 RFC 6749 错误（503
+///   `temporarily_unavailable`），与端点的其他错误响应一致。
 /// - 其余路径返回项目内部 API 信封 `{code, message}`（504 `request_timeout`）。
 ///
 /// 这是协议边界，不是路径前缀约定：`/api/v1/oauth/*`（授权确认 API）属于内部
@@ -75,11 +75,13 @@ pub(crate) fn timeout_response_for_path(path: &str) -> Response {
 
 /// OAuth 2.0 协议端点路径判定。
 ///
-/// 只有 `/oauth/` 前缀的路径是 RFC 6749 协议端点（`/oauth/token`、
-/// `/oauth/authorize`、`/oauth/revoke`、`/oauth/userinfo`）。OIDC Discovery
-/// 端点（`/.well-known/*`）不属于 RFC 6749 协议端点，超时时返回 API 信封。
-fn is_oauth_protocol_path(path: &str) -> bool {
-    path.starts_with("/oauth/")
+/// 只识别实际注册的 RFC 6749/6750/7009 端点。不能按 `/oauth/` 前缀放宽，
+/// 否则未知路径会被错误分类为协议端点，而不是保持统一 404。
+pub(crate) fn is_oauth_protocol_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/oauth/authorize" | "/oauth/token" | "/oauth/revoke" | "/oauth/userinfo"
+    )
 }
 
 pub fn oauth_unauthorized(
@@ -333,13 +335,11 @@ mod tests {
 
     #[test]
     fn oauth_protocol_path_detection_covers_rfc6749_endpoints_only() {
-        // 只有 /oauth/ 前缀的路径是 RFC 6749 协议端点。
         for path in [
             "/oauth/token",
             "/oauth/authorize",
             "/oauth/revoke",
             "/oauth/userinfo",
-            "/oauth/authorize/decide",
         ] {
             assert!(is_oauth_protocol_path(path), "{path} should be OAuth");
         }
@@ -351,6 +351,9 @@ mod tests {
             "/.well-known/jwks.json",
             "/api/v1/auth/login",
             "/api/v1/oauth/authorize/requests/abc",
+            "/oauth/authorize/decide",
+            "/oauth/not-registered",
+            "/oauth/consent",
             "/health/live",
             "/admin/login",
             "/console/developer",

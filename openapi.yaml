@@ -6,9 +6,10 @@ info:
     辰星通行证用户认证、OAuth 2.0/OIDC 和统一用户管理 API。
     当前定义以仓库实际路由为准。运行期 Issuer 持久化在 PostgreSQL；未配置时仅健康检查、静态前端和初始化状态可用，其他协议路由由运行时门禁拒绝。
 
-    请求超时（`REQUEST_TIMEOUT_SECONDS`）按路径分流错误信封（Issue #423）：
-    `/oauth/*` 协议端点返回 RFC 6749 `503 temporarily_unavailable`（`OAuthErrorResponse`），
-    不得改写为内部 API 信封；其余应用路由返回 `504` + `ErrorResponse`（`code=request_timeout`）。
+    请求超时（`REQUEST_TIMEOUT_SECONDS`）或 Issuer 运行态门禁失败时，已注册的
+    `/oauth/authorize`、`/oauth/token`、`/oauth/revoke` 和 `/oauth/userinfo` 返回 RFC 6749
+    `503 temporarily_unavailable`（`OAuthErrorResponse`），不得改写为内部 API 信封。
+    未知 `/oauth/*` 路径仍返回统一 404；其余应用路由使用内部 `ErrorResponse`。
     健康检查与静态 SPA fallback 不套用该请求超时。
 servers:
   - url: http://127.0.0.1:3000
@@ -1898,7 +1899,8 @@ components:
     OAuthTooManyRequests: { description: OAuth 限流或容量保护触发, content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } } }
     OAuthServiceUnavailable:
       description: |
-        OAuth 依赖暂时不可用，或 `/oauth/*` 协议端点触发请求超时（Issue #423）。
+        OAuth 依赖暂时不可用、Issuer 未配置或运行态无效，或已注册的 OAuth 协议端点
+        触发请求超时（Issues #423、#441）。
         响应始终为 RFC 6749 信封（`error=temporarily_unavailable`），不是内部 `{code, message}`。
       content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } }
     RequestTimeout:
