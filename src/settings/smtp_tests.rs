@@ -111,7 +111,9 @@ fn next_ciphertext_keeps_sets_and_clears() {
     );
     assert_eq!(
         SmtpPasswordUpdate::Set("plain".to_owned())
-            .next_ciphertext(existing.clone(), |plain| Ok(format!("enc:{plain}")))
+            .next_ciphertext(existing.clone(), |plain| -> Result<String, ()> {
+                Ok(format!("enc:{plain}"))
+            })
             .expect("set"),
         Some("enc:plain".to_owned())
     );
