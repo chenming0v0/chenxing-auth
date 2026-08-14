@@ -6,10 +6,10 @@
 //! 签发、尚未到 `exp` 的令牌立刻验不过，公钥同时从 JWKS 和磁盘上消失。
 //!
 //! 创建时刻可以从文件 mtime 读出来，退役时刻没有天然载体，因此每个已退役的 key
-//! 在目录里多一个同名 sidecar 记录。名字刻意落在两个既有命名空间之外：不带
-//! `atomic_write` 的 `.chenxing-key-` 前缀，因此不会被 `cleanup_stale_temporary_files`
-//! 当成中断的半成品删掉；后缀不是 `.pkcs1.der`，因此不会被 `discover_key_files`
-//! 当成密钥材料读进来。
+//! 在目录里多一个同名 sidecar 记录。名字刻意落在既有命名空间之外：不带
+//! `atomic_write` 的临时文件前缀（`.chenxing-key-` / `.chenxing-secret-`），
+//! 因此不会被 `cleanup_stale_temporary_files` 当成中断的半成品删掉；后缀不是
+//! `.pkcs1.der`，因此不会被 `discover_key_files` 当成密钥材料读进来。
 //!
 //! 不变量（由 `reconcile` 在目录锁内双向维持）：active key 没有记录，其余每个 key
 //! 都有记录。两个方向都会被修正，因此崩溃遗留的半成品、以及升级前就存在的历史
