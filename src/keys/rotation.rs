@@ -4,7 +4,7 @@ use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 
 use super::{
     KeyManager, KeyManagerError, KeyRotation, activation, build_key_state, generate_rsa_key,
-    journal, key_material, persistence, prune, retirement,
+    key_material, persistence, prune, retirement,
 };
 
 /// 轮换：先把新公钥发布进 JWKS，等到 `activate_at` 才接管签发。
@@ -233,25 +233,15 @@ fn persist_published_rotation(
     activate_now: bool,
     now: OffsetDateTime,
 ) -> Result<(), KeyManagerError> {
-    // 先把轮换意图落盘，再动私钥材料（Issue #318）：崩溃后加载路径据此把
-    // 材料补完或回滚。激活截止时刻是另一份记录，旧二进制不认识它，回滚
-    // 不会把三行格式判成损坏 journal。
-    journal::record_rotation(
-        directory,
-        &journal::PendingRotation::new(key_id.to_owned(), previous_active_key_id.to_owned()),
-    )?;
-    if let Err(error) = persistence::persist_key(directory, key_id, der)
-        .and_then(|_| activation::record(directory, pending))
+    // publish 流程只使用 activation record，不再写旧的 rotation journal。
+    // 记录必须先于材料持久化：任何含新材料的崩溃状态都必然带 activate_at；
+    // 只有记录、没有材料则由恢复路径安全回滚。旧二进制忽略 activation record，
+    // 会把新材料当作非 active 验证 key，而不会像看到旧 journal 那样立即切签发。
+    if let Err(error) = activation::record(directory, pending)
+        .and_then(|_| persistence::persist_key(directory, key_id, der))
     {
         rollback_published_key(directory, key_id);
         return Err(error);
-    }
-    if let Err(error) = journal::clear_rotation(directory) {
-        tracing::warn!(
-            key_id = %key_id,
-            error = %error,
-            "failed to clear the rotation intent after publishing the signing key"
-        );
     }
     if !activate_now {
         return Ok(());
@@ -298,13 +288,6 @@ fn rollback_published_key(directory: &std::path::Path, key_id: &str) {
             key_id = %key_id,
             error = %clear_error,
             "failed to discard the activation record after rolling back the signing key"
-        );
-    }
-    if let Err(clear_error) = journal::clear_rotation(directory) {
-        tracing::warn!(
-            key_id = %key_id,
-            error = %clear_error,
-            "failed to discard the rotation intent after rolling back the signing key"
         );
     }
 }

@@ -9,11 +9,11 @@
 //! 回滚时会忽略它并继续用旧 active 签发，不会把 3 行记录判成损坏后清空
 //! 整个 keyset。
 
-use std::{fs, io::Read, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
 
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
 
-use crate::key_storage::{atomic_write, remove_secure_file, secure_existing_file};
+use crate::key_storage::{atomic_write, read_secure_file_limited, remove_secure_file};
 
 use super::{KeyManager, KeyManagerError, persistence};
 
@@ -93,25 +93,14 @@ pub(super) fn record(
 
 pub(super) fn read(directory: &Path) -> Result<Option<PendingPublishedKey>, KeyManagerError> {
     let path = directory.join(PENDING_ACTIVATION_FILE);
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
+    let contents = match read_secure_file_limited(&path, MAX_PENDING_RECORD_BYTES) {
+        Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if !metadata.is_file() {
-        return Err(KeyManagerError::Io(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "invalid secure storage path",
-        )));
-    }
-    secure_existing_file(&path)?;
-    if metadata.len() > MAX_PENDING_RECORD_BYTES {
+    if contents.len() as u64 > MAX_PENDING_RECORD_BYTES {
         return Err(KeyManagerError::InvalidKeyId);
     }
-    let mut contents = Vec::new();
-    fs::File::open(&path)?
-        .take(MAX_PENDING_RECORD_BYTES + 1)
-        .read_to_end(&mut contents)?;
     parse(&contents)
 }
 

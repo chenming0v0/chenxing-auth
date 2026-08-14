@@ -136,6 +136,7 @@ pub(super) fn record(directory: &Path, pending: &PendingRevocation) -> Result<()
 
 /// 把轮换意图落盘。返回成功即表示这次轮换已提交：崩溃后加载路径会把它补完或
 /// 回滚，不会留下从未进入 JWKS 的孤儿私钥（Issue #318）。
+#[cfg(test)]
 pub(super) fn record_rotation(
     directory: &Path,
     pending: &PendingRotation,

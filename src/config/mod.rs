@@ -98,8 +98,8 @@ pub struct Config {
     pub key_rotation_skew_allowance_seconds: u64,
     /// 新公钥进入 JWKS 之后、接管签发之前的等待秒数（Issue #454）。
     ///
-    /// 默认覆盖 JWKS `max-age=60` 与一次 5 秒跨实例同步。0 表示立即激活。
-    /// 已落盘的 `activate_at` 优先于这个值，改配置不会改写进行中的轮换。
+    /// 生产环境至少覆盖 JWKS `max-age=60` 与一次 5 秒跨实例同步；测试构造器
+    /// 可以使用 0 立即激活。已落盘的 `activate_at` 优先于这个值。
     pub key_activation_delay_seconds: u64,
     pub cookie_secure: bool,
     /// Development-only compatibility for the OAuth session header.

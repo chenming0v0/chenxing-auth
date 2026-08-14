@@ -150,6 +150,30 @@ fn recover_discards_an_activation_whose_material_is_gone() {
     assert!(!directory.activation_path().exists());
 }
 
+/// 崩溃发生在 activation record 已持久化、私钥材料尚未落盘之间：旧 active
+/// 继续签发，发布意图被清理，绝不能生成或激活一个没有材料的 kid。
+#[test]
+fn load_rolls_back_a_published_rotation_before_material_persistence() {
+    let directory = TempKeyDir::new("record-before-material");
+    write_key(&directory, "cx-previous");
+    write_active_key_id(&directory, "cx-previous");
+    write_activation(
+        &directory,
+        &PendingPublishedKey::new(
+            "cx-new".to_owned(),
+            "cx-previous".to_owned(),
+            test_now() + TimeDuration::seconds(65),
+        ),
+    );
+
+    let (active_key_id, materials) = load_at(&directory, test_now()).expect("load");
+
+    assert_eq!(active_key_id, "cx-previous");
+    assert_eq!(read_active_key_id(&directory), "cx-previous");
+    assert!(!materials.contains_key("cx-new"));
+    assert!(!directory.activation_path().exists());
+}
+
 #[test]
 fn recover_discards_a_corrupt_activation_without_touching_the_active_key() {
     let directory = TempKeyDir::new("corrupt");

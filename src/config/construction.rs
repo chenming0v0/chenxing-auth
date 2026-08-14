@@ -18,7 +18,8 @@ use super::proxy::{TrustedProxies, trusted_proxies_from_env};
 use super::security::{
     DEFAULT_KEY_ACTIVATION_DELAY_SECONDS, DEFAULT_KEY_ROTATION_GRACE_SECONDS,
     DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS, DEFAULT_TOKEN_TTL_SECONDS,
-    validate_activation_delay, validate_session_lifetimes, validate_token_and_key_lifetimes,
+    validate_activation_delay, validate_production_activation_delay, validate_session_lifetimes,
+    validate_token_and_key_lifetimes,
 };
 use super::{Config, ConfigError, DEFAULT_REQUEST_TIMEOUT_SECONDS, normalize_issuer_url};
 
@@ -116,6 +117,10 @@ impl Config {
             .unwrap_or_else(|_| DEFAULT_KEY_ACTIVATION_DELAY_SECONDS.to_string());
         let key_activation_delay_seconds =
             parse_u64("KEY_ACTIVATION_DELAY_SECONDS", &key_activation_delay_raw)?;
+        validate_production_activation_delay(
+            key_activation_delay_seconds,
+            key_rotation_grace_seconds,
+        )?;
         let cookie_secure = parse_bool(
             "COOKIE_SECURE",
             env::var("COOKIE_SECURE").ok().as_deref().unwrap_or("true"),
