@@ -286,7 +286,7 @@ pub async fn update_smtp_setting(
         Err(response) => return response,
     };
     match state.settings.set_smtp(input).await {
-        Ok(setting) => {
+        Ok((setting, password_action)) => {
             record_setting_event(
                 &state,
                 actor,
@@ -297,6 +297,7 @@ pub async fn update_smtp_setting(
                     "ssl_enabled": setting.ssl_enabled,
                     "force_auth_login": setting.force_auth_login,
                     "password_configured": setting.password_configured,
+                    "password_action": password_action,
                 }),
             )
             .await;

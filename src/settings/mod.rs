@@ -6,11 +6,11 @@ pub mod repository;
 pub mod security_limits;
 pub mod security_limits_cache;
 pub mod service;
+mod smtp;
 mod smtp_sender;
 
 pub use domain::{
     EmailPolicySetting, PasskeyAuthenticatorAttachment, PasskeySetting, PasskeyUserVerification,
-    SmtpSetting, SmtpSettingUpdate,
 };
 pub use issuer::{InitializeIssuerOutcome, IssuerSettingError};
 pub use issuer_runtime::{
@@ -23,6 +23,7 @@ pub use security_limits_cache::{
     SecurityLimitsCache, SecurityLimitsSource,
 };
 pub use service::{SettingsService, SettingsServiceError};
+pub use smtp::{SmtpPasswordAction, SmtpSetting, SmtpSettingUpdate};
 
 pub const REGISTRATION_EMAIL_FROM_KEY: &str = "registration_email_from";
 pub const PASSKEY_KEY: &str = "passkey";

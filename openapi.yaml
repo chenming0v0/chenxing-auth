@@ -1724,7 +1724,7 @@ paths:
             schema: { $ref: '#/components/schemas/SmtpSettingUpdate' }
       responses:
         '200':
-          description: 已更新的 SMTP 设置；password 永不回显
+          description: 已更新的 SMTP 设置；只返回 password_configured，永不回显 password 或密文
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SmtpSetting' }
@@ -2578,9 +2578,21 @@ components:
         ssl_enabled: { type: boolean }
         force_auth_login: { type: boolean }
         password_configured: { type: boolean }
+    SmtpPasswordAction:
+      type: string
+      enum: [keep, set, clear]
+      description: >-
+        SMTP 密码更新意图。keep 保留已存密文，set 加密替换，clear 原子删除已存密文。
+        响应、日志和审计只记录该枚举，永不回显 password 或 password_ciphertext。
     SmtpSettingUpdate:
       type: object
       required: [host, port, username, from_address, ssl_enabled, force_auth_login]
+      description: >-
+        SMTP 设置写入体。密码三态以 password_action 为准：keep 必须省略 password；
+        set 必须提供非空 password（最长 512）；clear 必须省略 password。
+        省略 password_action 仅兼容旧客户端——此时省略或 null 的 password 视为 keep，
+        非空 password 视为 set。空字符串不再等于 keep，与 action 冲突或 set 缺值返回
+        400 invalid_smtp_setting。GET/PUT 响应只有 password_configured，不含明文或密文。
       properties:
         host: { type: string }
         port: { type: integer, minimum: 1, maximum: 65535 }
@@ -2588,7 +2600,9 @@ components:
         from_address: { type: string }
         ssl_enabled: { type: boolean }
         force_auth_login: { type: boolean }
-        password: { type: string, format: password, nullable: true, writeOnly: true }
+        password_action:
+          $ref: '#/components/schemas/SmtpPasswordAction'
+        password: { type: string, format: password, nullable: true, writeOnly: true, maxLength: 512 }
     SecurityLimitsSetting:
       type: object
       description: >-

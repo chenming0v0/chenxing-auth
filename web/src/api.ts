@@ -404,6 +404,7 @@ export type SmtpSetting = {
   force_auth_login: boolean
   password_configured: boolean
 }
+export type SmtpPasswordAction = 'keep' | 'set' | 'clear'
 export type SmtpSettingUpdate = {
   host: string
   port: number
@@ -411,6 +412,7 @@ export type SmtpSettingUpdate = {
   from_address: string
   ssl_enabled: boolean
   force_auth_login: boolean
+  password_action?: SmtpPasswordAction
   password?: string | null
 }
 export type SecurityLimitsSetting = {

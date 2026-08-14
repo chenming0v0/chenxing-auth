@@ -340,7 +340,19 @@ Issuer 设置接口仅 Owner（`manage_issuer`）可用。GET 返回 `persisted`
 - `GET /api/v1/admin/settings/registration-email`：读取当前发件地址，未配置时返回 `{"registration_email_from":null}`。
 - `PUT /api/v1/admin/settings/registration-email`：更新发件地址，提交 `{"registration_email_from":"no-reply@example.com"}`；传 `null` 或空字符串可清除配置，成功返回更新后的设置。
 
-发件地址保存于 PostgreSQL 的 `app_settings` 表，不从环境变量、请求 Host 或前端状态推导。当前设置资源只保存地址本身；SMTP 连接参数、发送凭据和邮件模板属于后续邮件服务接入边界。
+发件地址保存于 PostgreSQL 的 `app_settings` 表，不从环境变量、请求 Host 或前端状态推导。发件地址与 SMTP 设置双向镜像：SMTP `from_address` 非空时优先作为注册发件人。
+
+### `GET/PUT /api/v1/admin/settings/smtp`
+
+需要 `ManageSettings`。GET 返回 `host`、`port`、`username`、`from_address`、`ssl_enabled`、`force_auth_login`、`password_configured`。未配置密码时 `password_configured` 为 `false`。响应、日志和审计永不包含 `password` 或 `password_ciphertext`。
+
+PUT 用 `password_action` 表达密码三态，不要再靠空字符串猜测：
+
+- `keep`：保留已存密文；`password` 必须省略或 `null`。
+- `set`：加密替换密文；`password` 必须是非空字符串，最长 512 字符。
+- `clear`：在同一事务里删除已存密文；`password` 必须省略或 `null`。
+
+省略 `password_action` 只兼容旧客户端：此时省略或 `null` 的 `password` 视为 `keep`，非空 `password` 视为 `set`。空字符串不再等于 `keep`。`keep`/`clear` 携带任何 `password` 值、`set` 缺密码，或空字符串，一律 `400 invalid_smtp_setting`。成功响应与 GET 相同，审计只记录 `password_action` 和 `password_configured`。
 
 `GET /api/v1/admin/settings/passkey`、`GET /api/v1/admin/settings/email-policy` 和 `GET /api/v1/admin/settings/security-limits` 的 JSON body 始终是设置对象本身。若库里的行无法用于安全热路径，响应额外带 `X-Chenxing-Setting-Diagnostic: invalid` 或 `corrupt`，便于管理员保存修复；有效值和未配置行不带该头。头和 body 都不回显损坏 JSON、域名或阈值。
 
