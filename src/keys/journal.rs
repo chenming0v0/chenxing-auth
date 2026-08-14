@@ -32,9 +32,10 @@ use super::{KeyManagerError, persistence, retirement};
 
 /// 吊销意图记录文件。
 ///
-/// 名字刻意落在两个既有命名空间之外：不带 `atomic_write` 的 `.chenxing-key-`
-/// 前缀，因此不会被 `cleanup_stale_temporary_files` 当成中断的半成品删掉；
-/// 也不带 `rs256-` 前缀，因此不会被 `discover_key_files` 当成密钥材料读进来。
+/// 名字刻意落在既有命名空间之外：不带 `atomic_write` 的临时文件前缀
+/// （`.chenxing-key-` / `.chenxing-secret-`），因此不会被
+/// `cleanup_stale_temporary_files` 当成中断的半成品删掉；也不带 `rs256-`
+/// 前缀，因此不会被 `discover_key_files` 当成密钥材料读进来。
 const PENDING_REVOCATION_FILE: &str = "pending-revocation.record";
 /// 轮换意图记录文件，命名约束与吊销记录相同（Issue #318）。
 const PENDING_ROTATION_FILE: &str = "pending-rotation.record";

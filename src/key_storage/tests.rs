@@ -170,3 +170,62 @@ fn atomic_write_and_read_round_trip_through_dirfd() {
     assert_eq!(mode_of(&path).expect("file mode"), 0o600);
     assert!(inspect_secure_file(&path).expect("present"));
 }
+
+#[test]
+fn temporary_file_namespaces_do_not_overlap() {
+    assert!(is_temporary_file(
+        ".chenxing-key-deadbeef.tmp",
+        TemporaryFileKind::SigningKey
+    ));
+    assert!(!is_temporary_file(
+        ".chenxing-key-deadbeef.tmp",
+        TemporaryFileKind::ProviderSecret
+    ));
+    assert!(is_temporary_file(
+        ".chenxing-secret-deadbeef.tmp",
+        TemporaryFileKind::ProviderSecret
+    ));
+    assert!(!is_temporary_file(
+        ".chenxing-secret-deadbeef.tmp",
+        TemporaryFileKind::SigningKey
+    ));
+    assert!(!is_temporary_file(
+        ".chenxing-key-.tmp",
+        TemporaryFileKind::SigningKey
+    ));
+    assert!(!is_temporary_file(
+        "rs256-foo.pkcs1.der",
+        TemporaryFileKind::SigningKey
+    ));
+}
+
+#[test]
+fn cleanup_only_removes_temporaries_from_the_requested_namespace() {
+    let guard = prepare_key_dir("tmp-ns");
+    let key_tmp = guard.path().join(".chenxing-key-aaaa.tmp");
+    let secret_tmp = guard.path().join(".chenxing-secret-bbbb.tmp");
+    let persisted = guard.path().join("oauth-provider-secret.key");
+    fs::write(&key_tmp, b"key-temp").expect("key temp");
+    fs::write(&secret_tmp, b"secret-temp").expect("secret temp");
+    fs::write(&persisted, b"persisted").expect("persisted file");
+
+    cleanup_stale_temporary_files_in(guard.path(), TemporaryFileKind::SigningKey)
+        .expect("key cleanup");
+    assert!(!key_tmp.exists(), "key namespace temp must be removed");
+    assert!(
+        secret_tmp.exists(),
+        "secret namespace temp must survive key cleanup"
+    );
+    assert!(persisted.exists(), "persisted files must survive cleanup");
+
+    cleanup_stale_temporary_files_in(guard.path(), TemporaryFileKind::ProviderSecret)
+        .expect("secret cleanup");
+    assert!(
+        !secret_tmp.exists(),
+        "secret namespace temp must be removed"
+    );
+    assert!(
+        persisted.exists(),
+        "persisted files must survive secret cleanup"
+    );
+}

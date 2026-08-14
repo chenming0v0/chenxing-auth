@@ -22,7 +22,7 @@ use super::policy::{
 use super::unix_sys::{
     fchmod, from_file_fd, linkat, map_open_error, mkdirat, open_beneath, renameat, unlinkat,
 };
-use super::{KEY_DIRECTORY_MODE, PRIVATE_FILE_MODE, TEMPORARY_FILE_PREFIX, TEMPORARY_FILE_SUFFIX};
+use super::{KEY_DIRECTORY_MODE, PRIVATE_FILE_MODE, TEMPORARY_FILE_SUFFIX, TemporaryFileKind};
 
 pub(crate) struct SecureDir {
     file: File,
@@ -95,6 +95,7 @@ impl SecureDir {
 
     pub(crate) fn atomic_write(
         &self,
+        kind: TemporaryFileKind,
         name: &str,
         contents: &[u8],
         replace_existing: bool,
@@ -114,7 +115,8 @@ impl SecureDir {
         }
 
         let temporary = format!(
-            "{TEMPORARY_FILE_PREFIX}{}{TEMPORARY_FILE_SUFFIX}",
+            "{}{}{TEMPORARY_FILE_SUFFIX}",
+            kind.prefix(),
             uuid::Uuid::new_v4().simple()
         );
         let result = self.write_temporary(&temporary, name, contents, replace_existing);

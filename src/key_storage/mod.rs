@@ -37,8 +37,27 @@ mod tests;
 
 pub(crate) const PRIVATE_FILE_MODE: u32 = 0o600;
 pub(crate) const KEY_DIRECTORY_MODE: u32 = 0o700;
-const TEMPORARY_FILE_PREFIX: &str = ".chenxing-key-";
 const TEMPORARY_FILE_SUFFIX: &str = ".tmp";
+
+/// 原子写入临时文件的命名空间。
+///
+/// `KeyManager` 与 `SecretManager` 共享 `KEY_DIRECTORY`，但不能假设清理半成品时
+/// 对方已经持有同一把目录锁。两个子系统使用互不重叠的前缀，各自只删除自己的
+/// `.tmp`，这样一方正在写的临时文件不会被另一方当成崩溃残留清掉（Issue #458）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TemporaryFileKind {
+    SigningKey,
+    ProviderSecret,
+}
+
+impl TemporaryFileKind {
+    const fn prefix(self) -> &'static str {
+        match self {
+            Self::SigningKey => ".chenxing-key-",
+            Self::ProviderSecret => ".chenxing-secret-",
+        }
+    }
+}
 
 pub(crate) use policy::{FileInode, invalid_storage_path};
 
@@ -98,20 +117,41 @@ pub(crate) fn remove_secure_file(path: &Path) -> io::Result<()> {
 }
 
 pub(crate) fn atomic_write(path: &Path, contents: &[u8], replace_existing: bool) -> io::Result<()> {
+    atomic_write_in(
+        TemporaryFileKind::SigningKey,
+        path,
+        contents,
+        replace_existing,
+    )
+}
+
+pub(crate) fn atomic_write_in(
+    kind: TemporaryFileKind,
+    path: &Path,
+    contents: &[u8],
+    replace_existing: bool,
+) -> io::Result<()> {
     let (parent, name) = split_dir_and_name(path)?;
     #[cfg(unix)]
     {
-        unix::SecureDir::open(parent)?.atomic_write(name, contents, replace_existing)
+        unix::SecureDir::open(parent)?.atomic_write(kind, name, contents, replace_existing)
     }
     #[cfg(not(unix))]
     {
-        fallback_atomic_write(path, contents, replace_existing)
+        fallback_atomic_write(kind, path, contents, replace_existing)
     }
 }
 
 pub(crate) fn cleanup_stale_temporary_files(directory: &Path) -> io::Result<()> {
+    cleanup_stale_temporary_files_in(directory, TemporaryFileKind::SigningKey)
+}
+
+pub(crate) fn cleanup_stale_temporary_files_in(
+    directory: &Path,
+    kind: TemporaryFileKind,
+) -> io::Result<()> {
     for entry in list_secure_names(directory)? {
-        if is_atomic_write_temporary(&entry.name) {
+        if is_temporary_file(&entry.name, kind) {
             remove_secure_file(&directory.join(&entry.name))?;
         }
     }
@@ -235,15 +275,20 @@ fn with_parent<T>(path: &Path, op: impl FnOnce(&Path, &str) -> io::Result<T>) ->
     op(parent, name)
 }
 
-fn is_atomic_write_temporary(file_name: &str) -> bool {
+fn is_temporary_file(file_name: &str, kind: TemporaryFileKind) -> bool {
     file_name
-        .strip_prefix(TEMPORARY_FILE_PREFIX)
+        .strip_prefix(kind.prefix())
         .and_then(|name| name.strip_suffix(TEMPORARY_FILE_SUFFIX))
         .is_some_and(|unique| !unique.is_empty())
 }
 
 #[cfg(not(unix))]
-fn fallback_atomic_write(path: &Path, contents: &[u8], replace_existing: bool) -> io::Result<()> {
+fn fallback_atomic_write(
+    kind: TemporaryFileKind,
+    path: &Path,
+    contents: &[u8],
+    replace_existing: bool,
+) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => {}
         Ok(_) => return Err(invalid_storage_path()),
@@ -252,7 +297,8 @@ fn fallback_atomic_write(path: &Path, contents: &[u8], replace_existing: bool) -
     }
     let parent = path.parent().ok_or_else(invalid_storage_path)?;
     let temporary = parent.join(format!(
-        "{TEMPORARY_FILE_PREFIX}{}{TEMPORARY_FILE_SUFFIX}",
+        "{}{}{TEMPORARY_FILE_SUFFIX}",
+        kind.prefix(),
         Uuid::new_v4().simple()
     ));
     let result = (|| {

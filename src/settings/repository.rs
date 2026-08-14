@@ -2,6 +2,7 @@ use super::{
     EMAIL_POLICY_KEY, PASSKEY_KEY, REGISTRATION_EMAIL_FROM_KEY, SECURITY_LIMITS_KEY, SMTP_KEY,
     SecurityLimitsSetting,
     domain::{EmailPolicySetting, PasskeySetting, StoredSmtpSetting},
+    persisted,
 };
 
 /// 所有读写都接受任意 PostgreSQL 执行器：单键路径直接传 `&PgPool`，
@@ -66,7 +67,7 @@ where
 {
     match get_text(executor, PASSKEY_KEY).await? {
         Some(raw) if !raw.trim().is_empty() => {
-            serde_json::from_str(&raw).map(Some).map_err(json_error)
+            persisted::parse_passkey(&raw).map(Some).map_err(json_error)
         }
         _ => Ok(None),
     }
@@ -90,9 +91,9 @@ where
     E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
 {
     match get_text(executor, EMAIL_POLICY_KEY).await? {
-        Some(raw) if !raw.trim().is_empty() => {
-            serde_json::from_str(&raw).map(Some).map_err(json_error)
-        }
+        Some(raw) if !raw.trim().is_empty() => persisted::parse_email_policy(&raw)
+            .map(Some)
+            .map_err(json_error),
         _ => Ok(None),
     }
 }
@@ -115,9 +116,9 @@ where
     E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
 {
     match get_text(executor, SECURITY_LIMITS_KEY).await? {
-        Some(raw) if !raw.trim().is_empty() => {
-            serde_json::from_str(&raw).map(Some).map_err(json_error)
-        }
+        Some(raw) if !raw.trim().is_empty() => persisted::parse_security_limits(&raw)
+            .map(Some)
+            .map_err(json_error),
         _ => Ok(None),
     }
 }
