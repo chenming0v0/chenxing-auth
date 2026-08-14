@@ -215,7 +215,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ### `GET /auth/external/{slug}` / `GET /auth/external/{slug}/callback`
 
-开始并完成自定义外部 **OAuth 2.0** 登录。`slug` 来自管理员设置；开始请求可携带 `request_id` 以便登录后继续辰星的授权确认。系统使用一次性 Redis `state` 和 HttpOnly Cookie 绑定浏览器流程，回调成功后创建辰星 Session。
+开始并完成自定义外部 **OAuth 2.0** 登录。`slug` 来自管理员设置；开始请求可携带 `request_id` 以便登录后继续辰星的授权确认。系统使用一次性 Redis `state` 和 HttpOnly Cookie 绑定浏览器流程，回调成功后创建辰星 Session。成功签发 Session 后会清理同浏览器残留的 pending-login ticket/holder Cookie；若请求里仍带有可解析的旧 ticket，服务端会尽力删除对应 Redis 记录。清理失败只记非敏感告警并由 TTL 兜底，不会撤销已经成功的外部登录。
 
 #### 信任模型：OAuth 2.0 + UserInfo
 
