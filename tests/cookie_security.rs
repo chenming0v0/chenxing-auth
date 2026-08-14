@@ -1,7 +1,7 @@
 use axum::http::{HeaderMap, HeaderValue};
 use chenxing_auth::sessions::cookies::{
-    CSRF_COOKIE, EXTERNAL_STATE_COOKIE_PREFIX, HOST_EXTERNAL_STATE_COOKIE_PREFIX, SESSION_COOKIE,
-    CookieReadError, append_clear_cookies, append_clear_external_state_cookie,
+    CSRF_COOKIE, CookieReadError, EXTERNAL_STATE_COOKIE_PREFIX, HOST_EXTERNAL_STATE_COOKIE_PREFIX,
+    SESSION_COOKIE, append_clear_cookies, append_clear_external_state_cookie,
     append_external_state_cookie, append_login_cookies, csrf_cookie,
     csrf_cookie_for_secure_transport, csrf_token, external_state, external_state_cookie_name,
     session_cookie_id_for_secure_transport,
@@ -254,7 +254,6 @@ fn loopback_external_state_cookie_uses_unprefixed_name() {
     assert!(set_cookie.contains("Path=/"));
     assert!(!set_cookie.contains("Domain="));
 }
-
 
 /// 兄弟域只能投下不带 `__Host-` 的父域 Domain cookie。生产读取只认 host-only 名。
 #[test]
