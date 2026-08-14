@@ -53,12 +53,7 @@ async fn try_external_error_with_request(
     tracing::info!(provider = %slug, error_code = %code, "external OAuth login failed");
     let mut response = external_failure_redirect(request_id, code);
     if let Some(state_value) = state_value {
-        append_external_state_clear(
-            &mut response,
-            state_value,
-            &external_callback_path(slug),
-            state.config.cookie_secure,
-        )?;
+        append_external_state_clear(&mut response, state_value, state.config.cookie_secure)?;
     }
     Ok(response)
 }
@@ -115,27 +110,16 @@ fn try_binding_failure_response(
     // 撤销后浏览器不应再留着任何指向该会话的 Cookie；两个名字都由 helper 按
     // `cookie_secure` 选择，和下发时保持一致。
     cookies::append_clear_cookies(response.headers_mut(), state.config.cookie_secure)?;
-    append_external_state_clear(
-        &mut response,
-        state_value,
-        &external_callback_path(slug),
-        state.config.cookie_secure,
-    )?;
+    append_external_state_clear(&mut response, state_value, state.config.cookie_secure)?;
     Ok(response)
 }
 
 pub(super) fn append_external_state_clear(
     response: &mut Response,
     state_value: &str,
-    callback_path: &str,
     secure: bool,
 ) -> Result<(), cookies::CookieError> {
-    cookies::append_clear_external_state_cookie(
-        response.headers_mut(),
-        state_value,
-        secure,
-        callback_path,
-    )
+    cookies::append_clear_external_state_cookie(response.headers_mut(), state_value, secure)
 }
 
 fn external_failure_redirect(request_id: Option<&str>, code: &str) -> Response {

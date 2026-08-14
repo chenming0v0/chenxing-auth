@@ -74,7 +74,8 @@ pub async fn external_callback(
     let Some(returned_state) = query.state.as_deref().filter(|value| !value.is_empty()) else {
         return external_error(&state, &slug, "oauth_login_failed").await;
     };
-    let cookie_state = cookies::external_state(&headers, returned_state);
+    let cookie_state =
+        cookies::external_state(&headers, returned_state, state.config.cookie_secure);
     if cookie_state.as_deref() != Some(returned_state) {
         return external_error_with_request(
             &state,
@@ -216,7 +217,6 @@ pub async fn external_callback(
             if let Err(cookie_error) = append_external_state_clear(
                 &mut response,
                 returned_state,
-                &callback_path,
                 state.config.cookie_secure,
             ) {
                 tracing::error!(
@@ -230,12 +230,9 @@ pub async fn external_callback(
     if let Err(error_value) = state.sessions.save(&mut session, ttl).await {
         tracing::error!(error = %error_value, "failed to save external OAuth session");
         let mut response = error::internal();
-        if let Err(cookie_error) = append_external_state_clear(
-            &mut response,
-            returned_state,
-            &callback_path,
-            state.config.cookie_secure,
-        ) {
+        if let Err(cookie_error) =
+            append_external_state_clear(&mut response, returned_state, state.config.cookie_secure)
+        {
             tracing::error!(
                 error = %cookie_error,
                 "failed to clear external OAuth state cookie"
@@ -302,12 +299,9 @@ pub async fn external_callback(
             );
         }
         let mut response = error::internal();
-        if let Err(cookie_error) = append_external_state_clear(
-            &mut response,
-            returned_state,
-            &callback_path,
-            state.config.cookie_secure,
-        ) {
+        if let Err(cookie_error) =
+            append_external_state_clear(&mut response, returned_state, state.config.cookie_secure)
+        {
             tracing::error!(
                 error = %cookie_error,
                 "failed to clear external OAuth state cookie"
@@ -330,19 +324,16 @@ pub async fn external_callback(
         state.config.cookie_secure,
     ) {
         tracing::error!(error = %cookie_error, "failed to build external OAuth login cookies");
-        return cookie_failure_response(&state, &session, returned_state, &callback_path).await;
+        return cookie_failure_response(&state, &session, returned_state).await;
     }
-    if let Err(cookie_error) = append_external_state_clear(
-        &mut response,
-        returned_state,
-        &callback_path,
-        state.config.cookie_secure,
-    ) {
+    if let Err(cookie_error) =
+        append_external_state_clear(&mut response, returned_state, state.config.cookie_secure)
+    {
         tracing::error!(
             error = %cookie_error,
             "failed to clear external OAuth state cookie"
         );
-        return cookie_failure_response(&state, &session, returned_state, &callback_path).await;
+        return cookie_failure_response(&state, &session, returned_state).await;
     }
     response
 }
@@ -414,7 +405,6 @@ async fn cookie_failure_response(
     state: &AppState,
     session: &Session,
     returned_state: &str,
-    callback_path: &str,
 ) -> Response {
     if let Err(revoke_error) = state.sessions.revoke(&session.token).await {
         tracing::warn!(
@@ -423,12 +413,9 @@ async fn cookie_failure_response(
         );
     }
     let mut response = error::internal();
-    if let Err(cookie_error) = append_external_state_clear(
-        &mut response,
-        returned_state,
-        callback_path,
-        state.config.cookie_secure,
-    ) {
+    if let Err(cookie_error) =
+        append_external_state_clear(&mut response, returned_state, state.config.cookie_secure)
+    {
         tracing::error!(
             error = %cookie_error,
             "failed to clear external OAuth state cookie"

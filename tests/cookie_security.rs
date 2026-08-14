@@ -1,7 +1,9 @@
 use axum::http::{HeaderMap, HeaderValue};
 use chenxing_auth::sessions::cookies::{
-    CSRF_COOKIE, SESSION_COOKIE, append_clear_cookies, append_login_cookies, csrf_cookie,
-    csrf_cookie_for_secure_transport, csrf_token, session_cookie_id_for_secure_transport,
+    CSRF_COOKIE, EXTERNAL_STATE_COOKIE_PREFIX, HOST_EXTERNAL_STATE_COOKIE_PREFIX, SESSION_COOKIE,
+    append_clear_cookies, append_clear_external_state_cookie, append_external_state_cookie,
+    append_login_cookies, csrf_cookie, csrf_cookie_for_secure_transport, csrf_token,
+    external_state, external_state_cookie_name, session_cookie_id_for_secure_transport,
 };
 
 /// 会话取值只有一条公开入口：按传输安全性选名的 Cookie 读取。
@@ -130,4 +132,183 @@ fn loopback_development_cookies_keep_http_compatibility() {
             .any(|value| value.starts_with("chenxing_csrf="))
     );
     assert!(values.iter().all(|value| !value.contains("Secure")));
+}
+
+#[test]
+fn secure_external_state_cookie_uses_host_prefix_and_host_attributes() {
+    let state = "oauth-state-value";
+    let mut headers = HeaderMap::new();
+    append_external_state_cookie(&mut headers, state, 300, true).expect("state cookie");
+
+    let set_cookie = headers
+        .get("set-cookie")
+        .expect("Set-Cookie")
+        .to_str()
+        .expect("cookie header");
+    let name = external_state_cookie_name(state, true);
+    assert!(name.starts_with(HOST_EXTERNAL_STATE_COOKIE_PREFIX));
+    assert!(set_cookie.starts_with(&format!("{name}={state}")));
+    assert!(set_cookie.contains("Secure"));
+    assert!(set_cookie.contains("HttpOnly"));
+    assert!(set_cookie.contains("Path=/"));
+    assert!(set_cookie.contains("SameSite=Lax"));
+    assert!(!set_cookie.contains("Domain="));
+
+    let mut request = HeaderMap::new();
+    request.insert(
+        "cookie",
+        HeaderValue::from_str(&format!("{name}={state}")).expect("cookie"),
+    );
+    assert_eq!(
+        external_state(&request, state, true).as_deref(),
+        Some(state)
+    );
+}
+
+#[test]
+fn loopback_external_state_cookie_uses_unprefixed_name() {
+    let state = "oauth-state-value";
+    assert_eq!(
+        external_state_cookie_name(state, false).as_str(),
+        format!(
+            "{EXTERNAL_STATE_COOKIE_PREFIX}{}",
+            external_state_cookie_name(state, true)
+                .trim_start_matches(HOST_EXTERNAL_STATE_COOKIE_PREFIX)
+        )
+    );
+
+    let mut headers = HeaderMap::new();
+    append_external_state_cookie(&mut headers, state, 300, false).expect("state cookie");
+    let set_cookie = headers
+        .get("set-cookie")
+        .expect("Set-Cookie")
+        .to_str()
+        .expect("cookie header");
+    assert!(set_cookie.starts_with(EXTERNAL_STATE_COOKIE_PREFIX));
+    assert!(!set_cookie.contains("__Host-"));
+    assert!(!set_cookie.contains("Secure"));
+    assert!(set_cookie.contains("HttpOnly"));
+    assert!(set_cookie.contains("Path=/"));
+    assert!(!set_cookie.contains("Domain="));
+}
+
+/// 兄弟域只能投下不带 `__Host-` 的父域 Domain cookie。生产读取只认 host-only 名。
+#[test]
+fn secure_callback_ignores_parent_domain_cookie_name() {
+    let state = "oauth-state-value";
+    let tossed = external_state_cookie_name(state, false);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "cookie",
+        HeaderValue::from_str(&format!("{tossed}={state}")).expect("cookie"),
+    );
+
+    assert_eq!(external_state(&headers, state, true), None);
+    assert_eq!(
+        external_state(&headers, state, false).as_deref(),
+        Some(state)
+    );
+}
+
+#[test]
+fn secure_callback_keeps_host_cookie_when_sibling_domain_cookie_is_also_present() {
+    let state = "oauth-state-value";
+    let host = external_state_cookie_name(state, true);
+    let tossed = external_state_cookie_name(state, false);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "cookie",
+        HeaderValue::from_str(&format!("{tossed}=attacker-state; {host}={state}")).expect("cookie"),
+    );
+
+    assert_eq!(
+        external_state(&headers, state, true).as_deref(),
+        Some(state)
+    );
+}
+
+#[test]
+fn conflicting_duplicate_state_cookies_are_rejected() {
+    let state = "oauth-state-value";
+    let name = external_state_cookie_name(state, true);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "cookie",
+        HeaderValue::from_str(&format!("{name}={state}; {name}=other-state")).expect("cookie"),
+    );
+
+    assert_eq!(external_state(&headers, state, true), None);
+}
+
+#[test]
+fn wrong_state_cookie_name_is_ignored() {
+    let state = "oauth-state-value";
+    let other = external_state_cookie_name("other-state", true);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "cookie",
+        HeaderValue::from_str(&format!("{other}={state}")).expect("cookie"),
+    );
+
+    assert_eq!(external_state(&headers, state, true), None);
+}
+
+#[test]
+fn identical_duplicate_state_cookies_are_accepted() {
+    let state = "oauth-state-value";
+    let name = external_state_cookie_name(state, true);
+    let mut headers = HeaderMap::new();
+    headers.append(
+        "cookie",
+        HeaderValue::from_str(&format!("{name}={state}")).expect("cookie"),
+    );
+    headers.append(
+        "cookie",
+        HeaderValue::from_str(&format!("{name}={state}")).expect("cookie"),
+    );
+
+    assert_eq!(
+        external_state(&headers, state, true).as_deref(),
+        Some(state)
+    );
+}
+
+#[test]
+fn secure_clear_external_state_cookie_uses_host_attributes() {
+    let state = "oauth-state-value";
+    let mut headers = HeaderMap::new();
+    append_clear_external_state_cookie(&mut headers, state, true).expect("clear cookie");
+
+    let set_cookie = headers
+        .get("set-cookie")
+        .expect("Set-Cookie")
+        .to_str()
+        .expect("cookie header");
+    let name = external_state_cookie_name(state, true);
+    assert!(set_cookie.starts_with(&format!("{name}=")));
+    assert!(set_cookie.contains("Max-Age=0"));
+    assert!(set_cookie.contains("Secure"));
+    assert!(set_cookie.contains("HttpOnly"));
+    assert!(set_cookie.contains("Path=/"));
+    assert!(set_cookie.contains("SameSite=Lax"));
+    assert!(!set_cookie.contains("Domain="));
+}
+
+#[test]
+fn loopback_clear_external_state_cookie_uses_unprefixed_name() {
+    let state = "oauth-state-value";
+    let mut headers = HeaderMap::new();
+    append_clear_external_state_cookie(&mut headers, state, false).expect("clear cookie");
+
+    let set_cookie = headers
+        .get("set-cookie")
+        .expect("Set-Cookie")
+        .to_str()
+        .expect("cookie header");
+    assert!(set_cookie.starts_with(EXTERNAL_STATE_COOKIE_PREFIX));
+    assert!(!set_cookie.contains("__Host-"));
+    assert!(set_cookie.contains("Max-Age=0"));
+    assert!(!set_cookie.contains("Secure"));
+    assert!(set_cookie.contains("Path=/"));
+    assert!(!set_cookie.contains("Domain="));
 }
