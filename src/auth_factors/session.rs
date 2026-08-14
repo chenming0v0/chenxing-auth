@@ -236,7 +236,9 @@ pub async fn clear_pending_login_after_external_success(
 }
 
 fn leftover_login_ticket_id(headers: &HeaderMap, secure: bool) -> Option<String> {
-    let ticket_id = cookies::login_ticket_id_for_secure_transport(headers, secure)?;
+    let ticket_id = cookies::login_ticket_id_for_secure_transport(headers, secure)
+        .ok()
+        .flatten()?;
     uuid::Uuid::parse_str(&ticket_id)
         .ok()
         .map(|id| id.to_string())
