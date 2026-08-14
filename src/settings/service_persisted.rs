@@ -1,0 +1,144 @@
+use super::{SettingsService, SettingsServiceError};
+use crate::settings::{
+    SecurityLimitsSetting,
+    domain::{EmailPolicySetting, PasskeySetting},
+    persisted::{
+        PersistedDecode, PersistedLoadError, PersistedSetting, SettingInspection, decode_persisted,
+    },
+    repository,
+};
+
+impl SettingsService {
+    pub async fn passkey(&self) -> Result<PasskeySetting, SettingsServiceError> {
+        let runtime_default = self.passkey_runtime_default();
+        self.decode_stored::<PasskeySetting>()
+            .await?
+            .require(
+                runtime_default.clone(),
+                |value| apply_passkey_runtime_defaults(value, &runtime_default),
+                PasskeySetting::validate,
+            )
+            .map_err(Self::persist_error::<PasskeySetting>)
+    }
+
+    pub async fn inspect_passkey(
+        &self,
+    ) -> Result<SettingInspection<PasskeySetting>, SettingsServiceError> {
+        let runtime_default = self.passkey_runtime_default();
+        Ok(self.decode_stored::<PasskeySetting>().await?.inspect(
+            runtime_default.clone(),
+            |value| apply_passkey_runtime_defaults(value, &runtime_default),
+            PasskeySetting::validate,
+        ))
+    }
+
+    pub async fn set_passkey(
+        &self,
+        value: PasskeySetting,
+    ) -> Result<PasskeySetting, SettingsServiceError> {
+        let value = value.validate()?;
+        repository::set_passkey(&self.pool, &value).await?;
+        Ok(value)
+    }
+
+    pub async fn email_policy(&self) -> Result<EmailPolicySetting, SettingsServiceError> {
+        self.decode_stored::<EmailPolicySetting>()
+            .await?
+            .require(
+                EmailPolicySetting::default(),
+                |value| value,
+                EmailPolicySetting::validate,
+            )
+            .map_err(Self::persist_error::<EmailPolicySetting>)
+    }
+
+    pub async fn inspect_email_policy(
+        &self,
+    ) -> Result<SettingInspection<EmailPolicySetting>, SettingsServiceError> {
+        Ok(self.decode_stored::<EmailPolicySetting>().await?.inspect(
+            EmailPolicySetting::default(),
+            |value| value,
+            EmailPolicySetting::validate,
+        ))
+    }
+
+    pub async fn set_email_policy(
+        &self,
+        value: EmailPolicySetting,
+    ) -> Result<EmailPolicySetting, SettingsServiceError> {
+        let value = value.validate()?;
+        repository::set_email_policy(&self.pool, &value).await?;
+        Ok(value)
+    }
+
+    /// 单次数据库读取，不涉及缓存。
+    ///
+    /// 与 Passkey / email policy 同一条管道：无行用启动期环境配置（#361），
+    /// 旧 schema 升级后校验，损坏或越界 fail-closed。调用方是 OAuth 授权、令牌
+    /// 签发和限流器热路径——越界值不能再被 `sanitized()` 打扮成一次成功加载。
+    /// 管理读取走 [`Self::inspect_security_limits`]，才能看见并修好当前行。
+    pub(super) async fn load_security_limits(
+        &self,
+    ) -> Result<SecurityLimitsSetting, SettingsServiceError> {
+        self.decode_stored::<SecurityLimitsSetting>()
+            .await?
+            .require(
+                self.default_security_limits.clone(),
+                |value| value,
+                SecurityLimitsSetting::validate,
+            )
+            .map_err(Self::persist_error::<SecurityLimitsSetting>)
+    }
+
+    pub async fn inspect_security_limits(
+        &self,
+    ) -> Result<SettingInspection<SecurityLimitsSetting>, SettingsServiceError> {
+        Ok(self
+            .decode_stored::<SecurityLimitsSetting>()
+            .await?
+            .inspect(
+                self.default_security_limits.clone(),
+                |value| value,
+                SecurityLimitsSetting::validate,
+            ))
+    }
+
+    fn passkey_runtime_default(&self) -> PasskeySetting {
+        self.issuer_runtime
+            .as_ref()
+            .and_then(crate::settings::IssuerRuntime::current)
+            .map(|snapshot| {
+                PasskeySetting::default()
+                    .with_runtime_defaults(snapshot.webauthn_rp_id(), snapshot.webauthn_origin())
+            })
+            .unwrap_or_else(|| self.default_passkey.clone())
+    }
+
+    async fn decode_stored<T: PersistedSetting>(
+        &self,
+    ) -> Result<PersistedDecode<T>, SettingsServiceError> {
+        let raw = repository::get_text(&self.pool, T::KEY).await?;
+        Ok(decode_persisted(raw.as_deref()))
+    }
+
+    fn persist_error<T: PersistedSetting>(error: PersistedLoadError) -> SettingsServiceError {
+        match error {
+            PersistedLoadError::Invalid(error) => SettingsServiceError::Validation(error),
+            PersistedLoadError::Corrupt(_) => SettingsServiceError::Corrupt { key: T::KEY },
+        }
+    }
+}
+
+fn apply_passkey_runtime_defaults(
+    value: PasskeySetting,
+    runtime_default: &PasskeySetting,
+) -> PasskeySetting {
+    value.with_runtime_defaults(
+        &runtime_default.rp_id,
+        runtime_default
+            .allowed_origins
+            .first()
+            .map(String::as_str)
+            .unwrap_or_default(),
+    )
+}
