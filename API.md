@@ -363,7 +363,7 @@ Issuer 设置接口仅 Owner（`manage_issuer`）可用。GET 返回 `persisted`
 套餐定义 OAuth Client 数量、日/月授权配额和 QPS 上限；未显式分配套餐或套餐过期的用户回落到默认套餐。
 
 - `GET /api/v1/admin/plans`：列出全部套餐（含已归档），每个元素带 `assigned_users`，需要 `ManageSettings`。
-- `POST /api/v1/admin/plans`：创建套餐，提交 `code`、`name`、`description`、`oauth_clients_limit`、`daily_auth_limit`、`monthly_auth_limit`、`max_qps`、`is_default`；`code` 服务端归一化为小写。成功 `201`。
+- `POST /api/v1/admin/plans`：创建套餐，提交 `code`、`name`、`description`、`oauth_clients_limit`（0–1000）、`daily_auth_limit`（0–1000000）、`monthly_auth_limit`（0–31000000 或 `null` 表示无限）、`max_qps`（1–10000 或 `null` 表示不限）、`is_default`；`code` 服务端归一化为小写。成功 `201`。越界返回 `400 invalid_plan`。
 - `PUT /api/v1/admin/plans/{id}`：更新套餐，字段同创建，成功返回更新后的套餐。
 - `POST /api/v1/admin/plans/{id}/archive`：归档套餐；默认套餐不可归档，返回 `409 default_plan_protected`。
 - `POST /api/v1/admin/plans/{id}/restore`：恢复套餐。

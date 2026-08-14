@@ -205,6 +205,13 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../../migrations/0002_issuer_runtime.sql")),
             false,
         ),
+        Migration::new(
+            3,
+            Cow::Borrowed("bounded plan quotas"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!("../../migrations/0003_plan_quota_bounds.sql")),
+            false,
+        ),
     ];
 
     Migrator {

@@ -533,7 +533,7 @@ fn deployment_files_are_present_at_repository_root() {
 fn database_uses_one_transactional_current_baseline() {
     assert!(DB_MODULE.contains("current schema baseline"));
     assert!(DB_MODULE.contains("include_str!(\"../../migrations/0001_initial.sql\")"));
-    assert_eq!(DB_MODULE.matches("Migration::new(").count(), 2);
+    assert_eq!(DB_MODULE.matches("Migration::new(").count(), 3);
     assert!(
         DB_MODULE.contains(
             "normalize_migration_sql(include_str!(\"../../migrations/0001_initial.sql\"))"
@@ -563,6 +563,7 @@ fn database_uses_one_transactional_current_baseline() {
         vec![
             std::ffi::OsString::from("0001_initial.sql"),
             std::ffi::OsString::from("0002_issuer_runtime.sql"),
+            std::ffi::OsString::from("0003_plan_quota_bounds.sql"),
         ]
     );
 
