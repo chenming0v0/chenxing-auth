@@ -236,3 +236,68 @@ async fn first_factor_race_allows_only_one_factor_type_to_win() {
         .await
         .expect("cleanup test user");
 }
+
+#[tokio::test]
+async fn delete_passkeys_in_transaction_removes_all_credentials_for_one_user() {
+    let pool = database().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let user_ids: Vec<i64> = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO users (username, email, canonical_email, password_hash, status, created_at)
+         VALUES ($1, $2, lower($2), 'test-hash', 'active', NOW()),
+                ($3, $4, lower($4), 'test-hash', 'active', NOW())
+         RETURNING id",
+    )
+    .bind(format!("passkey-reset-{suffix}-a"))
+    .bind(format!("passkey-reset-{suffix}-a@example.com"))
+    .bind(format!("passkey-reset-{suffix}-b"))
+    .bind(format!("passkey-reset-{suffix}-b@example.com"))
+    .fetch_all(&pool)
+    .await
+    .expect("insert test users");
+
+    for (index, user_id) in user_ids.iter().enumerate() {
+        let credential_id = Uuid::new_v4().into_bytes().to_vec();
+        let passkey = test_passkey(&credential_id);
+        assert_eq!(
+            repository::insert_passkey_if_empty(&pool, *user_id, &credential_id, &passkey)
+                .await
+                .expect("insert passkey"),
+            repository::PasskeyPersistenceResult::Stored,
+            "user {index} should store a first passkey"
+        );
+    }
+
+    let mut transaction = pool.begin().await.expect("begin delete transaction");
+    let removed = repository::delete_passkeys_in_transaction(&mut transaction, user_ids[0])
+        .await
+        .expect("delete first user passkeys");
+    transaction.commit().await.expect("commit delete");
+    assert_eq!(removed, 1);
+    assert!(
+        repository::list_passkeys(&pool, user_ids[0])
+            .await
+            .expect("list first user passkeys")
+            .is_empty()
+    );
+    assert_eq!(
+        repository::list_passkeys(&pool, user_ids[1])
+            .await
+            .expect("list second user passkeys")
+            .len(),
+        1,
+        "deleting one user's passkeys must not touch another account"
+    );
+
+    let mut empty = pool.begin().await.expect("begin empty delete");
+    let removed_again = repository::delete_passkeys_in_transaction(&mut empty, user_ids[0])
+        .await
+        .expect("repeat delete");
+    empty.rollback().await.expect("rollback empty delete");
+    assert_eq!(removed_again, 0);
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = ANY($1)")
+        .bind(&user_ids)
+        .execute(&pool)
+        .await
+        .expect("cleanup test users");
+}
