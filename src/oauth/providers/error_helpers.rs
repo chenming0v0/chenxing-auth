@@ -93,7 +93,7 @@ pub(super) async fn external_binding_failure(
         session_revoked,
         "external OAuth login failed while binding the pending authorization request"
     );
-    match try_binding_failure_response(state, slug, request_id, state_value, code) {
+    match try_binding_failure_response(state, request_id, state_value, code) {
         Ok(response) => response,
         Err(cookie_error) => cookie_error_response(cookie_error),
     }
@@ -101,7 +101,6 @@ pub(super) async fn external_binding_failure(
 
 fn try_binding_failure_response(
     state: &AppState,
-    slug: &str,
     request_id: &str,
     state_value: &str,
     code: &str,
