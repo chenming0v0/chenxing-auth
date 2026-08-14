@@ -5,7 +5,7 @@
 //! cwd 之下）；已验证目录内的单分量才用 BENEATH。
 
 use std::{
-    ffi::{CStr, CString, OsStr},
+    ffi::{CString, OsStr},
     fs::File,
     io,
     os::{
@@ -15,6 +15,9 @@ use std::{
 };
 
 use super::policy::invalid_storage_path;
+
+#[cfg(target_os = "linux")]
+use std::ffi::CStr;
 
 /// openat2 的 resolve 范围。
 #[derive(Clone, Copy)]
@@ -26,6 +29,7 @@ pub(super) enum OpenScope {
 }
 
 impl OpenScope {
+    #[cfg(target_os = "linux")]
     fn resolve_flags(self) -> u64 {
         let no_links = libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS;
         match self {
@@ -78,7 +82,7 @@ fn open_at(
         let _ = scope;
     }
     // SAFETY: dirfd 是活目录或 AT_FDCWD；c_name 是有效 C 字符串。
-    let fd = unsafe { libc::openat(dirfd, c_name.as_ptr(), flags, mode as libc::mode_t) };
+    let fd = unsafe { libc::openat(dirfd, c_name.as_ptr(), flags, mode as libc::c_uint) };
     from_file_fd(fd)
 }
 
