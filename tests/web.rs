@@ -2,9 +2,10 @@ use axum::{
     Router,
     body::Body,
     http::{
-        Method, Request, StatusCode,
+        HeaderName, Method, Request, StatusCode,
         header::{CACHE_CONTROL, CONTENT_TYPE},
     },
+    response::Response,
 };
 use chenxing_auth::{api, config::Config, state::AppState};
 use tower::ServiceExt;
@@ -13,8 +14,8 @@ use uuid::Uuid;
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
 
-async fn assert_spa_shell(router: Router, uri: &str) {
-    let response = router
+async fn spa_response(router: Router, uri: &str) -> Response {
+    router
         .oneshot(
             Request::builder()
                 .uri(uri)
@@ -22,7 +23,11 @@ async fn assert_spa_shell(router: Router, uri: &str) {
                 .expect("SPA request"),
         )
         .await
-        .expect("SPA response");
+        .expect("SPA response")
+}
+
+async fn assert_spa_shell(router: Router, uri: &str) {
+    let response = spa_response(router, uri).await;
     assert_eq!(response.status(), StatusCode::OK, "{uri}");
     assert_eq!(
         response
@@ -138,6 +143,7 @@ async fn unknown_non_get_paths_return_json_not_found() {
     assert_json_not_found(router.clone(), Method::POST, "/api/v1/does-not-exist").await;
     assert_json_not_found(router.clone(), Method::PUT, "/oauth/does-not-exist").await;
     assert_json_not_found(router.clone(), Method::DELETE, "/oauth/account").await;
+    assert_json_not_found(router.clone(), Method::POST, "/index.html").await;
     assert_spa_shell(router, "/console/developer").await;
 
     let _ = std::fs::remove_dir_all(key_directory);
@@ -204,6 +210,55 @@ async fn content_hashed_assets_are_immutable_and_unhashed_files_are_not() {
         !cache.contains("immutable"),
         "unhashed favicon must not be immutable: {cache}"
     );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+/// `/` 走 SPA fallback，`/index.html` 是盘上的真实文件。两条路径必须返回
+/// 同一份内嵌 shell，否则半次发布会让浏览器加载两套资源引用。
+#[tokio::test]
+async fn root_and_index_html_serve_the_same_embedded_shell() {
+    let (router, key_directory) = test_router().await;
+
+    let root = spa_response(router.clone(), "/").await;
+    let index = spa_response(router, "/index.html").await;
+
+    assert_eq!(root.status(), StatusCode::OK);
+    assert_eq!(index.status(), StatusCode::OK);
+
+    let root_headers = root.headers().clone();
+    let index_headers = index.headers().clone();
+    let root_body = axum::body::to_bytes(root.into_body(), usize::MAX)
+        .await
+        .expect("root body");
+    let index_body = axum::body::to_bytes(index.into_body(), usize::MAX)
+        .await
+        .expect("index.html body");
+
+    assert_eq!(
+        root_body, index_body,
+        "/ and /index.html must be the same bytes"
+    );
+    assert_eq!(
+        root_headers
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/html; charset=utf-8")
+    );
+
+    for name in [
+        CONTENT_TYPE,
+        CACHE_CONTROL,
+        HeaderName::from_static("content-security-policy"),
+        HeaderName::from_static("x-frame-options"),
+        HeaderName::from_static("x-content-type-options"),
+        HeaderName::from_static("referrer-policy"),
+    ] {
+        assert_eq!(
+            root_headers.get(&name),
+            index_headers.get(&name),
+            "{name} must match between / and /index.html"
+        );
+    }
 
     let _ = std::fs::remove_dir_all(key_directory);
 }

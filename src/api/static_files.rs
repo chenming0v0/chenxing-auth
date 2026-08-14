@@ -5,8 +5,9 @@
 //! 本模块不持有第二份定义。
 //!
 //! 请求的处理顺序是：
-//! 1. `ServeDir` 命中产物根下的真实文件（JS / CSS / 图标等）时直接返回文件；
-//! 2. 未命中时回退到 `web_app`，由它区分协议路径、静态资源路径和 SPA 路由。
+//! 1. `/index.html` 显式走 `web_app`，与 `/` 共用编译期内嵌的 SPA shell；
+//! 2. `ServeDir` 命中产物根下的真实文件（JS / CSS / 图标等）时直接返回文件；
+//! 3. 未命中时回退到 `web_app`，由它区分协议路径、静态资源路径和 SPA 路由。
 //!
 //! 静态根不在这里解析：它是启动期就 canonicalize 并校验过的 [`WebDistRoot`]
 //! （Issue #303）。本模块因此没有任何「目录不存在」「配置为空」之类的降级分支——
@@ -41,6 +42,8 @@ const HASHED_ASSET_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 /// 外层 Router 只用来给哈希 assets 补 `Cache-Control`，不改变匹配顺序。
 pub(super) fn static_service(root: &WebDistRoot) -> Router {
     Router::new()
+        // `/index.html` 是内嵌 shell 的显式别名，不能让 ServeDir 读取磁盘副本。
+        .route("/index.html", any(web_app))
         .fallback_service(
             ServeDir::new(root.path())
                 // 目录请求不从磁盘拼 index.html，直接交给回退处理器：
@@ -65,7 +68,7 @@ fn spa_fallback() -> MethodRouter<()> {
     any(web_app)
 }
 
-/// `ServeDir` 未命中真实文件时的回退处理器。
+/// `ServeDir` 未命中真实文件时的回退处理器，也是 `/index.html` 的唯一处理函数。
 async fn web_app(request: axum::extract::Request) -> Response {
     if request.method() != Method::GET && request.method() != Method::HEAD {
         return crate::error::not_found("not_found", "not found");
@@ -74,10 +77,15 @@ async fn web_app(request: axum::extract::Request) -> Response {
     let path = request.uri().path();
     // 协议路径（API、真实 OAuth/OIDC 端点等）和带扩展名的资源路径都不应返回 SPA shell：
     // 前者会让客户端把 HTML 当 JSON 解析，后者会让缺失的 JS/CSS 静默变成 HTML。
-    if is_protocol_path(path) || has_file_extension(path) {
+    // `/index.html` 有扩展名，但它就是这份 shell 本身，必须与 `/` 走同一条路径。
+    if !is_spa_document(path) && (is_protocol_path(path) || has_file_extension(path)) {
         return crate::error::not_found("not_found", "not found");
     }
 
+    spa_shell()
+}
+
+fn spa_shell() -> Response {
     (
         StatusCode::OK,
         [
@@ -139,6 +147,8 @@ fn hashed_filename(filename: &str) -> bool {
                 .iter()
                 .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-')
     })
+fn is_spa_document(path: &str) -> bool {
+    path == "/" || path == "/index.html"
 }
 
 fn is_protocol_path(path: &str) -> bool {
@@ -232,6 +242,16 @@ mod tests {
         assert!(!is_protocol_path("/console"));
         assert!(!is_protocol_path("/assets/main.js"));
         assert!(!is_protocol_path("/admin/login"));
+    }
+
+    /// `/` 与 `/index.html` 是同一份文档；后者有扩展名，但不能当缺失资源 404。
+    #[test]
+    fn index_html_is_the_spa_document_not_a_missing_asset() {
+        assert!(has_file_extension("/index.html"));
+        assert!(is_spa_document("/"));
+        assert!(is_spa_document("/index.html"));
+        assert!(!is_spa_document("/favicon.ico"));
+        assert!(!is_spa_document("/assets/index.js"));
     }
 
     /// 内嵌 shell 是唯一的 HTML 来源，静态根不参与 HTML 生成。
