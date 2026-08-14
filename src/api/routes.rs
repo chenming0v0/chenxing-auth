@@ -1,10 +1,8 @@
 use axum::{
     Router,
-    http::StatusCode,
     routing::{delete, get, post},
 };
 use std::time::Duration;
-use tower_http::timeout::TimeoutLayer;
 
 use crate::{
     admin::auth_handlers::create_admin,
@@ -270,8 +268,5 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
         )
         // Health probes have their own 2s dependency budget. The static fallback may
         // stream files, so neither should inherit this handler-future timeout.
-        .route_layer(TimeoutLayer::with_status_code(
-            StatusCode::GATEWAY_TIMEOUT,
-            request_timeout,
-        ))
+        .route_layer(super::timeout::request_timeout_layer(request_timeout))
 }
