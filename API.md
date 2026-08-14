@@ -22,13 +22,23 @@
 
 ## 健康和 OIDC 元数据
 
-### `GET /health`
+### `GET /health/live`
 
-响应：
+存活探针。只报告进程本身，不触碰数据库、Redis 或 Issuer，恒返回 `200`：
 
 ```json
 {"status":"ok","service":"chenxing-auth"}
 ```
+
+### `GET /health` 与 `GET /health/ready`
+
+就绪探针。`/health` 是 `/health/ready` 的兼容别名，两者检查数据库、Redis 和 Issuer 收敛。全部就绪返回 `200` 和上面的 `status=ok` 响应；任一依赖超时或未就绪返回 `503`：
+
+```json
+{"status":"unavailable","service":"chenxing-auth"}
+```
+
+响应体只暴露聚合状态，不含连接串、主机名或错误细节。
 
 ### `GET /.well-known/openid-configuration`
 
@@ -424,7 +434,7 @@ Client 列表元素包含：`id`、`client_id`、`client_name`、`redirect_uris`
 
 ### 自定义 OAuth 提供商管理
 
-管理界面在 React 控制台的 `/console/settings`（原 `GET /admin/settings/oauth` 仅转发到该页面），也可以直接使用以下 API。提供商默认停用，确认配置无误后再启用。
+管理界面在 React 控制台的 `/admin/settings`。旧地址 `GET /admin/settings/oauth` 仅 303 转发到 `/admin/settings`（查询串原样保留），旧地址 `GET /admin/login` 仅 303 转发到 `/login`。也可以直接使用以下 API。提供商默认停用，确认配置无误后再启用。
 
 提供商一律按 **OAuth 2.0 + UserInfo** 信任模型接入，摘要中的 `trust_model` 恒为 `oauth2_userinfo`；本平台不为自定义提供商验证 ID Token，也不接受 issuer/JWKS/算法策略配置。详见上文「信任模型：OAuth 2.0 + UserInfo」。
 
