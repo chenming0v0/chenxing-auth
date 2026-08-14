@@ -35,6 +35,7 @@ pub enum PasskeyAuthenticatorAttachment {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PasskeySetting {
     pub enabled: bool,
     pub rp_name: String,
@@ -60,6 +61,7 @@ impl Default for PasskeySetting {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct EmailPolicySetting {
     pub whitelist_enabled: bool,
     pub alias_restriction_enabled: bool,

@@ -13,7 +13,7 @@ use crate::{
     error,
     settings::{
         EmailPolicySetting, PasskeySetting, REGISTRATION_EMAIL_FROM_KEY, SECURITY_LIMITS_KEY,
-        SecurityLimitsSetting, SettingsServiceError, SmtpSettingUpdate,
+        SecurityLimitsSetting, SettingInspection, SettingsServiceError, SmtpSettingUpdate,
     },
     state::AppState,
 };
@@ -133,8 +133,8 @@ pub async fn get_passkey_setting(State(state): State<AppState>, admin: AdminRead
     {
         return response;
     }
-    match state.settings.passkey().await {
-        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
+    match state.settings.inspect_passkey().await {
+        Ok(inspection) => respond_setting_inspection("passkey", inspection),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load passkey setting");
             error::internal()
@@ -210,8 +210,8 @@ pub async fn get_email_policy_setting(State(state): State<AppState>, admin: Admi
     {
         return response;
     }
-    match state.settings.email_policy().await {
-        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
+    match state.settings.inspect_email_policy().await {
+        Ok(inspection) => respond_setting_inspection("email_policy", inspection),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load email policy setting");
             error::internal()
@@ -322,8 +322,8 @@ pub async fn get_security_limits_setting(
     {
         return response;
     }
-    match state.settings.security_limits().await {
-        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
+    match state.settings.inspect_security_limits().await {
+        Ok(inspection) => respond_setting_inspection("security_limits", inspection),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load security limits setting");
             error::internal()
@@ -378,6 +378,22 @@ pub async fn update_security_limits_setting(
             error::internal()
         }
     }
+}
+
+fn respond_setting_inspection<T: Serialize>(
+    setting_key: &'static str,
+    inspection: SettingInspection<T>,
+) -> Response {
+    if let Some(diagnostic) = &inspection.diagnostic {
+        tracing::warn!(
+            event = "settings.admin_read_needs_repair",
+            setting_key,
+            diagnostic = diagnostic.as_str(),
+            detail = %diagnostic,
+            "stored setting is readable for repair but must not be used on the security hot path"
+        );
+    }
+    (StatusCode::OK, Json(inspection.value)).into_response()
 }
 
 async fn record_setting_event(

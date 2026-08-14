@@ -60,18 +60,6 @@ where
     set_text(executor, REGISTRATION_EMAIL_FROM_KEY, value).await
 }
 
-pub async fn get_passkey<'e, E>(executor: E) -> Result<Option<PasskeySetting>, crate::sqlx::Error>
-where
-    E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
-{
-    match get_text(executor, PASSKEY_KEY).await? {
-        Some(raw) if !raw.trim().is_empty() => {
-            serde_json::from_str(&raw).map(Some).map_err(json_error)
-        }
-        _ => Ok(None),
-    }
-}
-
 pub async fn set_passkey<'e, E>(
     executor: E,
     value: &PasskeySetting,
@@ -83,20 +71,6 @@ where
     set_text(executor, PASSKEY_KEY, Some(&raw)).await
 }
 
-pub async fn get_email_policy<'e, E>(
-    executor: E,
-) -> Result<Option<EmailPolicySetting>, crate::sqlx::Error>
-where
-    E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
-{
-    match get_text(executor, EMAIL_POLICY_KEY).await? {
-        Some(raw) if !raw.trim().is_empty() => {
-            serde_json::from_str(&raw).map(Some).map_err(json_error)
-        }
-        _ => Ok(None),
-    }
-}
-
 pub async fn set_email_policy<'e, E>(
     executor: E,
     value: &EmailPolicySetting,
@@ -106,20 +80,6 @@ where
 {
     let raw = serde_json::to_string(value).map_err(json_error)?;
     set_text(executor, EMAIL_POLICY_KEY, Some(&raw)).await
-}
-
-pub async fn get_security_limits<'e, E>(
-    executor: E,
-) -> Result<Option<SecurityLimitsSetting>, crate::sqlx::Error>
-where
-    E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
-{
-    match get_text(executor, SECURITY_LIMITS_KEY).await? {
-        Some(raw) if !raw.trim().is_empty() => {
-            serde_json::from_str(&raw).map(Some).map_err(json_error)
-        }
-        _ => Ok(None),
-    }
 }
 
 pub async fn set_security_limits<'e, E>(
