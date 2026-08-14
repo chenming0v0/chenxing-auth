@@ -1,7 +1,10 @@
 use axum::{
     Router,
     body::Body,
-    http::{Request, StatusCode, header::CONTENT_TYPE},
+    http::{
+        Request, StatusCode,
+        header::{CACHE_CONTROL, CONTENT_TYPE},
+    },
 };
 use chenxing_auth::{api, config::Config, state::AppState};
 use tower::ServiceExt;
@@ -43,6 +46,24 @@ async fn test_router() -> (Router, std::path::PathBuf) {
     )
 }
 
+async fn jwks_response(router: Router) -> (axum::http::HeaderMap, Vec<u8>) {
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/jwks.json")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers().clone();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    (headers, body.to_vec())
+}
+
 #[tokio::test]
 async fn liveness_endpoint_reports_process_status_without_dependencies() {
     let (router, key_directory) = test_router().await;
@@ -57,6 +78,44 @@ async fn liveness_endpoint_reports_process_status_without_dependencies() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn liveness_endpoint_does_not_expand_jwks_cors() {
+    // Issue #442：JWKS 的 ACEH / ACAO 不得扩到非 JWKS 路由。
+    let (router, key_directory) = test_router().await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/health/live")
+                .header("origin", "https://relying-party.example.com")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none()
+    );
+    assert!(
+        response
+            .headers()
+            .get("access-control-expose-headers")
+            .is_none()
+    );
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
@@ -151,6 +210,13 @@ async fn readiness_endpoint_returns_a_dependency_agnostic_failure_body() {
         response.status(),
         StatusCode::OK | StatusCode::SERVICE_UNAVAILABLE
     ));
+    assert_eq!(
+        response
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("readiness body");
@@ -158,6 +224,41 @@ async fn readiness_endpoint_returns_a_dependency_agnostic_failure_body() {
     assert!(!body.contains("postgres"));
     assert!(!body.contains("redis://"));
     assert!(!body.contains("127.0.0.1"));
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+/// Issue #445：三个探针都禁止缓存。隔离 schema 没有持久化 Issuer，
+/// `/health` 与 `/health/ready` 因此走 503；`/health/live` 不碰依赖，始终 200。
+#[tokio::test]
+async fn health_probes_are_not_stored_on_ok_and_unavailable() {
+    let (router, key_directory) = test_router().await;
+
+    for (path, expected) in [
+        ("/health/live", StatusCode::OK),
+        ("/health", StatusCode::SERVICE_UNAVAILABLE),
+        ("/health/ready", StatusCode::SERVICE_UNAVAILABLE),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("health request"),
+            )
+            .await
+            .expect("health response");
+        assert_eq!(response.status(), expected, "{path}");
+        assert_eq!(
+            response
+                .headers()
+                .get(CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store"),
+            "{path}"
+        );
+    }
+
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
@@ -245,6 +346,314 @@ async fn jwks_endpoint_returns_a_key_set_document() {
         .expect("response from router");
 
     assert_eq!(response.status(), StatusCode::OK);
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn jwks_endpoint_sets_public_cache_control_with_must_revalidate() {
+    // Issue #430：JWKS 必须可被共享缓存 60 秒，过期后必须重新验证。
+    // must-revalidate 阻止缓存在回源失败时返回陈旧公钥——陈旧公钥会让新签发的
+    // 令牌验签失败。
+    let (router, key_directory) = test_router().await;
+    let (headers, _body) = jwks_response(router).await;
+
+    assert_eq!(
+        headers.get("cache-control").and_then(|v| v.to_str().ok()),
+        Some("public, max-age=60, must-revalidate")
+    );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn jwks_endpoint_returns_a_deterministic_strong_etag() {
+    // Issue #430：ETag 由 JWKS 字节的 SHA-256 派生，同一公钥集合始终产出同一 ETag。
+    // 两次独立请求拿到相同 ETag，且是带双引号的强 ETag。
+    let (router, key_directory) = test_router().await;
+    let (headers_first, body_first) = jwks_response(router.clone()).await;
+    let (headers_second, body_second) = jwks_response(router).await;
+
+    assert_eq!(body_first, body_second, "JWKS body must be stable");
+    let etag_first = headers_first
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .expect("first response has ETag");
+    let etag_second = headers_second
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .expect("second response has ETag");
+    assert_eq!(etag_first, etag_second);
+    assert!(
+        etag_first.starts_with('"') && etag_first.ends_with('"'),
+        "{etag_first}"
+    );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn jwks_endpoint_returns_304_when_if_none_match_matches_etag() {
+    // Issue #430：RP 用 If-None-Match 发起条件请求，公钥集合未变时返回 304。
+    // 304 必须携带 ETag 和 Cache-Control，让 RP 继续缓存。
+    let (router, key_directory) = test_router().await;
+    let (headers, _body) = jwks_response(router.clone()).await;
+    let etag = headers
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .expect("first response has ETag");
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/jwks.json")
+                .header("if-none-match", etag)
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(
+        response.headers().get("etag").and_then(|v| v.to_str().ok()),
+        Some(etag)
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok()),
+        Some("public, max-age=60, must-revalidate")
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("304 body");
+    assert!(body.is_empty(), "304 must not carry a body");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn jwks_endpoint_returns_304_for_star_if_none_match() {
+    // Issue #430：If-None-Match: * 匹配任何资源状态，必须返回 304。
+    let (router, key_directory) = test_router().await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/jwks.json")
+                .header("if-none-match", "*")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn jwks_endpoint_returns_200_when_if_none_match_does_not_match() {
+    // Issue #430：ETag 不匹配时返回完整 200 响应，让 RP 更新缓存。
+    let (router, key_directory) = test_router().await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/jwks.json")
+                .header("if-none-match", "\"stale-etag-value\"")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .is_some()
+    );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn jwks_endpoint_allows_cross_origin_reads_without_credentials() {
+    // Issue #430：JWKS 是公开只读元数据，允许任意来源跨域读取。
+    // 带 Origin 请求时返回 Access-Control-Allow-Origin: * 和 Vary: Origin。
+    let (router, key_directory) = test_router().await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/jwks.json")
+                .header("origin", "https://relying-party.example.com")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("*")
+    );
+    assert_eq!(
+        response.headers().get("vary").and_then(|v| v.to_str().ok()),
+        Some("Origin")
+    );
+    // Issue #442：ETag 不是 CORS 安全列表头，必须显式暴露，浏览器 JS 才能读取。
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|v| v.to_str().ok()),
+        Some("ETag")
+    );
+    assert!(
+        response
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .is_some(),
+        "cross-origin JWKS 200 must carry ETag so JS can cache it"
+    );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn jwks_endpoint_omits_cors_headers_when_request_has_no_origin() {
+    // Issue #430：无 Origin 请求不返回 ACAO，但必须仍带 Vary: Origin，
+    // 否则共享缓存可能把无 CORS 副本交给跨域 RP。
+    let (router, key_directory) = test_router().await;
+    let (headers, _body) = jwks_response(router).await;
+    assert!(headers.get("access-control-allow-origin").is_none());
+    assert_eq!(
+        headers.get("vary").and_then(|v| v.to_str().ok()),
+        Some("Origin")
+    );
+    // ACEH 不是跨域许可，只声明 ETag 可读；无 Origin 时同样写出，避免缓存变体遗漏。
+    assert_eq!(
+        headers
+            .get("access-control-expose-headers")
+            .and_then(|v| v.to_str().ok()),
+        Some("ETag")
+    );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn jwks_endpoint_304_response_carries_cors_headers_when_origin_present() {
+    // Issue #430：304 响应同样需要 CORS 头，否则跨域 RP 拿不到缓存确认。
+    let (router, key_directory) = test_router().await;
+    let (headers, _body) = jwks_response(router.clone()).await;
+    let etag = headers
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .expect("first response has ETag");
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/jwks.json")
+                .header("if-none-match", etag)
+                .header("origin", "https://relying-party.example.com")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("*")
+    );
+    assert_eq!(
+        response.headers().get("vary").and_then(|v| v.to_str().ok()),
+        Some("Origin")
+    );
+    // Issue #442：304 同样必须暴露 ETag，否则跨域 RP 无法继续发 If-None-Match。
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|v| v.to_str().ok()),
+        Some("ETag")
+    );
+    assert_eq!(
+        response.headers().get("etag").and_then(|v| v.to_str().ok()),
+        Some(etag)
+    );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn discovery_endpoint_allows_cross_origin_reads_without_credentials() {
+    // Issue #430：Discovery 与 JWKS 共用同一公开 CORS 策略。
+    let (router, key_directory) = test_router().await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/openid-configuration")
+                .header("origin", "https://relying-party.example.com")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("*")
+    );
+    assert_eq!(
+        response.headers().get("vary").and_then(|v| v.to_str().ok()),
+        Some("Origin")
+    );
+    // Issue #442：不要把 JWKS 的 ACEH 扩到 Discovery——它没有 ETag。
+    assert!(
+        response
+            .headers()
+            .get("access-control-expose-headers")
+            .is_none()
+    );
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn discovery_endpoint_omits_acao_but_varies_on_origin_when_request_has_no_origin() {
+    // Issue #430：与 JWKS 对称——无 Origin 不写 ACAO，但始终 Vary: Origin。
+    let (router, key_directory) = test_router().await;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/openid-configuration")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("response from router");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none()
+    );
+    assert_eq!(
+        response.headers().get("vary").and_then(|v| v.to_str().ok()),
+        Some("Origin")
+    );
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

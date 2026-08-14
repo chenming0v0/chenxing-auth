@@ -346,6 +346,7 @@ fn permissions(role: AdminRole) -> Vec<&'static str> {
             AdminPermission::ManageIdentityProviders,
             "manage_identity_providers",
         ),
+        (AdminPermission::ManageIssuer, "manage_issuer"),
         (AdminPermission::ManageRoles, "manage_roles"),
         (AdminPermission::ManageAuthFactors, "manage_auth_factors"),
     ]

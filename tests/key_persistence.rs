@@ -47,6 +47,29 @@ fn startup_removes_crash_left_atomic_write_temporary_files_only() {
     let _ = fs::remove_dir_all(directory);
 }
 
+#[test]
+fn key_manager_cleanup_does_not_remove_provider_secret_temporaries() {
+    let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
+    let _manager = KeyManager::load_or_generate(&directory).expect("initial key");
+    let key_temporary = directory.join(".chenxing-key-crashed.tmp");
+    let secret_temporary = directory.join(".chenxing-secret-in-flight.tmp");
+    fs::write(&key_temporary, b"signing-key temp").expect("key temp");
+    fs::write(&secret_temporary, b"provider-secret temp").expect("secret temp");
+
+    let _reloaded = KeyManager::load_or_generate(&directory).expect("reload");
+
+    assert!(
+        !key_temporary.exists(),
+        "key namespace temps must be cleaned by key manager"
+    );
+    assert!(
+        secret_temporary.exists(),
+        "provider secret temps must survive key manager cleanup"
+    );
+
+    let _ = fs::remove_dir_all(directory);
+}
+
 #[tokio::test]
 async fn reloaded_key_manager_keeps_rotated_key_for_old_token_validation() {
     let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));

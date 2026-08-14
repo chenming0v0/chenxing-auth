@@ -1,13 +1,11 @@
 use axum::{
     Router,
-    http::StatusCode,
     routing::{delete, get, post},
 };
 use std::time::Duration;
-use tower_http::timeout::TimeoutLayer;
 
 use crate::{
-    admin::auth_handlers::{bootstrap_admin, bootstrap_status, create_admin},
+    admin::auth_handlers::create_admin,
     admin::factor_handlers::{auth_factor_key_health, reset_user_totp_factor, user_auth_factors},
     admin::handlers::{
         create_client, disable_client, enable_client, list_clients, rotate_secret, update_client,
@@ -16,6 +14,7 @@ use crate::{
     admin::management_handlers::{
         list_admins, list_audit, list_users, set_user_role, set_user_status,
     },
+    admin::passkey_recovery::reset_user_passkey_factor,
     admin::plan_handlers::{
         archive_plan, assign_plan, create_plan, list_plans, restore_plan, update_plan,
     },
@@ -61,31 +60,9 @@ use crate::{
     },
 };
 
-use super::{
-    discovery::{jwks, openid_configuration},
-    health::{health, health_live, health_ready, issuer_not_configured},
-};
+use super::discovery::{jwks, openid_configuration};
 
-/// Issuer 尚未落库时的最小路由面。
-///
-/// 静态 React 产物由 `api::router` 的 fallback 提供；这里除此之外只保留容器探针和
-/// 一个明确的初始化状态。认证、管理、OAuth/OIDC、JWKS 都不进入路由表。
-fn register_unconfigured(router: Router<AppState>) -> Router<AppState> {
-    router
-        .route("/api/v1/admin/bootstrap/status", get(issuer_not_configured))
-        .route("/health", get(health))
-        .route("/health/live", get(health_live))
-        .route("/health/ready", get(health_ready))
-}
-
-pub(super) fn register(
-    router: Router<AppState>,
-    request_timeout: Duration,
-    issuer_configured: bool,
-) -> Router<AppState> {
-    if !issuer_configured {
-        return register_unconfigured(router);
-    }
+pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> Router<AppState> {
     router
         .route(
             "/.well-known/openid-configuration",
@@ -151,8 +128,6 @@ pub(super) fn register(
             "/api/v1/auth/sessions/{session_id}",
             axum::routing::delete(revoke_user_session),
         )
-        .route("/api/v1/admin/bootstrap/status", get(bootstrap_status))
-        .route("/api/v1/admin/bootstrap", post(bootstrap_admin))
         .route("/api/v1/admin/admins", get(list_admins).post(create_admin))
         .route("/api/v1/admin/auth/me", get(admin_me))
         .route("/api/v1/admin/users", get(list_users).post(create_user))
@@ -169,6 +144,12 @@ pub(super) fn register(
         .route(
             "/api/v1/admin/users/{user_id}/auth-factors/totp",
             delete(reset_user_totp_factor),
+        )
+        // Passkey 重置是 #460 的恢复出口：Passkey-only 账号丢了认证器后，
+        // 系统 Token 通道不依赖现有 Session / Passkey。
+        .route(
+            "/api/v1/admin/users/{user_id}/auth-factors/passkey",
+            delete(reset_user_passkey_factor),
         )
         .route(
             "/api/v1/admin/auth-factors/key-health",
@@ -287,11 +268,5 @@ pub(super) fn register(
         )
         // Health probes have their own 2s dependency budget. The static fallback may
         // stream files, so neither should inherit this handler-future timeout.
-        .route_layer(TimeoutLayer::with_status_code(
-            StatusCode::GATEWAY_TIMEOUT,
-            request_timeout,
-        ))
-        .route("/health", get(health))
-        .route("/health/live", get(health_live))
-        .route("/health/ready", get(health_ready))
+        .route_layer(super::timeout::request_timeout_layer(request_timeout))
 }

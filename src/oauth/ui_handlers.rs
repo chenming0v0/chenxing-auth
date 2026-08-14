@@ -156,9 +156,14 @@ pub async fn bind_authorization_request(
     session: SessionWrite,
     Path(request_id): Path<String>,
 ) -> Response {
-    let holder_hash = cookies::extract_authz_holder_cookie(&headers)
-        .as_deref()
-        .map(cookies::authz_holder_hash);
+    let holder_hash = cookies::extract_authz_holder_cookie_for_secure_transport(
+        &headers,
+        state.config.cookie_secure,
+    )
+    .ok()
+    .flatten()
+    .as_deref()
+    .map(cookies::authz_holder_hash);
     match bind_pending_request(
         &state.authorization_requests,
         &request_id,
@@ -176,7 +181,7 @@ pub async fn bind_authorization_request(
                 .record_best_effort(AuditEvent::new(
                     "user".to_owned(),
                     Some(session.user_id.to_string()),
-                    "authorization_request_rebound".to_owned(),
+                    crate::audit::AuditAction::AuthorizationRequestRebound,
                     "oauth_authorization".to_owned(),
                     None,
                     serde_json::json!({"reason": "session_changed"}),
@@ -266,7 +271,7 @@ pub async fn decide_authorization_request(
             .record_best_effort(AuditEvent::new(
                 "user".to_owned(),
                 Some(session.user_id.to_string()),
-                "authorization_denied".to_owned(),
+                crate::audit::AuditAction::AuthorizationDenied,
                 "oauth_authorization".to_owned(),
                 Some(pending.client_id.clone()),
                 crate::audit::with_request_context(

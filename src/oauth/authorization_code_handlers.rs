@@ -43,7 +43,7 @@ pub async fn issue_authorization_code_result(
                 .record_best_effort(AuditEvent::new(
                     "user".to_owned(),
                     Some(user_id.clone()),
-                    "authorization_denied".to_owned(),
+                    crate::audit::AuditAction::AuthorizationDenied,
                     "oauth_authorization".to_owned(),
                     None,
                     crate::audit::with_request_context(
@@ -173,7 +173,7 @@ pub async fn issue_authorization_code_result(
                     .record_best_effort(AuditEvent::new(
                         "user".to_owned(),
                         Some(user_id.clone()),
-                        "rate_limit_triggered".to_owned(),
+                        crate::audit::AuditAction::RateLimitTriggered,
                         "oauth_quota".to_owned(),
                         None,
                         crate::audit::with_request_context(
@@ -227,7 +227,7 @@ pub async fn issue_authorization_code_result(
         .record_blocking(AuditEvent::new(
             "user".to_owned(),
             Some(code.user_id.clone()),
-            "authorization_code_issue".to_owned(),
+            crate::audit::AuditAction::AuthorizationCodeIssue,
             "oauth_client".to_owned(),
             Some(code.client_id.clone()),
             crate::audit::with_request_context(

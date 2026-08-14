@@ -2,7 +2,7 @@
 //!
 //! `src/api/extract.rs` 用类型约束表达了「浏览器写操作必须校验 CSRF」，
 //! 但类型只覆盖「handler 声明了提取器」这一半；另一半是「新增的写路由确实
-//! 声明了提取器」。本测试扫描 `src/api/routes.rs` 的全部路由表，对每个
+//! 声明了提取器」。本测试扫描应用路由和 system router 的全部路由表，对每个
 //! 状态改变方法（POST/PUT/PATCH/DELETE）要求二者之一：
 //!
 //! 1. handler 签名里有 [`SessionWrite`] 或 [`AdminWrite`]（类型级保证）；
@@ -13,7 +13,10 @@
 
 use std::{collections::BTreeMap, fs, path::Path};
 
-const ROUTES: &str = include_str!("../src/api/routes.rs");
+const ROUTE_SOURCES: [&str; 2] = [
+    include_str!("../src/api/routes.rs"),
+    include_str!("../src/api/mod.rs"),
+];
 
 /// 需要 CSRF 保证的 HTTP 方法。GET/HEAD 不改状态，同源策略也拿不到响应体。
 const STATE_CHANGING: [&str; 4] = ["post", "put", "patch", "delete"];
@@ -166,6 +169,7 @@ fn method_handlers(arguments: &str) -> Vec<(String, String)> {
                 continue;
             };
             let handler = arguments[cursor + 1..close].trim();
+            let handler = handler.rsplit("::").next().unwrap_or(handler).trim();
             if !handler.is_empty() && !handler.contains(['(', '"']) {
                 found.push((method.to_owned(), handler.to_owned()));
             }
@@ -174,27 +178,29 @@ fn method_handlers(arguments: &str) -> Vec<(String, String)> {
     found
 }
 
-/// 解析 `src/api/routes.rs`，展开成方法粒度的端点列表。
+/// 解析应用路由和 system router，展开成方法粒度的端点列表。
 fn endpoints() -> Vec<Endpoint> {
     let mut endpoints = Vec::new();
-    let mut cursor = 0;
-    while let Some(offset) = ROUTES[cursor..].find(".route(") {
-        let open = cursor + offset + ".route".len();
-        cursor = open + 1;
-        let Some(close) = matching_paren(ROUTES, open) else {
-            continue;
-        };
-        let arguments = &ROUTES[open + 1..close];
-        let Some(path) = route_path(arguments) else {
-            continue;
-        };
-        let rest = &arguments[arguments.find(&path).unwrap_or_default() + path.len()..];
-        for (method, handler) in method_handlers(rest) {
-            endpoints.push(Endpoint {
-                path: path.clone(),
-                method,
-                handler,
-            });
+    for routes in ROUTE_SOURCES {
+        let mut cursor = 0;
+        while let Some(offset) = routes[cursor..].find(".route(") {
+            let open = cursor + offset + ".route".len();
+            cursor = open + 1;
+            let Some(close) = matching_paren(routes, open) else {
+                continue;
+            };
+            let arguments = &routes[open + 1..close];
+            let Some(path) = route_path(arguments) else {
+                continue;
+            };
+            let rest = &arguments[arguments.find(&path).unwrap_or_default() + path.len()..];
+            for (method, handler) in method_handlers(rest) {
+                endpoints.push(Endpoint {
+                    path: path.clone(),
+                    method,
+                    handler,
+                });
+            }
         }
     }
     endpoints

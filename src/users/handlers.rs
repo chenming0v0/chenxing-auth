@@ -63,7 +63,7 @@ pub async fn register_user(
                 .record_best_effort(AuditEvent::new(
                     "system".to_owned(),
                     None,
-                    "user_register".to_owned(),
+                    crate::audit::AuditAction::UserRegister,
                     "user".to_owned(),
                     Some(user.id.to_string()),
                     serde_json::json!({"result": "success"}),
@@ -179,7 +179,7 @@ pub async fn login_user(
         Err(UserServiceError::InvalidCredentials) => {
             record_security_event(
                 &state,
-                "login_failure",
+                crate::audit::AuditAction::LoginFailure,
                 None,
                 "invalid_credentials",
                 Some(&identifier),
@@ -201,7 +201,7 @@ pub async fn login_user(
         Err(UserServiceError::RateLimited) => {
             record_security_event(
                 &state,
-                "rate_limit_triggered",
+                crate::audit::AuditAction::RateLimitTriggered,
                 None,
                 "login",
                 Some(&identifier),
@@ -254,7 +254,7 @@ pub async fn login_user(
             Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
                 record_security_event(
                     &state,
-                    "mfa_failure",
+                    crate::audit::AuditAction::MfaFailure,
                     Some(user_id),
                     "totp_rate_limited",
                     None,
@@ -296,7 +296,7 @@ pub async fn login_user(
             FactorVerification::Rejected => {
                 record_security_event(
                     &state,
-                    "mfa_failure",
+                    crate::audit::AuditAction::MfaFailure,
                     Some(user_id),
                     "totp_invalid",
                     None,
@@ -321,7 +321,7 @@ pub async fn login_user(
         if recovery_required {
             record_security_event(
                 &state,
-                "passkey_recovery_required",
+                crate::audit::AuditAction::PasskeyRecoveryRequired,
                 Some(user_id),
                 "passkey_disabled",
                 None,
@@ -355,7 +355,7 @@ pub async fn login_user(
         Err(crate::auth_factors::service::AuthFactorServiceError::AuthenticationEpochChanged) => {
             record_security_event(
                 &state,
-                "login_failure",
+                crate::audit::AuditAction::LoginFailure,
                 Some(user_id),
                 "credentials_superseded",
                 Some(&identifier),
@@ -430,7 +430,7 @@ pub async fn revoke_session(
                 .record_best_effort(AuditEvent::new(
                     "user".to_owned(),
                     Some(user_id),
-                    "session_revoke".to_owned(),
+                    crate::audit::AuditAction::SessionRevoke,
                     "session".to_owned(),
                     Some(session_id.to_string()),
                     crate::audit::with_request_context(
@@ -458,7 +458,7 @@ pub async fn revoke_session(
 
 async fn record_security_event(
     state: &AppState,
-    action: &str,
+    action: crate::audit::AuditAction,
     actor_id: Option<crate::users::domain::UserId>,
     reason: &str,
     attempted_identifier: Option<&str>,
@@ -468,7 +468,7 @@ async fn record_security_event(
     state
         .audit
         .record_best_effort(AuditEvent::authentication_failure(
-            action.to_owned(),
+            action,
             if actor_id.is_some() {
                 "user".to_owned()
             } else {

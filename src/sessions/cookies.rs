@@ -1,11 +1,13 @@
 use axum::http::{
     HeaderMap, HeaderValue,
-    header::{COOKIE, InvalidHeaderValue, SET_COOKIE},
+    header::{InvalidHeaderValue, SET_COOKIE},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use cookie::{Cookie, SameSite};
 use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
+
+pub use super::cookie_parse::{CookieReadError, read_named_cookie};
 
 /// Secure browser session cookie. The `__Host-` prefix requires Secure, Path=/,
 /// and no Domain attribute, which makes the host-only contract browser-enforced.
@@ -14,11 +16,9 @@ pub const SESSION_COOKIE: &str = "__Host-chenxing_session";
 pub const CSRF_COOKIE: &str = "__Host-chenxing_csrf";
 const LOCAL_SESSION_COOKIE: &str = "chenxing_session";
 const LOCAL_CSRF_COOKIE: &str = "chenxing_csrf";
-pub const EXTERNAL_STATE_COOKIE_PREFIX: &str = "chenxing_external_oauth_state_";
-const EXTERNAL_STATE_COOKIE_ID_BYTES: usize = 12;
 /// 授权请求持有者 Cookie：证明调用绑定端点的浏览器就是发起 `/oauth/authorize`
 /// 的那一个（#115）。只在服务端与 pending 记录中的摘要比对，值本身不进日志。
-pub const AUTHZ_HOLDER_COOKIE: &str = "chenxing_authz_holder";
+pub const AUTHZ_HOLDER_COOKIE: &str = "__Host-chenxing_authz_holder";
 const AUTHZ_HOLDER_BYTES: usize = 32;
 /// Pending login ticket cookie. The ticket is HttpOnly so normal browser code
 /// cannot copy the bearer value into a URL, log, or response body.
@@ -28,9 +28,16 @@ pub const LOGIN_TICKET_COOKIE: &str = "__Host-chenxing_login_ticket";
 pub const LOGIN_TICKET_HOLDER_COOKIE: &str = "__Host-chenxing_login_holder";
 const LOCAL_LOGIN_TICKET_COOKIE: &str = "chenxing_login_ticket";
 const LOCAL_LOGIN_TICKET_HOLDER_COOKIE: &str = "chenxing_login_holder";
+const LOCAL_AUTHZ_HOLDER_COOKIE: &str = "chenxing_authz_holder";
 const LOGIN_TICKET_HOLDER_BYTES: usize = 32;
 
 pub type CookieError = InvalidHeaderValue;
+
+pub use super::external_state::{
+    EXTERNAL_STATE_COOKIE_PREFIX, HOST_EXTERNAL_STATE_COOKIE_PREFIX,
+    append_clear_external_state_cookie, append_external_state_cookie, external_state,
+    external_state_cookie_name, external_state_cookie_prefix,
+};
 
 pub fn append_login_cookies(
     headers: &mut HeaderMap,
@@ -68,32 +75,6 @@ pub fn append_clear_cookies(headers: &mut HeaderMap, secure: bool) -> Result<(),
     for value in values {
         headers.append(SET_COOKIE, value);
     }
-    Ok(())
-}
-
-pub fn append_external_state_cookie(
-    headers: &mut HeaderMap,
-    state: &str,
-    max_age_seconds: u64,
-    secure: bool,
-    path: &str,
-) -> Result<(), CookieError> {
-    let name = external_state_cookie_name(state);
-    headers.append(
-        SET_COOKIE,
-        build_cookie(&name, state, max_age_seconds, secure, true, path)?,
-    );
-    Ok(())
-}
-
-pub fn append_clear_external_state_cookie(
-    headers: &mut HeaderMap,
-    state: &str,
-    secure: bool,
-    path: &str,
-) -> Result<(), CookieError> {
-    let name = external_state_cookie_name(state);
-    headers.append(SET_COOKIE, build_cookie(&name, "", 0, secure, true, path)?);
     Ok(())
 }
 
@@ -158,15 +139,18 @@ pub fn append_clear_login_ticket_cookies(
     Ok(())
 }
 
-pub fn login_ticket_id_for_secure_transport(headers: &HeaderMap, secure: bool) -> Option<String> {
-    cookie_value(headers, login_ticket_cookie_name(secure))
+pub fn login_ticket_id_for_secure_transport(
+    headers: &HeaderMap,
+    secure: bool,
+) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, login_ticket_cookie_name(secure))
 }
 
 pub fn login_ticket_holder_for_secure_transport(
     headers: &HeaderMap,
     secure: bool,
-) -> Option<String> {
-    cookie_value(headers, login_ticket_holder_cookie_name(secure))
+) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, login_ticket_holder_cookie_name(secure))
 }
 
 /// 下发授权请求持有者 Cookie（HttpOnly, SameSite=Lax, path="/"）。
@@ -180,10 +164,11 @@ pub fn append_authz_holder_cookie(
     max_age_seconds: u64,
     secure: bool,
 ) -> Result<(), CookieError> {
+    let name = authz_holder_cookie_name(secure);
     headers.append(
         SET_COOKIE,
         build_cookie(
-            AUTHZ_HOLDER_COOKIE,
+            name,
             holder,
             max_age_seconds,
             secure,
@@ -194,9 +179,11 @@ pub fn append_authz_holder_cookie(
     Ok(())
 }
 
-/// 从请求 Cookie 头中提取授权持有者值（如存在）。
-pub fn extract_authz_holder_cookie(headers: &HeaderMap) -> Option<String> {
-    cookie_value(headers, AUTHZ_HOLDER_COOKIE)
+pub fn extract_authz_holder_cookie_for_secure_transport(
+    headers: &HeaderMap,
+    secure: bool,
+) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, authz_holder_cookie_name(secure))
 }
 
 /// 开发期兼容头部 `X-Chenxing-Session` 的原始取值。
@@ -213,8 +200,11 @@ pub fn session_header_id(headers: &HeaderMap) -> Option<String> {
 }
 
 /// 按传输安全性取会话 Cookie：HTTPS 用 `__Host-` 前缀名，本地 HTTP 用无前缀名。
-pub fn session_cookie_id_for_secure_transport(headers: &HeaderMap, secure: bool) -> Option<String> {
-    cookie_value(headers, session_cookie_name(secure))
+pub fn session_cookie_id_for_secure_transport(
+    headers: &HeaderMap,
+    secure: bool,
+) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, session_cookie_name(secure))
 }
 
 pub fn csrf_token(headers: &HeaderMap) -> Option<String> {
@@ -224,12 +214,15 @@ pub fn csrf_token(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub fn csrf_cookie(headers: &HeaderMap) -> Option<String> {
-    cookie_value(headers, CSRF_COOKIE)
+pub fn csrf_cookie(headers: &HeaderMap) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, CSRF_COOKIE)
 }
 
-pub fn csrf_cookie_for_secure_transport(headers: &HeaderMap, secure: bool) -> Option<String> {
-    cookie_value(headers, csrf_cookie_name(secure))
+pub fn csrf_cookie_for_secure_transport(
+    headers: &HeaderMap,
+    secure: bool,
+) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, csrf_cookie_name(secure))
 }
 
 pub const fn session_cookie_name(secure: bool) -> &'static str {
@@ -264,21 +257,19 @@ pub const fn login_ticket_holder_cookie_name(secure: bool) -> &'static str {
     }
 }
 
-pub fn external_state(headers: &HeaderMap, state: &str) -> Option<String> {
-    let name = external_state_cookie_name(state);
-    cookie_value(headers, &name)
+pub const fn authz_holder_cookie_name(secure: bool) -> &'static str {
+    if secure {
+        AUTHZ_HOLDER_COOKIE
+    } else {
+        LOCAL_AUTHZ_HOLDER_COOKIE
+    }
 }
 
-pub fn external_state_cookie_name(state: &str) -> String {
-    let digest = Sha256::digest(state.as_bytes());
-    format!(
-        "{EXTERNAL_STATE_COOKIE_PREFIX}{}",
-        URL_SAFE_NO_PAD.encode(&digest[..EXTERNAL_STATE_COOKIE_ID_BYTES])
-    )
-}
-
-pub fn cookie_value_by_name(headers: &HeaderMap, name: &str) -> Option<String> {
-    cookie_value(headers, name)
+pub fn cookie_value_by_name(
+    headers: &HeaderMap,
+    name: &str,
+) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, name)
 }
 
 pub fn append_named_login_cookies(
@@ -323,15 +314,7 @@ pub fn append_named_clear_cookies(
     Ok(())
 }
 
-fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    let header = headers.get(COOKIE)?.to_str().ok()?;
-    header.split(';').find_map(|part| {
-        let cookie = Cookie::parse(part.trim()).ok()?;
-        (cookie.name() == name).then(|| cookie.value().to_owned())
-    })
-}
-
-fn build_cookie(
+pub(crate) fn build_cookie(
     name: &str,
     value: &str,
     max_age_seconds: u64,
@@ -359,8 +342,9 @@ mod tests {
     use axum::http::{HeaderMap, header::SET_COOKIE};
 
     use super::{
-        append_login_cookies, authz_holder_hash, login_ticket_holder_hash, new_authz_holder,
-        new_login_ticket_holder,
+        append_authz_holder_cookie, append_login_cookies, authz_holder_cookie_name,
+        authz_holder_hash, extract_authz_holder_cookie_for_secure_transport,
+        login_ticket_holder_hash, new_authz_holder, new_login_ticket_holder,
     };
 
     /// 回归 #115：holder 值生成应足够随机且长度合理。
@@ -397,6 +381,45 @@ mod tests {
         let hash1 = authz_holder_hash("holder_a");
         let hash2 = authz_holder_hash("holder_b");
         assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn authz_holder_cookie_name_and_reader_follow_transport_security() {
+        let holder = "holder";
+        assert_eq!(
+            authz_holder_cookie_name(true),
+            "__Host-chenxing_authz_holder"
+        );
+        assert_eq!(authz_holder_cookie_name(false), "chenxing_authz_holder");
+
+        for secure in [true, false] {
+            let mut response_headers = HeaderMap::new();
+            append_authz_holder_cookie(&mut response_headers, holder, 300, secure)
+                .expect("holder cookie");
+            let set_cookie = response_headers
+                .get(SET_COOKIE)
+                .expect("Set-Cookie header")
+                .to_str()
+                .expect("cookie header value");
+            let name = authz_holder_cookie_name(secure);
+            assert!(set_cookie.starts_with(&format!("{name}=")));
+
+            let mut request_headers = HeaderMap::new();
+            request_headers.insert(
+                axum::http::header::COOKIE,
+                set_cookie.split(';').next().unwrap().parse().unwrap(),
+            );
+            assert_eq!(
+                extract_authz_holder_cookie_for_secure_transport(&request_headers, secure)
+                    .expect("holder cookie parse"),
+                Some(holder.to_owned())
+            );
+            assert_eq!(
+                extract_authz_holder_cookie_for_secure_transport(&request_headers, !secure)
+                    .expect("holder cookie parse"),
+                None
+            );
+        }
     }
 
     #[test]

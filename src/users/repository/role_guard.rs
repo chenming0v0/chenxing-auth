@@ -69,6 +69,7 @@ pub async fn set_user_role(
     pool: &PgPool,
     id: UserId,
     role: UserRole,
+    access: OwnerTargetAccess,
 ) -> Result<OwnerGuardOutcome, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
     let (active_owner_count, current) = lock_owner_scope(&mut transaction, id).await?;
@@ -76,6 +77,12 @@ pub async fn set_user_role(
         transaction.rollback().await?;
         return Ok(OwnerGuardOutcome::NotFound);
     };
+    if UserRole::parse(&current_role).is_some_and(UserRole::is_privileged)
+        && !access.permits_owner()
+    {
+        transaction.rollback().await?;
+        return Ok(OwnerGuardOutcome::ManageRolesRequired);
+    }
     if current_role == "owner"
         && role != UserRole::Owner
         && UserStatus::is_active(&status)
@@ -89,6 +96,9 @@ pub async fn set_user_role(
         .bind(role.as_str())
         .execute(&mut *transaction)
         .await?;
+    if role == UserRole::User {
+        crate::sessions::store::revoke_all_for_user_in_transaction(&mut transaction, id).await?;
+    }
     transaction.commit().await?;
     Ok(OwnerGuardOutcome::Updated)
 }

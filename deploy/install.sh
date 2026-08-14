@@ -46,6 +46,10 @@ ensure_env_value() {
 }
 
 validate_issuer() {
+    if [[ -z "$APP_ISSUER" ]]; then
+        EXPECTED_COOKIE_SECURE=true
+        return 0
+    fi
     if [[ "$APP_ISSUER" =~ ^https://[^/[:space:]?#@]+$ ]]; then
         EXPECTED_COOKIE_SECURE=true
         return 0
@@ -63,16 +67,8 @@ if [[ -f .env ]]; then
     printf '%s\n' 'Using existing .env; secrets will not be replaced.'
     APP_ISSUER="$(read_env_value APP_ISSUER)"
     COOKIE_SECURE="$(read_env_value COOKIE_SECURE)"
-    if [[ -z "$APP_ISSUER" ]]; then
-        printf '%s\n' 'Existing .env must define APP_ISSUER. Set the public HTTPS issuer and retry.' >&2
-        exit 1
-    fi
 else
-    if [[ -z "${CHENXING_ISSUER:-}" ]]; then
-        printf '%s\n' 'CHENXING_ISSUER is required for a new production install (for example, https://auth.example.com).' >&2
-        exit 1
-    fi
-    APP_ISSUER="$CHENXING_ISSUER"
+    APP_ISSUER="${CHENXING_ISSUER:-}"
     validate_issuer
 
     if ! command -v openssl >/dev/null 2>&1; then
@@ -132,7 +128,7 @@ if [[ -z "$POSTGRES_RUNTIME_PASSWORD" ]]; then
 fi
 
 validate_issuer
-if [[ "$COOKIE_SECURE" != "$EXPECTED_COOKIE_SECURE" ]]; then
+if [[ -n "$APP_ISSUER" && "$COOKIE_SECURE" != "$EXPECTED_COOKIE_SECURE" ]]; then
     printf 'COOKIE_SECURE must be %s for issuer %s.\n' "$EXPECTED_COOKIE_SECURE" "$APP_ISSUER" >&2
     exit 1
 fi
@@ -180,19 +176,24 @@ if [[ "$ready" != true ]]; then
     exit 1
 fi
 
-DISCOVERY_JSON="$(curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${HOST_PORT}/.well-known/openid-configuration")" || {
-    printf '%s\n' 'Readiness succeeded but OpenID Connect discovery could not be fetched.' >&2
-    exit 1
-}
-for marker in \
-    "\"issuer\":\"${APP_ISSUER}\"" \
-    "\"authorization_endpoint\":\"${APP_ISSUER}/oauth/authorize\"" \
-    "\"token_endpoint\":\"${APP_ISSUER}/oauth/token\"" \
-    "\"jwks_uri\":\"${APP_ISSUER}/.well-known/jwks.json\""; do
-    if [[ "$DISCOVERY_JSON" != *"$marker"* ]]; then
-        printf 'OpenID discovery does not match APP_ISSUER: %s\n' "$APP_ISSUER" >&2
+if [[ -n "$APP_ISSUER" ]]; then
+    DISCOVERY_JSON="$(curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:${HOST_PORT}/.well-known/openid-configuration")" || {
+        printf '%s\n' 'Readiness succeeded but OpenID Connect discovery could not be fetched.' >&2
         exit 1
-    fi
-done
-printf '%s\n' 'OpenID Connect discovery matches the configured issuer.'
+    }
+    for marker in \
+        "\"issuer\":\"${APP_ISSUER}\"" \
+        "\"authorization_endpoint\":\"${APP_ISSUER}/oauth/authorize\"" \
+        "\"token_endpoint\":\"${APP_ISSUER}/oauth/token\"" \
+        "\"jwks_uri\":\"${APP_ISSUER}/.well-known/jwks.json\""; do
+        if [[ "$DISCOVERY_JSON" != *"$marker"* ]]; then
+            printf 'OpenID discovery does not match APP_ISSUER: %s\n' "$APP_ISSUER" >&2
+            exit 1
+        fi
+    done
+    printf '%s\n' 'OpenID Connect discovery matches the configured issuer.'
+else
+    printf '%s\n' 'APP_ISSUER is not set; the service is running in secure bootstrap mode.'
+    printf '%s\n' 'Configure the issuer through the Owner settings API or configure-issuer when ready.'
+fi
 exit 0

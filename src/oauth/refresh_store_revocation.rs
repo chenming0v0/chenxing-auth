@@ -9,11 +9,13 @@
 use redis::{AsyncCommands, Script};
 
 use super::{
-    CLIENT_REVOKE_BATCH_SIZE, FAMILY_IDX_PREFIX, FamilyScope, INDEX_TTL_SECONDS, RefreshTokenStore,
-    RefreshTokenStoreError, TOKEN_KEY_PREFIX, TOMBSTONE_PREFIX, TOMBSTONE_TTL_SECONDS, Tombstone,
-    TombstoneState,
+    CLIENT_REVOKE_BATCH_SIZE, FAMILY_IDX_PREFIX, FAMILY_REVOKED_PREFIX, FamilyScope,
+    GRANT_IDX_PREFIX, INDEX_TTL_SECONDS, RefreshTokenStore, RefreshTokenStoreError,
+    TOKEN_KEY_PREFIX, TOMBSTONE_PREFIX, TOMBSTONE_TTL_SECONDS, Tombstone, TombstoneState,
 };
-use crate::oauth::refresh_store_scripts::{REVOKE_CLIENT_TOKENS_SCRIPT, REVOKE_FAMILY_SCRIPT};
+use crate::oauth::refresh_store_scripts::{
+    REVOKE_CLIENT_TOKENS_SCRIPT, REVOKE_FAMILY_SCRIPT, REVOKE_GRANT_TOKENS_SCRIPT,
+};
 
 /// 一次 family 撤销的结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +124,7 @@ impl RefreshTokenStore {
             .key(&scope.revoked_key)
             .key(Self::token_key_for_hash(&submitted_hash))
             .key(Self::tombstone_key_for_hash(&submitted_hash))
+            .key(Self::grant_idx_key(user_id, client_id))
             .arg(TOKEN_KEY_PREFIX)
             .arg(TOMBSTONE_PREFIX)
             .arg(tombstone_json)
@@ -143,6 +146,57 @@ impl RefreshTokenStore {
                 already_revoked: false,
             }
         })
+    }
+
+    /// 撤销一个 grant（`user_id` + `client_id`）下的全部 Refresh Token。
+    ///
+    /// 用户「断开应用」的撤销单元（Issue #418）。此前撤销只写 consent 行，
+    /// 已签发的 Refresh Token 靠下一次兑换时的 consent 检查挡住——那是
+    /// check-on-use，不是撤销。用户的合理预期是「断开即断」，凭据必须被删掉。
+    ///
+    /// 与 [`Self::revoke_client_tokens`] 不同，这里写墓碑和 family 墓志：
+    /// grant 撤销不改变 Client 的 secret 版本，因此没有版本兜底，一次飞行中的
+    /// 轮换可以在索引清空之后把新成员写回同一个 family。墓志是那道竞态的
+    /// 收口点。墓碑状态是 `ExplicitRevoke`：用户主动断开不是泄露信号。
+    ///
+    /// 返回被撤销的 token 数量。
+    pub async fn revoke_grant_tokens(
+        &self,
+        user_id: &str,
+        client_id: &str,
+    ) -> Result<u64, RefreshTokenStoreError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let grant_idx_key = Self::grant_idx_key(user_id, client_id);
+        // family_id 由脚本按每个成员的 payload 填入，这里只需要一个不绑定具体
+        // family 的墓碑载荷；撤销域标识写在键名上。
+        let tombstone_json = serde_json::to_string(&Tombstone::for_family(
+            "",
+            client_id,
+            user_id,
+            TombstoneState::ExplicitRevoke,
+            self.clock.now(),
+        ))?;
+        let mut removed = 0_u64;
+
+        loop {
+            let (batch_removed, remaining): (i64, i64) = Script::new(REVOKE_GRANT_TOKENS_SCRIPT)
+                .key(&grant_idx_key)
+                .arg(TOKEN_KEY_PREFIX)
+                .arg(FAMILY_IDX_PREFIX)
+                .arg(TOMBSTONE_PREFIX)
+                .arg(CLIENT_REVOKE_BATCH_SIZE)
+                .arg(Self::client_idx_key(client_id))
+                .arg(&tombstone_json)
+                .arg(TOMBSTONE_TTL_SECONDS)
+                .arg(FAMILY_REVOKED_PREFIX)
+                .arg(INDEX_TTL_SECONDS)
+                .invoke_async(&mut connection)
+                .await?;
+            removed = removed.saturating_add(batch_removed.max(0) as u64);
+            if remaining <= 0 {
+                return Ok(removed);
+            }
+        }
     }
 
     /// 撤销某个 Client 的全部 Refresh Token（Issue #62：Secret 轮换时调用）。
@@ -174,6 +228,7 @@ impl RefreshTokenStore {
                 .arg(FAMILY_IDX_PREFIX)
                 .arg(TOMBSTONE_PREFIX)
                 .arg(CLIENT_REVOKE_BATCH_SIZE)
+                .arg(GRANT_IDX_PREFIX)
                 .invoke_async(&mut connection)
                 .await?;
             removed = removed.saturating_add(batch_removed.max(0) as u64);

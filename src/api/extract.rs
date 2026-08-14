@@ -47,6 +47,7 @@ use axum::{
     response::Response,
 };
 use std::ops::Deref;
+use std::sync::Arc;
 
 use crate::{
     admin::{
@@ -55,12 +56,56 @@ use crate::{
         handlers::is_admin_request,
     },
     error,
+    settings::IssuerSnapshot,
     state::AppState,
     users::{
         domain::OwnerTargetAccess,
         ui_auth::{UserContext, current_user, user_csrf_valid},
     },
 };
+
+/// 由全局 Issuer gate 注入的请求级快照。
+///
+/// handler 不能重新读取 runtime：更新可能恰好落在 gate 与 handler 之间，二次读取会
+/// 让同一请求混用两个 generation。提取器缺失即表示路由没有经过协议门禁，直接拒绝。
+#[derive(Debug, Clone)]
+pub struct RequestIssuer(Arc<IssuerSnapshot>);
+
+impl RequestIssuer {
+    pub fn snapshot(&self) -> &Arc<IssuerSnapshot> {
+        &self.0
+    }
+}
+
+impl Deref for RequestIssuer {
+    type Target = IssuerSnapshot;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<S> FromRequestParts<S> for RequestIssuer
+where
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<Arc<IssuerSnapshot>>()
+            .cloned()
+            .map(Self)
+            .ok_or_else(|| {
+                tracing::error!("issuer-gated handler was invoked without a request snapshot");
+                error::service_unavailable(
+                    "issuer_not_loaded",
+                    "the application issuer is not loaded",
+                )
+            })
+    }
+}
 
 /// 已认证的浏览器会话，未校验 CSRF。用于读端点。
 ///

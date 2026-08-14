@@ -1,5 +1,7 @@
 use crate::{
+    api::extract::RequestIssuer,
     audit::AuditEvent,
+    auth_factors::session::clear_pending_login_after_external_success,
     error,
     oauth::{
         providers::{
@@ -45,6 +47,7 @@ impl fmt::Debug for ExternalCallbackQuery {
 
 pub async fn external_callback(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     Path(slug): Path<String>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
@@ -72,7 +75,10 @@ pub async fn external_callback(
     let Some(returned_state) = query.state.as_deref().filter(|value| !value.is_empty()) else {
         return external_error(&state, &slug, "oauth_login_failed").await;
     };
-    let cookie_state = cookies::external_state(&headers, returned_state);
+    let cookie_state =
+        cookies::external_state(&headers, returned_state, state.config.cookie_secure)
+            .ok()
+            .flatten();
     if cookie_state.as_deref() != Some(returned_state) {
         return external_error_with_request(
             &state,
@@ -140,7 +146,7 @@ pub async fn external_callback(
             .await;
         }
     };
-    let callback = format!("{}{}", state.config.issuer_url, callback_path);
+    let callback = format!("{}{}", issuer.issuer().as_str(), callback_path);
     // 用发起授权时存入 state 的 verifier 兑换授权码（RFC 7636 §4.5）。
     // 空串表示本次登录未使用 PKCE：provider 关闭了开关，或这是升级前签发的旧 state。
     let token = match state
@@ -214,7 +220,6 @@ pub async fn external_callback(
             if let Err(cookie_error) = append_external_state_clear(
                 &mut response,
                 returned_state,
-                &callback_path,
                 state.config.cookie_secure,
             ) {
                 tracing::error!(
@@ -228,12 +233,9 @@ pub async fn external_callback(
     if let Err(error_value) = state.sessions.save(&mut session, ttl).await {
         tracing::error!(error = %error_value, "failed to save external OAuth session");
         let mut response = error::internal();
-        if let Err(cookie_error) = append_external_state_clear(
-            &mut response,
-            returned_state,
-            &callback_path,
-            state.config.cookie_secure,
-        ) {
+        if let Err(cookie_error) =
+            append_external_state_clear(&mut response, returned_state, state.config.cookie_secure)
+        {
             tracing::error!(
                 error = %cookie_error,
                 "failed to clear external OAuth state cookie"
@@ -245,9 +247,14 @@ pub async fn external_callback(
         .request_id
         .as_deref()
         .filter(|value| !value.is_empty());
-    let holder_hash = cookies::extract_authz_holder_cookie(&headers)
-        .as_deref()
-        .map(cookies::authz_holder_hash);
+    let holder_hash = cookies::extract_authz_holder_cookie_for_secure_transport(
+        &headers,
+        state.config.cookie_secure,
+    )
+    .ok()
+    .flatten()
+    .as_deref()
+    .map(cookies::authz_holder_hash);
     if let Some(request_id) = request_id
         && let Err(error_code) = bind_and_audit(
             &state,
@@ -274,7 +281,7 @@ pub async fn external_callback(
         .record_blocking(AuditEvent::new(
             "user".to_owned(),
             Some(user_id.to_string()),
-            "login".to_owned(),
+            crate::audit::AuditAction::Login,
             "session".to_owned(),
             Some(session.id.to_string()),
             crate::audit::with_request_context(
@@ -297,12 +304,9 @@ pub async fn external_callback(
             );
         }
         let mut response = error::internal();
-        if let Err(cookie_error) = append_external_state_clear(
-            &mut response,
-            returned_state,
-            &callback_path,
-            state.config.cookie_secure,
-        ) {
+        if let Err(cookie_error) =
+            append_external_state_clear(&mut response, returned_state, state.config.cookie_secure)
+        {
             tracing::error!(
                 error = %cookie_error,
                 "failed to clear external OAuth state cookie"
@@ -325,20 +329,19 @@ pub async fn external_callback(
         state.config.cookie_secure,
     ) {
         tracing::error!(error = %cookie_error, "failed to build external OAuth login cookies");
-        return cookie_failure_response(&state, &session, returned_state, &callback_path).await;
+        return cookie_failure_response(&state, &session, returned_state).await;
     }
-    if let Err(cookie_error) = append_external_state_clear(
-        &mut response,
-        returned_state,
-        &callback_path,
-        state.config.cookie_secure,
-    ) {
+    if let Err(cookie_error) =
+        append_external_state_clear(&mut response, returned_state, state.config.cookie_secure)
+    {
         tracing::error!(
             error = %cookie_error,
             "failed to clear external OAuth state cookie"
         );
-        return cookie_failure_response(&state, &session, returned_state, &callback_path).await;
+        return cookie_failure_response(&state, &session, returned_state).await;
     }
+    // Session 已经对浏览器生效。残留 MFA ticket 的清理失败不能撤回这次登录。
+    clear_pending_login_after_external_success(&state, &headers, &mut response).await;
     response
 }
 
@@ -369,7 +372,7 @@ async fn bind_and_audit(
                 .record_best_effort(AuditEvent::new(
                     "user".to_owned(),
                     Some(user_id.to_string()),
-                    "authorization_request_rebound".to_owned(),
+                    crate::audit::AuditAction::AuthorizationRequestRebound,
                     "oauth_authorization".to_owned(),
                     None,
                     serde_json::json!({"reason": "session_changed", "channel": "external_oauth"}),
@@ -409,7 +412,6 @@ async fn cookie_failure_response(
     state: &AppState,
     session: &Session,
     returned_state: &str,
-    callback_path: &str,
 ) -> Response {
     if let Err(revoke_error) = state.sessions.revoke(&session.token).await {
         tracing::warn!(
@@ -418,12 +420,9 @@ async fn cookie_failure_response(
         );
     }
     let mut response = error::internal();
-    if let Err(cookie_error) = append_external_state_clear(
-        &mut response,
-        returned_state,
-        callback_path,
-        state.config.cookie_secure,
-    ) {
+    if let Err(cookie_error) =
+        append_external_state_clear(&mut response, returned_state, state.config.cookie_secure)
+    {
         tracing::error!(
             error = %cookie_error,
             "failed to clear external OAuth state cookie"

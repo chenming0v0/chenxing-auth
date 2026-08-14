@@ -247,11 +247,11 @@ pub async fn create_admin_client(router: &Router, suffix: &str) -> Value {
     json(response).await
 }
 
-pub async fn create_plan(
+pub async fn submit_plan(
     router: &Router,
     suffix: &str,
     limits: serde_json::Map<String, Value>,
-) -> Value {
+) -> (StatusCode, Value) {
     let mut body = serde_json::Map::new();
     body.insert("code".to_owned(), Value::String(format!("plan-{suffix}")));
     body.insert("name".to_owned(), Value::String(format!("Plan {suffix}")));
@@ -271,8 +271,17 @@ pub async fn create_plan(
         )
         .await
         .expect("create plan response");
-    assert_eq!(response.status(), StatusCode::CREATED, "create plan");
-    json(response).await
+    (response.status(), json(response).await)
+}
+
+pub async fn create_plan(
+    router: &Router,
+    suffix: &str,
+    limits: serde_json::Map<String, Value>,
+) -> Value {
+    let (status, body) = submit_plan(router, suffix, limits).await;
+    assert_eq!(status, StatusCode::CREATED, "create plan: {body}");
+    body
 }
 
 /// 常用限额组合，省掉每个测试重复构造 `serde_json::Map`。

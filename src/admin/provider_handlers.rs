@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::{
     admin::{authorization::AdminActor, domain::AdminPermission},
-    api::extract::{AdminRead, AdminWrite},
+    api::extract::{AdminRead, AdminWrite, RequestIssuer},
     audit::AuditEvent,
     error,
     oauth::providers::{domain::ProviderInput, service::ExternalOAuthError},
@@ -23,13 +23,14 @@ struct ProviderSummaryResponse {
 }
 
 fn provider_response(
-    state: &AppState,
+    issuer: &RequestIssuer,
     provider: crate::oauth::providers::domain::ProviderSummary,
 ) -> ProviderSummaryResponse {
     ProviderSummaryResponse {
         callback_uri: format!(
             "{}/auth/external/{}/callback",
-            state.config.issuer_url, provider.slug
+            issuer.issuer().as_str(),
+            provider.slug
         ),
         provider,
     }
@@ -40,7 +41,11 @@ pub struct ProviderStatusPath {
     pub slug: String,
 }
 
-pub async fn list_providers(State(state): State<AppState>, admin: AdminRead) -> Response {
+pub async fn list_providers(
+    State(state): State<AppState>,
+    issuer: RequestIssuer,
+    admin: AdminRead,
+) -> Response {
     if let Err(response) = admin
         .authorize(&state, AdminPermission::ManageIdentityProviders)
         .await
@@ -53,7 +58,7 @@ pub async fn list_providers(State(state): State<AppState>, admin: AdminRead) -> 
             Json(
                 providers
                     .into_iter()
-                    .map(|provider| provider_response(&state, provider))
+                    .map(|provider| provider_response(&issuer, provider))
                     .collect::<Vec<_>>(),
             ),
         )
@@ -67,6 +72,7 @@ pub async fn list_providers(State(state): State<AppState>, admin: AdminRead) -> 
 
 pub async fn create_provider(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     admin: AdminWrite,
     Json(input): Json<ProviderInput>,
 ) -> Response {
@@ -88,7 +94,7 @@ pub async fn create_provider(
             record_provider_event(
                 &state,
                 actor,
-                "oauth_provider_create",
+                crate::audit::AuditAction::OauthProviderCreate,
                 &provider.slug,
                 serde_json::json!({
                     "authorization_endpoint": input.authorization_endpoint,
@@ -99,7 +105,7 @@ pub async fn create_provider(
             .await;
             (
                 StatusCode::CREATED,
-                Json(provider_response(&state, provider)),
+                Json(provider_response(&issuer, provider)),
             )
                 .into_response()
         }
@@ -128,7 +134,7 @@ pub async fn update_provider(
             record_provider_event(
                 &state,
                 actor,
-                "oauth_provider_update",
+                crate::audit::AuditAction::OauthProviderUpdate,
                 &slug,
                 serde_json::json!({
                     "authorization_endpoint": input.authorization_endpoint,
@@ -180,7 +186,11 @@ async fn set_provider_status(
             record_provider_event(
                 state,
                 actor,
-                &format!("oauth_provider_{status}"),
+                match status {
+                    "active" => crate::audit::AuditAction::OauthProviderActive,
+                    "disabled" => crate::audit::AuditAction::OauthProviderDisabled,
+                    _ => unreachable!("provider status is validated by the service"),
+                },
                 slug,
                 serde_json::json!({"result": "success"}),
             )
@@ -247,7 +257,7 @@ fn internal(error_value: &ExternalOAuthError, operation: &'static str) -> Respon
 async fn record_provider_event(
     state: &AppState,
     actor: AdminActor,
-    action: &str,
+    action: crate::audit::AuditAction,
     slug: &str,
     details: serde_json::Value,
 ) {
@@ -257,7 +267,7 @@ async fn record_provider_event(
         .record_best_effort(AuditEvent::new(
             actor_type.to_owned(),
             actor_id,
-            action.to_owned(),
+            action,
             "oauth_provider".to_owned(),
             Some(slug.to_owned()),
             details,

@@ -1,8 +1,7 @@
-//! [`SecurityLimitsSetting`] 的校验与回读收敛测试。
+//! [`SecurityLimitsSetting`] 的写入校验测试。
 //!
-//! 这些用例不连数据库：它们守的是「管理 API 拒绝越界值、回读路径降级到调用方默认值」
-//! 的收敛规则。收敛一旦出错，症状是配置被静默改写或旧行把 OAuth 流程打死——都不会
-//! 报错，只在限流行为上体现出来。
+//! 已持久化值的 decode / 旧 schema / 越界 fail-closed / 管理读取诊断在
+//! `persisted_tests.rs`。这里只守「管理 API 拒绝越界并指出字段名」。
 
 use super::*;
 // 生产代码里 `for_each_security_limit!` 用绝对路径引用上界常量；测试要按名字断言。
@@ -307,62 +306,4 @@ fn security_limits_rejects_authorization_code_ttl_beyond_the_rfc_guidance() {
         boundary.clone().validate().expect("the bound itself is ok"),
         boundary
     );
-}
-
-/// 回读路径必须降级而不是报错：上界收紧之前写入的旧行不能把 OAuth 流程打死。
-#[test]
-fn security_limits_sanitized_falls_back_out_of_range_stored_values() {
-    let defaults = SecurityLimitsSetting::default();
-    let sanitized = SecurityLimitsSetting {
-        account_failure_limit: i64::MAX,
-        authorization_code_ttl_seconds: 86_400,
-        ip_failure_limit: 0,
-        ..Default::default()
-    }
-    .sanitized(&defaults);
-
-    assert_eq!(sanitized, defaults);
-    // 降级后的取值必须自身合法，否则回读结果仍然是不可用配置。
-    assert_eq!(
-        sanitized
-            .clone()
-            .validate()
-            .expect("sanitized must be valid"),
-        sanitized
-    );
-}
-
-/// 合法的已持久化取值不能被回读路径改写，否则管理员保存的配置形同虚设。
-#[test]
-fn security_limits_sanitized_preserves_valid_stored_values() {
-    let stored = SecurityLimitsSetting {
-        unauthenticated_source_qps: 5,
-        authorization_code_ttl_seconds: 60,
-        ip_failure_limit: 100,
-        ..Default::default()
-    };
-    assert_eq!(
-        stored.clone().sanitized(&SecurityLimitsSetting::default()),
-        stored
-    );
-}
-
-/// #361：回退目标必须是调用方传入的启动期默认（环境配置），而不是结构体自身的
-/// 硬编码默认。`SettingsService` 在数据库无行时用环境配置（如 `ACCOUNT_FAILURE_LIMIT=50`），
-/// 行存在但某项越界时也必须回落同一来源，否则运维的环境调优会在旧行存在期间被静默丢弃。
-#[test]
-fn security_limits_sanitized_falls_back_to_provided_defaults_not_hardcoded_ones() {
-    let env_defaults = SecurityLimitsSetting {
-        account_failure_limit: 50,
-        ..Default::default()
-    };
-    let sanitized = SecurityLimitsSetting {
-        account_failure_limit: i64::MAX,
-        ..Default::default()
-    }
-    .sanitized(&env_defaults);
-
-    assert_eq!(sanitized.account_failure_limit, 50);
-    // 硬编码默认必须与此不同，否则本用例退化为恒真，守不住漂移。
-    assert_ne!(SecurityLimitsSetting::default().account_failure_limit, 50);
 }

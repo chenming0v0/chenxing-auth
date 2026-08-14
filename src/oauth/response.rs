@@ -14,7 +14,7 @@ use super::{
     session::active_user_id,
     token::issue_access_token_at,
 };
-use crate::{error, state::AppState};
+use crate::{config::IssuerUrl, error, state::AppState};
 
 #[derive(Serialize)]
 struct TokenResponse {
@@ -44,29 +44,37 @@ impl fmt::Debug for TokenResponse {
     }
 }
 
-/// `auth_time` 是终端用户完成认证的时刻（会话建立时间），`None` 表示无会话
-/// 上下文，ID Token 将省略该 Claim。见 `id_token::IdTokenClaims::auth_time`。
-pub async fn issue_token_response(
-    state: &AppState,
-    user_id: &str,
-    client_id: &str,
-    scopes: &[String],
-    refresh_token: Option<String>,
-    nonce: Option<&str>,
-    auth_time: Option<i64>,
-) -> Response {
-    with_no_store_headers(
-        issue_token_response_inner(
-            state,
-            user_id,
-            client_id,
-            scopes,
-            refresh_token,
-            nonce,
-            auth_time,
-        )
-        .await,
-    )
+/// Token issuance context from one authorization exchange.
+pub struct TokenIssueParams<'a> {
+    pub issuer: &'a IssuerUrl,
+    pub user_id: &'a str,
+    pub client_id: &'a str,
+    pub scopes: &'a [String],
+    pub refresh_token: Option<String>,
+    pub nonce: Option<&'a str>,
+    /// `None` omits the `auth_time` claim from the ID Token.
+    pub auth_time: Option<i64>,
+}
+
+impl fmt::Debug for TokenIssueParams<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenIssueParams")
+            .field("issuer", &self.issuer)
+            .field("user_id", &self.user_id)
+            .field("client_id", &self.client_id)
+            .field("scopes", &self.scopes)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("nonce", &self.nonce.map(|_| "<redacted>"))
+            .field("auth_time", &self.auth_time)
+            .finish()
+    }
+}
+
+pub async fn issue_token_response(state: &AppState, params: TokenIssueParams<'_>) -> Response {
+    with_no_store_headers(issue_token_response_inner(state, params).await)
 }
 
 pub fn with_no_store_headers(mut response: Response) -> Response {
@@ -79,16 +87,8 @@ pub fn with_no_store_headers(mut response: Response) -> Response {
     response
 }
 
-async fn issue_token_response_inner(
-    state: &AppState,
-    user_id: &str,
-    client_id: &str,
-    scopes: &[String],
-    refresh_token: Option<String>,
-    nonce: Option<&str>,
-    auth_time: Option<i64>,
-) -> Response {
-    match active_user_id(state, user_id).await {
+async fn issue_token_response_inner(state: &AppState, params: TokenIssueParams<'_>) -> Response {
+    match active_user_id(state, params.user_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
             return error::oauth_bad_request("invalid_grant", "authorization grant is invalid");
@@ -100,10 +100,10 @@ async fn issue_token_response_inner(
     }
     let token = match issue_access_token_at(
         &state.keys,
-        &state.config.issuer_url,
-        user_id,
-        client_id,
-        scopes,
+        params.issuer.as_str(),
+        params.user_id,
+        params.client_id,
+        params.scopes,
         state.config.access_token_ttl_seconds,
         state.clock.now(),
     ) {
@@ -113,7 +113,7 @@ async fn issue_token_response_inner(
             return error::oauth_temporarily_unavailable();
         }
     };
-    let id_token = match issue_id_token(state, user_id, client_id, scopes, nonce, auth_time).await {
+    let id_token = match issue_id_token(state, &params).await {
         Ok(token) => token,
         Err(response) => return response,
     };
@@ -123,8 +123,8 @@ async fn issue_token_response_inner(
             access_token: token,
             token_type: "Bearer",
             expires_in: state.config.access_token_ttl_seconds,
-            scope: scopes.join(" "),
-            refresh_token,
+            scope: params.scopes.join(" "),
+            refresh_token: params.refresh_token,
             id_token,
         }),
     )
@@ -133,17 +133,16 @@ async fn issue_token_response_inner(
 
 async fn issue_id_token(
     state: &AppState,
-    user_id: &str,
-    client_id: &str,
-    scopes: &[String],
-    nonce: Option<&str>,
-    auth_time: Option<i64>,
+    params: &TokenIssueParams<'_>,
 ) -> Result<Option<String>, Response> {
-    if !scopes.iter().any(|scope| scope == "openid") {
+    if !params.scopes.iter().any(|scope| scope == "openid") {
         return Ok(None);
     }
-    let Ok(subject) = user_id.parse::<crate::users::domain::UserId>() else {
-        tracing::error!(user_id, "cannot issue ID token for invalid user id");
+    let Ok(subject) = params.user_id.parse::<crate::users::domain::UserId>() else {
+        tracing::error!(
+            user_id = params.user_id,
+            "cannot issue ID token for invalid user id"
+        );
         return Err(error::oauth_temporarily_unavailable());
     };
     let profile = match state.users.find_profile(subject).await {
@@ -156,21 +155,23 @@ async fn issue_id_token(
     };
     let id_token = issue_id_token_with_profile_at(
         &state.keys,
-        &state.config.issuer_url,
-        user_id,
-        client_id,
+        params.issuer.as_str(),
+        params.user_id,
+        params.client_id,
         IdTokenProfile {
-            nonce,
-            email: scopes
+            nonce: params.nonce,
+            email: params
+                .scopes
                 .iter()
                 .any(|scope| scope == "email")
                 .then_some(profile.email.as_str()),
-            name: scopes
+            name: params
+                .scopes
                 .iter()
                 .any(|scope| scope == "profile")
                 .then_some(profile.display_name.as_deref())
                 .flatten(),
-            auth_time,
+            auth_time: params.auth_time,
         },
         state.config.id_token_ttl_seconds,
         state.clock.now(),

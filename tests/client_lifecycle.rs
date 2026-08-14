@@ -31,8 +31,11 @@ fn admin_one_time_secret_paths_block_on_audit_failure() {
         ADMIN_HANDLERS.contains("audit.block_on_failure"),
         "handler 必须在审计失败时记录 audit.block_on_failure 结构化事件"
     );
-    // 确认两个操作的审计 action 名称都在 handler 里
-    for action in ["client_create", "client_secret_rotate"] {
+    // 确认两个操作都使用受类型约束的生产 action。
+    for action in [
+        "AuditAction::ClientCreate",
+        "AuditAction::ClientSecretRotate",
+    ] {
         assert!(
             ADMIN_HANDLERS.contains(action),
             "handler 必须包含操作 {action} 的审计写入"

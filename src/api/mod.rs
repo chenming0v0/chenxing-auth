@@ -1,10 +1,12 @@
 use axum::{
     Router,
+    extract::{Request as AxumRequest, State},
     http::{HeaderMap, Request},
-    middleware::map_response,
+    middleware::{Next, from_fn, from_fn_with_state},
     response::Response,
+    routing::get,
 };
-use std::{net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tower_http::trace::TraceLayer;
 
 use crate::{config::TrustedProxies, state::AppState};
@@ -15,6 +17,7 @@ mod health;
 mod routes;
 mod security_headers;
 mod static_files;
+mod timeout;
 
 /// 请求 query 可能包含 OAuth 凭据和状态值，不能进入 HTTP trace span。
 fn request_span<B>(request: &Request<B>) -> tracing::Span {
@@ -26,25 +29,92 @@ fn request_span<B>(request: &Request<B>) -> tracing::Span {
 }
 
 pub fn router(state: AppState) -> Router {
-    let hsts_enabled = security_headers::hsts_enabled(&state.config.issuer_url);
     let request_timeout = Duration::from_secs(state.config.request_timeout_seconds);
+    let state_for_middleware = state.clone();
 
     let static_service = static_files::static_service(&state.web_dist);
-    routes::register(
-        Router::new(),
-        request_timeout,
-        state.config.issuer_configured,
-    )
-    // fallback 只处理未匹配路径，协议和健康路由不会被静态服务抢走。
-    .fallback_service(static_service)
-    .with_state(state)
-    .layer(TraceLayer::new_for_http().make_span_with(request_span))
-    .layer(map_response(|response: Response| async move {
-        crate::error::map_request_timeout(response)
-    }))
-    .layer(map_response(move |response: Response| {
-        security_headers::apply(response, hsts_enabled)
-    }))
+    let application = routes::register(Router::new(), request_timeout).route_layer(
+        from_fn_with_state(state_for_middleware.clone(), require_issuer),
+    );
+    // Bootstrap / issuer 必须在 Issuer 未就绪时仍可访问；鉴权仍由各自 extractor 执行。
+    // 超时与 application router 共用同一层，health 有自己的 2 秒预算，不能套进来。
+    let system_api = Router::new()
+        .route("/api/v1/admin/bootstrap/status", get(health::system_status))
+        // 匿名 status 只回答 initialized/uninitialized，不暴露 Issuer 收敛状态。
+        .route(
+            "/api/v1/admin/bootstrap",
+            axum::routing::post(crate::admin::auth_handlers::bootstrap_admin),
+        )
+        .route(
+            "/api/v1/admin/settings/issuer",
+            get(crate::admin::issuer_settings_handlers::get_issuer_setting)
+                .put(crate::admin::issuer_settings_handlers::update_issuer_setting),
+        )
+        .route_layer(timeout::request_timeout_layer(request_timeout));
+    let health = Router::new()
+        .route("/health", get(health::health))
+        .route("/health/live", get(health::health_live))
+        .route("/health/ready", get(health::health_ready));
+    system_api
+        .merge(health)
+        .merge(application)
+        // fallback 只处理未匹配路径，协议和健康路由不会被静态服务抢走。
+        .fallback_service(static_service)
+        .with_state(state)
+        .layer(TraceLayer::new_for_http().make_span_with(request_span))
+        .layer(from_fn(timeout::map_request_timeout_by_path))
+        .layer(from_fn_with_state(
+            state_for_middleware,
+            apply_security_headers,
+        ))
+}
+
+async fn require_issuer(
+    State(state): State<AppState>,
+    mut request: AxumRequest,
+    next: Next,
+) -> Response {
+    let runtime = state.issuer.state();
+    let Some(snapshot) = runtime.loaded() else {
+        if crate::error::is_oauth_protocol_path(request.uri().path()) {
+            return crate::error::oauth_temporarily_unavailable();
+        }
+        return match runtime.as_ref() {
+            crate::settings::IssuerRuntimeState::AwaitingIssuer => {
+                crate::error::service_unavailable(
+                    "issuer_not_configured",
+                    "the application issuer is not configured",
+                )
+            }
+            crate::settings::IssuerRuntimeState::Invalid { .. } => {
+                crate::error::service_unavailable(
+                    "issuer_runtime_invalid",
+                    "the persisted application issuer could not be loaded",
+                )
+            }
+            crate::settings::IssuerRuntimeState::Ready(_) => unreachable!(),
+        };
+    };
+    request.extensions_mut().insert(snapshot.clone());
+    let mut response = next.run(request).await;
+    response.extensions_mut().insert(snapshot);
+    response
+}
+
+async fn apply_security_headers(
+    State(state): State<AppState>,
+    request: AxumRequest,
+    next: Next,
+) -> Response {
+    let response = next.run(request).await;
+    let request_snapshot = response
+        .extensions()
+        .get::<Arc<crate::settings::IssuerSnapshot>>()
+        .cloned();
+    let hsts_enabled = request_snapshot
+        .or_else(|| state.issuer.current())
+        .is_some_and(|snapshot| snapshot.issuer().is_https());
+    security_headers::apply(response, hsts_enabled).await
 }
 
 /// 从请求对端地址和头部解析真实客户端 IP。
@@ -250,6 +320,13 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("text/html; charset=utf-8")
         );
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
     }
 
     #[tokio::test]
@@ -279,6 +356,13 @@ mod tests {
         let response = send_request("/health/live", Method::GET).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(content_type(&response), Some("application/json"));
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
     }
 
     #[tokio::test]

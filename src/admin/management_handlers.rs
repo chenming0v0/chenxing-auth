@@ -145,7 +145,10 @@ pub async fn set_user_status(
                 .record_best_effort(crate::audit::AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
-                    format!("user_{}", status.as_str()),
+                    match status {
+                        UserStatus::Active => crate::audit::AuditAction::UserActive,
+                        UserStatus::Disabled => crate::audit::AuditAction::UserDisabled,
+                    },
                     "user".to_owned(),
                     Some(user_id.to_string()),
                     serde_json::json!({"result":"success"}),
@@ -186,10 +189,11 @@ pub async fn set_user_role(
     Path(user_id): Path<UserId>,
     Json(input): Json<SetUserRoleInput>,
 ) -> Response {
-    let actor = match admin.authorize(&state, AdminPermission::ManageRoles).await {
-        Ok(actor_id) => actor_id,
+    let authorization = match authorize_user_write(&state, &admin).await {
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
+    let actor = authorization.actor();
     if actor.user_id() == Some(user_id) {
         return error::forbidden(
             "self_role_change_forbidden",
@@ -199,7 +203,11 @@ pub async fn set_user_role(
     let Some(role) = UserRole::parse(&input.role) else {
         return error::bad_request("invalid_role", "role is invalid");
     };
-    match state.users.set_role(user_id, role).await {
+    match state
+        .users
+        .set_role(user_id, role, authorization.access())
+        .await
+    {
         Ok(true) => {
             let (actor_type, actor_id) = actor.audit_fields();
             state
@@ -207,7 +215,7 @@ pub async fn set_user_role(
                 .record_best_effort(crate::audit::AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
-                    "user_role_update".to_owned(),
+                    crate::audit::AuditAction::UserRoleUpdate,
                     "user".to_owned(),
                     Some(user_id.to_string()),
                     serde_json::json!({"role": role.as_str()}),
@@ -230,6 +238,9 @@ pub async fn set_user_role(
                 "last_owner_required",
                 "at least one active owner is required",
             )
+        }
+        Err(crate::users::service::UserServiceError::ManageRolesRequired) => {
+            owner_write_permission_denied(&state, authorization).await
         }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update user role");

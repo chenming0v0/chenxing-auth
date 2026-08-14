@@ -10,6 +10,55 @@ async fn database() -> chenxing_auth::sqlx::PgPool {
     db_isolation::isolated_pool("database_schema", &database_url).await
 }
 
+#[tokio::test]
+async fn business_advisory_locks_do_not_collide_with_user_ids() {
+    let pool = database().await;
+
+    for key in [7_341_928_i64, 7_341_929_i64] {
+        let mut user_transaction = pool.begin().await.expect("begin user lock transaction");
+        chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(key)
+            .execute(&mut *user_transaction)
+            .await
+            .expect("acquire user bigint lock");
+        let business_lock_available: bool =
+            chenxing_auth::sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(0, $1)")
+                .bind(i32::try_from(key).expect("business lock key fits int4"))
+                .fetch_one(&pool)
+                .await
+                .expect("try business lock while user lock is held");
+        assert!(
+            business_lock_available,
+            "business lock collided with user id {key}"
+        );
+        user_transaction
+            .rollback()
+            .await
+            .expect("release user lock");
+
+        let mut business_transaction = pool.begin().await.expect("begin business lock transaction");
+        chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock(0, $1)")
+            .bind(i32::try_from(key).expect("business lock key fits int4"))
+            .execute(&mut *business_transaction)
+            .await
+            .expect("acquire business lock");
+        let duplicate_available: bool =
+            chenxing_auth::sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(0, $1)")
+                .bind(i32::try_from(key).expect("business lock key fits int4"))
+                .fetch_one(&pool)
+                .await
+                .expect("try duplicate business lock");
+        assert!(
+            !duplicate_available,
+            "business lock {key} stopped serializing callers"
+        );
+        business_transaction
+            .rollback()
+            .await
+            .expect("release business lock");
+    }
+}
+
 async fn assert_column(
     pool: &chenxing_auth::sqlx::PgPool,
     table: &str,
@@ -176,6 +225,21 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
         &["status", "is_default"],
     )
     .await;
+    assert_constraint_contains(
+        &pool,
+        "plans",
+        "plans_daily_auth_limit_check",
+        &["daily_auth_limit", "1000000"],
+    )
+    .await;
+    assert_constraint_contains(
+        &pool,
+        "plans",
+        "plans_monthly_auth_limit_check",
+        &["monthly_auth_limit", "31000000"],
+    )
+    .await;
+    assert_constraint_contains(&pool, "plans", "plans_max_qps_check", &["max_qps", "10000"]).await;
     assert_column(&pool, "user_sessions", "session_payload", "bytea", true).await;
     assert_column(
         &pool,
@@ -529,4 +593,36 @@ async fn audit_boundary_verification_accepts_the_runtime_role_and_rejects_the_ow
     .await
     .expect("the explicit switch downgrades the failure to a warning");
     assert!(degraded.can_mutate);
+}
+
+/// Issue #456：含引号、反斜杠的口令必须能经绑定参数写入，并且随后能登录。
+/// 这些字符会打穿旧的客户端 `quote_literal`（尤其 `standard_conforming_strings=off`）。
+#[tokio::test]
+async fn runtime_role_password_with_quotes_and_backslashes_can_login() {
+    let pool = database().await;
+    let database_url = env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let mut runtime_url = url::Url::parse(&database_url).expect("runtime database URL");
+    runtime_url
+        .set_username(chenxing_auth::db::RUNTIME_DATABASE_ROLE)
+        .expect("set runtime username");
+    let password = r#"o'brien\x";weird"#;
+    runtime_url
+        .set_password(Some(password))
+        .expect("set runtime password");
+
+    chenxing_auth::db::configure_runtime_role(
+        &pool,
+        runtime_url.as_str(),
+        chenxing_auth::db::RuntimePasswordPolicy::Managed,
+    )
+    .await
+    .expect("configure runtime role with quoted/backslash password");
+
+    let runtime_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(runtime_url.as_str())
+        .await
+        .expect("login with quoted/backslash password must succeed");
+    runtime_pool.close().await;
 }

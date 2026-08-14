@@ -1,6 +1,6 @@
 [package]
 name = "chenxing-auth"
-version = "1.1.1"
+version = "1.1.2"
 edition = "2024"
 description = "天穹辰星 · 辰星认证中枢"
 license = "MIT"
@@ -51,6 +51,12 @@ uuid = { version = "1", features = ["serde", "v4"] }
 zeroize = { version = "1", features = ["derive"] }
 pkcs8 = { version = "0.10", features = ["std"] }
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+psl = "2"
+
+# Unix 密钥目录的 openat/openat2/fstat/fchmod。libc 已是传递依赖，这里只在
+# Unix 上显式化，非 Unix 构建不引入这组 syscall 绑定。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 # 集成测试需要生成真实 PNG 作为上传夹具。image 已是常规依赖且启用了 png，

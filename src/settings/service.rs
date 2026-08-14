@@ -1,13 +1,11 @@
 use std::sync::Arc;
 
 use super::{
-    SecurityLimitsSetting,
-    domain::{
-        EmailPolicySetting, PasskeySetting, SettingsValidationError, SmtpSetting,
-        SmtpSettingUpdate, StoredSmtpSetting,
-    },
+    IssuerRuntime, SecurityLimitsSetting,
+    domain::{PasskeySetting, SettingsValidationError},
     repository,
     security_limits_cache::{CachedSecurityLimits, SecurityLimitsCache, SecurityLimitsSource},
+    smtp::{SmtpPasswordAction, SmtpSetting, SmtpSettingUpdate, StoredSmtpSetting},
     smtp_sender::parse_smtp_sender,
 };
 use crate::{
@@ -16,6 +14,9 @@ use crate::{
     users::email::EmailAddress,
 };
 use thiserror::Error;
+
+#[path = "service_persisted.rs"]
+mod persisted_reads;
 
 #[derive(Clone)]
 pub struct SettingsService {
@@ -27,6 +28,7 @@ pub struct SettingsService {
     /// 认证热路径共享的阈值缓存（#300）。`Arc` 让本服务的全部克隆共享同一份状态，
     /// 因此管理接口写入后的主动刷新对同进程内所有读取路径立即生效。
     security_limits_cache: Arc<SecurityLimitsCache>,
+    issuer_runtime: Option<IssuerRuntime>,
 }
 
 #[derive(Debug, Error)]
@@ -35,6 +37,8 @@ pub enum SettingsServiceError {
     InvalidEmail,
     #[error("setting validation failed: {0}")]
     Validation(#[from] SettingsValidationError),
+    #[error("stored setting {key} is unreadable")]
+    Corrupt { key: &'static str },
     #[error("secret operation failed: {0}")]
     Secret(#[from] SecretError),
     #[error("database operation failed: {0}")]
@@ -73,7 +77,13 @@ impl SettingsService {
                 default_security_limits.clone(),
             )),
             default_security_limits,
+            issuer_runtime: None,
         }
+    }
+
+    pub fn with_issuer_runtime(mut self, issuer_runtime: IssuerRuntime) -> Self {
+        self.issuer_runtime = Some(issuer_runtime);
+        self
     }
 
     /// 用自定义 TTL / 退避的缓存替换默认缓存。仅用于测试缓存与降级路径。
@@ -174,52 +184,12 @@ impl SettingsService {
         Ok(value)
     }
 
-    pub async fn passkey(&self) -> Result<PasskeySetting, SettingsServiceError> {
-        repository::get_passkey(&self.pool)
-            .await?
-            .unwrap_or_else(|| self.default_passkey.clone())
-            .with_runtime_defaults(
-                &self.default_passkey.rp_id,
-                self.default_passkey
-                    .allowed_origins
-                    .first()
-                    .map(String::as_str)
-                    .unwrap_or_default(),
-            )
-            .validate()
-            .map_err(SettingsServiceError::from)
-    }
-
-    pub async fn set_passkey(
-        &self,
-        value: PasskeySetting,
-    ) -> Result<PasskeySetting, SettingsServiceError> {
-        let value = value.validate()?;
-        repository::set_passkey(&self.pool, &value).await?;
-        Ok(value)
-    }
-
-    pub async fn email_policy(&self) -> Result<EmailPolicySetting, SettingsServiceError> {
-        Ok(repository::get_email_policy(&self.pool)
-            .await?
-            .unwrap_or_default())
-    }
-
-    pub async fn set_email_policy(
-        &self,
-        value: EmailPolicySetting,
-    ) -> Result<EmailPolicySetting, SettingsServiceError> {
-        let value = value.validate()?;
-        repository::set_email_policy(&self.pool, &value).await?;
-        Ok(value)
-    }
-
-    /// 读取安全阈值，命中未过期缓存时不查询数据库。
+    /// 读取已校验的安全阈值，命中未过期缓存时不查询数据库。
     ///
-    /// 语义与 #300 之前保持一致：读取失败仍然返回 `Err`，调用方（管理接口、OAuth
-    /// 授权与令牌路径）继续按各自既有方式映射错误。差别只在稳态下不再每次往返数据库。
-    ///
-    /// 需要「故障时降级而不是报错」的调用方用 `cached_security_limits()`。
+    /// 这是 OAuth 授权 / 令牌等安全热路径：损坏或越界的已持久化值返回 `Err`
+    /// （fail-closed），不再 `sanitized()` 成一次成功加载。管理读取走
+    /// [`Self::inspect_security_limits`]。限流器要用降级而不是报错时走
+    /// [`Self::cached_security_limits`]。
     pub async fn security_limits(&self) -> Result<SecurityLimitsSetting, SettingsServiceError> {
         if let Some(cached) = self.security_limits_cache.fresh() {
             return Ok(cached);
@@ -255,22 +225,6 @@ impl SettingsService {
                 );
                 self.security_limits_cache.record_failure()
             }
-        }
-    }
-
-    /// 单次数据库读取，不涉及缓存。
-    ///
-    /// 回读用 `sanitized()` 而不是 `validate()`：这条路径被 OAuth 授权、令牌签发和
-    /// 失败限流器共用，返回错误会让一条在上界收紧之前写入的旧行把整套协议流程打死，
-    /// 管理员连设置页都打不开。越界项回退默认值（收紧方向）。
-    ///
-    /// 回退目标与「数据库无行」路径同源：都是 `self.default_security_limits`（启动期
-    /// 环境配置）。若各自回退到不同来源，运维设了 `ACCOUNT_FAILURE_LIMIT=50` 也会在
-    /// 旧行存在期间被静默丢回硬编码的 10（#361）。
-    async fn load_security_limits(&self) -> Result<SecurityLimitsSetting, SettingsServiceError> {
-        match repository::get_security_limits(&self.pool).await? {
-            Some(value) => Ok(value.sanitized(&self.default_security_limits)),
-            None => Ok(self.default_security_limits.clone()),
         }
     }
 
@@ -338,19 +292,24 @@ impl SettingsService {
     pub async fn set_smtp(
         &self,
         update: SmtpSettingUpdate,
-    ) -> Result<SmtpSetting, SettingsServiceError> {
+    ) -> Result<(SmtpSetting, SmtpPasswordAction), SettingsServiceError> {
         let (mut setting, password) = update.validate()?;
+        let password_action = password.action();
         // SMTP 与注册发件人镜像必须一起落库：第二次写失败时若第一个键已持久化
         // 会形成「SMTP 已更新、镜像残留旧地址」的半同步状态（#322）。
-        // 事务内读取 existing，保证「未提供新密码则沿用旧密文」看到的是同一快照。
+        // 事务内读取 existing，保证 keep 看到的是同一快照，clear 也在同一事务里删密文。
         let mut transaction = self.pool.begin().await?;
         let existing = repository::get_smtp(&mut *transaction).await?;
-        let password_ciphertext = match password {
-            Some(password) => Some(SecretManager::encode(&self.secrets.encrypt(&password)?)),
-            None => existing
+        let password_ciphertext = password.next_ciphertext(
+            existing
                 .as_ref()
                 .and_then(|value| value.password_ciphertext.clone()),
-        };
+            |plaintext| {
+                self.secrets
+                    .encrypt(&plaintext)
+                    .map(|secret| SecretManager::encode(&secret))
+            },
+        )?;
         setting.password_configured = password_ciphertext
             .as_ref()
             .is_some_and(|value| !value.is_empty());
@@ -376,7 +335,7 @@ impl SettingsService {
             None => repository::set_registration_email_from(&mut *transaction, None).await?,
         }
         transaction.commit().await?;
-        Ok(setting)
+        Ok((setting, password_action))
     }
 }
 

@@ -164,7 +164,7 @@ pub(super) async fn record_and_return_invalid(
     record_token_event_best_effort(
         state,
         user_id,
-        "token_refresh_failure",
+        crate::audit::AuditAction::TokenRefreshFailure,
         Some(client_id),
         reason,
     )

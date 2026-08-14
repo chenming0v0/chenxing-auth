@@ -205,6 +205,10 @@ CHENXING_TEST_ROLE=orchestrator ./test_sh/test.sh --full
 - `releases` 是释放分支。
 - `releases` 不接受任何直接提交，只接受来自其他分支的合并。发现自己即将在 `releases` 上提交时，不要停下询问：自觉切回 `dev` 再提交，并顺口告诉用户一句他忘记切分支了。这条自主切换分支的权限仅限“当前确实要提交、且提交目标是 `releases`”这一种情形，其他分支切换仍需用户确认。
 - 把 `dev` 合并到 `releases` 之前，必须先在 `dev` 上把 `Cargo.toml` 的 `version` 改成本次要发布的版本号，并同步 `Cargo.lock` 里 `chenxing-auth` 的版本和 `.github/workflows/release-tag.yml` 的 `default`。版本号提交在合并之前完成，让标签 `vX.Y.Z` 与它指向的提交自身声明的版本一致；不要合并完再补。
+- 打标签是发布链的关键一步，只能使用能触发下游工作流的凭据。GitHub 有防递归规则：用默认 `GITHUB_TOKEN` 推送的标签不会触发任何新的工作流运行。`Create Release Tag` 工作流（release-tag.yml）曾经用 `GITHUB_TOKEN` 推标签，结果是标签存在、但 Build And Publish 的 `Publish release assets` job（条件 `if: startsWith(github.ref, 'refs/tags/v')`）永不执行，GitHub Release 不会生成——表现为"工作流都成功了却没有 Release"。因此打标签二选一：
+  1. 本地推送（推荐，最稳）：合并后本地 `git tag -a vX.Y.Z -m "release: vX.Y.Z"` 并用个人凭据 `git push origin vX.Y.Z`，与 v1.1.0 及之前的流程一致。
+  2. 工作流触发：先确保仓库已配置 `RELEASE_PAT` secret（细粒度 PAT，`Contents: Read and write` 权限），否则 release-tag.yml 会显式失败并提示。该工作流用 PAT 推标签才能触发下游 Build And Publish。
+- 合并 dev 到 releases 后看到 CI 和 Build And Publish 都成功，**不等于发布完成**：分支 push 触发的那次运行不含 `Publish release assets` job（该 job 只响应 tag push）。必须确认远端存在 `vX.Y.Z` 标签且 Build And Publish 有 tag 事件的运行（`gh run list --workflow=321905998 --json headBranch,event` 里 headBranch 为 vX.Y.Z 的 push 运行）后，GitHub Release 才会出现在列表。
 - `design` 是设计稿分支，只保存 `design-auth-chengming/` 和设计稿专用 skill；它单向从 `dev` 接收更新，禁止合并回 `dev` 或 `releases`。
 - 功能分支应从当前明确的目标基线创建；开始工作前必须检查当前分支、工作区状态、远端跟踪关系以及目标分支的祖先关系，确认没有把功能分支误合入 `dev` 或 `releases`。
 - 涉及分支合并、推送、删除或发布时，先向用户确认目标分支语义；“主要分支”表示 `dev`，“释放分支”明确表示 `releases`。

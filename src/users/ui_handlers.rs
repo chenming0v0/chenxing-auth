@@ -148,7 +148,7 @@ pub async fn change_current_user_password(
                 .record_best_effort(AuditEvent::new(
                     "user".to_owned(),
                     Some(session.user_id.to_string()),
-                    "password_change".to_owned(),
+                    crate::audit::AuditAction::PasswordChange,
                     "password".to_owned(),
                     None,
                     crate::audit::with_request_context(

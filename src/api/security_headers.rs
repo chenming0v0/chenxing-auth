@@ -53,10 +53,6 @@ frame-ancestors 'none'";
 
 const HSTS_POLICY: &str = "max-age=31536000; includeSubDomains";
 
-pub(super) fn hsts_enabled(issuer_url: &str) -> bool {
-    url::Url::parse(issuer_url).is_ok_and(|issuer| issuer.scheme() == "https")
-}
-
 pub(super) async fn apply(response: Response, hsts_enabled: bool) -> Response {
     let mut response = response;
     let policy = content_security_policy(response.headers());
@@ -106,7 +102,7 @@ mod tests {
         response::Response,
     };
 
-    use super::{DOCUMENT_CSP, STRICT_CSP, apply, hsts_enabled};
+    use super::{DOCUMENT_CSP, STRICT_CSP, apply};
 
     fn response_with_content_type(content_type: &str) -> Response {
         let mut response = Response::new(Body::empty());
@@ -115,12 +111,6 @@ mod tests {
             HeaderValue::from_str(content_type).expect("valid content type"),
         );
         response
-    }
-
-    #[test]
-    fn hsts_follows_the_configured_issuer_scheme() {
-        assert!(!hsts_enabled("http://127.0.0.1:3000"));
-        assert!(hsts_enabled("https://auth.example.com"));
     }
 
     #[tokio::test]

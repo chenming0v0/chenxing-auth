@@ -7,11 +7,17 @@
 //! 索引成员统一使用 `token_hash` 而不是原始 token 值，避免凭据出现在
 //! Redis keyspace 中（与 `sessions::store` 的哈希键约定一致）。
 
-/// 原子保存 Refresh Token 并更新 client / family 索引。
+/// 原子保存 Refresh Token 并更新 client / grant / family 索引。
+///
+/// grant 索引（`KEYS[4]`，键为 `{user_id}:{client_id}`）是用户「断开应用」的
+/// 撤销单元。此前只有 client 维度索引，按 (user, client) 撤销必须扫描该
+/// Client 全部用户的 token 才能筛出目标；而用户撤销授权是逐 grant 发生的，
+/// 索引就该按 grant 建（Issue #418）。
 ///
 /// - `KEYS[1]` token 主键
 /// - `KEYS[2]` client 索引键
 /// - `KEYS[3]` family 索引键（`ARGV[5]` 为空时不使用）
+/// - `KEYS[4]` grant 索引键（user + client）
 /// - `ARGV[1]` token JSON
 /// - `ARGV[2]` 主键 TTL（秒）
 /// - `ARGV[3]` 索引 TTL（秒）
@@ -21,6 +27,8 @@ pub const SAVE_WITH_INDEXES_SCRIPT: &str = r#"
 redis.call('SETEX', KEYS[1], ARGV[2], ARGV[1])
 redis.call('SADD', KEYS[2], ARGV[4])
 redis.call('EXPIRE', KEYS[2], ARGV[3])
+redis.call('SADD', KEYS[4], ARGV[4])
+redis.call('EXPIRE', KEYS[4], ARGV[3])
 if ARGV[5] ~= '' then
     redis.call('SADD', KEYS[3], ARGV[4])
     redis.call('EXPIRE', KEYS[3], ARGV[3])
@@ -46,7 +54,8 @@ return 1
 /// - `KEYS[5]` 新 family 索引键
 /// - `KEYS[6]` 墓碑键
 /// - `KEYS[7]` 新 family 的撤销墓志键
-/// - `ARGV[1]` 预期旧 token JSON（CAS 比较值）
+/// - `KEYS[8]` grant 索引键（user + client；轮换前后同一个 grant）
+/// - `ARGV[1]` 预期旧 token JSON（只比较当前协议字段，忽略未来字段）
 /// - `ARGV[2]` 新 token JSON
 /// - `ARGV[3]` 新主键 TTL（秒）
 /// - `ARGV[4]` 索引 TTL（秒）
@@ -65,6 +74,23 @@ return 1
 /// 偏差（良性）。脚本无法区分，调用方必须读取墓碑：存在 `Consumed` 墓碑才是
 /// 重放并撤销 family；没有墓碑则只是键消失，绝不能撤销整个 grant。
 pub const ROTATE_WITH_TOMBSTONE_SCRIPT: &str = r#"
+local function same_payload(current_json, expected_json)
+    local current = cjson.decode(current_json)
+    local expected = cjson.decode(expected_json)
+    local fields = {
+        'value', 'client_id', 'user_id', 'scopes', 'created_at', 'expires_at',
+        'revoked_at', 'issued_at', 'family_id', 'client_secret_version', 'session_epoch'
+    }
+    local function encoded(value)
+        if value == nil then return 'null' end
+        return cjson.encode(value)
+    end
+    for _, field in ipairs(fields) do
+        if encoded(current[field]) ~= encoded(expected[field]) then return false end
+    end
+    return true
+end
+
 if redis.call('EXISTS', KEYS[7]) == 1 then
     return -1
 end
@@ -72,7 +98,7 @@ local current = redis.call('GET', KEYS[1])
 if current == false then
     return 2
 end
-if current ~= ARGV[1] then
+if not same_payload(current, ARGV[1]) then
     return 0
 end
 redis.call('SETEX', KEYS[2], ARGV[3], ARGV[2])
@@ -80,6 +106,9 @@ redis.call('DEL', KEYS[1])
 redis.call('SREM', KEYS[3], ARGV[5])
 redis.call('SADD', KEYS[3], ARGV[6])
 redis.call('EXPIRE', KEYS[3], ARGV[4])
+redis.call('SREM', KEYS[8], ARGV[5])
+redis.call('SADD', KEYS[8], ARGV[6])
+redis.call('EXPIRE', KEYS[8], ARGV[4])
 if ARGV[9] ~= '' then
     redis.call('SREM', KEYS[4], ARGV[5])
     redis.call('EXPIRE', KEYS[4], ARGV[4])
@@ -104,6 +133,7 @@ return 1
 /// - `KEYS[1]` token 主键
 /// - `KEYS[2]` client 索引键
 /// - `KEYS[3]` family 索引键（`ARGV[3]` 为空时不使用）
+/// - `KEYS[4]` grant 索引键（user + client）
 /// - `ARGV[1]` token_hash
 /// - `ARGV[2]` 索引 TTL（秒）
 /// - `ARGV[3]` family_id，空表示旧格式 token
@@ -111,6 +141,8 @@ pub const REMOVE_WITHOUT_TOMBSTONE_SCRIPT: &str = r#"
 redis.call('DEL', KEYS[1])
 redis.call('SREM', KEYS[2], ARGV[1])
 redis.call('EXPIRE', KEYS[2], ARGV[2])
+redis.call('SREM', KEYS[4], ARGV[1])
+redis.call('EXPIRE', KEYS[4], ARGV[2])
 if ARGV[3] ~= '' then
     redis.call('SREM', KEYS[3], ARGV[1])
     redis.call('EXPIRE', KEYS[3], ARGV[2])
@@ -121,13 +153,15 @@ return 1
 /// 原子 CAS 删除 token、清理索引并写墓碑（授权码换取路径的单次消费）。
 ///
 /// 这是唯一会写 `Consumed` 墓碑的删除脚本。先做 CAS 比较：只有当前值
-/// 与预期完全一致时才消费，避免并发请求各自删掉对方刚写入的 token。
+/// 与预期协议字段一致时才消费，避免并发请求各自删掉对方刚写入的 token；
+/// 未知未来字段不参与比较，以支持滚动升级。
 ///
 /// - `KEYS[1]` token 主键
 /// - `KEYS[2]` client 索引键
 /// - `KEYS[3]` family 索引键（`ARGV[6]` 为空时不使用）
 /// - `KEYS[4]` 墓碑键
-/// - `ARGV[1]` 预期 token JSON（CAS 比较值）
+/// - `KEYS[5]` grant 索引键（user + client）
+/// - `ARGV[1]` 预期 token JSON（只比较当前协议字段，忽略未来字段）
 /// - `ARGV[2]` token_hash
 /// - `ARGV[3]` 墓碑 JSON
 /// - `ARGV[4]` 墓碑 TTL（秒）
@@ -136,13 +170,32 @@ return 1
 ///
 /// 返回 `1` 消费成功，`0` 表示 CAS 失败。
 pub const TAKE_IF_MATCHES_SCRIPT: &str = r#"
+local function same_payload(current_json, expected_json)
+    local current = cjson.decode(current_json)
+    local expected = cjson.decode(expected_json)
+    local fields = {
+        'value', 'client_id', 'user_id', 'scopes', 'created_at', 'expires_at',
+        'revoked_at', 'issued_at', 'family_id', 'client_secret_version', 'session_epoch'
+    }
+    local function encoded(value)
+        if value == nil then return 'null' end
+        return cjson.encode(value)
+    end
+    for _, field in ipairs(fields) do
+        if encoded(current[field]) ~= encoded(expected[field]) then return false end
+    end
+    return true
+end
+
 local current = redis.call('GET', KEYS[1])
-if current ~= ARGV[1] then
+if not current or not same_payload(current, ARGV[1]) then
     return 0
 end
 redis.call('DEL', KEYS[1])
 redis.call('SREM', KEYS[2], ARGV[2])
 redis.call('EXPIRE', KEYS[2], ARGV[5])
+redis.call('SREM', KEYS[5], ARGV[2])
+redis.call('EXPIRE', KEYS[5], ARGV[5])
 if ARGV[6] ~= '' then
     redis.call('SREM', KEYS[3], ARGV[2])
     redis.call('EXPIRE', KEYS[3], ARGV[5])
@@ -171,6 +224,7 @@ return 1
 /// - `KEYS[3]` family 撤销墓志键
 /// - `KEYS[4]` 调用方提交的 token 主键
 /// - `KEYS[5]` 调用方提交的 token 墓碑键
+/// - `KEYS[6]` grant 索引键（user + client）
 /// - `ARGV[1]` token 主键前缀
 /// - `ARGV[2]` 墓碑键前缀
 /// - `ARGV[3]` 墓碑 JSON（`family_revoked` 或 `explicit_revoke`）
@@ -190,6 +244,7 @@ for _, token_hash in ipairs(members) do
         removed = removed + 1
     end
     redis.call('SREM', KEYS[2], token_hash)
+    redis.call('SREM', KEYS[6], token_hash)
     redis.call('SETEX', ARGV[2] .. token_hash, ARGV[4], ARGV[3])
 end
 redis.call('DEL', KEYS[1])
@@ -197,39 +252,54 @@ if redis.call('DEL', KEYS[4]) == 1 then
     removed = removed + 1
 end
 redis.call('SREM', KEYS[2], ARGV[6])
+redis.call('SREM', KEYS[6], ARGV[6])
 redis.call('SETEX', KEYS[5], ARGV[4], ARGV[3])
 redis.call('SETEX', KEYS[3], ARGV[5], ARGV[3])
 return removed
 "#;
 
-/// 撤销某个 Client 的全部 Refresh Token（Issue #62：Secret 轮换后旧 token 必须失效）。
+/// 撤销一个 grant（`user_id` + `client_id`）下的全部 Refresh Token。
 ///
-/// 每批非破坏地选取最多 128 个 client 索引成员。整批 payload 成功解析且
-/// family 索引清理成功后，才删除 token / tombstone，最后从 client 索引
-/// 移除成员作为完成确认。任何失败都保留尚未确认的成员，允许修复后重试。
+/// 用户「断开应用」的撤销单元就是 grant（Issue #418）。此前撤销只写 consent
+/// 行，已签发的 Refresh Token 依赖下一次兑换时的 consent 检查才失效——那是
+/// check-on-use，不是撤销：一旦 consent 缓存或 DB 判定出现任何放行路径，凭据
+/// 就还在。这里把凭据本身删掉。
 ///
-/// 这里不写墓碑：Secret 轮换是管理员的主动操作，不是凭据泄露信号，
-/// 旧 token 的后续请求应当只是普通的 `invalid_grant`，不应触发
-/// 「检测到重放」的审计噪声。迟到的旧版本写入由 PostgreSQL 签发栅栏阻断，
-/// Refresh Token 自身的 `client_secret_version` 是撤销失败时的兑换兜底（#310）。
+/// 与 client 级撤销的关键差别是**必须写墓碑和 family 墓志**。Secret 轮换后
+/// 有 `client_secret_version` 兜底，且旧凭据已在语义上失效；而 grant 撤销
+/// 之后 Client 的 secret 版本不变，一次飞行中的轮换完全可以在本脚本清空索引
+/// 之后把新成员写回同一个 family。墓志是那道竞态的收口点，与
+/// `REVOKE_FAMILY_SCRIPT` 的理由一致。
 ///
-/// - `KEYS[1]` client 索引键
+/// 墓碑状态用 `explicit_revoke`：用户主动断开不是凭据泄露信号，后续提交只应
+/// 得到普通 `invalid_grant`，不该被记成「检测到重放」的安全事件。
+///
+/// 每批最多处理 128 个成员，重复到 grant 索引清空。payload 解析失败时不确认
+/// 对应成员，调用方修复后可重试。
+///
+/// - `KEYS[1]` grant 索引键
 /// - `ARGV[1]` token 主键前缀
 /// - `ARGV[2]` family 索引键前缀
-/// - `ARGV[3]` tombstone 键前缀（清理同 token 的旧 marker）
+/// - `ARGV[3]` 墓碑键前缀
 /// - `ARGV[4]` 请求的批大小（脚本内硬限制为最多 128）
+/// - `ARGV[5]` client 索引键
+/// - `ARGV[6]` 墓碑 JSON（`explicit_revoke`）
+/// - `ARGV[7]` 墓碑 TTL（秒）
+/// - `ARGV[8]` family 撤销墓志键前缀
+/// - `ARGV[9]` 墓志 TTL（秒）
 ///
-/// 返回 `{被删除的 token 数量, client 索引剩余成员数}`。
-pub const REVOKE_CLIENT_TOKENS_SCRIPT: &str = r#"
+/// 返回 `{被删除的 token 数量, grant 索引剩余成员数}`。
+pub const REVOKE_GRANT_TOKENS_SCRIPT: &str = r#"
 local batch_size = tonumber(ARGV[4])
 if not batch_size or batch_size < 1 then
-    return redis.error_reply('ERR invalid client revoke batch size')
+    return redis.error_reply('ERR invalid grant revoke batch size')
 end
 batch_size = math.min(batch_size, 128)
 local members = redis.call('SRANDMEMBER', KEYS[1], batch_size)
 local tokens = {}
 
--- Preflight every selected payload before changing any index or token key.
+-- Preflight every payload before destroying anything, so a decode failure
+-- leaves the whole batch retryable instead of half-revoked.
 for _, token_hash in ipairs(members) do
     local token_key = ARGV[1] .. token_hash
     local payload = redis.call('GET', token_key)
@@ -251,6 +321,93 @@ for _, token_hash in ipairs(members) do
     }
 end
 
+local removed = 0
+for _, token in ipairs(tokens) do
+    -- 旧格式 token（空 family_id）的撤销域按 token 哈希独立，与
+    -- `FamilyScope` 的 `legacy-token:{hash}` 回退保持同一键空间。
+    local scope = token.family_id
+    if not scope or scope == '' then
+        scope = 'legacy-token:' .. token.hash
+    else
+        redis.call('SREM', ARGV[2] .. scope, token.hash)
+    end
+    -- 墓志必须比任何成员活得久，否则它过期后一次迟到的轮换又能写回该 family。
+    redis.call('SETEX', ARGV[8] .. scope, ARGV[9], ARGV[6])
+    if redis.call('DEL', token.key) == 1 then
+        removed = removed + 1
+    end
+    redis.call('SETEX', ARGV[3] .. token.hash, ARGV[7], ARGV[6])
+    redis.call('SREM', ARGV[5], token.hash)
+end
+
+-- Removing the grant member is the completion acknowledgement for retries.
+for _, token in ipairs(tokens) do
+    redis.call('SREM', KEYS[1], token.hash)
+end
+
+return {removed, redis.call('SCARD', KEYS[1])}
+"#;
+
+/// 撤销某个 Client 的全部 Refresh Token（Issue #62：Secret 轮换后旧 token 必须失效）。
+///
+/// 每批非破坏地选取最多 128 个 client 索引成员。整批 payload 成功解析且
+/// family 索引清理成功后，才删除 token / tombstone，最后从 client 索引
+/// 移除成员作为完成确认。任何失败都保留尚未确认的成员，允许修复后重试。
+///
+/// 这里不写墓碑：Secret 轮换是管理员的主动操作，不是凭据泄露信号，
+/// 旧 token 的后续请求应当只是普通的 `invalid_grant`，不应触发
+/// 「检测到重放」的审计噪声。迟到的旧版本写入由 PostgreSQL 签发栅栏阻断，
+/// Refresh Token 自身的 `client_secret_version` 是撤销失败时的兑换兜底（#310）。
+///
+/// - `KEYS[1]` client 索引键
+/// - `ARGV[1]` token 主键前缀
+/// - `ARGV[2]` family 索引键前缀
+/// - `ARGV[3]` tombstone 键前缀（清理同 token 的旧 marker）
+/// - `ARGV[4]` 请求的批大小（脚本内硬限制为最多 128）
+/// - `ARGV[5]` grant 索引键前缀（按 payload 里的 user_id + client_id 拼装）
+///
+/// 返回 `{被删除的 token 数量, client 索引剩余成员数}`。
+pub const REVOKE_CLIENT_TOKENS_SCRIPT: &str = r#"
+local batch_size = tonumber(ARGV[4])
+if not batch_size or batch_size < 1 then
+    return redis.error_reply('ERR invalid client revoke batch size')
+end
+batch_size = math.min(batch_size, 128)
+local members = redis.call('SRANDMEMBER', KEYS[1], batch_size)
+local tokens = {}
+
+-- Preflight every selected payload before changing any index or token key.
+for _, token_hash in ipairs(members) do
+    local token_key = ARGV[1] .. token_hash
+    local payload = redis.call('GET', token_key)
+    local family_id = nil
+    -- 必须显式 local：Redis 拒绝脚本创建全局变量。
+    local grant_key = nil
+    if payload then
+        local decoded = cjson.decode(payload)
+        if type(decoded) ~= 'table' then
+            return redis.error_reply('ERR invalid refresh token payload')
+        end
+        family_id = decoded['family_id']
+        if family_id and type(family_id) ~= 'string' then
+            return redis.error_reply('ERR invalid refresh token family_id')
+        end
+        -- grant 索引成员也必须清掉，否则 Secret 轮换后 (user, client) 索引里
+        -- 会残留已删除 token 的哈希，让后续按 grant 撤销的批次空转。
+        local user_id = decoded['user_id']
+        local client_id = decoded['client_id']
+        if type(user_id) == 'string' and type(client_id) == 'string' then
+            grant_key = ARGV[5] .. user_id .. ':' .. client_id
+        end
+    end
+    tokens[#tokens + 1] = {
+        hash = token_hash,
+        key = token_key,
+        family_id = family_id,
+        grant_key = grant_key
+    }
+end
+
 -- A family index error must happen before any selected token is destroyed.
 for _, token in ipairs(tokens) do
     if token.family_id and token.family_id ~= '' then
@@ -264,6 +421,12 @@ for _, token in ipairs(tokens) do
         removed = removed + 1
     end
     redis.call('DEL', ARGV[3] .. token.hash)
+end
+
+for _, token in ipairs(tokens) do
+    if token.grant_key then
+        redis.call('SREM', token.grant_key, token.hash)
+    end
 end
 
 -- Removing the client member is the completion acknowledgement for retries.

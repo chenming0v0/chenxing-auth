@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use thiserror::Error;
 use url::Url;
 
-use super::smtp_sender::parse_smtp_sender;
 use crate::users::email::EmailAddress;
 
 const MAX_RP_NAME_LENGTH: usize = 128;
@@ -11,10 +9,6 @@ const MAX_RP_ID_LENGTH: usize = 253;
 const MAX_ORIGINS: usize = 32;
 const MAX_DOMAINS: usize = 128;
 const MAX_DOMAIN_LENGTH: usize = 253;
-const MAX_SMTP_HOST_LENGTH: usize = 253;
-const MAX_SMTP_USERNAME_LENGTH: usize = 256;
-const MAX_SMTP_FROM_LENGTH: usize = 320;
-const MAX_SMTP_PASSWORD_LENGTH: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -34,6 +28,11 @@ pub enum PasskeyAuthenticatorAttachment {
     CrossPlatform,
 }
 
+/// 管理 API 与运行时使用的 Passkey 配置。
+///
+/// 反序列化保持全字段必填：这是 PUT `/admin/settings/passkey` 的请求体。
+/// 数据库旧行的缺字段补齐在 `settings::persisted`，不要把 `#[serde(default)]`
+/// 加到这个类型上，否则漏字段的 PUT 会按默认值覆盖已保存的限制。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PasskeySetting {
     pub enabled: bool,
@@ -59,91 +58,15 @@ impl Default for PasskeySetting {
     }
 }
 
+/// 管理 API 与运行时使用的邮箱域名策略。
+///
+/// 反序列化保持全字段必填。回读缺字段的兼容转换见 `settings::persisted`：
+/// `whitelist_enabled` 缺失必须拒绝，不能按 `false` 补成「放行一切」。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct EmailPolicySetting {
     pub whitelist_enabled: bool,
     pub alias_restriction_enabled: bool,
     pub allowed_domains: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SmtpSetting {
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub from_address: String,
-    pub ssl_enabled: bool,
-    pub force_auth_login: bool,
-    pub password_configured: bool,
-}
-
-impl Default for SmtpSetting {
-    fn default() -> Self {
-        Self {
-            host: String::new(),
-            port: 587,
-            username: String::new(),
-            from_address: String::new(),
-            ssl_enabled: true,
-            force_auth_login: false,
-            password_configured: false,
-        }
-    }
-}
-
-#[derive(Clone, Deserialize)]
-pub struct SmtpSettingUpdate {
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub from_address: String,
-    pub ssl_enabled: bool,
-    pub force_auth_login: bool,
-    /// Write-only. Omit or null to keep the existing password.
-    pub password: Option<String>,
-}
-
-impl fmt::Debug for SmtpSettingUpdate {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SmtpSettingUpdate")
-            .field("host", &self.host)
-            .field("port", &self.port)
-            .field("username", &self.username)
-            .field("from_address", &self.from_address)
-            .field("ssl_enabled", &self.ssl_enabled)
-            .field("force_auth_login", &self.force_auth_login)
-            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
-            .finish()
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct StoredSmtpSetting {
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub from_address: String,
-    pub ssl_enabled: bool,
-    pub force_auth_login: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password_ciphertext: Option<String>,
-}
-
-impl fmt::Debug for StoredSmtpSetting {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("StoredSmtpSetting")
-            .field("host", &self.host)
-            .field("port", &self.port)
-            .field("username", &self.username)
-            .field("from_address", &self.from_address)
-            .field("ssl_enabled", &self.ssl_enabled)
-            .field("force_auth_login", &self.force_auth_login)
-            .field(
-                "password_ciphertext",
-                &self.password_ciphertext.as_ref().map(|_| "<redacted>"),
-            )
-            .finish()
-    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -166,6 +89,10 @@ pub enum SettingsValidationError {
     InvalidSmtpFrom,
     #[error("smtp password is invalid")]
     InvalidSmtpPassword,
+    #[error("smtp password action conflicts with password field")]
+    SmtpPasswordConflict,
+    #[error("smtp password is required when password_action is set")]
+    SmtpPasswordRequired,
     #[error("security limit field is invalid: {0}")]
     InvalidSecurityLimit(&'static str),
 }
@@ -279,66 +206,20 @@ impl EmailPolicySetting {
     }
 }
 
-impl SmtpSettingUpdate {
-    pub fn validate(self) -> Result<(SmtpSetting, Option<String>), SettingsValidationError> {
-        let host = self.host.trim().to_owned();
-        if host.chars().count() > MAX_SMTP_HOST_LENGTH
-            || (!host.is_empty()
-                && (host.starts_with('.')
-                    || host.ends_with('.')
-                    || host.contains("..")
-                    || !host.chars().all(|character| {
-                        character.is_ascii_alphanumeric() || character == '-' || character == '.'
-                    })))
-        {
-            return Err(SettingsValidationError::InvalidSmtpHost);
-        }
-        if self.port == 0 {
-            return Err(SettingsValidationError::InvalidSmtpPort);
-        }
-        let username = self.username.trim().to_owned();
-        if username.chars().count() > MAX_SMTP_USERNAME_LENGTH {
-            return Err(SettingsValidationError::InvalidSmtpUsername);
-        }
-        let from_address = self.from_address.trim().to_owned();
-        if self.from_address.chars().any(char::is_control)
-            || from_address.chars().count() > MAX_SMTP_FROM_LENGTH
-            || (!from_address.is_empty() && parse_smtp_sender(&from_address).is_none())
-        {
-            return Err(SettingsValidationError::InvalidSmtpFrom);
-        }
-        let password = match self.password {
-            Some(value) if value.is_empty() => None,
-            Some(value) if value.chars().count() > MAX_SMTP_PASSWORD_LENGTH => {
-                return Err(SettingsValidationError::InvalidSmtpPassword);
-            }
-            Some(value) => Some(value),
-            None => None,
-        };
-        Ok((
-            SmtpSetting {
-                host,
-                port: self.port,
-                username,
-                from_address,
-                ssl_enabled: self.ssl_enabled,
-                force_auth_login: self.force_auth_login,
-                password_configured: false,
-            },
-            password,
-        ))
-    }
-}
-
-/// WebAuthn rp_id 必须是可注册域（Issue #287）。
+/// WebAuthn rp_id 必须是可注册域（Issue #287，#452）。
 ///
 /// origin 校验用 `host == rp_id || host.ends_with(".{rp_id}")`。单标签 rp_id 会让
 /// 这条后缀规则退化成通配：`rp_id = "com"` 时 `https://evil.com` 也能进白名单。
-/// 因此要求至少含一个点号，与 `EmailPolicySetting` 的域名校验同一强度。
+/// 因此要求至少含一个点号，并进一步用 Public Suffix List 拒绝本身就是公共后缀的
+/// 值（`co.uk`、`com.cn`、`github.io` 等）：把后缀当 rp_id 会让所有子域共享同一条
+/// 信任边界，浏览器端 WebAuthn 也拒绝这类 rp_id。
 ///
-/// `localhost` 是唯一保留的例外：RFC 6761 保证它（以及 `*.localhost`）指向回环，
-/// 不存在被他人注册的可能，而本地开发依赖它——`Config` 在缺少 `WEBAUTHN_RP_ID`
-/// 时就会从 issuer host 填出这个值。
+/// 例外只保留两类：
+/// - `localhost`：RFC 6761 保证它（以及 `*.localhost`）指向回环，不存在被他人注册
+///   的可能，而本地开发依赖它——`Config` 在缺少 `WEBAUTHN_RP_ID` 时就会从 issuer
+///   host 填出这个值。
+/// - IPv4：WebAuthn 规范允许 IP 地址作为 rp_id，PSL 不覆盖 IP，按规范放行
+///   （`127.0.0.1` 之类内网地址）。IPv6 无法通过下方字符白名单，天然被拒。
 fn is_registrable_rp_id(rp_id: &str) -> bool {
     if rp_id.is_empty()
         || rp_id.chars().count() > MAX_RP_ID_LENGTH
@@ -351,7 +232,16 @@ fn is_registrable_rp_id(rp_id: &str) -> bool {
     {
         return false;
     }
-    rp_id.contains('.') || rp_id == "localhost"
+    if rp_id == "localhost" {
+        return true;
+    }
+    // 严格四段十进制 IPv4，避免 url 规范里 `123` 这类宽松解析被当作地址放行。
+    if rp_id.parse::<std::net::Ipv4Addr>().is_ok() {
+        return true;
+    }
+    // `psl::domain_str` 返回 eTLD+1；公共后缀本身返回 None。rp_id 已在上层
+    // `validate` 转成 ASCII 小写，Punycode 形式（`xn--…`）直接命中 PSL 数据。
+    psl::domain_str(rp_id).is_some()
 }
 
 fn normalize_origins(

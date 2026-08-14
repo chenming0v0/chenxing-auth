@@ -436,7 +436,7 @@ async fn owner_role_mutation_is_owner_only_and_updates_existing_sessions() {
         )
         .await
         .expect("demoted session response");
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     let (owner_cookie, owner_csrf) = browser_session(&database, &redis_url, 1).await;
     let response = router
@@ -480,6 +480,18 @@ async fn owner_role_mutation_is_owner_only_and_updates_existing_sessions() {
         .expect("promote second owner response");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
+    // 使用仍为 Admin 的独立会话验证 #424；managed_cookie 已因上面的角色降权被撤销，
+    // 不能再拿它区分认证失败和权限失败。
+    let response = create_user(
+        format!("peer-admin-{suffix}"),
+        format!("peer-admin-{suffix}@example.com"),
+    )
+    .await
+    .expect("create peer admin response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let peer_admin_id = json(response).await["id"].as_i64().expect("peer admin id");
+    let (peer_cookie, peer_csrf) = browser_session(&database, &redis_url, peer_admin_id).await;
+
     // 禁用 Owner 属于角色管理：只有 ManageUsers 的 Admin 不得绕过 ManageRoles。
     let response = router
         .clone()
@@ -487,8 +499,8 @@ async fn owner_role_mutation_is_owner_only_and_updates_existing_sessions() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/api/v1/admin/users/{second_admin_id}/disabled"))
-                .header("cookie", &managed_cookie)
-                .header("x-csrf-token", &managed_csrf)
+                .header("cookie", &peer_cookie)
+                .header("x-csrf-token", &peer_csrf)
                 .body(Body::empty())
                 .expect("disable owner request"),
         )

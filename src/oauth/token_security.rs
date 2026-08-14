@@ -2,8 +2,11 @@ use axum::response::Response;
 
 use super::client_auth::ClientCredentials;
 use crate::{
-    audit::AuditEvent, auth_limiter::MissingSourceIpPolicy, clients::service::AuthenticatedClient,
-    error, state::AppState,
+    audit::{AuditAction, AuditEvent},
+    auth_limiter::MissingSourceIpPolicy,
+    clients::service::AuthenticatedClient,
+    error,
+    state::AppState,
 };
 
 pub(crate) async fn enforce_source_qps_with_policy(
@@ -48,7 +51,7 @@ pub(crate) async fn enforce_source_qps(state: &AppState, source_ip: &str) -> Opt
             record_token_event_best_effort(
                 state,
                 None,
-                "rate_limit_triggered",
+                AuditAction::RateLimitTriggered,
                 None,
                 "oauth_source_qps",
             )
@@ -90,14 +93,25 @@ pub(crate) async fn enforce_qps(state: &AppState, client_id: &str) -> Option<Res
     // 没有生效套餐（平台未开放自助接入）时跳过按套餐的 QPS 限制：闸门只关新增
     // Client，已有集成不能因为系统缺套餐而被拒绝。每源 IP 限流仍然独立生效。
     let max_qps = effective?.plan.max_qps?;
-    match state.qps.allow(client_id, max_qps.max(1) as u32).await {
+    // CHECK 保证 1..=MAX_QPS；不要用 `.max(1)` 把非法 0/-N 伪装成合法限流。
+    let max_qps = match u32::try_from(max_qps) {
+        Ok(qps) if qps >= 1 => qps,
+        _ => {
+            tracing::error!(
+                max_qps,
+                "plan max_qps is not a positive u32; CHECK should have prevented this"
+            );
+            return Some(error::oauth_temporarily_unavailable());
+        }
+    };
+    match state.qps.allow(client_id, max_qps).await {
         Ok(true) => None,
         Ok(false) => {
             // Rate-limit denials should not depend on audit durability; log and still 429.
             record_token_event_best_effort(
                 state,
                 None,
-                "rate_limit_triggered",
+                AuditAction::RateLimitTriggered,
                 Some(client_id),
                 "oauth_qps",
             )
@@ -139,7 +153,7 @@ pub(crate) async fn verify_client_credentials(
 pub(crate) async fn record_token_event(
     state: &AppState,
     actor_id: Option<&str>,
-    action: &str,
+    action: AuditAction,
     client_id: Option<&str>,
     reason: &str,
 ) -> Result<(), crate::audit::AuditError> {
@@ -156,7 +170,7 @@ pub(crate) async fn record_token_event(
 pub(crate) async fn record_token_event_best_effort(
     state: &AppState,
     actor_id: Option<&str>,
-    action: &str,
+    action: AuditAction,
     client_id: Option<&str>,
     reason: &str,
 ) {
@@ -173,7 +187,7 @@ pub(crate) async fn record_token_event_best_effort(
 pub(crate) async fn record_token_event_with_metadata(
     state: &AppState,
     actor_id: Option<&str>,
-    action: &str,
+    action: AuditAction,
     client_id: Option<&str>,
     metadata: serde_json::Value,
 ) -> Result<(), crate::audit::AuditError> {
@@ -186,7 +200,7 @@ pub(crate) async fn record_token_event_with_metadata(
                 "oauth_client".to_owned()
             },
             actor_id.map(str::to_owned),
-            action.to_owned(),
+            action,
             client_id.map(str::to_owned),
             metadata,
         ))
@@ -196,7 +210,7 @@ pub(crate) async fn record_token_event_with_metadata(
 pub(crate) async fn record_token_event_with_metadata_best_effort(
     state: &AppState,
     actor_id: Option<&str>,
-    action: &str,
+    action: AuditAction,
     client_id: Option<&str>,
     metadata: serde_json::Value,
 ) {
@@ -209,7 +223,7 @@ pub(crate) async fn record_token_event_with_metadata_best_effort(
                 "oauth_client".to_owned()
             },
             actor_id.map(str::to_owned),
-            action.to_owned(),
+            action,
             client_id.map(str::to_owned),
             metadata,
         ))
@@ -219,7 +233,7 @@ pub(crate) async fn record_token_event_with_metadata_best_effort(
 fn token_event(
     actor_type: String,
     actor_id: Option<String>,
-    action: String,
+    action: AuditAction,
     resource_id: Option<String>,
     metadata: serde_json::Value,
 ) -> AuditEvent {

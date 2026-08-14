@@ -1,7 +1,7 @@
 use axum::{
     Json,
     extract::State,
-    http::StatusCode,
+    http::{HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
@@ -13,9 +13,14 @@ use crate::{
     error,
     settings::{
         EmailPolicySetting, PasskeySetting, REGISTRATION_EMAIL_FROM_KEY, SECURITY_LIMITS_KEY,
-        SecurityLimitsSetting, SettingsServiceError, SmtpSettingUpdate,
+        SecurityLimitsSetting, SettingInspection, SettingsServiceError, SmtpSettingUpdate,
     },
     state::AppState,
+};
+
+pub use super::issuer_settings_handlers::{
+    IssuerRecordResponse, IssuerSettingResponse, UpdateIssuerSetting, get_issuer_setting,
+    update_issuer_setting,
 };
 
 /// 注册发件人的三态更新：缺失 = 非法请求，`null` = 清除，字符串 = 设置。
@@ -107,7 +112,7 @@ pub async fn update_registration_email(
     record_setting_event(
         &state,
         actor,
-        "registration_email_update",
+        crate::audit::AuditAction::RegistrationEmailUpdate,
         REGISTRATION_EMAIL_FROM_KEY,
         serde_json::json!({"configured": registration_email_from.is_some()}),
     )
@@ -128,8 +133,8 @@ pub async fn get_passkey_setting(State(state): State<AppState>, admin: AdminRead
     {
         return response;
     }
-    match state.settings.passkey().await {
-        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
+    match state.settings.inspect_passkey().await {
+        Ok(inspection) => respond_setting_inspection("passkey", inspection),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load passkey setting");
             error::internal()
@@ -176,7 +181,7 @@ pub async fn update_passkey_setting(
             record_setting_event(
                 &state,
                 actor,
-                "passkey_setting_update",
+                crate::audit::AuditAction::PasskeySettingUpdate,
                 "passkey",
                 serde_json::json!({
                     "enabled": setting.enabled,
@@ -205,8 +210,8 @@ pub async fn get_email_policy_setting(State(state): State<AppState>, admin: Admi
     {
         return response;
     }
-    match state.settings.email_policy().await {
-        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
+    match state.settings.inspect_email_policy().await {
+        Ok(inspection) => respond_setting_inspection("email_policy", inspection),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load email policy setting");
             error::internal()
@@ -231,7 +236,7 @@ pub async fn update_email_policy_setting(
             record_setting_event(
                 &state,
                 actor,
-                "email_policy_update",
+                crate::audit::AuditAction::EmailPolicyUpdate,
                 "email_policy",
                 serde_json::json!({
                     "whitelist_enabled": setting.whitelist_enabled,
@@ -281,17 +286,18 @@ pub async fn update_smtp_setting(
         Err(response) => return response,
     };
     match state.settings.set_smtp(input).await {
-        Ok(setting) => {
+        Ok((setting, password_action)) => {
             record_setting_event(
                 &state,
                 actor,
-                "smtp_setting_update",
+                crate::audit::AuditAction::SmtpSettingUpdate,
                 "smtp",
                 serde_json::json!({
                     "host_configured": !setting.host.is_empty(),
                     "ssl_enabled": setting.ssl_enabled,
                     "force_auth_login": setting.force_auth_login,
                     "password_configured": setting.password_configured,
+                    "password_action": password_action,
                 }),
             )
             .await;
@@ -317,8 +323,8 @@ pub async fn get_security_limits_setting(
     {
         return response;
     }
-    match state.settings.security_limits().await {
-        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
+    match state.settings.inspect_security_limits().await {
+        Ok(inspection) => respond_setting_inspection("security_limits", inspection),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load security limits setting");
             error::internal()
@@ -344,7 +350,7 @@ pub async fn update_security_limits_setting(
             record_setting_event(
                 &state,
                 actor,
-                "security_limits_update",
+                crate::audit::AuditAction::SecurityLimitsUpdate,
                 SECURITY_LIMITS_KEY,
                 serde_json::json!({
                     "unauthenticated_source_qps": setting.unauthenticated_source_qps,
@@ -375,10 +381,39 @@ pub async fn update_security_limits_setting(
     }
 }
 
+/// 管理读取把可修复诊断放在这个响应头里，JSON body 保持设置对象本身。
+/// 取值只有 `invalid` / `corrupt`，不含配置原文。
+pub(crate) const SETTING_DIAGNOSTIC_HEADER: HeaderName =
+    HeaderName::from_static("x-chenxing-setting-diagnostic");
+
+fn respond_setting_inspection<T: Serialize>(
+    setting_key: &'static str,
+    inspection: SettingInspection<T>,
+) -> Response {
+    let mut response = (StatusCode::OK, Json(inspection.value)).into_response();
+    if let Some(diagnostic) = &inspection.diagnostic {
+        tracing::warn!(
+            event = "settings.admin_read_needs_repair",
+            setting_key,
+            diagnostic = diagnostic.as_str(),
+            "stored setting is readable for repair but must not be used on the security hot path"
+        );
+        response.headers_mut().insert(
+            SETTING_DIAGNOSTIC_HEADER,
+            HeaderValue::from_static(diagnostic.as_str()),
+        );
+    }
+    response
+}
+
+#[cfg(test)]
+#[path = "settings_handlers_tests.rs"]
+mod tests;
+
 async fn record_setting_event(
     state: &AppState,
     actor: super::authorization::AdminActor,
-    action: &str,
+    action: crate::audit::AuditAction,
     resource_id: &str,
     metadata: serde_json::Value,
 ) {
@@ -387,7 +422,7 @@ async fn record_setting_event(
         .record_best_effort(AuditEvent::new(
             actor.actor_type().to_owned(),
             actor.user_id().map(|id| id.to_string()),
-            action.to_owned(),
+            action,
             "setting".to_owned(),
             Some(resource_id.to_owned()),
             metadata,

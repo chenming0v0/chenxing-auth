@@ -167,7 +167,15 @@ impl ClientService {
         status: &str,
     ) -> Result<bool, ClientServiceError> {
         validate_status(status)?;
-        Ok(repository::set_client_status(&self.pool, None, client_id, status).await?)
+        let updated = repository::set_client_status(&self.pool, None, client_id, status).await?;
+        if updated && status == "disabled" {
+            self.revoke_refresh_tokens_best_effort(
+                client_id,
+                super::rotation::RefreshTokenCleanupReason::ClientDisabled,
+            )
+            .await;
+        }
+        Ok(updated)
     }
 
     pub async fn set_status_for_user(
@@ -177,10 +185,17 @@ impl ClientService {
         status: &str,
     ) -> Result<bool, ClientServiceError> {
         validate_status(status)?;
-        Ok(
+        let updated =
             repository::set_client_status(&self.pool, Some(owner_user_id), client_id, status)
-                .await?,
-        )
+                .await?;
+        if updated && status == "disabled" {
+            self.revoke_refresh_tokens_best_effort(
+                client_id,
+                super::rotation::RefreshTokenCleanupReason::ClientDisabled,
+            )
+            .await;
+        }
+        Ok(updated)
     }
 }
 

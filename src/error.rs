@@ -53,12 +53,35 @@ pub(crate) fn request_timeout() -> Response {
         .into_response()
 }
 
-pub(crate) fn map_request_timeout(response: Response) -> Response {
-    if response.status() == StatusCode::GATEWAY_TIMEOUT {
-        request_timeout()
+/// 按请求路径映射超时响应。
+///
+/// `tower_http::timeout::TimeoutLayer` 在请求超时时返回空体 504 响应。调用方
+/// （`api::timeout::map_request_timeout_by_path` 中间件）捕获请求路径后调用本函数，按
+/// 协议边界选择响应格式：
+///
+/// - 已注册的 OAuth 协议端点返回 RFC 6749 错误（503
+///   `temporarily_unavailable`），与端点的其他错误响应一致。
+/// - 其余路径返回项目内部 API 信封 `{code, message}`（504 `request_timeout`）。
+///
+/// 这是协议边界，不是路径前缀约定：`/api/v1/oauth/*`（授权确认 API）属于内部
+/// API，仍返回 API 信封。
+pub(crate) fn timeout_response_for_path(path: &str) -> Response {
+    if is_oauth_protocol_path(path) {
+        oauth_temporarily_unavailable()
     } else {
-        response
+        request_timeout()
     }
+}
+
+/// OAuth 2.0 协议端点路径判定。
+///
+/// 只识别实际注册的 RFC 6749/6750/7009 端点。不能按 `/oauth/` 前缀放宽，
+/// 否则未知路径会被错误分类为协议端点，而不是保持统一 404。
+pub(crate) fn is_oauth_protocol_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/oauth/authorize" | "/oauth/token" | "/oauth/revoke" | "/oauth/userinfo"
+    )
 }
 
 pub fn oauth_unauthorized(
@@ -210,9 +233,12 @@ pub fn internal() -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{map_request_timeout, oauth_invalid_bearer, oauth_invalid_client};
+    use super::{
+        is_oauth_protocol_path, oauth_invalid_bearer, oauth_invalid_client,
+        timeout_response_for_path,
+    };
     use axum::{
-        body::{Body, to_bytes},
+        body::to_bytes,
         http::{StatusCode, header::WWW_AUTHENTICATE},
     };
 
@@ -260,12 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_timeout_uses_generic_json_without_internal_details() {
-        let response = map_request_timeout(
-            axum::http::Response::builder()
-                .status(StatusCode::GATEWAY_TIMEOUT)
-                .body(Body::empty())
-                .expect("request timeout response"),
-        );
+        let response = timeout_response_for_path("/api/v1/auth/login");
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
 
         let body = to_bytes(response.into_body(), usize::MAX)
@@ -274,5 +295,72 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&body).expect("request timeout JSON");
         assert_eq!(body["code"], "request_timeout");
         assert_eq!(body["message"], "request timed out");
+        assert!(body.get("error").is_none());
+    }
+
+    #[tokio::test]
+    async fn oauth_protocol_timeout_returns_rfc6749_temporarily_unavailable() {
+        // /oauth/token 等协议端点超时必须返回 RFC 6749 错误信封，而不是内部
+        // API 信封，否则 OAuth 客户端无法按 error 字段识别失败原因。
+        for path in [
+            "/oauth/token",
+            "/oauth/authorize",
+            "/oauth/revoke",
+            "/oauth/userinfo",
+        ] {
+            let response = timeout_response_for_path(path);
+            assert_eq!(
+                response.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{path} status"
+            );
+
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("oauth timeout body");
+            let body: serde_json::Value =
+                serde_json::from_slice(&body).expect("oauth timeout JSON");
+            assert_eq!(body["error"], "temporarily_unavailable", "{path} error");
+            assert!(
+                body["error_description"].as_str().is_some(),
+                "{path} error_description"
+            );
+            assert!(body.get("code").is_none(), "{path} must not leak API code");
+            assert!(
+                body.get("message").is_none(),
+                "{path} must not leak API message"
+            );
+        }
+    }
+
+    #[test]
+    fn oauth_protocol_path_detection_covers_rfc6749_endpoints_only() {
+        for path in [
+            "/oauth/token",
+            "/oauth/authorize",
+            "/oauth/revoke",
+            "/oauth/userinfo",
+        ] {
+            assert!(is_oauth_protocol_path(path), "{path} should be OAuth");
+        }
+
+        // OIDC Discovery、内部 API、授权确认 API、静态资源、SPA 路由都不是
+        // RFC 6749 协议端点，超时时返回 API 信封。
+        for path in [
+            "/.well-known/openid-configuration",
+            "/.well-known/jwks.json",
+            "/api/v1/auth/login",
+            "/api/v1/oauth/authorize/requests/abc",
+            "/oauth/authorize/decide",
+            "/oauth/not-registered",
+            "/oauth/consent",
+            "/health/live",
+            "/admin/login",
+            "/console/developer",
+            "/assets/app.js",
+            "/",
+        ] {
+            assert!(!is_oauth_protocol_path(path), "{path} should not be OAuth");
+        }
     }
 }

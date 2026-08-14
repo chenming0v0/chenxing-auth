@@ -103,7 +103,7 @@ pub async fn create_client(
                 .record_blocking(AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
-                    "client_create".to_owned(),
+                    crate::audit::AuditAction::ClientCreate,
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),
                     serde_json::json!({"result": "success"}),
@@ -191,7 +191,7 @@ pub async fn update_client(
                 .record_best_effort(AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
-                    "client_update".to_owned(),
+                    crate::audit::AuditAction::ClientUpdate,
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),
                     serde_json::json!({"result": "success"}),
@@ -225,7 +225,11 @@ async fn set_client_status(
                 .record_best_effort(AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
-                    format!("client_{status}"),
+                    match status {
+                        "active" => crate::audit::AuditAction::ClientActive,
+                        "disabled" => crate::audit::AuditAction::ClientDisabled,
+                        _ => unreachable!("client status is validated by the service"),
+                    },
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),
                     serde_json::json!({"result": "success"}),
@@ -279,7 +283,7 @@ pub async fn rotate_secret(
                 .record_blocking(AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
-                    "client_secret_rotate".to_owned(),
+                    crate::audit::AuditAction::ClientSecretRotate,
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),
                     serde_json::json!({"result": "success"}),
@@ -300,7 +304,7 @@ pub async fn rotate_secret(
                 .record_best_effort(AuditEvent::new(
                     actor_type.to_owned(),
                     actor_id,
-                    "client_secret_rotate_conflict".to_owned(),
+                    crate::audit::AuditAction::ClientSecretRotateConflict,
                     "oauth_client".to_owned(),
                     Some(client_id.clone()),
                     serde_json::json!({

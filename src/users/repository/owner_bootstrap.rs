@@ -55,7 +55,7 @@ pub async fn insert_user_after_owner(
     password_hash: String,
 ) -> Result<Option<NewUser>, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
-    crate::sqlx::query("SELECT pg_advisory_xact_lock(7341928)")
+    crate::sqlx::query("SELECT pg_advisory_xact_lock(0, 7341928)")
         .execute(&mut *transaction)
         .await?;
     if !owner_exists(&mut *transaction).await? {
@@ -134,7 +134,7 @@ where
     F: FnOnce(&UserProfile) -> AuditEvent,
 {
     let mut transaction = pool.begin().await?;
-    crate::sqlx::query("SELECT pg_advisory_xact_lock(7341928)")
+    crate::sqlx::query("SELECT pg_advisory_xact_lock(0, 7341928)")
         .execute(&mut *transaction)
         .await?;
     if owner_exists(&mut *transaction).await? {

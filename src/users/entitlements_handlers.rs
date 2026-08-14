@@ -145,10 +145,17 @@ pub async fn current_entitlements(State(state): State<AppState>, session: Sessio
     // QPS 只是套餐展示值，无「用量/上限」概念，因此不带 limit 字段；
     // 套餐不限并发（max_qps 为 NULL）时不返回该卡片。
     if let Some(max_qps) = plan.max_qps {
+        let Ok(used) = u64::try_from(max_qps) else {
+            tracing::error!(
+                max_qps,
+                "plan max_qps is negative; CHECK should have prevented this"
+            );
+            return error::internal();
+        };
         entitlements.push(EntitlementItem::Numeric(NumericEntitlement {
             key: "max_qps",
             label: "最大并发（请求/秒）",
-            used: max_qps.max(0) as u64,
+            used,
         }));
     }
 

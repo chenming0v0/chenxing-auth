@@ -88,10 +88,14 @@ pub enum UserPermission {
     ReadAudit,
     ManageSettings,
     ManageIdentityProviders,
+    /// 修改 OIDC 发行者信任锚，只授予 Owner。
+    ManageIssuer,
     RotateKeys,
     ManageRoles,
-    /// 重置他人的认证因子。独立于 `ManageUsers`：删除一个账号的 TOTP 会把它降级到
-    /// 「只有密码」，是账号接管链条上的一环，因此按最小权限只授予 Owner。
+    /// 重置他人的认证因子。独立于 `ManageUsers`：删除一个账号的 TOTP 或 Passkey
+    /// 会把它降级到「只有密码」（或只剩另一个因子），是账号接管链条上的一环，
+    /// 因此按最小权限只授予 Owner。末位 Owner 丢失全部 Passkey 时不能走 Session
+    /// 通道，必须用系统 `ADMIN_TOKEN`（#460）。
     ManageAuthFactors,
 }
 
@@ -128,6 +132,10 @@ impl UserRole {
             Self::Admin => "admin",
             Self::Owner => "owner",
         }
+    }
+
+    pub const fn is_privileged(self) -> bool {
+        matches!(self, Self::Admin | Self::Owner)
     }
 
     pub const fn allows(self, permission: UserPermission) -> bool {
@@ -394,6 +402,20 @@ pub fn validate_display_name(
     Ok(display_name)
 }
 
+/// 认证用口令边界：登录 `password` 与改密 `current_password` 共用（Issue #462）。
+///
+/// 只拦空口令和超过 [`MAX_PASSWORD_LENGTH`] 的明文。不套用
+/// [`MIN_PASSWORD_LENGTH`]：下界是注册期策略，认证期套用会锁死存量短口令。
+pub fn validate_authentication_password(password: &str) -> Result<(), LoginError> {
+    if password.is_empty() {
+        return Err(LoginError::EmptyPassword);
+    }
+    if password.chars().count() > MAX_PASSWORD_LENGTH {
+        return Err(LoginError::PasswordTooLong);
+    }
+    Ok(())
+}
+
 /// 登录输入校验（Issue #259 补齐长度上界）。
 ///
 /// 长度上界先于形态判定：长度检查是 O(n) 且不分配，而规范化会为标识符复制一份
@@ -408,19 +430,13 @@ pub fn validate_display_name(
 /// 判定顺序保持"标识符形态 → 口令"，与补丁前一致：两类错误在服务层都归一为
 /// `InvalidLoginInput`，但顺序变化会改变同时违反两项时的错误取值，没有必要动。
 ///
-/// 登录侧只校验上界，不校验 `MIN_PASSWORD_LENGTH`：下界是注册期策略，
-/// 在登录期套用会让"下界收紧之前设置的存量短口令"直接无法登录。
+/// 口令边界走 [`validate_authentication_password`]，与改密当前口令同一套规则。
 pub fn validate_login(input: LoginInput) -> Result<ValidatedLogin, LoginError> {
     if input.identifier.chars().count() > MAX_IDENTIFIER_LENGTH {
         return Err(LoginError::InvalidIdentifier);
     }
     let identifier = parse_login_identifier(input.identifier.trim())?;
-    if input.password.is_empty() {
-        return Err(LoginError::EmptyPassword);
-    }
-    if input.password.chars().count() > MAX_PASSWORD_LENGTH {
-        return Err(LoginError::PasswordTooLong);
-    }
+    validate_authentication_password(&input.password)?;
 
     Ok(ValidatedLogin {
         identifier,
@@ -478,22 +494,5 @@ pub struct PublicUser {
 }
 
 #[cfg(test)]
-mod public_user_tests {
-    use super::{PublicUser, UserRole};
-
-    #[test]
-    fn public_user_serializes_creation_time_as_rfc3339() {
-        let value = serde_json::to_value(PublicUser {
-            id: 1,
-            username: "owner".to_owned(),
-            email: "owner@example.test".to_owned(),
-            display_name: None,
-            status: "active".to_owned(),
-            role: UserRole::Owner,
-            created_at: time::OffsetDateTime::UNIX_EPOCH,
-        })
-        .expect("public user serializes");
-
-        assert_eq!(value["created_at"], "1970-01-01T00:00:00Z");
-    }
-}
+#[path = "domain_public_user_tests.rs"]
+mod public_user_tests;

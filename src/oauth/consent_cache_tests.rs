@@ -2,7 +2,7 @@
 //!
 //! 拆成独立文件而不是内联 `mod tests`：`consent_cache.rs` 的注释密度较高
 //! （设计取舍需要写清楚），内联测试会把它推过 300 行的弱警告线。
-//! 与 `keys_tests.rs` / `handlers_tests.rs` 的既有做法一致。
+//! 与 `keys/tests.rs` / `handlers_tests.rs` 的既有做法一致。
 
 use super::{
     ACTIVE_MARKER, CONSENT_STATE_CACHE_ONLY_TTL_SECONDS, CONSENT_STATE_CACHE_TTL_SECONDS,

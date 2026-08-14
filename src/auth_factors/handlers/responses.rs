@@ -142,7 +142,7 @@ pub(crate) async fn factor_key_unavailable_response(
     state
         .audit
         .record_best_effort(AuditEvent::authentication_failure(
-            "auth_factor_key_unavailable".to_owned(),
+            crate::audit::AuditAction::AuthFactorKeyUnavailable,
             if actor_id.is_some() {
                 "user".to_owned()
             } else {
@@ -187,7 +187,7 @@ async fn record_mfa_event(
     state
         .audit
         .record_best_effort(AuditEvent::authentication_failure(
-            "mfa_failure".to_owned(),
+            crate::audit::AuditAction::MfaFailure,
             if actor_id.is_some() {
                 "user".to_owned()
             } else {

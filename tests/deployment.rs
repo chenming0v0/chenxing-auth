@@ -5,18 +5,18 @@ const CI_WORKFLOW: &str = include_str!("../.github/workflows/ci.yml");
 const INSTALL_SCRIPT: &str = include_str!("../deploy/install.sh");
 const REMOTE_INSTALL_SCRIPT: &str = include_str!("../install.sh");
 const PRODUCTION_COMPOSE: &str = include_str!("../docker-compose.prod.yml");
-const DB_MODULE: &str = include_str!("../src/db.rs");
-const DB_POOL_MODULE: &str = include_str!("../src/db_pool.rs");
-const DB_AUDIT_BOUNDARY_MODULE: &str = include_str!("../src/db_audit_boundary.rs");
-const DB_ROLES_MODULE: &str = include_str!("../src/db_roles.rs");
-const DB_MIGRATE_MODULE: &str = include_str!("../src/db_migrate.rs");
+const DB_MODULE: &str = include_str!("../src/db/mod.rs");
+const DB_POOL_MODULE: &str = include_str!("../src/db/pool.rs");
+const DB_AUDIT_BOUNDARY_MODULE: &str = include_str!("../src/db/audit_boundary.rs");
+const DB_ROLES_MODULE: &str = include_str!("../src/db/roles.rs");
+const DB_MIGRATE_MODULE: &str = include_str!("../src/db/migrate.rs");
 const ENV_EXAMPLE: &str = include_str!("../.env.example");
 const DOCKERFILE: &str = include_str!("../Dockerfile");
 const RUNTIME_DOCKERFILE: &str = include_str!("../Dockerfile.runtime");
 const DOCKERIGNORE: &str = include_str!("../.dockerignore");
 const STATIC_FILES_MODULE: &str = include_str!("../src/api/static_files.rs");
 const WEB_DIST_MODULE: &str = include_str!("../src/web_dist.rs");
-const CONFIG_CONSTRUCTION_MODULE: &str = include_str!("../src/config_construction.rs");
+const CONFIG_CONSTRUCTION_MODULE: &str = include_str!("../src/config/construction.rs");
 const STATE_MODULE: &str = include_str!("../src/state.rs");
 const DATABASE_BASELINE: &str = include_str!("../migrations/0001_initial.sql");
 
@@ -486,7 +486,7 @@ fn remote_installer_generates_and_preserves_deployment_secrets() {
             "remote installer is missing secret marker: {marker}"
         );
     }
-    assert!(!REMOTE_INSTALL_SCRIPT.contains("APP_ISSUER="));
+    assert!(!REMOTE_INSTALL_SCRIPT.contains("APP_ISSUER=${APP_ISSUER}"));
 }
 
 #[test]
@@ -498,13 +498,13 @@ fn production_probes_use_readiness_and_keep_liveness_separate() {
 }
 
 #[test]
-fn installer_rejects_implicit_localhost_and_checks_discovery_contract() {
+fn installer_allows_bootstrap_mode_and_checks_discovery_contract() {
     for marker in [
-        "CHENXING_ISSUER is required",
         "CHENXING_ALLOW_LOOPBACK_HTTP",
         "EXPECTED_COOKIE_SECURE",
         "OpenID discovery does not match APP_ISSUER",
         ".well-known/openid-configuration",
+        "APP_ISSUER is not set; the service is running in secure bootstrap mode.",
     ] {
         assert!(
             INSTALL_SCRIPT.contains(marker),
@@ -532,17 +532,13 @@ fn deployment_files_are_present_at_repository_root() {
 #[test]
 fn database_uses_one_transactional_current_baseline() {
     assert!(DB_MODULE.contains("current schema baseline"));
-    assert!(DB_MODULE.contains("include_str!(\"../migrations/0001_initial.sql\")"));
-    assert_eq!(
-        DB_MODULE.matches("Migration::new(").count(),
-        1,
-        "the development baseline must be registered exactly once"
-    );
+    assert!(DB_MODULE.contains("include_str!(\"../../migrations/0001_initial.sql\")"));
+    assert_eq!(DB_MODULE.matches("Migration::new(").count(), 3);
     assert!(
         DB_MODULE.contains(
-            "normalize_migration_sql(include_str!(\"../migrations/0001_initial.sql\")),\n        false,"
-        ),
-        "the schema baseline must remain transactional"
+            "normalize_migration_sql(include_str!(\"../../migrations/0001_initial.sql\"))"
+        ) && DB_MODULE.contains("MigrationType::Simple"),
+        "the schema migrations must remain transactional"
     );
 
     let ensure_role = DB_MODULE
@@ -564,7 +560,11 @@ fn database_uses_one_transactional_current_baseline() {
     migrations.sort();
     assert_eq!(
         migrations,
-        vec![std::ffi::OsString::from("0001_initial.sql")]
+        vec![
+            std::ffi::OsString::from("0001_initial.sql"),
+            std::ffi::OsString::from("0002_issuer_runtime.sql"),
+            std::ffi::OsString::from("0003_plan_quota_bounds.sql"),
+        ]
     );
 
     assert_eq!(

@@ -1,4 +1,4 @@
-use super::{OAuthError, TOKEN_EXCHANGE_ACTION, TOKEN_EXCHANGE_FAILURE_ACTION, TokenResponse};
+use super::{OAuthError, TokenResponse};
 use crate::{
     oauth::token_security::{
         record_token_event_with_metadata, record_token_event_with_metadata_best_effort,
@@ -26,7 +26,7 @@ pub(super) async fn record_token_exchange_success(
     record_token_event_with_metadata(
         state,
         Some(user_id),
-        TOKEN_EXCHANGE_ACTION,
+        crate::audit::AuditAction::TokenExchange,
         Some(client_id),
         serde_json::json!({
             "client_id": client_id,
@@ -47,7 +47,7 @@ async fn record_token_exchange_failure(
     record_token_event_with_metadata_best_effort(
         state,
         user_id,
-        TOKEN_EXCHANGE_FAILURE_ACTION,
+        crate::audit::AuditAction::TokenExchangeFailure,
         client_id,
         serde_json::json!({
             "client_id": client_id,

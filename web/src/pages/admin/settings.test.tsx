@@ -235,6 +235,9 @@ describe('SettingsWorkspace 加载 effect 与消息状态解耦', () => {
     await screen.findByText('SMTP 设置已保存。')
     expect(field('SMTP 服务器地址').value).toBe('new.smtp.example')
     expect(getCount('/api/v1/admin/settings/smtp')).toBe(1)
+    const saved = requests.find((request) => request.method === 'PUT' && request.path === '/api/v1/admin/settings/smtp')
+    expect(saved?.body).toMatchObject({ host: 'new.smtp.example', password_action: 'keep' })
+    expect(saved?.body).not.toHaveProperty('password')
   })
 })
 

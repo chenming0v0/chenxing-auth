@@ -35,9 +35,8 @@ pub struct AuthorizationCode {
     /// 反序列化 helper 的 `#[serde(default)]` + `skip_serializing_if` 是 Redis 兼容性要求，不可删除：
     /// - `default`：升级期间在途的旧授权码 JSON 没有这个键，缺了它反序列化会
     ///   直接失败，所有在途授权码全部作废。
-    /// - `skip_serializing_if`：`take_if_matches` 用「重新序列化后与 Redis 中的
-    ///   字符串逐字节相等」做原子消费判定。旧载荷解析出 `None` 后如果被写成
-    ///   `"session_token_hash":null`，就永远匹配不上原始载荷，旧授权码将无法被消费。
+    /// - `skip_serializing_if`：保持旧载荷的稳定表示，便于混合版本部署；
+    ///   `take_if_matches` 只比较已知协议字段，未知未来字段不参与 CAS。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_token_hash: Option<String>,
     /// 签发时配额消耗对应的 reservation id（Issue #341）。
@@ -47,8 +46,7 @@ pub struct AuthorizationCode {
     /// 取消。`None` 表示该授权码没有计量配额（admin Client、无生效套餐）。
     ///
     /// 序列化约定与 `session_token_hash` 相同：`#[serde(default)]` 保证升级
-    /// 期间在途的旧授权码可读，`skip_serializing_if` 保证无值时不写键、
-    /// CAS 的逐字节相等判定不被破坏。
+    /// 期间在途的旧授权码可读，`skip_serializing_if` 保持旧载荷表示稳定。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quota_reservation_id: Option<String>,
     pub scopes: Vec<String>,

@@ -195,7 +195,7 @@ async fn csrf_denial_on_admin_mutation_is_recorded_in_the_audit_log() {
     let event = &events[0];
     assert_eq!(event.actor_id, Some(owner_id.to_string()));
     assert_eq!(event.resource_type, "admin_permission");
-    assert_eq!(event.resource_id.as_deref(), Some("ManageRoles"));
+    assert_eq!(event.resource_id.as_deref(), Some("ManageUsers"));
     assert_eq!(event.metadata["reason"], "csrf_invalid");
 }
 

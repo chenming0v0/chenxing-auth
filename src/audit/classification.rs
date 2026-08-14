@@ -1,93 +1,137 @@
-//! 用户安全事件的分级体系（Issue #308）。
+//! 用户安全事件的分级体系（Issue #308 / #467）。
 //!
-//! 每个事件两个正交维度，由服务端直接返回，前端不维护 action 白名单：
-//!
-//! - **category**（类别，用于列表筛选）：`auth` / `session` / `authorization` /
-//!   `account`；
-//! - **severity**（等级，用于呈现与告警）：`info` / `notice` / `warning` /
-//!   `critical`。
-//!
-//! action → (category, severity) 的映射只在这里定义一次，列表与详情接口共用。
-//! 未映射的 action 回落到 `account` / `info`，不 panic、不丢事件——新增 action 时
-//! 在这里补一行，而不是在接口层维护第二份映射。
+//! 生产代码只能发出 [`AuditAction`]。落库字符串、历史读取和列表/详情展示仍走
+//! [`classify`]：已知值与枚举分类一致，未知历史值兼容回退为 `account/info`。
 
 use serde::Serialize;
 
-/// 安全事件的类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityEventCategory {
-    /// 登录与认证因子活动。
     Auth,
-    /// 会话生命周期变更。
     Session,
-    /// OAuth 授权相关活动。
     Authorization,
-    /// 账户资料与凭据变更。
     Account,
 }
 
-/// 安全事件的等级。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SecurityEventSeverity {
-    /// 常规活动。
     Info,
-    /// 成功的敏感操作。
     Notice,
-    /// 需要用户留意。
     Warning,
-    /// 高危变更。
     Critical,
 }
 
-/// action → (category, severity) 的单点映射（Issue #308）。
-///
-/// 表项覆盖当前代码库实际发出的事件，以及提案约定的 action 名（`login_failed`、
-/// `oauth_consent`、`oauth_consent_revoke`、`password_change`），后两者为尚未落库
-/// 的契约预留。新增 action 时必须在这里补一行；未映射的 action 回落到
-/// `account` / `info`，保证列表与详情不会 panic 或丢事件。
-pub fn classify(action: &str) -> (SecurityEventCategory, SecurityEventSeverity) {
-    match action {
-        // auth：登录与认证因子
-        "login" => (SecurityEventCategory::Auth, SecurityEventSeverity::Notice),
-        "login_failure"
-        | "login_failed"
-        | "mfa_failure"
-        | "rate_limit_triggered"
-        | "passkey_recovery_required"
-        | "auth_factor_key_unavailable" => {
-            (SecurityEventCategory::Auth, SecurityEventSeverity::Warning)
+type Classification = (SecurityEventCategory, SecurityEventSeverity);
+
+const UNKNOWN_CLASSIFICATION: Classification =
+    (SecurityEventCategory::Account, SecurityEventSeverity::Info);
+
+macro_rules! audit_actions {
+    ($($variant:ident => $name:literal => ($category:ident, $severity:ident)),+ $(,)?) => {
+        /// 生产审计 action。新增变体必须同时声明落库字符串和分类。
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum AuditAction {
+            $($variant),+
         }
-        // session：会话生命周期
-        "session_revoke" => (
-            SecurityEventCategory::Session,
-            SecurityEventSeverity::Warning,
-        ),
-        // authorization：OAuth 授权
-        "oauth_consent" | "authorization_code_issue" => (
-            SecurityEventCategory::Authorization,
-            SecurityEventSeverity::Notice,
-        ),
-        "consent_revoke" | "oauth_consent_revoke" | "authorization_request_rebound" => (
-            SecurityEventCategory::Authorization,
-            SecurityEventSeverity::Warning,
-        ),
-        "authorization_denied" => (
-            SecurityEventCategory::Authorization,
-            SecurityEventSeverity::Info,
-        ),
-        // account：资料与凭据变更
-        "password_change" => (
-            SecurityEventCategory::Account,
-            SecurityEventSeverity::Critical,
-        ),
-        "user_avatar_update" | "user_avatar_remove" => {
-            (SecurityEventCategory::Account, SecurityEventSeverity::Info)
+
+        impl AuditAction {
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name),+
+                }
+            }
+
+            pub fn parse(value: &str) -> Option<Self> {
+                match value {
+                    $($name => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+
+            pub const fn classification(self) -> Classification {
+                match self {
+                    $(Self::$variant => (
+                        SecurityEventCategory::$category,
+                        SecurityEventSeverity::$severity,
+                    )),+
+                }
+            }
         }
-        // 未映射：默认 account/info，不 panic 不丢事件
-        _ => (SecurityEventCategory::Account, SecurityEventSeverity::Info),
-    }
+    };
+}
+
+audit_actions! {
+    Login => "login" => (Auth, Notice),
+    LoginFailure => "login_failure" => (Auth, Warning),
+    LoginFailed => "login_failed" => (Auth, Warning),
+    LoginRateLimited => "login_rate_limited" => (Auth, Warning),
+    MfaFailure => "mfa_failure" => (Auth, Warning),
+    RateLimitTriggered => "rate_limit_triggered" => (Auth, Warning),
+    PasskeyRecoveryRequired => "passkey_recovery_required" => (Auth, Warning),
+    AuthFactorKeyUnavailable => "auth_factor_key_unavailable" => (Auth, Warning),
+    OauthProviderCreate => "oauth_provider_create" => (Auth, Critical),
+    OauthProviderUpdate => "oauth_provider_update" => (Auth, Critical),
+    OauthProviderActive => "oauth_provider_active" => (Auth, Critical),
+    OauthProviderDisabled => "oauth_provider_disabled" => (Auth, Warning),
+    PasskeySettingUpdate => "passkey_setting_update" => (Auth, Critical),
+
+    SessionRevoke => "session_revoke" => (Session, Warning),
+
+    OauthConsent => "oauth_consent" => (Authorization, Notice),
+    AuthorizationCodeIssue => "authorization_code_issue" => (Authorization, Notice),
+    TokenExchange => "token_exchange" => (Authorization, Notice),
+    TokenRefresh => "token_refresh" => (Authorization, Notice),
+    ClientCreate => "client_create" => (Authorization, Notice),
+    ConsentRevoke => "consent_revoke" => (Authorization, Warning),
+    OauthConsentRevoke => "oauth_consent_revoke" => (Authorization, Warning),
+    AuthorizationRequestRebound => "authorization_request_rebound" => (Authorization, Warning),
+    TokenExchangeFailure => "token_exchange_failure" => (Authorization, Warning),
+    TokenRefreshFailure => "token_refresh_failure" => (Authorization, Warning),
+    TokenRevoke => "token_revoke" => (Authorization, Warning),
+    ClientDisabled => "client_disabled" => (Authorization, Warning),
+    ClientSecretRotateConflict => "client_secret_rotate_conflict" => (Authorization, Warning),
+    AuthorizationDenied => "authorization_denied" => (Authorization, Info),
+    ClientUpdate => "client_update" => (Authorization, Critical),
+    ClientActive => "client_active" => (Authorization, Critical),
+    ClientSecretRotate => "client_secret_rotate" => (Authorization, Critical),
+    SigningKeyRotate => "signing_key_rotate" => (Authorization, Critical),
+    SigningKeyRevoke => "signing_key_revoke" => (Authorization, Critical),
+    IssuerConfigure => "issuer_configure" => (Authorization, Critical),
+    IssuerUpdate => "issuer_update" => (Authorization, Critical),
+
+    UserAvatarUpdate => "user_avatar_update" => (Account, Info),
+    UserAvatarRemove => "user_avatar_remove" => (Account, Info),
+    UserRegister => "user_register" => (Account, Notice),
+    RegistrationEmailUpdate => "registration_email_update" => (Account, Notice),
+    PlanCreate => "plan_create" => (Account, Notice),
+    PlanUpdate => "plan_update" => (Account, Notice),
+    PlanArchive => "plan_archive" => (Account, Notice),
+    PlanRestore => "plan_restore" => (Account, Notice),
+    UserPlanAssign => "user_plan_assign" => (Account, Notice),
+    AdminAuthorizationDenied => "admin_authorization_denied" => (Account, Warning),
+    AdminOwnerGuardDenied => "admin_owner_guard_denied" => (Account, Warning),
+    PasswordChange => "password_change" => (Account, Critical),
+    UserTotpFactorReset => "user_totp_factor_reset" => (Account, Critical),
+    UserPasskeyFactorReset => "user_passkey_factor_reset" => (Account, Critical),
+    OwnerBootstrap => "owner_bootstrap" => (Account, Critical),
+    UserCreate => "user_create" => (Account, Critical),
+    UserActive => "user_active" => (Account, Critical),
+    UserDisabled => "user_disabled" => (Account, Critical),
+    UserRoleUpdate => "user_role_update" => (Account, Critical),
+    EmailPolicyUpdate => "email_policy_update" => (Account, Critical),
+    SmtpSettingUpdate => "smtp_setting_update" => (Account, Critical),
+    SecurityLimitsUpdate => "security_limits_update" => (Account, Critical),
+}
+
+/// 列表与详情共用的 action 分类入口。未知历史值保持可见并沿用旧回退。
+pub fn classify(action: &str) -> Classification {
+    AuditAction::parse(action)
+        .map(AuditAction::classification)
+        .unwrap_or(UNKNOWN_CLASSIFICATION)
 }
 
 #[cfg(test)]
@@ -95,59 +139,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn known_actions_classify_into_their_documented_quadrant() {
-        assert_eq!(
-            classify("login"),
-            (SecurityEventCategory::Auth, SecurityEventSeverity::Notice)
-        );
-        assert_eq!(
-            classify("login_failure"),
-            (SecurityEventCategory::Auth, SecurityEventSeverity::Warning)
-        );
-        assert_eq!(
-            classify("session_revoke"),
-            (
-                SecurityEventCategory::Session,
-                SecurityEventSeverity::Warning
-            )
-        );
-        assert_eq!(
-            classify("oauth_consent"),
-            (
-                SecurityEventCategory::Authorization,
-                SecurityEventSeverity::Notice
-            )
-        );
-        assert_eq!(
-            classify("consent_revoke"),
-            (
-                SecurityEventCategory::Authorization,
-                SecurityEventSeverity::Warning
-            )
-        );
-        assert_eq!(
-            classify("password_change"),
-            (
-                SecurityEventCategory::Account,
-                SecurityEventSeverity::Critical
-            )
-        );
-        assert_eq!(
-            classify("user_avatar_update"),
-            (SecurityEventCategory::Account, SecurityEventSeverity::Info)
-        );
+    fn every_production_action_is_explicitly_classified() {
+        for action in AuditAction::ALL {
+            assert_eq!(classify(action.as_str()), action.classification());
+            assert_eq!(AuditAction::parse(action.as_str()), Some(*action));
+        }
     }
 
-    /// 未映射的 action 必须回落默认值，而不是让接口 panic 或丢事件（提案硬性要求）。
     #[test]
-    fn unknown_actions_fall_back_to_account_info() {
-        assert_eq!(
-            classify("some_future_action"),
-            (SecurityEventCategory::Account, SecurityEventSeverity::Info)
-        );
-        assert_eq!(
-            classify(""),
-            (SecurityEventCategory::Account, SecurityEventSeverity::Info)
-        );
+    fn high_risk_actions_never_downgrade_to_info() {
+        for action in [
+            AuditAction::ClientSecretRotate,
+            AuditAction::SigningKeyRevoke,
+            AuditAction::UserRoleUpdate,
+            AuditAction::TokenRefreshFailure,
+        ] {
+            assert_ne!(
+                action.classification().1,
+                SecurityEventSeverity::Info,
+                "{} must not be info",
+                action.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_historical_actions_keep_account_info_fallback() {
+        for action in ["some_future_action", "", "test"] {
+            assert_eq!(AuditAction::parse(action), None);
+            assert_eq!(classify(action), UNKNOWN_CLASSIFICATION);
+        }
     }
 }

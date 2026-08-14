@@ -30,8 +30,10 @@
 //!
 //! 已初始化后该端点返回与未注册路由完全一致的 404（见
 //! [`hidden_bootstrap_status`]），匿名调用者无法据此区分「这是一台已初始化的辰星
-//! 实例」和「这个路径不存在」。未初始化时仍然如实返回 `initialized: false`——
-//! 初始化页面必须能判断要不要显示，这是引导例外的一部分，不是疏漏。
+//! 实例」和「这个路径不存在」。Issuer 未配置、待重载或运行时无效也不能改写这条
+//! 404，否则收敛异常本身会变成 Owner 已存在的预言机。未初始化时仍然如实返回
+//! `initialized: false`——初始化页面必须能判断要不要显示，这是引导例外的一部分，
+//! 不是疏漏。响应不含 generation、phase、persisted 等 Issuer 内部状态。
 //!
 //! 探测面因此从「免费 GET」收敛到「受限流、留审计的 POST」。
 
@@ -132,7 +134,7 @@ pub(crate) async fn record_bootstrap_denial(
     state
         .audit
         .record_best_effort(AuditEvent::authentication_failure(
-            "owner_bootstrap".to_owned(),
+            crate::audit::AuditAction::OwnerBootstrap,
             "bootstrap".to_owned(),
             None,
             "user".to_owned(),

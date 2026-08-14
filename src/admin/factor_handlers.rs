@@ -10,9 +10,11 @@
 //!   「这个人是被密钥退役锁死了，还是自己输错了码」。
 //! - `DELETE /api/v1/admin/users/{user_id}/auth-factors/totp`：丢弃不可读的密文，
 //!   让账号回到「无因子」状态并在下次登录重新注册。
+//! - Passkey 重置见 [`super::passkey_recovery`]（#460）：末位 Owner 丢失全部
+//!   Passkey 时走系统 Token，不能依赖现有 Session。
 //!
-//! 三个端点都不返回 kid、密文和种子：管理员做决策只需要状态名，拿到 kid 只会
-//! 把密钥环结构泄漏到 API 与前端日志里。
+//! 这些端点都不返回 kid、密文、种子或 Passkey 凭据材料：管理员做决策只需要
+//! 状态名，拿到材料只会泄漏到 API 与前端日志里。
 
 use axum::{
     Json,
@@ -176,7 +178,7 @@ pub async fn reset_user_totp_factor(
         .record_best_effort(AuditEvent::new(
             actor_type.to_owned(),
             actor_id,
-            "user_totp_factor_reset".to_owned(),
+            crate::audit::AuditAction::UserTotpFactorReset,
             "authentication_factor".to_owned(),
             Some(user_id.to_string()),
             serde_json::json!({

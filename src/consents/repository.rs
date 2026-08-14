@@ -134,7 +134,19 @@ impl ConsentRepository for PgConsentRepository {
             "INSERT INTO user_consents (user_id, client_id, scopes, updated_at, revoked_at, state_version)
              SELECT $1, id, $3, $4, NULL, 1 FROM oauth_clients WHERE client_id = $2
              ON CONFLICT (user_id, client_id) DO UPDATE
-                 SET scopes        = EXCLUDED.scopes,
+                 SET scopes        = CASE
+                         WHEN user_consents.revoked_at IS NOT NULL THEN EXCLUDED.scopes
+                         ELSE (
+                             SELECT COALESCE(jsonb_agg(elem ORDER BY elem), '[]'::jsonb)
+                             FROM (
+                                 SELECT elem
+                                 FROM jsonb_array_elements_text(user_consents.scopes) AS existing(elem)
+                                 UNION
+                                 SELECT elem
+                                 FROM jsonb_array_elements_text(EXCLUDED.scopes) AS incoming(elem)
+                             ) AS merged(elem)
+                         )
+                     END,
                      updated_at    = EXCLUDED.updated_at,
                      revoked_at    = NULL,
                      state_version = user_consents.state_version + 1

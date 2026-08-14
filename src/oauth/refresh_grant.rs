@@ -9,15 +9,20 @@ use super::{
     token_handlers::TokenRequest,
     token_use_case::{self, OAuthError, RefreshExchangeError},
 };
-use crate::{clients::service::AuthenticatedClient, error, state::AppState};
+use crate::{
+    api::extract::RequestIssuer, clients::service::AuthenticatedClient, error, state::AppState,
+};
 
 /// Handle a refresh-token request after `token_inner` has authenticated the client.
 pub async fn exchange_refresh_token(
     state: AppState,
+    issuer: RequestIssuer,
     request: TokenRequest,
     authenticated: AuthenticatedClient,
 ) -> Response {
-    match token_use_case::exchange_refresh_token(&state, request, authenticated).await {
+    match token_use_case::exchange_refresh_token(&state, issuer.issuer(), request, authenticated)
+        .await
+    {
         Ok(token) => Json(token).into_response(),
         Err(error_value) => oauth_error_response(error_value),
     }
