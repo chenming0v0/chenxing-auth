@@ -56,7 +56,7 @@ pub(crate) fn request_timeout() -> Response {
 /// 按请求路径映射超时响应。
 ///
 /// `tower_http::timeout::TimeoutLayer` 在请求超时时返回空体 504 响应。调用方
-/// （`api::map_request_timeout_by_path` 中间件）捕获请求路径后调用本函数，按
+/// （`api::timeout::map_request_timeout_by_path` 中间件）捕获请求路径后调用本函数，按
 /// 协议边界选择响应格式：
 ///
 /// - 已注册的 OAuth 协议端点返回 RFC 6749 错误（503

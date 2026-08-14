@@ -928,6 +928,7 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '504': { $ref: '#/components/responses/RequestTimeout' }
   /api/v1/admin/bootstrap/status:
     get:
       tags: [Admin Auth]
@@ -943,6 +944,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '500': { $ref: '#/components/responses/InternalServerError' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '504': { $ref: '#/components/responses/RequestTimeout' }
   /api/v1/admin/auth/me:
     get:
       tags: [Admin Auth]
@@ -1550,6 +1552,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '504': { $ref: '#/components/responses/RequestTimeout' }
     put:
       tags: [Admin]
       summary: 创建或更新 OIDC Issuer
@@ -1579,6 +1582,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/InternalError' }
+        '504': { $ref: '#/components/responses/RequestTimeout' }
   /api/v1/admin/settings/passkey:
     get:
       tags: [Admin]
@@ -1959,7 +1963,8 @@ components:
       content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } }
     RequestTimeout:
       description: |
-        非 `/oauth/*` 应用路由触发请求超时（Issue #423）。
+        非 `/oauth/*` 应用路由或 system 路由（bootstrap、bootstrap/status、Issuer 管理）
+        触发请求超时（Issues #423、#451）。
         OAuth 协议端点超时不使用本响应，见 `OAuthServiceUnavailable`。
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } }
   schemas:
