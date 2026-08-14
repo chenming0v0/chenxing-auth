@@ -1125,6 +1125,45 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/admin/users/{user_id}/auth-factors/passkey:
+    delete:
+      tags: [Admin Auth Factors]
+      summary: 重置账号的全部 Passkey 凭据
+      description: |
+        删除该账号的全部 Passkey 凭据并撤销它的全部会话与已签发 Refresh Token。
+        Passkey-only 账号回到「无因子」状态，下次密码登录返回 `factor_setup_required`，
+        由用户重新完成因子绑定。仍绑定 TOTP 的账号保留 TOTP。
+
+        这是 Passkey-only 账号丢失全部认证器后的受控恢复路径。末位 Owner 丢失
+        全部 Passkey 时无法签发新的管理 Session：必须使用系统 `ADMIN_TOKEN`
+        Bearer 通道。该通道不依赖现有 Passkey 或用户 Session，避免形成闭环。
+
+        权限：Owner 专属的 `manage_auth_factors`，**不是** `manage_users`。
+        系统 `ADMIN_TOKEN` 权限等价于 Owner，无用户 ID，豁免浏览器 CSRF。
+        浏览器 Session 写操作必须同时携带 HttpOnly Session Cookie、CSRF Cookie
+        和 X-CSRF-Token。
+
+        响应只包含删除条数，永不返回 credential_id、公钥或 counter。
+
+        错误码：
+        - 400：csrf_invalid
+        - 403：admin_forbidden
+        - 404：user_not_found、passkey_factor_not_found
+      operationId: adminResetUserPasskeyFactor
+      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      parameters:
+        - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '200':
+          description: 已删除全部 Passkey 凭据并撤销该账号的全部会话
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeyFactorResetResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/admin/auth-factors/key-health:
     get:
       tags: [Admin Auth Factors]
@@ -2301,6 +2340,13 @@ components:
           type: string
           enum: [current, rotatable, legacy, unavailable]
           description: 删除前密文的可读状态。unavailable 表示这次重置解救了一个被密钥退役锁死的账号。
+        credentials_revoked: { type: boolean, description: 重置同时撤销了该账号的全部会话与 Refresh Token，固定为 true }
+    PasskeyFactorResetResponse:
+      type: object
+      required: [user_id, removed, credentials_revoked]
+      properties:
+        user_id: { type: integer, format: int64, minimum: 1 }
+        removed: { type: integer, format: int64, minimum: 1, description: 本次清掉的 Passkey 凭据条数 }
         credentials_revoked: { type: boolean, description: 重置同时撤销了该账号的全部会话与 Refresh Token，固定为 true }
     AuthFactorKeyHealthResponse:
       type: object

@@ -78,7 +78,7 @@ pub fn classify(action: &str) -> (SecurityEventCategory, SecurityEventSeverity) 
             SecurityEventSeverity::Info,
         ),
         // account：资料与凭据变更
-        "password_change" => (
+        "password_change" | "user_totp_factor_reset" | "user_passkey_factor_reset" => (
             SecurityEventCategory::Account,
             SecurityEventSeverity::Critical,
         ),
@@ -127,6 +127,20 @@ mod tests {
         );
         assert_eq!(
             classify("password_change"),
+            (
+                SecurityEventCategory::Account,
+                SecurityEventSeverity::Critical
+            )
+        );
+        assert_eq!(
+            classify("user_passkey_factor_reset"),
+            (
+                SecurityEventCategory::Account,
+                SecurityEventSeverity::Critical
+            )
+        );
+        assert_eq!(
+            classify("user_totp_factor_reset"),
             (
                 SecurityEventCategory::Account,
                 SecurityEventSeverity::Critical

@@ -21,6 +21,14 @@
 //! 时必须做同样的解码，否则含 `%40`、UTF-8 转义等内容的 URL 永远无法用刚写入的
 //! 角色口令连接（Issue #309）。
 //!
+//! ## 口令不得进入客户端 SQL 文本（Issue #456）
+//!
+//! 写入角色口令时，客户端只发送固定语句和绑定参数。真正的 `ALTER ROLE ...
+//! PASSWORD` 由 `pg_temp` 临时函数用 `format(%I, %L)` 在服务端构造。口令因此
+//! 不会出现在客户端查询文本、代理日志或 `pg_stat_activity` 里。函数同时
+//! `SET standard_conforming_strings = on` 并校验，避免旧式反斜杠转义改变 `%L`
+//! 语义。禁止再做客户端 `quote_literal` 拼接。
+//!
 //! 审计表的权限边界校验在 [`super::audit_boundary`]。
 
 use std::time::Duration;
@@ -176,19 +184,44 @@ pub(crate) fn runtime_password_action(
     }
 }
 
-/// 把运行时 URL 携带的口令写到角色上。口令只在这一处离开 URL。
+/// 在同一条连接上安装临时函数，再用绑定参数把口令交给它。
+///
+/// `pg_temp` 函数是会话级的：CREATE 和 CALL 必须落在池里的同一条连接上，
+/// 否则下一个 checkout 看不到刚创建的函数。
+const ENSURE_SET_ROLE_PASSWORD_FN: &str = "\
+CREATE OR REPLACE FUNCTION pg_temp.chenxing_set_role_password(role_name text, new_password text)
+RETURNS void
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+SET standard_conforming_strings = on
+AS $chenxing_set_role_password$
+BEGIN
+    IF current_setting('standard_conforming_strings') IS DISTINCT FROM 'on' THEN
+        RAISE EXCEPTION 'standard_conforming_strings must be on';
+    END IF;
+    EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', role_name, new_password);
+END
+$chenxing_set_role_password$;";
+
+/// 客户端查询文本是固定语句。口令只作为 `$2`，不进 SQL 字符串。
+const SET_ROLE_PASSWORD_SQL: &str = "SELECT pg_temp.chenxing_set_role_password($1, $2)";
+
+/// 把运行时 URL 携带的口令写到角色上。口令只在这一处离开 URL，
+/// 并且只作为绑定参数交给服务端，不进入客户端查询文本（Issue #456）。
 async fn write_password(
     database: &super::Database,
     runtime_database_url: &str,
 ) -> Result<(), DbError> {
     let password = decode_runtime_password(runtime_database_url)?;
-    crate::sqlx::query(&format!(
-        "ALTER ROLE {} WITH LOGIN PASSWORD {}",
-        quote_ident(RUNTIME_DATABASE_ROLE),
-        quote_literal(&password)
-    ))
-    .execute(database)
-    .await?;
+    let mut connection = database.acquire().await?;
+    crate::sqlx::query(ENSURE_SET_ROLE_PASSWORD_FN)
+        .execute(&mut *connection)
+        .await?;
+    crate::sqlx::query(SET_ROLE_PASSWORD_SQL)
+        .bind(RUNTIME_DATABASE_ROLE)
+        .bind(&password)
+        .execute(&mut *connection)
+        .await?;
     Ok(())
 }
 
@@ -271,12 +304,10 @@ fn is_password_rejection(error: &crate::sqlx::Error) -> bool {
     )
 }
 
-pub(crate) fn quote_ident(identifier: &str) -> String {
-    format!("\"{}\"", identifier.replace('"', "\"\""))
-}
-
-pub(crate) fn quote_literal(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
+/// 客户端发出的置备口令语句，供测试断言查询文本不含秘密。
+#[cfg(test)]
+pub(crate) fn role_password_client_statements() -> [&'static str; 2] {
+    [ENSURE_SET_ROLE_PASSWORD_FN, SET_ROLE_PASSWORD_SQL]
 }
 
 #[cfg(test)]

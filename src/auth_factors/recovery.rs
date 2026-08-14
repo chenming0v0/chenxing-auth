@@ -1,18 +1,23 @@
-//! 因子恢复用例（#258）。
+//! 因子恢复用例（#258 / #460）。
 //!
 //! 信封加密的 TOTP 种子带 `kid`。旧 key 从 `AUTH_ENCRYPTION_KEYS` 移除后，仍以它
 //! 加密的密文永久不可读；而懒迁移挂在「一次成功验证之后」，验证本身已经失败，
-//! 于是用户被彻底锁死。本模块提供两条不依赖成功验证的出口：
+//! 于是用户被彻底锁死。Passkey-only 账号丢了全部认证器时同样没有自助出口：
+//! 登录要现有 Passkey，管理 Session 也要先登录，末位 Owner 会把自己锁死。
+//! 本模块提供不依赖成功验证、也不依赖现有 Session/Passkey 的出口：
 //!
 //! - [`AuthFactorService::encryption_key_health`]：在移除旧 key **之前**就能看到
 //!   还有多少密文引用环外的 kid，把 #258 从「事后救火」变成「事前可发现」。
 //! - [`AuthFactorService::reset_totp_factor`]：丢弃不可读的密文，让账号回到
 //!   「无因子」状态，下次密码登录走 `factor_setup_required` 重新注册。
+//! - [`AuthFactorService::reset_passkey_factor`]：删除全部 Passkey 凭据并撤销
+//!   会话，专治 Passkey-only 锁死（#460）。授权在 HTTP 层：Owner Session 或
+//!   系统 `ADMIN_TOKEN`，后者是末位 Owner 的逃生通道。
 //!
-//! [`AuthFactorService::account_factor_status`] 是这两者的诊断入口：它回答
-//! 「这个账号是被密钥退役锁死了，还是用户自己输错了码」。
+//! [`AuthFactorService::account_factor_status`] 是诊断入口：它回答
+//! 「这个账号是被密钥退役锁死了，还是用户自己输错了码，还是只剩 Passkey」。
 //!
-//! 三者都不解密、不返回 kid、不返回种子。
+//! 这些用例都不解密、不返回 kid、不返回种子、不返回 Passkey 凭据材料。
 
 use super::{AuthFactorService, AuthFactorServiceError};
 use crate::{
@@ -76,6 +81,18 @@ impl EncryptionKeyHealth {
         health.truncated = total > health.scanned;
         health
     }
+}
+
+/// Passkey 重置结果。`Missing` 与「删除成功」必须区分：管理端要能把
+/// 「这个账号本来就没有 Passkey」如实回成 404，而不是伪装成一次成功的重置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasskeyResetOutcome {
+    /// 已删除。`removed` 是本次清掉的凭据条数，供审计核对。
+    Removed { removed: i64 },
+    /// 账号存在但没有 Passkey。
+    Missing,
+    /// 账号不存在。
+    UnknownUser,
 }
 
 /// 重置结果。`Missing` 与「删除成功」必须区分：管理端要能把
@@ -176,6 +193,53 @@ impl AuthFactorService {
         Ok(TotpResetOutcome::Removed { key_state })
     }
 
+    /// 删除账号的全部 Passkey 凭据并撤销该账号的全部活跃凭据，两步在同一事务内完成。
+    ///
+    /// Passkey-only 账号丢了认证器之后，自助路径是闭环：登录要现有 Passkey，
+    /// 管理 Session 要先登录。本用例本身不查 Session、不验 Passkey，只改持久化
+    /// 事实；谁能调用由 HTTP 层用 Owner 的 `ManageAuthFactors` 或系统
+    /// `ADMIN_TOKEN` 决定。后者不依赖任何用户 Session，是末位 Owner 的逃生口
+    /// （Issue #460）。
+    ///
+    /// 凭据是靠旧 Passkey 签发的，重置等于拆掉第二因子，留着旧凭据就把恢复
+    /// 通道变成后门。因此「撤销会话」与「删除凭据」必须原子，顺序与
+    /// [`Self::reset_totp_factor`] 相同：先推进 `session_epoch`（Cookie 会话与
+    /// 已签发 Refresh Token 在同一水位上一起失效，Issue #409），再删除全部
+    /// Passkey。没有凭据可删时整体回滚，epoch 推进与 outbox 事件全部撤销。
+    /// advisory 锁与改密、会话签发、因子注册共用（#274），本事务与它们严格
+    /// 串行。
+    ///
+    /// 失败计数清理放在事务提交之后，是 best-effort：凭据已经删除，这个既成
+    /// 事实不能因为 Redis 暂时不可用而被改写成 500。
+    pub async fn reset_passkey_factor(
+        &self,
+        user_id: UserId,
+    ) -> Result<PasskeyResetOutcome, AuthFactorServiceError> {
+        let mut transaction = self.pool.begin().await?;
+        if revoke_all_for_user_in_transaction(&mut transaction, user_id)
+            .await?
+            .is_none()
+        {
+            transaction.rollback().await?;
+            return Ok(PasskeyResetOutcome::UnknownUser);
+        }
+        let removed = repository::delete_passkeys_in_transaction(&mut transaction, user_id).await?;
+        if removed == 0 {
+            // 并发重置抢先删掉了全部凭据：整体回滚，撤销动作不留痕。
+            transaction.rollback().await?;
+            return Ok(PasskeyResetOutcome::Missing);
+        }
+        transaction.commit().await?;
+        if let Err(error) = self.clear_account_failures(user_id).await {
+            tracing::error!(
+                event = "auth_factor.passkey.reset_limiter_not_cleared",
+                error = %error,
+                "Passkey factor was reset but its failure counters were not cleared"
+            );
+        }
+        Ok(PasskeyResetOutcome::Removed { removed })
+    }
+
     /// 统计 TOTP 密文相对当前密钥环的可读状态分布。
     ///
     /// 移除 `AUTH_ENCRYPTION_KEYS` 中的旧 key 之前应当先看这个：`unavailable` 非零
@@ -205,7 +269,7 @@ impl AuthFactorService {
 
 #[cfg(test)]
 mod tests {
-    use super::{EncryptionKeyHealth, TotpResetOutcome};
+    use super::{EncryptionKeyHealth, PasskeyResetOutcome, TotpResetOutcome};
     use crate::auth_factors::crypto::SecretKeyState;
 
     #[test]
@@ -257,6 +321,22 @@ mod tests {
             TotpResetOutcome::Removed {
                 key_state: SecretKeyState::Current
             }
+        );
+    }
+
+    #[test]
+    fn passkey_reset_outcome_distinguishes_missing_factor_from_missing_user() {
+        assert_ne!(
+            PasskeyResetOutcome::Missing,
+            PasskeyResetOutcome::UnknownUser
+        );
+        assert_ne!(
+            PasskeyResetOutcome::Removed { removed: 1 },
+            PasskeyResetOutcome::Removed { removed: 2 }
+        );
+        assert_ne!(
+            PasskeyResetOutcome::Removed { removed: 0 },
+            PasskeyResetOutcome::Missing
         );
     }
 }

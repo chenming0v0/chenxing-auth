@@ -352,6 +352,20 @@ Issuer 设置接口仅 Owner（`manage_issuer`）可用。GET 返回 `persisted`
 
 用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`role`、`created_at`。按 `created_at DESC, id DESC` 排序。
 
+### 认证因子恢复
+
+- `GET /api/v1/admin/users/{user_id}/auth-factors`：查看账号已绑定的因子方法；TOTP 另报 `key_state` / `readable`，不含 kid、密文或种子。需要 `ManageUsers`。
+- `DELETE /api/v1/admin/users/{user_id}/auth-factors/totp`：删除 TOTP 因子并撤销该账号全部 Session 与 Refresh Token。需要 Owner 专属的 `ManageAuthFactors`。
+- `DELETE /api/v1/admin/users/{user_id}/auth-factors/passkey`：删除该账号全部 Passkey 凭据并撤销全部 Session 与 Refresh Token。需要 `ManageAuthFactors`。Passkey-only 账号下次密码登录返回 `factor_setup_required`；仍绑定 TOTP 的账号保留 TOTP。
+
+末位 Owner 丢失全部 Passkey 时无法再签发管理 Session。这条恢复必须使用系统 `ADMIN_TOKEN` Bearer 通道：它不依赖现有 Passkey 或用户 Session，避免形成「要先有 Passkey 才能恢复 Passkey」的闭环。`ADMIN_TOKEN` 为空时整个管理面关闭，该逃生通道一并不可用。浏览器 Session 写操作仍须携带 Session Cookie、CSRF Cookie 和 `X-CSRF-Token`。Admin 角色返回 `403 admin_forbidden`。账号没有对应因子时返回 `404 totp_factor_not_found` / `passkey_factor_not_found`，且不会推进 `session_epoch`。
+
+Passkey 重置成功响应：
+
+```json
+{"user_id":1,"removed":2,"credentials_revoked":true}
+```
+
 ### 特权用户管理
 
 - `GET /api/v1/admin/admins`：列出角色为 `admin` 或 `owner` 的统一用户，需要 `ManageUsers`。
