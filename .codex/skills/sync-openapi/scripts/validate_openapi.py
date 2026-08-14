@@ -45,8 +45,41 @@ def main() -> int:
                 if parameter_name not in declared:
                     raise ValueError(f"{method.upper()} {path} lacks path parameter: {parameter_name}")
 
+    unresolved = [
+        ref for ref in collect_local_refs(spec) if not pointer_exists(spec, ref)
+    ]
+    if unresolved:
+        preview = ", ".join(unresolved[:8])
+        raise ValueError(f"unresolved $ref ({len(unresolved)}): {preview}")
+
     print(f"OpenAPI OK: {len(spec['paths'])} paths, {len(operation_ids)} operations")
     return 0
+
+
+def collect_local_refs(node: object) -> list[str]:
+    refs: list[str] = []
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            refs.append(ref)
+        for value in node.values():
+            refs.extend(collect_local_refs(value))
+    elif isinstance(node, list):
+        for item in node:
+            refs.extend(collect_local_refs(item))
+    return refs
+
+
+def pointer_exists(spec: dict, ref: str) -> bool:
+    if not ref.startswith("#/"):
+        raise ValueError(f"unsupported external $ref: {ref}")
+    current: object = spec
+    for raw_part in ref[2:].split("/"):
+        part = raw_part.replace("~1", "/").replace("~0", "~")
+        if not isinstance(current, dict) or part not in current:
+            return False
+        current = current[part]
+    return True
 
 
 if __name__ == "__main__":

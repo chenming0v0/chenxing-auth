@@ -37,15 +37,54 @@ paths:
   /health:
     get:
       tags: [System]
-      summary: 健康检查
+      summary: 就绪探针（与 /health/ready 相同）
       operationId: health
+      description: |
+        兼容别名，处理逻辑与 GET /health/ready 相同：检查数据库、Redis 和 Issuer 收敛。
+        全部就绪返回 200；任一依赖不可用返回 503。响应体只暴露聚合状态，不含连接串或错误细节。
       responses:
         '200':
-          description: 服务正常
+          description: 数据库、Redis 与 Issuer 均已就绪
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
+              example: { status: ok, service: chenxing-auth }
+        '503':
+          $ref: '#/components/responses/HealthServiceUnavailable'
+  /health/live:
+    get:
+      tags: [System]
+      summary: 存活探针
+      operationId: healthLive
+      description: |
+        只报告进程本身，不触碰数据库、Redis 或 Issuer。恒返回 200，供编排器 liveness 探针使用。
+      responses:
+        '200':
+          description: 进程存活
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example: { status: ok, service: chenxing-auth }
+  /health/ready:
+    get:
+      tags: [System]
+      summary: 就绪探针
+      operationId: healthReady
+      description: |
+        检查数据库、Redis 和 Issuer 收敛。全部就绪返回 200；任一依赖超时或未就绪返回 503。
+        响应体只暴露聚合状态，不含连接串、主机名或错误细节。
+      responses:
+        '200':
+          description: 数据库、Redis 与 Issuer 均已就绪
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example: { status: ok, service: chenxing-auth }
+        '503':
+          $ref: '#/components/responses/HealthServiceUnavailable'
   /.well-known/openid-configuration:
     get:
       tags: [OAuth/OIDC]
@@ -758,7 +797,7 @@ paths:
       description: |
         未登录浏览器请求仅在 client、redirect_uri、scope、state 和 PKCE 完整校验后创建 pending。
         X-Chenxing-Session 仅在 OAUTH_SESSION_HEADER_ENABLED=true 的开发兼容配置中接受，不能绕过 Session 绑定、CSRF 或 consent。
-        请求超时在中间件层返回 503 `temporarily_unavailable`（RFC 6749 JSON 信封；此时尚无可用的 redirect_uri 上下文做错误重定向），不会返回内部 API 的 504 `request_timeout`（Issue #423）。
+        请求超时或 Issuer 未就绪时，中间件返回 503 `temporarily_unavailable`（RFC 6749 JSON 信封；此时尚无可用的 redirect_uri 上下文做错误重定向），不会返回内部 API 的 `{code, message}` 或 504 `request_timeout`（Issues #423、#441）。
       parameters:
         - { $ref: '#/components/parameters/ClientId' }
         - { name: redirect_uri, in: query, required: true, schema: { type: string, format: uri } }
@@ -857,7 +896,7 @@ paths:
       operationId: token
       description: |
         表单编码。Client 认证为 HTTP Basic 或 body 二选一。
-        请求超时返回 503 `temporarily_unavailable`（RFC 6749 信封），不会返回内部 API 的 504 `request_timeout`（Issue #423）。
+        请求超时或 Issuer 未就绪时返回 503 `temporarily_unavailable`（RFC 6749 信封），不会返回内部 API 的 `{code, message}` 或 504 `request_timeout`（Issues #423、#441）。
       security: [{ basicClientAuth: [] }]
       requestBody:
         required: true
@@ -1562,7 +1601,7 @@ paths:
               schema: { $ref: '#/components/schemas/IssuerSettingResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
-        '500': { $ref: '#/components/responses/InternalError' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
         '504': { $ref: '#/components/responses/RequestTimeout' }
     put:
       tags: [Admin]
@@ -1592,7 +1631,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
-        '500': { $ref: '#/components/responses/InternalError' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
         '504': { $ref: '#/components/responses/RequestTimeout' }
   /api/v1/admin/settings/passkey:
     get:
@@ -1871,16 +1910,34 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /admin/login:
+    get:
+      tags: [Admin Auth]
+      summary: 旧版管理登录页（转发到 React 登录页）
+      operationId: adminLoginPage
+      description: |
+        遗留浏览器入口，不是 JSON API。GET 保留查询串并 303 到 `/login`。
+        POST 未注册，axum 返回 405 Method Not Allowed，避免旧表单登录被 303 丢掉请求体。
+        实际登录走 POST /api/v1/auth/login；React 登录页位于 `/login`。
+      responses:
+        '303':
+          description: 重定向到 React SPA 的 /login，查询串原样保留
+          headers:
+            Location:
+              schema: { type: string, example: /login }
   /admin/settings/oauth:
     get:
       tags: [Admin OAuth Providers]
-      summary: 自定义 OAuth 提供商设置页（转发到 React 控制台）
+      summary: 自定义 OAuth 提供商设置页（转发到 React 管理设置）
       operationId: oauthProviderSettingsPage
+      description: |
+        遗留浏览器入口。GET 保留查询串并 303 到 `/admin/settings`（React 管理设置页），
       responses:
         '303':
-          description: 重定向到 React SPA 的 /console/settings
+          description: 重定向到 React SPA 的 /admin/settings，查询串原样保留
           headers:
-            Location: { schema: { type: string } }
+            Location:
+              schema: { type: string, example: /admin/settings }
   /api/v1/admin/keys/rotate:
     post:
       tags: [Admin Operations]
@@ -1959,6 +2016,13 @@ components:
     TooManyRequests: { description: 认证、OAuth 配额或 QPS 限流触发, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     ServiceUnavailable: { description: 依赖或必要能力暂不可用, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     InternalServerError: { description: 服务端内部故障, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    HealthServiceUnavailable:
+      description: |
+        数据库、Redis 或 Issuer 未收敛。响应体只暴露聚合状态，不含连接串或错误细节。
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/HealthResponse' }
+          example: { status: unavailable, service: chenxing-auth }
     OAuthBadRequest: { description: OAuth 请求错误，响应遵守 RFC 6749/7009, content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } } }
     OAuthUnauthorized:
       description: OAuth 客户端或 Bearer 凭据无效
@@ -1993,8 +2057,12 @@ components:
         error_description: { type: string, description: Human-readable non-sensitive description }
     HealthResponse:
       type: object
+      required: [status, service]
       properties:
-        status: { type: string, example: ok }
+        status:
+          type: string
+          enum: [ok, unavailable]
+          description: ok 表示该探针通过；unavailable 仅出现在就绪探针 503
         service: { type: string, example: chenxing-auth }
     RegistrationInput:
       type: object
