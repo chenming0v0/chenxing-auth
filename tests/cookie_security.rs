@@ -1,7 +1,8 @@
 use axum::http::{HeaderMap, HeaderValue};
 use chenxing_auth::sessions::cookies::{
-    CSRF_COOKIE, SESSION_COOKIE, append_clear_cookies, append_login_cookies, csrf_cookie,
-    csrf_cookie_for_secure_transport, csrf_token, session_cookie_id_for_secure_transport,
+    CSRF_COOKIE, CookieReadError, SESSION_COOKIE, append_clear_cookies, append_login_cookies,
+    csrf_cookie, csrf_cookie_for_secure_transport, csrf_token,
+    session_cookie_id_for_secure_transport,
 };
 
 /// 会话取值只有一条公开入口：按传输安全性选名的 Cookie 读取。
@@ -20,10 +21,15 @@ fn cookies_parse_session_and_csrf_values_separately() {
     headers.insert("x-csrf-token", HeaderValue::from_static("csrf-value"));
 
     assert_eq!(
-        session_cookie_id_for_secure_transport(&headers, true).as_deref(),
+        session_cookie_id_for_secure_transport(&headers, true)
+            .expect("session cookie parse")
+            .as_deref(),
         Some(id)
     );
-    assert_eq!(csrf_cookie(&headers).as_deref(), Some("csrf-value"));
+    assert_eq!(
+        csrf_cookie(&headers).expect("csrf cookie parse").as_deref(),
+        Some("csrf-value")
+    );
     assert_eq!(csrf_token(&headers).as_deref(), Some("csrf-value"));
 }
 
@@ -44,6 +50,14 @@ fn no_ungated_header_or_cookie_session_helper_exists() {
     assert!(
         !COOKIES_MODULE.contains("session_header_id(headers).or_else("),
         "no helper may fall back from the compatibility header to the cookie unconditionally"
+    );
+    assert!(
+        !COOKIES_MODULE.contains("headers.get(COOKIE)"),
+        "security cookie readers must not take the first Cookie header"
+    );
+    assert!(
+        COOKIES_MODULE.contains("read_named_cookie(headers,"),
+        "every security cookie reader must share the Result parse boundary"
     );
     assert!(
         OAUTH_SESSION_MODULE.contains("fn session_id_from_headers("),
@@ -69,14 +83,24 @@ fn secure_mode_does_not_accept_local_cookie_names() {
         HeaderValue::from_static("chenxing_session=session; chenxing_csrf=csrf"),
     );
 
-    assert_eq!(session_cookie_id_for_secure_transport(&headers, true), None);
-    assert_eq!(csrf_cookie_for_secure_transport(&headers, true), None);
     assert_eq!(
-        session_cookie_id_for_secure_transport(&headers, false).as_deref(),
+        session_cookie_id_for_secure_transport(&headers, true).expect("session cookie parse"),
+        None
+    );
+    assert_eq!(
+        csrf_cookie_for_secure_transport(&headers, true).expect("csrf cookie parse"),
+        None
+    );
+    assert_eq!(
+        session_cookie_id_for_secure_transport(&headers, false)
+            .expect("session cookie parse")
+            .as_deref(),
         Some("session")
     );
     assert_eq!(
-        csrf_cookie_for_secure_transport(&headers, false).as_deref(),
+        csrf_cookie_for_secure_transport(&headers, false)
+            .expect("csrf cookie parse")
+            .as_deref(),
         Some("csrf")
     );
 }
@@ -130,4 +154,87 @@ fn loopback_development_cookies_keep_http_compatibility() {
             .any(|value| value.starts_with("chenxing_csrf="))
     );
     assert!(values.iter().all(|value| !value.contains("Secure")));
+}
+
+#[test]
+fn split_cookie_headers_are_all_visible() {
+    let mut headers = HeaderMap::new();
+    headers.append(
+        "cookie",
+        HeaderValue::from_static("chenxing_session=session-one"),
+    );
+    headers.append("cookie", HeaderValue::from_static("chenxing_csrf=csrf-one"));
+
+    assert_eq!(
+        session_cookie_id_for_secure_transport(&headers, false)
+            .expect("session cookie parse")
+            .as_deref(),
+        Some("session-one")
+    );
+    assert_eq!(
+        csrf_cookie_for_secure_transport(&headers, false)
+            .expect("csrf cookie parse")
+            .as_deref(),
+        Some("csrf-one")
+    );
+}
+
+#[test]
+fn duplicate_session_cookie_in_one_header_is_rejected() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "cookie",
+        HeaderValue::from_static("chenxing_session=first; chenxing_session=second"),
+    );
+
+    assert_eq!(
+        session_cookie_id_for_secure_transport(&headers, false),
+        Err(CookieReadError::Duplicate)
+    );
+}
+
+#[test]
+fn duplicate_session_cookie_across_headers_is_rejected() {
+    let mut headers = HeaderMap::new();
+    headers.append("cookie", HeaderValue::from_static("chenxing_session=first"));
+    headers.append(
+        "cookie",
+        HeaderValue::from_static("chenxing_csrf=csrf-one; chenxing_session=second"),
+    );
+
+    assert_eq!(
+        session_cookie_id_for_secure_transport(&headers, false),
+        Err(CookieReadError::Duplicate)
+    );
+    assert_eq!(
+        csrf_cookie_for_secure_transport(&headers, false)
+            .expect("csrf cookie parse")
+            .as_deref(),
+        Some("csrf-one")
+    );
+}
+
+#[test]
+fn invalid_cookie_header_encoding_is_rejected() {
+    let mut headers = HeaderMap::new();
+    headers.append(
+        "cookie",
+        HeaderValue::from_bytes(b"chenxing_session=\xff").expect("opaque header"),
+    );
+
+    assert_eq!(
+        session_cookie_id_for_secure_transport(&headers, false),
+        Err(CookieReadError::Invalid)
+    );
+}
+
+#[test]
+fn invalid_percent_encoding_is_rejected() {
+    let mut headers = HeaderMap::new();
+    headers.insert("cookie", HeaderValue::from_static("chenxing_session=%ZZ"));
+
+    assert_eq!(
+        session_cookie_id_for_secure_transport(&headers, false),
+        Err(CookieReadError::Invalid)
+    );
 }

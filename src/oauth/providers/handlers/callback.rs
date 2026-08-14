@@ -74,7 +74,9 @@ pub async fn external_callback(
     let Some(returned_state) = query.state.as_deref().filter(|value| !value.is_empty()) else {
         return external_error(&state, &slug, "oauth_login_failed").await;
     };
-    let cookie_state = cookies::external_state(&headers, returned_state);
+    let cookie_state = cookies::external_state(&headers, returned_state)
+        .ok()
+        .flatten();
     if cookie_state.as_deref() != Some(returned_state) {
         return external_error_with_request(
             &state,
@@ -251,6 +253,8 @@ pub async fn external_callback(
         &headers,
         state.config.cookie_secure,
     )
+    .ok()
+    .flatten()
     .as_deref()
     .map(cookies::authz_holder_hash);
     if let Some(request_id) = request_id

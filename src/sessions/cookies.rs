@@ -1,11 +1,13 @@
 use axum::http::{
     HeaderMap, HeaderValue,
-    header::{COOKIE, InvalidHeaderValue, SET_COOKIE},
+    header::{InvalidHeaderValue, SET_COOKIE},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use cookie::{Cookie, SameSite};
 use rand::{RngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
+
+pub use super::cookie_parse::{CookieReadError, read_named_cookie};
 
 /// Secure browser session cookie. The `__Host-` prefix requires Secure, Path=/,
 /// and no Domain attribute, which makes the host-only contract browser-enforced.
@@ -159,15 +161,18 @@ pub fn append_clear_login_ticket_cookies(
     Ok(())
 }
 
-pub fn login_ticket_id_for_secure_transport(headers: &HeaderMap, secure: bool) -> Option<String> {
-    cookie_value(headers, login_ticket_cookie_name(secure))
+pub fn login_ticket_id_for_secure_transport(
+    headers: &HeaderMap,
+    secure: bool,
+) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, login_ticket_cookie_name(secure))
 }
 
 pub fn login_ticket_holder_for_secure_transport(
     headers: &HeaderMap,
     secure: bool,
-) -> Option<String> {
-    cookie_value(headers, login_ticket_holder_cookie_name(secure))
+) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, login_ticket_holder_cookie_name(secure))
 }
 
 /// 下发授权请求持有者 Cookie（HttpOnly, SameSite=Lax, path="/"）。
@@ -199,8 +204,8 @@ pub fn append_authz_holder_cookie(
 pub fn extract_authz_holder_cookie_for_secure_transport(
     headers: &HeaderMap,
     secure: bool,
-) -> Option<String> {
-    cookie_value(headers, authz_holder_cookie_name(secure))
+) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, authz_holder_cookie_name(secure))
 }
 
 /// 开发期兼容头部 `X-Chenxing-Session` 的原始取值。
@@ -217,8 +222,11 @@ pub fn session_header_id(headers: &HeaderMap) -> Option<String> {
 }
 
 /// 按传输安全性取会话 Cookie：HTTPS 用 `__Host-` 前缀名，本地 HTTP 用无前缀名。
-pub fn session_cookie_id_for_secure_transport(headers: &HeaderMap, secure: bool) -> Option<String> {
-    cookie_value(headers, session_cookie_name(secure))
+pub fn session_cookie_id_for_secure_transport(
+    headers: &HeaderMap,
+    secure: bool,
+) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, session_cookie_name(secure))
 }
 
 pub fn csrf_token(headers: &HeaderMap) -> Option<String> {
@@ -228,12 +236,15 @@ pub fn csrf_token(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub fn csrf_cookie(headers: &HeaderMap) -> Option<String> {
-    cookie_value(headers, CSRF_COOKIE)
+pub fn csrf_cookie(headers: &HeaderMap) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, CSRF_COOKIE)
 }
 
-pub fn csrf_cookie_for_secure_transport(headers: &HeaderMap, secure: bool) -> Option<String> {
-    cookie_value(headers, csrf_cookie_name(secure))
+pub fn csrf_cookie_for_secure_transport(
+    headers: &HeaderMap,
+    secure: bool,
+) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, csrf_cookie_name(secure))
 }
 
 pub const fn session_cookie_name(secure: bool) -> &'static str {
@@ -276,9 +287,9 @@ pub const fn authz_holder_cookie_name(secure: bool) -> &'static str {
     }
 }
 
-pub fn external_state(headers: &HeaderMap, state: &str) -> Option<String> {
+pub fn external_state(headers: &HeaderMap, state: &str) -> Result<Option<String>, CookieReadError> {
     let name = external_state_cookie_name(state);
-    cookie_value(headers, &name)
+    read_named_cookie(headers, &name)
 }
 
 pub fn external_state_cookie_name(state: &str) -> String {
@@ -289,8 +300,11 @@ pub fn external_state_cookie_name(state: &str) -> String {
     )
 }
 
-pub fn cookie_value_by_name(headers: &HeaderMap, name: &str) -> Option<String> {
-    cookie_value(headers, name)
+pub fn cookie_value_by_name(
+    headers: &HeaderMap,
+    name: &str,
+) -> Result<Option<String>, CookieReadError> {
+    read_named_cookie(headers, name)
 }
 
 pub fn append_named_login_cookies(
@@ -333,14 +347,6 @@ pub fn append_named_clear_cookies(
         headers.append(SET_COOKIE, value);
     }
     Ok(())
-}
-
-fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    let header = headers.get(COOKIE)?.to_str().ok()?;
-    header.split(';').find_map(|part| {
-        let cookie = Cookie::parse(part.trim()).ok()?;
-        (cookie.name() == name).then(|| cookie.value().to_owned())
-    })
 }
 
 fn build_cookie(
@@ -439,11 +445,13 @@ mod tests {
                 set_cookie.split(';').next().unwrap().parse().unwrap(),
             );
             assert_eq!(
-                extract_authz_holder_cookie_for_secure_transport(&request_headers, secure),
+                extract_authz_holder_cookie_for_secure_transport(&request_headers, secure)
+                    .expect("holder cookie parse"),
                 Some(holder.to_owned())
             );
             assert_eq!(
-                extract_authz_holder_cookie_for_secure_transport(&request_headers, !secure),
+                extract_authz_holder_cookie_for_secure_transport(&request_headers, !secure)
+                    .expect("holder cookie parse"),
                 None
             );
         }

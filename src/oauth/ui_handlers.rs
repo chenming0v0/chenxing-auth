@@ -160,6 +160,8 @@ pub async fn bind_authorization_request(
         &headers,
         state.config.cookie_secure,
     )
+    .ok()
+    .flatten()
     .as_deref()
     .map(cookies::authz_holder_hash);
     match bind_pending_request(
