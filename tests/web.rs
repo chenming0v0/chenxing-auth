@@ -8,6 +8,10 @@ use axum::{
     response::Response,
 };
 use chenxing_auth::{api, config::Config, state::AppState};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -81,7 +85,11 @@ async fn assert_json_not_found(router: Router, method: Method, uri: &str) {
     assert_eq!(error["code"], "not_found", "{method} {uri}");
 }
 
-async fn test_router() -> (axum::Router, std::path::PathBuf) {
+async fn test_router() -> (axum::Router, PathBuf) {
+    test_router_with_web_dist(None).await
+}
+
+async fn test_router_with_web_dist(web_dist_dir: Option<&Path>) -> (axum::Router, PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -99,6 +107,9 @@ async fn test_router() -> (axum::Router, std::path::PathBuf) {
     .expect("config");
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
+    if let Some(web_dist_dir) = web_dist_dir {
+        config.web_dist_dir = web_dist_dir.to_string_lossy().into_owned();
+    }
     (
         api::router(
             AppState::new_with_pool(config, database)
@@ -107,6 +118,20 @@ async fn test_router() -> (axum::Router, std::path::PathBuf) {
         ),
         key_directory,
     )
+}
+
+fn copy_directory(source: &Path, target: &Path) {
+    fs::create_dir_all(target).expect("create temporary web dist");
+    for entry in fs::read_dir(source).expect("read web dist") {
+        let entry = entry.expect("read web dist entry");
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_directory(&source_path, &target_path);
+        } else {
+            fs::copy(&source_path, &target_path).expect("copy web dist file");
+        }
+    }
 }
 
 #[tokio::test]
@@ -217,7 +242,20 @@ async fn content_hashed_assets_are_immutable_and_unhashed_files_are_not() {
 /// 同一份内嵌 shell，否则半次发布会让浏览器加载两套资源引用。
 #[tokio::test]
 async fn root_and_index_html_serve_the_same_embedded_shell() {
-    let (router, key_directory) = test_router().await;
+    let web_dist_dir = std::env::temp_dir().join(format!("chenxing-web-dist-{}", Uuid::new_v4()));
+    copy_directory(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("web/dist")
+            .as_path(),
+        &web_dist_dir,
+    );
+    fs::write(
+        web_dist_dir.join("index.html"),
+        "<!doctype html><html><body>stale disk shell</body></html>",
+    )
+    .expect("write stale disk shell");
+
+    let (router, key_directory) = test_router_with_web_dist(Some(&web_dist_dir)).await;
 
     let root = spa_response(router.clone(), "/").await;
     let index = spa_response(router, "/index.html").await;
@@ -237,6 +275,10 @@ async fn root_and_index_html_serve_the_same_embedded_shell() {
     assert_eq!(
         root_body, index_body,
         "/ and /index.html must be the same bytes"
+    );
+    assert_eq!(
+        root_body,
+        chenxing_auth::web_dist::EMBEDDED_INDEX_HTML.as_bytes()
     );
     assert_eq!(
         root_headers
@@ -261,4 +303,5 @@ async fn root_and_index_html_serve_the_same_embedded_shell() {
     }
 
     let _ = std::fs::remove_dir_all(key_directory);
+    let _ = fs::remove_dir_all(web_dist_dir);
 }
