@@ -9,6 +9,25 @@ use time::OffsetDateTime;
 /// 这一配置可达的静默截断状态。
 pub const MAX_OAUTH_CLIENTS_LIMIT: i32 = 1000;
 
+/// `daily_auth_limit` 的合理上界（Issue #459）。
+///
+/// 授权发放是交互式用户动作，不是机器对机器的吞吐。种子套餐是 2500/天；
+/// 100 万/天/Client 约等于持续 11.5 次/秒，已经超过任何真实 SSO 车队。
+/// 这一列是 `NOT NULL` 且没有「无限」哨兵，所以上界就是可配置的天花板。
+pub const MAX_DAILY_AUTH_LIMIT: i64 = 1_000_000;
+
+/// `monthly_auth_limit` 的合理上界（Issue #459）。
+///
+/// 等于 `31 × MAX_DAILY_AUTH_LIMIT`，允许套餐在 31 天的月份里每天都打满日上限。
+/// 需要更高就设 `NULL`（无限）。种子套餐是 50_000。
+pub const MAX_MONTHLY_AUTH_LIMIT: i64 = 31_000_000;
+
+/// `max_qps` 的合理上界（Issue #459）。
+///
+/// Token 端点按 Client 的滑动窗口限流。文档示例是 35；10_000 已经是认证
+/// 服务的攻击流量量级。需要更高就设 `NULL`（不限）。显式 0 没有意义。
+pub const MAX_QPS: i32 = 10_000;
+
 /// 套餐的持久化模型。`monthly_auth_limit` / `max_qps` 为 `NULL` 表示无限 / 不限。
 #[derive(Debug, Clone, Serialize)]
 pub struct Plan {
@@ -42,10 +61,25 @@ pub struct AuthQuotaLimits {
 impl Plan {
     pub fn auth_quota_limits(&self) -> AuthQuotaLimits {
         AuthQuotaLimits {
-            daily_auth_limit: self.daily_auth_limit.max(0) as u64,
-            monthly_auth_limit: self.monthly_auth_limit.map(|limit| limit.max(0) as u64),
+            daily_auth_limit: unsigned_quota(self.daily_auth_limit),
+            monthly_auth_limit: self.monthly_auth_limit.map(unsigned_quota),
         }
     }
+}
+
+/// 把持久化配额转成配额存储使用的无符号值。
+///
+/// 负值是数据完整性错误。以前的 `.max(0)` 会把它变成真实的「拒绝全部授权」
+/// 配额，绕过服务层写入负数就能对挂了该套餐的 Client 造成拒绝服务
+/// （Issue #459）。数据库 CHECK 现在拒绝这种写入；如果负值仍然出现，
+/// 宁可崩溃也不要发明 0。
+fn unsigned_quota(limit: i64) -> u64 {
+    u64::try_from(limit).unwrap_or_else(|_| {
+        panic!(
+            "plan quota {limit} is negative; refusing to clamp it to 0 \
+             (that would deny all authorizations)"
+        )
+    })
 }
 
 /// 管理员创建 / 更新套餐时提交的原始输入。
@@ -84,11 +118,17 @@ pub enum PlanError {
     InvalidDescription,
     #[error("OAuth clients limit must not be negative")]
     InvalidOauthClientsLimit,
-    #[error("daily authorization limit must not be negative")]
+    #[error(
+        "daily authorization limit must be between 0 and {}",
+        MAX_DAILY_AUTH_LIMIT
+    )]
     InvalidDailyLimit,
-    #[error("monthly authorization limit must not be negative")]
+    #[error(
+        "monthly authorization limit must be between 0 and {}, or null for unlimited",
+        MAX_MONTHLY_AUTH_LIMIT
+    )]
     InvalidMonthlyLimit,
-    #[error("max QPS must be at least 1, or null for unlimited")]
+    #[error("max QPS must be between 1 and {}, or null for unlimited", MAX_QPS)]
     InvalidMaxQps,
     #[error("plan expiration must be in the future")]
     ExpiryInPast,
@@ -153,14 +193,20 @@ pub fn validate_plan_input(input: PlanInput) -> Result<ValidatedPlanInput, PlanE
     if !(0..=MAX_OAUTH_CLIENTS_LIMIT).contains(&input.oauth_clients_limit) {
         return Err(PlanError::InvalidOauthClientsLimit);
     }
-    if input.daily_auth_limit < 0 {
+    if !(0..=MAX_DAILY_AUTH_LIMIT).contains(&input.daily_auth_limit) {
         return Err(PlanError::InvalidDailyLimit);
     }
-    if input.monthly_auth_limit.is_some_and(|limit| limit < 0) {
+    if input
+        .monthly_auth_limit
+        .is_some_and(|limit| !(0..=MAX_MONTHLY_AUTH_LIMIT).contains(&limit))
+    {
         return Err(PlanError::InvalidMonthlyLimit);
     }
     // `max_qps` 为 `NULL` 表示不限并发；显式 0 没有意义且会拒绝所有请求。
-    if input.max_qps.is_some_and(|qps| qps < 1) {
+    if input
+        .max_qps
+        .is_some_and(|qps| !(1..=MAX_QPS).contains(&qps))
+    {
         return Err(PlanError::InvalidMaxQps);
     }
     Ok(ValidatedPlanInput {
@@ -176,158 +222,5 @@ pub fn validate_plan_input(input: PlanInput) -> Result<ValidatedPlanInput, PlanE
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        AuthQuotaLimits, MAX_OAUTH_CLIENTS_LIMIT, Plan, PlanError, PlanInput, validate_plan_input,
-    };
-    use time::OffsetDateTime;
-
-    fn input() -> PlanInput {
-        PlanInput {
-            code: "vip".to_owned(),
-            name: "VIP".to_owned(),
-            description: Some("适合重度接入方".to_owned()),
-            oauth_clients_limit: 2,
-            daily_auth_limit: 2_500,
-            monthly_auth_limit: Some(50_000),
-            max_qps: Some(35),
-            is_default: false,
-        }
-    }
-
-    fn plan_with_auth_limits(daily: i64, monthly: Option<i64>) -> Plan {
-        let now = OffsetDateTime::UNIX_EPOCH;
-        Plan {
-            id: 1,
-            code: "test".to_owned(),
-            name: "Test".to_owned(),
-            description: None,
-            oauth_clients_limit: 1,
-            daily_auth_limit: daily,
-            monthly_auth_limit: monthly,
-            max_qps: None,
-            is_default: false,
-            status: "active".to_owned(),
-            created_at: now,
-            updated_at: now,
-        }
-    }
-
-    #[test]
-    fn auth_quota_limits_preserve_zero_and_unlimited_monthly_values() {
-        assert_eq!(
-            plan_with_auth_limits(0, None).auth_quota_limits(),
-            AuthQuotaLimits {
-                daily_auth_limit: 0,
-                monthly_auth_limit: None,
-            }
-        );
-        assert_eq!(
-            plan_with_auth_limits(7, Some(11)).auth_quota_limits(),
-            AuthQuotaLimits {
-                daily_auth_limit: 7,
-                monthly_auth_limit: Some(11),
-            }
-        );
-    }
-
-    #[test]
-    fn plan_serializes_timestamps_as_rfc3339() {
-        let value =
-            serde_json::to_value(plan_with_auth_limits(7, Some(11))).expect("plan serializes");
-
-        assert_eq!(value["created_at"], "1970-01-01T00:00:00Z");
-        assert_eq!(value["updated_at"], "1970-01-01T00:00:00Z");
-    }
-
-    #[test]
-    fn accepts_valid_plan_input() {
-        let validated = validate_plan_input(input()).expect("valid input");
-        assert_eq!(validated.code, "vip");
-        assert_eq!(validated.max_qps, Some(35));
-    }
-
-    #[test]
-    fn normalizes_code_to_lowercase_and_trims() {
-        let mut value = input();
-        value.code = "  VIP-Tier_2 ".to_owned();
-        assert_eq!(
-            validate_plan_input(value).expect("valid code").code,
-            "vip-tier_2"
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_codes() {
-        for code in ["", "含有中文", "has space", "UPPER CASE", &"x".repeat(65)] {
-            let mut value = input();
-            value.code = code.to_owned();
-            assert_eq!(
-                validate_plan_input(value),
-                Err(PlanError::InvalidCode),
-                "code: {code}"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_invalid_names_and_descriptions() {
-        let mut value = input();
-        value.name = "   ".to_owned();
-        assert_eq!(validate_plan_input(value), Err(PlanError::InvalidName));
-
-        let mut value = input();
-        value.name = "x".repeat(129);
-        assert_eq!(validate_plan_input(value), Err(PlanError::InvalidName));
-
-        let mut value = input();
-        value.description = Some("x".repeat(513));
-        assert_eq!(
-            validate_plan_input(value),
-            Err(PlanError::InvalidDescription)
-        );
-    }
-
-    #[test]
-    fn rejects_negative_limits_and_zero_qps() {
-        let mut value = input();
-        value.oauth_clients_limit = -1;
-        assert_eq!(
-            validate_plan_input(value),
-            Err(PlanError::InvalidOauthClientsLimit)
-        );
-
-        // 超过上界的配额同样被拒绝（Issue #415）
-        let mut value = input();
-        value.oauth_clients_limit = MAX_OAUTH_CLIENTS_LIMIT + 1;
-        assert_eq!(
-            validate_plan_input(value),
-            Err(PlanError::InvalidOauthClientsLimit)
-        );
-
-        let mut value = input();
-        value.daily_auth_limit = -1;
-        assert_eq!(
-            validate_plan_input(value),
-            Err(PlanError::InvalidDailyLimit)
-        );
-
-        let mut value = input();
-        value.monthly_auth_limit = Some(-1);
-        assert_eq!(
-            validate_plan_input(value),
-            Err(PlanError::InvalidMonthlyLimit)
-        );
-
-        let mut value = input();
-        value.max_qps = Some(0);
-        assert_eq!(validate_plan_input(value), Err(PlanError::InvalidMaxQps));
-    }
-
-    #[test]
-    fn treats_blank_description_as_none() {
-        let mut value = input();
-        value.description = Some("   ".to_owned());
-        assert_eq!(validate_plan_input(value).expect("valid").description, None);
-    }
-}
+#[path = "domain_tests.rs"]
+mod tests;
