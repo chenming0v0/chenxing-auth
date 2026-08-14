@@ -77,67 +77,12 @@ pub(super) async fn health_ready(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
+/// 匿名引导状态。只回答 Owner 是否已初始化，不暴露 Issuer 收敛内部状态。
+///
+/// generation / phase / persisted 属于 `GET /api/v1/admin/settings/issuer`，需要
+/// ManageIssuer。匿名端点若按收敛异常分流，Owner 已存在时不同 503 会重新打开预言机。
 pub(super) async fn system_status(State(state): State<AppState>) -> Response {
-    let persisted = match crate::settings::issuer::load(&state.database).await {
-        Ok(persisted) => persisted,
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to load issuer bootstrap status");
-            return crate::error::service_unavailable(
-                "issuer_status_unavailable",
-                "the application issuer status is unavailable",
-            );
-        }
-    };
-    let runtime = state.issuer.state();
-    if persisted.is_none() && runtime.loaded().is_some() {
-        return crate::admin::auth_handlers::bootstrap_status(State(state)).await;
-    }
-    if persisted.is_none()
-        && matches!(
-            runtime.as_ref(),
-            crate::settings::IssuerRuntimeState::AwaitingIssuer
-        )
-    {
-        return crate::admin::auth_handlers::bootstrap_status(State(state)).await;
-    }
-    if let (Some(persisted), Some(loaded)) = (persisted.as_ref(), runtime.loaded())
-        && persisted.generation == loaded.generation()
-        && persisted.value == loaded.issuer().as_str()
-    {
-        return crate::admin::auth_handlers::bootstrap_status(State(state)).await;
-    }
-
-    let (code, message) = match (persisted.as_ref(), runtime.as_ref()) {
-        (None, crate::settings::IssuerRuntimeState::AwaitingIssuer) => (
-            "issuer_not_configured",
-            "configure the persistent application issuer",
-        ),
-        (_, crate::settings::IssuerRuntimeState::Invalid { .. }) => (
-            "issuer_runtime_invalid",
-            "the persisted application issuer is invalid",
-        ),
-        (Some(_), _) => (
-            "issuer_pending_reload",
-            "the persisted application issuer is waiting to be loaded",
-        ),
-        (None, _) => (
-            "issuer_state_mismatch",
-            "the application issuer state is inconsistent",
-        ),
-    };
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(serde_json::json!({
-            "code": code,
-            "message": message,
-            "issuer_persisted": persisted.is_some(),
-            "persisted_generation": persisted.as_ref().map(|record| record.generation),
-            "issuer_loaded": runtime.loaded().is_some(),
-            "loaded_generation": runtime.loaded_generation(),
-            "phase": runtime.phase(),
-        })),
-    )
-        .into_response()
+    crate::admin::auth_handlers::bootstrap_status(State(state)).await
 }
 
 async fn issuer_converged(state: &AppState) -> bool {

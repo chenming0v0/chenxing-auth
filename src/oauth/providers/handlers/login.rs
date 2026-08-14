@@ -192,7 +192,6 @@ pub async fn start_external_login(
         &state_value,
         limits.external_login_state_ttl_seconds,
         state.config.cookie_secure,
-        &callback_path,
     ) {
         tracing::error!(
             error = %cookie_error,
