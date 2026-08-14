@@ -1,6 +1,7 @@
 use crate::{
     api::extract::RequestIssuer,
     audit::AuditEvent,
+    auth_factors::session::clear_pending_login_after_external_success,
     error,
     oauth::{
         providers::{
@@ -339,6 +340,8 @@ pub async fn external_callback(
         );
         return cookie_failure_response(&state, &session, returned_state).await;
     }
+    // Session 已经对浏览器生效。残留 MFA ticket 的清理失败不能撤回这次登录。
+    clear_pending_login_after_external_success(&state, &headers, &mut response).await;
     response
 }
 
