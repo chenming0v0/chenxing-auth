@@ -3,7 +3,9 @@ use axum::{
     body::Body,
     http::{
         HeaderName, Method, Request, StatusCode,
-        header::{CACHE_CONTROL, CONTENT_TYPE},
+        header::{
+            CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE, IF_MODIFIED_SINCE, LAST_MODIFIED, RANGE,
+        },
     },
     response::Response,
 };
@@ -49,6 +51,51 @@ async fn assert_spa_shell(router: Router, uri: &str) {
         Some("no-cache"),
         "{uri}"
     );
+}
+
+async fn assert_head_shell(router: Router, uri: &str) {
+    let expected_length = chenxing_auth::web_dist::EMBEDDED_INDEX_HTML
+        .len()
+        .to_string();
+    let response = router
+        .oneshot(
+            Request::builder()
+                .method(Method::HEAD)
+                .uri(uri)
+                .body(Body::empty())
+                .expect("HEAD SPA request"),
+        )
+        .await
+        .expect("HEAD SPA response");
+    assert_eq!(response.status(), StatusCode::OK, "HEAD {uri}");
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/html; charset=utf-8"),
+        "HEAD {uri}"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-cache"),
+        "HEAD {uri}"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok()),
+        Some(expected_length.as_str()),
+        "HEAD {uri} content length"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("HEAD SPA body");
+    assert!(body.is_empty(), "HEAD {uri} must not return a body");
 }
 
 async fn assert_json_not_found(router: Router, method: Method, uri: &str) {
@@ -216,6 +263,79 @@ async fn content_hashed_assets_are_immutable_and_unhashed_files_are_not() {
         "{hashed}"
     );
 
+    let hashed_last_modified = hashed_response
+        .headers()
+        .get(LAST_MODIFIED)
+        .cloned()
+        .expect("hashed asset Last-Modified");
+
+    let head_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::HEAD)
+                .uri(hashed)
+                .body(Body::empty())
+                .expect("hashed asset HEAD request"),
+        )
+        .await
+        .expect("hashed asset HEAD response");
+    assert_eq!(head_response.status(), StatusCode::OK, "HEAD {hashed}");
+    assert_eq!(
+        head_response
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("public, max-age=31536000, immutable"),
+        "HEAD {hashed}"
+    );
+    assert!(
+        axum::body::to_bytes(head_response.into_body(), usize::MAX)
+            .await
+            .expect("hashed asset HEAD body")
+            .is_empty()
+    );
+
+    let range_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .header(RANGE, "bytes=0-9")
+                .uri(hashed)
+                .body(Body::empty())
+                .expect("hashed asset range request"),
+        )
+        .await
+        .expect("hashed asset range response");
+    assert_eq!(range_response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        range_response
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("public, max-age=31536000, immutable")
+    );
+
+    let conditional_response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .header(IF_MODIFIED_SINCE, hashed_last_modified)
+                .uri(hashed)
+                .body(Body::empty())
+                .expect("hashed asset conditional request"),
+        )
+        .await
+        .expect("hashed asset conditional response");
+    assert_eq!(conditional_response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(
+        conditional_response
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("public, max-age=31536000, immutable")
+    );
+
     let favicon = router
         .oneshot(
             Request::builder()
@@ -258,7 +378,7 @@ async fn root_and_index_html_serve_the_same_embedded_shell() {
     let (router, key_directory) = test_router_with_web_dist(Some(&web_dist_dir)).await;
 
     let root = spa_response(router.clone(), "/").await;
-    let index = spa_response(router, "/index.html").await;
+    let index = spa_response(router.clone(), "/index.html").await;
 
     assert_eq!(root.status(), StatusCode::OK);
     assert_eq!(index.status(), StatusCode::OK);
@@ -300,6 +420,10 @@ async fn root_and_index_html_serve_the_same_embedded_shell() {
             index_headers.get(&name),
             "{name} must match between / and /index.html"
         );
+    }
+
+    for uri in ["/", "/index.html", "/console/developer"] {
+        assert_head_shell(router.clone(), uri).await;
     }
 
     let _ = std::fs::remove_dir_all(key_directory);
