@@ -117,3 +117,57 @@ fn canonicalizes_default_and_explicit_origin_ports() {
         ]
     );
 }
+
+fn validate_passkey_with_rp_id(rp_id: &str) -> Result<PasskeySetting, SettingsValidationError> {
+    PasskeySetting {
+        enabled: true,
+        rp_name: "辰星认证中枢".to_owned(),
+        rp_id: rp_id.to_owned(),
+        user_verification: PasskeyUserVerification::Preferred,
+        authenticator_attachment: PasskeyAuthenticatorAttachment::Any,
+        allow_insecure_origin: false,
+        allowed_origins: vec![format!("https://{rp_id}")],
+    }
+    .validate()
+}
+
+/// Issue #452：公共后缀本身就是 PSL 条目，把它当 rp_id 会让所有子域共享同一条
+/// 信任边界，浏览器端 WebAuthn 也拒绝这类值。必须拒绝。
+#[test]
+fn rp_id_rejects_public_suffixes() {
+    for rp_id in ["co.uk", "com.cn", "github.io", "com", "uk", "ac.cn"] {
+        assert!(
+            !is_registrable_rp_id(rp_id),
+            "public suffix {rp_id:?} must not be a registrable rp_id"
+        );
+        assert!(
+            matches!(
+                validate_passkey_with_rp_id(rp_id),
+                Err(SettingsValidationError::InvalidPasskeyRpId)
+            ),
+            "validate must reject public suffix {rp_id:?}"
+        );
+    }
+}
+
+/// Issue #452：有效 eTLD+1、多级子域、Punycode IDN、localhost 与 IPv4 均接受。
+#[test]
+fn rp_id_accepts_registrable_domains_and_exceptions() {
+    for rp_id in [
+        "example.com",
+        "example.co.uk",
+        "user.github.io",
+        "auth.clya.top",
+        "xn--xample-9ua.com",
+        "localhost",
+        "127.0.0.1",
+        "192.168.1.5",
+    ] {
+        assert!(
+            is_registrable_rp_id(rp_id),
+            "registrable rp_id {rp_id:?} must be accepted"
+        );
+        validate_passkey_with_rp_id(rp_id)
+            .unwrap_or_else(|error| panic!("validate must accept {rp_id:?}: {error}"));
+    }
+}
