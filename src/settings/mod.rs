@@ -1,6 +1,7 @@
 pub mod domain;
 pub mod issuer;
 pub mod issuer_runtime;
+pub(crate) mod persisted;
 pub mod repository;
 pub mod security_limits;
 pub mod security_limits_cache;

@@ -8,8 +8,10 @@
 //! 2. **登录按匹配值查行**。同一个邮箱的任意等价书写都要解析到同一行。
 //! 3. **纯 ASCII 地址的 SQL 小写结果与应用层规范化逐字节相等**。测试夹具会直接
 //!    比较两者，避免测试或维护 SQL 写入错误的匹配值。
-//! 4. **启动期复核会拦下 SQL 无法自证的行**。`xn--` 域名的 Punycode 有效性
-//!    在 PL/pgSQL 里验证不了，所以 `db::migrate` 之后用 `EmailAddress` 复核；
+//! 4. **启动期复核会拦下 SQL 无法自证的行**。PostgreSQL 证明不了匹配值与
+//!    `EmailAddress` 一致，所以 `db::migrate` 之后按主键分批扫完全表再重算；
+//!    只筛 `xn--` 会漏掉 Unicode 域名、错误的纯 ASCII 匹配值和本地部分差异。
+//!    键集分页必须覆盖完整 BIGINT，包括维护 SQL 写入的负 id。
 //!    落错的行会让其所有者静默无法登录，因此必须拒绝启动而不是放行。
 //!
 //! 单独一个二进制而不是塞进 `database_schema`：那个文件断言的是 schema 形状，
@@ -51,6 +53,31 @@ async fn insert_raw(
          VALUES ($1, $2, $3, 'unusable-hash', 'active')
          RETURNING id",
     )
+    .bind(username)
+    .bind(email)
+    .bind(canonical_email)
+    .fetch_one(pool)
+    .await
+}
+
+/// 绕过 identity 生成器，写入指定主键。
+///
+/// 基线没有 `id > 0` 约束。维护 SQL 用 `OVERRIDING SYSTEM VALUE` 就能放进负
+/// BIGINT，复核如果从 `0` 起游标，这类行会整行消失。
+async fn insert_raw_with_id(
+    pool: &chenxing_auth::sqlx::PgPool,
+    id: i64,
+    username: &str,
+    email: &str,
+    canonical_email: &str,
+) -> Result<i64, chenxing_auth::sqlx::Error> {
+    chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO users (id, username, email, canonical_email, password_hash, status)
+         OVERRIDING SYSTEM VALUE
+         VALUES ($1, $2, $3, $4, 'unusable-hash', 'active')
+         RETURNING id",
+    )
+    .bind(id)
     .bind(username)
     .bind(email)
     .bind(canonical_email)
@@ -259,6 +286,45 @@ async fn ascii_lowercase_agrees_with_the_application_canonicalizer() {
     }
 }
 
+/// 插入一行错误匹配值，断言 migrate 拒绝启动且不回显地址，删掉后再放行。
+async fn assert_startup_rejects_then_recovers(
+    pool: &chenxing_auth::sqlx::PgPool,
+    username: &str,
+    email: &str,
+    stored_canonical: &str,
+) {
+    insert_raw(pool, username, email, stored_canonical)
+        .await
+        .expect("the raw insert itself is not constrained");
+
+    let error = chenxing_auth::db::migrate(pool)
+        .await
+        .expect_err("startup must refuse to proceed with a mismatched matching value");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("canonical_email mismatch"),
+        "unexpected error: {rendered}"
+    );
+    // 消息里不得出现邮箱本身：它会进启动日志，属于个人数据。
+    assert!(
+        !rendered.contains(email),
+        "the startup error must not echo the address: {rendered}"
+    );
+    assert!(
+        !rendered.contains(stored_canonical),
+        "the startup error must not echo the stored matching value: {rendered}"
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE username = $1")
+        .bind(username)
+        .execute(pool)
+        .await
+        .expect("remove the broken row");
+    chenxing_auth::db::migrate(pool)
+        .await
+        .expect("startup must proceed once the offending row is fixed");
+}
+
 /// 启动期复核必须拦下匹配值落错的 IDNA 行，而不是放行。
 ///
 /// 这类行的所有者会静默无法登录，且错误表现为"密码不对"。SQL 无法验证 Punycode
@@ -271,59 +337,152 @@ async fn startup_verification_rejects_a_wrong_idna_matching_value() {
     // `xn--a-ecp` 形态看似是 Punycode，但并不是有效编码：
     // 应用层的 `EmailAddress::parse` 会拒绝它，于是复核必须报错。
     let broken = format!("broken-{suffix}@xn--a-ecp.example");
-    insert_raw(&pool, &format!("broken-{suffix}"), &broken, &broken)
-        .await
-        .expect("the raw insert itself is not constrained");
-
-    let error = chenxing_auth::db::migrate(&pool)
-        .await
-        .expect_err("startup must refuse to proceed with an unverifiable matching value");
-    let rendered = error.to_string();
-    assert!(
-        rendered.contains("canonical_email mismatch"),
-        "unexpected error: {rendered}"
-    );
-    // 消息里不得出现邮箱本身：它会进启动日志，属于个人数据。
-    assert!(
-        !rendered.contains(&broken),
-        "the startup error must not echo the address: {rendered}"
-    );
-
-    // 修好那一行之后，复核必须放行——否则这道闸就不是可恢复的。
-    chenxing_auth::sqlx::query("DELETE FROM users WHERE username = $1")
-        .bind(format!("broken-{suffix}"))
-        .execute(&pool)
-        .await
-        .expect("remove the broken row");
-    chenxing_auth::db::migrate(&pool)
-        .await
-        .expect("startup must proceed once the offending row is fixed");
+    assert_startup_rejects_then_recovers(&pool, &format!("broken-{suffix}"), &broken, &broken)
+        .await;
 }
 
-/// 有效的 Punycode 行不得被复核误伤。
+/// Unicode 域名若按 `lower(email)` 落库，匹配值里不会出现 `xn--`。
 ///
-/// 复核只查 `xn--` 行，若判定过严会把正常的国际化域名账号挡在启动之外，
-/// 那是一个比它要防的问题更糟的故障。
+/// 旧复核只筛 Punycode 标签，这类行会直接放行，登录却对不上。
 #[tokio::test]
-async fn startup_verification_accepts_valid_idna_rows() {
+async fn startup_verification_rejects_unicode_domain_stored_without_punycode() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple().to_string();
-    let email = email_address(format!("Valid-{suffix}@ÉXAMPLE.COM"));
+    let display = format!("User-{suffix}@ÉXAMPLE.COM");
+    let naive_lower = display.to_lowercase();
     assert!(
-        email.canonical().contains("xn--"),
+        !naive_lower.contains("xn--"),
+        "fixture must be invisible to an xn-- filter: {naive_lower}"
+    );
+
+    assert_startup_rejects_then_recovers(
+        &pool,
+        &format!("unicode-{suffix}"),
+        &display,
+        &naive_lower,
+    )
+    .await;
+}
+
+/// 纯 ASCII 行的错误匹配值同样必须拦住。
+///
+/// 旧复核假定这类行由应用写入契约保证，绕过应用层的维护 SQL 就能把错误值留下。
+#[tokio::test]
+async fn startup_verification_rejects_a_wrong_ascii_matching_value() {
+    let pool = database().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let display = format!("user-{suffix}@Example.COM");
+    assert_startup_rejects_then_recovers(&pool, &format!("ascii-{suffix}"), &display, &display)
+        .await;
+}
+
+/// 只差本地部分大小写的匹配值也必须拦住。
+///
+/// 域名已经是 ASCII 小写时，旧 `xn--` 过滤完全看不见这类漂移。
+#[tokio::test]
+async fn startup_verification_rejects_local_part_case_drift() {
+    let pool = database().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let display = format!("John.Doe-{suffix}@example.com");
+    assert_startup_rejects_then_recovers(&pool, &format!("local-{suffix}"), &display, &display)
+        .await;
+}
+
+/// 有效的 ASCII 与国际化域名行不得被全表复核误伤。
+///
+/// 判定过严会把正常账号挡在启动之外，那是一个比它要防的问题更糟的故障。
+#[tokio::test]
+async fn startup_verification_accepts_valid_ascii_and_idna_rows() {
+    let pool = database().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let ascii = email_address(format!("Valid-{suffix}@Example.COM"));
+    let idna = email_address(format!("Valid-{suffix}@ÉXAMPLE.COM"));
+    assert!(
+        idna.canonical().contains("xn--"),
         "fixture must exercise the IDNA branch"
     );
 
     insert_raw(
         &pool,
+        &format!("valid-ascii-{suffix}"),
+        ascii.display(),
+        ascii.canonical(),
+    )
+    .await
+    .expect("insert a valid ASCII row");
+    insert_raw(
+        &pool,
         &format!("valid-idna-{suffix}"),
-        email.display(),
-        email.canonical(),
+        idna.display(),
+        idna.canonical(),
     )
     .await
     .expect("insert a valid IDNA row");
 
     chenxing_auth::db::migrate(&pool)
         .await
-        .expect("a valid IDNA row must not block startup");
+        .expect("valid ASCII and IDNA rows must not block startup");
+}
+
+/// 夹在合法 IDNA 行中间的错误 ASCII 行也必须被发现。
+///
+/// 这是 #461 的回归锁：全表扫描之前，旁边有 `xn--` 行也救不了漏掉的纯 ASCII 错误。
+#[tokio::test]
+async fn startup_verification_finds_ascii_mismatch_among_valid_idna_rows() {
+    let pool = database().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let idna = email_address(format!("Keep-{suffix}@ÉXAMPLE.COM"));
+    insert_raw(
+        &pool,
+        &format!("keep-idna-{suffix}"),
+        idna.display(),
+        idna.canonical(),
+    )
+    .await
+    .expect("insert a valid IDNA neighbor");
+
+    let broken = format!("Drift-{suffix}@example.com");
+    assert_startup_rejects_then_recovers(&pool, &format!("drift-ascii-{suffix}"), &broken, &broken)
+        .await;
+}
+
+/// 负主键行必须进入复核。夹具用 [`i64::MIN`]：它同时打中从 `0` 起游标和
+/// `id > i64::MIN` 两种漏扫。
+#[tokio::test]
+async fn startup_verification_rejects_mismatch_on_negative_user_id() {
+    let pool = database().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let username = format!("neg-id-{suffix}");
+    let display = format!("neg-{suffix}@Example.COM");
+
+    let inserted = insert_raw_with_id(&pool, i64::MIN, &username, &display, &display)
+        .await
+        .expect("maintenance SQL can insert a negative BIGINT id");
+    assert_eq!(inserted, i64::MIN);
+
+    let error = chenxing_auth::db::migrate(&pool)
+        .await
+        .expect_err("a negative-id mismatch must still refuse startup");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("canonical_email mismatch"),
+        "unexpected error: {rendered}"
+    );
+    assert!(
+        rendered.contains(&i64::MIN.to_string()),
+        "the startup error must name the negative id: {rendered}"
+    );
+    assert!(
+        !rendered.contains(&display),
+        "the startup error must not echo the address: {rendered}"
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(i64::MIN)
+        .execute(&pool)
+        .await
+        .expect("remove the negative-id row");
+    chenxing_auth::db::migrate(&pool)
+        .await
+        .expect("startup must proceed once the offending row is fixed");
 }

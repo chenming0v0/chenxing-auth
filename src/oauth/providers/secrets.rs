@@ -9,7 +9,10 @@ use std::{
 };
 use thiserror::Error;
 
-use crate::key_storage::{atomic_write, ensure_secure_directory, secure_existing_file};
+use crate::key_storage::{
+    KeyStorageLock, TemporaryFileKind, atomic_write_in, cleanup_stale_temporary_files_in,
+    ensure_secure_directory, secure_existing_file,
+};
 
 const SECRET_KEY_FILE: &str = "oauth-provider-secret.key";
 const KEY_LENGTH: usize = 32;
@@ -37,6 +40,11 @@ impl SecretManager {
     pub fn load_or_generate(directory: impl AsRef<Path>) -> Result<Self, SecretError> {
         let directory = directory.as_ref().to_path_buf();
         ensure_secure_directory(&directory)?;
+        // 与 KeyManager 共享目录，但不共用临时文件前缀。持锁后再清理本命名空间的
+        // 半成品，这样既不会删掉 KeyManager 正在写的 `.chenxing-key-*.tmp`，也不会
+        // 在另一个 SecretManager 写入中途把 `.chenxing-secret-*.tmp` 清掉。
+        let _lock = KeyStorageLock::acquire(&directory)?;
+        cleanup_stale_temporary_files_in(&directory, TemporaryFileKind::ProviderSecret)?;
         let path = directory.join(SECRET_KEY_FILE);
         let key = match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_file() => {
@@ -52,7 +60,7 @@ impl SecretManager {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let mut generated = vec![0_u8; KEY_LENGTH];
                 rand::rngs::OsRng.fill_bytes(&mut generated);
-                match atomic_write(&path, &generated, false) {
+                match atomic_write_in(TemporaryFileKind::ProviderSecret, &path, &generated, false) {
                     Ok(()) => generated,
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                         secure_existing_file(&path)?;
@@ -118,6 +126,7 @@ impl SecretManager {
 #[cfg(test)]
 mod tests {
     use super::SecretManager;
+    use std::fs;
 
     #[test]
     fn encrypted_secret_can_be_decrypted_but_does_not_contain_plaintext() {
@@ -131,5 +140,55 @@ mod tests {
         );
         assert_eq!(manager.decrypt(&ciphertext).expect("decrypt"), "top-secret");
         assert!(manager.decrypt(b"invalid").is_err());
+    }
+
+    #[test]
+    fn load_cleans_only_provider_secret_temporary_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "chenxing-secret-ns-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let _manager = SecretManager::load_or_generate(&directory).expect("provider secret");
+        let key_temporary = directory.join(".chenxing-key-in-flight.tmp");
+        let secret_temporary = directory.join(".chenxing-secret-crashed.tmp");
+        fs::write(&key_temporary, b"signing-key temp").expect("key temp");
+        fs::write(&secret_temporary, b"provider-secret temp").expect("secret temp");
+
+        let _reloaded = SecretManager::load_or_generate(&directory).expect("reload");
+
+        assert!(
+            key_temporary.exists(),
+            "signing key temps must survive secret manager cleanup"
+        );
+        assert!(
+            !secret_temporary.exists(),
+            "secret namespace temps must be cleaned by secret manager"
+        );
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn concurrent_first_init_converges_on_one_provider_secret() {
+        let directory = std::env::temp_dir().join(format!(
+            "chenxing-secret-race-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let directory = directory.clone();
+                std::thread::spawn(move || SecretManager::load_or_generate(directory))
+            })
+            .collect();
+        let managers: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("worker").expect("init"))
+            .collect();
+        let probe = managers[0].encrypt("same-key").expect("encrypt");
+        for manager in &managers {
+            assert_eq!(manager.decrypt(&probe).expect("decrypt"), "same-key");
+        }
+
+        let _ = fs::remove_dir_all(directory);
     }
 }

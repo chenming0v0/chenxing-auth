@@ -10,10 +10,12 @@ use super::service::UserServiceError;
 ///
 /// - `None` 或空白字符串表示管理员从未写入过策略，使用 `EmailPolicySetting::default()`
 ///   （未启用白名单，放行）是合法的初始状态。
-/// - `Some(value)` 但反序列化失败表示库里的 `setting_value` 与当前结构不兼容
-///   （字段改名、类型漂移、手工改库写坏）。此时**必须 fail-closed**：
-///   旧实现的 `unwrap_or_default()` 会把损坏配置静默降级为"放行一切"，
-///   等于在运行期自动放宽注册域名限制，而管理员在日志和响应里都看不到异常。
+/// - `Some(value)` 但解析失败表示库里的 `setting_value` 与当前结构不兼容
+///   （字段改名、类型漂移、手工改库写坏、缺少 `whitelist_enabled`）。
+///   此时**必须 fail-closed**：旧实现的 `unwrap_or_default()` 会把损坏配置
+///   静默降级为"放行一切"。后来新增的非开关字段可以由
+///   `settings::persisted::parse_email_policy` 按 Default 补齐；
+///   `whitelist_enabled` 本身缺失仍视为结构漂移，不得补 `false`。
 ///
 /// 拒绝时统一返回 `EmailDomainNotAllowed`：对调用者而言判定结果就是"不允许"，
 /// 具体的解析失败原因只写进日志，不进 HTTP 响应，避免泄露内部结构与配置内容。
@@ -22,7 +24,7 @@ fn evaluate_email_policy(
     email: &EmailAddress,
 ) -> Result<(), UserServiceError> {
     let policy = match raw.filter(|value| !value.trim().is_empty()) {
-        Some(value) => match serde_json::from_str::<EmailPolicySetting>(&value) {
+        Some(value) => match crate::settings::persisted::parse_email_policy(&value) {
             Ok(policy) => policy,
             Err(error) => {
                 // 只记录 setting key、错误分类和位置，不记录 setting_value 全文：
@@ -137,10 +139,21 @@ mod tests {
 
     #[test]
     fn structural_drift_fails_closed() {
-        // 字段改名 / 结构漂移：缺少必需字段时不得静默退回 default。
+        // 字段改名 / 结构漂移：缺少 whitelist_enabled 时不得静默退回 default。
         let raw = serde_json::json!({ "domains": ["corp.example"] }).to_string();
         let error = evaluate_email_policy(Some(raw), &email("user@anywhere.example"))
             .expect_err("structural drift must fail closed");
+        assert!(matches!(error, UserServiceError::EmailDomainNotAllowed));
+    }
+
+    /// #449：旧行可以没有后来才出现的 `alias_restriction_enabled`，
+    /// 但已经写入的白名单必须继续拦截名单外域名。
+    #[test]
+    fn legacy_policy_without_alias_flag_still_enforces_whitelist() {
+        let raw = r#"{"whitelist_enabled":true,"allowed_domains":["corp.example"]}"#;
+        assert!(evaluate_email_policy(Some(raw.to_owned()), &email("user@corp.example")).is_ok());
+        let error = evaluate_email_policy(Some(raw.to_owned()), &email("user@other.example"))
+            .expect_err("whitelist must still apply after schema upgrade");
         assert!(matches!(error, UserServiceError::EmailDomainNotAllowed));
     }
 
