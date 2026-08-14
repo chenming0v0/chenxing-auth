@@ -48,7 +48,7 @@ JWKS 是被 RP 高频轮询的公开端点，缓存策略为 `Cache-Control: pub
 
 响应携带确定性 ETag（JWKS 字节的 SHA-256 强 ETag，跨实例一致）。RP 应在本地缓存过期后用 `If-None-Match` 发起条件请求：公钥集合未变时返回 `304 Not Modified`（仍带 ETag 与 Cache-Control），避免重复传输完整 JWKS。密钥轮换或吊销改变公钥集合后 ETag 随之改变，RP 拿到新 ETag 和新 JWKS。
 
-JWKS 的 CORS 与 Discovery 一致：请求带 `Origin` 时 `Access-Control-Allow-Origin: *`（不带凭据），始终 `Vary: Origin`；200 与 304 均适用。
+JWKS 的 CORS 与 Discovery 一致：请求带 `Origin` 时 `Access-Control-Allow-Origin: *`（不带凭据），始终 `Vary: Origin`；200 与 304 均适用。另返回 `Access-Control-Expose-Headers: ETag`：`ETag` 不是 CORS 安全列表响应头，浏览器 JS 必须靠该头才能读取并用于后续 `If-None-Match`。该头只出现在 JWKS，不扩到 Discovery 或其它路由。
 
 ## 用户和浏览器 Session
 
