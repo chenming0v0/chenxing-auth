@@ -97,7 +97,10 @@ fn session_id_from_headers(
     allow_header: bool,
     secure: bool,
 ) -> Option<String> {
-    let cookie = cookies::session_cookie_id_for_secure_transport(headers, secure);
+    let cookie = match cookies::session_cookie_id_for_secure_transport(headers, secure) {
+        Ok(value) => value,
+        Err(_) => return None,
+    };
     let header = cookies::session_header_id(headers);
     if cookie.is_some() && header.is_some() && cookie != header {
         return None;

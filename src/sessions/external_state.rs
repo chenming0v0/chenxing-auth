@@ -65,6 +65,10 @@ pub fn append_clear_external_state_cookie(
 /// Production only accepts the `__Host-` name. A parent-domain cookie that
 /// reused the loopback prefix is a different name and cannot satisfy this
 /// lookup. Conflicting duplicates of the selected name fail closed.
-pub fn external_state(headers: &HeaderMap, state: &str, secure: bool) -> Option<String> {
-    cookies::unique_cookie_value(headers, &external_state_cookie_name(state, secure))
+pub fn external_state(
+    headers: &HeaderMap,
+    state: &str,
+    secure: bool,
+) -> Result<Option<String>, cookies::CookieReadError> {
+    cookies::read_named_cookie(headers, &external_state_cookie_name(state, secure))
 }

@@ -13,8 +13,12 @@ pub(super) fn ticket_proof(
     supplied_ticket: Option<&str>,
     secure: bool,
 ) -> Option<(String, String)> {
-    let ticket_id = cookies::login_ticket_id_for_secure_transport(headers, secure)?;
-    let holder = cookies::login_ticket_holder_for_secure_transport(headers, secure)?;
+    let ticket_id = cookies::login_ticket_id_for_secure_transport(headers, secure)
+        .ok()
+        .flatten()?;
+    let holder = cookies::login_ticket_holder_for_secure_transport(headers, secure)
+        .ok()
+        .flatten()?;
     if let Some(supplied_ticket) = supplied_ticket {
         let matches: bool = ticket_id
             .as_bytes()
