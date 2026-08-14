@@ -371,9 +371,12 @@ async fn system_token_recovers_last_owner_without_existing_passkey_or_session() 
     assert_eq!(metadata["method"], "passkey");
     assert_eq!(metadata["removed"], 2);
     assert_eq!(metadata["credentials_revoked"], true);
-    let rendered = metadata.to_string();
-    assert!(!rendered.contains("credential"));
-    assert!(!rendered.contains("public_key"));
+    for sensitive_key in ["credential_id", "credential", "public_key", "counter"] {
+        assert!(
+            metadata.get(sensitive_key).is_none(),
+            "audit metadata must not contain {sensitive_key}"
+        );
+    }
 
     harness.cleanup();
 }
