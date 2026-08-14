@@ -12,7 +12,6 @@ use std::{
         unix::{ffi::OsStrExt, fs::MetadataExt},
     },
     path::{Component, Path},
-    time::SystemTime,
 };
 
 use super::policy::{
@@ -20,22 +19,21 @@ use super::policy::{
     leaf_directory_owned, leaf_directory_trusted, regular_file_owned, require_same_inode,
 };
 use super::unix_sys::{
-    fchmod, from_file_fd, linkat, map_open_error, mkdirat, open_beneath, renameat, unlinkat,
+    fchmod, from_file_fd, linkat, map_open_error, mkdirat, open_beneath, renameat, to_c_string,
+    unlinkat,
 };
-use super::{KEY_DIRECTORY_MODE, PRIVATE_FILE_MODE, TEMPORARY_FILE_SUFFIX, TemporaryFileKind};
+use super::{
+    KEY_DIRECTORY_MODE, PRIVATE_FILE_MODE, SecureFileData, TEMPORARY_FILE_SUFFIX, TemporaryFileKind,
+};
 
 pub(crate) struct SecureDir {
     file: File,
 }
 
+#[derive(Debug)]
 pub(crate) struct SecureDirEntry {
     pub name: String,
     pub inode: FileInode,
-}
-
-pub(crate) struct SecureFileData {
-    pub contents: Vec<u8>,
-    pub modified: SystemTime,
 }
 
 pub(crate) fn current_process_identity() -> ProcessIdentity {
@@ -171,7 +169,7 @@ impl SecureDir {
     fn create_exclusive(&self, name: &str) -> io::Result<File> {
         let file = open_beneath(
             self.fd(),
-            name,
+            OsStr::new(name),
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
             PRIVATE_FILE_MODE,
         )?;
@@ -186,7 +184,7 @@ impl SecureDir {
         flags: libc::c_int,
         expected: Option<FileInode>,
     ) -> io::Result<File> {
-        let file = open_beneath(self.fd(), name, flags, 0)?;
+        let file = open_beneath(self.fd(), OsStr::new(name), flags, 0)?;
         expect_owned_regular(&file, expected)?;
         Ok(file)
     }

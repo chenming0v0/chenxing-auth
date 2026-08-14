@@ -61,11 +61,13 @@ impl TemporaryFileKind {
 
 pub(crate) use policy::{FileInode, invalid_storage_path};
 
+#[derive(Debug)]
 pub(crate) struct SecureDirEntry {
     pub name: String,
     pub inode: Option<FileInode>,
 }
 
+#[derive(Debug)]
 pub(crate) struct SecureFileData {
     pub contents: Vec<u8>,
     pub modified: SystemTime,

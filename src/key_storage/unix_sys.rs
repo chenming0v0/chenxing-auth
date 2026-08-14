@@ -39,11 +39,13 @@ pub(super) fn open_beneath(
 
 #[cfg(target_os = "linux")]
 fn openat2_beneath(dirfd: RawFd, name: &CStr, flags: libc::c_int, mode: u32) -> io::Result<File> {
-    let how = libc::open_how {
-        flags: flags as u64,
-        mode: u64::from(mode),
-        resolve: libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS,
-    };
+    // SAFETY: open_how 是 non_exhaustive，不能写结构体字面量。全部字段都是
+    // 整数，全 0 是合法位型，也是 openat2 对未知/未用字段的约定值；随后只写入
+    // 本内核 ABI 已文档化的 flags/mode/resolve。
+    let mut how = unsafe { std::mem::zeroed::<libc::open_how>() };
+    how.flags = flags as u64;
+    how.mode = u64::from(mode);
+    how.resolve = libc::RESOLVE_BENEATH | libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS;
     // SAFETY: how 指向本栈上的 open_how；name 是有效 C 字符串。
     let fd = unsafe {
         libc::syscall(
@@ -120,7 +122,7 @@ fn validate_basename(name: &OsStr) -> io::Result<()> {
     Ok(())
 }
 
-fn to_c_string(name: &OsStr) -> io::Result<CString> {
+pub(super) fn to_c_string(name: &OsStr) -> io::Result<CString> {
     CString::new(name.as_bytes().to_vec()).map_err(|_| invalid_storage_path())
 }
 
