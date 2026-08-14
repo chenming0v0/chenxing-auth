@@ -71,14 +71,24 @@ async fn web_app(request: axum::extract::Request) -> Response {
 fn is_protocol_path(path: &str) -> bool {
     path == "/api"
         || path.starts_with("/api/")
-        || ((path == "/oauth" || path.starts_with("/oauth/"))
-            && !matches!(
-                path,
-                "/oauth/account" | "/oauth/consent" | "/oauth/redirect"
-            ))
+        || is_unregistered_oauth_path(path)
         || path == "/.well-known"
         || path.starts_with("/.well-known/")
         || path.starts_with("/health/")
+}
+
+/// `/oauth/*` 默认是协议空间，只有前端实际注册的三个浏览器页才回退 SPA。
+///
+/// 依据 `web/src/App.tsx` 的 `pages` 表：只登记了精确路径
+/// `/oauth/account`、`/oauth/consent`、`/oauth/redirect`，没有尾斜杠变体。
+/// 尾斜杠（`/oauth/consent/`）和子路径（`/oauth/consent/xxx`）必须当协议 404，
+/// 避免 OAuth 客户端把拼错的 URL 当成成功页。
+fn is_unregistered_oauth_path(path: &str) -> bool {
+    (path == "/oauth" || path.starts_with("/oauth/"))
+        && !matches!(
+            path,
+            "/oauth/account" | "/oauth/consent" | "/oauth/redirect"
+        )
 }
 
 fn has_file_extension(path: &str) -> bool {
@@ -119,6 +129,7 @@ mod tests {
         assert!(is_protocol_path("/api"));
         assert!(is_protocol_path("/api/v1/users"));
         for path in [
+            "/oauth",
             "/oauth/authorize",
             "/oauth/authorize/",
             "/oauth/token",
@@ -127,15 +138,21 @@ mod tests {
             "/oauth/revoke/",
             "/oauth/userinfo",
             "/oauth/userinfo/",
+            "/oauth/not-registered",
+            "/oauth/does-not-exist",
+            "/oauth/does-not-exist/",
+            "/oauth/consent/xxx",
+            "/oauth/consent/sub",
+            "/oauth/account/",
+            "/oauth/consent/",
+            "/oauth/redirect/",
         ] {
             assert!(is_protocol_path(path), "{path}");
         }
         assert!(is_protocol_path("/.well-known/openid-configuration"));
         assert!(is_protocol_path("/health/ready"));
 
-        assert!(is_protocol_path("/oauth/not-registered"));
-
-        // 这三个 OAuth 浏览器流程页面是明确注册的 SPA 路由。
+        // 前端 App.tsx 只注册无尾斜杠的精确路径，尾斜杠变体走协议 404。
         for path in ["/oauth/account", "/oauth/consent", "/oauth/redirect"] {
             assert!(!is_protocol_path(path), "{path}");
         }

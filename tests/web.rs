@@ -31,6 +31,39 @@ async fn assert_spa_shell(router: Router, uri: &str) {
     );
 }
 
+async fn assert_json_not_found(router: Router, uri: &str) {
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .body(Body::empty())
+                .expect("protocol 404 request"),
+        )
+        .await
+        .expect("protocol 404 response");
+    assert_ne!(
+        response.status(),
+        StatusCode::OK,
+        "{uri} must not be SPA 200"
+    );
+    assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.split(';').next().unwrap_or(value)),
+        Some("application/json"),
+        "{uri}"
+    );
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("protocol 404 body");
+    let error: serde_json::Value = serde_json::from_slice(&body).expect("JSON error");
+    assert_eq!(error["code"], "not_found", "{uri}");
+}
+
 async fn test_router() -> (axum::Router, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
@@ -68,9 +101,18 @@ async fn rust_forwards_root_and_spa_paths_to_the_compiled_react_app() {
         "/oauth/account",
         "/oauth/consent?request_id=test-request",
         "/oauth/redirect?redirect_to=https%3A%2F%2Fclient.example%2Fcallback",
-        "/oauth/does-not-exist",
     ] {
         assert_spa_shell(router.clone(), uri).await;
+    }
+
+    // 未注册的 /oauth/* 是协议空间，不能回退成 200 HTML，否则 OAuth 客户端
+    // 会把拼错的授权 URL 当成成功页。尾斜杠和子路径同样拒绝。
+    for uri in [
+        "/oauth/does-not-exist",
+        "/oauth/does-not-exist/",
+        "/oauth/consent/xxx",
+    ] {
+        assert_json_not_found(router.clone(), uri).await;
     }
     let _ = std::fs::remove_dir_all(key_directory);
 }
