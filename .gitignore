@@ -25,6 +25,7 @@ coverage/
 /design-auth-chengming/
 /.claude/skills/design-canvas-format/
 web/node_modules/
+web/dist
 web/dist/
 web/*.tsbuildinfo
 .slim/deepwork/

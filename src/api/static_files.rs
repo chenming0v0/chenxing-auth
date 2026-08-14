@@ -13,7 +13,13 @@
 //! 那些情况在进程开始监听之前就已经被拒绝。
 
 use axum::{
-    http::{Method, StatusCode, header::CONTENT_TYPE},
+    Router,
+    extract::Request,
+    http::{
+        HeaderValue, Method, StatusCode,
+        header::{CACHE_CONTROL, CONTENT_TYPE},
+    },
+    middleware::{Next, from_fn},
     response::{IntoResponse, Response},
     routing::{MethodRouter, any},
 };
@@ -21,21 +27,33 @@ use tower_http::services::ServeDir;
 
 use crate::web_dist::{EMBEDDED_INDEX_HTML, WebDistRoot};
 
+/// SPA shell 必须每次向源站再验证：新部署会换掉内嵌 `index.html` 引用的哈希资源，
+/// 浏览器若继续用旧 shell 就会去拉已经不存在的 chunk。
+const SPA_CACHE_CONTROL: &str = "no-cache";
+
+/// Vite 内容哈希资源：文件名变了才是新内容，旧 URL 永不复用。
+const HASHED_ASSET_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+
 /// 构建静态文件服务。
 ///
 /// `ServeDir` 负责产物根下的真实文件；文件缺失或方法不被允许时回退到
 /// `web_app`，从而让 SPA 路由拿到 `index.html`、让资源路径拿到 JSON 404。
-pub(super) fn static_service(root: &WebDistRoot) -> ServeDir<MethodRouter<()>> {
-    ServeDir::new(root.path())
-        // 目录请求不从磁盘拼 index.html，直接交给回退处理器：
-        // 内嵌的 index.html 是 SPA shell 的唯一来源，避免磁盘副本与内嵌副本
-        // 产生两条可能不一致的路径（磁盘产物可能比内嵌的旧），也顺带避免
-        // SPA 路由撞上同名目录时被 301 重定向到带斜杠的地址。
-        .append_index_html_on_directories(false)
-        // 默认情况下 ServeDir 对非 GET/HEAD 直接返回 405，会绕过 web_app。
-        // 打开该开关让所有方法都走同一条回退路径，保持 404 语义一致。
-        .call_fallback_on_method_not_allowed(true)
-        .fallback(spa_fallback())
+/// 外层 Router 只用来给哈希 assets 补 `Cache-Control`，不改变匹配顺序。
+pub(super) fn static_service(root: &WebDistRoot) -> Router {
+    Router::new()
+        .fallback_service(
+            ServeDir::new(root.path())
+                // 目录请求不从磁盘拼 index.html，直接交给回退处理器：
+                // 内嵌的 index.html 是 SPA shell 的唯一来源，避免磁盘副本与内嵌副本
+                // 产生两条可能不一致的路径（磁盘产物可能比内嵌的旧），也顺带避免
+                // SPA 路由撞上同名目录时被 301 重定向到带斜杠的地址。
+                .append_index_html_on_directories(false)
+                // 默认情况下 ServeDir 对非 GET/HEAD 直接返回 405，会绕过 web_app。
+                // 打开该开关让所有方法都走同一条回退路径，保持 404 语义一致。
+                .call_fallback_on_method_not_allowed(true)
+                .fallback(spa_fallback()),
+        )
+        .layer(from_fn(cache_hashed_assets))
 }
 
 /// SPA 回退服务。
@@ -62,10 +80,65 @@ async fn web_app(request: axum::extract::Request) -> Response {
 
     (
         StatusCode::OK,
-        [(CONTENT_TYPE, "text/html; charset=utf-8")],
+        [
+            (CONTENT_TYPE, "text/html; charset=utf-8"),
+            (CACHE_CONTROL, SPA_CACHE_CONTROL),
+        ],
         EMBEDDED_INDEX_HTML,
     )
         .into_response()
+}
+
+/// 命中带内容哈希的 `/assets/*` 且源站 200 时，才标一年 immutable。
+///
+/// 404 不能 immutable，否则缺失的 chunk 会被中间缓存钉死。非哈希路径
+/// （`/favicon.png`、`/fonts/*.woff2`、SPA shell）走各自的策略，这里不动。
+async fn cache_hashed_assets(request: Request, next: Next) -> Response {
+    let hashed = is_content_hashed_asset(request.uri().path());
+    let mut response = next.run(request).await;
+    if hashed && response.status() == StatusCode::OK {
+        response.headers_mut().insert(
+            CACHE_CONTROL,
+            HeaderValue::from_static(HASHED_ASSET_CACHE_CONTROL),
+        );
+    }
+    response
+}
+
+/// Vite 把带内容哈希的产物放在 `/assets/`，文件名形如 `name-<hash>.ext`。
+///
+/// 当前 `web/dist/assets/` 下全是这种文件（`index-*.js` / `index-*.css` /
+/// `logo-*.png`）。根上的 `favicon.png`、`apple-touch-icon.png` 和
+/// `/fonts/*.woff2` 没有哈希，不能按路径前缀一刀切。哈希是 8-12 位
+/// `[0-9A-Za-z_-]`（Vite 默认 url-safe，可能含 `-`）。
+fn is_content_hashed_asset(path: &str) -> bool {
+    let Some(relative) = path.strip_prefix("/assets/") else {
+        return false;
+    };
+    if relative.is_empty() || relative.ends_with('/') {
+        return false;
+    }
+    hashed_filename(relative.rsplit('/').next().unwrap_or(relative))
+}
+
+fn hashed_filename(filename: &str) -> bool {
+    let Some((stem, extension)) = filename.rsplit_once('.') else {
+        return false;
+    };
+    if extension.is_empty() {
+        return false;
+    }
+    let bytes = stem.as_bytes();
+    (8..=12).any(|hash_len| {
+        let Some(split) = bytes.len().checked_sub(hash_len) else {
+            return false;
+        };
+        split >= 1
+            && bytes[split - 1] == b'-'
+            && bytes[split..]
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-')
+    })
 }
 
 fn is_protocol_path(path: &str) -> bool {
@@ -165,5 +238,20 @@ mod tests {
     #[test]
     fn the_embedded_shell_is_the_spa_html_source() {
         assert!(EMBEDDED_INDEX_HTML.contains("<div id=\"root\"></div>"));
+    }
+
+    #[test]
+    fn content_hashed_assets_match_vite_filenames() {
+        assert!(is_content_hashed_asset("/assets/index-D43JXjyl.js"));
+        assert!(is_content_hashed_asset("/assets/index-Cx-ZuEpU.css"));
+        assert!(is_content_hashed_asset("/assets/logo-Czd3JYMY.png"));
+        assert!(is_content_hashed_asset("/assets/nested/chunk-AbCdef12.js"));
+
+        assert!(!is_content_hashed_asset("/assets/"));
+        assert!(!is_content_hashed_asset("/assets/missing-chunk.js"));
+        assert!(!is_content_hashed_asset("/favicon.png"));
+        assert!(!is_content_hashed_asset("/fonts/exo2-400-latin.woff2"));
+        assert!(!is_content_hashed_asset("/console"));
+        assert!(!is_content_hashed_asset("/"));
     }
 }
