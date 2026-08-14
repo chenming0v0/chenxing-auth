@@ -25,6 +25,7 @@ use zeroize::Zeroizing;
 use crate::clock::{Clock, SystemClock};
 use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 
+mod activation;
 mod journal;
 mod material;
 mod persistence;
@@ -34,8 +35,13 @@ mod revocation;
 mod rotation;
 mod sync;
 
+use activation::PendingPublishedKey;
 use material::{KeyMaterial, PrivateKeyDer, compare_recency, key_material, newest_key_id};
 
+pub use activation::{
+    DEFAULT_KEY_ACTIVATION_DELAY_SECONDS, JWKS_CACHE_MAX_AGE_SECONDS,
+    MAX_KEY_ACTIVATION_DELAY_SECONDS,
+};
 pub use sync::{DEFAULT_KEY_SYNC_INTERVAL, KeySyncOutcome, MINIMUM_KEY_SYNC_INTERVAL};
 
 pub const DEFAULT_KEY_RETENTION_SECONDS: u64 = 604_800;
@@ -74,11 +80,16 @@ struct KeyState {
     /// `retired_at + retention + skew_allowance`，保证时钟偏快的实例不会在真实
     /// 保留窗口结束前删除共享密钥文件。
     skew_allowance: Duration,
+    /// 新公钥进入 JWKS 之后、接管签发之前必须等待的时间（Issue #454）。
+    /// 已落盘的 `activate_at` 优先于这个值，因此中途改配置不会改写进行中的轮换。
+    activation_delay: Duration,
     active_key_id: String,
     active_encoding_key: EncodingKey,
     private_materials: BTreeMap<String, KeyMaterial>,
     verification_keys: BTreeMap<String, DecodingKey>,
     jwks: JwkSet,
+    /// 已发布、尚未接管签发的密钥。`None` 表示没有进行中的 publish→active 过渡。
+    pending: Option<PendingPublishedKey>,
 }
 
 impl KeyState {
@@ -90,8 +101,11 @@ impl KeyState {
         &self,
         active_key_id: &str,
         materials: &BTreeMap<String, KeyMaterial>,
+        pending_key_id: Option<&str>,
     ) -> bool {
-        self.active_key_id == active_key_id && self.private_materials.keys().eq(materials.keys())
+        self.active_key_id == active_key_id
+            && self.private_materials.keys().eq(materials.keys())
+            && self.pending.as_ref().map(|pending| pending.key_id.as_str()) == pending_key_id
     }
 }
 
@@ -155,8 +169,21 @@ pub enum KeyManagerError {
 }
 impl KeyManager {
     pub fn generate() -> Result<Self, KeyManagerError> {
+        Self::generate_with_activation_delay(Duration::ZERO)
+    }
+
+    /// 纯内存管理器。`activation_delay` 为 0 时 `rotate` 立即接管签发，保持既有测试语义。
+    pub fn generate_with_activation_delay(
+        activation_delay: Duration,
+    ) -> Result<Self, KeyManagerError> {
         let (key_id, der) = generate_rsa_key()?;
-        Self::from_key_material(None, key_id.clone(), [(key_id, der)], SystemClock.now())
+        Self::from_key_material(
+            None,
+            key_id.clone(),
+            [(key_id, der)],
+            SystemClock.now(),
+            activation_delay,
+        )
     }
     pub fn load_or_generate(directory: impl AsRef<Path>) -> Result<Self, KeyManagerError> {
         Self::load_or_generate_with_retention(
@@ -179,18 +206,35 @@ impl KeyManager {
         retention: Duration,
         skew_allowance: Duration,
     ) -> Result<Self, KeyManagerError> {
+        Self::load_or_generate_with_lifecycle(directory, retention, skew_allowance, Duration::ZERO)
+    }
+
+    /// 带完整生命周期参数的加载：保留窗口、时钟偏差容忍、发布后激活等待。
+    ///
+    /// 已落盘的 `pending-activation.record` 里的 `activate_at` 优先于
+    /// `activation_delay`，所以第二实例即使以 delay=0 加载，也不会提前签发
+    /// 仍在传播窗口内的新密钥。
+    pub fn load_or_generate_with_lifecycle(
+        directory: impl AsRef<Path>,
+        retention: Duration,
+        skew_allowance: Duration,
+        activation_delay: Duration,
+    ) -> Result<Self, KeyManagerError> {
         let now = SystemClock.now();
         let directory = directory.as_ref().to_path_buf();
         ensure_secure_directory(&directory)?;
         let _storage_lock = KeyStorageLock::acquire(&directory)?;
         let (active_key_id, key_files) =
             persistence::load_materials(&directory, retention, skew_allowance, now, true)?;
+        let pending = activation::read(&directory)?;
         Self::from_materials(
             Some(directory),
             retention,
             skew_allowance,
+            activation_delay,
             active_key_id,
             key_files,
+            pending,
         )
     }
     pub async fn rotate(&self) -> Result<KeyRotation, KeyManagerError> {
@@ -294,6 +338,7 @@ impl KeyManager {
         active_key_id: String,
         materials: impl IntoIterator<Item = (String, PrivateKeyDer)>,
         now: OffsetDateTime,
+        activation_delay: Duration,
     ) -> Result<Self, KeyManagerError> {
         let materials = materials
             .into_iter()
@@ -304,8 +349,10 @@ impl KeyManager {
             Duration::from_secs(DEFAULT_KEY_RETENTION_SECONDS),
             // 纯内存模式没有第二个实例，不存在跨实例时钟偏差。
             Duration::ZERO,
+            activation_delay,
             active_key_id,
             materials,
+            None,
         )
     }
 
@@ -313,16 +360,20 @@ impl KeyManager {
         directory: Option<PathBuf>,
         retention: Duration,
         skew_allowance: Duration,
+        activation_delay: Duration,
         active_key_id: String,
         materials: BTreeMap<String, KeyMaterial>,
+        pending: Option<PendingPublishedKey>,
     ) -> Result<Self, KeyManagerError> {
         Ok(Self {
             state: Arc::new(RwLock::new(build_key_state(
                 directory,
                 retention,
                 skew_allowance,
+                activation_delay,
                 active_key_id,
                 materials,
+                pending,
             )?)),
             rotation_lock: Arc::new(Mutex::new(())),
             resync_hint: Arc::new(Notify::new()),
@@ -350,10 +401,18 @@ fn build_key_state(
     directory: Option<PathBuf>,
     retention: Duration,
     skew_allowance: Duration,
+    activation_delay: Duration,
     active_key_id: String,
     private_materials: BTreeMap<String, KeyMaterial>,
+    pending: Option<PendingPublishedKey>,
 ) -> Result<KeyState, KeyManagerError> {
     persistence::validate_key_id(&active_key_id)?;
+    if let Some(pending) = pending.as_ref() {
+        persistence::validate_key_id(&pending.key_id)?;
+        if !private_materials.contains_key(&pending.key_id) {
+            return Err(KeyManagerError::InvalidKeyId);
+        }
+    }
     let active_der = private_materials
         .get(&active_key_id)
         .map(|material| material.der.as_slice())
@@ -376,11 +435,13 @@ fn build_key_state(
         directory,
         retention,
         skew_allowance,
+        activation_delay,
         active_key_id,
         active_encoding_key: EncodingKey::from_rsa_der(active_der),
         private_materials,
         verification_keys,
         jwks: JwkSet { keys: jwks },
+        pending,
     })
 }
 

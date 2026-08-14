@@ -40,7 +40,7 @@ pub(super) fn load_materials(
     // 必须早于读取 kid 和发现材料：崩溃留下的半成品吊销会在这里被补完，之后所有
     // 判断看到的都是一份已收敛的目录。否则被吊销的材料会被 discover_key_files
     // 读回内存并重新发布进 JWKS（Issue #284）。
-    journal::recover(directory)?;
+    journal::recover(directory, now)?;
     let declared_active_id = declared_active_key_id(directory)?;
     // 先把材料连同退役时刻整份读进来，再判断谁是 active、谁过期。过期判定必须在
     // 确定 active kid 之后进行：`declared_active_id` 可能缺失，此时 active 由最新
@@ -101,7 +101,16 @@ pub(super) fn load_materials(
     // 落实“active key 没有退役记录，其余都有记录”这条不变量后再裁剪：升级前的历史
     // 目录和崩溃遗留的半成品都在这里自愈，因此下面的裁剪对每个非 active key 都有
     // 明确的退役时刻可用，不需要退回按创建时刻推断。
-    retirement::reconcile(directory, &active_key_id, &mut key_files, now)?;
+    let published_key_id = super::activation::read(directory)?
+        .map(|pending| pending.key_id)
+        .filter(|key_id| key_id != &active_key_id);
+    retirement::reconcile(
+        directory,
+        &active_key_id,
+        &mut key_files,
+        now,
+        published_key_id.as_deref(),
+    )?;
     let expired = prune::prune_materials(
         &active_key_id,
         &mut key_files,

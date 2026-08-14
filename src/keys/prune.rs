@@ -74,8 +74,8 @@ pub(super) fn retirement_window_open_at(
     now: OffsetDateTime,
 ) -> bool {
     // 尚未退役的 key 不受保留窗口约束。持久化模式下 `retirement::reconcile` 已经
-    // 在锁内给每个非 active key 盖上退役时刻，因此这里的 `None` 只可能是 active
-    // key 本身，或内存模式下刚刚生成的新 key。
+    // 在锁内给每个非 active、非 published-pending 的 key 盖上退役时刻，因此这里
+    // 的 `None` 只可能是 active、等待激活的 published key，或内存模式下刚生成的 key。
     let Some(retired_at) = retired_at else {
         return true;
     };

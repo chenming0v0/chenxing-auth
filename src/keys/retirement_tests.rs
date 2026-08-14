@@ -1,6 +1,6 @@
 //! 单元测试：退役时刻记录与不变量收敛（Issue #298）。
 //!
-//! 覆盖的核心事实是 `reconcile` 双向维持“active key 没有记录，其余都有记录”：
+//! 覆盖的核心事实是 `reconcile` 双向维持“active / published-pending key 没有记录，其余都有记录”：
 //! 升级前就存在的历史目录会被补齐，崩溃或吊销留下的错误记录会被清掉。两个方向
 //! 都必须正确，否则同一个 bug 换个入口复现。
 
@@ -95,7 +95,14 @@ fn reconcile_stamps_retired_keys_that_have_no_record() {
     materials.insert("cx-active".to_owned(), material(1));
     materials.insert("cx-old".to_owned(), material(2));
 
-    reconcile(directory.path(), "cx-active", &mut materials, test_now()).expect("reconcile");
+    reconcile(
+        directory.path(),
+        "cx-active",
+        &mut materials,
+        test_now(),
+        None,
+    )
+    .expect("reconcile");
 
     assert_eq!(materials["cx-old"].retired_at, Some(test_now()));
     let recorded = fs::read_to_string(directory.record_path("cx-old")).expect("record written");
@@ -121,7 +128,14 @@ fn reconcile_preserves_an_existing_retirement_instant() {
     load_into(directory.path(), "cx-old", &mut old).expect("load");
     materials.insert("cx-old".to_owned(), old);
 
-    reconcile(directory.path(), "cx-active", &mut materials, test_now()).expect("reconcile");
+    reconcile(
+        directory.path(),
+        "cx-active",
+        &mut materials,
+        test_now(),
+        None,
+    )
+    .expect("reconcile");
 
     assert_eq!(materials["cx-old"].retired_at, Some(retired_at));
 }
@@ -142,7 +156,14 @@ fn reconcile_clears_the_record_of_a_key_that_is_active_again() {
     assert!(back.retired_at.is_some(), "fixture must start retired");
     materials.insert("cx-back".to_owned(), back);
 
-    reconcile(directory.path(), "cx-back", &mut materials, test_now()).expect("reconcile");
+    reconcile(
+        directory.path(),
+        "cx-back",
+        &mut materials,
+        test_now(),
+        None,
+    )
+    .expect("reconcile");
 
     assert_eq!(materials["cx-back"].retired_at, None);
     assert!(
@@ -159,10 +180,42 @@ fn reconcile_removes_records_without_matching_key_material() {
     let mut materials = BTreeMap::new();
     materials.insert("cx-active".to_owned(), material(1));
 
-    reconcile(directory.path(), "cx-active", &mut materials, test_now()).expect("reconcile");
+    reconcile(
+        directory.path(),
+        "cx-active",
+        &mut materials,
+        test_now(),
+        None,
+    )
+    .expect("reconcile");
 
     assert!(
         !directory.record_path("cx-gone").exists(),
         "orphaned retirement records must be collected"
     );
+}
+
+/// 已发布、尚未签发的 key 仍在签发生命周期内，不能被盖上退役章（Issue #454）。
+#[test]
+fn reconcile_does_not_retire_a_published_pending_key() {
+    let directory = TempKeyDir::new("published");
+    let mut materials = BTreeMap::new();
+    materials.insert("cx-active".to_owned(), material(1));
+    materials.insert("cx-pending".to_owned(), material(2));
+
+    reconcile(
+        directory.path(),
+        "cx-active",
+        &mut materials,
+        test_now(),
+        Some("cx-pending"),
+    )
+    .expect("reconcile");
+
+    assert_eq!(materials["cx-pending"].retired_at, None);
+    assert!(
+        !directory.record_path("cx-pending").exists(),
+        "a published key must not get a retirement record before it signs"
+    );
+    assert!(!directory.record_path("cx-active").exists());
 }

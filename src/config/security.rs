@@ -3,6 +3,9 @@ use super::ConfigError;
 pub const DEFAULT_KEY_ROTATION_GRACE_SECONDS: u64 = crate::keys::DEFAULT_KEY_RETENTION_SECONDS;
 pub const DEFAULT_KEY_ROTATION_SKEW_ALLOWANCE_SECONDS: u64 =
     crate::keys::DEFAULT_KEY_RETENTION_SKEW_ALLOWANCE_SECONDS;
+pub const DEFAULT_KEY_ACTIVATION_DELAY_SECONDS: u64 =
+    crate::keys::DEFAULT_KEY_ACTIVATION_DELAY_SECONDS;
+pub const MIN_PRODUCTION_KEY_ACTIVATION_DELAY_SECONDS: u64 = DEFAULT_KEY_ACTIVATION_DELAY_SECONDS;
 pub const DEFAULT_TOKEN_TTL_SECONDS: u64 = 3_600;
 
 const MIN_KEY_ROTATION_GRACE_SECONDS: u64 = 1;
@@ -89,6 +92,37 @@ pub(super) fn validate_token_and_key_lifetimes(
         return Err(ConfigError::InvalidValue("KEY_ROTATION_GRACE_SECONDS"));
     }
     Ok(())
+}
+
+/// 新公钥进入 JWKS 之后、接管签发之前的等待（Issue #454）。
+///
+/// 公共构造边界允许 0，供不读取环境变量的测试构造器立即激活。生产 `from_env`
+/// 还会调用 [`validate_production_activation_delay`] 强制覆盖 JWKS 缓存和同步窗口。
+/// 上界取 `300` 与保留窗口的较小值。
+pub(super) fn validate_activation_delay(
+    key_activation_delay_seconds: u64,
+    key_rotation_grace_seconds: u64,
+) -> Result<(), ConfigError> {
+    let maximum = crate::keys::MAX_KEY_ACTIVATION_DELAY_SECONDS.min(key_rotation_grace_seconds);
+    validate_range(
+        "KEY_ACTIVATION_DELAY_SECONDS",
+        key_activation_delay_seconds,
+        0,
+        maximum,
+    )
+}
+
+pub(super) fn validate_production_activation_delay(
+    key_activation_delay_seconds: u64,
+    key_rotation_grace_seconds: u64,
+) -> Result<(), ConfigError> {
+    let maximum = crate::keys::MAX_KEY_ACTIVATION_DELAY_SECONDS.min(key_rotation_grace_seconds);
+    validate_range(
+        "KEY_ACTIVATION_DELAY_SECONDS",
+        key_activation_delay_seconds,
+        MIN_PRODUCTION_KEY_ACTIVATION_DELAY_SECONDS,
+        maximum,
+    )
 }
 
 /// 浏览器会话三参数的上下界校验（#365）。
@@ -281,6 +315,43 @@ mod tests {
             Err(ConfigError::InvalidValue(
                 "KEY_ROTATION_SKEW_ALLOWANCE_SECONDS"
             ))
+        );
+    }
+
+    #[test]
+    fn activation_delay_is_bounded_by_cache_window_and_grace() {
+        assert!(validate_activation_delay(0, DEFAULT_KEY_ROTATION_GRACE_SECONDS).is_ok());
+        assert!(
+            validate_activation_delay(
+                DEFAULT_KEY_ACTIVATION_DELAY_SECONDS,
+                DEFAULT_KEY_ROTATION_GRACE_SECONDS
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            validate_activation_delay(
+                crate::keys::MAX_KEY_ACTIVATION_DELAY_SECONDS + 1,
+                DEFAULT_KEY_ROTATION_GRACE_SECONDS
+            ),
+            Err(ConfigError::InvalidValue("KEY_ACTIVATION_DELAY_SECONDS"))
+        );
+        assert_eq!(
+            validate_activation_delay(30, 10),
+            Err(ConfigError::InvalidValue("KEY_ACTIVATION_DELAY_SECONDS"))
+        );
+        assert_eq!(
+            validate_production_activation_delay(
+                MIN_PRODUCTION_KEY_ACTIVATION_DELAY_SECONDS - 1,
+                DEFAULT_KEY_ROTATION_GRACE_SECONDS
+            ),
+            Err(ConfigError::InvalidValue("KEY_ACTIVATION_DELAY_SECONDS"))
+        );
+        assert!(
+            validate_production_activation_delay(
+                MIN_PRODUCTION_KEY_ACTIVATION_DELAY_SECONDS,
+                DEFAULT_KEY_ROTATION_GRACE_SECONDS
+            )
+            .is_ok()
         );
     }
 

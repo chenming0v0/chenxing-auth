@@ -15,8 +15,8 @@ use time::OffsetDateTime;
 use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 
 use super::{
-    KeyManager, KeyManagerError, KeyMaterial, KeyRevocation, KeyState, build_key_state, journal,
-    newest_key_id, persistence,
+    KeyManager, KeyManagerError, KeyMaterial, KeyRevocation, KeyState, activation, build_key_state,
+    journal, newest_key_id, persistence,
 };
 
 pub(super) fn revoke_blocking_at(
@@ -30,12 +30,13 @@ pub(super) fn revoke_blocking_at(
         .rotation_lock
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (directory, retention, skew_allowance, mut active_key_id, mut materials) = {
+    let (directory, retention, skew_allowance, activation_delay, mut active_key_id, mut materials) = {
         let state = manager.read_state();
         (
             state.directory.clone(),
             state.retention,
             state.skew_allowance,
+            state.activation_delay,
             state.active_key_id.clone(),
             state.private_materials.clone(),
         )
@@ -59,16 +60,39 @@ pub(super) fn revoke_blocking_at(
     if !materials.contains_key(&key_id) {
         return Err(KeyManagerError::UnknownKeyId);
     }
+    let mut pending = match directory.as_ref() {
+        Some(directory) => activation::read(directory)?,
+        None => manager.read_state().pending.clone(),
+    };
+    if pending
+        .as_ref()
+        .is_some_and(|pending| pending.key_id == key_id)
+    {
+        pending = None;
+        if let Some(directory) = directory.as_ref() {
+            activation::clear(directory)?;
+        }
+    }
     let _ = materials.remove(&key_id);
     let planned_active_key_id = if active_key_id == key_id {
         // 替代者按退役时刻选取（`newest_key_id`），绝不按 mtime（Issue #318）。
         // 残余边界：升级前崩溃遗留的孤儿 key 若已被旧版 `reconcile` 盖上退役
         // 记录，无法与合法退役 key 区分；本修复保证轮换/吊销的新写入不会再
-        // 制造这种孤儿。
+        // 制造这种孤儿。pending 密钥 `retired_at` 为 None，会被优先选中并立即
+        // 接管签发——紧急吊销不能再等传播窗口。
         newest_key_id(&materials).ok_or(KeyManagerError::NoActiveKeyReplacement)?
     } else {
         active_key_id.clone()
     };
+    if pending
+        .as_ref()
+        .is_some_and(|pending| pending.key_id == planned_active_key_id)
+    {
+        pending = None;
+        if let Some(directory) = directory.as_ref() {
+            activation::clear(directory)?;
+        }
+    }
     // 吊销 active key 时替代者是一个已退役的 key，它从这一刻起重新在役，因此必须
     // 清掉它的退役时刻。留着会让它下次退役时沿用上一轮的起点，保留窗口被提前用掉
     // （Issue #298）。磁盘侧的记录由 `commit_to_disk` 之后的加载 reconcile 清除，
@@ -81,8 +105,10 @@ pub(super) fn revoke_blocking_at(
         directory.clone(),
         retention,
         skew_allowance,
+        activation_delay,
         planned_active_key_id.clone(),
         materials,
+        pending,
     )?;
     let (next_active_key_id, next_state) = match directory.as_ref() {
         Some(directory) => snapshot_after_commit(
@@ -139,8 +165,12 @@ pub(super) fn snapshot_after_commit(
 ) -> Result<(String, KeyState), KeyManagerError> {
     match outcome {
         CommitOutcome::Converged(disk_active_key_id, disk_materials) => {
-            let state = if planned_state.matches_disk_snapshot(&disk_active_key_id, &disk_materials)
-            {
+            let pending = activation::read(directory).ok().flatten();
+            let state = if planned_state.matches_disk_snapshot(
+                &disk_active_key_id,
+                &disk_materials,
+                pending.as_ref().map(|pending| pending.key_id.as_str()),
+            ) {
                 planned_state
             } else {
                 // 仅异常恢复会走这里：以 journal 收敛后的实际 active/materials 为准，
@@ -149,8 +179,10 @@ pub(super) fn snapshot_after_commit(
                     Some(directory.to_path_buf()),
                     retention,
                     skew_allowance,
+                    planned_state.activation_delay,
                     disk_active_key_id.clone(),
                     disk_materials,
+                    pending,
                 )?
             };
             Ok((disk_active_key_id, state))

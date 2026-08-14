@@ -22,14 +22,16 @@ pub(super) struct KeyMaterial {
     /// 材料诞生的时刻。只在“最近在役”排定时作为次要次序（退役时刻相同或都
     /// 缺失时），不参与保留窗口计算。
     pub(super) created_at: OffsetDateTime,
-    /// 停止签发、降级为只验证的时刻。`None` 表示这个 key 仍在役。
+    /// 停止签发、降级为只验证的时刻。`None` 表示这个 key 仍在签发生命周期内：
+    /// 它是当前 active，或是已发布、等待 `activate_at` 的 pending key。
     ///
     /// 保留窗口从这里起算而不是从 `created_at` 起算（Issue #298）：在役时长完全
     /// 由运维的轮换节奏决定，可以远超保留窗口，用创建时刻起算会让长期在役的 key
     /// 在轮换那一瞬间就越过窗口，把它最后一刻签发、尚未到 `exp` 的令牌一起作废。
     ///
-    /// 不变量：这个字段为 `None` 当且仅当该 key 是 active key。持久化模式下由
-    /// `retirement::reconcile` 在目录锁内双向维持，内存模式下由轮换与吊销维持。
+    /// 不变量：这个字段为 `None` 当且仅当该 key 是 active 或 published-pending。
+    /// 持久化模式下由 `retirement::reconcile` 在目录锁内双向维持，内存模式下由
+    /// 轮换与吊销维持。
     pub(super) retired_at: Option<OffsetDateTime>,
 }
 /// 手写 `Debug`：派生实现会整段打印私钥 DER，一旦 `KeyMaterial` 被记进日志或断言失败信息，

@@ -137,8 +137,9 @@ fn read_rejects_inode_replaced_between_list_and_open() {
         .expect("listed key")
         .inode;
 
-    fs::remove_file(&path).expect("swap out");
-    fs::write(&path, b"replacement-key").expect("plant replacement");
+    let replacement_path = guard.path().join("replacement-material");
+    fs::write(&replacement_path, b"replacement-key").expect("plant replacement");
+    fs::rename(&replacement_path, &path).expect("swap replacement into place");
     let replacement = unix::inode_of_path(&path).expect("new inode");
     assert_ne!(
         (original.dev, original.ino),

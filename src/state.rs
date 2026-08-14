@@ -110,13 +110,15 @@ impl StartupKeyMaterial {
         key_directory: &str,
         key_retention: Duration,
         key_skew_allowance: Duration,
+        key_activation_delay: Duration,
     ) -> Result<Self, StateError> {
         // 保持与历史实现一致的失败顺序：先 provider secret，再签名密钥。
         let secrets = SecretManager::load_or_generate(key_directory)?;
-        let keys = KeyManager::load_or_generate_with_retention_and_skew_allowance(
+        let keys = KeyManager::load_or_generate_with_lifecycle(
             key_directory,
             key_retention,
             key_skew_allowance,
+            key_activation_delay,
         )?;
         Ok(Self { keys, secrets })
     }
@@ -228,11 +230,17 @@ impl AppState {
         let key_directory = config.key_directory.clone();
         let key_retention = Duration::from_secs(config.key_rotation_grace_seconds);
         let key_skew_allowance = Duration::from_secs(config.key_rotation_skew_allowance_seconds);
+        let key_activation_delay = Duration::from_secs(config.key_activation_delay_seconds);
         let StartupKeyMaterial {
             keys,
             secrets: secret_manager,
         } = tokio::task::spawn_blocking(move || {
-            StartupKeyMaterial::load(&key_directory, key_retention, key_skew_allowance)
+            StartupKeyMaterial::load(
+                &key_directory,
+                key_retention,
+                key_skew_allowance,
+                key_activation_delay,
+            )
         })
         .await??;
 

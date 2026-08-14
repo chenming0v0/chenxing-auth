@@ -28,7 +28,7 @@ use std::path::Path;
 
 use crate::key_storage::{atomic_write, read_secure_file_limited, remove_secure_file};
 
-use super::{KeyManagerError, persistence, retirement};
+use super::{KeyManagerError, activation, persistence, retirement};
 
 /// 吊销意图记录文件。
 ///
@@ -136,6 +136,7 @@ pub(super) fn record(directory: &Path, pending: &PendingRevocation) -> Result<()
 
 /// 把轮换意图落盘。返回成功即表示这次轮换已提交：崩溃后加载路径会把它补完或
 /// 回滚，不会留下从未进入 JWKS 的孤儿私钥（Issue #318）。
+#[cfg(test)]
 pub(super) fn record_rotation(
     directory: &Path,
     pending: &PendingRotation,
@@ -211,9 +212,10 @@ fn clear_record(directory: &Path, file_name: &str) -> Result<(), KeyManagerError
 /// 恢复成功时目录里必有一个不等于 revoked 的 active key 及其材料；journal 最后才
 /// 清除，所以任何中断点都能从同一条记录继续，不会留下"记录已丢、active 仍缺失"的
 /// 新故障窗口。
-pub(super) fn recover(directory: &Path) -> Result<(), KeyManagerError> {
+pub(super) fn recover(directory: &Path, now: time::OffsetDateTime) -> Result<(), KeyManagerError> {
     recover_rotation(directory)?;
     let Some(record) = read(directory)? else {
+        activation::recover(directory, now)?;
         return Ok(());
     };
 
@@ -221,6 +223,8 @@ pub(super) fn recover(directory: &Path) -> Result<(), KeyManagerError> {
         JournalRecord::Pending(pending) => recover_pending(directory, &pending)?,
         JournalRecord::Corrupt(corrupt) => recover_corrupt(directory, corrupt)?,
     }
+    // 吊销恢复可能已经删掉 pending 材料或把它提升为 active，再收敛激活记录。
+    activation::recover(directory, now)?;
     Ok(())
 }
 
@@ -284,7 +288,16 @@ fn recover_rotation(directory: &Path) -> Result<(), KeyManagerError> {
             let switch_completed = active_key_id.as_deref() == Some(pending.new_key_id.as_str());
             if !switch_completed {
                 if persistence::has_key_material(directory, &pending.new_key_id)? {
-                    persistence::persist_active_key_id(directory, &pending.new_key_id)?;
+                    // 激活记录在时，签发切换由 `activation::recover` 按 `activate_at`
+                    // 决定。这里再切一次会跳过 JWKS 传播窗口（Issue #454）。
+                    let activation = match activation::read(directory) {
+                        Ok(published) => published,
+                        Err(KeyManagerError::InvalidKeyId) => None,
+                        Err(error) => return Err(error),
+                    };
+                    if activation.is_none() {
+                        persistence::persist_active_key_id(directory, &pending.new_key_id)?;
+                    }
                 } else {
                     tracing::warn!(
                         new_key_id = %pending.new_key_id,
