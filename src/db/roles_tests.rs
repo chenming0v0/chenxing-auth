@@ -1,6 +1,6 @@
 use super::{
-    PasswordAction, PasswordProbe, RuntimePasswordPolicy, decode_runtime_password, quote_ident,
-    quote_literal, runtime_password_action,
+    PasswordAction, PasswordProbe, RuntimePasswordPolicy, decode_runtime_password,
+    role_password_client_statements, runtime_password_action,
 };
 
 #[test]
@@ -68,15 +68,63 @@ fn missing_probe_result_never_overwrites() {
 }
 
 #[test]
-fn identifier_quoting_escapes_embedded_quotes() {
-    assert_eq!(quote_ident("chenxing_runtime"), "\"chenxing_runtime\"");
-    assert_eq!(quote_ident("we\"ird"), "\"we\"\"ird\"");
+fn client_sql_never_embeds_role_password_secrets() {
+    // Issue #456：口令只走绑定参数。这些值若被拼进客户端 SQL，就会进
+    // pg_stat_activity / 慢查询 / 代理日志。
+    let secrets = [
+        "super-secret",
+        "o'brien",
+        r"back\slash",
+        r#"quote"value"#,
+        "'; DROP ROLE chenxing_runtime; --",
+    ];
+    for sql in role_password_client_statements() {
+        for secret in secrets {
+            assert!(
+                !sql.contains(secret),
+                "client SQL must not contain {secret:?}: {sql}"
+            );
+        }
+        assert!(
+            !sql.contains("PASSWORD '"),
+            "client SQL must not interpolate a password literal: {sql}"
+        );
+    }
 }
 
 #[test]
-fn literal_quoting_escapes_embedded_single_quotes() {
-    assert_eq!(quote_literal("secret"), "'secret'");
-    assert_eq!(quote_literal("o'brien"), "'o''brien'");
+fn password_write_uses_server_format_and_forces_standard_conforming_strings() {
+    let [ensure_fn, call_sql] = role_password_client_statements();
+    assert!(
+        ensure_fn.contains("format('ALTER ROLE %I WITH LOGIN PASSWORD %L'"),
+        "server function must quote ident/literal with format %I/%L: {ensure_fn}"
+    );
+    assert!(
+        ensure_fn.contains("SET standard_conforming_strings = on"),
+        "function must force standard_conforming_strings=on: {ensure_fn}"
+    );
+    assert!(
+        ensure_fn.contains("current_setting('standard_conforming_strings') IS DISTINCT FROM 'on'"),
+        "function must reject a session that cannot honor standard_conforming_strings: {ensure_fn}"
+    );
+    assert!(
+        call_sql.contains("$1") && call_sql.contains("$2"),
+        "call site must bind role and password as parameters: {call_sql}"
+    );
+    assert!(
+        !call_sql.contains("ALTER ROLE"),
+        "the bound call must not be the ALTER ROLE text itself: {call_sql}"
+    );
+}
+
+#[test]
+fn runtime_password_preserves_quotes_and_backslashes() {
+    let password = decode_runtime_password(
+        "postgres://chenxing_runtime:o%27brien%5Csecret%22quote@localhost/chenxing_auth",
+    )
+    .expect("valid special-character runtime password");
+
+    assert_eq!(password, "o'brien\\secret\"quote");
 }
 
 #[test]
