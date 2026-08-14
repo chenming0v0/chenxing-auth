@@ -16,6 +16,7 @@ use crate::{
     admin::management_handlers::{
         list_admins, list_audit, list_users, set_user_role, set_user_status,
     },
+    admin::passkey_recovery::reset_user_passkey_factor,
     admin::plan_handlers::{
         archive_plan, assign_plan, create_plan, list_plans, restore_plan, update_plan,
     },
@@ -145,6 +146,12 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
         .route(
             "/api/v1/admin/users/{user_id}/auth-factors/totp",
             delete(reset_user_totp_factor),
+        )
+        // Passkey 重置是 #460 的恢复出口：Passkey-only 账号丢了认证器后，
+        // 系统 Token 通道不依赖现有 Session / Passkey。
+        .route(
+            "/api/v1/admin/users/{user_id}/auth-factors/passkey",
+            delete(reset_user_passkey_factor),
         )
         .route(
             "/api/v1/admin/auth-factors/key-health",

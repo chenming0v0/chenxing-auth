@@ -175,6 +175,22 @@ pub async fn delete_totp_factor(
     Ok(result.rows_affected() == 1)
 }
 
+/// 在既有事务内删除该账号的全部 Passkey 凭据，返回删除行数（#460）。
+///
+/// 与 [`delete_totp_factor_in_transaction`] 同一契约：删除与会话撤销必须同事务
+/// 提交。返回 `0` 时调用方整体回滚，epoch 推进与 outbox 事件全部撤销。
+/// 不 `RETURNING` 凭据材料——管理端只需要「删了几条」，凭据 JSON 不能离开仓储。
+pub async fn delete_passkeys_in_transaction(
+    transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+    user_id: UserId,
+) -> Result<i64, crate::sqlx::Error> {
+    let result = crate::sqlx::query("DELETE FROM user_passkeys WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut **transaction)
+        .await?;
+    Ok(i64::try_from(result.rows_affected()).unwrap_or(i64::MAX))
+}
+
 /// 在既有事务内删除 TOTP 因子并取回删除前的密文与更新时间（#331）。
 ///
 /// 管理端重置因子必须与「撤销全部会话」同事务原子提交（Issue #331）：撤销成功而
