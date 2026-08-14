@@ -14,8 +14,6 @@ pub const SESSION_COOKIE: &str = "__Host-chenxing_session";
 pub const CSRF_COOKIE: &str = "__Host-chenxing_csrf";
 const LOCAL_SESSION_COOKIE: &str = "chenxing_session";
 const LOCAL_CSRF_COOKIE: &str = "chenxing_csrf";
-pub const EXTERNAL_STATE_COOKIE_PREFIX: &str = "chenxing_external_oauth_state_";
-const EXTERNAL_STATE_COOKIE_ID_BYTES: usize = 12;
 /// 授权请求持有者 Cookie：证明调用绑定端点的浏览器就是发起 `/oauth/authorize`
 /// 的那一个（#115）。只在服务端与 pending 记录中的摘要比对，值本身不进日志。
 pub const AUTHZ_HOLDER_COOKIE: &str = "__Host-chenxing_authz_holder";
@@ -32,6 +30,12 @@ const LOCAL_AUTHZ_HOLDER_COOKIE: &str = "chenxing_authz_holder";
 const LOGIN_TICKET_HOLDER_BYTES: usize = 32;
 
 pub type CookieError = InvalidHeaderValue;
+
+pub use super::external_state::{
+    EXTERNAL_STATE_COOKIE_PREFIX, HOST_EXTERNAL_STATE_COOKIE_PREFIX,
+    append_clear_external_state_cookie, append_external_state_cookie, external_state,
+    external_state_cookie_name, external_state_cookie_prefix,
+};
 
 pub fn append_login_cookies(
     headers: &mut HeaderMap,
@@ -69,32 +73,6 @@ pub fn append_clear_cookies(headers: &mut HeaderMap, secure: bool) -> Result<(),
     for value in values {
         headers.append(SET_COOKIE, value);
     }
-    Ok(())
-}
-
-pub fn append_external_state_cookie(
-    headers: &mut HeaderMap,
-    state: &str,
-    max_age_seconds: u64,
-    secure: bool,
-    path: &str,
-) -> Result<(), CookieError> {
-    let name = external_state_cookie_name(state);
-    headers.append(
-        SET_COOKIE,
-        build_cookie(&name, state, max_age_seconds, secure, true, path)?,
-    );
-    Ok(())
-}
-
-pub fn append_clear_external_state_cookie(
-    headers: &mut HeaderMap,
-    state: &str,
-    secure: bool,
-    path: &str,
-) -> Result<(), CookieError> {
-    let name = external_state_cookie_name(state);
-    headers.append(SET_COOKIE, build_cookie(&name, "", 0, secure, true, path)?);
     Ok(())
 }
 
@@ -276,19 +254,6 @@ pub const fn authz_holder_cookie_name(secure: bool) -> &'static str {
     }
 }
 
-pub fn external_state(headers: &HeaderMap, state: &str) -> Option<String> {
-    let name = external_state_cookie_name(state);
-    cookie_value(headers, &name)
-}
-
-pub fn external_state_cookie_name(state: &str) -> String {
-    let digest = Sha256::digest(state.as_bytes());
-    format!(
-        "{EXTERNAL_STATE_COOKIE_PREFIX}{}",
-        URL_SAFE_NO_PAD.encode(&digest[..EXTERNAL_STATE_COOKIE_ID_BYTES])
-    )
-}
-
 pub fn cookie_value_by_name(headers: &HeaderMap, name: &str) -> Option<String> {
     cookie_value(headers, name)
 }
@@ -343,7 +308,37 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     })
 }
 
-fn build_cookie(
+/// Collect every value for `name` across all Cookie headers.
+///
+/// Conflicting duplicates return `None` so a tossed sibling-domain cookie
+/// cannot win by appearing first. Identical repeats are treated as one value.
+/// This helper is shared with the external-state cookie reader; session and
+/// CSRF readers stay on [`cookie_value`] until #464 adopts the same rule.
+pub(crate) fn unique_cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let mut found: Option<String> = None;
+    for header in headers.get_all(COOKIE) {
+        let Ok(value) = header.to_str() else {
+            continue;
+        };
+        for part in value.split(';') {
+            let Ok(cookie) = Cookie::parse(part.trim()) else {
+                continue;
+            };
+            if cookie.name() != name {
+                continue;
+            }
+            let cookie_value = cookie.value().to_owned();
+            match &found {
+                None => found = Some(cookie_value),
+                Some(existing) if existing == &cookie_value => {}
+                Some(_) => return None,
+            }
+        }
+    }
+    found
+}
+
+pub(crate) fn build_cookie(
     name: &str,
     value: &str,
     max_age_seconds: u64,
