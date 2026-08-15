@@ -11,6 +11,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 
 use crate::audit::{AuditError, AuditEvent};
+use crate::db::advisory_lock::{BusinessLock, lock_business};
 use crate::users::domain::{UserCreation, UserId};
 use crate::users::email::EmailAddress;
 
@@ -55,9 +56,7 @@ pub async fn insert_user_after_owner(
     password_hash: String,
 ) -> Result<Option<NewUser>, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
-    crate::sqlx::query("SELECT pg_advisory_xact_lock(0, 7341928)")
-        .execute(&mut *transaction)
-        .await?;
+    lock_business(&mut transaction, BusinessLock::OwnerBootstrap).await?;
     if !owner_exists(&mut *transaction).await? {
         transaction.rollback().await?;
         return Ok(None);
@@ -134,9 +133,7 @@ where
     F: FnOnce(&UserProfile) -> AuditEvent,
 {
     let mut transaction = pool.begin().await?;
-    crate::sqlx::query("SELECT pg_advisory_xact_lock(0, 7341928)")
-        .execute(&mut *transaction)
-        .await?;
+    lock_business(&mut transaction, BusinessLock::OwnerBootstrap).await?;
     if owner_exists(&mut *transaction).await? {
         transaction.rollback().await?;
         return Ok(BootstrapOwnerOutcome::AlreadyConfigured);

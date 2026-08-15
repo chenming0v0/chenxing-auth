@@ -4,6 +4,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::domain::{ClientAuthMethod, ProviderRecord, ValidatedProviderInput};
+use crate::db::advisory_lock::{BusinessLock, lock_business};
 use crate::users::domain::{UserId, UserStatus};
 use crate::users::email::EmailAddress;
 
@@ -178,9 +179,7 @@ pub async fn create_user_with_identity(
     password_hash: &str,
 ) -> Result<UserId, CreateIdentityError> {
     let mut transaction = pool.begin().await?;
-    crate::sqlx::query("SELECT pg_advisory_xact_lock(0, 7341928)")
-        .execute(&mut *transaction)
-        .await?;
+    lock_business(&mut transaction, BusinessLock::OwnerBootstrap).await?;
     let existing_identity: Option<(UserId, String)> = crate::sqlx::query_as(
         "SELECT i.user_id, u.status
          FROM oauth_external_identities i
