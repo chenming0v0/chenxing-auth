@@ -5,7 +5,7 @@ use std::fmt;
 /// The implicit `legacy` mode preserves keys created before `REDIS_NAMESPACE`
 /// existed. Explicit namespaces are wrapped in a service-owned prefix so they
 /// cannot collide with legacy keys or another deployment.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RedisKeyspace(Option<String>);
 
 impl RedisKeyspace {
@@ -40,12 +40,6 @@ impl RedisKeyspace {
 
     pub fn namespace(&self) -> &str {
         self.0.as_deref().unwrap_or("legacy")
-    }
-}
-
-impl Default for RedisKeyspace {
-    fn default() -> Self {
-        Self(None)
     }
 }
 

@@ -189,17 +189,11 @@ where
         state: &S,
     ) -> Result<Option<Self>, Self::Rejection> {
         let state = AppState::from_ref(state);
-        optional_session(current_user(&state, &parts.headers).await)
-    }
-}
-
-fn optional_session(
-    result: Result<UserContext, Response>,
-) -> Result<Option<SessionRead>, Response> {
-    match result {
-        Ok(context) => Ok(Some(SessionRead(context))),
-        Err(response) if response.status() == StatusCode::UNAUTHORIZED => Ok(None),
-        Err(response) => Err(response),
+        match current_user(&state, &parts.headers).await {
+            Ok(context) => Ok(Some(SessionRead(context))),
+            Err(response) if response.status() == StatusCode::UNAUTHORIZED => Ok(None),
+            Err(response) => Err(response),
+        }
     }
 }
 
