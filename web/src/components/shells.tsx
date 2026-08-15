@@ -464,8 +464,11 @@ export function GlobalTopbar({
                     {/* 菜单项 */}
                     <div className="p-2">
                       <Link to="/console/profile" className="chenxing-menu-item" onClick={account.close}>
-                        <Icon name="user" className="text-[var(--chenxing-cyan)]" size={16} />账户设置
-                      </Link>
+                         <Icon name="user" className="text-[var(--chenxing-cyan)]" size={16} />账户设置
+                       </Link>
+                       <Link to="/console/security" className="chenxing-menu-item" onClick={account.close}>
+                         <Icon name="shield-check" className="text-[var(--chenxing-cyan)]" size={16} />登录安全
+                       </Link>
                       <Link to="/console/plans" className="chenxing-menu-item" onClick={account.close}>
                         <Icon name="receipt" className="text-[var(--chenxing-cyan)]" size={16} />套餐订阅
                       </Link>

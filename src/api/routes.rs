@@ -35,6 +35,12 @@ use crate::{
         confirm_totp_setup, finish_passkey_authentication, finish_passkey_registration, login_totp,
         start_passkey_authentication, start_passkey_registration, start_totp_setup,
     },
+    auth_factors::security_handlers::{
+        confirm_security_totp_enrollment, current_security_factors,
+        finish_security_passkey_registration, remove_security_passkey_factor,
+        remove_security_totp_factor, start_security_passkey_registration,
+        start_security_totp_enrollment,
+    },
     oauth::handlers::{authorize, authorize_post, token},
     oauth::providers::handlers::{external_callback, list_public_providers, start_external_login},
     oauth::revocation_handler::revoke,
@@ -127,6 +133,34 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
         .route(
             "/api/v1/auth/sessions/{session_id}",
             axum::routing::delete(revoke_user_session),
+        )
+        .route(
+            "/api/v1/auth/security/factors",
+            get(current_security_factors),
+        )
+        .route(
+            "/api/v1/auth/security/totp/enrollment/start",
+            post(start_security_totp_enrollment),
+        )
+        .route(
+            "/api/v1/auth/security/totp/enrollment/confirm",
+            post(confirm_security_totp_enrollment),
+        )
+        .route(
+            "/api/v1/auth/security/passkeys/registration/start",
+            post(start_security_passkey_registration),
+        )
+        .route(
+            "/api/v1/auth/security/passkeys/registration/finish",
+            post(finish_security_passkey_registration),
+        )
+        .route(
+            "/api/v1/auth/security/factors/totp",
+            delete(remove_security_totp_factor),
+        )
+        .route(
+            "/api/v1/auth/security/factors/passkey",
+            delete(remove_security_passkey_factor),
         )
         .route("/api/v1/admin/admins", get(list_admins).post(create_admin))
         .route("/api/v1/admin/auth/me", get(admin_me))

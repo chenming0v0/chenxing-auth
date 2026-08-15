@@ -19,6 +19,18 @@ if ticket['holder_hash'] ~= ARGV[1] then return nil end
 redis.call('DEL', KEYS[1])
 return payload
 "#;
+const TAKE_SESSION_ENROLLMENT_IF_OWNER_SCRIPT: &str = r#"
+local payload = redis.call('GET', KEYS[1])
+if not payload then return nil end
+local pending = cjson.decode(payload)
+if pending['binding']['user_id'] ~= ARGV[1] then return nil end
+if pending['binding']['session_id'] ~= ARGV[2] then return nil end
+if pending['binding']['session_epoch'] ~= ARGV[3] then return nil end
+if pending['method'] ~= ARGV[4] then return nil end
+if pending['enrollment_id'] ~= ARGV[5] then return nil end
+redis.call('DEL', KEYS[1])
+return payload
+"#;
 
 #[derive(Clone)]
 pub struct LoginTicketStore {
@@ -227,6 +239,35 @@ impl LoginTicketStore {
     ) -> Result<Option<T>, LoginTicketStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload: Option<String> = connection.get_del(key).await?;
+        payload
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map_err(LoginTicketStoreError::from)
+    }
+
+    pub async fn take_session_enrollment_if_owner<T: DeserializeOwned>(
+        &self,
+        key: &str,
+        user_id: UserId,
+        session_id: i64,
+        session_epoch: i64,
+        method: FactorMethod,
+        enrollment_id: &str,
+    ) -> Result<Option<T>, LoginTicketStoreError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let method = match method {
+            FactorMethod::Totp => "totp",
+            FactorMethod::Passkey => "passkey",
+        };
+        let payload: Option<String> = Script::new(TAKE_SESSION_ENROLLMENT_IF_OWNER_SCRIPT)
+            .key(key)
+            .arg(user_id)
+            .arg(session_id)
+            .arg(session_epoch)
+            .arg(method)
+            .arg(enrollment_id)
+            .invoke_async(&mut connection)
+            .await?;
         payload
             .map(|value| serde_json::from_str(&value))
             .transpose()

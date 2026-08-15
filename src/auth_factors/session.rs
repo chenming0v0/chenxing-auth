@@ -8,8 +8,13 @@ use std::{fmt, time::Duration};
 
 use crate::{
     audit::AuditEvent,
+    auth_factors::domain::FactorMethod,
     error,
-    sessions::{cookies, domain::Session, store::SessionStoreError},
+    sessions::{
+        cookies,
+        domain::Session,
+        store::{PasswordSessionPersistence, SessionStoreError},
+    },
     state::AppState,
     users::domain::{AuthenticatedUser, UserStatus},
 };
@@ -78,6 +83,7 @@ pub async fn issue_user_session(
     headers: &HeaderMap,
     source_ip: Option<&str>,
     stale_credential: StaleCredentialCode,
+    require_no_effective_factors: bool,
 ) -> Response {
     let user_id = authenticated.id;
     let Some(profile) = (match state.users.find_profile(user_id).await {
@@ -106,24 +112,45 @@ pub async fn issue_user_session(
             return error::internal();
         }
     };
-    if let Err(session_error) = state
-        .sessions
-        .save_authenticated(&mut session, ttl, authenticated.session_epoch)
-        .await
-    {
-        match &session_error {
-            SessionStoreError::UserDisabled => {
-                return error::unauthorized("user_disabled", "user account is disabled");
+    let persistence = if require_no_effective_factors {
+        state
+            .sessions
+            .save_password_authenticated(&mut session, ttl, authenticated.session_epoch)
+            .await
+    } else {
+        state
+            .sessions
+            .save_authenticated(&mut session, ttl, authenticated.session_epoch)
+            .await
+            .map(|()| PasswordSessionPersistence::Stored)
+    };
+    let persistence = match persistence {
+        Ok(persistence) => persistence,
+        Err(session_error) => {
+            match &session_error {
+                SessionStoreError::UserDisabled => {
+                    return error::unauthorized("user_disabled", "user account is disabled");
+                }
+                // 并发改密已经作废了本次认证依据的口令：按凭据失效处理，
+                // 复用调用端点自己已声明的 401 词表，不泄露"发生了改密"。
+                SessionStoreError::AuthenticationEpochChanged => {
+                    return stale_credential.response();
+                }
+                _ => {}
             }
-            // 并发改密已经作废了本次认证依据的口令：按凭据失效处理，
-            // 复用调用端点自己已声明的 401 词表，不泄露"发生了改密"。
-            SessionStoreError::AuthenticationEpochChanged => {
-                return stale_credential.response();
-            }
-            _ => {}
+            tracing::error!(error = %session_error, "failed to persist session");
+            return error::internal();
         }
-        tracing::error!(error = %session_error, "failed to persist session");
-        return error::internal();
+    };
+    if let PasswordSessionPersistence::FactorBecameRequired(factors) = persistence {
+        let mut methods = Vec::with_capacity(2);
+        if factors.passkey {
+            methods.push(FactorMethod::Passkey);
+        }
+        if factors.totp {
+            methods.push(FactorMethod::Totp);
+        }
+        return factor_required_ticket_response(state, authenticated, methods).await;
     }
     if state
         .audit
@@ -196,6 +223,54 @@ pub async fn issue_user_session(
             );
         }
         tracing::error!(error = %cookie_error, "failed to build login cookie response");
+        return error::internal();
+    }
+    response
+}
+
+#[derive(Serialize)]
+struct PendingFactorResponse {
+    status: &'static str,
+    methods: Vec<FactorMethod>,
+}
+
+pub async fn factor_required_ticket_response(
+    state: &AppState,
+    authenticated: AuthenticatedUser,
+    methods: Vec<FactorMethod>,
+) -> Response {
+    let holder = cookies::new_login_ticket_holder();
+    let holder_hash = cookies::login_ticket_holder_hash(&holder);
+    let (login_ticket, _) = match state
+        .factors
+        .create_login_ticket(authenticated, methods.clone(), &holder_hash)
+        .await
+    {
+        Ok(ticket) => ticket,
+        Err(crate::auth_factors::service::AuthFactorServiceError::AuthenticationEpochChanged) => {
+            return StaleCredentialCode::InvalidCredentials.response();
+        }
+        Err(factor_error) => {
+            tracing::error!(error = %factor_error, "failed to create pending login ticket");
+            return error::internal();
+        }
+    };
+    let mut response = (
+        StatusCode::ACCEPTED,
+        Json(PendingFactorResponse {
+            status: "factor_required",
+            methods,
+        }),
+    )
+        .into_response();
+    if let Err(cookie_error) = cookies::append_login_ticket_cookies(
+        response.headers_mut(),
+        &login_ticket,
+        &holder,
+        crate::auth_factors::domain::LoginTicket::TTL.whole_seconds() as u64,
+        state.config.cookie_secure,
+    ) {
+        tracing::error!(error = %cookie_error, "failed to build login ticket cookie response");
         return error::internal();
     }
     response

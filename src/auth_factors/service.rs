@@ -22,6 +22,8 @@ use super::{
 
 #[path = "attempt_limiter.rs"]
 mod attempt_limiter;
+#[path = "authenticated_enrollment.rs"]
+mod authenticated_enrollment;
 #[path = "passkey.rs"]
 mod passkey;
 #[path = "passkey_core.rs"]
@@ -33,9 +35,12 @@ mod totp_enrollment;
 #[path = "totp_service.rs"]
 mod totp_service;
 
+pub use authenticated_enrollment::{
+    EnrollmentFinish, EnrollmentStart, SessionFactorSummary, SessionPasskeyStart, SessionTotpStart,
+};
 pub use recovery::{
-    AccountFactorStatus, EncryptionKeyHealth, PasskeyResetOutcome, TotpFactorStatus,
-    TotpResetOutcome,
+    AccountFactorStatus, EncryptionKeyHealth, PasskeyResetOutcome, SelfServiceRemovalOutcome,
+    TotpFactorStatus, TotpResetOutcome,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +185,10 @@ impl AuthFactorService {
         let methods = repository::list_factor_methods(&self.pool, user_id).await?;
         let passkey_enabled = self.settings.passkey().await?.enabled;
         Ok(effective_factor_methods(methods, passkey_enabled))
+    }
+
+    pub async fn passkey_enabled(&self) -> Result<bool, AuthFactorServiceError> {
+        Ok(self.settings.passkey().await?.enabled)
     }
 
     pub async fn available_setup_methods(

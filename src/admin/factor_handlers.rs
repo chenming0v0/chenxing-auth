@@ -131,8 +131,8 @@ pub async fn auth_factor_key_health(State(state): State<AppState>, admin: AdminR
 /// 重置某个账号的 TOTP 因子。
 ///
 /// 权限是 Owner 专属的 `ManageAuthFactors`，而不是 `ManageUsers`：这个动作把账号
-/// 降级为「只有密码」，下次登录进入 `factor_setup_required`，谁掌握密码谁就能注册
-/// 新的 TOTP。它是账号接管链条上的一环，必须与普通用户管理分权。
+/// 降级为「只有密码」，下次密码登录可签发普通 Session，并从安全设置注册新的
+/// TOTP。它是账号接管链条上的一环，必须与普通用户管理分权。
 ///
 /// 撤销会话与删除因子由 `AuthFactorService::reset_totp_factor` 在同一事务内原子
 /// 完成（Issue #331）：`Missing`/`UnknownUser` 时整体回滚，不会留下「会话已撤、

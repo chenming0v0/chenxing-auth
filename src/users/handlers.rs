@@ -5,7 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
-use std::{fmt, net::SocketAddr};
+use std::net::SocketAddr;
 
 use super::{
     domain::{LoginInput, RegistrationError, RegistrationInput},
@@ -17,7 +17,7 @@ use crate::{
     auth_factors::{
         handlers::factor_key_unavailable_response,
         service::FactorVerification,
-        session::{StaleCredentialCode, issue_user_session},
+        session::{StaleCredentialCode, factor_required_ticket_response, issue_user_session},
     },
     error,
     sessions::cookies,
@@ -27,22 +27,6 @@ use crate::{
 #[derive(Debug, Serialize)]
 struct CreatedUserResponse {
     user: super::domain::PublicUser,
-}
-
-#[derive(Serialize)]
-struct PendingLoginResponse {
-    status: &'static str,
-    methods: Vec<crate::auth_factors::domain::FactorMethod>,
-}
-
-impl fmt::Debug for PendingLoginResponse {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PendingLoginResponse")
-            .field("status", &self.status)
-            .field("login_ticket", &"<redacted>")
-            .field("methods", &self.methods)
-            .finish()
-    }
 }
 
 pub async fn register_user(
@@ -278,6 +262,7 @@ pub async fn login_user(
                     &headers,
                     source_ip.as_deref(),
                     StaleCredentialCode::InvalidCredentials,
+                    false,
                 )
                 .await;
             }
@@ -309,8 +294,7 @@ pub async fn login_user(
         }
     }
 
-    let setup_required = methods.is_empty();
-    if setup_required {
+    if methods.is_empty() {
         let recovery_required = match state.factors.is_passkey_recovery_required(user_id).await {
             Ok(required) => required,
             Err(factor_error) => {
@@ -330,73 +314,18 @@ pub async fn login_user(
             )
             .await;
         }
+        return issue_user_session(
+            &state,
+            authenticated,
+            "password",
+            &headers,
+            source_ip.as_deref(),
+            StaleCredentialCode::InvalidCredentials,
+            true,
+        )
+        .await;
     }
-    let ticket_methods = if setup_required {
-        match state.factors.available_setup_methods().await {
-            Ok(methods) => methods,
-            Err(factor_error) => {
-                tracing::error!(error = %factor_error, "failed to load authentication setup policy");
-                return error::internal();
-            }
-        }
-    } else {
-        methods
-    };
-    let holder = cookies::new_login_ticket_holder();
-    let holder_hash = cookies::login_ticket_holder_hash(&holder);
-    let (login_ticket, _) = match state
-        .factors
-        .create_login_ticket(authenticated, ticket_methods.clone(), &holder_hash)
-        .await
-    {
-        Ok(ticket) => ticket,
-        // 并发改密作废了本次口令：与其他凭据失败共用 401 invalid_credentials，
-        // 不签发任何 ticket，也不向调用方暴露"刚刚发生过改密"。
-        Err(crate::auth_factors::service::AuthFactorServiceError::AuthenticationEpochChanged) => {
-            record_security_event(
-                &state,
-                crate::audit::AuditAction::LoginFailure,
-                Some(user_id),
-                "credentials_superseded",
-                Some(&identifier),
-                source_ip.as_deref(),
-                user_agent.as_deref(),
-            )
-            .await;
-            return error::unauthorized(
-                "invalid_credentials",
-                "username, email, or password is incorrect",
-            );
-        }
-        Err(factor_error) => {
-            tracing::error!(error = %factor_error, "failed to create pending login ticket");
-            return error::internal();
-        }
-    };
-    let status = if setup_required {
-        "factor_setup_required"
-    } else {
-        "factor_required"
-    };
-    let mut response = (
-        StatusCode::ACCEPTED,
-        Json(PendingLoginResponse {
-            status,
-            methods: ticket_methods,
-        }),
-    )
-        .into_response();
-    if let Err(cookie_error) = cookies::append_login_ticket_cookies(
-        response.headers_mut(),
-        &login_ticket,
-        &holder,
-        crate::auth_factors::domain::LoginTicket::TTL.whole_seconds() as u64,
-        state.config.cookie_secure,
-    ) {
-        tracing::error!(error = %cookie_error, "failed to build login ticket cookie response");
-        return error::internal();
-    }
-    response
+    factor_required_ticket_response(&state, authenticated, methods).await
 }
 
 /// 撤销当前浏览器会话（自注销）。

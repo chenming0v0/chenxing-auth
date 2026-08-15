@@ -86,6 +86,18 @@ pub enum SessionStoreError {
     Database(#[from] crate::sqlx::Error),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveFactorState {
+    pub totp: bool,
+    pub passkey: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordSessionPersistence {
+    Stored,
+    FactorBecameRequired(EffectiveFactorState),
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
     pub id: i64,
@@ -107,6 +119,7 @@ pub struct SessionSummary {
 pub enum SessionEpochBinding {
     Current,
     Authenticated(i64),
+    PasswordAuthenticated { authenticated_epoch: i64 },
 }
 
 impl SessionStore {
@@ -219,6 +232,7 @@ impl SessionStore {
     ) -> Result<(), SessionStoreError> {
         self.save_bound(session, ttl, SessionEpochBinding::Current)
             .await
+            .map(|_| ())
     }
 
     /// 写入一条绑定认证 epoch 的会话。
@@ -239,6 +253,23 @@ impl SessionStore {
             SessionEpochBinding::Authenticated(authenticated_epoch),
         )
         .await
+        .map(|_| ())
+    }
+
+    pub async fn save_password_authenticated(
+        &self,
+        session: &mut Session,
+        ttl: Duration,
+        authenticated_epoch: i64,
+    ) -> Result<PasswordSessionPersistence, SessionStoreError> {
+        self.save_bound(
+            session,
+            ttl,
+            SessionEpochBinding::PasswordAuthenticated {
+                authenticated_epoch,
+            },
+        )
+        .await
     }
 
     async fn save_bound(
@@ -246,7 +277,7 @@ impl SessionStore {
         session: &mut Session,
         ttl: Duration,
         binding: SessionEpochBinding,
-    ) -> Result<(), SessionStoreError> {
+    ) -> Result<PasswordSessionPersistence, SessionStoreError> {
         session.set_idle_timeout(self.policy.idle_timeout);
         if self.metadata.is_some() {
             postgres::save_with_metadata(self, session, ttl, binding).await
@@ -254,10 +285,11 @@ impl SessionStore {
             // 纯 Redis 路径没有 users 表可读，无法校验 epoch。缺少校验能力时
             // 拒绝签发，而不是降级成"当作校验通过"：后者会让一条本应被拒绝的
             // 凭据在配置退化时静默生效。生产 AppState 始终带 Postgres 元数据。
-            if matches!(binding, SessionEpochBinding::Authenticated(_)) {
+            if !matches!(binding, SessionEpochBinding::Current) {
                 return Err(SessionStoreError::MetadataUnavailable);
             }
-            redis_only::save_redis_only(self, session, ttl).await
+            redis_only::save_redis_only(self, session, ttl).await?;
+            Ok(PasswordSessionPersistence::Stored)
         }
     }
 

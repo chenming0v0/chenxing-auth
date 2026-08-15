@@ -7,7 +7,10 @@
 
 use std::time::Duration;
 
-use super::{SessionEpochBinding, SessionStore, SessionStoreError};
+use super::{
+    EffectiveFactorState, PasswordSessionPersistence, SessionEpochBinding, SessionStore,
+    SessionStoreError,
+};
 use crate::{
     sessions::domain::{Session, SessionPayload, session_token_hash_bytes},
     sqlx::{Postgres, Transaction},
@@ -35,7 +38,7 @@ pub(super) async fn save_with_metadata(
     session: &mut Session,
     _ttl: Duration,
     binding: SessionEpochBinding,
-) -> Result<(), SessionStoreError> {
+) -> Result<PasswordSessionPersistence, SessionStoreError> {
     let pool = store
         .metadata
         .as_ref()
@@ -46,6 +49,9 @@ pub(super) async fn save_with_metadata(
         .map_err(|_| SessionStoreError::InvalidUserId)?;
     let token_hash = session_token_hash_bytes(&session.token).to_vec();
     let mut transaction = pool.begin().await?;
+    if matches!(binding, SessionEpochBinding::PasswordAuthenticated { .. }) {
+        crate::settings::repository::lock_passkey_policy(&mut *transaction).await?;
+    }
     lock_user_session_scope(&mut transaction, user_id).await?;
     let user_state: Option<(i64, String)> =
         crate::sqlx::query_as("SELECT session_epoch, status FROM users WHERE id = $1 FOR UPDATE")
@@ -58,15 +64,50 @@ pub(super) async fn save_with_metadata(
     if UserStatus::parse(&status) != Some(UserStatus::Active) {
         return Err(SessionStoreError::UserDisabled);
     }
-    if let SessionEpochBinding::Authenticated(authenticated_epoch) = binding
-        && authenticated_epoch != session_epoch
-    {
+    let authenticated_epoch = match binding {
+        SessionEpochBinding::Current => None,
+        SessionEpochBinding::Authenticated(epoch)
+        | SessionEpochBinding::PasswordAuthenticated {
+            authenticated_epoch: epoch,
+            ..
+        } => Some(epoch),
+    };
+    if authenticated_epoch.is_some_and(|epoch| epoch != session_epoch) {
         tracing::warn!(
             event = "session.authentication_epoch_stale",
             user_id,
             "session issuance rejected because credentials were invalidated concurrently"
         );
         return Err(SessionStoreError::AuthenticationEpochChanged);
+    }
+    if let SessionEpochBinding::PasswordAuthenticated { .. } = binding {
+        let factors: (bool, bool) = crate::sqlx::query_as(
+            "SELECT
+                 EXISTS(SELECT 1 FROM user_totp_factors WHERE user_id = $1),
+                 EXISTS(SELECT 1 FROM user_passkeys WHERE user_id = $1)",
+        )
+        .bind(user_id)
+        .fetch_one(&mut *transaction)
+        .await?;
+        let passkey_enabled = match crate::settings::repository::get_text(
+            &mut *transaction,
+            crate::settings::PASSKEY_KEY,
+        )
+        .await?
+        {
+            None => true,
+            Some(raw) => serde_json::from_str::<crate::settings::PasskeySetting>(&raw)
+                .map(|setting| setting.enabled)
+                .unwrap_or(false),
+        };
+        let effective = EffectiveFactorState {
+            totp: factors.0,
+            passkey: passkey_enabled && factors.1,
+        };
+        if effective.totp || effective.passkey {
+            transaction.rollback().await?;
+            return Ok(PasswordSessionPersistence::FactorBecameRequired(effective));
+        }
     }
     let active_count: i64 = crate::sqlx::query_scalar(
         "SELECT COUNT(*)
@@ -163,7 +204,7 @@ pub(super) async fn save_with_metadata(
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
-    Ok(())
+    Ok(PasswordSessionPersistence::Stored)
 }
 
 /// 按令牌哈希撤销单条会话。

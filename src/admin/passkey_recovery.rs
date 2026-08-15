@@ -38,8 +38,8 @@ pub struct PasskeyResetResponse {
 /// 重置某个账号的全部 Passkey 凭据。
 ///
 /// 权限是 Owner 专属的 `ManageAuthFactors`，而不是 `ManageUsers`：这个动作把
-/// Passkey-only 账号降级为「只有密码」，下次登录进入 `factor_setup_required`。
-/// 它是账号接管链条上的一环，必须与普通用户管理分权。
+/// Passkey-only 账号降级为「只有密码」，下次密码登录可签发普通 Session，再从
+/// 安全设置注册新因素。它是账号接管链条上的一环，必须与普通用户管理分权。
 ///
 /// 末位 Owner 丢失全部 Passkey 时无法签发新的管理 Session。系统 Token 通道
 /// 不读用户 Session、不验 Passkey，是这条恢复路径唯一不形成闭环的入口。

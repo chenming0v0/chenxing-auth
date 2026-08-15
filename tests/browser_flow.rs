@@ -7,7 +7,6 @@ use axum::{
     },
 };
 use chenxing_auth::{api, config::Config, state::AppState};
-use totp_rs::TOTP;
 use tower::ServiceExt;
 use url::Url;
 use uuid::Uuid;
@@ -100,7 +99,7 @@ fn request_id_from(location: &str) -> String {
 }
 
 /// Full browser OAuth flow entirely over JSON, mirroring how the React SPA drives it:
-/// authorize (creates pending, redirects to SPA login) → JSON login + TOTP enrollment
+/// authorize (creates pending, redirects to SPA login) → JSON password login
 /// (issues session) → bind session to the pending request → inspect → approve →
 /// authorization code. Re-running authorize with a stored consent yields a code directly.
 #[tokio::test]
@@ -262,7 +261,7 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
         "authorize must issue the authorization holder cookie, got {authz_holder_cookie}"
     );
 
-    // SPA logs in over JSON. First factor: password → pending factor ticket.
+    // SPA logs in over JSON. Password-only accounts receive a normal session.
     let response = router
         .clone()
         .oneshot(
@@ -277,51 +276,11 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
         )
         .await
         .expect("login response");
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let pending_cookie = cookies(&response);
-    let pending_login: serde_json::Value =
-        serde_json::from_str(&body(response).await).expect("pending login JSON");
-    assert_eq!(pending_login["status"], "factor_setup_required");
-    assert!(pending_login.get("login_ticket").is_none());
-
-    // TOTP enrollment: fetch the secret, then confirm the current code to get a session.
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/auth/totp/setup")
-                .header("content-type", "application/json")
-                .header("cookie", &pending_cookie)
-                .body(Body::from(serde_json::json!({}).to_string()))
-                .expect("totp setup request"),
-        )
-        .await
-        .expect("totp setup response");
-    assert_eq!(response.status(), StatusCode::OK);
-    let setup: serde_json::Value = serde_json::from_str(&body(response).await).expect("setup JSON");
-    let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("otpauth url")).expect("TOTP");
-
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/auth/totp/login")
-                .header("content-type", "application/json")
-                .header("cookie", &pending_cookie)
-                .body(Body::from(
-                    serde_json::json!({
-                        "code": totp.generate_current().expect("totp code")
-                    })
-                    .to_string(),
-                ))
-                .expect("totp login request"),
-        )
-        .await
-        .expect("totp login response");
     assert_eq!(response.status(), StatusCode::OK);
     let session_cookies = cookies(&response);
+    let login_body: serde_json::Value =
+        serde_json::from_str(&body(response).await).expect("login JSON");
+    assert!(login_body["expires_at"].as_str().is_some());
     let csrf = cookie_value(&session_cookies, "chenxing_csrf");
 
     // 回归（#115）：无持有者 Cookie 的绑定请求必须被拒绝（403）。
