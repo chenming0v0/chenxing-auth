@@ -16,7 +16,6 @@ use super::{
 };
 use crate::{
     api::extract::{AdminWrite, ApiJson},
-    audit::AuditEvent,
     error,
     state::AppState,
     users::domain::{RegistrationInput, UserRole},
@@ -169,26 +168,17 @@ pub async fn create_admin(
         password: input.password,
         display_name: None,
     };
-    match state.users.create_privileged(registration, role).await {
-        Ok(id) => {
-            let (actor_type, actor_id) = actor.audit_fields();
-            state
-                .audit
-                .record_best_effort(AuditEvent::new(
-                    actor_type.to_owned(),
-                    actor_id,
-                    crate::audit::AuditAction::UserCreate,
-                    "user".to_owned(),
-                    Some(id.to_string()),
-                    serde_json::json!({"role": role.as_str()}),
-                ))
-                .await;
-            (
-                StatusCode::CREATED,
-                Json(serde_json::json!({"id": id, "role": role.as_str()})),
-            )
-                .into_response()
-        }
+    let (actor_type, actor_id) = actor.audit_fields();
+    match state
+        .users
+        .create_privileged(registration, role, actor_type.to_owned(), actor_id)
+        .await
+    {
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({"id": id, "role": role.as_str()})),
+        )
+            .into_response(),
         Err(error_value) => user_creation_error_response(error_value),
     }
 }

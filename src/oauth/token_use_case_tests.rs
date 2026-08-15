@@ -1,6 +1,9 @@
+use super::token_final_fence::{consent_fence_holds, session_epoch_fence_holds};
 use super::*;
 use crate::clock::SharedClock;
+use crate::consents::domain::ConsentState;
 use crate::oauth::code::{AUTHORIZATION_CODE_TTL_SECONDS, AuthorizationCode};
+use std::sync::{Arc, Barrier, Mutex};
 use time::{Duration, OffsetDateTime};
 
 const CLIENT_ID: &str = "cx_client";
@@ -122,5 +125,45 @@ fn authorization_code_redeemability_flips_exactly_at_expiry() {
         validate_code_binding(CLIENT_ID, REDIRECT_URI, VERIFIER, &code, now_at(ttl))
             .expect_err("到期时刻必须拒绝"),
         OAuthError::invalid_grant()
+    );
+}
+
+#[test]
+fn final_code_fences_reject_a_barriered_revoke_and_epoch_advance() {
+    let state = Arc::new(Mutex::new((ConsentState::new(false, 1), Some(7_i64))));
+    let gate_started = Arc::new(Barrier::new(2));
+    let revoke_committed = Arc::new(Barrier::new(2));
+    let exchange_state = state.clone();
+    let exchange_gate_started = gate_started.clone();
+    let exchange_revoke_committed = revoke_committed.clone();
+    let exchange = std::thread::spawn(move || {
+        let (consent, epoch) = *exchange_state.lock().expect("exchange state");
+        let observed_consent_version = consent.version;
+        let observed_epoch = epoch.expect("epoch");
+        exchange_gate_started.wait();
+        exchange_revoke_committed.wait();
+        let (current_consent, current_epoch) = *exchange_state.lock().expect("final state");
+        (
+            consent_fence_holds(Some(current_consent), observed_consent_version),
+            session_epoch_fence_holds(current_epoch, observed_epoch),
+        )
+    });
+
+    gate_started.wait();
+    {
+        let mut state = state.lock().expect("revoke state");
+        state.0 = ConsentState::new(true, 2);
+        state.1 = Some(8);
+    }
+    revoke_committed.wait();
+
+    let (consent_ok, epoch_ok) = exchange.join().expect("exchange join");
+    assert!(
+        !consent_ok,
+        "the final consent fence must reject the revoke race"
+    );
+    assert!(
+        !epoch_ok,
+        "the final epoch fence must reject the epoch race"
     );
 }

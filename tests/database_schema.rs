@@ -221,6 +221,7 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     assert_check_contains(&pool, "users", "users_role_check").await;
     assert_table_missing(&pool, "admins").await;
     assert_column(&pool, "user_passkeys", "user_id", "bigint", false).await;
+    assert_column(&pool, "user_passkeys", "state_version", "bigint", false).await;
     assert_fk(&pool, "user_passkeys", "user_id", "users", "id").await;
     assert_column(&pool, "oauth_clients", "id", "bigint", false).await;
     assert_identity(&pool, "oauth_clients", "id").await;

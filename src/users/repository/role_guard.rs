@@ -103,6 +103,57 @@ pub async fn set_user_role(
     Ok(OwnerGuardOutcome::Updated)
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum AuditedRoleGuardError {
+    #[error("database operation failed: {0}")]
+    Database(#[from] crate::sqlx::Error),
+    #[error("audit operation failed: {0}")]
+    Audit(#[from] crate::audit::AuditError),
+}
+
+/// Role changes are privilege changes, so persist the audit event before the
+/// transaction commits. An audit outage therefore rolls the role change back
+/// instead of creating an untraceable administrator (#474).
+pub async fn set_user_role_with_audit(
+    pool: &PgPool,
+    id: UserId,
+    role: UserRole,
+    access: OwnerTargetAccess,
+    audit_event: crate::audit::AuditEvent,
+) -> Result<OwnerGuardOutcome, AuditedRoleGuardError> {
+    let mut transaction = pool.begin().await?;
+    let (active_owner_count, current) = lock_owner_scope(&mut transaction, id).await?;
+    let Some((current_role, status)) = current else {
+        transaction.rollback().await?;
+        return Ok(OwnerGuardOutcome::NotFound);
+    };
+    if UserRole::parse(&current_role).is_some_and(UserRole::is_privileged)
+        && !access.permits_owner()
+    {
+        transaction.rollback().await?;
+        return Ok(OwnerGuardOutcome::ManageRolesRequired);
+    }
+    if current_role == "owner"
+        && role != UserRole::Owner
+        && UserStatus::is_active(&status)
+        && active_owner_count <= 1
+    {
+        transaction.rollback().await?;
+        return Ok(OwnerGuardOutcome::LastOwnerRequired);
+    }
+    crate::sqlx::query("UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1")
+        .bind(id)
+        .bind(role.as_str())
+        .execute(&mut *transaction)
+        .await?;
+    if role == UserRole::User {
+        crate::sessions::store::revoke_all_for_user_in_transaction(&mut transaction, id).await?;
+    }
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
+    transaction.commit().await?;
+    Ok(OwnerGuardOutcome::Updated)
+}
+
 /// 变更用户状态。
 ///
 /// 入参是已解析的 [`UserStatus`]，因此本函数不存在「状态串非法」这一终局 ——
@@ -122,7 +173,11 @@ pub async fn set_user_status_guarded(
     };
     // 角色判定和状态写入共用本事务持有的目标行锁。若目标在等待锁期间被晋升为
     // Owner，这里读取晋升后的版本并拒绝，不能继续使用 HTTP 层的旧快照（#323）。
-    if role == "owner" && !access.permits_owner() {
+    // Disabling an administrator is an effective privilege downgrade: it
+    // revokes every session and removes management access just like changing
+    // the role to `user`.  Treat both privileged target roles uniformly so a
+    // peer Admin cannot use ManageUsers to lock out another Admin (#424).
+    if UserRole::parse(&role).is_some_and(UserRole::is_privileged) && !access.permits_owner() {
         transaction.rollback().await?;
         return Ok(OwnerGuardOutcome::ManageRolesRequired);
     }

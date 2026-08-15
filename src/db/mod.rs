@@ -158,6 +158,24 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             normalize_migration_sql(include_str!("../../migrations/0003_plan_quota_bounds.sql")),
             false,
         ),
+        Migration::new(
+            4,
+            Cow::Borrowed("passkey credential state versions"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!(
+                "../../migrations/0004_passkey_state_version.sql"
+            )),
+            false,
+        ),
+        Migration::new(
+            5,
+            Cow::Borrowed("durable client operation idempotency"),
+            MigrationType::Simple,
+            normalize_migration_sql(include_str!(
+                "../../migrations/0005_client_operation_idempotency.sql"
+            )),
+            false,
+        ),
     ];
 
     Migrator {

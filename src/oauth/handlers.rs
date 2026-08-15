@@ -14,7 +14,8 @@ use super::{
         validate_authorization_request_with_allowlist,
     },
     authorization_code_handlers::{
-        authorization_quota_redirect, pending_from_validated, restore_pending_after_failure,
+        authorization_code_issue_error_response, authorization_quota_redirect,
+        pending_from_validated, restore_pending_after_failure,
     },
     consent::PendingAuthorization,
     session::{SessionLookupError, session_for_headers},
@@ -28,7 +29,8 @@ use crate::{
 };
 
 pub use super::authorization_code_handlers::{
-    AuthorizationCodeIssue, issue_authorization_code_result, validated_pending_request,
+    AuthorizationCodeIssue, AuthorizationCodeIssueError, issue_authorization_code_result,
+    validated_pending_request,
 };
 
 pub async fn authorize(
@@ -293,9 +295,9 @@ async fn issue_preconsented_request(
             restore_pending_after_failure(state, &consumed).await;
             authorization_quota_redirect(&consumed)
         }
-        Err(response) => {
+        Err(error_value) => {
             restore_pending_after_failure(state, &consumed).await;
-            response
+            authorization_code_issue_error_response(error_value)
         }
     }
 }

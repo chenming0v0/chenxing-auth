@@ -6,8 +6,8 @@
 #   - 每个 phase_* 只做一件事，从全局变量读配置，用 record 写结果。
 #   - 任何 phase_* 都不得 exit。一次运行要把所有问题一次报完，
 #     最终退出码由 test.sh 依据汇总表统一决定。
-#   - 工具缺失（cargo-nextest / cargo-llvm-cov / cargo-audit）记 skip，不记 fail。
-#     环境里没装的东西不是代码问题。
+#   - 工具缺失只有在该阶段被明确请求（或由 --gate 强制请求）时才允许
+#     继续；此时必须记 fail，避免 false-green。未请求的可选阶段才记 skip。
 
 # ---------------------------------------------------------------- 格式检查
 phase_fmt() {
@@ -64,6 +64,13 @@ phase_test() {
 
     info "测试期间通过用例保持静默；下方计时持续变化即仍在运行"
     spinner_start "运行测试"
+
+    if [ -n "$FILTER_EXPR" ] && [ "$NEXTEST" -eq 0 ]; then
+        spinner_stop
+        record "测试" fail "$(( $(now_ms) - begin ))" "--filter 需要 cargo-nextest，不能回退到未过滤 cargo test"
+        err "--filter 需要 cargo-nextest；为避免改变测试范围，已拒绝执行回退命令"
+        return 0
+    fi
 
     if [ "$NEXTEST" -eq 1 ]; then
         local args=(run --all-features --no-pager --max-fail "$MAX_FAIL")
@@ -188,7 +195,12 @@ phase_coverage() {
     begin="$(now_ms)"
 
     if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
-        record "覆盖检查" skip 0 "未安装 cargo-llvm-cov"
+        if [ "$MODE" = "coverage" ] || [ "$MODE" = "gate" ]; then
+            record "覆盖检查" fail 0 "未安装 cargo-llvm-cov"
+            err "覆盖检查被请求但 cargo-llvm-cov 不可用"
+        else
+            record "覆盖检查" skip 0 "未安装 cargo-llvm-cov"
+        fi
         return 0
     fi
 
@@ -220,7 +232,12 @@ phase_audit() {
     begin="$(now_ms)"
 
     if ! command -v cargo-audit >/dev/null 2>&1; then
-        record "依赖审计" skip 0 "未安装 cargo-audit"
+        if [ "$MODE" = "audit" ] || [ "$MODE" = "gate" ]; then
+            record "依赖审计" fail 0 "未安装 cargo-audit"
+            err "依赖审计被请求但 cargo-audit 不可用"
+        else
+            record "依赖审计" skip 0 "未安装 cargo-audit"
+        fi
         return 0
     fi
 

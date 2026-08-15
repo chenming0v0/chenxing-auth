@@ -18,7 +18,6 @@ use std::fmt;
 use super::domain::AdminPermission;
 use crate::{
     api::extract::{AdminWrite, ApiJson},
-    audit::AuditEvent,
     error,
     state::AppState,
     users::{
@@ -104,28 +103,13 @@ pub async fn create_user(
         password: input.password,
         display_name: input.display_name,
     };
+    let (actor_type, actor_id) = actor.audit_fields();
     match state
         .users
-        .create_by_admin(registration, role, status)
+        .create_by_admin(registration, role, status, actor_type.to_owned(), actor_id)
         .await
     {
-        Ok(user) => {
-            let (actor_type, actor_id) = actor.audit_fields();
-            // 账号已经落库；审计失败不能把已完成的创建伪装成 500。
-            // 元数据只记录角色与状态，口令与哈希都不进审计。
-            state
-                .audit
-                .record_best_effort(AuditEvent::new(
-                    actor_type.to_owned(),
-                    actor_id,
-                    crate::audit::AuditAction::UserCreate,
-                    "user".to_owned(),
-                    Some(user.id.to_string()),
-                    serde_json::json!({"role": role.as_str(), "status": status.as_str()}),
-                ))
-                .await;
-            (StatusCode::CREATED, Json(user)).into_response()
-        }
+        Ok(user) => (StatusCode::CREATED, Json(user)).into_response(),
         Err(error_value) => user_creation_error_response(error_value),
     }
 }

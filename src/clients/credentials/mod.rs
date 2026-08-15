@@ -81,12 +81,17 @@ impl From<ClientRegistrationInput> for ClientRegistrationRequest {
 /// 生成新的 Client Secret 明文及其 Argon2 哈希（Issue #92 抽取共享逻辑）。
 pub fn generate_client_secret() -> Result<(String, String), ClientServiceError> {
     let client_secret = format!("cxs_{}", Uuid::new_v4().simple());
+    let hash = hash_client_secret(&client_secret)?;
+    Ok((client_secret, hash))
+}
+
+pub(crate) fn hash_client_secret(client_secret: &str) -> Result<String, ClientServiceError> {
     let salt = SaltString::generate(&mut OsRng);
     let hash = Argon2::default()
         .hash_password(client_secret.as_bytes(), &salt)
         .map_err(|_| ClientServiceError::SecretHash)?
         .to_string();
-    Ok((client_secret, hash))
+    Ok(hash)
 }
 
 /// 根据 `auth_method` 决定是否签发 secret。

@@ -203,26 +203,25 @@ pub async fn set_user_role(
     let Some(role) = UserRole::parse(&input.role) else {
         return error::bad_request("invalid_role", "role is invalid");
     };
+    let (actor_type, actor_id) = actor.audit_fields();
     match state
         .users
-        .set_role(user_id, role, authorization.access())
+        .set_role_with_audit(
+            user_id,
+            role,
+            authorization.access(),
+            crate::audit::AuditEvent::new(
+                actor_type.to_owned(),
+                actor_id,
+                crate::audit::AuditAction::UserRoleUpdate,
+                "user".to_owned(),
+                Some(user_id.to_string()),
+                serde_json::json!({"role": role.as_str()}),
+            ),
+        )
         .await
     {
-        Ok(true) => {
-            let (actor_type, actor_id) = actor.audit_fields();
-            state
-                .audit
-                .record_best_effort(crate::audit::AuditEvent::new(
-                    actor_type.to_owned(),
-                    actor_id,
-                    crate::audit::AuditAction::UserRoleUpdate,
-                    "user".to_owned(),
-                    Some(user_id.to_string()),
-                    serde_json::json!({"role": role.as_str()}),
-                ))
-                .await;
-            StatusCode::NO_CONTENT.into_response()
-        }
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error::not_found("user_not_found", "user was not found"),
         // 降级最后一个活跃 Owner 与禁用它同档，走同一条留痕路径（Issue #304）。
         Err(crate::users::service::UserServiceError::LastOwnerRequired) => {

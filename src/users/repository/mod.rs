@@ -28,10 +28,13 @@ pub use lookup::{
     find_credentials_by_identifier, find_profile_by_id, list_users,
 };
 pub use owner_bootstrap::{
-    BootstrapOwnerError, BootstrapOwnerOutcome, bootstrap_owner, insert_user_after_owner,
-    owner_exists,
+    AuditedUserInsertError, BootstrapOwnerError, BootstrapOwnerOutcome, bootstrap_owner,
+    insert_user_after_owner, insert_user_after_owner_with_audit, owner_exists,
 };
-pub use role_guard::{OwnerGuardOutcome, set_user_role, set_user_status_guarded};
+pub use role_guard::{
+    AuditedRoleGuardError, OwnerGuardOutcome, set_user_role, set_user_role_with_audit,
+    set_user_status_guarded,
+};
 pub use write::{
     PasswordChangeOutcome, change_password_and_revoke_all, insert_user, insert_user_in_transaction,
     update_display_name,

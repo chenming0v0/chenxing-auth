@@ -7,6 +7,7 @@ use super::replay::{TombstoneDisposition, classify_tombstone};
 use super::select_scopes;
 use crate::oauth::refresh_store::{Tombstone, TombstoneState};
 use crate::oauth::{refresh::RefreshToken, token_use_case::OAuthError};
+use std::sync::{Arc, Barrier, Mutex};
 use time::{Duration, OffsetDateTime};
 
 fn refresh_token() -> RefreshToken {
@@ -143,4 +144,30 @@ fn a_foreign_client_can_never_revoke_someone_elses_family() {
             "{state:?} submitted by a foreign client must not revoke anything"
         );
     }
+}
+
+#[test]
+fn refresh_epoch_check_rejects_a_barriered_epoch_advance_before_successor_issue() {
+    let epoch = Arc::new(Mutex::new(7_i64));
+    let checked = Arc::new(Barrier::new(2));
+    let committed = Arc::new(Barrier::new(2));
+    let exchange_epoch = epoch.clone();
+    let exchange_checked = checked.clone();
+    let exchange_committed = committed.clone();
+    let exchange = std::thread::spawn(move || {
+        let observed = *exchange_epoch.lock().expect("exchange epoch");
+        exchange_checked.wait();
+        exchange_committed.wait();
+        let current = *exchange_epoch.lock().expect("final epoch");
+        observed == current
+    });
+
+    checked.wait();
+    *epoch.lock().expect("advance epoch") = 8;
+    committed.wait();
+
+    assert!(
+        !exchange.join().expect("refresh exchange join"),
+        "a successor must not be issued after the epoch advance commits"
+    );
 }

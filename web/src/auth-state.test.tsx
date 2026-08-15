@@ -108,3 +108,45 @@ describe('refreshBootstrap failure semantics (#324)', () => {
     await waitFor(() => expect(screen.getByLabelText('引导状态').textContent).toBe('ready'))
   })
 })
+
+describe('refresh request ordering (#473)', () => {
+  it('does not let an older 401 clear a newer successful refresh', async () => {
+    let resolveOld: ((response: Response) => void) | undefined
+    let resolveNew: ((response: Response) => void) | undefined
+    let profileCalls = 0
+    vi.stubGlobal('fetch', vi.fn((path: string) => {
+      if (path === '/api/v1/admin/bootstrap/status') {
+        return Promise.resolve(jsonResponse({ initialized: true }))
+      }
+      if (path === '/api/v1/auth/me') {
+        profileCalls += 1
+        return new Promise<Response>((resolve) => {
+          if (profileCalls === 1) resolveOld = resolve
+          else resolveNew = resolve
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    }))
+
+    render(<AuthProvider><AuthStateProbe /></AuthProvider>)
+    await waitFor(() => expect(profileCalls).toBe(1))
+    fireEvent.click(screen.getByRole('button', { name: '重试认证' }))
+    await waitFor(() => expect(profileCalls).toBe(2))
+
+    resolveNew?.(jsonResponse({
+      id: 1,
+      username: 'owner',
+      email: 'owner@example.test',
+      display_name: 'Owner',
+      status: 'active',
+      role: 'owner',
+      current_session_expires_at: '2099-01-01T00:00:00Z',
+      avatar_updated_at: null,
+    }))
+    await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('authenticated'))
+
+    resolveOld?.(jsonResponse({ code: 'unauthorized' }, 401))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(screen.getByLabelText('认证状态').textContent).toBe('authenticated')
+  })
+})

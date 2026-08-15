@@ -314,7 +314,8 @@ impl AppState {
         // 清理已经失效的 Redis 记录，避免它们一直占据索引与 TTL（#62/#310）。
         let clients =
             ClientService::with_limits(database.clone(), config.client_registration_limits.clone())
-                .with_refresh_tokens(refresh_tokens.clone());
+                .with_refresh_tokens(refresh_tokens.clone())
+                .with_idempotency_keys(config.auth_encryption_keys.clone());
         let authorization_requests = AuthorizationRequestStore::new_with_settings_and_keyspace(
             redis.clone(),
             settings.clone(),

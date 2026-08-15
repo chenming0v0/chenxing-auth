@@ -36,6 +36,12 @@ fn test_passkey(credential_id: &[u8]) -> Passkey {
     .expect("test passkey")
 }
 
+fn test_passkey_with_counter(credential_id: &[u8], counter: u32) -> Passkey {
+    let mut value = serde_json::to_value(test_passkey(credential_id)).expect("passkey JSON");
+    value["cred"]["counter"] = serde_json::json!(counter);
+    serde_json::from_value(value).expect("passkey with counter")
+}
+
 async fn database() -> chenxing_auth::sqlx::PgPool {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
@@ -181,6 +187,99 @@ async fn passkey_first_factor_insert_rejects_repeat_and_cross_user_collisions() 
         .execute(&pool)
         .await
         .expect("cleanup test users");
+}
+
+#[tokio::test]
+async fn passkey_updates_use_user_version_and_previous_credential_cas() {
+    let pool = database().await;
+    let suffix = Uuid::new_v4().simple();
+    let user_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO users (username, email, canonical_email, password_hash, status, created_at)
+         VALUES ($1, $2, lower($2), 'test-hash', 'active', NOW())
+         RETURNING id",
+    )
+    .bind(format!("passkey-cas-{suffix}"))
+    .bind(format!("passkey-cas-{suffix}@example.com"))
+    .fetch_one(&pool)
+    .await
+    .expect("insert passkey CAS user");
+    let credential_id = Uuid::new_v4().into_bytes().to_vec();
+    let original = test_passkey_with_counter(&credential_id, 0);
+    repository::insert_passkey_if_empty(&pool, user_id, &credential_id, &original)
+        .await
+        .expect("insert passkey");
+    let stored = repository::list_passkeys_with_versions(&pool, user_id)
+        .await
+        .expect("load versioned passkey")
+        .pop()
+        .expect("stored passkey");
+    let newer = test_passkey_with_counter(&credential_id, 2);
+    let stale = test_passkey_with_counter(&credential_id, 1);
+    assert_eq!(
+        repository::update_passkey(
+            &pool,
+            user_id,
+            &credential_id,
+            stored.state_version,
+            stored.passkey(),
+            &newer,
+        )
+        .await
+        .expect("newer CAS update"),
+        repository::PasskeyUpdateOutcome::Updated
+    );
+    assert_eq!(
+        repository::update_passkey(
+            &pool,
+            user_id,
+            &credential_id,
+            stored.state_version,
+            stored.passkey(),
+            &stale,
+        )
+        .await
+        .expect("stale CAS update"),
+        repository::PasskeyUpdateOutcome::Conflict
+    );
+    let persisted = repository::list_passkeys_with_versions(&pool, user_id)
+        .await
+        .expect("reload passkey")
+        .pop()
+        .expect("persisted passkey");
+    assert_eq!(persisted.state_version, stored.state_version + 1);
+    assert_eq!(
+        serde_json::to_value(persisted.passkey()).expect("persisted JSON")["cred"]["counter"],
+        serde_json::json!(2)
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM user_passkeys WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("delete original credential");
+    let replacement = test_passkey_with_counter(&credential_id, 9);
+    repository::insert_passkey_if_empty(&pool, user_id, &credential_id, &replacement)
+        .await
+        .expect("re-register credential");
+    assert_eq!(
+        repository::update_passkey(
+            &pool,
+            user_id,
+            &credential_id,
+            stored.state_version,
+            stored.passkey(),
+            &stale,
+        )
+        .await
+        .expect("stale update after re-registration"),
+        repository::PasskeyUpdateOutcome::Conflict
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("cleanup passkey CAS user");
 }
 
 #[tokio::test]

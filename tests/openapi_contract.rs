@@ -13,6 +13,7 @@ use axum::{
 };
 use chenxing_auth::{api, config::Config, state::AppState};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use tower::ServiceExt;
 
 #[path = "support/db_isolation.rs"]
@@ -21,14 +22,62 @@ mod db_isolation;
 mod key_directory;
 
 const OPENAPI: &str = include_str!("../openapi.yaml");
+const ROUTE_SOURCES: &str = concat!(
+    include_str!("../src/api/routes.rs"),
+    include_str!("../src/api/mod.rs")
+);
 
-fn openapi_section(start: &str, end: &str) -> &'static str {
-    let (_, section) = OPENAPI
+fn static_route_paths(source: &str) -> BTreeSet<String> {
+    let mut paths = BTreeSet::new();
+    let mut pending = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if pending {
+            if let Some(path) = quoted_path(trimmed) {
+                paths.insert(path.to_owned());
+                pending = false;
+            } else if !trimmed.is_empty() && !trimmed.starts_with("//") {
+                pending = false;
+            }
+        }
+        if let Some(index) = line.find(".route(") {
+            let rest = &line[index + ".route(".len()..];
+            if let Some(path) = quoted_path(rest) {
+                paths.insert(path.to_owned());
+            } else {
+                pending = true;
+            }
+        }
+    }
+    paths
+}
+
+fn quoted_path(value: &str) -> Option<&str> {
+    let value = value.trim_start();
+    let value = value.strip_prefix('"')?;
+    let end = value.find('"')?;
+    Some(&value[..end])
+}
+
+fn openapi_paths() -> BTreeSet<String> {
+    OPENAPI
+        .lines()
+        .filter_map(|line| {
+            let value = line.strip_prefix("  /")?;
+            let end = value.strip_suffix(':')?;
+            Some(format!("/{end}"))
+        })
+        .collect()
+}
+
+fn openapi_section(start: &str, end: &str) -> String {
+    let normalized = OPENAPI.replace("\r\n", "\n");
+    let (_, section) = normalized
         .split_once(start)
         .unwrap_or_else(|| panic!("missing OpenAPI section start: {start}"));
     section
         .split_once(end)
-        .map(|(section, _)| section)
+        .map(|(section, _)| section.to_owned())
         .unwrap_or_else(|| panic!("missing OpenAPI section end: {end}"))
 }
 
@@ -129,6 +178,13 @@ fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
     ] {
         assert!(OPENAPI.contains(path), "missing path {path}");
     }
+    assert!(
+        OPENAPI.contains("  /oauth/authorize:\n    get:")
+            && OPENAPI.contains(
+                "    post:\n      tags: [OAuth/OIDC]\n      summary: OAuth 授权码入口（表单 POST）"
+            )
+    );
+    assert!(OPENAPI.contains("  /oauth/userinfo:\n    get:") && OPENAPI.contains("    post:\n      tags: [OAuth/OIDC]\n      summary: 获取 OIDC UserInfo（表单 POST）"));
     for operation_id in [
         "operationId: healthLive",
         "operationId: healthReady",
@@ -202,6 +258,25 @@ fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
     );
     assert!(discovery.contains("Runtime 处于 AwaitingIssuer"));
     assert!(discovery.contains("应用到当前请求"));
+}
+
+#[test]
+fn openapi_paths_match_all_static_axum_routes() {
+    let routes = static_route_paths(ROUTE_SOURCES);
+    let paths = openapi_paths();
+    assert_eq!(routes.len(), 87, "route inventory changed; review contract");
+    assert_eq!(
+        paths.len(),
+        87,
+        "OpenAPI path inventory changed; review contract"
+    );
+    assert_eq!(routes, paths, "Axum and OpenAPI path inventories diverged");
+    assert!(
+        ROUTE_SOURCES.contains(".route(\"/oauth/authorize\", get(authorize).post(authorize_post))")
+    );
+    assert!(
+        ROUTE_SOURCES.contains(".route(\"/oauth/userinfo\", get(userinfo).post(userinfo_post))")
+    );
 }
 
 #[test]
@@ -295,6 +370,18 @@ async fn awaiting_gate_applies_a_valid_persisted_issuer_to_the_current_request()
 }
 
 #[tokio::test]
+async fn discovery_auth_methods_match_token_and_revocation_contracts() {
+    let (router, key_directory) = configured_issuer_router().await;
+    let response = send(&router, Method::GET, "/.well-known/openid-configuration").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let expected = serde_json::json!(["client_secret_basic", "client_secret_post", "none"]);
+    assert_eq!(body["token_endpoint_auth_methods_supported"], expected);
+    assert_eq!(body["revocation_endpoint_auth_methods_supported"], expected);
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
 async fn missing_issuer_keeps_local_login_reachable_for_request_validation() {
     let (router, key_directory) = missing_issuer_router().await;
 
@@ -324,6 +411,7 @@ async fn issuer_gate_preserves_protocol_and_internal_error_envelopes() {
         (Method::POST, "/oauth/token"),
         (Method::POST, "/oauth/revoke"),
         (Method::GET, "/oauth/userinfo"),
+        (Method::POST, "/oauth/userinfo"),
     ] {
         let response = send(&router, method, path).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
