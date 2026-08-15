@@ -13,7 +13,19 @@ pub use credentials::{
 };
 #[path = "repository_rotation.rs"]
 mod rotation;
-pub use rotation::{find_client_secret_version, update_client_secret_if_version};
+pub use rotation::{
+    AuditedRotationError, find_client_secret_version, update_client_secret_if_version,
+    update_client_secret_if_version_with_audit,
+};
+#[path = "repository_owned_registration.rs"]
+mod owned_registration;
+pub use owned_registration::{insert_owned_client, insert_owned_client_with_audit};
+#[path = "repository_idempotency.rs"]
+mod idempotency;
+pub(crate) use idempotency::{
+    IdempotentClientInsert, IdempotentClientOperationError, IdempotentClientRotation,
+    insert_client_idempotent_with_audit, rotate_client_secret_idempotent_with_audit,
+};
 
 /// Client 的认证方式与对应凭据材料。
 ///
@@ -98,6 +110,16 @@ pub enum ClientInsertError {
     Database(#[from] crate::sqlx::Error),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum AuditedClientInsertError {
+    #[error("normal user OAuth project quota has been exhausted")]
+    QuotaExceeded,
+    #[error("database operation failed: {0}")]
+    Database(#[from] crate::sqlx::Error),
+    #[error("audit operation failed: {0}")]
+    Audit(#[from] crate::audit::AuditError),
+}
+
 /// 列表查询的行元组。SELECT 列顺序与 `to_listed_client` 必须保持一致。
 type ClientRow = (
     i64,
@@ -127,7 +149,7 @@ fn to_listed_client(row: ClientRow) -> ListedClient {
 
 /// 单条 INSERT，供有主 / 无主两条注册路径共用。
 /// 返回生成的自增 id，由调用方一次性构造 `NewClient`，避免占位值再回填（Issue #93）。
-async fn insert_client_row<'executor, E>(
+pub(super) async fn insert_client_row<'executor, E>(
     executor: E,
     registration: &ValidatedClientRegistration,
     client_id: &str,
@@ -186,31 +208,17 @@ pub async fn insert_client(
     })
 }
 
-pub async fn insert_owned_client(
+pub async fn insert_client_with_audit<F>(
     pool: &PgPool,
-    owner_user_id: UserId,
     registration: ValidatedClientRegistration,
     client_id: String,
     credential: ClientCredential,
-    oauth_clients_limit: i64,
-) -> Result<NewClient, ClientInsertError> {
+    audit_event: F,
+) -> Result<NewClient, AuditedClientInsertError>
+where
+    F: FnOnce(&NewClient) -> crate::audit::AuditEvent,
+{
     let mut transaction = pool.begin().await?;
-    // 锁住 owner 行，让并发注册的配额检查串行化。
-    crate::sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
-        .bind(owner_user_id)
-        .fetch_one(&mut *transaction)
-        .await?;
-    let count: i64 =
-        crate::sqlx::query_scalar("SELECT COUNT(*) FROM oauth_clients WHERE owner_user_id = $1")
-            .bind(owner_user_id)
-            .fetch_one(&mut *transaction)
-            .await?;
-    if count >= oauth_clients_limit {
-        transaction.rollback().await?;
-        return Err(ClientInsertError::QuotaExceeded);
-    }
-
-    // 保留墙钟（Issue #299 的明确例外）：同上，行创建时间。
     let created_at = OffsetDateTime::now_utc();
     let id = insert_client_row(
         &mut *transaction,
@@ -218,20 +226,22 @@ pub async fn insert_owned_client(
         &client_id,
         &credential,
         created_at,
-        Some(owner_user_id),
+        None,
     )
     .await?;
-    transaction.commit().await?;
-    Ok(NewClient {
+    let client = NewClient {
         id,
         client_id,
         client_name: registration.client_name,
         redirect_uris: registration.redirect_uris,
         scopes: registration.scopes,
         created_at,
-        owner_user_id: Some(owner_user_id),
+        owner_user_id: None,
         auth_method: credential.auth_method(),
-    })
+    };
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event(&client)).await?;
+    transaction.commit().await?;
+    Ok(client)
 }
 
 pub async fn find_client_by_id(

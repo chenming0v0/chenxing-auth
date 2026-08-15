@@ -1,4 +1,7 @@
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Redirect, Response},
+};
 use std::fmt;
 
 use super::{
@@ -14,6 +17,31 @@ use crate::{error, state::AppState};
 pub enum AuthorizationCodeIssue {
     Redirect(String),
     QuotaExceeded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum AuthorizationCodeIssueError {
+    #[error("the authenticated session is no longer valid")]
+    InvalidSession,
+    #[error("the OAuth client is invalid")]
+    InvalidClient,
+    #[error("the authorization request is invalid")]
+    InvalidRequest,
+    #[error("authorization is temporarily unavailable")]
+    TemporarilyUnavailable,
+    #[error("authorization failed after validation")]
+    ServerError,
+}
+
+impl AuthorizationCodeIssueError {
+    pub const fn status(self) -> StatusCode {
+        match self {
+            Self::InvalidSession => StatusCode::UNAUTHORIZED,
+            Self::InvalidClient | Self::InvalidRequest => StatusCode::BAD_REQUEST,
+            Self::TemporarilyUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
 }
 
 impl fmt::Debug for AuthorizationCodeIssue {
@@ -34,7 +62,7 @@ pub async fn issue_authorization_code_result(
     validated: ValidatedAuthorizationRequest,
     source_ip: Option<&str>,
     user_agent: Option<&str>,
-) -> Result<AuthorizationCodeIssue, Response> {
+) -> Result<AuthorizationCodeIssue, AuthorizationCodeIssueError> {
     match active_user_id(state, &user_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
@@ -53,15 +81,11 @@ pub async fn issue_authorization_code_result(
                     ),
                 ))
                 .await;
-            return Err(error::oauth_unauthorized(
-                "invalid_session",
-                "the authenticated session is no longer valid",
-                "Session realm=\"oauth\"",
-            ));
+            return Err(AuthorizationCodeIssueError::InvalidSession);
         }
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to load OAuth authorization user");
-            return Err(error::oauth_temporarily_unavailable());
+            return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
         }
     }
     let Some(client) = state
@@ -70,13 +94,10 @@ pub async fn issue_authorization_code_result(
         .await
         .map_err(|error_value| {
             tracing::error!(error = %error_value, "failed to load OAuth client for quota");
-            error::oauth_temporarily_unavailable()
+            AuthorizationCodeIssueError::TemporarilyUnavailable
         })?
     else {
-        return Err(error::oauth_bad_request(
-            "invalid_client",
-            "client is invalid",
-        ));
+        return Err(AuthorizationCodeIssueError::InvalidClient);
     };
     if validated.client_id != client.client_id
         || !client
@@ -89,10 +110,7 @@ pub async fn issue_authorization_code_result(
             &state.config.client_registration_limits.allowed_scopes,
         )
     {
-        return Err(error::oauth_bad_request(
-            "invalid_request",
-            "authorization request is invalid",
-        ));
+        return Err(AuthorizationCodeIssueError::InvalidRequest);
     }
     let limits = state
         .settings
@@ -100,7 +118,7 @@ pub async fn issue_authorization_code_result(
         .await
         .map_err(|error_value| {
             tracing::error!(error = %error_value, "failed to load OAuth security limits");
-            error::oauth_temporarily_unavailable()
+            AuthorizationCodeIssueError::TemporarilyUnavailable
         })?;
     let client_id = validated.client_id.clone();
     // 签发时刻必须来自共享时钟：store 保存时用 `self.clock.now()` 计算 Redis TTL，
@@ -134,7 +152,7 @@ pub async fn issue_authorization_code_result(
     {
         tracing::error!(error = %error_value, "failed to sync OAuth consent state cache");
         remove_authorization_code_after_failure(state, &code, &client_id, None).await;
-        return Err(error::oauth_temporarily_unavailable());
+        return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
     }
 
     // 只有用户自助创建的 Client 计量配额；admin Client（owner_user_id 为空）
@@ -145,7 +163,7 @@ pub async fn issue_authorization_code_result(
             Err(error_value) => {
                 tracing::error!(error = %error_value, "failed to load plan for OAuth authorization quota");
                 remove_authorization_code_after_failure(state, &code, &client_id, None).await;
-                return Err(error::oauth_temporarily_unavailable());
+                return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
             }
         },
         None => None,
@@ -161,7 +179,7 @@ pub async fn issue_authorization_code_result(
             Err(error_value) => {
                 tracing::error!(error = %error_value, "failed to consume OAuth authorization quota");
                 remove_authorization_code_after_failure(state, &code, &client_id, None).await;
-                return Err(error::oauth_temporarily_unavailable());
+                return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
             }
         };
         match consumption.result {
@@ -207,7 +225,7 @@ pub async fn issue_authorization_code_result(
                 quota_reservation.as_ref(),
             )
             .await;
-            return Err(error::oauth_temporarily_unavailable());
+            return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
         }
     }
     if let Err(store_error) = state.authorization_codes.save(&code).await {
@@ -220,7 +238,7 @@ pub async fn issue_authorization_code_result(
             quota_reservation.as_ref(),
         )
         .await;
-        return Err(error::oauth_temporarily_unavailable());
+        return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
     }
     if state
         .audit
@@ -246,7 +264,7 @@ pub async fn issue_authorization_code_result(
             quota_reservation.as_ref(),
         )
         .await;
-        return Err(error::oauth_server_error());
+        return Err(AuthorizationCodeIssueError::ServerError);
     }
 
     let mut redirect_uri = match url::Url::parse(&validated.redirect_uri) {
@@ -260,7 +278,7 @@ pub async fn issue_authorization_code_result(
             )
             .await;
             tracing::error!(error = %parse_error, "validated redirect URI could not be parsed");
-            return Err(error::oauth_server_error());
+            return Err(AuthorizationCodeIssueError::ServerError);
         }
     };
     redirect_uri
@@ -336,6 +354,28 @@ pub(crate) fn authorization_quota_redirect(pending: &PendingAuthorization) -> Re
     Redirect::to(redirect.as_str()).into_response()
 }
 
+pub(crate) fn authorization_code_issue_error_response(
+    error_value: AuthorizationCodeIssueError,
+) -> Response {
+    match error_value {
+        AuthorizationCodeIssueError::InvalidSession => error::oauth_unauthorized(
+            "invalid_session",
+            "the authenticated session is no longer valid",
+            "Session realm=\"oauth\"",
+        ),
+        AuthorizationCodeIssueError::InvalidClient => {
+            error::oauth_bad_request("invalid_client", "client is invalid")
+        }
+        AuthorizationCodeIssueError::InvalidRequest => {
+            error::oauth_bad_request("invalid_request", "authorization request is invalid")
+        }
+        AuthorizationCodeIssueError::TemporarilyUnavailable => {
+            error::oauth_temporarily_unavailable()
+        }
+        AuthorizationCodeIssueError::ServerError => error::oauth_server_error(),
+    }
+}
+
 /// `validated_pending_request` 的反向路径：会话绑定统一从
 /// `ValidatedAuthorizationRequest::session_token_hash` 读取，不再另开参数，
 /// 避免两个来源不一致时静默丢掉绑定。
@@ -378,6 +418,6 @@ pub async fn issue_authorization_code(
     match issue_authorization_code_result(state, user_id, validated, source_ip, user_agent).await {
         Ok(AuthorizationCodeIssue::Redirect(redirect)) => Redirect::to(&redirect).into_response(),
         Ok(AuthorizationCodeIssue::QuotaExceeded) => authorization_quota_redirect(&pending),
-        Err(response) => response,
+        Err(error_value) => authorization_code_issue_error_response(error_value),
     }
 }

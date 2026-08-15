@@ -28,6 +28,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 每次 clear() 递增，用于丢弃在 logout 之后才落地的过期 refresh() 写入。
   // 使用 useRef 而非 useState：不触发重渲染，且读到的始终是最新值而非快照。
   const generationRef = useRef<number>(0)
+  // A generation only changes on clear/logout. Multiple refreshes can still
+  // overlap within one generation, so each request also gets a monotonic id
+  // and only the newest request may publish its result (#473).
+  const refreshRequestRef = useRef<number>(0)
 
   const clear = useCallback(() => {
     // 递增代数——所有正在进行的 refresh() await 返回后会发现代数不匹配，自动丢弃结果
@@ -67,6 +71,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // 记录启动时的代数。若 clear() / logout() 在 await 期间运行，gen 会与
     // generationRef.current 不一致，届时应丢弃结果，不得覆盖已清除的认证状态。
     const gen = generationRef.current
+    const requestId = ++refreshRequestRef.current
+    const isCurrentRequest = () =>
+      gen === generationRef.current && requestId === refreshRequestRef.current
     // 已认证页面刷新资料时保持现有内容；初次加载、登录完成和错误重试则进入 loading。
     setStatus((current) => current === 'authenticated' ? current : 'loading')
     try {
@@ -76,7 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       // Issue #99：await 返回后检查代数。若 logout 已在 await 期间运行，则代数
       // 已被递增，此处丢弃结果避免将已登出的会话重新写回 authenticated 状态。
-      if (gen !== generationRef.current) return null
+      if (!isCurrentRequest()) return null
 
       setUser(profile)
       setStatus('authenticated')
@@ -84,7 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       // 竞态保护：若 logout 已在 await 期间完成，跳过后续 state 操作。
       // 不在此处再次调用 clear()，避免二次递增代数而使新一轮 refresh() 失效。
-      if (gen !== generationRef.current) return null
+      if (!isCurrentRequest()) return null
 
       // 只有明确的 401 才代表未认证，应清空本地状态。
       // 网络错误（ApiError.status === 0）和服务端错误（5xx）不等于已登出：

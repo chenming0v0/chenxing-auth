@@ -39,6 +39,12 @@ pub(crate) enum GrantGateError {
     Unavailable(&'static str),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EffectiveGrant {
+    pub(crate) scopes: Vec<String>,
+    pub(crate) consent_state_version: i64,
+}
+
 impl GrantGateError {
     /// 审计与日志用的原因码；不含用户输入，也不含凭据材料。
     pub(crate) const fn reason(self) -> &'static str {
@@ -61,7 +67,7 @@ pub(crate) async fn effective_grant_scopes(
     user_id: &str,
     client_id: &str,
     granted: &[String],
-) -> Result<Vec<String>, GrantGateError> {
+) -> Result<EffectiveGrant, GrantGateError> {
     let Ok(subject) = user_id.parse::<UserId>() else {
         return Err(GrantGateError::Denied("invalid_subject"));
     };
@@ -119,7 +125,26 @@ pub(crate) async fn effective_grant_scopes(
         .has_scopes(subject, client_id, &effective)
         .await
     {
-        Ok(true) => Ok(effective),
+        Ok(true) => {
+            let state = state
+                .consents
+                .consent_state(subject, client_id)
+                .await
+                .map_err(|error| {
+                    tracing::error!(error = %error, "failed to load OAuth consent state version");
+                    GrantGateError::Unavailable("consent_state_version_check_failed")
+                })?;
+            let Some(state) = state else {
+                return Err(GrantGateError::Denied("consent_missing_scopes"));
+            };
+            if state.revoked {
+                return Err(GrantGateError::Denied("consent_revoked"));
+            }
+            Ok(EffectiveGrant {
+                scopes: effective,
+                consent_state_version: state.version,
+            })
+        }
         Ok(false) => Err(GrantGateError::Denied("consent_missing_scopes")),
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to check OAuth consent scopes");

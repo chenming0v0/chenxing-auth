@@ -120,7 +120,24 @@ describe('IntegratePage Redirect URI guidance', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: '创建应用' }))
 
-    expect(apiFetchMock.mock.calls.some(([path, init]) =>
-      path === '/api/v1/auth/oauth-clients' && init?.method === 'POST')).toBe(true)
+    const createCall = apiFetchMock.mock.calls.find(([path, init]) =>
+      path === '/api/v1/auth/oauth-clients' && init?.method === 'POST')
+    expect(createCall).toBeTruthy()
+    expect(createCall?.[1]?.headers).toEqual({ 'Idempotency-Key': expect.any(String) })
+  })
+
+  it('reuses a retry key for Secret rotation', async () => {
+    apiFetchMock.mockResolvedValue({ items: [CLIENT] })
+    vi.stubGlobal('confirm', () => true)
+    render(<IntegratePage />)
+    expect(await screen.findByText('演示应用')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '轮换' }))
+
+    await waitFor(() => {
+      const rotateCall = apiFetchMock.mock.calls.find(([path, init]) =>
+        typeof path === 'string' && path.endsWith('/rotate-secret') && init?.method === 'POST')
+      expect(rotateCall?.[1]?.headers).toEqual({ 'Idempotency-Key': expect.any(String) })
+    })
   })
 })

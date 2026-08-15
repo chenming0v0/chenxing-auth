@@ -101,6 +101,63 @@ pub async fn insert_user_after_owner(
     }))
 }
 
+/// Create a managed user and persist its audit event in the same transaction.
+/// Privileged account creation must not commit when the durable audit boundary
+/// is unavailable (#474).
+pub async fn insert_user_after_owner_with_audit<F>(
+    pool: &PgPool,
+    creation: UserCreation,
+    password_hash: String,
+    audit_event: F,
+) -> Result<Option<NewUser>, AuditedUserInsertError>
+where
+    F: FnOnce(&NewUser) -> AuditEvent,
+{
+    let mut transaction = pool.begin().await?;
+    lock_business(&mut transaction, BusinessLock::OwnerBootstrap).await?;
+    if !owner_exists(&mut *transaction).await? {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+    let UserCreation {
+        registration,
+        role,
+        status,
+    } = creation;
+    let username = registration.username;
+    let email = registration.email;
+    let display_name = registration.display_name;
+    let created_at = OffsetDateTime::now_utc();
+    let id: UserId = crate::sqlx::query_scalar(
+        "INSERT INTO users (username, email, canonical_email, password_hash, display_name, role, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+         RETURNING id",
+    )
+    .bind(&username)
+    .bind(email.display())
+    .bind(email.canonical())
+    .bind(&password_hash)
+    .bind(&display_name)
+    .bind(role.as_str())
+    .bind(status.as_str())
+    .bind(created_at)
+    .fetch_one(&mut *transaction)
+    .await?;
+    let user = NewUser {
+        id,
+        username,
+        email,
+        password_hash,
+        display_name,
+        role,
+        status,
+        created_at,
+    };
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event(&user)).await?;
+    transaction.commit().await?;
+    Ok(Some(user))
+}
+
 /// 创建首个 Owner，并在同一事务内写入它的成功审计记录。
 ///
 /// # 为什么审计必须在事务内（Issue #304）
@@ -186,5 +243,13 @@ pub enum BootstrapOwnerError {
     #[error("could not persist the first owner")]
     Database(#[from] crate::sqlx::Error),
     #[error("could not persist the owner bootstrap audit record")]
+    Audit(#[from] AuditError),
+}
+
+#[derive(Debug, Error)]
+pub enum AuditedUserInsertError {
+    #[error("could not persist user")]
+    Database(#[from] crate::sqlx::Error),
+    #[error("could not persist user audit record")]
     Audit(#[from] AuditError),
 }

@@ -1,7 +1,3 @@
-use serde::{Deserialize, Serialize};
-use std::fmt;
-use thiserror::Error;
-
 use super::{
     grant_gate::{GrantGateError, effective_grant_scopes},
     refresh::RefreshToken,
@@ -13,127 +9,20 @@ use crate::{clients::service::AuthenticatedClient, config::IssuerUrl, state::App
 mod refresh_use_case;
 #[path = "token_exchange_audit.rs"]
 mod token_exchange_audit;
+#[path = "token_final_fence.rs"]
+mod token_final_fence;
+#[path = "token_types.rs"]
+mod token_types;
 #[path = "token_use_case_support.rs"]
 mod token_use_case_support;
 use token_exchange_audit::{exchange_failure, record_token_exchange_success};
+use token_final_fence::verify_authorization_code_fences;
+pub use token_types::{OAuthError, RefreshExchangeError, TokenRequest, TokenResponse};
 pub(crate) use token_use_case_support::{TokenIssueParams, issue_token_response};
 use token_use_case_support::{
     authorization_code_session_auth_time, compensate_authorization_code_exchange,
     validate_code_binding,
 };
-
-#[derive(Deserialize)]
-pub struct TokenRequest {
-    pub grant_type: String,
-    pub code: Option<String>,
-    pub redirect_uri: Option<String>,
-    pub client_id: Option<String>,
-    pub client_secret: Option<String>,
-    pub code_verifier: Option<String>,
-    pub refresh_token: Option<String>,
-    pub scope: Option<String>,
-}
-
-impl fmt::Debug for TokenRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TokenRequest")
-            .field("grant_type", &self.grant_type)
-            .field("code", &self.code.as_ref().map(|_| "<redacted>"))
-            .field("redirect_uri", &self.redirect_uri)
-            .field("client_id", &self.client_id)
-            .field(
-                "client_secret",
-                &self.client_secret.as_ref().map(|_| "<redacted>"),
-            )
-            .field(
-                "code_verifier",
-                &self.code_verifier.as_ref().map(|_| "<redacted>"),
-            )
-            .field(
-                "refresh_token",
-                &self.refresh_token.as_ref().map(|_| "<redacted>"),
-            )
-            .field("scope", &self.scope)
-            .finish()
-    }
-}
-
-#[derive(Serialize)]
-pub struct TokenResponse {
-    pub access_token: String,
-    pub token_type: &'static str,
-    pub expires_in: u64,
-    pub scope: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id_token: Option<String>,
-}
-
-impl fmt::Debug for TokenResponse {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TokenResponse")
-            .field("access_token", &"<redacted>")
-            .field("token_type", &self.token_type)
-            .field("expires_in", &self.expires_in)
-            .field("scope", &self.scope)
-            .field(
-                "refresh_token",
-                &self.refresh_token.as_ref().map(|_| "<redacted>"),
-            )
-            .field("id_token", &self.id_token.as_ref().map(|_| "<redacted>"))
-            .finish()
-    }
-}
-
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum OAuthError {
-    #[error("OAuth request is invalid: {code}: {description}")]
-    BadRequest {
-        code: &'static str,
-        description: &'static str,
-    },
-    #[error("client authentication failed")]
-    InvalidClient,
-    #[error("OAuth service is temporarily unavailable")]
-    TemporarilyUnavailable,
-    #[error("OAuth server error")]
-    ServerError,
-}
-
-impl OAuthError {
-    fn bad_request(code: &'static str, description: &'static str) -> Self {
-        Self::BadRequest { code, description }
-    }
-
-    fn invalid_grant() -> Self {
-        Self::bad_request("invalid_grant", "authorization code is invalid")
-    }
-
-    fn invalid_authorization_grant() -> Self {
-        Self::bad_request("invalid_grant", "authorization grant is invalid")
-    }
-
-    fn temporarily_unavailable() -> Self {
-        Self::TemporarilyUnavailable
-    }
-
-    fn server_error() -> Self {
-        Self::ServerError
-    }
-
-    fn invalid_refresh_grant() -> Self {
-        Self::bad_request("invalid_grant", "refresh token is invalid")
-    }
-}
-
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum RefreshExchangeError {
-    #[error(transparent)]
-    OAuth(#[from] OAuthError),
-    #[error("OAuth server error")]
-    ServerError,
-}
 
 /// Exchange an authorization code after the token endpoint has authenticated the client.
 ///
@@ -283,8 +172,8 @@ pub async fn exchange_code(
     // #417）；scope 也不复核当前注册集合（Issue #421）。闸门与 refresh /
     // UserInfo 共用同一实现，放在 CAS 之前：授权失效不该先烧掉授权码，存储
     // 故障更不该。
-    let scopes = match effective_grant_scopes(state, &code.user_id, client_id, &code.scopes).await {
-        Ok(scopes) => scopes,
+    let grant = match effective_grant_scopes(state, &code.user_id, client_id, &code.scopes).await {
+        Ok(grant) => grant,
         Err(gate_error) => {
             let error = match gate_error {
                 GrantGateError::Denied(_) => OAuthError::invalid_grant(),
@@ -300,6 +189,8 @@ pub async fn exchange_code(
             .await;
         }
     };
+    let scopes = grant.scopes;
+    let consent_state_version = grant.consent_state_version;
     // Keep this shared row lock until the Refresh Token is indexed in Redis.
     // Secret rotation's UPDATE takes a conflicting row lock, so it either
     // commits first and makes this snapshot stale, or waits and subsequently
@@ -403,6 +294,34 @@ pub async fn exchange_code(
             Some(client_id),
             "refresh_token_persistence_failed",
             OAuthError::temporarily_unavailable(),
+        )
+        .await;
+    }
+
+    if let Err(fence_error) = verify_authorization_code_fences(
+        state,
+        &code.user_id,
+        client_id,
+        consent_state_version,
+        user_epoch,
+        &refresh,
+    )
+    .await
+    {
+        if let Err(release_error) = issuance_guard.release().await {
+            tracing::warn!(error = %release_error, "failed to release Client credential issuance fence");
+        }
+        let error = if fence_error.is_denied() {
+            OAuthError::invalid_grant()
+        } else {
+            OAuthError::temporarily_unavailable()
+        };
+        return exchange_failure(
+            state,
+            Some(&code.user_id),
+            Some(client_id),
+            fence_error.reason(),
+            error,
         )
         .await;
     }

@@ -11,6 +11,7 @@ use thiserror::Error;
 
 use crate::{
     clients::domain::{ClientAuthMethod, ClientRegistrationError, ClientRegistrationLimits},
+    config::AuthEncryptionKeyRing,
     oauth::refresh_store::RefreshTokenStore,
 };
 use crate::{sqlx::PgPool, users::domain::UserId};
@@ -24,6 +25,7 @@ mod rotation;
 // Keep the established public paths for request parsing and single-secret
 // verification, even though the service implementation is split by use case.
 pub use super::credentials::{ClientRegistrationRequest, verify_client_secret};
+pub use super::repository::AuditedClientInsertError;
 
 #[derive(Clone)]
 pub struct ClientService {
@@ -37,6 +39,7 @@ pub struct ClientService {
     /// 生产路径由 `AppState::new` 通过 `with_refresh_tokens` 注入。
     /// 为 `None` 时轮换会记 `tracing::error!`，避免静默退化成安全空操作。
     pub(super) refresh_tokens: Option<RefreshTokenStore>,
+    pub(super) idempotency_keys: Option<AuthEncryptionKeyRing>,
 }
 
 /// Successful Client authentication bound to the exact secret generation read
@@ -147,6 +150,16 @@ pub enum ClientServiceError {
     InvalidData,
     #[error("client secret was rotated by another concurrent request")]
     SecretRotationConflict,
+    #[error("client operation audit could not be persisted")]
+    AuditUnavailable,
+    #[error("idempotency key is invalid")]
+    IdempotencyKeyInvalid,
+    #[error("idempotency key was already used for a different request")]
+    IdempotencyConflict,
+    #[error("idempotency key cannot be replayed with the configured key ring")]
+    IdempotencyKeyUnavailable,
+    #[error("stored idempotency result is corrupt")]
+    IdempotencyCorruptResult,
 }
 
 impl ClientService {
@@ -162,6 +175,7 @@ impl ClientService {
             pool,
             limits,
             refresh_tokens: None,
+            idempotency_keys: None,
         }
     }
 
@@ -170,6 +184,11 @@ impl ClientService {
     /// 建造者模式，返回 `Self` 支持链式调用。生产路径由 `AppState` 构造时注入。
     pub fn with_refresh_tokens(mut self, store: RefreshTokenStore) -> Self {
         self.refresh_tokens = Some(store);
+        self
+    }
+
+    pub fn with_idempotency_keys(mut self, keys: AuthEncryptionKeyRing) -> Self {
+        self.idempotency_keys = Some(keys);
         self
     }
 }

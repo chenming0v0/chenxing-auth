@@ -4,6 +4,7 @@
 //! 翻译成 `UserServiceError`（Issue #126 / #283），两条写路径共用同一张翻译表。
 
 use super::{UserService, UserServiceError};
+use crate::audit::AuditEvent;
 use crate::users::{
     domain::{OwnerTargetAccess, UserId, UserRole, UserStatus},
     query_repository,
@@ -47,6 +48,31 @@ impl UserService {
         access: OwnerTargetAccess,
     ) -> Result<bool, UserServiceError> {
         translate_owner_guard(repository::set_user_role(&self.pool, id, role, access).await?)
+    }
+
+    pub async fn set_role_with_audit(
+        &self,
+        id: UserId,
+        role: UserRole,
+        access: OwnerTargetAccess,
+        audit_event: AuditEvent,
+    ) -> Result<bool, UserServiceError> {
+        let outcome = repository::set_user_role_with_audit(
+            &self.pool,
+            id,
+            role,
+            access,
+            audit_event,
+        )
+        .await
+        .map_err(|error| match error {
+            repository::AuditedRoleGuardError::Database(error) => UserServiceError::Database(error),
+            repository::AuditedRoleGuardError::Audit(error) => {
+                tracing::error!(event = "user_role_update.audit_unavailable", error = %error);
+                UserServiceError::AuditUnavailable
+            }
+        })?;
+        translate_owner_guard(outcome)
     }
 
     /// 变更用户状态。

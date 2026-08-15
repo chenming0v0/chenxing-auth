@@ -179,7 +179,7 @@ async fn userinfo_inner(
     // 返回的是收窄后的集合，下面按它决定放出哪些 claim——只拒绝整个请求并不
     // 等于收窄权限。
     let scopes = match effective_grant_scopes(&state, &claims.sub, &claims.aud, &presented).await {
-        Ok(scopes) => scopes,
+        Ok(grant) => grant.scopes,
         Err(GrantGateError::Denied(_)) => {
             return error::oauth_invalid_bearer("access token is invalid");
         }

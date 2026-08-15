@@ -60,3 +60,46 @@ pub async fn update_client_secret_if_version(
     .await?;
     Ok(result.rows_affected() == 1)
 }
+
+#[derive(Debug, thiserror::Error)]
+pub enum AuditedRotationError {
+    #[error("database operation failed: {0}")]
+    Database(#[from] crate::sqlx::Error),
+    #[error("audit operation failed: {0}")]
+    Audit(#[from] crate::audit::AuditError),
+}
+
+pub async fn update_client_secret_if_version_with_audit(
+    pool: &PgPool,
+    owner_user_id: Option<UserId>,
+    client_id: &str,
+    expected_version: i64,
+    client_secret_hash: &str,
+    audit_event: crate::audit::AuditEvent,
+) -> Result<bool, AuditedRotationError> {
+    let mut transaction = pool.begin().await?;
+    let result = crate::sqlx::query(
+        "UPDATE oauth_clients
+         SET client_secret_hash = $3,
+             client_secret_version = client_secret_version + 1,
+             allow_legacy_refresh_tokens = FALSE
+         WHERE client_id = $1
+           AND ($2::bigint IS NULL OR owner_user_id = $2)
+           AND auth_method <> 'none'
+           AND status = 'active'
+           AND client_secret_version = $4",
+    )
+    .bind(client_id)
+    .bind(owner_user_id)
+    .bind(client_secret_hash)
+    .bind(expected_version)
+    .execute(&mut *transaction)
+    .await?;
+    if result.rows_affected() != 1 {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
+    transaction.commit().await?;
+    Ok(true)
+}

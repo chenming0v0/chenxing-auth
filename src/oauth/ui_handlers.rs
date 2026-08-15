@@ -10,8 +10,15 @@ use std::net::SocketAddr;
 
 use super::{
     authorization::{AuthorizationRequest, validate_authorization_request_with_allowlist},
-    consent::{ConsentDecision, PendingAuthorization, parse_decision},
-    handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
+    authorization_code_handlers::{
+        AuthorizationCodeIssue, authorization_code_issue_error_response,
+        issue_authorization_code_result,
+    },
+    authorization_decision_use_case::{
+        AuthorizationDecisionError, AuthorizationDecisionOutcome, AuthorizationDecisionPort,
+        AuthorizationDecisionPortError, AuthorizationDecisionRequest, decide_authorization,
+    },
+    consent::{PendingAuthorization, parse_decision},
     request_binding::{PendingRequestBinding, PendingRequestBindingError, bind_pending_request},
     session::session_for_headers,
 };
@@ -236,120 +243,26 @@ pub async fn decide_authorization_request(
     let Some(decision) = parse_decision(&input.decision) else {
         return error::bad_request("invalid_decision", "authorization decision is invalid");
     };
-    let Some(pending) = (match state.authorization_requests.find(&request_id).await {
-        Ok(pending) => pending,
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to load OAuth authorization request");
-            return error::oauth_temporarily_unavailable();
-        }
-    }) else {
-        return pending_expired();
-    };
     let current_session_hash = session_token_hash(&session.session.token);
-    if pending.session_token_hash.as_deref() != Some(current_session_hash.as_str()) {
-        return error::unauthorized(
-            "invalid_session",
-            "authorization request is not bound to this session",
-        );
-    }
-    if matches!(decision, ConsentDecision::Deny) {
-        let Some(pending) = (match state
-            .authorization_requests
-            .take_if_matches(&request_id, &pending)
-            .await
-        {
-            Ok(pending) => pending,
-            Err(store_error) => {
-                tracing::error!(error = %store_error, "failed to consume denied OAuth request");
-                return error::oauth_temporarily_unavailable();
-            }
-        }) else {
-            return pending_expired();
-        };
-        state
-            .audit
-            .record_best_effort(AuditEvent::new(
-                "user".to_owned(),
-                Some(session.user_id.to_string()),
-                crate::audit::AuditAction::AuthorizationDenied,
-                "oauth_authorization".to_owned(),
-                Some(pending.client_id.clone()),
-                crate::audit::with_request_context(
-                    serde_json::json!({"reason": "user_denied"}),
-                    source_ip.as_deref(),
-                    user_agent.as_deref(),
-                ),
-            ))
-            .await;
-        return match error_redirect(&pending) {
-            Some(redirect_to) => (
-                axum::http::StatusCode::OK,
-                Json(DecisionResponse {
-                    decision: "deny",
-                    redirect_to,
-                }),
-            )
-                .into_response(),
-            None => error::bad_request("invalid_request", "authorization request is invalid"),
-        };
-    }
-    let validated = match validated_pending(&state, &pending).await {
-        Ok(validated) => validated,
-        Err(response) => return response,
+    let port = HttpAuthorizationDecisionPort {
+        state: &state,
+        headers: &headers,
+        expected_session: &session.session,
     };
-    let Some(consumed) = (match state
-        .authorization_requests
-        .take_if_matches(&request_id, &pending)
-        .await
-    {
-        Ok(consumed) => consumed,
-        Err(store_error) => {
-            tracing::error!(error = %store_error, "failed to consume approved OAuth request");
-            return error::oauth_temporarily_unavailable();
-        }
-    }) else {
-        return pending_expired();
-    };
-    if let Err(response) = session_still_active(&state, &headers, &session.session).await {
-        restore_pending(&state, &consumed).await;
-        return response;
-    }
-    // `save` 返回本次重新授权的 `state_version`（Issue #276）。这里刻意不用它写缓存：
-    // 紧随其后的 `issue_authorization_code_result` 会按数据库权威状态同步缓存围栏，
-    // 两处都写只会让「谁的版本更新」多一个来源，而条件写的结论完全相同。
-    if let Err(error_value) = state
-        .consents
-        .save(session.user_id, &consumed.client_id, &validated.scopes)
-        .await
-    {
-        // ClientNotFound 是内部一致性错误：validated_pending 已确认过 client 存在
-        let response = match error_value {
-            ConsentServiceError::ClientNotFound => {
-                tracing::error!(
-                    client_id = %consumed.client_id,
-                    user_id = %session.user_id,
-                    "consent save rejected: OAuth client no longer exists"
-                );
-                error::oauth_server_error()
-            }
-            ConsentServiceError::Database(database_error) => {
-                tracing::error!(error = %database_error, "failed to save JSON OAuth consent");
-                error::oauth_temporarily_unavailable()
-            }
-        };
-        restore_pending(&state, &consumed).await;
-        return response;
-    }
-    match issue_authorization_code_result(
-        &state,
-        session.user_id.to_string(),
-        validated,
-        source_ip.as_deref(),
-        user_agent.as_deref(),
+    match decide_authorization(
+        &port,
+        AuthorizationDecisionRequest {
+            request_id: &request_id,
+            user_id: session.user_id,
+            session_token_hash: &current_session_hash,
+            decision,
+            source_ip: source_ip.as_deref(),
+            user_agent: user_agent.as_deref(),
+        },
     )
     .await
     {
-        Ok(AuthorizationCodeIssue::Redirect(redirect_to)) => (
+        Ok(AuthorizationDecisionOutcome::Approved { redirect_to }) => (
             axum::http::StatusCode::OK,
             Json(DecisionResponse {
                 decision: "approve",
@@ -357,93 +270,209 @@ pub async fn decide_authorization_request(
             }),
         )
             .into_response(),
-        Ok(AuthorizationCodeIssue::QuotaExceeded) => {
-            restore_pending(&state, &consumed).await;
-            error::oauth_too_many_requests(
-                "temporarily_unavailable",
-                "authorization is temporarily unavailable",
-            )
-        }
-        Err(response) => {
-            restore_pending(&state, &consumed).await;
-            response
-        }
+        Ok(AuthorizationDecisionOutcome::Denied { redirect_to }) => (
+            axum::http::StatusCode::OK,
+            Json(DecisionResponse {
+                decision: "deny",
+                redirect_to,
+            }),
+        )
+            .into_response(),
+        Ok(AuthorizationDecisionOutcome::QuotaExceeded) => error::oauth_too_many_requests(
+            "temporarily_unavailable",
+            "authorization is temporarily unavailable",
+        ),
+        Err(error_value) => authorization_decision_error_response(error_value),
     }
 }
 
-async fn validated_pending(
-    state: &AppState,
-    pending: &PendingAuthorization,
-) -> Result<super::authorization::ValidatedAuthorizationRequest, Response> {
-    let Some(client) = state
-        .clients
-        .find_registered(&pending.client_id)
+struct HttpAuthorizationDecisionPort<'a> {
+    state: &'a AppState,
+    headers: &'a HeaderMap,
+    expected_session: &'a Session,
+}
+
+impl AuthorizationDecisionPort for HttpAuthorizationDecisionPort<'_> {
+    async fn find_pending(
+        &self,
+        request_id: &str,
+    ) -> Result<Option<PendingAuthorization>, AuthorizationDecisionPortError> {
+        self.state
+            .authorization_requests
+            .find(request_id)
+            .await
+            .map_err(|store_error| {
+                tracing::error!(error = %store_error, "failed to load OAuth authorization request");
+                AuthorizationDecisionPortError::StorageUnavailable
+            })
+    }
+
+    async fn take_pending(
+        &self,
+        request_id: &str,
+        expected: &PendingAuthorization,
+    ) -> Result<Option<PendingAuthorization>, AuthorizationDecisionPortError> {
+        self.state
+            .authorization_requests
+            .take_if_matches(request_id, expected)
+            .await
+            .map_err(|store_error| {
+                tracing::error!(error = %store_error, "failed to consume OAuth authorization request");
+                AuthorizationDecisionPortError::StorageUnavailable
+            })
+    }
+
+    async fn validate_pending(
+        &self,
+        pending: &PendingAuthorization,
+    ) -> Result<super::authorization::ValidatedAuthorizationRequest, AuthorizationDecisionPortError>
+    {
+        let Some(client) = self
+            .state
+            .clients
+            .find_registered(&pending.client_id)
+            .await
+            .map_err(|error_value| {
+                tracing::error!(error = %error_value, "failed to load OAuth client for consent");
+                AuthorizationDecisionPortError::StorageUnavailable
+            })?
+        else {
+            return Err(AuthorizationDecisionPortError::InvalidClient);
+        };
+        let mut validated = validate_authorization_request_with_allowlist(
+            &client,
+            AuthorizationRequest {
+                client_id: pending.client_id.clone(),
+                redirect_uri: pending.redirect_uri.clone(),
+                response_type: "code".to_owned(),
+                scope: pending.scope.clone(),
+                state: Some(pending.state.clone()),
+                nonce: pending.nonce.clone(),
+                code_challenge: Some(pending.code_challenge.clone()),
+                code_challenge_method: Some(pending.code_challenge_method.clone()),
+            },
+            &self.state.config.client_registration_limits.allowed_scopes,
+        )
+        .map_err(|_| AuthorizationDecisionPortError::InvalidRequest)?;
+        validated.session_token_hash = pending.session_token_hash.clone();
+        Ok(validated)
+    }
+
+    async fn session_still_active(&self) -> Result<bool, AuthorizationDecisionPortError> {
+        match session_for_headers(self.state, self.headers).await {
+            Ok(Some(session)) => Ok(session.token == self.expected_session.token),
+            Ok(None) => Ok(false),
+            Err(session_error) => {
+                tracing::error!(error = %session_error, "OAuth session revalidation failed");
+                Err(AuthorizationDecisionPortError::SessionUnavailable)
+            }
+        }
+    }
+
+    async fn save_consent(
+        &self,
+        user_id: crate::users::domain::UserId,
+        client_id: &str,
+        scopes: &[String],
+    ) -> Result<(), AuthorizationDecisionPortError> {
+        self.state
+            .consents
+            .save(user_id, client_id, scopes)
+            .await
+            .map(|_| ())
+            .map_err(|error_value| match error_value {
+                ConsentServiceError::ClientNotFound => {
+                    tracing::error!(
+                        client_id,
+                        user_id,
+                        "consent save rejected: OAuth client no longer exists"
+                    );
+                    AuthorizationDecisionPortError::ConsentClientMissing
+                }
+                ConsentServiceError::Database(database_error) => {
+                    tracing::error!(error = %database_error, "failed to save JSON OAuth consent");
+                    AuthorizationDecisionPortError::ConsentUnavailable
+                }
+            })
+    }
+
+    async fn issue_code(
+        &self,
+        user_id: crate::users::domain::UserId,
+        validated: super::authorization::ValidatedAuthorizationRequest,
+        source_ip: Option<&str>,
+        user_agent: Option<&str>,
+    ) -> Result<AuthorizationCodeIssue, AuthorizationDecisionPortError> {
+        issue_authorization_code_result(
+            self.state,
+            user_id.to_string(),
+            validated,
+            source_ip,
+            user_agent,
+        )
         .await
-        .map_err(|error_value| {
-            tracing::error!(error = %error_value, "failed to load OAuth client for consent");
-            error::oauth_temporarily_unavailable()
-        })?
-    else {
-        return Err(error::oauth_bad_request(
-            "invalid_client",
-            "client is invalid",
-        ));
-    };
-    let mut validated = validate_authorization_request_with_allowlist(
-        &client,
-        AuthorizationRequest {
-            client_id: pending.client_id.clone(),
-            redirect_uri: pending.redirect_uri.clone(),
-            response_type: "code".to_owned(),
-            scope: pending.scope.clone(),
-            state: Some(pending.state.clone()),
-            nonce: pending.nonce.clone(),
-            code_challenge: Some(pending.code_challenge.clone()),
-            code_challenge_method: Some(pending.code_challenge_method.clone()),
-        },
-        &state.config.client_registration_limits.allowed_scopes,
-    )
-    .map_err(|_| error::oauth_bad_request("invalid_request", "authorization request is invalid"))?;
-    // 调用方已校验 pending 绑定的会话就是当前会话，授权码必须继承该绑定，
-    // 否则用户登出后授权码在 TTL 内仍能兑换 token。
-    validated.session_token_hash = pending.session_token_hash.clone();
-    Ok(validated)
+        .map_err(AuthorizationDecisionPortError::Code)
+    }
+
+    async fn restore_pending(&self, pending: &PendingAuthorization) {
+        if let Err(store_error) = self.state.authorization_requests.save(pending).await {
+            tracing::error!(error = %store_error, "failed to restore OAuth authorization request");
+        }
+    }
+
+    async fn record_denied(
+        &self,
+        user_id: crate::users::domain::UserId,
+        pending: &PendingAuthorization,
+        source_ip: Option<&str>,
+        user_agent: Option<&str>,
+    ) {
+        self.state
+            .audit
+            .record_best_effort(AuditEvent::new(
+                "user".to_owned(),
+                Some(user_id.to_string()),
+                crate::audit::AuditAction::AuthorizationDenied,
+                "oauth_authorization".to_owned(),
+                Some(pending.client_id.clone()),
+                crate::audit::with_request_context(
+                    serde_json::json!({"reason": "user_denied"}),
+                    source_ip,
+                    user_agent,
+                ),
+            ))
+            .await;
+    }
 }
 
-fn error_redirect(pending: &PendingAuthorization) -> Option<String> {
-    let mut redirect = url::Url::parse(&pending.redirect_uri).ok()?;
-    redirect
-        .query_pairs_mut()
-        .append_pair("error", "access_denied")
-        .append_pair("state", &pending.state);
-    Some(redirect.to_string())
-}
-
-/// 授权码签发前重新确认会话仍然有效。
-///
-/// 提取器只在请求进入时校验一次身份；pending 请求被原子消费之后、授权码签发之前
-/// 会话可能已被撤销或用户被停用，这里再查一次以避免把授权码发给已失效的会话。
-async fn session_still_active(
-    state: &AppState,
-    headers: &HeaderMap,
-    expected: &Session,
-) -> Result<(), Response> {
-    match session_for_headers(state, headers).await {
-        Ok(Some(session)) if session.token == expected.token => Ok(()),
-        Ok(_) => Err(error::unauthorized(
+fn authorization_decision_error_response(error_value: AuthorizationDecisionError) -> Response {
+    match error_value {
+        AuthorizationDecisionError::Expired => pending_expired(),
+        AuthorizationDecisionError::InvalidSession => error::unauthorized(
+            "invalid_session",
+            "authorization request is not bound to this session",
+        ),
+        AuthorizationDecisionError::SessionNoLongerActive => error::unauthorized(
             "invalid_session",
             "authorization session is no longer valid",
-        )),
-        Err(session_error) => {
-            tracing::error!(error = %session_error, "OAuth session revalidation failed");
-            Err(error::oauth_temporarily_unavailable())
+        ),
+        AuthorizationDecisionError::Port(AuthorizationDecisionPortError::InvalidClient) => {
+            error::oauth_bad_request("invalid_client", "client is invalid")
         }
-    }
-}
-
-async fn restore_pending(state: &AppState, pending: &PendingAuthorization) {
-    if let Err(store_error) = state.authorization_requests.save(pending).await {
-        tracing::error!(error = %store_error, "failed to restore OAuth authorization request");
+        AuthorizationDecisionError::Port(AuthorizationDecisionPortError::InvalidRequest) => {
+            error::oauth_bad_request("invalid_request", "authorization request is invalid")
+        }
+        AuthorizationDecisionError::Port(
+            AuthorizationDecisionPortError::StorageUnavailable
+            | AuthorizationDecisionPortError::SessionUnavailable
+            | AuthorizationDecisionPortError::ConsentUnavailable,
+        ) => error::oauth_temporarily_unavailable(),
+        AuthorizationDecisionError::Port(AuthorizationDecisionPortError::ConsentClientMissing) => {
+            error::oauth_server_error()
+        }
+        AuthorizationDecisionError::Port(AuthorizationDecisionPortError::Code(error_value)) => {
+            authorization_code_issue_error_response(error_value)
+        }
     }
 }
 
