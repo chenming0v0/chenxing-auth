@@ -129,18 +129,21 @@ pub(super) async fn save_with_metadata(
         .execute(&mut *transaction)
         .await?;
     }
-    // The database row owns the session id.  A new payload uses the same id=0
-    // placeholder as the Redis-only store; PostgreSQL reads always overwrite
-    // it with the authoritative row id.
-    let stored_payload = SessionPayload::from(&*session);
+    let id: i64 =
+        crate::sqlx::query_scalar("SELECT nextval(pg_get_serial_sequence('user_sessions', 'id'))")
+            .fetch_one(&mut *transaction)
+            .await?;
+    let mut stored_payload = SessionPayload::from(&*session);
+    stored_payload.id = id;
     let encrypted_payload = store.encrypt_payload(&serde_json::to_vec(&stored_payload)?)?;
-    let id: i64 = crate::sqlx::query_scalar(
+    crate::sqlx::query(
         "INSERT INTO user_sessions
-             (token_hash, user_id, created_at, expires_at, last_seen_at,
-              session_payload, session_epoch)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id",
+             (id, token_hash, user_id, created_at, expires_at, last_seen_at,
+               session_payload, session_epoch)
+         OVERRIDING SYSTEM VALUE
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
+    .bind(id)
     .bind(&token_hash)
     .bind(user_id)
     .bind(session.created_at)
@@ -148,9 +151,8 @@ pub(super) async fn save_with_metadata(
     .bind(session.last_seen_at)
     .bind(encrypted_payload)
     .bind(session_epoch)
-    .fetch_one(&mut *transaction)
+    .execute(&mut *transaction)
     .await?;
-    session.id = id;
     crate::sqlx::query(
         "INSERT INTO session_outbox
              (operation, session_id, user_id, token_hash, generation)
@@ -163,6 +165,7 @@ pub(super) async fn save_with_metadata(
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
+    session.id = id;
     Ok(())
 }
 
