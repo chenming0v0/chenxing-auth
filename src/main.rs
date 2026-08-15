@@ -10,7 +10,7 @@ use chenxing_auth::{
 };
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,10 +19,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(config.log_filter.clone())
         .with_target(false)
         .init();
-    info!(
-        redis_namespace = %config.redis_keyspace,
-        "Redis key namespace configured"
-    );
+    if config.redis_keyspace.is_legacy() {
+        warn!(
+            redis_namespace = %config.redis_keyspace,
+            "Redis legacy key mode is active; configure a unique REDIS_NAMESPACE for new deployments"
+        );
+    } else {
+        info!(
+            redis_namespace = %config.redis_keyspace,
+            "Redis key namespace configured"
+        );
+    }
 
     let mut arguments = std::env::args().skip(1);
     match arguments.next().as_deref() {

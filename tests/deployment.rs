@@ -70,21 +70,31 @@ fn ci_validates_the_remote_installer_without_weakening_coverage() {
 
 #[test]
 fn deployment_configures_redis_namespaces_without_breaking_existing_env_files() {
-    assert!(ENV_EXAMPLE.contains("REDIS_NAMESPACE=legacy"));
+    assert!(ENV_EXAMPLE.contains("REDIS_NAMESPACE=replace-with-unique-installation-id"));
+    assert!(ENV_EXAMPLE.contains("Only upgraded deployments"));
     assert!(
-        PRODUCTION_COMPOSE.contains("REDIS_NAMESPACE: ${REDIS_NAMESPACE:-legacy}"),
-        "Compose must preserve legacy keys when an upgraded .env has no namespace"
+        PRODUCTION_COMPOSE.contains("REDIS_NAMESPACE: ${REDIS_NAMESPACE:?"),
+        "production Compose must reject a missing or empty namespace"
     );
-    assert!(REMOTE_INSTALL_SCRIPT.contains("REDIS_NAMESPACE=production"));
+    assert!(!PRODUCTION_COMPOSE.contains("REDIS_NAMESPACE:-"));
+    assert!(REMOTE_INSTALL_SCRIPT.contains("REDIS_NAMESPACE=cx-$(openssl rand -hex 16)"));
     assert!(
         REMOTE_INSTALL_SCRIPT.contains("append_env_default REDIS_NAMESPACE legacy"),
         "existing remote installs must retain legacy keys"
     );
-    assert!(INSTALL_SCRIPT.contains("REDIS_NAMESPACE=${REDIS_NAMESPACE:-production}"));
+    assert!(
+        INSTALL_SCRIPT
+            .contains("REDIS_NAMESPACE=\"${REDIS_NAMESPACE:-cx-$(openssl rand -hex 16)}\"")
+    );
+    assert!(INSTALL_SCRIPT.contains("REDIS_NAMESPACE=${REDIS_NAMESPACE}"));
     assert!(
         INSTALL_SCRIPT.contains("ensure_env_value REDIS_NAMESPACE legacy"),
         "existing source installs must retain legacy keys"
     );
+    for script in [REMOTE_INSTALL_SCRIPT, INSTALL_SCRIPT] {
+        assert!(!script.contains("REDIS_NAMESPACE=production"));
+        assert!(!script.contains("REDIS_NAMESPACE=${REDIS_NAMESPACE:-production}"));
+    }
 }
 
 #[test]

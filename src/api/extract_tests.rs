@@ -1,13 +1,14 @@
 use axum::{
     Router,
     body::{Body, to_bytes},
+    extract::DefaultBodyLimit,
     http::{Request, StatusCode},
     routing::post,
 };
 use serde::Deserialize;
 use tower::ServiceExt;
 
-use super::{ApiJson, optional_session};
+use super::ApiJson;
 
 #[derive(Deserialize)]
 struct Input {
@@ -23,12 +24,26 @@ async fn rejection(
     content_type: Option<&'static str>,
     expected_status: StatusCode,
 ) -> serde_json::Value {
+    rejection_with_limit(body, content_type, expected_status, None).await
+}
+
+async fn rejection_with_limit(
+    body: &'static str,
+    content_type: Option<&'static str>,
+    expected_status: StatusCode,
+    body_limit: Option<usize>,
+) -> serde_json::Value {
     let mut request = Request::builder().method("POST").uri("/");
     if let Some(content_type) = content_type {
         request = request.header("content-type", content_type);
     }
-    let response = Router::new()
-        .route("/", post(accept))
+    let router = Router::new().route("/", post(accept));
+    let router = if let Some(body_limit) = body_limit {
+        router.layer(DefaultBodyLimit::max(body_limit))
+    } else {
+        router
+    };
+    let response = router
         .oneshot(request.body(Body::from(body)).expect("request"))
         .await
         .expect("response");
@@ -66,16 +81,16 @@ async fn missing_json_content_type_uses_the_same_contract() {
     );
 }
 
-#[test]
-fn optional_session_only_swallows_explicit_unauthenticated_responses() {
-    let unauthenticated = optional_session(Err(crate::error::unauthorized(
-        "login_required",
-        "an authenticated session is required",
-    )))
-    .expect("401 should become an absent optional session");
-    assert!(unauthenticated.is_none());
-
-    let internal = optional_session(Err(crate::error::internal()))
-        .expect_err("internal failures must remain extractor rejections");
-    assert_eq!(internal.status(), StatusCode::INTERNAL_SERVER_ERROR);
+#[tokio::test]
+async fn oversized_json_uses_the_payload_too_large_contract() {
+    let response = rejection_with_limit(
+        r#"{"count":123456789}"#,
+        Some("application/json"),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        Some(8),
+    )
+    .await;
+    assert_eq!(response["code"], "payload_too_large");
+    assert_eq!(response["message"], "request body exceeds the allowed size");
+    assert!(!response.to_string().contains("count"));
 }

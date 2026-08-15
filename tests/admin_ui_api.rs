@@ -275,6 +275,12 @@ async fn admin_query_rejects_an_offset_that_would_overflow() {
         .await
         .expect("overflow response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json(response).await;
+    assert_eq!(body["code"], "invalid_pagination");
+    assert_eq!(
+        body["message"],
+        "page must be a positive integer and page_size must be an integer between 1 and 100"
+    );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE email LIKE 'admin-ui-user-%@example.com'")
         .execute(&database)
@@ -290,6 +296,9 @@ async fn admin_queries_reject_out_of_range_pagination() {
         "/api/v1/admin/users/query?page=0",
         "/api/v1/admin/clients/query?page_size=0",
         "/api/v1/admin/audit/query?page_size=101",
+        "/api/v1/admin/users/query?page=abc",
+        "/api/v1/admin/clients/query?page=9223372036854775808",
+        "/api/v1/admin/audit/query?page_size=18446744073709551616",
     ] {
         let response = router
             .clone()
@@ -305,6 +314,11 @@ async fn admin_queries_reject_out_of_range_pagination() {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
         let body = json(response).await;
         assert_eq!(body["code"], "invalid_pagination", "{path}");
+        assert_eq!(
+            body["message"],
+            "page must be a positive integer and page_size must be an integer between 1 and 100",
+            "{path}"
+        );
     }
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE email LIKE 'admin-ui-user-%@example.com'")

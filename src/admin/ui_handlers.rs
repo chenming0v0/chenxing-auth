@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Query, State, rejection::QueryRejection},
     http::HeaderMap,
     response::{IntoResponse, Response},
 };
@@ -29,6 +29,7 @@ pub struct PageQuery {
     pub action: Option<String>,
     pub resource_type: Option<String>,
 }
+type PageQueryResult = Result<Query<PageQuery>, QueryRejection>;
 #[derive(Debug, Serialize)]
 struct AdminMeResponse {
     user_id: Option<crate::users::domain::UserId>,
@@ -200,16 +201,13 @@ pub async fn admin_overview(State(state): State<AppState>, admin: AdminRead) -> 
 pub async fn query_users(
     State(state): State<AppState>,
     admin: AdminRead,
-    Query(query): Query<PageQuery>,
+    query: PageQueryResult,
 ) -> Response {
     if let Err(response) = admin.authorize(&state, AdminPermission::ManageUsers).await {
         return response;
     }
-    let Some((page, page_size, offset)) = bounds(&query) else {
-        return error::bad_request(
-            "invalid_pagination",
-            "page must be positive and page_size must be between 1 and 100",
-        );
+    let Some((query, page, page_size, offset)) = pagination(query) else {
+        return invalid_pagination();
     };
     let (users, total) = match state
         .users
@@ -251,7 +249,7 @@ pub async fn query_users(
 pub async fn query_clients(
     State(state): State<AppState>,
     admin: AdminRead,
-    Query(query): Query<PageQuery>,
+    query: PageQueryResult,
 ) -> Response {
     if let Err(response) = admin
         .authorize(&state, AdminPermission::ManageClients)
@@ -259,11 +257,8 @@ pub async fn query_clients(
     {
         return response;
     }
-    let Some((page, page_size, offset)) = bounds(&query) else {
-        return error::bad_request(
-            "invalid_pagination",
-            "page must be positive and page_size must be between 1 and 100",
-        );
+    let Some((query, page, page_size, offset)) = pagination(query) else {
+        return invalid_pagination();
     };
     let (clients, total) = match state
         .clients
@@ -288,16 +283,13 @@ pub async fn query_clients(
 pub async fn query_audit(
     State(state): State<AppState>,
     admin: AdminRead,
-    Query(query): Query<PageQuery>,
+    query: PageQueryResult,
 ) -> Response {
     if let Err(response) = admin.authorize(&state, AdminPermission::ReadAudit).await {
         return response;
     }
-    let Some((page, page_size, offset)) = bounds(&query) else {
-        return error::bad_request(
-            "invalid_pagination",
-            "page must be positive and page_size must be between 1 and 100",
-        );
+    let Some((query, page, page_size, offset)) = pagination(query) else {
+        return invalid_pagination();
     };
     let (items, total) = match state
         .audit
@@ -325,6 +317,17 @@ fn bounds(query: &PageQuery) -> Option<(i64, i64, i64)> {
         return None;
     }
     Some((page, page_size, (page - 1).checked_mul(page_size)?))
+}
+fn pagination(query: PageQueryResult) -> Option<(PageQuery, i64, i64, i64)> {
+    let Query(query) = query.ok()?;
+    let (page, page_size, offset) = bounds(&query)?;
+    Some((query, page, page_size, offset))
+}
+fn invalid_pagination() -> Response {
+    error::bad_request(
+        "invalid_pagination",
+        "page must be a positive integer and page_size must be an integer between 1 and 100",
+    )
 }
 fn page_response<T: Serialize>(items: Vec<T>, page: i64, page_size: i64, total: i64) -> Response {
     (

@@ -18,9 +18,9 @@
 - 请求超时（`REQUEST_TIMEOUT_SECONDS`，默认 30 秒；健康检查与静态 SPA fallback 不受此限制）和已配置 Issuer 的运行态门禁失败按协议边界分流响应格式（Issues #423、#441、#451）：
   - 已注册的 `/oauth/authorize`、`/oauth/token`、`/oauth/revoke`、`/oauth/userinfo`：`503` + RFC 6749 `{"error":"temporarily_unavailable","error_description":"..."}`，与依赖暂不可用等协议错误一致；未知 `/oauth/*` 路径仍返回统一 404。
   - 其余已匹配的应用路由，以及 system 路由（`/api/v1/admin/bootstrap`、`/api/v1/admin/bootstrap/status`、`/api/v1/admin/settings/issuer`）：`504` + `{"code":"request_timeout","message":"request timed out"}`。
-- 常见状态码：`200` 成功，`201` 创建成功，`204` 成功且无响应体，`400` 参数或业务校验失败，`401` 未认证，`403` 无权限，`409` 冲突，`503` 依赖暂不可用，`504` 非 OAuth 路由请求超时，`500` 服务端错误。
+- 常见状态码：`200` 成功，`201` 创建成功，`204` 成功且无响应体，`400` 参数或业务校验失败，`401` 未认证，`403` 无权限，`409` 冲突，`413` JSON 请求体超过上限，`503` 依赖暂不可用，`504` 非 OAuth 路由请求超时，`500` 服务端错误。
 - 不要在前端日志中记录密码、Client Secret、Session、授权码或 Token。
-- 共享 Redis 的每个部署必须配置不同的 `REDIS_NAMESPACE`（1–64 位 ASCII 字母、数字、`.`、`_` 或 `-`）。未配置或显式设为 `legacy` 时继续使用升级前的无前缀键，只用于兼容已有部署；新生产部署应使用稳定且唯一的环境标识。启动日志只记录该标识，不记录 `REDIS_URL`。
+- 共享 Redis 的每个部署必须配置不同的 `REDIS_NAMESPACE`（1–64 位 ASCII 字母、数字、`.`、`_` 或 `-`）。新安装器会生成一次性随机值；手工部署可用 `openssl rand -hex 16` 生成并持久化，禁止在多个安装间复用。只有升级前已使用无前缀键的部署才应省略该变量或显式设为 `legacy`；这是滚动升级兼容模式，不是新生产部署默认值。生产 Compose 会在变量缺失或为空时直接失败。legacy 模式启动时会明确告警，日志始终不会记录 `REDIS_URL` 或凭据。
 
 ## 健康和 OIDC 元数据
 
@@ -506,7 +506,7 @@ HttpOnly Session Cookie、CSRF Cookie 和匹配的 `X-CSRF-Token`；`ADMIN_TOKEN
 - `GET /api/v1/admin/clients/query?page=1&page_size=20&search=...&status=active`：分页筛选全局 Client，需要 `ManageClients`，返回 owner ID 但不返回 Secret。
 - `GET /api/v1/admin/audit/query?page=1&page_size=20&action=...&resource_type=...`：分页筛选审计，需要 `ReadAudit`。
 
-分页响应统一为 `{"items":[],"page":1,"page_size":20,"total":0}`。`page` 必须大于等于 1，`page_size` 必须在 1–100；越界返回 `400 invalid_pagination`，不做静默修正。管理员 API 继续支持 Bearer Token；浏览器 Session 写操作必须使用普通 CSRF Cookie 和 `X-CSRF-Token`。
+分页响应统一为 `{"items":[],"page":1,"page_size":20,"total":0}`。`page` 必须是大于等于 1 的整数，`page_size` 必须是 1–100 的整数；格式错误、整数溢出、数值越界或 offset 溢出都返回不含解析细节的 `400 invalid_pagination`，不做静默修正。管理员 API 继续支持 Bearer Token；浏览器 Session 写操作必须使用普通 CSRF Cookie 和 `X-CSRF-Token`。
 
 ## 权限矩阵
 

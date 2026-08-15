@@ -68,7 +68,7 @@ COMPOSE_PROJECT_NAME=chenxing-auth
 CHENXING_IMAGE=${CHENXING_IMAGE}
 POSTGRES_IMAGE=${POSTGRES_IMAGE}
 REDIS_IMAGE=${REDIS_IMAGE}
-REDIS_NAMESPACE=production
+REDIS_NAMESPACE=cx-$(openssl rand -hex 16)
 APP_HOST=0.0.0.0
 APP_PORT=${port}
 ADMIN_TOKEN=$(openssl rand -hex 32)
@@ -108,7 +108,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_RUNTIME_USER}:${POSTGRES_RUNTIME_PASSWORD}@postgres:5432/${POSTGRES_DB}
       MIGRATION_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
-      REDIS_NAMESPACE: ${REDIS_NAMESPACE}
+      REDIS_NAMESPACE: ${REDIS_NAMESPACE:?set REDIS_NAMESPACE to a unique non-empty value}
     ports:
       - "${APP_PORT}:3000"
     volumes:

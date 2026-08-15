@@ -138,13 +138,15 @@ pub fn bad_request(code: &'static str, message: impl Into<String>) -> Response {
 }
 
 pub fn json_rejection(status: StatusCode) -> Response {
-    let (code, message) = if status == StatusCode::UNSUPPORTED_MEDIA_TYPE {
-        (
+    let (code, message) = match status {
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => (
             "unsupported_media_type",
             "request Content-Type must be application/json",
-        )
-    } else {
-        ("invalid_json", "request body must be valid JSON")
+        ),
+        StatusCode::PAYLOAD_TOO_LARGE => {
+            ("payload_too_large", "request body exceeds the allowed size")
+        }
+        _ => ("invalid_json", "request body must be valid JSON"),
     };
     (
         status,

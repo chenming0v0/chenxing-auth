@@ -41,6 +41,10 @@ impl RedisKeyspace {
     pub fn namespace(&self) -> &str {
         self.0.as_deref().unwrap_or("legacy")
     }
+
+    pub fn is_legacy(&self) -> bool {
+        self.0.is_none()
+    }
 }
 
 impl fmt::Display for RedisKeyspace {
@@ -65,6 +69,8 @@ mod tests {
 
         assert_ne!(first.key(legacy_key), second.key(legacy_key));
         assert_eq!(RedisKeyspace::default().key(legacy_key), legacy_key);
+        assert!(RedisKeyspace::default().is_legacy());
+        assert!(!first.is_legacy());
     }
 
     #[test]
