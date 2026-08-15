@@ -1,14 +1,17 @@
 use redis::Script;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use time::{Date, Month, OffsetDateTime, Time};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
+use self::quota_keys::{period_keys, reservation_key};
 use super::quota_scripts::{CONSUME_SCRIPT, REFUND_SCRIPT};
 use crate::clock::{Clock, SystemClock};
 use crate::plans::domain::AuthQuotaLimits;
-use crate::redis_client::RedisClient;
+use crate::{redis_client::RedisClient, redis_keyspace::RedisKeyspace};
 
+#[path = "quota_keys.rs"]
+mod quota_keys;
 #[path = "quota_refund.rs"]
 mod quota_refund;
 
@@ -18,6 +21,7 @@ pub use quota_refund::{QUOTA_REFUND_WORKER_INTERVAL, QuotaRefundCancel};
 #[derive(Clone)]
 pub struct OAuthQuotaStore {
     client: RedisClient,
+    keyspace: RedisKeyspace,
 }
 
 /// 用量始终来自 Redis；上限来自生效套餐。
@@ -90,6 +94,14 @@ impl OAuthQuotaStore {
     pub fn new(client: impl Into<RedisClient>) -> Self {
         Self {
             client: client.into(),
+            keyspace: RedisKeyspace::default(),
+        }
+    }
+
+    pub fn with_keyspace(client: impl Into<RedisClient>, keyspace: RedisKeyspace) -> Self {
+        Self {
+            client: client.into(),
+            keyspace,
         }
     }
 
@@ -135,7 +147,7 @@ impl OAuthQuotaStore {
         limits: AuthQuotaLimits,
         now: OffsetDateTime,
     ) -> Result<QuotaConsumption, OAuthQuotaError> {
-        let (day_key, month_key, next_day, next_month) = period_keys(client_id, now)?;
+        let (day_key, month_key, next_day, next_month) = self.period_keys(client_id, now)?;
         let day_reservations_key = reservation_key(&day_key);
         let month_reservations_key = reservation_key(&month_key);
         let reservation_id = Uuid::new_v4().simple().to_string();
@@ -207,7 +219,7 @@ impl OAuthQuotaStore {
         limits: Option<AuthQuotaLimits>,
         now: OffsetDateTime,
     ) -> Result<QuotaSnapshot, OAuthQuotaError> {
-        let (day_key, month_key, _, _) = period_keys(client_id, now)?;
+        let (day_key, month_key, _, _) = self.period_keys(client_id, now)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let (daily_used, monthly_used): (Option<u64>, Option<u64>) = redis::pipe()
             .cmd("GET")
@@ -223,6 +235,13 @@ impl OAuthQuotaStore {
             monthly_used: monthly_used.unwrap_or(0),
         })
     }
+    fn period_keys(
+        &self,
+        client_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<(String, String, i64, i64), OAuthQuotaError> {
+        period_keys(&self.keyspace, client_id, now)
+    }
 }
 
 fn redis_limit(limit: Option<u64>) -> Result<i64, OAuthQuotaError> {
@@ -231,44 +250,6 @@ fn redis_limit(limit: Option<u64>) -> Result<i64, OAuthQuotaError> {
         .transpose()
         .map(|limit| limit.unwrap_or(-1))
 }
-fn reservation_key(period_key: &str) -> String {
-    format!("{period_key}:reservations")
-}
-
-fn period_keys(
-    client_id: &str,
-    now: OffsetDateTime,
-) -> Result<(String, String, i64, i64), OAuthQuotaError> {
-    let date = now.date();
-    let next_day = date
-        .next_day()
-        .map(|date| date.with_time(Time::MIDNIGHT).assume_utc().unix_timestamp())
-        .ok_or(OAuthQuotaError::InvalidResponse)?;
-    let next_month_date = match date.month() {
-        Month::December => Date::from_calendar_date(date.year() + 1, Month::January, 1),
-        month => Date::from_calendar_date(
-            date.year(),
-            Month::try_from(month as u8 + 1).map_err(|_| OAuthQuotaError::InvalidResponse)?,
-            1,
-        ),
-    }
-    .map_err(|_| OAuthQuotaError::InvalidResponse)?;
-    let next_month = next_month_date
-        .with_time(Time::MIDNIGHT)
-        .assume_utc()
-        .unix_timestamp();
-    Ok((
-        format!("chenxing:oauth:quota:{client_id}:day:{date}"),
-        format!(
-            "chenxing:oauth:quota:{client_id}:month:{:04}-{:02}",
-            date.year(),
-            date.month() as u8
-        ),
-        next_day,
-        next_month,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{OAuthQuotaStore, QuotaConsumeResult};

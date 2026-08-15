@@ -42,10 +42,12 @@
 //! 类型让人难以写错，`tests/csrf_route_coverage.rs` 的路由级测试让写错的跑不过。
 
 use axum::{
-    extract::{FromRef, FromRequestParts, OptionalFromRequestParts},
-    http::request::Parts,
+    Json,
+    extract::{FromRef, FromRequest, FromRequestParts, OptionalFromRequestParts},
+    http::{Request, StatusCode, request::Parts},
     response::Response,
 };
+use serde::de::DeserializeOwned;
 use std::ops::Deref;
 use std::sync::Arc;
 
@@ -119,6 +121,28 @@ pub struct SessionRead(UserContext);
 #[derive(Debug)]
 pub struct SessionWrite(UserContext);
 
+/// JSON request extractor with the service error envelope.
+///
+/// Axum's rejection includes serde's field/type diagnostics and uses a plain-text
+/// body. API callers get one stable code instead, without parser details.
+#[derive(Debug)]
+pub struct ApiJson<T>(pub T);
+
+impl<S, T> FromRequest<S> for ApiJson<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned,
+{
+    type Rejection = Response;
+
+    async fn from_request(request: Request<axum::body::Body>, state: &S) -> Result<Self, Response> {
+        Json::<T>::from_request(request, state)
+            .await
+            .map(|Json(value)| Self(value))
+            .map_err(|rejection| error::json_rejection(rejection.status()))
+    }
+}
+
 impl Deref for SessionRead {
     type Target = UserContext;
 
@@ -151,8 +175,8 @@ where
 /// `Option<SessionRead>` 用于「探测登录状态」而非「要求登录」的读端点。
 ///
 /// `auth_status` 要如实回答「当前浏览器是否已登录」，未登录是一个正常答案而不是错误，
-/// 因此任何认证失败都收敛成 `None`。这与该端点重构前的 `current_user(..).is_ok()`
-/// 行为一致：调用方只关心布尔结果，不区分「没有 Cookie」和「会话已失效」。
+/// 只有明确的未登录/失效会话收敛成 `None`。数据库、Redis 或响应构造故障必须保留
+/// 为拒绝响应，否则依赖故障会被伪装成正常的 `authenticated: false`。
 impl<S> OptionalFromRequestParts<S> for SessionRead
 where
     AppState: FromRef<S>,
@@ -165,9 +189,17 @@ where
         state: &S,
     ) -> Result<Option<Self>, Self::Rejection> {
         let state = AppState::from_ref(state);
-        Ok(current_user(&state, &parts.headers).await.ok().map(Self))
+        match current_user(&state, &parts.headers).await {
+            Ok(context) => Ok(Some(SessionRead(context))),
+            Err(response) if response.status() == StatusCode::UNAUTHORIZED => Ok(None),
+            Err(response) => Err(response),
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "extract_tests.rs"]
+mod tests;
 
 impl<S> FromRequestParts<S> for SessionWrite
 where

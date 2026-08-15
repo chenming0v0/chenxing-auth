@@ -5,8 +5,8 @@ use thiserror::Error;
 
 use super::consent_cache::ConsentStateCache;
 use crate::consents::repository::PgConsentRepository;
-use crate::redis_client::RedisClient;
 use crate::sqlx::PgPool;
+use crate::{redis_client::RedisClient, redis_keyspace::RedisKeyspace};
 
 /// Access Token 与同意撤销的统一入口。
 ///
@@ -20,6 +20,7 @@ use crate::sqlx::PgPool;
 pub struct TokenRevocationStore {
     client: RedisClient,
     consent_states: ConsentStateCache,
+    keyspace: RedisKeyspace,
 }
 
 #[derive(Debug, Error)]
@@ -43,6 +44,20 @@ impl TokenRevocationStore {
         Self {
             consent_states: ConsentStateCache::new(client.clone(), None),
             client,
+            keyspace: RedisKeyspace::default(),
+        }
+    }
+
+    pub fn with_keyspace(client: impl Into<RedisClient>, keyspace: RedisKeyspace) -> Self {
+        let client = client.into();
+        Self {
+            consent_states: ConsentStateCache::with_keyspace(
+                client.clone(),
+                None,
+                keyspace.clone(),
+            ),
+            client,
+            keyspace,
         }
     }
 
@@ -58,25 +73,43 @@ impl TokenRevocationStore {
                 Some(PgConsentRepository::new(pool)),
             ),
             client,
+            keyspace: RedisKeyspace::default(),
+        }
+    }
+
+    pub fn new_with_pool_and_keyspace(
+        client: impl Into<RedisClient>,
+        pool: PgPool,
+        keyspace: RedisKeyspace,
+    ) -> Self {
+        let client = client.into();
+        Self {
+            consent_states: ConsentStateCache::with_keyspace(
+                client.clone(),
+                Some(PgConsentRepository::new(pool)),
+                keyspace.clone(),
+            ),
+            client,
+            keyspace,
         }
     }
 
     pub async fn revoke(&self, token: &str, ttl_seconds: u64) -> Result<(), TokenRevocationError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let _: () = connection
-            .set_ex(Self::key(token), "1", ttl_seconds.max(1))
+            .set_ex(self.key(token), "1", ttl_seconds.max(1))
             .await?;
         Ok(())
     }
 
     pub async fn is_revoked(&self, token: &str) -> Result<bool, TokenRevocationError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        Ok(connection.exists(Self::key(token)).await?)
+        Ok(connection.exists(self.key(token)).await?)
     }
 
     pub async fn remove(&self, token: &str) -> Result<(), TokenRevocationError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let _: usize = connection.del(Self::key(token)).await?;
+        let _: usize = connection.del(self.key(token)).await?;
         Ok(())
     }
 
@@ -153,8 +186,11 @@ impl TokenRevocationStore {
         self.consent_states.forget(user_id, client_id).await
     }
 
-    fn key(token: &str) -> String {
+    fn key(&self, token: &str) -> String {
         let digest = Sha256::digest(token.as_bytes());
-        format!("chenxing:oauth:revoked:{}", URL_SAFE_NO_PAD.encode(digest))
+        self.keyspace.key(&format!(
+            "chenxing:oauth:revoked:{}",
+            URL_SAFE_NO_PAD.encode(digest)
+        ))
     }
 }

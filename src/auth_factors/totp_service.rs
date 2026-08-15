@@ -265,9 +265,7 @@ impl AuthFactorService {
         holder_hash: &str,
     ) -> Result<(), AuthFactorServiceError> {
         self.tickets.take_for_holder(ticket_id, holder_hash).await?;
-        self.tickets
-            .delete(&Self::totp_setup_key(ticket_id))
-            .await?;
+        self.tickets.delete(&self.totp_setup_key(ticket_id)).await?;
         Ok(())
     }
 

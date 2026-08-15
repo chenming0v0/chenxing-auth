@@ -17,7 +17,7 @@ use std::fmt;
 
 use super::domain::AdminPermission;
 use crate::{
-    api::extract::AdminWrite,
+    api::extract::{AdminWrite, ApiJson},
     audit::AuditEvent,
     error,
     state::AppState,
@@ -60,7 +60,7 @@ impl fmt::Debug for CreateUserInput {
 pub async fn create_user(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<CreateUserInput>,
+    ApiJson(input): ApiJson<CreateUserInput>,
 ) -> Response {
     // 角色决定所需权限，必须在守卫之前解析。状态一并在此解析：两个词表都属于
     // 公开 API 契约，先行拒绝非法值不泄露任何信息，也让两个 400 行为一致。

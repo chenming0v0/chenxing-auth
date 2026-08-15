@@ -3,6 +3,7 @@ use std::{fmt, num::ParseIntError};
 use thiserror::Error;
 
 use crate::clients::domain::ClientRegistrationLimits;
+use crate::redis_keyspace::RedisKeyspace;
 
 mod admin;
 mod audit;
@@ -114,6 +115,7 @@ pub struct Config {
     pub oauth_provider_loopback_enabled: bool,
     pub database_url: String,
     pub redis_url: String,
+    pub redis_keyspace: RedisKeyspace,
     pub session_ttl_seconds: u64,
     /// Successful requests renew idle activity, but never extend `session_ttl_seconds`.
     pub session_idle_timeout_seconds: u64,
@@ -185,6 +187,7 @@ impl fmt::Debug for Config {
             )
             .field("database_url", &"<redacted>")
             .field("redis_url", &"<redacted>")
+            .field("redis_namespace", &self.redis_keyspace)
             .field("session_ttl_seconds", &self.session_ttl_seconds)
             .field(
                 "session_idle_timeout_seconds",

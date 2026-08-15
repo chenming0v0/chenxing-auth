@@ -8,7 +8,7 @@ use super::domain::{
 use super::policy::{
     LimiterPolicy, count_failure_records, log_blocked_dimension, log_limit, value_hash,
 };
-use crate::settings::SettingsService;
+use crate::{redis_keyspace::RedisKeyspace, settings::SettingsService};
 
 const FAILURE_KEY_PREFIX: &str = "chenxing:auth:failure:";
 const PENDING_KEY_PREFIX: &str = "chenxing:auth:pending:";
@@ -18,6 +18,7 @@ use crate::redis_client::RedisClient;
 #[derive(Clone)]
 pub struct RedisAuthFailureLimiter {
     client: RedisClient,
+    keyspace: RedisKeyspace,
     /// 阈值来源与故障处置。Redis 与 settings 两类故障都经由它分发到同一个
     /// `AuthLimiterFailurePolicy`（#300）。
     policy: LimiterPolicy,
@@ -42,6 +43,7 @@ impl RedisAuthFailureLimiter {
     ) -> Self {
         Self {
             client: client.into(),
+            keyspace: RedisKeyspace::default(),
             policy: LimiterPolicy::fixed(failure_policy, limits),
         }
     }
@@ -53,26 +55,40 @@ impl RedisAuthFailureLimiter {
     ) -> Self {
         Self {
             client: client.into(),
+            keyspace: RedisKeyspace::default(),
+            policy: LimiterPolicy::from_settings(failure_policy, settings),
+        }
+    }
+
+    pub fn with_settings_and_keyspace(
+        client: impl Into<RedisClient>,
+        failure_policy: AuthLimiterFailurePolicy,
+        settings: SettingsService,
+        keyspace: RedisKeyspace,
+    ) -> Self {
+        Self {
+            client: client.into(),
+            keyspace,
             policy: LimiterPolicy::from_settings(failure_policy, settings),
         }
     }
 
     /// 失败历史的 ZSET key。滑动窗口下这就是最终 key——不再由 Lua 追加窗口后缀。
-    fn failure_key(dimension: FailureDimension, value: &str) -> String {
-        format!(
+    fn failure_key(&self, dimension: FailureDimension, value: &str) -> String {
+        self.keyspace.key(&format!(
             "{FAILURE_KEY_PREFIX}{}:{}",
             dimension.as_str(),
             value_hash(value)
-        )
+        ))
     }
 
     /// 在途预留计数器的 key。
-    fn pending_key(dimension: FailureDimension, value: &str) -> String {
-        format!(
+    fn pending_key(&self, dimension: FailureDimension, value: &str) -> String {
+        self.keyspace.key(&format!(
             "{PENDING_KEY_PREFIX}{}:{}",
             dimension.as_str(),
             value_hash(value)
-        )
+        ))
     }
 
     /// ZSET member。同一次调用的多个维度共用一个 UUID，由 Lua 追加维度下标区分，
@@ -119,7 +135,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             };
             let script = Script::new(CLEAR_FAILURE_SCRIPT);
             let mut invocation = script.prepare_invoke();
-            invocation.key(Self::failure_key(dimension, &value));
+            invocation.key(self.failure_key(dimension, &value));
             let result: Result<i64, _> = invocation.invoke_async(&mut connection).await;
             if result.is_err() {
                 return self.policy.unavailable_unit("clear", &dimensions);
@@ -141,7 +157,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             let script = Script::new(CHECK_LIMITS_SCRIPT);
             let mut invocation = script.prepare_invoke();
             for (dimension, value) in &dimensions {
-                invocation.key(Self::failure_key(*dimension, value));
+                invocation.key(self.failure_key(*dimension, value));
             }
             invocation.arg(limits.window());
             for (dimension, _) in &dimensions {
@@ -172,7 +188,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             let script = Script::new(RECORD_FAILURE_SCRIPT);
             let mut invocation = script.prepare_invoke();
             for (dimension, value) in &dimensions {
-                invocation.key(Self::failure_key(*dimension, value));
+                invocation.key(self.failure_key(*dimension, value));
             }
             invocation.arg(limits.window());
             invocation.arg(Self::failure_member());
@@ -207,10 +223,10 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             let script = Script::new(RESERVE_ATTEMPT_SCRIPT);
             let mut invocation = script.prepare_invoke();
             for (dimension, value) in &dimensions {
-                invocation.key(Self::failure_key(*dimension, value));
+                invocation.key(self.failure_key(*dimension, value));
             }
             for (dimension, value) in &dimensions {
-                invocation.key(Self::pending_key(*dimension, value));
+                invocation.key(self.pending_key(*dimension, value));
             }
             invocation.arg(dimensions.len());
             invocation.arg(limits.window());
@@ -253,10 +269,10 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             let script = Script::new(RECORD_RESERVED_FAILURE_SCRIPT);
             let mut invocation = script.prepare_invoke();
             for (dimension, value) in &dimensions {
-                invocation.key(Self::failure_key(*dimension, value));
+                invocation.key(self.failure_key(*dimension, value));
             }
             for (dimension, value) in &dimensions {
-                invocation.key(Self::pending_key(*dimension, value));
+                invocation.key(self.pending_key(*dimension, value));
             }
             invocation.arg(dimensions.len());
             invocation.arg(limits.window());
@@ -300,7 +316,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             let script = Script::new(RELEASE_ATTEMPT_SCRIPT);
             let mut invocation = script.prepare_invoke();
             for (dimension, value) in &dimensions {
-                invocation.key(Self::pending_key(*dimension, value));
+                invocation.key(self.pending_key(*dimension, value));
             }
             let result: Result<i64, _> = invocation.invoke_async(&mut connection).await;
             if result.is_err() {
@@ -335,3 +351,7 @@ fn reached_dimensions(
 #[cfg(test)]
 #[path = "redis_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "redis_keyspace_tests.rs"]
+mod keyspace_tests;

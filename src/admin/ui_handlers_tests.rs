@@ -107,3 +107,28 @@ fn admin_me_separates_database_failure_from_missing_account() {
     assert!(missing.is_client_error());
     assert!(failed.is_server_error());
 }
+
+#[test]
+fn admin_pagination_rejects_values_outside_the_contract() {
+    for query in [
+        PageQuery {
+            page: Some(0),
+            ..Default::default()
+        },
+        PageQuery {
+            page_size: Some(0),
+            ..Default::default()
+        },
+        PageQuery {
+            page_size: Some(101),
+            ..Default::default()
+        },
+    ] {
+        assert!(bounds(&query).is_none());
+    }
+}
+
+#[test]
+fn admin_pagination_keeps_defaults_when_values_are_omitted() {
+    assert_eq!(bounds(&PageQuery::default()), Some((1, 20, 0)));
+}

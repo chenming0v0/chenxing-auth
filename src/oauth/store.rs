@@ -5,12 +5,13 @@ use thiserror::Error;
 
 use super::code::AuthorizationCode;
 use super::quota::QuotaRefundCancel;
-use crate::{clock::SharedClock, redis_client::RedisClient};
+use crate::{clock::SharedClock, redis_client::RedisClient, redis_keyspace::RedisKeyspace};
 
 #[derive(Clone)]
 pub struct AuthorizationCodeStore {
     client: RedisClient,
     clock: SharedClock,
+    keyspace: RedisKeyspace,
 }
 
 #[derive(Debug, Error)]
@@ -26,6 +27,15 @@ impl AuthorizationCodeStore {
         Self {
             client: client.into(),
             clock: SharedClock::system(),
+            keyspace: RedisKeyspace::default(),
+        }
+    }
+
+    pub fn with_keyspace(client: impl Into<RedisClient>, keyspace: RedisKeyspace) -> Self {
+        Self {
+            client: client.into(),
+            clock: SharedClock::system(),
+            keyspace,
         }
     }
 
@@ -59,7 +69,7 @@ impl AuthorizationCodeStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload = serde_json::to_string(code)?;
         let _: () = connection
-            .set_ex(Self::key(&code.value), payload, ttl_seconds.max(1))
+            .set_ex(self.key(&code.value), payload, ttl_seconds.max(1))
             .await?;
         Ok(())
     }
@@ -69,7 +79,7 @@ impl AuthorizationCodeStore {
         value: &str,
     ) -> Result<Option<AuthorizationCode>, AuthorizationCodeStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let payload: Option<String> = connection.get_del(Self::key(value)).await?;
+        let payload: Option<String> = connection.get_del(self.key(value)).await?;
         payload
             .map(|payload| serde_json::from_str(&payload))
             .transpose()
@@ -81,7 +91,7 @@ impl AuthorizationCodeStore {
         value: &str,
     ) -> Result<Option<AuthorizationCode>, AuthorizationCodeStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let payload: Option<String> = connection.get(Self::key(value)).await?;
+        let payload: Option<String> = connection.get(self.key(value)).await?;
         payload
             .map(|payload| serde_json::from_str(&payload))
             .transpose()
@@ -115,7 +125,7 @@ impl AuthorizationCodeStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         // 没有待退条目时 KEYS[2] 用授权码键占位（脚本在 ARGV[2] 为空时不会
         // 引用它），member 传空串即退化为纯 CAS。
-        let code_key = Self::key(value);
+        let code_key = self.key(value);
         let zset_key: &str = quota_cancel
             .as_ref()
             .map(|cancel| cancel.zset_key.as_str())
@@ -160,10 +170,10 @@ impl AuthorizationCodeStore {
         Ok(deleted == 1)
     }
 
-    fn key(value: &str) -> String {
-        format!(
+    fn key(&self, value: &str) -> String {
+        self.keyspace.key(&format!(
             "chenxing:oauth:code:{}",
             URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()))
-        )
+        ))
     }
 }

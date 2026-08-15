@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::{
     redis_client::RedisClient,
+    redis_keyspace::RedisKeyspace,
     settings::{SecurityLimitsSetting, SettingsService, SettingsServiceError},
 };
 
@@ -161,6 +162,23 @@ impl ExternalLoginStateStore {
         store
     }
 
+    pub fn new_with_settings_and_keyspace(
+        client: impl Into<RedisClient>,
+        settings: SettingsService,
+        keyspace: RedisKeyspace,
+    ) -> Self {
+        let mut store = Self::new_with_limits(
+            client,
+            keyspace.prefix(STATE_KEY_PREFIX),
+            EXTERNAL_LOGIN_STATE_RATE_LIMIT,
+            EXTERNAL_LOGIN_STATE_MAX_PENDING,
+            EXTERNAL_LOGIN_STATE_TTL_SECONDS,
+            EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
+        );
+        store.settings = Some(settings);
+        store
+    }
+
     pub async fn save(
         &self,
         value: &ExternalLoginState,
@@ -302,7 +320,10 @@ mod tests {
     use redis::AsyncCommands;
     use uuid::Uuid;
 
-    use super::{ExternalLoginState, ExternalLoginStateStore, ExternalLoginStateStoreError};
+    use super::{
+        ExternalLoginState, ExternalLoginStateStore, ExternalLoginStateStoreError, STATE_KEY_PREFIX,
+    };
+    use crate::redis_keyspace::RedisKeyspace;
 
     fn redis_client() -> redis::Client {
         let url =
@@ -337,6 +358,31 @@ mod tests {
         let payload = serde_json::to_string(&original).expect("序列化");
         let restored: ExternalLoginState = serde_json::from_str(&payload).expect("反序列化");
         assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn deployment_namespaces_isolate_every_external_state_key_family() {
+        let store = |namespace: &str| {
+            ExternalLoginStateStore::new_with_limits(
+                redis_client(),
+                RedisKeyspace::new(namespace)
+                    .expect("namespace")
+                    .prefix(STATE_KEY_PREFIX),
+                1,
+                1,
+                EXTERNAL_LOGIN_STATE_TTL_SECONDS,
+                EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
+            )
+        };
+        let first = store("external-a");
+        let second = store("external-b");
+
+        assert_ne!(first.pending_key(), second.pending_key());
+        assert_ne!(first.rate_key("same-ip"), second.rate_key("same-ip"));
+        assert_ne!(
+            first.state_key("same-state"),
+            second.state_key("same-state")
+        );
     }
 
     #[tokio::test]

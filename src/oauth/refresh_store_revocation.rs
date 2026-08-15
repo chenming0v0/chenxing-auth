@@ -40,7 +40,7 @@ impl RefreshTokenStore {
         value: &str,
     ) -> Result<Option<Tombstone>, RefreshTokenStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let payload: Option<String> = connection.get(Self::tombstone_key(value)).await?;
+        let payload: Option<String> = connection.get(self.tombstone_key(value)).await?;
         payload
             .map(|p| serde_json::from_str(&p))
             .transpose()
@@ -117,16 +117,16 @@ impl RefreshTokenStore {
             self.clock.now(),
         ))?;
         let submitted_hash = Self::token_hash(submitted_value);
-        let scope = FamilyScope::new(family_id, &submitted_hash);
+        let scope = FamilyScope::new(&self.keyspace, family_id, &submitted_hash);
         let removed: i64 = Script::new(REVOKE_FAMILY_SCRIPT)
             .key(&scope.index_key)
-            .key(Self::client_idx_key(client_id))
+            .key(self.client_idx_key(client_id))
             .key(&scope.revoked_key)
-            .key(Self::token_key_for_hash(&submitted_hash))
-            .key(Self::tombstone_key_for_hash(&submitted_hash))
-            .key(Self::grant_idx_key(user_id, client_id))
-            .arg(TOKEN_KEY_PREFIX)
-            .arg(TOMBSTONE_PREFIX)
+            .key(self.token_key_for_hash(&submitted_hash))
+            .key(self.tombstone_key_for_hash(&submitted_hash))
+            .key(self.grant_idx_key(user_id, client_id))
+            .arg(self.keyspace.prefix(TOKEN_KEY_PREFIX))
+            .arg(self.keyspace.prefix(TOMBSTONE_PREFIX))
             .arg(tombstone_json)
             .arg(TOMBSTONE_TTL_SECONDS)
             // 墓志必须比任何成员活得久，否则它过期之后一次迟到的轮换又能写回
@@ -166,7 +166,7 @@ impl RefreshTokenStore {
         client_id: &str,
     ) -> Result<u64, RefreshTokenStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let grant_idx_key = Self::grant_idx_key(user_id, client_id);
+        let grant_idx_key = self.grant_idx_key(user_id, client_id);
         // family_id 由脚本按每个成员的 payload 填入，这里只需要一个不绑定具体
         // family 的墓碑载荷；撤销域标识写在键名上。
         let tombstone_json = serde_json::to_string(&Tombstone::for_family(
@@ -181,14 +181,14 @@ impl RefreshTokenStore {
         loop {
             let (batch_removed, remaining): (i64, i64) = Script::new(REVOKE_GRANT_TOKENS_SCRIPT)
                 .key(&grant_idx_key)
-                .arg(TOKEN_KEY_PREFIX)
-                .arg(FAMILY_IDX_PREFIX)
-                .arg(TOMBSTONE_PREFIX)
+                .arg(self.keyspace.prefix(TOKEN_KEY_PREFIX))
+                .arg(self.keyspace.prefix(FAMILY_IDX_PREFIX))
+                .arg(self.keyspace.prefix(TOMBSTONE_PREFIX))
                 .arg(CLIENT_REVOKE_BATCH_SIZE)
-                .arg(Self::client_idx_key(client_id))
+                .arg(self.client_idx_key(client_id))
                 .arg(&tombstone_json)
                 .arg(TOMBSTONE_TTL_SECONDS)
-                .arg(FAMILY_REVOKED_PREFIX)
+                .arg(self.keyspace.prefix(FAMILY_REVOKED_PREFIX))
                 .arg(INDEX_TTL_SECONDS)
                 .invoke_async(&mut connection)
                 .await?;
@@ -218,17 +218,17 @@ impl RefreshTokenStore {
         client_id: &str,
     ) -> Result<u64, RefreshTokenStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let client_idx_key = Self::client_idx_key(client_id);
+        let client_idx_key = self.client_idx_key(client_id);
         let mut removed = 0_u64;
 
         loop {
             let (batch_removed, remaining): (i64, i64) = Script::new(REVOKE_CLIENT_TOKENS_SCRIPT)
                 .key(&client_idx_key)
-                .arg(TOKEN_KEY_PREFIX)
-                .arg(FAMILY_IDX_PREFIX)
-                .arg(TOMBSTONE_PREFIX)
+                .arg(self.keyspace.prefix(TOKEN_KEY_PREFIX))
+                .arg(self.keyspace.prefix(FAMILY_IDX_PREFIX))
+                .arg(self.keyspace.prefix(TOMBSTONE_PREFIX))
                 .arg(CLIENT_REVOKE_BATCH_SIZE)
-                .arg(GRANT_IDX_PREFIX)
+                .arg(self.keyspace.prefix(GRANT_IDX_PREFIX))
                 .invoke_async(&mut connection)
                 .await?;
             removed = removed.saturating_add(batch_removed.max(0) as u64);

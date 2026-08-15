@@ -6,6 +6,7 @@
 
 - Base URL 使用部署后的认证服务地址，例如 `https://auth.example.com`。
 - JSON 请求发送 `Content-Type: application/json`；OAuth Token 和 Revocation 请求发送 `application/x-www-form-urlencoded`。
+- 所有 `application/json` 请求体使用同一解析契约：缺少或使用错误的 `Content-Type` 返回 `415 unsupported_media_type`，JSON 语法错误返回 `400 invalid_json`，字段类型或必填字段错误返回 `422 invalid_json`。这些响应都使用 `{code,message}`，不会回显 serde 字段路径、Rust 类型或解析器内部信息。
 - 时间使用 RFC 3339 字符串；用户、Session、OAuth Client、认证因子、外部身份、提供商和审计事件的数据库内部 ID 是从 1 开始递增的整数。Client ID、提供商 slug、Session Token、授权码等协议或凭据标识仍使用字符串。
 - 认证失败、参数错误等 JSON 错误统一为：
 
@@ -17,8 +18,9 @@
 - 请求超时（`REQUEST_TIMEOUT_SECONDS`，默认 30 秒；健康检查与静态 SPA fallback 不受此限制）和已配置 Issuer 的运行态门禁失败按协议边界分流响应格式（Issues #423、#441、#451）：
   - 已注册的 `/oauth/authorize`、`/oauth/token`、`/oauth/revoke`、`/oauth/userinfo`：`503` + RFC 6749 `{"error":"temporarily_unavailable","error_description":"..."}`，与依赖暂不可用等协议错误一致；未知 `/oauth/*` 路径仍返回统一 404。
   - 其余已匹配的应用路由，以及 system 路由（`/api/v1/admin/bootstrap`、`/api/v1/admin/bootstrap/status`、`/api/v1/admin/settings/issuer`）：`504` + `{"code":"request_timeout","message":"request timed out"}`。
-- 常见状态码：`200` 成功，`201` 创建成功，`204` 成功且无响应体，`400` 参数或业务校验失败，`401` 未认证，`403` 无权限，`409` 冲突，`503` 依赖暂不可用，`504` 非 OAuth 路由请求超时，`500` 服务端错误。
+- 常见状态码：`200` 成功，`201` 创建成功，`204` 成功且无响应体，`400` 参数或业务校验失败，`401` 未认证，`403` 无权限，`409` 冲突，`413` JSON 请求体超过上限，`503` 依赖暂不可用，`504` 非 OAuth 路由请求超时，`500` 服务端错误。
 - 不要在前端日志中记录密码、Client Secret、Session、授权码或 Token。
+- 共享 Redis 的每个部署必须配置不同的 `REDIS_NAMESPACE`（1–64 位 ASCII 字母、数字、`.`、`_` 或 `-`）。新安装器会生成一次性随机值；手工部署可用 `openssl rand -hex 16` 生成并持久化，禁止在多个安装间复用。只有升级前已使用无前缀键的部署才应省略该变量或显式设为 `legacy`；这是滚动升级兼容模式，不是新生产部署默认值。生产 Compose 会在变量缺失或为空时直接失败。legacy 模式启动时会明确告警，日志始终不会记录 `REDIS_URL` 或凭据。
 
 ## 健康和 OIDC 元数据
 
@@ -156,7 +158,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ### 用户中心 UI API
 
-- `GET /api/v1/auth/status`：返回当前是否登录。
+- `GET /api/v1/auth/status`：返回当前是否登录。没有会话或会话已失效时返回 `authenticated: false`；数据库或 Session 存储故障返回 `500 internal_error`，不会伪装成未登录。
 - `GET /api/v1/auth/me`：返回当前用户资料和当前 Session 到期时间。
 - `PATCH /api/v1/auth/me`：更新 `display_name`，需要用户 CSRF。
 - `POST /api/v1/auth/password`：校验当前密码并修改密码，成功返回 `204`，同时撤销该用户所有 Session。当前密码为空或超过 128 字符时与密码错误返回同一 `401 invalid_credentials`，不暴露长度。
@@ -504,7 +506,7 @@ HttpOnly Session Cookie、CSRF Cookie 和匹配的 `X-CSRF-Token`；`ADMIN_TOKEN
 - `GET /api/v1/admin/clients/query?page=1&page_size=20&search=...&status=active`：分页筛选全局 Client，需要 `ManageClients`，返回 owner ID 但不返回 Secret。
 - `GET /api/v1/admin/audit/query?page=1&page_size=20&action=...&resource_type=...`：分页筛选审计，需要 `ReadAudit`。
 
-分页响应统一为 `{"items":[],"page":1,"page_size":20,"total":0}`。管理员 API 继续支持 Bearer Token；浏览器 Session 写操作必须使用普通 CSRF Cookie 和 `X-CSRF-Token`。
+分页响应统一为 `{"items":[],"page":1,"page_size":20,"total":0}`。`page` 必须是大于等于 1 的整数，`page_size` 必须是 1–100 的整数；格式错误、整数溢出、数值越界或 offset 溢出都返回不含解析细节的 `400 invalid_pagination`，不做静默修正。管理员 API 继续支持 Bearer Token；浏览器 Session 写操作必须使用普通 CSRF Cookie 和 `X-CSRF-Token`。
 
 ## 权限矩阵
 

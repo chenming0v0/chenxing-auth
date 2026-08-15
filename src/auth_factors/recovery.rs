@@ -175,10 +175,8 @@ impl AuthFactorService {
         if let Err(error) = self.clear_account_failures(user_id).await {
             tracing::error!(error = %error, "factor removed but failure counters were not cleared");
         }
-        if totp {
-            if let Err(error) = self.tickets.clear_totp_replay(user_id).await {
-                tracing::error!(error = %error, "TOTP removed but replay claims were not cleared");
-            }
+        if totp && let Err(error) = self.tickets.clear_totp_replay(user_id).await {
+            tracing::error!(error = %error, "TOTP removed but replay claims were not cleared");
         }
         Ok(SelfServiceRemovalOutcome::Removed { removed })
     }

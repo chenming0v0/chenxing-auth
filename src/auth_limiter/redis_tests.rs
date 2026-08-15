@@ -170,7 +170,7 @@ async fn batch_failure_uses_account_ticket_and_ip_dimensions_with_window_ttl() {
         .await
         .expect("Redis connection");
     // 滑动窗口下 key 不带窗口后缀，可以直接寻址，不需要再 KEYS 扫描。
-    let key = RedisAuthFailureLimiter::failure_key(FailureDimension::Ticket, &ticket);
+    let key = limiter.failure_key(FailureDimension::Ticket, &ticket);
     let key_type: String = connection
         .key_type(&key)
         .await

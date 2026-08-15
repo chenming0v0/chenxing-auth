@@ -7,7 +7,7 @@ use redis::Script;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::redis_client::RedisClient;
+use crate::{redis_client::RedisClient, redis_keyspace::RedisKeyspace};
 
 const QPS_SCRIPT: &str = r#"
 local key = KEYS[1]
@@ -35,6 +35,7 @@ const QPS_WINDOW_MS: i64 = 1_000;
 pub struct QpsRateLimiter {
     client: RedisClient,
     window_ms: i64,
+    keyspace: RedisKeyspace,
 }
 
 #[derive(Debug, Error)]
@@ -48,7 +49,11 @@ pub enum QpsRateLimitError {
 impl QpsRateLimiter {
     /// 生产构造器：1 秒滑动窗口。所有非测试路径都必须用这个。
     pub fn new(client: impl Into<RedisClient>) -> Self {
-        Self::with_window_ms(client, QPS_WINDOW_MS)
+        Self::with_window_ms_and_keyspace(client, QPS_WINDOW_MS, RedisKeyspace::default())
+    }
+
+    pub fn with_keyspace(client: impl Into<RedisClient>, keyspace: RedisKeyspace) -> Self {
+        Self::with_window_ms_and_keyspace(client, QPS_WINDOW_MS, keyspace)
     }
 
     /// 显式指定滑动窗口长度。
@@ -65,6 +70,14 @@ impl QpsRateLimiter {
     /// `window_ms <= 0` 时 panic。非正窗口会让 Lua 里的 `now - window` 清空整个
     /// ZSET，等于静默关闭限流；宁可在构造期大声炸掉，也不能悄悄放行所有请求。
     pub fn with_window_ms(client: impl Into<RedisClient>, window_ms: i64) -> Self {
+        Self::with_window_ms_and_keyspace(client, window_ms, RedisKeyspace::default())
+    }
+
+    pub fn with_window_ms_and_keyspace(
+        client: impl Into<RedisClient>,
+        window_ms: i64,
+        keyspace: RedisKeyspace,
+    ) -> Self {
         assert!(
             window_ms > 0,
             "QPS sliding window must be positive, got {window_ms}ms"
@@ -72,6 +85,7 @@ impl QpsRateLimiter {
         Self {
             client: client.into(),
             window_ms,
+            keyspace,
         }
     }
 
@@ -88,8 +102,12 @@ impl QpsRateLimiter {
     /// 对 `client_id` 在最近一个滑动窗口内计数。返回 `true` 表示放行，
     /// `false` 表示超过 `max_qps` 应拒绝；`max_qps` 由调用方决定是否为 `None`（不启用）。
     pub async fn allow(&self, client_id: &str, max_qps: u32) -> Result<bool, QpsRateLimitError> {
-        self.allow_key(format!("chenxing:qps:{client_id}"), max_qps, self.window_ms)
-            .await
+        self.allow_key(
+            self.keyspace.key(&format!("chenxing:qps:{client_id}")),
+            max_qps,
+            self.window_ms,
+        )
+        .await
     }
 
     /// Limit unauthenticated token attempts independently from any Client plan.
@@ -99,7 +117,8 @@ impl QpsRateLimiter {
         max_qps: u32,
     ) -> Result<bool, QpsRateLimitError> {
         self.allow_key(
-            format!("chenxing:qps:source:{source_ip}"),
+            self.keyspace
+                .key(&format!("chenxing:qps:source:{source_ip}")),
             max_qps,
             self.window_ms,
         )
@@ -129,7 +148,8 @@ impl QpsRateLimiter {
             window_ms > 0,
             "scoped sliding window must be positive, got {window_ms}ms"
         );
-        self.allow_key(scope.to_owned(), limit, window_ms).await
+        self.allow_key(self.keyspace.key(scope), limit, window_ms)
+            .await
     }
 
     async fn allow_key(
@@ -289,7 +309,7 @@ mod tests {
             .await
             .expect("Redis connection");
         let ttl: i64 = connection
-            .ttl(format!("chenxing:qps:{client_id}"))
+            .ttl(limiter.keyspace.key(&format!("chenxing:qps:{client_id}")))
             .await
             .expect("key TTL");
         assert!(

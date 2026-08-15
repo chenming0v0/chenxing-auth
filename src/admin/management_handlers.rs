@@ -15,7 +15,7 @@ use super::{
     domain::AdminPermission,
 };
 use crate::{
-    api::extract::{AdminRead, AdminWrite},
+    api::extract::{AdminRead, AdminWrite, ApiJson},
     error,
     state::AppState,
 };
@@ -187,7 +187,7 @@ pub async fn set_user_role(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(user_id): Path<UserId>,
-    Json(input): Json<SetUserRoleInput>,
+    ApiJson(input): ApiJson<SetUserRoleInput>,
 ) -> Response {
     let authorization = match authorize_user_write(&state, &admin).await {
         Ok(authorization) => authorization,

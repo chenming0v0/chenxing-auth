@@ -9,6 +9,7 @@ use super::{
     CachedConsentState, ConsentStateCache, REVOKED_MARKER,
 };
 use crate::oauth::refresh::REFRESH_TOKEN_ABSOLUTE_TTL_DAYS;
+use crate::{redis_client::RedisClient, redis_keyspace::RedisKeyspace};
 
 #[test]
 fn cached_state_parses_versioned_markers() {
@@ -33,15 +34,35 @@ fn unparseable_cached_values_are_treated_as_a_miss() {
 
 #[test]
 fn cache_key_is_bound_to_both_user_and_client() {
-    let base = ConsentStateCache::key("user-1", "client-1");
+    let base = ConsentStateCache::legacy_key("user-1", "client-1");
 
-    assert_ne!(base, ConsentStateCache::key("user-1", "client-2"));
-    assert_ne!(base, ConsentStateCache::key("user-2", "client-1"));
+    assert_ne!(base, ConsentStateCache::legacy_key("user-1", "client-2"));
+    assert_ne!(base, ConsentStateCache::legacy_key("user-2", "client-1"));
     // 键前缀随值格式一同更换，新代码不会读到旧格式的无版本值
     assert!(base.starts_with("chenxing:oauth:consent-state:"));
     // user_id / client_id 不得出现在 keyspace 中
     assert!(!base.contains("user-1"));
     assert!(!base.contains("client-1"));
+}
+
+#[test]
+fn cache_keys_are_isolated_by_deployment_namespace() {
+    let client = RedisClient::open("redis://127.0.0.1:6379").expect("Redis URL");
+    let first = ConsentStateCache::with_keyspace(
+        client.clone(),
+        None,
+        RedisKeyspace::new("consent-a").expect("first namespace"),
+    );
+    let second = ConsentStateCache::with_keyspace(
+        client,
+        None,
+        RedisKeyspace::new("consent-b").expect("second namespace"),
+    );
+
+    assert_ne!(
+        first.key("same-user", "same-client"),
+        second.key("same-user", "same-client")
+    );
 }
 
 #[test]

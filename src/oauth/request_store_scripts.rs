@@ -1,7 +1,7 @@
 pub const PENDING_CAPACITY_SCRIPT: &str = r#"
-local request_prefix = 'chenxing:oauth:request:'
-local client_index_prefix = 'chenxing:oauth:pending:client-requests:'
-local client_count_prefix = 'chenxing:oauth:pending:client:'
+local request_prefix = ARGV[7]
+local client_index_prefix = ARGV[8]
+local client_count_prefix = ARGV[9]
 
 local function sync_client_count(client_id)
     local index_key = client_index_prefix .. client_id
@@ -70,8 +70,8 @@ return 1
 "#;
 
 pub const PENDING_TAKE_SCRIPT: &str = r#"
-local client_index_prefix = 'chenxing:oauth:pending:client-requests:'
-local client_count_prefix = 'chenxing:oauth:pending:client:'
+local client_index_prefix = ARGV[3]
+local client_count_prefix = ARGV[4]
 
 local function sync_client_count(client_id)
     local index_key = client_index_prefix .. client_id
@@ -122,8 +122,8 @@ return current
 "#;
 
 pub const PENDING_TAKE_IF_MATCHES_SCRIPT: &str = r#"
-local client_index_prefix = 'chenxing:oauth:pending:client-requests:'
-local client_count_prefix = 'chenxing:oauth:pending:client:'
+local client_index_prefix = ARGV[4]
+local client_count_prefix = ARGV[5]
 
 local function same_payload(current_json, expected_json)
     local current = cjson.decode(current_json)
@@ -192,8 +192,8 @@ return current
 "#;
 
 pub const PENDING_REPLACE_SCRIPT: &str = r#"
-local client_index_prefix = 'chenxing:oauth:pending:client-requests:'
-local client_count_prefix = 'chenxing:oauth:pending:client:'
+local client_index_prefix = ARGV[7]
+local client_count_prefix = ARGV[8]
 
 local function same_payload(current_json, expected_json)
     local current = cjson.decode(current_json)

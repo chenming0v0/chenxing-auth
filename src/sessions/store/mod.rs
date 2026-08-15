@@ -21,7 +21,7 @@ use super::{
 };
 use crate::{
     clock::SharedClock, config::AuthEncryptionKeyRing, redis_client::RedisClient,
-    users::domain::UserId,
+    redis_keyspace::RedisKeyspace, users::domain::UserId,
 };
 
 mod postgres;
@@ -192,6 +192,11 @@ impl SessionStore {
                 max_concurrent_sessions,
             };
         }
+        self
+    }
+
+    pub fn with_keyspace(mut self, keyspace: RedisKeyspace) -> Self {
+        self.key_prefix = keyspace.prefix("chenxing:session:");
         self
     }
 

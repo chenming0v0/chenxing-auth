@@ -96,7 +96,7 @@ impl AuthFactorService {
         let reserved = self
             .tickets
             .save_json_if_absent(
-                &Self::passkey_registration_key(ticket_id),
+                &self.passkey_registration_key(ticket_id),
                 &PendingPasskeyRegistration {
                     user_id: ticket.user_id,
                     state,
@@ -124,7 +124,7 @@ impl AuthFactorService {
         }
         let Some(pending) = self
             .tickets
-            .find_json::<PendingPasskeyRegistration>(&Self::passkey_registration_key(ticket_id))
+            .find_json::<PendingPasskeyRegistration>(&self.passkey_registration_key(ticket_id))
             .await?
         else {
             return Ok(PasskeyConfirmation::InvalidTicket);
@@ -154,7 +154,7 @@ impl AuthFactorService {
                         ticket_id,
                         holder_hash,
                         ticket.user_id,
-                        &Self::passkey_registration_key(ticket_id),
+                        &self.passkey_registration_key(ticket_id),
                         dimensions,
                     )
                     .await;
@@ -199,7 +199,7 @@ impl AuthFactorService {
             Err(AuthFactorServiceError::FirstFactorAlreadyExists) => {
                 let _ = self.tickets.take_for_holder(ticket_id, holder_hash).await?;
                 self.tickets
-                    .delete(&Self::passkey_registration_key(ticket_id))
+                    .delete(&self.passkey_registration_key(ticket_id))
                     .await?;
                 return Ok(PasskeyConfirmation::InvalidTicket);
             }
@@ -209,7 +209,7 @@ impl AuthFactorService {
             return Ok(confirmation);
         }
         self.tickets
-            .delete(&Self::passkey_registration_key(ticket_id))
+            .delete(&self.passkey_registration_key(ticket_id))
             .await?;
         Ok(confirmation)
     }
@@ -253,7 +253,7 @@ impl AuthFactorService {
         let reserved = self
             .tickets
             .save_json_if_absent(
-                &Self::passkey_authentication_key(ticket_id),
+                &self.passkey_authentication_key(ticket_id),
                 &PendingPasskeyAuthentication {
                     user_id: ticket.user_id,
                     state,
@@ -281,7 +281,7 @@ impl AuthFactorService {
         }
         let Some(pending) = self
             .tickets
-            .find_json::<PendingPasskeyAuthentication>(&Self::passkey_authentication_key(ticket_id))
+            .find_json::<PendingPasskeyAuthentication>(&self.passkey_authentication_key(ticket_id))
             .await?
         else {
             return Ok(PasskeyConfirmation::InvalidTicket);
@@ -312,7 +312,7 @@ impl AuthFactorService {
                         ticket_id,
                         holder_hash,
                         ticket.user_id,
-                        &Self::passkey_authentication_key(ticket_id),
+                        &self.passkey_authentication_key(ticket_id),
                         dimensions,
                     )
                     .await;
@@ -334,7 +334,7 @@ impl AuthFactorService {
                     ticket_id,
                     holder_hash,
                     ticket.user_id,
-                    &Self::passkey_authentication_key(ticket_id),
+                    &self.passkey_authentication_key(ticket_id),
                     dimensions,
                 )
                 .await;
@@ -365,7 +365,7 @@ impl AuthFactorService {
             return Ok(confirmation);
         }
         self.tickets
-            .delete(&Self::passkey_authentication_key(ticket_id))
+            .delete(&self.passkey_authentication_key(ticket_id))
             .await?;
         Ok(confirmation)
     }
@@ -408,11 +408,13 @@ impl AuthFactorService {
         Ok(PasskeyConfirmation::InvalidCredential(user_id))
     }
 
-    fn passkey_registration_key(ticket_id: &str) -> String {
-        format!("{PASSKEY_REGISTRATION_PREFIX}{ticket_id}")
+    fn passkey_registration_key(&self, ticket_id: &str) -> String {
+        self.tickets
+            .namespaced(&format!("{PASSKEY_REGISTRATION_PREFIX}{ticket_id}"))
     }
 
-    fn passkey_authentication_key(ticket_id: &str) -> String {
-        format!("{PASSKEY_AUTHENTICATION_PREFIX}{ticket_id}")
+    fn passkey_authentication_key(&self, ticket_id: &str) -> String {
+        self.tickets
+            .namespaced(&format!("{PASSKEY_AUTHENTICATION_PREFIX}{ticket_id}"))
     }
 }
