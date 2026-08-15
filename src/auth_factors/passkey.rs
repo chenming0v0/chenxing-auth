@@ -30,7 +30,7 @@ const PASSKEY_REGISTRATION_PREFIX: &str = "chenxing:auth:passkey-registration:";
 const PASSKEY_AUTHENTICATION_PREFIX: &str = "chenxing:auth:passkey-authentication:";
 
 impl AuthFactorService {
-    async fn enabled_passkey_settings(
+    pub(super) async fn enabled_passkey_settings(
         &self,
     ) -> Result<crate::settings::PasskeySetting, AuthFactorServiceError> {
         let settings = self.settings.passkey().await?;

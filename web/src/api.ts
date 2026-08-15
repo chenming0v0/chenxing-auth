@@ -61,6 +61,14 @@ const safeMessages = new Map<string, string>([
   ['email_already_registered', '注册信息无法使用，请检查后重试。'],
   ['email_domain_not_allowed', '当前邮箱域名不允许注册。'],
   ['passkey_disabled', 'Passkey 登录尚未启用。'],
+  ['factor_enrollment_pending', '该认证因子已有待确认操作，请完成当前操作或稍后重试。'],
+  ['totp_already_enabled', 'TOTP 已启用，无需重复绑定。'],
+  ['factor_already_enabled', '认证因子已启用。'],
+  ['invalid_factor_enrollment', '认证因子绑定已失效，请重新开始。'],
+  ['password_reauthentication_failed', '当前密码不正确，未执行安全操作。'],
+  ['password_reauthentication_unavailable', '当前账号无法使用密码重新认证，请联系管理员恢复。'],
+  ['factor_key_unavailable', '服务端暂时无法读取认证密钥，请联系管理员处理。'],
+  ['passkey_credential_conflict', '该 Passkey 已在其他账号或设备记录中使用。'],
   ['username_already_registered', '注册信息无法使用，请检查后重试。'],
   ['invalid_username', '用户名格式不正确，请检查长度和字符。'],
   ['invalid_email', '邮箱格式不正确，请检查输入。'],
@@ -233,6 +241,15 @@ export type PendingLoginResponse = {
   methods: Array<'totp' | 'passkey' | string>
 }
 export type TotpSetupResponse = { secret_base32: string; otpauth_url: string }
+export type SecurityFactorSummary = {
+  totp_enabled: boolean
+  passkey_count: number
+  available_methods: Array<'totp' | 'passkey' | string>
+}
+export type SecurityTotpStart = TotpSetupResponse & { enrollment_id: string }
+export type SecurityPasskeyStart = { enrollment_id: string; options: { publicKey?: Record<string, unknown> } }
+export type SecurityEnrollmentResult = { method: 'totp' | 'passkey'; enabled: boolean }
+export type SecurityRemovalResult = { method: 'totp' | 'passkey'; removed: number; credentials_revoked: boolean }
 
 /** 登录页可见的外部身份源，仅包含渲染入口所需的公开字段。 */
 export type PublicExternalProvider = { slug: string; name: string }

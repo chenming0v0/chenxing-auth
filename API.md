@@ -102,13 +102,13 @@ JWKS 的 CORS 与 Discovery 一致：请求带 `Origin` 时 `Access-Control-Allo
 
 `identifier` 上限 254 字符，`password` 上限 128 字符，与注册侧的口令长度上界一致。超出上界的请求在进入口令哈希、数据库查询和失败限流之前被拒绝，响应与凭据错误完全相同（`401` + `invalid_credentials`），不返回独立错误码，也不暴露账号是否存在。登录不校验口令长度下界，存量短口令仍可登录。
 
-首次登录或已绑定因子但尚未完成验证时响应 `202`，并设置短期 HttpOnly pending-login Cookie：
+已绑定因子但尚未完成验证时响应 `202`，并设置短期 HttpOnly pending-login Cookie：
 
 ```json
-{"status":"factor_setup_required","methods":["totp","passkey"]}
+{"status":"factor_required","methods":["totp","passkey"]}
 ```
 
-已绑定因子时 `status` 为 `factor_required`，`methods` 只包含当前策略允许的已绑定方式；全局禁用 Passkey 时不会发布 `passkey`。ticket 不再出现在普通 JSON 响应中，而是由 `HttpOnly`、`SameSite=Lax` 的 pending-login Cookie 携带，并绑定同一响应下发的独立 holder Cookie。TOTP 登录可在本请求中携带当前六位 `totp_code`；passkey 使用下面的 WebAuthn challenge 接口。没有可用因子时只能进入策略允许的设置流程。
+`methods` 只包含当前策略允许的已绑定方式；全局禁用 Passkey 时不会发布 `passkey`。ticket 不再出现在普通 JSON 响应中，而是由 `HttpOnly`、`SameSite=Lax` 的 pending-login Cookie 携带，并绑定同一响应下发的独立 holder Cookie。TOTP 登录可在本请求中携带当前六位 `totp_code`；passkey 使用下面的 WebAuthn challenge 接口。账号没有已绑定因子时，密码登录直接响应 `200` 并签发普通 Session；用户登录后通过安全设置 API 绑定 TOTP 或 Passkey。
 
 HTTPS 部署使用 `__Host-chenxing_login_ticket` 和 `__Host-chenxing_login_holder`；仅在 loopback HTTP 本地开发时使用 `chenxing_login_ticket` 和 `chenxing_login_holder`。两个 Cookie 都是 `Path=/`、`HttpOnly`、`SameSite=Lax`，成功签发 Session 后立即清理。
 
@@ -380,7 +380,7 @@ PUT 用 `password_action` 表达密码三态，不要再靠空字符串猜测：
 
 - `GET /api/v1/admin/users/{user_id}/auth-factors`：查看账号已绑定的因子方法；TOTP 另报 `key_state` / `readable`，不含 kid、密文或种子。需要 `ManageUsers`。
 - `DELETE /api/v1/admin/users/{user_id}/auth-factors/totp`：删除 TOTP 因子并撤销该账号全部 Session 与 Refresh Token。需要 Owner 专属的 `ManageAuthFactors`。
-- `DELETE /api/v1/admin/users/{user_id}/auth-factors/passkey`：删除该账号全部 Passkey 凭据并撤销全部 Session 与 Refresh Token。需要 `ManageAuthFactors`。Passkey-only 账号下次密码登录返回 `factor_setup_required`；仍绑定 TOTP 的账号保留 TOTP。
+- `DELETE /api/v1/admin/users/{user_id}/auth-factors/passkey`：删除该账号全部 Passkey 凭据并撤销全部 Session 与 Refresh Token。需要 `ManageAuthFactors`。Passkey-only 账号下次密码登录直接签发普通 Session，可从安全设置重新绑定；仍绑定 TOTP 的账号保留 TOTP。
 
 末位 Owner 丢失全部 Passkey 时无法再签发管理 Session。这条恢复必须使用系统 `ADMIN_TOKEN` Bearer 通道：它不依赖现有 Passkey 或用户 Session，避免形成「要先有 Passkey 才能恢复 Passkey」的闭环。`ADMIN_TOKEN` 为空时整个管理面关闭，该逃生通道一并不可用。浏览器 Session 写操作仍须携带 Session Cookie、CSRF Cookie 和 `X-CSRF-Token`。Admin 角色返回 `403 admin_forbidden`。账号没有对应因子时返回 `404 totp_factor_not_found` / `passkey_factor_not_found`，且不会推进 `session_epoch`。
 

@@ -6,11 +6,11 @@ use axum::{
 use chenxing_auth::{
     api,
     auth_factors::{domain::FactorMethod, service::TotpConfirmation},
+    clock::SharedClock,
     config::Config,
     state::AppState,
     users::domain::AuthenticatedUser,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
 use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -19,11 +19,10 @@ use uuid::Uuid;
 mod db_isolation;
 #[path = "support/oauth_flow.rs"]
 mod oauth_flow;
+#[path = "support/totp_time.rs"]
+mod totp_time;
 
 const ADMIN_TOKEN: &str = "totp-race-admin-token";
-/// TOTP 步长，与 `auth_factors::totp::TOTP_STEP_SECONDS` 一致。
-const TOTP_STEP_SECONDS: u64 = 30;
-
 struct Harness {
     router: Router,
     state: AppState,
@@ -61,7 +60,8 @@ async fn setup() -> Harness {
     // Service 层的并发测试需要直接持有 AppState，因此这里先克隆再交给 router。
     let state = AppState::new_with_pool(config, database.clone())
         .await
-        .expect("test state");
+        .expect("test state")
+        .with_clock(SharedClock::fixed(totp_time::centered_now()));
     let router = api::router(state.clone());
     oauth_flow::ensure_owner_bootstrapped(
         &router,
@@ -142,11 +142,20 @@ fn pending_cookie(response: &axum::response::Response) -> String {
         .join("; ")
 }
 
-async fn request_with_cookie(
+fn csrf(cookie: &str) -> String {
+    cookie
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix("chenxing_csrf="))
+        .expect("CSRF cookie")
+        .to_owned()
+}
+
+async fn request_with_session(
     router: &Router,
     uri: &str,
     payload: serde_json::Value,
     cookie: &str,
+    csrf_token: &str,
 ) -> axum::response::Response {
     router
         .clone()
@@ -156,6 +165,7 @@ async fn request_with_cookie(
                 .uri(uri)
                 .header("content-type", "application/json")
                 .header("cookie", cookie)
+                .header("x-csrf-token", csrf_token)
                 .body(Body::from(payload.to_string()))
                 .expect("JSON request"),
         )
@@ -164,10 +174,10 @@ async fn request_with_cookie(
 }
 
 #[tokio::test]
-async fn parallel_first_factor_tickets_have_only_one_winner() {
+async fn parallel_authenticated_totp_confirmations_have_only_one_winner() {
     let Harness {
         router,
-        state: _,
+        state,
         database,
         key_directory,
         email,
@@ -176,81 +186,53 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
     let password = "correct horse battery";
     create_user(&router, &username, &email, password).await;
 
-    let first_login_response = request(
+    let login_response = request(
         &router,
         "/api/v1/auth/login",
         serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
-    let first_cookie = pending_cookie(&first_login_response);
-    let _first_login = json_body(first_login_response).await;
-    let second_login_response = request(
-        &router,
-        "/api/v1/auth/login",
-        serde_json::json!({"identifier": username, "password": password}),
-    )
-    .await;
-    let second_cookie = pending_cookie(&second_login_response);
-    let _second_login = json_body(second_login_response).await;
-
-    let first_setup = json_body(
-        request_with_cookie(
+    assert_eq!(login_response.status(), StatusCode::OK);
+    let session_cookie = pending_cookie(&login_response);
+    let csrf_token = csrf(&session_cookie);
+    let setup = json_body(
+        request_with_session(
             &router,
-            "/api/v1/auth/totp/setup",
+            "/api/v1/auth/security/totp/enrollment/start",
             serde_json::json!({}),
-            &first_cookie,
+            &session_cookie,
+            &csrf_token,
         )
         .await,
     )
     .await;
-    let second_setup = json_body(
-        request_with_cookie(
+    let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
+    let now = u64::try_from(state.clock.now().unix_timestamp()).expect("fixed test timestamp");
+    let body = serde_json::json!({
+        "enrollment_id": setup["enrollment_id"],
+        "code": totp.generate(now)
+    });
+    let (first, second) = tokio::join!(
+        request_with_session(
             &router,
-            "/api/v1/auth/totp/setup",
-            serde_json::json!({}),
-            &second_cookie,
-        )
-        .await,
-    )
-    .await;
-    let first_totp = TOTP::from_url(first_setup["otpauth_url"].as_str().expect("first TOTP URI"))
-        .expect("first TOTP");
-    let second_totp = TOTP::from_url(
-        second_setup["otpauth_url"]
-            .as_str()
-            .expect("second TOTP URI"),
-    )
-    .expect("second TOTP");
-
-    // 两次确认必须落在不同的时间步。注册确认现在也 claim `user/timestep`（#301），
-    // 而两张 ticket 属于同一个用户、共享同一个 claim 键：同步提交的话第二次会先
-    // 被 claim 挡成 401 InvalidCode，测不到本用例真正要断言的「因子已存在」这条
-    // 持久化侧的败者语义。第二个码取 now+1 步，仍在 ±1 步的接受窗口内。
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_secs();
-    assert_eq!(
-        request_with_cookie(
+            "/api/v1/auth/security/totp/enrollment/confirm",
+            body.clone(),
+            &session_cookie,
+            &csrf_token,
+        ),
+        request_with_session(
             &router,
-            "/api/v1/auth/totp/setup/confirm",
-            serde_json::json!({"code": first_totp.generate(now)}),
-            &first_cookie,
+            "/api/v1/auth/security/totp/enrollment/confirm",
+            body,
+            &session_cookie,
+            &csrf_token,
         )
-        .await
-        .status(),
-        StatusCode::OK
     );
-    assert_eq!(
-        request_with_cookie(
-            &router,
-            "/api/v1/auth/totp/setup/confirm",
-            serde_json::json!({"code": second_totp.generate(now + TOTP_STEP_SECONDS)}),
-            &second_cookie,
-        )
-        .await
-        .status(),
-        StatusCode::BAD_REQUEST
+    let statuses = [first.status(), second.status()];
+    assert!(statuses.contains(&StatusCode::OK), "statuses: {statuses:?}");
+    assert!(
+        statuses.contains(&StatusCode::UNAUTHORIZED) || statuses.contains(&StatusCode::BAD_REQUEST),
+        "statuses: {statuses:?}"
     );
 
     let user_id: i64 = chenxing_auth::sqlx::query_scalar("SELECT id FROM users WHERE email = $1")

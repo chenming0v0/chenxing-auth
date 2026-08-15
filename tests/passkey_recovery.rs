@@ -7,7 +7,7 @@
 //! 2. 重置与撤销同事务：没有凭据可删时整体回滚，不推进 `session_epoch`。
 //! 3. 成功重置删除全部凭据、推进 epoch、撤销 Session，旧 Cookie 立刻失效。
 //! 4. 权限是 Owner 专属的 `manage_auth_factors`；Admin 被 403，缺 CSRF 被 400。
-//! 5. 重置后末位 Owner 能用密码进入 `factor_setup_required` 并重新绑定。
+//! 5. 重置后末位 Owner 能用密码登录，并从已认证安全 API 重新绑定。
 
 use axum::{
     Router,
@@ -16,6 +16,7 @@ use axum::{
 };
 use chenxing_auth::{
     api,
+    clock::SharedClock,
     config::Config,
     sessions::{cookies, domain::Session},
     state::AppState,
@@ -28,6 +29,8 @@ use uuid::Uuid;
 mod db_isolation;
 #[path = "support/oauth_flow.rs"]
 mod oauth_flow;
+#[path = "support/totp_time.rs"]
+mod totp_time;
 
 const ADMIN_TOKEN: &str = "passkey-recovery-admin-token";
 const PASSWORD: &str = "correct horse battery";
@@ -62,7 +65,8 @@ impl Harness {
         config.key_directory = key_directory.to_string_lossy().into_owned();
         let state = AppState::new_with_pool(config, database.clone())
             .await
-            .expect("test state");
+            .expect("test state")
+            .with_clock(SharedClock::fixed(totp_time::centered_now()));
         let router = api::router(state.clone());
         oauth_flow::ensure_owner_bootstrapped(
             &router,
@@ -240,6 +244,14 @@ fn pending_cookie(response: &axum::response::Response) -> String {
         .join("; ")
 }
 
+fn cookie_value(cookie: &str, name: &str) -> String {
+    cookie
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
+        .expect("cookie value")
+        .to_owned()
+}
+
 /// 末位 Owner 丢失全部 Passkey 后，系统 Token 是唯一不形成闭环的恢复入口。
 #[tokio::test]
 async fn system_token_recovers_last_owner_without_existing_passkey_or_session() {
@@ -303,10 +315,11 @@ async fn system_token_recovers_last_owner_without_existing_passkey_or_session() 
         )
         .await
         .expect("owner password login response");
-    assert_eq!(login.status(), StatusCode::ACCEPTED);
+    assert_eq!(login.status(), StatusCode::OK);
     let login_cookie = pending_cookie(&login);
+    let csrf = cookie_value(&login_cookie, cookies::csrf_cookie_name(false));
     let login_body = json_body(login).await;
-    assert_eq!(login_body["status"], "factor_setup_required");
+    assert!(login_body["expires_at"].as_str().is_some());
 
     let setup = harness
         .router
@@ -314,37 +327,35 @@ async fn system_token_recovers_last_owner_without_existing_passkey_or_session() 
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/auth/totp/setup")
+                .uri("/api/v1/auth/security/totp/enrollment/start")
                 .header("content-type", "application/json")
                 .header("cookie", &login_cookie)
+                .header("x-csrf-token", &csrf)
                 .body(Body::from("{}"))
                 .expect("totp setup request"),
         )
         .await
         .expect("totp setup response");
     assert_eq!(setup.status(), StatusCode::OK);
-    let totp = TOTP::from_url(
-        json_body(setup).await["otpauth_url"]
-            .as_str()
-            .expect("TOTP URI"),
-    )
-    .expect("TOTP");
-    let previous = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time")
-        .as_secs()
-        .saturating_sub(30);
+    let setup_body = json_body(setup).await;
+    let totp = TOTP::from_url(setup_body["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
+    let previous = totp_time::previous_timestep(harness.state.clock.now());
     let confirm = harness
         .router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/auth/totp/setup/confirm")
+                .uri("/api/v1/auth/security/totp/enrollment/confirm")
                 .header("content-type", "application/json")
                 .header("cookie", &login_cookie)
+                .header("x-csrf-token", &csrf)
                 .body(Body::from(
-                    serde_json::json!({ "code": totp.generate(previous) }).to_string(),
+                    serde_json::json!({
+                        "enrollment_id": setup_body["enrollment_id"],
+                        "code": totp.generate(previous)
+                    })
+                    .to_string(),
                 ))
                 .expect("totp confirm request"),
         )

@@ -301,3 +301,94 @@ async fn delete_passkeys_in_transaction_removes_all_credentials_for_one_user() {
         .await
         .expect("cleanup test users");
 }
+
+#[tokio::test]
+async fn authenticated_factor_inserts_require_active_user_and_exact_epoch() {
+    let pool = database().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let user_ids: Vec<i64> = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO users (username, email, canonical_email, password_hash, status, created_at)
+         VALUES ($1, $2, lower($2), 'test-hash', 'active', NOW()),
+                ($3, $4, lower($4), 'test-hash', 'active', NOW())
+         RETURNING id",
+    )
+    .bind(format!("authenticated-factor-{suffix}-a"))
+    .bind(format!("authenticated-factor-{suffix}-a@example.com"))
+    .bind(format!("authenticated-factor-{suffix}-b"))
+    .bind(format!("authenticated-factor-{suffix}-b@example.com"))
+    .fetch_all(&pool)
+    .await
+    .expect("insert authenticated factor users");
+
+    assert_eq!(
+        repository::insert_authenticated_totp_factor(&pool, user_ids[0], 0, &[1, 2, 3])
+            .await
+            .expect("authenticated TOTP insert"),
+        repository::AuthenticatedTotpPersistenceResult::Stored
+    );
+    chenxing_auth::sqlx::query("UPDATE users SET session_epoch = 1 WHERE id = $1")
+        .bind(user_ids[1])
+        .execute(&pool)
+        .await
+        .expect("advance second user epoch");
+    assert_eq!(
+        repository::insert_authenticated_totp_factor(&pool, user_ids[1], 0, &[4, 5, 6])
+            .await
+            .expect("stale TOTP insert"),
+        repository::AuthenticatedTotpPersistenceResult::AuthenticationChanged
+    );
+    assert!(
+        repository::find_totp_secret(&pool, user_ids[1])
+            .await
+            .expect("stale TOTP lookup")
+            .is_none()
+    );
+
+    let credential_id = Uuid::new_v4().into_bytes().to_vec();
+    let passkey = test_passkey(&credential_id);
+    assert_eq!(
+        repository::insert_authenticated_passkey(&pool, user_ids[1], 1, &credential_id, &passkey,)
+            .await
+            .expect("authenticated Passkey insert"),
+        repository::AuthenticatedPasskeyPersistenceResult::Stored
+    );
+    assert_eq!(
+        repository::insert_authenticated_passkey(&pool, user_ids[0], 0, &credential_id, &passkey,)
+            .await
+            .expect("cross-user Passkey conflict"),
+        repository::AuthenticatedPasskeyPersistenceResult::Conflict
+    );
+
+    chenxing_auth::sqlx::query("UPDATE users SET status = 'disabled' WHERE id = $1")
+        .bind(user_ids[1])
+        .execute(&pool)
+        .await
+        .expect("disable second user");
+    let second_credential_id = Uuid::new_v4().into_bytes().to_vec();
+    assert_eq!(
+        repository::insert_authenticated_passkey(
+            &pool,
+            user_ids[1],
+            1,
+            &second_credential_id,
+            &test_passkey(&second_credential_id),
+        )
+        .await
+        .expect("disabled Passkey insert"),
+        repository::AuthenticatedPasskeyPersistenceResult::AuthenticationChanged
+    );
+    assert_eq!(
+        repository::list_passkeys(&pool, user_ids[1])
+            .await
+            .expect("disabled user Passkeys")
+            .len(),
+        1,
+        "disabled or epoch-stale writes must not add another credential"
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = ANY($1)")
+        .bind(&user_ids)
+        .execute(&pool)
+        .await
+        .expect("cleanup authenticated factor users");
+}

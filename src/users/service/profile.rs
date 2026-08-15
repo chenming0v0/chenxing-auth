@@ -16,6 +16,37 @@ use crate::{
 };
 
 impl UserService {
+    pub async fn reauthenticate_password(
+        &self,
+        id: UserId,
+        password: &str,
+        source_ip: Option<&str>,
+    ) -> Result<Option<crate::users::domain::AuthenticatedUser>, UserServiceError> {
+        validate_authentication_password(password)
+            .map_err(|_| UserServiceError::InvalidCredentials)?;
+        let Some(credentials) = repository::find_credentials_by_id(&self.pool, id).await? else {
+            return Err(UserServiceError::InvalidCredentials);
+        };
+        if !credentials.password_login_enabled {
+            return Ok(None);
+        }
+        let dimensions =
+            self.password_change_dimensions(&credentials.canonical_email, source_ip)?;
+        if !self.limiter.reserve(dimensions.clone()).await? {
+            return Err(UserServiceError::RateLimited);
+        }
+        if UserStatus::parse(&credentials.status) != Some(UserStatus::Active)
+            || !verify_password(password.to_owned(), credentials.password_hash.clone()).await
+        {
+            return match self.record_password_failure(dimensions).await {
+                Ok(()) => Err(UserServiceError::InvalidCredentials),
+                Err(error) => Err(error),
+            };
+        }
+        self.limiter.release(dimensions).await?;
+        Ok(Some(credentials.authenticated()))
+    }
+
     pub async fn find_profile(
         &self,
         id: UserId,

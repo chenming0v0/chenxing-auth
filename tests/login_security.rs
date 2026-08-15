@@ -3,7 +3,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, state::AppState};
+use chenxing_auth::{api, clock::SharedClock, config::Config, state::AppState};
 use serde_json::Value;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -12,10 +12,17 @@ use uuid::Uuid;
 mod db_isolation;
 #[path = "support/oauth_flow.rs"]
 mod oauth_flow;
+#[path = "support/totp_time.rs"]
+mod totp_time;
 
 const ADMIN_TOKEN: &str = "login-security-admin-token";
 
-async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
+async fn setup() -> (
+    Router,
+    chenxing_auth::sqlx::PgPool,
+    std::path::PathBuf,
+    time::OffsetDateTime,
+) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -34,14 +41,15 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     config.admin_token = ADMIN_TOKEN.to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let router = api::router(
-        AppState::new_with_pool(config, database.clone())
-            .await
-            .expect("test state"),
-    );
+    let now = totp_time::centered_now();
+    let state = AppState::new_with_pool(config, database.clone())
+        .await
+        .expect("test state")
+        .with_clock(SharedClock::fixed(now));
+    let router = api::router(state);
     oauth_flow::ensure_owner_bootstrapped(&router, &database, "login_security", "login-security")
         .await;
-    (router, database, key_directory)
+    (router, database, key_directory, now)
 }
 
 async fn json(response: axum::response::Response) -> Value {
@@ -98,9 +106,40 @@ async fn request_with_cookie(
         .expect("JSON response")
 }
 
+fn cookie_value(cookie: &str, name: &str) -> String {
+    cookie
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
+        .expect("cookie value")
+        .to_owned()
+}
+
+async fn request_with_session(
+    router: &Router,
+    uri: &str,
+    payload: Value,
+    cookie: &str,
+    csrf: &str,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .header("x-csrf-token", csrf)
+                .body(Body::from(payload.to_string()))
+                .expect("JSON request"),
+        )
+        .await
+        .expect("JSON response")
+}
+
 #[tokio::test]
 async fn password_success_does_not_reset_mfa_account_failures() {
-    let (router, database, key_directory) = setup().await;
+    let (router, database, key_directory, now) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let username = format!("security-{suffix}");
     let email = format!("security-{suffix}@example.com");
@@ -140,34 +179,38 @@ async fn password_success_does_not_reset_mfa_account_failures() {
         .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
 
-    let pending_response = request(
+    let login_response = request(
         &router,
         "/api/v1/auth/login",
         serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
-    let pending_cookie_header = pending_cookie(&pending_response);
-    let pending = json(pending_response).await;
-    assert!(pending.get("login_ticket").is_none());
+    assert_eq!(login_response.status(), StatusCode::OK);
+    let session_cookie = pending_cookie(&login_response);
+    let csrf = cookie_value(&session_cookie, "chenxing_csrf");
+    assert!(json(login_response).await["expires_at"].as_str().is_some());
     let setup = json(
-        request_with_cookie(
+        request_with_session(
             &router,
-            "/api/v1/auth/totp/setup",
+            "/api/v1/auth/security/totp/enrollment/start",
             serde_json::json!({}),
-            &pending_cookie_header,
+            &session_cookie,
+            &csrf,
         )
         .await,
     )
     .await;
     let totp =
         totp_rs::TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
-    let response = request_with_cookie(
+    let response = request_with_session(
         &router,
-        "/api/v1/auth/totp/setup/confirm",
+        "/api/v1/auth/security/totp/enrollment/confirm",
         serde_json::json!({
-            "code": totp.generate_current().expect("TOTP code")
+            "enrollment_id": setup["enrollment_id"],
+            "code": totp.generate(totp_time::previous_timestep(now))
         }),
-        &pending_cookie_header,
+        &session_cookie,
+        &csrf,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);

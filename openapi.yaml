@@ -24,6 +24,7 @@ tags:
   - name: User Auth
   - name: User Auth/Account
   - name: User Auth/MFA
+  - name: User Auth/Security
   - name: User Auth/Sessions
   - name: User Auth/Security Events
   - name: User Auth/OAuth Clients
@@ -220,6 +221,12 @@ paths:
         数据库确实无记录时进入保护模式，只有用户 ID=1 可以本地登录，其他用户返回 `invalid_credentials`。
         门禁允许继续后，请求格式错误返回 415 或 422；持久化空值/无效值、读取失败或 Runtime Pending/Invalid 时，
         在进入登录处理器前返回 503 `issuer_runtime_invalid`。
+
+        没有已启用/生效认证因子的账号在口令校验成功后直接签发普通 Session，审计
+        factor 固定为 `password`，不会创建 login ticket，也不会返回
+        `factor_setup_required`。已有生效因子时继续返回 `factor_required` 并走既有
+        ticket-only 第二步。`factor_setup_required` 保留在响应枚举中用于协议兼容。
+
         错误码：
         - 401 invalid_credentials / invalid_factor：口令或 TOTP 验证码错误，或已被限流。
         - 503 factor_key_unavailable：请求带 `totp_code` 且该账号的 TOTP 种子由已退役的
@@ -244,7 +251,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/LoginResponse'
         '202':
-          description: 密码正确但需要首次绑定或完成认证因子。通过 HttpOnly login ticket 与 holder Cookie 继续流程，不在 JSON 响应中返回 ticket
+          description: 密码正确且已有生效认证因子，需要完成第二步。通过 HttpOnly login ticket 与 holder Cookie 继续流程，不在 JSON 响应中返回 ticket
           headers:
             Set-Cookie: { $ref: '#/components/headers/SetCookie' }
           content:
@@ -420,6 +427,176 @@ paths:
               schema: { $ref: '#/components/schemas/LoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/security/factors:
+    get:
+      tags: [User Auth/Security]
+      summary: 查询当前用户认证因素概览
+      operationId: getCurrentUserFactorSummary
+      description: |
+        只统计已持久化确认的因素。Redis 中待确认的 TOTP 种子或 Passkey challenge
+        不会出现在 `available_methods`，也不会改变后续登录策略。
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 当前用户因素概览
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FactorSummaryResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/security/totp/enrollment/start:
+    post:
+      tags: [User Auth/Security]
+      summary: 使用当前 Session 开始 TOTP 注册
+      operationId: startCurrentUserTotpEnrollment
+      description: |
+        创建约五分钟有效、绑定当前用户、Session ID 和 session_epoch 的待确认注册。
+        同一用户同一方法只允许一份 pending；并发败者返回 409，绝不覆盖已返回的种子。
+        otpauth issuer 标签取自配置 Issuer 的 host，不读取请求 Host 或代理头。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyObject' }
+      responses:
+        '200':
+          description: 待确认 TOTP 注册
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionTotpStartResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/auth/security/totp/enrollment/confirm:
+    post:
+      tags: [User Auth/Security]
+      summary: 确认当前 Session 的 TOTP 注册
+      operationId: confirmCurrentUserTotpEnrollment
+      description: |
+        ownership、Session ID、session_epoch 和 enrollment_id 全部匹配后才可完成。
+        成功只持久化因素，不签发或替换 Session。TOTP 已存在时拒绝；已有 Passkey 不影响注册。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionTotpConfirmInput' }
+      responses:
+        '200':
+          description: TOTP 已启用
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FactorEnrollmentResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/security/passkeys/registration/start:
+    post:
+      tags: [User Auth/Security]
+      summary: 使用当前 Session 开始 Passkey 注册
+      operationId: startCurrentUserPasskeyRegistration
+      description: |
+        创建绑定当前用户、Session ID 和 session_epoch 的 WebAuthn challenge。
+        已有 TOTP 或其他 Passkey 不阻止新增凭据；同一用户同一方法的并发 start 不覆盖 challenge。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyObject' }
+      responses:
+        '200':
+          description: Passkey 注册 challenge
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionPasskeyStartResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/auth/security/passkeys/registration/finish:
+    post:
+      tags: [User Auth/Security]
+      summary: 完成当前 Session 的 Passkey 注册
+      operationId: finishCurrentUserPasskeyRegistration
+      description: |
+        验证 WebAuthn credential 后原子消费 ownership 匹配的 pending，并在用户 advisory
+        lock 下写入凭据。保留 credential_id 全局唯一约束。成功不签发新 Session。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionPasskeyFinishInput' }
+      responses:
+        '200':
+          description: Passkey 已启用
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FactorEnrollmentResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+  /api/v1/auth/security/factors/totp:
+    delete:
+      tags: [User Auth/Security]
+      summary: 移除当前用户的 TOTP 因素
+      operationId: removeCurrentUserTotpFactor
+      description: |
+        需要当前 Session、CSRF 和请求内显式密码再认证。成功时在同一数据库事务内删除
+        TOTP、推进 session_epoch、撤销全部 Session/Refresh Token 并写入 outbox；随后清空
+        当前浏览器认证 Cookie。密码不可用时拒绝，管理员恢复是唯一回退。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FactorRemovalInput' }
+      responses:
+        '200':
+          description: TOTP 已移除，当前及其他会话均已撤销
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FactorRemovalResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/auth/security/factors/passkey:
+    delete:
+      tags: [User Auth/Security]
+      summary: 移除当前用户的全部 Passkey 凭据
+      operationId: removeCurrentUserPasskeyFactor
+      description: |
+        方法级移除：删除该用户全部已注册 Passkey。需要当前 Session、CSRF 和请求内显式
+        密码再认证；成功时原子推进 session_epoch、撤销全部 Session/Refresh Token 和 outbox，
+        并清空当前浏览器认证 Cookie。响应 `removed` 明确给出删除凭据数。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FactorRemovalInput' }
+      responses:
+        '200':
+          description: 全部 Passkey 已移除，当前及其他会话均已撤销
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FactorRemovalResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/auth/status:
     get:
       tags: [User Auth/Account]
@@ -1199,7 +1376,7 @@ paths:
       summary: 重置账号的 TOTP 因子
       description: |
         删除该账号的 TOTP 因子并撤销它的全部会话。账号回到「无因子」状态，
-        下次密码登录返回 `factor_setup_required`，由用户重新完成 TOTP 绑定。
+        下次密码登录直接签发普通 Session，用户可从已认证安全 API 重新绑定 TOTP。
 
         这是加密 kid 退役后唯一的恢复路径：种子已经无法解密，也就无法迁移，
         只能丢弃不可读的密文。响应中的 `previous_key_state` 说明这次重置救的是
@@ -1235,8 +1412,8 @@ paths:
       summary: 重置账号的全部 Passkey 凭据
       description: |
         删除该账号的全部 Passkey 凭据并撤销它的全部会话与已签发 Refresh Token。
-        Passkey-only 账号回到「无因子」状态，下次密码登录返回 `factor_setup_required`，
-        由用户重新完成因子绑定。仍绑定 TOTP 的账号保留 TOTP。
+        Passkey-only 账号回到「无因子」状态，下次密码登录直接签发普通 Session，
+        用户可从已认证安全 API 重新绑定。仍绑定 TOTP 的账号继续要求 TOTP。
 
         这是 Passkey-only 账号丢失全部认证器后的受控恢复路径。末位 Owner 丢失
         全部 Passkey 时无法签发新的管理 Session：必须使用系统 `ADMIN_TOKEN`
@@ -2175,6 +2352,69 @@ components:
           required: [code]
           properties:
             code: { type: string, pattern: '^[0-9]{6}$' }
+    EmptyObject:
+      type: object
+      additionalProperties: false
+    FactorSummaryResponse:
+      type: object
+      required: [totp_enabled, passkey_count, available_methods]
+      properties:
+        totp_enabled: { type: boolean }
+        passkey_count: { type: integer, format: int64, minimum: 0 }
+        available_methods:
+          type: array
+          items: { type: string, enum: [totp, passkey] }
+          description: 当前登录策略实际生效的方法；不包含待确认 enrollment。
+    SessionTotpStartResponse:
+      type: object
+      required: [enrollment_id, secret_base32, otpauth_url]
+      additionalProperties: false
+      properties:
+        enrollment_id: { type: string, format: uuid }
+        secret_base32: { type: string, description: 仅在 start 响应返回一次，按凭据材料处理且不得记录日志。 }
+        otpauth_url: { type: string, format: uri, description: 仅在 start 响应返回一次，客户端应本地生成二维码。 }
+    SessionTotpConfirmInput:
+      type: object
+      required: [enrollment_id, code]
+      additionalProperties: false
+      properties:
+        enrollment_id: { type: string, format: uuid }
+        code: { type: string, pattern: '^[0-9]{6}$', writeOnly: true }
+    SessionPasskeyStartResponse:
+      type: object
+      required: [enrollment_id, options]
+      additionalProperties: false
+      properties:
+        enrollment_id: { type: string, format: uuid }
+        options: { $ref: '#/components/schemas/WebAuthnOptions' }
+    SessionPasskeyFinishInput:
+      type: object
+      required: [enrollment_id, credential]
+      additionalProperties: false
+      properties:
+        enrollment_id: { type: string, format: uuid }
+        credential: { type: object, additionalProperties: true, writeOnly: true }
+    FactorEnrollmentResponse:
+      type: object
+      required: [method, enabled]
+      additionalProperties: false
+      properties:
+        method: { type: string, enum: [totp, passkey] }
+        enabled: { type: boolean, enum: [true] }
+    FactorRemovalInput:
+      type: object
+      required: [password]
+      additionalProperties: false
+      properties:
+        password: { type: string, format: password, maxLength: 128, writeOnly: true }
+    FactorRemovalResponse:
+      type: object
+      required: [method, removed, credentials_revoked]
+      additionalProperties: false
+      properties:
+        method: { type: string, enum: [totp, passkey] }
+        removed: { type: integer, format: int64, minimum: 1, description: TOTP 固定为 1；Passkey 为本次删除的全部凭据数。 }
+        credentials_revoked: { type: boolean, enum: [true] }
     WebAuthnOptions:
       type: object
       description: WebAuthn options returned by webauthn-rs; pass through to navigator.credentials.

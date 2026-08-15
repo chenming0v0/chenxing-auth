@@ -78,12 +78,13 @@ async fn request(
         .expect("response")
 }
 
-async fn request_with_cookie(
+async fn request_with_session(
     router: &Router,
     method: &str,
     uri: &str,
     body: Value,
     cookie: &str,
+    csrf: &str,
 ) -> axum::response::Response {
     router
         .clone()
@@ -93,6 +94,7 @@ async fn request_with_cookie(
                 .uri(uri)
                 .header("content-type", "application/json")
                 .header("cookie", cookie)
+                .header("x-csrf-token", csrf)
                 .body(Body::from(body.to_string()))
                 .expect("request"),
         )
@@ -109,6 +111,14 @@ fn cookie_header(response: &axum::response::Response) -> String {
         .map(|value| value.split(';').next().expect("cookie pair"))
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+fn cookie_value(cookie: &str, name: &str) -> String {
+    cookie
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
+        .expect("cookie value")
+        .to_owned()
 }
 
 async fn create_user(router: &Router, database: &sqlx::PgPool) -> (i64, String) {
@@ -199,7 +209,10 @@ async fn login(router: &Router, username: &str) -> Value {
         None,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert!(matches!(
+        response.status(),
+        StatusCode::OK | StatusCode::ACCEPTED
+    ));
     json(response).await
 }
 
@@ -262,7 +275,7 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
     );
     assert_eq!(
         login(&router, &empty_username).await["methods"],
-        serde_json::json!(["totp", "passkey"])
+        serde_json::Value::Null
     );
 
     let response = update_passkey_setting(&router, false).await;
@@ -278,9 +291,9 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
         .await
         .expect("remove recovery factor");
 
-    let (passkey_pending, pending_cookie) = login_with_cookie(&router, &passkey_username).await;
-    assert_eq!(passkey_pending["status"], "factor_setup_required");
-    assert_eq!(passkey_pending["methods"], serde_json::json!(["totp"]));
+    let (passkey_login, session_cookie) = login_with_cookie(&router, &passkey_username).await;
+    assert!(passkey_login["expires_at"].as_str().is_some());
+    assert!(passkey_login.get("status").is_none());
     let recovery_audit: Option<String> = sqlx::query_scalar(
         "SELECT action FROM audit_events
          WHERE actor_user_id = $1 AND action = 'passkey_recovery_required'
@@ -291,26 +304,30 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
     .await
     .expect("recovery audit event");
     assert_eq!(recovery_audit.as_deref(), Some("passkey_recovery_required"));
-    let setup_response = request_with_cookie(
+    let csrf = cookie_value(&session_cookie, "chenxing_csrf");
+    let setup_response = request_with_session(
         &router,
         "POST",
-        "/api/v1/auth/totp/setup",
+        "/api/v1/auth/security/totp/enrollment/start",
         serde_json::json!({}),
-        &pending_cookie,
+        &session_cookie,
+        &csrf,
     )
     .await;
     assert_eq!(setup_response.status(), StatusCode::OK);
     let setup = json(setup_response).await;
     let totp =
         TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP setup");
-    let response = request_with_cookie(
+    let response = request_with_session(
         &router,
         "POST",
-        "/api/v1/auth/totp/setup/confirm",
+        "/api/v1/auth/security/totp/enrollment/confirm",
         serde_json::json!({
+            "enrollment_id": setup["enrollment_id"],
             "code": totp.generate_current().expect("TOTP code")
         }),
-        &pending_cookie,
+        &session_cookie,
+        &csrf,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -328,9 +345,10 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
         login(&router, &mixed_username).await["methods"],
         serde_json::json!(["totp"])
     );
-    assert_eq!(
-        login(&router, &empty_username).await["methods"],
-        serde_json::json!(["totp"])
+    assert!(
+        login(&router, &empty_username).await["expires_at"]
+            .as_str()
+            .is_some()
     );
 
     let response = update_passkey_setting(&router, true).await;
@@ -347,9 +365,10 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
         login(&router, &mixed_username).await["methods"],
         serde_json::json!(["passkey", "totp"])
     );
-    assert_eq!(
-        login(&router, &empty_username).await["methods"],
-        serde_json::json!(["totp", "passkey"])
+    assert!(
+        login(&router, &empty_username).await["expires_at"]
+            .as_str()
+            .is_some()
     );
 
     let user_ids = vec![passkey_user, totp_user, mixed_user, empty_user];

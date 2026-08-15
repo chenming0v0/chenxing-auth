@@ -22,6 +22,7 @@ pub(super) async fn totp_confirmation_response(
                 headers,
                 source_ip,
                 StaleCredentialCode::InvalidFactor,
+                false,
             )
             .await
         }
@@ -78,6 +79,7 @@ pub(super) async fn passkey_confirmation_response(
                 headers,
                 source_ip,
                 StaleCredentialCode::InvalidFactor,
+                false,
             )
             .await
         }

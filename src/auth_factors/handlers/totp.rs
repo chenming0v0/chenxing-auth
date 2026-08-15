@@ -11,10 +11,13 @@ use super::{
     responses::{factor_error_response, totp_confirmation_response},
     ticket_proof::ticket_proof,
 };
-use crate::{auth_factors::service::TotpConfirmation, error, state::AppState};
+use crate::{
+    api::extract::RequestIssuer, auth_factors::service::TotpConfirmation, error, state::AppState,
+};
 
 pub async fn start_totp_setup(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     headers: HeaderMap,
     Json(input): Json<TotpSetupInput>,
 ) -> Response {
@@ -49,7 +52,12 @@ pub async fn start_totp_setup(
     };
     let ticket = match state
         .factors
-        .start_totp_enrollment(&ticket_id, &holder_hash, &profile.email, "Chenxing Pass")
+        .start_totp_enrollment(
+            &ticket_id,
+            &holder_hash,
+            &profile.email,
+            issuer.issuer().host_str(),
+        )
         .await
     {
         Ok(ticket) => ticket,

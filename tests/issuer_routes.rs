@@ -600,6 +600,7 @@ async fn final_session_issuance_rechecks_issuer_login_policy() {
             &headers,
             None,
             StaleCredentialCode::InvalidFactor,
+            false,
         )
         .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{factor}");
@@ -626,6 +627,7 @@ async fn final_session_issuance_rechecks_issuer_login_policy() {
         &headers,
         None,
         StaleCredentialCode::InvalidFactor,
+        false,
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);

@@ -2,6 +2,13 @@ use crate::sqlx::PgPool;
 use crate::users::domain::UserId;
 use webauthn_rs::prelude::Passkey;
 
+#[path = "repository_authenticated.rs"]
+mod authenticated;
+pub use authenticated::{
+    AuthenticatedPasskeyPersistenceResult, AuthenticatedTotpPersistenceResult,
+    insert_authenticated_passkey, insert_authenticated_totp_factor,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasskeyPersistenceResult {
     Stored,
@@ -318,6 +325,13 @@ pub async fn list_passkeys(
         .collect()
 }
 
+pub async fn count_passkeys(pool: &PgPool, user_id: UserId) -> Result<i64, crate::sqlx::Error> {
+    crate::sqlx::query_scalar("SELECT COUNT(*) FROM user_passkeys WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+}
+
 pub async fn insert_passkey_if_empty(
     pool: &PgPool,
     user_id: UserId,
@@ -369,7 +383,7 @@ pub async fn update_passkey(
     Ok(result.rows_affected() == 1)
 }
 
-async fn lock_factor_account(
+pub(super) async fn lock_factor_account(
     transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
     user_id: UserId,
 ) -> Result<(), crate::sqlx::Error> {
