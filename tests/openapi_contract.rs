@@ -1,14 +1,14 @@
 //! Issue #444：OpenAPI 契约必须与当前 HTTP 行为一致。
 //!
-//! 静态断言钉住路径、`$ref` 和文档中的 Location；运行时断言钉住健康探针
-//! 503、Issuer 门禁信封、以及遗留管理页重定向。
+//! 静态断言钉住路径、`$ref` 和文档中的 Location；运行时断言钉住保护模式
+//! readiness、本地登录可达性、Issuer 门禁信封、用户创建禁用和遗留管理页重定向。
 
 use axum::{
     Router,
     body::{Body, to_bytes},
     http::{
         Method, Request, StatusCode,
-        header::{CONTENT_TYPE, LOCATION},
+        header::{AUTHORIZATION, CONTENT_TYPE, LOCATION},
     },
 };
 use chenxing_auth::{api, config::Config, state::AppState};
@@ -21,6 +21,16 @@ mod db_isolation;
 mod key_directory;
 
 const OPENAPI: &str = include_str!("../openapi.yaml");
+
+fn openapi_section(start: &str, end: &str) -> &'static str {
+    let (_, section) = OPENAPI
+        .split_once(start)
+        .unwrap_or_else(|| panic!("missing OpenAPI section start: {start}"));
+    section
+        .split_once(end)
+        .map(|(section, _)| section)
+        .unwrap_or_else(|| panic!("missing OpenAPI section end: {end}"))
+}
 
 fn json_content_type(response: &axum::response::Response) -> Option<&str> {
     response
@@ -40,28 +50,44 @@ async fn json_body(response: axum::response::Response) -> Value {
 }
 
 async fn send(router: &Router, method: Method, uri: &str) -> axum::response::Response {
+    send_request(router, method, uri, None, None, Body::empty()).await
+}
+
+async fn send_request(
+    router: &Router,
+    method: Method,
+    uri: &str,
+    content_type: Option<&str>,
+    authorization: Option<&str>,
+    body: Body,
+) -> axum::response::Response {
+    let mut request = Request::builder().method(method).uri(uri);
+    if let Some(content_type) = content_type {
+        request = request.header(CONTENT_TYPE, content_type);
+    }
+    if let Some(authorization) = authorization {
+        request = request.header(AUTHORIZATION, authorization);
+    }
     router
         .clone()
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(uri)
-                .body(Body::empty())
-                .expect("valid request"),
-        )
+        .oneshot(request.body(body).expect("valid request"))
         .await
         .expect("response from router")
 }
 
 async fn missing_issuer_router() -> (Router, std::path::PathBuf) {
-    contract_router(None).await
+    let (state, _database, key_directory) = contract_state(None).await;
+    (api::router(state), key_directory)
 }
 
 async fn configured_issuer_router() -> (Router, std::path::PathBuf) {
-    contract_router(Some("http://127.0.0.1:3000")).await
+    let (state, _database, key_directory) = contract_state(Some("http://127.0.0.1:3000")).await;
+    (api::router(state), key_directory)
 }
 
-async fn contract_router(issuer: Option<&str>) -> (Router, std::path::PathBuf) {
+async fn contract_state(
+    issuer: Option<&str>,
+) -> (AppState, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -86,14 +112,10 @@ async fn contract_router(issuer: Option<&str>) -> (Router, std::path::PathBuf) {
     config.cookie_secure = false;
     config.admin_token = "openapi-contract-admin".to_owned();
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(
-            AppState::new_with_pool(config, database)
-                .await
-                .expect("state"),
-        ),
-        key_directory,
-    )
+    let state = AppState::new_with_pool(config, database.clone())
+        .await
+        .expect("state");
+    (state, database, key_directory)
 }
 
 #[test]
@@ -127,6 +149,31 @@ fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
         OPENAPI.contains("#/components/responses/HealthServiceUnavailable"),
         "ready probes must declare the 503 health schema"
     );
+    for marker in ["PostgreSQL `app_settings`", "用户 ID=1", "ADMIN_TOKEN"] {
+        assert!(
+            OPENAPI.contains(marker),
+            "missing protection-mode marker: {marker}"
+        );
+    }
+    for response in ["'415':", "'422':"] {
+        assert!(OPENAPI.contains(response), "login must declare {response}");
+    }
+    assert!(!OPENAPI.contains("issuer_pending"));
+    assert!(!OPENAPI.contains("issuer_runtime_pending"));
+
+    let login = openapi_section("  /api/v1/auth/login:\n", "  /api/v1/auth/totp/setup:\n");
+    assert!(login.contains("请求先经过 Issuer 门禁"));
+    assert!(login.contains("合法持久化 Issuer 会应用到当前请求并继续"));
+    assert!(login.contains("数据库确实无记录时进入保护模式"));
+    assert!(login.contains("issuer_runtime_invalid"));
+    assert!(login.contains("415 或 422"));
+
+    let discovery = openapi_section(
+        "  /.well-known/openid-configuration:\n",
+        "  /.well-known/jwks.json:\n",
+    );
+    assert!(discovery.contains("Runtime 处于 AwaitingIssuer"));
+    assert!(discovery.contains("应用到当前请求"));
 }
 
 #[test]
@@ -146,26 +193,19 @@ fn openapi_documents_legacy_admin_redirect_targets() {
 }
 
 #[tokio::test]
-async fn readiness_probes_return_503_when_issuer_is_missing() {
+async fn readiness_probes_return_200_when_issuer_is_missing() {
     let (router, key_directory) = missing_issuer_router().await;
 
-    let live = send(&router, Method::GET, "/health/live").await;
-    assert_eq!(live.status(), StatusCode::OK);
-    assert_eq!(json_content_type(&live), Some("application/json"));
-    let live_body = json_body(live).await;
-    assert_eq!(live_body["status"], "ok");
-    assert_eq!(live_body["service"], "chenxing-auth");
-
-    for path in ["/health", "/health/ready"] {
+    for path in ["/health", "/health/live", "/health/ready"] {
         let response = send(&router, Method::GET, path).await;
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
         assert_eq!(
             json_content_type(&response),
             Some("application/json"),
             "{path}"
         );
         let body = json_body(response).await;
-        assert_eq!(body["status"], "unavailable", "{path}");
+        assert_eq!(body["status"], "ok", "{path}");
         assert_eq!(body["service"], "chenxing-auth", "{path}");
         assert!(body.get("error").is_none(), "{path}");
         assert!(body.get("code").is_none(), "{path}");
@@ -175,7 +215,80 @@ async fn readiness_probes_return_503_when_issuer_is_missing() {
 }
 
 #[tokio::test]
-async fn issuer_gate_uses_oauth_envelope_only_on_protocol_endpoints() {
+async fn readiness_probes_return_503_when_database_and_runtime_issuer_diverge() {
+    let (state, database, key_directory) = contract_state(Some("http://127.0.0.1:3000")).await;
+    assert!(
+        chenxing_auth::settings::issuer::load(&database)
+            .await
+            .expect("load absent issuer")
+            .is_none()
+    );
+    let router = api::router(state);
+    for path in ["/health", "/health/ready"] {
+        let response = send(&router, Method::GET, path).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert_eq!(json_body(response).await["status"], "unavailable", "{path}");
+    }
+    let _ = std::fs::remove_dir_all(key_directory);
+
+    let (state, database, key_directory) = contract_state(None).await;
+    chenxing_auth::settings::issuer::initialize(&database, "http://127.0.0.1:3000")
+        .await
+        .expect("persist issuer without loading runtime");
+    let router = api::router(state);
+    for path in ["/health", "/health/ready"] {
+        let response = send(&router, Method::GET, path).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert_eq!(json_body(response).await["status"], "unavailable", "{path}");
+    }
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn awaiting_gate_applies_a_valid_persisted_issuer_to_the_current_request() {
+    let (state, database, key_directory) = contract_state(None).await;
+    chenxing_auth::settings::issuer::initialize(&database, "http://127.0.0.1:3000")
+        .await
+        .expect("persist issuer from another instance");
+    let runtime = state.issuer.clone();
+    assert!(!runtime.is_ready());
+    let router = api::router(state);
+
+    let response = send(&router, Method::GET, "/.well-known/openid-configuration").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["issuer"], "http://127.0.0.1:3000");
+    assert!(runtime.is_ready());
+
+    let readiness = send(&router, Method::GET, "/health/ready").await;
+    assert_eq!(readiness.status(), StatusCode::OK);
+    assert_eq!(json_body(readiness).await["status"], "ok");
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn missing_issuer_keeps_local_login_reachable_for_request_validation() {
+    let (router, key_directory) = missing_issuer_router().await;
+
+    let response = send(&router, Method::POST, "/api/v1/auth/login").await;
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    let response = send_request(
+        &router,
+        Method::POST,
+        "/api/v1/auth/login",
+        Some("application/json"),
+        None,
+        Body::from("{}"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn issuer_gate_preserves_protocol_and_internal_error_envelopes() {
     let (router, key_directory) = missing_issuer_router().await;
 
     for (method, path) in [
@@ -198,13 +311,85 @@ async fn issuer_gate_uses_oauth_envelope_only_on_protocol_endpoints() {
         assert!(body.get("message").is_none(), "{path}");
     }
 
-    let response = send(&router, Method::POST, "/api/v1/auth/login").await;
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(json_content_type(&response), Some("application/json"));
-    let body = json_body(response).await;
-    assert_eq!(body["code"], "issuer_not_configured");
-    assert!(body["message"].as_str().is_some());
-    assert!(body.get("error").is_none());
+    for path in [
+        "/.well-known/openid-configuration",
+        "/.well-known/jwks.json",
+        "/api/v1/oauth/authorize/requests/contract-request",
+        "/api/v1/admin/oauth/providers",
+        "/api/v1/auth/external-providers",
+        "/auth/external/example",
+        "/auth/external/example/callback?state=contract-state",
+    ] {
+        let response = send(&router, Method::GET, path).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert_eq!(
+            json_content_type(&response),
+            Some("application/json"),
+            "{path}"
+        );
+        let body = json_body(response).await;
+        assert_eq!(body["code"], "issuer_not_configured", "{path}");
+        assert!(body["message"].as_str().is_some(), "{path}");
+        assert!(body.get("error").is_none(), "{path}");
+    }
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn missing_issuer_disables_registration_and_all_non_bootstrap_user_creation() {
+    let (router, key_directory) = missing_issuer_router().await;
+
+    let bootstrap = send_request(
+        &router,
+        Method::POST,
+        "/api/v1/admin/bootstrap",
+        Some("application/json"),
+        None,
+        Body::from(
+            r#"{"username":"contract-owner","email":"contract-owner@example.com","password":"contract-password"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(bootstrap.status(), StatusCode::CREATED);
+    assert_eq!(json_body(bootstrap).await["id"], 1);
+
+    for (path, body, authorization) in [
+        (
+            "/api/v1/users",
+            r#"{"username":"contract-user","email":"contract-user@example.com","password":"contract-password"}"#,
+            None,
+        ),
+        (
+            "/api/v1/admin/users",
+            r#"{"username":"managed-user","email":"managed-user@example.com","password":"contract-password","role":"user","status":"active"}"#,
+            Some("Bearer openapi-contract-admin"),
+        ),
+        (
+            "/api/v1/admin/admins",
+            r#"{"username":"managed-admin","email":"managed-admin@example.com","password":"contract-password","role":"admin"}"#,
+            Some("Bearer openapi-contract-admin"),
+        ),
+    ] {
+        let response = send_request(
+            &router,
+            Method::POST,
+            path,
+            Some("application/json"),
+            authorization,
+            Body::from(body),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert_eq!(
+            json_content_type(&response),
+            Some("application/json"),
+            "{path}"
+        );
+        let body = json_body(response).await;
+        assert_eq!(body["code"], "issuer_not_configured", "{path}");
+        assert!(body.get("error").is_none(), "{path}");
+    }
 
     let _ = std::fs::remove_dir_all(key_directory);
 }

@@ -34,6 +34,8 @@ pub const RESERVED_USERNAMES: &[&str] = &[
     "system",
 ];
 pub type UserId = i64;
+/// The first-owner bootstrap transaction resets the users sequence so this identity is stable.
+pub const INITIAL_OWNER_ID: UserId = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]

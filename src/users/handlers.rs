@@ -8,6 +8,7 @@ use serde::Serialize;
 use std::{fmt, net::SocketAddr};
 
 use super::{
+    auth_audit::record_security_event,
     domain::{LoginInput, RegistrationError, RegistrationInput},
     service::UserServiceError,
 };
@@ -51,6 +52,13 @@ pub async fn register_user(
     headers: HeaderMap,
     Json(input): Json<RegistrationInput>,
 ) -> Response {
+    if !state.issuer.is_ready() {
+        return if state.issuer.is_awaiting_configuration() {
+            error::issuer_not_configured()
+        } else {
+            error::issuer_runtime_invalid()
+        };
+    }
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
         &headers,
@@ -230,6 +238,22 @@ pub async fn login_user(
             return error::internal();
         }
     };
+    if !state.issuer.local_login_allowed(authenticated.id) {
+        record_security_event(
+            &state,
+            crate::audit::AuditAction::LoginFailure,
+            Some(authenticated.id),
+            "issuer_setup_restricted",
+            Some(&identifier),
+            source_ip.as_deref(),
+            user_agent.as_deref(),
+        )
+        .await;
+        return error::unauthorized(
+            "invalid_credentials",
+            "username, email, or password is incorrect",
+        );
+    }
     let user_id = authenticated.id;
 
     let methods = match state.factors.available_methods(user_id).await {
@@ -454,33 +478,4 @@ pub async fn revoke_session(
             error::internal()
         }
     }
-}
-
-async fn record_security_event(
-    state: &AppState,
-    action: crate::audit::AuditAction,
-    actor_id: Option<crate::users::domain::UserId>,
-    reason: &str,
-    attempted_identifier: Option<&str>,
-    source_ip: Option<&str>,
-    user_agent: Option<&str>,
-) {
-    state
-        .audit
-        .record_best_effort(AuditEvent::authentication_failure(
-            action,
-            if actor_id.is_some() {
-                "user".to_owned()
-            } else {
-                "anonymous".to_owned()
-            },
-            actor_id.map(|id| id.to_string()),
-            "authentication".to_owned(),
-            None,
-            reason,
-            attempted_identifier,
-            source_ip,
-            user_agent,
-        ))
-        .await;
 }

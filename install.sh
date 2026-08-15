@@ -305,22 +305,21 @@ fi
 
 stage "部署完成"
 compose ps
-if [[ -n "$APP_ISSUER" ]]; then
-    printf '%s\n' '已检测到 APP_ISSUER；可直接使用认证、管理和 OAuth/OIDC 功能。'
-else
-    cat <<EOF
+cat <<EOF
 
 访问地址: http://服务器地址:${APP_PORT}
 安装目录: ${INSTALL_DIR}
 
-当前未设置 APP_ISSUER，认证、管理和 OAuth/OIDC 功能处于安全禁用状态。
-域名和 HTTPS 准备好以后执行：
+新生成的 .env 不包含 APP_ISSUER。数据库尚未设置 Issuer 时，服务运行在保护模式：
+健康检查和静态前端保持可用；不存在 Owner 时可公开初始化首个、固定为 ID=1 的 Owner，
+该 Owner 可以登录并进入管理设置。注册、普通用户创建、管理员/Owner 创建保持关闭；
+只有依赖正式 Issuer 的 OAuth/OIDC、Discovery、JWKS 和外部登录路由关闭。
 
-  cd "${INSTALL_DIR}"
-  docker compose --env-file .env -f compose.yml run --rm app \
-    configure-issuer https://auth.example.com
-
-APP_ISSUER 会写入 PostgreSQL；后续变更需由 Owner 在管理设置页确认并通过 CAS 更新。
+请先完成首个 Owner 初始化，再由 Owner 在管理设置中写入固定的 HTTPS Issuer。
+写入会保存到 PostgreSQL app_settings，并在当前进程热更新；不能从请求 Host 或代理头推导。
+ADMIN_TOKEN 保留为管理 API 的恢复通道（为空时仍遵守管理 API 的禁用规则）。
 管理员 Token 和全部随机密钥只保存在 ${ENV_FILE}，请备份并保持私密。
 EOF
+if [[ -n "$APP_ISSUER" ]]; then
+    printf '%s\n' '检测到旧环境中的 APP_ISSUER；它仅按兼容规则在数据库没有 Issuer 时导入，数据库设置优先。'
 fi

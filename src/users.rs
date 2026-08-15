@@ -1,3 +1,4 @@
+mod auth_audit;
 pub mod avatar_handlers;
 pub mod avatar_image;
 pub mod credentials;

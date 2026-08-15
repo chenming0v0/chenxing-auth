@@ -1,6 +1,8 @@
 pub mod domain;
 pub mod issuer;
 pub mod issuer_runtime;
+#[cfg(test)]
+mod issuer_runtime_tests;
 pub(crate) mod persisted;
 pub mod repository;
 pub mod security_limits;

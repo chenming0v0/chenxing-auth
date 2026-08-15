@@ -84,15 +84,22 @@ pub(super) async fn system_status(State(state): State<AppState>) -> Response {
 }
 
 async fn issuer_converged(state: &AppState) -> bool {
-    let persisted = match crate::settings::issuer::load(&state.database).await {
+    let persisted = match crate::settings::issuer::load_raw(&state.database).await {
         Ok(persisted) => persisted,
         Err(_) => return false,
     };
-    match (persisted, state.issuer.state().loaded()) {
-        (None, None) => false,
-        (Some(persisted), Some(loaded)) => {
+    let runtime = state.issuer.state();
+    match (persisted, runtime.as_ref()) {
+        (None, crate::settings::IssuerRuntimeState::AwaitingIssuer) => true,
+        (Some(persisted), crate::settings::IssuerRuntimeState::Ready(loaded)) => {
+            let Some(value) = persisted.value else {
+                return false;
+            };
+            let Ok(value) = crate::config::IssuerUrl::parse(&value) else {
+                return false;
+            };
             persisted.generation == loaded.generation()
-                && persisted.value == loaded.issuer().as_str()
+                && value.as_str() == loaded.issuer().as_str()
         }
         _ => false,
     }

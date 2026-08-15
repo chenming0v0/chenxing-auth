@@ -134,21 +134,34 @@ impl AppState {
     /// 生产启动路径：监听前解析持久化 Issuer，不改变 [`Self::new`] 的懒加载语义。
     pub async fn new_with_persisted_issuer(mut config: Config) -> Result<Self, StateError> {
         let database = crate::db::connect(&config)?;
-        let (issuer, invalid_generation) =
+        let raw = crate::settings::issuer::load_raw(&database).await?;
+        let issuer = if raw.as_ref().is_some_and(|record| {
+            record
+                .value
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        }) {
+            // A row with an empty value is persisted state, not bootstrap absence.
+            config.issuer = None;
+            IssuerRuntime::new_from_raw(&config, raw.as_ref())
+        } else {
             match crate::settings::issuer::resolve(&mut config, &database).await {
-                Ok(issuer) => (issuer, None),
+                Ok(Some(record)) => IssuerRuntime::new(&config, Some(&record))?,
+                Ok(None) => {
+                    let raw = crate::settings::issuer::load_raw(&database).await?;
+                    IssuerRuntime::new_from_raw(&config, raw.as_ref())
+                }
                 Err(crate::settings::IssuerSettingError::Invalid(_)) => {
                     let generation = crate::settings::issuer::load_raw(&database)
-                        .await
-                        .ok()
-                        .flatten()
+                        .await?
                         .map(|record| record.generation)
                         .unwrap_or_default();
-                    (None, Some(generation))
+                    IssuerRuntime::new_invalid(&config, generation)
                 }
                 Err(error) => return Err(error.into()),
-            };
-        Self::new_with_pool_and_issuer(config, database, issuer, invalid_generation).await
+            }
+        };
+        Self::new_with_pool_and_issuer(config, database, issuer).await
     }
 
     /// 用另一个时钟重建全部时间敏感的 store 与 service。
@@ -185,25 +198,26 @@ impl AppState {
         config: Config,
         database: crate::db::Database,
     ) -> Result<Self, StateError> {
-        let issuer = config.issuer.as_ref().map(|issuer| IssuerRecord {
-            value: issuer.as_str().to_owned(),
-            generation: 1,
-            updated_at: time::OffsetDateTime::now_utc(),
-        });
-        Self::new_with_pool_and_issuer(config, database, issuer, None).await
+        let issuer = match config.issuer.as_ref() {
+            Some(issuer) => IssuerRuntime::new(
+                &config,
+                Some(&IssuerRecord {
+                    value: issuer.as_str().to_owned(),
+                    generation: 1,
+                    updated_at: time::OffsetDateTime::now_utc(),
+                }),
+            )?,
+            None => IssuerRuntime::new_from_raw(&config, None),
+        };
+        Self::new_with_pool_and_issuer(config, database, issuer).await
     }
 
     async fn new_with_pool_and_issuer(
         config: Config,
         database: crate::db::Database,
-        issuer_record: Option<IssuerRecord>,
-        invalid_generation: Option<i64>,
+        issuer: IssuerRuntime,
     ) -> Result<Self, StateError> {
         config.validate_cookie_security()?;
-        let issuer = match invalid_generation {
-            Some(generation) => IssuerRuntime::new_invalid(&config, generation),
-            None => IssuerRuntime::new(&config, issuer_record.as_ref())?,
-        };
 
         // 静态根先解析：这是纯配置校验，放在生成 RSA 私钥和连 Redis 之前，配置错误
         // 就不会等到副作用做完才暴露。canonicalize 与 stat 是阻塞 I/O，和密钥加载
@@ -349,8 +363,12 @@ impl AppState {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
+            let expected = self.issuer.state();
             match crate::settings::issuer::load_raw(&self.database).await {
-                Ok(record) => match self.issuer.apply_raw(record.as_ref()) {
+                Ok(record) => match self
+                    .issuer
+                    .apply_raw_if_unchanged(&expected, record.as_ref())
+                {
                     Ok(Some(snapshot)) => tracing::info!(
                         event = "issuer.runtime_applied",
                         generation = snapshot.generation(),

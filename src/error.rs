@@ -220,6 +220,20 @@ pub fn service_unavailable(code: &'static str, message: impl Into<String>) -> Re
         .into_response()
 }
 
+pub fn issuer_not_configured() -> Response {
+    service_unavailable(
+        "issuer_not_configured",
+        "the application issuer is not configured",
+    )
+}
+
+pub fn issuer_runtime_invalid() -> Response {
+    service_unavailable(
+        "issuer_runtime_invalid",
+        "the persisted application issuer could not be loaded",
+    )
+}
+
 pub fn internal() -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
