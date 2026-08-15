@@ -3,7 +3,7 @@ import { Link } from '../../router'
 import { ApiError, apiFetch, type SecurityEventDetail } from '../../api'
 import { Badge, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { formatDate } from '../../data'
-import { ActionBadge, previewDetail } from './security-logs-shared'
+import { ActionBadge } from './security-logs-shared'
 
 /** 敏感值默认打码，点眼睛切换明文；值缺失（后端未记录）时显示占位符。 */
 function MaskedValue({ value, label }: { value: string | null; label: string }) {
@@ -36,7 +36,7 @@ function DetailField({ label, children }: { label: string; children: React.React
 
 type DetailState =
   | { kind: 'loading' }
-  | { kind: 'ready'; data: SecurityEventDetail; preview: boolean }
+  | { kind: 'ready'; data: SecurityEventDetail }
   | { kind: 'error'; message: string }
 
 export function SecurityLogDetail({ id }: { id: number }) {
@@ -46,14 +46,11 @@ export function SecurityLogDetail({ id }: { id: number }) {
     let active = true
     setState({ kind: 'loading' })
     void apiFetch<SecurityEventDetail>(`/api/v1/auth/security-events/${id}`)
-      .then((data) => { if (active) setState({ kind: 'ready', data, preview: false }) })
+      .then((data) => { if (active) setState({ kind: 'ready', data }) })
       .catch((reason: unknown) => {
         if (!active) return
-        /* 404 兼有「接口未上线」与「记录不存在」两义：能命中示例数据就当预览，
-           否则按记录缺失处理。后端上线后真实 id 不会命中示例，语义自然收敛。 */
         if (reason instanceof ApiError && reason.status === 404) {
-          const preview = previewDetail(id)
-          setState(preview ? { kind: 'ready', data: preview, preview: true } : { kind: 'error', message: '日志记录不存在或已失效。' })
+          setState({ kind: 'error', message: '日志记录不存在或已失效。' })
           return
         }
         setState({ kind: 'error', message: reason instanceof Error ? reason.message : '日志详情加载失败。' })
@@ -80,9 +77,6 @@ export function SecurityLogDetail({ id }: { id: number }) {
   return (
     <>
       <PageIntro eyebrow="// Security · Log Detail" title="日志详情" description={`授权记录 #${event.id}`} action={back} />
-      {state.preview ? (
-        <div className="mb-4"><Notice tone="info">当前为示例数据预览：详情接口尚未上线（GitHub Issue #308）。</Notice></div>
-      ) : null}
       <div className="space-y-6">
         <HudPanel>
           <h2 className="chenxing-h2 mb-5 flex items-center gap-2">
