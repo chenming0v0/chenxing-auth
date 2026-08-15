@@ -22,13 +22,12 @@ async fn business_advisory_locks_do_not_collide_with_user_ids() {
             .execute(&mut *user_transaction)
             .await
             .expect("acquire user bigint lock");
-        let duplicate_user_available: bool = chenxing_auth::sqlx::query_scalar(
-            "SELECT pg_try_advisory_xact_lock($1::bigint)",
-        )
-        .bind(user_id)
-        .fetch_one(&pool)
-        .await
-        .expect("try duplicate user lock");
+        let duplicate_user_available: bool =
+            chenxing_auth::sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1::bigint)")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("try duplicate user lock");
         assert!(
             !duplicate_user_available,
             "user lock {user_id} stopped serializing callers"
