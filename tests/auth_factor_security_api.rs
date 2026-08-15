@@ -436,7 +436,7 @@ async fn committed_enrollment_wins_before_password_session_write() {
         &HeaderMap::new(),
         None,
         chenxing_auth::auth_factors::session::StaleCredentialCode::InvalidCredentials,
-        Some(true),
+        true,
     )
     .await;
     assert_eq!(response.status(), StatusCode::ACCEPTED);
