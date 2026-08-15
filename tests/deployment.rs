@@ -70,10 +70,19 @@ fn ci_validates_the_remote_installer_without_weakening_coverage() {
 
 #[test]
 fn deployment_configures_redis_namespaces_without_breaking_existing_env_files() {
-    assert!(ENV_EXAMPLE.contains("REDIS_NAMESPACE=replace-with-unique-installation-id"));
-    assert!(ENV_EXAMPLE.contains("Only upgraded deployments"));
+    let example_namespaces = ENV_EXAMPLE
+        .lines()
+        .filter(|line| line.starts_with("REDIS_NAMESPACE="))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        example_namespaces,
+        ["REDIS_NAMESPACE="],
+        ".env.example must leave the required namespace empty instead of shipping a shared value"
+    );
+    assert!(ENV_EXAMPLE.contains("explicit upgrade compatibility"));
     assert!(
-        PRODUCTION_COMPOSE.contains("REDIS_NAMESPACE: ${REDIS_NAMESPACE:?"),
+        PRODUCTION_COMPOSE.lines().any(|line| line.trim()
+            == "REDIS_NAMESPACE: ${REDIS_NAMESPACE:?set REDIS_NAMESPACE to a unique non-empty value}"),
         "production Compose must reject a missing or empty namespace"
     );
     assert!(!PRODUCTION_COMPOSE.contains("REDIS_NAMESPACE:-"));
