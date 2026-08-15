@@ -69,6 +69,7 @@ if [[ -f .env ]]; then
     # the runtime issuer through the Owner settings API after bootstrap.
     APP_ISSUER="$(read_env_value APP_ISSUER)"
     COOKIE_SECURE="$(read_env_value COOKIE_SECURE)"
+    ensure_env_value REDIS_NAMESPACE legacy
 else
     APP_ISSUER=""
     if ! command -v openssl >/dev/null 2>&1; then
@@ -101,6 +102,7 @@ POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 POSTGRES_RUNTIME_USER=${POSTGRES_RUNTIME_USER}
 POSTGRES_RUNTIME_PASSWORD=${POSTGRES_RUNTIME_PASSWORD}
 SESSION_TTL_SECONDS=${SESSION_TTL_SECONDS:-604800}
+REDIS_NAMESPACE=${REDIS_NAMESPACE:-production}
 AUDIT_ARCHIVE_ENABLED=${AUDIT_ARCHIVE_ENABLED:-false}
 AUDIT_RETENTION_DAYS=${AUDIT_RETENTION_DAYS:-2555}
 RUST_LOG=${RUST_LOG:-chenxing_auth=info,tower_http=info}

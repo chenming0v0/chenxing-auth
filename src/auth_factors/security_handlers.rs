@@ -10,7 +10,7 @@ use webauthn_rs::prelude::RegisterPublicKeyCredential;
 use webauthn_rs_core::proto::CreationChallengeResponse;
 
 use crate::{
-    api::extract::{RequestIssuer, SessionRead, SessionWrite},
+    api::extract::{ApiJson, RequestIssuer, SessionRead, SessionWrite},
     audit::AuditEvent,
     auth_factors::service::{
         AuthFactorServiceError, EnrollmentFinish, EnrollmentStart, SelfServiceRemovalOutcome,
@@ -126,7 +126,7 @@ pub async fn start_security_totp_enrollment(
     State(state): State<AppState>,
     issuer: RequestIssuer,
     session: SessionWrite,
-    Json(_): Json<EmptyInput>,
+    ApiJson(_): ApiJson<EmptyInput>,
 ) -> Response {
     let Some(profile) = (match state.users.find_profile(session.user_id).await {
         Ok(profile) => profile,
@@ -182,7 +182,7 @@ pub async fn confirm_security_totp_enrollment(
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     session: SessionWrite,
-    Json(input): Json<TotpConfirmInput>,
+    ApiJson(input): ApiJson<TotpConfirmInput>,
 ) -> Response {
     let result = state
         .factors
@@ -208,7 +208,7 @@ pub async fn confirm_security_totp_enrollment(
 pub async fn start_security_passkey_registration(
     State(state): State<AppState>,
     session: SessionWrite,
-    Json(_): Json<EmptyInput>,
+    ApiJson(_): ApiJson<EmptyInput>,
 ) -> Response {
     let Some(profile) = (match state.users.find_profile(session.user_id).await {
         Ok(profile) => profile,
@@ -256,7 +256,7 @@ pub async fn finish_security_passkey_registration(
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     session: SessionWrite,
-    Json(input): Json<PasskeyFinishInput>,
+    ApiJson(input): ApiJson<PasskeyFinishInput>,
 ) -> Response {
     let result = state
         .factors
@@ -352,7 +352,7 @@ pub async fn remove_security_totp_factor(
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     session: SessionWrite,
-    Json(input): Json<FactorRemovalInput>,
+    ApiJson(input): ApiJson<FactorRemovalInput>,
 ) -> Response {
     remove_factor(state, connect_info, headers, session, input, "totp").await
 }
@@ -362,7 +362,7 @@ pub async fn remove_security_passkey_factor(
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     session: SessionWrite,
-    Json(input): Json<FactorRemovalInput>,
+    ApiJson(input): ApiJson<FactorRemovalInput>,
 ) -> Response {
     remove_factor(state, connect_info, headers, session, input, "passkey").await
 }

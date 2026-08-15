@@ -13,7 +13,7 @@ use super::{
     service::UserServiceError,
 };
 use crate::{
-    api::extract::SessionWrite,
+    api::extract::{ApiJson, SessionWrite},
     audit::AuditEvent,
     auth_factors::{
         handlers::factor_key_unavailable_response,
@@ -34,7 +34,7 @@ pub async fn register_user(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(input): Json<RegistrationInput>,
+    ApiJson(input): ApiJson<RegistrationInput>,
 ) -> Response {
     if !state.issuer.is_ready() {
         return if state.issuer.is_awaiting_configuration() {
@@ -143,7 +143,7 @@ pub async fn login_user(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(input): Json<LoginInput>,
+    ApiJson(input): ApiJson<LoginInput>,
 ) -> Response {
     let totp_code = input.totp_code.clone();
     // 审计的 `account_ref` 必须与限流的账号维度用同一个键（Issue #302）。

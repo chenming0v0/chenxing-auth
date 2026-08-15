@@ -6,8 +6,11 @@ use super::request_store_scripts::{
     PENDING_CAPACITY_SCRIPT, PENDING_REPLACE_SCRIPT, PENDING_TAKE_IF_MATCHES_SCRIPT,
     PENDING_TAKE_SCRIPT,
 };
+#[path = "request_store_keys.rs"]
+mod keys;
 use crate::{
     redis_client::RedisClient,
+    redis_keyspace::RedisKeyspace,
     settings::{SecurityLimitsSetting, SettingsService, SettingsServiceError},
 };
 
@@ -20,6 +23,7 @@ pub const MAX_PENDING_REQUESTS_GLOBAL: u64 = 1_000;
 pub struct AuthorizationRequestStore {
     client: RedisClient,
     settings: Option<SettingsService>,
+    keyspace: RedisKeyspace,
 }
 
 #[derive(Debug, Error)]
@@ -39,6 +43,15 @@ impl AuthorizationRequestStore {
         Self {
             client: client.into(),
             settings: None,
+            keyspace: RedisKeyspace::default(),
+        }
+    }
+
+    pub fn with_keyspace(client: impl Into<RedisClient>, keyspace: RedisKeyspace) -> Self {
+        Self {
+            client: client.into(),
+            settings: None,
+            keyspace,
         }
     }
 
@@ -46,6 +59,19 @@ impl AuthorizationRequestStore {
         Self {
             client: client.into(),
             settings: Some(settings),
+            keyspace: RedisKeyspace::default(),
+        }
+    }
+
+    pub fn new_with_settings_and_keyspace(
+        client: impl Into<RedisClient>,
+        settings: SettingsService,
+        keyspace: RedisKeyspace,
+    ) -> Self {
+        Self {
+            client: client.into(),
+            settings: Some(settings),
+            keyspace,
         }
     }
 
@@ -76,18 +102,21 @@ impl AuthorizationRequestStore {
         let payload = serde_json::to_string(request)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let result: i64 = Script::new(PENDING_CAPACITY_SCRIPT)
-            .key(Self::key(&request.request_id))
-            .key(Self::client_capacity_key(&request.client_id))
-            .key(Self::global_capacity_key())
-            .key(Self::client_index_key(&request.client_id))
-            .key(Self::global_index_key())
-            .key(Self::global_expiry_key())
+            .key(self.key(&request.request_id))
+            .key(self.client_capacity_key(&request.client_id))
+            .key(self.global_capacity_key())
+            .key(self.client_index_key(&request.client_id))
+            .key(self.global_index_key())
+            .key(self.global_expiry_key())
             .arg(payload)
             .arg(limits.pending_request_ttl_seconds)
             .arg(limits.max_pending_requests_per_client)
             .arg(limits.max_pending_requests_global)
             .arg(&request.client_id)
             .arg(&request.request_id)
+            .arg(self.request_prefix())
+            .arg(self.client_index_prefix())
+            .arg(self.client_capacity_prefix())
             .invoke_async(&mut connection)
             .await?;
         Ok(result == 1)
@@ -108,12 +137,14 @@ impl AuthorizationRequestStore {
     ) -> Result<Option<PendingAuthorization>, AuthorizationRequestStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload: Option<String> = Script::new(PENDING_TAKE_SCRIPT)
-            .key(Self::key(request_id))
-            .key(Self::global_index_key())
-            .key(Self::global_capacity_key())
-            .key(Self::global_expiry_key())
+            .key(self.key(request_id))
+            .key(self.global_index_key())
+            .key(self.global_capacity_key())
+            .key(self.global_expiry_key())
             .arg(request_id)
             .arg(limits.pending_request_ttl_seconds)
+            .arg(self.client_index_prefix())
+            .arg(self.client_capacity_prefix())
             .invoke_async(&mut connection)
             .await?;
         payload
@@ -141,13 +172,15 @@ impl AuthorizationRequestStore {
         let expected = serde_json::to_string(request)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload: Option<String> = Script::new(PENDING_TAKE_IF_MATCHES_SCRIPT)
-            .key(Self::key(request_id))
-            .key(Self::global_index_key())
-            .key(Self::global_capacity_key())
-            .key(Self::global_expiry_key())
+            .key(self.key(request_id))
+            .key(self.global_index_key())
+            .key(self.global_capacity_key())
+            .key(self.global_expiry_key())
             .arg(expected)
             .arg(request_id)
             .arg(limits.pending_request_ttl_seconds)
+            .arg(self.client_index_prefix())
+            .arg(self.client_capacity_prefix())
             .invoke_async(&mut connection)
             .await?;
         payload
@@ -178,16 +211,18 @@ impl AuthorizationRequestStore {
         let replacement = serde_json::to_string(replacement)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let replaced: i64 = Script::new(PENDING_REPLACE_SCRIPT)
-            .key(Self::key(request_id))
-            .key(Self::global_index_key())
-            .key(Self::global_capacity_key())
-            .key(Self::global_expiry_key())
+            .key(self.key(request_id))
+            .key(self.global_index_key())
+            .key(self.global_capacity_key())
+            .key(self.global_expiry_key())
             .arg(expected)
             .arg(replacement)
             .arg(request_id)
             .arg(limits.pending_request_ttl_seconds)
             .arg(limits.max_pending_requests_per_client)
             .arg(limits.max_pending_requests_global)
+            .arg(self.client_index_prefix())
+            .arg(self.client_capacity_prefix())
             .invoke_async(&mut connection)
             .await?;
         Ok(replaced == 1)
@@ -198,7 +233,7 @@ impl AuthorizationRequestStore {
         request_id: &str,
     ) -> Result<Option<PendingAuthorization>, AuthorizationRequestStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let payload: Option<String> = connection.get(Self::key(request_id)).await?;
+        let payload: Option<String> = connection.get(self.key(request_id)).await?;
         payload
             .map(|payload| serde_json::from_str(&payload))
             .transpose()
@@ -212,30 +247,6 @@ impl AuthorizationRequestStore {
             Some(settings) => Ok(settings.security_limits().await?),
             None => Ok(SecurityLimitsSetting::default()),
         }
-    }
-
-    fn key(request_id: &str) -> String {
-        format!("chenxing:oauth:request:{request_id}")
-    }
-
-    fn client_capacity_key(client_id: &str) -> String {
-        format!("chenxing:oauth:pending:client:{client_id}")
-    }
-
-    fn global_capacity_key() -> &'static str {
-        "chenxing:oauth:pending:global"
-    }
-
-    fn client_index_key(client_id: &str) -> String {
-        format!("chenxing:oauth:pending:client-requests:{client_id}")
-    }
-
-    fn global_index_key() -> &'static str {
-        "chenxing:oauth:pending:index"
-    }
-
-    fn global_expiry_key() -> &'static str {
-        "chenxing:oauth:pending:expiry"
     }
 }
 
@@ -339,7 +350,7 @@ mod tests {
             .get_multiplexed_async_connection()
             .await
             .expect("Redis connection");
-        let key = AuthorizationRequestStore::key(&request.request_id);
+        let key = store.key(&request.request_id);
         let payload: String = connection.get(&key).await.expect("stored pending JSON");
         let mut json: serde_json::Value = serde_json::from_str(&payload).expect("parse pending");
         json["future_field"] = serde_json::json!({"version": 2});
@@ -453,7 +464,7 @@ mod tests {
             .expect("Redis connection");
         // Redis owns this TTL clock; advancing Tokio time cannot expire a remote Redis key.
         let _: bool = connection
-            .expire(format!("chenxing:oauth:request:{}", expired.request_id), 0)
+            .expire(store.key(&expired.request_id), 0)
             .await
             .expect("expire pending request");
         assert!(

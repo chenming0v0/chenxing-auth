@@ -33,10 +33,10 @@ fn unparseable_cached_values_are_treated_as_a_miss() {
 
 #[test]
 fn cache_key_is_bound_to_both_user_and_client() {
-    let base = ConsentStateCache::key("user-1", "client-1");
+    let base = ConsentStateCache::legacy_key("user-1", "client-1");
 
-    assert_ne!(base, ConsentStateCache::key("user-1", "client-2"));
-    assert_ne!(base, ConsentStateCache::key("user-2", "client-1"));
+    assert_ne!(base, ConsentStateCache::legacy_key("user-1", "client-2"));
+    assert_ne!(base, ConsentStateCache::legacy_key("user-2", "client-1"));
     // 键前缀随值格式一同更换，新代码不会读到旧格式的无版本值
     assert!(base.starts_with("chenxing:oauth:consent-state:"));
     // user_id / client_id 不得出现在 keyspace 中

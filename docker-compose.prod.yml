@@ -17,6 +17,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_RUNTIME_USER}:${POSTGRES_RUNTIME_PASSWORD}@postgres:5432/${POSTGRES_DB}
       MIGRATION_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
+      REDIS_NAMESPACE: ${REDIS_NAMESPACE:-legacy}
     ports:
       - "${APP_PORT:-3000}:3000"
     volumes:

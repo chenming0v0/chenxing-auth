@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::{
     redis_client::RedisClient,
+    redis_keyspace::RedisKeyspace,
     settings::{SecurityLimitsSetting, SettingsService, SettingsServiceError},
 };
 
@@ -152,6 +153,23 @@ impl ExternalLoginStateStore {
         let mut store = Self::new_with_limits(
             client,
             STATE_KEY_PREFIX.to_owned(),
+            EXTERNAL_LOGIN_STATE_RATE_LIMIT,
+            EXTERNAL_LOGIN_STATE_MAX_PENDING,
+            EXTERNAL_LOGIN_STATE_TTL_SECONDS,
+            EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
+        );
+        store.settings = Some(settings);
+        store
+    }
+
+    pub fn new_with_settings_and_keyspace(
+        client: impl Into<RedisClient>,
+        settings: SettingsService,
+        keyspace: RedisKeyspace,
+    ) -> Self {
+        let mut store = Self::new_with_limits(
+            client,
+            keyspace.prefix(STATE_KEY_PREFIX),
             EXTERNAL_LOGIN_STATE_RATE_LIMIT,
             EXTERNAL_LOGIN_STATE_MAX_PENDING,
             EXTERNAL_LOGIN_STATE_TTL_SECONDS,

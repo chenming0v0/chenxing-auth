@@ -271,16 +271,18 @@ impl AppState {
         // 逐次查询 `app_settings`（#300）；管理接口写入后主动刷新该缓存，因此同一进程
         // 内的执行路径立即看到新阈值，多实例部署由缓存 TTL 收敛。
         let auth_limiter: Arc<dyn AuthFailureLimiter> =
-            Arc::new(RedisAuthFailureLimiter::with_settings(
+            Arc::new(RedisAuthFailureLimiter::with_settings_and_keyspace(
                 redis.clone(),
                 config.auth_limiter_failure_policy,
                 settings.clone(),
+                config.redis_keyspace.clone(),
             ));
         let sessions = SessionStore::with_metadata_and_key_ring(
             redis.clone(),
             database.clone(),
             config.auth_encryption_keys.clone(),
         )
+        .with_keyspace(config.redis_keyspace.clone())
         .with_session_policy(
             Duration::from_secs(config.session_idle_timeout_seconds),
             config.session_max_concurrent_sessions,
@@ -292,29 +294,41 @@ impl AppState {
             auth_limiter.clone(),
             config.missing_source_ip_policy,
         );
-        let factors = AuthFactorService::new_with_source_ip_policy(
+        let factors = AuthFactorService::new_with_source_ip_policy_and_keyspace(
             database.clone(),
             redis.clone(),
             auth_limiter,
             config.auth_encryption_keys.clone(),
             settings.clone(),
             config.missing_source_ip_policy,
+            config.redis_keyspace.clone(),
         )
         .with_clock(clock.clone());
         let authorization_codes =
-            AuthorizationCodeStore::new(redis.clone()).with_clock(clock.clone());
-        let refresh_tokens = RefreshTokenStore::new(redis.clone()).with_clock(clock.clone());
+            AuthorizationCodeStore::with_keyspace(redis.clone(), config.redis_keyspace.clone())
+                .with_clock(clock.clone());
+        let refresh_tokens =
+            RefreshTokenStore::with_keyspace(redis.clone(), config.redis_keyspace.clone())
+                .with_clock(clock.clone());
         // Secret 版本负责兑换时的硬失效；RefreshTokenStore 负责在轮换后立即
         // 清理已经失效的 Redis 记录，避免它们一直占据索引与 TTL（#62/#310）。
         let clients =
             ClientService::with_limits(database.clone(), config.client_registration_limits.clone())
                 .with_refresh_tokens(refresh_tokens.clone());
-        let authorization_requests =
-            AuthorizationRequestStore::new_with_settings(redis.clone(), settings.clone());
+        let authorization_requests = AuthorizationRequestStore::new_with_settings_and_keyspace(
+            redis.clone(),
+            settings.clone(),
+            config.redis_keyspace.clone(),
+        );
         let consents = ConsentService::new(database.clone());
-        let revocations = TokenRevocationStore::new_with_pool(redis.clone(), database.clone());
-        let oauth_quotas = OAuthQuotaStore::new(redis.clone());
-        let qps = QpsRateLimiter::new(redis.clone());
+        let revocations = TokenRevocationStore::new_with_pool_and_keyspace(
+            redis.clone(),
+            database.clone(),
+            config.redis_keyspace.clone(),
+        );
+        let oauth_quotas =
+            OAuthQuotaStore::with_keyspace(redis.clone(), config.redis_keyspace.clone());
+        let qps = QpsRateLimiter::with_keyspace(redis.clone(), config.redis_keyspace.clone());
         let plans = PlanService::new(database.clone()).with_clock(clock.clone());
         let admin = AdminAuthenticator::new(config.admin_token.clone());
         let audit = AuditService::new(database.clone()).with_clock(clock.clone());
@@ -325,8 +339,11 @@ impl AppState {
             secret_manager,
             EndpointPolicy::new(config.oauth_provider_loopback_enabled),
         )?;
-        let external_login_states =
-            ExternalLoginStateStore::new_with_settings(redis.clone(), settings.clone());
+        let external_login_states = ExternalLoginStateStore::new_with_settings_and_keyspace(
+            redis.clone(),
+            settings.clone(),
+            config.redis_keyspace.clone(),
+        );
 
         Ok(Self {
             config,

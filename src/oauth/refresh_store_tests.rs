@@ -24,8 +24,9 @@ fn legacy_tombstones_default_to_a_consumed_credential() {
 /// 任意一个旧 token 都会给全部旧 token 写上同一个墓志，把它们连坐撤销。
 #[test]
 fn legacy_tokens_get_a_private_revocation_scope() {
-    let first = FamilyScope::new("", "hash-one");
-    let second = FamilyScope::new("", "hash-two");
+    let keyspace = crate::redis_keyspace::RedisKeyspace::default();
+    let first = FamilyScope::new(&keyspace, "", "hash-one");
+    let second = FamilyScope::new(&keyspace, "", "hash-two");
 
     assert_ne!(first.revoked_key, second.revoked_key);
     assert_ne!(first.index_key, second.index_key);
@@ -36,8 +37,9 @@ fn legacy_tokens_get_a_private_revocation_scope() {
 /// 必须解析到同一组键，否则 family 撤销就不是幂等的。
 #[test]
 fn family_scope_ignores_which_member_was_submitted() {
-    let from_first_member = FamilyScope::new("family-7", "hash-one");
-    let from_second_member = FamilyScope::new("family-7", "hash-two");
+    let keyspace = crate::redis_keyspace::RedisKeyspace::default();
+    let from_first_member = FamilyScope::new(&keyspace, "family-7", "hash-one");
+    let from_second_member = FamilyScope::new(&keyspace, "family-7", "hash-two");
 
     assert_eq!(
         from_first_member.revoked_key,

@@ -15,7 +15,7 @@ use super::{
     user_creation::user_creation_error_response,
 };
 use crate::{
-    api::extract::AdminWrite,
+    api::extract::{AdminWrite, ApiJson},
     audit::AuditEvent,
     error,
     state::AppState,
@@ -87,7 +87,7 @@ pub async fn bootstrap_admin(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(input): Json<BootstrapAdmin>,
+    ApiJson(input): ApiJson<BootstrapAdmin>,
 ) -> Response {
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
@@ -142,7 +142,7 @@ pub async fn bootstrap_admin(
 pub async fn create_admin(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<CreateAdmin>,
+    ApiJson(input): ApiJson<CreateAdmin>,
 ) -> Response {
     let actor = match admin.authorize(&state, AdminPermission::ManageRoles).await {
         Ok(actor) => actor,

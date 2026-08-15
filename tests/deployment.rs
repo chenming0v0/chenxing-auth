@@ -69,6 +69,25 @@ fn ci_validates_the_remote_installer_without_weakening_coverage() {
 }
 
 #[test]
+fn deployment_configures_redis_namespaces_without_breaking_existing_env_files() {
+    assert!(ENV_EXAMPLE.contains("REDIS_NAMESPACE=legacy"));
+    assert!(
+        PRODUCTION_COMPOSE.contains("REDIS_NAMESPACE: ${REDIS_NAMESPACE:-legacy}"),
+        "Compose must preserve legacy keys when an upgraded .env has no namespace"
+    );
+    assert!(REMOTE_INSTALL_SCRIPT.contains("REDIS_NAMESPACE=production"));
+    assert!(
+        REMOTE_INSTALL_SCRIPT.contains("append_env_default REDIS_NAMESPACE legacy"),
+        "existing remote installs must retain legacy keys"
+    );
+    assert!(INSTALL_SCRIPT.contains("REDIS_NAMESPACE=${REDIS_NAMESPACE:-production}"));
+    assert!(
+        INSTALL_SCRIPT.contains("ensure_env_value REDIS_NAMESPACE legacy"),
+        "existing source installs must retain legacy keys"
+    );
+}
+
+#[test]
 fn release_workflow_keeps_all_supported_targets() {
     for target in [
         "x86_64-unknown-linux-gnu",

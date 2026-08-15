@@ -26,5 +26,9 @@ pub const TEST_QPS_WINDOW_MS: i64 = 60_000;
 ///
 /// 复用 `state.redis`，因此 Redis key 空间与生产路径完全一致，只有窗口长度不同。
 pub fn override_qps_window(state: &mut AppState) {
-    state.qps = QpsRateLimiter::with_window_ms(state.redis.clone(), TEST_QPS_WINDOW_MS);
+    state.qps = QpsRateLimiter::with_window_ms_and_keyspace(
+        state.redis.clone(),
+        TEST_QPS_WINDOW_MS,
+        state.config.redis_keyspace.clone(),
+    );
 }

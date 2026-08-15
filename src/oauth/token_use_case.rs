@@ -4,7 +4,6 @@ use thiserror::Error;
 
 use super::{
     grant_gate::{GrantGateError, effective_grant_scopes},
-    quota::QuotaRefundCancel,
     refresh::RefreshToken,
     session::active_user_epoch,
 };
@@ -338,7 +337,7 @@ pub async fn exchange_code(
     let quota_cancel = code
         .quota_reservation_id
         .as_deref()
-        .map(QuotaRefundCancel::for_reservation);
+        .map(|reservation_id| state.oauth_quotas.refund_cancel(reservation_id));
     match state
         .authorization_codes
         .take_if_matches_with_quota_cancel(code_value, &code, quota_cancel)

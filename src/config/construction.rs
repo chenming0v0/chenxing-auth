@@ -2,6 +2,7 @@ use std::env;
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 use crate::clients::domain::ClientRegistrationLimits;
+use crate::redis_keyspace::RedisKeyspace;
 use crate::web_dist::{DEFAULT_WEB_DIST_DIR, WEB_DIST_DIR_ENV};
 
 use super::admin::admin_token_from_env;
@@ -43,6 +44,7 @@ struct ConfigValues {
     oauth_provider_loopback_enabled: bool,
     database_url: String,
     redis_url: String,
+    redis_keyspace: RedisKeyspace,
     session_ttl_seconds: u64,
     session_idle_timeout_seconds: u64,
     session_max_concurrent_sessions: u64,
@@ -75,6 +77,14 @@ impl Config {
             optional_u64("REQUEST_TIMEOUT_SECONDS", DEFAULT_REQUEST_TIMEOUT_SECONDS)?;
         let database_url = required_env("DATABASE_URL")?;
         let redis_url = required_env("REDIS_URL")?;
+        let redis_keyspace = match env::var(RedisKeyspace::ENV_NAME) {
+            Ok(value) => RedisKeyspace::new(&value)
+                .map_err(|_| ConfigError::InvalidValue(RedisKeyspace::ENV_NAME))?,
+            Err(env::VarError::NotPresent) => RedisKeyspace::default(),
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(ConfigError::InvalidValue(RedisKeyspace::ENV_NAME));
+            }
+        };
         let auth_encryption_keys = parse_auth_encryption_key_ring()?;
         let auth_encryption_key = auth_encryption_keys.active_key().clone();
         // 新部署允许先启动依赖与初始化前端，再把固定 Issuer 写入数据库。旧部署的
@@ -211,6 +221,7 @@ impl Config {
             oauth_provider_loopback_enabled,
             database_url,
             redis_url,
+            redis_keyspace,
             session_ttl_seconds,
             session_idle_timeout_seconds,
             session_max_concurrent_sessions,
@@ -251,6 +262,7 @@ impl Config {
             oauth_provider_loopback_enabled,
             database_url,
             redis_url,
+            redis_keyspace,
             session_ttl_seconds,
             session_idle_timeout_seconds,
             session_max_concurrent_sessions,
@@ -381,6 +393,7 @@ impl Config {
             oauth_provider_loopback_enabled,
             database_url,
             redis_url,
+            redis_keyspace,
             session_ttl_seconds,
             session_idle_timeout_seconds,
             session_max_concurrent_sessions,

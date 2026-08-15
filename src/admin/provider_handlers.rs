@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::{
     admin::{authorization::AdminActor, domain::AdminPermission},
-    api::extract::{AdminRead, AdminWrite, RequestIssuer},
+    api::extract::{AdminRead, AdminWrite, ApiJson, RequestIssuer},
     audit::AuditEvent,
     error,
     oauth::providers::{domain::ProviderInput, service::ExternalOAuthError},
@@ -74,7 +74,7 @@ pub async fn create_provider(
     State(state): State<AppState>,
     issuer: RequestIssuer,
     admin: AdminWrite,
-    Json(input): Json<ProviderInput>,
+    ApiJson(input): ApiJson<ProviderInput>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageIdentityProviders)
@@ -117,7 +117,7 @@ pub async fn update_provider(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(slug): Path<String>,
-    Json(input): Json<ProviderInput>,
+    ApiJson(input): ApiJson<ProviderInput>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageIdentityProviders)

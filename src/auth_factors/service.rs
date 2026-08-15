@@ -8,6 +8,7 @@ use crate::{
     clock::SharedClock,
     config::AuthEncryptionKeyRing,
     redis_client::RedisClient,
+    redis_keyspace::RedisKeyspace,
     settings::{SettingsService, SettingsServiceError},
     sqlx::PgPool,
     users::domain::{AuthenticatedUser, UserId},
@@ -157,8 +158,28 @@ impl AuthFactorService {
         settings: SettingsService,
         missing_source_ip_policy: MissingSourceIpPolicy,
     ) -> Self {
+        Self::new_with_source_ip_policy_and_keyspace(
+            pool,
+            redis,
+            limiter,
+            encryption_keys,
+            settings,
+            missing_source_ip_policy,
+            RedisKeyspace::default(),
+        )
+    }
+
+    pub fn new_with_source_ip_policy_and_keyspace(
+        pool: PgPool,
+        redis: impl Into<RedisClient>,
+        limiter: Arc<dyn AuthFailureLimiter>,
+        encryption_keys: AuthEncryptionKeyRing,
+        settings: SettingsService,
+        missing_source_ip_policy: MissingSourceIpPolicy,
+        keyspace: RedisKeyspace,
+    ) -> Self {
         Self {
-            tickets: LoginTicketStore::new_with_pool(redis, pool.clone()),
+            tickets: LoginTicketStore::new_with_pool_and_keyspace(redis, pool.clone(), keyspace),
             pool,
             limiter,
             missing_source_ip_policy,
@@ -290,7 +311,7 @@ impl AuthFactorService {
             return Ok(false);
         };
         self.tickets
-            .delete(&LoginTicketStore::key(&ticket_id.to_string()))
+            .delete(&self.tickets.key_for_ticket(&ticket_id.to_string()))
             .await?;
         Ok(true)
     }

@@ -137,6 +137,25 @@ pub fn bad_request(code: &'static str, message: impl Into<String>) -> Response {
         .into_response()
 }
 
+pub fn json_rejection(status: StatusCode) -> Response {
+    let (code, message) = if status == StatusCode::UNSUPPORTED_MEDIA_TYPE {
+        (
+            "unsupported_media_type",
+            "request Content-Type must be application/json",
+        )
+    } else {
+        ("invalid_json", "request body must be valid JSON")
+    };
+    (
+        status,
+        Json(ErrorResponse {
+            code: code.to_owned(),
+            message: message.to_owned(),
+        }),
+    )
+        .into_response()
+}
+
 pub fn conflict(code: &'static str, message: impl Into<String>) -> Response {
     (
         StatusCode::CONFLICT,

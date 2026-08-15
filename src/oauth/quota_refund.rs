@@ -40,6 +40,7 @@ use tokio::time::sleep;
 use super::super::quota_scripts::SCHEDULE_REFUND_SCRIPT;
 use super::{OAuthQuotaError, OAuthQuotaStore, QuotaReservation};
 use crate::clock::SharedClock;
+use crate::redis_keyspace::RedisKeyspace;
 
 /// 后台退款任务的扫描周期。
 ///
@@ -56,8 +57,10 @@ const REFUND_BATCH_SIZE: isize = 100;
 /// 待退台账 ZSET：member = reservation id，score = 授权码过期时刻。
 pub(crate) const PENDING_REFUNDS_ZSET: &str = "chenxing:oauth:quota:refund-pending";
 
-fn reservation_record_key(reservation_id: &str) -> String {
-    format!("chenxing:oauth:quota:reservation:{reservation_id}")
+fn reservation_record_key(keyspace: &RedisKeyspace, reservation_id: &str) -> String {
+    keyspace.key(&format!(
+        "chenxing:oauth:quota:reservation:{reservation_id}"
+    ))
 }
 
 /// 兑换授权码时原子取消待退条目的参数，与授权码 CAS 在同一个 Lua 脚本里执行。
@@ -69,8 +72,12 @@ pub struct QuotaRefundCancel {
 
 impl QuotaRefundCancel {
     pub fn for_reservation(id: &str) -> Self {
+        Self::for_reservation_with_keyspace(id, &RedisKeyspace::default())
+    }
+
+    pub fn for_reservation_with_keyspace(id: &str, keyspace: &RedisKeyspace) -> Self {
         Self {
-            zset_key: PENDING_REFUNDS_ZSET.to_owned(),
+            zset_key: keyspace.key(PENDING_REFUNDS_ZSET),
             member: id.to_owned(),
         }
     }
@@ -86,8 +93,8 @@ impl OAuthQuotaStore {
         let payload = serde_json::to_string(reservation)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let _: i64 = Script::new(SCHEDULE_REFUND_SCRIPT)
-            .key(PENDING_REFUNDS_ZSET)
-            .key(reservation_record_key(&reservation.id))
+            .key(self.pending_refunds_key())
+            .key(reservation_record_key(&self.keyspace, &reservation.id))
             .arg(refund_at_unix)
             .arg(reservation.id.as_str())
             .arg(payload.as_str())
@@ -109,7 +116,11 @@ impl OAuthQuotaStore {
     ) -> Result<(), OAuthQuotaError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let _: () = connection
-            .zadd(PENDING_REFUNDS_ZSET, reservation_id, refund_at_unix as f64)
+            .zadd(
+                self.pending_refunds_key(),
+                reservation_id,
+                refund_at_unix as f64,
+            )
             .await?;
         Ok(())
     }
@@ -123,9 +134,10 @@ impl OAuthQuotaStore {
         now: time::OffsetDateTime,
     ) -> Result<usize, OAuthQuotaError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let pending_refunds_key = self.pending_refunds_key();
         let due: Vec<String> = connection
             .zrangebyscore_limit(
-                PENDING_REFUNDS_ZSET,
+                &pending_refunds_key,
                 0,
                 now.unix_timestamp(),
                 0,
@@ -135,13 +147,13 @@ impl OAuthQuotaStore {
         let mut refunded = 0usize;
         for reservation_id in due {
             let record: Option<String> = connection
-                .get(reservation_record_key(&reservation_id))
+                .get(reservation_record_key(&self.keyspace, &reservation_id))
                 .await?;
             let Some(payload) = record else {
                 // 记录键缺失：只有月边界过期或从未成功登记两种可能，此时周期
                 // 计数器同样已过期，退款是空操作，直接清理成员即可。
                 let _: () = connection
-                    .zrem(PENDING_REFUNDS_ZSET, &reservation_id)
+                    .zrem(&pending_refunds_key, &reservation_id)
                     .await?;
                 continue;
             };
@@ -150,10 +162,10 @@ impl OAuthQuotaStore {
                 Err(error) => {
                     tracing::warn!(error = %error, "dropping malformed OAuth quota refund record");
                     let _: () = connection
-                        .zrem(PENDING_REFUNDS_ZSET, &reservation_id)
+                        .zrem(&pending_refunds_key, &reservation_id)
                         .await?;
                     let _: () = connection
-                        .del(reservation_record_key(&reservation_id))
+                        .del(reservation_record_key(&self.keyspace, &reservation_id))
                         .await?;
                     continue;
                 }
@@ -166,14 +178,22 @@ impl OAuthQuotaStore {
                 continue;
             }
             let _: () = connection
-                .zrem(PENDING_REFUNDS_ZSET, &reservation_id)
+                .zrem(&pending_refunds_key, &reservation_id)
                 .await?;
             let _: () = connection
-                .del(reservation_record_key(&reservation_id))
+                .del(reservation_record_key(&self.keyspace, &reservation_id))
                 .await?;
             refunded += 1;
         }
         Ok(refunded)
+    }
+
+    pub fn refund_cancel(&self, reservation_id: &str) -> QuotaRefundCancel {
+        QuotaRefundCancel::for_reservation_with_keyspace(reservation_id, &self.keyspace)
+    }
+
+    fn pending_refunds_key(&self) -> String {
+        self.keyspace.key(PENDING_REFUNDS_ZSET)
     }
 
     /// 后台退款任务：周期性扫描到期条目并退还配额。

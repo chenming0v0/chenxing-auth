@@ -68,6 +68,7 @@ COMPOSE_PROJECT_NAME=chenxing-auth
 CHENXING_IMAGE=${CHENXING_IMAGE}
 POSTGRES_IMAGE=${POSTGRES_IMAGE}
 REDIS_IMAGE=${REDIS_IMAGE}
+REDIS_NAMESPACE=production
 APP_HOST=0.0.0.0
 APP_PORT=${port}
 ADMIN_TOKEN=$(openssl rand -hex 32)
@@ -107,6 +108,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_RUNTIME_USER}:${POSTGRES_RUNTIME_PASSWORD}@postgres:5432/${POSTGRES_DB}
       MIGRATION_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       REDIS_URL: redis://redis:6379
+      REDIS_NAMESPACE: ${REDIS_NAMESPACE}
     ports:
       - "${APP_PORT}:3000"
     volumes:
@@ -222,6 +224,7 @@ if [[ -f "$ENV_FILE" ]]; then
     append_env_default CHENXING_IMAGE "$DEFAULT_IMAGE"
     append_env_default POSTGRES_IMAGE "$DEFAULT_POSTGRES_IMAGE"
     append_env_default REDIS_IMAGE "$DEFAULT_REDIS_IMAGE"
+    append_env_default REDIS_NAMESPACE legacy
     chmod 600 "$ENV_FILE"
 else
     port="${CHENXING_PORT:-}"

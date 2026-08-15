@@ -20,7 +20,7 @@ use crate::{
     },
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct PageQuery {
     pub page: Option<i64>,
     pub page_size: Option<i64>,
@@ -319,8 +319,11 @@ pub async fn query_audit(
 }
 
 fn bounds(query: &PageQuery) -> Option<(i64, i64, i64)> {
-    let page = query.page.unwrap_or(1).max(1);
-    let page_size = query.page_size.unwrap_or(20).clamp(1, 100);
+    let page = query.page.unwrap_or(1);
+    let page_size = query.page_size.unwrap_or(20);
+    if page < 1 || !(1..=100).contains(&page_size) {
+        return None;
+    }
     Some((page, page_size, (page - 1).checked_mul(page_size)?))
 }
 fn page_response<T: Serialize>(items: Vec<T>, page: i64, page_size: i64, total: i64) -> Response {

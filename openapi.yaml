@@ -16,6 +16,9 @@ info:
     （`REQUEST_TIMEOUT_SECONDS`）时统一返回标准 `503 temporarily_unavailable`，不得改写为内部 API 信封。
     未知 `/oauth/*` 路径仍返回统一 404；其余应用路由使用内部 `ErrorResponse`。
     健康检查与静态 SPA fallback 不套用该请求超时。
+    所有声明 `application/json` requestBody 的内部 API 使用统一提取错误：缺少或错误 Content-Type
+    返回 415 `unsupported_media_type`，JSON 语法错误返回 400 `invalid_json`，字段类型或必填字段错误
+    返回 422 `invalid_json`；响应始终是 `ErrorResponse`，不暴露 serde 字段路径或实现类型。
 servers:
   - url: http://127.0.0.1:3000
     description: 本地开发
@@ -212,6 +215,8 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/login:
     post:
       tags: [User Auth/Account]
@@ -257,8 +262,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PendingLoginResponse' }
-        '415': { description: 请求未声明 application/json，尚未进入登录业务逻辑 }
-        '422': { description: JSON 类型或必填字段不符合 LoginInput，尚未进入登录业务逻辑 }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/totp/setup:
@@ -278,6 +283,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TotpSetupResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/totp/setup/confirm:
     post:
       tags: [User Auth/MFA]
@@ -313,6 +320,8 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/totp/login:
     post:
       tags: [User Auth/MFA]
@@ -347,6 +356,8 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/passkeys/register/start:
     post:
       tags: [User Auth/MFA]
@@ -365,6 +376,8 @@ paths:
               schema: { $ref: '#/components/schemas/WebAuthnOptions' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/passkeys/register/finish:
     post:
       tags: [User Auth/MFA]
@@ -387,6 +400,8 @@ paths:
               schema: { $ref: '#/components/schemas/LoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/passkeys/authentication/start:
     post:
       tags: [User Auth/MFA]
@@ -405,6 +420,8 @@ paths:
               schema: { $ref: '#/components/schemas/WebAuthnOptions' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/passkeys/authentication/finish:
     post:
       tags: [User Auth/MFA]
@@ -427,6 +444,8 @@ paths:
               schema: { $ref: '#/components/schemas/LoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/security/factors:
     get:
       tags: [User Auth/Security]
@@ -468,6 +487,8 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/security/totp/enrollment/confirm:
     post:
       tags: [User Auth/Security]
@@ -493,6 +514,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/security/passkeys/registration/start:
     post:
       tags: [User Auth/Security]
@@ -517,6 +540,8 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/security/passkeys/registration/finish:
     post:
       tags: [User Auth/Security]
@@ -541,6 +566,8 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/security/factors/totp:
     delete:
       tags: [User Auth/Security]
@@ -569,6 +596,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/security/factors/passkey:
     delete:
       tags: [User Auth/Security]
@@ -597,6 +626,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/status:
     get:
       tags: [User Auth/Account]
@@ -608,6 +639,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthStatusResponse' }
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/v1/auth/me:
     get:
       tags: [User Auth/Account]
@@ -640,6 +673,8 @@ paths:
               schema: { $ref: '#/components/schemas/UserMeResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/me/avatar:
     get:
       tags: [User Auth/Account]
@@ -710,6 +745,8 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/entitlements:
     get:
       tags: [User Entitlements]
@@ -754,7 +791,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PagedSecurityEvents' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400': { $ref: '#/components/responses/InvalidPagination' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '500': { $ref: '#/components/responses/InternalServerError' }
   /api/v1/auth/security-events/{event_id}:
@@ -837,6 +874,8 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/authorized-apps:
     get:
       tags: [User Auth/Authorized Apps]
@@ -882,6 +921,8 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/oauth-clients/{client_id}/disable:
     post:
       tags: [User Auth/OAuth Clients]
@@ -1066,6 +1107,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/oauth/authorize/requests/{request_id}/bind:
     post:
       tags: [OAuth/OIDC]
@@ -1203,6 +1246,8 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
         '504': { $ref: '#/components/responses/RequestTimeout' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/bootstrap/status:
     get:
       tags: [Admin Auth]
@@ -1299,6 +1344,8 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/users/{user_id}/{status}:
     post:
       tags: [Admin Users]
@@ -1340,6 +1387,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/users/{user_id}/auth-factors:
     get:
       tags: [Admin Auth Factors]
@@ -1493,6 +1542,8 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/plans:
     get:
       tags: [Admin Plans]
@@ -1529,6 +1580,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/plans/{id}:
     put:
       tags: [Admin Plans]
@@ -1554,6 +1607,8 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/plans/{id}/archive:
     post:
       tags: [Admin Plans]
@@ -1617,6 +1672,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/clients/{client_id}:
     put:
       tags: [Admin Clients]
@@ -1638,6 +1695,8 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/clients/{client_id}/disable:
     post:
       tags: [Admin Clients]
@@ -1702,6 +1761,8 @@ paths:
       responses:
         '201': { description: 创建成功 }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/audit:
     get:
       tags: [Admin Operations]
@@ -1742,7 +1803,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PagedUsers' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400': { $ref: '#/components/responses/InvalidPagination' }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/admin/clients/query:
     get:
@@ -1761,7 +1822,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PagedClients' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400': { $ref: '#/components/responses/InvalidPagination' }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/admin/audit/query:
     get:
@@ -1780,7 +1841,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PagedAudit' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400': { $ref: '#/components/responses/InvalidPagination' }
         '401': { $ref: '#/components/responses/Unauthorized' }
   /api/v1/admin/settings/registration-email:
     get:
@@ -1815,6 +1876,8 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/settings/issuer:
     get:
       tags: [Admin]
@@ -1865,6 +1928,8 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/InternalServerError' }
         '504': { $ref: '#/components/responses/RequestTimeout' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/settings/passkey:
     get:
       tags: [Admin]
@@ -1914,6 +1979,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/settings/email-policy:
     get:
       tags: [Admin]
@@ -1961,6 +2028,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/settings/smtp:
     get:
       tags: [Admin]
@@ -2005,6 +2074,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/settings/security-limits:
     get:
       tags: [Admin]
@@ -2052,6 +2123,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/oauth/providers:
     get:
       tags: [Admin OAuth Providers]
@@ -2094,6 +2167,8 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/oauth/providers/{slug}:
     put:
       tags: [Admin OAuth Providers]
@@ -2116,6 +2191,8 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/oauth/providers/{slug}/disable:
     post:
       tags: [Admin OAuth Providers]
@@ -2245,7 +2322,15 @@ components:
         响应头与 JSON body 都不包含配置原文、域名或阈值。
       schema: { type: string, enum: [invalid, corrupt] }
   responses:
-    BadRequest: { description: 请求错误, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    BadRequest: { description: 请求错误；JSON 请求体无法解析时返回 400 invalid_json，且不暴露 serde 字段或类型细节, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    UnsupportedMediaType: { description: JSON 请求缺少正确的 Content-Type 时返回 415 unsupported_media_type, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' }, example: { code: unsupported_media_type, message: request Content-Type must be application/json } } } }
+    InvalidJsonData: { description: JSON 语法正确但字段类型无法反序列化时返回 422 invalid_json，响应不包含字段或 Rust/serde 类型细节, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' }, example: { code: invalid_json, message: request body must be valid JSON } } } }
+    InvalidPagination:
+      description: page 小于 1、page_size 不在 1..=100 或 offset 溢出；服务端不静默修正越界值
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { code: invalid_pagination, message: page must be positive and page_size must be between 1 and 100 }
     Unauthorized: { description: 未认证或凭据无效, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Forbidden: { description: 无权限（admin_forbidden）；ADMIN_TOKEN 未配置时管理接口统一返回 admin_disabled, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Conflict: { description: 资源冲突（包括套餐 code 冲突、已归档套餐不能设为默认和 Passkey 禁用保护）, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }

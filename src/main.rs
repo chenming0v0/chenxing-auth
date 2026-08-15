@@ -19,6 +19,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(config.log_filter.clone())
         .with_target(false)
         .init();
+    info!(
+        redis_namespace = %config.redis_keyspace,
+        "Redis key namespace configured"
+    );
 
     let mut arguments = std::env::args().skip(1);
     match arguments.next().as_deref() {

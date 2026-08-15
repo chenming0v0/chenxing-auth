@@ -13,7 +13,7 @@ use super::{
     domain::AdminPermission,
 };
 use crate::{
-    api::extract::{AdminRead, AdminWrite},
+    api::extract::{AdminRead, AdminWrite, ApiJson},
     audit::AuditEvent,
     error,
     plans::{
@@ -71,7 +71,7 @@ pub async fn list_plans(State(state): State<AppState>, admin: AdminRead) -> Resp
 pub async fn create_plan(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<PlanInput>,
+    ApiJson(input): ApiJson<PlanInput>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -100,7 +100,7 @@ pub async fn update_plan(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(id): Path<i64>,
-    Json(input): Json<PlanInput>,
+    ApiJson(input): ApiJson<PlanInput>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -211,7 +211,7 @@ pub async fn assign_plan(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(user_id): Path<UserId>,
-    Json(input): Json<AssignPlanInput>,
+    ApiJson(input): ApiJson<AssignPlanInput>,
 ) -> Response {
     let authorization = match authorize_user_write(&state, &admin).await {
         Ok(authorization) => authorization,

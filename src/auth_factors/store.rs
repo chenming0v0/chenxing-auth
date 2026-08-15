@@ -4,7 +4,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use super::domain::{FactorMethod, LoginTicket};
-use crate::{clock::SharedClock, redis_client::RedisClient, users::domain::UserId};
+use crate::{
+    clock::SharedClock, redis_client::RedisClient, redis_keyspace::RedisKeyspace,
+    users::domain::UserId,
+};
 
 const LOGIN_TICKET_PREFIX: &str = "chenxing:auth:login-ticket:";
 const TOTP_REPLAY_PREFIX: &str = "chenxing:auth:totp-used:";
@@ -37,6 +40,7 @@ pub struct LoginTicketStore {
     client: RedisClient,
     metadata: Option<crate::sqlx::PgPool>,
     clock: SharedClock,
+    keyspace: RedisKeyspace,
 }
 
 #[derive(Debug, Error)]
@@ -55,6 +59,7 @@ impl LoginTicketStore {
             client: client.into(),
             metadata: None,
             clock: SharedClock::system(),
+            keyspace: RedisKeyspace::default(),
         }
     }
 
@@ -63,6 +68,20 @@ impl LoginTicketStore {
             client: client.into(),
             metadata: Some(metadata),
             clock: SharedClock::system(),
+            keyspace: RedisKeyspace::default(),
+        }
+    }
+
+    pub fn new_with_pool_and_keyspace(
+        client: impl Into<RedisClient>,
+        metadata: crate::sqlx::PgPool,
+        keyspace: RedisKeyspace,
+    ) -> Self {
+        Self {
+            client: client.into(),
+            metadata: Some(metadata),
+            clock: SharedClock::system(),
+            keyspace,
         }
     }
 
@@ -137,7 +156,7 @@ impl LoginTicketStore {
         let payload = serde_json::to_string(&ticket)?;
         let _: () = connection
             .set_ex(
-                Self::key(ticket_id),
+                self.key_for_ticket(ticket_id),
                 payload,
                 LoginTicket::TTL.whole_seconds() as u64,
             )
@@ -167,7 +186,7 @@ impl LoginTicketStore {
     ) -> Result<Option<LoginTicket>, LoginTicketStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload: Option<String> = Script::new(TAKE_LOGIN_TICKET_IF_HOLDER_SCRIPT)
-            .key(Self::key(ticket_id))
+            .key(self.key_for_ticket(ticket_id))
             .arg(holder_hash)
             .invoke_async(&mut connection)
             .await?;
@@ -186,7 +205,7 @@ impl LoginTicketStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload = serde_json::to_string(&ticket)?;
         let _: () = connection
-            .set_ex(Self::key(ticket_id), payload, ttl as u64)
+            .set_ex(self.key_for_ticket(ticket_id), payload, ttl as u64)
             .await?;
         Ok(())
     }
@@ -198,9 +217,9 @@ impl LoginTicketStore {
     ) -> Result<Option<LoginTicket>, LoginTicketStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload: Option<String> = if consume {
-            connection.get_del(Self::key(ticket_id)).await?
+            connection.get_del(self.key_for_ticket(ticket_id)).await?
         } else {
-            connection.get(Self::key(ticket_id)).await?
+            connection.get(self.key_for_ticket(ticket_id)).await?
         };
         self.decode_ticket_payload(payload).await
     }
@@ -231,6 +250,14 @@ impl LoginTicketStore {
 
     pub fn key(ticket_id: &str) -> String {
         format!("{LOGIN_TICKET_PREFIX}{ticket_id}")
+    }
+
+    pub fn key_for_ticket(&self, ticket_id: &str) -> String {
+        self.namespaced(&Self::key(ticket_id))
+    }
+
+    pub(super) fn namespaced(&self, legacy_key: &str) -> String {
+        self.keyspace.key(legacy_key)
     }
 
     pub async fn take_json<T: DeserializeOwned>(
@@ -342,7 +369,7 @@ impl LoginTicketStore {
     ) -> Result<bool, LoginTicketStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let claimed: i64 = Script::new(CLAIM_TOTP_STEP_SCRIPT)
-            .key(Self::totp_replay_key(user_id, timestep))
+            .key(self.totp_replay_key_for(user_id, timestep))
             .arg(TOTP_REPLAY_TTL_SECONDS)
             .invoke_async(&mut connection)
             .await?;
@@ -351,6 +378,10 @@ impl LoginTicketStore {
 
     pub fn totp_replay_key(user_id: UserId, timestep: u64) -> String {
         format!("{TOTP_REPLAY_PREFIX}{user_id}:{timestep}")
+    }
+
+    fn totp_replay_key_for(&self, user_id: UserId, timestep: u64) -> String {
+        self.namespaced(&Self::totp_replay_key(user_id, timestep))
     }
 
     /// 删除该用户全部 TOTP 一次性时间步 claim。
@@ -365,7 +396,11 @@ impl LoginTicketStore {
         {
             // AsyncIter 持有 connection 的可变借用，必须在这个块里耗尽并 drop。
             let mut iter = connection
-                .scan_match(format!("{TOTP_REPLAY_PREFIX}{user_id}:*"))
+                .scan_match(format!(
+                    "{}{}:*",
+                    self.keyspace.prefix(TOTP_REPLAY_PREFIX),
+                    user_id
+                ))
                 .await?;
             while let Some(key) = iter.next_item().await {
                 keys.push(key);

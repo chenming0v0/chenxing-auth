@@ -158,6 +158,20 @@ fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
     for response in ["'415':", "'422':"] {
         assert!(OPENAPI.contains(response), "login must declare {response}");
     }
+    assert_eq!(
+        OPENAPI
+            .matches("#/components/responses/UnsupportedMediaType")
+            .count(),
+        37,
+        "every JSON request-body operation must declare the unified 415 envelope"
+    );
+    assert_eq!(
+        OPENAPI
+            .matches("#/components/responses/InvalidJsonData")
+            .count(),
+        37,
+        "every JSON request-body operation must declare the unified 422 envelope"
+    );
     assert!(!OPENAPI.contains("issuer_pending"));
     assert!(!OPENAPI.contains("issuer_runtime_pending"));
 

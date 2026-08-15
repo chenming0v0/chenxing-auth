@@ -71,7 +71,7 @@ impl AuthFactorService {
         let reserved = self
             .tickets
             .save_json_if_absent(
-                &Self::totp_setup_key(ticket_id),
+                &self.totp_setup_key(ticket_id),
                 &PendingTotpSetup {
                     user_id: ticket.user_id,
                     encrypted_secret,
@@ -129,7 +129,7 @@ impl AuthFactorService {
         // 登录端点要靠它判断是否回落到 verify_totp_login，而回落之前一律不预留额度。
         let Some(pending) = self
             .tickets
-            .find_json::<PendingTotpSetup>(&Self::totp_setup_key(ticket_id))
+            .find_json::<PendingTotpSetup>(&self.totp_setup_key(ticket_id))
             .await?
         else {
             return Ok(TotpConfirmation::NoPendingEnrollment);
@@ -172,9 +172,7 @@ impl AuthFactorService {
                     // 调用 setup 就能拿到当前 active key 加密的新种子，无需重新输入
                     // 口令。连 ticket 一起废掉会把一个可自助恢复的场景升级成重新登录。
                     self.report_retired_key(dimensions, "enrollment").await;
-                    self.tickets
-                        .delete(&Self::totp_setup_key(ticket_id))
-                        .await?;
+                    self.tickets.delete(&self.totp_setup_key(ticket_id)).await?;
                     return Ok(TotpConfirmation::KeyUnavailable);
                 }
                 Err(error) => {
@@ -249,16 +247,12 @@ impl AuthFactorService {
             Ok(confirmation) => confirmation,
             Err(AuthFactorServiceError::FirstFactorAlreadyExists) => {
                 let _ = self.tickets.take_for_holder(ticket_id, holder_hash).await?;
-                self.tickets
-                    .delete(&Self::totp_setup_key(ticket_id))
-                    .await?;
+                self.tickets.delete(&self.totp_setup_key(ticket_id)).await?;
                 return Ok(TotpConfirmation::InvalidTicket);
             }
             Err(error) => return Err(error),
         };
-        self.tickets
-            .delete(&Self::totp_setup_key(ticket_id))
-            .await?;
+        self.tickets.delete(&self.totp_setup_key(ticket_id)).await?;
         Ok(confirmation)
     }
 
@@ -272,7 +266,8 @@ impl AuthFactorService {
         self.is_disabled_passkey_only(methods).await
     }
 
-    pub(super) fn totp_setup_key(ticket_id: &str) -> String {
-        format!("{TOTP_SETUP_PREFIX}{ticket_id}")
+    pub(super) fn totp_setup_key(&self, ticket_id: &str) -> String {
+        self.tickets
+            .namespaced(&format!("{TOTP_SETUP_PREFIX}{ticket_id}"))
     }
 }

@@ -15,6 +15,7 @@ pub mod keys;
 pub mod oauth;
 pub mod plans;
 pub mod redis_client;
+pub mod redis_keyspace;
 pub mod sessions;
 pub mod settings;
 pub mod state;

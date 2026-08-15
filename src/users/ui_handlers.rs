@@ -10,7 +10,7 @@ use std::{fmt, net::SocketAddr};
 use super::domain::{RegistrationError, UserId};
 use super::ui_auth::UserContext;
 use crate::{
-    api::extract::{SessionRead, SessionWrite},
+    api::extract::{ApiJson, SessionRead, SessionWrite},
     audit::AuditEvent,
     error,
     sessions::cookies,
@@ -98,7 +98,7 @@ pub async fn current_user_profile(State(state): State<AppState>, session: Sessio
 pub async fn update_current_user_profile(
     State(state): State<AppState>,
     session: SessionWrite,
-    Json(input): Json<UpdateProfileInput>,
+    ApiJson(input): ApiJson<UpdateProfileInput>,
 ) -> Response {
     match state
         .users
@@ -122,7 +122,7 @@ pub async fn change_current_user_password(
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     session: SessionWrite,
-    Json(input): Json<ChangePasswordInput>,
+    ApiJson(input): ApiJson<ChangePasswordInput>,
 ) -> Response {
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),

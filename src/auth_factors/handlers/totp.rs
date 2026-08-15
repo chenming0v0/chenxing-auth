@@ -12,14 +12,17 @@ use super::{
     ticket_proof::ticket_proof,
 };
 use crate::{
-    api::extract::RequestIssuer, auth_factors::service::TotpConfirmation, error, state::AppState,
+    api::extract::{ApiJson, RequestIssuer},
+    auth_factors::service::TotpConfirmation,
+    error,
+    state::AppState,
 };
 
 pub async fn start_totp_setup(
     State(state): State<AppState>,
     issuer: RequestIssuer,
     headers: HeaderMap,
-    Json(input): Json<TotpSetupInput>,
+    ApiJson(input): ApiJson<TotpSetupInput>,
 ) -> Response {
     let Some((ticket_id, holder_hash)) = ticket_proof(
         &headers,
@@ -83,7 +86,7 @@ pub async fn confirm_totp_setup(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(input): Json<TotpConfirmInput>,
+    ApiJson(input): ApiJson<TotpConfirmInput>,
 ) -> Response {
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
@@ -121,7 +124,7 @@ pub async fn login_totp(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(input): Json<TotpLoginInput>,
+    ApiJson(input): ApiJson<TotpLoginInput>,
 ) -> Response {
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),

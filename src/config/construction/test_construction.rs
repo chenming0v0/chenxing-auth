@@ -1,5 +1,6 @@
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 use crate::clients::domain::ClientRegistrationLimits;
+use crate::redis_keyspace::RedisKeyspace;
 use crate::web_dist::DEFAULT_WEB_DIST_DIR;
 
 use super::super::audit::AuditRetentionConfig;
@@ -60,6 +61,7 @@ impl Config {
             oauth_provider_loopback_enabled: false,
             database_url,
             redis_url,
+            redis_keyspace: RedisKeyspace::default(),
             session_ttl_seconds,
             session_idle_timeout_seconds: DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
             session_max_concurrent_sessions: DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,

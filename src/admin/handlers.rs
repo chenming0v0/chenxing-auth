@@ -15,7 +15,7 @@ use super::client_errors::{
 };
 use crate::{
     admin::domain::AdminPermission,
-    api::extract::{AdminRead, AdminWrite},
+    api::extract::{AdminRead, AdminWrite, ApiJson},
     audit::AuditEvent,
     clients::{
         domain::ClientRegistrationInput,
@@ -80,7 +80,7 @@ struct ClientSummary {
 pub async fn create_client(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<ClientRegistrationRequest>,
+    ApiJson(input): ApiJson<ClientRegistrationRequest>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageClients)
@@ -174,7 +174,7 @@ pub async fn update_client(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(client_id): Path<String>,
-    Json(input): Json<ClientRegistrationInput>,
+    ApiJson(input): ApiJson<ClientRegistrationInput>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageClients)

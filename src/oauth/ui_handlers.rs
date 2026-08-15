@@ -16,7 +16,7 @@ use super::{
     session::session_for_headers,
 };
 use crate::{
-    api::extract::{SessionRead, SessionWrite},
+    api::extract::{ApiJson, SessionRead, SessionWrite},
     audit::AuditEvent,
     consents::ConsentServiceError,
     error,
@@ -224,7 +224,7 @@ pub async fn decide_authorization_request(
     headers: HeaderMap,
     session: SessionWrite,
     Path(request_id): Path<String>,
-    Json(input): Json<DecisionInput>,
+    ApiJson(input): ApiJson<DecisionInput>,
 ) -> Response {
     // 授权决定写入审计时需要请求上下文（源 IP / UA，Issue #308）。
     let source_ip = crate::api::source_ip(

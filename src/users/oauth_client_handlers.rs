@@ -9,7 +9,7 @@ use std::fmt;
 use std::net::SocketAddr;
 
 use crate::{
-    api::extract::{SessionRead, SessionWrite},
+    api::extract::{ApiJson, SessionRead, SessionWrite},
     audit::AuditEvent,
     clients::{
         domain::ClientRegistrationInput,
@@ -229,7 +229,7 @@ pub async fn revoke_authorized_app(
 pub async fn create_owned_client(
     State(state): State<AppState>,
     session: SessionWrite,
-    Json(input): Json<ClientRegistrationRequest>,
+    ApiJson(input): ApiJson<ClientRegistrationRequest>,
 ) -> Response {
     let effective = match state.plans.effective_plan_for_user(session.user_id).await {
         Ok(Some(effective)) => effective,
@@ -283,7 +283,7 @@ pub async fn update_owned_client(
     State(state): State<AppState>,
     session: SessionWrite,
     Path(client_id): Path<String>,
-    Json(input): Json<ClientRegistrationInput>,
+    ApiJson(input): ApiJson<ClientRegistrationInput>,
 ) -> Response {
     match state
         .clients

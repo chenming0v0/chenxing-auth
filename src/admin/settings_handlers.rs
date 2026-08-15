@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::domain::AdminPermission;
 use crate::{
-    api::extract::{AdminRead, AdminWrite},
+    api::extract::{AdminRead, AdminWrite, ApiJson},
     audit::AuditEvent,
     error,
     settings::{
@@ -76,7 +76,7 @@ pub async fn get_registration_email(State(state): State<AppState>, admin: AdminR
 pub async fn update_registration_email(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<UpdateRegistrationEmail>,
+    ApiJson(input): ApiJson<UpdateRegistrationEmail>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -145,7 +145,7 @@ pub async fn get_passkey_setting(State(state): State<AppState>, admin: AdminRead
 pub async fn update_passkey_setting(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<PasskeySetting>,
+    ApiJson(input): ApiJson<PasskeySetting>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -222,7 +222,7 @@ pub async fn get_email_policy_setting(State(state): State<AppState>, admin: Admi
 pub async fn update_email_policy_setting(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<EmailPolicySetting>,
+    ApiJson(input): ApiJson<EmailPolicySetting>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -276,7 +276,7 @@ pub async fn get_smtp_setting(State(state): State<AppState>, admin: AdminRead) -
 pub async fn update_smtp_setting(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<SmtpSettingUpdate>,
+    ApiJson(input): ApiJson<SmtpSettingUpdate>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -335,7 +335,7 @@ pub async fn get_security_limits_setting(
 pub async fn update_security_limits_setting(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<SecurityLimitsSetting>,
+    ApiJson(input): ApiJson<SecurityLimitsSetting>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageSettings)

@@ -176,7 +176,7 @@ impl AuthFactorService {
         code: &str,
     ) -> Result<EnrollmentFinish, AuthFactorServiceError> {
         let session_epoch = self.current_epoch(user_id).await?;
-        let key = Self::session_enrollment_key(user_id, FactorMethod::Totp);
+        let key = self.session_enrollment_key(user_id, FactorMethod::Totp);
         let Some(pending) = self
             .tickets
             .find_json::<PendingSessionEnrollment<PendingTotpPayload>>(&key)
@@ -328,7 +328,7 @@ impl AuthFactorService {
     ) -> Result<EnrollmentFinish, AuthFactorServiceError> {
         self.enabled_passkey_settings().await?;
         let session_epoch = self.current_epoch(user_id).await?;
-        let key = Self::session_enrollment_key(user_id, FactorMethod::Passkey);
+        let key = self.session_enrollment_key(user_id, FactorMethod::Passkey);
         let Some(pending) = self
             .tickets
             .find_json::<PendingSessionEnrollment<PendingPasskeyRegistration>>(&key)
@@ -404,7 +404,7 @@ impl AuthFactorService {
         Ok(self
             .tickets
             .save_json_if_absent(
-                &Self::session_enrollment_key(user_id, pending.method),
+                &self.session_enrollment_key(user_id, pending.method),
                 pending,
                 LoginTicket::TTL.whole_seconds() as u64,
             )
@@ -448,12 +448,13 @@ impl AuthFactorService {
         Ok(())
     }
 
-    fn session_enrollment_key(user_id: UserId, method: FactorMethod) -> String {
+    fn session_enrollment_key(&self, user_id: UserId, method: FactorMethod) -> String {
         let method = match method {
             FactorMethod::Totp => "totp",
             FactorMethod::Passkey => "passkey",
         };
-        format!("{SESSION_ENROLLMENT_PREFIX}{user_id}:{method}")
+        self.tickets
+            .namespaced(&format!("{SESSION_ENROLLMENT_PREFIX}{user_id}:{method}"))
     }
 }
 

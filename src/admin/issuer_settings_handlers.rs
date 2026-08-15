@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 
 use super::domain::AdminPermission;
 use crate::{
-    api::extract::{AdminRead, AdminWrite},
+    api::extract::{AdminRead, AdminWrite, ApiJson},
     audit::AuditEvent,
     error,
     settings::issuer::{self, IssuerRecord},
@@ -100,7 +100,7 @@ pub async fn update_issuer_setting(
     admin: AdminWrite,
     headers: HeaderMap,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
-    Json(input): Json<UpdateIssuerSetting>,
+    ApiJson(input): ApiJson<UpdateIssuerSetting>,
 ) -> Response {
     let actor = match admin.authorize(&state, AdminPermission::ManageIssuer).await {
         Ok(actor) => actor,
