@@ -23,6 +23,15 @@ const DATABASE_BASELINE: &str = include_str!("../migrations/0001_initial.sql");
 /// Where both production images place the built frontend bundle.
 const WEB_DIST_IMAGE_PATH: &str = "/usr/local/share/chenxing-auth/web/dist";
 
+fn heredoc_body_after<'a>(script: &'a str, marker: &str) -> &'a str {
+    let (_, body) = script
+        .split_once(marker)
+        .unwrap_or_else(|| panic!("installer is missing heredoc marker: {marker}"));
+    body.split_once("\nEOF")
+        .map(|(body, _)| body)
+        .expect("generated .env heredoc must terminate with EOF")
+}
+
 #[test]
 fn release_workflow_publishes_versioned_archives_and_checksums() {
     for marker in [
@@ -429,7 +438,7 @@ fn installer_validates_compose_and_reports_application_logs() {
         "POSTGRES_RUNTIME_USER",
         "POSTGRES_RUNTIME_PASSWORD",
         "MIGRATION_DATABASE_URL",
-        "CHENXING_ISSUER",
+        "APP_ISSUER is read only for older deployments",
         "APP_PORT",
     ] {
         assert!(
@@ -450,7 +459,8 @@ fn remote_installer_uses_published_images_and_keeps_download_progress_visible() 
         "docker pull \"$REDIS_IMAGE\"",
         "compose run --rm app migrate",
         "compose up -d app",
-        "configure-issuer https://auth.example.com",
+        "Owner 在管理设置中写入固定的 HTTPS Issuer",
+        "PostgreSQL app_settings",
         "--prepare-only",
     ] {
         assert!(
@@ -486,25 +496,58 @@ fn remote_installer_generates_and_preserves_deployment_secrets() {
             "remote installer is missing secret marker: {marker}"
         );
     }
-    assert!(!REMOTE_INSTALL_SCRIPT.contains("APP_ISSUER=${APP_ISSUER}"));
 }
 
 #[test]
-fn production_probes_use_readiness_and_keep_liveness_separate() {
-    assert!(PRODUCTION_COMPOSE.contains("/health/ready"));
+fn fresh_installers_do_not_write_app_issuer_but_keep_legacy_env_compatibility() {
+    for (name, script, marker) in [
+        ("source installer", INSTALL_SCRIPT, "    cat > .env <<EOF\n"),
+        (
+            "remote installer",
+            REMOTE_INSTALL_SCRIPT,
+            "    cat > \"$ENV_FILE\" <<EOF\n",
+        ),
+    ] {
+        let generated_env = heredoc_body_after(script, marker);
+        assert!(
+            !generated_env
+                .lines()
+                .any(|line| line.trim_start().starts_with("APP_ISSUER=")),
+            "{name} must not write APP_ISSUER into a fresh .env"
+        );
+        assert!(
+            script.contains("APP_ISSUER=\"$(read_env_value APP_ISSUER)\""),
+            "{name} must still read legacy APP_ISSUER from an existing .env"
+        );
+    }
+
+    assert!(INSTALL_SCRIPT.contains("APP_ISSUER is read only for older deployments"));
+    assert!(REMOTE_INSTALL_SCRIPT.contains("检测到旧环境中的 APP_ISSUER"));
+}
+
+#[test]
+fn production_healthchecks_and_installers_use_readiness() {
+    let readiness_healthcheck =
+        "test: [\"CMD\", \"curl\", \"--fail\", \"http://127.0.0.1:3000/health/ready\"]";
+    assert!(PRODUCTION_COMPOSE.contains(readiness_healthcheck));
     assert!(!PRODUCTION_COMPOSE.contains("http://127.0.0.1:3000/health\"]"));
     assert!(INSTALL_SCRIPT.contains("/health/ready"));
-    assert!(!INSTALL_SCRIPT.contains("/health/live"));
+    assert!(REMOTE_INSTALL_SCRIPT.contains(readiness_healthcheck));
 }
 
 #[test]
-fn installer_allows_bootstrap_mode_and_checks_discovery_contract() {
+fn source_installer_keeps_legacy_issuer_checks_and_documents_protected_bootstrap() {
     for marker in [
         "CHENXING_ALLOW_LOOPBACK_HTTP",
         "EXPECTED_COOKIE_SECURE",
+        "APP_ISSUER=\"$(read_env_value APP_ISSUER)\"",
         "OpenID discovery does not match APP_ISSUER",
         ".well-known/openid-configuration",
-        "APP_ISSUER is not set; the service is running in secure bootstrap mode.",
+        "No legacy APP_ISSUER was read",
+        "protected bootstrap mode",
+        "ID=1 Owner",
+        "Owner settings",
+        "PostgreSQL app_settings",
     ] {
         assert!(
             INSTALL_SCRIPT.contains(marker),

@@ -133,7 +133,7 @@ src/
 - PostgreSQL 14 或更高版本
 - Redis 6 或更高版本
 
-复制 `.env.example` 为 `.env`，按本地环境修改连接地址。使用 HTTP 本地开发时，将 `APP_ISSUER` 设置为 `http://127.0.0.1:3000`（或其他 loopback 地址）并将 `COOKIE_SECURE` 显式设为 `false`；HTTPS 或非 loopback 环境必须保持 `COOKIE_SECURE=true`。正常服务启动不会修改数据库结构；需要执行迁移时运行 `cargo run -- migrate`，生产 Docker 部署脚本会在启动应用前显式执行同一迁移命令。审计归档不在 Web 服务启动时自动运行，只有单独的 `cargo run -- audit-archive` 维护命令会搬运过期热表事件。
+复制 `.env.example` 为 `.env`，按本地环境修改连接地址。新环境不要把 `APP_ISSUER` 写入 `.env`：先完成数据库迁移和首个 Owner 初始化，再由 Owner 在管理设置中写入固定 Issuer，服务会从 PostgreSQL `app_settings` 热加载。使用 HTTP 本地开发时将 `COOKIE_SECURE` 显式设为 `false`；HTTPS 或非 loopback 环境必须保持 `COOKIE_SECURE=true`。旧开发环境保留的 `APP_ISSUER` 只作为兼容导入，不得从请求 Host 推导。正常服务启动不会修改数据库结构；需要执行迁移时运行 `cargo run -- migrate`，生产 Docker 部署脚本会在启动应用前显式执行同一迁移命令。审计归档不在 Web 服务启动时自动运行，只有单独的 `cargo run -- audit-archive` 维护命令会搬运过期热表事件。
 
 数据库连接分成两个用途不同的池。请求路径使用的应用池会在每条新连接上设置服务端 `statement_timeout`，默认 `DB_STATEMENT_TIMEOUT_MS=5000`（允许 100 至 60000 毫秒）：`REQUEST_TIMEOUT_SECONDS` 只放弃 HTTP 响应，PostgreSQL 后端仍在执行，连接不会归还，因此语句上限必须由数据库自己执行，否则少量卡住的查询就能抽干连接池并让登录和令牌签发一起失败。该变量取值越界或不是整数时直接启动失败，不静默回退，避免运维以为自己配置的上限生效；设为 `0` 表示显式关闭（仅在数据库角色已带 `ALTER ROLE ... SET statement_timeout` 时使用），启动时会记录警告。`migrate` 和 `audit-archive` 走独立的维护池，不带 `statement_timeout`，长时间 DDL 和归档批次不会被中途取消。
 
@@ -201,19 +201,19 @@ PostgreSQL 和 Redis 镜像。三个 `docker pull` 的分层下载与解压进�
 显示数据库迁移、容器启动和就绪检查过程。默认使用
 `ghcr.io/chenming0v0/chenxing-auth:latest`，可通过 `CHENXING_IMAGE` 覆盖。
 
-新实例不要求安装时已经拥有域名。`APP_ISSUER` 未写入 PostgreSQL 时，进程仍提供
-健康检查和初始化前端，但认证、管理、OAuth/OIDC、Discovery 与 JWKS 路由全部禁用。
-域名和 HTTPS 准备好后，在安装目录执行：
+新实例不要求安装时已经拥有域名，安装器生成的 `.env` 也不包含 `APP_ISSUER`。数据库
+尚未写入 Issuer 时，进程进入保护模式：`/health*` 健康检查、静态前端和首个 Owner
+初始化保持可用；ID=1 的首 Owner 可以本地登录，`ADMIN_TOKEN` 是管理 API 的恢复通道。
+公开注册、普通用户创建、管理员/Owner 创建关闭；只有依赖正式 Issuer 的 OAuth/OIDC、
+Discovery、JWKS 和外部登录路由关闭。该模式不是把全部认证或管理 API 返回 503。
 
-```bash
-docker compose --env-file .env -f compose.yml run --rm app \
-  configure-issuer https://auth.example.com
-docker compose --env-file .env -f compose.yml up -d --force-recreate app
-```
+先通过 `POST /api/v1/admin/bootstrap` 初始化首个 Owner，再登录管理控制台，在 Issuer
+设置中写入固定的 HTTPS URL。该值保存到 PostgreSQL `app_settings`，当前进程立即热更新，
+其他实例按 generation 收敛；不能从请求 Host 或反向代理输入推导。旧部署若仍在 `.env`
+中保留 `APP_ISSUER`，运行时只会在数据库没有 Issuer 时按兼容规则导入一次，数据库设置优先。
 
 Issuer 第一次写入后允许用相同值幂等重试；不同值会被拒绝，避免静默作废现有令牌、
-Cookie 和 Passkey 绑定。旧部署的 `APP_ISSUER` 只在数据库还没有该设置时导入一次，
-之后数据库是唯一事实来源。
+Cookie 和 Passkey 绑定。
 
 ### 源码构建部署
 
@@ -223,7 +223,7 @@ Cookie 和 Passkey 绑定。旧部署的 `APP_ISSUER` 只在数据库还没有�
 ./deploy/install.sh
 ```
 
-该源码部署脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码、runtime 数据库密码和 `ADMIN_TOKEN`，先校验生产 Compose 配置，再启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。已有 `.env` 不会被覆盖，但缺少 runtime 角色凭据时会自动追加；该旧入口仍要求提前传入固定 HTTPS `CHENXING_ISSUER`（例如 `https://auth.example.com`），缺失时脚本会在启动容器前退出。当前基线不自动转换旧 `_sqlx_migrations` 记录；健康检查失败时脚本会输出 Compose 状态和应用日志，便于定位启动问题。
+该源码部署脚本首次运行会生成权限为 `0600` 的 `.env`，随机生成 PostgreSQL 密码、runtime 数据库密码和 `ADMIN_TOKEN`，不生成 `APP_ISSUER`；它会先校验生产 Compose 配置，再启动 PostgreSQL、Redis 和认证服务，并等待 `/health` 返回成功。没有 Issuer 时脚本仍会完成部署，服务进入上面的保护模式。已有 `.env` 不会被覆盖，但缺少 runtime 角色凭据时会自动追加；旧 `.env` 中的 `APP_ISSUER` 仍按兼容规则读取。当前基线不自动转换旧 `_sqlx_migrations` 记录；健康检查失败时脚本会输出 Compose 状态和应用日志，便于定位启动问题。
 
 生产 Compose 文件为 `docker-compose.prod.yml`。数据库、Redis、JWK 密钥和内嵌 Web 都由应用容器提供，应用容器以非 root 用户运行。TLS 终止可以交给服务器网关，但 Web/API 本身不依赖反向代理。
 
@@ -233,7 +233,7 @@ Cookie 和 Passkey 绑定。旧部署的 `APP_ISSUER` 只在数据库还没有�
 
 `KEY_DIRECTORY` 默认指向 `data/keys`，该目录包含运行时私钥并已加入 `.gitignore`。Unix 下应用会将目录收紧为 `0700`，并校验目录及必要祖先的 owner 有效 uid 与写权限边界：叶子必须属于当前有效用户且不含 group/other 位，祖先必须属于本进程或 root，且不可被他人改写（root+sticky 如 `/tmp` 除外）。私钥、active `kid` 和 OAuth Provider 主密钥收紧为 `0600`。关键文件操作绑定目录 fd，经 `openat2`/`openat` 拒绝符号链接，打开后 `fstat` 同一 inode，避免路径级 check-then-open。非 Unix 没有 POSIX owner / `O_NOFOLLOW`，保持路径级创建与读写，不假装做了同等检查。密钥写入使用受限临时文件和原子替换；签名密钥与 Provider Secret 使用互不重叠的 `.chenxing-key-` / `.chenxing-secret-` 前缀，各自只清理本命名空间。active `kid` 存在但它指向的私钥材料不在目录里时，服务 fail-closed：启动和刷新直接失败并记录一条不含密钥材料的 error 日志，既不覆盖 `kid` 也不生成替代密钥，避免静默作废全部已签发令牌并抹掉材料丢失的证据；只有目录既没有 `kid` 也没有任何私钥材料时才执行首次初始化。恢复方式是还原备份的私钥文件，或在确认可以接受全部已签发令牌失效后手动清空密钥目录。`KEY_ROTATION_GRACE_SECONDS` 默认是 `604800`（7 天），支持范围是 `1` 到 `2592000` 秒（30 天），且不能小于 access/ID token TTL：轮换后的旧公钥在该窗口内继续用于验签，窗口外的旧私钥会在启动或后续轮换时回收；设置为 `0` 或超出范围会使服务启动失败。`KEY_ROTATION_SKEW_ALLOWANCE_SECONDS` 默认是 `3600`（1 小时），支持范围是 `0` 到 `KEY_ROTATION_GRACE_SECONDS`：多实例共享密钥目录时，`retired_at` 由退役实例的时钟写入、窗口判断却发生在当前加载实例的时钟上，时钟偏快的实例会把窗口算短、提前删除仍被其他实例用于验签的公钥文件（不可逆）；该容忍值把窗口关闭边界推到 `retired_at + grace + allowance`，偏差不超过容忍值的实例只会晚删、绝不提前删，单实例部署可设为 `0`。签发、验签和 JWKS 三条请求热路径只读进程内的密钥快照，不在请求线程里读写密钥目录；与共享 `KEY_DIRECTORY` 的一致性由一个 5 秒周期的后台任务负责（验签遇到未知 `kid` 时会提前触发一次同步）。密钥轮换先把新公钥写入 JWKS（`published`），再等到 `KEY_ACTIVATION_DELAY_SECONDS`（默认 65，覆盖 JWKS `max-age=60` 与一次同步周期）之后才把签发权切到新 key；截止时刻落在 `pending-activation.record` 里，重启和第二实例按同一份 `activate_at` 恢复，不会因为进程内 sleep 丢失。旧公钥继续留在验证窗口内。`KEY_ACTIVATION_DELAY_SECONDS` 的生产范围是 `65` 到 `300`，且不能超过保留窗口；低于 `65` 会使服务启动失败，只有内部测试构造器允许 `0`。进行中的轮换不受中途改配置影响。因此多实例共享同一目录时，某个实例的轮换或吊销最迟在一个同步周期后在其他实例生效，期间旧公钥仍在保留窗口内可验签。管理 API 有两条独立通道：系统 `ADMIN_TOKEN` Bearer，以及浏览器 HttpOnly Session Cookie（写操作还需 CSRF Cookie 与 `X-CSRF-Token` 绑定，权限按用户角色判定）。`ADMIN_TOKEN` 为空时只关闭 Bearer 通道——任何 Bearer 请求都会被拒绝，而已认证、角色足够且 CSRF 绑定有效的浏览器管理 Session 仍然可用；不存在 Owner 时公开的首个 Owner 初始化接口不受两条通道约束，例外语义不变。此时启动日志会记录一条 `ADMIN_TOKEN not set` 警告，说明被关闭的是 Bearer 自动化通道而不是整个管理面，便于运维不要据此误判管理面已停用。
 
-`APP_ISSUER` 是 OIDC 发行者标识，会写入 JWT 的 `iss` claim 和 Discovery 文档，必须是无 path、query 和 fragment 的固定绝对 URL，且不能从请求 Host 或反向代理输入推导。运行期值保存在 PostgreSQL `app_settings`；未配置时服务进入受限模式，仅保留健康检查、初始化状态和静态前端，不注册认证、管理、OAuth/OIDC、Discovery 与 JWKS 路由。旧环境变量 `APP_ISSUER` 只在数据库为空时导入一次，不能覆盖已经持久化的值。
+运行期 Issuer 是 OIDC 发行者标识，会写入 JWT 的 `iss` claim 和 Discovery 文档，必须是无 path、query 和 fragment 的固定绝对 URL，且不能从请求 Host 或反向代理输入推导。它保存在 PostgreSQL `app_settings`，由 Owner 管理设置写入并由运行时热更新。未配置时服务进入保护模式：健康检查、静态前端、首 Owner bootstrap、ID=1 Owner 登录以及未依赖正式 Issuer 的管理路径仍可用；注册、普通用户创建、管理员/Owner 创建关闭，OAuth/OIDC、Discovery、JWKS 和外部登录路由关闭。旧环境变量 `APP_ISSUER` 只在数据库为空时导入一次，不能覆盖已经持久化的值，也不是新部署配置路径。
 
 HTTPS 部署的 Session 和 CSRF Cookie 使用 `__Host-chenxing_session` 与 `__Host-chenxing_csrf`，固定带 `Secure; Path=/` 且不带 `Domain`，由浏览器强制 host-only 约束。外部 OAuth state Cookie 同样遵守这条契约：生产名称为动态的 `__Host-chenxing_external_oauth_state_<state 绑定标识>`，回调只读取该 host-only 名，同站兄弟域投下的父域 `Domain` cookie（普通 `chenxing_external_oauth_state_*` 名）不会命中。`COOKIE_SECURE=false` 只允许用于明确的 loopback HTTP 本地开发（`localhost`、`127.0.0.1` 或 `::1`），此时才使用不带 `__Host-` 的兼容名称；在 HTTPS 或其他主机发行者下会导致启动失败，生产路径不会回退到普通名。HTTP 发行者配合 `COOKIE_SECURE=true` 会记录启动警告，因为浏览器可能拒绝 Secure Cookie。
 
@@ -243,7 +243,7 @@ Session payload 使用 AES-256-GCM 并携带 key id。`AUTH_ENCRYPTION_KEY` 保�
 
 `session_outbox` 有明确的有界生命周期，分三个状态：待处理、已投递和 dead-letter。一个事件最多被投递 10 次（退避上限 5 分钟，覆盖约 20 分钟的真实故障窗口）；仍然失败则写入 `dead_lettered_at` 并退出待处理索引，不再被重试，`attempts` 和 `last_error` 作为审计记录保留。已投递事件保留 1 天，dead-letter 事件保留 30 天，都由 outbox worker 按 5 分钟间隔分批删除，每批每类上限 500 行，积压时连续清理直到收敛。撤销只在真正发生"未撤销 → 已撤销"转变时写入事件：重复登出和对不存在令牌的登出不产生投递任务。运维应监控 dead-letter 行——一条撤销事件进入 dead-letter 意味着对应的 Redis 投影可能仍然存在，需要人工确认，而 PostgreSQL 始终是认证判定的权威来源，投影残留不会让已撤销的会话通过认证。
 
-用户首次密码登录会通过短期 HttpOnly pending-login Cookie 进入因子流程；Redis 中的 `login_ticket` 绑定同一浏览器 holder，前端需要完成 TOTP 或 WebAuthn passkey 注册后才会获得 Session。后续登录需要密码加已绑定的 TOTP 或 passkey。生产环境应设置固定的 `WEBAUTHN_RP_ID` 和 `WEBAUTHN_ORIGIN`，默认从固定 `APP_ISSUER` 派生，不能从请求 Host 派生。
+用户首次密码登录会通过短期 HttpOnly pending-login Cookie 进入因子流程；Redis 中的 `login_ticket` 绑定同一浏览器 holder，前端需要完成 TOTP 或 WebAuthn passkey 注册后才会获得 Session。后续登录需要密码加已绑定的 TOTP 或 passkey。生产环境应设置固定的 `WEBAUTHN_RP_ID` 和 `WEBAUTHN_ORIGIN`；Issuer 配置完成后，未显式覆盖的值从运行时 Issuer 派生，不能从请求 Host 派生。
 
 ## 开源协议
 

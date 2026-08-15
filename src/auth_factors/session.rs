@@ -86,6 +86,9 @@ pub async fn issue_user_session(
     require_no_effective_factors: bool,
 ) -> Response {
     let user_id = authenticated.id;
+    if !state.issuer.local_login_allowed(user_id) {
+        return stale_credential.response();
+    }
     let Some(profile) = (match state.users.find_profile(user_id).await {
         Ok(profile) => profile,
         Err(user_error) => {

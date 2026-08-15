@@ -59,9 +59,8 @@ chenxing_env_set() {
     mv "$tmp" "$file"
 }
 
-# 按 APP_ISSUER 的方案（http / https）自动派生 COOKIE_SECURE 的正确值，
-# 仅当当前值与派生值不符时才写入，避免不必要的文件修改。
-# 不处理无 APP_ISSUER、方案非 http/https，以及已正确配置的情况。
+# 兼容旧开发环境中 APP_ISSUER 的方案（http / https），自动派生 COOKIE_SECURE。
+# 新环境不生成 APP_ISSUER；没有旧值时保留或补上 COOKIE_SECURE=true。
 chenxing_normalize_cookie_secure() {
     local file="$1" issuer current expected
     issuer="$(chenxing_env_value APP_ISSUER "$file" || true)"
@@ -81,7 +80,7 @@ chenxing_normalize_cookie_secure() {
 }
 
 # 主流程：确保 .env 存在，把无效的 AUTH_ENCRYPTION_KEY 自动补成随机值，
-# 并将 COOKIE_SECURE 规范化到与 APP_ISSUER 方案一致。
+# 并保留本地浏览器所需的 COOKIE_SECURE；旧 APP_ISSUER 仅用于兼容归一化。
 # 已显式配置轮换环 AUTH_ENCRYPTION_KEYS 时不插手单密钥，避免覆盖运维意图。
 chenxing_ensure_env() {
     local file="${1:-.env}" key
@@ -95,6 +94,9 @@ chenxing_ensure_env() {
     chmod 600 "$file"
 
     if key="$(chenxing_env_value AUTH_ENCRYPTION_KEYS "$file")" && [ -n "$key" ]; then
+        if ! key="$(chenxing_env_value COOKIE_SECURE "$file")" || [ -z "$key" ]; then
+            chenxing_env_set COOKIE_SECURE true "$file"
+        fi
         chenxing_normalize_cookie_secure "$file"
         return 0
     fi
@@ -106,5 +108,8 @@ chenxing_ensure_env() {
         warn "已加密的旧开发 Session 会失效，生产环境请使用受保护的密钥存储"
     fi
 
+    if ! key="$(chenxing_env_value COOKIE_SECURE "$file")" || [ -z "$key" ]; then
+        chenxing_env_set COOKIE_SECURE true "$file"
+    fi
     chenxing_normalize_cookie_secure "$file"
 }

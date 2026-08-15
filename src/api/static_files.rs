@@ -185,6 +185,8 @@ fn is_spa_document(path: &str) -> bool {
 fn is_protocol_path(path: &str) -> bool {
     path == "/api"
         || path.starts_with("/api/")
+        || path == "/auth/external"
+        || path.starts_with("/auth/external/")
         || is_unregistered_oauth_path(path)
         || path == "/.well-known"
         || path.starts_with("/.well-known/")
@@ -265,6 +267,8 @@ mod tests {
         }
         assert!(is_protocol_path("/.well-known/openid-configuration"));
         assert!(is_protocol_path("/health/ready"));
+        assert!(is_protocol_path("/auth/external"));
+        assert!(is_protocol_path("/auth/external/example"));
 
         // 前端 App.tsx 只注册无尾斜杠的精确路径，尾斜杠变体走协议 404。
         for path in ["/oauth/account", "/oauth/consent", "/oauth/redirect"] {

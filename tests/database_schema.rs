@@ -14,22 +14,35 @@ async fn database() -> chenxing_auth::sqlx::PgPool {
 async fn business_advisory_locks_do_not_collide_with_user_ids() {
     let pool = database().await;
 
-    for key in [7_341_928_i64, 7_341_929_i64] {
+    for business_key in [7_341_928_i32, 7_341_929_i32] {
+        let user_id = i64::from(business_key);
         let mut user_transaction = pool.begin().await.expect("begin user lock transaction");
-        chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(key)
+        chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock($1::bigint)")
+            .bind(user_id)
             .execute(&mut *user_transaction)
             .await
             .expect("acquire user bigint lock");
-        let business_lock_available: bool =
-            chenxing_auth::sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(0, $1)")
-                .bind(i32::try_from(key).expect("business lock key fits int4"))
+        let duplicate_user_available: bool =
+            chenxing_auth::sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1::bigint)")
+                .bind(user_id)
                 .fetch_one(&pool)
                 .await
-                .expect("try business lock while user lock is held");
+                .expect("try duplicate user lock");
+        assert!(
+            !duplicate_user_available,
+            "user lock {user_id} stopped serializing callers"
+        );
+        let business_lock_available: bool = chenxing_auth::sqlx::query_scalar(
+            "SELECT pg_try_advisory_xact_lock($1::integer, $2::integer)",
+        )
+        .bind(0_i32)
+        .bind(business_key)
+        .fetch_one(&pool)
+        .await
+        .expect("try business lock while user lock is held");
         assert!(
             business_lock_available,
-            "business lock collided with user id {key}"
+            "business lock collided with user id {user_id}"
         );
         user_transaction
             .rollback()
@@ -37,20 +50,23 @@ async fn business_advisory_locks_do_not_collide_with_user_ids() {
             .expect("release user lock");
 
         let mut business_transaction = pool.begin().await.expect("begin business lock transaction");
-        chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock(0, $1)")
-            .bind(i32::try_from(key).expect("business lock key fits int4"))
+        chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)")
+            .bind(0_i32)
+            .bind(business_key)
             .execute(&mut *business_transaction)
             .await
             .expect("acquire business lock");
-        let duplicate_available: bool =
-            chenxing_auth::sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(0, $1)")
-                .bind(i32::try_from(key).expect("business lock key fits int4"))
-                .fetch_one(&pool)
-                .await
-                .expect("try duplicate business lock");
+        let duplicate_available: bool = chenxing_auth::sqlx::query_scalar(
+            "SELECT pg_try_advisory_xact_lock($1::integer, $2::integer)",
+        )
+        .bind(0_i32)
+        .bind(business_key)
+        .fetch_one(&pool)
+        .await
+        .expect("try duplicate business lock");
         assert!(
             !duplicate_available,
-            "business lock {key} stopped serializing callers"
+            "business lock {business_key} stopped serializing callers"
         );
         business_transaction
             .rollback()

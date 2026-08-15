@@ -148,6 +148,13 @@ pub async fn create_admin(
         Ok(actor) => actor,
         Err(response) => return response,
     };
+    if !state.issuer.is_ready() {
+        return if state.issuer.is_awaiting_configuration() {
+            error::issuer_not_configured()
+        } else {
+            error::issuer_runtime_invalid()
+        };
+    }
     let Some(role) = UserRole::parse(&input.role)
         .filter(|role| matches!(role, UserRole::Admin | UserRole::Owner))
     else {

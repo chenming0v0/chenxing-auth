@@ -4,11 +4,16 @@ info:
   version: 1.0.0
   description: |
     辰星通行证用户认证、OAuth 2.0/OIDC 和统一用户管理 API。
-    当前定义以仓库实际路由为准。运行期 Issuer 持久化在 PostgreSQL；未配置时仅健康检查、静态前端和初始化状态可用，其他协议路由由运行时门禁拒绝。
+    当前定义以仓库实际路由为准。运行时 Issuer 的权威来源是 PostgreSQL `app_settings` 表中的 `app_issuer` 记录，不是环境变量、请求 Host 或反向代理输入。
+    数据库与 Runtime 都没有 Issuer 时进入保护模式：readiness 仍视为健康；首 Owner 初始化仍可用，只有用户 ID=1 可以本地登录，
+    ADMIN_TOKEN 保留用于恢复和 Issuer 配置；除首 Owner 初始化外，公共注册与所有用户创建接口关闭。仅依赖正式 Issuer
+    的路由关闭，包括 OAuth/OIDC 协议与授权确认、Discovery、JWKS、外部登录及其 Provider 管理。Issuer 门禁发现 Runtime
+    处于 AwaitingIssuer 时会立即回读 PostgreSQL：合法持久化值会应用到当前请求并继续处理；无记录、空值/无效值、数据库读取失败、
+    Runtime 已是 Pending/Invalid，或 DB/Runtime 事实无法一致应用时才返回 503。readiness 独立要求 raw DB 与 Runtime 完全一致。
 
-    请求超时（`REQUEST_TIMEOUT_SECONDS`）或 Issuer 运行态门禁失败时，已注册的
-    `/oauth/authorize`、`/oauth/token`、`/oauth/revoke` 和 `/oauth/userinfo` 返回 RFC 6749
-    `503 temporarily_unavailable`（`OAuthErrorResponse`），不得改写为内部 API 信封。
+    已注册的 `/oauth/authorize`、`/oauth/token`、`/oauth/revoke` 和 `/oauth/userinfo` 始终保持 RFC 6749
+    `OAuthErrorResponse` 信封。Issuer 门禁即时回读后仍不可用、OAuth 依赖不可用或请求超时
+    （`REQUEST_TIMEOUT_SECONDS`）时统一返回标准 `503 temporarily_unavailable`，不得改写为内部 API 信封。
     未知 `/oauth/*` 路径仍返回统一 404；其余应用路由使用内部 `ErrorResponse`。
     健康检查与静态 SPA fallback 不套用该请求超时。
 servers:
@@ -42,10 +47,13 @@ paths:
       operationId: health
       description: |
         兼容别名，处理逻辑与 GET /health/ready 相同：检查数据库、Redis 和 Issuer 收敛。
-        全部就绪返回 200；任一依赖不可用返回 503。响应体只暴露聚合状态，不含连接串或错误细节。
+        raw DB 没有 Issuer 记录且 Runtime 也未加载 Issuer 是合法的保护模式，此时只要数据库和 Redis 可用仍返回 200。
+        raw DB 存在合法 Issuer 且 generation/value 与 Runtime 完全一致时同样返回 200。raw 记录为空或无效、读取失败、
+        Runtime 已加载但数据库无记录、数据库有记录但 Runtime 未加载，或值/代次不一致时返回 503。
+        响应体只暴露聚合状态，不含连接串或错误细节。
       responses:
         '200':
-          description: 数据库、Redis 与 Issuer 均已就绪
+          description: 数据库和 Redis 可用，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
           content:
             application/json:
               schema:
@@ -74,11 +82,13 @@ paths:
       summary: 就绪探针
       operationId: healthReady
       description: |
-        检查数据库、Redis 和 Issuer 收敛。全部就绪返回 200；任一依赖超时或未就绪返回 503。
+        检查数据库、Redis 和 Issuer 收敛。raw DB 与 Runtime 都没有 Issuer 是合法的保护模式；raw DB 存在合法 Issuer
+        且 generation/value 与 Runtime 完全一致时也就绪。raw 记录为空或无效、读取失败、任一侧缺失、值/代次不一致，
+        或任一依赖超时/未就绪时返回 503。
         响应体只暴露聚合状态，不含连接串、主机名或错误细节。
       responses:
         '200':
-          description: 数据库、Redis 与 Issuer 均已就绪
+          description: 数据库和 Redis 可用，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
           content:
             application/json:
               schema:
@@ -93,7 +103,10 @@ paths:
       operationId: openidConfiguration
       description: |
         返回 OIDC Discovery 文档。公开只读元数据，允许任意来源跨域读取
-        （`Access-Control-Allow-Origin: *`，不带凭据）。
+        （`Access-Control-Allow-Origin: *`，不带凭据）。Runtime 处于 AwaitingIssuer 时，门禁立即回读 PostgreSQL；
+        合法持久化 Issuer 会应用到当前请求并继续返回 Discovery。数据库确实无记录时返回内部 `ErrorResponse`
+        信封的 503 `issuer_not_configured`；持久化空值/无效值、读取失败、Runtime Pending/Invalid，或事实无法一致应用时
+        返回 503 `issuer_runtime_invalid`。
       responses:
         '200':
           description: OIDC 配置
@@ -108,6 +121,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OpenIdConfiguration'
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /.well-known/jwks.json:
     get:
       tags: [OAuth/OIDC]
@@ -122,6 +136,9 @@ paths:
         缓存策略为 `Cache-Control: public, max-age=60, must-revalidate`，RP 可在 60 秒内
         直接使用共享缓存；过期后用 `If-None-Match` 发起条件请求，公钥集合未变时返回 304。
         ETag 由 JWKS 字节的 SHA-256 派生，确定性且跨实例一致；密钥轮换或吊销后 ETag 改变。
+        Runtime 处于 AwaitingIssuer 时，门禁立即回读 PostgreSQL；合法持久化 Issuer 会应用到当前请求并继续返回 JWKS。
+        数据库确实无记录时返回内部 `ErrorResponse` 信封的 503 `issuer_not_configured`；持久化空值/无效值、读取失败、
+        Runtime Pending/Invalid，或事实无法一致应用时返回 503 `issuer_runtime_invalid`。
       parameters:
         - { name: If-None-Match, in: header, required: false, description: RP 上次响应的 ETag，匹配时返回 304, schema: { type: string } }
       responses:
@@ -165,6 +182,7 @@ paths:
             Vary:
               description: 始终为 `Origin`。
               schema: { type: string }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/users:
     post:
       tags: [User Auth/Account]
@@ -174,6 +192,7 @@ paths:
         公共注册在真实的邮件投递和验证令牌消费能力接入前 fail-closed。
         格式合法的请求会返回 `email_verification_unavailable`，不会创建未证明邮箱所有权的 active 用户。
         用户名和邮箱的唯一冲突统一返回 `registration_conflict`，不暴露具体冲突字段。
+        Issuer 缺少时注册接口关闭并返回 503 `issuer_not_configured`。
       requestBody:
         required: true
         content:
@@ -198,6 +217,11 @@ paths:
       tags: [User Auth/Account]
       summary: 用户登录
       description: |
+        请求先经过 Issuer 门禁。Runtime 为 AwaitingIssuer 时立即回读 PostgreSQL：合法持久化 Issuer 会应用到当前请求并继续；
+        数据库确实无记录时进入保护模式，只有用户 ID=1 可以本地登录，其他用户返回 `invalid_credentials`。
+        门禁允许继续后，请求格式错误返回 415 或 422；持久化空值/无效值、读取失败或 Runtime Pending/Invalid 时，
+        在进入登录处理器前返回 503 `issuer_runtime_invalid`。
+
         没有已启用/生效认证因子的账号在口令校验成功后直接签发普通 Session，审计
         factor 固定为 `password`，不会创建 login ticket，也不会返回
         `factor_setup_required`。已有生效因子时继续返回 `factor_required` 并走既有
@@ -233,6 +257,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PendingLoginResponse' }
+        '415': { description: 请求未声明 application/json，尚未进入登录业务逻辑 }
+        '422': { description: JSON 类型或必填字段不符合 LoginInput，尚未进入登录业务逻辑 }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/totp/setup:
@@ -920,6 +946,7 @@ paths:
       tags: [User Auth/Browser Login]
       summary: 查询公开的外部登录提供商
       operationId: listPublicExternalProviders
+      description: Runtime 为 AwaitingIssuer 时先回读 PostgreSQL；合法持久化 Issuer 会应用到当前请求并继续。数据库确实无记录时返回内部 `ErrorResponse` 信封的 503 `issuer_not_configured`；空值/无效值、读取失败、Runtime Pending/Invalid 或事实无法一致应用时返回 503 `issuer_runtime_invalid`，且不暴露外部登录配置。
       responses:
         '200':
           description: 当前启用的外部登录提供商，仅包含登录页所需的公开信息
@@ -928,6 +955,7 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/PublicExternalProvider' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /auth/external/{slug}:
     get:
       tags: [User Auth/Browser Login]
@@ -935,7 +963,9 @@ paths:
       description: >-
         自定义提供商按 OAuth 2.0 授权码流程 + UserInfo 信任模型接入，本平台在这一侧不是 OIDC 依赖方。
         scopes 可包含 openid（多数 OIDC 提供商需要它才开放 UserInfo），但它只用于换取可调用 UserInfo 的
-        access token，不代表本平台执行了 OIDC 身份断言校验。
+        access token，不代表本平台执行了 OIDC 身份断言校验。Runtime 为 AwaitingIssuer 时先回读 PostgreSQL；合法持久化
+        Issuer 会应用到当前请求并继续。数据库确实无记录时返回内部 `ErrorResponse` 信封的 503 `issuer_not_configured`；
+        空值/无效值、读取失败、Runtime Pending/Invalid 或事实无法一致应用时返回 503 `issuer_runtime_invalid`。
       operationId: startExternalOAuthLogin
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
@@ -944,6 +974,7 @@ paths:
         '302': { description: 重定向到外部授权端点, headers: { Set-Cookie: { $ref: '#/components/headers/SetCookie' } } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /auth/external/{slug}/callback:
     get:
       tags: [User Auth/Browser Login]
@@ -953,7 +984,9 @@ paths:
         全部按 provider 配置的 claim 路径从该响应读取。令牌响应中的 id_token 不被解析、不被存储、不参与身份判定
         （本平台不为自定义提供商保存 issuer、JWKS、允许算法或 nonce 策略，不具备验证它的条件）。只返回 id_token
         而没有 access_token 的令牌响应按失败处理，回跳 external_error=oauth_login_failed。email_verified 的
-        可信度上限就是外部 UserInfo 响应本身。
+        可信度上限就是外部 UserInfo 响应本身。Runtime 为 AwaitingIssuer 时先回读 PostgreSQL；合法持久化 Issuer 会应用到
+        当前请求并继续。数据库确实无记录时返回内部 `ErrorResponse` 信封的 503 `issuer_not_configured`；空值/无效值、
+        读取失败、Runtime Pending/Invalid 或事实无法一致应用时返回 503 `issuer_runtime_invalid`。
       operationId: externalOAuthCallback
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
@@ -964,6 +997,7 @@ paths:
         '302': { description: 登录成功或失败后的页面重定向, headers: { Set-Cookie: { $ref: '#/components/headers/SetCookie' } } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /oauth/authorize:
     get:
       tags: [OAuth/OIDC]
@@ -973,7 +1007,10 @@ paths:
       description: |
         未登录浏览器请求仅在 client、redirect_uri、scope、state 和 PKCE 完整校验后创建 pending。
         X-Chenxing-Session 仅在 OAUTH_SESSION_HEADER_ENABLED=true 的开发兼容配置中接受，不能绕过 Session 绑定、CSRF 或 consent。
-        请求超时或 Issuer 未就绪时，中间件返回 503 `temporarily_unavailable`（RFC 6749 JSON 信封；此时尚无可用的 redirect_uri 上下文做错误重定向），不会返回内部 API 的 `{code, message}` 或 504 `request_timeout`（Issues #423、#441）。
+        Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。无记录、空值/无效值、
+        数据库读取失败、Runtime Pending/Invalid 或事实无法一致应用，以及请求超时时，统一返回 RFC 6749 JSON 信封的
+        503 `temporarily_unavailable`。此时尚无可用的 redirect_uri 上下文做错误重定向，
+        不会返回内部 API 的 `{code, message}` 或 504 `request_timeout`（Issues #423、#441）。
       parameters:
         - { $ref: '#/components/parameters/ClientId' }
         - { name: redirect_uri, in: query, required: true, schema: { type: string, format: uri } }
@@ -1005,6 +1042,7 @@ paths:
               schema: { $ref: '#/components/schemas/PendingAuthorizationResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     post:
       tags: [OAuth/OIDC]
       summary: 批准或拒绝绑定到当前 Session 的授权请求
@@ -1027,7 +1065,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
-        '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/oauth/authorize/requests/{request_id}/bind:
     post:
       tags: [OAuth/OIDC]
@@ -1064,7 +1102,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { description: 'pending 请求正被并发修改，CAS 无法收敛（authorization_request_conflict）；重试即可', content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /oauth/token:
     post:
       tags: [OAuth/OIDC]
@@ -1072,7 +1110,11 @@ paths:
       operationId: token
       description: |
         表单编码。Client 认证为 HTTP Basic 或 body 二选一。
-        请求超时或 Issuer 未就绪时返回 503 `temporarily_unavailable`（RFC 6749 信封），不会返回内部 API 的 `{code, message}` 或 504 `request_timeout`（Issues #423、#441）。
+        Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。无记录、空值/无效值、
+        数据库读取失败、Runtime Pending/Invalid 或事实无法一致应用，以及请求超时时统一返回 RFC 6749 信封的
+        503 `temporarily_unavailable`。
+        不会返回内部 API 的 `{code, message}`
+        或 504 `request_timeout`（Issues #423、#441）。
       security: [{ basicClientAuth: [] }]
       requestBody:
         required: true
@@ -1096,6 +1138,9 @@ paths:
       tags: [OAuth/OIDC]
       summary: 获取 OIDC UserInfo
       operationId: userinfo
+      description: |
+        Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。回读后仍不可用、
+        OAuth 依赖暂时不可用或请求超时时，返回 RFC 6749 信封的 503 `temporarily_unavailable`，不使用内部 `{code, message}`。
       security: [{ bearerAuth: [] }]
       responses:
         '200':
@@ -1111,6 +1156,9 @@ paths:
       tags: [OAuth/OIDC]
       summary: 撤销 Token
       operationId: revokeToken
+      description: |
+        Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。回读后仍不可用、
+        OAuth 依赖暂时不可用或请求超时时，返回 RFC 6749 信封的 503 `temporarily_unavailable`，不使用内部 `{code, message}`。
       security: [{ basicClientAuth: [] }]
       requestBody:
         required: true
@@ -1134,7 +1182,10 @@ paths:
     post:
       tags: [Admin Auth]
       summary: 初始化首个 Owner 用户
-      description: Issuer 已配置但 Owner 尚未初始化时允许匿名调用；按可信源 IP 限制为每分钟 5 次。缺少可信源地址时遵循服务端 missing_source_ip_policy，限流依赖不可用时 fail closed。
+      description: |
+        Owner 尚未初始化时允许匿名创建首个 Owner（数据库 ID=1），无论 Issuer 是否已配置；
+        该初始化入口是保护模式的唯一用户创建例外。按可信源 IP 限制为每分钟 5 次，
+        缺少可信源地址时遵循服务端 missing_source_ip_policy，限流依赖不可用时 fail closed。
       operationId: bootstrapAdmin
       requestBody:
         required: true
@@ -1220,6 +1271,7 @@ paths:
       description: |
         管理员创建任意角色和初始状态的用户，是 POST /api/v1/admin/admins 的一般化。
         响应只包含公开用户字段，永不返回口令、口令哈希或任何凭据材料。
+        Issuer 缺少时所有管理用户创建接口关闭并返回 503 `issuer_not_configured`；首 Owner 只能通过 bootstrap 初始化。
 
         权限：`manage_users` 为基线；`role` 为 admin 或 owner 时所需权限抬升为 `manage_roles`。
         浏览器 Session 写操作必须同时携带 HttpOnly Session Cookie、CSRF Cookie 和 X-CSRF-Token。
@@ -1246,6 +1298,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/users/{user_id}/{status}:
     post:
       tags: [Admin Users]
@@ -1637,6 +1690,7 @@ paths:
     post:
       tags: [Admin Auth]
       summary: 创建管理员或 Owner
+      description: Issuer 缺少时关闭并返回 503 `issuer_not_configured`；首 Owner 只能通过 bootstrap 初始化。
       operationId: createAdmin
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
       parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
@@ -1647,6 +1701,7 @@ paths:
             schema: { $ref: '#/components/schemas/AdminInput' }
       responses:
         '201': { description: 创建成功 }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/audit:
     get:
       tags: [Admin Operations]
@@ -1764,7 +1819,7 @@ paths:
     get:
       tags: [Admin]
       summary: 查询 OIDC Issuer 状态
-      description: Owner 专属。返回持久化记录、当前进程加载快照和运行阶段，不返回秘密材料。
+      description: Owner 专属。返回 PostgreSQL `app_settings` 中的持久化记录、当前进程加载快照和运行阶段，不返回秘密材料。保护模式下 ADMIN_TOKEN 是恢复访问通道。
       operationId: getIssuerSetting
       security:
         - adminBearer: []
@@ -1785,7 +1840,8 @@ paths:
       description: |
         Owner 专属，浏览器会话需要 CSRF。value 必须是无 userinfo、路径、查询和片段的
         http(s) 根 URL。expected_generation 用于 CAS 并发保护；修改已有值时 confirm 必须为 true。
-        写入与 issuer_configure/issuer_update 审计在同一事务中提交，当前进程立即热生效，其他副本按 generation 轮询收敛。
+        Issuer 写入 PostgreSQL `app_settings`；写入与 issuer_configure/issuer_update 审计在同一事务中提交，
+        当前进程立即热生效，其他副本按 generation 轮询收敛。保护模式下可使用 ADMIN_TOKEN 完成恢复配置。
       operationId: updateIssuerSetting
       security:
         - sessionCookie: []
@@ -2010,6 +2066,7 @@ paths:
               schema: { type: array, items: { $ref: '#/components/schemas/OAuthProviderSummary' } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     post:
       tags: [Admin OAuth Providers]
       summary: 创建自定义 OAuth 提供商
@@ -2036,6 +2093,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/oauth/providers/{slug}:
     put:
       tags: [Admin OAuth Providers]
@@ -2057,6 +2115,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/oauth/providers/{slug}/disable:
     post:
       tags: [Admin OAuth Providers]
@@ -2071,6 +2130,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/oauth/providers/{slug}/enable:
     post:
       tags: [Admin OAuth Providers]
@@ -2086,6 +2146,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /admin/login:
     get:
       tags: [Admin Auth]
@@ -2190,11 +2251,14 @@ components:
     Conflict: { description: 资源冲突（包括套餐 code 冲突、已归档套餐不能设为默认和 Passkey 禁用保护）, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     NotFound: { description: 资源不存在, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     TooManyRequests: { description: 认证、OAuth 配额或 QPS 限流触发, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-    ServiceUnavailable: { description: 依赖或必要能力暂不可用, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    ServiceUnavailable: { description: 依赖或必要能力暂不可用；Issuer 门禁在 Runtime Awaiting 时先回读 PostgreSQL 并应用合法值。数据库确实无 Issuer 记录时 code 为 issuer_not_configured；空值/无效值、读取失败、Runtime Pending/Invalid 或 DB/Runtime 事实无法一致应用时 code 为 issuer_runtime_invalid, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     InternalServerError: { description: 服务端内部故障, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     HealthServiceUnavailable:
       description: |
-        数据库、Redis 或 Issuer 未收敛。响应体只暴露聚合状态，不含连接串或错误细节。
+        数据库、Redis 不可用；raw Issuer 记录为空/无效或读取失败；Runtime 已加载但数据库无记录；数据库有记录但 Runtime
+        未加载；或 generation/value 不一致。raw DB 与 Runtime 都没有 Issuer 是健康的保护模式，合法记录与 Runtime
+        完全一致时同样就绪。
+        响应体只暴露聚合状态，不含连接串或错误细节。
       content:
         application/json:
           schema: { $ref: '#/components/schemas/HealthResponse' }
@@ -2208,9 +2272,10 @@ components:
     OAuthTooManyRequests: { description: OAuth 限流或容量保护触发, content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } } }
     OAuthServiceUnavailable:
       description: |
-        OAuth 依赖暂时不可用、Issuer 未配置或运行态无效，或已注册的 OAuth 协议端点
-        触发请求超时（Issues #423、#441）。
-        响应始终为 RFC 6749 信封（`error=temporarily_unavailable`），不是内部 `{code, message}`。
+        Runtime Awaiting 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。数据库无记录、空值/无效值、
+        读取失败、Runtime Pending/Invalid、DB/Runtime 事实无法一致应用、OAuth 依赖暂时不可用，或请求超时
+        （Issues #423、#441）时统一返回 RFC 6749 `error=temporarily_unavailable`，
+        不使用内部 `{code, message}`。
       content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } }
     RequestTimeout:
       description: |
@@ -2541,7 +2606,7 @@ components:
         azp 在单 audience 场景可省略（OIDC Core §2 允许），不签发也不声明。
       required: [iss, sub, aud, exp, iat]
       properties:
-        iss: { type: string, format: uri, description: "令牌签发者（等于 APP_ISSUER）" }
+        iss: { type: string, format: uri, description: "令牌签发者（等于 PostgreSQL app_settings 中已加载的运行时 Issuer）" }
         sub: { type: string, description: "用户主体标识符" }
         aud: { type: string, description: "接收方 client_id" }
         exp: { type: integer, format: int64, description: "过期时间（Unix 秒）" }

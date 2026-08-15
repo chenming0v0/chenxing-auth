@@ -15,6 +15,14 @@ mod db_isolation;
 mod key_directory;
 
 async fn test_router() -> (Router, std::path::PathBuf) {
+    test_router_with_issuer(true).await
+}
+
+async fn test_router_without_issuer() -> (Router, std::path::PathBuf) {
+    test_router_with_issuer(false).await
+}
+
+async fn test_router_with_issuer(configure_issuer: bool) -> (Router, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -30,6 +38,9 @@ async fn test_router() -> (Router, std::path::PathBuf) {
         3600,
     )
     .expect("config");
+    if !configure_issuer {
+        config.issuer = None;
+    }
     // Issue #348：ADMIN_TOKEN 为空时管理面整体关闭，未认证请求拿到的是 403
     // admin_disabled 而不是守卫的 401。这两个用例的意图是「请求落到 AdminWrite
     // 守卫并被拒绝」，因此显式启用管理面（非空 Token），让守卫真正执行。
@@ -227,10 +238,43 @@ async fn readiness_endpoint_returns_a_dependency_agnostic_failure_body() {
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
-/// Issue #445：三个探针都禁止缓存。隔离 schema 没有持久化 Issuer，
-/// `/health` 与 `/health/ready` 因此走 503；`/health/live` 不碰依赖，始终 200。
+/// Issue #445：三个探针都禁止缓存。缺少 Issuer 是可恢复的引导状态，数据库和
+/// Redis 正常时三个探针都返回 200。
 #[tokio::test]
-async fn health_probes_are_not_stored_on_ok_and_unavailable() {
+async fn health_probes_are_not_stored_when_issuer_is_truly_absent() {
+    let (router, key_directory) = test_router_without_issuer().await;
+
+    for (path, expected) in [
+        ("/health/live", StatusCode::OK),
+        ("/health", StatusCode::OK),
+        ("/health/ready", StatusCode::OK),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("health request"),
+            )
+            .await
+            .expect("health response");
+        assert_eq!(response.status(), expected, "{path}");
+        assert_eq!(
+            response
+                .headers()
+                .get(CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store"),
+            "{path}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn health_rejects_a_runtime_issuer_that_is_not_persisted() {
     let (router, key_directory) = test_router().await;
 
     for (path, expected) in [

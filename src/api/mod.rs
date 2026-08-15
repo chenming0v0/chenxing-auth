@@ -14,6 +14,7 @@ use crate::{config::TrustedProxies, state::AppState};
 mod discovery;
 pub mod extract;
 mod health;
+mod issuer_gate;
 mod routes;
 mod security_headers;
 mod static_files;
@@ -34,7 +35,7 @@ pub fn router(state: AppState) -> Router {
 
     let static_service = static_files::static_service(&state.web_dist);
     let application = routes::register(Router::new(), request_timeout).route_layer(
-        from_fn_with_state(state_for_middleware.clone(), require_issuer),
+        from_fn_with_state(state_for_middleware.clone(), issuer_gate::require_issuer),
     );
     // Bootstrap / issuer 必须在 Issuer 未就绪时仍可访问；鉴权仍由各自 extractor 执行。
     // 超时与 application router 共用同一层，health 有自己的 2 秒预算，不能套进来。
@@ -67,38 +68,6 @@ pub fn router(state: AppState) -> Router {
             state_for_middleware,
             apply_security_headers,
         ))
-}
-
-async fn require_issuer(
-    State(state): State<AppState>,
-    mut request: AxumRequest,
-    next: Next,
-) -> Response {
-    let runtime = state.issuer.state();
-    let Some(snapshot) = runtime.loaded() else {
-        if crate::error::is_oauth_protocol_path(request.uri().path()) {
-            return crate::error::oauth_temporarily_unavailable();
-        }
-        return match runtime.as_ref() {
-            crate::settings::IssuerRuntimeState::AwaitingIssuer => {
-                crate::error::service_unavailable(
-                    "issuer_not_configured",
-                    "the application issuer is not configured",
-                )
-            }
-            crate::settings::IssuerRuntimeState::Invalid { .. } => {
-                crate::error::service_unavailable(
-                    "issuer_runtime_invalid",
-                    "the persisted application issuer could not be loaded",
-                )
-            }
-            crate::settings::IssuerRuntimeState::Ready(_) => unreachable!(),
-        };
-    };
-    request.extensions_mut().insert(snapshot.clone());
-    let mut response = next.run(request).await;
-    response.extensions_mut().insert(snapshot);
-    response
 }
 
 async fn apply_security_headers(

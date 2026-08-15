@@ -91,8 +91,9 @@ impl fmt::Debug for Session {
 ///   因此旧载荷中多出的 `token` 会被静默丢弃，不会导致解析失败。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SessionPayload {
-    /// 格式兼容字段。PostgreSQL 路径以 `user_sessions.id` 为唯一权威并在读取时
-    /// 覆盖此值；新建载荷可使用 Redis-only 路径既有的 `0` 占位。
+    /// 格式兼容字段。PostgreSQL 新写入的载荷使用预分配的最终行 ID；读取时仍以
+    /// `user_sessions.id` 为权威并覆盖此值，以兼容旧的 `0` 占位载荷。Redis-only
+    /// 路径继续使用既有的 `0` 占位。
     pub id: i64,
     // token 字段被移除：它是明文凭据且在查询时被调用方传入值覆盖，持久化它没有必要且扩大了密钥泄露的影响面
     pub user_id: String,

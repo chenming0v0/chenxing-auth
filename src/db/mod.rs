@@ -4,6 +4,7 @@ use crate::sqlx::{PgPool, PgPoolOptions};
 
 use crate::config::Config;
 
+pub(crate) mod advisory_lock;
 mod audit_boundary;
 mod canonical_email;
 mod migrate;

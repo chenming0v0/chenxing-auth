@@ -387,11 +387,7 @@ pub(super) async fn lock_factor_account(
     transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
     user_id: UserId,
 ) -> Result<(), crate::sqlx::Error> {
-    crate::sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(user_id)
-        .execute(&mut **transaction)
-        .await?;
-    Ok(())
+    crate::db::advisory_lock::lock_user(transaction, user_id).await
 }
 
 async fn account_has_factor(

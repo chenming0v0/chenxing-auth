@@ -14,7 +14,7 @@
 ```
 
 - OAuth 协议端点（`/oauth/*`，如 `/oauth/token`、`/oauth/authorize`、`/oauth/revoke`、`/oauth/userinfo`）的 JSON 错误遵守 RFC 6749，字段为 `error` / `error_description`，**不是**上面的内部 `{code, message}` 信封。内部授权确认 API（`/api/v1/oauth/*`）仍使用内部信封。
-- 请求超时（`REQUEST_TIMEOUT_SECONDS`，默认 30 秒；健康检查与静态 SPA fallback 不受此限制）和 Issuer 运行态门禁失败按协议边界分流响应格式（Issues #423、#441、#451）：
+- 请求超时（`REQUEST_TIMEOUT_SECONDS`，默认 30 秒；健康检查与静态 SPA fallback 不受此限制）和已配置 Issuer 的运行态门禁失败按协议边界分流响应格式（Issues #423、#441、#451）：
   - 已注册的 `/oauth/authorize`、`/oauth/token`、`/oauth/revoke`、`/oauth/userinfo`：`503` + RFC 6749 `{"error":"temporarily_unavailable","error_description":"..."}`，与依赖暂不可用等协议错误一致；未知 `/oauth/*` 路径仍返回统一 404。
   - 其余已匹配的应用路由，以及 system 路由（`/api/v1/admin/bootstrap`、`/api/v1/admin/bootstrap/status`、`/api/v1/admin/settings/issuer`）：`504` + `{"code":"request_timeout","message":"request timed out"}`。
 - 常见状态码：`200` 成功，`201` 创建成功，`204` 成功且无响应体，`400` 参数或业务校验失败，`401` 未认证，`403` 无权限，`409` 冲突，`503` 依赖暂不可用，`504` 非 OAuth 路由请求超时，`500` 服务端错误。
@@ -32,7 +32,7 @@
 
 ### `GET /health` 与 `GET /health/ready`
 
-就绪探针。`/health` 是 `/health/ready` 的兼容别名，两者检查数据库、Redis 和 Issuer 收敛。全部就绪返回 `200` 和上面的 `status=ok` 响应；任一依赖超时或未就绪返回 `503`：
+就绪探针。`/health` 是 `/health/ready` 的兼容别名，两者检查数据库和 Redis；数据库已有 Issuer 时还检查运行时是否已收敛。数据库、Redis 正常且 Issuer 尚未设置时，保护模式同样返回 `200`，不会因为缺少 Issuer 把 readiness/health 置为 `503`。任一实际依赖超时或未就绪返回 `503`：
 
 ```json
 {"status":"unavailable","service":"chenxing-auth"}
@@ -44,11 +44,15 @@
 
 返回 OIDC Discovery 文档。前端/接入方应优先读取该文档，不要硬编码协议端点。当前至少包含 `issuer`、`authorization_endpoint`、`token_endpoint`、`userinfo_endpoint`、`jwks_uri`、`revocation_endpoint` 等标准字段。
 
+保护模式尚未设置 Issuer 时，该端点关闭；完成 Owner 设置并热更新后才提供 Discovery。
+
 Discovery 是公开只读元数据，允许任意来源跨域读取：请求带 `Origin` 时响应 `Access-Control-Allow-Origin: *`；无论是否带 Origin 都响应 `Vary: Origin`，避免共享缓存混用 CORS 变体。该端点不读取 Cookie 或 Authorization，`*` 与不带凭据的请求兼容。
 
 ### `GET /.well-known/jwks.json`
 
 返回当前及验证过渡期公钥集合。只用于验证 JWT，不包含私钥。
+
+保护模式尚未设置 Issuer 时，该端点关闭；它只服务于正式 Issuer 下签发的令牌。
 
 JWKS 是被 RP 高频轮询的公开端点，缓存策略为 `Cache-Control: public, max-age=60, must-revalidate`：
 
@@ -66,7 +70,7 @@ JWKS 的 CORS 与 Discovery 一致：请求带 `Origin` 时 `Access-Control-Allo
 
 创建辰星通行证账号。
 
-当前公开注册在真实的邮件投递和验证令牌消费能力接入前 fail-closed：格式合法的请求返回 `503` 和 `email_verification_unavailable`，不会创建 active 用户，也不会写入无期限的待验证身份。系统不会把邮件标记为已验证，也不会在响应中返回验证令牌。
+当前公开注册在真实的邮件投递和验证令牌消费能力接入前 fail-closed：格式合法的请求返回 `503` 和 `email_verification_unavailable`，不会创建 active 用户，也不会写入无期限的待验证身份。保护模式下还会以 `503 issuer_not_configured` 拒绝注册。系统不会把邮件标记为已验证，也不会在响应中返回验证令牌。
 
 请求：
 
@@ -287,7 +291,7 @@ Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限�
 
 | Claim | 是否总是出现 | 说明 |
 | --- | --- | --- |
-| `iss` | 是 | 签发者，等于 `APP_ISSUER` 配置值 |
+| `iss` | 是 | 签发者，等于 PostgreSQL `app_settings` 中的运行期 Issuer；旧环境兼容导入后也以该值为准 |
 | `sub` | 是 | 用户主体标识符 |
 | `aud` | 是 | 接收方 `client_id` |
 | `exp` | 是 | 过期时间（Unix 秒） |
@@ -315,9 +319,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ## 管理 API
 
-运行期 Issuer 保存在 PostgreSQL `app_settings`。数据库尚未设置 Issuer 时，服务仍提供
-`/health*`、静态前端、Owner 引导和 Owner 专属 Issuer 设置入口；其他认证、管理、OAuth/OIDC、Discovery 与 JWKS 路由由运行时门禁拒绝。
-运维可通过容器内命令 `chenxing-auth configure-issuer https://auth.example.com` 首次写入，也可由 Owner 在管理设置页配置；写入后当前进程热生效，其他副本按 generation 轮询收敛，不能从请求 Host 推导。
+运行期 Issuer 保存在 PostgreSQL `app_settings`，由 Owner 在管理设置中写入并由运行时热更新。数据库尚未设置 Issuer 时是保护模式：`/health*`、静态前端、首 Owner 引导、ID=1 Owner 登录以及未依赖正式 Issuer 的管理路径仍可用；`ADMIN_TOKEN` 是管理 API 的恢复通道。公开注册、普通用户创建、管理员/Owner 创建关闭，只有 OAuth/OIDC、Discovery、JWKS 和外部登录路由由运行时门禁拒绝。不能从请求 Host 推导 Issuer。
 
 管理员 Bearer Token 请求头：`Authorization: Bearer <ADMIN_TOKEN>`。初始化完成后，管理 API 有两条独立通道，任一通过即可继续按角色判定权限：系统 `ADMIN_TOKEN` Bearer（权限等价于 Owner，无用户 ID，豁免浏览器 CSRF），或普通用户 Session。浏览器写操作使用 `__Host-chenxing_session`、`__Host-chenxing_csrf` Cookie 和 `X-CSRF-Token` 三者绑定（loopback HTTP 开发环境使用对应的不带前缀名称）。
 
@@ -327,7 +329,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ### `POST /api/v1/admin/bootstrap`
 
-仅用于 Issuer 已配置后的首个 Owner 初始化，无需认证。只有不存在 Owner 时请求才会成功；初始化使用数据库并发锁保证最多创建一个 Owner，成功后不可重复初始化。请求按可信源 IP 限制为每分钟 5 次，缺少可信源地址或 Redis 限流不可用时按配置 fail closed。请求必须包含用户名、邮箱和密码，首个 Owner 的用户 ID 为 `1`，成功后不自动创建 Session。
+用于初始化首个 Owner，无需认证，不要求 Issuer 已配置。只有不存在 Owner 时请求才会成功；初始化使用数据库并发锁保证最多创建一个 Owner，成功后不可重复初始化。请求按可信源 IP 限制为每分钟 5 次，缺少可信源地址或 Redis 限流不可用时按配置 fail closed。请求必须包含用户名、邮箱和密码，首个 Owner 的用户 ID 为 `1`，成功后不自动创建 Session。在保护模式下，这是创建首个 Owner 的唯一公开入口。
 
 ```json
 {"username":"chenxing-owner","email":"owner@example.com","password":"at-least-10-chars"}
@@ -369,7 +371,7 @@ PUT 用 `password_action` 表达密码三态，不要再靠空字符串猜测：
 ### 用户管理
 
 - `GET /api/v1/admin/users?limit=50&offset=0`：列出用户，需要 `ManageUsers`。响应是用户数组。服务端强制分页：`limit` 默认 `50`，取值被 clamp 到 `[1, 200]`（与审计列表一致），`offset` 默认 `0`，负值按 `0` 处理。需要 `total` 和分页信封时用 `GET /api/v1/admin/users/query`。
-- `POST /api/v1/admin/users`：创建用户，提交 `{"username":"alice","email":"alice@example.com","password":"...","display_name":null,"role":"user","status":"active"}`。`display_name`、`role`、`status` 可省略，`role` 缺省 `user`，`status` 缺省 `active`。基线权限 `ManageUsers`；`role` 为 `admin` 或 `owner` 时额外要求 `ManageRoles`。成功 `201`，响应是公开用户字段，不含口令哈希或任何凭据材料。`400` 为 `invalid_role`、`invalid_status`、`invalid_username`、`invalid_email`、`password_too_short`、`password_too_long`、`display_name_too_long`、`email_domain_not_allowed`、`csrf_invalid`；`403` 为 `admin_forbidden`；`409` 为 `username_already_registered`、`email_already_registered`、`owner_bootstrap_required`。
+- `POST /api/v1/admin/users`：创建用户，提交 `{"username":"alice","email":"alice@example.com","password":"...","display_name":null,"role":"user","status":"active"}`。`display_name`、`role`、`status` 可省略，`role` 缺省 `user`，`status` 缺省 `active`。基线权限 `ManageUsers`；`role` 为 `admin` 或 `owner` 时额外要求 `ManageRoles`。Issuer 未配置的保护模式下该接口关闭并返回 `503 issuer_not_configured`，包括创建普通用户和创建特权用户。正常模式成功 `201`，响应是公开用户字段，不含口令哈希或任何凭据材料。`400` 为 `invalid_role`、`invalid_status`、`invalid_username`、`invalid_email`、`password_too_short`、`password_too_long`、`display_name_too_long`、`email_domain_not_allowed`、`csrf_invalid`；`403` 为 `admin_forbidden`；`409` 为 `username_already_registered`、`email_already_registered`、`owner_bootstrap_required`。
 - `POST /api/v1/admin/users/{user_id}/{status}`：设置用户状态，基线需要 `ManageUsers`，目标为 Owner 时额外需要 `ManageRoles`。授权先于资源查询，低权限调用者不能枚举用户或 Owner 身份。状态常用为 `active`、`disabled`；非法状态返回 `400 invalid_status`，用户不存在返回 `404 user_not_found`，成功 `204`。禁止修改自己的状态，自我操作返回 `403 self_status_change_forbidden`。
 
 用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`role`、`created_at`。按 `created_at DESC, id DESC` 排序。
@@ -391,7 +393,7 @@ Passkey 重置成功响应：
 ### 特权用户管理
 
 - `GET /api/v1/admin/admins`：列出角色为 `admin` 或 `owner` 的统一用户，需要 `ManageUsers`。
-- `POST /api/v1/admin/admins`：创建完整的特权用户，需要 Owner 权限和普通用户 CSRF。
+- `POST /api/v1/admin/admins`：创建完整的特权用户，需要 Owner 权限和普通用户 CSRF；保护模式下返回 `503 issuer_not_configured`。
 - `POST /api/v1/admin/users/{user_id}/role`：修改其他用户角色，仅 Owner 可用；禁止自我改角色，降级最后一个活跃 Owner 返回 `409 last_owner_required`。
 
 创建字段：`username`、`email`、`password`、`role`，角色只允许 `admin` 或 `owner`。返回的用户摘要不包含密码或哈希。

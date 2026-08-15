@@ -65,12 +65,12 @@ validate_issuer() {
 
 if [[ -f .env ]]; then
     printf '%s\n' 'Using existing .env; secrets will not be replaced.'
+    # APP_ISSUER is read only for older deployments. New deployments configure
+    # the runtime issuer through the Owner settings API after bootstrap.
     APP_ISSUER="$(read_env_value APP_ISSUER)"
     COOKIE_SECURE="$(read_env_value COOKIE_SECURE)"
 else
-    APP_ISSUER="${CHENXING_ISSUER:-}"
-    validate_issuer
-
+    APP_ISSUER=""
     if ! command -v openssl >/dev/null 2>&1; then
         printf '%s\n' 'openssl is required to generate deployment secrets.' >&2
         exit 1
@@ -84,17 +84,12 @@ else
     POSTGRES_RUNTIME_PASSWORD="${POSTGRES_RUNTIME_PASSWORD:-$(generate_secret)}"
     ADMIN_TOKEN="${ADMIN_TOKEN:-$(openssl rand -hex 32)}"
     AUTH_ENCRYPTION_KEY="${AUTH_ENCRYPTION_KEY:-$(openssl rand -base64 32)}"
-    COOKIE_SECURE="${COOKIE_SECURE:-$EXPECTED_COOKIE_SECURE}"
-    if [[ "$COOKIE_SECURE" != "$EXPECTED_COOKIE_SECURE" ]]; then
-        printf 'COOKIE_SECURE must be %s for issuer %s.\n' "$EXPECTED_COOKIE_SECURE" "$APP_ISSUER" >&2
-        exit 1
-    fi
+    COOKIE_SECURE="${COOKIE_SECURE:-true}"
 
     umask 077
     cat > .env <<EOF
 APP_HOST=0.0.0.0
 APP_PORT=${APP_PORT}
-APP_ISSUER=${APP_ISSUER}
 ADMIN_TOKEN=${ADMIN_TOKEN}
 AUTH_ENCRYPTION_KEY=${AUTH_ENCRYPTION_KEY}
 KEY_DIRECTORY=/var/lib/chenxing-auth/keys
@@ -128,6 +123,10 @@ if [[ -z "$POSTGRES_RUNTIME_PASSWORD" ]]; then
 fi
 
 validate_issuer
+if [[ -z "$COOKIE_SECURE" ]]; then
+    COOKIE_SECURE="$EXPECTED_COOKIE_SECURE"
+    ensure_env_value COOKIE_SECURE "$COOKIE_SECURE"
+fi
 if [[ -n "$APP_ISSUER" && "$COOKIE_SECURE" != "$EXPECTED_COOKIE_SECURE" ]]; then
     printf 'COOKIE_SECURE must be %s for issuer %s.\n' "$EXPECTED_COOKIE_SECURE" "$APP_ISSUER" >&2
     exit 1
@@ -193,7 +192,7 @@ if [[ -n "$APP_ISSUER" ]]; then
     done
     printf '%s\n' 'OpenID Connect discovery matches the configured issuer.'
 else
-    printf '%s\n' 'APP_ISSUER is not set; the service is running in secure bootstrap mode.'
-    printf '%s\n' 'Configure the issuer through the Owner settings API or configure-issuer when ready.'
+    printf '%s\n' 'No legacy APP_ISSUER was read; new deployments do not require that environment variable.'
+    printf '%s\n' 'If PostgreSQL has no Issuer, the service is running in protected bootstrap mode: initialize the ID=1 Owner first, then set the fixed Issuer in Owner settings; it hot-reloads from PostgreSQL app_settings.'
 fi
 exit 0
