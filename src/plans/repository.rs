@@ -7,11 +7,9 @@ use super::{
     },
     service::EffectivePlan,
 };
+use crate::db::advisory_lock::{BusinessLock, lock_business};
 use crate::sqlx::{PgPool, Postgres, Transaction};
 use crate::users::domain::{OwnerTargetAccess, UserId};
-
-/// 串行化 `is_default` 切换的 advisory lock，与用户引导锁区分开。
-const DEFAULT_PLAN_LOCK: i32 = 7341929;
 
 #[derive(Debug, Error)]
 pub enum PlanRepositoryError {
@@ -180,11 +178,7 @@ pub async fn find_for_user(
 async fn lock_default_plan_set(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<(), crate::sqlx::Error> {
-    crate::sqlx::query("SELECT pg_advisory_xact_lock(0, $1)")
-        .bind(DEFAULT_PLAN_LOCK)
-        .execute(&mut **transaction)
-        .await?;
-    Ok(())
+    lock_business(transaction, BusinessLock::DefaultPlan).await
 }
 
 async fn find_for_update(

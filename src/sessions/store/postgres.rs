@@ -238,11 +238,7 @@ pub(crate) async fn lock_user_session_scope(
     transaction: &mut Transaction<'_, Postgres>,
     user_id: UserId,
 ) -> Result<(), crate::sqlx::Error> {
-    crate::sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(user_id)
-        .execute(&mut **transaction)
-        .await?;
-    Ok(())
+    crate::db::advisory_lock::lock_user(transaction, user_id).await
 }
 
 pub(crate) async fn revoke_all_for_user_in_transaction(
