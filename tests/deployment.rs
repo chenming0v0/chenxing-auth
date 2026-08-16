@@ -80,13 +80,157 @@ fn release_workflow_publishes_versioned_archives_and_checksums() {
         "--repo \"${GITHUB_REPOSITORY}\"",
         "sha256sum -c SHA256SUMS",
         "startsWith(github.ref, 'refs/tags/v')",
-        "github.event_name != 'workflow_run'",
+        "github.event_name == 'push'",
     ] {
         assert!(
             BUILD_WORKFLOW.contains(marker),
             "release workflow is missing marker: {marker}"
         );
     }
+}
+
+#[test]
+fn deployment_runtime_and_migration_credentials_are_separated() {
+    let app_start = PRODUCTION_COMPOSE
+        .find("\n  app:")
+        .expect("production compose must define app");
+    let app_end = PRODUCTION_COMPOSE
+        .find("\n  migrate:")
+        .expect("production compose must define migrate after app");
+    let app = &PRODUCTION_COMPOSE[app_start..app_end];
+    assert!(
+        !app.contains("env_file:"),
+        "app must use an explicit runtime allowlist"
+    );
+    for secret in [
+        "MIGRATION_DATABASE_URL",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+    ] {
+        assert!(
+            !app.contains(secret),
+            "app must not receive owner credential {secret}"
+        );
+    }
+    let migrate = PRODUCTION_COMPOSE
+        .split_once("\n  migrate:")
+        .map(|(_, rest)| rest)
+        .expect("production compose must define a migrate service");
+    for marker in [
+        "profiles:",
+        "command: [\"migrate\"]",
+        "MIGRATION_DATABASE_URL:",
+        "DATABASE_URL:",
+    ] {
+        assert!(
+            migrate.contains(marker),
+            "migrate service is missing {marker}"
+        );
+    }
+    assert!(INSTALL_SCRIPT.contains("run --rm --build migrate"));
+    assert!(REMOTE_INSTALL_SCRIPT.contains("run --rm migrate"));
+    for script in [INSTALL_SCRIPT, REMOTE_INSTALL_SCRIPT] {
+        assert!(!script.contains("run --rm app migrate"));
+    }
+    assert!(REMOTE_INSTALL_SCRIPT.contains("  migrate:\n"));
+    let generated = REMOTE_INSTALL_SCRIPT
+        .split_once("services:\n")
+        .map(|(_, body)| body)
+        .expect("remote installer must generate a compose document");
+    let generated_app_start = generated
+        .find("  app:")
+        .expect("generated compose must define app");
+    let generated_app_end = generated
+        .find("\n  migrate:")
+        .expect("generated compose must define migrate after app");
+    let generated_app = &generated[generated_app_start..generated_app_end];
+    assert!(!generated_app.contains("env_file:"));
+    assert!(!generated_app.contains("MIGRATION_DATABASE_URL:"));
+}
+
+#[test]
+fn installers_harden_env_files_before_any_legacy_read_or_write() {
+    let deploy_security = INSTALL_SCRIPT
+        .find("if [[ -e .env || -L .env ]]")
+        .expect("source installer must classify every existing .env path");
+    let deploy_read = INSTALL_SCRIPT
+        .find("APP_ISSUER=\"$(read_env_value APP_ISSUER)\"")
+        .expect("source installer must read legacy APP_ISSUER");
+    assert!(deploy_security < deploy_read);
+    for marker in [
+        "[[ -L .env ]]",
+        "[[ ! -f .env ]]",
+        "chmod 600 -- .env",
+        "chmod 600 -- .env",
+    ] {
+        assert!(
+            INSTALL_SCRIPT.contains(marker),
+            "source installer missing {marker}"
+        );
+    }
+
+    let remote_security = REMOTE_INSTALL_SCRIPT
+        .find("if [[ -e \"$ENV_FILE\" || -L \"$ENV_FILE\" ]]")
+        .expect("remote installer must classify every existing .env path");
+    let remote_read = REMOTE_INSTALL_SCRIPT
+        .find("APP_ISSUER=\"$(read_env_value APP_ISSUER)\"")
+        .expect("remote installer must read legacy APP_ISSUER");
+    assert!(remote_security < remote_read);
+    for marker in ["[[ -L \"$ENV_FILE\" ]]", "chmod 600 -- \"$ENV_FILE\""] {
+        assert!(
+            REMOTE_INSTALL_SCRIPT.contains(marker),
+            "remote installer missing {marker}"
+        );
+    }
+}
+
+#[test]
+fn deployment_project_names_are_stable_and_legacy_resolution_fails_closed() {
+    assert!(INSTALL_SCRIPT.contains("COMPOSE_PROJECT_NAME"));
+    assert!(INSTALL_SCRIPT.contains("resolve_legacy_project"));
+    assert!(INSTALL_SCRIPT.contains("docker volume inspect"));
+    assert!(INSTALL_SCRIPT.contains("fail closed") || INSTALL_SCRIPT.contains("无法确认"));
+    assert!(
+        REMOTE_INSTALL_SCRIPT.contains("append_env_default COMPOSE_PROJECT_NAME chenxing-auth")
+    );
+    assert!(!REMOTE_INSTALL_SCRIPT.contains("resolve_legacy_project"));
+    let generated = heredoc_body_after(INSTALL_SCRIPT, "    cat > .env <<EOF\n");
+    assert!(generated.contains("COMPOSE_PROJECT_NAME="));
+    assert!(!INSTALL_SCRIPT.contains("append_env_default COMPOSE_PROJECT_NAME"));
+    assert!(REMOTE_INSTALL_SCRIPT.contains("COMPOSE_PROJECT_NAME=chenxing-auth"));
+}
+
+#[test]
+fn compose_keeps_container_listener_fixed_when_host_port_changes() {
+    for compose in [PRODUCTION_COMPOSE, REMOTE_INSTALL_SCRIPT] {
+        assert!(compose.contains("APP_HOST: 0.0.0.0"));
+        assert!(compose.contains("APP_PORT: 3000"));
+        assert!(
+            compose.contains("\"${APP_PORT:-3000}:3000\"")
+                || compose.contains("\"${APP_PORT}:3000\"")
+        );
+        assert!(!compose.contains("APP_HOST: ${APP_HOST"));
+        assert!(!compose.contains("APP_PORT: ${APP_PORT"));
+    }
+}
+
+#[test]
+fn publish_workflow_only_mints_protected_or_temporary_tags() {
+    assert!(BUILD_WORKFLOW.contains("actions: read"));
+    assert!(BUILD_WORKFLOW.contains("manual-${{ github.sha }}"));
+    assert!(!BUILD_WORKFLOW.contains("type=ref,event=branch"));
+    assert!(BUILD_WORKFLOW.contains("github.event_name == 'workflow_dispatch'"));
+    assert!(
+        BUILD_WORKFLOW
+            .contains("github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')")
+    );
+    assert!(BUILD_WORKFLOW.contains("github.event.workflow_run.head_sha"));
+    assert!(BUILD_WORKFLOW.contains("actions/workflows/ci.yml/runs"));
+    assert!(BUILD_WORKFLOW.contains("conclusion == 'success'"));
+    assert!(BUILD_WORKFLOW.contains("merge-base --is-ancestor"));
+    assert!(BUILD_WORKFLOW.contains("github.event_name == 'workflow_run'"));
+    assert!(!BUILD_WORKFLOW.contains("github.ref == 'refs/heads/dev'"));
+    assert!(!BUILD_WORKFLOW.contains("github.event_name != 'workflow_run'\n"));
 }
 
 #[test]
@@ -341,7 +485,7 @@ fn release_workflow_builds_web_once_and_reuses_it() {
     for marker in [
         "name: Build embedded web",
         "name: web-dist",
-        "needs: web",
+        "needs: [verify-provenance, web]",
         "path: web/dist",
         "CHENXING_USE_PREBUILT_WEB",
         "Accept prebuilt embedded web",
@@ -615,7 +759,7 @@ fn embedded_index_html_asset_references_require_the_whole_bundle_root() {
 #[test]
 fn container_job_stages_the_same_web_bundle_the_binaries_embedded() {
     for marker in [
-        "needs: [web, rust-binaries]",
+        "needs: [verify-provenance, web, rust-binaries]",
         "name: web-dist",
         "path: container-web-dist",
         "name: Stage container web bundle",
@@ -708,7 +852,7 @@ fn remote_installer_uses_published_images_and_keeps_download_progress_visible() 
         "docker pull \"$CHENXING_IMAGE\"",
         "docker pull \"$POSTGRES_IMAGE\"",
         "docker pull \"$REDIS_IMAGE\"",
-        "compose run --rm app migrate",
+        "compose run --rm migrate",
         "compose up -d app",
         "Owner 在管理设置中写入固定的 HTTPS Issuer",
         "PostgreSQL app_settings",
@@ -738,7 +882,7 @@ fn remote_installer_generates_and_preserves_deployment_secrets() {
     for marker in [
         "openssl rand -base64 32",
         "openssl rand -hex 32",
-        "chmod 600 \"$ENV_FILE\"",
+        "chmod 600 -- \"$ENV_FILE\"",
         "检测到已有 .env，将保留数据库密码、Token 和加密密钥",
         "AUTH_ENCRYPTION_KEY 必须是 Base64 编码的 32 字节密钥",
     ] {
@@ -1192,7 +1336,7 @@ fn request_path_pool_enforces_statement_timeout_and_maintenance_pool_does_not() 
 #[test]
 fn installer_runs_migrations_before_starting_the_application() {
     let migrate =
-        "docker compose --env-file .env -f docker-compose.prod.yml run --rm --build app migrate";
+        "docker compose --env-file .env -f docker-compose.prod.yml run --rm --build migrate";
     let start = "docker compose --env-file .env -f docker-compose.prod.yml up -d --build app";
     let migrate_at = INSTALL_SCRIPT
         .find(migrate)
