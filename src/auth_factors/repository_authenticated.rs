@@ -58,7 +58,7 @@ pub async fn insert_authenticated_passkey(
     passkey: &Passkey,
 ) -> Result<AuthenticatedPasskeyPersistenceResult, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
-    crate::settings::repository::lock_passkey_policy(&mut *transaction).await?;
+    crate::settings::repository::lock_passkey_policy(&mut transaction).await?;
     let enabled = match crate::settings::repository::get_text(
         &mut *transaction,
         crate::settings::PASSKEY_KEY,

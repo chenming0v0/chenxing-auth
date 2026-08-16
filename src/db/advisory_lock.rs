@@ -9,6 +9,10 @@ const BUSINESS_LOCK_NAMESPACE: i32 = 0;
 pub(crate) enum BusinessLock {
     OwnerBootstrap = 7_341_928,
     DefaultPlan = 7_341_929,
+    /// Serialize passkey policy writes with authentication decisions that read
+    /// the policy. A setting row lock is insufficient when the row does not
+    /// exist yet, so both sides share this key.
+    PasskeyPolicy = 7_341_931,
 }
 
 pub(crate) async fn lock_business(
@@ -33,4 +37,17 @@ pub(crate) async fn lock_user(
         .execute(&mut **transaction)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn business_lock_keys_are_stable_and_namespaced() {
+        assert_eq!(BUSINESS_LOCK_NAMESPACE, 0);
+        assert_eq!(BusinessLock::OwnerBootstrap as i32, 7_341_928);
+        assert_eq!(BusinessLock::DefaultPlan as i32, 7_341_929);
+        assert_eq!(BusinessLock::PasskeyPolicy as i32, 7_341_931);
+    }
 }

@@ -39,7 +39,7 @@ impl SettingsService {
     ) -> Result<PasskeySetting, SettingsServiceError> {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
-        repository::lock_passkey_policy(&mut *transaction).await?;
+        repository::lock_passkey_policy(&mut transaction).await?;
         repository::set_passkey(&mut *transaction, &value).await?;
         transaction.commit().await?;
         Ok(value)
@@ -56,7 +56,7 @@ impl SettingsService {
     {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
-        repository::lock_passkey_policy(&mut *transaction).await?;
+        repository::lock_passkey_policy(&mut transaction).await?;
         repository::set_passkey(&mut *transaction, &value).await?;
         audit
             .record_in_transaction(&mut transaction, audit_event(&value))
