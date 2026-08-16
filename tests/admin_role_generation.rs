@@ -136,6 +136,7 @@ async fn issue_refresh_token(
     user_id: i64,
     client_id: &str,
     client_secret: &str,
+    session_token: &str,
 ) -> String {
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes()));
     let code = AuthorizationCode::new_with_nonce(
@@ -145,7 +146,9 @@ async fn issue_refresh_token(
         vec!["openid".to_owned()],
         challenge,
         Some("issue-493-nonce".to_owned()),
-        None,
+        // #508：缺少会话绑定的授权码在 Token 端点 fail-closed，必须绑定真实
+        // 浏览器会话才能走通兑换路径。
+        Some(session_token.to_owned()),
     );
     env.state
         .authorization_codes
@@ -261,7 +264,8 @@ async fn every_role_change_rotates_generation_and_invalidates_existing_credentia
             .expect("save browser session");
         assert_eq!(session.credential_generation(), Some(epoch_before));
         let session_token = session.token.clone();
-        let refresh_token = issue_refresh_token(&env, user_id, &client_id, &client_secret).await;
+        let refresh_token =
+            issue_refresh_token(&env, user_id, &client_id, &client_secret, &session_token).await;
 
         change_role(&env, user_id, next_role).await;
 

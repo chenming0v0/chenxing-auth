@@ -294,11 +294,24 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .fetch_all(&pool)
     .await
     .expect("read upgraded migration history");
-    assert_eq!(applied, (1_i64..=29).collect::<Vec<_>>());
+    // 0030/0031 来自 #50-479 批次合并，重编号后接在历史链尾部。
+    assert_eq!(applied, (1_i64..=31).collect::<Vec<_>>());
 
     // A database initialized by v1.1.2 has the same schema but records the
     // flattened baseline plus the two then-current migrations as versions 1-3.
     // The compatibility path must recognize and repair that exact ledger too.
+    //
+    // 真实 v1.1.2 库的 schema 止于 29 号终态；上一段升级已经把 0030/0031
+    // 应用进来，先把这两步的 schema 变更回退，模拟才忠实。列/表均为空，
+    // 回退不影响被保留的身份数据。
+    chenxing_auth::sqlx::query("ALTER TABLE user_passkeys DROP COLUMN state_version")
+        .execute(&pool)
+        .await
+        .expect("revert 0030 before v1.1.2 simulation");
+    chenxing_auth::sqlx::query("DROP TABLE client_operation_idempotency")
+        .execute(&pool)
+        .await
+        .expect("revert 0031 before v1.1.2 simulation");
     chenxing_auth::sqlx::query("DELETE FROM _sqlx_migrations")
         .execute(&pool)
         .await
@@ -342,7 +355,7 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .fetch_all(&pool)
     .await
     .expect("read repaired v1.1.2 migration history");
-    assert_eq!(repaired, (1_i64..=29).collect::<Vec<_>>());
+    assert_eq!(repaired, (1_i64..=31).collect::<Vec<_>>());
 
     let preserved: (i64, i64, i64) = chenxing_auth::sqlx::query_as(
         "SELECT \

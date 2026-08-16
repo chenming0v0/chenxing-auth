@@ -829,8 +829,24 @@ async fn password_pending_cookies(router: &axum::Router, username: &str, passwor
 async fn external_login_clears_leftover_password_mfa_ticket() {
     let (mock, mock_state) = mock_server().await;
     let external_email = mock_state.user_email.lock().await.clone();
-    let (router, _database, key_directory, slug) = setup(mock).await;
+    let (router, database, key_directory, slug) = setup(mock).await;
     let (local_username, local_email, password) = create_local_password_user(&router).await;
+    // 当前登录契约：未配置任何因子时密码直接完成登录（200），不产生待定
+    // ticket。本用例验证「旧 MFA ticket 被外部登录清除」，先种一个 TOTP
+    // 因子让密码登录进入 202 factor_required。
+    let user_id: i64 =
+        chenxing_auth::sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+            .bind(&local_username)
+            .fetch_one(&database)
+            .await
+            .expect("load local user id");
+    chenxing_auth::auth_factors::repository::insert_totp_factor_if_empty(
+        &database,
+        user_id,
+        &[1, 2, 3],
+    )
+    .await
+    .expect("seed TOTP factor");
     let pending = password_pending_cookies(&router, &local_username, &password).await;
     let ticket_id = cookie_pair_value(&pending, "chenxing_login_ticket");
     assert!(

@@ -867,11 +867,20 @@ fn database_uses_forward_only_transactional_migration_history() {
     assert!(DB_MODULE.contains("Versions 1-27 have shipped and their SQL bytes are immutable"));
     assert!(DB_MODULE.contains("include_str!(\"../../migrations/0001_initial.sql\")"));
     assert!(DB_MODULE.contains("include_str!(\"../../migrations/0029_plan_quota_bounds.sql\")"));
+    // 0030/0031（passkey state version、client operation idempotency）来自
+    // #50-479 批次的合并，重编号后接在恢复的历史链尾部。
+    assert!(
+        DB_MODULE.contains("include_str!(\"../../migrations/0030_passkey_state_version.sql\")")
+    );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0031_client_operation_idempotency.sql\")")
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        29
+        31
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -915,14 +924,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 29);
+    assert_eq!(migrations.len(), 31);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0029_plan_quota_bounds.sql")
+        Some("0031_client_operation_idempotency.sql")
     );
     for (index, name) in migrations.iter().enumerate() {
         let expected_prefix = format!("{:04}_", index + 1);

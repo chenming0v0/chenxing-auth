@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthProvider, useAuth } from './auth-state'
 
@@ -133,20 +133,25 @@ describe('refresh request ordering (#473)', () => {
     fireEvent.click(screen.getByRole('button', { name: '重试认证' }))
     await waitFor(() => expect(profileCalls).toBe(2))
 
-    resolveNew?.(jsonResponse({
-      id: 1,
-      username: 'owner',
-      email: 'owner@example.test',
-      display_name: 'Owner',
-      status: 'active',
-      role: 'owner',
-      current_session_expires_at: '2099-01-01T00:00:00Z',
-      avatar_updated_at: null,
-    }))
+    // resolve 在 act 内完成续体排空：apiFetch 内部有 fetch/json 两级 await，
+    // 单个 setTimeout(0) tick 不足以确定性覆盖所有微任务与状态提交（#473 回归）。
+    await act(async () => {
+      resolveNew?.(jsonResponse({
+        id: 1,
+        username: 'owner',
+        email: 'owner@example.test',
+        display_name: 'Owner',
+        status: 'active',
+        role: 'owner',
+        current_session_expires_at: '2099-01-01T00:00:00Z',
+        avatar_updated_at: null,
+      }))
+    })
     await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('authenticated'))
 
-    resolveOld?.(jsonResponse({ code: 'unauthorized' }, 401))
-    await new Promise((resolve) => setTimeout(resolve, 0))
+    await act(async () => {
+      resolveOld?.(jsonResponse({ code: 'unauthorized' }, 401))
+    })
     expect(screen.getByLabelText('认证状态').textContent).toBe('authenticated')
   })
 })
