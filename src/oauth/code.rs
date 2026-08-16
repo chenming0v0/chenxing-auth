@@ -35,8 +35,8 @@ pub struct AuthorizationCode {
     /// 反序列化 helper 的 `#[serde(default)]` + `skip_serializing_if` 是 Redis 兼容性要求，不可删除：
     /// - `default`：升级期间在途的旧授权码 JSON 没有这个键，仍允许读取以便稳定
     ///   返回 `invalid_grant`，但绝不允许兑换。
-    /// - `skip_serializing_if`：保持旧载荷的稳定表示，便于混合版本部署；
-    ///   `take_if_matches` 只比较已知协议字段，未知未来字段不参与 CAS。
+    /// - `skip_serializing_if`：保持旧载荷的稳定表示，便于混合版本部署。
+    ///   CAS 身份只看 `value` + `cas_revision`，不再比较完整 JSON。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_token_hash: Option<String>,
     /// Compatibility marker set when an older Redis payload omitted the
@@ -73,6 +73,14 @@ pub struct AuthorizationCode {
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
     pub redeemed_at: Option<OffsetDateTime>,
+    /// Stable CAS generation. Missing on legacy payloads and treated as 0.
+    /// Authorization codes are immutable until consume, so this stays 0 and
+    /// is omitted from JSON to keep mixed-version full-JSON CAS working.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::oauth::cas::is_zero_cas_revision"
+    )]
+    pub cas_revision: u64,
 }
 
 impl fmt::Debug for AuthorizationCode {
@@ -97,6 +105,7 @@ impl fmt::Debug for AuthorizationCode {
             .field("created_at", &self.created_at)
             .field("expires_at", &self.expires_at)
             .field("redeemed_at", &self.redeemed_at)
+            .field("cas_revision", &self.cas_revision)
             .finish()
     }
 }
@@ -121,6 +130,8 @@ struct AuthorizationCodePayload {
     created_at: OffsetDateTime,
     expires_at: OffsetDateTime,
     redeemed_at: Option<OffsetDateTime>,
+    #[serde(default)]
+    cas_revision: u64,
     #[serde(flatten)]
     extra: BTreeMap<String, serde_json::Value>,
 }
@@ -181,6 +192,7 @@ impl<'de> Deserialize<'de> for AuthorizationCode {
             created_at: payload.created_at,
             expires_at: payload.expires_at,
             redeemed_at: payload.redeemed_at,
+            cas_revision: payload.cas_revision,
         })
     }
 }
@@ -366,6 +378,7 @@ impl AuthorizationCode {
             created_at: now,
             expires_at: now + Duration::seconds(ttl_seconds as i64),
             redeemed_at: None,
+            cas_revision: 0,
         }
     }
 

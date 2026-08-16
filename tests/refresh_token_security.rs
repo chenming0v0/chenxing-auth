@@ -1052,6 +1052,7 @@ async fn revoking_a_legacy_token_does_not_touch_other_legacy_tokens() {
         session_epoch: None,
         // 旧格式 payload 没有 issuer_generation（Issue #492 之前签发）
         issuer_generation: None,
+        cas_revision: 0,
     };
     let revoked = legacy("revoked");
     let untouched = legacy("untouched");
@@ -1127,6 +1128,7 @@ fn legacy_token_without_new_fields_can_rotate() {
         session_epoch: None,
         // 旧格式 payload 没有 issuer_generation，兑换路径同样 fail-closed
         issuer_generation: None,
+        cas_revision: 0,
     };
 
     // issued_at() 回退到 created_at

@@ -36,10 +36,10 @@
 //!
 //! # 原子性
 //!
-//! 重绑走 `replace_if_matches` 的 CAS：以读到的整条载荷为期望值，避免与
-//! 并发的 `bind` / `decide` 互相覆盖。CAS 失败时重新读取重试，因为失败
-//! 只说明「载荷变了」，可能是并发绑定（重试后收敛）也可能是请求已被消费
-//! （重试后按过期处理）。重试次数有上限，避免在持续竞争下无限打转。
+//! 重绑走 `replace_if_matches` 的 CAS：以读到的 `request_id` + `cas_revision`
+//! 为期望身份，避免与并发的 `bind` / `decide` 互相覆盖。CAS 失败时重新读取
+//! 重试，因为失败只说明「身份变了」，可能是并发绑定（重试后收敛）也可能是
+//! 请求已被消费（重试后按过期处理）。重试次数有上限，避免在持续竞争下无限打转。
 
 use super::{consent::PendingAuthorization, request_store::AuthorizationRequestStore};
 use crate::sessions::domain::session_token_hash;

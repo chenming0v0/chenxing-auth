@@ -65,6 +65,7 @@ fn legacy_code_without_a_session_hash_deserializes_as_none() {
         serde_json::from_str(&legacy_json).expect("legacy code must remain readable");
 
     assert!(restored.session_token_hash.is_none());
+    assert_eq!(restored.cas_revision, 0);
     assert_eq!(restored.value, code.value);
     assert_eq!(restored.client_id, code.client_id);
     assert_eq!(restored.redirect_uri, code.redirect_uri);
@@ -75,13 +76,17 @@ fn legacy_code_without_a_session_hash_deserializes_as_none() {
     assert_eq!(restored.expires_at, code.expires_at);
 }
 
-/// `take_if_matches` 靠「重新序列化 == Redis 中的原始字符串」做原子消费。
-/// 无会话的授权码必须省略该键而不是写成 `null`，否则旧授权码永远消费不掉。
+/// 无会话的授权码必须省略该键而不是写成 `null`。混部时仍按完整 JSON
+/// 比较的旧实例才能继续消费 revision 0 的在途载荷。
 #[test]
 fn code_without_a_session_hash_round_trips_byte_identically() {
     let code = code_with_session(None);
     let payload = serde_json::to_string(&code).expect("serialize code");
     assert!(!payload.contains("session_token_hash"));
+    assert!(
+        !payload.contains("cas_revision"),
+        "revision 0 must stay omitted so legacy full-JSON CAS still matches"
+    );
 
     let restored: AuthorizationCode = serde_json::from_str(&payload).expect("deserialize code");
 
@@ -102,6 +107,7 @@ fn legacy_code_payload_reserializes_without_a_session_binding() {
     assert_eq!(reserialized, legacy_json);
     assert!(!reserialized.contains("session_token_hash"));
     assert!(!reserialized.contains("session-token"));
+    assert!(!reserialized.contains("cas_revision"));
 }
 
 #[test]
@@ -163,7 +169,8 @@ fn issuer_generation_is_persisted_when_present() {
 }
 
 /// Issue #516：升级前 Redis 里没有 `issuer_generation` 的在途授权码必须仍可读，
-/// 且重新序列化不得补上该键，否则 CAS 永远对不上旧载荷。
+/// 且重新序列化不得补上该键。混部时仍按完整 JSON 比较的旧实例才能继续消费
+/// revision 0 的在途载荷。
 #[test]
 fn legacy_code_without_issuer_generation_round_trips_without_the_field() {
     let code = code_with_session(Some("session-token")).with_issuer_generation(7);
@@ -183,4 +190,33 @@ fn legacy_code_without_issuer_generation_round_trips_without_the_field() {
     let reserialized = serde_json::to_string(&restored).expect("reserialize legacy code");
     assert_eq!(reserialized, legacy);
     assert!(!reserialized.contains("issuer_generation"));
+}
+
+/// 旧模型读到未来字段后必须仍能还原已知协议字段，并把缺失的 CAS
+/// revision 当成 0。真正的消费兼容由 Redis 集成测试覆盖。
+#[test]
+fn future_fields_do_not_change_cas_identity() {
+    let code = code_with_session(Some("session-token"));
+    let mut value = serde_json::to_value(&code).expect("code as JSON value");
+    value
+        .as_object_mut()
+        .expect("code serializes to a JSON object")
+        .insert("future_field".to_owned(), serde_json::json!({"version": 2}));
+
+    let restored: AuthorizationCode =
+        serde_json::from_value(value).expect("future fields must be ignored");
+    assert_eq!(restored.value, code.value);
+    assert_eq!(restored.cas_revision, 0);
+    assert_eq!(restored.session_token_hash, code.session_token_hash);
+}
+
+#[test]
+fn non_zero_cas_revision_round_trips() {
+    let mut code = code_with_session(None);
+    code.cas_revision = 3;
+    let payload = serde_json::to_string(&code).expect("serialize revised code");
+    assert!(payload.contains("\"cas_revision\":3"));
+    let restored: AuthorizationCode =
+        serde_json::from_str(&payload).expect("deserialize revised code");
+    assert_eq!(restored.cas_revision, 3);
 }
