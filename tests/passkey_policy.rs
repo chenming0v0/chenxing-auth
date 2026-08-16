@@ -36,6 +36,12 @@ fn retired_key_ring() -> AuthEncryptionKeyRing {
 }
 
 async fn setup() -> (Router, sqlx::PgPool, std::path::PathBuf) {
+    setup_with_derived_webauthn(false).await
+}
+
+async fn setup_with_derived_webauthn(
+    derive_webauthn_from_issuer: bool,
+) -> (Router, sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -59,6 +65,10 @@ async fn setup() -> (Router, sqlx::PgPool, std::path::PathBuf) {
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     config.auth_encryption_keys = current_key_ring();
+    if derive_webauthn_from_issuer {
+        config.webauthn_rp_id_explicit = false;
+        config.webauthn_origin_explicit = false;
+    }
     let router = api::router(
         AppState::new_with_pool(config, database.clone())
             .await
@@ -519,7 +529,7 @@ async fn passkey_disable_rechecks_after_a_registration_commits_under_policy_lock
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn issuer_update_rechecks_passkeys_after_policy_lock() {
-    let (router, database, key_directory) = setup().await;
+    let (router, database, key_directory) = setup_with_derived_webauthn(true).await;
     let (user_id, _) = create_user(&router, &database).await;
     let mut gate = database.begin().await.expect("policy gate transaction");
     sqlx::query("SELECT pg_advisory_xact_lock(0, 7341931)")
@@ -545,7 +555,7 @@ async fn issuer_update_rechecks_passkeys_after_policy_lock() {
                 "PUT",
                 "/api/v1/admin/settings/issuer",
                 serde_json::json!({
-                    "value": "https://new-issuer.example",
+                    "value": "http://localhost:3000",
                     "expected_generation": 0,
                     "confirm": true
                 }),

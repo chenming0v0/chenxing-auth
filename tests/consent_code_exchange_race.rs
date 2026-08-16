@@ -241,19 +241,21 @@ async fn pending_refund_exists(harness: &Harness, reservation_id: &str) -> bool 
 async fn metered_authorization_code(
     harness: &Harness,
     session_token: String,
-) -> (AuthorizationCode, String, AuthQuotaLimits) {
+) -> (
+    AuthorizationCode,
+    String,
+    AuthQuotaLimits,
+    time::OffsetDateTime,
+) {
     let limits = AuthQuotaLimits {
         daily_auth_limit: 10,
         monthly_auth_limit: Some(10),
     };
+    let quota_now = harness.state.clock.now();
     let consumption = harness
         .state
         .oauth_quotas
-        .consume_with_limits_and_reservation_at(
-            &harness.client_id,
-            limits,
-            harness.state.clock.now(),
-        )
+        .consume_with_limits_and_reservation_at(&harness.client_id, limits, quota_now)
         .await
         .expect("consume metered authorization quota");
     assert_eq!(consumption.result, QuotaConsumeResult::Allowed);
@@ -266,7 +268,7 @@ async fn metered_authorization_code(
         .schedule_refund(&reservation, code.expires_at)
         .await
         .expect("schedule authorization quota refund");
-    (code, reservation.id().to_owned(), limits)
+    (code, reservation.id().to_owned(), limits, quota_now)
 }
 
 async fn park_exchange_behind_client_guard(
@@ -388,7 +390,7 @@ async fn final_consent_query_failure_restores_code_and_quota_for_retry() {
     let harness = setup().await;
     save_consent(&harness).await;
     let session = saved_session(&harness).await;
-    let (code, reservation_id, limits) =
+    let (code, reservation_id, limits, quota_now) =
         metered_authorization_code(&harness, session.token.clone()).await;
     harness
         .state
@@ -442,7 +444,7 @@ async fn final_consent_query_failure_restores_code_and_quota_for_retry() {
     let held = harness
         .state
         .oauth_quotas
-        .snapshot(&harness.client_id, Some(limits))
+        .snapshot_at(&harness.client_id, Some(limits), quota_now)
         .await
         .expect("quota snapshot after compensation");
     assert_eq!(held.daily_used, 1);
@@ -465,7 +467,7 @@ async fn final_consent_query_failure_restores_code_and_quota_for_retry() {
     let retained = harness
         .state
         .oauth_quotas
-        .snapshot(&harness.client_id, Some(limits))
+        .snapshot_at(&harness.client_id, Some(limits), quota_now)
         .await
         .expect("quota snapshot after successful retry");
     assert_eq!(retained.daily_used, 1);
@@ -482,7 +484,7 @@ async fn final_consent_query_failure_keeps_quota_refundable_when_code_restore_fa
     let harness = setup().await;
     save_consent(&harness).await;
     let session = saved_session(&harness).await;
-    let (code, reservation_id, limits) =
+    let (code, reservation_id, limits, quota_now) =
         metered_authorization_code(&harness, session.token.clone()).await;
     harness
         .state
@@ -543,7 +545,7 @@ async fn final_consent_query_failure_keeps_quota_refundable_when_code_restore_fa
     let refunded = harness
         .state
         .oauth_quotas
-        .snapshot(&harness.client_id, Some(limits))
+        .snapshot_at(&harness.client_id, Some(limits), quota_now)
         .await
         .expect("quota snapshot after fallback refund");
     assert_eq!(refunded.daily_used, 0);
@@ -557,7 +559,7 @@ async fn final_consent_query_failure_keeps_quota_refundable_when_refresh_remove_
     let harness = setup().await;
     save_consent(&harness).await;
     let session = saved_session(&harness).await;
-    let (code, reservation_id, limits) =
+    let (code, reservation_id, limits, quota_now) =
         metered_authorization_code(&harness, session.token.clone()).await;
     harness
         .state
@@ -622,7 +624,7 @@ async fn final_consent_query_failure_keeps_quota_refundable_when_refresh_remove_
     let refunded = harness
         .state
         .oauth_quotas
-        .snapshot(&harness.client_id, Some(limits))
+        .snapshot_at(&harness.client_id, Some(limits), quota_now)
         .await
         .expect("quota snapshot after remove-failure refund");
     assert_eq!(refunded.daily_used, 0);
