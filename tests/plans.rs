@@ -707,15 +707,10 @@ async fn unsetting_the_last_default_plan_closes_self_service() {
     let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
     let mut validated = validated_request(&existing_client_id, user_id);
     validated.session_token_hash = Some(session_hash);
-    let result = issue_authorization_code_result(
-        &env.state,
-        user_id.to_string(),
-        validated,
-        None,
-        None,
-    )
-    .await
-    .expect("existing client authorization must keep working without a default plan");
+    let result =
+        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
+            .await
+            .expect("existing client authorization must keep working without a default plan");
     assert!(matches!(result, AuthorizationCodeIssue::Redirect(_)));
 
     env.cleanup().await;

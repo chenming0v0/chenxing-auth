@@ -133,6 +133,13 @@ fn pending_cookie(response: &axum::response::Response) -> String {
         .join("; ")
 }
 
+fn csrf(cookies: &str) -> &str {
+    cookies
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix("chenxing_csrf="))
+        .expect("csrf cookie")
+}
+
 async fn request_with_cookie(
     router: &Router,
     uri: &str,
@@ -147,6 +154,29 @@ async fn request_with_cookie(
                 .uri(uri)
                 .header("content-type", "application/json")
                 .header("cookie", cookie)
+                .body(Body::from(payload.to_string()))
+                .expect("JSON request"),
+        )
+        .await
+        .expect("JSON response")
+}
+
+async fn request_with_cookie_and_csrf(
+    router: &Router,
+    uri: &str,
+    payload: serde_json::Value,
+    cookie: &str,
+    csrf_token: &str,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .header("x-csrf-token", csrf_token)
                 .body(Body::from(payload.to_string()))
                 .expect("JSON request"),
         )
@@ -170,18 +200,26 @@ async fn enroll_totp(
         serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
-    let pending_cookie = pending_cookie(&login_response);
-    let _pending = json_body(login_response).await;
+    assert_eq!(login_response.status(), StatusCode::OK);
+    let cookie = pending_cookie(&login_response);
+    let csrf_token = csrf(&cookie).to_owned();
+    let _login_body = json_body(login_response).await;
+    
     let setup = json_body(
-        request_with_cookie(
+        request_with_cookie_and_csrf(
             router,
-            "/api/v1/auth/totp/setup",
+            "/api/v1/auth/security/totp/enrollment/start",
             serde_json::json!({}),
-            &pending_cookie,
+            &cookie,
+            &csrf_token,
         )
         .await,
     )
     .await;
+    let enrollment_id = setup["enrollment_id"]
+        .as_str()
+        .expect("enrollment ID")
+        .to_owned();
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
     // 专用的注册确认端点完成注册，登录端点此后只应走验证路径。
     //
@@ -189,11 +227,15 @@ async fn enroll_totp(
     // 用当前步的码会把当前步烧掉，后面断言「正确验证码能登录」的调用就会被自己的
     // 注册挡住。上一步的码仍在 ±1 步接受窗口内，且不占用后续登录要用的当前步。
     assert_eq!(
-        request_with_cookie(
+        request_with_cookie_and_csrf(
             router,
-            "/api/v1/auth/totp/setup/confirm",
-            serde_json::json!({"code": totp.generate(previous_timestep_timestamp(now))}),
-            &pending_cookie,
+            "/api/v1/auth/security/totp/enrollment/confirm",
+            serde_json::json!({
+                "enrollment_id": enrollment_id,
+                "code": totp.generate(previous_timestep_timestamp(now))
+            }),
+            &cookie,
+            &csrf_token,
         )
         .await
         .status(),
