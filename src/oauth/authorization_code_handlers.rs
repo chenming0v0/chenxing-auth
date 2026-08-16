@@ -214,7 +214,7 @@ pub async fn issue_authorization_code_result(
         code.quota_reservation_id = Some(reservation.id().to_owned());
         if let Err(error_value) = state
             .oauth_quotas
-            .schedule_refund(reservation, code.expires_at.unix_timestamp())
+            .schedule_refund(reservation, code.expires_at)
             .await
         {
             tracing::error!(error = %error_value, "failed to schedule OAuth authorization quota refund");

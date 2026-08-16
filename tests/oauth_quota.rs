@@ -1,10 +1,12 @@
-use chenxing_auth::oauth::quota::{OAuthQuotaStore, QuotaConsumeResult};
+use chenxing_auth::oauth::quota::{OAuthQuotaStore, QuotaConsumeResult, refund_due_unix_millis};
 use chenxing_auth::plans::domain::AuthQuotaLimits;
-use time::{Date, Month, OffsetDateTime, Time};
+use time::{Date, Duration, Month, OffsetDateTime, Time};
 use uuid::Uuid;
 
 const AUTHORIZATION_CODE_HANDLERS: &str =
     include_str!("../src/oauth/authorization_code_handlers.rs");
+const TOKEN_USE_CASE_SUPPORT: &str = include_str!("../src/oauth/token_use_case_support.rs");
+const QUOTA_REFUND: &str = include_str!("../src/oauth/quota_refund.rs");
 
 #[test]
 fn quota_store_can_be_constructed_from_redis_client() {
@@ -109,4 +111,40 @@ async fn refund_is_idempotent_and_stays_with_the_consumed_period() {
         .expect("empty current period snapshot");
     assert_eq!(empty_current_period.daily_used, 0);
     assert_eq!(empty_current_period.monthly_used, 0);
+}
+
+#[test]
+fn refund_due_millis_never_precedes_exact_expiry() {
+    let exact_second = OffsetDateTime::UNIX_EPOCH + Duration::seconds(1_700_000_005);
+    assert_eq!(refund_due_unix_millis(exact_second), 1_700_000_005_000);
+
+    let nine_hundred_ms = exact_second + Duration::milliseconds(900);
+    assert_eq!(refund_due_unix_millis(nine_hundred_ms), 1_700_000_005_900);
+
+    let leftover_nanos = nine_hundred_ms + Duration::nanoseconds(1);
+    assert_eq!(refund_due_unix_millis(leftover_nanos), 1_700_000_005_901);
+}
+
+#[test]
+fn authorization_paths_schedule_refunds_from_exact_expiry() {
+    assert!(
+        AUTHORIZATION_CODE_HANDLERS.contains("schedule_refund(reservation, code.expires_at)"),
+        "issue path must schedule from the exact expires_at"
+    );
+    assert!(
+        !AUTHORIZATION_CODE_HANDLERS.contains("expires_at.unix_timestamp()"),
+        "issue path must not truncate expiry to whole seconds"
+    );
+    assert!(
+        TOKEN_USE_CASE_SUPPORT.contains("reschedule_refund(reservation_id, code.expires_at)"),
+        "compensation must reschedule from the exact expires_at"
+    );
+    assert!(
+        !TOKEN_USE_CASE_SUPPORT.contains("expires_at.unix_timestamp()"),
+        "compensation must not truncate expiry to whole seconds"
+    );
+    assert!(
+        QUOTA_REFUND.contains("refund_query_unix_millis(now)"),
+        "worker query must use millisecond precision"
+    );
 }

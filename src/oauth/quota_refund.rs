@@ -8,7 +8,9 @@
 //! # 数据结构
 //!
 //! - ZSET `chenxing:oauth:quota:refund-pending`：member 是 reservation id，
-//!   score 是授权码的过期时刻。只有 score 已过期的成员会被 worker 处理。
+//!   score 是授权码过期时刻的 Unix **毫秒**（Issue #522）。只有 score 已到期
+//!   的成员会被 worker 处理。升级前写入的秒级 score（约 1.7e9）按
+//!   「整秒过完才到期」解释，禁止在精确 `expires_at` 之前退款。
 //! - 记录键 `chenxing:oauth:quota:reservation:{id}`：reservation 的 JSON
 //!   序列化（含周期键），EXPIREAT 到与月度计数器相同的月边界，保证 worker
 //!   在计数器存活期间总能找到退款所需的数据；周期结束后记录随计数器一起
@@ -23,11 +25,11 @@
 //!
 //! # 为什么 worker 不需要检查授权码是否还存在
 //!
-//! worker 只处理 score <= now 的成员，而 score（授权码过期时刻）与兑换路径
-//! 的过期校验共用 `AppState` 的共享时钟：score 已过期的授权码在兑换时会被
-//! `validate_code_binding` 拒绝（`now >= expires_at`），因此 worker 处理到的
-//! 条目必然「过期且未兑换」，直接退款是安全的。兑换发生在过期之前的情形，
-//! 其台账条目已经在 CAS 里被原子取消，worker 永远不会看到。
+//! worker 只处理「精确过期时刻已到」的成员：新条目的毫秒 score 由
+//! [`refund_due_unix_millis`] 从 `expires_at` 向上取整，查询上界是 `now` 的
+//! 毫秒向下取整，因此 `score <= now_millis` 蕴含 `now >= expires_at`，与
+//! `validate_code_binding` 的过期判定一致。兑换发生在过期之前的情形，其台账
+//! 条目已经在 CAS 里被原子取消，worker 永远不会看到。
 //!
 //! 多个实例同时跑 worker 也安全：`REFUND_SCRIPT` 用 HDEL 的返回值判定谁真正
 //! DECR，重复退款是幂等的空操作；ZREM 同样幂等。
@@ -54,8 +56,32 @@ const MINIMUM_QUOTA_REFUND_INTERVAL: Duration = Duration::from_secs(1);
 /// 每轮最多处理的过期条目数：一轮处理不完留到下一轮，不长时间占住连接。
 const REFUND_BATCH_SIZE: isize = 100;
 
-/// 待退台账 ZSET：member = reservation id，score = 授权码过期时刻。
+/// 待退台账 ZSET：member = reservation id，score = 授权码过期时刻（Unix 毫秒）。
 pub(crate) const PENDING_REFUNDS_ZSET: &str = "chenxing:oauth:quota:refund-pending";
+
+/// Scores below this are pre-#522 unix-second ZSET entries.
+/// ~1973 in milliseconds; current unix seconds sit near 1.7e9.
+const LEGACY_UNIX_SECOND_SCORE_LIMIT: i64 = 100_000_000_000;
+
+/// Unix milliseconds at which an unused authorization code may be refunded.
+///
+/// Never earlier than `expires_at`. Leftover nanoseconds round up so the
+/// worker cannot observe the member while the code is still redeemable
+/// (`now >= expires_at` is the token-endpoint rule).
+pub fn refund_due_unix_millis(expires_at: time::OffsetDateTime) -> i64 {
+    let nanos = expires_at.unix_timestamp_nanos();
+    let millis = nanos.div_euclid(1_000_000);
+    let due = if nanos.rem_euclid(1_000_000) == 0 {
+        millis
+    } else {
+        millis + 1
+    };
+    i64::try_from(due).unwrap_or(i64::MAX)
+}
+
+fn refund_query_unix_millis(now: time::OffsetDateTime) -> i64 {
+    i64::try_from(now.unix_timestamp_nanos().div_euclid(1_000_000)).unwrap_or(i64::MAX)
+}
 
 fn reservation_record_key(keyspace: &RedisKeyspace, reservation_id: &str) -> String {
     keyspace.key(&format!(
@@ -85,17 +111,20 @@ impl QuotaRefundCancel {
 
 impl OAuthQuotaStore {
     /// 登记一次待退条目：授权码过期仍未兑换时，worker 会退还这次配额。
+    ///
+    /// `expires_at` 必须是授权码的精确过期时刻。ZSET score 使用 Unix 毫秒，
+    /// 且永不早于该时刻，避免秒级截断在码仍可兑换时提前退款（Issue #522）。
     pub async fn schedule_refund(
         &self,
         reservation: &QuotaReservation,
-        refund_at_unix: i64,
+        expires_at: time::OffsetDateTime,
     ) -> Result<(), OAuthQuotaError> {
         let payload = serde_json::to_string(reservation)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let _: i64 = Script::new(SCHEDULE_REFUND_SCRIPT)
             .key(self.pending_refunds_key())
             .key(reservation_record_key(&self.keyspace, &reservation.id))
-            .arg(refund_at_unix)
+            .arg(refund_due_unix_millis(expires_at))
             .arg(reservation.id.as_str())
             .arg(payload.as_str())
             .arg(reservation.month_expires_at)
@@ -112,14 +141,14 @@ impl OAuthQuotaStore {
     pub async fn reschedule_refund(
         &self,
         reservation_id: &str,
-        refund_at_unix: i64,
+        expires_at: time::OffsetDateTime,
     ) -> Result<(), OAuthQuotaError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let _: () = connection
             .zadd(
                 self.pending_refunds_key(),
                 reservation_id,
-                refund_at_unix as f64,
+                refund_due_unix_millis(expires_at) as f64,
             )
             .await?;
         Ok(())
@@ -135,15 +164,29 @@ impl OAuthQuotaStore {
     ) -> Result<usize, OAuthQuotaError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let pending_refunds_key = self.pending_refunds_key();
-        let due: Vec<String> = connection
+        // Millisecond scores are due when `score <= floor(now_millis)`, which
+        // is exactly `now >= expires_at` for values produced by
+        // `refund_due_unix_millis`. Legacy second scores are queried separately
+        // with an exclusive next-second bound so mixed-version entries cannot
+        // refund while the code is still redeemable.
+        let now_millis = refund_query_unix_millis(now);
+        let mut due: Vec<String> = connection
             .zrangebyscore_limit(
                 &pending_refunds_key,
-                0,
-                now.unix_timestamp(),
+                LEGACY_UNIX_SECOND_SCORE_LIMIT,
+                now_millis,
                 0,
                 REFUND_BATCH_SIZE,
             )
             .await?;
+        let remaining = REFUND_BATCH_SIZE.saturating_sub(due.len() as isize);
+        let legacy_max = now.unix_timestamp().saturating_sub(1);
+        if remaining > 0 && legacy_max >= 0 {
+            let mut legacy: Vec<String> = connection
+                .zrangebyscore_limit(&pending_refunds_key, 0, legacy_max, 0, remaining)
+                .await?;
+            due.append(&mut legacy);
+        }
         let mut refunded = 0usize;
         for reservation_id in due {
             let record: Option<String> = connection
