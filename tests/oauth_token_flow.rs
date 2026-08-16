@@ -234,17 +234,25 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
         )
         .await
         .expect("login response");
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let pending_cookie = cookie_header(&response);
-    assert!(json_body(response).await.get("login_ticket").is_none());
+    assert_eq!(response.status(), StatusCode::OK);
+    let session_cookie = cookie_header(&response);
+    assert!(session_cookie.contains("chenxing_session="));
+    assert!(session_cookie.contains("chenxing_csrf="));
+    let csrf = session_cookie
+        .split(';')
+        .find_map(|value| value.trim().strip_prefix("chenxing_csrf="))
+        .expect("CSRF cookie")
+        .to_owned();
+    assert!(json_body(response).await["expires_at"].as_str().is_some());
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/auth/totp/setup")
+                .uri("/api/v1/auth/security/totp/enrollment/start")
                 .header("content-type", "application/json")
-                .header("cookie", &pending_cookie)
+                .header("cookie", &session_cookie)
+                .header("x-csrf-token", &csrf)
                 .body(Body::from(serde_json::json!({}).to_string()))
                 .expect("TOTP setup request"),
         )
@@ -253,16 +261,19 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
     assert_eq!(response.status(), StatusCode::OK);
     let setup = json_body(response).await;
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
+    let enrollment_id = setup["enrollment_id"].as_str().expect("enrollment id");
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/auth/totp/setup/confirm")
+                .uri("/api/v1/auth/security/totp/enrollment/confirm")
                 .header("content-type", "application/json")
-                .header("cookie", &pending_cookie)
+                .header("cookie", &session_cookie)
+                .header("x-csrf-token", &csrf)
                 .body(Body::from(
                     serde_json::json!({
+                        "enrollment_id": enrollment_id,
                         "code": totp.generate_current().expect("TOTP code")
                     })
                     .to_string(),
@@ -272,9 +283,6 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
         .await
         .expect("TOTP confirmation response");
     assert_eq!(response.status(), StatusCode::OK);
-    let session_cookie = cookie_header(&response);
-    assert!(session_cookie.contains("chenxing_session="));
-    assert!(session_cookie.contains("chenxing_csrf="));
 
     let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
