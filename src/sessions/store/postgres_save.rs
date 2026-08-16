@@ -27,7 +27,7 @@ use super::super::{
 /// 因此两个事务只能串行——要么改密先提交、本次读到新 epoch 并拒绝写入，要么本次
 /// 先提交、改密随后把这条会话一起撤销。不存在"读到旧 epoch 又按新 epoch 落库"的
 /// 中间态。比对失败直接返回错误，事务连一行都没插入。
-pub(super) async fn save_with_metadata(
+pub(in crate::sessions::store) async fn save_with_metadata(
     store: &SessionStore,
     session: &mut Session,
     _ttl: Duration,
