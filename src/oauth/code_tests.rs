@@ -95,7 +95,8 @@ fn code_without_a_session_hash_round_trips_byte_identically() {
 #[test]
 fn legacy_code_payload_reserializes_without_a_session_binding() {
     let legacy_json = legacy_code_json(&code_with_session(Some("session-token")));
-    let restored: AuthorizationCode = serde_json::from_str(&legacy_json).expect("legacy code payload");
+    let restored: AuthorizationCode =
+        serde_json::from_str(&legacy_json).expect("legacy code payload");
 
     let reserialized = serde_json::to_string(&restored).expect("reserialize legacy code");
     assert_eq!(reserialized, legacy_json);
@@ -168,7 +169,10 @@ fn legacy_code_without_issuer_generation_round_trips_without_the_field() {
     let code = code_with_session(Some("session-token")).with_issuer_generation(7);
     let serialized = serde_json::to_string(&code).expect("serialize code");
     let legacy = serialized.replace("\"issuer_generation\":7,", "");
-    assert_ne!(legacy, serialized, "issuer generation field must be removed");
+    assert_ne!(
+        legacy, serialized,
+        "issuer generation field must be removed"
+    );
     assert!(!legacy.contains("issuer_generation"));
 
     let restored: AuthorizationCode =
