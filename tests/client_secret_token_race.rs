@@ -94,7 +94,24 @@ fn test_issuer(state: &AppState) -> Arc<IssuerSnapshot> {
         .expect("test state has a loaded issuer")
 }
 
-fn authorization_code(client_id: &str, user_id: i64) -> AuthorizationCode {
+/// #508：无会话绑定的授权码在 Token 端点 fail-closed，走兑换路径的测试
+/// 必须先把码绑定到一条已持久化的浏览器会话上。
+async fn browser_session_token(harness: &Harness) -> String {
+    let mut session = chenxing_auth::sessions::domain::Session::new(
+        harness.user_id.to_string(),
+        std::time::Duration::from_secs(3600),
+    )
+    .expect("session");
+    harness
+        .state
+        .sessions
+        .save(&mut session, std::time::Duration::from_secs(3600))
+        .await
+        .expect("persist session");
+    session.token
+}
+
+fn authorization_code(client_id: &str, user_id: i64, session_token: &str) -> AuthorizationCode {
     AuthorizationCode::new_with_nonce(
         client_id.to_owned(),
         REDIRECT_URI.to_owned(),
@@ -102,7 +119,7 @@ fn authorization_code(client_id: &str, user_id: i64) -> AuthorizationCode {
         vec!["openid".to_owned()],
         CHALLENGE.to_owned(),
         None,
-        None,
+        Some(session_token.to_owned()),
     )
 }
 
@@ -170,7 +187,8 @@ async fn authorization_code_cannot_persist_after_authenticated_secret_version_ch
     let harness = setup().await;
     let authenticated =
         authenticate(&harness.state, &harness.client_id, &harness.client_secret).await;
-    let code = authorization_code(&harness.client_id, harness.user_id);
+    let session_token = browser_session_token(&harness).await;
+    let code = authorization_code(&harness.client_id, harness.user_id, &session_token);
     harness
         .state
         .authorization_codes
@@ -219,7 +237,8 @@ async fn refresh_token_cannot_cross_an_issuer_generation_change() {
     let harness = setup().await;
     let authenticated =
         authenticate(&harness.state, &harness.client_id, &harness.client_secret).await;
-    let code = authorization_code(&harness.client_id, harness.user_id);
+    let session_token = browser_session_token(&harness).await;
+    let code = authorization_code(&harness.client_id, harness.user_id, &session_token);
     harness
         .state
         .authorization_codes
@@ -251,7 +270,10 @@ async fn refresh_token_cannot_cross_an_issuer_generation_change() {
         .state
         .issuer
         .apply(&IssuerRecord {
-            value: "https://issuer-b.example".to_owned(),
+            // COOKIE_SECURE=false 只放行 loopback HTTP issuer（issuer_runtime 的
+            // apply 校验），Issuer B 必须保持同族形式；#492 验证的是代际边界，
+            // 不依赖具体 URL。
+            value: "http://127.0.0.1:3999".to_owned(),
             generation: issuer_a.generation() + 1,
             updated_at: harness.state.clock.now(),
         })
@@ -489,7 +511,8 @@ async fn concurrent_rotation_leaves_no_live_refresh_from_either_issuance_path() 
     let mut codes = Vec::with_capacity(per_path);
     let mut code_tasks = Vec::with_capacity(per_path);
     for _ in 0..per_path {
-        let code = authorization_code(&harness.client_id, harness.user_id);
+        let session_token = browser_session_token(&harness).await;
+        let code = authorization_code(&harness.client_id, harness.user_id, &session_token);
         harness
             .state
             .authorization_codes

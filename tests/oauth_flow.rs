@@ -40,6 +40,19 @@ use support::{
     session_cookie, test_state,
 };
 
+/// #508：无会话绑定的授权码在 Token 端点 fail-closed，直存授权码走兑换路径的
+/// 测试必须先把码绑定到一条已持久化的浏览器会话上。
+async fn bound_session_token(state: &AppState, user_id: i64) -> String {
+    let mut session =
+        Session::new(user_id.to_string(), std::time::Duration::from_secs(3600)).expect("session");
+    state
+        .sessions
+        .save(&mut session, std::time::Duration::from_secs(3600))
+        .await
+        .expect("persist session");
+    session.token
+}
+
 #[tokio::test]
 async fn disabled_user_session_cannot_authorize_or_submit_consent() {
     let (state, database, key_directory) = test_state("oauth_flow").await;
@@ -173,7 +186,7 @@ async fn disabled_user_cannot_exchange_oauth_credentials_without_consuming_them(
         vec!["openid".to_owned(), "profile".to_owned()],
         challenge,
         Some("disabled-nonce".to_owned()),
-        None,
+        Some(bound_session_token(&state, user_id).await),
     );
     let mut refresh = RefreshToken::new(
         client_id.clone(),
@@ -466,7 +479,7 @@ async fn totp_reset_revocation_invalidates_outstanding_refresh_tokens() {
         vec!["openid".to_owned()],
         challenge,
         Some("reset-nonce".to_owned()),
-        None,
+        Some(bound_session_token(&state, user_id).await),
     );
     state
         .authorization_codes
@@ -592,7 +605,7 @@ async fn authorization_code_is_restored_when_token_issuance_fails() {
         vec!["openid".to_owned(), "profile".to_owned()],
         challenge,
         Some("restore-nonce".to_owned()),
-        None,
+        Some(bound_session_token(&state, user_id).await),
     );
     // 授权码兑换在 CAS 前校验 consent（Issue #417），直存授权码必须补 consent 行。
     chenxing_auth::sqlx::query(
@@ -816,7 +829,7 @@ async fn authorization_code_stays_consumed_when_refresh_cleanup_fails() {
         vec!["openid".to_owned()],
         challenge,
         None,
-        None,
+        Some(bound_session_token(&state, user_id).await),
     );
     // 授权码兑换在 CAS 前校验 consent（Issue #417），直存授权码必须补 consent 行。
     chenxing_auth::sqlx::query(
@@ -943,11 +956,27 @@ async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
     .expect_err("authorization code persistence failure");
     assert_eq!(result.status(), StatusCode::SERVICE_UNAVAILABLE);
 
+    // take() 与 save() 共用一个已经损坏的存储，无法证明授权码没有落盘；此刻
+    // 立即退款可能让同一授权在码实际存在的情况下二次消耗配额，所以实现选择
+    // 保守等待：配额暂时占用，由 #341 的过期退款台账兜底。
+    let immediately_after = state
+        .oauth_quotas
+        .snapshot(&client_id, limits)
+        .await
+        .expect("quota immediately after failed authorization");
+    assert_eq!(immediately_after.daily_used, before.daily_used + 1);
+
+    // 授权码 TTL 过后，退款 worker 把未兑换的 reservation 还回去。
+    state
+        .oauth_quotas
+        .run_refund_worker_pass(state.clock.now() + time::Duration::seconds(360))
+        .await
+        .expect("run quota refund worker pass");
     let after = state
         .oauth_quotas
         .snapshot(&client_id, limits)
         .await
-        .expect("quota after failed authorization");
+        .expect("quota after refund worker");
     assert_eq!(after.daily_used, before.daily_used);
     assert_eq!(after.monthly_used, before.monthly_used);
 
@@ -1033,7 +1062,7 @@ async fn revoked_consent_rejects_unused_authorization_code_exchange() {
         vec!["openid".to_owned(), "profile".to_owned()],
         challenge,
         None,
-        None,
+        Some(bound_session_token(&state, user_id).await),
     );
     state
         .authorization_codes
@@ -1211,7 +1240,7 @@ async fn shrinking_client_scopes_narrows_refresh_and_userinfo() {
         scopes.clone(),
         challenge,
         None,
-        None,
+        Some(bound_session_token(&state, user_id).await),
     );
     state
         .authorization_codes
