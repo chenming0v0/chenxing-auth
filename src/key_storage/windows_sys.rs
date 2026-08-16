@@ -13,17 +13,17 @@ use std::{
         io::{AsRawHandle, FromRawHandle, RawHandle},
     },
     path::Path,
-    ptr,
-    slice,
+    ptr, slice,
 };
 
 use windows_sys::{
     Wdk::{
         Foundation::OBJECT_ATTRIBUTES,
         Storage::FileSystem::{
-            FILE_CREATE, FILE_DIRECTORY_FILE, FILE_ID_BOTH_DIR_INFORMATION, FILE_NON_DIRECTORY_FILE,
-            FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, FileIdBothDirectoryInformation,
-            NtCreateFile, NtQueryDirectoryFile,
+            FILE_CREATE, FILE_DIRECTORY_FILE, FILE_ID_BOTH_DIR_INFORMATION,
+            FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+            FILE_SYNCHRONOUS_IO_NONALERT, FileIdBothDirectoryInformation, NtCreateFile,
+            NtQueryDirectoryFile,
         },
     },
     Win32::{
@@ -35,13 +35,13 @@ use windows_sys::{
             STATUS_OBJECT_NAME_NOT_FOUND, UNICODE_STRING,
         },
         Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY,
+            BY_HANDLE_FILE_INFORMATION, CreateFileW, DELETE, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY,
             FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_DELETE_CHILD,
             FILE_DISPOSITION_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
             FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE,
             FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, FileDispositionInfo, FileRenameInfo,
             GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE,
-            SetFileInformationByHandle, WRITE_DAC, CreateFileW,
+            SetFileInformationByHandle, WRITE_DAC,
         },
         System::IO::IO_STATUS_BLOCK,
     },
@@ -71,7 +71,13 @@ pub(super) fn file_read_access() -> u32 {
 }
 
 pub(super) fn file_write_access() -> u32 {
-    GENERIC_READ | GENERIC_WRITE | DELETE | WRITE_DAC | READ_CONTROL | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+    GENERIC_READ
+        | GENERIC_WRITE
+        | DELETE
+        | WRITE_DAC
+        | READ_CONTROL
+        | FILE_READ_ATTRIBUTES
+        | SYNCHRONIZE
 }
 
 pub(super) fn open_dir_path(path: &Path) -> io::Result<File> {
@@ -143,7 +149,12 @@ pub(super) fn open_relative(
     file_from_handle(handle)
 }
 
-pub(super) fn rename_in_dir(file: &File, parent: &File, new_name: &str, replace: bool) -> io::Result<()> {
+pub(super) fn rename_in_dir(
+    file: &File,
+    parent: &File,
+    new_name: &str,
+    replace: bool,
+) -> io::Result<()> {
     validate_basename(OsStr::new(new_name))?;
     let mut wide: Vec<u16> = new_name.encode_utf16().collect();
     wide.push(0);
@@ -160,12 +171,8 @@ pub(super) fn rename_in_dir(file: &File, parent: &File, new_name: &str, replace:
         (*info).RootDirectory = raw_handle(parent);
         (*info).FileNameLength = name_bytes as u32;
         ptr::copy_nonoverlapping(wide.as_ptr(), (*info).FileName.as_mut_ptr(), wide.len());
-        let ok = SetFileInformationByHandle(
-            raw_handle(file),
-            FileRenameInfo,
-            info.cast(),
-            size as u32,
-        );
+        let ok =
+            SetFileInformationByHandle(raw_handle(file), FileRenameInfo, info.cast(), size as u32);
         if ok == 0 {
             return Err(map_last_error());
         }
@@ -258,7 +265,12 @@ pub(super) fn list_dir(dir: &File) -> io::Result<Vec<DirEntry>> {
         restart = false;
         let mut offset = 0usize;
         loop {
-            let info = unsafe { &*buffer.as_ptr().add(offset).cast::<FILE_ID_BOTH_DIR_INFORMATION>() };
+            let info = unsafe {
+                &*buffer
+                    .as_ptr()
+                    .add(offset)
+                    .cast::<FILE_ID_BOTH_DIR_INFORMATION>()
+            };
             let name_units = (info.FileNameLength / 2) as usize;
             let name = unsafe { slice::from_raw_parts(info.FileName.as_ptr(), name_units) };
             if name != [b'.' as u16] && name != [b'.' as u16, b'.' as u16] {
@@ -322,7 +334,12 @@ fn validate_basename(name: &OsStr) -> io::Result<()> {
     }
     let wide: Vec<u16> = name.encode_wide().collect();
     if wide.contains(&0)
-        || wide.iter().any(|unit| matches!(*unit, 0x2F | 0x5C | 0x3A | 0x2A | 0x3F | 0x22 | 0x3C | 0x3E | 0x7C))
+        || wide.iter().any(|unit| {
+            matches!(
+                *unit,
+                0x2F | 0x5C | 0x3A | 0x2A | 0x3F | 0x22 | 0x3C | 0x3E | 0x7C
+            )
+        })
     {
         return Err(invalid_storage_path());
     }
@@ -334,7 +351,10 @@ fn map_ntstatus(status: NTSTATUS) -> io::Error {
         return io::Error::new(ErrorKind::NotFound, "secure storage path not found");
     }
     if status == STATUS_OBJECT_NAME_COLLISION {
-        return io::Error::new(ErrorKind::AlreadyExists, "secure storage file already exists");
+        return io::Error::new(
+            ErrorKind::AlreadyExists,
+            "secure storage file already exists",
+        );
     }
     if status == STATUS_FILE_IS_A_DIRECTORY || status == STATUS_NOT_A_DIRECTORY {
         return invalid_storage_path();
@@ -352,9 +372,10 @@ fn map_dos(code: u32) -> io::Error {
         ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => {
             io::Error::new(ErrorKind::NotFound, "secure storage path not found")
         }
-        ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS => {
-            io::Error::new(ErrorKind::AlreadyExists, "secure storage file already exists")
-        }
+        ERROR_ALREADY_EXISTS | ERROR_FILE_EXISTS => io::Error::new(
+            ErrorKind::AlreadyExists,
+            "secure storage file already exists",
+        ),
         ERROR_DIRECTORY => invalid_storage_path(),
         _ => io::Error::from_raw_os_error(code as i32),
     }

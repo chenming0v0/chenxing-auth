@@ -17,8 +17,8 @@ use super::windows_policy::{
     ancestor_kind_trusted, leaf_directory_kind_trusted, regular_file_kind_trusted,
 };
 use super::windows_sys::{
-    dir_access, dispose_file, file_read_access, file_write_access, inode_of, list_dir, open_dir_path,
-    open_relative, path_kind, raw_handle, rename_in_dir, require_kind,
+    dir_access, dispose_file, file_read_access, file_write_access, inode_of, list_dir,
+    open_dir_path, open_relative, path_kind, raw_handle, rename_in_dir, require_kind,
 };
 use super::{SecureFileData, TEMPORARY_FILE_SUFFIX, TemporaryFileKind};
 
@@ -228,13 +228,11 @@ fn step(parent: &SecureDir, name: &OsStr, create: bool, is_leaf: bool) -> io::Re
         Err(error) if error.kind() == ErrorKind::NotFound && create => {
             match create_dir(parent, name) {
                 Ok(dir) => finish_dir(dir, true, true),
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                    finish_dir(
-                        open_relative(&parent.file, name, dir_access(), true, false, None)?,
-                        is_leaf,
-                        false,
-                    )
-                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => finish_dir(
+                    open_relative(&parent.file, name, dir_access(), true, false, None)?,
+                    is_leaf,
+                    false,
+                ),
                 Err(error) => Err(error),
             }
         }

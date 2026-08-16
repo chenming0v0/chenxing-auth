@@ -6,18 +6,17 @@ use std::{io, mem, ptr};
 
 use windows_sys::Win32::{
     Foundation::{CloseHandle, GENERIC_ALL, GetLastError, HANDLE, LocalFree},
+    Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo},
     Security::{
         ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_REVISION, AddAccessAllowedAceEx,
         CONTAINER_INHERIT_ACE, CopySid, CreateWellKnownSid, DACL_SECURITY_INFORMATION, EqualSid,
         GetAce, GetLengthSid, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
         GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor, IsValidSid,
         OBJECT_INHERIT_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-        SE_DACL_PROTECTED, SECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_CONTROL,
-        SECURITY_MAX_SID_SIZE, SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
-        TOKEN_QUERY, TOKEN_USER, TokenUser, WinAuthenticatedUserSid, WinBuiltinUsersSid,
-        WinLocalSystemSid, WinWorldSid,
+        SE_DACL_PROTECTED, SECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_CONTROL, SECURITY_MAX_SID_SIZE,
+        SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TOKEN_QUERY, TOKEN_USER,
+        TokenUser, WinAuthenticatedUserSid, WinBuiltinUsersSid, WinLocalSystemSid, WinWorldSid,
     },
-    Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo},
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
 
@@ -44,7 +43,9 @@ impl SidBuf {
         let mut bytes = vec![0u8; len as usize];
         let copied = unsafe { CopySid(len, bytes.as_mut_ptr().cast(), sid) };
         if copied == 0 {
-            return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+            return Err(io::Error::from_raw_os_error(
+                unsafe { GetLastError() } as i32
+            ));
         }
         Ok(Self { bytes })
     }
@@ -52,9 +53,13 @@ impl SidBuf {
     fn well_known(kind: i32) -> io::Result<Self> {
         let mut size = SECURITY_MAX_SID_SIZE;
         let mut bytes = vec![0u8; size as usize];
-        let ok = unsafe { CreateWellKnownSid(kind, ptr::null_mut(), bytes.as_mut_ptr().cast(), &mut size) };
+        let ok = unsafe {
+            CreateWellKnownSid(kind, ptr::null_mut(), bytes.as_mut_ptr().cast(), &mut size)
+        };
         if ok == 0 {
-            return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+            return Err(io::Error::from_raw_os_error(
+                unsafe { GetLastError() } as i32
+            ));
         }
         bytes.truncate(size as usize);
         Ok(Self { bytes })
@@ -136,7 +141,9 @@ fn build_sd(sids: &TrustedSids, inherit: u32) -> io::Result<ProtectedSd> {
         + grant.len() * (mem::size_of::<ACCESS_ALLOWED_ACE>() + SECURITY_MAX_SID_SIZE as usize);
     let mut acl = vec![0u8; acl_size];
     if unsafe { InitializeAcl(acl.as_mut_ptr().cast(), acl_size as u32, ACL_REVISION) } == 0 {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     for sid in grant {
         let ok = unsafe {
@@ -149,28 +156,41 @@ fn build_sd(sids: &TrustedSids, inherit: u32) -> io::Result<ProtectedSd> {
             )
         };
         if ok == 0 {
-            return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+            return Err(io::Error::from_raw_os_error(
+                unsafe { GetLastError() } as i32
+            ));
         }
     }
 
     let mut sd = unsafe { mem::zeroed::<SECURITY_DESCRIPTOR>() };
-    if unsafe { InitializeSecurityDescriptor((&raw mut sd).cast(), SECURITY_DESCRIPTOR_REVISION) } == 0
+    if unsafe { InitializeSecurityDescriptor((&raw mut sd).cast(), SECURITY_DESCRIPTOR_REVISION) }
+        == 0
     {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     if unsafe { SetSecurityDescriptorDacl((&raw mut sd).cast(), 1, acl.as_ptr().cast(), 0) } == 0 {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     if unsafe {
         SetSecurityDescriptorControl((&raw mut sd).cast(), SE_DACL_PROTECTED, SE_DACL_PROTECTED)
     } == 0
     {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     Ok(ProtectedSd { sd, _acl: acl })
 }
 
-pub(super) fn apply_protected_dacl(handle: HANDLE, sids: &TrustedSids, directory: bool) -> io::Result<()> {
+pub(super) fn apply_protected_dacl(
+    handle: HANDLE,
+    sids: &TrustedSids,
+    directory: bool,
+) -> io::Result<()> {
     let sd = if directory {
         ProtectedSd::for_directory(sids)?
     } else {
@@ -256,13 +276,18 @@ fn read_dacl(handle: HANDLE, sids: &TrustedSids) -> io::Result<DaclSnapshot> {
     let mut present = 0;
     let mut defaulted = 0;
     let mut dacl_ptr = ptr::null_mut();
-    if unsafe { GetSecurityDescriptorDacl(sd.0, &mut present, &mut dacl_ptr, &mut defaulted) } == 0 {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+    if unsafe { GetSecurityDescriptorDacl(sd.0, &mut present, &mut dacl_ptr, &mut defaulted) } == 0
+    {
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     let mut control: SECURITY_DESCRIPTOR_CONTROL = 0;
     let mut revision = 0;
     if unsafe { GetSecurityDescriptorControl(sd.0, &mut control, &mut revision) } == 0 {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     let present = present != 0;
     let null_dacl = present && dacl_ptr.is_null();
@@ -287,7 +312,9 @@ fn collect_aces(acl: *const ACL, sids: &TrustedSids) -> io::Result<Vec<AceView>>
     for index in 0..count {
         let mut ace = ptr::null_mut();
         if unsafe { GetAce(acl, index as u32, &mut ace) } == 0 {
-            return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+            return Err(io::Error::from_raw_os_error(
+                unsafe { GetLastError() } as i32
+            ));
         }
         let header = ace.cast::<ACE_HEADER>();
         let kind = match unsafe { (*header).AceType } {
@@ -310,7 +337,9 @@ fn collect_aces(acl: *const ACL, sids: &TrustedSids) -> io::Result<Vec<AceView>>
 fn current_user_sid() -> io::Result<SidBuf> {
     let mut token = ptr::null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     struct TokenHandle(HANDLE);
     impl Drop for TokenHandle {
@@ -334,7 +363,9 @@ fn current_user_sid() -> io::Result<SidBuf> {
         )
     } == 0
     {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     let user = unsafe { &*(buffer.as_ptr() as *const TOKEN_USER) };
     SidBuf::from_psid(user.User.Sid)
@@ -343,10 +374,14 @@ fn current_user_sid() -> io::Result<SidBuf> {
 #[cfg(test)]
 pub(super) fn apply_allow_everyone_for_test(handle: HANDLE) -> io::Result<()> {
     let everyone = SidBuf::well_known(WinWorldSid)?;
-    let acl_size = mem::size_of::<ACL>() + mem::size_of::<ACCESS_ALLOWED_ACE>() + SECURITY_MAX_SID_SIZE as usize;
+    let acl_size = mem::size_of::<ACL>()
+        + mem::size_of::<ACCESS_ALLOWED_ACE>()
+        + SECURITY_MAX_SID_SIZE as usize;
     let mut acl = vec![0u8; acl_size];
     if unsafe { InitializeAcl(acl.as_mut_ptr().cast(), acl_size as u32, ACL_REVISION) } == 0 {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     if unsafe {
         AddAccessAllowedAceEx(
@@ -358,7 +393,9 @@ pub(super) fn apply_allow_everyone_for_test(handle: HANDLE) -> io::Result<()> {
         )
     } == 0
     {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     let status = unsafe {
         SetSecurityInfo(
@@ -386,14 +423,24 @@ pub(super) fn apply_foreign_principal_for_test(handle: HANDLE) -> io::Result<()>
         + grant.len() * (mem::size_of::<ACCESS_ALLOWED_ACE>() + SECURITY_MAX_SID_SIZE as usize);
     let mut acl = vec![0u8; acl_size];
     if unsafe { InitializeAcl(acl.as_mut_ptr().cast(), acl_size as u32, ACL_REVISION) } == 0 {
-        return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+        return Err(io::Error::from_raw_os_error(
+            unsafe { GetLastError() } as i32
+        ));
     }
     for sid in grant {
         if unsafe {
-            AddAccessAllowedAceEx(acl.as_mut_ptr().cast(), ACL_REVISION, 0, GENERIC_ALL, sid.as_psid())
+            AddAccessAllowedAceEx(
+                acl.as_mut_ptr().cast(),
+                ACL_REVISION,
+                0,
+                GENERIC_ALL,
+                sid.as_psid(),
+            )
         } == 0
         {
-            return Err(io::Error::from_raw_os_error(unsafe { GetLastError() } as i32));
+            return Err(io::Error::from_raw_os_error(
+                unsafe { GetLastError() } as i32
+            ));
         }
     }
     let status = unsafe {

@@ -138,10 +138,7 @@ mod tests {
             WellKnownPrincipal::AuthenticatedUsers,
             WellKnownPrincipal::BuiltinUsers,
         ] {
-            let aces = [
-                allow(WellKnownPrincipal::CurrentUser),
-                allow(principal),
-            ];
+            let aces = [allow(WellKnownPrincipal::CurrentUser), allow(principal)];
             assert!(
                 !leaf_dacl_trusted(view(&aces, true)),
                 "{principal:?} 是宽松 ACL，必须 fail-closed"
