@@ -270,7 +270,10 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
 
     let client = create_owned_client(&router, &cookie, &csrf, &suffix).await;
     let client_id = client["client_id"].as_str().expect("client id").to_owned();
-    let validated = validated_request(&client_id, user_id);
+    let session_token = bound_session_token(&env.state, user_id).await;
+    let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
+    let mut validated = validated_request(&client_id, user_id);
+    validated.session_token_hash = Some(session_hash);
 
     for _ in 0..2 {
         let result = issue_authorization_code_result(
@@ -311,7 +314,21 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
 
     let client = create_owned_client(&router, &cookie, &csrf, &suffix).await;
     let client_id = client["client_id"].as_str().expect("client id").to_owned();
-    let validated = validated_request(&client_id, user_id);
+    let session_token = bound_session_token(&env.state, user_id).await;
+    let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
+    let mut validated = validated_request(&client_id, user_id);
+    validated.session_token_hash = Some(session_hash);
+
+    let limits = Some(AuthQuotaLimits {
+        daily_auth_limit: 1,
+        monthly_auth_limit: Some(5),
+    });
+    let before = env
+        .state
+        .oauth_quotas
+        .snapshot(&client_id, limits)
+        .await
+        .expect("quota before failed authorization");
 
     env.state.authorization_codes = AuthorizationCodeStore::new(
         redis::Client::open("redis://127.0.0.1:1").expect("unavailable Redis URL"),
@@ -326,19 +343,31 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
     .await;
     assert!(failed.is_err(), "authorization code persistence must fail");
 
-    let limits = Some(AuthQuotaLimits {
-        daily_auth_limit: 1,
-        monthly_auth_limit: Some(5),
-    });
-    let snapshot = env
+    // take() 与 save() 共用一个已经损坏的存储，无法证明授权码没有落盘；此刻
+    // 立即退款可能让同一授权在码实际存在的情况下二次消耗配额，所以实现选择
+    // 保守等待：配额暂时占用，由 #341 的过期退款台账兜底。
+    let immediately_after = env
         .state
         .oauth_quotas
         .snapshot(&client_id, limits)
         .await
-        .expect("quota snapshot after refund");
-    assert_eq!(snapshot.daily_limit, Some(1));
-    assert_eq!(snapshot.daily_used, 0);
-    assert_eq!(snapshot.monthly_used, 0);
+        .expect("quota immediately after failed authorization");
+    assert_eq!(immediately_after.daily_used, before.daily_used + 1);
+
+    // 授权码 TTL 过后，退款 worker 把未兑换的 reservation 还回去。
+    env.state
+        .oauth_quotas
+        .run_refund_worker_pass(env.state.clock.now() + time::Duration::seconds(360))
+        .await
+        .expect("run quota refund worker pass");
+    let after_refund = env
+        .state
+        .oauth_quotas
+        .snapshot(&client_id, limits)
+        .await
+        .expect("quota after refund worker");
+    assert_eq!(after_refund.daily_used, before.daily_used);
+    assert_eq!(after_refund.monthly_used, before.monthly_used);
 
     env.state.authorization_codes = AuthorizationCodeStore::new(env.state.redis.clone());
     let retry =
@@ -380,7 +409,10 @@ async fn unlimited_monthly_plan_never_rejects_authorizations() {
     let client_id = client["client_id"].as_str().expect("client id").to_owned();
     assert_eq!(client["quota"]["daily_limit"], 10);
     assert!(client["quota"]["monthly_limit"].is_null());
-    let validated = validated_request(&client_id, user_id);
+    let session_token = bound_session_token(&env.state, user_id).await;
+    let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
+    let mut validated = validated_request(&client_id, user_id);
+    validated.session_token_hash = Some(session_hash);
 
     for _ in 0..6 {
         let result = issue_authorization_code_result(
@@ -671,10 +703,14 @@ async fn unsetting_the_last_default_plan_closes_self_service() {
 
     // 既有 Client 的授权仍然成功：这是防止「只关新增」被悄悄改成
     // 「打死既有集成」的机器保障。
+    let session_token = bound_session_token(&env.state, user_id).await;
+    let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
+    let mut validated = validated_request(&existing_client_id, user_id);
+    validated.session_token_hash = Some(session_hash);
     let result = issue_authorization_code_result(
         &env.state,
         user_id.to_string(),
-        validated_request(&existing_client_id, user_id),
+        validated,
         None,
         None,
     )
@@ -844,17 +880,13 @@ async fn no_default_plan_keeps_existing_user_clients_working() {
     let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
     let session_token = bound_session_token(&env.state, user_id).await;
     let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
-    let mut validated = validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier));
+    let mut validated =
+        validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier));
     validated.session_token_hash = Some(session_hash);
-    let issued = issue_authorization_code_result(
-        &env.state,
-        user_id.to_string(),
-        validated,
-        None,
-        None,
-    )
-    .await
-    .expect("authorization must succeed without any plan");
+    let issued =
+        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
+            .await
+            .expect("authorization must succeed without any plan");
     let AuthorizationCodeIssue::Redirect(redirect) = issued else {
         panic!("authorization without a plan must not be quota-limited");
     };
@@ -974,17 +1006,13 @@ async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
     let verifier = "M25iVq8lYCr2Wl4nkPdz0oVYtIdYs1JRLmS3xN8sYAo";
     let session_token = bound_session_token(&env.state, user_id).await;
     let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
-    let mut validated = validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier));
+    let mut validated =
+        validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier));
     validated.session_token_hash = Some(session_hash);
-    let issued = issue_authorization_code_result(
-        &env.state,
-        user_id.to_string(),
-        validated,
-        None,
-        None,
-    )
-    .await
-    .expect("admin client authorization must succeed without any plan");
+    let issued =
+        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
+            .await
+            .expect("admin client authorization must succeed without any plan");
     let AuthorizationCodeIssue::Redirect(redirect) = issued else {
         panic!("admin client authorization must not be quota-limited");
     };
