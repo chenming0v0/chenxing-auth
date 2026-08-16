@@ -100,7 +100,7 @@ impl AuthorizationRequestStore {
         self.save_limited_with_limits(request, &limits).await
     }
 
-    pub(crate) async fn save_limited_with_limits(
+    pub async fn save_limited_with_limits(
         &self,
         request: &PendingAuthorization,
         limits: &SecurityLimitsSetting,
@@ -109,7 +109,9 @@ impl AuthorizationRequestStore {
             .await
     }
 
-    pub(crate) async fn save_limited_with_ttl(
+    /// Restore a consumed pending request with its remaining lifetime.
+    /// Shared client/global index TTLs are never shortened to this value.
+    pub async fn save_limited_with_ttl(
         &self,
         request: &PendingAuthorization,
         remaining_ttl_ms: u64,
@@ -119,7 +121,7 @@ impl AuthorizationRequestStore {
             .await
     }
 
-    async fn save_limited_with_limits_and_ttl(
+    pub async fn save_limited_with_limits_and_ttl(
         &self,
         request: &PendingAuthorization,
         limits: &SecurityLimitsSetting,
@@ -143,6 +145,8 @@ impl AuthorizationRequestStore {
             .arg(self.request_prefix())
             .arg(self.client_index_prefix())
             .arg(self.client_capacity_prefix())
+            // 0 = use configured pending_request_ttl_seconds. Shared index
+            // TTLs are max(existing, this); see expire_at_least in Lua.
             .arg(remaining_ttl_ms.unwrap_or_default())
             .invoke_async(&mut connection)
             .await?;
