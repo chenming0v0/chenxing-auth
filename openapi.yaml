@@ -1138,6 +1138,10 @@ paths:
       summary: 查询绑定到当前 Session 的待授权请求
       operationId: inspectAuthorizationRequest
       security: [{ sessionCookie: [] }]
+      description: |
+        pending 请求绑定创建它的 `/oauth/authorize` 请求级 Issuer generation。
+        Issuer 热切换后，旧 generation 或升级前缺失 generation 的请求会被丢弃并返回
+        400 `authorization_request_expired`，Client 必须重新发起授权。
       parameters:
         - { name: request_id, in: path, required: true, schema: { type: string } }
       responses:
@@ -1154,6 +1158,10 @@ paths:
       summary: 批准或拒绝绑定到当前 Session 的授权请求
       operationId: decideAuthorizationRequest
       security: [{ sessionCookie: [] }]
+      description: |
+        决策只能在 pending 创建时捕获的 Issuer generation 内完成。
+        Issuer 热切换后不会把旧授权意图升级为新 Issuer 的授权码；旧 generation 或缺失
+        generation 的请求会被丢弃并返回 400 `authorization_request_expired`。
       parameters:
         - { name: request_id, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
@@ -1194,6 +1202,9 @@ paths:
 
         升级前创建的旧 pending 记录无 holder 摘要，绑定时将被拒绝（fail-secure），用户需重新发起授权流程。
 
+        pending 同时绑定创建它的请求级 Issuer generation。Issuer 热切换后，旧 generation 或升级前
+        缺失 generation 的请求会被丢弃并返回 400 `authorization_request_expired`，Client 必须重新发起授权。
+
         **受控重绑（#270）**：上述校验全部通过时，无论该 pending 请求此前绑定的是哪个 Session 摘要，
         都会被重绑到调用者当前的 Session，写入走 CAS 保证原子性。
         holder Cookie 才是所有权凭据，Session 绑定是派生状态，因此重绑不放宽任何安全边界：
@@ -1201,6 +1212,8 @@ paths:
         这让「会话过期后重新登录」与「切换账号继续授权」可以自愈，
         不再固定返回 401 并在登录页与授权确认页之间形成跳转循环。
         授权码在最终 approve 时按当时持有的 Session 签发。
+        每次绑定或重绑都保留 Redis 请求键的原始剩余 TTL 与 expiry 索引截止时间；重复重绑不会延长
+        pending 的总生命周期，临界过期请求也不会被恢复为完整配置 TTL。
 
         重绑会记录审计事件 `authorization_request_rebound`（resource_type `oauth_authorization`）。
       parameters:

@@ -44,6 +44,10 @@ pub struct PendingAuthorization {
     pub redirect_uri: String,
     pub scope: String,
     pub state: String,
+    /// Issuer runtime generation captured when the authorization request began.
+    /// Missing on legacy payloads and therefore rejected by continuation paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer_generation: Option<i64>,
     pub nonce: Option<String>,
     pub code_challenge: String,
     pub code_challenge_method: String,
@@ -88,6 +92,7 @@ impl fmt::Debug for PendingAuthorization {
             .field("redirect_uri", &self.redirect_uri)
             .field("scope", &self.scope)
             .field("state", &"<redacted>")
+            .field("issuer_generation", &self.issuer_generation)
             .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
             .field("code_challenge", &"<redacted>")
             .field("code_challenge_method", &self.code_challenge_method)
@@ -111,6 +116,8 @@ struct PendingAuthorizationPayload {
     redirect_uri: String,
     scope: String,
     state: String,
+    #[serde(default)]
+    issuer_generation: Option<i64>,
     nonce: Option<String>,
     code_challenge: String,
     code_challenge_method: String,
@@ -132,6 +139,7 @@ impl fmt::Debug for PendingAuthorizationPayload {
             .field("redirect_uri", &self.redirect_uri)
             .field("scope", &self.scope)
             .field("state", &"<redacted>")
+            .field("issuer_generation", &self.issuer_generation)
             .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
             .field("code_challenge", &"<redacted>")
             .field("code_challenge_method", &self.code_challenge_method)
@@ -168,6 +176,7 @@ impl<'de> Deserialize<'de> for PendingAuthorization {
             redirect_uri: payload.redirect_uri,
             scope: payload.scope,
             state: payload.state,
+            issuer_generation: payload.issuer_generation,
             nonce: payload.nonce,
             code_challenge: payload.code_challenge,
             code_challenge_method: payload.code_challenge_method,
@@ -175,6 +184,14 @@ impl<'de> Deserialize<'de> for PendingAuthorization {
             holder_hash: payload.holder_hash,
             cas_revision: payload.cas_revision,
         })
+    }
+}
+
+impl PendingAuthorization {
+    /// Returns whether this pending request belongs to the request's issuer snapshot.
+    /// Legacy records without a generation fail closed.
+    pub fn is_bound_to_issuer_generation(&self, generation: i64) -> bool {
+        self.issuer_generation == Some(generation)
     }
 }
 
@@ -214,6 +231,11 @@ mod tests {
         let restored: PendingAuthorization =
             serde_json::from_str(legacy_json).expect("legacy pending must deserialize");
         assert!(restored.holder_hash.is_none());
+        assert!(restored.issuer_generation.is_none());
+        assert!(
+            !restored.is_bound_to_issuer_generation(1),
+            "legacy pending requests without an issuer generation must fail closed"
+        );
     }
 
     #[test]
@@ -250,6 +272,7 @@ mod tests {
             code_challenge_method: "S256".to_owned(),
             session_token_hash: None,
             holder_hash: None,
+            issuer_generation: None,
             cas_revision: 0,
         };
         let serialized = serde_json::to_string(&pending).expect("serialize pending");
@@ -272,12 +295,16 @@ mod tests {
             code_challenge_method: "S256".to_owned(),
             session_token_hash: None,
             holder_hash: Some("abc123hash".to_owned()),
+            issuer_generation: Some(7),
             cas_revision: 0,
         };
         let serialized = serde_json::to_string(&pending).expect("serialize");
         let restored: PendingAuthorization =
             serde_json::from_str(&serialized).expect("deserialize");
         assert_eq!(restored.holder_hash.as_deref(), Some("abc123hash"));
+        assert_eq!(restored.issuer_generation, Some(7));
+        assert!(restored.is_bound_to_issuer_generation(7));
+        assert!(!restored.is_bound_to_issuer_generation(8));
         assert_eq!(restored.cas_revision, 0);
         assert!(!serialized.contains("cas_revision"));
     }
@@ -295,6 +322,7 @@ mod tests {
             code_challenge_method: "S256".to_owned(),
             session_token_hash: None,
             holder_hash: None,
+            issuer_generation: None,
             cas_revision: 0,
         };
         let mut value = serde_json::to_value(&pending).expect("pending as JSON");

@@ -37,6 +37,7 @@ async fn oauth_keys_with_identical_ids_are_isolated_by_namespace() {
         code_challenge_method: "S256".to_owned(),
         session_token_hash: None,
         holder_hash: None,
+        issuer_generation: None,
         cas_revision: 0,
     };
     requests_a.save(&request).await.expect("save request in A");

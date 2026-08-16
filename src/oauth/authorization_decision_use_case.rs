@@ -9,6 +9,7 @@ use super::{
     },
     authorization_code_handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
     consent::{ConsentDecision, PendingAuthorization},
+    request_binding::discard_issuer_mismatched_pending,
     request_store::ConsumedPendingAuthorization,
     session::active_user_id,
 };
@@ -75,6 +76,18 @@ pub async fn decide_authorization(
             return Err(DecisionError::Storage);
         }
     };
+    if !pending.is_bound_to_issuer_generation(issuer.generation()) {
+        return match discard_issuer_mismatched_pending(
+            &state.authorization_requests,
+            request_id,
+            &pending,
+        )
+        .await
+        {
+            Ok(()) => Err(DecisionError::Expired),
+            Err(_) => Err(DecisionError::Storage),
+        };
+    }
     if pending.session_token_hash.as_deref() != Some(session_token_hash(session_token).as_str()) {
         return Err(DecisionError::SessionMismatch);
     }
@@ -354,6 +367,7 @@ mod tests {
             code_challenge_method: "S256".to_owned(),
             session_token_hash: Some("session-hash".to_owned()),
             holder_hash: Some("holder-hash".to_owned()),
+            issuer_generation: Some(1),
             cas_revision: 0,
         }
     }

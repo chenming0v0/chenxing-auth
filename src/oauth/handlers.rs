@@ -132,7 +132,7 @@ async fn authorize_request(
             );
         }
         // 还没有会话，pending 以未绑定状态落盘；登录后由绑定接口补上会话。
-        let pending = pending_from_validated(&validated);
+        let pending = pending_from_validated(&validated, issuer.generation());
         return save_and_redirect_to_ui(&state, pending, UiDestination::Login, &client).await;
     };
 
@@ -149,7 +149,7 @@ async fn authorize_request(
     // 会话绑定挂到 validated 上：pending 和后续签发的授权码都从这里取值，
     // 已授权直通路径（issue_preconsented_request）才不会丢掉绑定。
     validated.session_token_hash = Some(session_token_hash(&session.token));
-    let pending = pending_from_validated(&validated);
+    let pending = pending_from_validated(&validated, issuer.generation());
 
     match state
         .consents

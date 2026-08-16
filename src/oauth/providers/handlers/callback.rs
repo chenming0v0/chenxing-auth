@@ -262,6 +262,7 @@ pub async fn external_callback(
             &session,
             holder_hash.as_deref(),
             user_id,
+            issuer.generation(),
         )
         .await
     {
@@ -356,12 +357,14 @@ async fn bind_and_audit(
     session: &Session,
     holder_hash: Option<&str>,
     user_id: crate::users::domain::UserId,
+    issuer_generation: i64,
 ) -> Result<(), &'static str> {
     match bind_pending_request(
         &state.authorization_requests,
         request_id,
         &session.token,
         holder_hash,
+        issuer_generation,
     )
     .await
     {
