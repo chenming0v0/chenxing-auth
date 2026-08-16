@@ -42,7 +42,7 @@ impl Config {
         redis_url: String,
         session_ttl_seconds: u64,
     ) -> Result<Self, ConfigError> {
-        Self::from_values_with_log(ConfigValues {
+        Self::from_validated_values(ConfigValues {
             host,
             port,
             request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,

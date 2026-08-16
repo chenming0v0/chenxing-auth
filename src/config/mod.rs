@@ -14,10 +14,13 @@ mod limits;
 mod parsing;
 mod proxy;
 mod security;
+mod warnings;
 
 pub(crate) use construction::{parse_root_http_url, validate_cookie_security};
+pub(crate) use warnings::parse_log_filter;
 
 pub use issuer::{IssuerUrl, normalize_issuer_url};
+pub use warnings::{ConfigWarning, install_tracing};
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 // 会话配置上界常量 `MAX_SESSION_*` 统一来自 security（#365 政策封顶），

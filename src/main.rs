@@ -1,7 +1,7 @@
 use chenxing_auth::{
     api,
     audit::AuditService,
-    config::Config,
+    config::{self, Config},
     db,
     keys::DEFAULT_KEY_SYNC_INTERVAL,
     oauth::quota::QUOTA_REFUND_WORKER_INTERVAL,
@@ -16,10 +16,10 @@ use tracing::{info, warn};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env()?;
-    tracing_subscriber::fmt()
-        .with_env_filter(config.log_filter.clone())
-        .with_target(false)
-        .init();
+    // Construction returns posture diagnostics as data. Emit only after a
+    // subscriber exists; `tracing::warn!` inside `from_env` is dropped.
+    config::install_tracing(&config.log_filter)?;
+    config.emit_startup_warnings();
     if config.redis_keyspace.is_legacy() {
         warn!(
             redis_namespace = %config.redis_keyspace,
