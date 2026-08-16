@@ -90,6 +90,22 @@ impl IssuerRuntimeState {
             Self::AwaitingIssuer | Self::Pending { .. } => None,
         }
     }
+
+    /// Monotonic key for publish. `AwaitingIssuer` is generation-less and is
+    /// only an initial state; a later persisted generation never regresses to it.
+    pub(crate) fn persisted_generation(&self) -> Option<i64> {
+        match self {
+            Self::Ready(snapshot) => Some(snapshot.generation()),
+            Self::Pending {
+                persisted_generation,
+            }
+            | Self::Invalid {
+                persisted_generation,
+                ..
+            } => Some(*persisted_generation),
+            Self::AwaitingIssuer => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +157,8 @@ impl IssuerPolicy {
 pub struct IssuerRuntime {
     sender: Arc<watch::Sender<Arc<IssuerRuntimeState>>>,
     policy: Arc<IssuerPolicy>,
+    /// Shared by every clone. `watch::send_replace` is not a generation CAS;
+    /// read/compare/publish must hold this lock.
     transition_lock: Arc<Mutex<()>>,
 }
 
@@ -280,11 +298,7 @@ impl IssuerRuntime {
         &self,
         record: Option<&RawIssuerRecord>,
     ) -> Result<Option<Arc<IssuerSnapshot>>, ConfigError> {
-        let _guard = self
-            .transition_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.apply_raw_locked(record)
+        self.transition(record, None)
     }
 
     pub(crate) fn apply_raw_if_unchanged(
@@ -292,46 +306,55 @@ impl IssuerRuntime {
         expected: &Arc<IssuerRuntimeState>,
         record: Option<&RawIssuerRecord>,
     ) -> Result<Option<Arc<IssuerSnapshot>>, ConfigError> {
-        let _guard = self
-            .transition_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let current = self.sender.borrow().clone();
-        if !Arc::ptr_eq(expected, &current) {
-            return Ok(None);
-        }
-        self.apply_raw_locked(record)
+        self.transition(record, Some(expected))
     }
 
-    fn apply_raw_locked(
+    fn lock_transitions(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.transition_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Read, compare, and publish under one lock shared by every clone.
+    /// `watch::Sender::send_replace` is not a generation CAS; this boundary is.
+    fn transition(
         &self,
         record: Option<&RawIssuerRecord>,
+        expected: Option<&Arc<IssuerRuntimeState>>,
     ) -> Result<Option<Arc<IssuerSnapshot>>, ConfigError> {
-        let Some(record) = record else {
-            if matches!(
-                self.sender.borrow().as_ref(),
-                IssuerRuntimeState::AwaitingIssuer
-            ) {
-                return Ok(None);
-            }
-            self.sender
-                .send_replace(Arc::new(IssuerRuntimeState::AwaitingIssuer));
-            return Ok(None);
-        };
+        let _guard = self.lock_transitions();
         let current = self.sender.borrow().clone();
-        let current_generation = match current.as_ref() {
-            IssuerRuntimeState::Ready(snapshot) => Some(snapshot.generation()),
-            IssuerRuntimeState::Pending {
-                persisted_generation,
-            }
-            | IssuerRuntimeState::Invalid {
-                persisted_generation,
-                ..
-            } => Some(*persisted_generation),
-            IssuerRuntimeState::AwaitingIssuer => None,
-        };
-        if current_generation.is_some_and(|generation| record.generation < generation) {
+        if expected.is_some_and(|expected| !Arc::ptr_eq(expected, &current)) {
             return Ok(None);
+        }
+        match self.decide(current.as_ref(), record) {
+            ApplyDecision::Unchanged => Ok(None),
+            ApplyDecision::Publish { state, snapshot } => {
+                self.sender.send_replace(Arc::new(state));
+                Ok(snapshot)
+            }
+            ApplyDecision::Fail { state, error } => {
+                self.sender.send_replace(Arc::new(state));
+                Err(error)
+            }
+        }
+    }
+
+    fn decide(
+        &self,
+        current: &IssuerRuntimeState,
+        record: Option<&RawIssuerRecord>,
+    ) -> ApplyDecision {
+        let Some(record) = record else {
+            // Absence has no generation. A stale "no row" reread must not
+            // clobber Ready/Pending/Invalid. AwaitingIssuer is initial-only.
+            return ApplyDecision::Unchanged;
+        };
+        if current
+            .persisted_generation()
+            .is_some_and(|generation| record.generation < generation)
+        {
+            return ApplyDecision::Unchanged;
         }
         let Some(value) = record
             .value
@@ -339,31 +362,33 @@ impl IssuerRuntime {
             .filter(|value| !value.trim().is_empty())
         else {
             if matches!(
-                current.as_ref(),
+                current,
                 IssuerRuntimeState::Pending {
                     persisted_generation
                 } if *persisted_generation == record.generation
             ) {
-                return Ok(None);
+                return ApplyDecision::Unchanged;
             }
-            self.sender
-                .send_replace(Arc::new(IssuerRuntimeState::Pending {
+            return ApplyDecision::Publish {
+                state: IssuerRuntimeState::Pending {
                     persisted_generation: record.generation,
-                }));
-            return Ok(None);
+                },
+                snapshot: None,
+            };
         };
-        if let IssuerRuntimeState::Ready(snapshot) = current.as_ref()
+        if let IssuerRuntimeState::Ready(snapshot) = current
             && record.generation == snapshot.generation()
         {
             if value == snapshot.issuer().as_str() {
-                return Ok(None);
+                return ApplyDecision::Unchanged;
             }
-            self.sender
-                .send_replace(Arc::new(IssuerRuntimeState::Invalid {
+            return ApplyDecision::Fail {
+                state: IssuerRuntimeState::Invalid {
                     persisted_generation: record.generation,
                     loaded_generation: Some(snapshot.generation()),
-                }));
-            return Err(ConfigError::InvalidValue("APP_ISSUER_GENERATION"));
+                },
+                error: ConfigError::InvalidValue("APP_ISSUER_GENERATION"),
+            };
         }
 
         let previous_generation = current.loaded_generation();
@@ -372,19 +397,33 @@ impl IssuerRuntime {
             generation: record.generation,
             updated_at: record.updated_at,
         };
-        let snapshot = match self.policy.snapshot(&normalized) {
-            Ok(snapshot) => Arc::new(snapshot),
-            Err(error) => {
-                self.sender
-                    .send_replace(Arc::new(IssuerRuntimeState::Invalid {
-                        persisted_generation: record.generation,
-                        loaded_generation: previous_generation,
-                    }));
-                return Err(error);
+        match self.policy.snapshot(&normalized) {
+            Ok(snapshot) => {
+                let snapshot = Arc::new(snapshot);
+                ApplyDecision::Publish {
+                    state: IssuerRuntimeState::Ready(snapshot.clone()),
+                    snapshot: Some(snapshot),
+                }
             }
-        };
-        self.sender
-            .send_replace(Arc::new(IssuerRuntimeState::Ready(snapshot.clone())));
-        Ok(Some(snapshot))
+            Err(error) => ApplyDecision::Fail {
+                state: IssuerRuntimeState::Invalid {
+                    persisted_generation: record.generation,
+                    loaded_generation: previous_generation,
+                },
+                error,
+            },
+        }
     }
+}
+
+enum ApplyDecision {
+    Unchanged,
+    Publish {
+        state: IssuerRuntimeState,
+        snapshot: Option<Arc<IssuerSnapshot>>,
+    },
+    Fail {
+        state: IssuerRuntimeState,
+        error: ConfigError,
+    },
 }
