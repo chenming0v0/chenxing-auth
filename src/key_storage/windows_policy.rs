@@ -3,6 +3,7 @@
 //! 全部是纯函数：真实 SID 与句柄操作留在 `windows_acl` / `windows_sys`，
 //! 判定本身必须能在 Linux CI 里测到拒绝分支。
 
+#[cfg(windows)]
 use std::io::{self, ErrorKind};
 
 /// 一次 DACL 观察里出现的主体。`Foreign` 覆盖 Users / Everyone / 其它帐户。
@@ -84,6 +85,7 @@ fn ace_is_trusted(ace: &AceView) -> bool {
     }
 }
 
+#[cfg(windows)]
 pub(crate) fn invalid_acl() -> io::Error {
     io::Error::new(
         ErrorKind::PermissionDenied,
@@ -91,6 +93,7 @@ pub(crate) fn invalid_acl() -> io::Error {
     )
 }
 
+#[cfg(windows)]
 pub(crate) fn reparse_point_rejected() -> io::Error {
     io::Error::new(
         ErrorKind::PermissionDenied,
@@ -129,6 +132,15 @@ mod tests {
             leaf_dacl_trusted(view(&[allow(WellKnownPrincipal::LocalSystem)], true)),
             "仅 SYSTEM 也可以：进程本身就是 LocalSystem 时只有一个 SID"
         );
+    }
+
+    #[test]
+    fn leaf_accepts_deny_aces_from_untrusted_principals() {
+        let aces = [AceView {
+            kind: AceKind::Deny,
+            principal: WellKnownPrincipal::Foreign,
+        }];
+        assert!(leaf_dacl_trusted(view(&aces, true)));
     }
 
     #[test]

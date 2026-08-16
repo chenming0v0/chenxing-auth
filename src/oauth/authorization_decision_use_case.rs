@@ -58,17 +58,41 @@ pub enum DecisionError {
     QuotaExceeded,
 }
 
+pub struct AuthorizationDecisionCommand<'a> {
+    request_id: &'a str,
+    user_id: UserId,
+    session_token: &'a str,
+    decision: ConsentDecision,
+    source_ip: Option<&'a str>,
+    user_agent: Option<&'a str>,
+}
+
+impl<'a> AuthorizationDecisionCommand<'a> {
+    pub fn new(
+        request_id: &'a str,
+        user_id: UserId,
+        session_token: &'a str,
+        decision: ConsentDecision,
+        source_ip: Option<&'a str>,
+        user_agent: Option<&'a str>,
+    ) -> Self {
+        Self {
+            request_id,
+            user_id,
+            session_token,
+            decision,
+            source_ip,
+            user_agent,
+        }
+    }
+}
+
 pub async fn decide_authorization(
     state: &AppState,
     issuer: &IssuerSnapshot,
-    request_id: &str,
-    user_id: UserId,
-    session_token: &str,
-    decision: ConsentDecision,
-    source_ip: Option<&str>,
-    user_agent: Option<&str>,
+    command: AuthorizationDecisionCommand<'_>,
 ) -> Result<AuthorizationDecision, DecisionError> {
-    let pending = match state.authorization_requests.find(request_id).await {
+    let pending = match state.authorization_requests.find(command.request_id).await {
         Ok(Some(pending)) => pending,
         Ok(None) => return Err(DecisionError::Expired),
         Err(store_error) => {
@@ -79,7 +103,7 @@ pub async fn decide_authorization(
     if !pending.is_bound_to_issuer_generation(issuer.generation()) {
         return match discard_issuer_mismatched_pending(
             &state.authorization_requests,
-            request_id,
+            command.request_id,
             &pending,
         )
         .await
@@ -88,33 +112,21 @@ pub async fn decide_authorization(
             Err(_) => Err(DecisionError::Storage),
         };
     }
-    if pending.session_token_hash.as_deref() != Some(session_token_hash(session_token).as_str()) {
+    if pending.session_token_hash.as_deref()
+        != Some(session_token_hash(command.session_token).as_str())
+    {
         return Err(DecisionError::SessionMismatch);
     }
-    if matches!(decision, ConsentDecision::Deny) {
-        return deny_authorization(state, request_id, user_id, pending, source_ip, user_agent)
-            .await;
+    if matches!(command.decision, ConsentDecision::Deny) {
+        return deny_authorization(state, &command, pending).await;
     }
-    approve_authorization(
-        state,
-        issuer,
-        request_id,
-        user_id,
-        session_token,
-        pending,
-        source_ip,
-        user_agent,
-    )
-    .await
+    approve_authorization(state, issuer, &command, pending).await
 }
 
 async fn deny_authorization(
     state: &AppState,
-    request_id: &str,
-    user_id: UserId,
+    command: &AuthorizationDecisionCommand<'_>,
     pending: PendingAuthorization,
-    source_ip: Option<&str>,
-    user_agent: Option<&str>,
 ) -> Result<AuthorizationDecision, DecisionError> {
     // A pending request may outlive a Client update. Never return a denial
     // redirect to a URI that is no longer registered; approve already
@@ -129,20 +141,20 @@ async fn deny_authorization(
     }) {
         return Err(DecisionError::InvalidRequest);
     }
-    let consumed = consume_pending(state, request_id, &pending).await?;
+    let consumed = consume_pending(state, command.request_id, &pending).await?;
     let pending = consumed.request;
     state
         .audit
         .record_best_effort(AuditEvent::new(
             "user".to_owned(),
-            Some(user_id.to_string()),
+            Some(command.user_id.to_string()),
             crate::audit::AuditAction::AuthorizationDenied,
             "oauth_authorization".to_owned(),
             Some(pending.client_id.clone()),
             crate::audit::with_request_context(
                 serde_json::json!({"reason": "user_denied"}),
-                source_ip,
-                user_agent,
+                command.source_ip,
+                command.user_agent,
             ),
         ))
         .await;
@@ -154,16 +166,12 @@ async fn deny_authorization(
 async fn approve_authorization(
     state: &AppState,
     issuer: &IssuerSnapshot,
-    request_id: &str,
-    user_id: UserId,
-    session_token: &str,
+    command: &AuthorizationDecisionCommand<'_>,
     pending: PendingAuthorization,
-    source_ip: Option<&str>,
-    user_agent: Option<&str>,
 ) -> Result<AuthorizationDecision, DecisionError> {
     let validated = validated_pending(state, &pending).await?;
-    let consumed = consume_pending(state, request_id, &pending).await?;
-    if let Err(error_value) = session_still_active(state, session_token).await {
+    let consumed = consume_pending(state, command.request_id, &pending).await?;
+    if let Err(error_value) = session_still_active(state, command.session_token).await {
         restore_pending(state, &consumed.request, consumed.remaining_ttl_ms).await;
         return Err(error_value);
     }
@@ -172,7 +180,7 @@ async fn approve_authorization(
     // cache fence from the database authority, so writing the version here
     // would add a second source for the same conditional-write conclusion.
     if let Err(error_value) =
-        save_consent(state, user_id, &consumed.request, &validated.scopes).await
+        save_consent(state, command.user_id, &consumed.request, &validated.scopes).await
     {
         restore_pending(state, &consumed.request, consumed.remaining_ttl_ms).await;
         return Err(error_value);
@@ -180,10 +188,10 @@ async fn approve_authorization(
     match issue_authorization_code_result(
         state,
         issuer,
-        user_id.to_string(),
+        command.user_id.to_string(),
         validated,
-        source_ip,
-        user_agent,
+        command.source_ip,
+        command.user_agent,
     )
     .await
     {

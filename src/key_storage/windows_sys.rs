@@ -273,16 +273,17 @@ pub(super) fn list_dir(dir: &File) -> io::Result<Vec<DirEntry>> {
             };
             let name_units = (info.FileNameLength / 2) as usize;
             let name = unsafe { slice::from_raw_parts(info.FileName.as_ptr(), name_units) };
-            if name != [b'.' as u16] && name != [b'.' as u16, b'.' as u16] {
-                if let Ok(name) = String::from_utf16(name) {
-                    entries.push(DirEntry {
-                        name,
-                        inode: FileInode {
-                            dev: u64::from(volume),
-                            ino: info.FileId as u64,
-                        },
-                    });
-                }
+            if name != [b'.' as u16]
+                && name != [b'.' as u16, b'.' as u16]
+                && let Ok(name) = String::from_utf16(name)
+            {
+                entries.push(DirEntry {
+                    name,
+                    inode: FileInode {
+                        dev: u64::from(volume),
+                        ino: info.FileId as u64,
+                    },
+                });
             }
             if info.NextEntryOffset == 0 {
                 break;

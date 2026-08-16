@@ -8,7 +8,9 @@ use serde::Deserialize;
 use std::net::SocketAddr;
 
 use super::{
-    authorization_decision_use_case::{AuthorizationDecision, DecisionError, decide_authorization},
+    authorization_decision_use_case::{
+        AuthorizationDecision, AuthorizationDecisionCommand, DecisionError, decide_authorization,
+    },
     consent::parse_decision,
     request_binding::{
         PendingRequestBinding, PendingRequestBindingError, bind_pending_request,
@@ -230,12 +232,14 @@ pub async fn decide_authorization_request(
     match decide_authorization(
         &state,
         issuer.snapshot(),
-        &request_id,
-        session.user_id,
-        &session.session.token,
-        decision,
-        source_ip.as_deref(),
-        user_agent.as_deref(),
+        AuthorizationDecisionCommand::new(
+            &request_id,
+            session.user_id,
+            &session.session.token,
+            decision,
+            source_ip.as_deref(),
+            user_agent.as_deref(),
+        ),
     )
     .await
     {
