@@ -317,7 +317,11 @@ async fn transplanted_provider_ciphertext_is_rejected_before_token_request() {
         .expect("callback response");
 
     assert_eq!(callback.status(), StatusCode::SEE_OTHER);
-    assert!(location(&callback).contains("external=error"));
+    assert!(
+        location(&callback).contains("external_error=oauth_login_failed"),
+        "transplanted ciphertext must use the unified external OAuth failure redirect: {}",
+        location(&callback)
+    );
     assert!(
         mock_state.token_form.lock().await.is_none(),
         "a transplanted ciphertext must fail before any secret reaches the target endpoint"
