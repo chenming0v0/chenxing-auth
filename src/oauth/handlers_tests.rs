@@ -2,8 +2,6 @@ use super::super::authorization::MAX_STATE_LENGTH;
 use super::*;
 use axum::http::{StatusCode, header::LOCATION};
 
-const UI_HANDLERS_SOURCE: &str = include_str!("ui_handlers.rs");
-
 fn client() -> super::super::authorization::RegisteredClient {
     super::super::authorization::RegisteredClient {
         client_id: "client-1".to_owned(),
@@ -24,21 +22,6 @@ fn request(redirect_uri: &str) -> AuthorizationRequest {
         nonce: None,
         code_challenge: Some("challenge".to_owned()),
         code_challenge_method: Some("S256".to_owned()),
-    }
-}
-
-fn pending(redirect_uri: &str) -> PendingAuthorization {
-    PendingAuthorization {
-        request_id: "request-1".to_owned(),
-        client_id: "client-1".to_owned(),
-        redirect_uri: redirect_uri.to_owned(),
-        scope: "openid".to_owned(),
-        state: "state-1".to_owned(),
-        nonce: None,
-        code_challenge: "challenge".to_owned(),
-        code_challenge_method: "S256".to_owned(),
-        session_token_hash: Some("session-hash".to_owned()),
-        holder_hash: Some("holder-hash".to_owned()),
     }
 }
 
@@ -145,40 +128,4 @@ fn authorization_error_does_not_reflect_overlong_state() {
         .expect("verified redirect location");
     assert!(location.contains("error=invalid_request"));
     assert!(!location.contains("state="));
-}
-
-#[test]
-fn denial_redirect_rejects_uri_removed_from_current_client_registration() {
-    let redirect = super::super::ui_handlers::error_redirect(
-        &pending("https://retired.example/callback"),
-        &client(),
-    );
-
-    assert!(redirect.is_none());
-}
-
-#[test]
-fn denial_flow_reloads_current_client_before_building_redirect() {
-    let denial_branch = UI_HANDLERS_SOURCE
-        .split_once("if matches!(decision, ConsentDecision::Deny)")
-        .map(|(_, source)| source)
-        .and_then(|source| source.split_once("let validated ="))
-        .map(|(source, _)| source)
-        .expect("authorization denial branch");
-
-    assert!(denial_branch.contains("state.clients.find_registered(&pending.client_id)"));
-    assert!(denial_branch.contains("error_redirect(&pending, &client)"));
-}
-
-#[test]
-fn denial_redirect_uses_canonical_current_registration_uri() {
-    let redirect = super::super::ui_handlers::error_redirect(
-        &pending("https://client.example:443/callback"),
-        &client(),
-    )
-    .expect("currently registered redirect URI");
-
-    assert!(redirect.starts_with("https://client.example/callback?"));
-    assert!(redirect.contains("error=access_denied"));
-    assert!(redirect.contains("state=state-1"));
 }

@@ -117,7 +117,7 @@ fn invalid_log_filter_is_diagnosable_without_leaking_config() {
 
 #[test]
 fn warning_messages_do_not_embed_credential_values() {
-    let config = test_config();
+    let config = production_like_config();
     for warning in config.startup_warnings() {
         let message = warning.message();
         assert!(!message.contains("database-password"));
