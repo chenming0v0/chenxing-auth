@@ -134,6 +134,8 @@ pub enum AuthFactorServiceError {
     FirstFactorAlreadyExists,
     #[error("passkey authentication is disabled")]
     PasskeyDisabled,
+    #[error(transparent)]
+    ManagementActor(#[from] crate::users::ManagementActorValidationError),
 }
 
 impl AuthFactorService {

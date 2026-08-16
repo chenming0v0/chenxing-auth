@@ -42,6 +42,8 @@ pub enum PlanServiceError {
     ActorSessionInvalid,
     #[error("the management actor no longer has the required permission")]
     ActorPermissionRequired,
+    #[error(transparent)]
+    ManagementActor(#[from] crate::users::ManagementActorValidationError),
     #[error("database operation failed: {0}")]
     Database(#[from] crate::sqlx::Error),
 }
@@ -71,9 +73,13 @@ impl PlanService {
         Ok(repository::list_plans(&self.pool).await?)
     }
 
-    pub async fn create(&self, input: PlanInput) -> Result<Plan, PlanServiceError> {
+    pub async fn create(
+        &self,
+        input: PlanInput,
+        credential: ManagementActorCredential,
+    ) -> Result<Plan, PlanServiceError> {
         let input = validate_plan_input(input)?;
-        match repository::insert(&self.pool, &input).await {
+        match repository::insert(&self.pool, &input, credential).await {
             Ok(plan) => Ok(plan),
             Err(PlanRepositoryError::Database(error)) if is_unique_violation(&error) => {
                 Err(PlanServiceError::CodeConflict)
@@ -87,13 +93,14 @@ impl PlanService {
         &self,
         id: i64,
         input: PlanInput,
+        credential: ManagementActorCredential,
     ) -> Result<PlanWithUsers, PlanServiceError> {
         let input = validate_plan_input(input)?;
         let Some(current) = repository::find_by_id(&self.pool, id).await? else {
             return Err(PlanServiceError::NotFound);
         };
         validate_plan_update(&current, &input).map_err(map_mutation_error)?;
-        match repository::update(&self.pool, id, &input).await {
+        match repository::update(&self.pool, id, &input, credential).await {
             Ok(Some(plan_with_users)) => Ok(plan_with_users),
             Ok(None) => Err(PlanServiceError::NotFound),
             Err(PlanRepositoryError::Database(error)) if is_unique_violation(&error) => {
@@ -105,16 +112,29 @@ impl PlanService {
 
     /// 归档套餐。归档默认套餐是允许的：结果是「平台没有生效默认套餐」，
     /// 语义为未开放自助接入，而不是错误。
-    pub async fn archive(&self, id: i64) -> Result<(), PlanServiceError> {
-        self.set_status(id, "archived").await
+    pub async fn archive(
+        &self,
+        id: i64,
+        credential: ManagementActorCredential,
+    ) -> Result<(), PlanServiceError> {
+        self.set_status(id, "archived", credential).await
     }
 
-    pub async fn restore(&self, id: i64) -> Result<(), PlanServiceError> {
-        self.set_status(id, "active").await
+    pub async fn restore(
+        &self,
+        id: i64,
+        credential: ManagementActorCredential,
+    ) -> Result<(), PlanServiceError> {
+        self.set_status(id, "active", credential).await
     }
 
-    async fn set_status(&self, id: i64, status: &str) -> Result<(), PlanServiceError> {
-        if repository::set_status(&self.pool, id, status)
+    async fn set_status(
+        &self,
+        id: i64,
+        status: &str,
+        credential: ManagementActorCredential,
+    ) -> Result<(), PlanServiceError> {
+        if repository::set_status(&self.pool, id, status, credential)
             .await
             .map_err(map_repository_error)?
         {
@@ -196,5 +216,6 @@ fn map_repository_error(error: PlanRepositoryError) -> PlanServiceError {
     match error {
         PlanRepositoryError::Database(error) => PlanServiceError::Database(error),
         PlanRepositoryError::Mutation(error) => map_mutation_error(error),
+        PlanRepositoryError::ManagementActor(error) => PlanServiceError::ManagementActor(error),
     }
 }

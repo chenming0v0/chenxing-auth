@@ -6,9 +6,13 @@ use axum::{
 };
 use serde::Serialize;
 
-use super::domain::AdminPermission;
+use super::{
+    authorization::{authorize_admin_write, management_actor_validation_failed},
+    domain::AdminPermission,
+};
 use crate::{
     api::extract::AdminWrite, audit::AuditEvent, error, keys::KeyManagerError, state::AppState,
+    users::revalidate_management_actor,
 };
 
 #[derive(Debug, Serialize)]
@@ -25,10 +29,11 @@ pub struct KeyRevocationResponse {
 }
 
 pub async fn rotate_signing_key(State(state): State<AppState>, admin: AdminWrite) -> Response {
-    let actor = match admin.authorize(&state, AdminPermission::RotateKeys).await {
-        Ok(actor) => actor,
+    let authorization = match authorize_key_side_effect(&state, &admin).await {
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
+    let actor = authorization.actor();
 
     let actor_type = actor.actor_type().to_owned();
     let actor_id = actor.user_id().map(|id| id.to_string());
@@ -106,10 +111,11 @@ pub async fn revoke_signing_key(
     admin: AdminWrite,
     Path(key_id): Path<String>,
 ) -> Response {
-    let actor = match admin.authorize(&state, AdminPermission::RotateKeys).await {
-        Ok(actor) => actor,
+    let authorization = match authorize_key_side_effect(&state, &admin).await {
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
+    let actor = authorization.actor();
 
     let actor_type = actor.actor_type().to_owned();
     let actor_id = actor.user_id().map(|id| id.to_string());
@@ -218,6 +224,24 @@ pub async fn revoke_signing_key(
         }),
     )
         .into_response()
+}
+
+async fn authorize_key_side_effect(
+    state: &AppState,
+    admin: &AdminWrite,
+) -> Result<super::authorization::AdminWriteAuthorization, Response> {
+    let authorization = authorize_admin_write(state, admin, AdminPermission::RotateKeys).await?;
+    if let Err(error_value) = revalidate_management_actor(
+        &state.database,
+        authorization.credential(),
+        AdminPermission::RotateKeys,
+    )
+    .await
+    {
+        return Err(management_actor_validation_failed(state, authorization, error_value).await);
+    }
+    // Residual TOCTOU between validation-commit and file write is accepted; we do not hold a user lock across blocking IO.
+    Ok(authorization)
 }
 
 async fn record_key_failure(

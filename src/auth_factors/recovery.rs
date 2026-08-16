@@ -26,7 +26,11 @@ use crate::{
         repository,
     },
     sessions::store::revoke_all_for_user_in_transaction,
-    users::domain::UserId,
+    users::{
+        ManagementActorCredential,
+        domain::{UserId, UserPermission},
+        repository::management_actor::validate_management_actor_in_transaction,
+    },
 };
 
 /// 单次密钥健康度扫描的上限。管理端诊断端点不能变成全表扫描的放大器；
@@ -224,8 +228,15 @@ impl AuthFactorService {
     pub async fn reset_totp_factor(
         &self,
         user_id: UserId,
+        credential: ManagementActorCredential,
     ) -> Result<TotpResetOutcome, AuthFactorServiceError> {
         let mut transaction = self.pool.begin().await?;
+        validate_management_actor_in_transaction(
+            &mut transaction,
+            credential,
+            UserPermission::ManageAuthFactors,
+        )
+        .await?;
         if revoke_all_for_user_in_transaction(&mut transaction, user_id)
             .await?
             .is_none()
@@ -286,8 +297,15 @@ impl AuthFactorService {
     pub async fn reset_passkey_factor(
         &self,
         user_id: UserId,
+        credential: ManagementActorCredential,
     ) -> Result<PasskeyResetOutcome, AuthFactorServiceError> {
         let mut transaction = self.pool.begin().await?;
+        validate_management_actor_in_transaction(
+            &mut transaction,
+            credential,
+            UserPermission::ManageAuthFactors,
+        )
+        .await?;
         if revoke_all_for_user_in_transaction(&mut transaction, user_id)
             .await?
             .is_none()

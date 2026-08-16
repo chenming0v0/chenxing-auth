@@ -40,12 +40,13 @@ impl AdminActor {
 /// 这里只保存初始审计身份与 Session generation，不把事务外观察到的角色当作最终授权。
 /// 目标角色、actor active/role/generation 都由具体写事务持行锁复核（Issue #323/#493）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct UserWriteAuthorization {
+pub(crate) struct AdminWriteAuthorization {
     actor: AdminActor,
     credential: ManagementActorCredential,
+    permission: AdminPermission,
 }
 
-impl UserWriteAuthorization {
+impl AdminWriteAuthorization {
     pub const fn actor(self) -> AdminActor {
         self.actor
     }
@@ -53,26 +54,38 @@ impl UserWriteAuthorization {
     pub const fn credential(self) -> ManagementActorCredential {
         self.credential
     }
+
+    pub const fn permission(self) -> AdminPermission {
+        self.permission
+    }
+}
+
+pub(crate) type UserWriteAuthorization = AdminWriteAuthorization;
+
+pub(crate) async fn authorize_admin_write(
+    state: &AppState,
+    admin: &AdminWrite,
+    permission: AdminPermission,
+) -> Result<AdminWriteAuthorization, Response> {
+    let actor = admin.authorize(state, permission).await?;
+    let Some(credential) = admin.management_actor_credential() else {
+        if let Some(user_id) = actor.user_id() {
+            record_authz_denial(state, user_id, permission, "credential_generation_missing").await;
+        }
+        return Err(invalid_session_response(state, "invalid_session"));
+    };
+    Ok(AdminWriteAuthorization {
+        actor,
+        credential,
+        permission,
+    })
 }
 
 pub(crate) async fn authorize_user_write(
     state: &AppState,
     admin: &AdminWrite,
 ) -> Result<UserWriteAuthorization, Response> {
-    let actor = admin.authorize(state, AdminPermission::ManageUsers).await?;
-    let Some(credential) = admin.management_actor_credential() else {
-        if let Some(user_id) = actor.user_id() {
-            record_authz_denial(
-                state,
-                user_id,
-                AdminPermission::ManageUsers,
-                "credential_generation_missing",
-            )
-            .await;
-        }
-        return Err(invalid_session_response(state, "invalid_session"));
-    };
-    Ok(UserWriteAuthorization { actor, credential })
+    authorize_admin_write(state, admin, AdminPermission::ManageUsers).await
 }
 
 /// 把事务内判定出的 Owner 权限不足翻译成既有的 403 与拒绝审计。
@@ -124,11 +137,48 @@ pub(crate) async fn management_actor_session_invalid(
     record_authz_denial(
         state,
         user_id,
-        AdminPermission::ManageUsers,
+        authorization.permission(),
         "actor_session_changed",
     )
     .await;
     invalid_session_response(state, "invalid_session")
+}
+
+pub(crate) async fn management_actor_validation_failed(
+    state: &AppState,
+    authorization: AdminWriteAuthorization,
+    error_value: crate::users::ManagementActorValidationError,
+) -> Response {
+    match error_value {
+        crate::users::ManagementActorValidationError::SessionInvalid => {
+            management_actor_session_invalid(state, authorization).await
+        }
+        crate::users::ManagementActorValidationError::PermissionRequired => {
+            let actor = authorization.actor();
+            let Some(user_id) = actor.user_id() else {
+                tracing::error!(
+                    actor_type = actor.actor_type(),
+                    "system ADMIN_TOKEN unexpectedly failed permission revalidation"
+                );
+                return error::internal();
+            };
+            record_authz_denial(
+                state,
+                user_id,
+                authorization.permission(),
+                "insufficient_role",
+            )
+            .await;
+            error::forbidden(
+                "admin_forbidden",
+                "administrator permission is insufficient",
+            )
+        }
+        crate::users::ManagementActorValidationError::Database(database_error) => {
+            tracing::error!(error = %database_error, "failed to revalidate management actor");
+            error::internal()
+        }
+    }
 }
 
 /// Translate a transaction-time actor role downgrade.

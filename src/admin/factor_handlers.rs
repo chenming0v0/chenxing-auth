@@ -24,11 +24,14 @@ use axum::{
 };
 use serde::Serialize;
 
-use super::domain::AdminPermission;
+use super::{
+    authorization::{authorize_admin_write, management_actor_validation_failed},
+    domain::AdminPermission,
+};
 use crate::{
     api::extract::{AdminRead, AdminWrite},
     audit::AuditEvent,
-    auth_factors::service::TotpResetOutcome,
+    auth_factors::service::{AuthFactorServiceError, TotpResetOutcome},
     error,
     state::AppState,
     users::domain::UserId,
@@ -145,15 +148,20 @@ pub async fn reset_user_totp_factor(
     admin: AdminWrite,
     Path(user_id): Path<UserId>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageAuthFactors)
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageAuthFactors).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let outcome = match state
+        .factors
+        .reset_totp_factor(user_id, authorization.credential())
         .await
     {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
-    let outcome = match state.factors.reset_totp_factor(user_id).await {
         Ok(outcome) => outcome,
+        Err(AuthFactorServiceError::ManagementActor(error_value)) => {
+            return management_actor_validation_failed(&state, authorization, error_value).await;
+        }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to reset TOTP factor");
             return error::internal();
@@ -170,7 +178,7 @@ pub async fn reset_user_totp_factor(
             return error::not_found("user_not_found", "user was not found");
         }
     };
-    let (actor_type, actor_id) = actor.audit_fields();
+    let (actor_type, actor_id) = authorization.actor().audit_fields();
     // 因子已经删除，这个既成事实不因审计写入失败而改写；best_effort 的失败日志
     // 保留人工补录所需的上下文。元数据只含状态名，不含 kid 与种子。
     state

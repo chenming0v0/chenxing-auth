@@ -1,7 +1,7 @@
 use crate::sqlx::{Postgres, Transaction};
 use crate::users::{
-    ActorCredentialError, ManagementActorCredential,
-    domain::{OwnerTargetAccess, UserId},
+    ActorCredentialError, ManagementActorCredential, ManagementActorValidationError,
+    domain::{OwnerTargetAccess, UserId, UserPermission},
 };
 
 /// User state read while the management transaction owns the row lock.
@@ -104,4 +104,51 @@ pub(crate) fn validate_management_actor(
                 ManagementActorRejection::PermissionRequired
             }
         })
+}
+
+pub(crate) fn validate_locked_management_actor_permission(
+    credential: ManagementActorCredential,
+    actor: Option<&LockedManagementUser>,
+    permission: UserPermission,
+) -> Result<(), ManagementActorValidationError> {
+    if matches!(credential, ManagementActorCredential::SystemToken) {
+        return Ok(());
+    }
+    let Some(actor) = actor else {
+        return Err(ManagementActorValidationError::SessionInvalid);
+    };
+    credential
+        .validate_locked(&actor.role, &actor.status, actor.session_epoch, permission)
+        .map(|_| ())
+        .map_err(|error| match error {
+            ActorCredentialError::SessionInvalid => ManagementActorValidationError::SessionInvalid,
+            ActorCredentialError::PermissionRequired => {
+                ManagementActorValidationError::PermissionRequired
+            }
+        })
+}
+
+/// Revalidate an AdminWrite actor while the caller's mutation transaction owns
+/// the actor's session-generation lock. No business write may precede this call.
+pub(crate) async fn validate_management_actor_in_transaction(
+    transaction: &mut Transaction<'_, Postgres>,
+    credential: ManagementActorCredential,
+    permission: UserPermission,
+) -> Result<(), ManagementActorValidationError> {
+    let ManagementActorCredential::UserSession { user_id, .. } = credential else {
+        return Ok(());
+    };
+    crate::sessions::store::lock_user_session_scope(transaction, user_id).await?;
+    let actor = crate::sqlx::query_as::<_, (String, String, i64)>(
+        "SELECT role, status, session_epoch FROM users WHERE id = $1 FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut **transaction)
+    .await?
+    .map(|(role, status, session_epoch)| LockedManagementUser {
+        role,
+        status,
+        session_epoch,
+    });
+    validate_locked_management_actor_permission(credential, actor.as_ref(), permission)
 }
