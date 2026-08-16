@@ -206,11 +206,10 @@ async fn insert_new_session(
     token_hash: &[u8],
     session_epoch: i64,
 ) -> Result<i64, SessionStoreError> {
-    let id: i64 = crate::sqlx::query_scalar(
-        "SELECT nextval(pg_get_serial_sequence('user_sessions', 'id'))",
-    )
-    .fetch_one(&mut **transaction)
-    .await?;
+    let id: i64 =
+        crate::sqlx::query_scalar("SELECT nextval(pg_get_serial_sequence('user_sessions', 'id'))")
+            .fetch_one(&mut **transaction)
+            .await?;
     let mut stored_payload = SessionPayload::from(session);
     stored_payload.id = id;
     let encrypted_payload = store.encrypt_payload(&serde_json::to_vec(&stored_payload)?)?;
