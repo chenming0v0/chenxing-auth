@@ -10,7 +10,7 @@ import {
   type ReactNode,
   type Ref,
 } from 'react'
-import { Link, NavLink, useLocation, useNavigate } from '../router'
+import { Link, NavLink, prepareNavigation, useLocation } from '../router'
 import { useAuth } from '../auth-state'
 import { navGroups, pageStatus } from '../data'
 import { avatarUrl, getEntitlements, type EntitlementItem } from '../api'
@@ -264,7 +264,6 @@ export function GlobalTopbar({
 }) {
   const { expanded, sentinelRef } = useTopbarExpanded()
   const { status: authStatus, user, logout } = useAuth()
-  const navigate = useNavigate()
   const loggedIn = authStatus === 'authenticated'
   
   /* 汉堡菜单与账户菜单共享抽屉：两个按钮互斥，点击任一个都会在胶囊内展开抽屉 */
@@ -296,7 +295,7 @@ export function GlobalTopbar({
         setEntitlements({ daily: null, monthly: null })
       })
     return () => { cancelled = true }
-  }, [account.open])
+  }, [account.open, user?.id])
   
   // 点击头像时：关闭汉堡菜单，打开账户抽屉
   const toggleAccount = useCallback(() => {
@@ -481,12 +480,17 @@ export function GlobalTopbar({
                         type="button"
                         className="chenxing-menu-item"
                         onClick={() => {
+                          // 先取得一次性导航意图。草稿守卫拒绝时，既不撤销会话，
+                          // 也不关闭菜单；登出完成后提交该意图不会再次询问守卫（#530）。
+                          const intent = prepareNavigation('/login')
+                          if (!intent) return
                           account.close()
                           // logout 永不 reject（#325）：成功与失败都跳登录页，跳转行为一致；
                           // 撤销失败时带 logout=failed 标记，登录页据此提示「未能完全登出」。
-                          void logout().then(({ revoked }) => {
-                            navigate(revoked ? '/login' : '/login?logout=failed')
-                          })
+                          void logout().then(
+                            ({ revoked }) => { intent.commit(revoked ? '/login' : '/login?logout=failed') },
+                            () => { intent.commit('/login?logout=failed') },
+                          )
                         }}
                       >
                         <Icon name="log-out" className="text-[var(--chenxing-error)]" size={16} />退出
