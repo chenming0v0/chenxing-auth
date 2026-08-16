@@ -249,7 +249,7 @@ Session payload 使用 AES-256-GCM 并携带 key id。`AUTH_ENCRYPTION_KEY` 保�
 
 `session_outbox` 有明确的有界生命周期，分三个状态：待处理、已投递和 dead-letter。一个事件最多被投递 10 次（退避上限 5 分钟，覆盖约 20 分钟的真实故障窗口）；仍然失败则写入 `dead_lettered_at` 并退出待处理索引，不再被重试，`attempts` 和 `last_error` 作为审计记录保留。已投递事件保留 1 天，dead-letter 事件保留 30 天，都由 outbox worker 按 5 分钟间隔分批删除，每批每类上限 500 行，积压时连续清理直到收敛。撤销只在真正发生"未撤销 → 已撤销"转变时写入事件：重复登出和对不存在令牌的登出不产生投递任务。运维应监控 dead-letter 行——一条撤销事件进入 dead-letter 意味着对应的 Redis 投影可能仍然存在，需要人工确认，而 PostgreSQL 始终是认证判定的权威来源，投影残留不会让已撤销的会话通过认证。
 
-用户首次密码登录会通过短期 HttpOnly pending-login Cookie 进入因子流程；Redis 中的 `login_ticket` 绑定同一浏览器 holder，前端需要完成 TOTP 或 WebAuthn passkey 注册后才会获得 Session。后续登录需要密码加已绑定的 TOTP 或 passkey。生产环境应设置固定的 `WEBAUTHN_RP_ID` 和 `WEBAUTHN_ORIGIN`；Issuer 配置完成后，未显式覆盖的值从运行时 Issuer 派生，不能从请求 Host 派生。
+没有已启用认证因子的新账号，密码验证成功后直接获得普通已认证 Session；TOTP 和 WebAuthn passkey 都是可选的，登录后可在账户安全设置中启用。启用后，后续密码登录会通过短期 HttpOnly pending-login Cookie 进入因子流程：Redis 中的 `login_ticket` 绑定同一浏览器 holder，前端需要完成已绑定的 TOTP 或 passkey 验证后才会获得 Session。生产环境应设置固定的 `WEBAUTHN_RP_ID` 和 `WEBAUTHN_ORIGIN`；Issuer 配置完成后，未显式覆盖的值从运行时 Issuer 派生，不能从请求 Host 派生。
 
 ## 开源协议
 
