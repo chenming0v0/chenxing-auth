@@ -401,6 +401,7 @@ pub(crate) fn pending_from_validated(
         // holder 由 `save_and_redirect_to_ui` 在交给 SPA 之前生成并回填（#115 / #270）。
         // 这里留 None：预授权直通路径不经过 SPA 也不经过绑定端点，不需要 holder。
         holder_hash: None,
+        cas_revision: 0,
     }
 }
 

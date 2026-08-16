@@ -44,8 +44,8 @@ pub struct RefreshToken {
     /// 轮换时不变，用于计算凭据家族的总生命周期。旧格式 token 缺失此字段时，
     /// 反序列化为 `None`，`issued_at()` 方法会回退到 `created_at`（保守兼容）。
     ///
-    /// `skip_serializing_if` 保持旧 token 的序列化表示稳定；存储层 CAS 只比较
-    /// 已知协议字段，未知未来字段不会导致轮换失败。
+    /// `skip_serializing_if` 保持旧 token 的序列化表示稳定。CAS 身份只看
+    /// `value` + `cas_revision`，未知未来字段不会导致轮换失败。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issued_at: Option<OffsetDateTime>,
     /// Token Family ID（RFC 9700 §4.14.2：检测重放攻击的撤销单元）。
@@ -103,6 +103,15 @@ pub struct RefreshToken {
     /// 因此兑换路径 fail-closed，要求客户端重新走授权流程。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issuer_generation: Option<i64>,
+    /// Stable CAS generation. Missing on legacy payloads and treated as 0.
+    /// Each token value is a new Redis key, so successors start at 0 and omit
+    /// the field. In-place compare-and-swap still uses this so a stale reader
+    /// cannot consume a replaced payload.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::oauth::cas::is_zero_cas_revision"
+    )]
+    pub cas_revision: u64,
 }
 
 impl fmt::Debug for RefreshToken {
@@ -120,6 +129,7 @@ impl fmt::Debug for RefreshToken {
             .field("client_secret_version", &self.client_secret_version)
             .field("session_epoch", &self.session_epoch)
             .field("issuer_generation", &self.issuer_generation)
+            .field("cas_revision", &self.cas_revision)
             .finish()
     }
 }
@@ -216,6 +226,30 @@ mod tests {
             "rotation must never upgrade an unbound legacy token into the current issuer"
         );
     }
+
+    #[test]
+    fn future_fields_do_not_change_cas_identity() {
+        let token = RefreshToken::new_at_with_client_secret_version(
+            "client".to_owned(),
+            "user".to_owned(),
+            vec!["openid".to_owned()],
+            7,
+            3,
+            11,
+            OffsetDateTime::UNIX_EPOCH + Duration::days(1),
+        );
+        let mut value = serde_json::to_value(&token).expect("token as JSON");
+        value
+            .as_object_mut()
+            .expect("token serializes to an object")
+            .insert("future_field".to_owned(), serde_json::json!(["v2"]));
+        let restored: RefreshToken =
+            serde_json::from_value(value).expect("future fields must be ignored");
+        assert_eq!(restored.value, token.value);
+        assert_eq!(restored.cas_revision, 0);
+        let serialized = serde_json::to_string(&token).expect("serialize token");
+        assert!(!serialized.contains("cas_revision"));
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -276,6 +310,7 @@ impl RefreshToken {
             client_secret_version: Some(client_secret_version),
             session_epoch: Some(session_epoch),
             issuer_generation: Some(issuer_generation),
+            cas_revision: 0,
         }
     }
 
@@ -311,6 +346,7 @@ impl RefreshToken {
             client_secret_version: self.client_secret_version,
             session_epoch: self.session_epoch,
             issuer_generation: self.issuer_generation,
+            cas_revision: 0,
         }
     }
 

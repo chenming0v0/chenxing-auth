@@ -10,6 +10,8 @@ mod auth_limiter;
 mod client;
 #[path = "redis_integration/external_login_state.rs"]
 mod external_login_state;
+#[path = "redis_integration/oauth_cas.rs"]
+mod oauth_cas;
 #[path = "redis_integration/oauth_quota.rs"]
 mod oauth_quota;
 #[path = "redis_integration/oauth_quota_refund.rs"]

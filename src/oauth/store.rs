@@ -109,6 +109,9 @@ impl AuthorizationCodeStore {
 
     /// 原子消费授权码（CAS），并在同一个 Lua 事务里取消关联的待退配额条目。
     ///
+    /// CAS 身份是 `value` + `cas_revision`，不比较完整 JSON。未来字段和
+    /// 已知协议字段的序列化布局变化都不会让有效授权码消费失败。
+    ///
     /// 兑换成功时配额必须保留（计数保留是正确行为），因此取消待退条目必须与
     /// 授权码的删除原子完成：分成两步会让后台退款 worker 有机会在两步之间
     /// 看到条目，把「已兑换」的配额退掉（Issue #341）。
@@ -134,33 +137,21 @@ impl AuthorizationCodeStore {
             .as_ref()
             .map(|cancel| cancel.member.as_str())
             .unwrap_or("");
-        let deleted: i32 = Script::new(
+        let deleted: i32 = Script::new(concat!(
+            super::cas::cas_identity_lua!(),
             r#"local current_json = redis.call('GET', KEYS[1])
                if not current_json then
                     return 0
                end
-               local current = cjson.decode(current_json)
-               local expected = cjson.decode(ARGV[1])
-               local fields = {
-                   'value', 'client_id', 'redirect_uri', 'user_id',
-                   'session_token_hash', 'quota_reservation_id', 'scopes',
-                   'code_challenge', 'nonce', 'created_at', 'expires_at', 'redeemed_at'
-               }
-               local function encoded(value)
-                   if value == nil then return 'null' end
-                   return cjson.encode(value)
-               end
-               for _, field in ipairs(fields) do
-                   if encoded(current[field]) ~= encoded(expected[field]) then
-                       return 0
-                   end
+               if not same_cas_identity(current_json, ARGV[1], 'value') then
+                    return 0
                end
                redis.call('DEL', KEYS[1])
                if ARGV[2] ~= '' then
-                   redis.call('ZREM', KEYS[2], ARGV[2])
+                    redis.call('ZREM', KEYS[2], ARGV[2])
                end
                return 1"#,
-        )
+        ))
         .key(code_key.as_str())
         .key(zset_key)
         .arg(expected)
