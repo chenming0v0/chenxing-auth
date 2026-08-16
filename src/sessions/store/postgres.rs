@@ -25,6 +25,62 @@ mod lookup;
 pub(super) use find::{find_with_metadata, find_with_metadata_by_token_hash};
 pub(super) use lookup::{list_for_user, revoke_for_user};
 
+/// A short PostgreSQL row lock that orders one OAuth token publication against Session logout.
+pub(crate) struct SessionIssuanceGuard {
+    transaction: crate::sqlx::Transaction<'static, crate::sqlx::Postgres>,
+}
+
+impl SessionIssuanceGuard {
+    pub(crate) async fn release(self) -> Result<(), crate::sqlx::Error> {
+        self.transaction.rollback().await
+    }
+}
+
+/// Final Session liveness recheck and issuance linearization point (Issue #506).
+pub(super) async fn acquire_issuance_guard(
+    store: &SessionStore,
+    session_id: i64,
+    user_id: UserId,
+    token_hash: &[u8],
+) -> Result<Option<SessionIssuanceGuard>, SessionStoreError> {
+    let pool = store
+        .metadata
+        .as_ref()
+        .ok_or(SessionStoreError::MetadataUnavailable)?;
+    let mut transaction = pool.begin().await?;
+    crate::sqlx::query("SET LOCAL lock_timeout = '5s'")
+        .execute(&mut *transaction)
+        .await?;
+    crate::sqlx::query("SET LOCAL idle_in_transaction_session_timeout = '5s'")
+        .execute(&mut *transaction)
+        .await?;
+    let active: Option<bool> = crate::sqlx::query_scalar(
+        "SELECT TRUE
+         FROM user_sessions AS sessions
+         JOIN users ON users.id = sessions.user_id
+         WHERE sessions.id = $1
+           AND sessions.token_hash = $2
+           AND sessions.user_id = $3
+           AND sessions.revoked_at IS NULL
+           AND sessions.expires_at > NOW()
+           AND sessions.last_seen_at > NOW() - $4
+           AND sessions.session_epoch >= users.session_epoch
+           AND users.status = 'active'
+         FOR SHARE OF sessions",
+    )
+    .bind(session_id)
+    .bind(token_hash)
+    .bind(user_id)
+    .bind(store.idle_timeout_interval())
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if active.is_none() {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+    Ok(Some(SessionIssuanceGuard { transaction }))
+}
+
 /// 写入会话元数据。
 ///
 /// `binding` 为 [`SessionEpochBinding::Authenticated`] 时，epoch 比对发生在本事务
@@ -207,6 +263,7 @@ pub(super) async fn save_with_metadata(
     .await?;
     transaction.commit().await?;
     session.id = id;
+    session.set_credential_generation(session_epoch);
     Ok(PasswordSessionPersistence::Stored)
 }
 

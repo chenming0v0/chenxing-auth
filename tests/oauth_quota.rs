@@ -3,10 +3,40 @@ use chenxing_auth::plans::domain::AuthQuotaLimits;
 use time::{Date, Month, OffsetDateTime, Time};
 use uuid::Uuid;
 
+const AUTHORIZATION_CODE_HANDLERS: &str =
+    include_str!("../src/oauth/authorization_code_handlers.rs");
+
 #[test]
 fn quota_store_can_be_constructed_from_redis_client() {
     let client = redis::Client::open("redis://127.0.0.1:6379").expect("redis URL");
     let _store = OAuthQuotaStore::new(client);
+}
+
+#[test]
+fn authorization_code_compensation_skips_refund_when_removal_outcome_is_unknown() {
+    let compensation = AUTHORIZATION_CODE_HANDLERS
+        .split_once("async fn remove_authorization_code_after_failure")
+        .map(|(_, source)| source)
+        .and_then(|source| source.split_once("async fn refund_quota_if_consumed"))
+        .map(|(source, _)| source)
+        .expect("authorization-code compensation function");
+    let (success_branch, error_branch) = compensation
+        .split_once("Err(error_value) =>")
+        .expect("explicit removal-error branch");
+
+    assert!(
+        compensation.contains("match state.authorization_codes.take(&code.value).await"),
+        "compensation must branch on the authoritative Redis removal result"
+    );
+    assert!(
+        success_branch.contains("Ok(_) => refund_quota_if_consumed"),
+        "a definitive removal result may refund the reserved quota"
+    );
+    assert!(
+        !error_branch.contains("refund_quota_if_consumed"),
+        "an unknown removal outcome must fail closed without refunding quota"
+    );
+    assert!(error_branch.contains("quota refund skipped"));
 }
 
 #[tokio::test]

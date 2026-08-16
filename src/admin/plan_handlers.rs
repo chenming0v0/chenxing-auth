@@ -9,7 +9,10 @@ use serde_json::Value;
 use time::OffsetDateTime;
 
 use super::{
-    authorization::{AdminActor, authorize_user_write, owner_write_permission_denied},
+    authorization::{
+        AdminActor, authorize_user_write, management_actor_permission_denied,
+        management_actor_session_invalid, owner_write_permission_denied,
+    },
     domain::AdminPermission,
 };
 use crate::{
@@ -224,7 +227,12 @@ pub async fn assign_plan(
     };
     match state
         .plans
-        .assign_to_user(user_id, input.plan_id, expires_at, authorization.access())
+        .assign_to_user(
+            user_id,
+            input.plan_id,
+            expires_at,
+            authorization.credential(),
+        )
         .await
     {
         Ok(()) => {
@@ -239,6 +247,12 @@ pub async fn assign_plan(
         }
         Err(PlanServiceError::ManageRolesRequired) => {
             owner_write_permission_denied(&state, authorization).await
+        }
+        Err(PlanServiceError::ActorSessionInvalid) => {
+            management_actor_session_invalid(&state, authorization).await
+        }
+        Err(PlanServiceError::ActorPermissionRequired) => {
+            management_actor_permission_denied(&state, authorization).await
         }
         Err(error_value) => plan_error_response(error_value),
     }
@@ -280,6 +294,10 @@ fn plan_error_response(error_value: PlanServiceError) -> Response {
         PlanServiceError::UserNotFound => error::not_found("user_not_found", "user was not found"),
         PlanServiceError::ManageRolesRequired => {
             tracing::error!("owner permission outcome escaped the assignment handler");
+            error::internal()
+        }
+        PlanServiceError::ActorSessionInvalid | PlanServiceError::ActorPermissionRequired => {
+            tracing::error!("actor authorization outcome escaped the assignment handler");
             error::internal()
         }
         PlanServiceError::Database(database_error) => {

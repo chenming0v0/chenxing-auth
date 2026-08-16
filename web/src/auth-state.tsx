@@ -20,22 +20,50 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
+const AUTH_SYNC_CHANNEL = 'chenxing-auth-sync'
+const AUTH_SYNC_STORAGE_KEY = 'chenxing-auth-sync-event'
+const REVALIDATE_THROTTLE_MS = 5_000
+
+type AuthSyncEvent = { type: 'logout'; nonce: string }
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserMe | null>(null)
   const [status, setStatus] = useState<AuthContextValue['status']>('loading')
   const [bootstrap, setBootstrap] = useState<BootstrapState>('loading')
   const loaded = useRef(false)
+  const channelRef = useRef<BroadcastChannel | null>(null)
+  const sessionExpiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastRevalidationRef = useRef(0)
   // 每次 clear() 递增，用于丢弃在 logout 之后才落地的过期 refresh() 写入。
   // 使用 useRef 而非 useState：不触发重渲染，且读到的始终是最新值而非快照。
   const generationRef = useRef<number>(0)
 
-  const clear = useCallback(() => {
+  const clearLocal = useCallback(() => {
     // 递增代数——所有正在进行的 refresh() await 返回后会发现代数不匹配，自动丢弃结果
     generationRef.current += 1
     setUser(null)
     setStatus('unauthenticated')
     clearApiCache()
   }, [])
+
+  const broadcastLogout = useCallback(() => {
+    const event: AuthSyncEvent = { type: 'logout', nonce: `${Date.now()}-${Math.random()}` }
+    try {
+      channelRef.current?.postMessage(event)
+    } catch {
+      // BroadcastChannel may be unavailable or closed; localStorage remains the fallback.
+    }
+    try {
+      window.localStorage.setItem(AUTH_SYNC_STORAGE_KEY, JSON.stringify(event))
+    } catch {
+      // Storage can be disabled in privacy-restricted browser contexts.
+    }
+  }, [])
+
+  const clear = useCallback(() => {
+    clearLocal()
+    if (typeof window !== 'undefined') broadcastLogout()
+  }, [broadcastLogout, clearLocal])
 
   const refreshBootstrap = useCallback(async () => {
     // 重试（错误面板的按钮）时回到 loading，界面显示检查中而不是旧错误。
@@ -99,6 +127,69 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return null
     }
   }, [clear])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const onRemoteLogout = (event: AuthSyncEvent | null) => {
+      if (event?.type === 'logout') clearLocal()
+    }
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== AUTH_SYNC_STORAGE_KEY || !event.newValue) return
+      try {
+        onRemoteLogout(JSON.parse(event.newValue) as AuthSyncEvent)
+      } catch {
+        // Ignore malformed values from other applications using localStorage.
+      }
+    }
+
+    window.addEventListener('storage', onStorage)
+    if ('BroadcastChannel' in window) {
+      try {
+        const channel = new BroadcastChannel(AUTH_SYNC_CHANNEL)
+        channelRef.current = channel
+        channel.addEventListener('message', (event: MessageEvent<AuthSyncEvent>) => onRemoteLogout(event.data))
+      } catch {
+        channelRef.current = null
+      }
+    }
+
+    return () => {
+      window.removeEventListener('storage', onStorage)
+      channelRef.current?.close()
+      channelRef.current = null
+    }
+  }, [clearLocal])
+
+  useEffect(() => {
+    if (sessionExpiryTimerRef.current) clearTimeout(sessionExpiryTimerRef.current)
+    sessionExpiryTimerRef.current = null
+    if (!user?.current_session_expires_at) return
+
+    const delay = new Date(user.current_session_expires_at).getTime() - Date.now()
+    sessionExpiryTimerRef.current = setTimeout(() => clear(), Math.max(0, delay))
+    return () => {
+      if (sessionExpiryTimerRef.current) clearTimeout(sessionExpiryTimerRef.current)
+      sessionExpiryTimerRef.current = null
+    }
+  }, [clear, user?.current_session_expires_at])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const revalidate = () => {
+      if (document.visibilityState !== 'visible' || status !== 'authenticated') return
+      const now = Date.now()
+      if (now - lastRevalidationRef.current < REVALIDATE_THROTTLE_MS) return
+      lastRevalidationRef.current = now
+      void refresh()
+    }
+    window.addEventListener('focus', revalidate)
+    document.addEventListener('visibilitychange', revalidate)
+    return () => {
+      window.removeEventListener('focus', revalidate)
+      document.removeEventListener('visibilitychange', revalidate)
+    }
+  }, [refresh, status])
 
   useEffect(() => {
     if (loaded.current) return

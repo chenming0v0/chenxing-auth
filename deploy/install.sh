@@ -39,10 +39,29 @@ generate_secret() {
 }
 
 ensure_env_value() {
-    local key="$1" value="$2"
-    if [[ -z "$(read_env_value "$key")" ]]; then
-        printf '\n%s=%s\n' "$key" "$value" >> .env
+    local key="$1" value="$2" temp
+    if [[ -n "$(read_env_value "$key")" ]]; then
+        return 0
     fi
+    if ! grep -q "^${key}=" .env; then
+        printf '\n%s=%s\n' "$key" "$value" >> .env
+        return 0
+    fi
+
+    # Replace an existing empty assignment instead of appending a duplicate;
+    # this keeps legacy .env files unambiguous on subsequent upgrades.
+    temp="$(mktemp .env.tmp.XXXXXX)"
+    awk -v key="$key" -v value="$value" '
+        BEGIN { prefix = key "="; replaced = 0 }
+        index($0, prefix) == 1 {
+            if (!replaced) { print prefix value; replaced = 1 }
+            next
+        }
+        { print }
+        END { if (!replaced) print prefix value }
+    ' .env > "$temp"
+    chmod 600 "$temp"
+    mv -f "$temp" .env
 }
 
 validate_issuer() {

@@ -175,10 +175,17 @@ async fn disabled_user_cannot_exchange_oauth_credentials_without_consuming_them(
         Some("disabled-nonce".to_owned()),
         None,
     );
-    let refresh = RefreshToken::new(
+    let mut refresh = RefreshToken::new(
         client_id.clone(),
         user_id.to_string(),
         vec!["openid".to_owned(), "profile".to_owned()],
+    );
+    refresh.issuer_generation = Some(
+        state
+            .issuer
+            .current()
+            .expect("test state has a loaded issuer")
+            .generation(),
     );
     state
         .authorization_codes
@@ -289,10 +296,17 @@ async fn refresh_token_remains_reusable_when_access_token_issuance_fails() {
     ensure_owner_bootstrapped(&setup_router, &database, "oauth_flow", &suffix).await;
     let (user_id, _username, _email, _password) = register_test_user(&setup_router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&setup_router, "flow-admin-token").await;
-    let refresh = RefreshToken::new(
+    let mut refresh = RefreshToken::new(
         client_id.clone(),
         user_id.to_string(),
         vec!["openid".to_owned(), "profile".to_owned()],
+    );
+    refresh.issuer_generation = Some(
+        state
+            .issuer
+            .current()
+            .expect("test state has a loaded issuer")
+            .generation(),
     );
     state
         .refresh_tokens

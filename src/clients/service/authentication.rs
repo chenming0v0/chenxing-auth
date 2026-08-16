@@ -73,6 +73,15 @@ impl ClientService {
         authenticated: &AuthenticatedClient,
     ) -> Result<Option<ClientCredentialIssuanceGuard>, ClientServiceError> {
         let mut transaction = self.pool.begin().await?;
+        // This transaction deliberately spans one Redis CAS/save. Bound both lock acquisition
+        // and idle-in-transaction time: if Redis stalls past the budget PostgreSQL releases the
+        // fence, `release()` fails, and the token use case compensates the Redis credential.
+        crate::sqlx::query("SET LOCAL lock_timeout = '10s'")
+            .execute(&mut *transaction)
+            .await?;
+        crate::sqlx::query("SET LOCAL idle_in_transaction_session_timeout = '12s'")
+            .execute(&mut *transaction)
+            .await?;
         if !repository::lock_client_credentials_if_version(
             &mut transaction,
             authenticated.client_id(),

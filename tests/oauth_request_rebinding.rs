@@ -617,3 +617,95 @@ async fn repeated_bind_is_idempotent_and_consumed_request_reports_expired() {
 
     cleanup(&database, &client_id, &[user_id], key_directory).await;
 }
+
+#[tokio::test]
+async fn concurrent_bind_requests_converge_to_one_session() {
+    let (router, state, database, key_directory) = setup().await;
+    let user_id = create_user(&router, "rebind-concurrent").await;
+    let client_id = create_client(&router).await;
+    let (request_id, holder) = start_unauthenticated_authorization(&router, &client_id).await;
+
+    let first_session = persisted_session(&state, user_id).await;
+    let second_session = persisted_session(&state, user_id).await;
+    let first_cookie = format!("{}; {holder}", session_cookie(&first_session));
+    let second_cookie = format!("{}; {holder}", session_cookie(&second_session));
+    let (first, second) = tokio::join!(
+        bind(
+            &router,
+            &request_id,
+            &first_cookie,
+            &first_session.csrf_token,
+        ),
+        bind(
+            &router,
+            &request_id,
+            &second_cookie,
+            &second_session.csrf_token,
+        ),
+    );
+    assert_eq!(first, StatusCode::NO_CONTENT);
+    assert_eq!(second, StatusCode::NO_CONTENT);
+
+    let stored = state
+        .authorization_requests
+        .find(&request_id)
+        .await
+        .expect("find pending request")
+        .expect("pending request exists")
+        .session_token_hash
+        .expect("bound session hash");
+    assert!(
+        stored == session_token_hash(&first_session.token)
+            || stored == session_token_hash(&second_session.token),
+        "concurrent CAS updates must leave exactly one complete session hash"
+    );
+
+    cleanup(&database, &client_id, &[user_id], key_directory).await;
+}
+
+#[tokio::test]
+async fn legacy_pending_request_without_holder_hash_is_rejected() {
+    let (router, state, database, key_directory) = setup().await;
+    let user_id = create_user(&router, "rebind-legacy-holder").await;
+    let client_id = create_client(&router).await;
+    let (request_id, holder) = start_unauthenticated_authorization(&router, &client_id).await;
+
+    let pending = state
+        .authorization_requests
+        .find(&request_id)
+        .await
+        .expect("find pending request")
+        .expect("pending request exists");
+    let mut legacy = pending.clone();
+    legacy.holder_hash = None;
+    assert!(
+        state
+            .authorization_requests
+            .replace_if_matches(&request_id, &pending, &legacy)
+            .await
+            .expect("replace pending request")
+    );
+
+    let session = persisted_session(&state, user_id).await;
+    let cookie = format!("{}; {holder}", session_cookie(&session));
+    assert_eq!(
+        bind(&router, &request_id, &cookie, &session.csrf_token).await,
+        StatusCode::FORBIDDEN,
+        "records created before holder binding support must fail secure"
+    );
+    let stored = state
+        .authorization_requests
+        .find(&request_id)
+        .await
+        .expect("find rejected pending request")
+        .expect("pending request remains");
+    assert!(stored.holder_hash.is_none());
+    assert!(stored.session_token_hash.is_none());
+
+    state
+        .authorization_requests
+        .take(&request_id)
+        .await
+        .expect("cleanup pending request");
+    cleanup(&database, &client_id, &[user_id], key_directory).await;
+}

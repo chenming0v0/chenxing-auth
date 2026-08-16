@@ -226,40 +226,49 @@ pub async fn revoke_authorized_app(
     StatusCode::NO_CONTENT.into_response()
 }
 
+fn self_service_disabled() -> Response {
+    error::forbidden(
+        "self_service_disabled",
+        "平台当前未开放自助接入，请联系管理员。",
+    )
+}
+
 pub async fn create_owned_client(
     State(state): State<AppState>,
     session: SessionWrite,
     ApiJson(input): ApiJson<ClientRegistrationRequest>,
 ) -> Response {
-    let effective = match state.plans.effective_plan_for_user(session.user_id).await {
-        Ok(Some(effective)) => effective,
+    match state.plans.effective_plan_for_user(session.user_id).await {
+        // 这里只做快速闸门和保持既有错误优先级；repository 会在用户行锁后重新解析
+        // 并锁定权威套餐，绝不消费这个事务外快照（Issue #479）。
+        Ok(Some(_)) => {}
         // 自助接入闸门：没有生效套餐时不允许新建 Client，但既有 Client 的
         // 授权、令牌和列表路径不受影响。
-        Ok(None) => {
-            return error::forbidden(
-                "self_service_disabled",
-                "平台当前未开放自助接入，请联系管理员。",
-            );
-        }
+        Ok(None) => return self_service_disabled(),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load plan for OAuth client quota");
             return error::internal();
         }
-    };
-    let quota_limits = Some(effective.plan.auth_quota_limits());
+    }
     match state
         .clients
-        .register_for_user(
-            session.user_id,
-            input,
-            effective.plan.oauth_clients_limit as i64,
-        )
+        .register_for_user(session.user_id, input)
         .await
     {
-        Ok(client) => match owned_registered_response(&state, client, quota_limits).await {
-            Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
-            Err(response) => response,
-        },
+        Ok(Some(registered)) => {
+            match owned_registered_response(
+                &state,
+                registered.client,
+                Some(registered.quota_limits),
+            )
+            .await
+            {
+                Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
+                Err(response) => response,
+            }
+        }
+        // 套餐可能在快速闸门之后被归档或取消默认；事务内结果才是权威。
+        Ok(None) => self_service_disabled(),
         Err(ClientServiceError::Validation(validation_error)) => {
             error::bad_request("invalid_client_registration", validation_error.to_string())
         }

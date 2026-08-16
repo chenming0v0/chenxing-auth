@@ -1,3 +1,5 @@
+use std::{sync::Arc, time::Duration};
+
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -11,6 +13,8 @@ use chenxing_auth::{
     state::AppState,
     users::domain::AuthenticatedUser,
 };
+use redis::AsyncCommands;
+use tokio::sync::Barrier;
 use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -129,6 +133,43 @@ async fn create_user(router: &Router, username: &str, email: &str, password: &st
         .await
         .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+async fn wait_for_factor_persistence_waiters(database: &chenxing_auth::sqlx::PgPool, user_id: i64) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let waiting: i64 = chenxing_auth::sqlx::query_scalar(
+                "SELECT COUNT(*)
+                   FROM pg_locks
+                  WHERE locktype = 'advisory'
+                    AND NOT granted
+                    AND classid::bigint = 0
+                    AND objid::bigint = $1
+                    AND objsubid = 1",
+            )
+            .bind(user_id)
+            .fetch_one(database)
+            .await
+            .expect("inspect advisory lock waiters");
+            if waiting == 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both first-factor confirmations must reach the persistence lock");
+}
+
+async fn redis_key_exists(key: &str) -> bool {
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let mut connection = redis::Client::open(redis_url)
+        .expect("Redis URL")
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    connection.exists(key).await.expect("Redis key existence")
 }
 
 fn pending_cookie(response: &axum::response::Response) -> String {
@@ -341,6 +382,172 @@ async fn concurrent_enrollment_starts_reserve_one_secret_per_ticket() {
         .await
         .expect("factor count"),
         1
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("user cleanup");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+/// 两张首因子 ticket 使用不同 TOTP timestep，绕过同一时间步的 replay claim，
+/// 并在数据库用户锁前汇合。这样两条确认都真实进入持久化窗口，数据库原子边界
+/// 必须只允许一个胜者；败者的 ticket 和 pending secret 都必须被清掉。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_first_factor_tickets_have_only_one_winner() {
+    let Harness {
+        router,
+        state,
+        database,
+        key_directory,
+        email,
+    } = setup().await;
+    let username = format!("totp-first-factor-race-{}", Uuid::new_v4().simple());
+    let password = "correct horse battery";
+    create_user(&router, &username, &email, password).await;
+    let user_id: i64 = chenxing_auth::sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+        .bind(&email)
+        .fetch_one(&database)
+        .await
+        .expect("user lookup");
+    let authenticated = AuthenticatedUser::new(user_id, 0);
+
+    let first_now = state.clock.now();
+    let second_now = first_now + time::Duration::seconds(30);
+    let first_factors = state
+        .clone()
+        .with_clock(SharedClock::fixed(first_now))
+        .factors;
+    let second_factors = state
+        .clone()
+        .with_clock(SharedClock::fixed(second_now))
+        .factors;
+    let first_holder = format!("first-holder-{}", Uuid::new_v4().simple());
+    let second_holder = format!("second-holder-{}", Uuid::new_v4().simple());
+    let (first_ticket, _) = first_factors
+        .create_login_ticket(authenticated, vec![FactorMethod::Totp], &first_holder)
+        .await
+        .expect("first login ticket");
+    let (second_ticket, _) = second_factors
+        .create_login_ticket(authenticated, vec![FactorMethod::Totp], &second_holder)
+        .await
+        .expect("second login ticket");
+    let first_enrollment = first_factors
+        .start_totp_enrollment(&first_ticket, &first_holder, &email, "Chenxing Pass")
+        .await
+        .expect("first TOTP enrollment")
+        .expect("first pending secret");
+    let second_enrollment = second_factors
+        .start_totp_enrollment(&second_ticket, &second_holder, &email, "Chenxing Pass")
+        .await
+        .expect("second TOTP enrollment")
+        .expect("second pending secret");
+    let first_code = TOTP::from_url(first_enrollment.otpauth_url())
+        .expect("first TOTP")
+        .generate(u64::try_from(first_now.unix_timestamp()).expect("first timestamp"));
+    let second_code = TOTP::from_url(second_enrollment.otpauth_url())
+        .expect("second TOTP")
+        .generate(u64::try_from(second_now.unix_timestamp()).expect("second timestamp"));
+
+    let mut persistence_gate = database.begin().await.expect("begin persistence gate");
+    chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock($1::bigint)")
+        .bind(user_id)
+        .execute(&mut *persistence_gate)
+        .await
+        .expect("hold factor persistence lock");
+
+    let start = Arc::new(Barrier::new(3));
+    let first_start = start.clone();
+    let first_task = tokio::spawn({
+        let first_factors = first_factors.clone();
+        let first_ticket = first_ticket.clone();
+        let first_holder = first_holder.clone();
+        async move {
+            first_start.wait().await;
+            let result = first_factors
+                .confirm_totp_enrollment(&first_ticket, &first_holder, None, &first_code)
+                .await
+                .expect("first confirmation");
+            (first_ticket, first_holder, result)
+        }
+    });
+    let second_start = start.clone();
+    let second_task = tokio::spawn({
+        let second_factors = second_factors.clone();
+        let second_ticket = second_ticket.clone();
+        let second_holder = second_holder.clone();
+        async move {
+            second_start.wait().await;
+            let result = second_factors
+                .confirm_totp_enrollment(&second_ticket, &second_holder, None, &second_code)
+                .await
+                .expect("second confirmation");
+            (second_ticket, second_holder, result)
+        }
+    });
+
+    start.wait().await;
+    wait_for_factor_persistence_waiters(&database, user_id).await;
+    persistence_gate
+        .commit()
+        .await
+        .expect("release factor persistence lock");
+    let (first_outcome, second_outcome) = tokio::join!(first_task, second_task);
+    let outcomes = [
+        first_outcome.expect("join first confirmation"),
+        second_outcome.expect("join second confirmation"),
+    ];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|(_, _, result)| matches!(*result, TotpConfirmation::Completed(_)))
+            .count(),
+        1,
+        "exactly one persistence contender must complete"
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|(_, _, result)| matches!(*result, TotpConfirmation::InvalidTicket))
+            .count(),
+        1,
+        "the persistence loser must be invalidated"
+    );
+
+    let loser = outcomes
+        .iter()
+        .find(|(_, _, result)| matches!(*result, TotpConfirmation::InvalidTicket))
+        .expect("losing confirmation");
+    assert!(
+        state
+            .factors
+            .user_id_for_ticket(&loser.0, &loser.1)
+            .await
+            .expect("look up losing ticket")
+            .is_none(),
+        "the losing ticket must not remain reusable"
+    );
+    for (ticket_id, _, _) in &outcomes {
+        assert!(
+            !redis_key_exists(&format!("chenxing:auth:totp-setup:{ticket_id}")).await,
+            "neither winner nor loser may leave a pending TOTP secret"
+        );
+    }
+
+    let total_factors: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT
+             (SELECT COUNT(*) FROM user_totp_factors WHERE user_id = $1) +
+             (SELECT COUNT(*) FROM user_passkeys WHERE user_id = $1)",
+    )
+    .bind(user_id)
+    .fetch_one(&database)
+    .await
+    .expect("total factor count");
+    assert_eq!(
+        total_factors, 1,
+        "the loser must not create a second factor"
     );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")

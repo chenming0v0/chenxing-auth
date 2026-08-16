@@ -72,6 +72,23 @@ pub async fn list_providers(pool: &PgPool) -> Result<Vec<ProviderRecord>, crate:
     rows.into_iter().map(parse_provider_row).collect()
 }
 
+/// Whether PostgreSQL already contains provider credentials encrypted with the
+/// provider secret key. Startup uses this before touching the key directory so a
+/// missing key cannot be mistaken for a fresh installation.
+pub(crate) async fn has_client_secret_ciphertext(
+    pool: &PgPool,
+) -> Result<bool, crate::sqlx::Error> {
+    crate::sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+             FROM oauth_providers
+             WHERE octet_length(client_secret_ciphertext) > 0
+         )",
+    )
+    .fetch_one(pool)
+    .await
+}
+
 pub async fn find_by_slug(
     pool: &PgPool,
     slug: &str,

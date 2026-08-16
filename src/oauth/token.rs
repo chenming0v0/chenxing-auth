@@ -17,10 +17,35 @@ pub struct AccessTokenClaims {
     pub scope: String,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_access_token_issuance_when_signing_is_unavailable() {
+        let keys = KeyManager::generate().expect("generate signing key");
+        keys.mark_sync_healthy(false);
+
+        let result = issue_access_token_at(
+            &keys,
+            "https://issuer.example",
+            "1",
+            "client",
+            &["openid".to_owned()],
+            60,
+            time::OffsetDateTime::UNIX_EPOCH,
+        );
+
+        assert!(matches!(result, Err(TokenError::SigningUnavailable)));
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum TokenError {
     #[error("token signing failed: {0}")]
     Signing(#[from] jsonwebtoken::errors::Error),
+    #[error("token signing is unavailable while signing-key synchronization is unhealthy")]
+    SigningUnavailable,
     #[error("token lifetime is invalid")]
     InvalidLifetime,
     #[error("token validation failed: {0}")]
@@ -125,7 +150,9 @@ pub fn issue_access_token_at(
         scope: scopes.join(" "),
     };
     let mut header = Header::new(Algorithm::RS256);
-    let signing_key = keys.active_signing_key();
+    let signing_key = keys
+        .active_signing_key_if_ready()
+        .ok_or(TokenError::SigningUnavailable)?;
     header.kid = Some(signing_key.key_id().to_owned());
     encode(&header, &claims, signing_key.encoding_key()).map_err(TokenError::from)
 }

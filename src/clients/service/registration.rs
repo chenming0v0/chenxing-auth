@@ -1,6 +1,6 @@
 //! Client registration use cases.
 
-use super::{ClientService, ClientServiceError, RegisteredClientSecret};
+use super::{ClientService, ClientServiceError, RegisteredClientSecret, RegisteredOwnedClient};
 use crate::clients::{
     credentials::{ClientRegistrationRequest, issue_client_credential},
     domain::validate_client_registration_with_limits,
@@ -30,29 +30,33 @@ impl ClientService {
         &self,
         owner_user_id: UserId,
         input: impl Into<ClientRegistrationRequest>,
-        oauth_clients_limit: i64,
-    ) -> Result<RegisteredClientSecret, ClientServiceError> {
+    ) -> Result<Option<RegisteredOwnedClient>, ClientServiceError> {
         let request = input.into();
         let auth_method = request.auth_method;
         let registration =
             validate_client_registration_with_limits(request.registration, &self.limits)?;
         let client_id = format!("cx_{}", Uuid::new_v4().simple());
         let (credential, client_secret) = issue_client_credential(auth_method)?;
-        let client = repository::insert_owned_client(
+        let Some(owned_client) = repository::insert_owned_client(
             &self.pool,
             owner_user_id,
             registration,
             client_id,
             credential,
-            oauth_clients_limit,
         )
         .await
         .map_err(|error| match error {
             ClientInsertError::QuotaExceeded => ClientServiceError::QuotaExceeded,
             ClientInsertError::Database(error) => ClientServiceError::Database(error),
-        })?;
+        })?
+        else {
+            return Ok(None);
+        };
 
-        Ok(registered_client_secret(client, client_secret))
+        Ok(Some(RegisteredOwnedClient {
+            client: registered_client_secret(owned_client.client, client_secret),
+            quota_limits: owned_client.quota_limits,
+        }))
     }
 }
 

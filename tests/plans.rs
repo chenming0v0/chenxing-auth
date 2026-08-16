@@ -5,6 +5,7 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chenxing_auth::{
+    clients::{domain::ClientRegistrationInput, service::ClientServiceError},
     oauth::{
         handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
         quota::QuotaConsumeResult,
@@ -13,7 +14,11 @@ use chenxing_auth::{
     plans::domain::{AuthQuotaLimits, MAX_DAILY_AUTH_LIMIT, MAX_MONTHLY_AUTH_LIMIT, MAX_QPS},
 };
 use serde_json::Value;
-use std::net::{IpAddr, SocketAddr};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
+use tokio::sync::Barrier;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -103,6 +108,133 @@ async fn assigned_plan_controls_client_quota_and_entitlements() {
     assert_eq!(clients["items"][0]["quota"]["monthly_limit"], 100);
 
     let _ = first["client_id"].as_str();
+    env.cleanup().await;
+}
+
+/// Issue #479：事务外读到高配套餐后，管理员先完成降级，随后继续的创建必须
+/// 在 repository 事务内重读低配套餐，不能拿旧数字越过配额。
+#[tokio::test]
+async fn client_creation_rechecks_quota_after_plan_downgrade_commits() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
+
+    let high_plan = create_plan(
+        &router,
+        &format!("high-{suffix}"),
+        plan_limits(2, 10, Some(100), None),
+    )
+    .await;
+    let low_plan = create_plan(
+        &router,
+        &format!("low-{suffix}"),
+        plan_limits(1, 10, Some(100), None),
+    )
+    .await;
+    let high_plan_id = high_plan["id"].as_i64().expect("high plan id");
+    let low_plan_id = low_plan["id"].as_i64().expect("low plan id");
+    assert_eq!(
+        assign_plan(&router, user_id, high_plan_id, None).await,
+        StatusCode::NO_CONTENT
+    );
+    create_owned_client(&router, &cookie, &csrf, &format!("existing-{suffix}")).await;
+
+    let stale_plan_read = Arc::new(Barrier::new(2));
+    let downgrade_committed = Arc::new(Barrier::new(2));
+    let create = {
+        let plans = env.state.plans.clone();
+        let clients = env.state.clients.clone();
+        let input = service_client_input(&format!("after-downgrade-{suffix}"));
+        let stale_plan_read = Arc::clone(&stale_plan_read);
+        let downgrade_committed = Arc::clone(&downgrade_committed);
+        async move {
+            let stale = plans
+                .effective_plan_for_user(user_id)
+                .await
+                .expect("read old effective plan")
+                .expect("assigned high plan");
+            assert_eq!(stale.plan.id, high_plan_id);
+            assert_eq!(stale.plan.oauth_clients_limit, 2);
+            stale_plan_read.wait().await;
+            downgrade_committed.wait().await;
+            clients.register_for_user(user_id, input).await
+        }
+    };
+    let downgrade = {
+        let router = router.clone();
+        let stale_plan_read = Arc::clone(&stale_plan_read);
+        let downgrade_committed = Arc::clone(&downgrade_committed);
+        async move {
+            stale_plan_read.wait().await;
+            assert_eq!(
+                assign_plan(&router, user_id, low_plan_id, None).await,
+                StatusCode::NO_CONTENT
+            );
+            downgrade_committed.wait().await;
+        }
+    };
+
+    let (creation, ()) = tokio::join!(create, downgrade);
+    assert!(matches!(creation, Err(ClientServiceError::QuotaExceeded)));
+    assert_eq!(owned_client_count(&env.database, user_id).await, 1);
+
+    env.cleanup().await;
+}
+
+/// 同一用户的 COUNT + INSERT 必须由用户行锁串行化；两个同时起跑的创建在
+/// 限额为 1 时只能有一个成功，不能各自在空快照中都看到 0。
+#[tokio::test]
+async fn concurrent_client_creations_remain_serialized_by_user_lock() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+
+    let plan = create_plan(
+        &router,
+        &format!("serial-{suffix}"),
+        plan_limits(1, 10, Some(100), None),
+    )
+    .await;
+    let plan_id = plan["id"].as_i64().expect("serial plan id");
+    assert_eq!(
+        assign_plan(&router, user_id, plan_id, None).await,
+        StatusCode::NO_CONTENT
+    );
+
+    let start = Arc::new(Barrier::new(2));
+    let first = {
+        let clients = env.state.clients.clone();
+        let input = service_client_input(&format!("first-{suffix}"));
+        let start = Arc::clone(&start);
+        async move {
+            start.wait().await;
+            clients.register_for_user(user_id, input).await
+        }
+    };
+    let second = {
+        let clients = env.state.clients.clone();
+        let input = service_client_input(&format!("second-{suffix}"));
+        let start = Arc::clone(&start);
+        async move {
+            start.wait().await;
+            clients.register_for_user(user_id, input).await
+        }
+    };
+
+    let (first, second) = tokio::join!(first, second);
+    let created =
+        usize::from(matches!(&first, Ok(Some(_)))) + usize::from(matches!(&second, Ok(Some(_))));
+    let exceeded = usize::from(matches!(&first, Err(ClientServiceError::QuotaExceeded)))
+        + usize::from(matches!(&second, Err(ClientServiceError::QuotaExceeded)));
+    assert_eq!(created, 1);
+    assert_eq!(exceeded, 1);
+    assert_eq!(owned_client_count(&env.database, user_id).await, 1);
+
     env.cleanup().await;
 }
 
@@ -1172,6 +1304,22 @@ async fn insert_plan_bypassing_service(
     .bind(max_qps)
     .fetch_one(database)
     .await
+}
+
+fn service_client_input(label: &str) -> ClientRegistrationInput {
+    ClientRegistrationInput {
+        client_name: format!("Quota race {label}"),
+        redirect_uris: vec![format!("https://{label}.example/callback")],
+        scopes: vec!["openid".to_owned()],
+    }
+}
+
+async fn owned_client_count(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -> i64 {
+    chenxing_auth::sqlx::query_scalar("SELECT COUNT(*) FROM oauth_clients WHERE owner_user_id = $1")
+        .bind(user_id)
+        .fetch_one(database)
+        .await
+        .expect("owned client count")
 }
 
 /// 绕过服务层的直接写入必须被数据库 CHECK 拦住，不能再靠读侧 `.max(0)` 把

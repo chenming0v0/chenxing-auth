@@ -1,4 +1,5 @@
 use super::{SettingsService, SettingsServiceError};
+use crate::audit::{AuditEvent, AuditService};
 use crate::settings::{
     SecurityLimitsSetting,
     domain::{EmailPolicySetting, PasskeySetting},
@@ -44,6 +45,26 @@ impl SettingsService {
         Ok(value)
     }
 
+    pub async fn set_passkey_audited<F>(
+        &self,
+        value: PasskeySetting,
+        audit: &AuditService,
+        audit_event: F,
+    ) -> Result<PasskeySetting, SettingsServiceError>
+    where
+        F: FnOnce(&PasskeySetting) -> AuditEvent,
+    {
+        let value = value.validate()?;
+        let mut transaction = self.pool.begin().await?;
+        repository::lock_passkey_policy(&mut *transaction).await?;
+        repository::set_passkey(&mut *transaction, &value).await?;
+        audit
+            .record_in_transaction(&mut transaction, audit_event(&value))
+            .await?;
+        transaction.commit().await?;
+        Ok(value)
+    }
+
     pub async fn email_policy(&self) -> Result<EmailPolicySetting, SettingsServiceError> {
         self.decode_stored::<EmailPolicySetting>()
             .await?
@@ -71,6 +92,25 @@ impl SettingsService {
     ) -> Result<EmailPolicySetting, SettingsServiceError> {
         let value = value.validate()?;
         repository::set_email_policy(&self.pool, &value).await?;
+        Ok(value)
+    }
+
+    pub async fn set_email_policy_audited<F>(
+        &self,
+        value: EmailPolicySetting,
+        audit: &AuditService,
+        audit_event: F,
+    ) -> Result<EmailPolicySetting, SettingsServiceError>
+    where
+        F: FnOnce(&EmailPolicySetting) -> AuditEvent,
+    {
+        let value = value.validate()?;
+        let mut transaction = self.pool.begin().await?;
+        repository::set_email_policy(&mut *transaction, &value).await?;
+        audit
+            .record_in_transaction(&mut transaction, audit_event(&value))
+            .await?;
+        transaction.commit().await?;
         Ok(value)
     }
 

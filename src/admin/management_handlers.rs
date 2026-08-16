@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     authorization::{
-        OwnerGuardedOperation, authorize_user_write, owner_write_permission_denied,
-        record_owner_guard_denial,
+        OwnerGuardedOperation, authorize_user_write, management_actor_permission_denied,
+        management_actor_session_invalid, owner_write_permission_denied, record_owner_guard_denial,
     },
     domain::AdminPermission,
 };
@@ -110,6 +110,8 @@ pub async fn list_users(
 ///
 /// 顺序固定为：基线 `ManageUsers` → 自我操作检查 → 解析状态 → 写事务锁住目标并判定 Owner 档位。
 /// 目标角色与状态写入共用事务，消除并发晋升 Owner 的旧快照窗口（Issue #323）。
+/// 用户 Session actor 的 active、role 与 generation 也在同一事务内锁定复核；
+/// handler 的初始授权只负责快速拒绝与 CSRF，不能授权最终提交（Issue #493）。
 /// 状态串是与资源无关的语法输入，在查询目标之前解析，因此非法状态恒为
 /// 400 `invalid_status`，不再和「用户不存在」共用一个错误码（Issue #283）。
 pub async fn set_user_status(
@@ -135,7 +137,7 @@ pub async fn set_user_status(
     };
     match state
         .users
-        .set_status_guarded(user_id, status, authorization.access())
+        .set_status_guarded(user_id, status, authorization.credential())
         .await
     {
         Ok(true) => {
@@ -159,7 +161,7 @@ pub async fn set_user_status(
         // 状态串已在上面解析过，`false` 只剩一种含义：目标用户不存在。
         Ok(false) => error::not_found("user_not_found", "user was not found"),
         // 有权限的调用者试图禁用最后一个活跃 Owner：这是安全相关决策，必须留痕（Issue #304）。
-        Err(crate::users::service::UserServiceError::LastOwnerRequired) => {
+        Err(crate::users::service::ManagementWriteError::LastOwnerRequired) => {
             record_owner_guard_denial(
                 &state,
                 actor,
@@ -173,8 +175,14 @@ pub async fn set_user_status(
                 "at least one active owner is required",
             )
         }
-        Err(crate::users::service::UserServiceError::ManageRolesRequired) => {
+        Err(crate::users::service::ManagementWriteError::ManageRolesRequired) => {
             owner_write_permission_denied(&state, authorization).await
+        }
+        Err(crate::users::service::ManagementWriteError::ActorSessionInvalid) => {
+            management_actor_session_invalid(&state, authorization).await
+        }
+        Err(crate::users::service::ManagementWriteError::ActorPermissionRequired) => {
+            management_actor_permission_denied(&state, authorization).await
         }
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to update user status");
@@ -205,7 +213,7 @@ pub async fn set_user_role(
     };
     match state
         .users
-        .set_role(user_id, role, authorization.access())
+        .set_role(user_id, role, authorization.credential())
         .await
     {
         Ok(true) => {
@@ -225,7 +233,7 @@ pub async fn set_user_role(
         }
         Ok(false) => error::not_found("user_not_found", "user was not found"),
         // 降级最后一个活跃 Owner 与禁用它同档，走同一条留痕路径（Issue #304）。
-        Err(crate::users::service::UserServiceError::LastOwnerRequired) => {
+        Err(crate::users::service::ManagementWriteError::LastOwnerRequired) => {
             record_owner_guard_denial(
                 &state,
                 actor,
@@ -239,8 +247,14 @@ pub async fn set_user_role(
                 "at least one active owner is required",
             )
         }
-        Err(crate::users::service::UserServiceError::ManageRolesRequired) => {
+        Err(crate::users::service::ManagementWriteError::ManageRolesRequired) => {
             owner_write_permission_denied(&state, authorization).await
+        }
+        Err(crate::users::service::ManagementWriteError::ActorSessionInvalid) => {
+            management_actor_session_invalid(&state, authorization).await
+        }
+        Err(crate::users::service::ManagementWriteError::ActorPermissionRequired) => {
+            management_actor_permission_denied(&state, authorization).await
         }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update user role");

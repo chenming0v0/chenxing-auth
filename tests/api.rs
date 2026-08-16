@@ -47,14 +47,11 @@ async fn test_router_with_issuer(configure_issuer: bool) -> (Router, std::path::
     config.admin_token = "api-test-admin".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    (
-        api::router(
-            AppState::new_with_pool(config, database)
-                .await
-                .expect("state"),
-        ),
-        key_directory,
-    )
+    let state = AppState::new_with_pool(config, database)
+        .await
+        .expect("state");
+    state.worker_health.assume_ready_for_test();
+    (api::router(state), key_directory)
 }
 
 async fn jwks_response(router: Router) -> (axum::http::HeaderMap, Vec<u8>) {

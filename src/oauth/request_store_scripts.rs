@@ -2,6 +2,11 @@ pub const PENDING_CAPACITY_SCRIPT: &str = r#"
 local request_prefix = ARGV[7]
 local client_index_prefix = ARGV[8]
 local client_count_prefix = ARGV[9]
+local ttl_ms = tonumber(ARGV[10])
+local ttl_seconds = tonumber(ARGV[2])
+if ttl_ms and ttl_ms > 0 then
+    ttl_seconds = math.ceil(ttl_ms / 1000)
+end
 
 local function sync_client_count(client_id)
     local index_key = client_index_prefix .. client_id
@@ -10,8 +15,8 @@ local function sync_client_count(client_id)
         redis.call('DEL', index_key, client_count_prefix .. client_id)
     else
         redis.call('SET', client_count_prefix .. client_id, count)
-        redis.call('EXPIRE', index_key, ARGV[2])
-        redis.call('EXPIRE', client_count_prefix .. client_id, ARGV[2])
+        redis.call('EXPIRE', index_key, ttl_seconds)
+        redis.call('EXPIRE', client_count_prefix .. client_id, ttl_seconds)
     end
     return count
 end
@@ -22,9 +27,9 @@ local function sync_global_count()
         redis.call('DEL', KEYS[5], KEYS[6], KEYS[3])
     else
         redis.call('SET', KEYS[3], count)
-        redis.call('EXPIRE', KEYS[5], ARGV[2])
-        redis.call('EXPIRE', KEYS[6], ARGV[2])
-        redis.call('EXPIRE', KEYS[3], ARGV[2])
+        redis.call('EXPIRE', KEYS[5], ttl_seconds)
+        redis.call('EXPIRE', KEYS[6], ttl_seconds)
+        redis.call('EXPIRE', KEYS[3], ttl_seconds)
     end
     return count
 end
@@ -50,7 +55,7 @@ for _, request_id in ipairs(redis.call('ZRANGEBYSCORE', KEYS[6], '-inf', now)) d
     if redis.call('EXISTS', request_prefix .. request_id) == 0 then
         release(request_id, nil)
     else
-        redis.call('ZADD', KEYS[6], now + tonumber(ARGV[2]), request_id)
+        redis.call('ZADD', KEYS[6], now + ttl_seconds, request_id)
     end
 end
 
@@ -60,10 +65,14 @@ if redis.call('EXISTS', KEYS[1]) == 1 then return -1 end
 if client_count >= tonumber(ARGV[3]) or global_count >= tonumber(ARGV[4]) then
     return 0
 end
-redis.call('SETEX', KEYS[1], ARGV[2], ARGV[1])
+if ttl_ms and ttl_ms > 0 then
+    redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl_ms)
+else
+    redis.call('SETEX', KEYS[1], ttl_seconds, ARGV[1])
+end
 redis.call('SADD', KEYS[4], ARGV[6])
 redis.call('HSET', KEYS[5], ARGV[6], ARGV[5])
-redis.call('ZADD', KEYS[6], now + tonumber(ARGV[2]), ARGV[6])
+redis.call('ZADD', KEYS[6], now + ttl_seconds, ARGV[6])
 sync_client_count(ARGV[5])
 sync_global_count()
 return 1
@@ -115,10 +124,11 @@ if not current then
     release(ARGV[1], nil)
     return nil
 end
+local remaining_ms = redis.call('PTTL', KEYS[1])
 local client_id = cjson.decode(current)['client_id']
 redis.call('DEL', KEYS[1])
 release(ARGV[1], client_id)
-return current
+return {current, remaining_ms}
 "#;
 
 pub const PENDING_TAKE_IF_MATCHES_SCRIPT: &str = r#"
@@ -185,10 +195,11 @@ if not current then
     return nil
 end
 if not same_payload(current, ARGV[1]) then return nil end
+local remaining_ms = redis.call('PTTL', KEYS[1])
 local client_id = cjson.decode(current)['client_id']
 redis.call('DEL', KEYS[1])
 release(ARGV[2], client_id)
-return current
+return {current, remaining_ms}
 "#;
 
 pub const PENDING_REPLACE_SCRIPT: &str = r#"

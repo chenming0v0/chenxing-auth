@@ -2,7 +2,7 @@ use super::{
     OAuthError, RefreshExchangeError, TokenIssueParams, TokenRequest, TokenResponse,
     issue_token_response,
 };
-use crate::{clients::service::AuthenticatedClient, config::IssuerUrl, state::AppState};
+use crate::{clients::service::AuthenticatedClient, settings::IssuerSnapshot, state::AppState};
 
 use super::super::{
     grant_gate::{GrantGateError, effective_grant_scopes},
@@ -29,7 +29,7 @@ mod replay;
 /// Exchange a refresh token after the token endpoint has authenticated the client.
 pub(super) async fn exchange_refresh_token(
     state: &AppState,
-    issuer: &IssuerUrl,
+    issuer: &IssuerSnapshot,
     request: TokenRequest,
     authenticated: AuthenticatedClient,
 ) -> Result<TokenResponse, RefreshExchangeError> {
@@ -53,6 +53,20 @@ pub(super) async fn exchange_refresh_token(
             return Err(OAuthError::temporarily_unavailable().into());
         }
     };
+
+    // Refresh Token belongs to the Issuer generation that originally minted
+    // the grant. Comparing against the request-scoped snapshot prevents an A
+    // token from being exchanged into an iss=B token after a hot switch. The
+    // snapshot must not be re-read from runtime inside this request: doing so
+    // could mix generations if an update lands midway through the exchange.
+    if !refresh.is_bound_to_issuer_generation(issuer.generation()) {
+        let reason = if refresh.issuer_generation.is_none() {
+            "refresh_token_issuer_generation_required"
+        } else {
+            "issuer_generation_changed"
+        };
+        return record_and_return_invalid(state, Some(&refresh.user_id), client_id, reason).await;
+    }
 
     // A Refresh Token is part of the credential generation that created it.
     // Versioned tokens must match the exact authenticated generation. Legacy
@@ -126,11 +140,11 @@ pub(super) async fn exchange_refresh_token(
     }
 
     let scopes = select_scopes(request.scope.as_deref(), &granted)?;
-    // Rotation inherits issued_at/family_id/session_epoch and stamps the
-    // authenticated Client Secret generation, including for legacy unversioned
-    // tokens. The inherited epoch keeps the successor in the same credential
-    // generation: re-reading it here would let a revocation that lands between
-    // the check above and this rotation be stamped away (Issue #409).
+    // Rotation inherits issued_at/family_id/session_epoch/issuer_generation and
+    // stamps only the authenticated Client Secret generation, including for
+    // legacy unversioned Client credentials. Inheriting both security snapshots
+    // keeps the successor in the same credential generation: re-reading either
+    // value here could stamp away a revocation or cross an Issuer trust boundary.
     let next_refresh = refresh.rotate_at_with_client_secret_version(
         scopes.clone(),
         authenticated.client_secret_version(),
@@ -139,7 +153,7 @@ pub(super) async fn exchange_refresh_token(
     let token = issue_token_response(
         state,
         TokenIssueParams {
-            issuer,
+            issuer: issuer.issuer(),
             user_id: &refresh.user_id,
             client_id,
             scopes: &scopes,

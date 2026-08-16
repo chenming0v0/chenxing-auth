@@ -27,6 +27,7 @@ mod avatar;
 mod profile;
 mod registration;
 
+pub use administration::ManagementWriteError;
 pub use avatar::AvatarServiceError;
 
 #[derive(Clone)]

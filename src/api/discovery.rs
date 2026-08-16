@@ -7,7 +7,8 @@ use axum::{
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{
-            ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_EXPOSE_HEADERS, CACHE_CONTROL,
+            ACCESS_CONTROL_ALLOW_HEADERS, ACCESS_CONTROL_ALLOW_METHODS,
+            ACCESS_CONTROL_ALLOW_ORIGIN, ACCESS_CONTROL_EXPOSE_HEADERS, ALLOW, CACHE_CONTROL,
             CONTENT_TYPE, ETAG, IF_NONE_MATCH, ORIGIN, VARY,
         },
     },
@@ -45,6 +46,26 @@ fn apply_jwks_cors(request_headers: &HeaderMap, response: &mut Response) {
     response.headers_mut().insert(
         ACCESS_CONTROL_EXPOSE_HEADERS,
         HeaderValue::from_static("ETag"),
+    );
+}
+
+/// JWKS 仅开放读取所需的 CORS 预检范围，不把预检能力扩展到应用 API。
+fn apply_jwks_preflight(response: &mut Response) {
+    let headers = response.headers_mut();
+    headers.insert(ALLOW, HeaderValue::from_static("GET, HEAD, OPTIONS"));
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, HEAD, OPTIONS"),
+    );
+    headers.insert(
+        ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("If-None-Match"),
+    );
+    headers.insert(
+        VARY,
+        HeaderValue::from_static(
+            "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+        ),
     );
 }
 
@@ -142,5 +163,13 @@ pub(super) async fn jwks(State(state): State<AppState>, headers: HeaderMap) -> R
     response_headers.insert(CACHE_CONTROL, HeaderValue::from_static(JWKS_CACHE_CONTROL));
     response_headers.insert(ETAG, etag);
     apply_jwks_cors(&headers, &mut response);
+    response
+}
+
+/// JWKS 的受限 CORS 预检端点。
+pub(super) async fn jwks_options(headers: HeaderMap) -> Response {
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    apply_jwks_cors(&headers, &mut response);
+    apply_jwks_preflight(&mut response);
     response
 }

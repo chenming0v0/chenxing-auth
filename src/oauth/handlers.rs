@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 
 use super::{
     authorization::{
-        AuthorizationRequest, AuthorizationRequestError, MAX_STATE_LENGTH,
+        AuthorizationRequest, AuthorizationRequestError, MAX_STATE_LENGTH, redirect_uri_matches,
         validate_authorization_request_with_allowlist,
     },
     authorization_code_handlers::{
@@ -21,6 +21,7 @@ use super::{
     token_security::enforce_source_qps_with_policy,
 };
 use crate::{
+    clients::domain::canonicalize_redirect_uri,
     error,
     sessions::{cookies, domain::session_token_hash},
     settings::SecurityLimitsSetting,
@@ -110,7 +111,10 @@ async fn authorize_request(
 
     let session = match session_for_headers(&state, &headers).await {
         Ok(session) => session,
-        Err(session_error) => return session_error_response(session_error),
+        Err(session_error) => {
+            let (code, description) = session_error_code(session_error);
+            return authorization_dependency_error(&request, &client, code, description);
+        }
     };
     let Some(session) = session else {
         if !accepts_html(&headers) {
@@ -122,7 +126,7 @@ async fn authorize_request(
         }
         // 还没有会话，pending 以未绑定状态落盘；登录后由绑定接口补上会话。
         let pending = pending_from_validated(&validated);
-        return save_and_redirect_to_ui(&state, pending, UiDestination::Login).await;
+        return save_and_redirect_to_ui(&state, pending, UiDestination::Login, &client).await;
     };
 
     let user_id = match session.user_id.parse::<crate::users::domain::UserId>() {
@@ -147,7 +151,9 @@ async fn authorize_request(
     {
         // 已登录但尚未授权：同样下发 holder Cookie 后进入确认页。会话在确认前
         // 过期或用户切换账号时，绑定端点需要 holder 才能受控重绑（#270）。
-        Ok(false) => save_and_redirect_to_ui(&state, pending, UiDestination::Consent).await,
+        Ok(false) => {
+            save_and_redirect_to_ui(&state, pending, UiDestination::Consent, &client).await
+        }
         Ok(true) => {
             issue_preconsented_request(
                 &state,
@@ -155,12 +161,18 @@ async fn authorize_request(
                 user_id.to_string(),
                 source_ip.as_deref(),
                 user_agent.as_deref(),
+                &client,
             )
             .await
         }
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to load user consent");
-            error::oauth_temporarily_unavailable()
+            authorization_dependency_error(
+                &request,
+                &client,
+                "temporarily_unavailable",
+                "the authorization server is temporarily unable to handle the request",
+            )
         }
     }
 }
@@ -197,15 +209,28 @@ async fn save_and_redirect_to_ui(
     state: &AppState,
     mut pending: PendingAuthorization,
     destination: UiDestination,
+    client: &super::authorization::RegisteredClient,
 ) -> Response {
     let holder = cookies::new_authz_holder();
     pending.holder_hash = Some(cookies::authz_holder_hash(&holder));
     let limits = match load_security_limits(state).await {
         Ok(limits) => limits,
-        Err(response) => return response,
+        Err(_) => {
+            return trusted_pending_error(
+                &pending,
+                client,
+                "temporarily_unavailable",
+                "the authorization server is temporarily unable to handle the request",
+            );
+        }
     };
-    if let Err(response) = save_pending_with_limits(state, &pending, &limits).await {
-        return response;
+    if let Err(_response) = save_pending_with_limits(state, &pending, &limits).await {
+        return trusted_pending_error(
+            &pending,
+            client,
+            "temporarily_unavailable",
+            "the authorization server is temporarily unable to handle the request",
+        );
     }
     let mut response = Redirect::to(&destination.location(&pending.request_id)).into_response();
     // Cookie 生命周期与 pending 记录的 Redis TTL 对齐：pending 过期后 Cookie 也失效。
@@ -216,7 +241,12 @@ async fn save_and_redirect_to_ui(
         state.config.cookie_secure,
     ) {
         tracing::error!(error = %cookie_error, "failed to build OAuth holder cookie response");
-        return error::internal();
+        return trusted_pending_error(
+            &pending,
+            client,
+            "server_error",
+            "the authorization server encountered an unexpected condition",
+        );
     }
     response
 }
@@ -265,37 +295,59 @@ async fn issue_preconsented_request(
     user_id: String,
     source_ip: Option<&str>,
     user_agent: Option<&str>,
+    client: &super::authorization::RegisteredClient,
 ) -> Response {
     if let Err(response) = save_pending(state, &pending).await {
-        return response;
+        let _ = response;
+        return trusted_pending_error(
+            &pending,
+            client,
+            "temporarily_unavailable",
+            "the authorization server is temporarily unable to handle the request",
+        );
     }
     let Some(consumed) = (match state
         .authorization_requests
-        .take_if_matches(&pending.request_id, &pending)
+        .take_if_matches_with_ttl(&pending.request_id, &pending)
         .await
     {
         Ok(consumed) => consumed,
         Err(store_error) => {
             tracing::error!(error = %store_error, "failed to consume pre-consented OAuth request");
-            return error::oauth_temporarily_unavailable();
+            return trusted_pending_error(
+                &pending,
+                client,
+                "temporarily_unavailable",
+                "the authorization server is temporarily unable to handle the request",
+            );
         }
     }) else {
-        return error::oauth_bad_request(
+        return trusted_pending_error(
+            &pending,
+            client,
             "invalid_request",
             "authorization request has already been processed",
         );
     };
 
-    let validated = validated_pending_request(consumed.clone());
+    let validated = validated_pending_request(consumed.request.clone());
     match issue_authorization_code_result(state, user_id, validated, source_ip, user_agent).await {
         Ok(AuthorizationCodeIssue::Redirect(redirect)) => Redirect::to(&redirect).into_response(),
         Ok(AuthorizationCodeIssue::QuotaExceeded) => {
-            restore_pending_after_failure(state, &consumed).await;
-            authorization_quota_redirect(&consumed)
+            restore_pending_after_failure(state, &consumed.request, consumed.remaining_ttl_ms)
+                .await;
+            authorization_quota_redirect(&consumed.request)
         }
         Err(response) => {
-            restore_pending_after_failure(state, &consumed).await;
-            response
+            restore_pending_after_failure(state, &consumed.request, consumed.remaining_ttl_ms)
+                .await;
+            let _ = response;
+            trusted_pending_error(
+                &consumed.request,
+                client,
+                "temporarily_unavailable",
+                "the authorization server is temporarily unable to handle the request",
+            )
         }
     }
 }
@@ -335,11 +387,21 @@ fn authorization_error(
             ("invalid_request", "code_challenge is invalid")
         }
     };
-    if client
-        .redirect_uris
-        .iter()
-        .any(|registered| registered == &request.redirect_uri)
-        && let Ok(mut redirect) = url::Url::parse(&request.redirect_uri)
+    authorization_error_redirect(request, client, code, description)
+}
+
+fn authorization_error_redirect(
+    request: &AuthorizationRequest,
+    client: &super::authorization::RegisteredClient,
+    code: &'static str,
+    description: &str,
+) -> Response {
+    if let Some(canonical_redirect_uri) = canonicalize_redirect_uri(&request.redirect_uri)
+        && client
+            .redirect_uris
+            .iter()
+            .any(|registered| redirect_uri_matches(registered, &canonical_redirect_uri))
+        && let Ok(mut redirect) = url::Url::parse(&canonical_redirect_uri)
     {
         redirect
             .query_pairs_mut()
@@ -357,9 +419,40 @@ fn authorization_error(
     error::oauth_bad_request(code, description)
 }
 
-fn session_error_response(error_value: SessionLookupError) -> Response {
+fn trusted_pending_error(
+    pending: &PendingAuthorization,
+    client: &super::authorization::RegisteredClient,
+    code: &'static str,
+    description: &str,
+) -> Response {
+    let request = AuthorizationRequest {
+        client_id: pending.client_id.clone(),
+        redirect_uri: pending.redirect_uri.clone(),
+        response_type: "code".to_owned(),
+        scope: pending.scope.clone(),
+        state: Some(pending.state.clone()),
+        nonce: pending.nonce.clone(),
+        code_challenge: Some(pending.code_challenge.clone()),
+        code_challenge_method: Some(pending.code_challenge_method.clone()),
+    };
+    authorization_error_redirect(&request, client, code, description)
+}
+
+fn authorization_dependency_error(
+    request: &AuthorizationRequest,
+    client: &super::authorization::RegisteredClient,
+    code: &'static str,
+    description: &str,
+) -> Response {
+    authorization_error_redirect(request, client, code, description)
+}
+
+fn session_error_code(error_value: SessionLookupError) -> (&'static str, &'static str) {
     tracing::error!(error = %error_value, "OAuth session lookup failed");
-    error::oauth_temporarily_unavailable()
+    (
+        "temporarily_unavailable",
+        "the authorization server is temporarily unable to handle the request",
+    )
 }
 
 #[cfg(test)]

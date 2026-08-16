@@ -9,6 +9,7 @@ use std::time::Duration;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
 use crate::oauth::token::{decode_access_token, issue_access_token};
+use crate::workers::{WorkerHealth, WorkerName, WorkerSupervisor};
 
 use super::prune::retirement_window_open_at;
 use super::{
@@ -235,20 +236,32 @@ fn in_memory_manager_sync_reports_not_persisted() {
     );
 }
 
-/// 无共享目录时后台任务必须立即退出，而不是空转一个什么都不做的定时器。
-///
-/// 传入 1ns 间隔：如果实现真的进入了循环，它会被抬到 `MINIMUM_KEY_SYNC_INTERVAL`
-/// 并持续 tick，从而撞上这里的超时。
+/// 无共享目录时后台任务不做磁盘 IO，但必须留在 supervisor 内直到合作关停。
 #[tokio::test]
-async fn disk_sync_worker_returns_immediately_without_a_key_directory() {
+async fn disk_sync_worker_stays_supervised_without_a_key_directory() {
     let manager = KeyManager::generate().expect("key generation");
+    let health = WorkerHealth::new();
+    let mut supervisor = WorkerSupervisor::new(health.clone());
+    supervisor.spawn(WorkerName::KeySync, move |worker| {
+        manager.run_disk_sync_worker(Duration::from_nanos(1), worker)
+    });
 
-    tokio::time::timeout(
-        MINIMUM_KEY_SYNC_INTERVAL,
-        manager.run_disk_sync_worker(Duration::from_nanos(1)),
-    )
+    tokio::time::timeout(MINIMUM_KEY_SYNC_INTERVAL, async {
+        loop {
+            let status = health.status(WorkerName::KeySync);
+            if status.last_success_age.is_some() {
+                assert_eq!(status.phase, crate::workers::WorkerPhase::Running);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
     .await
-    .expect("worker must not schedule ticks without a key directory");
+    .expect("the no-op pass still records worker success");
+    supervisor
+        .drain(MINIMUM_KEY_SYNC_INTERVAL)
+        .await
+        .expect("in-memory worker shutdown");
 }
 
 #[test]

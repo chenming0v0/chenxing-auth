@@ -4,6 +4,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 
 use super::domain::{ClientAuthMethod, ValidatedClientRegistration};
+use crate::plans::domain::AuthQuotaLimits;
 use crate::users::domain::UserId;
 
 #[path = "repository_credentials.rs"]
@@ -67,6 +68,12 @@ pub struct NewClient {
     pub created_at: OffsetDateTime,
     pub owner_user_id: Option<UserId>,
     pub auth_method: ClientAuthMethod,
+}
+
+#[derive(Debug)]
+pub struct NewOwnedClient {
+    pub client: NewClient,
+    pub quota_limits: AuthQuotaLimits,
 }
 
 #[derive(Debug)]
@@ -192,20 +199,22 @@ pub async fn insert_owned_client(
     registration: ValidatedClientRegistration,
     client_id: String,
     credential: ClientCredential,
-    oauth_clients_limit: i64,
-) -> Result<NewClient, ClientInsertError> {
+) -> Result<Option<NewOwnedClient>, ClientInsertError> {
     let mut transaction = pool.begin().await?;
-    // 锁住 owner 行，让并发注册的配额检查串行化。
-    crate::sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
-        .bind(owner_user_id)
-        .fetch_one(&mut *transaction)
-        .await?;
+    // 套餐仓储按「用户行 → DefaultPlan 业务锁 → 套餐行」解析并锁定当前套餐。
+    // 用户行锁同时让同一 owner 的 COUNT + INSERT 串行化；配额不再来自事务外快照。
+    let Some(effective_plan) =
+        crate::plans::repository::lock_effective_for_user(&mut transaction, owner_user_id).await?
+    else {
+        transaction.rollback().await?;
+        return Ok(None);
+    };
     let count: i64 =
         crate::sqlx::query_scalar("SELECT COUNT(*) FROM oauth_clients WHERE owner_user_id = $1")
             .bind(owner_user_id)
             .fetch_one(&mut *transaction)
             .await?;
-    if count >= oauth_clients_limit {
+    if count >= i64::from(effective_plan.oauth_clients_limit) {
         transaction.rollback().await?;
         return Err(ClientInsertError::QuotaExceeded);
     }
@@ -221,17 +230,21 @@ pub async fn insert_owned_client(
         Some(owner_user_id),
     )
     .await?;
+    let quota_limits = effective_plan.auth_quota_limits();
     transaction.commit().await?;
-    Ok(NewClient {
-        id,
-        client_id,
-        client_name: registration.client_name,
-        redirect_uris: registration.redirect_uris,
-        scopes: registration.scopes,
-        created_at,
-        owner_user_id: Some(owner_user_id),
-        auth_method: credential.auth_method(),
-    })
+    Ok(Some(NewOwnedClient {
+        client: NewClient {
+            id,
+            client_id,
+            client_name: registration.client_name,
+            redirect_uris: registration.redirect_uris,
+            scopes: registration.scopes,
+            created_at,
+            owner_user_id: Some(owner_user_id),
+            auth_method: credential.auth_method(),
+        },
+        quota_limits,
+    }))
 }
 
 pub async fn find_client_by_id(

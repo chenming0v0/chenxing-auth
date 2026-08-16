@@ -34,7 +34,7 @@
 
 ### `GET /health` 与 `GET /health/ready`
 
-就绪探针。`/health` 是 `/health/ready` 的兼容别名，两者检查数据库和 Redis；数据库已有 Issuer 时还检查运行时是否已收敛。数据库、Redis 正常且 Issuer 尚未设置时，保护模式同样返回 `200`，不会因为缺少 Issuer 把 readiness/health 置为 `503`。任一实际依赖超时或未就绪返回 `503`：
+就绪探针。`/health` 是 `/health/ready` 的兼容别名，两者检查数据库、Redis、Issuer 收敛、四个关键后台 worker 的心跳/最近成功，以及签名密钥同步状态。数据库、Redis、worker 和签名同步正常且 Issuer 尚未设置时，保护模式同样返回 `200`，不会因为缺少 Issuer 把 readiness/health 置为 `503`。任一实际依赖超时或未就绪、worker 未成功启动/心跳过期/连续失败，或签名密钥同步异常时返回 `503`：
 
 ```json
 {"status":"unavailable","service":"chenxing-auth"}
@@ -142,7 +142,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 管理员通过 `PUT /api/v1/admin/settings/passkey` 禁用 Passkey 时，如果存在活跃且唯一绑定 Passkey 的账号，服务端返回 `409 passkey_disable_blocked`，设置不会变更。这样已绑定 Passkey 的账号不会因全局策略被锁定；禁用后新的登录因子响应和首次绑定选项只发布 TOTP。
 
-所有 pending-login Cookie、`login_ticket` 和 WebAuthn challenge 默认有效 5 分钟；ticket 是一次性的。Redis 中只保存 holder Cookie 的摘要，不保存 holder 原值；缺少 holder、Cookie 中 ticket 与旧请求字段不一致、或升级前无 holder 摘要的 ticket 都 fail closed，需要重新开始登录。WebAuthn 的 RP ID 和 origin 由固定配置 `WEBAUTHN_RP_ID`、`WEBAUTHN_ORIGIN` 控制，不能从请求 Host 推导。
+所有 pending-login Cookie、`login_ticket` 和 WebAuthn challenge 默认有效 5 分钟；ticket 是一次性的。Redis 中只保存 holder Cookie 的摘要，不保存 holder 原值；缺少 holder、Cookie 中 ticket 与旧请求字段不一致、或升级前无 holder 摘要的 ticket 都 fail closed，需要重新开始登录。WebAuthn 的 RP ID 和 origin 不能从请求 Host 或反向代理输入推导：显式配置 `WEBAUTHN_RP_ID`、`WEBAUTHN_ORIGIN` 时固定使用覆盖值；未显式配置时，在持久化 Issuer 加载后分别从其 host 和根 URL 派生，并随 Issuer generation 原子更新。通用 `.env.example` 不再永久固定 loopback 值；本地 HTTP 开发使用 `.env.loopback.example` 中的明确覆盖。
 
 浏览器 OAuth 登录现在由 React SPA 承接。密码步骤调用 `POST /api/v1/auth/login`，TOTP 绑定和登录分别调用 `POST /api/v1/auth/totp/setup`、`POST /api/v1/auth/totp/setup/confirm` 或 `POST /api/v1/auth/totp/login`；passkey 流程使用上面的 WebAuthn API。因子完成后，SPA 调用授权请求绑定接口并继续授权确认。
 
@@ -180,11 +180,13 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ## OAuth 2.0 / OIDC
 
-### `GET /oauth/authorize`
+### `GET /oauth/authorize` / `POST /oauth/authorize`
 
-授权码入口，成功后重定向到注册的 `redirect_uri`，附带 `code` 和原始 `state`。
+授权码入口。GET 使用查询参数，POST 使用 `application/x-www-form-urlencoded` 表单；两种方法的字段、校验和响应行为相同。成功后重定向到注册的 `redirect_uri`，附带 `code` 和原始 `state`。
 
-必填查询参数：
+Client 已加载且 `redirect_uri` canonicalize 后仍严格匹配注册值时，后续参数校验失败、Session/consent/pending 存储不可用、授权码签发失败等错误通过 `302` 返回该 canonical 回调地址，并携带 RFC 6749 `error` / `error_description`。只有非空且不超过 512 个字符的 `state` 才会回显。Client 或回调地址不可信时绝不重定向，改为 RFC 6749 JSON 错误信封；Issuer 门禁和请求超时发生在可信回调上下文建立之前，同样返回 `503 temporarily_unavailable` JSON。
+
+必填请求字段（GET 为查询参数，POST 为表单字段）：
 
 | 参数 | 说明 |
 | --- | --- |
@@ -223,7 +225,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ### `GET /api/v1/oauth/authorize/requests/{request_id}` / `POST ...`
 
-供 JSON 授权确认 UI 使用。请求必须绑定当前浏览器 Session；GET 返回 Client 名称、Redirect 主机、Scope 和剩余有效时间。POST JSON 请求为 `{"decision":"approve"}` 或 `{"decision":"deny"}`，需要用户 CSRF，成功返回经过校验的 `redirect_to`，请求被一次性消费。普通用户项目超过日/月配额时返回 `429 oauth_quota_exceeded`；标准 `/oauth/authorize` 流程返回协议安全的 `temporarily_unavailable` 重定向。
+供 JSON 授权确认 UI 使用。请求必须绑定当前浏览器 Session；GET 返回 Client 名称、Redirect 主机、Scope 和剩余有效时间。POST JSON 请求为 `{"decision":"approve"}` 或 `{"decision":"deny"}`，需要用户 CSRF，成功返回经过校验的 `redirect_to`，请求被一次性消费。该内部 UI API 的所有错误都使用 `{code, message}`，不会返回 OAuth `{error, error_description}` 信封。普通用户项目超过日/月配额时返回 `429 authorization_unavailable`；内部一致性故障返回 `500 internal_error`，依赖故障返回对应的 `503` 内部错误。标准 `/oauth/authorize` 流程则返回协议安全的 `temporarily_unavailable` 重定向。
 
 ### React SPA 浏览器登录 `/login`
 

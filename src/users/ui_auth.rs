@@ -67,7 +67,7 @@ pub(crate) async fn current_user(
     })
 }
 
-fn invalid_session_response(state: &AppState, code: &'static str) -> Response {
+pub(crate) fn invalid_session_response(state: &AppState, code: &'static str) -> Response {
     let message = if code == "user_disabled" {
         "user account is disabled"
     } else {

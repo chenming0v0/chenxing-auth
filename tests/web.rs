@@ -221,6 +221,54 @@ async fn unknown_non_get_paths_return_json_not_found() {
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
+#[tokio::test]
+async fn api_health_and_asset_paths_are_not_shadowed_by_the_spa_fallback() {
+    let (router, key_directory) = test_router().await;
+
+    assert_json_not_found(router.clone(), Method::GET, "/api/v1/does-not-exist").await;
+    assert_json_not_found(router.clone(), Method::GET, "/assets/missing-chunk.js").await;
+
+    let protected = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/auth/authorized-apps")
+                .body(Body::empty())
+                .expect("protected API request"),
+        )
+        .await
+        .expect("protected API response");
+    assert_eq!(protected.status(), StatusCode::UNAUTHORIZED);
+
+    let health = router
+        .oneshot(
+            Request::builder()
+                .uri("/health/live")
+                .body(Body::empty())
+                .expect("health request"),
+        )
+        .await
+        .expect("health response");
+    assert_eq!(health.status(), StatusCode::OK);
+    assert_eq!(
+        health
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.split(';').next().unwrap_or(value)),
+        Some("application/json")
+    );
+    assert_eq!(
+        health
+            .headers()
+            .get(CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
 fn embedded_hashed_script_path() -> &'static str {
     let html = chenxing_auth::web_dist::EMBEDDED_INDEX_HTML;
     let marker = "src=\"";

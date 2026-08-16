@@ -7,18 +7,23 @@ use super::{
     refresh::RefreshToken,
     session::active_user_epoch,
 };
-use crate::{clients::service::AuthenticatedClient, config::IssuerUrl, state::AppState};
+use crate::{clients::service::AuthenticatedClient, settings::IssuerSnapshot, state::AppState};
 
 #[path = "refresh_use_case.rs"]
 mod refresh_use_case;
 #[path = "token_exchange_audit.rs"]
 mod token_exchange_audit;
+#[path = "token_use_case_finalize.rs"]
+mod token_use_case_finalize;
 #[path = "token_use_case_support.rs"]
 mod token_use_case_support;
-use token_exchange_audit::{exchange_failure, record_token_exchange_success};
+use token_exchange_audit::exchange_failure;
+use token_use_case_finalize::{
+    AuthorizationCodeFinalization, finalize_authorization_code_exchange,
+};
 pub(crate) use token_use_case_support::{TokenIssueParams, issue_token_response};
 use token_use_case_support::{
-    authorization_code_session_auth_time, compensate_authorization_code_exchange,
+    authorization_code_session_binding, compensate_authorization_code_exchange,
     validate_code_binding,
 };
 
@@ -144,7 +149,7 @@ pub async fn exchange_code(
     state: &AppState,
     request: TokenRequest,
     authenticated: AuthenticatedClient,
-    issuer: &IssuerUrl,
+    issuer: &IssuerSnapshot,
 ) -> Result<TokenResponse, OAuthError> {
     let Some(code_value) = request.code.as_deref() else {
         return exchange_failure(
@@ -265,8 +270,8 @@ pub async fn exchange_code(
     };
     // Session binding is intentionally checked before the authorization-code CAS. A failed
     // request must not burn a valid code before binding, expiry, and PKCE all pass.
-    let auth_time = match authorization_code_session_auth_time(state, &code).await {
-        Ok(auth_time) => auth_time,
+    let session_binding = match authorization_code_session_binding(state, &code).await {
+        Ok(binding) => binding,
         Err(error) => {
             return exchange_failure(
                 state,
@@ -386,6 +391,7 @@ pub async fn exchange_code(
         scopes.clone(),
         authenticated.client_secret_version(),
         user_epoch,
+        issuer.generation(),
         state.clock.now(),
     );
     if let Err(store_error) = state.refresh_tokens.save(&refresh).await {
@@ -422,59 +428,24 @@ pub async fn exchange_code(
         )
         .await;
     }
-    let token = match issue_token_response(
+    finalize_authorization_code_exchange(
         state,
-        TokenIssueParams {
-            issuer,
-            user_id: &code.user_id,
+        AuthorizationCodeFinalization {
+            issuer: issuer.issuer(),
+            code: &code,
             client_id,
             scopes: &scopes,
-            refresh_token: Some(refresh.value.clone()),
-            nonce: code.nonce.as_deref(),
-            auth_time,
+            refresh: &refresh,
+            session: &session_binding,
         },
     )
     .await
-    {
-        Ok(token) => token,
-        Err(error) => {
-            compensate_authorization_code_exchange(state, &code, &refresh.value).await;
-            return exchange_failure(
-                state,
-                Some(&code.user_id),
-                Some(client_id),
-                "token_issuance_failed",
-                error,
-            )
-            .await;
-        }
-    };
-    if let Err(audit_error) =
-        record_token_exchange_success(state, &code.user_id, client_id, &scopes).await
-    {
-        compensate_authorization_code_exchange(state, &code, &refresh.value).await;
-        tracing::error!(
-            error = %audit_error,
-            client_id = %client_id,
-            user_id = %code.user_id,
-            "failed to record OAuth token exchange audit event"
-        );
-        return exchange_failure(
-            state,
-            Some(&code.user_id),
-            Some(client_id),
-            "success_audit_failed",
-            OAuthError::server_error(),
-        )
-        .await;
-    }
-    Ok(token)
 }
 
 /// Exchange a refresh token after the token endpoint has authenticated the client.
 pub async fn exchange_refresh_token(
     state: &AppState,
-    issuer: &IssuerUrl,
+    issuer: &IssuerSnapshot,
     request: TokenRequest,
     authenticated: AuthenticatedClient,
 ) -> Result<TokenResponse, RefreshExchangeError> {

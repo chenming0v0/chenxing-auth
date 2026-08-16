@@ -61,7 +61,7 @@ use crate::{
     settings::IssuerSnapshot,
     state::AppState,
     users::{
-        domain::OwnerTargetAccess,
+        ManagementActorCredential,
         ui_auth::{UserContext, current_user, user_csrf_valid},
     },
 };
@@ -321,16 +321,22 @@ impl AdminWrite {
         self.caller.check_permission(state, permission).await
     }
 
-    /// 调用者在完成基线授权后可携带到目标用户写事务的最高档位。
+    /// Build the credential proof carried into a high-risk management transaction.
     ///
-    /// 该方法只描述调用者，不读取目标；目标角色必须由写事务持行锁后判定（#323）。
-    pub(crate) fn owner_target_access(&self) -> OwnerTargetAccess {
+    /// The Session variant uses the generation read from the authoritative `user_sessions` row,
+    /// never a fresh `users.session_epoch` query. A fresh query could stamp an old Cookie with a
+    /// newly elevated generation between Session lookup and handler authorization (Issue #493).
+    pub(crate) fn management_actor_credential(&self) -> Option<ManagementActorCredential> {
         match &self.caller {
-            AdminCaller::SystemToken => OwnerTargetAccess::ManageRoles,
-            AdminCaller::Session(context) if context.role.allows(AdminPermission::ManageRoles) => {
-                OwnerTargetAccess::ManageRoles
+            AdminCaller::SystemToken => Some(ManagementActorCredential::SystemToken),
+            AdminCaller::Session(context) => {
+                context.session.credential_generation().map(|generation| {
+                    ManagementActorCredential::UserSession {
+                        user_id: context.user_id,
+                        generation,
+                    }
+                })
             }
-            AdminCaller::Session(_) => OwnerTargetAccess::ManageUsers,
         }
     }
 }

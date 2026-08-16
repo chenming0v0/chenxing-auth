@@ -190,7 +190,11 @@ case "$MODE" in
 esac
 
 # ---------------------------------------------------------------- 前置检查
-command -v cargo >/dev/null || { err "需要 Cargo，请先安装 Rust"; exit 1; }
+# --clean-only only invokes the target pruning helper; it must remain usable
+# on machines that intentionally do not have the Rust toolchain installed.
+if [ "$MODE" != "clean-only" ]; then
+    command -v cargo >/dev/null || { err "需要 Cargo，请先安装 Rust"; exit 1; }
+fi
 
 NEXTEST=1
 command -v cargo-nextest >/dev/null 2>&1 || NEXTEST=0

@@ -8,6 +8,7 @@ pub mod email;
 mod email_policy;
 pub mod entitlements_handlers;
 pub mod handlers;
+mod management;
 pub mod oauth_client_handlers;
 pub mod query_repository;
 pub mod repository;
@@ -15,3 +16,6 @@ pub mod security_event_handlers;
 pub mod service;
 pub mod ui_auth;
 pub mod ui_handlers;
+
+pub(crate) use management::ActorCredentialError;
+pub use management::ManagementActorCredential;

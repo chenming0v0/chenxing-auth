@@ -1,5 +1,6 @@
 use chenxing_auth::keys::{KeyManager, KeySyncOutcome};
 use chenxing_auth::oauth::token::{decode_access_token, issue_access_token};
+use chenxing_auth::workers::{WorkerHealth, WorkerName, WorkerSupervisor};
 use std::fs;
 use std::time::Duration;
 use uuid::Uuid;
@@ -379,7 +380,7 @@ fn provider_secret_storage_permissions_are_restricted_and_repaired() {
     use std::os::unix::fs::PermissionsExt;
 
     let directory = std::env::temp_dir().join(format!("chenxing-secrets-{}", Uuid::new_v4()));
-    let manager = SecretManager::load_or_generate(&directory).expect("provider secret");
+    let manager = SecretManager::load_or_generate(&directory, false).expect("provider secret");
     let path = manager.path().expect("provider secret path");
     assert_eq!(
         fs::metadata(&directory)
@@ -399,7 +400,8 @@ fn provider_secret_storage_permissions_are_restricted_and_repaired() {
     );
 
     fs::set_permissions(path, fs::Permissions::from_mode(0o644)).expect("secret mode");
-    let reloaded = SecretManager::load_or_generate(&directory).expect("reloaded provider secret");
+    let reloaded =
+        SecretManager::load_or_generate(&directory, false).expect("reloaded provider secret");
     assert_eq!(
         fs::metadata(reloaded.path().expect("reloaded path"))
             .expect("reloaded metadata")
@@ -552,11 +554,12 @@ async fn disk_sync_worker_converges_on_keys_rotated_by_another_instance() {
     let directory = std::env::temp_dir().join(format!("chenxing-keys-{}", Uuid::new_v4()));
     let first = KeyManager::load_or_generate(&directory).expect("initial key");
     let second = KeyManager::load_or_generate(&directory).expect("second manager");
-    let worker = tokio::spawn(
-        second
-            .clone()
-            .run_disk_sync_worker(Duration::from_millis(50)),
-    );
+    let health = WorkerHealth::new();
+    let mut supervisor = WorkerSupervisor::new(health);
+    let syncing_manager = second.clone();
+    supervisor.spawn(WorkerName::KeySync, move |worker| {
+        syncing_manager.run_disk_sync_worker(Duration::from_millis(50), worker)
+    });
 
     let rotation = first.rotate().await.expect("rotate signing key");
     let token = issue_access_token(
@@ -575,7 +578,10 @@ async fn disk_sync_worker_converges_on_keys_rotated_by_another_instance() {
         second.key_id() == rotation.key_id
     })
     .await;
-    worker.abort();
+    supervisor
+        .drain(Duration::from_secs(1))
+        .await
+        .expect("key sync worker drain");
 
     assert!(converged, "worker must adopt the shared active key");
     decode_access_token(&second, "https://auth.example.com", "cx_project", &token)

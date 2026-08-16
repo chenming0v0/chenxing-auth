@@ -3,6 +3,8 @@ mod db_isolation;
 
 use base64::Engine;
 use chenxing_auth::auth_factors::repository;
+use std::sync::Arc;
+use tokio::sync::Barrier;
 use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
@@ -39,7 +41,11 @@ fn test_passkey(credential_id: &[u8]) -> Passkey {
 async fn database() -> chenxing_auth::sqlx::PgPool {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
-    db_isolation::isolated_pool("auth_factors_repository", &database_url).await
+    // The first-factor race must have enough connections for both writes to
+    // reach PostgreSQL at the same time; the default two-connection pool is
+    // also shared by setup/cleanup work and can serialize the contenders.
+    db_isolation::isolated_pool_with_max_connections("auth_factors_repository", &database_url, 8)
+        .await
 }
 
 #[tokio::test]
@@ -183,7 +189,7 @@ async fn passkey_first_factor_insert_rejects_repeat_and_cross_user_collisions() 
         .expect("cleanup test users");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn first_factor_race_allows_only_one_factor_type_to_win() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple();
@@ -200,12 +206,31 @@ async fn first_factor_race_allows_only_one_factor_type_to_win() {
     let credential_id = Uuid::new_v4().into_bytes().to_vec();
     let passkey = test_passkey(&credential_id);
 
-    let (totp_result, passkey_result) = tokio::join!(
-        repository::insert_totp_factor_if_empty(&pool, user_id, &[1, 2, 3]),
-        repository::insert_passkey_if_empty(&pool, user_id, &credential_id, &passkey),
-    );
-    let totp_result = totp_result.expect("TOTP first-factor write");
-    let passkey_result = passkey_result.expect("Passkey first-factor write");
+    let barrier = Arc::new(Barrier::new(3));
+    let totp_barrier = Arc::clone(&barrier);
+    let totp_pool = pool.clone();
+    let totp_task = tokio::spawn(async move {
+        totp_barrier.wait().await;
+        repository::insert_totp_factor_if_empty(&totp_pool, user_id, &[1, 2, 3]).await
+    });
+    let passkey_barrier = Arc::clone(&barrier);
+    let passkey_pool = pool.clone();
+    let passkey_task = tokio::spawn(async move {
+        passkey_barrier.wait().await;
+        repository::insert_passkey_if_empty(&passkey_pool, user_id, &credential_id, &passkey).await
+    });
+    // Release both contenders together so this test exercises the database
+    // uniqueness/first-factor boundary instead of merely testing call order.
+    barrier.wait().await;
+
+    let totp_result = totp_task
+        .await
+        .expect("join TOTP first-factor write")
+        .expect("TOTP first-factor write");
+    let passkey_result = passkey_task
+        .await
+        .expect("join Passkey first-factor write")
+        .expect("Passkey first-factor write");
     assert!(matches!(
         (totp_result, passkey_result),
         (

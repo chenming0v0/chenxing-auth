@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link } from '../../router'
-import { apiFetch, type OwnedOAuthClient } from '../../api'
+import { type OwnedOAuthClient } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { SelectField } from '../../components/select'
-import { entitlementState, useEntitlements } from './shared'
+import { entitlementState, listAllOwnedOAuthClients, useEntitlements } from './shared'
 
 export function PlaygroundPage() {
   const selfServiceClosed = entitlementState(useEntitlements()).kind === 'closed'
@@ -17,10 +17,10 @@ export function PlaygroundPage() {
   const [message, setMessage] = useState('')
 
   useEffect(() => {
-    void apiFetch<{ items: OwnedOAuthClient[] }>('/api/v1/auth/oauth-clients')
-      .then((response) => {
-        setClients(response.items)
-        const first = response.items[0]
+    void listAllOwnedOAuthClients()
+      .then((items) => {
+        setClients(items)
+        const first = items[0]
         if (first) {
           setSelectedId(first.client_id)
           setRedirectUri(first.redirect_uris[0] || '')

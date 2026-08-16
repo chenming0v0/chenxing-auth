@@ -74,7 +74,10 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
             "/.well-known/openid-configuration",
             get(openid_configuration),
         )
-        .route("/.well-known/jwks.json", get(jwks))
+        .route(
+            "/.well-known/jwks.json",
+            get(jwks).options(super::discovery::jwks_options),
+        )
         .route("/oauth/authorize", get(authorize).post(authorize_post))
         .route("/oauth/token", post(token))
         .route("/oauth/revoke", post(revoke))

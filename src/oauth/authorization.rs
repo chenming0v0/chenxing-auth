@@ -1,9 +1,10 @@
 use super::pkce::validate_s256_challenge;
-use crate::clients::domain::DEFAULT_ALLOWED_SCOPES;
+use crate::clients::domain::{DEFAULT_ALLOWED_SCOPES, canonicalize_redirect_uri};
 use crate::users::domain::UserId;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
+use url::{Host, Url};
 
 /// Maximum number of Unicode scalar values accepted for the OAuth `state` value.
 pub const MAX_STATE_LENGTH: usize = 512;
@@ -126,10 +127,12 @@ pub fn validate_authorization_request_with_allowlist(
     if request.client_id != client.client_id {
         return Err(AuthorizationRequestError::InvalidClient);
     }
+    let canonical_redirect_uri = canonicalize_redirect_uri(&request.redirect_uri)
+        .ok_or(AuthorizationRequestError::RedirectUriNotAllowed)?;
     if !client
         .redirect_uris
         .iter()
-        .any(|uri| uri == &request.redirect_uri)
+        .any(|uri| redirect_uri_matches(uri, &canonical_redirect_uri))
     {
         return Err(AuthorizationRequestError::RedirectUriNotAllowed);
     }
@@ -170,7 +173,7 @@ pub fn validate_authorization_request_with_allowlist(
 
     Ok(ValidatedAuthorizationRequest {
         client_id: request.client_id,
-        redirect_uri: request.redirect_uri,
+        redirect_uri: canonical_redirect_uri,
         scopes,
         state,
         nonce,
@@ -179,6 +182,46 @@ pub fn validate_authorization_request_with_allowlist(
         // 会话绑定由持有会话的调用方回填，见字段文档。
         session_token_hash: None,
     })
+}
+
+/// RFC 8252 section 7.3 permits native apps using a literal loopback address
+/// to vary only the port between registration and authorization. All other
+/// redirect URIs retain exact matching after canonicalization.
+pub(crate) fn redirect_uri_matches(registered: &str, requested: &str) -> bool {
+    if registered == requested {
+        return true;
+    }
+
+    let (Ok(registered_url), Ok(requested_url)) = (Url::parse(registered), Url::parse(requested))
+    else {
+        return false;
+    };
+    if registered_url.as_str() != registered || requested_url.as_str() != requested {
+        return false;
+    }
+    if registered_url.scheme() != "http" || requested_url.scheme() != "http" {
+        return false;
+    }
+
+    let same_literal_loopback_ip = match (registered_url.host(), requested_url.host()) {
+        (Some(Host::Ipv4(registered_ip)), Some(Host::Ipv4(requested_ip))) => {
+            registered_ip.is_loopback() && registered_ip == requested_ip
+        }
+        (Some(Host::Ipv6(registered_ip)), Some(Host::Ipv6(requested_ip))) => {
+            registered_ip.is_loopback() && registered_ip == requested_ip
+        }
+        _ => false,
+    };
+
+    same_literal_loopback_ip
+        && registered_url.username().is_empty()
+        && requested_url.username().is_empty()
+        && registered_url.password().is_none()
+        && requested_url.password().is_none()
+        && registered_url.path() == requested_url.path()
+        && registered_url.query() == requested_url.query()
+        && registered_url.fragment().is_none()
+        && requested_url.fragment().is_none()
 }
 
 pub(crate) fn scopes_are_allowed(

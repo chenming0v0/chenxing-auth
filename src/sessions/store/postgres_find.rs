@@ -104,6 +104,7 @@ pub(in crate::sessions::store) async fn find_with_metadata(
     session.expires_at = row.expires_at;
     session.last_seen_at = row.last_seen_at;
     session.revoked_at = None;
+    session.set_credential_generation(row.session_epoch);
     session.set_idle_timeout(store.policy.idle_timeout);
 
     if row.needs_renewal {

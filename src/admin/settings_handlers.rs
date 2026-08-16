@@ -93,7 +93,14 @@ pub async fn update_registration_email(
     };
     let registration_email_from = match state
         .settings
-        .set_registration_email_from(registration_email_from)
+        .set_registration_email_from_audited(registration_email_from, &state.audit, move |value| {
+            setting_event(
+                actor,
+                crate::audit::AuditAction::RegistrationEmailUpdate,
+                REGISTRATION_EMAIL_FROM_KEY,
+                serde_json::json!({"configured": value.is_some()}),
+            )
+        })
         .await
     {
         Ok(value) => value,
@@ -109,14 +116,6 @@ pub async fn update_registration_email(
             return error::internal();
         }
     };
-    record_setting_event(
-        &state,
-        actor,
-        crate::audit::AuditAction::RegistrationEmailUpdate,
-        REGISTRATION_EMAIL_FROM_KEY,
-        serde_json::json!({"configured": registration_email_from.is_some()}),
-    )
-    .await;
     (
         StatusCode::OK,
         Json(RegistrationEmailSettingResponse {
@@ -176,23 +175,24 @@ pub async fn update_passkey_setting(
             }
         }
     }
-    match state.settings.set_passkey(input).await {
-        Ok(setting) => {
-            record_setting_event(
-                &state,
+    match state
+        .settings
+        .set_passkey_audited(input, &state.audit, move |setting| {
+            setting_event(
                 actor,
                 crate::audit::AuditAction::PasskeySettingUpdate,
                 "passkey",
                 serde_json::json!({
                     "enabled": setting.enabled,
-                    "rp_id": setting.rp_id,
+                    "rp_id": setting.rp_id.clone(),
                     "allow_insecure_origin": setting.allow_insecure_origin,
                     "origin_count": setting.allowed_origins.len(),
                 }),
             )
-            .await;
-            (StatusCode::OK, Json(setting)).into_response()
-        }
+        })
+        .await
+    {
+        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
         Err(SettingsServiceError::Validation(error_value)) => {
             error::bad_request("invalid_passkey_setting", error_value.to_string())
         }
@@ -231,10 +231,10 @@ pub async fn update_email_policy_setting(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    match state.settings.set_email_policy(input).await {
-        Ok(setting) => {
-            record_setting_event(
-                &state,
+    match state
+        .settings
+        .set_email_policy_audited(input, &state.audit, move |setting| {
+            setting_event(
                 actor,
                 crate::audit::AuditAction::EmailPolicyUpdate,
                 "email_policy",
@@ -244,9 +244,10 @@ pub async fn update_email_policy_setting(
                     "domain_count": setting.allowed_domains.len(),
                 }),
             )
-            .await;
-            (StatusCode::OK, Json(setting)).into_response()
-        }
+        })
+        .await
+    {
+        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
         Err(SettingsServiceError::Validation(error_value)) => {
             error::bad_request("invalid_email_policy", error_value.to_string())
         }
@@ -285,10 +286,10 @@ pub async fn update_smtp_setting(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    match state.settings.set_smtp(input).await {
-        Ok((setting, password_action)) => {
-            record_setting_event(
-                &state,
+    match state
+        .settings
+        .set_smtp_audited(input, &state.audit, move |(setting, password_action)| {
+            setting_event(
                 actor,
                 crate::audit::AuditAction::SmtpSettingUpdate,
                 "smtp",
@@ -300,9 +301,10 @@ pub async fn update_smtp_setting(
                     "password_action": password_action,
                 }),
             )
-            .await;
-            (StatusCode::OK, Json(setting)).into_response()
-        }
+        })
+        .await
+    {
+        Ok((setting, _)) => (StatusCode::OK, Json(setting)).into_response(),
         Err(SettingsServiceError::Validation(error_value)) => {
             error::bad_request("invalid_smtp_setting", error_value.to_string())
         }
@@ -344,11 +346,10 @@ pub async fn update_security_limits_setting(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    match state.settings.set_security_limits(input).await {
-        Ok(setting) => {
-            // 阈值数值本身不是凭据，完整记录便于事后追查是谁放宽了限流。
-            record_setting_event(
-                &state,
+    match state
+        .settings
+        .set_security_limits_audited(input, &state.audit, move |setting| {
+            setting_event(
                 actor,
                 crate::audit::AuditAction::SecurityLimitsUpdate,
                 SECURITY_LIMITS_KEY,
@@ -368,7 +369,10 @@ pub async fn update_security_limits_setting(
                     "external_login_state_max_pending": setting.external_login_state_max_pending,
                 }),
             )
-            .await;
+        })
+        .await
+    {
+        Ok(setting) => {
             (StatusCode::OK, Json(setting)).into_response()
         }
         Err(SettingsServiceError::Validation(error_value)) => {
@@ -410,22 +414,18 @@ fn respond_setting_inspection<T: Serialize>(
 #[path = "settings_handlers_tests.rs"]
 mod tests;
 
-async fn record_setting_event(
-    state: &AppState,
+fn setting_event(
     actor: super::authorization::AdminActor,
     action: crate::audit::AuditAction,
     resource_id: &str,
     metadata: serde_json::Value,
-) {
-    state
-        .audit
-        .record_best_effort(AuditEvent::new(
-            actor.actor_type().to_owned(),
-            actor.user_id().map(|id| id.to_string()),
-            action,
-            "setting".to_owned(),
-            Some(resource_id.to_owned()),
-            metadata,
-        ))
-        .await;
+) -> AuditEvent {
+    AuditEvent::new(
+        actor.actor_type().to_owned(),
+        actor.user_id().map(|id| id.to_string()),
+        action,
+        "setting".to_owned(),
+        Some(resource_id.to_owned()),
+        metadata,
+    )
 }

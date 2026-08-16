@@ -31,11 +31,13 @@ mod redis_only;
 #[path = "store_tests.rs"]
 mod tests;
 
-// 两个函数本体在 postgres 子模块，可见性保持 `pub(crate)`：
+// 跨边界类型/函数本体在 postgres 子模块，可见性保持 `pub(crate)`：
 // `users::repository` 通过 `crate::sessions::store::...` 调用，路径不变。
 // 这里必须用 `pub(crate) use` 而非 `pub use`——`pub use` 重导出 `pub(crate)` 条目
 // 会触发 E0365。
-pub(crate) use postgres::{lock_user_session_scope, revoke_all_for_user_in_transaction};
+pub(crate) use postgres::{
+    SessionIssuanceGuard, lock_user_session_scope, revoke_all_for_user_in_transaction,
+};
 
 #[derive(Clone)]
 pub struct SessionStore {
@@ -316,6 +318,19 @@ impl SessionStore {
         } else {
             redis_only::find_redis_only_by_token_hash(self, token_hash).await
         }
+    }
+
+    /// Acquire the final PostgreSQL ordering boundary for token issuance.
+    pub(crate) async fn acquire_issuance_guard(
+        &self,
+        session_id: i64,
+        user_id: UserId,
+        token_hash: &[u8],
+    ) -> Result<Option<SessionIssuanceGuard>, SessionStoreError> {
+        if self.metadata.is_none() {
+            return Err(SessionStoreError::MetadataUnavailable);
+        }
+        postgres::acquire_issuance_guard(self, session_id, user_id, token_hash).await
     }
 
     pub async fn revoke(&self, token: &str) -> Result<(), SessionStoreError> {

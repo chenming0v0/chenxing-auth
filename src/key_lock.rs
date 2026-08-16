@@ -178,6 +178,7 @@ mod directory_lock {
     }
 
     impl DirectoryLock {
+        #[cfg_attr(not(test), allow(dead_code))]
         pub(super) fn path(&self) -> &Path {
             &self.path
         }

@@ -179,29 +179,10 @@ fn check_bundle(root: &Path) -> Result<(), WebDistError> {
         reason,
     };
 
-    // 顶层条目先过一遍：源码/状态目录和密钥材料一旦出现，后面的 index.html
-    // 检查是否通过都无关紧要，这个路径都不该被托管。
-    let entries = fs::read_dir(root).map_err(|source| WebDistError::Unresolvable {
-        path: root.to_path_buf(),
-        source,
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|source| WebDistError::Unresolvable {
-            path: root.to_path_buf(),
-            source,
-        })?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if is_secret_material(&name) {
-            return Err(not_a_bundle(format!(
-                "it holds runtime secret material ({name})"
-            )));
-        }
-        if SOURCE_OR_STATE_MARKERS.contains(&name.as_str()) {
-            return Err(not_a_bundle(format!(
-                "it looks like a source or state directory ({name})"
-            )));
-        }
-    }
+    // `ServeDir` serves nested paths too, so the bundle check must inspect the
+    // same recursive namespace. Hidden entries, source maps and secret
+    // material are never valid public assets at any depth.
+    scan_bundle_entries(root, root, &not_a_bundle)?;
 
     if !root.join(INDEX_FILE).is_file() {
         return Err(not_a_bundle(format!("{INDEX_FILE} is missing")));
@@ -293,6 +274,100 @@ fn is_secret_material(name: &str) -> bool {
                 .iter()
                 .any(|secret| extension.eq_ignore_ascii_case(secret))
         })
+}
+
+/// Whether a request path is allowed to address a public bundle asset.
+///
+/// This is shared by startup validation and the request layer: a bundle can
+/// change after startup, so `ServeDir` must apply the same fail-closed rules
+/// to every path it is asked to serve.
+pub(crate) fn is_public_asset_uri_path(path: &str) -> bool {
+    let Some(relative) = path.strip_prefix('/') else {
+        return false;
+    };
+    if relative.is_empty() || relative.contains('%') {
+        return false;
+    }
+    is_public_asset_path(Path::new(relative))
+}
+
+pub(crate) fn is_public_asset_path(path: &Path) -> bool {
+    path.components().all(|component| {
+        let Component::Normal(name) = component else {
+            return false;
+        };
+        let Some(name) = name.to_str() else {
+            return false;
+        };
+        !name.starts_with('.') && !is_source_map(name) && !is_secret_material(name)
+    })
+}
+
+fn scan_bundle_entries(
+    root: &Path,
+    directory: &Path,
+    not_a_bundle: &impl Fn(String) -> WebDistError,
+) -> Result<(), WebDistError> {
+    let entries = fs::read_dir(directory).map_err(|source| WebDistError::Unresolvable {
+        path: directory.to_path_buf(),
+        source,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| WebDistError::Unresolvable {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let entry_path = entry.path();
+        let relative = entry_path
+            .strip_prefix(root)
+            .unwrap_or(entry_path.as_path())
+            .display()
+            .to_string();
+
+        let file_type = entry
+            .file_type()
+            .map_err(|source| WebDistError::Unresolvable {
+                path: entry_path.clone(),
+                source,
+            })?;
+        if file_type.is_symlink() {
+            return Err(not_a_bundle(format!(
+                "it holds a symbolic link ({relative})"
+            )));
+        }
+
+        if !is_public_asset_path(
+            entry_path
+                .strip_prefix(root)
+                .unwrap_or(entry_path.as_path()),
+        ) {
+            return Err(not_a_bundle(format!(
+                "it holds a forbidden public asset ({relative})"
+            )));
+        }
+        if SOURCE_OR_STATE_MARKERS.contains(&name.as_str()) && directory == root {
+            return Err(not_a_bundle(format!(
+                "it looks like a source or state directory ({name})"
+            )));
+        }
+
+        if file_type.is_dir() {
+            scan_bundle_entries(root, &entry_path, not_a_bundle)?;
+        } else if !file_type.is_file() {
+            return Err(not_a_bundle(format!(
+                "it holds a non-regular public asset ({relative})"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn is_source_map(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("map"))
 }
 
 /// 相对路径按给定工作目录展开，并在词法层面消掉 `.` 与 `..`。
