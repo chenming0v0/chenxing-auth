@@ -228,6 +228,105 @@ fn s256_challenge(verifier: &str) -> String {
 }
 
 #[tokio::test]
+async fn transplanted_provider_ciphertext_is_rejected_before_token_request() {
+    let (mock, mock_state) = mock_server().await;
+    let (router, database, key_directory, source_slug) = setup(mock).await;
+    let target_slug = format!("transplant-{}", Uuid::new_v4().simple());
+    let input = serde_json::json!({
+        "name": "Transplant Target",
+        "slug": target_slug,
+        "authorization_endpoint": format!("http://{mock}/authorize"),
+        "token_endpoint": format!("http://{mock}/token"),
+        "userinfo_endpoint": format!("http://{mock}/userinfo"),
+        "client_id": "target-client",
+        "client_secret": "target-secret",
+        "scopes": ["openid", "email"],
+        "subject_claim": "sub",
+        "email_claim": "email",
+        "name_claim": "name",
+        "email_verified_claim": "email_verified",
+        "client_auth_method": "request_body"
+    });
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/oauth/providers")
+                .header("authorization", "Bearer provider-flow-admin")
+                .header("content-type", "application/json")
+                .body(Body::from(input.to_string()))
+                .expect("target provider request"),
+        )
+        .await
+        .expect("target provider response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/admin/oauth/providers/{target_slug}/enable"
+                ))
+                .header("authorization", "Bearer provider-flow-admin")
+                .body(Body::empty())
+                .expect("enable target provider"),
+        )
+        .await
+        .expect("enable target response");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    chenxing_auth::sqlx::query(
+        "UPDATE oauth_providers AS target
+         SET client_secret_ciphertext = source.client_secret_ciphertext
+         FROM oauth_providers AS source
+         WHERE target.slug = $1 AND source.slug = $2",
+    )
+    .bind(&target_slug)
+    .bind(&source_slug)
+    .execute(&database)
+    .await
+    .expect("transplant provider ciphertext");
+
+    let start = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/auth/external/{target_slug}"))
+                .body(Body::empty())
+                .expect("start transplanted provider"),
+        )
+        .await
+        .expect("start response");
+    assert_eq!(start.status(), StatusCode::SEE_OTHER);
+    let state_cookie = set_cookie(&start, EXTERNAL_STATE_COOKIE_PREFIX);
+    let state = authorization_query(&location(&start), "state").expect("authorization state");
+    let callback = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/auth/external/{target_slug}/callback?code=mock-code&state={state}"
+                ))
+                .header("cookie", state_cookie)
+                .body(Body::empty())
+                .expect("transplanted provider callback"),
+        )
+        .await
+        .expect("callback response");
+
+    assert_eq!(callback.status(), StatusCode::SEE_OTHER);
+    assert!(location(&callback).contains("external=error"));
+    assert!(
+        mock_state.token_form.lock().await.is_none(),
+        "a transplanted ciphertext must fail before any secret reaches the target endpoint"
+    );
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
 async fn custom_provider_registers_reuses_identity_and_rejects_state_replay() {
     let (mock, mock_state) = mock_server().await;
     let external_subject = mock_state.subject.clone();

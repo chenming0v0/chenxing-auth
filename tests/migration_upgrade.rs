@@ -377,3 +377,136 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
         .await
         .expect("drop isolated migration schema");
 }
+
+#[tokio::test]
+async fn flattened_repair_rejects_trigger_names_from_other_schema_or_wrong_table() {
+    let database_url = env::var("MIGRATION_DATABASE_URL")
+        .or_else(|_| env::var("DATABASE_URL"))
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let suffix = Uuid::new_v4().simple().to_string();
+    let target_schema = format!("ctest_trigger_target_{suffix}");
+    let decoy_schema = format!("ctest_trigger_decoy_{suffix}");
+    let mut bootstrap = PgConnection::connect(&database_url)
+        .await
+        .expect("connect migration owner");
+    chenxing_auth::sqlx::query(&format!("CREATE SCHEMA {target_schema}"))
+        .execute(&mut bootstrap)
+        .await
+        .expect("create trigger isolation schemas");
+    chenxing_auth::sqlx::query(&format!("CREATE SCHEMA {decoy_schema}"))
+        .execute(&mut bootstrap)
+        .await
+        .expect("create trigger decoy schema");
+
+    let target_for_pool = target_schema.clone();
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .after_connect(move |connection, _meta| {
+            let schema = target_for_pool.clone();
+            Box::pin(async move {
+                chenxing_auth::sqlx::query(&format!("SET search_path TO {schema}"))
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&database_url)
+        .await
+        .expect("connect trigger target pool");
+    chenxing_auth::db::migrate(&pool)
+        .await
+        .expect("initialize current target schema");
+
+    for statement in [
+        "ALTER TABLE user_passkeys DROP COLUMN state_version",
+        "DROP TABLE client_operation_idempotency",
+        "DROP TRIGGER audit_events_append_only_trigger ON audit_events",
+        "CREATE TABLE trigger_decoy_target (id BIGINT)",
+        "CREATE FUNCTION trigger_decoy_function() RETURNS trigger
+         LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$",
+        "CREATE TRIGGER audit_events_append_only_trigger
+         BEFORE INSERT ON trigger_decoy_target
+         FOR EACH ROW EXECUTE FUNCTION trigger_decoy_function()",
+        "DELETE FROM _sqlx_migrations",
+    ] {
+        chenxing_auth::sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .expect("prepare flattened target with wrong-table trigger");
+    }
+    for (version, description, checksum) in [
+        (
+            1_i64,
+            "current schema baseline",
+            "ca8607f4cd8b19d91531d9081d7951d70e266ef35c686c64bcff48e89728ea95",
+        ),
+        (
+            2_i64,
+            "controlled runtime issuer",
+            "70b7c2bd57303895720d0e13fbc56b16d43645f67363803fac73411fd8e4526f",
+        ),
+        (
+            3_i64,
+            "bounded plan quotas",
+            "56e9d9ea680ac129115cc21ac2ff5029f9f2746683bdb9cf42ad966afb3571c4",
+        ),
+    ] {
+        chenxing_auth::sqlx::query(
+            "INSERT INTO _sqlx_migrations
+                 (version, description, success, checksum, execution_time)
+             VALUES ($1, $2, TRUE, decode($3, 'hex'), 0)",
+        )
+        .bind(version)
+        .bind(description)
+        .bind(checksum)
+        .execute(&pool)
+        .await
+        .expect("install flattened ledger row");
+    }
+    for statement in [
+        format!("CREATE TABLE {decoy_schema}.audit_events (id BIGINT)"),
+        format!(
+            "CREATE FUNCTION {decoy_schema}.reject_audit_event_mutation() RETURNS trigger
+             LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$"
+        ),
+        format!(
+            "CREATE TRIGGER audit_events_append_only_trigger
+             BEFORE INSERT ON {decoy_schema}.audit_events
+             FOR EACH ROW EXECUTE FUNCTION {decoy_schema}.reject_audit_event_mutation()"
+        ),
+    ] {
+        chenxing_auth::sqlx::query(&statement)
+            .execute(&mut bootstrap)
+            .await
+            .expect("create cross-schema trigger decoy");
+    }
+
+    let migration_result = chenxing_auth::db::migrate(&pool).await;
+    let ledger: Vec<i64> = chenxing_auth::sqlx::query_scalar(
+        "SELECT version FROM _sqlx_migrations WHERE success ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read ledger after rejected repair");
+    pool.close().await;
+    chenxing_auth::sqlx::query(&format!("DROP SCHEMA {target_schema} CASCADE"))
+        .execute(&mut bootstrap)
+        .await
+        .expect("drop trigger target schema");
+    chenxing_auth::sqlx::query(&format!("DROP SCHEMA {decoy_schema} CASCADE"))
+        .execute(&mut bootstrap)
+        .await
+        .expect("drop trigger decoy schema");
+
+    let error = migration_result
+        .expect_err("wrong-table and cross-schema trigger names must not satisfy flattened repair");
+    assert!(
+        error.to_string().contains("does not match that release"),
+        "unexpected migration error: {error}"
+    );
+    assert_eq!(
+        ledger,
+        vec![1, 2, 3],
+        "failed repair must not rewrite the ledger"
+    );
+}

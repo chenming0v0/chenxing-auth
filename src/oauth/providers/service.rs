@@ -10,7 +10,7 @@ use super::{
     endpoint_policy::{EndpointPolicy, validate_endpoint_url},
     http_client::build_provider_http_client,
     repository::{self, CreateIdentityError},
-    secrets::{SecretError, SecretManager},
+    secrets::{SecretContext, SecretError, SecretManager},
 };
 use crate::users::domain::{UserId, UserStatus};
 use reqwest::Client;
@@ -116,12 +116,17 @@ impl ExternalOAuthService {
         input: ProviderInput,
     ) -> Result<ProviderSummary, ExternalOAuthError> {
         let validated = input.validate(self.policy)?;
-        let ciphertext = self.encrypt_secret(validated.client_secret.as_deref())?;
-        Ok(
-            repository::insert_provider(&self.pool, &validated, ciphertext)
-                .await?
-                .summary(),
-        )
+        let mut transaction = self.pool.begin().await?;
+        let mut provider =
+            repository::insert_provider(&mut transaction, &validated, Vec::new()).await?;
+        let ciphertext = self.encrypt_secret(provider.id, validated.client_secret.as_deref())?;
+        if !ciphertext.is_empty() {
+            repository::update_client_secret_ciphertext(&mut transaction, provider.id, &ciphertext)
+                .await?;
+            provider.client_secret_ciphertext = ciphertext;
+        }
+        transaction.commit().await?;
+        Ok(provider.summary())
     }
 
     pub async fn update(
@@ -130,11 +135,18 @@ impl ExternalOAuthService {
         input: ProviderInput,
     ) -> Result<bool, ExternalOAuthError> {
         let validated = input.validate(self.policy)?;
+        let mut transaction = self.pool.begin().await?;
+        let provider = repository::lock_by_slug(&mut transaction, slug)
+            .await?
+            .ok_or(ExternalOAuthError::NotFound)?;
         let ciphertext = match validated.client_secret.as_deref() {
-            Some(secret) => self.encrypt_secret(Some(secret))?,
-            None => self.find(slug).await?.client_secret_ciphertext,
+            Some(secret) => self.encrypt_secret(provider.id, Some(secret))?,
+            None => provider.client_secret_ciphertext,
         };
-        Ok(repository::update_provider(&self.pool, slug, &validated, ciphertext).await?)
+        let updated =
+            repository::update_provider(&mut transaction, slug, &validated, ciphertext).await?;
+        transaction.commit().await?;
+        Ok(updated)
     }
 
     /// 切换 provider 启用状态。
@@ -201,9 +213,16 @@ impl ExternalOAuthService {
         })
     }
 
-    fn encrypt_secret(&self, secret: Option<&str>) -> Result<Vec<u8>, ExternalOAuthError> {
+    fn encrypt_secret(
+        &self,
+        provider_id: i64,
+        secret: Option<&str>,
+    ) -> Result<Vec<u8>, ExternalOAuthError> {
         secret
-            .map(|secret| self.secrets.encrypt(secret))
+            .map(|secret| {
+                self.secrets
+                    .encrypt_for(SecretContext::Provider(provider_id), secret)
+            })
             .transpose()
             .map(|value| value.unwrap_or_default())
             .map_err(Into::into)
@@ -230,7 +249,10 @@ impl ExternalOAuthService {
             return Err(ExternalOAuthError::MissingSecret);
         }
         self.secrets
-            .decrypt(&provider.client_secret_ciphertext)
+            .decrypt_for(
+                SecretContext::Provider(provider.id),
+                &provider.client_secret_ciphertext,
+            )
             .map_err(Into::into)
     }
 }
