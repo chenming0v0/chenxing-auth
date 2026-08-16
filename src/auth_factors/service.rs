@@ -126,7 +126,9 @@ pub enum AuthFactorServiceError {
     SourceIpUnavailable,
     #[error("passkey credential conflicts with an existing credential")]
     PasskeyConflict,
-    #[error("passkey credential update lost a concurrent compare-and-swap")]
+    /// 凭据行已消失/被换行，或有限次 CAS 重读合并后仍写不进去。
+    /// 调用方不得把它当成认证成功。
+    #[error("passkey credential update could not be applied")]
     PasskeyUpdateConflict,
     #[error("account already has an authentication factor")]
     FirstFactorAlreadyExists,

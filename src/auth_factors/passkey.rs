@@ -230,14 +230,18 @@ impl AuthFactorService {
         // 同一个 ticket 可以反复请求 challenge，限流检查必须挡在 list_passkeys 之前。
         self.ensure_passkey_attempt_allowed(ticket.user_id, ticket_id, source_ip)
             .await?;
-        let passkeys = repository::list_passkeys(&self.pool, ticket.user_id).await?;
+        let passkeys = repository::list_passkeys_with_versions(&self.pool, ticket.user_id).await?;
         if passkeys.is_empty() {
             return Ok(None);
         }
         let credentials = passkeys
             .iter()
-            .map(core_credential)
+            .map(|passkey| core_credential(passkey.passkey()))
             .collect::<Result<Vec<_>, _>>()?;
+        let credential_row_ids = passkeys
+            .iter()
+            .map(|passkey| (passkey.credential_id.clone(), passkey.id))
+            .collect();
         let core = build_core(&settings)?;
         let builder = core
             .new_challenge_authenticate_builder(
@@ -258,6 +262,7 @@ impl AuthFactorService {
                     user_id: ticket.user_id,
                     state,
                     settings,
+                    credential_row_ids,
                 },
                 LoginTicket::TTL.whole_seconds() as u64,
             )
@@ -289,9 +294,8 @@ impl AuthFactorService {
         if pending.user_id != ticket.user_id {
             return Ok(PasskeyConfirmation::InvalidTicket);
         }
-        // 预留额度必须在 authenticate_credential 验签和 list_passkeys 查询之前：challenge 是
-        // 一次性的，但同一个 ticket 在 5 分钟 TTL 内可以反复提交伪造 credential，每次都会付出
-        // 一轮验签与数据库查询的代价。
+        // 预留额度必须在 authenticate_credential 验签之前：challenge 是一次性的，但同一个
+        // ticket 在 5 分钟 TTL 内可以反复提交伪造 credential，每次都会付出一轮验签代价。
         let account_key = self.account_key(ticket.user_id).await?;
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
         if self.ensure_dimensions_allowed(dimensions.clone()).await? {
@@ -318,18 +322,9 @@ impl AuthFactorService {
                     .await;
             }
         };
-        let mut passkeys =
-            match repository::list_passkeys_with_versions(&self.pool, ticket.user_id).await {
-                Ok(passkeys) => passkeys,
-                Err(error) => {
-                    self.release_dimensions(dimensions).await?;
-                    return Err(error.into());
-                }
-            };
-        let Some(passkey) = passkeys
-            .iter_mut()
-            .find(|passkey| passkey.cred_id() == result.cred_id())
-        else {
+        // 行身份来自签发 challenge 时的快照，不按 finish 当下的 credential_id 重查。
+        // 没有绑定（旧 pending 或凭据不在 challenge 集合里）按验签失败处理。
+        let Some(row_id) = pending.row_id_for(result.cred_id()) else {
             return self
                 .record_passkey_failure(
                     ticket_id,
@@ -345,36 +340,27 @@ impl AuthFactorService {
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
-        let expected_credential = passkey.credential.clone();
         let confirmation = consume_then_persist(
             PasskeyConfirmation::Completed(ticket.authenticated()),
             PasskeyConfirmation::InvalidTicket,
             self.tickets.take_for_holder(ticket_id, holder_hash),
             async {
-                if result.needs_update()
-                    && passkey
-                        .credential
-                        .update_credential(&result)
-                        .is_some_and(|changed| changed)
+                match repository::persist_passkey_authentication(
+                    &self.pool,
+                    ticket.user_id,
+                    row_id,
+                    result.cred_id(),
+                    &result,
+                )
+                .await?
                 {
-                    match repository::update_passkey(
-                        &self.pool,
-                        ticket.user_id,
-                        result.cred_id(),
-                        passkey.state_version,
-                        &expected_credential,
-                        &passkey.credential,
-                    )
-                    .await?
-                    {
-                        repository::PasskeyUpdateOutcome::Updated => {}
-                        repository::PasskeyUpdateOutcome::Conflict
-                        | repository::PasskeyUpdateOutcome::Missing => {
-                            return Err(AuthFactorServiceError::PasskeyUpdateConflict);
-                        }
+                    repository::PasskeyPersistOutcome::Applied
+                    | repository::PasskeyPersistOutcome::AlreadyCurrent => Ok(()),
+                    repository::PasskeyPersistOutcome::Missing
+                    | repository::PasskeyPersistOutcome::Exhausted => {
+                        Err(AuthFactorServiceError::PasskeyUpdateConflict)
                     }
                 }
-                Ok::<(), AuthFactorServiceError>(())
             },
             |ticket| self.tickets.restore(ticket_id, ticket),
         )
