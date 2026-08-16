@@ -12,7 +12,7 @@ use super::{
     session::active_user_id,
 };
 use crate::audit::AuditEvent;
-use crate::{error, state::AppState};
+use crate::{error, settings::IssuerSnapshot, state::AppState};
 
 pub enum AuthorizationCodeIssue {
     Redirect(String),
@@ -58,6 +58,7 @@ impl fmt::Debug for AuthorizationCodeIssue {
 
 pub async fn issue_authorization_code_result(
     state: &AppState,
+    issuer: &IssuerSnapshot,
     user_id: String,
     validated: ValidatedAuthorizationRequest,
     source_ip: Option<&str>,
@@ -133,6 +134,8 @@ pub async fn issue_authorization_code_result(
         // 授权码绑定签发时的会话摘要：会话撤销后 Token 端点会拒绝兑换。
         validated.session_token_hash,
         limits.authorization_code_ttl_seconds,
+        // 信任域绑定必须来自请求级快照，不能在签发中途重读 runtime。
+        issuer.generation(),
         state.clock.now(),
     );
     let state_value = validated.state;
@@ -423,13 +426,16 @@ pub(crate) async fn restore_pending_after_failure(
 
 pub async fn issue_authorization_code(
     state: &AppState,
+    issuer: &IssuerSnapshot,
     user_id: String,
     validated: ValidatedAuthorizationRequest,
     source_ip: Option<&str>,
     user_agent: Option<&str>,
 ) -> Response {
     let pending = pending_from_validated(&validated);
-    match issue_authorization_code_result(state, user_id, validated, source_ip, user_agent).await {
+    match issue_authorization_code_result(state, issuer, user_id, validated, source_ip, user_agent)
+        .await
+    {
         Ok(AuthorizationCodeIssue::Redirect(redirect)) => Redirect::to(&redirect).into_response(),
         Ok(AuthorizationCodeIssue::QuotaExceeded) => authorization_quota_redirect(&pending),
         Err(error_value) => authorization_code_issue_error_response(error_value),

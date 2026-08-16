@@ -18,7 +18,7 @@ use super::{
     ui_responses::{DecisionResponse, PendingRequestResponse},
 };
 use crate::{
-    api::extract::{ApiJson, SessionRead, SessionWrite},
+    api::extract::{ApiJson, RequestIssuer, SessionRead, SessionWrite},
     audit::AuditEvent,
     clients::domain::canonicalize_redirect_uri,
     consents::ConsentServiceError,
@@ -197,6 +197,7 @@ pub async fn bind_authorization_request(
 /// 伪造请求的 body 不会被解析。
 pub async fn decide_authorization_request(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     session: SessionWrite,
@@ -356,6 +357,7 @@ pub async fn decide_authorization_request(
     }
     match issue_authorization_code_result(
         &state,
+        issuer.snapshot(),
         session.user_id.to_string(),
         validated,
         source_ip.as_deref(),
