@@ -59,6 +59,11 @@ async fn setup() -> Harness {
     .expect("test configuration");
     config.admin_token = ADMIN_TOKEN.to_owned();
     config.cookie_secure = false;
+    config.redis_keyspace = chenxing_auth::redis_keyspace::RedisKeyspace::new(&format!(
+        "totp-factor-race-{}",
+        Uuid::new_v4().simple()
+    ))
+    .expect("test Redis namespace");
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let email = format!("totp-race-{}@example.com", Uuid::new_v4().simple());
     // Service 层的并发测试需要直接持有 AppState，因此这里先克隆再交给 router。
@@ -210,17 +215,21 @@ async fn parallel_authenticated_totp_confirmations_have_only_one_winner() {
     assert_eq!(login_response.status(), StatusCode::OK);
     let session_cookie = pending_cookie(&login_response);
     let csrf_token = csrf(&session_cookie);
-    let setup = json_body(
-        request_with_session(
-            &router,
-            "/api/v1/auth/security/totp/enrollment/start",
-            serde_json::json!({}),
-            &session_cookie,
-            &csrf_token,
-        )
-        .await,
+    let start_response = request_with_session(
+        &router,
+        "/api/v1/auth/security/totp/enrollment/start",
+        serde_json::json!({}),
+        &session_cookie,
+        &csrf_token,
     )
     .await;
+    assert_eq!(
+        start_response.status(),
+        StatusCode::OK,
+        "enrollment start failed: {:?}",
+        start_response.status()
+    );
+    let setup = json_body(start_response).await;
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
     let now = u64::try_from(state.clock.now().unix_timestamp()).expect("fixed test timestamp");
     let body = serde_json::json!({
@@ -509,7 +518,13 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
     );
     for (ticket_id, _, _) in &outcomes {
         assert!(
-            !redis_key_exists(&format!("chenxing:auth:totp-setup:{ticket_id}")).await,
+            !redis_key_exists(
+                &state
+                    .config
+                    .redis_keyspace
+                    .key(&format!("chenxing:auth:totp-setup:{ticket_id}"))
+            )
+            .await,
             "neither winner nor loser may leave a pending TOTP secret"
         );
     }
@@ -546,8 +561,18 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
     let first_step = u64::try_from(first_now.unix_timestamp()).expect("first timestamp") / 30;
     let second_step = u64::try_from(second_now.unix_timestamp()).expect("second timestamp") / 30;
     let _: () = redis::cmd("DEL")
-        .arg(format!("chenxing:auth:totp-used:{user_id}:{first_step}"))
-        .arg(format!("chenxing:auth:totp-used:{user_id}:{second_step}"))
+        .arg(
+            state
+                .config
+                .redis_keyspace
+                .key(&format!("chenxing:auth:totp-used:{user_id}:{first_step}")),
+        )
+        .arg(
+            state
+                .config
+                .redis_keyspace
+                .key(&format!("chenxing:auth:totp-used:{user_id}:{second_step}")),
+        )
         .query_async(&mut conn)
         .await
         .expect("clear replay claims");
