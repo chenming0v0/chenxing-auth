@@ -138,6 +138,7 @@ fn authorization_code(harness: &Harness, session_token: Option<String>) -> Autho
         None,
         session_token,
     )
+    .with_issuer_generation(issuer(&harness.state).generation())
 }
 
 fn code_request(client_id: &str, code: &str) -> TokenRequest {

@@ -80,3 +80,21 @@ fn expired_authorization_code_cannot_be_redeemed() {
         Err(CodeError::Expired)
     );
 }
+
+/// Issue #516：授权码必须绑定签发时的 Issuer generation；缺失值 fail-closed。
+#[test]
+fn authorization_code_binds_issuer_generation_strictly() {
+    let unbound = AuthorizationCode::new(
+        "cx_project".to_owned(),
+        "https://project.example/callback".to_owned(),
+        "user-1".to_owned(),
+        vec!["openid".to_owned()],
+        "challenge".to_owned(),
+    );
+    assert!(unbound.issuer_generation.is_none());
+    assert!(!unbound.is_bound_to_issuer_generation(1));
+
+    let bound = unbound.with_issuer_generation(3);
+    assert!(bound.is_bound_to_issuer_generation(3));
+    assert!(!bound.is_bound_to_issuer_generation(4));
+}

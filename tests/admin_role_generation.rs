@@ -149,6 +149,13 @@ async fn issue_refresh_token(
         // #508：缺少会话绑定的授权码在 Token 端点 fail-closed，必须绑定真实
         // 浏览器会话才能走通兑换路径。
         Some(session_token.to_owned()),
+    )
+    .with_issuer_generation(
+        env.state
+            .issuer
+            .current()
+            .expect("test state has a loaded issuer")
+            .generation(),
     );
     env.state
         .authorization_codes

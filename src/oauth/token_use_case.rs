@@ -225,6 +225,25 @@ pub async fn exchange_code(
         )
         .await;
     }
+    // Authorization codes belong to the Issuer generation that minted them.
+    // Compare against the request-scoped snapshot before CAS so an A-era
+    // code cannot be consumed into iss=B tokens after a hot switch. Missing
+    // generation is a pre-upgrade payload and fails closed.
+    if !code.is_bound_to_issuer_generation(issuer.generation()) {
+        let reason = if code.issuer_generation.is_none() {
+            "authorization_code_issuer_generation_required"
+        } else {
+            "issuer_generation_changed"
+        };
+        return exchange_failure(
+            state,
+            Some(&code.user_id),
+            Some(client_id),
+            reason,
+            OAuthError::invalid_grant(),
+        )
+        .await;
+    }
     if let Err(error) = validate_code_binding(
         client_id,
         redirect_uri,

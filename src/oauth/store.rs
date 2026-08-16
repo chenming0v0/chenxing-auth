@@ -141,11 +141,12 @@ impl AuthorizationCodeStore {
                end
                local current = cjson.decode(current_json)
                local expected = cjson.decode(ARGV[1])
-               local fields = {
+                local fields = {
                    'value', 'client_id', 'redirect_uri', 'user_id',
-                   'session_token_hash', 'quota_reservation_id', 'scopes',
-                   'code_challenge', 'nonce', 'created_at', 'expires_at', 'redeemed_at'
-               }
+                   'session_token_hash', 'quota_reservation_id', 'issuer_generation',
+                   'scopes', 'code_challenge', 'nonce', 'created_at', 'expires_at',
+                   'redeemed_at'
+                }
                local function encoded(value)
                    if value == nil then return 'null' end
                    return cjson.encode(value)

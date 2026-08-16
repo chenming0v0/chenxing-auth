@@ -111,7 +111,12 @@ async fn browser_session_token(harness: &Harness) -> String {
     session.token
 }
 
-fn authorization_code(client_id: &str, user_id: i64, session_token: &str) -> AuthorizationCode {
+fn authorization_code(
+    client_id: &str,
+    user_id: i64,
+    session_token: &str,
+    issuer_generation: i64,
+) -> AuthorizationCode {
     AuthorizationCode::new_with_nonce(
         client_id.to_owned(),
         REDIRECT_URI.to_owned(),
@@ -121,6 +126,7 @@ fn authorization_code(client_id: &str, user_id: i64, session_token: &str) -> Aut
         None,
         Some(session_token.to_owned()),
     )
+    .with_issuer_generation(issuer_generation)
 }
 
 fn code_request(client_id: &str, code: &str) -> TokenRequest {
@@ -188,7 +194,12 @@ async fn authorization_code_cannot_persist_after_authenticated_secret_version_ch
     let authenticated =
         authenticate(&harness.state, &harness.client_id, &harness.client_secret).await;
     let session_token = browser_session_token(&harness).await;
-    let code = authorization_code(&harness.client_id, harness.user_id, &session_token);
+    let code = authorization_code(
+        &harness.client_id,
+        harness.user_id,
+        &session_token,
+        test_issuer(&harness.state).generation(),
+    );
     harness
         .state
         .authorization_codes
@@ -238,7 +249,12 @@ async fn refresh_token_cannot_cross_an_issuer_generation_change() {
     let authenticated =
         authenticate(&harness.state, &harness.client_id, &harness.client_secret).await;
     let session_token = browser_session_token(&harness).await;
-    let code = authorization_code(&harness.client_id, harness.user_id, &session_token);
+    let code = authorization_code(
+        &harness.client_id,
+        harness.user_id,
+        &session_token,
+        test_issuer(&harness.state).generation(),
+    );
     harness
         .state
         .authorization_codes
@@ -512,7 +528,12 @@ async fn concurrent_rotation_leaves_no_live_refresh_from_either_issuance_path() 
     let mut code_tasks = Vec::with_capacity(per_path);
     for _ in 0..per_path {
         let session_token = browser_session_token(&harness).await;
-        let code = authorization_code(&harness.client_id, harness.user_id, &session_token);
+        let code = authorization_code(
+            &harness.client_id,
+            harness.user_id,
+            &session_token,
+            test_issuer(&harness.state).generation(),
+        );
         harness
             .state
             .authorization_codes

@@ -53,6 +53,13 @@ async fn bound_session_token(state: &AppState, user_id: i64) -> String {
     session.token
 }
 
+fn test_issuer(state: &AppState) -> std::sync::Arc<chenxing_auth::settings::IssuerSnapshot> {
+    state
+        .issuer
+        .current()
+        .expect("test state has a loaded issuer")
+}
+
 #[tokio::test]
 async fn disabled_user_session_cannot_authorize_or_submit_consent() {
     let (state, database, key_directory) = test_state("oauth_flow").await;
@@ -187,7 +194,8 @@ async fn disabled_user_cannot_exchange_oauth_credentials_without_consuming_them(
         challenge,
         Some("disabled-nonce".to_owned()),
         Some(bound_session_token(&state, user_id).await),
-    );
+    )
+    .with_issuer_generation(test_issuer(&state).generation());
     let mut refresh = RefreshToken::new(
         client_id.clone(),
         user_id.to_string(),
@@ -480,7 +488,8 @@ async fn totp_reset_revocation_invalidates_outstanding_refresh_tokens() {
         challenge,
         Some("reset-nonce".to_owned()),
         Some(bound_session_token(&state, user_id).await),
-    );
+    )
+    .with_issuer_generation(test_issuer(&state).generation());
     state
         .authorization_codes
         .save(&code)
@@ -606,7 +615,8 @@ async fn authorization_code_is_restored_when_token_issuance_fails() {
         challenge,
         Some("restore-nonce".to_owned()),
         Some(bound_session_token(&state, user_id).await),
-    );
+    )
+    .with_issuer_generation(test_issuer(&state).generation());
     // 授权码兑换在 CAS 前校验 consent（Issue #417），直存授权码必须补 consent 行。
     chenxing_auth::sqlx::query(
         "INSERT INTO user_consents (user_id, client_id, scopes, updated_at)
@@ -830,7 +840,8 @@ async fn authorization_code_stays_consumed_when_refresh_cleanup_fails() {
         challenge,
         None,
         Some(bound_session_token(&state, user_id).await),
-    );
+    )
+    .with_issuer_generation(test_issuer(&state).generation());
     // 授权码兑换在 CAS 前校验 consent（Issue #417），直存授权码必须补 consent 行。
     chenxing_auth::sqlx::query(
         "INSERT INTO user_consents (user_id, client_id, scopes, updated_at)
@@ -938,6 +949,7 @@ async fn authorization_code_store_failure_does_not_consume_oauth_quota() {
     );
     let result = issue_authorization_code_result(
         &state,
+        test_issuer(&state).as_ref(),
         user_id.to_string(),
         ValidatedAuthorizationRequest {
             client_id: client_id.clone(),
@@ -1063,7 +1075,8 @@ async fn revoked_consent_rejects_unused_authorization_code_exchange() {
         challenge,
         None,
         Some(bound_session_token(&state, user_id).await),
-    );
+    )
+    .with_issuer_generation(test_issuer(&state).generation());
     state
         .authorization_codes
         .save(&code)
@@ -1241,7 +1254,8 @@ async fn shrinking_client_scopes_narrows_refresh_and_userinfo() {
         challenge,
         None,
         Some(bound_session_token(&state, user_id).await),
-    );
+    )
+    .with_issuer_generation(test_issuer(&state).generation());
     state
         .authorization_codes
         .save(&code)

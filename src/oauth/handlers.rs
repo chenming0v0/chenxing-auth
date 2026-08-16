@@ -21,10 +21,11 @@ use super::{
     token_security::enforce_source_qps_with_policy,
 };
 use crate::{
+    api::extract::RequestIssuer,
     clients::domain::canonicalize_redirect_uri,
     error,
     sessions::{cookies, domain::session_token_hash},
-    settings::SecurityLimitsSetting,
+    settings::{IssuerSnapshot, SecurityLimitsSetting},
     state::AppState,
 };
 
@@ -35,6 +36,7 @@ pub use super::authorization_code_handlers::{
 
 pub async fn authorize(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     headers: HeaderMap,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     request: Result<Query<AuthorizationRequest>, QueryRejection>,
@@ -47,6 +49,7 @@ pub async fn authorize(
     };
     authorize_request(
         state,
+        issuer.snapshot(),
         headers,
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
         request,
@@ -56,6 +59,7 @@ pub async fn authorize(
 
 pub async fn authorize_post(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     headers: HeaderMap,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     form: Result<Form<AuthorizationRequest>, FormRejection>,
@@ -68,6 +72,7 @@ pub async fn authorize_post(
     };
     authorize_request(
         state,
+        issuer.snapshot(),
         headers,
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
         request,
@@ -77,6 +82,7 @@ pub async fn authorize_post(
 
 async fn authorize_request(
     state: AppState,
+    issuer: &IssuerSnapshot,
     headers: HeaderMap,
     peer: Option<SocketAddr>,
     request: AuthorizationRequest,
@@ -158,6 +164,7 @@ async fn authorize_request(
         Ok(true) => {
             issue_preconsented_request(
                 &state,
+                issuer,
                 pending,
                 user_id.to_string(),
                 source_ip.as_deref(),
@@ -292,6 +299,7 @@ async fn load_security_limits(state: &AppState) -> Result<SecurityLimitsSetting,
 
 async fn issue_preconsented_request(
     state: &AppState,
+    issuer: &IssuerSnapshot,
     pending: PendingAuthorization,
     user_id: String,
     source_ip: Option<&str>,
@@ -332,7 +340,9 @@ async fn issue_preconsented_request(
     };
 
     let validated = validated_pending_request(consumed.request.clone());
-    match issue_authorization_code_result(state, user_id, validated, source_ip, user_agent).await {
+    match issue_authorization_code_result(state, issuer, user_id, validated, source_ip, user_agent)
+        .await
+    {
         Ok(AuthorizationCodeIssue::Redirect(redirect)) => Redirect::to(&redirect).into_response(),
         Ok(AuthorizationCodeIssue::QuotaExceeded) => {
             restore_pending_after_failure(state, &consumed.request, consumed.remaining_ttl_ms)

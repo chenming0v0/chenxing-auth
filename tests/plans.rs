@@ -38,6 +38,15 @@ use support::{
     validated_request_with_challenge,
 };
 
+fn test_issuer(
+    state: &chenxing_auth::state::AppState,
+) -> std::sync::Arc<chenxing_auth::settings::IssuerSnapshot> {
+    state
+        .issuer
+        .current()
+        .expect("test state has a loaded issuer")
+}
+
 /// #508：无会话绑定的授权码在 Token 端点 fail-closed，直存授权码走兑换路径的
 /// 测试必须先把码绑定到一条已持久化的浏览器会话上。
 async fn bound_session_token(state: &chenxing_auth::state::AppState, user_id: i64) -> String {
@@ -278,6 +287,7 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
     for _ in 0..2 {
         let result = issue_authorization_code_result(
             &env.state,
+            test_issuer(&env.state).as_ref(),
             user_id.to_string(),
             validated.clone(),
             None,
@@ -287,10 +297,16 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
         .expect("authorization within daily limit");
         assert!(matches!(result, AuthorizationCodeIssue::Redirect(_)));
     }
-    let result =
-        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
-            .await
-            .expect("authorization over daily limit");
+    let result = issue_authorization_code_result(
+        &env.state,
+        test_issuer(&env.state).as_ref(),
+        user_id.to_string(),
+        validated,
+        None,
+        None,
+    )
+    .await
+    .expect("authorization over daily limit");
     assert!(matches!(result, AuthorizationCodeIssue::QuotaExceeded));
 
     env.cleanup().await;
@@ -335,6 +351,7 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
     );
     let failed = issue_authorization_code_result(
         &env.state,
+        test_issuer(&env.state).as_ref(),
         user_id.to_string(),
         validated.clone(),
         None,
@@ -370,10 +387,16 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
     assert_eq!(after_refund.monthly_used, before.monthly_used);
 
     env.state.authorization_codes = AuthorizationCodeStore::new(env.state.redis.clone());
-    let retry =
-        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
-            .await
-            .expect("retry after quota refund");
+    let retry = issue_authorization_code_result(
+        &env.state,
+        test_issuer(&env.state).as_ref(),
+        user_id.to_string(),
+        validated,
+        None,
+        None,
+    )
+    .await
+    .expect("retry after quota refund");
     assert!(matches!(retry, AuthorizationCodeIssue::Redirect(_)));
 
     let snapshot = env
@@ -417,6 +440,7 @@ async fn unlimited_monthly_plan_never_rejects_authorizations() {
     for _ in 0..6 {
         let result = issue_authorization_code_result(
             &env.state,
+            test_issuer(&env.state).as_ref(),
             user_id.to_string(),
             validated.clone(),
             None,
@@ -707,10 +731,16 @@ async fn unsetting_the_last_default_plan_closes_self_service() {
     let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
     let mut validated = validated_request(&existing_client_id, user_id);
     validated.session_token_hash = Some(session_hash);
-    let result =
-        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
-            .await
-            .expect("existing client authorization must keep working without a default plan");
+    let result = issue_authorization_code_result(
+        &env.state,
+        test_issuer(&env.state).as_ref(),
+        user_id.to_string(),
+        validated,
+        None,
+        None,
+    )
+    .await
+    .expect("existing client authorization must keep working without a default plan");
     assert!(matches!(result, AuthorizationCodeIssue::Redirect(_)));
 
     env.cleanup().await;
@@ -878,10 +908,16 @@ async fn no_default_plan_keeps_existing_user_clients_working() {
     let mut validated =
         validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier));
     validated.session_token_hash = Some(session_hash);
-    let issued =
-        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
-            .await
-            .expect("authorization must succeed without any plan");
+    let issued = issue_authorization_code_result(
+        &env.state,
+        test_issuer(&env.state).as_ref(),
+        user_id.to_string(),
+        validated,
+        None,
+        None,
+    )
+    .await
+    .expect("authorization must succeed without any plan");
     let AuthorizationCodeIssue::Redirect(redirect) = issued else {
         panic!("authorization without a plan must not be quota-limited");
     };
@@ -1004,10 +1040,16 @@ async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
     let mut validated =
         validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier));
     validated.session_token_hash = Some(session_hash);
-    let issued =
-        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
-            .await
-            .expect("admin client authorization must succeed without any plan");
+    let issued = issue_authorization_code_result(
+        &env.state,
+        test_issuer(&env.state).as_ref(),
+        user_id.to_string(),
+        validated,
+        None,
+        None,
+    )
+    .await
+    .expect("admin client authorization must succeed without any plan");
     let AuthorizationCodeIssue::Redirect(redirect) = issued else {
         panic!("admin client authorization must not be quota-limited");
     };
