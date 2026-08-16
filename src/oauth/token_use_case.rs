@@ -24,7 +24,7 @@ use token_use_case_finalize::{
 pub(crate) use token_use_case_support::{TokenIssueParams, issue_token_response};
 use token_use_case_support::{
     authorization_code_session_binding, compensate_authorization_code_exchange,
-    validate_code_binding,
+    confirm_consent_after_persist, validate_code_binding,
 };
 
 #[derive(Deserialize)]
@@ -307,8 +307,8 @@ pub async fn exchange_code(
     // #417）；scope 也不复核当前注册集合（Issue #421）。闸门与 refresh /
     // UserInfo 共用同一实现，放在 CAS 之前：授权失效不该先烧掉授权码，存储
     // 故障更不该。
-    let scopes = match effective_grant_scopes(state, &code.user_id, client_id, &code.scopes).await {
-        Ok(scopes) => scopes,
+    let grant = match effective_grant_scopes(state, &code.user_id, client_id, &code.scopes).await {
+        Ok(grant) => grant,
         Err(gate_error) => {
             let error = match gate_error {
                 GrantGateError::Denied(_) => OAuthError::invalid_grant(),
@@ -407,7 +407,7 @@ pub async fn exchange_code(
     let refresh = RefreshToken::new_at_with_client_secret_version(
         client_id.to_owned(),
         code.user_id.clone(),
-        scopes.clone(),
+        grant.scopes.clone(),
         authenticated.client_secret_version(),
         user_epoch,
         issuer.generation(),
@@ -447,13 +447,21 @@ pub async fn exchange_code(
         )
         .await;
     }
+    confirm_consent_after_persist(
+        state,
+        &code.user_id,
+        client_id,
+        grant.consent_version,
+        &refresh.value,
+    )
+    .await?;
     finalize_authorization_code_exchange(
         state,
         AuthorizationCodeFinalization {
             issuer: issuer.issuer(),
             code: &code,
             client_id,
-            scopes: &scopes,
+            scopes: &grant.scopes,
             refresh: &refresh,
             session: &session_binding,
         },

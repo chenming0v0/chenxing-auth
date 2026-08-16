@@ -1,11 +1,12 @@
 use super::super::{
     code::AuthorizationCode,
     id_token::{IdTokenProfile, issue_id_token_with_profile_at},
+    issuance_fence::{IssuanceFenceError, IssuanceSnapshot, confirm_issuance_snapshot},
     pkce::verify_s256,
     session::active_user_id,
     token::issue_access_token_at,
 };
-use super::{OAuthError, TokenResponse};
+use super::{OAuthError, TokenResponse, token_exchange_audit::exchange_failure};
 use crate::{
     config::IssuerUrl, sessions::domain::decode_session_token_hash, state::AppState,
     users::domain::UserId,
@@ -209,6 +210,49 @@ pub(super) async fn authorization_code_session_binding(
             tracing::error!(error = %store_error, "failed to load authorization code session");
             Err(OAuthError::temporarily_unavailable())
         }
+    }
+}
+
+/// Persist 之后复核同意版本。失败则丢掉刚写下的 Refresh Token，不恢复授权码。
+pub(super) async fn confirm_consent_after_persist(
+    state: &AppState,
+    user_id: &str,
+    client_id: &str,
+    consent_version: i64,
+    refresh_value: &str,
+) -> Result<(), OAuthError> {
+    let snapshot = IssuanceSnapshot {
+        consent_version: Some(consent_version),
+        session_epoch: None,
+    };
+    match confirm_issuance_snapshot(state, user_id, client_id, &snapshot).await {
+        Ok(()) => Ok(()),
+        Err(fence) => {
+            discard_issued_refresh(state, refresh_value).await;
+            let error = match fence {
+                IssuanceFenceError::Denied(_) => OAuthError::invalid_grant(),
+                IssuanceFenceError::Unavailable(_) => OAuthError::temporarily_unavailable(),
+            };
+            exchange_failure(state, Some(user_id), Some(client_id), fence.reason(), error)
+                .await
+                .map(|_| ())
+        }
+    }
+}
+
+/// 围栏失败后丢掉刚写下的 Refresh Token，不恢复授权码，也不重排配额退款。
+///
+/// 与 [`compensate_authorization_code_exchange`] 的差别是安全边界，不是风格：
+/// 同意已经在 persist 之后被撤销（Issue #475），授权码代表的那次授权不再成立。
+/// 把码放回去等于让下一次兑换再跑一遍闸门——闸门会拒绝，但也会把「已消费」
+/// 变成「仍可重试」，撤销路径就不再是一次性的。配额已经随 CAS 取消；同意没了，
+/// 这笔授权不该再占用可退额度。
+async fn discard_issued_refresh(state: &AppState, refresh_value: &str) {
+    if let Err(store_error) = state.refresh_tokens.remove(refresh_value).await {
+        tracing::error!(
+            error = %store_error,
+            "failed to discard refresh token after issuance fence rejection"
+        );
     }
 }
 
