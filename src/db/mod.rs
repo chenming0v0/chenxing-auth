@@ -282,6 +282,16 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "bounded plan quotas",
             include_str!("../../migrations/0029_plan_quota_bounds.sql"),
         ),
+        (
+            30,
+            "passkey state version",
+            include_str!("../../migrations/0030_passkey_state_version.sql"),
+        ),
+        (
+            31,
+            "client operation idempotency",
+            include_str!("../../migrations/0031_client_operation_idempotency.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

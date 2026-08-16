@@ -1,3 +1,7 @@
+use std::{
+    sync::{Arc, Barrier},
+    thread,
+};
 use time::OffsetDateTime;
 
 use super::{
@@ -147,6 +151,76 @@ fn stale_record_does_not_replace_a_concurrent_new_state() {
         IssuerRuntimeState::Ready(snapshot)
             if snapshot.generation() == 3
                 && snapshot.issuer().as_str() == "https://new.example.com"
+    ));
+}
+
+#[test]
+fn barrier_old_reads_cannot_publish_over_a_new_generation_for_all_raw_states() {
+    let config = config();
+    let cases = [
+        (None, Some("https://new.example.com")),
+        (
+            Some("https://old.example.com"),
+            Some("https://new.example.com"),
+        ),
+        (Some(""), Some("https://new.example.com")),
+        (Some("not-a-url"), Some("https://new.example.com")),
+    ];
+
+    for (old_value, new_value) in cases {
+        let initial_raw = old_value.map(|value| raw(Some(value), 10));
+        let runtime = IssuerRuntime::new_from_raw(&config, initial_raw.as_ref());
+        let expected = runtime.state();
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let worker = runtime.clone();
+        let worker_entered = entered.clone();
+        let worker_release = release.clone();
+        let old_record = old_value.map(|value| raw(Some(value), 10));
+        let handle = thread::spawn(move || {
+            worker_entered.wait();
+            worker_release.wait();
+            worker
+                .apply_raw_if_unchanged(&expected, old_record.as_ref())
+                .expect("stale worker transition");
+        });
+
+        entered.wait();
+        runtime
+            .apply(&record(new_value.expect("new issuer"), 11))
+            .expect("new generation apply");
+        release.wait();
+        handle.join().expect("worker join");
+
+        assert!(matches!(
+            runtime.state().as_ref(),
+            IssuerRuntimeState::Ready(snapshot)
+                if snapshot.generation() == 11
+                    && snapshot.issuer().as_str() == "https://new.example.com"
+        ));
+    }
+}
+
+#[test]
+fn concurrent_runtime_clones_never_publish_a_lower_generation() {
+    let config = config();
+    let runtime = IssuerRuntime::new_from_raw(&config, None);
+    let mut handles = Vec::new();
+    for generation in (1..=8).rev() {
+        let runtime = runtime.clone();
+        let config_value = format!("https://issuer-{generation}.example.com");
+        handles.push(thread::spawn(move || {
+            runtime
+                .apply(&record(&config_value, generation))
+                .expect("valid concurrent issuer");
+        }));
+    }
+    for handle in handles {
+        handle.join().expect("issuer clone join");
+    }
+    assert!(matches!(
+        runtime.state().as_ref(),
+        IssuerRuntimeState::Ready(snapshot) if snapshot.generation() == 8
     ));
 }
 

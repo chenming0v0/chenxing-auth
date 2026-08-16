@@ -318,13 +318,14 @@ impl AuthFactorService {
                     .await;
             }
         };
-        let mut passkeys = match repository::list_passkeys(&self.pool, ticket.user_id).await {
-            Ok(passkeys) => passkeys,
-            Err(error) => {
-                self.release_dimensions(dimensions).await?;
-                return Err(error.into());
-            }
-        };
+        let mut passkeys =
+            match repository::list_passkeys_with_versions(&self.pool, ticket.user_id).await {
+                Ok(passkeys) => passkeys,
+                Err(error) => {
+                    self.release_dimensions(dimensions).await?;
+                    return Err(error.into());
+                }
+            };
         let Some(passkey) = passkeys
             .iter_mut()
             .find(|passkey| passkey.cred_id() == result.cred_id())
@@ -344,6 +345,7 @@ impl AuthFactorService {
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
+        let expected_credential = passkey.credential.clone();
         let confirmation = consume_then_persist(
             PasskeyConfirmation::Completed(ticket.authenticated()),
             PasskeyConfirmation::InvalidTicket,
@@ -351,10 +353,26 @@ impl AuthFactorService {
             async {
                 if result.needs_update()
                     && passkey
+                        .credential
                         .update_credential(&result)
                         .is_some_and(|changed| changed)
                 {
-                    repository::update_passkey(&self.pool, result.cred_id(), passkey).await?;
+                    match repository::update_passkey(
+                        &self.pool,
+                        ticket.user_id,
+                        result.cred_id(),
+                        passkey.state_version,
+                        &expected_credential,
+                        &passkey.credential,
+                    )
+                    .await?
+                    {
+                        repository::PasskeyUpdateOutcome::Updated => {}
+                        repository::PasskeyUpdateOutcome::Conflict
+                        | repository::PasskeyUpdateOutcome::Missing => {
+                            return Err(AuthFactorServiceError::PasskeyUpdateConflict);
+                        }
+                    }
                 }
                 Ok::<(), AuthFactorServiceError>(())
             },

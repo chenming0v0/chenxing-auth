@@ -30,6 +30,7 @@ mod request_store_scripts;
 pub mod response;
 pub mod revocation;
 pub mod revocation_handler;
+pub mod revoke_consent_use_case;
 pub mod session;
 pub mod store;
 pub mod token;
@@ -57,6 +58,7 @@ pub struct OpenIdConfiguration {
     pub claims_supported: Vec<&'static str>,
     pub code_challenge_methods_supported: Vec<&'static str>,
     pub token_endpoint_auth_methods_supported: Vec<&'static str>,
+    pub revocation_endpoint_auth_methods_supported: Vec<&'static str>,
 }
 
 impl OpenIdConfiguration {
@@ -97,6 +99,11 @@ impl OpenIdConfiguration {
             ],
             code_challenge_methods_supported: vec!["S256"],
             token_endpoint_auth_methods_supported: vec![
+                "client_secret_basic",
+                "client_secret_post",
+                "none",
+            ],
+            revocation_endpoint_auth_methods_supported: vec![
                 "client_secret_basic",
                 "client_secret_post",
                 "none",

@@ -2,6 +2,23 @@ use crate::sqlx::PgPool;
 use crate::users::domain::UserId;
 use webauthn_rs::prelude::Passkey;
 
+#[derive(Debug, Clone)]
+pub struct StoredPasskey {
+    pub credential_id: Vec<u8>,
+    pub credential: Passkey,
+    pub state_version: i64,
+}
+
+impl StoredPasskey {
+    pub fn cred_id(&self) -> &[u8] {
+        &self.credential_id
+    }
+
+    pub fn passkey(&self) -> &Passkey {
+        &self.credential
+    }
+}
+
 #[path = "repository_authenticated.rs"]
 mod authenticated;
 pub use authenticated::{
@@ -311,16 +328,33 @@ pub async fn list_passkeys(
     pool: &PgPool,
     user_id: UserId,
 ) -> Result<Vec<Passkey>, crate::sqlx::Error> {
-    let rows = crate::sqlx::query_as::<_, (serde_json::Value,)>(
-        "SELECT credential FROM user_passkeys WHERE user_id = $1 ORDER BY created_at ASC",
+    Ok(list_passkeys_with_versions(pool, user_id)
+        .await?
+        .into_iter()
+        .map(|stored| stored.credential)
+        .collect())
+}
+
+pub async fn list_passkeys_with_versions(
+    pool: &PgPool,
+    user_id: UserId,
+) -> Result<Vec<StoredPasskey>, crate::sqlx::Error> {
+    let rows = crate::sqlx::query_as::<_, (Vec<u8>, serde_json::Value, i64)>(
+        "SELECT credential_id, credential, state_version
+         FROM user_passkeys WHERE user_id = $1 ORDER BY created_at ASC",
     )
     .bind(user_id)
     .fetch_all(pool)
     .await?;
     rows.into_iter()
-        .map(|(value,)| {
-            serde_json::from_value(value)
-                .map_err(|error| crate::sqlx::Error::Decode(Box::new(error)))
+        .map(|(credential_id, value, state_version)| {
+            let credential = serde_json::from_value(value)
+                .map_err(|error| crate::sqlx::Error::Decode(Box::new(error)))?;
+            Ok(StoredPasskey {
+                credential_id,
+                credential,
+                state_version,
+            })
         })
         .collect()
 }
@@ -368,19 +402,54 @@ pub async fn insert_passkey_if_empty(
 
 pub async fn update_passkey(
     pool: &PgPool,
+    user_id: UserId,
     credential_id: &[u8],
+    expected_version: i64,
+    expected_passkey: &Passkey,
     passkey: &Passkey,
-) -> Result<bool, crate::sqlx::Error> {
+) -> Result<PasskeyUpdateOutcome, crate::sqlx::Error> {
+    let expected_credential = serde_json::to_value(expected_passkey)
+        .map_err(|error| crate::sqlx::Error::Encode(Box::new(error)))?;
     let credential = serde_json::to_value(passkey)
         .map_err(|error| crate::sqlx::Error::Encode(Box::new(error)))?;
     let result = crate::sqlx::query(
-        "UPDATE user_passkeys SET credential = $2, updated_at = NOW() WHERE credential_id = $1",
+        "UPDATE user_passkeys
+         SET credential = $4, state_version = state_version + 1, updated_at = NOW()
+         WHERE credential_id = $1 AND user_id = $2 AND state_version = $3
+           AND credential = $5",
     )
     .bind(credential_id)
+    .bind(user_id)
+    .bind(expected_version)
     .bind(credential)
+    .bind(expected_credential)
     .execute(pool)
     .await?;
-    Ok(result.rows_affected() == 1)
+    if result.rows_affected() == 1 {
+        return Ok(PasskeyUpdateOutcome::Updated);
+    }
+    let exists: bool = crate::sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM user_passkeys
+             WHERE credential_id = $1 AND user_id = $2
+         )",
+    )
+    .bind(credential_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(if exists {
+        PasskeyUpdateOutcome::Conflict
+    } else {
+        PasskeyUpdateOutcome::Missing
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasskeyUpdateOutcome {
+    Updated,
+    Conflict,
+    Missing,
 }
 
 pub(super) async fn lock_factor_account(

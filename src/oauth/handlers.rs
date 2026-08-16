@@ -29,7 +29,8 @@ use crate::{
 };
 
 pub use super::authorization_code_handlers::{
-    AuthorizationCodeIssue, issue_authorization_code_result, validated_pending_request,
+    AuthorizationCodeIssue, AuthorizationCodeIssueError, issue_authorization_code_result,
+    validated_pending_request,
 };
 
 pub async fn authorize(

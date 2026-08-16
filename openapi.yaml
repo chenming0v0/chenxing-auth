@@ -877,7 +877,9 @@ paths:
       summary: 创建当前用户的 OAuth 项目
       operationId: createOwnedOAuthClient
       security: [{ sessionCookie: [] }]
-      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      parameters:
+        - { $ref: '#/components/parameters/CsrfHeader' }
+        - { $ref: '#/components/parameters/IdempotencyKeyHeader' }
       requestBody:
         required: true
         content:
@@ -900,6 +902,7 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/authorized-apps:
     get:
       tags: [User Auth/Authorized Apps]
@@ -985,6 +988,7 @@ paths:
       parameters:
         - { name: client_id, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
+        - { $ref: '#/components/parameters/IdempotencyKeyHeader' }
       responses:
         '200':
           description: 新 Secret，只返回一次
@@ -995,6 +999,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/session:
     delete:
       tags: [User Auth/Sessions]
@@ -1214,13 +1219,13 @@ paths:
       summary: 交换授权码或刷新 Token
       operationId: token
       description: |
-        表单编码。Client 认证为 HTTP Basic 或 body 二选一。
+        表单编码。Client 认证支持 HTTP Basic、`client_secret` 表单字段，或公开 Client 的 `none`。
         Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。无记录、空值/无效值、
         数据库读取失败、Runtime Pending/Invalid 或事实无法一致应用，以及请求超时时统一返回 RFC 6749 信封的
         503 `temporarily_unavailable`。
         不会返回内部 API 的 `{code, message}`
         或 504 `request_timeout`（Issues #423、#441）。
-      security: [{ basicClientAuth: [] }]
+      security: [{ basicClientAuth: [] }, {}]
       requestBody:
         required: true
         content:
@@ -1254,6 +1259,28 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UserInfo'
+        '401': { $ref: '#/components/responses/OAuthUnauthorized' }
+        '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
+    post:
+      tags: [OAuth/OIDC]
+      summary: 获取 OIDC UserInfo（表单 POST）
+      operationId: userinfoPost
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                access_token: { type: string, format: password }
+      responses:
+        '200':
+          description: 用户信息
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserInfo' }
+        '400': { $ref: '#/components/responses/OAuthBadRequest' }
         '401': { $ref: '#/components/responses/OAuthUnauthorized' }
         '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
   /oauth/revoke:
@@ -1724,7 +1751,9 @@ paths:
       summary: 创建 Client
       operationId: createClient
       security: [{ adminBearer: [] }, { sessionCookie: [] }]
-      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      parameters:
+        - { $ref: '#/components/parameters/CsrfHeader' }
+        - { $ref: '#/components/parameters/IdempotencyKeyHeader' }
       requestBody:
         required: true
         content:
@@ -1743,6 +1772,7 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/clients/{client_id}:
     put:
       tags: [Admin Clients]
@@ -1773,7 +1803,9 @@ paths:
       summary: 禁用 Client
       operationId: disableClient
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
-      parameters: [{ name: client_id, in: path, required: true, schema: { type: string } }, { $ref: '#/components/parameters/CsrfHeader' }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
         '204': { description: 操作成功 }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -1795,15 +1827,20 @@ paths:
       summary: 轮换 Client Secret
       operationId: rotateClientSecret
       security: [{ sessionCookie: [] }, { adminBearer: [] }]
-      parameters: [{ name: client_id, in: path, required: true, schema: { type: string } }, { $ref: '#/components/parameters/CsrfHeader' }]
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+        - { $ref: '#/components/parameters/IdempotencyKeyHeader' }
       responses:
         '200':
           description: 新 Secret，只返回一次
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ClientSecretResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/admins:
     get:
       tags: [Admin Auth]
@@ -2388,6 +2425,17 @@ components:
     ClientId: { name: client_id, in: query, required: true, schema: { type: string } }
     SessionResponseMode: { name: X-Chenxing-Session-Mode, in: header, required: false, description: 非浏览器兼容模式。仅在 SESSION_TOKEN_RESPONSE_ENABLED=true 且值为 token 时将 session_id 放入 JSON；浏览器不得发送此请求头。, schema: { type: string, enum: [token] } }
     CsrfHeader: { name: X-CSRF-Token, in: header, required: true, description: 浏览器 Session 写操作必需；ADMIN_TOKEN Bearer 请求不需要。ADMIN_TOKEN 为空时整个管理面关闭，管理请求一律 403 admin_disabled，本请求头不再生效, schema: { type: string } }
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Client 创建与 Secret 轮换的可选重试键。调用方应为一次逻辑操作生成同一个 1..128 字节可见 ASCII 值，
+        并保留到收到成功响应；24 小时内同一调用者、同一键和同一请求返回相同 Client ID/Secret 且不重复写审计。
+        非法键返回 400 invalid_idempotency_key；同键更换操作或请求内容返回 409 idempotency_conflict；
+        历史结果引用的 kid 已不可用时返回 503 idempotency_key_unavailable；审计依赖不可用时回滚整个操作并返回 503 audit_unavailable。
+        服务端只保存 SHA-256 摘要，不保存原始键或明文 Secret。
+      schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]{1,128}$' }
     Page: { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
     PageSize: { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
     Search: { name: search, in: query, required: false, schema: { type: string, maxLength: 128 } }
@@ -2413,7 +2461,7 @@ components:
           example: { code: invalid_pagination, message: page must be a positive integer and page_size must be an integer between 1 and 100 }
     Unauthorized: { description: 未认证或凭据无效, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Forbidden: { description: 无权限（admin_forbidden）；ADMIN_TOKEN 未配置时管理接口统一返回 admin_disabled, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-    Conflict: { description: 资源冲突（包括套餐 code 冲突、已归档套餐不能设为默认和 Passkey 禁用保护）, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    Conflict: { description: 资源冲突（包括 idempotency_conflict、套餐 code 冲突、已归档套餐不能设为默认和 Passkey 禁用保护）, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     NotFound: { description: 资源不存在, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     TooManyRequests: { description: 认证、OAuth 配额或 QPS 限流触发, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     ServiceUnavailable: { description: 依赖或必要能力暂不可用；Issuer 门禁在 Runtime Awaiting 时先回读 PostgreSQL 并应用合法值。数据库确实无 Issuer 记录时 code 为 issuer_not_configured；空值/无效值、读取失败、Runtime Pending/Invalid 或 DB/Runtime 事实无法一致应用时 code 为 issuer_runtime_invalid, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
@@ -2493,6 +2541,18 @@ components:
         identifier: { type: string, maxLength: 254, description: 用户名或邮箱；超过 254 字符按凭据错误拒绝 }
         password: { type: string, format: password, minLength: 10, maxLength: 128, description: 超过 128 字符按凭据错误拒绝，不返回独立错误码 }
         totp_code: { type: string, pattern: '^[0-9]{6}$' }
+    AuthorizationRequest:
+      type: object
+      required: [client_id, redirect_uri, response_type, scope, code_challenge, code_challenge_method]
+      properties:
+        client_id: { type: string }
+        redirect_uri: { type: string, format: uri }
+        response_type: { type: string, enum: [code] }
+        scope: { type: string, description: 空格分隔的 OAuth scope }
+        state: { type: string, maxLength: 512 }
+        nonce: { type: string, maxLength: 512 }
+        code_challenge: { type: string }
+        code_challenge_method: { type: string, enum: [S256] }
     PendingLoginResponse:
       type: object
       required: [status, methods]
@@ -2804,6 +2864,8 @@ components:
         - response_types_supported
         - subject_types_supported
         - id_token_signing_alg_values_supported
+        - token_endpoint_auth_methods_supported
+        - revocation_endpoint_auth_methods_supported
       properties:
         issuer: { type: string, format: uri }
         authorization_endpoint: { type: string, format: uri }
@@ -2821,6 +2883,7 @@ components:
           description: "支持的 ID Token Claims，含 sub、iss、aud、exp、iat、email、name、nonce、auth_time"
         code_challenge_methods_supported: { type: array, items: { type: string } }
         token_endpoint_auth_methods_supported: { type: array, items: { type: string } }
+        revocation_endpoint_auth_methods_supported: { type: array, items: { type: string } }
     UserInfo:
       type: object
       required: [sub]

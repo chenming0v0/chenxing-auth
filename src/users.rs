@@ -8,6 +8,7 @@ pub mod email;
 mod email_policy;
 pub mod entitlements_handlers;
 pub mod handlers;
+pub mod login_use_case;
 mod management;
 pub mod oauth_client_handlers;
 pub mod query_repository;

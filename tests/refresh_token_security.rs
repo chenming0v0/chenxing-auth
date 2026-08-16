@@ -36,6 +36,48 @@ fn family_revoked_key(family_id: &str) -> String {
     format!("cx:refresh:family_revoked:{family_id}")
 }
 
+#[tokio::test]
+async fn final_fence_failure_revokes_a_successor_refresh_token_from_the_grant() {
+    let store = RefreshTokenStore::new(redis_client());
+    let client_id = format!("cx_final_fence_{}", Uuid::new_v4().simple());
+    let user_id = format!("user-final-fence-{}", Uuid::new_v4().simple());
+    let original = RefreshToken::new(
+        client_id.clone(),
+        user_id.clone(),
+        vec!["openid".to_owned()],
+    );
+    let successor = original.rotate(vec!["openid".to_owned()]);
+    store.save(&original).await.expect("save original token");
+    assert_eq!(
+        store
+            .rotate_if_matches(&original.value, &original, &successor)
+            .await
+            .expect("rotate successor"),
+        RotationOutcome::Rotated
+    );
+    assert!(
+        store
+            .find(&successor.value)
+            .await
+            .expect("find successor")
+            .is_some()
+    );
+
+    let removed = store
+        .revoke_grant_tokens(&user_id, &client_id)
+        .await
+        .expect("revoke grant after final fence failure");
+    assert_eq!(removed, 1);
+    assert!(
+        store
+            .find(&successor.value)
+            .await
+            .expect("find revoked successor")
+            .is_none(),
+        "a consent or epoch fence failure must not leave a usable successor"
+    );
+}
+
 /// Issue #109：绝对生命周期限制生效，轮换不能无限延长有效期。
 #[tokio::test]
 async fn refresh_token_absolute_lifetime_is_enforced() {

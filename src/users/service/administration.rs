@@ -5,6 +5,7 @@
 //! 两条写路径共用同一张翻译表，不把并发授权终局泄漏到注册、登录等无关用例。
 
 use super::{UserService, UserServiceError};
+use crate::audit::AuditEvent;
 use crate::users::{
     ManagementActorCredential,
     domain::{UserId, UserRole, UserStatus},
@@ -24,6 +25,8 @@ pub enum ManagementWriteError {
     ActorSessionInvalid,
     #[error("the management actor no longer has user management permission")]
     ActorPermissionRequired,
+    #[error("the audit record could not be written; the change was rolled back")]
+    AuditUnavailable,
 }
 
 impl UserService {
@@ -63,6 +66,33 @@ impl UserService {
         credential: ManagementActorCredential,
     ) -> Result<bool, ManagementWriteError> {
         translate_owner_guard(repository::set_user_role(&self.pool, id, role, credential).await?)
+    }
+
+    pub async fn set_role_with_audit(
+        &self,
+        id: UserId,
+        role: UserRole,
+        credential: ManagementActorCredential,
+        audit_event: AuditEvent,
+    ) -> Result<bool, ManagementWriteError> {
+        let outcome = repository::set_user_role_with_audit(
+            &self.pool,
+            id,
+            role,
+            credential,
+            audit_event,
+        )
+        .await
+        .map_err(|error| match error {
+            repository::AuditedRoleGuardError::Database(error) => {
+                ManagementWriteError::Database(error)
+            }
+            repository::AuditedRoleGuardError::Audit(error) => {
+                tracing::error!(event = "user_role_update.audit_unavailable", error = %error);
+                ManagementWriteError::AuditUnavailable
+            }
+        })?;
+        translate_owner_guard(outcome)
     }
 
     /// 变更用户状态。
