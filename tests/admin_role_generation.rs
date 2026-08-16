@@ -319,31 +319,31 @@ async fn wait_for_actor_lock(database: &chenxing_auth::sqlx::PgPool, blocker_pid
 
 #[derive(Clone, Copy)]
 enum ActorMutation {
-    RoleOnly,
-    StatusOnly,
-    GenerationOnly,
+    Role,
+    Status,
+    Generation,
 }
 
 impl ActorMutation {
     const fn label(self) -> &'static str {
         match self {
-            Self::RoleOnly => "role",
-            Self::StatusOnly => "status",
-            Self::GenerationOnly => "generation",
+            Self::Role => "role",
+            Self::Status => "status",
+            Self::Generation => "generation",
         }
     }
 
     const fn expected_status(self) -> StatusCode {
         match self {
-            Self::RoleOnly => StatusCode::FORBIDDEN,
-            Self::StatusOnly | Self::GenerationOnly => StatusCode::UNAUTHORIZED,
+            Self::Role => StatusCode::FORBIDDEN,
+            Self::Status | Self::Generation => StatusCode::UNAUTHORIZED,
         }
     }
 
     const fn expected_code(self) -> &'static str {
         match self {
-            Self::RoleOnly => "admin_forbidden",
-            Self::StatusOnly | Self::GenerationOnly => "invalid_session",
+            Self::Role => "admin_forbidden",
+            Self::Status | Self::Generation => "invalid_session",
         }
     }
 }
@@ -355,12 +355,12 @@ async fn actor_active_role_and_generation_are_rechecked_inside_the_target_transa
     seed_user(&env.database, &format!("owner-{suffix}"), "owner").await;
 
     for mutation in [
-        ActorMutation::RoleOnly,
-        ActorMutation::StatusOnly,
-        ActorMutation::GenerationOnly,
+        ActorMutation::Role,
+        ActorMutation::Status,
+        ActorMutation::Generation,
     ] {
         let label = mutation.label();
-        let actor_role = if matches!(mutation, ActorMutation::RoleOnly) {
+        let actor_role = if matches!(mutation, ActorMutation::Role) {
             "owner"
         } else {
             "admin"
@@ -388,21 +388,21 @@ async fn actor_active_role_and_generation_are_rechecked_inside_the_target_transa
             .await
             .expect("actor change backend pid");
         match mutation {
-            ActorMutation::RoleOnly => {
+            ActorMutation::Role => {
                 chenxing_auth::sqlx::query("UPDATE users SET role = 'admin' WHERE id = $1")
                     .bind(actor_id)
                     .execute(&mut *actor_change)
                     .await
                     .expect("stage actor role downgrade");
             }
-            ActorMutation::StatusOnly => {
+            ActorMutation::Status => {
                 chenxing_auth::sqlx::query("UPDATE users SET status = 'disabled' WHERE id = $1")
                     .bind(actor_id)
                     .execute(&mut *actor_change)
                     .await
                     .expect("stage actor disable");
             }
-            ActorMutation::GenerationOnly => {
+            ActorMutation::Generation => {
                 chenxing_auth::sqlx::query(
                     "UPDATE users SET session_epoch = session_epoch + 1 WHERE id = $1",
                 )
@@ -416,7 +416,7 @@ async fn actor_active_role_and_generation_are_rechecked_inside_the_target_transa
         let router = env.router.clone();
         let request = tokio::spawn(async move {
             let request = match mutation {
-                ActorMutation::RoleOnly => Request::builder()
+                ActorMutation::Role => Request::builder()
                     .method("POST")
                     .uri(format!("/api/v1/admin/users/{target_id}/role"))
                     .header("cookie", cookie)
@@ -424,7 +424,7 @@ async fn actor_active_role_and_generation_are_rechecked_inside_the_target_transa
                     .header("content-type", "application/json")
                     .body(Body::from(serde_json::json!({"role": "owner"}).to_string()))
                     .expect("target role request"),
-                ActorMutation::StatusOnly | ActorMutation::GenerationOnly => Request::builder()
+                ActorMutation::Status | ActorMutation::Generation => Request::builder()
                     .method("POST")
                     .uri(format!("/api/v1/admin/users/{target_id}/disabled"))
                     .header("cookie", cookie)

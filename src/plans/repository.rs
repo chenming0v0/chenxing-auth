@@ -246,14 +246,12 @@ pub(crate) async fn lock_effective_for_user(
     .await?;
 
     lock_default_plan_set(transaction).await?;
-    if assignment_is_current {
-        if let Some(plan_id) = assigned_plan_id {
-            if let Some(plan) = find_for_update(transaction, plan_id).await? {
-                if plan.status == "active" {
-                    return Ok(Some(plan));
-                }
-            }
-        }
+    if assignment_is_current
+        && let Some(plan_id) = assigned_plan_id
+        && let Some(plan) = find_for_update(transaction, plan_id).await?
+        && plan.status == "active"
+    {
+        return Ok(Some(plan));
     }
     find_default_for_update(transaction).await
 }

@@ -181,7 +181,7 @@ impl SettingsService {
         // 独立值与 SMTP from 镜像必须一起落库：第二次写失败时若第一个键已持久化
         // 会形成「独立值已更新、SMTP 残留旧地址」的半同步状态（#322），
         // 用单事务保证要么都生效、要么都回滚。
-        let locked_smtp = repository::lock_registration_email_and_smtp(&mut **transaction).await?;
+        let locked_smtp = repository::lock_registration_email_and_smtp(transaction).await?;
         repository::set_registration_email_from(&mut **transaction, value.as_deref()).await?;
         match value.as_deref() {
             Some(email) => {
@@ -379,7 +379,7 @@ impl SettingsService {
         // SMTP 与注册发件人镜像必须一起落库：第二次写失败时若第一个键已持久化
         // 会形成「SMTP 已更新、镜像残留旧地址」的半同步状态（#322）。
         // 事务开始后先按统一顺序锁两个键；keep/clear 基于锁内 SMTP 快照处理密文。
-        let existing = repository::lock_registration_email_and_smtp(&mut **transaction).await?;
+        let existing = repository::lock_registration_email_and_smtp(transaction).await?;
         let password_ciphertext = password.next_ciphertext(
             existing
                 .as_ref()
