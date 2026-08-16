@@ -158,7 +158,7 @@ async fn insert_passkey_if_empty_with_generation(
         )
         .fetch_optional(&mut *transaction)
         .await?;
-        if current.is_some_and(|generation| generation != expected) {
+        if current != Some(expected) {
             transaction.rollback().await?;
             return Ok(PasskeyPersistenceResult::IssuerChanged);
         }
