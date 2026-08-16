@@ -196,7 +196,7 @@ async fn passkey_first_factor_insert_rejects_repeat_and_cross_user_collisions() 
 }
 
 #[tokio::test]
-async fn passkey_updates_use_user_version_and_previous_credential_cas() {
+async fn passkey_updates_use_row_id_user_and_version_cas() {
     let pool = database().await;
     let suffix = Uuid::new_v4().simple();
     let user_id: i64 = chenxing_auth::sqlx::query_scalar(
@@ -225,9 +225,9 @@ async fn passkey_updates_use_user_version_and_previous_credential_cas() {
         repository::update_passkey(
             &pool,
             user_id,
+            stored.id,
             &credential_id,
             stored.state_version,
-            stored.passkey(),
             &newer,
         )
         .await
@@ -238,9 +238,9 @@ async fn passkey_updates_use_user_version_and_previous_credential_cas() {
         repository::update_passkey(
             &pool,
             user_id,
+            stored.id,
             &credential_id,
             stored.state_version,
-            stored.passkey(),
             &stale,
         )
         .await
@@ -263,22 +263,41 @@ async fn passkey_updates_use_user_version_and_previous_credential_cas() {
         .execute(&pool)
         .await
         .expect("delete original credential");
-    let replacement = test_passkey_with_counter(&credential_id, 9);
+    // 重新注册用同一 credential_id 且 counter 仍是 0：旧实现按 cred_id+version
+    // 会命中新行。CAS 必须按旧行 id 判定 Missing，不能改写新行。
+    let replacement = test_passkey_with_counter(&credential_id, 0);
     repository::insert_passkey_if_empty(&pool, user_id, &credential_id, &replacement)
         .await
         .expect("re-register credential");
+    let re_registered = repository::list_passkeys_with_versions(&pool, user_id)
+        .await
+        .expect("load re-registered passkey")
+        .pop()
+        .expect("re-registered passkey");
+    assert_ne!(re_registered.id, stored.id);
     assert_eq!(
         repository::update_passkey(
             &pool,
             user_id,
+            stored.id,
             &credential_id,
             stored.state_version,
-            stored.passkey(),
             &stale,
         )
         .await
         .expect("stale update after re-registration"),
-        repository::PasskeyUpdateOutcome::Conflict
+        repository::PasskeyUpdateOutcome::Missing
+    );
+    let after_stale = repository::list_passkeys_with_versions(&pool, user_id)
+        .await
+        .expect("reload after stale write")
+        .pop()
+        .expect("replacement still present");
+    assert_eq!(after_stale.id, re_registered.id);
+    assert_eq!(after_stale.state_version, re_registered.state_version);
+    assert_eq!(
+        serde_json::to_value(after_stale.passkey()).expect("replacement JSON")["cred"]["counter"],
+        serde_json::json!(0)
     );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")

@@ -209,6 +209,13 @@ pub async fn finish_passkey_authentication(
         Err(AuthFactorServiceError::RateLimited) => {
             error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
+        Err(AuthFactorServiceError::PasskeyUpdateConflict) => {
+            tracing::warn!(
+                event = "auth_factor.passkey.update_conflict",
+                "passkey credential compare-and-swap did not apply"
+            );
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
+        }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to finish passkey authentication");
             error::internal()
