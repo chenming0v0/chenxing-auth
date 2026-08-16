@@ -354,6 +354,7 @@ mod tests {
             code_challenge_method: "S256".to_owned(),
             session_token_hash: Some("session-hash".to_owned()),
             holder_hash: Some("holder-hash".to_owned()),
+            cas_revision: 0,
         }
     }
 
