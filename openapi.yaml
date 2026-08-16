@@ -1236,6 +1236,9 @@ paths:
         Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。无记录、空值/无效值、
         数据库读取失败、Runtime Pending/Invalid 或事实无法一致应用，以及请求超时时统一返回 RFC 6749 信封的
         503 `temporarily_unavailable`。
+        授权码交换在持久化 Refresh Token 后还会最终复核授权同意版本；该复核暂时不可用时，服务销毁未披露的
+        Refresh Token，并在确认销毁后恢复授权码供重试。若无法确认销毁结果则保持授权码已消费，客户端需重新发起授权。
+        两种 503 分支都会保留套餐退款台账，没有成功 TokenResponse 的失败不会永久计入日/月授权用量。
         不会返回内部 API 的 `{code, message}`
         或 504 `request_timeout`（Issues #423、#441）。
       security: [{ basicClientAuth: [] }, {}]

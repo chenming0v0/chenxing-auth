@@ -213,12 +213,17 @@ pub(super) async fn authorization_code_session_binding(
     }
 }
 
-/// Persist 之后复核同意版本。失败则丢掉刚写下的 Refresh Token，不恢复授权码。
+/// Persist 之后复核同意版本。
+///
+/// Consent denial remains fail-closed. A temporary final-fence outage removes
+/// the undisclosed Refresh Token and atomically restores the code plus its
+/// pending quota refund so the client can retry the same exchange.
 pub(super) async fn confirm_consent_after_persist(
     state: &AppState,
     user_id: &str,
     client_id: &str,
     consent_version: i64,
+    code: &AuthorizationCode,
     refresh_value: &str,
 ) -> Result<(), OAuthError> {
     let snapshot = IssuanceSnapshot {
@@ -228,7 +233,19 @@ pub(super) async fn confirm_consent_after_persist(
     match confirm_issuance_snapshot(state, user_id, client_id, &snapshot).await {
         Ok(()) => Ok(()),
         Err(fence) => {
-            discard_issued_refresh(state, refresh_value).await;
+            let refresh_removed = discard_issued_refresh(state, refresh_value).await;
+            if matches!(fence, IssuanceFenceError::Unavailable(_)) {
+                if refresh_removed {
+                    restore_authorization_code_and_quota(state, code).await;
+                } else {
+                    reschedule_authorization_quota_refund(
+                        state,
+                        code,
+                        "refresh_token_remove_failed",
+                    )
+                    .await;
+                }
+            }
             let error = match fence {
                 IssuanceFenceError::Denied(_) => OAuthError::invalid_grant(),
                 IssuanceFenceError::Unavailable(_) => OAuthError::temporarily_unavailable(),
@@ -240,18 +257,65 @@ pub(super) async fn confirm_consent_after_persist(
     }
 }
 
-/// 围栏失败后丢掉刚写下的 Refresh Token，不恢复授权码，也不重排配额退款。
+/// 围栏失败后丢掉刚写下的 Refresh Token。
 ///
 /// 与 [`compensate_authorization_code_exchange`] 的差别是安全边界，不是风格：
 /// 同意已经在 persist 之后被撤销（Issue #475），授权码代表的那次授权不再成立。
 /// 把码放回去等于让下一次兑换再跑一遍闸门——闸门会拒绝，但也会把「已消费」
 /// 变成「仍可重试」，撤销路径就不再是一次性的。配额已经随 CAS 取消；同意没了，
 /// 这笔授权不该再占用可退额度。
-async fn discard_issued_refresh(state: &AppState, refresh_value: &str) {
-    if let Err(store_error) = state.refresh_tokens.remove(refresh_value).await {
-        tracing::error!(
+async fn discard_issued_refresh(state: &AppState, refresh_value: &str) -> bool {
+    match state.refresh_tokens.remove(refresh_value).await {
+        Ok(()) => true,
+        Err(store_error) => {
+            tracing::error!(
+                error = %store_error,
+                "failed to discard refresh token after issuance fence rejection"
+            );
+            false
+        }
+    }
+}
+
+async fn restore_authorization_code_and_quota(state: &AppState, code: &AuthorizationCode) {
+    let remaining_ttl_ms = authorization_code_restore_ttl_ms(code, state.clock.now());
+    let reservation_id = code.quota_reservation_id.clone();
+    let quota_cancel = reservation_id
+        .as_deref()
+        .map(|reservation_id| state.oauth_quotas.refund_cancel(reservation_id));
+    if let Err(store_error) = state
+        .authorization_codes
+        .restore_with_quota_refund(code, remaining_ttl_ms, quota_cancel)
+        .await
+    {
+        tracing::warn!(
             error = %store_error,
-            "failed to discard refresh token after issuance fence rejection"
+            client_id = %code.client_id,
+            "failed to atomically restore OAuth authorization code and quota refund"
+        );
+        reschedule_authorization_quota_refund(state, code, "authorization_code_restore_failed")
+            .await;
+    }
+}
+
+async fn reschedule_authorization_quota_refund(
+    state: &AppState,
+    code: &AuthorizationCode,
+    compensation_reason: &'static str,
+) {
+    let Some(reservation_id) = code.quota_reservation_id.as_deref() else {
+        return;
+    };
+    if let Err(error_value) = state
+        .oauth_quotas
+        .reschedule_refund(reservation_id, code.expires_at)
+        .await
+    {
+        tracing::error!(
+            error = %error_value,
+            client_id = %code.client_id,
+            compensation_reason,
+            "failed to re-enqueue OAuth quota refund compensation"
         );
     }
 }
@@ -282,33 +346,16 @@ pub(super) async fn compensate_authorization_code_exchange(
         );
         return;
     }
-    let ttl_seconds = authorization_code_restore_ttl(code, state.clock.now());
-    if let Err(store_error) = state.authorization_codes.restore(code, ttl_seconds).await {
-        tracing::warn!(error = %store_error, "failed to restore OAuth authorization code");
-    }
-    // CAS 消费时已经原子取消了待退台账条目；恢复后的授权码仍可能过期未兑换，
-    // 必须把条目重新登记，否则配额会在这一条补偿路径上泄漏（Issue #341）。
-    // 记录键没有被 CAS 删除，因此这里只需要把 ZSET 成员加回来。
-    if let Some(reservation_id) = code.quota_reservation_id.as_deref()
-        && let Err(error_value) = state
-            .oauth_quotas
-            .reschedule_refund(reservation_id, code.expires_at)
-            .await
-    {
-        tracing::warn!(
-            error = %error_value,
-            client_id = %code.client_id,
-            "failed to reschedule OAuth authorization quota refund after compensation"
-        );
-    }
+    restore_authorization_code_and_quota(state, code).await;
 }
 
-fn authorization_code_restore_ttl(code: &AuthorizationCode, now: time::OffsetDateTime) -> u64 {
-    let remaining_seconds = (code.expires_at - now).whole_seconds();
-    if remaining_seconds <= 0 {
-        return 1;
+fn authorization_code_restore_ttl_ms(code: &AuthorizationCode, now: time::OffsetDateTime) -> u64 {
+    let remaining_nanos = (code.expires_at - now).whole_nanoseconds();
+    if remaining_nanos <= 0 {
+        return 0;
     }
-    u64::try_from(remaining_seconds).unwrap_or(1)
+    let remaining_ms = (remaining_nanos + 999_999).div_euclid(1_000_000);
+    u64::try_from(remaining_ms).unwrap_or(u64::MAX)
 }
 
 fn verify_code_is_redeemable(

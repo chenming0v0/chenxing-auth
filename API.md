@@ -285,6 +285,8 @@ grant_type=refresh_token&refresh_token=...
 
 授权码除 Client 和 Redirect URI 外还绑定签发时的浏览器会话。会话被撤销（用户登出）或过期后，授权码即使仍在 TTL 内也不能兑换，返回 `invalid_grant`；被拒绝的授权码不会被消费，可在会话恢复有效后重试。
 
+授权码已消费、Refresh Token 已暂存后，服务还会复核授权同意版本。若这次最终复核因数据库暂时不可用而返回 `503 temporarily_unavailable`，服务会销毁尚未披露的 Refresh Token，并在确认销毁成功时恢复授权码供同一次交换重试；若无法确认销毁结果，授权码保持已消费，客户端需重新发起授权。两种 503 分支都会保留该授权码对应的套餐退款台账，因此没有成功 `TokenResponse` 的失败不会永久计入日/月授权用量。
+
 Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限流，超限返回 `429 temporarily_unavailable`；套餐未配置 `max_qps`（`null`）时不限流。
 
 处理超时（见上文「基础约定」）时，`/oauth/token` 与其它 `/oauth/*` 协议端点返回 `503 temporarily_unavailable`（RFC 6749 信封），**不会**返回内部 API 的 `504 request_timeout`。

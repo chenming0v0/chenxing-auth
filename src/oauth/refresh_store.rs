@@ -1,4 +1,9 @@
 use redis::{AsyncCommands, Script};
+#[cfg(debug_assertions)]
+use std::{
+    collections::HashSet,
+    sync::{Mutex, OnceLock},
+};
 use thiserror::Error;
 
 use super::{
@@ -9,6 +14,20 @@ use super::{
     },
 };
 use crate::{clock::SharedClock, redis_client::RedisClient, redis_keyspace::RedisKeyspace};
+
+#[cfg(debug_assertions)]
+fn remove_failures_for_tests() -> &'static Mutex<HashSet<String>> {
+    static FAILURES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    FAILURES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[cfg(debug_assertions)]
+fn take_remove_failure_for_test(client_id: &str) -> bool {
+    remove_failures_for_tests()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(client_id)
+}
 
 // 墓碑类型定义在 `refresh_tombstone`，但调用方历来从 `refresh_store` 导入，
 // 这里保持那条路径可用。
@@ -140,6 +159,15 @@ impl RefreshTokenStore {
         self
     }
 
+    #[doc(hidden)]
+    #[cfg(debug_assertions)]
+    pub fn fail_remove_once_for_client_for_tests(&self, client_id: &str) {
+        remove_failures_for_tests()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(client_id.to_owned());
+    }
+
     // ── 计算 token hash（用于主键与索引成员）─────────────────────────────
     //
     // 与 `revocation.rs` / `sessions::store` 一致使用 SHA-256 + URL-safe base64：
@@ -251,6 +279,14 @@ impl RefreshTokenStore {
         let payload: Option<String> = connection.get(&key).await?;
         if let Some(payload) = payload {
             let token: RefreshToken = serde_json::from_str(&payload)?;
+            #[cfg(debug_assertions)]
+            if take_remove_failure_for_test(&token.client_id) {
+                return Err(redis::RedisError::from((
+                    redis::ErrorKind::IoError,
+                    "injected refresh-token remove failure",
+                ))
+                .into());
+            }
             let hash = Self::token_hash(value);
             let _: i32 = Script::new(REMOVE_WITHOUT_TOMBSTONE_SCRIPT)
                 .key(&key)
