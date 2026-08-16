@@ -15,6 +15,7 @@ mod form;
 mod grant_gate;
 pub mod handlers;
 pub mod id_token;
+mod issuance_fence;
 pub mod pkce;
 pub mod providers;
 pub mod quota;

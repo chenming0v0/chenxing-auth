@@ -190,6 +190,25 @@ impl MockConsentRepository {
             .map(|record| ConsentState::new(record.revoked, record.state_version))
     }
 
+    fn sync_consent_grant(
+        &self,
+        user_id: UserId,
+        client_id: &str,
+    ) -> Option<(ConsentState, Vec<String>)> {
+        self.state
+            .records
+            .lock()
+            .expect("records lock")
+            .iter()
+            .find(|record| record.user_id == user_id && record.client_id == client_id)
+            .map(|record| {
+                (
+                    ConsentState::new(record.revoked, record.state_version),
+                    record.scopes.clone(),
+                )
+            })
+    }
+
     fn database_failure(&self) -> Option<chenxing_auth::sqlx::Error> {
         self.state
             .fail
@@ -250,6 +269,17 @@ impl ConsentRepository for MockConsentRepository {
         match self.database_failure() {
             Some(error) => Err(error),
             None => Ok(self.sync_consent_state(user_id, client_id)),
+        }
+    }
+
+    async fn consent_grant(
+        &self,
+        user_id: UserId,
+        client_id: &str,
+    ) -> Result<Option<(ConsentState, Vec<String>)>, chenxing_auth::sqlx::Error> {
+        match self.database_failure() {
+            Some(error) => Err(error),
+            None => Ok(self.sync_consent_grant(user_id, client_id)),
         }
     }
 }

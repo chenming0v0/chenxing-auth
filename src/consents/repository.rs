@@ -79,6 +79,18 @@ pub trait ConsentRepository: Send + Sync {
         user_id: UserId,
         client_id: &str,
     ) -> impl Future<Output = Result<Option<ConsentState>, crate::sqlx::Error>> + Send;
+
+    /// 一次读取同意行的撤销状态、版本号和 scope 集合。
+    ///
+    /// 兑换闸门需要版本号做 persist 后复核（Issue #475），同时仍要做
+    /// scope 覆盖判定。拆成 `consent_state` + `stored_scopes` 是两次往返，
+    /// 两次之间撤销可以插队，版本号就不再描述那次 scope 判定看到的行。
+    /// 返回 `None` 表示不存在同意记录（从未授权）。
+    fn consent_grant(
+        &self,
+        user_id: UserId,
+        client_id: &str,
+    ) -> impl Future<Output = Result<Option<(ConsentState, Vec<String>)>, crate::sqlx::Error>> + Send;
 }
 
 /// `ConsentRepository` 的 PostgreSQL 实现。
@@ -242,5 +254,24 @@ impl ConsentRepository for PgConsentRepository {
         // 行不存在 = 从未授权。不存在的授权无法被撤销，也没有版本号可比较；
         // 真正的拦截由 `stored_scopes` 完成（无同意记录 → 无有效 scope → 拒绝）。
         Ok(row.map(|(revoked, version)| ConsentState::new(revoked, version)))
+    }
+
+    async fn consent_grant(
+        &self,
+        user_id: UserId,
+        client_id: &str,
+    ) -> Result<Option<(ConsentState, Vec<String>)>, crate::sqlx::Error> {
+        let row = crate::sqlx::query_as::<_, (bool, i64, Json<Vec<String>>)>(
+            "SELECT c.revoked_at IS NOT NULL, c.state_version, c.scopes
+             FROM user_consents c
+             JOIN oauth_clients oc ON oc.id = c.client_id
+             WHERE c.user_id = $1 AND oc.client_id = $2",
+        )
+        .bind(user_id)
+        .bind(client_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row
+            .map(|(revoked, version, Json(scopes))| (ConsentState::new(revoked, version), scopes)))
     }
 }
