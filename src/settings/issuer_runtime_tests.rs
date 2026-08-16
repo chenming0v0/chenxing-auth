@@ -121,7 +121,12 @@ fn stale_none_apply_raw_does_not_clear_ready_pending_or_invalid() {
     ));
 
     let pending = IssuerRuntime::new_from_raw(&config, Some(&raw(None, 4)));
-    assert!(pending.apply_raw(None).expect("absence is ignored").is_none());
+    assert!(
+        pending
+            .apply_raw(None)
+            .expect("absence is ignored")
+            .is_none()
+    );
     assert!(matches!(
         pending.state().as_ref(),
         IssuerRuntimeState::Pending {
@@ -130,7 +135,12 @@ fn stale_none_apply_raw_does_not_clear_ready_pending_or_invalid() {
     ));
 
     let invalid = IssuerRuntime::new_from_raw(&config, Some(&raw(Some("not-a-url"), 5)));
-    assert!(invalid.apply_raw(None).expect("absence is ignored").is_none());
+    assert!(
+        invalid
+            .apply_raw(None)
+            .expect("absence is ignored")
+            .is_none()
+    );
     assert!(matches!(
         invalid.state().as_ref(),
         IssuerRuntimeState::Invalid {
@@ -202,7 +212,10 @@ fn stale_record_does_not_replace_a_concurrent_new_state() {
 fn stale_race_cases() -> [(Option<Option<&'static str>>, &'static str); 5] {
     [
         (None, "https://new.example.com"),
-        (Some(Some("https://old.example.com")), "https://new.example.com"),
+        (
+            Some(Some("https://old.example.com")),
+            "https://new.example.com",
+        ),
         (Some(None), "https://new.example.com"),
         (Some(Some("")), "https://new.example.com"),
         (Some(Some("not-a-url")), "https://new.example.com"),
@@ -219,7 +232,9 @@ fn assert_ready_generation(runtime: &IssuerRuntime, generation: i64, issuer: &st
         ),
         "runtime generation {:?}, issuer {:?}",
         runtime.state().persisted_generation(),
-        runtime.current().map(|snapshot| snapshot.issuer().as_str().to_owned())
+        runtime
+            .current()
+            .map(|snapshot| snapshot.issuer().as_str().to_owned())
     );
 }
 
