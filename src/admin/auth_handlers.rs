@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::{fmt, net::SocketAddr};
 
 use super::{
+    authorization::{authorize_admin_write, management_actor_validation_failed},
     bootstrap_guard::{
         enforce_bootstrap_attempt_limit, hidden_bootstrap_status, record_bootstrap_denial,
     },
@@ -143,10 +144,12 @@ pub async fn create_admin(
     admin: AdminWrite,
     ApiJson(input): ApiJson<CreateAdmin>,
 ) -> Response {
-    let actor = match admin.authorize(&state, AdminPermission::ManageRoles).await {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageRoles).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
     if !state.issuer.is_ready() {
         return if state.issuer.is_awaiting_configuration() {
             error::issuer_not_configured()
@@ -171,7 +174,13 @@ pub async fn create_admin(
     let (actor_type, actor_id) = actor.audit_fields();
     match state
         .users
-        .create_privileged(registration, role, actor_type.to_owned(), actor_id)
+        .create_privileged(
+            registration,
+            role,
+            actor_type.to_owned(),
+            actor_id,
+            authorization.credential(),
+        )
         .await
     {
         Ok(id) => (
@@ -179,6 +188,9 @@ pub async fn create_admin(
             Json(serde_json::json!({"id": id, "role": role.as_str()})),
         )
             .into_response(),
+        Err(crate::users::service::UserServiceError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(&state, authorization, error_value).await
+        }
         Err(error_value) => user_creation_error_response(error_value),
     }
 }

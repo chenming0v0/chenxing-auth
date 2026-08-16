@@ -10,8 +10,9 @@ use time::OffsetDateTime;
 
 use super::{
     authorization::{
-        AdminActor, authorize_user_write, management_actor_permission_denied,
-        management_actor_session_invalid, owner_write_permission_denied,
+        AdminActor, AdminWriteAuthorization, authorize_admin_write, authorize_user_write,
+        management_actor_permission_denied, management_actor_session_invalid,
+        management_actor_validation_failed, owner_write_permission_denied,
     },
     domain::AdminPermission,
 };
@@ -76,14 +77,13 @@ pub async fn create_plan(
     admin: AdminWrite,
     ApiJson(input): ApiJson<PlanInput>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageSettings)
-        .await
-    {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
-    match state.plans.create(input).await {
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
+    match state.plans.create(input, authorization.credential()).await {
         Ok(plan) => {
             record_plan_event(
                 &state,
@@ -95,6 +95,9 @@ pub async fn create_plan(
             // 新建套餐尚无分配用户，直接返回 0
             (StatusCode::CREATED, Json(plan_response(plan, 0))).into_response()
         }
+        Err(PlanServiceError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(&state, authorization, error_value).await
+        }
         Err(error_value) => plan_error_response(error_value),
     }
 }
@@ -105,14 +108,17 @@ pub async fn update_plan(
     Path(id): Path<i64>,
     ApiJson(input): ApiJson<PlanInput>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageSettings)
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
+    match state
+        .plans
+        .update(id, input, authorization.credential())
         .await
     {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
-    match state.plans.update(id, input).await {
         Ok(updated) => {
             record_plan_event(
                 &state,
@@ -125,6 +131,9 @@ pub async fn update_plan(
             let response = plan_response(updated.plan, updated.assigned_users);
             (StatusCode::OK, Json(response)).into_response()
         }
+        Err(PlanServiceError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(&state, authorization, error_value).await
+        }
         Err(error_value) => plan_error_response(error_value),
     }
 }
@@ -134,18 +143,16 @@ pub async fn archive_plan(
     admin: AdminWrite,
     Path(id): Path<i64>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageSettings)
-        .await
-    {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
     // 直接调用 archive，不经字符串分发；操作语义由调用点决定，而非运行时字符串比较
-    let result = state.plans.archive(id).await;
+    let result = state.plans.archive(id, authorization.credential()).await;
     finish_plan_status_change(
         &state,
-        actor,
+        authorization,
         result,
         crate::audit::AuditAction::PlanArchive,
         &id.to_string(),
@@ -158,18 +165,16 @@ pub async fn restore_plan(
     admin: AdminWrite,
     Path(id): Path<i64>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageSettings)
-        .await
-    {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
     // 直接调用 restore，与 archive_plan 对称；不存在 silent fallthrough 的分支
-    let result = state.plans.restore(id).await;
+    let result = state.plans.restore(id, authorization.credential()).await;
     finish_plan_status_change(
         &state,
-        actor,
+        authorization,
         result,
         crate::audit::AuditAction::PlanRestore,
         &id.to_string(),
@@ -181,15 +186,19 @@ pub async fn restore_plan(
 /// 接收已确定的操作结果，消除字符串选择操作的分发模式。
 async fn finish_plan_status_change(
     state: &AppState,
-    actor: AdminActor,
+    authorization: AdminWriteAuthorization,
     result: Result<(), PlanServiceError>,
     action: crate::audit::AuditAction,
     resource_id: &str,
 ) -> Response {
+    let actor = authorization.actor();
     match result {
         Ok(()) => {
             record_plan_event(state, actor, action, resource_id).await;
             StatusCode::NO_CONTENT.into_response()
+        }
+        Err(PlanServiceError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(state, authorization, error_value).await
         }
         Err(error_value) => plan_error_response(error_value),
     }
@@ -298,6 +307,10 @@ fn plan_error_response(error_value: PlanServiceError) -> Response {
         }
         PlanServiceError::ActorSessionInvalid | PlanServiceError::ActorPermissionRequired => {
             tracing::error!("actor authorization outcome escaped the assignment handler");
+            error::internal()
+        }
+        PlanServiceError::ManagementActor(error_value) => {
+            tracing::error!(error = %error_value, "management actor outcome escaped the plan handler");
             error::internal()
         }
         PlanServiceError::Database(database_error) => {

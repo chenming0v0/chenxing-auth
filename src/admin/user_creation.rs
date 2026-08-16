@@ -15,7 +15,10 @@ use axum::{
 use serde::Deserialize;
 use std::fmt;
 
-use super::domain::AdminPermission;
+use super::{
+    authorization::{authorize_admin_write, management_actor_validation_failed},
+    domain::AdminPermission,
+};
 use crate::{
     api::extract::{AdminWrite, ApiJson},
     error,
@@ -85,10 +88,11 @@ pub async fn create_user(
     } else {
         AdminPermission::ManageUsers
     };
-    let actor = match admin.authorize(&state, required).await {
-        Ok(actor) => actor,
+    let authorization = match authorize_admin_write(&state, &admin, required).await {
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
+    let actor = authorization.actor();
     if !state.issuer.is_ready() {
         return if state.issuer.is_awaiting_configuration() {
             error::issuer_not_configured()
@@ -106,10 +110,20 @@ pub async fn create_user(
     let (actor_type, actor_id) = actor.audit_fields();
     match state
         .users
-        .create_by_admin(registration, role, status, actor_type.to_owned(), actor_id)
+        .create_by_admin(
+            registration,
+            role,
+            status,
+            actor_type.to_owned(),
+            actor_id,
+            authorization.credential(),
+        )
         .await
     {
         Ok(user) => (StatusCode::CREATED, Json(user)).into_response(),
+        Err(UserServiceError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(&state, authorization, error_value).await
+        }
         Err(error_value) => user_creation_error_response(error_value),
     }
 }

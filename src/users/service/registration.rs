@@ -6,9 +6,10 @@
 use super::{BootstrapOwnerResult, UserService, UserServiceError};
 use crate::audit::AuditEvent;
 use crate::users::{
+    ManagementActorCredential,
     credentials::hash_password,
     domain::{
-        PublicUser, RegistrationInput, UserCreation, UserId, UserRole, UserStatus,
+        PublicUser, RegistrationInput, UserCreation, UserId, UserPermission, UserRole, UserStatus,
         validate_registration,
     },
     email::EmailAddress,
@@ -44,6 +45,7 @@ impl UserService {
         status: UserStatus,
         actor_type: String,
         actor_id: Option<String>,
+        actor_credential: ManagementActorCredential,
     ) -> Result<PublicUser, UserServiceError> {
         let registration = validate_registration(input)?;
         self.ensure_email_policy_allows(&registration.email).await?;
@@ -53,10 +55,17 @@ impl UserService {
             status,
         };
         let user = if role.is_privileged() {
-            self.insert_after_owner_with_audit(creation, actor_type, actor_id)
-                .await?
+            self.insert_after_owner_with_audit(
+                creation,
+                actor_type,
+                actor_id,
+                actor_credential,
+                UserPermission::ManageRoles,
+            )
+            .await?
         } else {
-            self.insert_after_owner(creation).await?
+            self.insert_after_owner(creation, actor_credential, UserPermission::ManageUsers)
+                .await?
         };
         Ok(public_user(user))
     }
@@ -138,6 +147,7 @@ impl UserService {
         role: UserRole,
         actor_type: String,
         actor_id: Option<String>,
+        actor_credential: ManagementActorCredential,
     ) -> Result<UserId, UserServiceError> {
         let registration = validate_registration(input)?;
         let user = self
@@ -149,6 +159,8 @@ impl UserService {
                 },
                 actor_type,
                 actor_id,
+                actor_credential,
+                UserPermission::ManageRoles,
             )
             .await?;
         Ok(user.id)
@@ -161,14 +173,30 @@ impl UserService {
     async fn insert_after_owner(
         &self,
         mut creation: UserCreation,
+        actor_credential: ManagementActorCredential,
+        permission: UserPermission,
     ) -> Result<NewUser, UserServiceError> {
         let password = std::mem::take(&mut creation.registration.password);
         let password_hash = hash_password(password)
             .await
             .map_err(|_| UserServiceError::PasswordHash)?;
-        repository::insert_user_after_owner(&self.pool, creation, password_hash)
-            .await?
-            .ok_or(UserServiceError::OwnerBootstrapRequired)
+        repository::insert_user_after_owner(
+            &self.pool,
+            creation,
+            password_hash,
+            actor_credential,
+            permission,
+        )
+        .await
+        .map_err(|error| match error {
+            repository::ManagedUserInsertError::Database(error) => {
+                UserServiceError::Database(error)
+            }
+            repository::ManagedUserInsertError::ManagementActor(error) => {
+                UserServiceError::ManagementActor(error)
+            }
+        })?
+        .ok_or(UserServiceError::OwnerBootstrapRequired)
     }
 
     async fn insert_after_owner_with_audit(
@@ -176,6 +204,8 @@ impl UserService {
         mut creation: UserCreation,
         actor_type: String,
         actor_id: Option<String>,
+        actor_credential: ManagementActorCredential,
+        permission: UserPermission,
     ) -> Result<NewUser, UserServiceError> {
         let password = std::mem::take(&mut creation.registration.password);
         let password_hash = hash_password(password)
@@ -185,6 +215,8 @@ impl UserService {
             &self.pool,
             creation,
             password_hash,
+            actor_credential,
+            permission,
             move |user| {
                 AuditEvent::new(
                     actor_type,
@@ -207,6 +239,9 @@ impl UserService {
             repository::AuditedUserInsertError::Audit(error) => {
                 tracing::error!(event = "user_creation.audit_unavailable", error = %error);
                 UserServiceError::AuditUnavailable
+            }
+            repository::AuditedUserInsertError::ManagementActor(error) => {
+                UserServiceError::ManagementActor(error)
             }
         })?
         .ok_or(UserServiceError::OwnerBootstrapRequired)?;

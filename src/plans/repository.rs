@@ -10,8 +10,8 @@ use super::{
 use crate::db::advisory_lock::{BusinessLock, lock_business};
 use crate::sqlx::{PgPool, Postgres, Transaction};
 use crate::users::{
-    ManagementActorCredential,
-    domain::UserId,
+    ManagementActorCredential, ManagementActorValidationError,
+    domain::{UserId, UserPermission},
     repository::management_actor::{
         ManagementActorRejection, lock_management_user_advisories, lock_management_user_rows,
         validate_management_actor,
@@ -24,6 +24,8 @@ pub enum PlanRepositoryError {
     Database(#[from] crate::sqlx::Error),
     #[error(transparent)]
     Mutation(#[from] PlanMutationError),
+    #[error(transparent)]
+    ManagementActor(#[from] ManagementActorValidationError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,8 +272,15 @@ async fn count_assigned_users(
 pub async fn insert(
     pool: &PgPool,
     input: &ValidatedPlanInput,
+    credential: ManagementActorCredential,
 ) -> Result<Plan, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
+    crate::users::repository::management_actor::validate_management_actor_in_transaction(
+        &mut transaction,
+        credential,
+        UserPermission::ManageSettings,
+    )
+    .await?;
     lock_default_plan_set(&mut transaction).await?;
     if input.is_default {
         crate::sqlx::query("UPDATE plans SET is_default = FALSE WHERE is_default = TRUE")
@@ -303,8 +312,15 @@ pub async fn update(
     pool: &PgPool,
     id: i64,
     input: &ValidatedPlanInput,
+    credential: ManagementActorCredential,
 ) -> Result<Option<PlanWithUsers>, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
+    crate::users::repository::management_actor::validate_management_actor_in_transaction(
+        &mut transaction,
+        credential,
+        UserPermission::ManageSettings,
+    )
+    .await?;
     lock_default_plan_set(&mut transaction).await?;
     let Some(current) = find_for_update(&mut transaction, id).await? else {
         transaction.rollback().await?;
@@ -352,8 +368,19 @@ pub async fn update(
 /// 因此不需要为「被归档的正是默认套餐」单开分支。
 /// 仍然持有 advisory lock，避免与 `insert` / `update` 的 is_default 切换交错，
 /// 让唯一索引和 CHECK 约束不必依赖并发时序。
-pub async fn set_status(pool: &PgPool, id: i64, status: &str) -> Result<bool, PlanRepositoryError> {
+pub async fn set_status(
+    pool: &PgPool,
+    id: i64,
+    status: &str,
+    credential: ManagementActorCredential,
+) -> Result<bool, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
+    crate::users::repository::management_actor::validate_management_actor_in_transaction(
+        &mut transaction,
+        credential,
+        UserPermission::ManageSettings,
+    )
+    .await?;
     lock_default_plan_set(&mut transaction).await?;
     let result = crate::sqlx::query(
         "UPDATE plans

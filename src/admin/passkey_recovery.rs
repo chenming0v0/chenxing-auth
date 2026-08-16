@@ -19,10 +19,17 @@ use axum::{
 };
 use serde::Serialize;
 
-use super::domain::AdminPermission;
+use super::{
+    authorization::{authorize_admin_write, management_actor_validation_failed},
+    domain::AdminPermission,
+};
 use crate::{
-    api::extract::AdminWrite, audit::AuditEvent, auth_factors::service::PasskeyResetOutcome, error,
-    state::AppState, users::domain::UserId,
+    api::extract::AdminWrite,
+    audit::AuditEvent,
+    auth_factors::service::{AuthFactorServiceError, PasskeyResetOutcome},
+    error,
+    state::AppState,
+    users::domain::UserId,
 };
 
 #[derive(Debug, Serialize)]
@@ -54,15 +61,20 @@ pub async fn reset_user_passkey_factor(
     admin: AdminWrite,
     Path(user_id): Path<UserId>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageAuthFactors)
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageAuthFactors).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let outcome = match state
+        .factors
+        .reset_passkey_factor(user_id, authorization.credential())
         .await
     {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
-    let outcome = match state.factors.reset_passkey_factor(user_id).await {
         Ok(outcome) => outcome,
+        Err(AuthFactorServiceError::ManagementActor(error_value)) => {
+            return management_actor_validation_failed(&state, authorization, error_value).await;
+        }
         Err(factor_error) => {
             tracing::error!(error = %factor_error, "failed to reset Passkey factor");
             return error::internal();
@@ -77,7 +89,7 @@ pub async fn reset_user_passkey_factor(
             return error::not_found("user_not_found", "user was not found");
         }
     };
-    let (actor_type, actor_id) = actor.audit_fields();
+    let (actor_type, actor_id) = authorization.actor().audit_fields();
     // 凭据已经删除，这个既成事实不因审计写入失败而改写。元数据只含条数，
     // 不含 credential_id、公钥或 counter。
     state
