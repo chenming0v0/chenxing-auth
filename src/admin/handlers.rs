@@ -150,10 +150,18 @@ pub async fn create_client(
             }),
         )
             .into_response(),
-        Err(ClientServiceError::AuditUnavailable) => error::service_unavailable(
-            "audit_unavailable",
-            "the operation was rolled back because its audit record could not be written; retry later",
-        ),
+        Err(ClientServiceError::AuditUnavailable) => {
+            // #72 运维契约：凭据签发被审计失败阻断时留下可检索的结构化事件。
+            tracing::error!(
+                event = "audit.block_on_failure",
+                operation = "client_create",
+                "client creation rolled back because its audit record could not be written"
+            );
+            error::service_unavailable(
+                "audit_unavailable",
+                "the operation was rolled back because its audit record could not be written; retry later",
+            )
+        }
         Err(error_value) => create_client_error_response(&error_value),
     }
 }
@@ -368,10 +376,18 @@ pub async fn rotate_secret(
                 .await;
             rotate_secret_error_response(&error_value)
         }
-        Err(ClientServiceError::AuditUnavailable) => error::service_unavailable(
-            "audit_unavailable",
-            "the operation was rolled back because its audit record could not be written; retry later",
-        ),
+        Err(ClientServiceError::AuditUnavailable) => {
+            // #72 运维契约：一次性 Secret 签发被审计失败阻断时留下可检索的结构化事件。
+            tracing::error!(
+                event = "audit.block_on_failure",
+                operation = "client_secret_rotate",
+                "secret rotation rolled back because its audit record could not be written"
+            );
+            error::service_unavailable(
+                "audit_unavailable",
+                "the operation was rolled back because its audit record could not be written; retry later",
+            )
+        }
         Err(error_value) => rotate_secret_error_response(&error_value),
     }
 }
