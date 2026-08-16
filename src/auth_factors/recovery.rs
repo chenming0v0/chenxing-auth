@@ -29,7 +29,10 @@ use crate::{
     users::{
         ManagementActorCredential,
         domain::{UserId, UserPermission},
-        repository::management_actor::validate_management_actor_in_transaction,
+        repository::management_actor::{
+            lock_management_user_advisories, lock_management_user_rows,
+            validate_locked_management_actor_permission,
+        },
     },
 };
 
@@ -145,6 +148,7 @@ impl AuthFactorService {
         totp: bool,
     ) -> Result<SelfServiceRemovalOutcome, AuthFactorServiceError> {
         let mut transaction = self.pool.begin().await?;
+        crate::settings::repository::lock_passkey_policy(&mut transaction).await?;
         crate::sessions::store::lock_user_session_scope(&mut transaction, user_id).await?;
         let current_epoch: Option<i64> =
             crate::sqlx::query_scalar("SELECT session_epoch FROM users WHERE id = $1 FOR UPDATE")
@@ -231,18 +235,25 @@ impl AuthFactorService {
         credential: ManagementActorCredential,
     ) -> Result<TotpResetOutcome, AuthFactorServiceError> {
         let mut transaction = self.pool.begin().await?;
-        validate_management_actor_in_transaction(
-            &mut transaction,
+        crate::settings::repository::lock_passkey_policy(&mut transaction).await?;
+        let lock_order =
+            lock_management_user_advisories(&mut transaction, user_id, credential).await?;
+        let locked = lock_management_user_rows(&mut transaction, &lock_order).await?;
+        validate_locked_management_actor_permission(
             credential,
+            locked.actor.as_ref(),
             UserPermission::ManageAuthFactors,
-        )
-        .await?;
+        )?;
+        if locked.target.is_none() {
+            // 账号在本次请求期间被删除（因子行随用户级联删除）：如实回
+            // UnknownUser，撤销动作没有推进任何东西。
+            transaction.rollback().await?;
+            return Ok(TotpResetOutcome::UnknownUser);
+        }
         if revoke_all_for_user_in_transaction(&mut transaction, user_id)
             .await?
             .is_none()
         {
-            // 账号在本次请求期间被删除（因子行随用户级联删除）：如实回
-            // UnknownUser，撤销动作没有推进任何东西。
             transaction.rollback().await?;
             return Ok(TotpResetOutcome::UnknownUser);
         }
@@ -300,12 +311,19 @@ impl AuthFactorService {
         credential: ManagementActorCredential,
     ) -> Result<PasskeyResetOutcome, AuthFactorServiceError> {
         let mut transaction = self.pool.begin().await?;
-        validate_management_actor_in_transaction(
-            &mut transaction,
+        crate::settings::repository::lock_passkey_policy(&mut transaction).await?;
+        let lock_order =
+            lock_management_user_advisories(&mut transaction, user_id, credential).await?;
+        let locked = lock_management_user_rows(&mut transaction, &lock_order).await?;
+        validate_locked_management_actor_permission(
             credential,
+            locked.actor.as_ref(),
             UserPermission::ManageAuthFactors,
-        )
-        .await?;
+        )?;
+        if locked.target.is_none() {
+            transaction.rollback().await?;
+            return Ok(PasskeyResetOutcome::UnknownUser);
+        }
         if revoke_all_for_user_in_transaction(&mut transaction, user_id)
             .await?
             .is_none()

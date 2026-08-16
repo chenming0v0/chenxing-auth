@@ -273,7 +273,7 @@ impl AuthFactorService {
         user_name: &str,
         display_name: &str,
     ) -> Result<EnrollmentStart<SessionPasskeyStart>, AuthFactorServiceError> {
-        let settings = self.enabled_passkey_settings().await?;
+        let (settings, issuer_generation) = self.enabled_passkey_settings_with_generation().await?;
         let session_epoch = self.current_epoch(user_id).await?;
         let existing = repository::list_passkeys(&self.pool, user_id).await?;
         let exclude = Some(
@@ -308,6 +308,7 @@ impl AuthFactorService {
                 user_id,
                 state,
                 settings,
+                issuer_generation: Some(issuer_generation),
             },
         };
         if !self.reserve_session_enrollment(user_id, &pending).await? {
@@ -326,7 +327,8 @@ impl AuthFactorService {
         enrollment_id: &str,
         credential: &RegisterPublicKeyCredential,
     ) -> Result<EnrollmentFinish, AuthFactorServiceError> {
-        self.enabled_passkey_settings().await?;
+        let (_, current_issuer_generation) =
+            self.enabled_passkey_settings_with_generation().await?;
         let session_epoch = self.current_epoch(user_id).await?;
         let key = self.session_enrollment_key(user_id, FactorMethod::Passkey);
         let Some(pending) = self
@@ -344,6 +346,19 @@ impl AuthFactorService {
             enrollment_id,
         ) || self.clock.now() >= pending.expires_at
         {
+            return Ok(EnrollmentFinish::InvalidEnrollment);
+        }
+        if pending.payload.issuer_generation != Some(current_issuer_generation) {
+            let _ = self
+                .take_session_enrollment::<PendingPasskeyRegistration>(
+                    &key,
+                    user_id,
+                    session_id,
+                    session_epoch,
+                    FactorMethod::Passkey,
+                    enrollment_id,
+                )
+                .await?;
             return Ok(EnrollmentFinish::InvalidEnrollment);
         }
         let core = build_core(&pending.payload.settings)?;
@@ -365,12 +380,13 @@ impl AuthFactorService {
         else {
             return Ok(EnrollmentFinish::InvalidEnrollment);
         };
-        match repository::insert_authenticated_passkey(
+        match repository::insert_authenticated_passkey_with_issuer_generation(
             &self.pool,
             user_id,
             session_epoch,
             passkey.cred_id(),
             &passkey,
+            current_issuer_generation,
         )
         .await
         {
@@ -379,6 +395,9 @@ impl AuthFactorService {
             }
             Ok(repository::AuthenticatedPasskeyPersistenceResult::Conflict) => {
                 Ok(EnrollmentFinish::AlreadyExists)
+            }
+            Ok(repository::AuthenticatedPasskeyPersistenceResult::IssuerChanged) => {
+                Ok(EnrollmentFinish::InvalidEnrollment)
             }
             Ok(repository::AuthenticatedPasskeyPersistenceResult::AuthenticationChanged) => {
                 Ok(EnrollmentFinish::AuthenticationChanged)

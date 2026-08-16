@@ -28,6 +28,7 @@ impl StoredPasskey {
 pub enum PasskeyPersistenceResult {
     Stored,
     Conflict,
+    IssuerChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,7 +123,61 @@ pub async fn insert_passkey_if_empty(
     credential_id: &[u8],
     passkey: &Passkey,
 ) -> Result<PasskeyPersistenceResult, crate::sqlx::Error> {
+    insert_passkey_if_empty_with_generation(pool, user_id, credential_id, passkey, None).await
+}
+
+pub async fn insert_passkey_if_empty_with_issuer_generation(
+    pool: &PgPool,
+    user_id: UserId,
+    credential_id: &[u8],
+    passkey: &Passkey,
+    expected_issuer_generation: i64,
+) -> Result<PasskeyPersistenceResult, crate::sqlx::Error> {
+    insert_passkey_if_empty_with_generation(
+        pool,
+        user_id,
+        credential_id,
+        passkey,
+        Some(expected_issuer_generation),
+    )
+    .await
+}
+
+async fn insert_passkey_if_empty_with_generation(
+    pool: &PgPool,
+    user_id: UserId,
+    credential_id: &[u8],
+    passkey: &Passkey,
+    expected_issuer_generation: Option<i64>,
+) -> Result<PasskeyPersistenceResult, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
+    crate::settings::repository::lock_passkey_policy(&mut transaction).await?;
+    if let Some(expected) = expected_issuer_generation {
+        let current: Option<i64> = crate::sqlx::query_scalar(
+            "SELECT generation FROM app_settings WHERE setting_key = 'app_issuer'",
+        )
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if current.is_some_and(|generation| generation != expected) {
+            transaction.rollback().await?;
+            return Ok(PasskeyPersistenceResult::IssuerChanged);
+        }
+    }
+    let enabled = match crate::settings::repository::get_text(
+        &mut *transaction,
+        crate::settings::PASSKEY_KEY,
+    )
+    .await?
+    {
+        None => true,
+        Some(raw) => serde_json::from_str::<crate::settings::PasskeySetting>(&raw)
+            .map(|setting| setting.enabled)
+            .unwrap_or(false),
+    };
+    if !enabled {
+        transaction.commit().await?;
+        return Ok(PasskeyPersistenceResult::Conflict);
+    }
     lock_factor_account(&mut transaction, user_id).await?;
     if account_has_factor(&mut transaction, user_id).await? {
         transaction.commit().await?;

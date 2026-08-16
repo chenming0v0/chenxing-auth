@@ -153,31 +153,9 @@ pub async fn update_passkey_setting(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    if !input.enabled {
-        match state.factors.has_active_passkey_only_accounts().await {
-            Ok(true) => {
-                tracing::warn!(
-                    event = "passkey_setting.disable_blocked",
-                    "passkey disable blocked because an active account has no alternative factor"
-                );
-                return error::conflict(
-                    "passkey_disable_blocked",
-                    "Passkey cannot be disabled while an active account relies on it as its only factor",
-                );
-            }
-            Ok(false) => {}
-            Err(error_value) => {
-                tracing::error!(
-                    error = %error_value,
-                    "failed to check passkey-only accounts before disabling Passkey"
-                );
-                return error::internal();
-            }
-        }
-    }
     match state
-        .settings
-        .set_passkey_audited(input, &state.audit, move |setting| {
+        .factors
+        .set_passkey_policy_audited(input, &state.audit, move |setting| {
             setting_event(
                 actor,
                 crate::audit::AuditAction::PasskeySettingUpdate,
@@ -193,7 +171,17 @@ pub async fn update_passkey_setting(
         .await
     {
         Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
-        Err(SettingsServiceError::Validation(error_value)) => {
+        Err(crate::auth_factors::service::PasskeyPolicyUpdateError::DisableBlocked) => {
+            tracing::warn!(
+                event = "passkey_setting.disable_blocked",
+                "passkey disable blocked because an active account has no readable alternative factor"
+            );
+            error::conflict(
+                "passkey_disable_blocked",
+                "Passkey cannot be disabled while an active account relies on it as its only factor",
+            )
+        }
+        Err(crate::auth_factors::service::PasskeyPolicyUpdateError::Validation(error_value)) => {
             error::bad_request("invalid_passkey_setting", error_value.to_string())
         }
         Err(error_value) => {

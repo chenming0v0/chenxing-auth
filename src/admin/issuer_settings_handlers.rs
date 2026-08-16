@@ -142,6 +142,20 @@ pub async fn update_issuer_setting(
             "changing the issuer requires explicit confirmation",
         );
     }
+    let mut transaction = match state.database.begin().await {
+        Ok(transaction) => transaction,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to begin issuer update transaction");
+            return error::internal();
+        }
+    };
+    if let Err(error_value) =
+        crate::settings::repository::lock_passkey_policy(&mut transaction).await
+    {
+        tracing::error!(error = %error_value, "failed to lock Passkey policy for issuer update");
+        let _ = transaction.rollback().await;
+        return error::internal();
+    }
     if let Some(snapshot) = state.issuer.current() {
         let defaults = match state.issuer.webauthn_defaults_for(&value) {
             Ok(defaults) => defaults,
@@ -154,8 +168,13 @@ pub async fn update_issuer_setting(
             }
         };
         if defaults.0 != snapshot.webauthn_rp_id() || defaults.1 != snapshot.webauthn_origin() {
-            match state.factors.has_passkeys().await {
+            match state
+                .factors
+                .has_passkeys_in_transaction(&mut transaction)
+                .await
+            {
                 Ok(true) => {
+                    let _ = transaction.rollback().await;
                     return error::conflict(
                         "issuer_passkey_migration_required",
                         "configure a stable WebAuthn RP ID and origin before changing issuer",
@@ -164,6 +183,7 @@ pub async fn update_issuer_setting(
                 Ok(false) => {}
                 Err(error_value) => {
                     tracing::error!(error = %error_value, "failed to check passkey compatibility");
+                    let _ = transaction.rollback().await;
                     return error::service_unavailable(
                         "issuer_passkey_check_unavailable",
                         "could not verify WebAuthn compatibility",
@@ -172,13 +192,6 @@ pub async fn update_issuer_setting(
             }
         }
     }
-    let mut transaction = match state.database.begin().await {
-        Ok(transaction) => transaction,
-        Err(error_value) => {
-            tracing::error!(error = %error_value, "failed to begin issuer update transaction");
-            return error::internal();
-        }
-    };
     let write =
         match issuer::set_in_transaction(&mut transaction, &value, input.expected_generation).await
         {
