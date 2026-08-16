@@ -23,9 +23,9 @@ fn production_like_config() -> Config {
     )
     .expect("valid production-like configuration");
     config.admin_token = "local-development-admin-token-012345".to_owned();
-    config.trusted_proxies = TrustedProxies::from_ips(vec!["127.0.0.1"
-        .parse()
-        .expect("loopback is a valid proxy IP")]);
+    config.trusted_proxies = TrustedProxies::from_ips(vec![
+        "127.0.0.1".parse().expect("loopback is a valid proxy IP"),
+    ]);
     config
 }
 

@@ -60,9 +60,7 @@ impl ConfigWarning {
                     self.message()
                 );
             }
-            Self::EmptyAdminToken
-            | Self::OauthProviderLoopbackEnabled
-            | Self::NoTrustedProxies => {
+            Self::EmptyAdminToken | Self::OauthProviderLoopbackEnabled | Self::NoTrustedProxies => {
                 tracing::warn!(config_warning = self.kind(), "{}", self.message());
             }
         }

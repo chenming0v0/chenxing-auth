@@ -2,8 +2,9 @@
 //! path. Construction returns them as data; `main` emits after tracing is live.
 
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use chenxing_auth::config::{Config, ConfigWarning, TrustedProxies};
 
@@ -30,9 +31,9 @@ fn production_like_config() -> Config {
     )
     .expect("valid production-like configuration");
     config.admin_token = SECRET_ADMIN_TOKEN.to_owned();
-    config.trusted_proxies = TrustedProxies::from_ips(vec!["127.0.0.1"
-        .parse()
-        .expect("loopback is a valid proxy IP")]);
+    config.trusted_proxies = TrustedProxies::from_ips(vec![
+        "127.0.0.1".parse().expect("loopback is a valid proxy IP"),
+    ]);
     config
 }
 
@@ -117,10 +118,7 @@ fn emit_http_issuer_secure_cookie_warning() {
 fn emit_empty_admin_token_warning() {
     let mut config = production_like_config();
     config.admin_token.clear();
-    assert_eq!(
-        config.startup_warnings(),
-        [ConfigWarning::EmptyAdminToken]
-    );
+    assert_eq!(config.startup_warnings(), [ConfigWarning::EmptyAdminToken]);
     assert_only_warning(&capture_emitted_warnings(&config), EMPTY_ADMIN_NEEDLE);
 }
 
@@ -139,16 +137,58 @@ fn emit_oauth_loopback_warning() {
 fn emit_missing_trusted_proxies_warning() {
     let mut config = production_like_config();
     config.trusted_proxies = TrustedProxies::none();
-    assert_eq!(
-        config.startup_warnings(),
-        [ConfigWarning::NoTrustedProxies]
-    );
+    assert_eq!(config.startup_warnings(), [ConfigWarning::NoTrustedProxies]);
     assert_only_warning(&capture_emitted_warnings(&config), NO_PROXIES_NEEDLE);
 }
 
 struct BinaryOutput {
     stdout: String,
     stderr: String,
+}
+
+fn chenxing_auth_bin() -> PathBuf {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let exe = format!("chenxing-auth{}", std::env::consts::EXE_SUFFIX);
+        locate_chenxing_auth_bin(&exe).unwrap_or_else(|| build_chenxing_auth_bin(&exe))
+    })
+    .clone()
+}
+
+fn locate_chenxing_auth_bin(exe: &str) -> Option<PathBuf> {
+    // The project test runner compiles `--test config_startup_warnings` without
+    // the package binary, so `env!("CARGO_BIN_EXE_*")` is either unset or points
+    // at a path that was never built. Resolve the executable at runtime.
+    let mut candidates = Vec::new();
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_chenxing_auth") {
+        candidates.push(PathBuf::from(path));
+    }
+    if let Some(path) = option_env!("CARGO_BIN_EXE_chenxing_auth") {
+        candidates.push(PathBuf::from(path));
+    }
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target"));
+    for profile in ["debug", "release"] {
+        candidates.push(target_dir.join(profile).join(exe));
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+fn build_chenxing_auth_bin(exe: &str) -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = Command::new(cargo)
+        .args(["build", "--bin", "chenxing-auth", "--locked"])
+        .current_dir(&manifest_dir)
+        .status()
+        .expect("spawn cargo build --bin chenxing-auth");
+    assert!(
+        status.success(),
+        "cargo build --bin chenxing-auth failed with {status}"
+    );
+    locate_chenxing_auth_bin(exe)
+        .unwrap_or_else(|| panic!("chenxing-auth missing after cargo build --bin chenxing-auth"))
 }
 
 fn run_binary(overrides: &[(&str, &str)]) -> BinaryOutput {
@@ -162,7 +202,7 @@ fn run_binary(overrides: &[(&str, &str)]) -> BinaryOutput {
     ));
     std::fs::create_dir_all(&work).expect("temp dir");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_chenxing_auth"))
+    let output = Command::new(chenxing_auth_bin())
         .arg("audit-archive")
         .current_dir(&work)
         .env_clear()
@@ -222,8 +262,11 @@ fn binary_emits_missing_trusted_proxies_warning() {
 fn binary_invalid_log_filter_is_diagnosable_without_secrets() {
     let output = run_binary(&[("RUST_LOG", "chenxing_auth=not-a-level")]);
     let logs = binary_logs(&output);
+    // `main` returns `Result<_, Box<dyn Error>>`, so the process prints Debug
+    // (`Error: InvalidValue("RUST_LOG")`), not ConfigError's Display text.
     assert!(
-        logs.contains("invalid configuration value: RUST_LOG"),
+        logs.contains(r#"InvalidValue("RUST_LOG")"#)
+            || logs.contains("invalid configuration value: RUST_LOG"),
         "filter failure must name RUST_LOG: {logs}"
     );
     assert!(!logs.contains(HTTP_ISSUER_NEEDLE));
@@ -237,6 +280,9 @@ fn binary_startup_warnings_do_not_leak_credentials() {
         ("ADMIN_TOKEN", SECRET_ADMIN_TOKEN),
         ("TRUSTED_PROXIES", ""),
     ]));
-    assert!(logs.contains(NO_PROXIES_NEEDLE), "expected proxy warning: {logs}");
+    assert!(
+        logs.contains(NO_PROXIES_NEEDLE),
+        "expected proxy warning: {logs}"
+    );
     assert_no_secrets(&logs);
 }
