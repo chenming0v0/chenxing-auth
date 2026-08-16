@@ -249,9 +249,15 @@ fn reclaim_if_stale_reports_nothing_to_do_without_a_lock() {
 fn heartbeat_refreshes_owner_mtime_until_stopped() {
     // Issue #355 的机制核心：持锁者用心跳刷新 owner 文件 mtime，陈旧判据从
     // "持锁开始时刻"变为"最后一次心跳"，活锁持有多久都不会被误回收。
+    // 某些 CI 文件系统只提供秒级 mtime；等待实际可观测的变化，而不是假定 200ms
+    // 内的两次写入一定有不同的时间戳。
     let directory = TempDir::new("heartbeat");
     fs::write(directory.path().join("owner"), FOREIGN_PID.to_string()).expect("write owner");
     let owner_path = directory.path().join("owner");
+    let initial = fs::metadata(&owner_path)
+        .expect("owner file")
+        .modified()
+        .expect("mtime");
 
     let mut heartbeat = directory_lock::Heartbeat::start(
         owner_path.clone(),
@@ -259,30 +265,30 @@ fn heartbeat_refreshes_owner_mtime_until_stopped() {
         Duration::from_millis(50),
     );
 
-    std::thread::sleep(Duration::from_millis(200));
-    let mid = fs::metadata(&owner_path)
-        .expect("owner file")
-        .modified()
-        .expect("mtime");
-    std::thread::sleep(Duration::from_millis(200));
-    let later = fs::metadata(&owner_path)
-        .expect("owner file")
-        .modified()
-        .expect("mtime");
-    assert!(later > mid, "持锁期间心跳必须持续刷新 owner 文件 mtime");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let refreshed = loop {
+        let observed = fs::metadata(&owner_path)
+            .expect("owner file")
+            .modified()
+            .expect("mtime");
+        if observed > initial {
+            break observed;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "持锁期间心跳必须持续刷新 owner 文件 mtime"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    };
 
     heartbeat.stop();
-    let stopped = fs::metadata(&owner_path)
-        .expect("owner file")
-        .modified()
-        .expect("mtime");
     std::thread::sleep(Duration::from_millis(200));
     let after = fs::metadata(&owner_path)
         .expect("owner file")
         .modified()
         .expect("mtime");
     assert_eq!(
-        after, stopped,
+        after, refreshed,
         "stop 后心跳线程必须退出，不得再写 owner 文件"
     );
 }
