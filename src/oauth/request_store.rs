@@ -281,15 +281,19 @@ impl AuthorizationRequestStore {
         replacement: &PendingAuthorization,
         limits: &SecurityLimitsSetting,
     ) -> Result<bool, AuthorizationRequestStoreError> {
-        let expected = serde_json::to_string(expected)?;
-        let replacement = serde_json::to_string(replacement)?;
+        let expected_payload = serde_json::to_string(expected)?;
+        // Store owns the generation bump so a rebind cannot forget it.
+        // Callers re-read after a lost CAS and therefore observe the new revision.
+        let mut replacement = replacement.clone();
+        replacement.cas_revision = super::cas::next_cas_revision(expected.cas_revision);
+        let replacement = serde_json::to_string(&replacement)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let replaced: i64 = Script::new(PENDING_REPLACE_SCRIPT)
             .key(self.key(request_id))
             .key(self.global_index_key())
             .key(self.global_capacity_key())
             .key(self.global_expiry_key())
-            .arg(expected)
+            .arg(expected_payload)
             .arg(replacement)
             .arg(request_id)
             .arg(limits.pending_request_ttl_seconds)

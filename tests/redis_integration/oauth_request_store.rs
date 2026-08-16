@@ -41,6 +41,7 @@ fn pending(request_id: String, client_id: &str) -> PendingAuthorization {
         code_challenge_method: "S256".to_owned(),
         session_token_hash: None,
         holder_hash: None,
+        cas_revision: 0,
     }
 }
 
@@ -140,6 +141,13 @@ async fn future_fields_do_not_break_pending_compare_and_swap() {
             .expect("replace pending with future field")
     );
 
+    let replaced = store
+        .find(&request.request_id)
+        .await
+        .expect("find replaced pending")
+        .expect("replaced pending");
+    assert_eq!(replaced.cas_revision, 1);
+
     let replaced_payload: String = connection.get(&key).await.expect("replaced pending JSON");
     let mut replaced_json: serde_json::Value =
         serde_json::from_str(&replaced_payload).expect("parse replaced pending");
@@ -154,7 +162,7 @@ async fn future_fields_do_not_break_pending_compare_and_swap() {
         .expect("inject second future pending field");
     assert!(
         store
-            .take_if_matches(&request.request_id, &replacement)
+            .take_if_matches(&request.request_id, &replaced)
             .await
             .expect("take pending with future field")
             .is_some()

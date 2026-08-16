@@ -5,6 +5,7 @@
 
 pub mod authorization;
 pub mod authorization_code_handlers;
+mod cas;
 pub mod client_auth;
 pub mod code;
 pub mod consent;
