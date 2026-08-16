@@ -14,7 +14,8 @@ async fn database() -> chenxing_auth::sqlx::PgPool {
 async fn business_advisory_locks_do_not_collide_with_user_ids() {
     let pool = database().await;
 
-    for business_key in [7_341_928_i32, 7_341_929_i32] {
+    // OwnerBootstrap, DefaultPlan, PasskeyPolicy — keep in sync with BusinessLock.
+    for business_key in [7_341_928_i32, 7_341_929_i32, 7_341_931_i32] {
         let user_id = i64::from(business_key);
         let mut user_transaction = pool.begin().await.expect("begin user lock transaction");
         chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock($1::bigint)")

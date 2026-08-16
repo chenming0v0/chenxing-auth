@@ -121,14 +121,14 @@ where
 /// A setting row lock is insufficient when the row does not exist yet, so both
 /// sides use this stable advisory key. This keeps the default-enabled case
 /// atomic with the first persisted setting write as well.
-pub(crate) async fn lock_passkey_policy<'e, E>(executor: E) -> Result<(), crate::sqlx::Error>
-where
-    E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
-{
-    crate::sqlx::query("SELECT pg_advisory_xact_lock(0, 7341931)")
-        .execute(executor)
-        .await?;
-    Ok(())
+pub(crate) async fn lock_passkey_policy(
+    transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+) -> Result<(), crate::sqlx::Error> {
+    crate::db::advisory_lock::lock_business(
+        transaction,
+        crate::db::advisory_lock::BusinessLock::PasskeyPolicy,
+    )
+    .await
 }
 
 pub async fn set_email_policy<'e, E>(

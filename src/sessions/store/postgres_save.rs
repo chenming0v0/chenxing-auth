@@ -44,7 +44,7 @@ pub(in crate::sessions::store) async fn save_with_metadata(
     let token_hash = session_token_hash_bytes(&session.token).to_vec();
     let mut transaction = pool.begin().await?;
     if matches!(binding, SessionEpochBinding::PasswordAuthenticated { .. }) {
-        crate::settings::repository::lock_passkey_policy(&mut *transaction).await?;
+        crate::settings::repository::lock_passkey_policy(&mut transaction).await?;
     }
     super::lock_user_session_scope(&mut transaction, user_id).await?;
     let user_state: Option<(i64, String)> =
