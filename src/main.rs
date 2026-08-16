@@ -6,10 +6,11 @@ use chenxing_auth::{
     keys::DEFAULT_KEY_SYNC_INTERVAL,
     oauth::quota::QUOTA_REFUND_WORKER_INTERVAL,
     settings::{InitializeIssuerOutcome, issuer},
+    shutdown,
     state::AppState,
-    workers::{WORKER_DRAIN_TIMEOUT, WorkerFailure, WorkerName, WorkerSupervisor},
+    workers::{WorkerName, WorkerSupervisor},
 };
-use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
@@ -152,85 +153,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let app = api::router(state);
-    let (http_shutdown, http_shutdown_receiver) = tokio::sync::watch::channel(false);
-    let server = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(wait_for_shutdown(http_shutdown_receiver))
-    .into_future();
-    tokio::pin!(server);
-
     info!(address = %address, "辰星认证中枢 started");
-
-    enum ServiceExit {
-        Server(std::io::Result<()>),
-        ShutdownSignal,
-        Worker(WorkerFailure),
-    }
-
-    let exit = tokio::select! {
-        result = &mut server => ServiceExit::Server(result),
-        _ = shutdown_signal() => ServiceExit::ShutdownSignal,
-        failure = workers.wait_for_failure() => ServiceExit::Worker(failure),
-    };
-    let (server_result, worker_failure) = match exit {
-        ServiceExit::Server(result) => (result, None),
-        ServiceExit::ShutdownSignal => {
-            let _ = http_shutdown.send(true);
-            (server.await, None)
-        }
-        ServiceExit::Worker(failure) => {
-            tracing::error!(error = %failure, "critical worker failed; shutting down service");
-            let _ = http_shutdown.send(true);
-            (server.await, Some(failure))
-        }
-    };
-
-    let drain_result = workers.drain(WORKER_DRAIN_TIMEOUT).await;
-    server_result?;
-    if let Some(failure) = worker_failure {
-        if let Err(drain_error) = &drain_result {
-            tracing::error!(error = %drain_error, "worker drain also failed after worker exit");
-        }
-        return Err(failure.into());
-    }
-    drain_result?;
-
+    shutdown::serve(
+        listener,
+        app,
+        workers,
+        Duration::from_secs(config.http_graceful_drain_seconds),
+    )
+    .await?;
     Ok(())
-}
-
-async fn wait_for_shutdown(mut receiver: tokio::sync::watch::Receiver<bool>) {
-    if *receiver.borrow() {
-        return;
-    }
-    while receiver.changed().await.is_ok() {
-        if *receiver.borrow() {
-            return;
-        }
-    }
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install terminate signal handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
 }

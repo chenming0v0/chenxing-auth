@@ -28,6 +28,7 @@ pub use crate::sessions::domain::{
 };
 
 const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 30;
+const DEFAULT_HTTP_GRACEFUL_DRAIN_SECONDS: u64 = 15;
 
 pub use audit::AuditRetentionConfig;
 // 上界常量必须公开可达 `crate::config::MAX_*`：`for_each_security_limit!` 用绝对路径
@@ -73,6 +74,11 @@ pub struct Config {
     pub port: u16,
     /// Maximum time for a matched application route to produce a response.
     pub request_timeout_seconds: u64,
+    /// Total time to finish in-flight HTTP connections after a process shutdown
+    /// signal. Static SPA/asset responses are not wrapped by
+    /// [`Self::request_timeout_seconds`], so a client that stops reading the
+    /// body can otherwise keep the Serve future alive indefinitely.
+    pub http_graceful_drain_seconds: u64,
     /// 启动时解析出的 Issuer 候选。进入 [`crate::state::AppState`] 后，运行期唯一
     /// 权威是共享的 Issuer runtime；handler 不再读取这份静态配置。
     pub issuer: Option<IssuerUrl>,
@@ -156,6 +162,10 @@ impl fmt::Debug for Config {
             .field("host", &self.host)
             .field("port", &self.port)
             .field("request_timeout_seconds", &self.request_timeout_seconds)
+            .field(
+                "http_graceful_drain_seconds",
+                &self.http_graceful_drain_seconds,
+            )
             .field("issuer", &issuer_url)
             .field("admin_token", &"REDACTED")
             .field("key_directory", &self.key_directory)
