@@ -173,8 +173,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionExpiryTimerRef.current = null
     if (!user?.current_session_expires_at) return
 
-    const delay = new Date(user.current_session_expires_at).getTime() - Date.now()
-    sessionExpiryTimerRef.current = setTimeout(() => clear(), Math.max(0, delay))
+    const expiresAt = new Date(user.current_session_expires_at).getTime()
+    if (!Number.isFinite(expiresAt)) return
+    // setTimeout 的 delay 超过 2^31-1 ms 时宿主会按溢出立即触发（HTML 标准行为），
+    // 远期到期时间（如 2099）会被当成“已到期”在下个 tick 直接登出。这里把单次
+    // 延迟钳制到上限，并在每次触发时复核剩余时间：未到期就重新续订，只有真正
+    // 过期才清除认证状态（#504 的到期定时器边界）。
+    const MAX_TIMEOUT_MS = 2_147_483_647
+    const arm = () => {
+      const remaining = expiresAt - Date.now()
+      if (remaining <= 0) {
+        clear()
+        return
+      }
+      sessionExpiryTimerRef.current = setTimeout(arm, Math.min(remaining, MAX_TIMEOUT_MS))
+    }
+    arm()
     return () => {
       if (sessionExpiryTimerRef.current) clearTimeout(sessionExpiryTimerRef.current)
       sessionExpiryTimerRef.current = null
