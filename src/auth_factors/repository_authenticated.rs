@@ -1,4 +1,4 @@
-use super::lock_factor_account;
+use super::{issuer_generation_matches, lock_factor_account};
 use crate::{sqlx::PgPool, users::domain::UserId};
 use webauthn_rs::prelude::Passkey;
 
@@ -104,7 +104,7 @@ async fn insert_authenticated_passkey_with_generation(
         )
         .fetch_optional(&mut *transaction)
         .await?;
-        if current != Some(expected) {
+        if !issuer_generation_matches(current, expected) {
             transaction.rollback().await?;
             return Ok(AuthenticatedPasskeyPersistenceResult::IssuerChanged);
         }

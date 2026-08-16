@@ -1,4 +1,4 @@
-use super::{account_has_factor, lock_factor_account};
+use super::{account_has_factor, issuer_generation_matches, lock_factor_account};
 use crate::{sqlx::PgPool, users::domain::UserId};
 use webauthn_rs::prelude::{AuthenticationResult, Passkey};
 
@@ -158,7 +158,7 @@ async fn insert_passkey_if_empty_with_generation(
         )
         .fetch_optional(&mut *transaction)
         .await?;
-        if current != Some(expected) {
+        if !issuer_generation_matches(current, expected) {
             transaction.rollback().await?;
             return Ok(PasskeyPersistenceResult::IssuerChanged);
         }
@@ -384,6 +384,13 @@ mod tests {
         serde_json::to_value(passkey).expect("passkey JSON")["cred"]["backup_eligible"]
             .as_bool()
             .expect("backup_eligible")
+    }
+
+    #[test]
+    fn absent_issuer_row_matches_only_the_initial_runtime_generation() {
+        let initial = super::super::INITIAL_ISSUER_GENERATION;
+        assert!(issuer_generation_matches(None, initial));
+        assert!(!issuer_generation_matches(None, initial + 1));
     }
 
     #[test]

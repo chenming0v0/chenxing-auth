@@ -1,6 +1,14 @@
 use crate::sqlx::PgPool;
 use crate::users::domain::UserId;
 
+// `AppState::new_with_pool` represents an explicitly configured, not-yet-persisted
+// Issuer as generation 1. Missing rows must never match later generations.
+const INITIAL_ISSUER_GENERATION: i64 = 1;
+
+fn issuer_generation_matches(current: Option<i64>, expected: i64) -> bool {
+    current.unwrap_or(INITIAL_ISSUER_GENERATION) == expected
+}
+
 #[path = "repository_authenticated.rs"]
 mod authenticated;
 pub use authenticated::{
