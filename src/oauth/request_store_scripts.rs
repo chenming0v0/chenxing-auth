@@ -1,22 +1,54 @@
-pub const PENDING_CAPACITY_SCRIPT: &str = r#"
+/// Shared-index TTL must never shrink to a sibling request's remaining life.
+/// Redis `EXPIRE` overwrites; `SET` clears TTL. Restore of a near-expiry
+/// request used to expire client/global indexes early and drop still-alive
+/// keys from capacity accounting.
+macro_rules! pending_script {
+    ($body:expr) => {
+        concat!(
+            r#"
+local function expire_at_least(key, ttl_ms)
+    ttl_ms = tonumber(ttl_ms)
+    if not ttl_ms or ttl_ms <= 0 then
+        return
+    end
+    local current = tonumber(redis.call('PTTL', key))
+    if current < ttl_ms then
+        redis.call('PEXPIRE', key, ttl_ms)
+    end
+end
+
+local function set_count(key, count, ttl_ms)
+    redis.call('SET', key, count, 'KEEPTTL')
+    expire_at_least(key, ttl_ms)
+end
+"#,
+            $body
+        )
+    };
+}
+
+pub const PENDING_CAPACITY_SCRIPT: &str = pending_script!(
+    r#"
 local request_prefix = ARGV[7]
 local client_index_prefix = ARGV[8]
 local client_count_prefix = ARGV[9]
-local ttl_ms = tonumber(ARGV[10])
+local request_ttl_ms = tonumber(ARGV[10])
 local ttl_seconds = tonumber(ARGV[2])
-if ttl_ms and ttl_ms > 0 then
-    ttl_seconds = math.ceil(ttl_ms / 1000)
+local ttl_ms = ttl_seconds * 1000
+if request_ttl_ms and request_ttl_ms > 0 then
+    ttl_ms = request_ttl_ms
+    ttl_seconds = math.ceil(request_ttl_ms / 1000)
 end
 
 local function sync_client_count(client_id)
     local index_key = client_index_prefix .. client_id
+    local count_key = client_count_prefix .. client_id
     local count = redis.call('SCARD', index_key)
     if count == 0 then
-        redis.call('DEL', index_key, client_count_prefix .. client_id)
+        redis.call('DEL', index_key, count_key)
     else
-        redis.call('SET', client_count_prefix .. client_id, count)
-        redis.call('EXPIRE', index_key, ttl_seconds)
-        redis.call('EXPIRE', client_count_prefix .. client_id, ttl_seconds)
+        set_count(count_key, count, ttl_ms)
+        expire_at_least(index_key, ttl_ms)
     end
     return count
 end
@@ -26,12 +58,27 @@ local function sync_global_count()
     if count == 0 then
         redis.call('DEL', KEYS[5], KEYS[6], KEYS[3])
     else
-        redis.call('SET', KEYS[3], count)
-        redis.call('EXPIRE', KEYS[5], ttl_seconds)
-        redis.call('EXPIRE', KEYS[6], ttl_seconds)
-        redis.call('EXPIRE', KEYS[3], ttl_seconds)
+        set_count(KEYS[3], count, ttl_ms)
+        expire_at_least(KEYS[5], ttl_ms)
+        expire_at_least(KEYS[6], ttl_ms)
     end
     return count
+end
+
+local function cover_request(request_id)
+    local remaining_ms = tonumber(redis.call('PTTL', request_prefix .. request_id))
+    if not remaining_ms or remaining_ms <= 0 then
+        return ttl_seconds
+    end
+    expire_at_least(KEYS[5], remaining_ms)
+    expire_at_least(KEYS[6], remaining_ms)
+    expire_at_least(KEYS[3], remaining_ms)
+    local owner = redis.call('HGET', KEYS[5], request_id) or ARGV[5]
+    if owner then
+        expire_at_least(client_index_prefix .. owner, remaining_ms)
+        expire_at_least(client_count_prefix .. owner, remaining_ms)
+    end
+    return math.ceil(remaining_ms / 1000)
 end
 
 local function release(request_id, fallback_client_id)
@@ -48,6 +95,8 @@ end
 for _, request_id in ipairs(redis.call('SMEMBERS', KEYS[4])) do
     if redis.call('EXISTS', request_prefix .. request_id) == 0 then
         release(request_id, ARGV[5])
+    else
+        cover_request(request_id)
     end
 end
 local now = tonumber(redis.call('TIME')[1])
@@ -55,7 +104,7 @@ for _, request_id in ipairs(redis.call('ZRANGEBYSCORE', KEYS[6], '-inf', now)) d
     if redis.call('EXISTS', request_prefix .. request_id) == 0 then
         release(request_id, nil)
     else
-        redis.call('ZADD', KEYS[6], now + ttl_seconds, request_id)
+        redis.call('ZADD', KEYS[6], now + cover_request(request_id), request_id)
     end
 end
 
@@ -65,8 +114,8 @@ if redis.call('EXISTS', KEYS[1]) == 1 then return -1 end
 if client_count >= tonumber(ARGV[3]) or global_count >= tonumber(ARGV[4]) then
     return 0
 end
-if ttl_ms and ttl_ms > 0 then
-    redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl_ms)
+if request_ttl_ms and request_ttl_ms > 0 then
+    redis.call('SET', KEYS[1], ARGV[1], 'PX', request_ttl_ms)
 else
     redis.call('SETEX', KEYS[1], ttl_seconds, ARGV[1])
 end
@@ -76,21 +125,24 @@ redis.call('ZADD', KEYS[6], now + ttl_seconds, ARGV[6])
 sync_client_count(ARGV[5])
 sync_global_count()
 return 1
-"#;
+"#
+);
 
-pub const PENDING_TAKE_SCRIPT: &str = r#"
+pub const PENDING_TAKE_SCRIPT: &str = pending_script!(
+    r#"
 local client_index_prefix = ARGV[3]
 local client_count_prefix = ARGV[4]
+local ttl_ms = tonumber(ARGV[2]) * 1000
 
 local function sync_client_count(client_id)
     local index_key = client_index_prefix .. client_id
+    local count_key = client_count_prefix .. client_id
     local count = redis.call('SCARD', index_key)
     if count == 0 then
-        redis.call('DEL', index_key, client_count_prefix .. client_id)
+        redis.call('DEL', index_key, count_key)
     else
-        redis.call('SET', client_count_prefix .. client_id, count)
-        redis.call('EXPIRE', index_key, ARGV[2])
-        redis.call('EXPIRE', client_count_prefix .. client_id, ARGV[2])
+        set_count(count_key, count, ttl_ms)
+        expire_at_least(index_key, ttl_ms)
     end
     return count
 end
@@ -100,10 +152,9 @@ local function sync_global_count()
     if count == 0 then
         redis.call('DEL', KEYS[2], KEYS[4], KEYS[3])
     else
-        redis.call('SET', KEYS[3], count)
-        redis.call('EXPIRE', KEYS[2], ARGV[2])
-        redis.call('EXPIRE', KEYS[4], ARGV[2])
-        redis.call('EXPIRE', KEYS[3], ARGV[2])
+        set_count(KEYS[3], count, ttl_ms)
+        expire_at_least(KEYS[2], ttl_ms)
+        expire_at_least(KEYS[4], ttl_ms)
     end
     return count
 end
@@ -129,11 +180,14 @@ local client_id = cjson.decode(current)['client_id']
 redis.call('DEL', KEYS[1])
 release(ARGV[1], client_id)
 return {current, remaining_ms}
-"#;
+"#
+);
 
-pub const PENDING_TAKE_IF_MATCHES_SCRIPT: &str = r#"
+pub const PENDING_TAKE_IF_MATCHES_SCRIPT: &str = pending_script!(
+    r#"
 local client_index_prefix = ARGV[4]
 local client_count_prefix = ARGV[5]
+local ttl_ms = tonumber(ARGV[3]) * 1000
 
 local function same_payload(current_json, expected_json)
     local current = cjson.decode(current_json)
@@ -154,13 +208,13 @@ end
 
 local function sync_client_count(client_id)
     local index_key = client_index_prefix .. client_id
+    local count_key = client_count_prefix .. client_id
     local count = redis.call('SCARD', index_key)
     if count == 0 then
-        redis.call('DEL', index_key, client_count_prefix .. client_id)
+        redis.call('DEL', index_key, count_key)
     else
-        redis.call('SET', client_count_prefix .. client_id, count)
-        redis.call('EXPIRE', index_key, ARGV[3])
-        redis.call('EXPIRE', client_count_prefix .. client_id, ARGV[3])
+        set_count(count_key, count, ttl_ms)
+        expire_at_least(index_key, ttl_ms)
     end
     return count
 end
@@ -170,10 +224,9 @@ local function sync_global_count()
     if count == 0 then
         redis.call('DEL', KEYS[2], KEYS[4], KEYS[3])
     else
-        redis.call('SET', KEYS[3], count)
-        redis.call('EXPIRE', KEYS[2], ARGV[3])
-        redis.call('EXPIRE', KEYS[4], ARGV[3])
-        redis.call('EXPIRE', KEYS[3], ARGV[3])
+        set_count(KEYS[3], count, ttl_ms)
+        expire_at_least(KEYS[2], ttl_ms)
+        expire_at_least(KEYS[4], ttl_ms)
     end
     return count
 end
@@ -200,11 +253,14 @@ local client_id = cjson.decode(current)['client_id']
 redis.call('DEL', KEYS[1])
 release(ARGV[2], client_id)
 return {current, remaining_ms}
-"#;
+"#
+);
 
-pub const PENDING_REPLACE_SCRIPT: &str = r#"
+pub const PENDING_REPLACE_SCRIPT: &str = pending_script!(
+    r#"
 local client_index_prefix = ARGV[7]
 local client_count_prefix = ARGV[8]
+local ttl_ms = tonumber(ARGV[4]) * 1000
 
 local function same_payload(current_json, expected_json)
     local current = cjson.decode(current_json)
@@ -225,13 +281,13 @@ end
 
 local function sync_client_count(client_id)
     local index_key = client_index_prefix .. client_id
+    local count_key = client_count_prefix .. client_id
     local count = redis.call('SCARD', index_key)
     if count == 0 then
-        redis.call('DEL', index_key, client_count_prefix .. client_id)
+        redis.call('DEL', index_key, count_key)
     else
-        redis.call('SET', client_count_prefix .. client_id, count)
-        redis.call('EXPIRE', index_key, ARGV[4])
-        redis.call('EXPIRE', client_count_prefix .. client_id, ARGV[4])
+        set_count(count_key, count, ttl_ms)
+        expire_at_least(index_key, ttl_ms)
     end
     return count
 end
@@ -241,10 +297,9 @@ local function sync_global_count()
     if count == 0 then
         redis.call('DEL', KEYS[2], KEYS[4], KEYS[3])
     else
-        redis.call('SET', KEYS[3], count)
-        redis.call('EXPIRE', KEYS[2], ARGV[4])
-        redis.call('EXPIRE', KEYS[4], ARGV[4])
-        redis.call('EXPIRE', KEYS[3], ARGV[4])
+        set_count(KEYS[3], count, ttl_ms)
+        expire_at_least(KEYS[2], ttl_ms)
+        expire_at_least(KEYS[4], ttl_ms)
     end
     return count
 end
@@ -283,4 +338,5 @@ redis.call('ZADD', KEYS[4], tonumber(redis.call('TIME')[1]) + tonumber(ARGV[4]),
 sync_client_count(replacement_client_id)
 sync_global_count()
 return 1
-"#;
+"#
+);

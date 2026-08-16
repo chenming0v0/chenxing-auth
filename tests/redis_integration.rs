@@ -18,3 +18,5 @@ mod oauth_quota_refund;
 mod oauth_rate_limit;
 #[path = "redis_integration/oauth_request_store.rs"]
 mod oauth_request_store;
+#[path = "redis_integration/oauth_request_store_ttl.rs"]
+mod oauth_request_store_ttl;
