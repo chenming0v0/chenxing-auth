@@ -179,48 +179,12 @@ impl QpsRateLimiter {
 #[cfg(test)]
 mod tests {
     use super::{QPS_WINDOW_MS, QpsRateLimiter};
-    use redis::AsyncCommands;
-
-    fn redis_url() -> String {
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned())
-    }
-
-    fn limiter() -> QpsRateLimiter {
-        QpsRateLimiter::new(redis::Client::open(redis_url()).expect("Redis URL"))
-    }
 
     fn limiter_with_window(window_ms: i64) -> QpsRateLimiter {
         QpsRateLimiter::with_window_ms(
-            redis::Client::open(redis_url()).expect("Redis URL"),
+            redis::Client::open("redis://127.0.0.1:1").expect("Redis URL"),
             window_ms,
         )
-    }
-
-    #[tokio::test]
-    async fn sliding_window_rejects_requests_over_the_limit() {
-        let limiter = limiter();
-        let client_id = format!("qps-test-{}", uuid::Uuid::new_v4().simple());
-        assert!(limiter.allow(&client_id, 2).await.expect("first request"));
-        assert!(limiter.allow(&client_id, 2).await.expect("second request"));
-        assert!(!limiter.allow(&client_id, 2).await.expect("third request"));
-    }
-
-    #[tokio::test]
-    async fn concurrent_requests_share_the_same_window() {
-        let limiter = limiter();
-        let client_id = format!("qps-concurrent-{}", uuid::Uuid::new_v4().simple());
-        let (first, second, third) = tokio::join!(
-            limiter.allow(&client_id, 2),
-            limiter.allow(&client_id, 2),
-            limiter.allow(&client_id, 2),
-        );
-        let mut allowed = [
-            first.expect("first concurrent request"),
-            second.expect("second concurrent request"),
-            third.expect("third concurrent request"),
-        ];
-        allowed.sort_unstable();
-        assert_eq!(allowed, [false, true, true]);
     }
 
     /// TTL 由窗口推导，且必须复刻历史上 1000ms → 2s 的关系。
@@ -237,31 +201,10 @@ mod tests {
         assert_eq!(QpsRateLimiter::key_ttl_seconds(60_000), 61);
     }
 
-    /// 作用域窗口独立于实例窗口：1 秒实例窗口下也能表达「每分钟 N 次」。
-    #[tokio::test]
-    async fn scoped_window_is_independent_of_the_instance_window() {
-        let limiter = limiter();
-        let scope = format!("chenxing:test:scoped:{}", uuid::Uuid::new_v4().simple());
-        assert!(
-            limiter
-                .allow_scoped(&scope, 1, 60_000)
-                .await
-                .expect("first scoped request")
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
-        assert!(
-            !limiter
-                .allow_scoped(&scope, 1, 60_000)
-                .await
-                .expect("second scoped request"),
-            "60s scoped window must still count the entry recorded 1.2s ago"
-        );
-    }
-
     #[tokio::test]
     #[should_panic(expected = "scoped sliding window must be positive")]
     async fn non_positive_scoped_window_is_rejected() {
-        let _ = limiter()
+        let _ = limiter_with_window(QPS_WINDOW_MS)
             .allow_scoped("chenxing:test:scoped:invalid", 1, 0)
             .await;
     }
@@ -271,50 +214,5 @@ mod tests {
     fn non_positive_window_is_rejected() {
         // 非正窗口等于「放行一切」，必须在构造期就炸掉。
         limiter_with_window(0);
-    }
-
-    /// `new()` 保持 1 秒语义：超过一个窗口后旧条目被清掉，请求重新放行。
-    #[tokio::test]
-    async fn default_window_expires_after_one_second() {
-        let limiter = limiter();
-        let client_id = format!("qps-default-window-{}", uuid::Uuid::new_v4().simple());
-        assert!(limiter.allow(&client_id, 1).await.expect("first request"));
-        assert!(
-            !limiter.allow(&client_id, 1).await.expect("second request"),
-            "second request inside the 1s window must be rejected"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
-        assert!(
-            limiter.allow(&client_id, 1).await.expect("third request"),
-            "1.2s later the entry left the 1s window and the request is allowed again"
-        );
-    }
-
-    /// 大窗口同时验证两件事：窗口本身生效（1 秒后仍然拒绝），
-    /// 以及推导出的 TTL 跟着放大（key 没在 2 秒后过期把条目带走）。
-    #[tokio::test]
-    async fn large_window_keeps_rejecting_after_one_second() {
-        let limiter = limiter_with_window(60_000);
-        let client_id = format!("qps-large-window-{}", uuid::Uuid::new_v4().simple());
-        assert!(limiter.allow(&client_id, 1).await.expect("first request"));
-        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
-        assert!(
-            !limiter.allow(&client_id, 1).await.expect("second request"),
-            "60s window must still count the entry recorded 1.2s ago"
-        );
-
-        let mut connection = limiter
-            .client
-            .get_multiplexed_async_connection()
-            .await
-            .expect("Redis connection");
-        let ttl: i64 = connection
-            .ttl(limiter.keyspace.key(&format!("chenxing:qps:{client_id}")))
-            .await
-            .expect("key TTL");
-        assert!(
-            ttl > 2,
-            "key TTL must scale with the window, got {ttl}s (hardcoded 2s would evict entries)"
-        );
     }
 }

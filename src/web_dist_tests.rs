@@ -253,6 +253,59 @@ fn secret_material_in_the_root_is_rejected() {
     }
 }
 
+/// `ServeDir` 递归提供子目录文件，因此隐藏条目、source map 和秘密材料在
+/// `assets/` 等嵌套目录中也必须拒绝，而不能只检查产物根顶层。
+#[test]
+fn nested_dotfiles_source_maps_and_secrets_are_rejected() {
+    for relative in [
+        "assets/.hidden",
+        "assets/chunk.js.map",
+        "assets/provider-secret.pem",
+    ] {
+        let guard = TempDirGuard::new("nested-secret");
+        let root = guard.child("dist");
+        write_bundle(&root);
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("nested asset parent"))
+            .expect("nested asset directory");
+        fs::write(&path, b"forbidden").expect("nested forbidden asset");
+
+        let error = WebDistRoot::resolve(
+            &root.to_string_lossy(),
+            guard.path(),
+            &unrelated_key_directory(&guard),
+        )
+        .expect_err("nested forbidden material must not be served");
+
+        assert!(
+            matches!(error, WebDistError::NotABundle { .. }),
+            "{relative}: {error}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn nested_symbolic_links_are_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let guard = TempDirGuard::new("nested-symlink");
+    let root = guard.child("dist");
+    write_bundle(&root);
+    let outside = guard.child("outside-secret.txt");
+    fs::write(&outside, b"secret").expect("outside file");
+    symlink(&outside, root.join("assets/linked.js")).expect("nested symlink");
+
+    let error = WebDistRoot::resolve(
+        &root.to_string_lossy(),
+        guard.path(),
+        &unrelated_key_directory(&guard),
+    )
+    .expect_err("nested symbolic links must not be served");
+
+    assert!(matches!(error, WebDistError::NotABundle { .. }));
+}
+
 #[test]
 fn a_directory_without_index_html_is_not_a_bundle() {
     let guard = TempDirGuard::new("noindex");

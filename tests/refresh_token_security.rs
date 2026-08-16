@@ -1050,6 +1050,8 @@ async fn revoking_a_legacy_token_does_not_touch_other_legacy_tokens() {
         client_secret_version: None,
         // 旧格式 payload 没有 session_epoch（Issue #409 之前签发）
         session_epoch: None,
+        // 旧格式 payload 没有 issuer_generation（Issue #492 之前签发）
+        issuer_generation: None,
     };
     let revoked = legacy("revoked");
     let untouched = legacy("untouched");
@@ -1104,10 +1106,11 @@ async fn revoking_a_legacy_token_does_not_touch_other_legacy_tokens() {
         .expect("cleanup legacy revoke");
 }
 
-/// 旧格式 token（无 `issued_at` / `family_id` / `client_secret_version`）能反序列化并轮换。
+/// 旧格式 token 能反序列化，但缺失的安全代际字段会在兑换路径 fail-closed。
 #[test]
 fn legacy_token_without_new_fields_can_rotate() {
-    // 构造旧格式 token（无 issued_at / family_id / client_secret_version / session_epoch）
+    // 构造旧格式 token（无 issued_at / family_id / client_secret_version /
+    // session_epoch / issuer_generation）。
     let now = OffsetDateTime::now_utc();
     let legacy = RefreshToken {
         value: "cx-refresh-legacy123".to_owned(),
@@ -1122,6 +1125,8 @@ fn legacy_token_without_new_fields_can_rotate() {
         client_secret_version: None,
         // 旧格式 payload 没有 session_epoch，兑换路径对其 fail-closed
         session_epoch: None,
+        // 旧格式 payload 没有 issuer_generation，兑换路径同样 fail-closed
+        issuer_generation: None,
     };
 
     // issued_at() 回退到 created_at
@@ -1150,6 +1155,10 @@ fn legacy_token_without_new_fields_can_rotate() {
         "family_id should not serialize when empty"
     );
     assert!(
+        serialized.get("issuer_generation").is_none(),
+        "issuer_generation should not serialize when absent"
+    );
+    assert!(
         serialized.get("client_secret_version").is_none(),
         "client_secret_version should not serialize when None"
     );
@@ -1160,6 +1169,11 @@ fn legacy_token_without_new_fields_can_rotate() {
     assert_eq!(deserialized.issued_at, None);
     assert_eq!(deserialized.family_id, "");
     assert_eq!(deserialized.client_secret_version, None);
+    assert_eq!(deserialized.issuer_generation, None);
+    assert!(
+        !deserialized.is_bound_to_issuer_generation(1),
+        "legacy refresh tokens without an issuer generation must fail closed"
+    );
     assert!(
         deserialized.is_bound_to_client_secret_version(7, true),
         "legacy tokens remain usable during the rollout compatibility window"
@@ -1171,6 +1185,7 @@ fn legacy_token_without_new_fields_can_rotate() {
     let rebound =
         deserialized.rotate_at_with_client_secret_version(vec!["openid".to_owned()], 7, now);
     assert_eq!(rebound.client_secret_version, Some(7));
+    assert_eq!(rebound.issuer_generation, None);
 }
 
 /// 索引和墓碑的 TTL 存在（防止 Redis 无界增长）。

@@ -14,6 +14,94 @@ fn client() -> RegisteredClient {
     }
 }
 
+fn redirect_uri_is_allowed(registered: &str, requested: &str) -> bool {
+    let mut client = client();
+    client.redirect_uris = vec![registered.to_owned()];
+    validate_authorization_request(
+        &client,
+        AuthorizationRequest {
+            client_id: client.client_id.clone(),
+            redirect_uri: requested.to_owned(),
+            response_type: "code".to_owned(),
+            scope: "openid".to_owned(),
+            state: Some("state-value".to_owned()),
+            nonce: None,
+            code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
+            code_challenge_method: Some("S256".to_owned()),
+        },
+    )
+    .is_ok()
+}
+
+#[test]
+fn loopback_ipv4_redirect_allows_only_the_port_to_change() {
+    assert!(redirect_uri_is_allowed(
+        "http://127.0.0.1:41000/callback?source=native",
+        "http://127.0.0.1:52000/callback?source=native",
+    ));
+    assert!(!redirect_uri_is_allowed(
+        "http://127.0.0.1:41000/callback?source=native",
+        "http://127.0.0.2:52000/callback?source=native",
+    ));
+    assert!(!redirect_uri_is_allowed(
+        "http://127.0.0.1:41000/callback?source=native",
+        "http://127.0.0.1:52000/other?source=native",
+    ));
+    assert!(!redirect_uri_is_allowed(
+        "http://127.0.0.1:41000/callback?source=native",
+        "http://127.0.0.1:52000/callback?source=changed",
+    ));
+    assert!(!redirect_uri_is_allowed(
+        "http://127.0.0.1:41000/callback?source=native",
+        "http://127.0.0.1:52000/callback?source=native#fragment",
+    ));
+    assert!(!redirect_uri_is_allowed(
+        "http://127.0.0.1:41000/callback?source=native",
+        "https://127.0.0.1:52000/callback?source=native",
+    ));
+}
+
+#[test]
+fn loopback_ipv6_redirect_allows_only_the_port_to_change() {
+    assert!(redirect_uri_is_allowed(
+        "http://[::1]:41000/callback",
+        "http://[::1]:52000/callback",
+    ));
+    assert!(!redirect_uri_is_allowed(
+        "http://[::1]:41000/callback",
+        "http://[::2]:52000/callback",
+    ));
+}
+
+#[test]
+fn non_loopback_redirects_keep_exact_matching() {
+    for (registered, requested) in [
+        (
+            "https://project.example:41000/callback",
+            "https://project.example:52000/callback",
+        ),
+        (
+            "http://localhost:41000/callback",
+            "http://localhost:52000/callback",
+        ),
+        (
+            "http://192.0.2.10:41000/callback",
+            "http://192.0.2.10:52000/callback",
+        ),
+    ] {
+        assert!(!redirect_uri_is_allowed(registered, requested));
+        assert!(redirect_uri_is_allowed(registered, registered));
+    }
+}
+
+#[test]
+fn loopback_port_exception_uses_shared_redirect_uri_canonicalization() {
+    assert!(redirect_uri_is_allowed(
+        "http://127.0.0.1:41000/callback",
+        "http://127.0.0.1:52000/other/../callback",
+    ));
+}
+
 #[test]
 fn authorization_request_accepts_exact_redirect_and_pkce() {
     let request = validate_authorization_request(
@@ -33,6 +121,27 @@ fn authorization_request_accepts_exact_redirect_and_pkce() {
 
     assert_eq!(request.scopes, vec!["openid", "profile"]);
     assert_eq!(request.nonce.as_deref(), Some("nonce-value"));
+}
+
+#[test]
+fn authorization_request_canonicalizes_redirect_before_strict_match() {
+    let request = validate_authorization_request(
+        &client(),
+        AuthorizationRequest {
+            client_id: "cx_project".to_owned(),
+            // Registration stores the canonical form without the default HTTPS port.
+            redirect_uri: "https://project.example:443/callback".to_owned(),
+            response_type: "code".to_owned(),
+            scope: "openid profile".to_owned(),
+            state: Some("state-value".to_owned()),
+            nonce: None,
+            code_challenge: Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned()),
+            code_challenge_method: Some("S256".to_owned()),
+        },
+    )
+    .expect("canonical equivalent redirect URI should match");
+
+    assert_eq!(request.redirect_uri, "https://project.example/callback");
 }
 
 #[test]

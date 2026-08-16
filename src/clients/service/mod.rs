@@ -13,6 +13,7 @@ use crate::{
     clients::domain::{ClientAuthMethod, ClientRegistrationError, ClientRegistrationLimits},
     config::AuthEncryptionKeyRing,
     oauth::refresh_store::RefreshTokenStore,
+    plans::domain::AuthQuotaLimits,
 };
 use crate::{sqlx::PgPool, users::domain::UserId};
 
@@ -108,6 +109,13 @@ impl fmt::Debug for RegisteredClientSecret {
             .field("auth_method", &self.auth_method)
             .finish()
     }
+}
+
+#[derive(Debug)]
+pub struct RegisteredOwnedClient {
+    pub client: RegisteredClientSecret,
+    /// 创建事务实际用于准入的套餐配额，避免响应继续使用事务外旧快照。
+    pub quota_limits: AuthQuotaLimits,
 }
 
 #[derive(Debug, Serialize)]

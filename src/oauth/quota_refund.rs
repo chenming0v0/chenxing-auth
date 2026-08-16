@@ -35,12 +35,12 @@
 use std::time::Duration;
 
 use redis::{AsyncCommands, Script};
-use tokio::time::sleep;
 
 use super::super::quota_scripts::SCHEDULE_REFUND_SCRIPT;
 use super::{OAuthQuotaError, OAuthQuotaStore, QuotaReservation};
 use crate::clock::SharedClock;
 use crate::redis_keyspace::RedisKeyspace;
+use crate::workers::WorkerContext;
 
 /// 后台退款任务的扫描周期。
 ///
@@ -198,183 +198,35 @@ impl OAuthQuotaStore {
 
     /// 后台退款任务：周期性扫描到期条目并退还配额。
     ///
-    /// 任务永不返回，由调用方在关停时 abort。多实例部署下每个实例都会跑这个
-    /// worker，退款与清理都幂等，重复处理无害。启动后立即先跑一轮，把停机
-    /// 期间积压的到期条目清掉。
-    pub async fn run_refund_worker(self, clock: SharedClock, interval: Duration) {
+    /// 多实例部署下每个实例都会跑这个 worker，退款与清理都幂等，重复处理无害。
+    /// 启动后立即先跑一轮，把停机期间积压的到期条目清掉；关停会完成当前批次，
+    /// 然后在下一次等待点退出。
+    pub async fn run_refund_worker(
+        self,
+        clock: SharedClock,
+        interval: Duration,
+        mut worker: WorkerContext,
+    ) {
         let interval = interval.max(MINIMUM_QUOTA_REFUND_INTERVAL);
         loop {
+            worker.reporter().heartbeat();
             match self.run_refund_worker_pass(clock.now()).await {
-                Ok(0) => {}
+                Ok(0) => worker.reporter().success(),
                 Ok(processed) => {
                     tracing::info!(
                         processed,
                         "refunded expired OAuth authorization quota reservations"
                     );
+                    worker.reporter().success();
                 }
                 Err(error) => {
                     tracing::warn!(error = %error, "OAuth quota refund worker pass failed");
+                    worker.reporter().retryable_failure();
                 }
             }
-            sleep(interval).await;
+            if worker.sleep_or_shutdown(interval).await {
+                break;
+            }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::{OAuthQuotaStore, QuotaConsumeResult};
-    use super::{PENDING_REFUNDS_ZSET, QuotaRefundCancel};
-    use crate::oauth::code::AuthorizationCode;
-    use crate::oauth::store::AuthorizationCodeStore;
-    use crate::plans::domain::AuthQuotaLimits;
-    use time::{Duration, OffsetDateTime};
-    use tokio::sync::{Mutex, MutexGuard};
-    use uuid::Uuid;
-
-    /// 两个用例共享全局待退台账 ZSET（`PENDING_REFUNDS_ZSET`），并行执行会互相
-    /// 污染计数。nextest 每个测试独立进程运行，进程内互斥锁无法跨进程串行化，
-    /// 跨进程互斥由 `.config/nextest.toml` 的 `quota-refund-serial` 测试组承担；
-    /// 这里的锁继续保护 llvm-cov / 裸 cargo test 等单进程运行器，用例开头清空
-    /// 共享键则消除上一轮残留的干扰。
-    static REFUND_TESTS_LOCK: Mutex<()> = Mutex::const_new(());
-
-    fn store() -> OAuthQuotaStore {
-        let url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-        OAuthQuotaStore::new(redis::Client::open(url).expect("Redis URL"))
-    }
-
-    fn code_store() -> AuthorizationCodeStore {
-        let url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-        AuthorizationCodeStore::new(redis::Client::open(url).expect("Redis URL"))
-    }
-
-    /// 串行化待退台账相关用例并清空共享 ZSET，返回持有的互斥锁。
-    ///
-    /// 用例全程持有锁跨越 await，std 互斥锁的守卫跨 await 会触发
-    /// clippy::await_holding_lock，因此用 tokio 的异步互斥锁。
-    async fn lock_refund_tests() -> MutexGuard<'static, ()> {
-        let guard = REFUND_TESTS_LOCK.lock().await;
-        let url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-        let client = redis::Client::open(url).expect("Redis URL");
-        let mut connection = client
-            .get_multiplexed_async_connection()
-            .await
-            .expect("Redis connection");
-        let _: () = redis::cmd("DEL")
-            .arg(PENDING_REFUNDS_ZSET)
-            .query_async(&mut connection)
-            .await
-            .expect("clear shared pending-refunds zset");
-        guard
-    }
-
-    /// 过期未兑换：worker 一轮扫描后 day/month 用量归还为 0（Issue #341 主路径）。
-    #[tokio::test]
-    async fn expired_unredeemed_code_refunds_quota() {
-        let _guard = lock_refund_tests().await;
-        let store = store();
-        let client_id = format!("quota-refund-expired-{}", Uuid::new_v4().simple());
-        let limits = AuthQuotaLimits {
-            daily_auth_limit: 10,
-            monthly_auth_limit: Some(20),
-        };
-        let now = OffsetDateTime::now_utc();
-        let consumption = store
-            .consume_with_limits_and_reservation_at(&client_id, limits, now)
-            .await
-            .expect("quota consumption");
-        assert_eq!(consumption.result, QuotaConsumeResult::Allowed);
-        let reservation = consumption.reservation().expect("reservation");
-
-        store
-            .schedule_refund(&reservation, now.unix_timestamp() + 60)
-            .await
-            .expect("schedule refund");
-
-        let processed = store
-            .run_refund_worker_pass(now + Duration::seconds(120))
-            .await
-            .expect("refund worker pass");
-        assert_eq!(processed, 1);
-
-        let snapshot = store
-            .snapshot(&client_id, Some(limits))
-            .await
-            .expect("snapshot");
-        assert_eq!(snapshot.daily_used, 0);
-        assert_eq!(snapshot.monthly_used, 0);
-    }
-
-    /// 兑换成功：CAS 原子取消待退条目，worker 扫描不到条目，用量保留为 1。
-    #[tokio::test]
-    async fn redeemed_code_keeps_quota_and_cancels_pending_refund() {
-        let _guard = lock_refund_tests().await;
-        let store = store();
-        let codes = code_store();
-        let client_id = format!("quota-refund-redeemed-{}", Uuid::new_v4().simple());
-        let limits = AuthQuotaLimits {
-            daily_auth_limit: 10,
-            monthly_auth_limit: Some(20),
-        };
-        let now = OffsetDateTime::now_utc();
-        let consumption = store
-            .consume_with_limits_and_reservation_at(&client_id, limits, now)
-            .await
-            .expect("quota consumption");
-        let reservation = consumption.reservation().expect("reservation");
-        store
-            .schedule_refund(&reservation, now.unix_timestamp() + 60)
-            .await
-            .expect("schedule refund");
-
-        let mut code = AuthorizationCode::new(
-            client_id.clone(),
-            "https://refund.example/callback".to_owned(),
-            "7".to_owned(),
-            vec!["openid".to_owned()],
-            "challenge".to_owned(),
-        );
-        code.quota_reservation_id = Some(reservation.id().to_owned());
-        codes.save(&code).await.expect("save code");
-        let consumed = codes
-            .take_if_matches_with_quota_cancel(
-                &code.value,
-                &code,
-                Some(QuotaRefundCancel::for_reservation(reservation.id())),
-            )
-            .await
-            .expect("consume code");
-        assert!(consumed);
-
-        let processed = store
-            .run_refund_worker_pass(now + Duration::seconds(120))
-            .await
-            .expect("refund worker pass");
-        assert_eq!(processed, 0);
-
-        let snapshot = store
-            .snapshot(&client_id, Some(limits))
-            .await
-            .expect("snapshot");
-        assert_eq!(snapshot.daily_used, 1);
-        assert_eq!(snapshot.monthly_used, 1);
-
-        let mut connection = redis::Client::open(
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned()),
-        )
-        .expect("Redis URL")
-        .get_multiplexed_async_connection()
-        .await
-        .expect("Redis connection");
-        let remaining: i64 = redis::cmd("ZCARD")
-            .arg(PENDING_REFUNDS_ZSET)
-            .query_async(&mut connection)
-            .await
-            .expect("pending refund count");
-        assert_eq!(remaining, 0);
     }
 }

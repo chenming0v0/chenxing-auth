@@ -6,6 +6,7 @@
 //! - [`write`]：写入路径（插入、资料更新、改密）。
 //! - [`avatar`]：头像字节的读写与清除。
 //! - [`owner_bootstrap`]：Owner 引导与受 Owner 前提约束的创建。
+//! - [`management_actor`]：管理 actor/target 的统一锁顺序与事务内授权复核。
 //! - [`role_guard`]：角色与状态守卫（最后一个活跃 Owner 规则）。
 //!
 //! 全部子模块条目在此 `pub use`，`crate::users::repository::*` 的既有引用路径不变。
@@ -18,6 +19,7 @@ use super::email::EmailAddress;
 
 mod avatar;
 mod lookup;
+pub(crate) mod management_actor;
 mod owner_bootstrap;
 mod role_guard;
 mod write;

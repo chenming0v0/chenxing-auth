@@ -62,20 +62,20 @@ POST   /api/v1/admin/users/{user_id}/plan  给用户分配套餐 body: { "plan_i
 
 ---
 
-## 1. 数据库基线 `migrations/0001_initial.sql`
+## 1. 数据库迁移
 
-套餐表和 `basic` 种子已经写入当前完整基线。首次生产发布前，结构变化直接修改该基线并重建开发数据库；生产发布后新增迁移必须在 `src/db/mod.rs` 的 `embedded_migrator()` 中显式注册，否则不会执行。
+套餐表和 `basic` 种子由已发布的 `0002_plans.sql` 创建。`0001` 至 `0027` 的迁移字节已经冻结，结构变化必须以新的递增版本追加，并在 `src/db/mod.rs` 的 `embedded_migrator()` 中显式注册，否则不会执行。
 
-最终基线中的 `plans` 表使用固定类型列保存四项限额，`users.plan_id` 以
+`plans` 表使用固定类型列保存四项限额，`users.plan_id` 以
 `ON DELETE SET NULL` 引用套餐，`plan_expires_at IS NULL` 表示永久有效。
 `plans_single_default_idx` 保证最多一个默认套餐，
-`plans_default_must_be_active` 禁止把归档套餐标成默认；基线同时写入
-`basic` 默认套餐（2 / 2500 / 50000 / 不限 QPS）。完整 SQL 只以
-`migrations/0001_initial.sql` 为准，不在文档中复制第二份可漂移的定义。
+`plans_default_must_be_active` 禁止把归档套餐标成默认；迁移链同时写入
+`basic` 默认套餐（2 / 2500 / 50000 / 不限 QPS）。完整 SQL 以
+`migrations/` 下按版本排序的迁移链为准，不在文档中复制第二份可漂移的定义。
 
 > 决策：用**固定列**存限额（不是 JSONB），因为限额种类是固定的四项，类型安全、SQL 好写。若以后要支持任意 key 的权益，再加一张 `plan_entitlements(plan_id, key, value)` 附表，不影响现有列。
 
-当前基线已经直接包含 sessions、套餐默认值约束和所有后续结构。`migrations/0003_plan_quota_bounds.sql` 为日/月授权和 QPS 增加业务上界 CHECK；存量过大值会被封顶，负值/非正 QPS 会让迁移失败而不是改写成 0。`migrations/checksums.sha256` 只校验磁盘上的当前 SQL 文件；已应用旧迁移链的数据库不能通过复用版本号或改写 checksum 伪装成新基线。
+`migrations/0029_plan_quota_bounds.sql` 为日/月授权和 QPS 增加业务上界 CHECK；存量过大值会被封顶，负值/非正 QPS 会让迁移失败而不是改写成 0。`migrations/published-checksums.sha256` 固定已发布迁移字节，`migrations/checksums.sha256` 覆盖当前完整链；旧数据库依照 `_sqlx_migrations` 的原版本和 checksum 原地继续升级，不复用版本号，也不要求清库。
 
 ## 2. 新模块 `src/plans/`
 

@@ -20,7 +20,7 @@ pub async fn exchange_refresh_token(
     request: TokenRequest,
     authenticated: AuthenticatedClient,
 ) -> Response {
-    match token_use_case::exchange_refresh_token(&state, issuer.issuer(), request, authenticated)
+    match token_use_case::exchange_refresh_token(&state, issuer.snapshot(), request, authenticated)
         .await
     {
         Ok(token) => Json(token).into_response(),

@@ -103,7 +103,7 @@ async fn exchange_authorization_code(
     request: TokenRequest,
     authenticated: crate::clients::service::AuthenticatedClient,
 ) -> Response {
-    match token_use_case::exchange_code(&state, request, authenticated, issuer.issuer()).await {
+    match token_use_case::exchange_code(&state, request, authenticated, issuer.snapshot()).await {
         Ok(token) => Json(token).into_response(),
         Err(error) => oauth_error_response(error),
     }

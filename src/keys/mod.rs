@@ -14,6 +14,7 @@ use pkcs8::PrivateKeyInfo;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
     sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
@@ -33,6 +34,7 @@ mod prune;
 mod retirement;
 mod revocation;
 mod rotation;
+mod signing;
 mod sync;
 
 use activation::PendingPublishedKey;
@@ -42,6 +44,7 @@ pub use activation::{
     DEFAULT_KEY_ACTIVATION_DELAY_SECONDS, JWKS_CACHE_MAX_AGE_SECONDS,
     MAX_KEY_ACTIVATION_DELAY_SECONDS,
 };
+pub use signing::ActiveSigningKey;
 pub use sync::{DEFAULT_KEY_SYNC_INTERVAL, KeySyncOutcome, MINIMUM_KEY_SYNC_INTERVAL};
 
 pub const DEFAULT_KEY_RETENTION_SECONDS: u64 = 604_800;
@@ -72,6 +75,8 @@ pub struct KeyManager {
     /// 通道只承载“该同步了”这一个事实，不携带数据；后台任务自带最小间隔，
     /// 因此伪造 `kid` 的请求无法把提示放大成任意频率的磁盘 IO。
     resync_hint: Arc<Notify>,
+    /// 共享目录同步异常时停止签发，避免用不再受一致性保护的材料继续产生 Token。
+    sync_healthy: Arc<AtomicBool>,
 }
 struct KeyState {
     directory: Option<PathBuf>,
@@ -95,8 +100,9 @@ struct KeyState {
 impl KeyState {
     /// 判断磁盘快照是否与当前内存快照等价。
     ///
-    /// 只比较 `kid` 集合与 active `kid`：`kid` 在生成时随机分配且与私钥一一对应，
-    /// 相同 `kid` 必然是同一份材料，因此不需要比较（也不应额外复制）私钥字节。
+    /// 比较 `kid` 集合、active `kid` 和每个已知 `kid` 的材料字节：`kid` 在生成时随机
+    /// 分配，但共享目录中的文件可能被替换；相同 `kid` 只有在材料仍一致时才算同一快照。
+    /// 私钥字节只在内存快照之间做等值比较，不写入日志或对外暴露。
     fn matches_disk_snapshot(
         &self,
         active_key_id: &str,
@@ -105,7 +111,20 @@ impl KeyState {
     ) -> bool {
         self.active_key_id == active_key_id
             && self.private_materials.keys().eq(materials.keys())
+            && self.private_materials.iter().all(|(key_id, material)| {
+                materials
+                    .get(key_id)
+                    .is_some_and(|other| material.der.as_slice() == other.der.as_slice())
+            })
             && self.pending.as_ref().map(|pending| pending.key_id.as_str()) == pending_key_id
+    }
+
+    fn has_replaced_materials(&self, materials: &BTreeMap<String, KeyMaterial>) -> bool {
+        self.private_materials.iter().any(|(key_id, material)| {
+            materials
+                .get(key_id)
+                .is_some_and(|other| material.der.as_slice() != other.der.as_slice())
+        })
     }
 }
 
@@ -120,26 +139,6 @@ pub struct KeyRevocation {
     pub key_id: String,
     pub active_key_id: String,
     pub published_key_count: usize,
-}
-
-/// 签发一次令牌所需的不可撕裂密钥快照。
-///
-/// `key_id` 和 `encoding_key` 来自同一份 `KeyState` 读取，调用方不得分别从
-/// `KeyManager` 读取它们，否则轮换恰好发生在两次读取之间时会产生错误的 JWT。
-#[derive(Clone)]
-pub struct ActiveSigningKey {
-    key_id: String,
-    encoding_key: EncodingKey,
-}
-
-impl ActiveSigningKey {
-    pub fn key_id(&self) -> &str {
-        &self.key_id
-    }
-
-    pub fn encoding_key(&self) -> &EncodingKey {
-        &self.encoding_key
-    }
 }
 
 #[derive(Debug, Error)]
@@ -164,6 +163,8 @@ pub enum KeyManagerError {
     RotationWorker,
     #[error("key operation worker failed")]
     KeyWorker,
+    #[error("persisted key material was replaced for an existing key id")]
+    MaterialReplaced,
     #[error("cannot revoke the active signing key without another valid signing key")]
     NoActiveKeyReplacement,
 }
@@ -287,6 +288,26 @@ impl KeyManager {
         }
     }
 
+    /// Return a consistent signing snapshot only while shared-directory synchronization is
+    /// healthy. The flag is checked before and after cloning the state so a synchronization
+    /// failure published during the read fails closed before a new signature is produced.
+    pub fn active_signing_key_if_ready(&self) -> Option<ActiveSigningKey> {
+        if !self.signing_ready() {
+            return None;
+        }
+        let signing_key = self.active_signing_key();
+        self.signing_ready().then_some(signing_key)
+    }
+
+    /// Whether the latest shared-directory synchronization permits token signing.
+    pub fn signing_ready(&self) -> bool {
+        self.sync_healthy.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn mark_sync_healthy(&self, healthy: bool) {
+        self.sync_healthy.store(healthy, Ordering::Release);
+    }
+
     /// 按 `kid` 取验证公钥，只读内存快照。
     ///
     /// `None` 表示这个 `kid` 不在当前已发布的密钥集合里，调用方必须按“令牌无效”
@@ -377,6 +398,7 @@ impl KeyManager {
             )?)),
             rotation_lock: Arc::new(Mutex::new(())),
             resync_hint: Arc::new(Notify::new()),
+            sync_healthy: Arc::new(AtomicBool::new(true)),
         })
     }
 

@@ -5,23 +5,49 @@ const CI_WORKFLOW: &str = include_str!("../.github/workflows/ci.yml");
 const INSTALL_SCRIPT: &str = include_str!("../deploy/install.sh");
 const REMOTE_INSTALL_SCRIPT: &str = include_str!("../install.sh");
 const PRODUCTION_COMPOSE: &str = include_str!("../docker-compose.prod.yml");
+const REDIS_CRASH_RECOVERY_SCRIPT: &str = include_str!("../test_sh/redis_crash_recovery.sh");
+const TEST_RUNNER_CONTRACT_SCRIPT: &str = include_str!("../test_sh/test_runner_contract.sh");
+const REDIS_DURABILITY_DOC: &str = include_str!("../docs/redis-durability.md");
 const DB_MODULE: &str = include_str!("../src/db/mod.rs");
 const DB_POOL_MODULE: &str = include_str!("../src/db/pool.rs");
 const DB_AUDIT_BOUNDARY_MODULE: &str = include_str!("../src/db/audit_boundary.rs");
 const DB_ROLES_MODULE: &str = include_str!("../src/db/roles.rs");
 const DB_MIGRATE_MODULE: &str = include_str!("../src/db/migrate.rs");
+const DB_MIGRATION_COMPAT_MODULE: &str = include_str!("../src/db/migration_compat.rs");
+const DB_MIGRATION_PREFLIGHT_MODULE: &str = include_str!("../src/db/migration_preflight.rs");
 const ENV_EXAMPLE: &str = include_str!("../.env.example");
 const DOCKERFILE: &str = include_str!("../Dockerfile");
 const RUNTIME_DOCKERFILE: &str = include_str!("../Dockerfile.runtime");
 const DOCKERIGNORE: &str = include_str!("../.dockerignore");
 const STATIC_FILES_MODULE: &str = include_str!("../src/api/static_files.rs");
+const HEALTH_MODULE: &str = include_str!("../src/api/health.rs");
+const OAUTH_RESPONSE_MODULE: &str = include_str!("../src/oauth/response.rs");
+const OAUTH_TOKEN_SUPPORT_MODULE: &str = include_str!("../src/oauth/token_use_case_support.rs");
+const OAUTH_ERROR_MODULE: &str = include_str!("../src/error.rs");
 const WEB_DIST_MODULE: &str = include_str!("../src/web_dist.rs");
 const CONFIG_CONSTRUCTION_MODULE: &str = include_str!("../src/config/construction.rs");
 const STATE_MODULE: &str = include_str!("../src/state.rs");
 const DATABASE_BASELINE: &str = include_str!("../migrations/0001_initial.sql");
+const PUBLISHED_MIGRATION_CHECKSUMS: &str =
+    include_str!("../migrations/published-checksums.sha256");
 
 /// Where both production images place the built frontend bundle.
 const WEB_DIST_IMAGE_PATH: &str = "/usr/local/share/chenxing-auth/web/dist";
+
+fn migration_history_sql() -> String {
+    let mut migrations = std::fs::read_dir("migrations")
+        .expect("migrations directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
+        .collect::<Vec<_>>();
+    migrations.sort();
+    migrations
+        .into_iter()
+        .map(|path| std::fs::read_to_string(path).expect("read migration SQL"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 fn heredoc_body_after<'a>(script: &'a str, marker: &str) -> &'a str {
     let (_, body) = script
@@ -30,6 +56,16 @@ fn heredoc_body_after<'a>(script: &'a str, marker: &str) -> &'a str {
     body.split_once("\nEOF")
         .map(|(body, _)| body)
         .expect("generated .env heredoc must terminate with EOF")
+}
+
+fn shell_function_body<'a>(script: &'a str, name: &str) -> &'a str {
+    let declaration = format!("{name}() {{\n");
+    let (_, body) = script
+        .split_once(&declaration)
+        .unwrap_or_else(|| panic!("installer is missing function: {name}"));
+    body.split_once("\n}\n")
+        .map(|(body, _)| body)
+        .unwrap_or_else(|| panic!("installer function is not terminated: {name}"))
 }
 
 #[test]
@@ -43,11 +79,162 @@ fn release_workflow_publishes_versioned_archives_and_checksums() {
         "gh release download",
         "--repo \"${GITHUB_REPOSITORY}\"",
         "sha256sum -c SHA256SUMS",
-        "if: startsWith(github.ref, 'refs/tags/v')",
+        "startsWith(github.ref, 'refs/tags/v')",
+        "github.event_name != 'workflow_run'",
     ] {
         assert!(
             BUILD_WORKFLOW.contains(marker),
             "release workflow is missing marker: {marker}"
+        );
+    }
+}
+
+#[test]
+fn native_release_archives_ship_and_verify_the_matching_web_bundle() {
+    let unix_at = BUILD_WORKFLOW
+        .find("- name: Package Unix binary")
+        .expect("Unix packaging step");
+    let windows_at = BUILD_WORKFLOW
+        .find("- name: Package Windows binary")
+        .expect("Windows packaging step");
+    let upload_at = BUILD_WORKFLOW[windows_at..]
+        .find("- uses: actions/upload-artifact@v4")
+        .map(|offset| windows_at + offset)
+        .expect("native archive upload step");
+    let unix_step = &BUILD_WORKFLOW[unix_at..windows_at];
+    let windows_step = &BUILD_WORKFLOW[windows_at..upload_at];
+    for marker in [
+        "cp -R web/dist \"$package_root/web/dist\"",
+        "chenxing-auth web/dist",
+    ] {
+        assert!(
+            unix_step.contains(marker),
+            "Unix archive missing marker: {marker}"
+        );
+    }
+    for marker in [
+        "Copy-Item `",
+        "-LiteralPath \"web/dist\"",
+        "Join-Path $packageRoot \"web\"",
+        "Join-Path $packageRoot \"*\"",
+    ] {
+        assert!(
+            windows_step.contains(marker),
+            "Windows archive missing marker: {marker}"
+        );
+    }
+    for marker in [
+        "Smoke test downloaded native archives",
+        "verified-download/chenxing-auth-*.tar.gz",
+        "verified-download/chenxing-auth-*.zip",
+        "tar -xzf",
+        "unzip -q",
+        "web/dist/index.html",
+        "release archive is missing referenced asset",
+    ] {
+        assert!(
+            BUILD_WORKFLOW.contains(marker),
+            "release smoke check missing marker: {marker}"
+        );
+    }
+}
+
+#[test]
+fn production_redis_has_durable_credential_state_and_crash_coverage() {
+    for compose in [PRODUCTION_COMPOSE, REMOTE_INSTALL_SCRIPT] {
+        for marker in [
+            "      - --appendonly\n      - \"yes\"",
+            "      - --appendfsync\n      - always",
+            "      - --no-appendfsync-on-rewrite\n      - \"no\"",
+            "      - --aof-load-truncated\n      - \"no\"",
+            "      - --aof-use-rdb-preamble\n      - \"yes\"",
+            "      - --save\n      - \"\"",
+            "      - --dir\n      - /data",
+            "      - --appenddirname\n      - appendonlydir",
+            "      - --appendfilename\n      - appendonly.aof",
+            "- chenxing-redis:/data",
+        ] {
+            assert!(
+                compose.contains(marker),
+                "Redis config missing marker: {marker:?}"
+            );
+        }
+        assert!(!compose.contains("everysec"));
+    }
+    for marker in [
+        "docker kill --signal KILL",
+        "GETDEL",
+        "authorization-code:consumed",
+        "refresh:rotation:old",
+        "refresh:rotation:successor",
+        "refresh:tombstone:consumed",
+        "refresh:tombstone:explicit-revoke",
+        "refresh:family-revoked",
+        "session:revoked:projection",
+        "session:revoked:epoch",
+        "assert_owned_container",
+        "assert_missing",
+        "assert_value",
+        "--network none",
+        "docker volume inspect",
+        "aof_last_write_status:ok",
+    ] {
+        assert!(
+            REDIS_CRASH_RECOVERY_SCRIPT.contains(marker),
+            "Redis crash/recovery script missing marker: {marker}"
+        );
+    }
+    for marker in [
+        "bash -n test_sh/redis_crash_recovery.sh",
+        "bash test_sh/redis_crash_recovery.sh",
+        "timeout-minutes: 5",
+    ] {
+        assert!(
+            CI_WORKFLOW.contains(marker),
+            "CI missing Redis recovery marker: {marker}"
+        );
+    }
+    for marker in [
+        "RPO 0",
+        "appendfsync always",
+        "授权码",
+        "Consumed",
+        "family revoked",
+        "session:revoked:epoch",
+        "陈旧 Redis 备份",
+        "故障后验证",
+    ] {
+        assert!(
+            REDIS_DURABILITY_DOC.contains(marker),
+            "Redis durability docs missing marker: {marker}"
+        );
+    }
+}
+
+#[test]
+fn signing_failures_map_to_oauth_unavailable_and_gate_readiness() {
+    for (module, marker) in [
+        (OAUTH_RESPONSE_MODULE, "state.keys.signing_ready()"),
+        (
+            OAUTH_RESPONSE_MODULE,
+            "error::oauth_temporarily_unavailable()",
+        ),
+        (OAUTH_TOKEN_SUPPORT_MODULE, "state.keys.signing_ready()"),
+        (
+            OAUTH_TOKEN_SUPPORT_MODULE,
+            "OAuthError::temporarily_unavailable()",
+        ),
+        (OAUTH_ERROR_MODULE, "\"temporarily_unavailable\""),
+        (
+            HEALTH_MODULE,
+            "let signing_ready = state.keys.signing_ready();",
+        ),
+        (HEALTH_MODULE, "signing_ready,"),
+        (HEALTH_MODULE, "workers.ready"),
+    ] {
+        assert!(
+            module.contains(marker),
+            "signing/readiness marker missing: {marker}"
         );
     }
 }
@@ -64,6 +251,32 @@ fn ci_validates_the_remote_installer_without_weakening_coverage() {
         assert!(
             CI_WORKFLOW.contains(marker),
             "CI workflow is missing deployment or coverage marker: {marker}"
+        );
+    }
+}
+
+#[test]
+fn test_runner_missing_tools_fail_closed_without_running_tests() {
+    for marker in [
+        "PATH=\"$temp_root/empty-path\"",
+        "MODE=filter",
+        "NEXTEST=0",
+        "assert_failed_phase \"测试\" phase_test",
+        "assert_failed_phase \"覆盖检查\" phase_coverage",
+        "assert_failed_phase \"依赖审计\" phase_audit",
+    ] {
+        assert!(
+            TEST_RUNNER_CONTRACT_SCRIPT.contains(marker),
+            "test runner contract missing marker: {marker}"
+        );
+    }
+    for marker in [
+        "bash -n test_sh/test_runner_contract.sh",
+        "bash test_sh/test_runner_contract.sh",
+    ] {
+        assert!(
+            CI_WORKFLOW.contains(marker),
+            "CI missing test runner contract marker: {marker}"
         );
     }
 }
@@ -571,6 +784,45 @@ fn production_healthchecks_and_installers_use_readiness() {
     assert!(!PRODUCTION_COMPOSE.contains("http://127.0.0.1:3000/health\"]"));
     assert!(INSTALL_SCRIPT.contains("/health/ready"));
     assert!(REMOTE_INSTALL_SCRIPT.contains(readiness_healthcheck));
+    let remote_wait = shell_function_body(REMOTE_INSTALL_SCRIPT, "wait_for_application");
+    for marker in [
+        "for attempt in $(seq 1 60); do",
+        "curl --fail --silent --max-time 5",
+        "http://127.0.0.1:3000/health/ready",
+        "return 0",
+        "return 1",
+    ] {
+        assert!(
+            remote_wait.contains(marker),
+            "readiness wait missing marker: {marker}"
+        );
+    }
+    assert!(!remote_wait.contains("/health/live"));
+}
+
+#[test]
+fn remote_installer_reports_full_readiness_timeout_diagnostics() {
+    let diagnostics = shell_function_body(REMOTE_INSTALL_SCRIPT, "report_application_diagnostics");
+    for marker in [
+        "compose ps >&2 || true",
+        "compose ps -q app",
+        "docker inspect --format",
+        ".State.Health.Status",
+        "compose logs app >&2 || true",
+    ] {
+        assert!(
+            diagnostics.contains(marker),
+            "readiness diagnostics missing marker: {marker}"
+        );
+    }
+    let (_, timeout_handler) = REMOTE_INSTALL_SCRIPT
+        .split_once("if ! wait_for_application; then\n")
+        .expect("remote installer must handle readiness timeout");
+    let timeout_handler = timeout_handler
+        .split_once("\nfi\n")
+        .map(|(body, _)| body)
+        .expect("readiness timeout handler must terminate");
+    assert!(timeout_handler.contains("report_application_diagnostics"));
 }
 
 #[test]
@@ -611,24 +863,48 @@ fn deployment_files_are_present_at_repository_root() {
 }
 
 #[test]
-fn database_uses_one_transactional_current_baseline() {
-    assert!(DB_MODULE.contains("current schema baseline"));
+fn database_uses_forward_only_transactional_migration_history() {
+    assert!(DB_MODULE.contains("Versions 1-27 have shipped and their SQL bytes are immutable"));
     assert!(DB_MODULE.contains("include_str!(\"../../migrations/0001_initial.sql\")"));
-    assert_eq!(DB_MODULE.matches("Migration::new(").count(), 3);
+    assert!(DB_MODULE.contains("include_str!(\"../../migrations/0029_plan_quota_bounds.sql\")"));
+    assert_eq!(
+        DB_MODULE
+            .matches("include_str!(\"../../migrations/")
+            .count(),
+        29
+    );
     assert!(
-        DB_MODULE.contains(
-            "normalize_migration_sql(include_str!(\"../../migrations/0001_initial.sql\"))"
-        ) && DB_MODULE.contains("MigrationType::Simple"),
+        DB_MODULE.contains("normalize_migration_sql(sql)")
+            && DB_MODULE.contains("MigrationType::Simple"),
         "the schema migrations must remain transactional"
     );
 
-    let ensure_role = DB_MODULE
-        .find("roles::ensure_runtime_role(database).await?;")
-        .expect("runtime role must be provisioned before the schema baseline");
-    let run_baseline = DB_MODULE
-        .find("embedded_migrator().run(database).await?;")
-        .expect("schema baseline must run");
-    assert!(ensure_role < run_baseline);
+    let run_migrations = DB_MODULE
+        .find("migration_compat::run(database, embedded_migrator()).await?;")
+        .expect("schema migrations must run");
+    let preflight = DB_MIGRATION_COMPAT_MODULE
+        .find("migration_preflight::verify(&mut connection).await?;")
+        .expect("pg_trgm placement must be checked inside the migration lock");
+    let ensure_role = DB_MIGRATION_COMPAT_MODULE
+        .find("roles::ensure_runtime_role(&mut *connection).await?;")
+        .expect("runtime role must be provisioned inside the migration lock");
+    let ensure_ledger = DB_MIGRATION_COMPAT_MODULE
+        .find("Migrate::ensure_migrations_table(&mut *connection).await?;")
+        .expect("migration ledger must be initialized after preflight");
+    assert!(run_migrations > 0);
+    assert!(preflight < ensure_role && ensure_role < ensure_ledger);
+    for checksum in [
+        "ca8607f4cd8b19d91531d9081d7951d70e266ef35c686c64bcff48e89728ea95",
+        "70b7c2bd57303895720d0e13fbc56b16d43645f67363803fac73411fd8e4526f",
+        "56e9d9ea680ac129115cc21ac2ff5029f9f2746683bdb9cf42ad966afb3571c4",
+    ] {
+        assert!(
+            DB_MIGRATION_COMPAT_MODULE.contains(checksum),
+            "flattened published checksum must remain explicitly recognized"
+        );
+    }
+    assert!(DB_MIGRATION_COMPAT_MODULE.contains("verify_flattened_schema"));
+    assert!(DB_MIGRATION_COMPAT_MODULE.contains("Migrate::lock"));
     assert!(DB_ROLES_MODULE.contains("CREATE ROLE chenxing_runtime LOGIN"));
     assert!(!DATABASE_BASELINE.contains("CREATE ROLE"));
 
@@ -639,22 +915,29 @@ fn database_uses_one_transactional_current_baseline() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
+    assert_eq!(migrations.len(), 29);
     assert_eq!(
-        migrations,
-        vec![
-            std::ffi::OsString::from("0001_initial.sql"),
-            std::ffi::OsString::from("0002_issuer_runtime.sql"),
-            std::ffi::OsString::from("0003_plan_quota_bounds.sql"),
-        ]
+        migrations.first().and_then(|name| name.to_str()),
+        Some("0001_initial.sql")
     );
+    assert_eq!(
+        migrations.last().and_then(|name| name.to_str()),
+        Some("0029_plan_quota_bounds.sql")
+    );
+    for (index, name) in migrations.iter().enumerate() {
+        let expected_prefix = format!("{:04}_", index + 1);
+        assert!(
+            name.to_string_lossy().starts_with(&expected_prefix),
+            "migration history must be contiguous at {expected_prefix}"
+        );
+    }
 
     assert_eq!(
         DATABASE_BASELINE.matches("CREATE TABLE ").count(),
-        13,
-        "the baseline must declare the complete 13-table schema"
+        10,
+        "the published version-1 migration must remain the original ten-table schema"
     );
     for table in [
-        "plans",
         "users",
         "oauth_clients",
         "user_consents",
@@ -665,35 +948,63 @@ fn database_uses_one_transactional_current_baseline() {
         "oauth_external_identities",
         "audit_events",
         "app_settings",
-        "session_outbox",
-        "audit_events_archive",
     ] {
         assert!(
             DATABASE_BASELINE.contains(&format!("CREATE TABLE {table} (")),
             "baseline is missing table {table}"
         );
     }
-
-    for forbidden in ["ADD COLUMN", "DROP CONSTRAINT", "DROP TABLE"] {
-        assert!(
-            !DATABASE_BASELINE.contains(forbidden),
-            "current-state baseline must not contain historical operation: {forbidden}"
-        );
-    }
-    assert!(
-        !DATABASE_BASELINE
-            .lines()
-            .any(|line| line.trim_start().starts_with("UPDATE ")),
-        "a fresh baseline must not carry old-row repair updates"
-    );
 }
 
 #[test]
-fn current_baseline_declares_final_security_and_consistency_invariants() {
+fn migration_preflight_is_inside_the_sqlx_lock_and_rejects_search_path_workarounds() {
     for marker in [
-        "canonical_email TEXT NOT NULL",
-        "CONSTRAINT users_canonical_email_key UNIQUE (canonical_email)",
-        "allow_legacy_refresh_tokens BOOLEAN NOT NULL DEFAULT FALSE",
+        "pg_catalog.pg_extension",
+        "pg_catalog.pg_namespace",
+        ".bind(PG_TRGM_EXTENSION)",
+        "ALTER EXTENSION pg_trgm SET SCHEMA public",
+        "Changing search_path cannot satisfy this contract",
+    ] {
+        assert!(
+            DB_MIGRATION_PREFLIGHT_MODULE.contains(marker),
+            "pg_trgm preflight is missing marker: {marker}"
+        );
+    }
+
+    let lock = DB_MIGRATION_COMPAT_MODULE
+        .find("Migrate::lock(&mut *connection).await?;")
+        .expect("migration must acquire SQLx's advisory lock");
+    let preflight = DB_MIGRATION_COMPAT_MODULE
+        .find("migration_preflight::verify(&mut connection).await?;")
+        .expect("migration must run the pg_trgm preflight");
+    let repair = DB_MIGRATION_COMPAT_MODULE
+        .find("repair_flattened_ledger(&mut connection, &migrator).await?")
+        .expect("flattened ledger compatibility must remain enabled");
+    let disable_nested_lock = DB_MIGRATION_COMPAT_MODULE
+        .find("migrator.set_locking(false);")
+        .expect("run_direct must not acquire the SQLx lock twice");
+    let run = DB_MIGRATION_COMPAT_MODULE
+        .find("migrator.run_direct(&mut *connection).await")
+        .expect("migration must run on the preflighted connection");
+    let unlock = DB_MIGRATION_COMPAT_MODULE
+        .find("Migrate::unlock(&mut *connection).await")
+        .expect("migration must release SQLx's advisory lock");
+
+    assert!(lock < preflight);
+    assert!(preflight < repair);
+    assert!(repair < disable_nested_lock);
+    assert!(disable_nested_lock < run);
+    assert!(run < unlock);
+    assert!(DB_MIGRATION_COMPAT_MODULE.contains("connection.close_on_drop();"));
+}
+
+#[test]
+fn migration_history_declares_final_security_and_consistency_invariants() {
+    let history = migration_history_sql();
+    for marker in [
+        "ADD COLUMN IF NOT EXISTS canonical_email TEXT",
+        "ALTER COLUMN canonical_email SET NOT NULL",
+        "ALTER COLUMN allow_legacy_refresh_tokens SET DEFAULT FALSE",
         "client_secret_version BIGINT NOT NULL DEFAULT 0",
         "state_version BIGINT NOT NULL DEFAULT 1",
         "CONSTRAINT oauth_providers_active_requires_email_verified_claim",
@@ -704,14 +1015,10 @@ fn current_baseline_declares_final_security_and_consistency_invariants() {
         "GRANT UPDATE ON SEQUENCE %s TO chenxing_runtime",
     ] {
         assert!(
-            DATABASE_BASELINE.contains(marker),
-            "database baseline is missing invariant: {marker}"
+            history.contains(marker),
+            "database migration history is missing invariant: {marker}"
         );
     }
-    assert!(
-        !DATABASE_BASELINE.contains("allow_legacy_refresh_tokens BOOLEAN NOT NULL DEFAULT TRUE"),
-        "fresh clients must never start in legacy-token compatibility mode"
-    );
 }
 
 #[test]
@@ -734,10 +1041,29 @@ fn migration_checksum_manifest_lists_every_sql_file() {
         on_disk, listed,
         "checksum manifest must list every migration"
     );
+
+    let published = PUBLISHED_MIGRATION_CHECKSUMS.lines().collect::<Vec<_>>();
+    let current = manifest.lines().collect::<Vec<_>>();
+    assert_eq!(published.len(), 27);
+    assert_eq!(published, current[..published.len()]);
+    assert!(published.last().is_some_and(|line| {
+        line.ends_with("  0027_repair_canonical_email_constraint_scope.sql")
+    }));
+    for marker in [
+        "sha256sum -c published-checksums.sha256",
+        "published_count=\"$(wc -l < published-checksums.sha256)\"",
+        "head -n \"$published_count\" checksums.sha256",
+    ] {
+        assert!(
+            CI_WORKFLOW.contains(marker),
+            "CI must pin the published migration ledger: {marker}"
+        );
+    }
 }
 
 #[test]
 fn database_baseline_enforces_runtime_role_least_privilege() {
+    let history = migration_history_sql();
     for marker in [
         "chenxing_runtime",
         "GRANT USAGE ON SCHEMA",
@@ -748,8 +1074,8 @@ fn database_baseline_enforces_runtime_role_least_privilege() {
         "REVOKE ALL ON FUNCTION",
     ] {
         assert!(
-            DATABASE_BASELINE.contains(marker),
-            "database baseline is missing runtime privilege marker: {marker}"
+            history.contains(marker),
+            "database migration history is missing runtime privilege marker: {marker}"
         );
     }
 }

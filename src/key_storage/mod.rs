@@ -25,6 +25,7 @@ use uuid::Uuid;
 mod key_lock;
 pub(crate) use key_lock::KeyStorageLock;
 
+#[cfg_attr(not(unix), allow(dead_code))]
 mod policy;
 #[cfg(unix)]
 mod unix;
@@ -35,7 +36,9 @@ mod unix_sys;
 #[path = "tests.rs"]
 mod tests;
 
+#[cfg(unix)]
 pub(crate) const PRIVATE_FILE_MODE: u32 = 0o600;
+#[cfg(unix)]
 pub(crate) const KEY_DIRECTORY_MODE: u32 = 0o700;
 const TEMPORARY_FILE_SUFFIX: &str = ".tmp";
 
@@ -93,6 +96,7 @@ pub(crate) fn remove_secure_file(path: &Path) -> io::Result<()> {
         }
         #[cfg(not(unix))]
         {
+            let _ = name;
             fs::remove_file(path)
         }
     })
@@ -113,13 +117,14 @@ pub(crate) fn atomic_write_in(
     contents: &[u8],
     replace_existing: bool,
 ) -> io::Result<()> {
-    let (parent, name) = split_dir_and_name(path)?;
     #[cfg(unix)]
     {
+        let (parent, name) = split_dir_and_name(path)?;
         unix::SecureDir::open(parent)?.atomic_write(kind, name, contents, replace_existing)
     }
     #[cfg(not(unix))]
     {
+        split_dir_and_name(path)?;
         fallback_atomic_write(kind, path, contents, replace_existing)
     }
 }
@@ -227,13 +232,14 @@ pub(crate) fn list_secure_names(directory: &Path) -> io::Result<Vec<SecureDirEnt
 
 /// 普通文件存在为 `true`，缺失为 `false`；符号链接/目录/异主一律报错。
 pub(crate) fn inspect_secure_file(path: &Path) -> io::Result<bool> {
-    let (parent, name) = split_dir_and_name(path)?;
     #[cfg(unix)]
     {
+        let (parent, name) = split_dir_and_name(path)?;
         unix::SecureDir::open(parent)?.inspect_regular_file(name)
     }
     #[cfg(not(unix))]
     {
+        split_dir_and_name(path)?;
         match fs::symlink_metadata(path) {
             Ok(metadata) if metadata.is_file() => Ok(true),
             Ok(_) => Err(invalid_storage_path()),
@@ -243,6 +249,7 @@ pub(crate) fn inspect_secure_file(path: &Path) -> io::Result<bool> {
     }
 }
 
+#[cfg(unix)]
 pub(crate) fn open_or_create_regular_file(directory: &Path, name: &str) -> io::Result<File> {
     #[cfg(unix)]
     {

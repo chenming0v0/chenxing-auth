@@ -125,12 +125,31 @@ pub async fn revoke_authorized_app(
     }
 }
 
+fn self_service_disabled() -> Response {
+    error::forbidden(
+        "self_service_disabled",
+        "平台当前未开放自助接入，请联系管理员。",
+    )
+}
+
 pub async fn create_owned_client(
     State(state): State<AppState>,
     session: SessionWrite,
     headers: HeaderMap,
     ApiJson(input): ApiJson<ClientRegistrationRequest>,
 ) -> Response {
+    match state.plans.effective_plan_for_user(session.user_id).await {
+        // 这里只做快速闸门和保持既有错误优先级；repository 会在用户行锁后重新解析
+        // 并锁定权威套餐，绝不消费这个事务外快照（Issue #479）。
+        Ok(Some(_)) => {}
+        // 自助接入闸门：没有生效套餐时不允许新建 Client，但既有 Client 的
+        // 授权、令牌和列表路径不受影响。
+        Ok(None) => return self_service_disabled(),
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load plan for OAuth client quota");
+            return error::internal();
+        }
+    }
     let idempotency_key = match parse_idempotency_key(&headers) {
         Ok(key) => key,
         Err(()) => {
@@ -139,31 +158,14 @@ pub async fn create_owned_client(
     };
     let actor_id = session.user_id.to_string();
     let result = match idempotency_key {
-        Some(key) => {
-            state
-                .clients
-                .register_for_user_with_audit_idempotent(
-                    session.user_id,
-                    input,
-                    format!("user:{}", session.user_id),
-                    key,
-                    move |client| {
-                        AuditEvent::new(
-                            "user".to_owned(),
-                            Some(actor_id.clone()),
-                            crate::audit::AuditAction::ClientCreate,
-                            "oauth_client".to_owned(),
-                            Some(client.client_id.clone()),
-                            serde_json::json!({"result": "success"}),
-                        )
-                    },
-                )
-                .await
-        }
-        None => {
-            state
-                .clients
-                .register_for_user_with_audit(session.user_id, input, move |client| {
+        Some(key) => state
+            .clients
+            .register_for_user_with_audit_idempotent(
+                session.user_id,
+                input,
+                format!("user:{}", session.user_id),
+                key,
+                move |client| {
                     AuditEvent::new(
                         "user".to_owned(),
                         Some(actor_id.clone()),
@@ -172,24 +174,46 @@ pub async fn create_owned_client(
                         Some(client.client_id.clone()),
                         serde_json::json!({"result": "success"}),
                     )
-                })
-                .await
-        }
+                },
+            )
+            .await
+            // 幂等恢复路径没有随行的事务内套餐快照；配额强制已在幂等插入
+            // 事务内完成（Issue #479/#50），这里稍后只补取展示用的限额。
+            .map(|client| Some((client, None))),
+        None => state
+            .clients
+            .register_for_user_with_audit(session.user_id, input, move |client| {
+                AuditEvent::new(
+                    "user".to_owned(),
+                    Some(actor_id.clone()),
+                    crate::audit::AuditAction::ClientCreate,
+                    "oauth_client".to_owned(),
+                    Some(client.client_id.clone()),
+                    serde_json::json!({"result": "success"}),
+                )
+            })
+            .await
+            .map(|registered| registered.map(|owned| (owned.client, Some(owned.quota_limits)))),
     };
     match result {
-        Ok(client) => {
-            let quota_limits = state
-                .plans
-                .effective_plan_for_user(session.user_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|effective| effective.plan.auth_quota_limits());
+        Ok(Some((client, quota_limits))) => {
+            let quota_limits = match quota_limits {
+                Some(limits) => Some(limits),
+                None => state
+                    .plans
+                    .effective_plan_for_user(session.user_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|effective| effective.plan.auth_quota_limits()),
+            };
             match owned_registered_response(&state, client, quota_limits).await {
                 Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
                 Err(response) => response,
             }
         }
+        // 套餐可能在快速闸门之后被归档或取消默认；事务内结果才是权威。
+        Ok(None) => self_service_disabled(),
         Err(ClientServiceError::Validation(validation_error)) => {
             error::bad_request("invalid_client_registration", validation_error.to_string())
         }

@@ -27,7 +27,7 @@ use axum::{
 };
 use tower_http::services::ServeDir;
 
-use crate::web_dist::{EMBEDDED_INDEX_HTML, WebDistRoot};
+use crate::web_dist::{EMBEDDED_INDEX_HTML, WebDistRoot, is_public_asset_uri_path};
 
 /// SPA shell 必须每次向源站再验证：新部署会换掉内嵌 `index.html` 引用的哈希资源，
 /// 浏览器若继续用旧 shell 就会去拉已经不存在的 chunk。
@@ -58,6 +58,22 @@ pub(super) fn static_service(root: &WebDistRoot) -> Router {
                 .fallback(spa_fallback()),
         )
         .layer(from_fn(cache_hashed_assets))
+        .layer(from_fn(enforce_public_asset_path))
+}
+
+/// Apply the same recursive public-asset policy used during bundle startup
+/// immediately before `ServeDir` can read from disk. This closes the window
+/// where a forbidden file is added after startup.
+async fn enforce_public_asset_path(request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    let looks_like_asset = path.contains('%')
+        || path.starts_with("/assets/")
+        || path.split('/').any(|segment| segment.starts_with('.'))
+        || has_file_extension(path);
+    if looks_like_asset && !is_spa_document(path) && !is_public_asset_uri_path(path) {
+        return crate::error::not_found("not_found", "not found");
+    }
+    next.run(request).await
 }
 
 /// SPA 回退服务。
@@ -308,5 +324,25 @@ mod tests {
         assert!(!is_content_hashed_asset("/fonts/exo2-400-latin.woff2"));
         assert!(!is_content_hashed_asset("/console"));
         assert!(!is_content_hashed_asset("/"));
+    }
+
+    #[test]
+    fn public_asset_paths_reject_nested_forbidden_material() {
+        for path in [
+            "/assets/.hidden.js",
+            "/assets/chunk.js.map",
+            "/assets/provider.pem",
+            "/nested/.cache/file.js",
+        ] {
+            assert!(!is_public_asset_uri_path(path), "{path}");
+        }
+        for path in [
+            "/assets/index-D43JXjyl.js",
+            "/assets/nested/chunk-AbCdef12.js",
+            "/fonts/exo2-400-latin.woff2",
+            "/favicon.png",
+        ] {
+            assert!(is_public_asset_uri_path(path), "{path}");
+        }
     }
 }

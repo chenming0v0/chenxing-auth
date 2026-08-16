@@ -462,7 +462,8 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         ClientCredential::SecretBasic("hash".to_owned()),
     )
     .await
-    .expect("insert first owned client");
+    .expect("insert first owned client")
+    .expect("default plan enables owned client creation");
     let (concurrent_a, concurrent_b) = tokio::join!(
         client_repository::insert_owned_client(
             &pool,
@@ -483,7 +484,7 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
     assert_eq!(
         concurrent_results
             .iter()
-            .filter(|result| result.is_ok())
+            .filter(|result| matches!(result, Ok(Some(_))))
             .count(),
         1
     );
@@ -542,14 +543,15 @@ async fn owned_clients_are_isolated_and_limited_to_two_projects() {
         ClientCredential::SecretBasic("hash".to_owned()),
     )
     .await
-    .expect("insert orphan client");
+    .expect("insert orphan client")
+    .expect("default plan enables orphan client creation");
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(orphan_owner.id)
         .execute(&pool)
         .await
         .expect("delete owner");
     assert!(
-        client_repository::find_client_by_id(&pool, &orphan_client.client_id)
+        client_repository::find_client_by_id(&pool, &orphan_client.client.client_id)
             .await
             .expect("find deleted client")
             .is_none()

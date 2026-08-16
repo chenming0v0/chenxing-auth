@@ -32,11 +32,25 @@ pub mod qps_window;
 pub async fn test_state(
     binary_name: &str,
 ) -> (AppState, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
+    test_state_with_max_connections(binary_name, 2).await
+}
+
+/// Test-state variant for deterministic lock races that need more than the default two
+/// connections.
+pub async fn test_state_with_max_connections(
+    binary_name: &str,
+    max_connections: u32,
+) -> (AppState, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = crate::db_isolation::isolated_pool(binary_name, &database_url).await;
+    let database = crate::db_isolation::isolated_pool_with_max_connections(
+        binary_name,
+        &database_url,
+        max_connections,
+    )
+    .await;
     let key_directory = key_directory::isolated_key_directory("flow");
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),

@@ -1,6 +1,6 @@
 //! Client registration use cases.
 
-use super::{ClientService, ClientServiceError, RegisteredClientSecret};
+use super::{ClientService, ClientServiceError, RegisteredClientSecret, RegisteredOwnedClient};
 use crate::clients::{
     credentials::{ClientRegistrationRequest, hash_client_secret, issue_client_credential},
     domain::validate_client_registration_with_limits,
@@ -68,14 +68,14 @@ impl ClientService {
         &self,
         owner_user_id: UserId,
         input: impl Into<ClientRegistrationRequest>,
-    ) -> Result<RegisteredClientSecret, ClientServiceError> {
+    ) -> Result<Option<RegisteredOwnedClient>, ClientServiceError> {
         let request = input.into();
         let auth_method = request.auth_method;
         let registration =
             validate_client_registration_with_limits(request.registration, &self.limits)?;
         let client_id = format!("cx_{}", Uuid::new_v4().simple());
         let (credential, client_secret) = issue_client_credential(auth_method)?;
-        let client = repository::insert_owned_client(
+        let Some(owned_client) = repository::insert_owned_client(
             &self.pool,
             owner_user_id,
             registration,
@@ -86,9 +86,15 @@ impl ClientService {
         .map_err(|error| match error {
             ClientInsertError::QuotaExceeded => ClientServiceError::QuotaExceeded,
             ClientInsertError::Database(error) => ClientServiceError::Database(error),
-        })?;
+        })?
+        else {
+            return Ok(None);
+        };
 
-        Ok(registered_client_secret(client, client_secret))
+        Ok(Some(RegisteredOwnedClient {
+            client: registered_client_secret(owned_client.client, client_secret),
+            quota_limits: owned_client.quota_limits,
+        }))
     }
 
     pub async fn register_for_user_with_audit<F>(
@@ -96,7 +102,7 @@ impl ClientService {
         owner_user_id: UserId,
         input: impl Into<ClientRegistrationRequest>,
         audit_event: F,
-    ) -> Result<RegisteredClientSecret, ClientServiceError>
+    ) -> Result<Option<RegisteredOwnedClient>, ClientServiceError>
     where
         F: FnOnce(&repository::NewClient) -> crate::audit::AuditEvent,
     {
@@ -106,7 +112,7 @@ impl ClientService {
             validate_client_registration_with_limits(request.registration, &self.limits)?;
         let client_id = format!("cx_{}", Uuid::new_v4().simple());
         let (credential, client_secret) = issue_client_credential(auth_method)?;
-        let client = repository::insert_owned_client_with_audit(
+        let Some(owned_client) = repository::insert_owned_client_with_audit(
             &self.pool,
             owner_user_id,
             registration,
@@ -126,8 +132,14 @@ impl ClientService {
                 tracing::error!(event = "client_create.audit_unavailable", error = %error);
                 ClientServiceError::AuditUnavailable
             }
-        })?;
-        Ok(registered_client_secret(client, client_secret))
+        })?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(RegisteredOwnedClient {
+            client: registered_client_secret(owned_client.client, client_secret),
+            quota_limits: owned_client.quota_limits,
+        }))
     }
 
     pub async fn register_with_audit_idempotent<F>(

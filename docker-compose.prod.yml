@@ -51,7 +51,29 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    # Authorization-code consumption and Refresh Token tombstones/revocations are
+    # authoritative here. A successful write must survive a process or host crash;
+    # a truncated AOF must stop recovery instead of loading an older credential state.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - always
+      - --no-appendfsync-on-rewrite
+      - "no"
+      - --aof-load-truncated
+      - "no"
+      - --aof-use-rdb-preamble
+      - "yes"
+      - --save
+      - ""
+      - --dir
+      - /data
+      - --appenddirname
+      - appendonlydir
+      - --appendfilename
+      - appendonly.aof
     volumes:
       - chenxing-redis:/data
     healthcheck:

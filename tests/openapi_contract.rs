@@ -1,4 +1,4 @@
-//! Issue #444：OpenAPI 契约必须与当前 HTTP 行为一致。
+//! Issue #444 / #488：OpenAPI 契约必须与当前 HTTP 行为和发布结果一致。
 //!
 //! 静态断言钉住路径、`$ref` 和文档中的 Location；运行时断言钉住保护模式
 //! readiness、本地登录可达性、Issuer 门禁信封、用户创建禁用和遗留管理页重定向。
@@ -11,9 +11,17 @@ use axum::{
         header::{AUTHORIZATION, CONTENT_TYPE, LOCATION},
     },
 };
-use chenxing_auth::{api, config::Config, state::AppState};
-use serde_json::Value;
+use chenxing_auth::{
+    api,
+    audit::{
+        SecurityEventCategory, SecurityEventClient, SecurityEventDetail, SecurityEventSeverity,
+    },
+    config::Config,
+    state::AppState,
+};
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use time::OffsetDateTime;
 use tower::ServiceExt;
 
 #[path = "support/db_isolation.rs"]
@@ -21,6 +29,7 @@ mod db_isolation;
 #[path = "support/key_directory.rs"]
 mod key_directory;
 
+const CI_WORKFLOW: &str = include_str!("../.github/workflows/ci.yml");
 const OPENAPI: &str = include_str!("../openapi.yaml");
 const ROUTE_SOURCES: &str = concat!(
     include_str!("../src/api/routes.rs"),
@@ -79,6 +88,22 @@ fn openapi_section(start: &str, end: &str) -> String {
         .split_once(end)
         .map(|(section, _)| section.to_owned())
         .unwrap_or_else(|| panic!("missing OpenAPI section end: {end}"))
+}
+
+fn security_event_detail(client: Option<SecurityEventClient>) -> SecurityEventDetail {
+    SecurityEventDetail {
+        id: 488,
+        action: "oauth_consent".to_owned(),
+        category: SecurityEventCategory::Authorization,
+        severity: SecurityEventSeverity::Notice,
+        resource_type: "oauth_client".to_owned(),
+        created_at: OffsetDateTime::UNIX_EPOCH,
+        ip: None,
+        ip_location: None,
+        user_agent: None,
+        ray_id: None,
+        client,
+    }
 }
 
 fn json_content_type(response: &axum::response::Response) -> Option<&str> {
@@ -164,7 +189,68 @@ async fn contract_state(
     let state = AppState::new_with_pool(config, database.clone())
         .await
         .expect("state");
+    state.worker_health.assume_ready_for_test();
     (state, database, key_directory)
+}
+
+#[test]
+fn security_event_detail_serializes_required_null_client() {
+    let value = serde_json::to_value(security_event_detail(None)).expect("serialize detail");
+    let object = value.as_object().expect("detail object");
+    let client = object.get("client").expect("client must remain required");
+
+    assert!(client.is_null(), "client must serialize as null");
+}
+
+#[test]
+fn security_event_detail_serializes_non_null_client_summary() {
+    let value = serde_json::to_value(security_event_detail(Some(SecurityEventClient {
+        client_id: "cx_contract".to_owned(),
+        client_name: "Contract Client".to_owned(),
+        created_at: OffsetDateTime::UNIX_EPOCH,
+        status: "active".to_owned(),
+    })))
+    .expect("serialize detail");
+
+    assert_eq!(
+        value["client"],
+        json!({
+            "client_id": "cx_contract",
+            "client_name": "Contract Client",
+            "created_at": "1970-01-01T00:00:00Z",
+            "status": "active",
+        })
+    );
+}
+
+#[test]
+fn openapi_declares_security_event_client_as_required_but_nullable() {
+    let schema = openapi_section("    SecurityEventDetail:\n", "    SecurityEventClient:\n");
+
+    assert!(
+        schema.contains(
+            "required: [id, action, category, severity, resource_type, created_at, ip, ip_location, user_agent, ray_id, client]"
+        ),
+        "SecurityEventDetail.client must remain required"
+    );
+    assert!(
+        schema.contains(
+            "        client:\n          allOf:\n            - $ref: '#/components/schemas/SecurityEventClient'\n          nullable: true"
+        ),
+        "SecurityEventDetail.client must remain a nullable SecurityEventClient reference"
+    );
+}
+
+#[test]
+fn apifox_import_removes_resources_absent_from_openapi() {
+    assert!(
+        CI_WORKFLOW.contains(r#""deleteUnmatchedResources": true"#),
+        "Apifox import must delete endpoints and schemas removed from openapi.yaml"
+    );
+    assert!(
+        !CI_WORKFLOW.contains(r#""deleteUnmatchedResources": false"#),
+        "Apifox import must not preserve stale resources"
+    );
 }
 
 #[test]

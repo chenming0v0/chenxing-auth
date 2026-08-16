@@ -6,8 +6,8 @@
 #   - 每个 phase_* 只做一件事，从全局变量读配置，用 record 写结果。
 #   - 任何 phase_* 都不得 exit。一次运行要把所有问题一次报完，
 #     最终退出码由 test.sh 依据汇总表统一决定。
-#   - 工具缺失只有在该阶段被明确请求（或由 --gate 强制请求）时才允许
-#     继续；此时必须记 fail，避免 false-green。未请求的可选阶段才记 skip。
+#   - 显式请求的阶段缺少必需工具时记 fail，不能把未执行的检查记成通过。
+#     cargo-nextest 只在普通测试模式下允许回退；nextest filterset 没有等价回退。
 
 # ---------------------------------------------------------------- 格式检查
 phase_fmt() {
@@ -62,15 +62,16 @@ phase_test() {
     begin="$(now_ms)"
     log="$LOG_DIR/test.log"
 
-    info "测试期间通过用例保持静默；下方计时持续变化即仍在运行"
-    spinner_start "运行测试"
-
-    if [ -n "$FILTER_EXPR" ] && [ "$NEXTEST" -eq 0 ]; then
-        spinner_stop
-        record "测试" fail "$(( $(now_ms) - begin ))" "--filter 需要 cargo-nextest，不能回退到未过滤 cargo test"
-        err "--filter 需要 cargo-nextest；为避免改变测试范围，已拒绝执行回退命令"
+    if [ "$NEXTEST" -ne 1 ] && [ "${MODE:-}" = "filter" ]; then
+        elapsed="$(( $(now_ms) - begin ))"
+        printf '%s\n' "缺少 cargo-nextest，无法执行 --filter 的 nextest filterset" >"$log"
+        record "测试" fail "$elapsed" "未安装 cargo-nextest，--filter 未执行"
+        err "--filter 需要 cargo-nextest；已拒绝静默回退到未过滤的 cargo test"
         return 0
     fi
+
+    info "测试期间通过用例保持静默；下方计时持续变化即仍在运行"
+    spinner_start "运行测试"
 
     if [ "$NEXTEST" -eq 1 ]; then
         local args=(run --all-features --no-pager --max-fail "$MAX_FAIL")
@@ -195,12 +196,8 @@ phase_coverage() {
     begin="$(now_ms)"
 
     if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
-        if [ "$MODE" = "coverage" ] || [ "$MODE" = "gate" ]; then
-            record "覆盖检查" fail 0 "未安装 cargo-llvm-cov"
-            err "覆盖检查被请求但 cargo-llvm-cov 不可用"
-        else
-            record "覆盖检查" skip 0 "未安装 cargo-llvm-cov"
-        fi
+        record "覆盖检查" fail 0 "未安装 cargo-llvm-cov，覆盖率检查未执行"
+        err "覆盖率模式需要 cargo-llvm-cov；未执行的覆盖率门槛不能记为跳过"
         return 0
     fi
 
@@ -232,12 +229,8 @@ phase_audit() {
     begin="$(now_ms)"
 
     if ! command -v cargo-audit >/dev/null 2>&1; then
-        if [ "$MODE" = "audit" ] || [ "$MODE" = "gate" ]; then
-            record "依赖审计" fail 0 "未安装 cargo-audit"
-            err "依赖审计被请求但 cargo-audit 不可用"
-        else
-            record "依赖审计" skip 0 "未安装 cargo-audit"
-        fi
+        record "依赖审计" fail 0 "未安装 cargo-audit，依赖审计未执行"
+        err "依赖审计模式需要 cargo-audit；未执行的审计不能记为跳过"
         return 0
     fi
 

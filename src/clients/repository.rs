@@ -4,6 +4,7 @@ use thiserror::Error;
 use time::OffsetDateTime;
 
 use super::domain::{ClientAuthMethod, ValidatedClientRegistration};
+use crate::plans::domain::AuthQuotaLimits;
 use crate::users::domain::UserId;
 
 #[path = "repository_credentials.rs"]
@@ -79,6 +80,12 @@ pub struct NewClient {
     pub created_at: OffsetDateTime,
     pub owner_user_id: Option<UserId>,
     pub auth_method: ClientAuthMethod,
+}
+
+#[derive(Debug)]
+pub struct NewOwnedClient {
+    pub client: NewClient,
+    pub quota_limits: AuthQuotaLimits,
 }
 
 #[derive(Debug)]
@@ -239,7 +246,9 @@ where
         owner_user_id: None,
         auth_method: credential.auth_method(),
     };
-    crate::audit::repository::insert_with(&mut *transaction, &audit_event(&client)).await?;
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event(&client))
+        .await
+        .map_err(AuditedClientInsertError::Audit)?;
     transaction.commit().await?;
     Ok(client)
 }

@@ -5,7 +5,6 @@
 
 pub mod authorization;
 pub mod authorization_code_handlers;
-pub mod authorization_decision_use_case;
 pub mod client_auth;
 pub mod code;
 pub mod consent;
@@ -39,6 +38,7 @@ pub mod token_handlers;
 pub mod token_security;
 pub mod token_use_case;
 pub mod ui_handlers;
+mod ui_responses;
 pub mod userinfo;
 
 use serde::Serialize;

@@ -5,7 +5,7 @@ use axum::{
 use std::fmt;
 
 use super::{
-    authorization::{ValidatedAuthorizationRequest, scopes_are_allowed},
+    authorization::{ValidatedAuthorizationRequest, redirect_uri_matches, scopes_are_allowed},
     code::AuthorizationCode,
     consent::PendingAuthorization,
     quota::{QuotaConsumeResult, QuotaReservation},
@@ -103,7 +103,7 @@ pub async fn issue_authorization_code_result(
         || !client
             .redirect_uris
             .iter()
-            .any(|uri| uri == &validated.redirect_uri)
+            .any(|uri| redirect_uri_matches(uri, &validated.redirect_uri))
         || !scopes_are_allowed(
             &client,
             &validated.scopes,
@@ -295,13 +295,19 @@ async fn remove_authorization_code_after_failure(
     client_id: &str,
     quota_reservation: Option<&QuotaReservation>,
 ) {
-    if let Err(error_value) = state.authorization_codes.take(&code.value).await {
-        tracing::warn!(
-            error = %error_value,
-            "failed to compensate authorization code after authorization failure"
-        );
+    // Refund only after Redis gives a definitive result. If the operation
+    // fails, the code may still exist and remain redeemable, so refunding
+    // would let the same authorization consume quota twice.
+    match state.authorization_codes.take(&code.value).await {
+        Ok(_) => refund_quota_if_consumed(state, client_id, quota_reservation).await,
+        Err(error_value) => {
+            tracing::error!(
+                error = %error_value,
+                client_id = %client_id,
+                "failed to compensate authorization code; quota refund skipped"
+            );
+        }
     }
-    refund_quota_if_consumed(state, client_id, quota_reservation).await;
 }
 
 async fn refund_quota_if_consumed(
@@ -401,8 +407,16 @@ pub(crate) fn pending_from_validated(
 pub(crate) async fn restore_pending_after_failure(
     state: &AppState,
     pending: &PendingAuthorization,
+    remaining_ttl_ms: u64,
 ) {
-    if let Err(store_error) = state.authorization_requests.save(pending).await {
+    if remaining_ttl_ms == 0 {
+        return;
+    }
+    if let Err(store_error) = state
+        .authorization_requests
+        .save_limited_with_ttl(pending, remaining_ttl_ms)
+        .await
+    {
         tracing::error!(error = %store_error, "failed to restore OAuth authorization request");
     }
 }

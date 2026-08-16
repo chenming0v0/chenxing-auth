@@ -5,11 +5,16 @@ info:
   description: |
     辰星通行证用户认证、OAuth 2.0/OIDC 和统一用户管理 API。
     当前定义以仓库实际路由为准。运行时 Issuer 的权威来源是 PostgreSQL `app_settings` 表中的 `app_issuer` 记录，不是环境变量、请求 Host 或反向代理输入。
-    数据库与 Runtime 都没有 Issuer 时进入保护模式：readiness 仍视为健康；首 Owner 初始化仍可用，只有用户 ID=1 可以本地登录，
+    数据库与 Runtime 都没有 Issuer 时进入保护模式：只要数据库、Redis、关键 worker 与签名同步均就绪，readiness 仍视为健康；首 Owner 初始化仍可用，只有用户 ID=1 可以本地登录，
     ADMIN_TOKEN 保留用于恢复和 Issuer 配置；除首 Owner 初始化外，公共注册与所有用户创建接口关闭。仅依赖正式 Issuer
     的路由关闭，包括 OAuth/OIDC 协议与授权确认、Discovery、JWKS、外部登录及其 Provider 管理。Issuer 门禁发现 Runtime
     处于 AwaitingIssuer 时会立即回读 PostgreSQL：合法持久化值会应用到当前请求并继续处理；无记录、空值/无效值、数据库读取失败、
-    Runtime 已是 Pending/Invalid，或 DB/Runtime 事实无法一致应用时才返回 503。readiness 独立要求 raw DB 与 Runtime 完全一致。
+    Runtime 已是 Pending/Invalid，或 DB/Runtime 事实无法一致应用时才返回 503。readiness 独立要求 raw DB 与 Runtime 完全一致，
+    且四个关键后台 worker 的心跳与最近成功均在各自时限内，签名密钥同步状态允许令牌签发。
+
+    ADMIN_TOKEN 为空时整个已初始化管理面 fail closed：系统 Bearer 与浏览器 Session 两条管理通道都返回 403
+    admin_disabled；唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口。WebAuthn 的显式 WEBAUTHN_RP_ID / WEBAUTHN_ORIGIN
+    覆盖始终优先；未显式覆盖时从持久化 Issuer 的 host / 根 URL 派生，绝不从请求 Host 或反向代理输入推导。
 
     已注册的 `/oauth/authorize`、`/oauth/token`、`/oauth/revoke` 和 `/oauth/userinfo` 始终保持 RFC 6749
     `OAuthErrorResponse` 信封。Issuer 门禁即时回读后仍不可用、OAuth 依赖不可用或请求超时
@@ -49,14 +54,15 @@ paths:
       summary: 就绪探针（与 /health/ready 相同）
       operationId: health
       description: |
-        兼容别名，处理逻辑与 GET /health/ready 相同：检查数据库、Redis 和 Issuer 收敛。
-        raw DB 没有 Issuer 记录且 Runtime 也未加载 Issuer 是合法的保护模式，此时只要数据库和 Redis 可用仍返回 200。
+        兼容别名，处理逻辑与 GET /health/ready 相同：检查数据库、Redis、Issuer 收敛和四个关键后台 worker。
+        raw DB 没有 Issuer 记录且 Runtime 也未加载 Issuer 是合法的保护模式，此时数据库、Redis、worker 和签名密钥同步均就绪则返回 200。
         raw DB 存在合法 Issuer 且 generation/value 与 Runtime 完全一致时同样返回 200。raw 记录为空或无效、读取失败、
         Runtime 已加载但数据库无记录、数据库有记录但 Runtime 未加载，或值/代次不一致时返回 503。
+        任一关键 worker 未成功启动、心跳/最近成功过期、连续失败、panic 或意外返回，或签名密钥同步异常时也返回 503。
         响应体只暴露聚合状态，不含连接串或错误细节。
       responses:
         '200':
-          description: 数据库和 Redis 可用，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
+          description: 数据库、Redis、四个关键 worker 和签名密钥同步均就绪，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
           content:
             application/json:
               schema:
@@ -85,13 +91,13 @@ paths:
       summary: 就绪探针
       operationId: healthReady
       description: |
-        检查数据库、Redis 和 Issuer 收敛。raw DB 与 Runtime 都没有 Issuer 是合法的保护模式；raw DB 存在合法 Issuer
+        检查数据库、Redis、Issuer 收敛和四个关键后台 worker，并确认签名密钥同步允许令牌签发。raw DB 与 Runtime 都没有 Issuer 是合法的保护模式；raw DB 存在合法 Issuer
         且 generation/value 与 Runtime 完全一致时也就绪。raw 记录为空或无效、读取失败、任一侧缺失、值/代次不一致，
-        或任一依赖超时/未就绪时返回 503。
+        任一依赖超时/未就绪，或任一关键 worker 未成功启动、心跳/最近成功过期、连续失败、panic/意外返回，或签名密钥同步异常时返回 503。
         响应体只暴露聚合状态，不含连接串、主机名或错误细节。
       responses:
         '200':
-          description: 数据库和 Redis 可用，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
+          description: 数据库、Redis、四个关键 worker 和签名密钥同步均就绪，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
           content:
             application/json:
               schema:
@@ -1072,6 +1078,9 @@ paths:
       description: |
         未登录浏览器请求仅在 client、redirect_uri、scope、state 和 PKCE 完整校验后创建 pending。
         X-Chenxing-Session 仅在 OAUTH_SESSION_HEADER_ENABLED=true 的开发兼容配置中接受，不能绕过 Session 绑定、CSRF 或 consent。
+        Client 已加载且 redirect_uri canonicalize 后仍严格匹配注册值时，后续参数校验或依赖错误通过 302
+        回调该 canonical redirect_uri，并携带 RFC 6749 `error` / `error_description`；仅非空且不超过 512
+        个字符的 state 会被回显。Client 或 redirect_uri 不可信时绝不重定向，改用 RFC 6749 JSON 错误信封。
         Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。无记录、空值/无效值、
         数据库读取失败、Runtime Pending/Invalid 或事实无法一致应用，以及请求超时时，统一返回 RFC 6749 JSON 信封的
         503 `temporarily_unavailable`。此时尚无可用的 redirect_uri 上下文做错误重定向，
@@ -1093,18 +1102,32 @@ paths:
         '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
     post:
       tags: [OAuth/OIDC]
-      summary: OAuth 授权码入口（表单 POST）
+      summary: 通过表单提交 OAuth 授权码请求
       operationId: authorizePost
       security: [{ sessionCookie: [] }, { chenxingSession: [] }, {}]
-      description: GET 授权参数的 `application/x-www-form-urlencoded` POST 等价入口；错误仍遵循 RFC 6749 重定向/JSON 契约。
+      description: |
+        与 GET `/oauth/authorize` 行为和安全边界相同。请求体必须使用
+        `application/x-www-form-urlencoded`。Client 已加载且 canonical redirect_uri 严格匹配注册值时，
+        后续参数校验或依赖错误通过 302 携带 RFC 6749 错误参数返回；不可信回调地址只返回 OAuth JSON 错误。
+        state 仅在非空且不超过 512 个字符时回显。
       requestBody:
         required: true
         content:
           application/x-www-form-urlencoded:
             schema:
-              $ref: '#/components/schemas/AuthorizationRequest'
+              type: object
+              required: [client_id, redirect_uri, response_type, scope, state, code_challenge, code_challenge_method]
+              properties:
+                client_id: { type: string }
+                redirect_uri: { type: string, format: uri }
+                response_type: { type: string, enum: [code] }
+                scope: { type: string, description: "空格分隔的 scope；受服务端 allowlist 和 Client 已注册 scopes 双重约束" }
+                state: { type: string, maxLength: 512 }
+                nonce: { type: string, maxLength: 512 }
+                code_challenge: { type: string }
+                code_challenge_method: { type: string, enum: [S256] }
       responses:
-        '302': { description: 重定向到 Client 的 redirect_uri 或登录/授权确认页 }
+        '302': { description: 重定向到 Client 的 canonical registered redirect_uri 或登录/授权确认页；错误重定向携带 RFC 6749 error/error_description，并仅回显合法长度的 state }
         '400': { $ref: '#/components/responses/OAuthBadRequest' }
         '401': { $ref: '#/components/responses/OAuthUnauthorized' }
         '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
@@ -1147,7 +1170,8 @@ paths:
               schema: { $ref: '#/components/schemas/AuthorizationDecisionResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
@@ -2395,7 +2419,7 @@ components:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
     adminBearer: { type: http, scheme: bearer, description: 系统 ADMIN_TOKEN 自动化通道，权限等价于 Owner 且无用户 ID，不需要浏览器 CSRF。ADMIN_TOKEN 为空时整个管理面关闭：Bearer 与 sessionCookie 两条通道都被拒绝，已初始化的管理接口统一返回 403 admin_disabled；唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口 }
     basicClientAuth: { type: http, scheme: basic }
-    sessionCookie: { type: apiKey, in: cookie, name: __Host-chenxing_session, description: HTTPS 浏览器部署使用的 host-only Session Cookie；仅 loopback HTTP 本地开发使用不带前缀的兼容名称 }
+    sessionCookie: { type: apiKey, in: cookie, name: __Host-chenxing_session, description: HTTPS 浏览器部署使用的 host-only Session Cookie；仅 loopback HTTP 本地开发使用不带前缀的兼容名称。管理接口只有在 ADMIN_TOKEN 非空时才接受此通道；ADMIN_TOKEN 为空时统一返回 403 admin_disabled }
     chenxingSession: { type: apiKey, in: header, name: X-Chenxing-Session, description: 仅开发兼容配置 OAUTH_SESSION_HEADER_ENABLED=true 时可用；不能替代 pending、Session 绑定、CSRF 或 consent }
   parameters:
     ClientId: { name: client_id, in: query, required: true, schema: { type: string } }
@@ -2446,7 +2470,7 @@ components:
       description: |
         数据库、Redis 不可用；raw Issuer 记录为空/无效或读取失败；Runtime 已加载但数据库无记录；数据库有记录但 Runtime
         未加载；或 generation/value 不一致。raw DB 与 Runtime 都没有 Issuer 是健康的保护模式，合法记录与 Runtime
-        完全一致时同样就绪。
+        完全一致时同样就绪。任一关键 worker 未成功启动、心跳/最近成功过期、连续失败、panic 或意外返回，或签名密钥同步异常时同样不可就绪。
         响应体只暴露聚合状态，不含连接串或错误细节。
       content:
         application/json:
@@ -3041,7 +3065,10 @@ components:
         ip_location: { type: string, nullable: true, description: IP 归属地；离线归属地库未接入，恒为 null }
         user_agent: { type: string, nullable: true, description: 事件请求 User-Agent（来自 metadata user_agent 白名单提取） }
         ray_id: { type: string, nullable: true, description: 请求关联 ID；暂无对应概念，恒为 null }
-        client: { $ref: '#/components/schemas/SecurityEventClient' }
+        client:
+          allOf:
+            - $ref: '#/components/schemas/SecurityEventClient'
+          nullable: true
     SecurityEventClient:
       type: object
       description: 详情接口中 OAuth Client 的公开摘要，只来自 oauth_clients 表自身列。

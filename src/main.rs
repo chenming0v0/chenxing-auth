@@ -7,6 +7,7 @@ use chenxing_auth::{
     oauth::quota::QUOTA_REFUND_WORKER_INTERVAL,
     settings::{InitializeIssuerOutcome, issuer},
     state::AppState,
+    workers::{WORKER_DRAIN_TIMEOUT, WorkerFailure, WorkerName, WorkerSupervisor},
 };
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -125,40 +126,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         audit_posture.separation(),
     )
     .await?;
-    // Route admission is runtime-gated, so background task startup cannot be frozen by
-    // the issuer state observed during construction. These workers are harmless while
-    // awaiting configuration and remain alive after a hot issuer promotion.
-    let issuer_sync = tokio::spawn(state.clone().run_issuer_sync_worker());
-    let session_outbox = tokio::spawn(state.sessions.clone().run_outbox_worker());
-    let key_sync = tokio::spawn(
-        state
-            .keys
-            .clone()
-            .run_disk_sync_worker(DEFAULT_KEY_SYNC_INTERVAL),
-    );
-    let quota_refund = tokio::spawn(
-        state
-            .oauth_quotas
-            .clone()
-            .run_refund_worker(state.clock.clone(), QUOTA_REFUND_WORKER_INTERVAL),
-    );
-    let workers = [issuer_sync, session_outbox, key_sync, quota_refund];
-    let app = api::router(state);
     let address = format!("{}:{}", config.host, config.port);
     let listener = TcpListener::bind(&address).await?;
+    let mut workers = WorkerSupervisor::new(state.worker_health.clone());
 
-    info!(address = %address, "辰星认证中枢 started");
-    axum::serve(
+    // Route admission is runtime-gated, so worker startup cannot be frozen by the issuer
+    // state observed during construction. All four tasks are supervised: a panic or return
+    // removes readiness immediately and initiates process shutdown.
+    let issuer_state = state.clone();
+    workers.spawn(WorkerName::IssuerSync, move |worker| {
+        issuer_state.run_issuer_sync_worker(worker)
+    });
+    let sessions = state.sessions.clone();
+    workers.spawn(WorkerName::SessionOutbox, move |worker| {
+        sessions.run_outbox_worker(worker)
+    });
+    let keys = state.keys.clone();
+    workers.spawn(WorkerName::KeySync, move |worker| {
+        keys.run_disk_sync_worker(DEFAULT_KEY_SYNC_INTERVAL, worker)
+    });
+    let quotas = state.oauth_quotas.clone();
+    let quota_clock = state.clock.clone();
+    workers.spawn(WorkerName::QuotaRefund, move |worker| {
+        quotas.run_refund_worker(quota_clock, QUOTA_REFUND_WORKER_INTERVAL, worker)
+    });
+
+    let app = api::router(state);
+    let (http_shutdown, http_shutdown_receiver) = tokio::sync::watch::channel(false);
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await?;
-    for worker in workers {
-        worker.abort();
+    .with_graceful_shutdown(wait_for_shutdown(http_shutdown_receiver))
+    .into_future();
+    tokio::pin!(server);
+
+    info!(address = %address, "辰星认证中枢 started");
+
+    enum ServiceExit {
+        Server(std::io::Result<()>),
+        ShutdownSignal,
+        Worker(WorkerFailure),
     }
 
+    let exit = tokio::select! {
+        result = &mut server => ServiceExit::Server(result),
+        _ = shutdown_signal() => ServiceExit::ShutdownSignal,
+        failure = workers.wait_for_failure() => ServiceExit::Worker(failure),
+    };
+    let (server_result, worker_failure) = match exit {
+        ServiceExit::Server(result) => (result, None),
+        ServiceExit::ShutdownSignal => {
+            let _ = http_shutdown.send(true);
+            (server.await, None)
+        }
+        ServiceExit::Worker(failure) => {
+            tracing::error!(error = %failure, "critical worker failed; shutting down service");
+            let _ = http_shutdown.send(true);
+            (server.await, Some(failure))
+        }
+    };
+
+    let drain_result = workers.drain(WORKER_DRAIN_TIMEOUT).await;
+    server_result?;
+    if let Some(failure) = worker_failure {
+        if let Err(drain_error) = &drain_result {
+            tracing::error!(error = %drain_error, "worker drain also failed after worker exit");
+        }
+        return Err(failure.into());
+    }
+    drain_result?;
+
     Ok(())
+}
+
+async fn wait_for_shutdown(mut receiver: tokio::sync::watch::Receiver<bool>) {
+    if *receiver.borrow() {
+        return;
+    }
+    while receiver.changed().await.is_ok() {
+        if *receiver.borrow() {
+            return;
+        }
+    }
 }
 
 async fn shutdown_signal() {

@@ -56,6 +56,7 @@ async fn restricted_state(
     let mut state = AppState::new_with_pool(config, database.clone())
         .await
         .expect("restricted state");
+    state.worker_health.assume_ready_for_test();
     if invalid {
         state.issuer = IssuerRuntime::new_invalid(&state.config, 1);
     }

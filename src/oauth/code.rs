@@ -28,17 +28,22 @@ pub struct AuthorizationCode {
     /// 用户会话：会话被撤销（用户登出）后，授权码必须立即失去兑换能力，否则
     /// 登出只是清了 Cookie，5 分钟 TTL 内的授权码仍能换出 access/refresh token。
     ///
-    /// 摘要使用 base64url 无填充编码。`None` 表示降级路径：授权码不是由浏览器会话签发的（例如直接构造的
-    /// 测试代码，或升级前写入 Redis 的历史授权码），此时 Token 端点不做会话
-    /// 校验，只保留原有的 Client / Redirect URI / PKCE / 用户状态检查。
+    /// 摘要使用 base64url 无填充编码。直接构造的 `None` 只保留给不经过持久化兑换
+    /// 的内部测试路径；从 Redis 兼容读取到缺失该字段的旧授权码会被单独标记，并在
+    /// Token 端点 fail-closed，不能借兼容反序列化绕过会话校验。
     ///
     /// 反序列化 helper 的 `#[serde(default)]` + `skip_serializing_if` 是 Redis 兼容性要求，不可删除：
-    /// - `default`：升级期间在途的旧授权码 JSON 没有这个键，缺了它反序列化会
-    ///   直接失败，所有在途授权码全部作废。
+    /// - `default`：升级期间在途的旧授权码 JSON 没有这个键，仍允许读取以便稳定
+    ///   返回 `invalid_grant`，但绝不允许兑换。
     /// - `skip_serializing_if`：保持旧载荷的稳定表示，便于混合版本部署；
     ///   `take_if_matches` 只比较已知协议字段，未知未来字段不参与 CAS。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_token_hash: Option<String>,
+    /// Compatibility marker set when an older Redis payload omitted the
+    /// session binding field entirely. Such codes must fail closed at token
+    /// exchange instead of using the intentional unbound-code fallback.
+    #[serde(skip)]
+    pub(crate) legacy_unbound_session_binding: bool,
     /// 签发时配额消耗对应的 reservation id（Issue #341）。
     ///
     /// 授权码过期未兑换时，后台 worker 凭这个 id 退还配额；兑换成功时
@@ -88,8 +93,10 @@ struct AuthorizationCodePayload {
     client_id: String,
     redirect_uri: String,
     user_id: String,
+    /// A missing (or explicitly null) field is treated as a legacy payload and
+    /// marked for fail-closed handling during token exchange.
     #[serde(default)]
-    session_token_hash: Option<String>,
+    session_token_hash: Option<Option<String>>,
     #[serde(default)]
     quota_reservation_id: Option<String>,
     scopes: Vec<String>,
@@ -147,7 +154,8 @@ impl<'de> Deserialize<'de> for AuthorizationCode {
             client_id: payload.client_id,
             redirect_uri: payload.redirect_uri,
             user_id: payload.user_id,
-            session_token_hash: payload.session_token_hash,
+            legacy_unbound_session_binding: payload.session_token_hash.is_none(),
+            session_token_hash: payload.session_token_hash.flatten(),
             quota_reservation_id: payload.quota_reservation_id,
             scopes: payload.scopes,
             code_challenge: payload.code_challenge,
@@ -326,6 +334,7 @@ impl AuthorizationCode {
             redirect_uri,
             user_id,
             session_token_hash,
+            legacy_unbound_session_binding: false,
             quota_reservation_id: None,
             scopes,
             code_challenge,

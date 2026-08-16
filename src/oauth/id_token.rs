@@ -34,6 +34,29 @@ pub struct IdTokenClaims {
     pub name: Option<String>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_id_token_issuance_when_signing_is_unavailable() {
+        let keys = KeyManager::generate().expect("generate signing key");
+        keys.mark_sync_healthy(false);
+
+        let result = issue_id_token_with_profile_at(
+            &keys,
+            "https://issuer.example",
+            "1",
+            "client",
+            IdTokenProfile::default(),
+            60,
+            time::OffsetDateTime::UNIX_EPOCH,
+        );
+
+        assert!(matches!(result, Err(IdTokenError::SigningUnavailable)));
+    }
+}
+
 impl fmt::Debug for IdTokenClaims {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("IdTokenClaims")
@@ -74,6 +97,8 @@ impl fmt::Debug for IdTokenProfile<'_> {
 pub enum IdTokenError {
     #[error("ID token lifetime is invalid")]
     InvalidLifetime,
+    #[error("ID token signing is unavailable while signing-key synchronization is unhealthy")]
+    SigningUnavailable,
     #[error("ID token signing failed: {0}")]
     Signing(#[from] jsonwebtoken::errors::Error),
 }
@@ -153,7 +178,9 @@ pub fn issue_id_token_with_profile_at(
         name: profile.name.map(str::to_owned),
     };
     let mut header = Header::new(Algorithm::RS256);
-    let signing_key = keys.active_signing_key();
+    let signing_key = keys
+        .active_signing_key_if_ready()
+        .ok_or(IdTokenError::SigningUnavailable)?;
     header.kid = Some(signing_key.key_id().to_owned());
     encode(&header, &claims, signing_key.encoding_key()).map_err(IdTokenError::from)
 }

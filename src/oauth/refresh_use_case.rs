@@ -2,7 +2,7 @@ use super::{
     OAuthError, RefreshExchangeError, TokenIssueParams, TokenRequest, TokenResponse,
     issue_token_response,
 };
-use crate::{clients::service::AuthenticatedClient, config::IssuerUrl, state::AppState};
+use crate::{clients::service::AuthenticatedClient, settings::IssuerSnapshot, state::AppState};
 
 use super::super::{
     grant_gate::{GrantGateError, effective_grant_scopes},
@@ -29,7 +29,7 @@ mod replay;
 /// Exchange a refresh token after the token endpoint has authenticated the client.
 pub(super) async fn exchange_refresh_token(
     state: &AppState,
-    issuer: &IssuerUrl,
+    issuer: &IssuerSnapshot,
     request: TokenRequest,
     authenticated: AuthenticatedClient,
 ) -> Result<TokenResponse, RefreshExchangeError> {
@@ -53,6 +53,20 @@ pub(super) async fn exchange_refresh_token(
             return Err(OAuthError::temporarily_unavailable().into());
         }
     };
+
+    // Refresh Token belongs to the Issuer generation that originally minted
+    // the grant. Comparing against the request-scoped snapshot prevents an A
+    // token from being exchanged into an iss=B token after a hot switch. The
+    // snapshot must not be re-read from runtime inside this request: doing so
+    // could mix generations if an update lands midway through the exchange.
+    if !refresh.is_bound_to_issuer_generation(issuer.generation()) {
+        let reason = if refresh.issuer_generation.is_none() {
+            "refresh_token_issuer_generation_required"
+        } else {
+            "issuer_generation_changed"
+        };
+        return record_and_return_invalid(state, Some(&refresh.user_id), client_id, reason).await;
+    }
 
     // A Refresh Token is part of the credential generation that created it.
     // Versioned tokens must match the exact authenticated generation. Legacy
@@ -91,9 +105,9 @@ pub(super) async fn exchange_refresh_token(
     //
     // `granted` 是本次兑换允许的上界：闸门收窄后的集合才是 `select_scopes`
     // 可选择的范围。
-    let grant =
+    let granted =
         match effective_grant_scopes(state, &refresh.user_id, client_id, &refresh.scopes).await {
-            Ok(grant) => grant,
+            Ok(granted) => granted,
             Err(GrantGateError::Denied(reason)) => {
                 return record_and_return_invalid(state, Some(&refresh.user_id), client_id, reason)
                     .await;
@@ -102,8 +116,6 @@ pub(super) async fn exchange_refresh_token(
                 return Err(OAuthError::temporarily_unavailable().into());
             }
         };
-    let granted = grant.scopes;
-    let consent_state_version = grant.consent_state_version;
     // Issue #409：凭据代际比对（见 `RefreshToken::is_bound_to_session_epoch`）。
     // `session_epoch` 是「撤销该用户全部凭据」的单一水位，会话校验每次查找都
     // 在比对；TOTP 重置只踢 Cookie 会话、旧 Refresh Token 仍可兑换的漏洞，
@@ -128,16 +140,30 @@ pub(super) async fn exchange_refresh_token(
     }
 
     let scopes = select_scopes(request.scope.as_deref(), &granted)?;
-    // Rotation inherits issued_at/family_id/session_epoch and stamps the
-    // authenticated Client Secret generation, including for legacy unversioned
-    // tokens. The inherited epoch keeps the successor in the same credential
-    // generation: re-reading it here would let a revocation that lands between
-    // the check above and this rotation be stamped away (Issue #409).
+    // Rotation inherits issued_at/family_id/session_epoch/issuer_generation and
+    // stamps only the authenticated Client Secret generation, including for
+    // legacy unversioned Client credentials. Inheriting both security snapshots
+    // keeps the successor in the same credential generation: re-reading either
+    // value here could stamp away a revocation or cross an Issuer trust boundary.
     let next_refresh = refresh.rotate_at_with_client_secret_version(
         scopes.clone(),
         authenticated.client_secret_version(),
         now,
     );
+    let token = issue_token_response(
+        state,
+        TokenIssueParams {
+            issuer: issuer.issuer(),
+            user_id: &refresh.user_id,
+            client_id,
+            scopes: &scopes,
+            refresh_token: Some(next_refresh.value.clone()),
+            nonce: None,
+            auth_time: None,
+        },
+    )
+    .await?;
+
     // This shared PostgreSQL row lock is the cross-instance ordering boundary
     // with Client Secret rotation. It remains held until Redis has atomically
     // replaced the old token with its successor.
@@ -175,67 +201,6 @@ pub(super) async fn exchange_refresh_token(
     }
     match rotation {
         Ok(RotationOutcome::Rotated) => {
-            let parsed_user_id = match refresh.user_id.parse::<crate::users::domain::UserId>() {
-                Ok(user_id) => user_id,
-                Err(_) => {
-                    revoke_grant_after_fence_failure(state, client_id, &refresh).await;
-                    return Err(OAuthError::invalid_refresh_grant().into());
-                }
-            };
-            match state
-                .consents
-                .consent_state(parsed_user_id, client_id)
-                .await
-            {
-                Ok(Some(consent))
-                    if !consent.revoked && consent.version == consent_state_version => {}
-                Ok(_) => {
-                    revoke_grant_after_fence_failure(state, client_id, &refresh).await;
-                    return record_and_return_invalid(
-                        state,
-                        Some(&refresh.user_id),
-                        client_id,
-                        "consent_changed_during_refresh",
-                    )
-                    .await;
-                }
-                Err(error) => {
-                    revoke_grant_after_fence_failure(state, client_id, &refresh).await;
-                    tracing::error!(error = %error, "failed to verify consent fence during refresh exchange");
-                    return Err(OAuthError::temporarily_unavailable().into());
-                }
-            }
-            match active_user_epoch(state, &refresh.user_id).await {
-                Ok(Some(epoch)) if refresh.session_epoch == Some(epoch) => {}
-                Ok(_) => {
-                    revoke_grant_after_fence_failure(state, client_id, &refresh).await;
-                    return record_and_return_invalid(
-                        state,
-                        Some(&refresh.user_id),
-                        client_id,
-                        "session_epoch_changed_during_refresh",
-                    )
-                    .await;
-                }
-                Err(error) => {
-                    revoke_grant_after_fence_failure(state, client_id, &refresh).await;
-                    tracing::error!(error = %error, "failed to verify session epoch fence during refresh exchange");
-                    return Err(OAuthError::temporarily_unavailable().into());
-                }
-            }
-            let token = issue_token_response(
-                state,
-                TokenIssueParams {
-                    issuer,
-                    user_id: &refresh.user_id,
-                    client_id,
-                    scopes: &scopes,
-                    refresh_token: Some(next_refresh.value.clone()),
-                    nonce: None,
-                    auth_time: None,
-                },
-            )
-            .await?;
             if record_token_event(
                 state,
                 Some(&refresh.user_id),
@@ -275,20 +240,6 @@ pub(super) async fn exchange_refresh_token(
             tracing::error!(error = %store_error, "failed to atomically rotate refresh token");
             Err(OAuthError::temporarily_unavailable().into())
         }
-    }
-}
-
-async fn revoke_grant_after_fence_failure(
-    state: &AppState,
-    client_id: &str,
-    refresh: &RefreshToken,
-) {
-    if let Err(error) = state
-        .refresh_tokens
-        .revoke_grant_tokens(&refresh.user_id, client_id)
-        .await
-    {
-        tracing::error!(error = %error, client_id = %client_id, "failed to revoke refresh grant after final issuance fence failure");
     }
 }
 

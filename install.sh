@@ -56,6 +56,30 @@ append_env_default() {
     fi
 }
 
+ensure_env_value() {
+    local key="$1" value="$2" temp
+    if ! env_has_key "$key"; then
+        printf '%s=%s\n' "$key" "$value" >> "$ENV_FILE"
+        return 0
+    fi
+    [[ -n "$(read_env_value "$key")" ]] && return 0
+
+    # Replace an existing empty assignment in place. Appending a duplicate
+    # key leaves read_env_value seeing the stale empty value on upgrades.
+    temp="$(mktemp "${ENV_FILE}.tmp.XXXXXX")"
+    awk -v key="$key" -v value="$value" '
+        BEGIN { prefix = key "="; replaced = 0 }
+        index($0, prefix) == 1 {
+            if (!replaced) { print prefix value; replaced = 1 }
+            next
+        }
+        { print }
+        END { if (!replaced) print prefix value }
+    ' "$ENV_FILE" > "$temp"
+    chmod 600 "$temp"
+    mv -f "$temp" "$ENV_FILE"
+}
+
 valid_port() {
     [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 ))
 }
@@ -142,7 +166,29 @@ services:
   redis:
     image: ${REDIS_IMAGE}
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    # Authorization-code consumption and Refresh Token tombstones/revocations are
+    # authoritative here. A successful write must survive a process or host crash;
+    # a truncated AOF must stop recovery instead of loading an older credential state.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - always
+      - --no-appendfsync-on-rewrite
+      - "no"
+      - --aof-load-truncated
+      - "no"
+      - --aof-use-rdb-preamble
+      - "yes"
+      - --save
+      - ""
+      - --dir
+      - /data
+      - --appenddirname
+      - appendonlydir
+      - --appendfilename
+      - appendonly.aof
     volumes:
       - chenxing-redis:/data
     healthcheck:
@@ -180,10 +226,10 @@ wait_for_postgres() {
 
 wait_for_application() {
     local attempt
-    printf '等待辰星认证中枢启动'
+    printf '等待辰星认证中枢就绪'
     for attempt in $(seq 1 60); do
         if compose exec -T app curl --fail --silent --max-time 5 \
-            http://127.0.0.1:3000/health/live >/dev/null 2>&1; then
+            http://127.0.0.1:3000/health/ready >/dev/null 2>&1; then
             printf ' 完成\n'
             return 0
         fi
@@ -192,6 +238,29 @@ wait_for_application() {
     done
     printf '\n' >&2
     return 1
+}
+
+report_application_diagnostics() {
+    local app_container_id health_status
+
+    printf '\nCompose 服务状态:\n' >&2
+    compose ps >&2 || true
+
+    printf '\n应用容器 health 状态:\n' >&2
+    app_container_id="$(compose ps -q app 2>/dev/null || true)"
+    if [[ -z "$app_container_id" ]]; then
+        printf '%s\n' 'unavailable（未找到 app 容器）' >&2
+    else
+        health_status="$(
+            docker inspect --format \
+                '{{if .State.Health}}{{.State.Health.Status}}{{else}}unavailable{{end}}' \
+                "$app_container_id" 2>/dev/null || true
+        )"
+        printf '%s\n' "${health_status:-unavailable}" >&2
+    fi
+
+    printf '\n应用日志:\n' >&2
+    compose logs app >&2 || true
 }
 
 IMAGE_OVERRIDE="${CHENXING_IMAGE:-}"
@@ -225,6 +294,10 @@ if [[ -f "$ENV_FILE" ]]; then
     append_env_default POSTGRES_IMAGE "$DEFAULT_POSTGRES_IMAGE"
     append_env_default REDIS_IMAGE "$DEFAULT_REDIS_IMAGE"
     append_env_default REDIS_NAMESPACE legacy
+    # Older installs predate the least-privileged runtime database role. Add
+    # only missing/empty values; never replace credentials already in use.
+    ensure_env_value POSTGRES_RUNTIME_USER chenxing_runtime
+    ensure_env_value POSTGRES_RUNTIME_PASSWORD "$(openssl rand -hex 32)"
     chmod 600 "$ENV_FILE"
 else
     port="${CHENXING_PORT:-}"
@@ -301,8 +374,7 @@ compose run --rm app migrate
 stage "启动辰星认证中枢"
 compose up -d app
 if ! wait_for_application; then
-    compose ps
-    compose logs app
+    report_application_diagnostics
     fail "应用未能在规定时间内就绪。"
 fi
 

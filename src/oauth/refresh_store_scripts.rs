@@ -79,7 +79,8 @@ local function same_payload(current_json, expected_json)
     local expected = cjson.decode(expected_json)
     local fields = {
         'value', 'client_id', 'user_id', 'scopes', 'created_at', 'expires_at',
-        'revoked_at', 'issued_at', 'family_id', 'client_secret_version', 'session_epoch'
+        'revoked_at', 'issued_at', 'family_id', 'client_secret_version', 'session_epoch',
+        'issuer_generation'
     }
     local function encoded(value)
         if value == nil then return 'null' end
@@ -175,7 +176,8 @@ local function same_payload(current_json, expected_json)
     local expected = cjson.decode(expected_json)
     local fields = {
         'value', 'client_id', 'user_id', 'scopes', 'created_at', 'expires_at',
-        'revoked_at', 'issued_at', 'family_id', 'client_secret_version', 'session_epoch'
+        'revoked_at', 'issued_at', 'family_id', 'client_secret_version', 'session_epoch',
+        'issuer_generation'
     }
     local function encoded(value)
         if value == nil then return 'null' end

@@ -302,7 +302,18 @@ fn validate_redirect_uri(
     // 注意兼容性影响：存量 redirect_uris 可能是非归一化形式（例如带 :443 或缺
     // trailing slash）。升级后这些 client 若按归一化形式发起授权请求，会因授权侧
     // 严格 == 比对失败而返回 RedirectUriNotAllowed，需人工或迁移脚本归一化存量数据。
-    Ok(url.to_string())
+    canonicalize_redirect_uri(&value).ok_or(ClientRegistrationError::InvalidRedirectUri)
+}
+
+/// Return the canonical textual form used for both client registration and
+/// authorization-request matching.
+///
+/// The caller is responsible for applying the registration security policy;
+/// this helper only performs URL parsing and serialization so that equivalent
+/// representations (for example a bare origin or an explicit default port)
+/// have one shared form.
+pub fn canonicalize_redirect_uri(value: &str) -> Option<String> {
+    Url::parse(value.trim()).ok().map(|url| url.to_string())
 }
 
 fn deduplicate(values: Vec<String>) -> Vec<String> {

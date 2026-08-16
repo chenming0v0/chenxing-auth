@@ -27,6 +27,7 @@ use crate::{
     settings::{IssuerRuntime, SecurityLimitsSetting, SettingsService, issuer::IssuerRecord},
     users::service::UserService,
     web_dist::{WebDistError, WebDistRoot},
+    workers::{WorkerContext, WorkerHealth},
 };
 
 #[derive(Clone)]
@@ -45,6 +46,8 @@ pub struct AppState {
     /// 不覆盖的时间来源：Redis Lua 里的 `TIME`（限流 / State / 授权请求存储需要
     /// 跨实例一致）、SQL 里的 `NOW()`（事务时间）、`key_lock` 的文件 mtime。
     pub clock: SharedClock,
+    /// Critical background worker lifecycle and progress state used by readiness probes.
+    pub worker_health: WorkerHealth,
     /// 启动期已校验的前端产物根：静态文件服务的唯一来源（Issue #303）。
     pub web_dist: WebDistRoot,
     pub database: Database,
@@ -95,8 +98,9 @@ pub enum StateError {
 
 /// 启动阶段一次性加载的密钥材料。
 ///
-/// `KeyManager` 与 `SecretManager` 都直接读写 `KEY_DIRECTORY` 下的文件，缺失时
-/// 还会生成材料。两者使用互不重叠的临时文件前缀，各自只清理自己的半成品，避免
+/// `KeyManager` 与 `SecretManager` 都直接读写 `KEY_DIRECTORY` 下的文件。签名密钥
+/// 按自身磁盘状态决定是否初始化；Provider/SMTP 主密钥还必须结合数据库密文状态，
+/// 只有无存量密文时才可生成。两者使用互不重叠的临时文件前缀，各自只清理自己的半成品，避免
 /// 一方正在写的 `.tmp` 被另一方当成崩溃残留删掉。打包成一个结构体是为了只做一次
 /// `spawn_blocking` 往返，而不是每个密钥各跨一次线程。
 struct StartupKeyMaterial {
@@ -111,9 +115,11 @@ impl StartupKeyMaterial {
         key_retention: Duration,
         key_skew_allowance: Duration,
         key_activation_delay: Duration,
+        persisted_secret_ciphertext_exists: bool,
     ) -> Result<Self, StateError> {
         // 保持与历史实现一致的失败顺序：先 provider secret，再签名密钥。
-        let secrets = SecretManager::load_or_generate(key_directory)?;
+        let secrets =
+            SecretManager::load_or_generate(key_directory, persisted_secret_ciphertext_exists)?;
         let keys = KeyManager::load_or_generate_with_lifecycle(
             key_directory,
             key_retention,
@@ -125,13 +131,14 @@ impl StartupKeyMaterial {
 }
 
 impl AppState {
-    /// 使用懒加载数据库池构建状态，保留请求期报告数据库故障的既有语义。
+    /// 使用懒加载数据库池构建状态。密钥恢复保护会在构建期间主动查询持久化密文，
+    /// 因而数据库不可达时启动失败，不能退化为请求期才发现故障。
     pub async fn new(config: Config) -> Result<Self, StateError> {
         let database = crate::db::connect(&config)?;
         Self::new_with_pool(config, database).await
     }
 
-    /// 生产启动路径：监听前解析持久化 Issuer，不改变 [`Self::new`] 的懒加载语义。
+    /// 生产启动路径：监听前解析持久化 Issuer，并执行同一套密钥恢复保护。
     pub async fn new_with_persisted_issuer(mut config: Config) -> Result<Self, StateError> {
         let database = crate::db::connect(&config)?;
         let raw = crate::settings::issuer::load_raw(&database).await?;
@@ -245,6 +252,19 @@ impl AppState {
         let key_retention = Duration::from_secs(config.key_rotation_grace_seconds);
         let key_skew_allowance = Duration::from_secs(config.key_rotation_skew_allowance_seconds);
         let key_activation_delay = Duration::from_secs(config.key_activation_delay_seconds);
+        // 文件缺失究竟表示“首次初始化”还是“主密钥丢失”，只能由 PostgreSQL 中的
+        // 密文事实判定。必须在进入阻塞线程、可能生成新钥匙之前完成这两项查询；
+        // 查询或持久化 JSON 解析失败同样 fail closed，避免把未知状态当成空库。
+        let provider_ciphertext_exists =
+            crate::oauth::providers::repository::has_client_secret_ciphertext(&database)
+                .await
+                .map_err(crate::db::DbError::from)?;
+        let smtp_ciphertext_exists =
+            crate::settings::repository::has_smtp_password_ciphertext(&database)
+                .await
+                .map_err(crate::db::DbError::from)?;
+        let persisted_secret_ciphertext_exists =
+            provider_ciphertext_exists || smtp_ciphertext_exists;
         let StartupKeyMaterial {
             keys,
             secrets: secret_manager,
@@ -254,6 +274,7 @@ impl AppState {
                 key_retention,
                 key_skew_allowance,
                 key_activation_delay,
+                persisted_secret_ciphertext_exists,
             )
         })
         .await??;
@@ -350,6 +371,7 @@ impl AppState {
             config,
             issuer,
             clock,
+            worker_health: WorkerHealth::new(),
             web_dist,
             database,
             redis,
@@ -376,36 +398,49 @@ impl AppState {
 
     /// 周期性回读 Issuer generation。通知只负责降低延迟，轮询才是 PgBouncer 与
     /// 断线场景下的可靠收敛上界；读取失败保留最后一个合法快照。
-    pub async fn run_issuer_sync_worker(self) {
+    pub async fn run_issuer_sync_worker(self, mut worker: WorkerContext) {
         let mut interval = tokio::time::interval(crate::settings::ISSUER_SYNC_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = worker.wait_for_shutdown() => break,
+                _ = interval.tick() => {}
+            }
+            worker.reporter().heartbeat();
             let expected = self.issuer.state();
             match crate::settings::issuer::load_raw(&self.database).await {
                 Ok(record) => match self
                     .issuer
                     .apply_raw_if_unchanged(&expected, record.as_ref())
                 {
-                    Ok(Some(snapshot)) => tracing::info!(
-                        event = "issuer.runtime_applied",
-                        generation = snapshot.generation(),
-                        issuer = %snapshot.issuer(),
-                        "applied persisted issuer to the running instance"
-                    ),
-                    Ok(None) => {}
-                    Err(error_value) => tracing::error!(
-                        event = "issuer.runtime_invalid",
-                        generation = record.as_ref().map(|record| record.generation),
-                        error = %error_value,
-                        "persisted issuer is invalid; protocol routes are fail-closed"
-                    ),
+                    Ok(Some(snapshot)) => {
+                        tracing::info!(
+                            event = "issuer.runtime_applied",
+                            generation = snapshot.generation(),
+                            issuer = %snapshot.issuer(),
+                            "applied persisted issuer to the running instance"
+                        );
+                        worker.reporter().success();
+                    }
+                    Ok(None) => worker.reporter().success(),
+                    Err(error_value) => {
+                        tracing::error!(
+                            event = "issuer.runtime_invalid",
+                            generation = record.as_ref().map(|record| record.generation),
+                            error = %error_value,
+                            "persisted issuer is invalid; protocol routes are fail-closed"
+                        );
+                        worker.reporter().retryable_failure();
+                    }
                 },
-                Err(error_value) => tracing::warn!(
-                    event = "issuer.runtime_reload_failed",
-                    error = %error_value,
-                    "failed to reload issuer; retaining the last runtime state"
-                ),
+                Err(error_value) => {
+                    tracing::warn!(
+                        event = "issuer.runtime_reload_failed",
+                        error = %error_value,
+                        "failed to reload issuer; retaining the last runtime state"
+                    );
+                    worker.reporter().retryable_failure();
+                }
             }
         }
     }

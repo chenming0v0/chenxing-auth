@@ -1,0 +1,366 @@
+use std::borrow::Cow;
+use std::env;
+
+use chenxing_auth::sqlx::migrate::{Migration, MigrationType, Migrator};
+use chenxing_auth::sqlx::postgres::PgPoolOptions;
+use chenxing_auth::sqlx::{Connection, PgConnection};
+use uuid::Uuid;
+
+fn normalize_migration_sql(sql: &'static str) -> Cow<'static, str> {
+    if sql.contains('\r') {
+        Cow::Owned(sql.replace("\r\n", "\n"))
+    } else {
+        Cow::Borrowed(sql)
+    }
+}
+
+fn published_migrator() -> Migrator {
+    let migrations: Vec<_> = [
+        (
+            1,
+            "initial schema",
+            include_str!("../migrations/0001_initial.sql"),
+        ),
+        (2, "plans", include_str!("../migrations/0002_plans.sql")),
+        (
+            3,
+            "session outbox",
+            include_str!("../migrations/0003_session_outbox.sql"),
+        ),
+        (
+            4,
+            "relax deleted session outbox target",
+            include_str!("../migrations/0004_relax_deleted_session_outbox_target.sql"),
+        ),
+        (
+            5,
+            "session outbox event user",
+            include_str!("../migrations/0005_session_outbox_event_user.sql"),
+        ),
+        (
+            6,
+            "session epochs",
+            include_str!("../migrations/0006_session_epochs.sql"),
+        ),
+        (
+            7,
+            "plan default invariant",
+            include_str!("../migrations/0007_plan_default_invariant.sql"),
+        ),
+        (
+            8,
+            "admin query indexes",
+            include_str!("../migrations/0008_admin_query_indexes.sql"),
+        ),
+        (
+            9,
+            "system settings",
+            include_str!("../migrations/0009_system_settings.sql"),
+        ),
+        (
+            10,
+            "consent revoked at",
+            include_str!("../migrations/0010_consent_revoked_at.sql"),
+        ),
+        (
+            11,
+            "oauth provider pkce",
+            include_str!("../migrations/0011_oauth_provider_pkce.sql"),
+        ),
+        (
+            12,
+            "restore basic plan",
+            include_str!("../migrations/0012_restore_basic_plan.sql"),
+        ),
+        (
+            13,
+            "audit append only retention",
+            include_str!("../migrations/0013_audit_append_only_retention.sql"),
+        ),
+        (
+            14,
+            "session idle policy",
+            include_str!("../migrations/0014_session_idle_policy.sql"),
+        ),
+        (
+            15,
+            "admin search indexes",
+            include_str!("../migrations/0015_admin_search_indexes.sql"),
+        ),
+        (
+            16,
+            "client secret rotation version",
+            include_str!("../migrations/0016_client_secret_rotation_version.sql"),
+        ),
+        (
+            17,
+            "relax plan default policy",
+            include_str!("../migrations/0017_relax_plan_default_policy.sql"),
+        ),
+        (
+            18,
+            "seed security limits",
+            include_str!("../migrations/0018_seed_security_limits.sql"),
+        ),
+        (
+            19,
+            "audit runtime role",
+            include_str!("../migrations/0019_audit_runtime_role.sql"),
+        ),
+        (
+            20,
+            "user avatar",
+            include_str!("../migrations/0020_user_avatar.sql"),
+        ),
+        (
+            21,
+            "oauth provider require email verified claim",
+            include_str!("../migrations/0021_oauth_provider_require_email_verified_claim.sql"),
+        ),
+        (
+            22,
+            "session outbox retention",
+            include_str!("../migrations/0022_session_outbox_retention.sql"),
+        ),
+        (
+            23,
+            "consent state version",
+            include_str!("../migrations/0023_consent_state_version.sql"),
+        ),
+        (
+            24,
+            "runtime users sequence update",
+            include_str!("../migrations/0024_runtime_users_sequence_update.sql"),
+        ),
+        (
+            25,
+            "user canonical email",
+            include_str!("../migrations/0025_user_canonical_email.sql"),
+        ),
+        (
+            26,
+            "client secret refresh generation",
+            include_str!("../migrations/0026_client_secret_refresh_generation.sql"),
+        ),
+        (
+            27,
+            "repair canonical email constraint scope",
+            include_str!("../migrations/0027_repair_canonical_email_constraint_scope.sql"),
+        ),
+    ]
+    .into_iter()
+    .map(|(version, description, sql)| {
+        Migration::new(
+            version,
+            Cow::Borrowed(description),
+            MigrationType::Simple,
+            normalize_migration_sql(sql),
+            false,
+        )
+    })
+    .collect();
+
+    Migrator {
+        migrations: Cow::Owned(migrations),
+        ..Migrator::DEFAULT
+    }
+}
+
+#[tokio::test]
+async fn published_database_upgrades_in_place_without_losing_identity_or_audit_data() {
+    let database_url = env::var("MIGRATION_DATABASE_URL")
+        .or_else(|_| env::var("DATABASE_URL"))
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let schema = format!("ctest_migration_upgrade_{}", Uuid::new_v4().simple());
+
+    let mut bootstrap = PgConnection::connect(&database_url)
+        .await
+        .expect("connect migration owner");
+    chenxing_auth::sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&mut bootstrap)
+        .await
+        .expect("create isolated migration schema");
+
+    let schema_for_pool = schema.clone();
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .after_connect(move |connection, _meta| {
+            let schema = schema_for_pool.clone();
+            Box::pin(async move {
+                chenxing_auth::sqlx::query(&format!("SET search_path TO {schema}"))
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&database_url)
+        .await
+        .expect("connect isolated migration pool");
+
+    published_migrator()
+        .run(&pool)
+        .await
+        .expect("apply published migration snapshot");
+
+    let user_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO users
+             (username, email, canonical_email, password_hash, role, created_at, updated_at)
+         VALUES ('upgrade-user', 'upgrade@example.com', 'upgrade@example.com',
+                 'published-password-hash', 'owner', NOW(), NOW())
+         RETURNING id",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("seed published user");
+    let client_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO oauth_clients
+             (client_id, client_name, redirect_uris, scopes, owner_user_id, created_at)
+         VALUES ('upgrade-client', 'Upgrade Client', '[\"https://client.example/callback\"]',
+                 '[\"openid\"]', $1, NOW())
+         RETURNING id",
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    .expect("seed published client");
+    let audit_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO audit_events
+             (actor_type, actor_user_id, action, resource_type, resource_id, metadata, created_at)
+         VALUES ('user', $1, 'migration.preserve', 'oauth_client', $2, '{}', NOW())
+         RETURNING id",
+    )
+    .bind(user_id)
+    .bind(client_id.to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("seed published audit event");
+
+    // v1.1.1 shipped the same final schema as a new destructive version-1
+    // baseline. Recreate that exact published ledger fork without changing the
+    // schema or seeded production data.
+    chenxing_auth::sqlx::query("DELETE FROM _sqlx_migrations WHERE version > 1")
+        .execute(&pool)
+        .await
+        .expect("remove historical ledger tail");
+    chenxing_auth::sqlx::query(
+        "UPDATE _sqlx_migrations \
+         SET description = 'current schema baseline', \
+             checksum = decode($1, 'hex') \
+         WHERE version = 1",
+    )
+    .bind("ca8607f4cd8b19d91531d9081d7951d70e266ef35c686c64bcff48e89728ea95")
+    .execute(&pool)
+    .await
+    .expect("install v1.1.1 flattened ledger");
+
+    chenxing_auth::db::migrate(&pool)
+        .await
+        .expect("repair v1.1.1 ledger and upgrade through current migrations");
+
+    let user: (String, String) =
+        chenxing_auth::sqlx::query_as("SELECT username, canonical_email FROM users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load upgraded user");
+    assert_eq!(
+        user,
+        ("upgrade-user".to_owned(), "upgrade@example.com".to_owned())
+    );
+
+    let client: (String, i64) = chenxing_auth::sqlx::query_as(
+        "SELECT client_id, owner_user_id FROM oauth_clients WHERE id = $1",
+    )
+    .bind(client_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load upgraded client");
+    assert_eq!(client, ("upgrade-client".to_owned(), user_id));
+
+    let audit: (String, String) =
+        chenxing_auth::sqlx::query_as("SELECT action, resource_id FROM audit_events WHERE id = $1")
+            .bind(audit_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load upgraded audit event");
+    assert_eq!(
+        audit,
+        ("migration.preserve".to_owned(), client_id.to_string())
+    );
+
+    let applied: Vec<i64> = chenxing_auth::sqlx::query_scalar(
+        "SELECT version FROM _sqlx_migrations WHERE success ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read upgraded migration history");
+    assert_eq!(applied, (1_i64..=29).collect::<Vec<_>>());
+
+    // A database initialized by v1.1.2 has the same schema but records the
+    // flattened baseline plus the two then-current migrations as versions 1-3.
+    // The compatibility path must recognize and repair that exact ledger too.
+    chenxing_auth::sqlx::query("DELETE FROM _sqlx_migrations")
+        .execute(&pool)
+        .await
+        .expect("clear canonical ledger before v1.1.2 simulation");
+    for (version, description, checksum) in [
+        (
+            1_i64,
+            "current schema baseline",
+            "ca8607f4cd8b19d91531d9081d7951d70e266ef35c686c64bcff48e89728ea95",
+        ),
+        (
+            2_i64,
+            "controlled runtime issuer",
+            "70b7c2bd57303895720d0e13fbc56b16d43645f67363803fac73411fd8e4526f",
+        ),
+        (
+            3_i64,
+            "bounded plan quotas",
+            "56e9d9ea680ac129115cc21ac2ff5029f9f2746683bdb9cf42ad966afb3571c4",
+        ),
+    ] {
+        chenxing_auth::sqlx::query(
+            "INSERT INTO _sqlx_migrations \
+                 (version, description, success, checksum, execution_time) \
+             VALUES ($1, $2, TRUE, decode($3, 'hex'), 0)",
+        )
+        .bind(version)
+        .bind(description)
+        .bind(checksum)
+        .execute(&pool)
+        .await
+        .expect("install v1.1.2 flattened ledger row");
+    }
+
+    chenxing_auth::db::migrate(&pool)
+        .await
+        .expect("repair v1.1.2 flattened ledger");
+    let repaired: Vec<i64> = chenxing_auth::sqlx::query_scalar(
+        "SELECT version FROM _sqlx_migrations WHERE success ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read repaired v1.1.2 migration history");
+    assert_eq!(repaired, (1_i64..=29).collect::<Vec<_>>());
+
+    let preserved: (i64, i64, i64) = chenxing_auth::sqlx::query_as(
+        "SELECT \
+             (SELECT COUNT(*) FROM users WHERE id = $1), \
+             (SELECT COUNT(*) FROM oauth_clients WHERE id = $2), \
+             (SELECT COUNT(*) FROM audit_events WHERE id = $3)",
+    )
+    .bind(user_id)
+    .bind(client_id)
+    .bind(audit_id)
+    .fetch_one(&pool)
+    .await
+    .expect("verify data after v1.1.2 ledger repair");
+    assert_eq!(preserved, (1, 1, 1));
+
+    pool.close().await;
+    chenxing_auth::sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&mut bootstrap)
+        .await
+        .expect("drop isolated migration schema");
+}

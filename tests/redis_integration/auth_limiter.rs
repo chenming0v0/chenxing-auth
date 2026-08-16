@@ -1,13 +1,16 @@
 use std::sync::Arc;
 
-use ::redis::AsyncCommands;
-
-use super::RedisAuthFailureLimiter;
-use crate::auth_limiter::domain::{AUTH_FAILURE_WINDOW_SECONDS, AuthFailureLimits};
-use crate::auth_limiter::{
-    AuthFailureLimiter, AuthLimiterFailurePolicy, FailureDimension, metrics,
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use chenxing_auth::{
+    auth_limiter::{
+        AuthFailureLimiter, AuthFailureLimits, AuthLimiterFailurePolicy, FailureDimension,
+        RedisAuthFailureLimiter, domain::AUTH_FAILURE_WINDOW_SECONDS, metrics,
+    },
+    oauth::providers::secrets::SecretManager,
+    settings::{SecurityLimitsSetting, SettingsService},
 };
-use crate::settings::{SecurityLimitsSetting, SettingsService};
+use redis::AsyncCommands;
+use sha2::{Digest, Sha256};
 
 fn redis_url() -> String {
     std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned())
@@ -19,6 +22,25 @@ fn limiter() -> RedisAuthFailureLimiter {
 
 fn unique_value(prefix: &str) -> String {
     format!("{prefix}-{}", uuid::Uuid::new_v4().simple())
+}
+
+fn failure_key(dimension: FailureDimension, value: &str) -> String {
+    let value_hash = URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()));
+    format!("chenxing:auth:failure:{}:{value_hash}", dimension.as_str())
+}
+
+fn unreachable_settings(default_security_limits: SecurityLimitsSetting) -> SettingsService {
+    let pool = chenxing_auth::sqlx::PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_millis(100))
+        .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+        .expect("lazy pool");
+    SettingsService::with_security_limits(
+        pool,
+        SecretManager::from_key([0_u8; 32]),
+        "localhost",
+        "http://localhost",
+        default_security_limits,
+    )
 }
 
 #[tokio::test]
@@ -164,13 +186,13 @@ async fn batch_failure_uses_account_ticket_and_ip_dimensions_with_window_ttl() {
     assert!(!record.reached(FailureDimension::Account));
     assert!(!record.reached(FailureDimension::SourceIp));
 
-    let mut connection = limiter
-        .client
+    let mut connection = redis::Client::open(redis_url())
+        .expect("Redis URL")
         .get_multiplexed_async_connection()
         .await
         .expect("Redis connection");
     // 滑动窗口下 key 不带窗口后缀，可以直接寻址，不需要再 KEYS 扫描。
-    let key = limiter.failure_key(FailureDimension::Ticket, &ticket);
+    let key = failure_key(FailureDimension::Ticket, &ticket);
     let key_type: String = connection
         .key_type(&key)
         .await
@@ -405,7 +427,7 @@ async fn redis_failure_policy_is_explicit_and_observable() {
 /// 两次失败之后必须真的锁住——证明降级路径不是「不限流」，而是「按已知阈值限流」。
 #[tokio::test]
 async fn fail_open_still_enforces_limits_when_settings_are_unavailable() {
-    let settings = SettingsService::unreachable_for_tests(SecurityLimitsSetting {
+    let settings = unreachable_settings(SecurityLimitsSetting {
         account_failure_limit: 2,
         ..SecurityLimitsSetting::default()
     });
@@ -448,7 +470,7 @@ async fn fail_open_still_enforces_limits_when_settings_are_unavailable() {
 /// 这是与上一个测试成对的另一半：只验证 fail-open 会掩盖策略根本没生效的情况。
 #[tokio::test]
 async fn fail_closed_rejects_when_settings_are_unavailable() {
-    let settings = SettingsService::unreachable_for_tests(SecurityLimitsSetting::default());
+    let settings = unreachable_settings(SecurityLimitsSetting::default());
     let limiter = RedisAuthFailureLimiter::with_settings(
         ::redis::Client::open(redis_url()).expect("Redis URL"),
         AuthLimiterFailurePolicy::FailClosed,

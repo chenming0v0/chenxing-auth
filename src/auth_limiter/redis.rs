@@ -349,9 +349,5 @@ fn reached_dimensions(
 }
 
 #[cfg(test)]
-#[path = "redis_tests.rs"]
-mod tests;
-
-#[cfg(test)]
 #[path = "redis_keyspace_tests.rs"]
 mod keyspace_tests;

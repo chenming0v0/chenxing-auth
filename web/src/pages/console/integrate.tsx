@@ -1,10 +1,10 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { apiFetch, type ClientInput, type OwnedOAuthClient, type RegisteredOwnedOAuthClient } from '../../api'
 import { Drawer } from '../../components/drawer'
 import { ConsoleLayout } from '../../components/shells'
 import { Button, CopyValue, EmptyState, Field, HudPanel, Icon, Notice, TextAreaField } from '../../components/ui'
 import { formatQuota, splitValues } from './developer-shared'
-import { entitlementState, SelfServiceClosedBlock, useEntitlements } from './shared'
+import { entitlementState, listAllOwnedOAuthClients, SelfServiceClosedBlock, useEntitlements } from './shared'
 
 const REDIRECT_URI_RULE_MESSAGE = '仅允许 HTTPS；本地 HTTP 回调必须使用 127.0.0.1 或 [::1]，不接受 localhost、通配符与危险协议。'
 
@@ -60,6 +60,8 @@ export function IntegratePage() {
   const createIdempotencyRef = useRef<{ fingerprint: string; key: string } | null>(null)
   const [statusChangingClientIds, setStatusChangingClientIds] = useState<Set<string>>(() => new Set())
   const statusChangingClientIdsRef = useRef(new Set<string>())
+  const loadRequestIdRef = useRef(0)
+  const mountedRef = useRef(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editing, setEditing] = useState<OwnedOAuthClient | null>(null)
   const [name, setName] = useState('')
@@ -71,14 +73,32 @@ export function IntegratePage() {
   const selfServiceClosed = plans.kind === 'closed'
   const gateNoteId = useId()
 
-  const load = () => {
+  const load = useCallback(() => {
+    if (!mountedRef.current) return
+    const requestId = ++loadRequestIdRef.current
     setLoading(true)
-    void apiFetch<{ items: OwnedOAuthClient[] }>('/api/v1/auth/oauth-clients')
-      .then((response) => setClients(response.items))
-      .catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。'))
-      .finally(() => setLoading(false))
-  }
-  useEffect(() => { load() }, [])
+    setMessage('')
+    void listAllOwnedOAuthClients()
+      .then((response) => {
+        if (!mountedRef.current || requestId !== loadRequestIdRef.current) return
+        setClients(response)
+      })
+      .catch((reason: unknown) => {
+        if (!mountedRef.current || requestId !== loadRequestIdRef.current) return
+        setMessage(reason instanceof Error ? reason.message : '应用列表加载失败。')
+      })
+      .finally(() => {
+        if (mountedRef.current && requestId === loadRequestIdRef.current) setLoading(false)
+      })
+  }, [])
+  useEffect(() => {
+    mountedRef.current = true
+    load()
+    return () => {
+      mountedRef.current = false
+      loadRequestIdRef.current += 1
+    }
+  }, [load])
 
   function closeDrawer() {
     setMessage('')

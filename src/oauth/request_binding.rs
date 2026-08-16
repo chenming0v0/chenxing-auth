@@ -147,7 +147,3 @@ fn holder_matches(holder_hash: Option<&str>, pending: &PendingAuthorization) -> 
         _ => false,
     }
 }
-
-#[cfg(test)]
-#[path = "request_binding_tests.rs"]
-mod tests;

@@ -9,6 +9,7 @@ use super::{
     smtp_sender::parse_smtp_sender,
 };
 use crate::{
+    audit::{AuditError, AuditEvent, AuditService},
     config::AuthEncryptionKey,
     oauth::providers::secrets::{SecretError, SecretManager},
     users::email::EmailAddress,
@@ -43,6 +44,8 @@ pub enum SettingsServiceError {
     Secret(#[from] SecretError),
     #[error("database operation failed: {0}")]
     Database(#[from] crate::sqlx::Error),
+    #[error("setting audit operation failed: {0}")]
+    Audit(#[from] AuditError),
 }
 
 impl SettingsService {
@@ -143,28 +146,58 @@ impl SettingsService {
         value: Option<String>,
     ) -> Result<Option<String>, SettingsServiceError> {
         let value = normalize_email(value)?;
+        let mut transaction = self.pool.begin().await?;
+        self.persist_registration_email_from(&mut transaction, &value)
+            .await?;
+        transaction.commit().await?;
+        Ok(value)
+    }
+
+    pub async fn set_registration_email_from_audited<F>(
+        &self,
+        value: Option<String>,
+        audit: &AuditService,
+        audit_event: F,
+    ) -> Result<Option<String>, SettingsServiceError>
+    where
+        F: FnOnce(&Option<String>) -> AuditEvent,
+    {
+        let value = normalize_email(value)?;
+        let mut transaction = self.pool.begin().await?;
+        self.persist_registration_email_from(&mut transaction, &value)
+            .await?;
+        audit
+            .record_in_transaction(&mut transaction, audit_event(&value))
+            .await?;
+        transaction.commit().await?;
+        Ok(value)
+    }
+
+    async fn persist_registration_email_from(
+        &self,
+        transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+        value: &Option<String>,
+    ) -> Result<(), SettingsServiceError> {
         // 独立值与 SMTP from 镜像必须一起落库：第二次写失败时若第一个键已持久化
         // 会形成「独立值已更新、SMTP 残留旧地址」的半同步状态（#322），
         // 用单事务保证要么都生效、要么都回滚。
-        let mut transaction = self.pool.begin().await?;
-        repository::set_registration_email_from(&mut *transaction, value.as_deref()).await?;
+        let locked_smtp = repository::lock_registration_email_and_smtp(&mut **transaction).await?;
+        repository::set_registration_email_from(&mut **transaction, value.as_deref()).await?;
         match value.as_deref() {
             Some(email) => {
                 // 首次配置发件人时回填 SMTP from；SMTP from 已存在（由 SMTP 表单管理）则不动。
-                let mut smtp = repository::get_smtp(&mut *transaction)
-                    .await?
-                    .unwrap_or_else(|| StoredSmtpSetting {
-                        host: String::new(),
-                        port: 587,
-                        username: String::new(),
-                        from_address: String::new(),
-                        ssl_enabled: true,
-                        force_auth_login: false,
-                        password_ciphertext: None,
-                    });
+                let mut smtp = locked_smtp.unwrap_or_else(|| StoredSmtpSetting {
+                    host: String::new(),
+                    port: 587,
+                    username: String::new(),
+                    from_address: String::new(),
+                    ssl_enabled: true,
+                    force_auth_login: false,
+                    password_ciphertext: None,
+                });
                 if smtp.from_address.trim().is_empty() {
                     smtp.from_address = email.to_owned();
-                    repository::set_smtp(&mut *transaction, &smtp).await?;
+                    repository::set_smtp(&mut **transaction, &smtp).await?;
                 }
             }
             None => {
@@ -172,16 +205,15 @@ impl SettingsService {
                 // `set_smtp` 也会把非空 from 同步进独立值），而读取路径 SMTP from 优先。
                 // 只清独立值会让残留旧地址继续生效；非空 SMTP from 即当前生效发件人，
                 // 清除请求必须一并清掉它，包括修复已处于「独立值已空、SMTP 残留」状态的行。
-                if let Some(mut smtp) = repository::get_smtp(&mut *transaction).await?
+                if let Some(mut smtp) = locked_smtp
                     && !smtp.from_address.trim().is_empty()
                 {
                     smtp.from_address.clear();
-                    repository::set_smtp(&mut *transaction, &smtp).await?;
+                    repository::set_smtp(&mut **transaction, &smtp).await?;
                 }
             }
         }
-        transaction.commit().await?;
-        Ok(value)
+        Ok(())
     }
 
     /// 读取已校验的安全阈值，命中未过期缓存时不查询数据库。
@@ -265,6 +297,26 @@ impl SettingsService {
         Ok(value)
     }
 
+    pub async fn set_security_limits_audited<F>(
+        &self,
+        value: SecurityLimitsSetting,
+        audit: &AuditService,
+        audit_event: F,
+    ) -> Result<SecurityLimitsSetting, SettingsServiceError>
+    where
+        F: FnOnce(&SecurityLimitsSetting) -> AuditEvent,
+    {
+        let value = value.validate()?;
+        let mut transaction = self.pool.begin().await?;
+        repository::set_security_limits(&mut *transaction, &value).await?;
+        audit
+            .record_in_transaction(&mut transaction, audit_event(&value))
+            .await?;
+        transaction.commit().await?;
+        self.security_limits_cache.store(value.clone());
+        Ok(value)
+    }
+
     pub async fn smtp(&self) -> Result<SmtpSetting, SettingsServiceError> {
         Ok(match repository::get_smtp(&self.pool).await? {
             Some(stored) => SmtpSetting {
@@ -293,13 +345,41 @@ impl SettingsService {
         &self,
         update: SmtpSettingUpdate,
     ) -> Result<(SmtpSetting, SmtpPasswordAction), SettingsServiceError> {
+        let mut transaction = self.pool.begin().await?;
+        let result = self.persist_smtp(&mut transaction, update).await?;
+        transaction.commit().await?;
+        Ok(result)
+    }
+
+    pub async fn set_smtp_audited<F>(
+        &self,
+        update: SmtpSettingUpdate,
+        audit: &AuditService,
+        audit_event: F,
+    ) -> Result<(SmtpSetting, SmtpPasswordAction), SettingsServiceError>
+    where
+        F: FnOnce(&(SmtpSetting, SmtpPasswordAction)) -> AuditEvent,
+    {
+        let mut transaction = self.pool.begin().await?;
+        let result = self.persist_smtp(&mut transaction, update).await?;
+        audit
+            .record_in_transaction(&mut transaction, audit_event(&result))
+            .await?;
+        transaction.commit().await?;
+        Ok(result)
+    }
+
+    async fn persist_smtp(
+        &self,
+        transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+        update: SmtpSettingUpdate,
+    ) -> Result<(SmtpSetting, SmtpPasswordAction), SettingsServiceError> {
         let (mut setting, password) = update.validate()?;
         let password_action = password.action();
         // SMTP 与注册发件人镜像必须一起落库：第二次写失败时若第一个键已持久化
         // 会形成「SMTP 已更新、镜像残留旧地址」的半同步状态（#322）。
-        // 事务内读取 existing，保证 keep 看到的是同一快照，clear 也在同一事务里删密文。
-        let mut transaction = self.pool.begin().await?;
-        let existing = repository::get_smtp(&mut *transaction).await?;
+        // 事务开始后先按统一顺序锁两个键；keep/clear 基于锁内 SMTP 快照处理密文。
+        let existing = repository::lock_registration_email_and_smtp(&mut **transaction).await?;
         let password_ciphertext = password.next_ciphertext(
             existing
                 .as_ref()
@@ -322,7 +402,7 @@ impl SettingsService {
             force_auth_login: setting.force_auth_login,
             password_ciphertext,
         };
-        repository::set_smtp(&mut *transaction, &stored).await?;
+        repository::set_smtp(&mut **transaction, &stored).await?;
         // 镜像同步必须双向（#321）：非空 from 写入独立键；from 清空时删除该键。
         // `validate` 已保证非空 from 可解析，`None` 分支只可能来自显式清空。只写
         // 不删会让读取路径（`registration_email_from`，SMTP from 为空时回退到独立
@@ -330,11 +410,10 @@ impl SettingsService {
         // `set_registration_email_from` 清除时同步清 SMTP from 的方向对称。
         match extract_email(&setting.from_address) {
             Some(email) => {
-                repository::set_registration_email_from(&mut *transaction, Some(&email)).await?
+                repository::set_registration_email_from(&mut **transaction, Some(&email)).await?
             }
-            None => repository::set_registration_email_from(&mut *transaction, None).await?,
+            None => repository::set_registration_email_from(&mut **transaction, None).await?,
         }
-        transaction.commit().await?;
         Ok((setting, password_action))
     }
 }

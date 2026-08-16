@@ -10,7 +10,7 @@ use super::{
 };
 use crate::clock::SharedClock;
 use crate::sqlx::PgPool;
-use crate::users::domain::{OwnerTargetAccess, UserId};
+use crate::users::{ManagementActorCredential, domain::UserId};
 
 #[derive(Clone)]
 pub struct PlanService {
@@ -38,6 +38,10 @@ pub enum PlanServiceError {
     UserNotFound,
     #[error("managing an owner requires role management permission")]
     ManageRolesRequired,
+    #[error("the management actor session is no longer valid")]
+    ActorSessionInvalid,
+    #[error("the management actor no longer has the required permission")]
+    ActorPermissionRequired,
     #[error("database operation failed: {0}")]
     Database(#[from] crate::sqlx::Error),
 }
@@ -125,14 +129,14 @@ impl PlanService {
         user_id: UserId,
         plan_id: i64,
         expires_at: Option<OffsetDateTime>,
-        access: OwnerTargetAccess,
+        credential: ManagementActorCredential,
     ) -> Result<(), PlanServiceError> {
         if expires_at.is_some_and(|value| value <= self.clock.now()) {
             return Err(PlanServiceError::Validation(PlanError::ExpiryInPast));
         }
         // 套餐存在性与状态由仓储在目标用户锁定之后校验。事务外预查不但重复，
         // 还会让 Owner 权限错误退化成套餐资源预言机。
-        match repository::assign_to_user(&self.pool, user_id, plan_id, expires_at, access)
+        match repository::assign_to_user(&self.pool, user_id, plan_id, expires_at, credential)
             .await
             .map_err(map_repository_error)?
         {
@@ -140,6 +144,12 @@ impl PlanService {
             PlanAssignmentResult::UserNotFound => return Err(PlanServiceError::UserNotFound),
             PlanAssignmentResult::ManageRolesRequired => {
                 return Err(PlanServiceError::ManageRolesRequired);
+            }
+            PlanAssignmentResult::ActorSessionInvalid => {
+                return Err(PlanServiceError::ActorSessionInvalid);
+            }
+            PlanAssignmentResult::ActorPermissionRequired => {
+                return Err(PlanServiceError::ActorPermissionRequired);
             }
             PlanAssignmentResult::Assigned => {}
         }

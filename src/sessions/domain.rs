@@ -53,6 +53,13 @@ pub struct Session {
     pub last_seen_at: OffsetDateTime,
     pub csrf_token: String,
     pub revoked_at: Option<OffsetDateTime>,
+    /// `users.session_epoch` bound to this persisted credential.
+    ///
+    /// New in-memory sessions have no generation until the metadata transaction commits. Loaded
+    /// PostgreSQL sessions always carry the generation from their `user_sessions` row, so a
+    /// management write can revalidate the exact Cookie credential instead of re-reading and
+    /// accidentally adopting a newer user generation (Issue #493).
+    credential_generation: Option<i64>,
     idle_timeout: Option<Duration>,
 }
 
@@ -67,6 +74,7 @@ impl fmt::Debug for Session {
             .field("last_seen_at", &self.last_seen_at)
             .field("csrf_token", &"<redacted>")
             .field("revoked_at", &self.revoked_at)
+            .field("credential_generation", &self.credential_generation)
             .field("idle_timeout", &self.idle_timeout)
             .finish()
     }
@@ -183,6 +191,7 @@ impl SessionPayload {
             last_seen_at: self.last_seen_at.unwrap_or(self.created_at),
             csrf_token: self.csrf_token,
             revoked_at: self.revoked_at,
+            credential_generation: None,
             idle_timeout: None,
         }
     }
@@ -303,6 +312,7 @@ impl Session {
             last_seen_at: now,
             csrf_token: URL_SAFE_NO_PAD.encode(csrf_bytes),
             revoked_at: None,
+            credential_generation: None,
             idle_timeout,
         })
     }
@@ -315,6 +325,15 @@ impl Session {
 
     pub(crate) fn set_idle_timeout(&mut self, idle_timeout: Duration) {
         self.idle_timeout = Some(idle_timeout);
+    }
+
+    /// Credential generation recorded by the authoritative session metadata row.
+    pub fn credential_generation(&self) -> Option<i64> {
+        self.credential_generation
+    }
+
+    pub(crate) fn set_credential_generation(&mut self, generation: i64) {
+        self.credential_generation = Some(generation);
     }
 
     pub(crate) fn idle_deadline(&self) -> Option<OffsetDateTime> {

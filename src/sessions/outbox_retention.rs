@@ -12,7 +12,10 @@
 
 use std::time::Duration;
 
-use crate::sessions::store::{SessionStore, SessionStoreError};
+use crate::{
+    sessions::store::{SessionStore, SessionStoreError},
+    workers::WorkerContext,
+};
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -246,12 +249,18 @@ impl SessionStore {
     /// 下一轮循环立刻再清一批而不是等满间隔——积压只有这样才收敛。
     ///
     /// 清理失败按正常间隔重试。它不影响投递，不值得让投递循环跟着退避。
-    pub async fn run_outbox_worker(self) {
+    pub async fn run_outbox_worker(self, mut worker: WorkerContext) {
         let policy = self.outbox_policy;
         let mut next_cleanup = tokio::time::Instant::now();
         loop {
-            if let Err(error_value) = self.process_pending_outbox().await {
-                tracing::error!(error = %error_value, "session outbox worker failed");
+            worker.reporter().heartbeat();
+            let mut pass_failed = false;
+            match self.process_pending_outbox().await {
+                Ok(_) => {}
+                Err(error_value) => {
+                    pass_failed = true;
+                    tracing::error!(error = %error_value, "session outbox worker failed");
+                }
             }
             if tokio::time::Instant::now() >= next_cleanup {
                 // 下一次到期时间以清理"结束"时刻为基准，而不是开始时刻：清理本身
@@ -272,12 +281,20 @@ impl SessionStore {
                         }
                     }
                     Err(error_value) => {
+                        pass_failed = true;
                         tracing::error!(error = %error_value, "session outbox retention failed");
                         tokio::time::Instant::now() + policy.cleanup_interval
                     }
                 };
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            if pass_failed {
+                worker.reporter().retryable_failure();
+            } else {
+                worker.reporter().success();
+            }
+            if worker.sleep_or_shutdown(Duration::from_secs(1)).await {
+                break;
+            }
         }
     }
 }

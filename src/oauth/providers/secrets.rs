@@ -27,6 +27,10 @@ pub enum SecretError {
     Io(#[from] std::io::Error),
     #[error("secret key has invalid length")]
     InvalidKeyLength,
+    #[error(
+        "provider secret key is missing while encrypted provider or SMTP credentials exist; restore oauth-provider-secret.key before startup"
+    )]
+    MissingKeyForPersistedSecrets,
     #[error("secret encryption failed")]
     Encryption,
     #[error("secret encoding failed")]
@@ -34,7 +38,15 @@ pub enum SecretError {
 }
 
 impl SecretManager {
-    pub fn load_or_generate(directory: impl AsRef<Path>) -> Result<Self, SecretError> {
+    /// Load the provider/SMTP encryption key, generating it only for a true bootstrap.
+    ///
+    /// `persisted_ciphertext_exists` must be derived from PostgreSQL before this blocking
+    /// file operation starts. Regenerating after ciphertext has been persisted would make
+    /// every existing credential permanently unreadable, so a missing file then fails closed.
+    pub fn load_or_generate(
+        directory: impl AsRef<Path>,
+        persisted_ciphertext_exists: bool,
+    ) -> Result<Self, SecretError> {
         let directory = directory.as_ref().to_path_buf();
         ensure_secure_directory(&directory)?;
         // 与 KeyManager 共享目录，但不共用临时文件前缀。持锁后再清理本命名空间的
@@ -46,6 +58,9 @@ impl SecretManager {
         let key = match read_secure_file(&path) {
             Ok(key) => key,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if persisted_ciphertext_exists {
+                    return Err(SecretError::MissingKeyForPersistedSecrets);
+                }
                 let mut generated = vec![0_u8; KEY_LENGTH];
                 rand::rngs::OsRng.fill_bytes(&mut generated);
                 match atomic_write_in(TemporaryFileKind::ProviderSecret, &path, &generated, false) {
@@ -112,7 +127,7 @@ impl SecretManager {
 
 #[cfg(test)]
 mod tests {
-    use super::SecretManager;
+    use super::{SecretError, SecretManager};
     use std::fs;
 
     #[test]
@@ -135,13 +150,13 @@ mod tests {
             "chenxing-secret-ns-{}",
             uuid::Uuid::new_v4().simple()
         ));
-        let _manager = SecretManager::load_or_generate(&directory).expect("provider secret");
+        let _manager = SecretManager::load_or_generate(&directory, false).expect("provider secret");
         let key_temporary = directory.join(".chenxing-key-in-flight.tmp");
         let secret_temporary = directory.join(".chenxing-secret-crashed.tmp");
         fs::write(&key_temporary, b"signing-key temp").expect("key temp");
         fs::write(&secret_temporary, b"provider-secret temp").expect("secret temp");
 
-        let _reloaded = SecretManager::load_or_generate(&directory).expect("reload");
+        let _reloaded = SecretManager::load_or_generate(&directory, false).expect("reload");
 
         assert!(
             key_temporary.exists(),
@@ -164,7 +179,7 @@ mod tests {
         let workers: Vec<_> = (0..8)
             .map(|_| {
                 let directory = directory.clone();
-                std::thread::spawn(move || SecretManager::load_or_generate(directory))
+                std::thread::spawn(move || SecretManager::load_or_generate(directory, false))
             })
             .collect();
         let managers: Vec<_> = workers
@@ -175,6 +190,56 @@ mod tests {
         for manager in &managers {
             assert_eq!(manager.decrypt(&probe).expect("decrypt"), "same-key");
         }
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn first_initialization_without_ciphertext_generates_provider_secret() {
+        let directory = std::env::temp_dir().join(format!(
+            "chenxing-secret-bootstrap-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+
+        let manager =
+            SecretManager::load_or_generate(&directory, false).expect("bootstrap provider secret");
+
+        assert!(manager.path().is_some_and(|path| path.is_file()));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn missing_provider_secret_requires_restoring_the_original_key() {
+        let directory = std::env::temp_dir().join(format!(
+            "chenxing-secret-recovery-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let manager =
+            SecretManager::load_or_generate(&directory, false).expect("initial provider secret");
+        let ciphertext = manager.encrypt("recoverable-secret").expect("encrypt");
+        let key_path = manager.path().expect("persisted key path").to_path_buf();
+        let original_key = fs::read(&key_path).expect("read original key for recovery fixture");
+        drop(manager);
+        fs::remove_file(&key_path).expect("simulate missing provider secret key");
+
+        let error = SecretManager::load_or_generate(&directory, true)
+            .err()
+            .expect("persisted ciphertext must prevent key regeneration");
+        assert!(matches!(error, SecretError::MissingKeyForPersistedSecrets));
+        assert!(
+            !key_path.exists(),
+            "failure must not write a replacement key"
+        );
+
+        fs::write(&key_path, original_key).expect("restore original provider secret key");
+        let recovered =
+            SecretManager::load_or_generate(&directory, true).expect("load restored key");
+        assert_eq!(
+            recovered
+                .decrypt(&ciphertext)
+                .expect("decrypt after recovery"),
+            "recoverable-secret"
+        );
 
         let _ = fs::remove_dir_all(directory);
     }

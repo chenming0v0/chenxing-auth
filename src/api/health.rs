@@ -43,10 +43,21 @@ pub(super) async fn health(State(state): State<AppState>) -> Response {
     health_ready(State(state)).await
 }
 
-/// 就绪探针：检查数据库和 Redis。
+/// 就绪探针：检查关键后台 worker、数据库、Redis 和 Issuer 收敛。
 ///
 /// 响应体只暴露聚合状态，不包含连接串、主机名或错误细节，避免泄露内部拓扑。
 pub(super) async fn health_ready(State(state): State<AppState>) -> Response {
+    let initial_workers = state.worker_health.readiness();
+    if !initial_workers.ready {
+        tracing::warn!(
+            event = "readiness_check_failed",
+            workers = false,
+            unready_workers = ?initial_workers.unready_names(),
+            "critical background workers are not ready"
+        );
+        return health_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+    }
+
     let (database_result, redis_result) = tokio::join!(
         tokio::time::timeout(
             HEALTH_CHECK_TIMEOUT,
@@ -61,7 +72,18 @@ pub(super) async fn health_ready(State(state): State<AppState>) -> Response {
     } else {
         false
     };
-    if database_ready && redis_ready && issuer_ready {
+    // A worker can fail while the dependency probes are in flight. Read the aggregate again
+    // before returning 200 so panic/return cannot race a stale readiness success.
+    let workers = state.worker_health.readiness();
+    let signing_ready = state.keys.signing_ready();
+    if readiness_status(
+        database_ready,
+        redis_ready,
+        issuer_ready,
+        workers.ready,
+        signing_ready,
+    ) == StatusCode::OK
+    {
         return health_response(StatusCode::OK, "ok");
     }
 
@@ -70,9 +92,26 @@ pub(super) async fn health_ready(State(state): State<AppState>) -> Response {
         database = database_ready,
         redis = redis_ready,
         issuer = issuer_ready,
+        workers = workers.ready,
+        signing = signing_ready,
+        unready_workers = ?workers.unready_names(),
         "application dependencies are not ready"
     );
     health_response(StatusCode::SERVICE_UNAVAILABLE, "unavailable")
+}
+
+fn readiness_status(
+    database_ready: bool,
+    redis_ready: bool,
+    issuer_ready: bool,
+    workers_ready: bool,
+    signing_ready: bool,
+) -> StatusCode {
+    if database_ready && redis_ready && issuer_ready && workers_ready && signing_ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
 }
 
 /// 匿名引导状态。只回答 Owner 是否已初始化，不暴露 Issuer 收敛内部状态。
@@ -132,5 +171,17 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn critical_worker_health_participates_in_readiness() {
+        assert_eq!(
+            readiness_status(true, true, true, true, true),
+            StatusCode::OK
+        );
+        assert_eq!(
+            readiness_status(true, true, true, false, true),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 }

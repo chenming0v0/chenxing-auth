@@ -50,6 +50,10 @@ pub(crate) async fn issue_token_response(
     state: &AppState,
     params: TokenIssueParams<'_>,
 ) -> Result<TokenResponse, OAuthError> {
+    if !state.keys.signing_ready() {
+        tracing::error!("OAuth token signing is disabled until key synchronization recovers");
+        return Err(OAuthError::temporarily_unavailable());
+    }
     match active_user_id(state, params.user_id).await {
         Ok(Some(_)) => {}
         Ok(None) => return Err(OAuthError::invalid_authorization_grant()),
@@ -136,16 +140,38 @@ async fn issue_id_token(
     })
 }
 
-/// 校验授权码绑定的会话仍然有效，并返回该会话的认证时刻。
+/// Session identity captured by the pre-CAS authorization-code check.
 ///
-/// 返回的时间戳是会话建立时间，用作 ID Token 的 `auth_time`，而不是令牌签发时刻。
-/// `session_token_hash` 为 `None` 时走无浏览器会话的兼容路径，不声明 `auth_time`。
-pub(super) async fn authorization_code_session_auth_time(
+/// The final issuance guard reuses all three durable identifiers so it cannot accidentally
+/// linearize against a different Session row than the one that authorized this code.
+pub(super) struct AuthorizationCodeSessionBinding {
+    pub(super) session_id: i64,
+    pub(super) user_id: UserId,
+    pub(super) token_hash: [u8; 32],
+    pub(super) auth_time: i64,
+}
+
+/// 校验授权码绑定的会话仍然有效，并保留最终签发复核所需的稳定标识。
+///
+/// 缺少 `session_token_hash` 的升级前授权码无法证明签发 Session，必须 fail-closed
+/// 拒绝（Issue #508），但拒绝发生在授权码 CAS 之前，因此不会烧掉凭据。
+pub(super) async fn authorization_code_session_binding(
     state: &AppState,
     code: &AuthorizationCode,
-) -> Result<Option<i64>, OAuthError> {
+) -> Result<AuthorizationCodeSessionBinding, OAuthError> {
+    if code.legacy_unbound_session_binding {
+        tracing::info!(
+            client_id = %code.client_id,
+            "OAuth authorization code rejected: legacy payload has no session binding"
+        );
+        return Err(OAuthError::invalid_grant());
+    }
     let Some(session_hash) = code.session_token_hash.as_deref() else {
-        return Ok(None);
+        tracing::info!(
+            client_id = %code.client_id,
+            "OAuth authorization code rejected: Session binding is required"
+        );
+        return Err(OAuthError::invalid_grant());
     };
     let Some(session_hash) = decode_session_token_hash(session_hash) else {
         tracing::info!(
@@ -154,9 +180,23 @@ pub(super) async fn authorization_code_session_auth_time(
         );
         return Err(OAuthError::invalid_grant());
     };
+    let Ok(user_id) = code.user_id.parse::<UserId>() else {
+        tracing::info!(
+            client_id = %code.client_id,
+            "OAuth authorization code rejected: Session user binding is invalid"
+        );
+        return Err(OAuthError::invalid_grant());
+    };
     match state.sessions.find_by_token_hash(&session_hash).await {
-        Ok(Some(session)) if session.is_active_at(state.clock.now()) => {
-            Ok(Some(session.created_at.unix_timestamp()))
+        Ok(Some(session))
+            if session.user_id == code.user_id && session.is_active_at(state.clock.now()) =>
+        {
+            Ok(AuthorizationCodeSessionBinding {
+                session_id: session.id,
+                user_id,
+                token_hash: session_hash,
+                auth_time: session.created_at.unix_timestamp(),
+            })
         }
         Ok(_) => {
             tracing::info!(
