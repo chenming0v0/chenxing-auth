@@ -38,6 +38,20 @@ use support::{
     validated_request_with_challenge,
 };
 
+/// #508：无会话绑定的授权码在 Token 端点 fail-closed，直存授权码走兑换路径的
+/// 测试必须先把码绑定到一条已持久化的浏览器会话上。
+async fn bound_session_token(state: &chenxing_auth::state::AppState, user_id: i64) -> String {
+    use chenxing_auth::sessions::domain::Session;
+    let mut session =
+        Session::new(user_id.to_string(), std::time::Duration::from_secs(3600)).expect("session");
+    state
+        .sessions
+        .save(&mut session, std::time::Duration::from_secs(3600))
+        .await
+        .expect("persist session");
+    session.token
+}
+
 #[tokio::test]
 async fn assigned_plan_controls_client_quota_and_entitlements() {
     let env = test_state().await;
@@ -828,10 +842,14 @@ async fn no_default_plan_keeps_existing_user_clients_working() {
     .expect("save code exchange consent");
 
     let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let session_token = bound_session_token(&env.state, user_id).await;
+    let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
+    let mut validated = validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier));
+    validated.session_token_hash = Some(session_hash);
     let issued = issue_authorization_code_result(
         &env.state,
         user_id.to_string(),
-        validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier)),
+        validated,
         None,
         None,
     )
@@ -954,10 +972,14 @@ async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
     .expect("save code exchange consent");
 
     let verifier = "M25iVq8lYCr2Wl4nkPdz0oVYtIdYs1JRLmS3xN8sYAo";
+    let session_token = bound_session_token(&env.state, user_id).await;
+    let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
+    let mut validated = validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier));
+    validated.session_token_hash = Some(session_hash);
     let issued = issue_authorization_code_result(
         &env.state,
         user_id.to_string(),
-        validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier)),
+        validated,
         None,
         None,
     )
