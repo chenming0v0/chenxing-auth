@@ -326,11 +326,25 @@ impl SessionStore {
         session_id: i64,
         user_id: UserId,
         token_hash: &[u8],
+        expected_epoch: i64,
     ) -> Result<Option<SessionIssuanceGuard>, SessionStoreError> {
         if self.metadata.is_none() {
             return Err(SessionStoreError::MetadataUnavailable);
         }
-        postgres::acquire_issuance_guard(self, session_id, user_id, token_hash).await
+        postgres::acquire_issuance_guard(self, session_id, user_id, token_hash, expected_epoch)
+            .await
+    }
+
+    /// Session-less `session_epoch` fence after Refresh Token rotation.
+    pub(crate) async fn acquire_user_generation_guard(
+        &self,
+        user_id: UserId,
+        expected_epoch: i64,
+    ) -> Result<Option<SessionIssuanceGuard>, SessionStoreError> {
+        if self.metadata.is_none() {
+            return Err(SessionStoreError::MetadataUnavailable);
+        }
+        postgres::acquire_user_generation_guard(self, user_id, expected_epoch).await
     }
 
     pub async fn revoke(&self, token: &str) -> Result<(), SessionStoreError> {

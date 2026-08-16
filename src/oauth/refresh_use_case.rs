@@ -26,6 +26,9 @@ use tombstone::{
 #[path = "refresh_use_case_replay.rs"]
 mod replay;
 
+#[path = "refresh_use_case_epoch.rs"]
+mod epoch;
+
 /// Exchange a refresh token after the token endpoint has authenticated the client.
 pub(super) async fn exchange_refresh_token(
     state: &AppState,
@@ -201,6 +204,7 @@ pub(super) async fn exchange_refresh_token(
     }
     match rotation {
         Ok(RotationOutcome::Rotated) => {
+            epoch::confirm_after_rotation(state, client_id, &refresh, &next_refresh).await?;
             if record_token_event(
                 state,
                 Some(&refresh.user_id),
