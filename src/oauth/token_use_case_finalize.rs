@@ -1,10 +1,12 @@
-//! Final publication of an authorization-code exchange (Issue #506).
+//! Final publication of an authorization-code exchange (Issues #506 / #476).
 //!
 //! Redis code consumption and candidate Refresh Token persistence happen before this module is
 //! entered, but no credential value has been disclosed to the client; Access/ID Tokens exist only
 //! in process memory. The final PostgreSQL Session guarded read is the issuance linearization
-//! point: a logout that committed first makes it return no row; a logout that loses the row-lock
-//! race is ordered after issuance when the short guard is explicitly released.
+//! point: a logout that committed first makes it return no row; a `session_epoch` bump that
+//! committed first fails the users-row fence even if the Session row is still live. A logout or
+//! epoch bump that loses the lock race is ordered after issuance when the short guard is
+//! explicitly released.
 
 use super::{
     OAuthError, TokenResponse,
@@ -66,12 +68,34 @@ pub(super) async fn finalize_authorization_code_exchange(
         }
     };
 
+    let Some(expected_epoch) = finalization.refresh.session_epoch else {
+        tracing::info!(
+            client_id = %finalization.client_id,
+            session_id = finalization.session.session_id,
+            "OAuth token issuance rejected: Refresh Token has no session_epoch"
+        );
+        compensate_authorization_code_exchange(
+            state,
+            finalization.code,
+            &finalization.refresh.value,
+        )
+        .await;
+        return exchange_failure(
+            state,
+            Some(&finalization.code.user_id),
+            Some(finalization.client_id),
+            "user_credentials_revoked",
+            OAuthError::invalid_grant(),
+        )
+        .await;
+    };
     let session_guard = match state
         .sessions
         .acquire_issuance_guard(
             finalization.session.session_id,
             finalization.session.user_id,
             &finalization.session.token_hash,
+            expected_epoch,
         )
         .await
     {
@@ -80,7 +104,8 @@ pub(super) async fn finalize_authorization_code_exchange(
             tracing::info!(
                 client_id = %finalization.client_id,
                 session_id = finalization.session.session_id,
-                "OAuth token issuance rejected: issuing Session was revoked concurrently"
+                expected_epoch,
+                "OAuth token issuance rejected: session_epoch fence failed"
             );
             compensate_authorization_code_exchange(
                 state,
@@ -92,7 +117,7 @@ pub(super) async fn finalize_authorization_code_exchange(
                 state,
                 Some(&finalization.code.user_id),
                 Some(finalization.client_id),
-                "session_revoked_during_exchange",
+                "user_credentials_revoked",
                 OAuthError::invalid_grant(),
             )
             .await;

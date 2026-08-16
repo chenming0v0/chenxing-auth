@@ -33,13 +33,16 @@ impl SessionIssuanceGuard {
     }
 }
 
-/// Final Session liveness recheck and issuance linearization point (Issue #506).
-pub(super) async fn acquire_issuance_guard(
+/// Begin the shared user-generation fence used by token issuance (Issue #476).
+///
+/// `revoke_all_for_user_in_transaction` takes the same advisory lock before
+/// advancing `users.session_epoch`. Taking it here first, then locking the
+/// `users` row, is what makes an epoch bump conflict with issuance. A lockless
+/// re-read, or `FOR SHARE OF sessions` alone, does not.
+async fn begin_user_generation_fence(
     store: &SessionStore,
-    session_id: i64,
     user_id: UserId,
-    token_hash: &[u8],
-) -> Result<Option<SessionIssuanceGuard>, SessionStoreError> {
+) -> Result<crate::sqlx::Transaction<'static, crate::sqlx::Postgres>, SessionStoreError> {
     let pool = store
         .metadata
         .as_ref()
@@ -51,6 +54,23 @@ pub(super) async fn acquire_issuance_guard(
     crate::sqlx::query("SET LOCAL idle_in_transaction_session_timeout = '5s'")
         .execute(&mut *transaction)
         .await?;
+    lock_user_session_scope(&mut transaction, user_id).await?;
+    Ok(transaction)
+}
+
+/// Final Session liveness and `session_epoch` fence (Issues #506 / #476).
+///
+/// `expected_epoch` is the generation already stamped on the Refresh Token.
+/// It is compared under the user lock; this function must not re-read epoch
+/// outside that lock.
+pub(super) async fn acquire_issuance_guard(
+    store: &SessionStore,
+    session_id: i64,
+    user_id: UserId,
+    token_hash: &[u8],
+    expected_epoch: i64,
+) -> Result<Option<SessionIssuanceGuard>, SessionStoreError> {
+    let mut transaction = begin_user_generation_fence(store, user_id).await?;
     let active: Option<bool> = crate::sqlx::query_scalar(
         "SELECT TRUE
          FROM user_sessions AS sessions
@@ -63,15 +83,40 @@ pub(super) async fn acquire_issuance_guard(
            AND sessions.last_seen_at > NOW() - $4
            AND sessions.session_epoch >= users.session_epoch
            AND users.status = 'active'
-         FOR SHARE OF sessions",
+           AND users.session_epoch = $5
+         FOR SHARE OF sessions, users",
     )
     .bind(session_id)
     .bind(token_hash)
     .bind(user_id)
     .bind(store.idle_timeout_interval())
+    .bind(expected_epoch)
     .fetch_optional(&mut *transaction)
     .await?;
     if active.is_none() {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+    Ok(Some(SessionIssuanceGuard { transaction }))
+}
+
+/// Session-less `session_epoch` fence for Refresh Token rotation (Issue #476).
+pub(super) async fn acquire_user_generation_guard(
+    store: &SessionStore,
+    user_id: UserId,
+    expected_epoch: i64,
+) -> Result<Option<SessionIssuanceGuard>, SessionStoreError> {
+    let mut transaction = begin_user_generation_fence(store, user_id).await?;
+    let current: Option<i64> = crate::sqlx::query_scalar(
+        "SELECT session_epoch
+         FROM users
+         WHERE id = $1 AND status = 'active'
+         FOR SHARE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if current != Some(expected_epoch) {
         transaction.rollback().await?;
         return Ok(None);
     }
