@@ -1102,7 +1102,7 @@ paths:
         '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
     post:
       tags: [OAuth/OIDC]
-      summary: 通过表单提交 OAuth 授权码请求
+      summary: OAuth 授权码入口（表单 POST）
       operationId: authorizePost
       security: [{ sessionCookie: [] }, { chenxingSession: [] }, {}]
       description: |
