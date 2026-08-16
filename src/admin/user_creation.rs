@@ -235,6 +235,10 @@ mod tests {
                 StatusCode::CONFLICT,
             ),
             (
+                UserServiceError::AuditUnavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
                 UserServiceError::PasswordHash,
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
