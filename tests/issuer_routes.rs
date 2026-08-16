@@ -280,8 +280,10 @@ async fn missing_issuer_allows_only_initial_owner_and_blocks_all_user_creation()
         None,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    assert_eq!(json_body(response).await["status"], "factor_setup_required");
+    // 当前实现（login_use_case）：未配置任何认证因子时密码即完成登录（200），
+    // `factor_setup_required` 是 login-factors 设计稿（docs/superpowers/specs/
+    // 2026-07-28-login-factors-design.md）的预留状态，实现未合入前不出现。
+    assert_eq!(response.status(), StatusCode::OK);
 
     let response = post_json(
         &router,

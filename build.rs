@@ -12,8 +12,10 @@ const INPUT_FILES: &[&str] = &[
     "tsconfig.json",
 ];
 
-/// Marker file written next to the bundle after a successful local build. It
-/// records the fingerprint of the inputs that produced the bundle.
+/// Marker file recording the fingerprint of the inputs that produced a locally
+/// built bundle. It lives in `web/` — outside the bundle — so `web/dist` stays
+/// free of hidden files; the runtime bundle check forbids dotfiles at any depth
+/// and must not make an exception for build bookkeeping (#500).
 const FINGERPRINT_FILE: &str = ".build-fingerprint";
 
 fn main() {
@@ -69,7 +71,7 @@ fn main() {
         .collect();
     let fingerprint = source_fingerprint(&input_refs);
 
-    let marker_fresh = read_fingerprint(&dist_dir).is_some_and(|recorded| recorded == fingerprint);
+    let marker_fresh = read_fingerprint(&web_dir).is_some_and(|recorded| recorded == fingerprint);
     let dist_newer_than_sources = dist_entry
         .metadata()
         .ok()
@@ -87,7 +89,7 @@ fn main() {
         BuildAction::BuildMissing => {
             run(npm, &["ci", "--prefix", "web"], &manifest_dir);
             run(npm, &["run", "build", "--prefix", "web"], &manifest_dir);
-            write_fingerprint(&dist_dir, &fingerprint);
+            write_fingerprint(&web_dir, &fingerprint);
         }
         BuildAction::Rebuild => {
             let install_marker = web_dir.join("node_modules/.package-lock.json");
@@ -96,7 +98,7 @@ fn main() {
                 run(npm, &["ci", "--prefix", "web"], &manifest_dir);
             }
             run(npm, &["run", "build", "--prefix", "web"], &manifest_dir);
-            write_fingerprint(&dist_dir, &fingerprint);
+            write_fingerprint(&web_dir, &fingerprint);
         }
         BuildAction::KeepStaleWithWarning => {
             println!(
@@ -198,15 +200,18 @@ fn collect_dir(dir: &Path, prefix: &str, inputs: &mut FrontendInputs) {
     }
 }
 
-fn read_fingerprint(dist_dir: &Path) -> Option<String> {
-    let content = fs::read_to_string(dist_dir.join(FINGERPRINT_FILE)).ok()?;
+fn read_fingerprint(web_dir: &Path) -> Option<String> {
+    let content = fs::read_to_string(web_dir.join(FINGERPRINT_FILE)).ok()?;
     Some(content.trim().to_string())
 }
 
-fn write_fingerprint(dist_dir: &Path, fingerprint: &str) {
-    fs::create_dir_all(dist_dir).expect("failed to create web/dist");
-    fs::write(dist_dir.join(FINGERPRINT_FILE), format!("{fingerprint}\n"))
-        .expect("failed to write web/dist/.build-fingerprint");
+fn write_fingerprint(web_dir: &Path, fingerprint: &str) {
+    // 历史版本把标记写进 web/dist；递归 bundle 检查会因此拒绝启动，
+    // 写新位置时顺手清掉遗留副本（#500）。
+    let legacy = web_dir.join("dist").join(FINGERPRINT_FILE);
+    let _ = fs::remove_file(&legacy);
+    fs::write(web_dir.join(FINGERPRINT_FILE), format!("{fingerprint}\n"))
+        .expect("failed to write web/.build-fingerprint");
 }
 
 /// Whether `web/package-lock.json` is newer than the last `npm ci`/install,
