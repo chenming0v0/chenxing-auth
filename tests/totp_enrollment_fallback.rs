@@ -204,7 +204,7 @@ async fn enroll_totp(
     let cookie = pending_cookie(&login_response);
     let csrf_token = csrf(&cookie).to_owned();
     let _login_body = json_body(login_response).await;
-    
+
     let setup = json_body(
         request_with_cookie_and_csrf(
             router,

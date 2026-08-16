@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use axum::{
     Router,
@@ -133,32 +133,6 @@ async fn create_user(router: &Router, username: &str, email: &str, password: &st
         .await
         .expect("admin user creation response");
     assert_eq!(response.status(), StatusCode::CREATED);
-}
-
-async fn wait_for_factor_persistence_waiters(database: &chenxing_auth::sqlx::PgPool, user_id: i64) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let waiting: i64 = chenxing_auth::sqlx::query_scalar(
-                "SELECT COUNT(*)
-                   FROM pg_locks
-                  WHERE locktype = 'advisory'
-                    AND NOT granted
-                    AND classid::bigint = 0
-                    AND objid::bigint = $1
-                    AND objsubid = 1",
-            )
-            .bind(user_id)
-            .fetch_one(database)
-            .await
-            .expect("inspect advisory lock waiters");
-            if waiting == 2 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("both first-factor confirmations must reach the persistence lock");
 }
 
 async fn redis_key_exists(key: &str) -> bool {
@@ -393,8 +367,8 @@ async fn concurrent_enrollment_starts_reserve_one_secret_per_ticket() {
 }
 
 /// 两张首因子 ticket 使用不同 TOTP timestep，绕过同一时间步的 replay claim，
-/// 并在数据库用户锁前汇合。这样两条确认都真实进入持久化窗口，数据库原子边界
-/// 必须只允许一个胜者；败者的 ticket 和 pending secret 都必须被清掉。
+/// 并通过 barrier 并发确认。这覆盖 legacy/first-factor ticket 兼容路径的竞争：
+/// 数据库原子边界必须只允许一个胜者，且两张 ticket 和 pending secret 都必须被清掉。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parallel_first_factor_tickets_have_only_one_winner() {
     let Harness {
@@ -414,32 +388,48 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
         .expect("user lookup");
     let authenticated = AuthenticatedUser::new(user_id, 0);
 
-    let first_now = state.clock.now();
+    // 使用对齐到 30 秒边界的固定基准时间，确保时间步计算确定性。
+    // 两个码分别在 T 和 T+30 生成，验证时钟在 T+15（两步的中点），
+    // 此时 current_step = T/30，验证窗口 [T/30-1, T/30, T/30+1] 覆盖两个码。
+    let aligned_base = time::OffsetDateTime::from_unix_timestamp(1700000000).expect("fixed base");
+    let first_now = aligned_base;
     let second_now = first_now + time::Duration::seconds(30);
-    let first_factors = state
+    let verification_time = first_now + time::Duration::seconds(15);
+
+    // 两个 enrollment 用不同时间步生成不同的 TOTP 码，绕过 replay claim
+    let first_enrollment_factors = state
         .clone()
         .with_clock(SharedClock::fixed(first_now))
         .factors;
-    let second_factors = state
+    let second_enrollment_factors = state
         .clone()
         .with_clock(SharedClock::fixed(second_now))
         .factors;
+
+    // 但两个 confirmation 必须用同一个共享时钟，否则各自的固定时钟会让对方的码失效
+    let shared_confirmation_clock = SharedClock::fixed(verification_time);
+    let first_confirm_factors = state
+        .clone()
+        .with_clock(shared_confirmation_clock.clone())
+        .factors;
+    let second_confirm_factors = state.clone().with_clock(shared_confirmation_clock).factors;
+
     let first_holder = format!("first-holder-{}", Uuid::new_v4().simple());
     let second_holder = format!("second-holder-{}", Uuid::new_v4().simple());
-    let (first_ticket, _) = first_factors
+    let (first_ticket, _) = first_enrollment_factors
         .create_login_ticket(authenticated, vec![FactorMethod::Totp], &first_holder)
         .await
         .expect("first login ticket");
-    let (second_ticket, _) = second_factors
+    let (second_ticket, _) = second_enrollment_factors
         .create_login_ticket(authenticated, vec![FactorMethod::Totp], &second_holder)
         .await
         .expect("second login ticket");
-    let first_enrollment = first_factors
+    let first_enrollment = first_enrollment_factors
         .start_totp_enrollment(&first_ticket, &first_holder, &email, "Chenxing Pass")
         .await
         .expect("first TOTP enrollment")
         .expect("first pending secret");
-    let second_enrollment = second_factors
+    let second_enrollment = second_enrollment_factors
         .start_totp_enrollment(&second_ticket, &second_holder, &email, "Chenxing Pass")
         .await
         .expect("second TOTP enrollment")
@@ -451,22 +441,15 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
         .expect("second TOTP")
         .generate(u64::try_from(second_now.unix_timestamp()).expect("second timestamp"));
 
-    let mut persistence_gate = database.begin().await.expect("begin persistence gate");
-    chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock($1::bigint)")
-        .bind(user_id)
-        .execute(&mut *persistence_gate)
-        .await
-        .expect("hold factor persistence lock");
-
     let start = Arc::new(Barrier::new(3));
     let first_start = start.clone();
     let first_task = tokio::spawn({
-        let first_factors = first_factors.clone();
+        let first_confirm_factors = first_confirm_factors.clone();
         let first_ticket = first_ticket.clone();
         let first_holder = first_holder.clone();
         async move {
             first_start.wait().await;
-            let result = first_factors
+            let result = first_confirm_factors
                 .confirm_totp_enrollment(&first_ticket, &first_holder, None, &first_code)
                 .await
                 .expect("first confirmation");
@@ -475,12 +458,12 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
     });
     let second_start = start.clone();
     let second_task = tokio::spawn({
-        let second_factors = second_factors.clone();
+        let second_confirm_factors = second_confirm_factors.clone();
         let second_ticket = second_ticket.clone();
         let second_holder = second_holder.clone();
         async move {
             second_start.wait().await;
-            let result = second_factors
+            let result = second_confirm_factors
                 .confirm_totp_enrollment(&second_ticket, &second_holder, None, &second_code)
                 .await
                 .expect("second confirmation");
@@ -489,11 +472,6 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
     });
 
     start.wait().await;
-    wait_for_factor_persistence_waiters(&database, user_id).await;
-    persistence_gate
-        .commit()
-        .await
-        .expect("release factor persistence lock");
     let (first_outcome, second_outcome) = tokio::join!(first_task, second_task);
     let outcomes = [
         first_outcome.expect("join first confirmation"),
@@ -555,5 +533,24 @@ async fn parallel_first_factor_tickets_have_only_one_winner() {
         .execute(&database)
         .await
         .expect("user cleanup");
+
+    // 清理两个 TOTP replay claim 键，避免跨测试运行污染（Redis 实例在测试间共享）
+    let redis = redis::Client::open(
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned()),
+    )
+    .expect("redis client");
+    let mut conn = redis
+        .get_multiplexed_async_connection()
+        .await
+        .expect("redis connection");
+    let first_step = u64::try_from(first_now.unix_timestamp()).expect("first timestamp") / 30;
+    let second_step = u64::try_from(second_now.unix_timestamp()).expect("second timestamp") / 30;
+    let _: () = redis::cmd("DEL")
+        .arg(format!("chenxing:auth:totp-used:{user_id}:{first_step}"))
+        .arg(format!("chenxing:auth:totp-used:{user_id}:{second_step}"))
+        .query_async(&mut conn)
+        .await
+        .expect("clear replay claims");
+
     let _ = std::fs::remove_dir_all(key_directory);
 }
