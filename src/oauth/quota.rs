@@ -16,7 +16,7 @@ mod quota_keys;
 mod quota_refund;
 
 /// 过期未兑换的授权码配额归还由后台 worker 执行（Issue #341）。
-pub use quota_refund::{QUOTA_REFUND_WORKER_INTERVAL, QuotaRefundCancel};
+pub use quota_refund::{QUOTA_REFUND_WORKER_INTERVAL, QuotaRefundCancel, refund_due_unix_millis};
 
 #[derive(Clone)]
 pub struct OAuthQuotaStore {

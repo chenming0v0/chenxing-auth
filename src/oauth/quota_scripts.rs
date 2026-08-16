@@ -27,7 +27,8 @@ return {1, 0, new_day, new_month}
 /// 避免出现「有成员没记录」的半成品条目让 worker 无从退款。
 ///
 /// KEYS[1] = 待退 ZSET；KEYS[2] = reservation 记录键
-/// ARGV[1] = 授权码过期时刻（ZSET score）；ARGV[2] = reservation id（ZSET member）
+/// ARGV[1] = 授权码过期时刻的 Unix 毫秒（ZSET score，永不早于精确 expires_at）；
+/// ARGV[2] = reservation id（ZSET member）
 /// ARGV[3] = reservation 的 JSON（含周期键）；ARGV[4] = 记录键 EXPIREAT（月边界）
 pub(super) const SCHEDULE_REFUND_SCRIPT: &str = r#"
 redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])

@@ -248,7 +248,7 @@ pub(super) async fn compensate_authorization_code_exchange(
     if let Some(reservation_id) = code.quota_reservation_id.as_deref()
         && let Err(error_value) = state
             .oauth_quotas
-            .reschedule_refund(reservation_id, code.expires_at.unix_timestamp())
+            .reschedule_refund(reservation_id, code.expires_at)
             .await
     {
         tracing::warn!(
