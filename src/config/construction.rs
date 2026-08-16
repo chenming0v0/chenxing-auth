@@ -22,7 +22,10 @@ use super::security::{
     validate_activation_delay, validate_production_activation_delay, validate_session_lifetimes,
     validate_token_and_key_lifetimes,
 };
-use super::{Config, ConfigError, DEFAULT_REQUEST_TIMEOUT_SECONDS, normalize_issuer_url};
+use super::{
+    Config, ConfigError, DEFAULT_HTTP_GRACEFUL_DRAIN_SECONDS, DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    normalize_issuer_url,
+};
 
 mod test_construction;
 
@@ -30,6 +33,7 @@ struct ConfigValues {
     host: String,
     port: u16,
     request_timeout_seconds: u64,
+    http_graceful_drain_seconds: u64,
     issuer_url: Option<String>,
     legacy_issuer_import: Option<String>,
     admin_token: String,
@@ -75,6 +79,10 @@ impl Config {
         )?;
         let request_timeout_seconds =
             optional_u64("REQUEST_TIMEOUT_SECONDS", DEFAULT_REQUEST_TIMEOUT_SECONDS)?;
+        let http_graceful_drain_seconds = optional_u64(
+            "HTTP_GRACEFUL_DRAIN_SECONDS",
+            DEFAULT_HTTP_GRACEFUL_DRAIN_SECONDS,
+        )?;
         let database_url = required_env("DATABASE_URL")?;
         let redis_url = required_env("REDIS_URL")?;
         let redis_keyspace = match env::var(RedisKeyspace::ENV_NAME) {
@@ -207,6 +215,7 @@ impl Config {
             host,
             port,
             request_timeout_seconds,
+            http_graceful_drain_seconds,
             issuer_url: None,
             legacy_issuer_import,
             admin_token,
@@ -248,6 +257,7 @@ impl Config {
             host,
             port,
             request_timeout_seconds,
+            http_graceful_drain_seconds,
             issuer_url,
             legacy_issuer_import,
             admin_token,
@@ -294,6 +304,9 @@ impl Config {
         if request_timeout_seconds == 0 {
             return Err(ConfigError::InvalidValue("REQUEST_TIMEOUT_SECONDS"));
         }
+        if http_graceful_drain_seconds == 0 {
+            return Err(ConfigError::InvalidValue("HTTP_GRACEFUL_DRAIN_SECONDS"));
+        }
         let issuer_url = issuer_url
             .map(|value| normalize_issuer_url(&value))
             .transpose()?;
@@ -339,6 +352,7 @@ impl Config {
             host,
             port,
             request_timeout_seconds,
+            http_graceful_drain_seconds,
             issuer: issuer_url
                 .as_deref()
                 .map(super::IssuerUrl::parse)

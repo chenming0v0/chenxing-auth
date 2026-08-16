@@ -11,8 +11,8 @@ use super::super::security::{
     DEFAULT_TOKEN_TTL_SECONDS,
 };
 use super::super::{
-    Config, ConfigError, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
-    DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,
+    Config, ConfigError, DEFAULT_HTTP_GRACEFUL_DRAIN_SECONDS, DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS, DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,
 };
 use super::ConfigValues;
 
@@ -46,6 +46,7 @@ impl Config {
             host,
             port,
             request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            http_graceful_drain_seconds: DEFAULT_HTTP_GRACEFUL_DRAIN_SECONDS,
             issuer_url: Some(issuer_url),
             legacy_issuer_import: None,
             admin_token: String::new(),

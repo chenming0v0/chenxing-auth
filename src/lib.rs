@@ -18,6 +18,7 @@ pub mod redis_client;
 pub mod redis_keyspace;
 pub mod sessions;
 pub mod settings;
+pub mod shutdown;
 pub mod state;
 pub mod users;
 pub mod web_dist;
