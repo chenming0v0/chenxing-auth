@@ -37,6 +37,9 @@ pub(crate) enum IdempotentClientOperationError {
 pub(crate) struct IdempotentPersisted<T> {
     pub value: T,
     pub secret_kid: String,
+    /// Whether this request applied the mutation instead of replaying a
+    /// previously committed idempotency result.
+    pub applied: bool,
 }
 
 enum Claim {
@@ -76,7 +79,11 @@ where
             let value = serde_json::from_value(result)
                 .map_err(|_| IdempotentClientOperationError::CorruptResult)?;
             transaction.rollback().await?;
-            Ok(IdempotentPersisted { value, secret_kid })
+            Ok(IdempotentPersisted {
+                value,
+                secret_kid,
+                applied: false,
+            })
         }
         Claim::New { secret_kid } => {
             if let Some(owner_user_id) = owner_user_id {
@@ -125,7 +132,11 @@ where
             };
             complete_operation(&mut transaction, context, &value).await?;
             transaction.commit().await?;
-            Ok(IdempotentPersisted { value, secret_kid })
+            Ok(IdempotentPersisted {
+                value,
+                secret_kid,
+                applied: true,
+            })
         }
     }
 }
@@ -159,7 +170,11 @@ pub(crate) async fn rotate_client_secret_idempotent_with_audit(
             let value = serde_json::from_value(result)
                 .map_err(|_| IdempotentClientOperationError::CorruptResult)?;
             transaction.rollback().await?;
-            Ok(IdempotentPersisted { value, secret_kid })
+            Ok(IdempotentPersisted {
+                value,
+                secret_kid,
+                applied: false,
+            })
         }
         Claim::New { secret_kid } => {
             let result = crate::sqlx::query(
@@ -190,7 +205,11 @@ pub(crate) async fn rotate_client_secret_idempotent_with_audit(
             };
             complete_operation(&mut transaction, context, &value).await?;
             transaction.commit().await?;
-            Ok(IdempotentPersisted { value, secret_kid })
+            Ok(IdempotentPersisted {
+                value,
+                secret_kid,
+                applied: true,
+            })
         }
     }
 }
