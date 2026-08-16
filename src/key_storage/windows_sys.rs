@@ -439,4 +439,3 @@ pub(super) fn create_mount_point_for_test(link: &Path, target: &Path) -> io::Res
         Ok(())
     }
 }
-
