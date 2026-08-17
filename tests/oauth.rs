@@ -124,7 +124,7 @@ fn authorization_request_accepts_exact_redirect_and_pkce() {
 }
 
 #[test]
-fn authorization_request_canonicalizes_redirect_before_strict_match() {
+fn authorization_request_preserves_original_redirect_after_canonical_match() {
     let request = validate_authorization_request(
         &client(),
         AuthorizationRequest {
@@ -141,7 +141,7 @@ fn authorization_request_canonicalizes_redirect_before_strict_match() {
     )
     .expect("canonical equivalent redirect URI should match");
 
-    assert_eq!(request.redirect_uri, "https://project.example/callback");
+    assert_eq!(request.redirect_uri, "https://project.example:443/callback");
 }
 
 #[test]

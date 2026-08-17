@@ -48,6 +48,8 @@ pub enum ExternalOAuthError {
     EmailNotVerified,
     #[error("external email is already registered")]
     EmailAlreadyRegistered,
+    #[error("external email is not allowed by the registration policy")]
+    EmailNotAllowed,
     #[error("external user is disabled")]
     UserDisabled,
     #[error("owner bootstrap is required")]
@@ -205,6 +207,7 @@ impl ExternalOAuthService {
             CreateIdentityError::EmailAlreadyRegistered => {
                 ExternalOAuthError::EmailAlreadyRegistered
             }
+            CreateIdentityError::EmailPolicyRejected => ExternalOAuthError::EmailNotAllowed,
             CreateIdentityError::UserDisabled => ExternalOAuthError::UserDisabled,
             CreateIdentityError::OwnerBootstrapRequired => {
                 ExternalOAuthError::OwnerBootstrapRequired

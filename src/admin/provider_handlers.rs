@@ -207,9 +207,9 @@ async fn set_provider_status(
 /// 变体逐个显式列出、不写 `_` 兜底（与 `client_errors.rs` 同一约定）：新增错误
 /// 变体时必须在这里显式表态，否则编译失败，避免业务状态被静默归入 500。
 /// `MissingSecret`/`RemoteRequest`/`InvalidUserInfo`/`EmailNotVerified`/
-/// `EmailAlreadyRegistered`/`UserDisabled`/`OwnerBootstrapRequired` 只在外部登录
-/// 流程产生，admin CRUD 路径返回它们说明调用链出错，统一按内部故障处理并留下
-/// 结构化日志。
+/// `EmailAlreadyRegistered`/`EmailNotAllowed`/`UserDisabled`/
+/// `OwnerBootstrapRequired` 只在外部登录流程产生，admin CRUD 路径返回它们说明
+/// 调用链出错，统一按内部故障处理并留下结构化日志。
 fn provider_error_response(error_value: ExternalOAuthError, operation: &'static str) -> Response {
     match &error_value {
         ExternalOAuthError::Validation(validation_error) => {
@@ -236,6 +236,7 @@ fn provider_error_response(error_value: ExternalOAuthError, operation: &'static 
         | ExternalOAuthError::InvalidUserInfo
         | ExternalOAuthError::EmailNotVerified
         | ExternalOAuthError::EmailAlreadyRegistered
+        | ExternalOAuthError::EmailNotAllowed
         | ExternalOAuthError::UserDisabled
         | ExternalOAuthError::OwnerBootstrapRequired => internal(&error_value, operation),
     }

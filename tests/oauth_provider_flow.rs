@@ -8,7 +8,7 @@ use axum::{
 };
 use chenxing_auth::{
     api, auth_factors::store::LoginTicketStore, config::Config,
-    sessions::cookies::EXTERNAL_STATE_COOKIE_PREFIX, state::AppState,
+    sessions::cookies::EXTERNAL_STATE_COOKIE_PREFIX, settings::EmailPolicySetting, state::AppState,
 };
 use redis::AsyncCommands;
 use serde::Deserialize;
@@ -687,6 +687,136 @@ async fn run_external_login_with_cookies(
         )
         .await
         .expect("callback response")
+}
+
+async fn set_email_policy(
+    database: &chenxing_auth::sqlx::PgPool,
+    alias_restriction_enabled: bool,
+    allowed_domains: &[&str],
+) {
+    let policy = EmailPolicySetting {
+        whitelist_enabled: true,
+        alias_restriction_enabled,
+        allowed_domains: allowed_domains
+            .iter()
+            .map(|domain| (*domain).to_owned())
+            .collect(),
+    }
+    .validate()
+    .expect("valid email policy fixture");
+    chenxing_auth::settings::repository::set_email_policy(database, &policy)
+        .await
+        .expect("persist email policy");
+}
+
+async fn external_registration_counts(
+    database: &chenxing_auth::sqlx::PgPool,
+    subject: &str,
+    email: &str,
+) -> (i64, i64) {
+    chenxing_auth::sqlx::query_as(
+        "SELECT
+             (SELECT COUNT(*) FROM oauth_external_identities WHERE subject = $1),
+             (SELECT COUNT(*) FROM users WHERE canonical_email = $2)",
+    )
+    .bind(subject)
+    .bind(email)
+    .fetch_one(database)
+    .await
+    .expect("count external registration rows")
+}
+
+#[tokio::test]
+async fn external_registration_rejects_domain_and_alias_without_partial_writes() {
+    let (mock, mock_state) = mock_server().await;
+    let external_subject = mock_state.subject.clone();
+    let (router, database, key_directory, slug) = setup(mock).await;
+    set_email_policy(&database, true, &["corp.example"]).await;
+
+    for (email, reason) in [
+        ("person@other.example", "domain outside whitelist"),
+        ("person+alias@corp.example", "alias address"),
+    ] {
+        *mock_state.user_email.lock().await = email.to_owned();
+        let response = run_external_login(&router, &slug).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert!(
+            location(&response).contains("external_error=oauth_login_failed"),
+            "{reason} must be rejected without exposing policy details: {}",
+            location(&response)
+        );
+        assert!(
+            set_cookie_header_optional(&response, "chenxing_session=").is_none(),
+            "{reason} must not create a browser session"
+        );
+        assert_eq!(
+            external_registration_counts(&database, &external_subject, email).await,
+            (0, 0),
+            "{reason} must leave neither a user nor an external identity"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn external_registration_allows_a_whitelisted_non_alias_email() {
+    let (mock, mock_state) = mock_server().await;
+    let external_subject = mock_state.subject.clone();
+    let allowed_email = "person@corp.example";
+    *mock_state.user_email.lock().await = allowed_email.to_owned();
+    let (router, database, key_directory, slug) = setup(mock).await;
+    set_email_policy(&database, true, &["corp.example"]).await;
+
+    let response = run_external_login(&router, &slug).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(location(&response).contains("external=success"));
+    assert_eq!(
+        external_registration_counts(&database, &external_subject, allowed_email).await,
+        (1, 1)
+    );
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn existing_external_identity_ignores_later_email_policy_changes() {
+    let (mock, mock_state) = mock_server().await;
+    let external_subject = mock_state.subject.clone();
+    let external_email = mock_state.user_email.lock().await.clone();
+    let (router, database, key_directory, slug) = setup(mock).await;
+
+    let first = run_external_login(&router, &slug).await;
+    assert!(location(&first).contains("external=success"));
+    let original_user_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT user_id FROM oauth_external_identities WHERE subject = $1",
+    )
+    .bind(&external_subject)
+    .fetch_one(&database)
+    .await
+    .expect("load initially bound external user");
+
+    set_email_policy(&database, true, &["corp.example"]).await;
+    let second = run_external_login(&router, &slug).await;
+    assert_eq!(second.status(), StatusCode::SEE_OTHER);
+    assert!(
+        location(&second).contains("external=success"),
+        "an existing identity must not be re-evaluated as a new registration"
+    );
+    let rebound_user_ids: Vec<i64> = chenxing_auth::sqlx::query_scalar(
+        "SELECT user_id FROM oauth_external_identities WHERE subject = $1",
+    )
+    .bind(&external_subject)
+    .fetch_all(&database)
+    .await
+    .expect("reload external identity rows");
+    assert_eq!(rebound_user_ids, vec![original_user_id]);
+    assert_eq!(
+        external_registration_counts(&database, &external_subject, &external_email).await,
+        (1, 1)
+    );
+
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 /// Issue #261：未验证邮箱既不能登录，也不能自动建号。

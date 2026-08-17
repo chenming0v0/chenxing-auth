@@ -1,5 +1,8 @@
 use super::*;
 use crate::clock::SharedClock;
+use crate::oauth::authorization::{
+    AuthorizationRequest, RegisteredClient, validate_authorization_request,
+};
 use crate::oauth::code::{AUTHORIZATION_CODE_TTL_SECONDS, AuthorizationCode};
 use time::{Duration, OffsetDateTime};
 
@@ -19,6 +22,40 @@ fn authorization_code() -> AuthorizationCode {
         "7".to_owned(),
         vec!["openid".to_owned()],
         CHALLENGE.to_owned(),
+        ISSUED_AT,
+    )
+}
+
+fn authorization_code_from_request(
+    registered_redirect_uri: &str,
+    requested_redirect_uri: &str,
+) -> AuthorizationCode {
+    let validated = validate_authorization_request(
+        &RegisteredClient {
+            client_id: CLIENT_ID.to_owned(),
+            client_name: "Test Client".to_owned(),
+            redirect_uris: vec![registered_redirect_uri.to_owned()],
+            scopes: vec!["openid".to_owned()],
+            owner_user_id: None,
+        },
+        AuthorizationRequest {
+            client_id: CLIENT_ID.to_owned(),
+            redirect_uri: requested_redirect_uri.to_owned(),
+            response_type: "code".to_owned(),
+            scope: "openid".to_owned(),
+            state: Some("state-543".to_owned()),
+            nonce: None,
+            code_challenge: Some(CHALLENGE.to_owned()),
+            code_challenge_method: Some("S256".to_owned()),
+        },
+    )
+    .expect("registered redirect URI variant must pass authorization validation");
+    AuthorizationCode::new_at(
+        validated.client_id,
+        validated.redirect_uri,
+        "7".to_owned(),
+        validated.scopes,
+        validated.code_challenge,
         ISSUED_AT,
     )
 }
@@ -59,6 +96,52 @@ fn redirect_binding_is_rejected_as_invalid_grant() {
     .expect_err("redirect URI mismatch must reject the code");
 
     assert_eq!(error, OAuthError::invalid_grant());
+}
+
+#[test]
+fn default_port_redirect_redeems_only_with_the_original_authorization_text() {
+    let original = "https://client.example:443/callback";
+    let canonical = "https://client.example/callback";
+    let code = authorization_code_from_request(canonical, original);
+
+    assert!(
+        validate_code_binding(CLIENT_ID, original, VERIFIER, &code, now_at(Duration::ZERO)).is_ok(),
+        "the exact redirect_uri accepted by authorization must redeem the code"
+    );
+    assert_eq!(
+        validate_code_binding(
+            CLIENT_ID,
+            canonical,
+            VERIFIER,
+            &code,
+            now_at(Duration::ZERO),
+        )
+        .expect_err("canonical-equivalent text must not replace the original binding"),
+        OAuthError::invalid_grant()
+    );
+}
+
+#[test]
+fn bare_origin_redirect_redeems_only_without_the_added_root_slash() {
+    let original = "https://client.example";
+    let canonical = "https://client.example/";
+    let code = authorization_code_from_request(canonical, original);
+
+    assert!(
+        validate_code_binding(CLIENT_ID, original, VERIFIER, &code, now_at(Duration::ZERO)).is_ok(),
+        "the original bare origin must remain the authorization-code binding"
+    );
+    assert_eq!(
+        validate_code_binding(
+            CLIENT_ID,
+            canonical,
+            VERIFIER,
+            &code,
+            now_at(Duration::ZERO),
+        )
+        .expect_err("adding a root slash changes the redirect_uri binding text"),
+        OAuthError::invalid_grant()
+    );
 }
 
 #[test]

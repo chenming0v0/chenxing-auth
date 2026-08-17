@@ -171,6 +171,9 @@ pub async fn exchange_code(
         )
         .await;
     };
+    // 不在 Token 端点 canonicalize：授权码保存的是授权请求通过校验时的原始
+    // redirect_uri 文本。RFC 6749 要求兑换提交同一值，默认端口或根斜杠等
+    // canonical 等价值仍然属于不同绑定（Issue #543）。
     let Some(code_verifier) = request.code_verifier.as_deref() else {
         return exchange_failure(
             state,

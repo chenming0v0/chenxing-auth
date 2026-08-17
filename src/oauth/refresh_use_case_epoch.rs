@@ -14,7 +14,7 @@ pub(super) async fn confirm_after_rotation(
     next_refresh: &RefreshToken,
 ) -> Result<(), RefreshExchangeError> {
     let Some(expected_epoch) = refresh.session_epoch else {
-        rollback_rotation(state, client_id, next_refresh, refresh).await;
+        let _ = rollback_rotation(state, client_id, next_refresh, refresh).await;
         return discard_token(
             record_and_return_invalid(
                 state,
@@ -26,7 +26,7 @@ pub(super) async fn confirm_after_rotation(
         );
     };
     let Ok(user_id) = refresh.user_id.parse::<UserId>() else {
-        rollback_rotation(state, client_id, next_refresh, refresh).await;
+        let _ = rollback_rotation(state, client_id, next_refresh, refresh).await;
         return discard_token(
             record_and_return_invalid(
                 state,
@@ -49,13 +49,13 @@ pub(super) async fn confirm_after_rotation(
                     client_id = %client_id,
                     "failed to release session_epoch fence after refresh rotation"
                 );
-                rollback_rotation(state, client_id, next_refresh, refresh).await;
+                let _ = rollback_rotation(state, client_id, next_refresh, refresh).await;
                 return Err(OAuthError::temporarily_unavailable().into());
             }
             Ok(())
         }
         Ok(None) => {
-            rollback_rotation(state, client_id, next_refresh, refresh).await;
+            let _ = rollback_rotation(state, client_id, next_refresh, refresh).await;
             discard_token(
                 record_and_return_invalid(
                     state,
@@ -72,7 +72,7 @@ pub(super) async fn confirm_after_rotation(
                 client_id = %client_id,
                 "failed to acquire session_epoch fence after refresh rotation"
             );
-            rollback_rotation(state, client_id, next_refresh, refresh).await;
+            let _ = rollback_rotation(state, client_id, next_refresh, refresh).await;
             Err(OAuthError::temporarily_unavailable().into())
         }
     }

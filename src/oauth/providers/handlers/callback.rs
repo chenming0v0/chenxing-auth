@@ -402,6 +402,7 @@ fn resolve_error_code(slug: &str, error_value: &ExternalOAuthError) -> &'static 
         // 纵深防御分支：`userinfo` 已经拦掉未验证邮箱，这里只会在
         // `ExternalUser` 被其他路径构造时触发，仍按未验证邮箱的语义回报。
         ExternalOAuthError::EmailNotVerified => "oauth_email_unverified",
+        ExternalOAuthError::EmailNotAllowed => "oauth_login_failed",
         ExternalOAuthError::OwnerBootstrapRequired => "owner_bootstrap_required",
         ExternalOAuthError::UserDisabled => "oauth_login_failed",
         _ => {
