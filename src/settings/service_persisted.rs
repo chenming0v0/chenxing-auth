@@ -1,4 +1,5 @@
 use super::{SettingsService, SettingsServiceError};
+use crate::audit::{AuditEvent, AuditService};
 use crate::settings::{
     SecurityLimitsSetting,
     domain::{EmailPolicySetting, PasskeySetting},
@@ -10,15 +11,33 @@ use crate::settings::{
 
 impl SettingsService {
     pub async fn passkey(&self) -> Result<PasskeySetting, SettingsServiceError> {
-        let runtime_default = self.passkey_runtime_default();
-        self.decode_stored::<PasskeySetting>()
+        Ok(self.passkey_with_issuer_binding().await?.0)
+    }
+
+    pub async fn passkey_with_issuer_binding(
+        &self,
+    ) -> Result<(PasskeySetting, Option<i64>), SettingsServiceError> {
+        let snapshot = self
+            .issuer_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.current());
+        let runtime_default = snapshot
+            .as_ref()
+            .map(|value| {
+                PasskeySetting::default()
+                    .with_runtime_defaults(value.webauthn_rp_id(), value.webauthn_origin())
+            })
+            .unwrap_or_else(|| self.default_passkey.clone());
+        let setting = self
+            .decode_stored::<PasskeySetting>()
             .await?
             .require(
                 runtime_default.clone(),
                 |value| apply_passkey_runtime_defaults(value, &runtime_default),
                 PasskeySetting::validate,
             )
-            .map_err(Self::persist_error::<PasskeySetting>)
+            .map_err(Self::persist_error::<PasskeySetting>)?;
+        Ok((setting, snapshot.map(|value| value.generation())))
     }
 
     pub async fn inspect_passkey(
@@ -37,7 +56,30 @@ impl SettingsService {
         value: PasskeySetting,
     ) -> Result<PasskeySetting, SettingsServiceError> {
         let value = value.validate()?;
-        repository::set_passkey(&self.pool, &value).await?;
+        let mut transaction = self.pool.begin().await?;
+        repository::lock_passkey_policy(&mut transaction).await?;
+        repository::set_passkey(&mut *transaction, &value).await?;
+        transaction.commit().await?;
+        Ok(value)
+    }
+
+    pub async fn set_passkey_audited<F>(
+        &self,
+        value: PasskeySetting,
+        audit: &AuditService,
+        audit_event: F,
+    ) -> Result<PasskeySetting, SettingsServiceError>
+    where
+        F: FnOnce(&PasskeySetting) -> AuditEvent,
+    {
+        let value = value.validate()?;
+        let mut transaction = self.pool.begin().await?;
+        repository::lock_passkey_policy(&mut transaction).await?;
+        repository::set_passkey(&mut *transaction, &value).await?;
+        audit
+            .record_in_transaction(&mut transaction, audit_event(&value))
+            .await?;
+        transaction.commit().await?;
         Ok(value)
     }
 
@@ -68,6 +110,25 @@ impl SettingsService {
     ) -> Result<EmailPolicySetting, SettingsServiceError> {
         let value = value.validate()?;
         repository::set_email_policy(&self.pool, &value).await?;
+        Ok(value)
+    }
+
+    pub async fn set_email_policy_audited<F>(
+        &self,
+        value: EmailPolicySetting,
+        audit: &AuditService,
+        audit_event: F,
+    ) -> Result<EmailPolicySetting, SettingsServiceError>
+    where
+        F: FnOnce(&EmailPolicySetting) -> AuditEvent,
+    {
+        let value = value.validate()?;
+        let mut transaction = self.pool.begin().await?;
+        repository::set_email_policy(&mut *transaction, &value).await?;
+        audit
+            .record_in_transaction(&mut transaction, audit_event(&value))
+            .await?;
+        transaction.commit().await?;
         Ok(value)
     }
 

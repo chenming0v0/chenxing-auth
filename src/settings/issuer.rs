@@ -160,7 +160,7 @@ pub async fn initialize(
     }
 }
 
-/// 数据库是运行期唯一事实来源。APP_ISSUER 只负责旧部署第一次升级时的导入。
+/// 数据库是运行时权威；旧 APP_ISSUER 仅用于旧部署的一次性导入。
 pub async fn resolve(
     config: &mut Config,
     pool: &crate::sqlx::PgPool,
@@ -208,7 +208,7 @@ pub async fn resolve(
     config.issuer = None;
     tracing::warn!(
         event = "issuer.not_configured",
-        "APP_ISSUER is not configured; authentication, administration and OAuth/OIDC routes are disabled"
+        "no persisted issuer is configured; health, static content, and bootstrap remain available; local login is limited to user ID 1, ADMIN_TOKEN recovery remains available, and user creation plus issuer-dependent routes are disabled"
     );
     Ok(None)
 }

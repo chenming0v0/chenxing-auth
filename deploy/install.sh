@@ -17,6 +17,20 @@ if ! command -v curl >/dev/null 2>&1; then
     exit 1
 fi
 
+secure_env_file() {
+    if [[ -e .env || -L .env ]]; then
+        if [[ -L .env ]]; then
+            printf '%s\n' '.env must not be a symbolic link.' >&2
+            exit 1
+        fi
+        if [[ ! -f .env ]]; then
+            printf '%s\n' '.env must be a regular file.' >&2
+            exit 1
+        fi
+        chmod 600 -- .env
+    fi
+}
+
 read_env_value() {
     local key="$1"
     local line
@@ -39,10 +53,67 @@ generate_secret() {
 }
 
 ensure_env_value() {
-    local key="$1" value="$2"
-    if [[ -z "$(read_env_value "$key")" ]]; then
-        printf '\n%s=%s\n' "$key" "$value" >> .env
+    local key="$1" value="$2" temp
+    if [[ -n "$(read_env_value "$key")" ]]; then
+        return 0
     fi
+    if ! grep -q "^${key}=" .env; then
+        printf '\n%s=%s\n' "$key" "$value" >> .env
+        return 0
+    fi
+
+    # Replace an existing empty assignment instead of appending a duplicate;
+    # this keeps legacy .env files unambiguous on subsequent upgrades.
+    temp="$(mktemp .env.tmp.XXXXXX)"
+    awk -v key="$key" -v value="$value" '
+        BEGIN { prefix = key "="; replaced = 0 }
+        index($0, prefix) == 1 {
+            if (!replaced) { print prefix value; replaced = 1 }
+            next
+        }
+        { print }
+        END { if (!replaced) print prefix value }
+    ' .env > "$temp"
+    chmod 600 "$temp"
+    mv -f "$temp" .env
+}
+
+legacy_project_name() {
+    local name
+    name="$(basename -- "$ROOT_DIR")"
+    name="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]+/-/g; s/^[^a-z0-9]+//; s/[^a-z0-9]+$//')"
+    [[ -n "$name" ]] || name=chenxing-auth
+    printf '%s' "$name"
+}
+
+resolve_legacy_project() {
+    # fail closed: never guess a project and silently create empty volumes.
+    local candidate volume project missing=0
+    candidate="$(legacy_project_name)"
+    for volume in chenxing-keys chenxing-postgres chenxing-redis; do
+        if ! docker volume inspect "${candidate}_${volume}" >/dev/null 2>&1; then
+            missing=1
+            break
+        fi
+        project="$(docker volume inspect --format '{{ index .Labels "com.docker.compose.project" }}' "${candidate}_${volume}" 2>/dev/null || true)"
+        if [[ "$project" != "$candidate" ]]; then
+            missing=1
+            break
+        fi
+    done
+    if [[ "$missing" == 0 ]]; then
+        printf '%s' "$candidate"
+        return 0
+    fi
+
+    printf 'Cannot identify the legacy Compose project for %s. Existing volume candidates:\n' "$ROOT_DIR" >&2
+    docker volume ls --format '{{.Name}}' \
+        | while IFS= read -r volume; do
+            project="$(docker volume inspect --format '{{ index .Labels "com.docker.compose.project" }}' "$volume" 2>/dev/null || true)"
+            [[ -n "$project" ]] && printf '  %s (%s)\n' "$volume" "$project" >&2
+        done
+    printf '%s\n' 'Set COMPOSE_PROJECT_NAME in .env to the original project and retry; refusing to create new volumes.' >&2
+    exit 1
 }
 
 validate_issuer() {
@@ -63,14 +134,24 @@ validate_issuer() {
     exit 1
 }
 
-if [[ -f .env ]]; then
+secure_env_file
+if [[ -e .env ]]; then
     printf '%s\n' 'Using existing .env; secrets will not be replaced.'
+    # APP_ISSUER is read only for older deployments. New deployments configure
+    # the runtime issuer through the Owner settings API after bootstrap.
     APP_ISSUER="$(read_env_value APP_ISSUER)"
     COOKIE_SECURE="$(read_env_value COOKIE_SECURE)"
+    AUTH_ENCRYPTION_KEY="$(read_env_value AUTH_ENCRYPTION_KEY)"
+    ensure_env_value REDIS_NAMESPACE legacy
+    if [[ -z "$(read_env_value COMPOSE_PROJECT_NAME)" ]]; then
+        legacy_project="$(resolve_legacy_project)" || exit 1
+        ensure_env_value COMPOSE_PROJECT_NAME "$legacy_project"
+    fi
+    if [[ -n "$AUTH_ENCRYPTION_KEY" ]]; then
+        ensure_env_value AUTH_ENCRYPTION_KEYS "kid=active:${AUTH_ENCRYPTION_KEY}"
+    fi
 else
-    APP_ISSUER="${CHENXING_ISSUER:-}"
-    validate_issuer
-
+    APP_ISSUER=""
     if ! command -v openssl >/dev/null 2>&1; then
         printf '%s\n' 'openssl is required to generate deployment secrets.' >&2
         exit 1
@@ -84,19 +165,18 @@ else
     POSTGRES_RUNTIME_PASSWORD="${POSTGRES_RUNTIME_PASSWORD:-$(generate_secret)}"
     ADMIN_TOKEN="${ADMIN_TOKEN:-$(openssl rand -hex 32)}"
     AUTH_ENCRYPTION_KEY="${AUTH_ENCRYPTION_KEY:-$(openssl rand -base64 32)}"
-    COOKIE_SECURE="${COOKIE_SECURE:-$EXPECTED_COOKIE_SECURE}"
-    if [[ "$COOKIE_SECURE" != "$EXPECTED_COOKIE_SECURE" ]]; then
-        printf 'COOKIE_SECURE must be %s for issuer %s.\n' "$EXPECTED_COOKIE_SECURE" "$APP_ISSUER" >&2
-        exit 1
-    fi
+    REDIS_NAMESPACE="${REDIS_NAMESPACE:-cx-$(openssl rand -hex 16)}"
+    COOKIE_SECURE="${COOKIE_SECURE:-true}"
 
     umask 077
     cat > .env <<EOF
+COMPOSE_PROJECT_NAME=chenxing-auth
 APP_HOST=0.0.0.0
 APP_PORT=${APP_PORT}
-APP_ISSUER=${APP_ISSUER}
 ADMIN_TOKEN=${ADMIN_TOKEN}
 AUTH_ENCRYPTION_KEY=${AUTH_ENCRYPTION_KEY}
+AUTH_ENCRYPTION_KEYS=kid=active:${AUTH_ENCRYPTION_KEY}
+AUTH_ENCRYPTION_ACTIVE_KID=active
 KEY_DIRECTORY=/var/lib/chenxing-auth/keys
 KEY_ROTATION_GRACE_SECONDS=${KEY_ROTATION_GRACE_SECONDS:-604800}
 COOKIE_SECURE=${COOKIE_SECURE}
@@ -106,10 +186,12 @@ POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 POSTGRES_RUNTIME_USER=${POSTGRES_RUNTIME_USER}
 POSTGRES_RUNTIME_PASSWORD=${POSTGRES_RUNTIME_PASSWORD}
 SESSION_TTL_SECONDS=${SESSION_TTL_SECONDS:-604800}
+REDIS_NAMESPACE=${REDIS_NAMESPACE}
 AUDIT_ARCHIVE_ENABLED=${AUDIT_ARCHIVE_ENABLED:-false}
 AUDIT_RETENTION_DAYS=${AUDIT_RETENTION_DAYS:-2555}
 RUST_LOG=${RUST_LOG:-chenxing_auth=info,tower_http=info}
 EOF
+    chmod 600 -- .env
     printf '%s\n' 'Created .env with generated secrets. Keep this file private.'
 fi
 
@@ -128,6 +210,10 @@ if [[ -z "$POSTGRES_RUNTIME_PASSWORD" ]]; then
 fi
 
 validate_issuer
+if [[ -z "$COOKIE_SECURE" ]]; then
+    COOKIE_SECURE="$EXPECTED_COOKIE_SECURE"
+    ensure_env_value COOKIE_SECURE "$COOKIE_SECURE"
+fi
 if [[ -n "$APP_ISSUER" && "$COOKIE_SECURE" != "$EXPECTED_COOKIE_SECURE" ]]; then
     printf 'COOKIE_SECURE must be %s for issuer %s.\n' "$EXPECTED_COOKIE_SECURE" "$APP_ISSUER" >&2
     exit 1
@@ -146,7 +232,7 @@ for attempt in $(seq 1 30); do
     fi
     sleep 2
 done
-if ! docker compose --env-file .env -f docker-compose.prod.yml run --rm --build app migrate; then
+if ! docker compose --env-file .env -f docker-compose.prod.yml run --rm --build migrate; then
     printf '%s\n' 'Database migration failed. This release uses a fresh SQLx baseline and does not roll old schemas forward automatically.' >&2
     printf '%s\n' 'Back up the database and recreate the development database, or follow an approved production data migration procedure, before retrying.' >&2
     exit 1
@@ -193,7 +279,7 @@ if [[ -n "$APP_ISSUER" ]]; then
     done
     printf '%s\n' 'OpenID Connect discovery matches the configured issuer.'
 else
-    printf '%s\n' 'APP_ISSUER is not set; the service is running in secure bootstrap mode.'
-    printf '%s\n' 'Configure the issuer through the Owner settings API or configure-issuer when ready.'
+    printf '%s\n' 'No legacy APP_ISSUER was read; new deployments do not require that environment variable.'
+    printf '%s\n' 'If PostgreSQL has no Issuer, the service is running in protected bootstrap mode: initialize the ID=1 Owner first, then set the fixed Issuer in Owner settings; it hot-reloads from PostgreSQL app_settings.'
 fi
 exit 0

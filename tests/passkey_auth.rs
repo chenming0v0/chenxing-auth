@@ -5,7 +5,10 @@ use axum::{
 };
 use base64::Engine;
 use chenxing_auth::auth_limiter::FailureDimension;
-use chenxing_auth::{api, config::Config, state::AppState};
+use chenxing_auth::{
+    api, auth_factors::domain::FactorMethod, config::Config, sessions::cookies, state::AppState,
+    users::domain::AuthenticatedUser,
+};
 use redis::AsyncCommands;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -18,6 +21,7 @@ mod oauth_flow;
 
 async fn setup() -> (
     Router,
+    AppState,
     chenxing_auth::sqlx::PgPool,
     std::path::PathBuf,
     String,
@@ -41,13 +45,12 @@ async fn setup() -> (
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
     let email = format!("passkey-{}@example.com", Uuid::new_v4().simple());
-    let router = api::router(
-        AppState::new_with_pool(config, database.clone())
-            .await
-            .expect("test state"),
-    );
+    let state = AppState::new_with_pool(config, database.clone())
+        .await
+        .expect("test state");
+    let router = api::router(state.clone());
     oauth_flow::ensure_owner_bootstrapped(&router, &database, "passkey_auth", "passkey_auth").await;
-    (router, database, key_directory, email)
+    (router, state, database, key_directory, email)
 }
 
 async fn json_response(response: axum::response::Response) -> serde_json::Value {
@@ -55,21 +58,6 @@ async fn json_response(response: axum::response::Response) -> serde_json::Value 
         .await
         .expect("response body");
     serde_json::from_slice(&body).expect("JSON response")
-}
-
-async fn post(router: &Router, uri: &str, body: serde_json::Value) -> axum::response::Response {
-    router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .expect("request"),
-        )
-        .await
-        .expect("response")
 }
 
 async fn post_with_cookie(
@@ -91,25 +79,6 @@ async fn post_with_cookie(
         )
         .await
         .expect("response")
-}
-
-fn cookie_header(response: &axum::response::Response) -> String {
-    response
-        .headers()
-        .get_all("set-cookie")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .map(|value| value.split(';').next().expect("cookie pair"))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn cookie_value(cookie: &str, name: &str) -> String {
-    cookie
-        .split(';')
-        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
-        .expect("cookie value")
-        .to_owned()
 }
 
 /// 逐个 ticket 的 Passkey 失败上限直接取自限流域模型，避免测试与实现漂移。
@@ -200,17 +169,34 @@ async fn create_user(router: &Router, email: &str) -> String {
     username
 }
 
-async fn login_ticket(router: &Router, username: &str) -> (String, String) {
-    let response = post(
-        router,
-        "/api/v1/auth/login",
-        serde_json::json!({"identifier": username, "password": "correct horse battery"}),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let cookie = cookie_header(&response);
-    assert!(json_response(response).await.get("login_ticket").is_none());
-    (cookie_value(&cookie, "chenxing_login_ticket"), cookie)
+async fn login_ticket(
+    state: &AppState,
+    database: &chenxing_auth::sqlx::PgPool,
+    email: &str,
+) -> (String, String) {
+    let (user_id, session_epoch): (i64, i64) =
+        chenxing_auth::sqlx::query_as("SELECT id, session_epoch FROM users WHERE email = $1")
+            .bind(email)
+            .fetch_one(database)
+            .await
+            .expect("user credentials");
+    let holder = cookies::new_login_ticket_holder();
+    let holder_hash = cookies::login_ticket_holder_hash(&holder);
+    let (ticket_id, _) = state
+        .factors
+        .create_login_ticket(
+            AuthenticatedUser::new(user_id, session_epoch),
+            vec![FactorMethod::Passkey],
+            &holder_hash,
+        )
+        .await
+        .expect("login ticket");
+    let cookie = format!(
+        "{}={ticket_id}; {}={holder}",
+        cookies::login_ticket_cookie_name(false),
+        cookies::login_ticket_holder_cookie_name(false)
+    );
+    (ticket_id, cookie)
 }
 
 /// #337：同一个 ticket 的 start 只能原子预留一份 challenge/state。
@@ -366,20 +352,9 @@ async fn cleanup_user(database: &chenxing_auth::sqlx::PgPool, user_id: i64) {
 
 #[tokio::test]
 async fn passkey_registration_start_returns_creation_challenge_for_login_ticket() {
-    let (router, database, key_directory, email) = setup().await;
-    let username = create_user(&router, &email).await;
-    let password = "correct horse battery";
-    let response = post(
-        &router,
-        "/api/v1/auth/login",
-        serde_json::json!({"identifier": username, "password": password}),
-    )
-    .await;
-    let ticket = {
-        let cookie = cookie_header(&response);
-        assert!(json_response(response).await.get("login_ticket").is_none());
-        (cookie_value(&cookie, "chenxing_login_ticket"), cookie)
-    };
+    let (router, state, database, key_directory, email) = setup().await;
+    let _username = create_user(&router, &email).await;
+    let ticket = login_ticket(&state, &database, &email).await;
 
     let response = post_with_cookie(
         &router,
@@ -434,10 +409,10 @@ async fn passkey_registration_start_returns_creation_challenge_for_login_ticket(
 
 #[tokio::test]
 async fn concurrent_registration_starts_reserve_one_challenge_without_burning_failures() {
-    let (router, database, key_directory, email) = setup().await;
-    let username = create_user(&router, &email).await;
+    let (router, state, database, key_directory, email) = setup().await;
+    let _username = create_user(&router, &email).await;
     let user_id = user_id_for_email(&database, &email).await;
-    let ticket = login_ticket(&router, &username).await;
+    let ticket = login_ticket(&state, &database, &email).await;
     let pending_key = format!("chenxing:auth:passkey-registration:{}", ticket.0);
 
     assert_start_reserves_one_challenge(
@@ -458,11 +433,11 @@ async fn concurrent_registration_starts_reserve_one_challenge_without_burning_fa
 
 #[tokio::test]
 async fn concurrent_authentication_starts_reserve_one_challenge_without_burning_failures() {
-    let (router, database, key_directory, email) = setup().await;
-    let username = create_user(&router, &email).await;
+    let (router, state, database, key_directory, email) = setup().await;
+    let _username = create_user(&router, &email).await;
     let user_id = user_id_for_email(&database, &email).await;
     insert_test_passkey(&database, user_id).await;
-    let ticket = login_ticket(&router, &username).await;
+    let ticket = login_ticket(&state, &database, &email).await;
     let pending_key = format!("chenxing:auth:passkey-authentication:{}", ticket.0);
 
     assert_start_reserves_one_challenge(
@@ -483,9 +458,8 @@ async fn concurrent_authentication_starts_reserve_one_challenge_without_burning_
 
 #[tokio::test]
 async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
-    let (router, database, key_directory, email) = setup().await;
-    let username = create_user(&router, &email).await;
-    let password = "correct horse battery";
+    let (router, state, database, key_directory, email) = setup().await;
+    let _username = create_user(&router, &email).await;
     let old_setting = serde_json::json!({
         "enabled": true,
         "rp_name": "Old RP",
@@ -506,22 +480,7 @@ async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
     .await
     .expect("old passkey setting");
 
-    let login_response = post(
-        &router,
-        "/api/v1/auth/login",
-        serde_json::json!({"identifier": username, "password": password}),
-    )
-    .await;
-    let ticket = {
-        let cookie = cookie_header(&login_response);
-        assert!(
-            json_response(login_response)
-                .await
-                .get("login_ticket")
-                .is_none()
-        );
-        (cookie_value(&cookie, "chenxing_login_ticket"), cookie)
-    };
+    let ticket = login_ticket(&state, &database, &email).await;
     let response = post_with_cookie(
         &router,
         "/api/v1/auth/passkeys/register/start",
@@ -580,18 +539,7 @@ async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
         serde_json::json!(["https://login.example.com"])
     );
 
-    let response = post(
-        &router,
-        "/api/v1/auth/login",
-        serde_json::json!({"identifier": username, "password": password}),
-    )
-    .await;
-    let second_cookie = cookie_header(&response);
-    let _second_pending = json_response(response).await;
-    let second_ticket = (
-        cookie_value(&second_cookie, "chenxing_login_ticket"),
-        second_cookie,
-    );
+    let second_ticket = login_ticket(&state, &database, &email).await;
     let response = post_with_cookie(
         &router,
         "/api/v1/auth/passkeys/register/start",
@@ -656,10 +604,10 @@ async fn passkey_registration_uses_updated_settings_and_keeps_start_snapshot() {
 
 #[tokio::test]
 async fn passkey_finish_failures_are_rate_limited_and_invalidate_the_ticket() {
-    let (router, database, key_directory, email) = setup().await;
-    let username = create_user(&router, &email).await;
+    let (router, state, database, key_directory, email) = setup().await;
+    let _username = create_user(&router, &email).await;
     let user_id = user_id_for_email(&database, &email).await;
-    let ticket = login_ticket(&router, &username).await;
+    let ticket = login_ticket(&state, &database, &email).await;
 
     // 阈值内的失败仍然按“凭据无效”处理，不会被限流提前拒绝。
     let statuses = exhaust_ticket_failures(&router, &ticket).await;
@@ -712,12 +660,12 @@ async fn passkey_finish_failures_are_rate_limited_and_invalidate_the_ticket() {
 
 #[tokio::test]
 async fn passkey_start_endpoints_reject_before_touching_passkey_storage() {
-    let (router, database, key_directory, email) = setup().await;
-    let username = create_user(&router, &email).await;
+    let (router, state, database, key_directory, email) = setup().await;
+    let _username = create_user(&router, &email).await;
     let user_id = user_id_for_email(&database, &email).await;
 
     let other_email = format!("passkey-other-{}@example.com", Uuid::new_v4().simple());
-    let other_username = create_user(&router, &other_email).await;
+    let _other_username = create_user(&router, &other_email).await;
     let other_user_id = user_id_for_email(&database, &other_email).await;
 
     // 账号维度上限高于单个 ticket 上限，需要多个 ticket 才能把账号额度耗尽。
@@ -726,10 +674,10 @@ async fn passkey_start_endpoints_reject_before_touching_passkey_storage() {
         (FailureDimension::Account.limit() as usize).div_ceil(ticket_failure_limit());
     let mut burn_tickets = Vec::new();
     for _ in 0..tickets_to_exhaust_account {
-        burn_tickets.push(login_ticket(&router, &username).await);
+        burn_tickets.push(login_ticket(&state, &database, &email).await);
     }
-    let spare_ticket = login_ticket(&router, &username).await;
-    let other_ticket = login_ticket(&router, &other_username).await;
+    let spare_ticket = login_ticket(&state, &database, &email).await;
+    let other_ticket = login_ticket(&state, &database, &other_email).await;
 
     for ticket in &burn_tickets {
         exhaust_ticket_failures(&router, ticket).await;

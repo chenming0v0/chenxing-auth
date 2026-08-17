@@ -5,23 +5,94 @@ const CI_WORKFLOW: &str = include_str!("../.github/workflows/ci.yml");
 const INSTALL_SCRIPT: &str = include_str!("../deploy/install.sh");
 const REMOTE_INSTALL_SCRIPT: &str = include_str!("../install.sh");
 const PRODUCTION_COMPOSE: &str = include_str!("../docker-compose.prod.yml");
+const REDIS_CRASH_RECOVERY_SCRIPT: &str = include_str!("../test_sh/redis_crash_recovery.sh");
+const TEST_RUNNER_CONTRACT_SCRIPT: &str = include_str!("../test_sh/test_runner_contract.sh");
+const REDIS_DURABILITY_DOC: &str = include_str!("../docs/redis-durability.md");
 const DB_MODULE: &str = include_str!("../src/db/mod.rs");
 const DB_POOL_MODULE: &str = include_str!("../src/db/pool.rs");
 const DB_AUDIT_BOUNDARY_MODULE: &str = include_str!("../src/db/audit_boundary.rs");
 const DB_ROLES_MODULE: &str = include_str!("../src/db/roles.rs");
 const DB_MIGRATE_MODULE: &str = include_str!("../src/db/migrate.rs");
+const DB_MIGRATION_COMPAT_MODULE: &str = include_str!("../src/db/migration_compat.rs");
+const DB_MIGRATION_PREFLIGHT_MODULE: &str = include_str!("../src/db/migration_preflight.rs");
 const ENV_EXAMPLE: &str = include_str!("../.env.example");
 const DOCKERFILE: &str = include_str!("../Dockerfile");
 const RUNTIME_DOCKERFILE: &str = include_str!("../Dockerfile.runtime");
 const DOCKERIGNORE: &str = include_str!("../.dockerignore");
 const STATIC_FILES_MODULE: &str = include_str!("../src/api/static_files.rs");
+const HEALTH_MODULE: &str = include_str!("../src/api/health.rs");
+const OAUTH_RESPONSE_MODULE: &str = include_str!("../src/oauth/response.rs");
+const OAUTH_TOKEN_SUPPORT_MODULE: &str = include_str!("../src/oauth/token_use_case_support.rs");
+const OAUTH_ERROR_MODULE: &str = include_str!("../src/error.rs");
 const WEB_DIST_MODULE: &str = include_str!("../src/web_dist.rs");
 const CONFIG_CONSTRUCTION_MODULE: &str = include_str!("../src/config/construction.rs");
 const STATE_MODULE: &str = include_str!("../src/state.rs");
 const DATABASE_BASELINE: &str = include_str!("../migrations/0001_initial.sql");
+const PUBLISHED_MIGRATION_CHECKSUMS: &str =
+    include_str!("../migrations/published-checksums.sha256");
 
 /// Where both production images place the built frontend bundle.
 const WEB_DIST_IMAGE_PATH: &str = "/usr/local/share/chenxing-auth/web/dist";
+
+fn migration_history_sql() -> String {
+    let mut migrations = std::fs::read_dir("migrations")
+        .expect("migrations directory")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
+        .collect::<Vec<_>>();
+    migrations.sort();
+    migrations
+        .into_iter()
+        .map(|path| std::fs::read_to_string(path).expect("read migration SQL"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn heredoc_body_after<'a>(script: &'a str, marker: &str) -> &'a str {
+    let (_, body) = script
+        .split_once(marker)
+        .unwrap_or_else(|| panic!("installer is missing heredoc marker: {marker}"));
+    body.split_once("\nEOF")
+        .map(|(body, _)| body)
+        .expect("generated .env heredoc must terminate with EOF")
+}
+
+fn shell_function_body<'a>(script: &'a str, name: &str) -> &'a str {
+    let declaration = format!("{name}() {{\n");
+    let (_, body) = script
+        .split_once(&declaration)
+        .unwrap_or_else(|| panic!("installer is missing function: {name}"));
+    body.split_once("\n}\n")
+        .map(|(body, _)| body)
+        .unwrap_or_else(|| panic!("installer function is not terminated: {name}"))
+}
+
+fn workflow_job<'a>(workflow: &'a str, name: &str) -> &'a str {
+    let marker = format!("\n  {name}:\n");
+    let start = workflow
+        .find(&marker)
+        .unwrap_or_else(|| panic!("workflow is missing job: {name}"))
+        + 1;
+    let rest = &workflow[start..];
+    let end = rest
+        .match_indices("\n  ")
+        .find_map(|(offset, _)| {
+            let candidate = &rest[offset + 1..];
+            let line = candidate.lines().next()?;
+            (!line.starts_with("    ") && line.ends_with(':')).then_some(offset)
+        })
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
+fn workflow_top_level_permissions(workflow: &str) -> &str {
+    workflow
+        .split_once("\npermissions:\n")
+        .and_then(|(_, rest)| rest.split_once("\njobs:\n"))
+        .map(|(permissions, _)| permissions)
+        .expect("workflow must declare top-level permissions before jobs")
+}
 
 #[test]
 fn release_workflow_publishes_versioned_archives_and_checksums() {
@@ -34,11 +105,339 @@ fn release_workflow_publishes_versioned_archives_and_checksums() {
         "gh release download",
         "--repo \"${GITHUB_REPOSITORY}\"",
         "sha256sum -c SHA256SUMS",
-        "if: startsWith(github.ref, 'refs/tags/v')",
+        "startsWith(github.ref, 'refs/tags/v')",
+        "github.event_name == 'push'",
     ] {
         assert!(
             BUILD_WORKFLOW.contains(marker),
             "release workflow is missing marker: {marker}"
+        );
+    }
+}
+
+#[test]
+fn build_workflow_scopes_write_permissions_and_drops_checkout_credentials() {
+    let defaults = workflow_top_level_permissions(BUILD_WORKFLOW);
+    assert!(defaults.contains("  contents: read"));
+    assert!(defaults.contains("  actions: read"));
+    assert!(!defaults.contains("write"));
+
+    let release = workflow_job(BUILD_WORKFLOW, "release");
+    assert!(release.contains("permissions:\n      contents: write"));
+    assert!(!release.contains("packages: write"));
+
+    let container = workflow_job(BUILD_WORKFLOW, "container");
+    assert!(container.contains("permissions:\n      contents: read\n      packages: write"));
+    assert!(!container.contains("contents: write"));
+
+    for name in ["verify-provenance", "web", "rust-binaries"] {
+        let job = workflow_job(BUILD_WORKFLOW, name);
+        assert!(
+            !job.contains("contents: write") && !job.contains("packages: write"),
+            "ordinary build job {name} must not receive write permissions"
+        );
+    }
+
+    for name in ["web", "rust-binaries", "container"] {
+        let job = workflow_job(BUILD_WORKFLOW, name);
+        assert!(job.contains("actions/checkout@v4"));
+        assert!(
+            job.contains("persist-credentials: false"),
+            "repository code checkout in {name} must not persist the job token"
+        );
+    }
+}
+
+#[test]
+fn deployment_runtime_and_migration_credentials_are_separated() {
+    let app_start = PRODUCTION_COMPOSE
+        .find("\n  app:")
+        .expect("production compose must define app");
+    let app_end = PRODUCTION_COMPOSE
+        .find("\n  migrate:")
+        .expect("production compose must define migrate after app");
+    let app = &PRODUCTION_COMPOSE[app_start..app_end];
+    assert!(
+        !app.contains("env_file:"),
+        "app must use an explicit runtime allowlist"
+    );
+    for secret in [
+        "MIGRATION_DATABASE_URL",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+    ] {
+        assert!(
+            !app.contains(secret),
+            "app must not receive owner credential {secret}"
+        );
+    }
+    let migrate = PRODUCTION_COMPOSE
+        .split_once("\n  migrate:")
+        .map(|(_, rest)| rest)
+        .expect("production compose must define a migrate service");
+    for marker in [
+        "profiles:",
+        "command: [\"migrate\"]",
+        "MIGRATION_DATABASE_URL:",
+        "DATABASE_URL:",
+    ] {
+        assert!(
+            migrate.contains(marker),
+            "migrate service is missing {marker}"
+        );
+    }
+    assert!(INSTALL_SCRIPT.contains("run --rm --build migrate"));
+    assert!(REMOTE_INSTALL_SCRIPT.contains("run --rm migrate"));
+    for script in [INSTALL_SCRIPT, REMOTE_INSTALL_SCRIPT] {
+        assert!(!script.contains("run --rm app migrate"));
+    }
+    assert!(REMOTE_INSTALL_SCRIPT.contains("  migrate:\n"));
+    let generated = REMOTE_INSTALL_SCRIPT
+        .split_once("services:\n")
+        .map(|(_, body)| body)
+        .expect("remote installer must generate a compose document");
+    let generated_app_start = generated
+        .find("  app:")
+        .expect("generated compose must define app");
+    let generated_app_end = generated
+        .find("\n  migrate:")
+        .expect("generated compose must define migrate after app");
+    let generated_app = &generated[generated_app_start..generated_app_end];
+    assert!(!generated_app.contains("env_file:"));
+    assert!(!generated_app.contains("MIGRATION_DATABASE_URL:"));
+}
+
+#[test]
+fn installers_harden_env_files_before_any_legacy_read_or_write() {
+    let deploy_security = INSTALL_SCRIPT
+        .find("if [[ -e .env || -L .env ]]")
+        .expect("source installer must classify every existing .env path");
+    let deploy_read = INSTALL_SCRIPT
+        .find("APP_ISSUER=\"$(read_env_value APP_ISSUER)\"")
+        .expect("source installer must read legacy APP_ISSUER");
+    assert!(deploy_security < deploy_read);
+    for marker in [
+        "[[ -L .env ]]",
+        "[[ ! -f .env ]]",
+        "chmod 600 -- .env",
+        "chmod 600 -- .env",
+    ] {
+        assert!(
+            INSTALL_SCRIPT.contains(marker),
+            "source installer missing {marker}"
+        );
+    }
+
+    let remote_security = REMOTE_INSTALL_SCRIPT
+        .find("if [[ -e \"$ENV_FILE\" || -L \"$ENV_FILE\" ]]")
+        .expect("remote installer must classify every existing .env path");
+    let remote_read = REMOTE_INSTALL_SCRIPT
+        .find("APP_ISSUER=\"$(read_env_value APP_ISSUER)\"")
+        .expect("remote installer must read legacy APP_ISSUER");
+    assert!(remote_security < remote_read);
+    for marker in ["[[ -L \"$ENV_FILE\" ]]", "chmod 600 -- \"$ENV_FILE\""] {
+        assert!(
+            REMOTE_INSTALL_SCRIPT.contains(marker),
+            "remote installer missing {marker}"
+        );
+    }
+}
+
+#[test]
+fn deployment_project_names_are_stable_and_legacy_resolution_fails_closed() {
+    assert!(INSTALL_SCRIPT.contains("COMPOSE_PROJECT_NAME"));
+    assert!(INSTALL_SCRIPT.contains("resolve_legacy_project"));
+    assert!(INSTALL_SCRIPT.contains("docker volume inspect"));
+    assert!(INSTALL_SCRIPT.contains("fail closed") || INSTALL_SCRIPT.contains("无法确认"));
+    assert!(
+        REMOTE_INSTALL_SCRIPT.contains("append_env_default COMPOSE_PROJECT_NAME chenxing-auth")
+    );
+    assert!(!REMOTE_INSTALL_SCRIPT.contains("resolve_legacy_project"));
+    let generated = heredoc_body_after(INSTALL_SCRIPT, "    cat > .env <<EOF\n");
+    assert!(generated.contains("COMPOSE_PROJECT_NAME="));
+    assert!(!INSTALL_SCRIPT.contains("append_env_default COMPOSE_PROJECT_NAME"));
+    assert!(REMOTE_INSTALL_SCRIPT.contains("COMPOSE_PROJECT_NAME=chenxing-auth"));
+}
+
+#[test]
+fn compose_keeps_container_listener_fixed_when_host_port_changes() {
+    for compose in [PRODUCTION_COMPOSE, REMOTE_INSTALL_SCRIPT] {
+        assert!(compose.contains("APP_HOST: 0.0.0.0"));
+        assert!(compose.contains("APP_PORT: 3000"));
+        assert!(
+            compose.contains("\"${APP_PORT:-3000}:3000\"")
+                || compose.contains("\"${APP_PORT}:3000\"")
+        );
+        assert!(!compose.contains("APP_HOST: ${APP_HOST"));
+        assert!(!compose.contains("APP_PORT: ${APP_PORT"));
+    }
+}
+
+#[test]
+fn publish_workflow_only_mints_protected_or_temporary_tags() {
+    assert!(BUILD_WORKFLOW.contains("actions: read"));
+    assert!(BUILD_WORKFLOW.contains("manual-${{ github.sha }}"));
+    assert!(!BUILD_WORKFLOW.contains("type=ref,event=branch"));
+    assert!(BUILD_WORKFLOW.contains("github.event_name == 'workflow_dispatch'"));
+    assert!(
+        BUILD_WORKFLOW
+            .contains("github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')")
+    );
+    assert!(BUILD_WORKFLOW.contains("github.event.workflow_run.head_sha"));
+    assert!(BUILD_WORKFLOW.contains("actions/workflows/ci.yml/runs"));
+    assert!(BUILD_WORKFLOW.contains("conclusion == 'success'"));
+    assert!(BUILD_WORKFLOW.contains("merge-base --is-ancestor"));
+    assert!(BUILD_WORKFLOW.contains("github.event_name == 'workflow_run'"));
+    assert!(!BUILD_WORKFLOW.contains("github.ref == 'refs/heads/dev'"));
+    assert!(!BUILD_WORKFLOW.contains("github.event_name != 'workflow_run'\n"));
+}
+
+#[test]
+fn native_release_archives_ship_and_verify_the_matching_web_bundle() {
+    let unix_at = BUILD_WORKFLOW
+        .find("- name: Package Unix binary")
+        .expect("Unix packaging step");
+    let windows_at = BUILD_WORKFLOW
+        .find("- name: Package Windows binary")
+        .expect("Windows packaging step");
+    let upload_at = BUILD_WORKFLOW[windows_at..]
+        .find("- uses: actions/upload-artifact@v4")
+        .map(|offset| windows_at + offset)
+        .expect("native archive upload step");
+    let unix_step = &BUILD_WORKFLOW[unix_at..windows_at];
+    let windows_step = &BUILD_WORKFLOW[windows_at..upload_at];
+    for marker in [
+        "cp -R web/dist \"$package_root/web/dist\"",
+        "chenxing-auth web/dist",
+    ] {
+        assert!(
+            unix_step.contains(marker),
+            "Unix archive missing marker: {marker}"
+        );
+    }
+    for marker in [
+        "Copy-Item `",
+        "-LiteralPath \"web/dist\"",
+        "Join-Path $packageRoot \"web\"",
+        "Join-Path $packageRoot \"*\"",
+    ] {
+        assert!(
+            windows_step.contains(marker),
+            "Windows archive missing marker: {marker}"
+        );
+    }
+    for marker in [
+        "Smoke test downloaded native archives",
+        "verified-download/chenxing-auth-*.tar.gz",
+        "verified-download/chenxing-auth-*.zip",
+        "tar -xzf",
+        "unzip -q",
+        "web/dist/index.html",
+        "release archive is missing referenced asset",
+    ] {
+        assert!(
+            BUILD_WORKFLOW.contains(marker),
+            "release smoke check missing marker: {marker}"
+        );
+    }
+}
+
+#[test]
+fn production_redis_has_durable_credential_state_and_crash_coverage() {
+    for compose in [PRODUCTION_COMPOSE, REMOTE_INSTALL_SCRIPT] {
+        for marker in [
+            "      - --appendonly\n      - \"yes\"",
+            "      - --appendfsync\n      - always",
+            "      - --no-appendfsync-on-rewrite\n      - \"no\"",
+            "      - --aof-load-truncated\n      - \"no\"",
+            "      - --aof-use-rdb-preamble\n      - \"yes\"",
+            "      - --save\n      - \"\"",
+            "      - --dir\n      - /data",
+            "      - --appenddirname\n      - appendonlydir",
+            "      - --appendfilename\n      - appendonly.aof",
+            "- chenxing-redis:/data",
+        ] {
+            assert!(
+                compose.contains(marker),
+                "Redis config missing marker: {marker:?}"
+            );
+        }
+        assert!(!compose.contains("everysec"));
+    }
+    for marker in [
+        "docker kill --signal KILL",
+        "GETDEL",
+        "authorization-code:consumed",
+        "refresh:rotation:old",
+        "refresh:rotation:successor",
+        "refresh:tombstone:consumed",
+        "refresh:tombstone:explicit-revoke",
+        "refresh:family-revoked",
+        "session:revoked:projection",
+        "session:revoked:epoch",
+        "assert_owned_container",
+        "assert_missing",
+        "assert_value",
+        "--network none",
+        "docker volume inspect",
+        "aof_last_write_status:ok",
+    ] {
+        assert!(
+            REDIS_CRASH_RECOVERY_SCRIPT.contains(marker),
+            "Redis crash/recovery script missing marker: {marker}"
+        );
+    }
+    for marker in [
+        "bash -n test_sh/redis_crash_recovery.sh",
+        "bash test_sh/redis_crash_recovery.sh",
+        "timeout-minutes: 5",
+    ] {
+        assert!(
+            CI_WORKFLOW.contains(marker),
+            "CI missing Redis recovery marker: {marker}"
+        );
+    }
+    for marker in [
+        "RPO 0",
+        "appendfsync always",
+        "授权码",
+        "Consumed",
+        "family revoked",
+        "session:revoked:epoch",
+        "陈旧 Redis 备份",
+        "故障后验证",
+    ] {
+        assert!(
+            REDIS_DURABILITY_DOC.contains(marker),
+            "Redis durability docs missing marker: {marker}"
+        );
+    }
+}
+
+#[test]
+fn signing_failures_map_to_oauth_unavailable_and_gate_readiness() {
+    for (module, marker) in [
+        (OAUTH_RESPONSE_MODULE, "state.keys.signing_ready()"),
+        (
+            OAUTH_RESPONSE_MODULE,
+            "error::oauth_temporarily_unavailable()",
+        ),
+        (OAUTH_TOKEN_SUPPORT_MODULE, "state.keys.signing_ready()"),
+        (
+            OAUTH_TOKEN_SUPPORT_MODULE,
+            "OAuthError::temporarily_unavailable()",
+        ),
+        (OAUTH_ERROR_MODULE, "\"temporarily_unavailable\""),
+        (
+            HEALTH_MODULE,
+            "let signing_ready = state.keys.signing_ready();",
+        ),
+        (HEALTH_MODULE, "signing_ready,"),
+        (HEALTH_MODULE, "workers.ready"),
+    ] {
+        assert!(
+            module.contains(marker),
+            "signing/readiness marker missing: {marker}"
         );
     }
 }
@@ -56,6 +455,70 @@ fn ci_validates_the_remote_installer_without_weakening_coverage() {
             CI_WORKFLOW.contains(marker),
             "CI workflow is missing deployment or coverage marker: {marker}"
         );
+    }
+}
+
+#[test]
+fn test_runner_missing_tools_fail_closed_without_running_tests() {
+    for marker in [
+        "PATH=\"$temp_root/empty-path\"",
+        "MODE=filter",
+        "NEXTEST=0",
+        "assert_failed_phase \"测试\" phase_test",
+        "assert_failed_phase \"覆盖检查\" phase_coverage",
+        "assert_failed_phase \"依赖审计\" phase_audit",
+    ] {
+        assert!(
+            TEST_RUNNER_CONTRACT_SCRIPT.contains(marker),
+            "test runner contract missing marker: {marker}"
+        );
+    }
+    for marker in [
+        "bash -n test_sh/test_runner_contract.sh",
+        "bash test_sh/test_runner_contract.sh",
+    ] {
+        assert!(
+            CI_WORKFLOW.contains(marker),
+            "CI missing test runner contract marker: {marker}"
+        );
+    }
+}
+
+#[test]
+fn deployment_configures_redis_namespaces_without_breaking_existing_env_files() {
+    let example_namespaces = ENV_EXAMPLE
+        .lines()
+        .filter(|line| line.starts_with("REDIS_NAMESPACE="))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        example_namespaces,
+        ["REDIS_NAMESPACE="],
+        ".env.example must leave the required namespace empty instead of shipping a shared value"
+    );
+    assert!(ENV_EXAMPLE.contains("explicit upgrade compatibility"));
+    assert!(
+        PRODUCTION_COMPOSE.lines().any(|line| line.trim()
+            == "REDIS_NAMESPACE: ${REDIS_NAMESPACE:?set REDIS_NAMESPACE to a unique non-empty value}"),
+        "production Compose must reject a missing or empty namespace"
+    );
+    assert!(!PRODUCTION_COMPOSE.contains("REDIS_NAMESPACE:-"));
+    assert!(REMOTE_INSTALL_SCRIPT.contains("REDIS_NAMESPACE=cx-$(openssl rand -hex 16)"));
+    assert!(
+        REMOTE_INSTALL_SCRIPT.contains("append_env_default REDIS_NAMESPACE legacy"),
+        "existing remote installs must retain legacy keys"
+    );
+    assert!(
+        INSTALL_SCRIPT
+            .contains("REDIS_NAMESPACE=\"${REDIS_NAMESPACE:-cx-$(openssl rand -hex 16)}\"")
+    );
+    assert!(INSTALL_SCRIPT.contains("REDIS_NAMESPACE=${REDIS_NAMESPACE}"));
+    assert!(
+        INSTALL_SCRIPT.contains("ensure_env_value REDIS_NAMESPACE legacy"),
+        "existing source installs must retain legacy keys"
+    );
+    for script in [REMOTE_INSTALL_SCRIPT, INSTALL_SCRIPT] {
+        assert!(!script.contains("REDIS_NAMESPACE=production"));
+        assert!(!script.contains("REDIS_NAMESPACE=${REDIS_NAMESPACE:-production}"));
     }
 }
 
@@ -81,7 +544,7 @@ fn release_workflow_builds_web_once_and_reuses_it() {
     for marker in [
         "name: Build embedded web",
         "name: web-dist",
-        "needs: web",
+        "needs: [verify-provenance, web]",
         "path: web/dist",
         "CHENXING_USE_PREBUILT_WEB",
         "Accept prebuilt embedded web",
@@ -355,7 +818,7 @@ fn embedded_index_html_asset_references_require_the_whole_bundle_root() {
 #[test]
 fn container_job_stages_the_same_web_bundle_the_binaries_embedded() {
     for marker in [
-        "needs: [web, rust-binaries]",
+        "needs: [verify-provenance, web, rust-binaries]",
         "name: web-dist",
         "path: container-web-dist",
         "name: Stage container web bundle",
@@ -429,7 +892,7 @@ fn installer_validates_compose_and_reports_application_logs() {
         "POSTGRES_RUNTIME_USER",
         "POSTGRES_RUNTIME_PASSWORD",
         "MIGRATION_DATABASE_URL",
-        "CHENXING_ISSUER",
+        "APP_ISSUER is read only for older deployments",
         "APP_PORT",
     ] {
         assert!(
@@ -448,9 +911,10 @@ fn remote_installer_uses_published_images_and_keeps_download_progress_visible() 
         "docker pull \"$CHENXING_IMAGE\"",
         "docker pull \"$POSTGRES_IMAGE\"",
         "docker pull \"$REDIS_IMAGE\"",
-        "compose run --rm app migrate",
+        "compose run --rm migrate",
         "compose up -d app",
-        "configure-issuer https://auth.example.com",
+        "Owner 在管理设置中写入固定的 HTTPS Issuer",
+        "PostgreSQL app_settings",
         "--prepare-only",
     ] {
         assert!(
@@ -477,7 +941,7 @@ fn remote_installer_generates_and_preserves_deployment_secrets() {
     for marker in [
         "openssl rand -base64 32",
         "openssl rand -hex 32",
-        "chmod 600 \"$ENV_FILE\"",
+        "chmod 600 -- \"$ENV_FILE\"",
         "检测到已有 .env，将保留数据库密码、Token 和加密密钥",
         "AUTH_ENCRYPTION_KEY 必须是 Base64 编码的 32 字节密钥",
     ] {
@@ -486,25 +950,97 @@ fn remote_installer_generates_and_preserves_deployment_secrets() {
             "remote installer is missing secret marker: {marker}"
         );
     }
-    assert!(!REMOTE_INSTALL_SCRIPT.contains("APP_ISSUER=${APP_ISSUER}"));
 }
 
 #[test]
-fn production_probes_use_readiness_and_keep_liveness_separate() {
-    assert!(PRODUCTION_COMPOSE.contains("/health/ready"));
+fn fresh_installers_do_not_write_app_issuer_but_keep_legacy_env_compatibility() {
+    for (name, script, marker) in [
+        ("source installer", INSTALL_SCRIPT, "    cat > .env <<EOF\n"),
+        (
+            "remote installer",
+            REMOTE_INSTALL_SCRIPT,
+            "    cat > \"$ENV_FILE\" <<EOF\n",
+        ),
+    ] {
+        let generated_env = heredoc_body_after(script, marker);
+        assert!(
+            !generated_env
+                .lines()
+                .any(|line| line.trim_start().starts_with("APP_ISSUER=")),
+            "{name} must not write APP_ISSUER into a fresh .env"
+        );
+        assert!(
+            script.contains("APP_ISSUER=\"$(read_env_value APP_ISSUER)\""),
+            "{name} must still read legacy APP_ISSUER from an existing .env"
+        );
+    }
+
+    assert!(INSTALL_SCRIPT.contains("APP_ISSUER is read only for older deployments"));
+    assert!(REMOTE_INSTALL_SCRIPT.contains("检测到旧环境中的 APP_ISSUER"));
+}
+
+#[test]
+fn production_healthchecks_and_installers_use_readiness() {
+    let readiness_healthcheck =
+        "test: [\"CMD\", \"curl\", \"--fail\", \"http://127.0.0.1:3000/health/ready\"]";
+    assert!(PRODUCTION_COMPOSE.contains(readiness_healthcheck));
     assert!(!PRODUCTION_COMPOSE.contains("http://127.0.0.1:3000/health\"]"));
     assert!(INSTALL_SCRIPT.contains("/health/ready"));
-    assert!(!INSTALL_SCRIPT.contains("/health/live"));
+    assert!(REMOTE_INSTALL_SCRIPT.contains(readiness_healthcheck));
+    let remote_wait = shell_function_body(REMOTE_INSTALL_SCRIPT, "wait_for_application");
+    for marker in [
+        "for attempt in $(seq 1 60); do",
+        "curl --fail --silent --max-time 5",
+        "http://127.0.0.1:3000/health/ready",
+        "return 0",
+        "return 1",
+    ] {
+        assert!(
+            remote_wait.contains(marker),
+            "readiness wait missing marker: {marker}"
+        );
+    }
+    assert!(!remote_wait.contains("/health/live"));
 }
 
 #[test]
-fn installer_allows_bootstrap_mode_and_checks_discovery_contract() {
+fn remote_installer_reports_full_readiness_timeout_diagnostics() {
+    let diagnostics = shell_function_body(REMOTE_INSTALL_SCRIPT, "report_application_diagnostics");
+    for marker in [
+        "compose ps >&2 || true",
+        "compose ps -q app",
+        "docker inspect --format",
+        ".State.Health.Status",
+        "compose logs app >&2 || true",
+    ] {
+        assert!(
+            diagnostics.contains(marker),
+            "readiness diagnostics missing marker: {marker}"
+        );
+    }
+    let (_, timeout_handler) = REMOTE_INSTALL_SCRIPT
+        .split_once("if ! wait_for_application; then\n")
+        .expect("remote installer must handle readiness timeout");
+    let timeout_handler = timeout_handler
+        .split_once("\nfi\n")
+        .map(|(body, _)| body)
+        .expect("readiness timeout handler must terminate");
+    assert!(timeout_handler.contains("report_application_diagnostics"));
+}
+
+#[test]
+fn source_installer_keeps_legacy_issuer_checks_and_documents_protected_bootstrap() {
     for marker in [
         "CHENXING_ALLOW_LOOPBACK_HTTP",
         "EXPECTED_COOKIE_SECURE",
+        "APP_ISSUER=\"$(read_env_value APP_ISSUER)\"",
         "OpenID discovery does not match APP_ISSUER",
         ".well-known/openid-configuration",
-        "APP_ISSUER is not set; the service is running in secure bootstrap mode.",
+        "No legacy APP_ISSUER was read",
+        "protected bootstrap mode",
+        "ID=1 Owner",
+        "Owner settings",
+        "PostgreSQL app_settings",
     ] {
         assert!(
             INSTALL_SCRIPT.contains(marker),
@@ -530,24 +1066,62 @@ fn deployment_files_are_present_at_repository_root() {
 }
 
 #[test]
-fn database_uses_one_transactional_current_baseline() {
-    assert!(DB_MODULE.contains("current schema baseline"));
+fn database_uses_forward_only_transactional_migration_history() {
+    assert!(DB_MODULE.contains("Versions 1-27 have shipped and their SQL bytes are immutable"));
     assert!(DB_MODULE.contains("include_str!(\"../../migrations/0001_initial.sql\")"));
-    assert_eq!(DB_MODULE.matches("Migration::new(").count(), 3);
+    assert!(DB_MODULE.contains("include_str!(\"../../migrations/0029_plan_quota_bounds.sql\")"));
+    // 0030/0031（passkey state version、client operation idempotency）来自
+    // #50-479 批次的合并；0032 收紧 SQLx migration ledger 的运行时权限。
+    assert!(
+        DB_MODULE.contains("include_str!(\"../../migrations/0030_passkey_state_version.sql\")")
+    );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0031_client_operation_idempotency.sql\")")
+    );
     assert!(
         DB_MODULE.contains(
-            "normalize_migration_sql(include_str!(\"../../migrations/0001_initial.sql\"))"
-        ) && DB_MODULE.contains("MigrationType::Simple"),
+            "include_str!(\"../../migrations/0032_runtime_migration_ledger_boundary.sql\")"
+        )
+    );
+    assert_eq!(
+        DB_MODULE
+            .matches("include_str!(\"../../migrations/")
+            .count(),
+        32
+    );
+    assert!(
+        DB_MODULE.contains("normalize_migration_sql(sql)")
+            && DB_MODULE.contains("MigrationType::Simple"),
         "the schema migrations must remain transactional"
     );
 
-    let ensure_role = DB_MODULE
-        .find("roles::ensure_runtime_role(database).await?;")
-        .expect("runtime role must be provisioned before the schema baseline");
-    let run_baseline = DB_MODULE
-        .find("embedded_migrator().run(database).await?;")
-        .expect("schema baseline must run");
-    assert!(ensure_role < run_baseline);
+    let run_migrations = DB_MODULE
+        .find("migration_compat::run(database, embedded_migrator()).await?;")
+        .expect("schema migrations must run");
+    let preflight = DB_MIGRATION_COMPAT_MODULE
+        .find("migration_preflight::verify(&mut connection).await?;")
+        .expect("pg_trgm placement must be checked inside the migration lock");
+    let ensure_role = DB_MIGRATION_COMPAT_MODULE
+        .find("roles::ensure_runtime_role(&mut *connection).await?;")
+        .expect("runtime role must be provisioned inside the migration lock");
+    let ensure_ledger = DB_MIGRATION_COMPAT_MODULE
+        .find("Migrate::ensure_migrations_table(&mut *connection).await?;")
+        .expect("migration ledger must be initialized after preflight");
+    assert!(run_migrations > 0);
+    assert!(preflight < ensure_role && ensure_role < ensure_ledger);
+    for checksum in [
+        "ca8607f4cd8b19d91531d9081d7951d70e266ef35c686c64bcff48e89728ea95",
+        "70b7c2bd57303895720d0e13fbc56b16d43645f67363803fac73411fd8e4526f",
+        "56e9d9ea680ac129115cc21ac2ff5029f9f2746683bdb9cf42ad966afb3571c4",
+    ] {
+        assert!(
+            DB_MIGRATION_COMPAT_MODULE.contains(checksum),
+            "flattened published checksum must remain explicitly recognized"
+        );
+    }
+    assert!(DB_MIGRATION_COMPAT_MODULE.contains("verify_flattened_schema"));
+    assert!(DB_MIGRATION_COMPAT_MODULE.contains("Migrate::lock"));
     assert!(DB_ROLES_MODULE.contains("CREATE ROLE chenxing_runtime LOGIN"));
     assert!(!DATABASE_BASELINE.contains("CREATE ROLE"));
 
@@ -558,22 +1132,29 @@ fn database_uses_one_transactional_current_baseline() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
+    assert_eq!(migrations.len(), 32);
     assert_eq!(
-        migrations,
-        vec![
-            std::ffi::OsString::from("0001_initial.sql"),
-            std::ffi::OsString::from("0002_issuer_runtime.sql"),
-            std::ffi::OsString::from("0003_plan_quota_bounds.sql"),
-        ]
+        migrations.first().and_then(|name| name.to_str()),
+        Some("0001_initial.sql")
     );
+    assert_eq!(
+        migrations.last().and_then(|name| name.to_str()),
+        Some("0032_runtime_migration_ledger_boundary.sql")
+    );
+    for (index, name) in migrations.iter().enumerate() {
+        let expected_prefix = format!("{:04}_", index + 1);
+        assert!(
+            name.to_string_lossy().starts_with(&expected_prefix),
+            "migration history must be contiguous at {expected_prefix}"
+        );
+    }
 
     assert_eq!(
         DATABASE_BASELINE.matches("CREATE TABLE ").count(),
-        13,
-        "the baseline must declare the complete 13-table schema"
+        10,
+        "the published version-1 migration must remain the original ten-table schema"
     );
     for table in [
-        "plans",
         "users",
         "oauth_clients",
         "user_consents",
@@ -584,35 +1165,63 @@ fn database_uses_one_transactional_current_baseline() {
         "oauth_external_identities",
         "audit_events",
         "app_settings",
-        "session_outbox",
-        "audit_events_archive",
     ] {
         assert!(
             DATABASE_BASELINE.contains(&format!("CREATE TABLE {table} (")),
             "baseline is missing table {table}"
         );
     }
-
-    for forbidden in ["ADD COLUMN", "DROP CONSTRAINT", "DROP TABLE"] {
-        assert!(
-            !DATABASE_BASELINE.contains(forbidden),
-            "current-state baseline must not contain historical operation: {forbidden}"
-        );
-    }
-    assert!(
-        !DATABASE_BASELINE
-            .lines()
-            .any(|line| line.trim_start().starts_with("UPDATE ")),
-        "a fresh baseline must not carry old-row repair updates"
-    );
 }
 
 #[test]
-fn current_baseline_declares_final_security_and_consistency_invariants() {
+fn migration_preflight_is_inside_the_sqlx_lock_and_rejects_search_path_workarounds() {
     for marker in [
-        "canonical_email TEXT NOT NULL",
-        "CONSTRAINT users_canonical_email_key UNIQUE (canonical_email)",
-        "allow_legacy_refresh_tokens BOOLEAN NOT NULL DEFAULT FALSE",
+        "pg_catalog.pg_extension",
+        "pg_catalog.pg_namespace",
+        ".bind(PG_TRGM_EXTENSION)",
+        "ALTER EXTENSION pg_trgm SET SCHEMA public",
+        "Changing search_path cannot satisfy this contract",
+    ] {
+        assert!(
+            DB_MIGRATION_PREFLIGHT_MODULE.contains(marker),
+            "pg_trgm preflight is missing marker: {marker}"
+        );
+    }
+
+    let lock = DB_MIGRATION_COMPAT_MODULE
+        .find("Migrate::lock(&mut *connection).await?;")
+        .expect("migration must acquire SQLx's advisory lock");
+    let preflight = DB_MIGRATION_COMPAT_MODULE
+        .find("migration_preflight::verify(&mut connection).await?;")
+        .expect("migration must run the pg_trgm preflight");
+    let repair = DB_MIGRATION_COMPAT_MODULE
+        .find("repair_flattened_ledger(&mut connection, &migrator).await?")
+        .expect("flattened ledger compatibility must remain enabled");
+    let disable_nested_lock = DB_MIGRATION_COMPAT_MODULE
+        .find("migrator.set_locking(false);")
+        .expect("run_direct must not acquire the SQLx lock twice");
+    let run = DB_MIGRATION_COMPAT_MODULE
+        .find("migrator.run_direct(&mut *connection).await")
+        .expect("migration must run on the preflighted connection");
+    let unlock = DB_MIGRATION_COMPAT_MODULE
+        .find("Migrate::unlock(&mut *connection).await")
+        .expect("migration must release SQLx's advisory lock");
+
+    assert!(lock < preflight);
+    assert!(preflight < repair);
+    assert!(repair < disable_nested_lock);
+    assert!(disable_nested_lock < run);
+    assert!(run < unlock);
+    assert!(DB_MIGRATION_COMPAT_MODULE.contains("connection.close_on_drop();"));
+}
+
+#[test]
+fn migration_history_declares_final_security_and_consistency_invariants() {
+    let history = migration_history_sql();
+    for marker in [
+        "ADD COLUMN IF NOT EXISTS canonical_email TEXT",
+        "ALTER COLUMN canonical_email SET NOT NULL",
+        "ALTER COLUMN allow_legacy_refresh_tokens SET DEFAULT FALSE",
         "client_secret_version BIGINT NOT NULL DEFAULT 0",
         "state_version BIGINT NOT NULL DEFAULT 1",
         "CONSTRAINT oauth_providers_active_requires_email_verified_claim",
@@ -621,16 +1230,14 @@ fn current_baseline_declares_final_security_and_consistency_invariants() {
         "CREATE TRIGGER audit_events_append_only_trigger",
         "CREATE TRIGGER audit_events_archive_append_only_trigger",
         "GRANT UPDATE ON SEQUENCE %s TO chenxing_runtime",
+        "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I._sqlx_migrations",
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA %I REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLES",
     ] {
         assert!(
-            DATABASE_BASELINE.contains(marker),
-            "database baseline is missing invariant: {marker}"
+            history.contains(marker),
+            "database migration history is missing invariant: {marker}"
         );
     }
-    assert!(
-        !DATABASE_BASELINE.contains("allow_legacy_refresh_tokens BOOLEAN NOT NULL DEFAULT TRUE"),
-        "fresh clients must never start in legacy-token compatibility mode"
-    );
 }
 
 #[test]
@@ -653,10 +1260,29 @@ fn migration_checksum_manifest_lists_every_sql_file() {
         on_disk, listed,
         "checksum manifest must list every migration"
     );
+
+    let published = PUBLISHED_MIGRATION_CHECKSUMS.lines().collect::<Vec<_>>();
+    let current = manifest.lines().collect::<Vec<_>>();
+    assert_eq!(published.len(), 27);
+    assert_eq!(published, current[..published.len()]);
+    assert!(published.last().is_some_and(|line| {
+        line.ends_with("  0027_repair_canonical_email_constraint_scope.sql")
+    }));
+    for marker in [
+        "sha256sum -c published-checksums.sha256",
+        "published_count=\"$(wc -l < published-checksums.sha256)\"",
+        "head -n \"$published_count\" checksums.sha256",
+    ] {
+        assert!(
+            CI_WORKFLOW.contains(marker),
+            "CI must pin the published migration ledger: {marker}"
+        );
+    }
 }
 
 #[test]
 fn database_baseline_enforces_runtime_role_least_privilege() {
+    let history = migration_history_sql();
     for marker in [
         "chenxing_runtime",
         "GRANT USAGE ON SCHEMA",
@@ -667,8 +1293,8 @@ fn database_baseline_enforces_runtime_role_least_privilege() {
         "REVOKE ALL ON FUNCTION",
     ] {
         assert!(
-            DATABASE_BASELINE.contains(marker),
-            "database baseline is missing runtime privilege marker: {marker}"
+            history.contains(marker),
+            "database migration history is missing runtime privilege marker: {marker}"
         );
     }
 }
@@ -776,7 +1402,7 @@ fn request_path_pool_enforces_statement_timeout_and_maintenance_pool_does_not() 
 #[test]
 fn installer_runs_migrations_before_starting_the_application() {
     let migrate =
-        "docker compose --env-file .env -f docker-compose.prod.yml run --rm --build app migrate";
+        "docker compose --env-file .env -f docker-compose.prod.yml run --rm --build migrate";
     let start = "docker compose --env-file .env -f docker-compose.prod.yml up -d --build app";
     let migrate_at = INSTALL_SCRIPT
         .find(migrate)

@@ -44,6 +44,7 @@ use super::revocation::TokenRevocationError;
 use crate::consents::domain::ConsentState;
 use crate::consents::repository::{ConsentRepository, PgConsentRepository};
 use crate::redis_client::RedisClient;
+use crate::redis_keyspace::RedisKeyspace;
 use crate::users::domain::UserId;
 
 /// 生产模式下同意状态缓存键的 TTL（秒）。
@@ -116,11 +117,28 @@ impl CachedConsentState {
 pub struct ConsentStateCache {
     client: RedisClient,
     consents: Option<PgConsentRepository>,
+    keyspace: RedisKeyspace,
 }
 
 impl ConsentStateCache {
     pub fn new(client: RedisClient, consents: Option<PgConsentRepository>) -> Self {
-        Self { client, consents }
+        Self {
+            client,
+            consents,
+            keyspace: RedisKeyspace::default(),
+        }
+    }
+
+    pub fn with_keyspace(
+        client: RedisClient,
+        consents: Option<PgConsentRepository>,
+        keyspace: RedisKeyspace,
+    ) -> Self {
+        Self {
+            client,
+            consents,
+            keyspace,
+        }
     }
 
     /// 写入「已撤销」缓存结论。
@@ -244,7 +262,7 @@ impl ConsentStateCache {
     /// 删除本身不会导致错误放行——下一次判定会回源权威库。
     pub async fn forget(&self, user_id: &str, client_id: &str) -> Result<(), TokenRevocationError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let _: usize = connection.del(Self::key(user_id, client_id)).await?;
+        let _: usize = connection.del(self.key(user_id, client_id)).await?;
         Ok(())
     }
 
@@ -252,13 +270,17 @@ impl ConsentStateCache {
     ///
     /// 哈希而不是明文拼接：避免 user_id / client_id 出现在 Redis keyspace 中，
     /// 也让键长度固定，与 `sessions::store` 的键约定一致。
-    pub(super) fn key(user_id: &str, client_id: &str) -> String {
+    pub(super) fn legacy_key(user_id: &str, client_id: &str) -> String {
         let binding = format!("{user_id}:{client_id}");
         let digest = Sha256::digest(binding.as_bytes());
         format!(
             "chenxing:oauth:consent-state:{}",
             URL_SAFE_NO_PAD.encode(digest)
         )
+    }
+
+    fn key(&self, user_id: &str, client_id: &str) -> String {
+        self.keyspace.key(&Self::legacy_key(user_id, client_id))
     }
 
     /// 生效的键 TTL：见两个常量各自的取值依据。
@@ -276,7 +298,7 @@ impl ConsentStateCache {
         client_id: &str,
     ) -> Result<Option<CachedConsentState>, TokenRevocationError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let raw: Option<String> = connection.get(Self::key(user_id, client_id)).await?;
+        let raw: Option<String> = connection.get(self.key(user_id, client_id)).await?;
         Ok(raw.as_deref().and_then(CachedConsentState::parse))
     }
 
@@ -303,7 +325,7 @@ impl ConsentStateCache {
     ) -> Result<bool, TokenRevocationError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let accepted: i64 = Script::new(CONSENT_STATE_UPDATE_SCRIPT)
-            .key(Self::key(user_id, client_id))
+            .key(self.key(user_id, client_id))
             .arg(version)
             .arg(marker)
             .arg(self.state_ttl())

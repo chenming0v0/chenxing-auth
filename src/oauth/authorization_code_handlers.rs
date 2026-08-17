@@ -1,19 +1,49 @@
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Redirect, Response},
+};
 use std::fmt;
 
 use super::{
-    authorization::{ValidatedAuthorizationRequest, scopes_are_allowed},
+    authorization::{ValidatedAuthorizationRequest, redirect_uri_matches, scopes_are_allowed},
     code::AuthorizationCode,
     consent::PendingAuthorization,
     quota::{QuotaConsumeResult, QuotaReservation},
     session::active_user_id,
 };
-use crate::audit::AuditEvent;
-use crate::{error, state::AppState};
+use crate::{
+    audit::AuditEvent, clients::domain::canonicalize_redirect_uri, error, settings::IssuerSnapshot,
+    state::AppState,
+};
 
 pub enum AuthorizationCodeIssue {
     Redirect(String),
     QuotaExceeded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum AuthorizationCodeIssueError {
+    #[error("the authenticated session is no longer valid")]
+    InvalidSession,
+    #[error("the OAuth client is invalid")]
+    InvalidClient,
+    #[error("the authorization request is invalid")]
+    InvalidRequest,
+    #[error("authorization is temporarily unavailable")]
+    TemporarilyUnavailable,
+    #[error("authorization failed after validation")]
+    ServerError,
+}
+
+impl AuthorizationCodeIssueError {
+    pub const fn status(self) -> StatusCode {
+        match self {
+            Self::InvalidSession => StatusCode::UNAUTHORIZED,
+            Self::InvalidClient | Self::InvalidRequest => StatusCode::BAD_REQUEST,
+            Self::TemporarilyUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::ServerError => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
 }
 
 impl fmt::Debug for AuthorizationCodeIssue {
@@ -30,11 +60,12 @@ impl fmt::Debug for AuthorizationCodeIssue {
 
 pub async fn issue_authorization_code_result(
     state: &AppState,
+    issuer: &IssuerSnapshot,
     user_id: String,
     validated: ValidatedAuthorizationRequest,
     source_ip: Option<&str>,
     user_agent: Option<&str>,
-) -> Result<AuthorizationCodeIssue, Response> {
+) -> Result<AuthorizationCodeIssue, AuthorizationCodeIssueError> {
     match active_user_id(state, &user_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
@@ -53,15 +84,11 @@ pub async fn issue_authorization_code_result(
                     ),
                 ))
                 .await;
-            return Err(error::oauth_unauthorized(
-                "invalid_session",
-                "the authenticated session is no longer valid",
-                "Session realm=\"oauth\"",
-            ));
+            return Err(AuthorizationCodeIssueError::InvalidSession);
         }
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to load OAuth authorization user");
-            return Err(error::oauth_temporarily_unavailable());
+            return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
         }
     }
     let Some(client) = state
@@ -70,29 +97,25 @@ pub async fn issue_authorization_code_result(
         .await
         .map_err(|error_value| {
             tracing::error!(error = %error_value, "failed to load OAuth client for quota");
-            error::oauth_temporarily_unavailable()
+            AuthorizationCodeIssueError::TemporarilyUnavailable
         })?
     else {
-        return Err(error::oauth_bad_request(
-            "invalid_client",
-            "client is invalid",
-        ));
+        return Err(AuthorizationCodeIssueError::InvalidClient);
     };
+    let redirect_target = canonicalize_redirect_uri(&validated.redirect_uri)
+        .ok_or(AuthorizationCodeIssueError::InvalidRequest)?;
     if validated.client_id != client.client_id
         || !client
             .redirect_uris
             .iter()
-            .any(|uri| uri == &validated.redirect_uri)
+            .any(|uri| redirect_uri_matches(uri, &redirect_target))
         || !scopes_are_allowed(
             &client,
             &validated.scopes,
             &state.config.client_registration_limits.allowed_scopes,
         )
     {
-        return Err(error::oauth_bad_request(
-            "invalid_request",
-            "authorization request is invalid",
-        ));
+        return Err(AuthorizationCodeIssueError::InvalidRequest);
     }
     let limits = state
         .settings
@@ -100,7 +123,7 @@ pub async fn issue_authorization_code_result(
         .await
         .map_err(|error_value| {
             tracing::error!(error = %error_value, "failed to load OAuth security limits");
-            error::oauth_temporarily_unavailable()
+            AuthorizationCodeIssueError::TemporarilyUnavailable
         })?;
     let client_id = validated.client_id.clone();
     // 签发时刻必须来自共享时钟：store 保存时用 `self.clock.now()` 计算 Redis TTL，
@@ -115,6 +138,8 @@ pub async fn issue_authorization_code_result(
         // 授权码绑定签发时的会话摘要：会话撤销后 Token 端点会拒绝兑换。
         validated.session_token_hash,
         limits.authorization_code_ttl_seconds,
+        // 信任域绑定必须来自请求级快照，不能在签发中途重读 runtime。
+        issuer.generation(),
         state.clock.now(),
     );
     let state_value = validated.state;
@@ -134,7 +159,7 @@ pub async fn issue_authorization_code_result(
     {
         tracing::error!(error = %error_value, "failed to sync OAuth consent state cache");
         remove_authorization_code_after_failure(state, &code, &client_id, None).await;
-        return Err(error::oauth_temporarily_unavailable());
+        return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
     }
 
     // 只有用户自助创建的 Client 计量配额；admin Client（owner_user_id 为空）
@@ -145,7 +170,7 @@ pub async fn issue_authorization_code_result(
             Err(error_value) => {
                 tracing::error!(error = %error_value, "failed to load plan for OAuth authorization quota");
                 remove_authorization_code_after_failure(state, &code, &client_id, None).await;
-                return Err(error::oauth_temporarily_unavailable());
+                return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
             }
         },
         None => None,
@@ -161,7 +186,7 @@ pub async fn issue_authorization_code_result(
             Err(error_value) => {
                 tracing::error!(error = %error_value, "failed to consume OAuth authorization quota");
                 remove_authorization_code_after_failure(state, &code, &client_id, None).await;
-                return Err(error::oauth_temporarily_unavailable());
+                return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
             }
         };
         match consumption.result {
@@ -196,7 +221,7 @@ pub async fn issue_authorization_code_result(
         code.quota_reservation_id = Some(reservation.id().to_owned());
         if let Err(error_value) = state
             .oauth_quotas
-            .schedule_refund(reservation, code.expires_at.unix_timestamp())
+            .schedule_refund(reservation, code.expires_at)
             .await
         {
             tracing::error!(error = %error_value, "failed to schedule OAuth authorization quota refund");
@@ -207,7 +232,7 @@ pub async fn issue_authorization_code_result(
                 quota_reservation.as_ref(),
             )
             .await;
-            return Err(error::oauth_temporarily_unavailable());
+            return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
         }
     }
     if let Err(store_error) = state.authorization_codes.save(&code).await {
@@ -220,7 +245,7 @@ pub async fn issue_authorization_code_result(
             quota_reservation.as_ref(),
         )
         .await;
-        return Err(error::oauth_temporarily_unavailable());
+        return Err(AuthorizationCodeIssueError::TemporarilyUnavailable);
     }
     if state
         .audit
@@ -246,10 +271,10 @@ pub async fn issue_authorization_code_result(
             quota_reservation.as_ref(),
         )
         .await;
-        return Err(error::oauth_server_error());
+        return Err(AuthorizationCodeIssueError::ServerError);
     }
 
-    let mut redirect_uri = match url::Url::parse(&validated.redirect_uri) {
+    let mut redirect_uri = match url::Url::parse(&redirect_target) {
         Ok(uri) => uri,
         Err(parse_error) => {
             remove_authorization_code_after_failure(
@@ -260,7 +285,7 @@ pub async fn issue_authorization_code_result(
             )
             .await;
             tracing::error!(error = %parse_error, "validated redirect URI could not be parsed");
-            return Err(error::oauth_server_error());
+            return Err(AuthorizationCodeIssueError::ServerError);
         }
     };
     redirect_uri
@@ -277,13 +302,19 @@ async fn remove_authorization_code_after_failure(
     client_id: &str,
     quota_reservation: Option<&QuotaReservation>,
 ) {
-    if let Err(error_value) = state.authorization_codes.take(&code.value).await {
-        tracing::warn!(
-            error = %error_value,
-            "failed to compensate authorization code after authorization failure"
-        );
+    // Refund only after Redis gives a definitive result. If the operation
+    // fails, the code may still exist and remain redeemable, so refunding
+    // would let the same authorization consume quota twice.
+    match state.authorization_codes.take(&code.value).await {
+        Ok(_) => refund_quota_if_consumed(state, client_id, quota_reservation).await,
+        Err(error_value) => {
+            tracing::error!(
+                error = %error_value,
+                client_id = %client_id,
+                "failed to compensate authorization code; quota refund skipped"
+            );
+        }
     }
-    refund_quota_if_consumed(state, client_id, quota_reservation).await;
 }
 
 async fn refund_quota_if_consumed(
@@ -336,11 +367,34 @@ pub(crate) fn authorization_quota_redirect(pending: &PendingAuthorization) -> Re
     Redirect::to(redirect.as_str()).into_response()
 }
 
+pub(crate) fn authorization_code_issue_error_response(
+    error_value: AuthorizationCodeIssueError,
+) -> Response {
+    match error_value {
+        AuthorizationCodeIssueError::InvalidSession => error::oauth_unauthorized(
+            "invalid_session",
+            "the authenticated session is no longer valid",
+            "Session realm=\"oauth\"",
+        ),
+        AuthorizationCodeIssueError::InvalidClient => {
+            error::oauth_bad_request("invalid_client", "client is invalid")
+        }
+        AuthorizationCodeIssueError::InvalidRequest => {
+            error::oauth_bad_request("invalid_request", "authorization request is invalid")
+        }
+        AuthorizationCodeIssueError::TemporarilyUnavailable => {
+            error::oauth_temporarily_unavailable()
+        }
+        AuthorizationCodeIssueError::ServerError => error::oauth_server_error(),
+    }
+}
+
 /// `validated_pending_request` 的反向路径：会话绑定统一从
 /// `ValidatedAuthorizationRequest::session_token_hash` 读取，不再另开参数，
 /// 避免两个来源不一致时静默丢掉绑定。
 pub(crate) fn pending_from_validated(
     request: &ValidatedAuthorizationRequest,
+    issuer_generation: i64,
 ) -> PendingAuthorization {
     PendingAuthorization {
         request_id: uuid::Uuid::new_v4().to_string(),
@@ -348,6 +402,7 @@ pub(crate) fn pending_from_validated(
         redirect_uri: request.redirect_uri.clone(),
         scope: request.scopes.join(" "),
         state: request.state.clone(),
+        issuer_generation: Some(issuer_generation),
         nonce: request.nonce.clone(),
         code_challenge: request.code_challenge.clone(),
         code_challenge_method: "S256".to_owned(),
@@ -355,29 +410,41 @@ pub(crate) fn pending_from_validated(
         // holder 由 `save_and_redirect_to_ui` 在交给 SPA 之前生成并回填（#115 / #270）。
         // 这里留 None：预授权直通路径不经过 SPA 也不经过绑定端点，不需要 holder。
         holder_hash: None,
+        cas_revision: 0,
     }
 }
 
 pub(crate) async fn restore_pending_after_failure(
     state: &AppState,
     pending: &PendingAuthorization,
+    remaining_ttl_ms: u64,
 ) {
-    if let Err(store_error) = state.authorization_requests.save(pending).await {
+    if remaining_ttl_ms == 0 {
+        return;
+    }
+    if let Err(store_error) = state
+        .authorization_requests
+        .save_limited_with_ttl(pending, remaining_ttl_ms)
+        .await
+    {
         tracing::error!(error = %store_error, "failed to restore OAuth authorization request");
     }
 }
 
 pub async fn issue_authorization_code(
     state: &AppState,
+    issuer: &IssuerSnapshot,
     user_id: String,
     validated: ValidatedAuthorizationRequest,
     source_ip: Option<&str>,
     user_agent: Option<&str>,
 ) -> Response {
-    let pending = pending_from_validated(&validated);
-    match issue_authorization_code_result(state, user_id, validated, source_ip, user_agent).await {
+    let pending = pending_from_validated(&validated, issuer.generation());
+    match issue_authorization_code_result(state, issuer, user_id, validated, source_ip, user_agent)
+        .await
+    {
         Ok(AuthorizationCodeIssue::Redirect(redirect)) => Redirect::to(&redirect).into_response(),
         Ok(AuthorizationCodeIssue::QuotaExceeded) => authorization_quota_redirect(&pending),
-        Err(response) => response,
+        Err(error_value) => authorization_code_issue_error_response(error_value),
     }
 }

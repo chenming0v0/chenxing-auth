@@ -4,23 +4,27 @@ use thiserror::Error;
 
 use super::{
     grant_gate::{GrantGateError, effective_grant_scopes},
-    quota::QuotaRefundCancel,
     refresh::RefreshToken,
     session::active_user_epoch,
 };
-use crate::{clients::service::AuthenticatedClient, config::IssuerUrl, state::AppState};
+use crate::{clients::service::AuthenticatedClient, settings::IssuerSnapshot, state::AppState};
 
 #[path = "refresh_use_case.rs"]
 mod refresh_use_case;
 #[path = "token_exchange_audit.rs"]
 mod token_exchange_audit;
+#[path = "token_use_case_finalize.rs"]
+mod token_use_case_finalize;
 #[path = "token_use_case_support.rs"]
 mod token_use_case_support;
-use token_exchange_audit::{exchange_failure, record_token_exchange_success};
+use token_exchange_audit::exchange_failure;
+use token_use_case_finalize::{
+    AuthorizationCodeFinalization, finalize_authorization_code_exchange,
+};
 pub(crate) use token_use_case_support::{TokenIssueParams, issue_token_response};
 use token_use_case_support::{
-    authorization_code_session_auth_time, compensate_authorization_code_exchange,
-    validate_code_binding,
+    authorization_code_session_binding, compensate_authorization_code_exchange,
+    confirm_consent_after_persist, validate_code_binding,
 };
 
 #[derive(Deserialize)]
@@ -145,7 +149,7 @@ pub async fn exchange_code(
     state: &AppState,
     request: TokenRequest,
     authenticated: AuthenticatedClient,
-    issuer: &IssuerUrl,
+    issuer: &IssuerSnapshot,
 ) -> Result<TokenResponse, OAuthError> {
     let Some(code_value) = request.code.as_deref() else {
         return exchange_failure(
@@ -167,6 +171,9 @@ pub async fn exchange_code(
         )
         .await;
     };
+    // 不在 Token 端点 canonicalize：授权码保存的是授权请求通过校验时的原始
+    // redirect_uri 文本。RFC 6749 要求兑换提交同一值，默认端口或根斜杠等
+    // canonical 等价值仍然属于不同绑定（Issue #543）。
     let Some(code_verifier) = request.code_verifier.as_deref() else {
         return exchange_failure(
             state,
@@ -221,6 +228,25 @@ pub async fn exchange_code(
         )
         .await;
     }
+    // Authorization codes belong to the Issuer generation that minted them.
+    // Compare against the request-scoped snapshot before CAS so an A-era
+    // code cannot be consumed into iss=B tokens after a hot switch. Missing
+    // generation is a pre-upgrade payload and fails closed.
+    if !code.is_bound_to_issuer_generation(issuer.generation()) {
+        let reason = if code.issuer_generation.is_none() {
+            "authorization_code_issuer_generation_required"
+        } else {
+            "issuer_generation_changed"
+        };
+        return exchange_failure(
+            state,
+            Some(&code.user_id),
+            Some(client_id),
+            reason,
+            OAuthError::invalid_grant(),
+        )
+        .await;
+    }
     if let Err(error) = validate_code_binding(
         client_id,
         redirect_uri,
@@ -266,8 +292,8 @@ pub async fn exchange_code(
     };
     // Session binding is intentionally checked before the authorization-code CAS. A failed
     // request must not burn a valid code before binding, expiry, and PKCE all pass.
-    let auth_time = match authorization_code_session_auth_time(state, &code).await {
-        Ok(auth_time) => auth_time,
+    let session_binding = match authorization_code_session_binding(state, &code).await {
+        Ok(binding) => binding,
         Err(error) => {
             return exchange_failure(
                 state,
@@ -284,8 +310,8 @@ pub async fn exchange_code(
     // #417）；scope 也不复核当前注册集合（Issue #421）。闸门与 refresh /
     // UserInfo 共用同一实现，放在 CAS 之前：授权失效不该先烧掉授权码，存储
     // 故障更不该。
-    let scopes = match effective_grant_scopes(state, &code.user_id, client_id, &code.scopes).await {
-        Ok(scopes) => scopes,
+    let grant = match effective_grant_scopes(state, &code.user_id, client_id, &code.scopes).await {
+        Ok(grant) => grant,
         Err(gate_error) => {
             let error = match gate_error {
                 GrantGateError::Denied(_) => OAuthError::invalid_grant(),
@@ -338,7 +364,7 @@ pub async fn exchange_code(
     let quota_cancel = code
         .quota_reservation_id
         .as_deref()
-        .map(QuotaRefundCancel::for_reservation);
+        .map(|reservation_id| state.oauth_quotas.refund_cancel(reservation_id));
     match state
         .authorization_codes
         .take_if_matches_with_quota_cancel(code_value, &code, quota_cancel)
@@ -384,9 +410,10 @@ pub async fn exchange_code(
     let refresh = RefreshToken::new_at_with_client_secret_version(
         client_id.to_owned(),
         code.user_id.clone(),
-        scopes.clone(),
+        grant.scopes.clone(),
         authenticated.client_secret_version(),
         user_epoch,
+        issuer.generation(),
         state.clock.now(),
     );
     if let Err(store_error) = state.refresh_tokens.save(&refresh).await {
@@ -423,59 +450,33 @@ pub async fn exchange_code(
         )
         .await;
     }
-    let token = match issue_token_response(
+    confirm_consent_after_persist(
         state,
-        TokenIssueParams {
-            issuer,
-            user_id: &code.user_id,
+        &code.user_id,
+        client_id,
+        grant.consent_version,
+        &code,
+        &refresh.value,
+    )
+    .await?;
+    finalize_authorization_code_exchange(
+        state,
+        AuthorizationCodeFinalization {
+            issuer: issuer.issuer(),
+            code: &code,
             client_id,
-            scopes: &scopes,
-            refresh_token: Some(refresh.value.clone()),
-            nonce: code.nonce.as_deref(),
-            auth_time,
+            scopes: &grant.scopes,
+            refresh: &refresh,
+            session: &session_binding,
         },
     )
     .await
-    {
-        Ok(token) => token,
-        Err(error) => {
-            compensate_authorization_code_exchange(state, &code, &refresh.value).await;
-            return exchange_failure(
-                state,
-                Some(&code.user_id),
-                Some(client_id),
-                "token_issuance_failed",
-                error,
-            )
-            .await;
-        }
-    };
-    if let Err(audit_error) =
-        record_token_exchange_success(state, &code.user_id, client_id, &scopes).await
-    {
-        compensate_authorization_code_exchange(state, &code, &refresh.value).await;
-        tracing::error!(
-            error = %audit_error,
-            client_id = %client_id,
-            user_id = %code.user_id,
-            "failed to record OAuth token exchange audit event"
-        );
-        return exchange_failure(
-            state,
-            Some(&code.user_id),
-            Some(client_id),
-            "success_audit_failed",
-            OAuthError::server_error(),
-        )
-        .await;
-    }
-    Ok(token)
 }
 
 /// Exchange a refresh token after the token endpoint has authenticated the client.
 pub async fn exchange_refresh_token(
     state: &AppState,
-    issuer: &IssuerUrl,
+    issuer: &IssuerSnapshot,
     request: TokenRequest,
     authenticated: AuthenticatedClient,
 ) -> Result<TokenResponse, RefreshExchangeError> {

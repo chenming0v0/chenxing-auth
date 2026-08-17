@@ -15,10 +15,11 @@ use super::client_errors::{
 };
 use crate::{
     admin::domain::AdminPermission,
-    api::extract::{AdminRead, AdminWrite},
+    api::extract::{AdminRead, AdminWrite, ApiJson},
     audit::AuditEvent,
     clients::{
         domain::ClientRegistrationInput,
+        idempotency::IdempotencyKey,
         service::{ClientRegistrationRequest, ClientServiceError},
     },
     error,
@@ -80,7 +81,8 @@ struct ClientSummary {
 pub async fn create_client(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<ClientRegistrationRequest>,
+    headers: HeaderMap,
+    ApiJson(input): ApiJson<ClientRegistrationRequest>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageClients)
@@ -90,42 +92,75 @@ pub async fn create_client(
         Err(response) => return response,
     };
 
-    match state.clients.register(input).await {
-        Ok(client) => {
-            let client_id = client.client_id.clone();
-            let (actor_type, actor_id) = actor.audit_fields();
-            // Client 已落库后必须先写审计，审计成功后才把凭据返回给调用者。
-            // 若审计失败：client 记录已在数据库提交，但调用者拿不到 secret，
-            // 攻击者无法利用未被记录的凭据；record_blocking 会发出
-            // audit.block_on_failure 结构化日志供运维人工补账。
-            if state
-                .audit
-                .record_blocking(AuditEvent::new(
-                    actor_type.to_owned(),
-                    actor_id,
-                    crate::audit::AuditAction::ClientCreate,
-                    "oauth_client".to_owned(),
-                    Some(client_id.clone()),
-                    serde_json::json!({"result": "success"}),
-                ))
+    let (actor_type, actor_id) = actor.audit_fields();
+    let idempotency_key = match parse_idempotency_key(&headers) {
+        Ok(key) => key,
+        Err(()) => {
+            return error::bad_request("invalid_idempotency_key", "idempotency key is invalid");
+        }
+    };
+    let result = match idempotency_key {
+        Some(key) => {
+            let actor_scope = format!(
+                "admin:{}:{}",
+                actor_type,
+                actor_id.as_deref().unwrap_or("system")
+            );
+            state
+                .clients
+                .register_with_audit_idempotent(input, actor_scope, key, move |client| {
+                    AuditEvent::new(
+                        actor_type.to_owned(),
+                        actor_id,
+                        crate::audit::AuditAction::ClientCreate,
+                        "oauth_client".to_owned(),
+                        Some(client.client_id.clone()),
+                        serde_json::json!({"result": "success"}),
+                    )
+                })
                 .await
-                .is_err()
-            {
-                return error::internal();
-            }
-            (
-                axum::http::StatusCode::CREATED,
-                Json(RegisteredClientResponse {
-                    id: client.id,
-                    client_id: client.client_id,
-                    client_name: client.client_name,
-                    redirect_uris: client.redirect_uris,
-                    scopes: client.scopes,
-                    auth_method: client.auth_method.as_str(),
-                    client_secret: client.client_secret,
-                }),
+        }
+        None => {
+            state
+                .clients
+                .register_with_audit(input, move |client| {
+                    AuditEvent::new(
+                        actor_type.to_owned(),
+                        actor_id,
+                        crate::audit::AuditAction::ClientCreate,
+                        "oauth_client".to_owned(),
+                        Some(client.client_id.clone()),
+                        serde_json::json!({"result": "success"}),
+                    )
+                })
+                .await
+        }
+    };
+    match result {
+        Ok(client) => (
+            axum::http::StatusCode::CREATED,
+            Json(RegisteredClientResponse {
+                id: client.id,
+                client_id: client.client_id,
+                client_name: client.client_name,
+                redirect_uris: client.redirect_uris,
+                scopes: client.scopes,
+                auth_method: client.auth_method.as_str(),
+                client_secret: client.client_secret,
+            }),
+        )
+            .into_response(),
+        Err(ClientServiceError::AuditUnavailable) => {
+            // #72 运维契约：凭据签发被审计失败阻断时留下可检索的结构化事件。
+            tracing::error!(
+                event = "audit.block_on_failure",
+                operation = "client_create",
+                "client creation rolled back because its audit record could not be written"
+            );
+            error::service_unavailable(
+                "audit_unavailable",
+                "the operation was rolled back because its audit record could not be written; retry later",
             )
-                .into_response()
         }
         Err(error_value) => create_client_error_response(&error_value),
     }
@@ -174,7 +209,7 @@ pub async fn update_client(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(client_id): Path<String>,
-    Json(input): Json<ClientRegistrationInput>,
+    ApiJson(input): ApiJson<ClientRegistrationInput>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageClients)
@@ -262,6 +297,7 @@ pub async fn rotate_secret(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(client_id): Path<String>,
+    headers: HeaderMap,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageClients)
@@ -270,31 +306,56 @@ pub async fn rotate_secret(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    match state.clients.rotate_secret(&client_id).await {
-        Ok(secret) => {
-            let client_id = secret.client_id.clone();
-            let (actor_type, actor_id) = actor.audit_fields();
-            // 与 create_client 一致：新 secret 已落库后先写审计，成功后才返回它。
-            // 若审计失败：旧 secret 已在数据库失效，但调用者拿不到新 secret，
-            // 该 client 暂时无法认证；record_blocking 会发出
-            // audit.block_on_failure 结构化日志供运维人工补账。
-            if state
-                .audit
-                .record_blocking(AuditEvent::new(
-                    actor_type.to_owned(),
-                    actor_id,
-                    crate::audit::AuditAction::ClientSecretRotate,
-                    "oauth_client".to_owned(),
-                    Some(client_id.clone()),
-                    serde_json::json!({"result": "success"}),
-                ))
-                .await
-                .is_err()
-            {
-                return error::internal();
-            }
-            (StatusCode::OK, Json(secret)).into_response()
+    let (actor_type, actor_id) = actor.audit_fields();
+    let idempotency_key = match parse_idempotency_key(&headers) {
+        Ok(key) => key,
+        Err(()) => {
+            return error::bad_request("invalid_idempotency_key", "idempotency key is invalid");
         }
+    };
+    let actor_scope = format!(
+        "admin:{}:{}",
+        actor_type,
+        actor_id.as_deref().unwrap_or("system")
+    );
+    let result = match idempotency_key {
+        Some(key) => {
+            state
+                .clients
+                .rotate_secret_with_audit_idempotent(
+                    &client_id,
+                    actor_scope,
+                    key,
+                    AuditEvent::new(
+                        actor_type.to_owned(),
+                        actor_id,
+                        crate::audit::AuditAction::ClientSecretRotate,
+                        "oauth_client".to_owned(),
+                        Some(client_id.clone()),
+                        serde_json::json!({"result": "success"}),
+                    ),
+                )
+                .await
+        }
+        None => {
+            state
+                .clients
+                .rotate_secret_with_audit(
+                    &client_id,
+                    AuditEvent::new(
+                        actor_type.to_owned(),
+                        actor_id,
+                        crate::audit::AuditAction::ClientSecretRotate,
+                        "oauth_client".to_owned(),
+                        Some(client_id.clone()),
+                        serde_json::json!({"result": "success"}),
+                    ),
+                )
+                .await
+        }
+    };
+    match result {
+        Ok(secret) => (StatusCode::OK, Json(secret)).into_response(),
         // 轮换冲突要留痕：这是并发轮换的可观测信号，响应体本身由映射函数给出，
         // 与直接走映射的路径保持同一个状态码和错误码。
         Err(error_value @ ClientServiceError::SecretRotationConflict) => {
@@ -315,6 +376,18 @@ pub async fn rotate_secret(
                 .await;
             rotate_secret_error_response(&error_value)
         }
+        Err(ClientServiceError::AuditUnavailable) => {
+            // #72 运维契约：一次性 Secret 签发被审计失败阻断时留下可检索的结构化事件。
+            tracing::error!(
+                event = "audit.block_on_failure",
+                operation = "client_secret_rotate",
+                "secret rotation rolled back because its audit record could not be written"
+            );
+            error::service_unavailable(
+                "audit_unavailable",
+                "the operation was rolled back because its audit record could not be written; retry later",
+            )
+        }
         Err(error_value) => rotate_secret_error_response(&error_value),
     }
 }
@@ -327,4 +400,12 @@ pub(crate) fn is_admin_request(state: &AppState, headers: &HeaderMap) -> bool {
         return false;
     };
     state.admin.is_authorization_header_valid(value)
+}
+
+fn parse_idempotency_key(headers: &HeaderMap) -> Result<Option<IdempotencyKey>, ()> {
+    let Some(value) = headers.get("idempotency-key") else {
+        return Ok(None);
+    };
+    let value = value.to_str().map_err(|_| ())?;
+    IdempotencyKey::parse(value).map(Some).map_err(|_| ())
 }

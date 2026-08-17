@@ -3,7 +3,9 @@ use super::{
     responses::{mfa_failure_response, passkey_confirmation_response},
     ticket_proof::ticket_proof,
 };
-use crate::{auth_factors::service::AuthFactorServiceError, error, state::AppState};
+use crate::{
+    api::extract::ApiJson, auth_factors::service::AuthFactorServiceError, error, state::AppState,
+};
 use axum::{
     Json,
     extract::{ConnectInfo, Extension, State},
@@ -16,7 +18,7 @@ pub async fn start_passkey_registration(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(input): Json<PasskeyTicketInput>,
+    ApiJson(input): ApiJson<PasskeyTicketInput>,
 ) -> Response {
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
@@ -89,7 +91,7 @@ pub async fn finish_passkey_registration(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(input): Json<PasskeyRegistrationInput>,
+    ApiJson(input): ApiJson<PasskeyRegistrationInput>,
 ) -> Response {
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
@@ -135,7 +137,7 @@ pub async fn start_passkey_authentication(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(input): Json<PasskeyTicketInput>,
+    ApiJson(input): ApiJson<PasskeyTicketInput>,
 ) -> Response {
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
@@ -173,7 +175,7 @@ pub async fn finish_passkey_authentication(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(input): Json<PasskeyAuthenticationInput>,
+    ApiJson(input): ApiJson<PasskeyAuthenticationInput>,
 ) -> Response {
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
@@ -205,6 +207,13 @@ pub async fn finish_passkey_authentication(
             error::bad_request("passkey_disabled", "passkey authentication is disabled")
         }
         Err(AuthFactorServiceError::RateLimited) => {
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
+        }
+        Err(AuthFactorServiceError::PasskeyUpdateConflict) => {
+            tracing::warn!(
+                event = "auth_factor.passkey.update_conflict",
+                "passkey credential compare-and-swap did not apply"
+            );
             error::unauthorized("invalid_factor", "authentication factor is invalid")
         }
         Err(factor_error) => {

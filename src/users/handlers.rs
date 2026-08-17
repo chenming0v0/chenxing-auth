@@ -5,19 +5,20 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
-use std::{fmt, net::SocketAddr};
+use std::net::SocketAddr;
 
 use super::{
+    auth_audit::record_security_event,
     domain::{LoginInput, RegistrationError, RegistrationInput},
+    login_use_case::{LoginDecision, LoginUseCaseError, decide_login},
     service::UserServiceError,
 };
 use crate::{
-    api::extract::SessionWrite,
+    api::extract::{ApiJson, SessionWrite},
     audit::AuditEvent,
     auth_factors::{
         handlers::factor_key_unavailable_response,
-        service::FactorVerification,
-        session::{StaleCredentialCode, issue_user_session},
+        session::{StaleCredentialCode, factor_required_ticket_response, issue_user_session},
     },
     error,
     sessions::cookies,
@@ -29,28 +30,19 @@ struct CreatedUserResponse {
     user: super::domain::PublicUser,
 }
 
-#[derive(Serialize)]
-struct PendingLoginResponse {
-    status: &'static str,
-    methods: Vec<crate::auth_factors::domain::FactorMethod>,
-}
-
-impl fmt::Debug for PendingLoginResponse {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PendingLoginResponse")
-            .field("status", &self.status)
-            .field("login_ticket", &"<redacted>")
-            .field("methods", &self.methods)
-            .finish()
-    }
-}
-
 pub async fn register_user(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(input): Json<RegistrationInput>,
+    ApiJson(input): ApiJson<RegistrationInput>,
 ) -> Response {
+    if !state.issuer.is_ready() {
+        return if state.issuer.is_awaiting_configuration() {
+            error::issuer_not_configured()
+        } else {
+            error::issuer_runtime_invalid()
+        };
+    }
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
         &headers,
@@ -137,6 +129,10 @@ pub async fn register_user(
         Err(UserServiceError::SourceIpUnavailable) => error::internal(),
         Err(UserServiceError::LastOwnerRequired) => error::internal(),
         Err(UserServiceError::ManageRolesRequired) => error::internal(),
+        Err(UserServiceError::ManagementActor(_)) => {
+            tracing::error!("management actor validation reached public registration");
+            error::internal()
+        }
         // 公开注册没有同事务审计要求，这个变体到不了这里；保留分支只为让新增
         // `UserServiceError` 变体在编译期被发现，而不是落进兜底的 500。
         Err(UserServiceError::AuditUnavailable) => error::internal(),
@@ -151,9 +147,8 @@ pub async fn login_user(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(input): Json<LoginInput>,
+    ApiJson(input): ApiJson<LoginInput>,
 ) -> Response {
-    let totp_code = input.totp_code.clone();
     // 审计的 `account_ref` 必须与限流的账号维度用同一个键（Issue #302）。
     // 补丁前这里独立做 `trim().to_ascii_lowercase()`，Unicode 域名下算出的串与
     // `canonical_email` 不同，于是同一个账号按不同书写登录会留下两个不同的
@@ -172,11 +167,20 @@ pub async fn login_user(
     );
     // UA 与源 IP 一起进入认证失败审计（Issue #308），只解析一次。
     let user_agent = crate::api::user_agent(&headers);
-    // `authenticated` 绑定了本次口令校验所依据的 session_epoch（Issue #274）。
-    // 之后签发 ticket 或 Session 都用它，不再重新读当前 epoch。
-    let authenticated = match state.users.authenticate(input, source_ip.as_deref()).await {
-        Ok(authenticated) => authenticated,
-        Err(UserServiceError::InvalidCredentials) => {
+    // 应用用例返回纯决策；本层只保留审计与 HTTP/Cookie 映射（Issue #140）。
+    // `AuthenticatedUser` 绑定本次口令校验所依据的 session_epoch（Issue #274），
+    // 后续签发 ticket 或 Session 继续使用该值，不重新读取当前 epoch。
+    match decide_login(
+        &state.users,
+        &state.factors,
+        &state.issuer,
+        input,
+        &identifier,
+        source_ip.as_deref(),
+    )
+    .await
+    {
+        Err(LoginUseCaseError::User(UserServiceError::InvalidCredentials)) => {
             record_security_event(
                 &state,
                 crate::audit::AuditAction::LoginFailure,
@@ -187,18 +191,16 @@ pub async fn login_user(
                 user_agent.as_deref(),
             )
             .await;
-            return error::unauthorized(
+            error::unauthorized(
                 "invalid_credentials",
                 "username, email, or password is incorrect",
-            );
+            )
         }
-        Err(UserServiceError::InvalidLoginInput) => {
-            return error::unauthorized(
-                "invalid_credentials",
-                "username, email, or password is incorrect",
-            );
-        }
-        Err(UserServiceError::RateLimited) => {
+        Err(LoginUseCaseError::User(UserServiceError::InvalidLoginInput)) => error::unauthorized(
+            "invalid_credentials",
+            "username, email, or password is incorrect",
+        ),
+        Err(LoginUseCaseError::User(UserServiceError::RateLimited)) => {
             record_security_event(
                 &state,
                 crate::audit::AuditAction::RateLimitTriggered,
@@ -209,194 +211,127 @@ pub async fn login_user(
                 user_agent.as_deref(),
             )
             .await;
-            return error::unauthorized(
+            error::unauthorized(
                 "invalid_credentials",
                 "username, email, or password is incorrect",
-            );
+            )
         }
-        Err(UserServiceError::Limiter(limiter_error)) => {
+        Err(LoginUseCaseError::User(UserServiceError::Limiter(limiter_error))) => {
             tracing::warn!(
                 error = %limiter_error,
                 "authentication limiter unavailable during login"
             );
-            return error::internal();
+            error::internal()
         }
-        Err(UserServiceError::Database(database_error)) => {
+        Err(LoginUseCaseError::User(UserServiceError::Database(database_error))) => {
             tracing::error!(error = %database_error, "failed to authenticate user");
-            return error::internal();
+            error::internal()
         }
-        Err(error) => {
-            tracing::error!(error = %error, "unexpected authentication failure");
-            return error::internal();
+        Err(LoginUseCaseError::User(error_value)) => {
+            tracing::error!(error = %error_value, "unexpected authentication failure");
+            error::internal()
         }
-    };
-    let user_id = authenticated.id;
-
-    let methods = match state.factors.available_methods(user_id).await {
-        Ok(methods) => methods,
-        Err(factor_error) => {
+        Err(LoginUseCaseError::Factor(factor_error)) => {
             tracing::error!(error = %factor_error, "failed to load authentication factors");
-            return error::internal();
+            error::internal()
         }
-    };
-    if methods.contains(&crate::auth_factors::domain::FactorMethod::Totp) && totp_code.is_some() {
-        let verification = match state
-            .factors
-            .verify_totp(
-                user_id,
-                &identifier,
-                source_ip.as_deref(),
-                totp_code.as_deref().unwrap_or_default(),
-            )
-            .await
-        {
-            Ok(verification) => verification,
-            Err(crate::auth_factors::service::AuthFactorServiceError::RateLimited) => {
-                record_security_event(
-                    &state,
-                    crate::audit::AuditAction::MfaFailure,
-                    Some(user_id),
-                    "totp_rate_limited",
-                    None,
-                    source_ip.as_deref(),
-                    user_agent.as_deref(),
-                )
-                .await;
-                return error::unauthorized("invalid_factor", "authentication factor is invalid");
-            }
-            Err(factor_error) => {
-                tracing::error!(error = %factor_error, "failed to verify TOTP");
-                return error::internal();
-            }
-        };
-        match verification {
-            FactorVerification::Accepted => {
-                return issue_user_session(
-                    &state,
-                    authenticated,
-                    "totp",
-                    &headers,
-                    source_ip.as_deref(),
-                    StaleCredentialCode::InvalidCredentials,
-                )
-                .await;
-            }
-            // 密钥退役导致的不可验证不是一次凭据失败：单独的审计动作与 503，
-            // 且 service 层已归还预留额度，不烧账号/IP 失败计数（#258）。
-            FactorVerification::KeyUnavailable => {
-                let source_ip = source_ip.as_deref();
-                return factor_key_unavailable_response(
-                    &state,
-                    Some(user_id),
-                    source_ip,
-                    crate::api::user_agent(&headers).as_deref(),
-                )
-                .await;
-            }
-            FactorVerification::Rejected => {
-                record_security_event(
-                    &state,
-                    crate::audit::AuditAction::MfaFailure,
-                    Some(user_id),
-                    "totp_invalid",
-                    None,
-                    source_ip.as_deref(),
-                    user_agent.as_deref(),
-                )
-                .await;
-                return error::unauthorized("invalid_factor", "authentication factor is invalid");
-            }
-        }
-    }
-
-    let setup_required = methods.is_empty();
-    if setup_required {
-        let recovery_required = match state.factors.is_passkey_recovery_required(user_id).await {
-            Ok(required) => required,
-            Err(factor_error) => {
-                tracing::error!(error = %factor_error, "failed to check authentication recovery policy");
-                return error::internal();
-            }
-        };
-        if recovery_required {
-            record_security_event(
-                &state,
-                crate::audit::AuditAction::PasskeyRecoveryRequired,
-                Some(user_id),
-                "passkey_disabled",
-                None,
-                source_ip.as_deref(),
-                user_agent.as_deref(),
-            )
-            .await;
-        }
-    }
-    let ticket_methods = if setup_required {
-        match state.factors.available_setup_methods().await {
-            Ok(methods) => methods,
-            Err(factor_error) => {
-                tracing::error!(error = %factor_error, "failed to load authentication setup policy");
-                return error::internal();
-            }
-        }
-    } else {
-        methods
-    };
-    let holder = cookies::new_login_ticket_holder();
-    let holder_hash = cookies::login_ticket_holder_hash(&holder);
-    let (login_ticket, _) = match state
-        .factors
-        .create_login_ticket(authenticated, ticket_methods.clone(), &holder_hash)
-        .await
-    {
-        Ok(ticket) => ticket,
-        // 并发改密作废了本次口令：与其他凭据失败共用 401 invalid_credentials，
-        // 不签发任何 ticket，也不向调用方暴露"刚刚发生过改密"。
-        Err(crate::auth_factors::service::AuthFactorServiceError::AuthenticationEpochChanged) => {
+        Err(LoginUseCaseError::IssuerRestricted(user_id)) => {
             record_security_event(
                 &state,
                 crate::audit::AuditAction::LoginFailure,
                 Some(user_id),
-                "credentials_superseded",
+                "issuer_setup_restricted",
                 Some(&identifier),
                 source_ip.as_deref(),
                 user_agent.as_deref(),
             )
             .await;
-            return error::unauthorized(
+            error::unauthorized(
                 "invalid_credentials",
                 "username, email, or password is incorrect",
-            );
+            )
         }
-        Err(factor_error) => {
-            tracing::error!(error = %factor_error, "failed to create pending login ticket");
-            return error::internal();
+        Ok(LoginDecision::TotpAccepted(authenticated)) => {
+            issue_user_session(
+                &state,
+                authenticated,
+                "totp",
+                &headers,
+                source_ip.as_deref(),
+                StaleCredentialCode::InvalidCredentials,
+                false,
+            )
+            .await
         }
-    };
-    let status = if setup_required {
-        "factor_setup_required"
-    } else {
-        "factor_required"
-    };
-    let mut response = (
-        StatusCode::ACCEPTED,
-        Json(PendingLoginResponse {
-            status,
-            methods: ticket_methods,
-        }),
-    )
-        .into_response();
-    if let Err(cookie_error) = cookies::append_login_ticket_cookies(
-        response.headers_mut(),
-        &login_ticket,
-        &holder,
-        crate::auth_factors::domain::LoginTicket::TTL.whole_seconds() as u64,
-        state.config.cookie_secure,
-    ) {
-        tracing::error!(error = %cookie_error, "failed to build login ticket cookie response");
-        return error::internal();
+        // 密钥退役导致的不可验证不是一次凭据失败：单独的审计动作与 503，
+        // 且 service 层已归还预留额度，不烧账号/IP 失败计数（#258）。
+        Ok(LoginDecision::TotpKeyUnavailable(user_id)) => {
+            factor_key_unavailable_response(
+                &state,
+                Some(user_id),
+                source_ip.as_deref(),
+                user_agent.as_deref(),
+            )
+            .await
+        }
+        Ok(LoginDecision::TotpRejected(user_id)) => {
+            record_security_event(
+                &state,
+                crate::audit::AuditAction::MfaFailure,
+                Some(user_id),
+                "totp_invalid",
+                None,
+                source_ip.as_deref(),
+                user_agent.as_deref(),
+            )
+            .await;
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
+        }
+        Ok(LoginDecision::TotpRateLimited(user_id)) => {
+            record_security_event(
+                &state,
+                crate::audit::AuditAction::MfaFailure,
+                Some(user_id),
+                "totp_rate_limited",
+                None,
+                source_ip.as_deref(),
+                user_agent.as_deref(),
+            )
+            .await;
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
+        }
+        Ok(LoginDecision::PasswordOnly {
+            authenticated,
+            passkey_recovery_required,
+        }) => {
+            if passkey_recovery_required {
+                record_security_event(
+                    &state,
+                    crate::audit::AuditAction::PasskeyRecoveryRequired,
+                    Some(authenticated.id),
+                    "passkey_disabled",
+                    None,
+                    source_ip.as_deref(),
+                    user_agent.as_deref(),
+                )
+                .await;
+            }
+            issue_user_session(
+                &state,
+                authenticated,
+                "password",
+                &headers,
+                source_ip.as_deref(),
+                StaleCredentialCode::InvalidCredentials,
+                true,
+            )
+            .await
+        }
+        Ok(LoginDecision::FactorRequired {
+            authenticated,
+            methods,
+        }) => factor_required_ticket_response(&state, authenticated, methods).await,
     }
-    response
 }
 
 /// 撤销当前浏览器会话（自注销）。
@@ -454,33 +389,4 @@ pub async fn revoke_session(
             error::internal()
         }
     }
-}
-
-async fn record_security_event(
-    state: &AppState,
-    action: crate::audit::AuditAction,
-    actor_id: Option<crate::users::domain::UserId>,
-    reason: &str,
-    attempted_identifier: Option<&str>,
-    source_ip: Option<&str>,
-    user_agent: Option<&str>,
-) {
-    state
-        .audit
-        .record_best_effort(AuditEvent::authentication_failure(
-            action,
-            if actor_id.is_some() {
-                "user".to_owned()
-            } else {
-                "anonymous".to_owned()
-            },
-            actor_id.map(|id| id.to_string()),
-            "authentication".to_owned(),
-            None,
-            reason,
-            attempted_identifier,
-            source_ip,
-            user_agent,
-        ))
-        .await;
 }

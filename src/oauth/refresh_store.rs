@@ -1,4 +1,9 @@
 use redis::{AsyncCommands, Script};
+#[cfg(debug_assertions)]
+use std::{
+    collections::HashSet,
+    sync::{Mutex, OnceLock},
+};
 use thiserror::Error;
 
 use super::{
@@ -8,7 +13,21 @@ use super::{
         TAKE_IF_MATCHES_SCRIPT,
     },
 };
-use crate::{clock::SharedClock, redis_client::RedisClient};
+use crate::{clock::SharedClock, redis_client::RedisClient, redis_keyspace::RedisKeyspace};
+
+#[cfg(debug_assertions)]
+fn remove_failures_for_tests() -> &'static Mutex<HashSet<String>> {
+    static FAILURES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    FAILURES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[cfg(debug_assertions)]
+fn take_remove_failure_for_test(client_id: &str) -> bool {
+    remove_failures_for_tests()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(client_id)
+}
 
 // 墓碑类型定义在 `refresh_tombstone`，但调用方历来从 `refresh_store` 导入，
 // 这里保持那条路径可用。
@@ -66,15 +85,15 @@ pub(super) struct FamilyScope {
 }
 
 impl FamilyScope {
-    pub(super) fn new(family_id: &str, token_hash: &str) -> Self {
+    pub(super) fn new(keyspace: &RedisKeyspace, family_id: &str, token_hash: &str) -> Self {
         let discriminator = if family_id.is_empty() {
             format!("legacy-token:{token_hash}")
         } else {
             family_id.to_owned()
         };
         Self {
-            index_key: format!("{FAMILY_IDX_PREFIX}{discriminator}"),
-            revoked_key: format!("{FAMILY_REVOKED_PREFIX}{discriminator}"),
+            index_key: format!("{}{discriminator}", keyspace.prefix(FAMILY_IDX_PREFIX)),
+            revoked_key: format!("{}{discriminator}", keyspace.prefix(FAMILY_REVOKED_PREFIX)),
         }
     }
 }
@@ -103,6 +122,7 @@ pub enum RotationOutcome {
 pub struct RefreshTokenStore {
     client: RedisClient,
     clock: SharedClock,
+    keyspace: RedisKeyspace,
 }
 
 #[derive(Debug, Error)]
@@ -118,6 +138,15 @@ impl RefreshTokenStore {
         Self {
             client: client.into(),
             clock: SharedClock::system(),
+            keyspace: RedisKeyspace::default(),
+        }
+    }
+
+    pub fn with_keyspace(client: impl Into<RedisClient>, keyspace: RedisKeyspace) -> Self {
+        Self {
+            client: client.into(),
+            clock: SharedClock::system(),
+            keyspace,
         }
     }
 
@@ -130,6 +159,15 @@ impl RefreshTokenStore {
         self
     }
 
+    #[doc(hidden)]
+    #[cfg(debug_assertions)]
+    pub fn fail_remove_once_for_client_for_tests(&self, client_id: &str) {
+        remove_failures_for_tests()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(client_id.to_owned());
+    }
+
     // ── 计算 token hash（用于主键与索引成员）─────────────────────────────
     //
     // 与 `revocation.rs` / `sessions::store` 一致使用 SHA-256 + URL-safe base64：
@@ -140,35 +178,42 @@ impl RefreshTokenStore {
     }
 
     // ── 主键 / 索引键 / 墓碑键的构造 ──────────────────────────────────────
-    fn token_key(value: &str) -> String {
-        Self::token_key_for_hash(&Self::token_hash(value))
+    fn token_key(&self, value: &str) -> String {
+        self.token_key_for_hash(&Self::token_hash(value))
     }
 
-    fn token_key_for_hash(hash: &str) -> String {
-        format!("{TOKEN_KEY_PREFIX}{hash}")
+    fn token_key_prefix(&self) -> String {
+        self.keyspace.prefix(TOKEN_KEY_PREFIX)
     }
 
-    fn client_idx_key(client_id: &str) -> String {
-        format!("{CLIENT_IDX_PREFIX}{client_id}")
+    fn token_key_for_hash(&self, hash: &str) -> String {
+        format!("{}{hash}", self.token_key_prefix())
+    }
+
+    fn client_idx_key(&self, client_id: &str) -> String {
+        format!("{}{client_id}", self.keyspace.prefix(CLIENT_IDX_PREFIX))
     }
 
     /// Grant 索引键。分隔符用 `:`，与 Lua 侧 `ARGV[5] .. user_id .. ':' ..
     /// client_id` 的拼装必须完全一致：`user_id` 是数字主键的十进制串，不含
     /// 冒号，因此拼接无歧义。
-    fn grant_idx_key(user_id: &str, client_id: &str) -> String {
-        format!("{GRANT_IDX_PREFIX}{user_id}:{client_id}")
+    fn grant_idx_key(&self, user_id: &str, client_id: &str) -> String {
+        format!(
+            "{}{user_id}:{client_id}",
+            self.keyspace.prefix(GRANT_IDX_PREFIX)
+        )
     }
 
-    fn family_idx_key(family_id: &str) -> String {
-        format!("{FAMILY_IDX_PREFIX}{family_id}")
+    fn family_idx_key(&self, family_id: &str) -> String {
+        format!("{}{family_id}", self.keyspace.prefix(FAMILY_IDX_PREFIX))
     }
 
-    fn tombstone_key(value: &str) -> String {
-        Self::tombstone_key_for_hash(&Self::token_hash(value))
+    fn tombstone_key(&self, value: &str) -> String {
+        self.tombstone_key_for_hash(&Self::token_hash(value))
     }
 
-    fn tombstone_key_for_hash(hash: &str) -> String {
-        format!("{TOMBSTONE_PREFIX}{hash}")
+    fn tombstone_key_for_hash(&self, hash: &str) -> String {
+        format!("{}{hash}", self.keyspace.prefix(TOMBSTONE_PREFIX))
     }
 
     /// 计算主键 TTL：`min(滑动窗口剩余, 绝对到期剩余)`，至少 1 秒。
@@ -194,10 +239,10 @@ impl RefreshTokenStore {
         let hash = Self::token_hash(&token.value);
         let ttl = self.effective_ttl(token);
         let _: i32 = Script::new(SAVE_WITH_INDEXES_SCRIPT)
-            .key(Self::token_key_for_hash(&hash))
-            .key(Self::client_idx_key(&token.client_id))
-            .key(Self::family_idx_key(&token.family_id))
-            .key(Self::grant_idx_key(&token.user_id, &token.client_id))
+            .key(self.token_key_for_hash(&hash))
+            .key(self.client_idx_key(&token.client_id))
+            .key(self.family_idx_key(&token.family_id))
+            .key(self.grant_idx_key(&token.user_id, &token.client_id))
             .arg(payload)
             .arg(ttl)
             .arg(INDEX_TTL_SECONDS)
@@ -210,7 +255,7 @@ impl RefreshTokenStore {
 
     pub async fn find(&self, value: &str) -> Result<Option<RefreshToken>, RefreshTokenStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let payload: Option<String> = connection.get(Self::token_key(value)).await?;
+        let payload: Option<String> = connection.get(self.token_key(value)).await?;
         payload
             .map(|p| serde_json::from_str(&p))
             .transpose()
@@ -230,16 +275,24 @@ impl RefreshTokenStore {
     pub async fn remove(&self, value: &str) -> Result<(), RefreshTokenStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         // 先读取 payload 以便清理索引（找不到时幂等成功）
-        let key = Self::token_key(value);
+        let key = self.token_key(value);
         let payload: Option<String> = connection.get(&key).await?;
         if let Some(payload) = payload {
             let token: RefreshToken = serde_json::from_str(&payload)?;
+            #[cfg(debug_assertions)]
+            if take_remove_failure_for_test(&token.client_id) {
+                return Err(redis::RedisError::from((
+                    redis::ErrorKind::IoError,
+                    "injected refresh-token remove failure",
+                ))
+                .into());
+            }
             let hash = Self::token_hash(value);
             let _: i32 = Script::new(REMOVE_WITHOUT_TOMBSTONE_SCRIPT)
                 .key(&key)
-                .key(Self::client_idx_key(&token.client_id))
-                .key(Self::family_idx_key(&token.family_id))
-                .key(Self::grant_idx_key(&token.user_id, &token.client_id))
+                .key(self.client_idx_key(&token.client_id))
+                .key(self.family_idx_key(&token.family_id))
+                .key(self.grant_idx_key(&token.user_id, &token.client_id))
                 .arg(&hash)
                 .arg(INDEX_TTL_SECONDS)
                 .arg(&token.family_id)
@@ -265,11 +318,11 @@ impl RefreshTokenStore {
         // CAS 消费、索引清理和墓碑写入在同一个 Lua 脚本内完成，
         // 避免「已删除但墓碑未写」的中间状态漏掉后续重放检测。
         let deleted: i32 = Script::new(TAKE_IF_MATCHES_SCRIPT)
-            .key(Self::token_key_for_hash(&hash))
-            .key(Self::client_idx_key(&token.client_id))
-            .key(Self::family_idx_key(&token.family_id))
-            .key(Self::tombstone_key_for_hash(&hash))
-            .key(Self::grant_idx_key(&token.user_id, &token.client_id))
+            .key(self.token_key_for_hash(&hash))
+            .key(self.client_idx_key(&token.client_id))
+            .key(self.family_idx_key(&token.family_id))
+            .key(self.tombstone_key_for_hash(&hash))
+            .key(self.grant_idx_key(&token.user_id, &token.client_id))
             .arg(expected)
             .arg(&hash)
             .arg(tombstone)
@@ -318,21 +371,18 @@ impl RefreshTokenStore {
         let tombstone =
             serde_json::to_string(&Tombstone::for_rotation(token, &replacement.family_id, now))?;
         let new_ttl = effective_ttl_at(replacement, now);
-        let target_family = FamilyScope::new(&replacement.family_id, &new_hash);
+        let target_family = FamilyScope::new(&self.keyspace, &replacement.family_id, &new_hash);
         let rotated: i32 = Script::new(ROTATE_WITH_TOMBSTONE_SCRIPT)
-            .key(Self::token_key_for_hash(&old_hash))
-            .key(Self::token_key_for_hash(&new_hash))
-            .key(Self::client_idx_key(&token.client_id))
-            .key(Self::family_idx_key(&token.family_id))
-            .key(Self::family_idx_key(&replacement.family_id))
-            .key(Self::tombstone_key_for_hash(&old_hash))
+            .key(self.token_key_for_hash(&old_hash))
+            .key(self.token_key_for_hash(&new_hash))
+            .key(self.client_idx_key(&token.client_id))
+            .key(self.family_idx_key(&token.family_id))
+            .key(self.family_idx_key(&replacement.family_id))
+            .key(self.tombstone_key_for_hash(&old_hash))
             .key(&target_family.revoked_key)
             // 轮换前后属于同一个 grant：用后继的归属拼键，保证 grant 索引跟着
             // 轮换链走，撤销总能看到当前活成员。
-            .key(Self::grant_idx_key(
-                &replacement.user_id,
-                &replacement.client_id,
-            ))
+            .key(self.grant_idx_key(&replacement.user_id, &replacement.client_id))
             .arg(expected)
             .arg(replacement_payload)
             .arg(new_ttl)

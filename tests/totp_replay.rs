@@ -3,7 +3,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, state::AppState};
+use chenxing_auth::{api, config::Config, redis_keyspace::RedisKeyspace, state::AppState};
 use redis::AsyncCommands;
 use serde_json::Value;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,10 +19,13 @@ mod oauth_flow;
 const ADMIN_TOKEN: &str = "totp-replay-admin-token";
 /// TOTP 步长，与 `auth_factors::totp::TOTP_STEP_SECONDS` 一致。
 const STEP_SECONDS: u64 = 30;
-/// 待确认注册在 Redis 中的键前缀，与 `auth_factors::totp_enrollment` 一致。
-const TOTP_SETUP_PREFIX: &str = "chenxing:auth:totp-setup:";
 
-async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
+async fn setup() -> (
+    Router,
+    AppState,
+    chenxing_auth::sqlx::PgPool,
+    std::path::PathBuf,
+) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
@@ -40,15 +43,16 @@ async fn setup() -> (Router, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     .expect("test configuration");
     config.admin_token = ADMIN_TOKEN.to_owned();
     config.cookie_secure = false;
+    config.redis_keyspace = RedisKeyspace::new(&format!("totp-replay-{}", Uuid::new_v4().simple()))
+        .expect("test Redis namespace");
     config.key_directory = key_directory.to_string_lossy().into_owned();
-    let router = api::router(
-        AppState::new_with_pool(config, database.clone())
-            .await
-            .expect("test state"),
-    );
+    let state = AppState::new_with_pool(config, database.clone())
+        .await
+        .expect("test state");
+    let router = api::router(state.clone());
     oauth_flow::ensure_owner_bootstrapped(&router, &database, "totp_replay", "totp_replay").await;
     db_isolation::isolate_user_ids(&database, "totp_replay").await;
-    (router, database, key_directory)
+    (router, state, database, key_directory)
 }
 
 async fn json(response: axum::response::Response) -> Value {
@@ -185,22 +189,57 @@ async fn password_login(router: &Router, identifier: &str, password: &str) -> St
     cookie
 }
 
-/// 在给定的 pending cookie 上启动 TOTP 注册，返回验证器侧的 TOTP 生成器。
-async fn start_enrollment(router: &Router, cookie: &str) -> TOTP {
-    let response = request_with_cookie(
+async fn request_with_session(
+    router: &Router,
+    uri: &str,
+    payload: Value,
+    cookie: &str,
+    csrf: &str,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .header("x-csrf-token", csrf)
+                .body(Body::from(payload.to_string()))
+                .expect("JSON request"),
+        )
+        .await
+        .expect("JSON response")
+}
+
+fn csrf(cookie: &str) -> String {
+    cookie_value(cookie, "chenxing_csrf")
+}
+
+/// 在认证会话上启动 TOTP 注册，返回 registration ID 与验证器侧的生成器。
+async fn start_enrollment(router: &Router, cookie: &str, csrf: &str) -> (String, TOTP) {
+    let response = request_with_session(
         router,
-        "/api/v1/auth/totp/setup",
+        "/api/v1/auth/security/totp/enrollment/start",
         serde_json::json!({}),
         cookie,
+        csrf,
     )
     .await;
+    assert_eq!(response.status(), StatusCode::OK, "TOTP enrollment start");
     let setup = json(response).await;
-    TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP")
+    (
+        setup["enrollment_id"]
+            .as_str()
+            .expect("enrollment ID")
+            .to_owned(),
+        TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP"),
+    )
 }
 
 #[tokio::test]
 async fn a_totp_time_step_is_single_use_across_tickets_and_inline_login() {
-    let (router, database, key_directory) = setup().await;
+    let (router, _state, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let username = format!("replay-{suffix}");
     let email = format!("replay-{suffix}@example.com");
@@ -208,7 +247,8 @@ async fn a_totp_time_step_is_single_use_across_tickets_and_inline_login() {
     create_user(&router, &username, &email, password).await;
 
     let setup_cookie = password_login(&router, &username, password).await;
-    let totp = start_enrollment(&router, &setup_cookie).await;
+    let csrf = csrf(&setup_cookie);
+    let (enrollment_id, totp) = start_enrollment(&router, &setup_cookie, &csrf).await;
     // 本用例断言的是**登录侧**的跨 ticket 语义，所以注册必须让开当前时间步：
     // 注册确认现在也会 claim `user/timestep`（#301），用当前步注册会让下面第一次
     // 登录被自己的注册挡住。取上一步的码，它仍在 ±1 步的接受窗口内。
@@ -217,15 +257,20 @@ async fn a_totp_time_step_is_single_use_across_tickets_and_inline_login() {
     // `an_enrollment_code_cannot_be_replayed_on_a_fresh_login_ticket` 覆盖。
     let now = now_seconds();
     assert_eq!(
-        request_with_cookie(
+        request_with_session(
             &router,
-            "/api/v1/auth/totp/setup/confirm",
-            serde_json::json!({"code": totp.generate(now.saturating_sub(STEP_SECONDS))}),
+            "/api/v1/auth/security/totp/enrollment/confirm",
+            serde_json::json!({
+                "enrollment_id": enrollment_id,
+                "code": totp.generate(now.saturating_sub(STEP_SECONDS))
+            }),
             &setup_cookie,
+            &csrf,
         )
         .await
         .status(),
-        StatusCode::OK
+        StatusCode::OK,
+        "enrollment must succeed with a fresh code"
     );
 
     let first_cookie = password_login(&router, &email, password).await;
@@ -287,7 +332,7 @@ async fn a_totp_time_step_is_single_use_across_tickets_and_inline_login() {
 /// service 层单独调用看不出 ticket 已经换了一张。
 #[tokio::test]
 async fn an_enrollment_code_cannot_be_replayed_on_a_fresh_login_ticket() {
-    let (router, database, key_directory) = setup().await;
+    let (router, _state, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let username = format!("enroll-replay-{suffix}");
     let email = format!("enroll-replay-{suffix}@example.com");
@@ -295,16 +340,21 @@ async fn an_enrollment_code_cannot_be_replayed_on_a_fresh_login_ticket() {
     create_user(&router, &username, &email, password).await;
 
     let setup_cookie = password_login(&router, &username, password).await;
-    let totp = start_enrollment(&router, &setup_cookie).await;
+    let csrf = csrf(&setup_cookie);
+    let (enrollment_id, totp) = start_enrollment(&router, &setup_cookie, &csrf).await;
     // 注册与后续两次重放尝试用的是**同一个时间步的同一个码**，这正是攻击场景。
     let now = now_seconds();
     let code = totp.generate(now);
     assert_eq!(
-        request_with_cookie(
+        request_with_session(
             &router,
-            "/api/v1/auth/totp/setup/confirm",
-            serde_json::json!({"code": code}),
+            "/api/v1/auth/security/totp/enrollment/confirm",
+            serde_json::json!({
+                "enrollment_id": enrollment_id,
+                "code": code
+            }),
             &setup_cookie,
+            &csrf,
         )
         .await
         .status(),
@@ -372,19 +422,13 @@ async fn an_enrollment_code_cannot_be_replayed_on_a_fresh_login_ticket() {
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
-/// #301：待确认注册的 `user_id` 与 login ticket 不一致时必须 fail closed。
+/// 待确认认证会话注册的绑定用户不一致时必须 fail closed。
 ///
-/// setup 键当前由 ticket_id 派生，正常流程下两者不可能不一致，所以这里直接改写
-/// Redis 里的 pending 载荷来构造这个状态。这不是在测试一条可从外部触发的攻击
-/// 路径，而是钉住那条防御性校验：一旦键的派生方式改变，缺了它就会把 A 预留的
-/// 种子写成 B 的因子，且 replay claim 会打在错误的用户命名空间上。
-///
-/// 判别力来自状态码：缺少校验时，服务端会拿着这份（用真实密钥加密的）种子继续
-/// 往下走，把因子写给 ticket 上的用户并签发会话，返回 200；有校验时在任何解密、
-/// 限流和写库之前就返回 400。
+/// session enrollment 的 Redis 键由用户与 factor method 派生；测试改写绑定中的
+/// user ID，钉住确认时 session、epoch、方法和 enrollment ID 的完整绑定校验。
 #[tokio::test]
 async fn a_pending_enrollment_bound_to_another_user_is_rejected() {
-    let (router, database, key_directory) = setup().await;
+    let (router, state, database, key_directory) = setup().await;
     let suffix = Uuid::new_v4().simple().to_string();
     let victim_name = format!("mismatch-victim-{suffix}");
     let victim_email = format!("mismatch-victim-{suffix}@example.com");
@@ -397,12 +441,13 @@ async fn a_pending_enrollment_bound_to_another_user_is_rejected() {
     let other = user_id(&database, &other_email).await;
 
     let cookie = password_login(&router, &victim_name, password).await;
-    let ticket_id = cookie_value(&cookie, "chenxing_login_ticket");
-    let totp = start_enrollment(&router, &cookie).await;
+    let csrf = csrf(&cookie);
+    let (enrollment_id, totp) = start_enrollment(&router, &cookie, &csrf).await;
 
-    // 把预留载荷的 user_id 改成另一个用户，密文保持原样：只有绑定被破坏，
-    // 种子仍然是服务端能正常解密的那一份。
-    let setup_key = format!("{TOTP_SETUP_PREFIX}{ticket_id}");
+    let setup_key = state
+        .config
+        .redis_keyspace
+        .key(&format!("chenxing:auth:session-enrollment:{victim}:totp"));
     let mut connection = redis_connection().await;
     let mut pending: Value = serde_json::from_str(
         &connection
@@ -411,14 +456,13 @@ async fn a_pending_enrollment_bound_to_another_user_is_rejected() {
             .expect("pending enrollment payload"),
     )
     .expect("pending enrollment JSON");
+    let victim_id = victim.to_string();
     assert_eq!(
-        pending["user_id"].as_i64(),
-        Some(victim),
-        "the pending payload must start out bound to the ticket user"
+        pending["binding"]["user_id"].as_str(),
+        Some(victim_id.as_str()),
+        "the pending payload must start out bound to the session user"
     );
-    pending["user_id"] = Value::from(other);
-    // TTL 用 login ticket 的完整寿命重写，而不是读回剩余 TTL 再套用：
-    // 读回值只在这一瞬间正确，而本用例后面还要发两个请求。
+    pending["binding"]["user_id"] = Value::from(other.to_string());
     let _: () = connection
         .set_ex(
             &setup_key,
@@ -428,13 +472,16 @@ async fn a_pending_enrollment_bound_to_another_user_is_rejected() {
         .await
         .expect("poison pending enrollment");
 
-    // 正确的验证码 + 被破坏的绑定：必须拒绝，且拒绝发生在写库之前。
     assert_eq!(
-        request_with_cookie(
+        request_with_session(
             &router,
-            "/api/v1/auth/totp/setup/confirm",
-            serde_json::json!({"code": totp.generate_current().expect("TOTP code")}),
+            "/api/v1/auth/security/totp/enrollment/confirm",
+            serde_json::json!({
+                "enrollment_id": enrollment_id,
+                "code": totp.generate_current().expect("TOTP code")
+            }),
             &cookie,
+            &csrf,
         )
         .await
         .status(),
@@ -444,39 +491,27 @@ async fn a_pending_enrollment_bound_to_another_user_is_rejected() {
     assert_eq!(
         factor_count(&database, victim).await,
         0,
-        "the ticket user must not receive a factor from a mismatched pending payload"
+        "the session user must not receive a factor from a mismatched pending payload"
     );
     assert_eq!(
         factor_count(&database, other).await,
         0,
-        "the payload user must not receive a factor either"
-    );
-
-    // fail closed 连 ticket 一起废掉：绑定不可信之后，这张 ticket 上的任何后续
-    // 判断都失去依据。重放同一张 ticket 只能再拿到 400。
-    assert_eq!(
-        request_with_cookie(
-            &router,
-            "/api/v1/auth/totp/setup/confirm",
-            serde_json::json!({"code": totp.generate_current().expect("TOTP code")}),
-            &cookie,
-        )
-        .await
-        .status(),
-        StatusCode::BAD_REQUEST,
-        "the ticket must have been invalidated along with the pending enrollment"
+        "the mismatched payload user must not receive a factor either"
     );
     let residual: Option<String> = connection.get(&setup_key).await.expect("residual lookup");
     assert!(
-        residual.is_none(),
-        "the mismatched pending enrollment must have been deleted"
+        residual.is_some(),
+        "an invalid confirmation must not consume a pending enrollment it does not own"
     );
 
-    let user_ids = vec![victim, other];
     chenxing_auth::sqlx::query("DELETE FROM users WHERE id = ANY($1)")
-        .bind(&user_ids)
+        .bind(vec![victim, other])
         .execute(&database)
         .await
         .expect("cleanup users");
+    let _: () = connection
+        .del(&setup_key)
+        .await
+        .expect("cleanup enrollment");
     let _ = std::fs::remove_dir_all(key_directory);
 }

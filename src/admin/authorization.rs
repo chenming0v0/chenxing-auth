@@ -6,7 +6,7 @@ use crate::{
     audit::AuditEvent,
     error,
     state::AppState,
-    users::domain::{OwnerTargetAccess, UserId},
+    users::{ManagementActorCredential, domain::UserId, ui_auth::invalid_session_response},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,35 +35,57 @@ impl AdminActor {
     }
 }
 
-/// 已通过目标无关的 `ManageUsers` 基线授权及其最高写入档位。
+/// 已通过目标无关的 `ManageUsers` 基线授权，以及要带入写事务的 actor 凭据。
 ///
-/// 这里只携带调用者能力，不查询目标用户。目标是否为 Owner 由具体写事务持行锁判定，
-/// 因而这个值可以安全地跨越输入解析，但不能代替仓储层的目标角色检查（Issue #323）。
+/// 这里只保存初始审计身份与 Session generation，不把事务外观察到的角色当作最终授权。
+/// 目标角色、actor active/role/generation 都由具体写事务持行锁复核（Issue #323/#493）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct UserWriteAuthorization {
+pub(crate) struct AdminWriteAuthorization {
     actor: AdminActor,
-    access: OwnerTargetAccess,
+    credential: ManagementActorCredential,
+    permission: AdminPermission,
 }
 
-impl UserWriteAuthorization {
+impl AdminWriteAuthorization {
     pub const fn actor(self) -> AdminActor {
         self.actor
     }
 
-    pub const fn access(self) -> OwnerTargetAccess {
-        self.access
+    pub const fn credential(self) -> ManagementActorCredential {
+        self.credential
     }
+
+    pub const fn permission(self) -> AdminPermission {
+        self.permission
+    }
+}
+
+pub(crate) type UserWriteAuthorization = AdminWriteAuthorization;
+
+pub(crate) async fn authorize_admin_write(
+    state: &AppState,
+    admin: &AdminWrite,
+    permission: AdminPermission,
+) -> Result<AdminWriteAuthorization, Response> {
+    let actor = admin.authorize(state, permission).await?;
+    let Some(credential) = admin.management_actor_credential() else {
+        if let Some(user_id) = actor.user_id() {
+            record_authz_denial(state, user_id, permission, "credential_generation_missing").await;
+        }
+        return Err(invalid_session_response(state, "invalid_session"));
+    };
+    Ok(AdminWriteAuthorization {
+        actor,
+        credential,
+        permission,
+    })
 }
 
 pub(crate) async fn authorize_user_write(
     state: &AppState,
     admin: &AdminWrite,
 ) -> Result<UserWriteAuthorization, Response> {
-    let actor = admin.authorize(state, AdminPermission::ManageUsers).await?;
-    Ok(UserWriteAuthorization {
-        actor,
-        access: admin.owner_target_access(),
-    })
+    authorize_admin_write(state, admin, AdminPermission::ManageUsers).await
 }
 
 /// 把事务内判定出的 Owner 权限不足翻译成既有的 403 与拒绝审计。
@@ -76,11 +98,11 @@ pub(crate) async fn owner_write_permission_denied(
     authorization: UserWriteAuthorization,
 ) -> Response {
     let actor = authorization.actor();
-    if authorization.access().permits_owner() {
+    if actor == AdminActor::SystemToken {
         tracing::error!(
             actor_type = actor.actor_type(),
             actor_id = ?actor.user_id(),
-            "owner write was rejected despite a ManageRoles capability"
+            "owner write was rejected for the system ADMIN_TOKEN"
         );
         return error::internal();
     }
@@ -93,6 +115,92 @@ pub(crate) async fn owner_write_permission_denied(
         )
         .await;
     }
+    error::forbidden(
+        "admin_forbidden",
+        "administrator permission is insufficient",
+    )
+}
+
+/// Translate a transaction-time Session generation/status failure.
+pub(crate) async fn management_actor_session_invalid(
+    state: &AppState,
+    authorization: UserWriteAuthorization,
+) -> Response {
+    let actor = authorization.actor();
+    let Some(user_id) = actor.user_id() else {
+        tracing::error!(
+            actor_type = actor.actor_type(),
+            "system ADMIN_TOKEN unexpectedly failed Session credential validation"
+        );
+        return error::internal();
+    };
+    record_authz_denial(
+        state,
+        user_id,
+        authorization.permission(),
+        "actor_session_changed",
+    )
+    .await;
+    invalid_session_response(state, "invalid_session")
+}
+
+pub(crate) async fn management_actor_validation_failed(
+    state: &AppState,
+    authorization: AdminWriteAuthorization,
+    error_value: crate::users::ManagementActorValidationError,
+) -> Response {
+    match error_value {
+        crate::users::ManagementActorValidationError::SessionInvalid => {
+            management_actor_session_invalid(state, authorization).await
+        }
+        crate::users::ManagementActorValidationError::PermissionRequired => {
+            let actor = authorization.actor();
+            let Some(user_id) = actor.user_id() else {
+                tracing::error!(
+                    actor_type = actor.actor_type(),
+                    "system ADMIN_TOKEN unexpectedly failed permission revalidation"
+                );
+                return error::internal();
+            };
+            record_authz_denial(
+                state,
+                user_id,
+                authorization.permission(),
+                "insufficient_role",
+            )
+            .await;
+            error::forbidden(
+                "admin_forbidden",
+                "administrator permission is insufficient",
+            )
+        }
+        crate::users::ManagementActorValidationError::Database(database_error) => {
+            tracing::error!(error = %database_error, "failed to revalidate management actor");
+            error::internal()
+        }
+    }
+}
+
+/// Translate a transaction-time actor role downgrade.
+pub(crate) async fn management_actor_permission_denied(
+    state: &AppState,
+    authorization: UserWriteAuthorization,
+) -> Response {
+    let actor = authorization.actor();
+    let Some(user_id) = actor.user_id() else {
+        tracing::error!(
+            actor_type = actor.actor_type(),
+            "system ADMIN_TOKEN unexpectedly failed ManageUsers validation"
+        );
+        return error::internal();
+    };
+    record_authz_denial(
+        state,
+        user_id,
+        AdminPermission::ManageUsers,
+        "insufficient_role",
+    )
+    .await;
     error::forbidden(
         "admin_forbidden",
         "administrator permission is insufficient",

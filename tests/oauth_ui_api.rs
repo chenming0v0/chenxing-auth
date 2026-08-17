@@ -186,7 +186,7 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
     let request_id = request_id(&login_location);
     let authz_holder_cookie = cookies(&response);
 
-    // SPA logs in over JSON: password → pending factor ticket → TOTP enrollment → session.
+    // SPA logs in over JSON, then enrolls TOTP through the authenticated security API.
     let response = router
         .clone()
         .oneshot(
@@ -201,19 +201,24 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
         )
         .await
         .expect("login response");
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let pending_login_cookie = cookies(&response);
-    let pending_login = json(response).await;
-    assert!(pending_login.get("login_ticket").is_none());
+    assert_eq!(response.status(), StatusCode::OK);
+    let session_cookies = cookies(&response);
+    let csrf = session_cookies
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix("chenxing_csrf="))
+        .expect("csrf cookie")
+        .to_owned();
+    assert!(json(response).await["expires_at"].as_str().is_some());
 
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/auth/totp/setup")
+                .uri("/api/v1/auth/security/totp/enrollment/start")
                 .header("content-type", "application/json")
-                .header("cookie", &pending_login_cookie)
+                .header("cookie", &session_cookies)
+                .header("x-csrf-token", &csrf)
                 .body(Body::from(serde_json::json!({}).to_string()))
                 .expect("totp setup request"),
         )
@@ -222,17 +227,20 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
     assert_eq!(response.status(), StatusCode::OK);
     let setup = json(response).await;
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("otpauth url")).expect("TOTP");
+    let enrollment_id = setup["enrollment_id"].as_str().expect("enrollment id");
 
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/auth/totp/login")
+                .uri("/api/v1/auth/security/totp/enrollment/confirm")
                 .header("content-type", "application/json")
-                .header("cookie", &pending_login_cookie)
+                .header("cookie", &session_cookies)
+                .header("x-csrf-token", &csrf)
                 .body(Body::from(
                     serde_json::json!({
+                        "enrollment_id": enrollment_id,
                         "code": totp.generate_current().expect("TOTP code")
                     })
                     .to_string(),
@@ -240,17 +248,11 @@ async fn logged_in_user_can_inspect_and_consume_oauth_ui_request_once() {
                 .expect("totp login request"),
         )
         .await
-        .expect("totp login response");
+        .expect("TOTP enrollment confirmation response");
     assert_eq!(response.status(), StatusCode::OK);
-    let session_cookies = cookies(&response);
-    let csrf = session_cookies
-        .split(';')
-        .find_map(|part| part.trim().strip_prefix("chenxing_csrf="))
-        .expect("csrf cookie")
-        .to_owned();
 
     // Bind the session to the pending authorization request created by /oauth/authorize.
-    // 持有者 Cookie 来自 authorize 响应，会话 Cookie 来自 TOTP 登录（#115）。
+    // 持有者 Cookie 来自 authorize 响应，会话 Cookie 来自密码登录。
     let session_cookies = format!("{session_cookies}; {authz_holder_cookie}");
     let response = router
         .clone()

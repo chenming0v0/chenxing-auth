@@ -65,21 +65,41 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          remote_install_dir="$RUNNER_TEMP/chenxing-remote-install"
+          cleanup_validation_files() {
+            rm -f .env
+            rm -rf "$remote_install_dir"
+          }
+          trap cleanup_validation_files EXIT
           bash -n install.sh
           bash -n deploy/install.sh
+          bash -n test_sh/deployment_contract.sh
+          bash -n test_sh/test_runner_contract.sh
+          bash -n test_sh/redis_crash_recovery.sh
+          bash test_sh/deployment_contract.sh
+          bash test_sh/test_runner_contract.sh
           cp .env.example .env
-          docker compose --env-file .env -f docker-compose.prod.yml config --quiet
-          remote_install_dir="$RUNNER_TEMP/chenxing-remote-install"
+          sed -i 's/^REDIS_NAMESPACE=$/REDIS_NAMESPACE=ci-validation/' .env
+          APP_PORT=8080 docker compose --env-file .env -f docker-compose.prod.yml config --quiet
           CHENXING_INSTALL_DIR="$remote_install_dir" CHENXING_PORT=3000 \
             bash install.sh --prepare-only
           docker compose --env-file "$remote_install_dir/.env" \
             -f "$remote_install_dir/compose.yml" config --quiet
+      - name: Verify Redis credential state survives a crash
+        shell: bash
+        timeout-minutes: 5
+        run: bash test_sh/redis_crash_recovery.sh
       - name: Verify migration checksum manifest
         shell: bash
         run: |
           set -euo pipefail
           cd migrations
           sha256sum -c checksums.sha256
+          sha256sum -c published-checksums.sha256
+          published_count="$(wc -l < published-checksums.sha256)"
+          diff -u \
+            published-checksums.sha256 \
+            <(head -n "$published_count" checksums.sha256)
           diff -u <(printf '%s\n' *.sql | sort) <(awk '{print $2}' checksums.sha256 | sort)
       - name: Check Rust source file size
         shell: bash
@@ -212,6 +232,6 @@ jobs:
                 "schemaOverwriteBehavior": "AUTO_MERGE",
                 "updateFolderOfChangedEndpoint": true,
                 "prependBasePath": false,
-                "deleteUnmatchedResources": false
+                "deleteUnmatchedResources": true
               }
             }'

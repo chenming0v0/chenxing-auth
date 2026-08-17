@@ -64,6 +64,8 @@ fn test_constructors_default_to_safe_values() {
     );
     // 测试构造立即激活，避免套件被 65 秒传播窗口拖死。生产 from_env 默认 65。
     assert_eq!(config.key_activation_delay_seconds, 0);
+    assert_eq!(config.redis_keyspace.namespace(), "legacy");
+    assert_eq!(config.http_graceful_drain_seconds, 15);
 }
 
 #[test]

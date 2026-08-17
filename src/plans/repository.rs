@@ -7,11 +7,16 @@ use super::{
     },
     service::EffectivePlan,
 };
+use crate::db::advisory_lock::{BusinessLock, lock_business};
 use crate::sqlx::{PgPool, Postgres, Transaction};
-use crate::users::domain::{OwnerTargetAccess, UserId};
-
-/// 串行化 `is_default` 切换的 advisory lock，与用户引导锁区分开。
-const DEFAULT_PLAN_LOCK: i32 = 7341929;
+use crate::users::{
+    ManagementActorCredential, ManagementActorValidationError,
+    domain::{UserId, UserPermission},
+    repository::management_actor::{
+        ManagementActorRejection, lock_management_user_advisories, lock_management_user_rows,
+        validate_management_actor,
+    },
+};
 
 #[derive(Debug, Error)]
 pub enum PlanRepositoryError {
@@ -19,6 +24,8 @@ pub enum PlanRepositoryError {
     Database(#[from] crate::sqlx::Error),
     #[error(transparent)]
     Mutation(#[from] PlanMutationError),
+    #[error(transparent)]
+    ManagementActor(#[from] ManagementActorValidationError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +33,8 @@ pub enum PlanAssignmentResult {
     PlanNotFound,
     UserNotFound,
     ManageRolesRequired,
+    ActorSessionInvalid,
+    ActorPermissionRequired,
     Assigned,
 }
 
@@ -84,6 +93,9 @@ type PlanRowWithExpiry = (
     OffsetDateTime,
     Option<OffsetDateTime>,
 );
+
+/// 用户行锁同时读取的套餐指针，以及该指针在数据库事务时间下是否仍有效。
+type LockedUserPlan = (Option<i64>, bool);
 
 fn row_to_plan(row: PlanRow) -> Plan {
     Plan {
@@ -180,11 +192,9 @@ pub async fn find_for_user(
 async fn lock_default_plan_set(
     transaction: &mut Transaction<'_, Postgres>,
 ) -> Result<(), crate::sqlx::Error> {
-    crate::sqlx::query("SELECT pg_advisory_xact_lock(0, $1)")
-        .bind(DEFAULT_PLAN_LOCK)
-        .execute(&mut **transaction)
-        .await?;
-    Ok(())
+    // 套餐相关写事务遵守同一偏序：用户行（若有）→ DefaultPlan 业务锁 → 套餐行。
+    // 默认套餐修改没有用户行，因此从第二步开始；任何路径都不得先锁套餐再回头锁用户。
+    lock_business(transaction, BusinessLock::DefaultPlan).await
 }
 
 async fn find_for_update(
@@ -202,6 +212,52 @@ async fn find_for_update(
     Ok(row.map(row_to_plan))
 }
 
+async fn find_default_for_update(
+    transaction: &mut Transaction<'_, Postgres>,
+) -> Result<Option<Plan>, crate::sqlx::Error> {
+    let row: Option<PlanRow> = crate::sqlx::query_as(
+        "SELECT id, code, name, description, oauth_clients_limit, daily_auth_limit,
+                monthly_auth_limit, max_qps, is_default, status, created_at, updated_at
+         FROM plans
+         WHERE is_default = TRUE AND status = 'active'
+         LIMIT 1
+         FOR UPDATE",
+    )
+    .fetch_optional(&mut **transaction)
+    .await?;
+    Ok(row.map(row_to_plan))
+}
+
+/// 在调用方事务内锁定用户及其当前有效套餐。
+///
+/// 用户的显式套餐失效、归档或缺失时回退到 active 默认套餐；没有默认套餐则
+/// 返回 `None`。业务锁让默认套餐切换和任意套餐更新都不能穿过本次解析，套餐行锁
+/// 则把随后依赖该配额的 COUNT + INSERT 固定在同一事务事实之上。
+pub(crate) async fn lock_effective_for_user(
+    transaction: &mut Transaction<'_, Postgres>,
+    user_id: UserId,
+) -> Result<Option<Plan>, crate::sqlx::Error> {
+    let (assigned_plan_id, assignment_is_current): LockedUserPlan = crate::sqlx::query_as(
+        "SELECT plan_id, (plan_expires_at IS NULL OR plan_expires_at > NOW())
+         FROM users
+         WHERE id = $1
+         FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_one(&mut **transaction)
+    .await?;
+
+    lock_default_plan_set(transaction).await?;
+    if assignment_is_current
+        && let Some(plan_id) = assigned_plan_id
+        && let Some(plan) = find_for_update(transaction, plan_id).await?
+        && plan.status == "active"
+    {
+        return Ok(Some(plan));
+    }
+    find_default_for_update(transaction).await
+}
+
 /// 统计挂载到指定套餐的用户数。在事务内调用，保证与刚写入的套餐处于同一快照。
 async fn count_assigned_users(
     transaction: &mut Transaction<'_, Postgres>,
@@ -216,8 +272,15 @@ async fn count_assigned_users(
 pub async fn insert(
     pool: &PgPool,
     input: &ValidatedPlanInput,
+    credential: ManagementActorCredential,
 ) -> Result<Plan, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
+    crate::users::repository::management_actor::validate_management_actor_in_transaction(
+        &mut transaction,
+        credential,
+        UserPermission::ManageSettings,
+    )
+    .await?;
     lock_default_plan_set(&mut transaction).await?;
     if input.is_default {
         crate::sqlx::query("UPDATE plans SET is_default = FALSE WHERE is_default = TRUE")
@@ -249,8 +312,15 @@ pub async fn update(
     pool: &PgPool,
     id: i64,
     input: &ValidatedPlanInput,
+    credential: ManagementActorCredential,
 ) -> Result<Option<PlanWithUsers>, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
+    crate::users::repository::management_actor::validate_management_actor_in_transaction(
+        &mut transaction,
+        credential,
+        UserPermission::ManageSettings,
+    )
+    .await?;
     lock_default_plan_set(&mut transaction).await?;
     let Some(current) = find_for_update(&mut transaction, id).await? else {
         transaction.rollback().await?;
@@ -298,8 +368,19 @@ pub async fn update(
 /// 因此不需要为「被归档的正是默认套餐」单开分支。
 /// 仍然持有 advisory lock，避免与 `insert` / `update` 的 is_default 切换交错，
 /// 让唯一索引和 CHECK 约束不必依赖并发时序。
-pub async fn set_status(pool: &PgPool, id: i64, status: &str) -> Result<bool, PlanRepositoryError> {
+pub async fn set_status(
+    pool: &PgPool,
+    id: i64,
+    status: &str,
+    credential: ManagementActorCredential,
+) -> Result<bool, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
+    crate::users::repository::management_actor::validate_management_actor_in_transaction(
+        &mut transaction,
+        credential,
+        UserPermission::ManageSettings,
+    )
+    .await?;
     lock_default_plan_set(&mut transaction).await?;
     let result = crate::sqlx::query(
         "UPDATE plans
@@ -323,22 +404,30 @@ pub async fn assign_to_user(
     user_id: UserId,
     plan_id: i64,
     expires_at: Option<OffsetDateTime>,
-    access: OwnerTargetAccess,
+    credential: ManagementActorCredential,
 ) -> Result<PlanAssignmentResult, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
-    // 先锁目标用户，再判定 Owner 档位；该锁一直持有到套餐写入提交。角色晋升与
-    // 套餐改写因此不可能穿过两个独立快照（Issue #323）。目标先于套餐判定也保留
-    // 既有错误优先级：Owner 权限不足仍是 403，而不是由套餐状态泄露 404/400。
-    let role: Option<String> =
-        crate::sqlx::query_scalar("SELECT role FROM users WHERE id = $1 FOR UPDATE")
-            .bind(user_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
-    let Some(role) = role else {
+    // Actor and target use the same ordered advisory/row-lock protocol as role and status writes.
+    // The actor's Session generation, active status, and current role are therefore revalidated
+    // before this transaction can alter entitlements (Issue #493).
+    let lock_order = lock_management_user_advisories(&mut transaction, user_id, credential).await?;
+    let locked = lock_management_user_rows(&mut transaction, &lock_order).await?;
+    let access = match validate_management_actor(credential, locked.actor.as_ref()) {
+        Ok(access) => access,
+        Err(ManagementActorRejection::SessionInvalid) => {
+            transaction.rollback().await?;
+            return Ok(PlanAssignmentResult::ActorSessionInvalid);
+        }
+        Err(ManagementActorRejection::PermissionRequired) => {
+            transaction.rollback().await?;
+            return Ok(PlanAssignmentResult::ActorPermissionRequired);
+        }
+    };
+    let Some(target) = locked.target else {
         transaction.rollback().await?;
         return Ok(PlanAssignmentResult::UserNotFound);
     };
-    if role == "owner" && !access.permits_owner() {
+    if target.role == "owner" && !access.permits_owner() {
         transaction.rollback().await?;
         return Ok(PlanAssignmentResult::ManageRolesRequired);
     }

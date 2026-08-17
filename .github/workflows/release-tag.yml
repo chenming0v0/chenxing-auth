@@ -6,7 +6,7 @@ on:
       version:
         description: Version to release, without the v prefix
         required: true
-        default: 1.1.2
+        default: 1.1.3
         type: string
 
 permissions:
@@ -27,6 +27,28 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          cargo_toml_version="$(awk -F '"' '$1 == "version = " { print $2; exit }' Cargo.toml)"
+          cargo_lock_version="$(awk '
+            $0 == "name = \"chenxing-auth\"" { in_package = 1; next }
+            in_package && /^version = / {
+              gsub(/"/, "", $3)
+              print $3
+              exit
+            }
+            in_package && /^name = / { exit 1 }
+          ' Cargo.lock)"
+
+          if [[ -z "$cargo_toml_version" || -z "$cargo_lock_version" ]]; then
+            printf 'Unable to determine chenxing-auth version from Cargo.toml or Cargo.lock.\n' >&2
+            exit 1
+          fi
+
+          if [[ "$VERSION" != "$cargo_toml_version" || "$VERSION" != "$cargo_lock_version" ]]; then
+            printf 'Version mismatch: input=%s, Cargo.toml=%s, Cargo.lock=%s.\n' \
+              "$VERSION" "$cargo_toml_version" "$cargo_lock_version" >&2
+            exit 1
+          fi
+
           test "$(git tag --list "v$VERSION")" = ""
       - name: Create and push tag
         env:

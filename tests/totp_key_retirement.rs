@@ -7,7 +7,7 @@
 //! 本文件锁定四条不变量：
 //! 1. 不可解密不再伪装成「验证码错误」：503 `factor_key_unavailable` 而不是 401。
 //! 2. 这条路径不烧失败额度：连续触发后正常的密码登录仍然可用，不会被限流。
-//! 3. Owner 可以重置因子，账号回到 `factor_setup_required` 并能重新绑定。
+//! 3. Owner 可以重置因子，账号能用密码登录并从已认证安全 API 重新绑定。
 //! 4. 重置权限是 Owner 专属的 `manage_auth_factors`，Admin 会被 403 拒绝。
 
 use axum::{
@@ -17,6 +17,8 @@ use axum::{
 };
 use chenxing_auth::{
     api,
+    auth_factors::store::LoginTicketStore,
+    clock::SharedClock,
     config::{AuthEncryptionKey, AuthEncryptionKeyRing, Config},
     sessions::{cookies, domain::Session, store::SessionStore},
     state::AppState,
@@ -29,6 +31,8 @@ use uuid::Uuid;
 mod db_isolation;
 #[path = "support/key_directory.rs"]
 mod key_directory;
+#[path = "support/totp_time.rs"]
+mod totp_time;
 
 const ADMIN_TOKEN: &str = "totp-key-retirement-admin-token";
 
@@ -47,6 +51,7 @@ struct Fixture {
     database: chenxing_auth::sqlx::PgPool,
     redis_url: String,
     key_directory: std::path::PathBuf,
+    now: time::OffsetDateTime,
 }
 
 impl Fixture {
@@ -61,6 +66,7 @@ impl Fixture {
             database,
             redis_url,
             key_directory: key_directory::isolated_key_directory("totp-key-retirement"),
+            now: totp_time::centered_now(),
         }
     }
 
@@ -83,11 +89,11 @@ impl Fixture {
         config.cookie_secure = false;
         config.key_directory = self.key_directory.to_string_lossy().into_owned();
         config.auth_encryption_keys = keys;
-        api::router(
-            AppState::new_with_pool(config, self.database.clone())
-                .await
-                .expect("test state"),
-        )
+        let state = AppState::new_with_pool(config, self.database.clone())
+            .await
+            .expect("test state")
+            .with_clock(SharedClock::fixed(self.now));
+        api::router(state)
     }
 
     /// 直接落一条会话，返回 (Cookie 头, CSRF 令牌)。
@@ -113,6 +119,19 @@ impl Fixture {
         )
     }
 
+    async fn clear_totp_test_state(&self, user_id: i64) {
+        let client = redis::Client::open(self.redis_url.as_str()).expect("factor Redis");
+        let store = LoginTicketStore::new(client);
+        store
+            .delete(&format!("chenxing:auth:session-enrollment:{user_id}:totp"))
+            .await
+            .expect("clear pending TOTP enrollment");
+        store
+            .clear_totp_replay(user_id)
+            .await
+            .expect("clear TOTP replay claims");
+    }
+
     fn cleanup(self) {
         let _ = std::fs::remove_dir_all(self.key_directory);
     }
@@ -136,6 +155,14 @@ fn pending_cookie(response: &axum::response::Response) -> String {
         .map(|value| value.split(';').next().expect("cookie pair"))
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+fn cookie_value(cookie: &str, name: &str) -> String {
+    cookie
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
+        .expect("cookie value")
+        .to_owned()
 }
 
 async fn post(router: &Router, uri: &str, payload: serde_json::Value) -> axum::response::Response {
@@ -167,6 +194,29 @@ async fn post_with_cookie(
                 .uri(uri)
                 .header("content-type", "application/json")
                 .header("cookie", cookie)
+                .body(Body::from(payload.to_string()))
+                .expect("JSON request"),
+        )
+        .await
+        .expect("JSON response")
+}
+
+async fn post_with_session(
+    router: &Router,
+    uri: &str,
+    payload: serde_json::Value,
+    cookie: &str,
+    csrf: &str,
+) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("cookie", cookie)
+                .header("x-csrf-token", csrf)
                 .body(Body::from(payload.to_string()))
                 .expect("JSON request"),
         )
@@ -225,50 +275,49 @@ async fn create_user(
         .expect("created user id")
 }
 
-/// 完成一次 TOTP 首绑，返回生成器。密文由该 router 的 active kid 加密。
-async fn enroll_totp(router: &Router, username: &str, password: &str) -> TOTP {
+/// 从已认证安全 API 完成一次 TOTP 绑定，返回生成器。密文由该 router 的 active kid 加密。
+async fn enroll_totp(
+    router: &Router,
+    username: &str,
+    password: &str,
+    now: time::OffsetDateTime,
+) -> TOTP {
     let login = post(
         router,
         "/api/v1/auth/login",
         serde_json::json!({"identifier": username, "password": password}),
     )
     .await;
-    assert_eq!(login.status(), StatusCode::ACCEPTED);
+    assert_eq!(login.status(), StatusCode::OK);
     let cookie = pending_cookie(&login);
-    assert_eq!(json_body(login).await["status"], "factor_setup_required");
-    let setup_response = post_with_cookie(
+    let csrf = cookie_value(&cookie, cookies::csrf_cookie_name(false));
+    assert!(json_body(login).await["expires_at"].as_str().is_some());
+    let setup_response = post_with_session(
         router,
-        "/api/v1/auth/totp/setup",
+        "/api/v1/auth/security/totp/enrollment/start",
         serde_json::json!({}),
         &cookie,
+        &csrf,
     )
     .await;
     let setup = json_body(setup_response).await;
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
-    // 注册用**上一个时间步**的码：注册确认现在也会 claim `user/timestep`（#301）。
-    // 调用方随后要用当前步的码断言登录行为，注册不能提前把那一步烧掉。
-    // 上一步的码仍在 ±1 步接受窗口内。
     assert_eq!(
-        post_with_cookie(
+        post_with_session(
             router,
-            "/api/v1/auth/totp/setup/confirm",
-            serde_json::json!({"code": totp.generate(previous_timestep_timestamp())}),
+            "/api/v1/auth/security/totp/enrollment/confirm",
+            serde_json::json!({
+                "enrollment_id": setup["enrollment_id"],
+                "code": totp.generate(totp_time::previous_timestep(now))
+            }),
             &cookie,
+            &csrf,
         )
         .await
         .status(),
         StatusCode::OK
     );
     totp
-}
-
-/// 上一个时间步的时间戳，用于生成「不占用当前步」的注册确认码（#301）。
-fn previous_timestep_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time")
-        .as_secs()
-        .saturating_sub(30)
 }
 
 #[tokio::test]
@@ -286,8 +335,9 @@ async fn retired_encryption_kid_is_reported_as_unavailable_without_burning_quota
     let username = format!("retire-{suffix}");
     let email = format!("{username}@example.com");
     let password = "correct horse battery";
-    create_user(&before, &username, &email, password, "user").await;
-    let totp = enroll_totp(&before, &username, password).await;
+    let user_id = create_user(&before, &username, &email, password, "user").await;
+    fixture.clear_totp_test_state(user_id).await;
+    let totp = enroll_totp(&before, &username, password, fixture.now).await;
 
     let after = fixture.router(retired_ring.clone()).await;
 
@@ -376,7 +426,8 @@ async fn owner_can_reset_a_locked_totp_factor_and_admin_cannot() {
     let email = format!("{username}@example.com");
     let password = "correct horse battery";
     let user_id = create_user(&before, &username, &email, password, "user").await;
-    let _totp = enroll_totp(&before, &username, password).await;
+    fixture.clear_totp_test_state(user_id).await;
+    let _totp = enroll_totp(&before, &username, password, fixture.now).await;
 
     let after = fixture.router(retired_ring.clone()).await;
     let owner_id: i64 = chenxing_auth::sqlx::query_scalar(
@@ -490,7 +541,7 @@ async fn owner_can_reset_a_locked_totp_factor_and_admin_cannot() {
     assert_eq!(reset["credentials_revoked"], true);
 
     // 重置后账号回到「无因子」，可以重新绑定并完成登录。
-    let totp = enroll_totp(&after, &username, password).await;
+    let totp = enroll_totp(&after, &username, password, fixture.now).await;
     let login = post(
         &after,
         "/api/v1/auth/login",

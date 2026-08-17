@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::domain::AdminPermission;
 use crate::{
-    api::extract::{AdminRead, AdminWrite},
+    api::extract::{AdminRead, AdminWrite, ApiJson},
     audit::AuditEvent,
     error,
     settings::{
@@ -76,7 +76,7 @@ pub async fn get_registration_email(State(state): State<AppState>, admin: AdminR
 pub async fn update_registration_email(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<UpdateRegistrationEmail>,
+    ApiJson(input): ApiJson<UpdateRegistrationEmail>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -93,7 +93,14 @@ pub async fn update_registration_email(
     };
     let registration_email_from = match state
         .settings
-        .set_registration_email_from(registration_email_from)
+        .set_registration_email_from_audited(registration_email_from, &state.audit, move |value| {
+            setting_event(
+                actor,
+                crate::audit::AuditAction::RegistrationEmailUpdate,
+                REGISTRATION_EMAIL_FROM_KEY,
+                serde_json::json!({"configured": value.is_some()}),
+            )
+        })
         .await
     {
         Ok(value) => value,
@@ -109,14 +116,6 @@ pub async fn update_registration_email(
             return error::internal();
         }
     };
-    record_setting_event(
-        &state,
-        actor,
-        crate::audit::AuditAction::RegistrationEmailUpdate,
-        REGISTRATION_EMAIL_FROM_KEY,
-        serde_json::json!({"configured": registration_email_from.is_some()}),
-    )
-    .await;
     (
         StatusCode::OK,
         Json(RegistrationEmailSettingResponse {
@@ -145,7 +144,7 @@ pub async fn get_passkey_setting(State(state): State<AppState>, admin: AdminRead
 pub async fn update_passkey_setting(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<PasskeySetting>,
+    ApiJson(input): ApiJson<PasskeySetting>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -154,46 +153,35 @@ pub async fn update_passkey_setting(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    if !input.enabled {
-        match state.factors.has_active_passkey_only_accounts().await {
-            Ok(true) => {
-                tracing::warn!(
-                    event = "passkey_setting.disable_blocked",
-                    "passkey disable blocked because an active account has no alternative factor"
-                );
-                return error::conflict(
-                    "passkey_disable_blocked",
-                    "Passkey cannot be disabled while an active account relies on it as its only factor",
-                );
-            }
-            Ok(false) => {}
-            Err(error_value) => {
-                tracing::error!(
-                    error = %error_value,
-                    "failed to check passkey-only accounts before disabling Passkey"
-                );
-                return error::internal();
-            }
-        }
-    }
-    match state.settings.set_passkey(input).await {
-        Ok(setting) => {
-            record_setting_event(
-                &state,
+    match state
+        .factors
+        .set_passkey_policy_audited(input, &state.audit, move |setting| {
+            setting_event(
                 actor,
                 crate::audit::AuditAction::PasskeySettingUpdate,
                 "passkey",
                 serde_json::json!({
                     "enabled": setting.enabled,
-                    "rp_id": setting.rp_id,
+                    "rp_id": setting.rp_id.clone(),
                     "allow_insecure_origin": setting.allow_insecure_origin,
                     "origin_count": setting.allowed_origins.len(),
                 }),
             )
-            .await;
-            (StatusCode::OK, Json(setting)).into_response()
+        })
+        .await
+    {
+        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
+        Err(crate::auth_factors::service::PasskeyPolicyUpdateError::DisableBlocked) => {
+            tracing::warn!(
+                event = "passkey_setting.disable_blocked",
+                "passkey disable blocked because an active account has no readable alternative factor"
+            );
+            error::conflict(
+                "passkey_disable_blocked",
+                "Passkey cannot be disabled while an active account relies on it as its only factor",
+            )
         }
-        Err(SettingsServiceError::Validation(error_value)) => {
+        Err(crate::auth_factors::service::PasskeyPolicyUpdateError::Validation(error_value)) => {
             error::bad_request("invalid_passkey_setting", error_value.to_string())
         }
         Err(error_value) => {
@@ -222,7 +210,7 @@ pub async fn get_email_policy_setting(State(state): State<AppState>, admin: Admi
 pub async fn update_email_policy_setting(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<EmailPolicySetting>,
+    ApiJson(input): ApiJson<EmailPolicySetting>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -231,10 +219,10 @@ pub async fn update_email_policy_setting(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    match state.settings.set_email_policy(input).await {
-        Ok(setting) => {
-            record_setting_event(
-                &state,
+    match state
+        .settings
+        .set_email_policy_audited(input, &state.audit, move |setting| {
+            setting_event(
                 actor,
                 crate::audit::AuditAction::EmailPolicyUpdate,
                 "email_policy",
@@ -244,9 +232,10 @@ pub async fn update_email_policy_setting(
                     "domain_count": setting.allowed_domains.len(),
                 }),
             )
-            .await;
-            (StatusCode::OK, Json(setting)).into_response()
-        }
+        })
+        .await
+    {
+        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
         Err(SettingsServiceError::Validation(error_value)) => {
             error::bad_request("invalid_email_policy", error_value.to_string())
         }
@@ -276,7 +265,7 @@ pub async fn get_smtp_setting(State(state): State<AppState>, admin: AdminRead) -
 pub async fn update_smtp_setting(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<SmtpSettingUpdate>,
+    ApiJson(input): ApiJson<SmtpSettingUpdate>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -285,10 +274,10 @@ pub async fn update_smtp_setting(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    match state.settings.set_smtp(input).await {
-        Ok((setting, password_action)) => {
-            record_setting_event(
-                &state,
+    match state
+        .settings
+        .set_smtp_audited(input, &state.audit, move |(setting, password_action)| {
+            setting_event(
                 actor,
                 crate::audit::AuditAction::SmtpSettingUpdate,
                 "smtp",
@@ -300,9 +289,10 @@ pub async fn update_smtp_setting(
                     "password_action": password_action,
                 }),
             )
-            .await;
-            (StatusCode::OK, Json(setting)).into_response()
-        }
+        })
+        .await
+    {
+        Ok((setting, _)) => (StatusCode::OK, Json(setting)).into_response(),
         Err(SettingsServiceError::Validation(error_value)) => {
             error::bad_request("invalid_smtp_setting", error_value.to_string())
         }
@@ -335,7 +325,7 @@ pub async fn get_security_limits_setting(
 pub async fn update_security_limits_setting(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<SecurityLimitsSetting>,
+    ApiJson(input): ApiJson<SecurityLimitsSetting>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -344,11 +334,10 @@ pub async fn update_security_limits_setting(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    match state.settings.set_security_limits(input).await {
-        Ok(setting) => {
-            // 阈值数值本身不是凭据，完整记录便于事后追查是谁放宽了限流。
-            record_setting_event(
-                &state,
+    match state
+        .settings
+        .set_security_limits_audited(input, &state.audit, move |setting| {
+            setting_event(
                 actor,
                 crate::audit::AuditAction::SecurityLimitsUpdate,
                 SECURITY_LIMITS_KEY,
@@ -368,7 +357,10 @@ pub async fn update_security_limits_setting(
                     "external_login_state_max_pending": setting.external_login_state_max_pending,
                 }),
             )
-            .await;
+        })
+        .await
+    {
+        Ok(setting) => {
             (StatusCode::OK, Json(setting)).into_response()
         }
         Err(SettingsServiceError::Validation(error_value)) => {
@@ -410,22 +402,18 @@ fn respond_setting_inspection<T: Serialize>(
 #[path = "settings_handlers_tests.rs"]
 mod tests;
 
-async fn record_setting_event(
-    state: &AppState,
+fn setting_event(
     actor: super::authorization::AdminActor,
     action: crate::audit::AuditAction,
     resource_id: &str,
     metadata: serde_json::Value,
-) {
-    state
-        .audit
-        .record_best_effort(AuditEvent::new(
-            actor.actor_type().to_owned(),
-            actor.user_id().map(|id| id.to_string()),
-            action,
-            "setting".to_owned(),
-            Some(resource_id.to_owned()),
-            metadata,
-        ))
-        .await;
+) -> AuditEvent {
+    AuditEvent::new(
+        actor.actor_type().to_owned(),
+        actor.user_id().map(|id| id.to_string()),
+        action,
+        "setting".to_owned(),
+        Some(resource_id.to_owned()),
+        metadata,
+    )
 }

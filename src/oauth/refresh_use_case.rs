@@ -2,10 +2,11 @@ use super::{
     OAuthError, RefreshExchangeError, TokenIssueParams, TokenRequest, TokenResponse,
     issue_token_response,
 };
-use crate::{clients::service::AuthenticatedClient, config::IssuerUrl, state::AppState};
+use crate::{clients::service::AuthenticatedClient, settings::IssuerSnapshot, state::AppState};
 
 use super::super::{
     grant_gate::{GrantGateError, effective_grant_scopes},
+    issuance_fence::{IssuanceFenceError, IssuanceSnapshot, confirm_issuance_snapshot},
     refresh::RefreshToken,
     refresh_store::RotationOutcome,
     session::active_user_epoch,
@@ -26,10 +27,13 @@ use tombstone::{
 #[path = "refresh_use_case_replay.rs"]
 mod replay;
 
+#[path = "refresh_use_case_epoch.rs"]
+mod epoch;
+
 /// Exchange a refresh token after the token endpoint has authenticated the client.
 pub(super) async fn exchange_refresh_token(
     state: &AppState,
-    issuer: &IssuerUrl,
+    issuer: &IssuerSnapshot,
     request: TokenRequest,
     authenticated: AuthenticatedClient,
 ) -> Result<TokenResponse, RefreshExchangeError> {
@@ -53,6 +57,20 @@ pub(super) async fn exchange_refresh_token(
             return Err(OAuthError::temporarily_unavailable().into());
         }
     };
+
+    // Refresh Token belongs to the Issuer generation that originally minted
+    // the grant. Comparing against the request-scoped snapshot prevents an A
+    // token from being exchanged into an iss=B token after a hot switch. The
+    // snapshot must not be re-read from runtime inside this request: doing so
+    // could mix generations if an update lands midway through the exchange.
+    if !refresh.is_bound_to_issuer_generation(issuer.generation()) {
+        let reason = if refresh.issuer_generation.is_none() {
+            "refresh_token_issuer_generation_required"
+        } else {
+            "issuer_generation_changed"
+        };
+        return record_and_return_invalid(state, Some(&refresh.user_id), client_id, reason).await;
+    }
 
     // A Refresh Token is part of the credential generation that created it.
     // Versioned tokens must match the exact authenticated generation. Legacy
@@ -91,9 +109,9 @@ pub(super) async fn exchange_refresh_token(
     //
     // `granted` 是本次兑换允许的上界：闸门收窄后的集合才是 `select_scopes`
     // 可选择的范围。
-    let granted =
+    let grant =
         match effective_grant_scopes(state, &refresh.user_id, client_id, &refresh.scopes).await {
-            Ok(granted) => granted,
+            Ok(grant) => grant,
             Err(GrantGateError::Denied(reason)) => {
                 return record_and_return_invalid(state, Some(&refresh.user_id), client_id, reason)
                     .await;
@@ -125,12 +143,12 @@ pub(super) async fn exchange_refresh_token(
         return record_and_return_invalid(state, Some(&refresh.user_id), client_id, reason).await;
     }
 
-    let scopes = select_scopes(request.scope.as_deref(), &granted)?;
-    // Rotation inherits issued_at/family_id/session_epoch and stamps the
-    // authenticated Client Secret generation, including for legacy unversioned
-    // tokens. The inherited epoch keeps the successor in the same credential
-    // generation: re-reading it here would let a revocation that lands between
-    // the check above and this rotation be stamped away (Issue #409).
+    let scopes = select_scopes(request.scope.as_deref(), &grant.scopes)?;
+    // Rotation inherits issued_at/family_id/session_epoch/issuer_generation and
+    // stamps only the authenticated Client Secret generation, including for
+    // legacy unversioned Client credentials. Inheriting both security snapshots
+    // keeps the successor in the same credential generation: re-reading either
+    // value here could stamp away a revocation or cross an Issuer trust boundary.
     let next_refresh = refresh.rotate_at_with_client_secret_version(
         scopes.clone(),
         authenticated.client_secret_version(),
@@ -139,7 +157,7 @@ pub(super) async fn exchange_refresh_token(
     let token = issue_token_response(
         state,
         TokenIssueParams {
-            issuer,
+            issuer: issuer.issuer(),
             user_id: &refresh.user_id,
             client_id,
             scopes: &scopes,
@@ -181,12 +199,21 @@ pub(super) async fn exchange_refresh_token(
             "failed to release Client credential issuance fence after refresh rotation"
         );
         if rotated {
-            rollback_rotation(state, client_id, &next_refresh, &refresh).await;
+            let _ = rollback_rotation(state, client_id, &next_refresh, &refresh).await;
         }
         return Err(OAuthError::temporarily_unavailable().into());
     }
     match rotation {
         Ok(RotationOutcome::Rotated) => {
+            epoch::confirm_after_rotation(state, client_id, &refresh, &next_refresh).await?;
+            confirm_consent_after_rotation(
+                state,
+                client_id,
+                &refresh,
+                &next_refresh,
+                grant.consent_version,
+            )
+            .await?;
             if record_token_event(
                 state,
                 Some(&refresh.user_id),
@@ -197,7 +224,7 @@ pub(super) async fn exchange_refresh_token(
             .await
             .is_err()
             {
-                rollback_rotation(state, client_id, &next_refresh, &refresh).await;
+                let _ = rollback_rotation(state, client_id, &next_refresh, &refresh).await;
                 return Err(RefreshExchangeError::ServerError);
             }
             Ok(token)
@@ -227,6 +254,54 @@ pub(super) async fn exchange_refresh_token(
             Err(OAuthError::temporarily_unavailable().into())
         }
     }
+}
+
+async fn confirm_consent_after_rotation(
+    state: &AppState,
+    client_id: &str,
+    refresh: &RefreshToken,
+    next_refresh: &RefreshToken,
+    consent_version: i64,
+) -> Result<(), RefreshExchangeError> {
+    let snapshot = IssuanceSnapshot {
+        consent_version: Some(consent_version),
+        session_epoch: None,
+    };
+    let Err(fence) = confirm_issuance_snapshot(state, &refresh.user_id, client_id, &snapshot).await
+    else {
+        return Ok(());
+    };
+
+    match fence {
+        IssuanceFenceError::Denied(reason) => {
+            let rollback = rollback_rotation(state, client_id, next_refresh, refresh).await;
+            let denied = discard_token(
+                record_and_return_invalid(state, Some(&refresh.user_id), client_id, reason).await,
+            );
+            if rollback == RotationRollback::Unavailable {
+                Err(OAuthError::temporarily_unavailable().into())
+            } else {
+                denied
+            }
+        }
+        IssuanceFenceError::Unavailable(_) => {
+            let _ = rollback_rotation(state, client_id, next_refresh, refresh).await;
+            Err(OAuthError::temporarily_unavailable().into())
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RotationRollback {
+    Restored,
+    NotRestorable,
+    Unavailable,
+}
+
+fn discard_token(
+    result: Result<TokenResponse, RefreshExchangeError>,
+) -> Result<(), RefreshExchangeError> {
+    result.map(|_| ())
 }
 
 /// 选择本次刷新使用的 scope 集合（RFC 6749 §6）。
@@ -273,30 +348,36 @@ async fn rollback_rotation(
     client_id: &str,
     issued: &RefreshToken,
     previous: &RefreshToken,
-) {
+) -> RotationRollback {
     match state
         .refresh_tokens
         .rollback_rotation(issued, previous)
         .await
     {
-        Ok(RotationOutcome::Rotated) => {}
+        Ok(RotationOutcome::Rotated) => RotationRollback::Restored,
         // 新 token 已经不在（并发消费或已过期），或整个 family 已被撤销。
         // 两种情况下恢复 previous 都会给已死的 grant 造出一个活凭据，
         // 只能让客户端重新走授权流程。
-        Ok(outcome) => tracing::warn!(
-            event = "refresh.rotation_rollback_skipped",
-            client_id = %client_id,
-            family_id = %issued.family_id,
-            outcome = ?outcome,
-            "refresh rotation rollback skipped: the issued token can no longer be swapped back"
-        ),
-        Err(store_error) => tracing::error!(
-            event = "refresh.rotation_rollback_failed",
-            error = %store_error,
-            client_id = %client_id,
-            family_id = %issued.family_id,
-            "failed to roll back refresh rotation after audit persistence failure"
-        ),
+        Ok(outcome) => {
+            tracing::warn!(
+                event = "refresh.rotation_rollback_skipped",
+                client_id = %client_id,
+                family_id = %issued.family_id,
+                outcome = ?outcome,
+                "refresh rotation rollback skipped: the issued token can no longer be swapped back"
+            );
+            RotationRollback::NotRestorable
+        }
+        Err(store_error) => {
+            tracing::error!(
+                event = "refresh.rotation_rollback_failed",
+                error = %store_error,
+                client_id = %client_id,
+                family_id = %issued.family_id,
+                "failed to roll back refresh rotation after a post-rotation failure"
+            );
+            RotationRollback::Unavailable
+        }
     }
 }
 

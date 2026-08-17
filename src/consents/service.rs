@@ -125,6 +125,19 @@ impl<R: ConsentRepository> ConsentService<R> {
         self.repository.consent_state(user_id, client_id).await
     }
 
+    /// 一次读取同意行的撤销状态、版本号和 scope 集合。
+    ///
+    /// 兑换闸门用它同时拿到 scope 覆盖判定所需的集合和 persist 后复核所需的
+    /// `state_version`（Issue #475）。不要拆成 `consent_state` + `has_scopes`：
+    /// 那是两次查询，版本号不再描述那次 scope 判定看到的行。
+    pub async fn consent_grant(
+        &self,
+        user_id: UserId,
+        client_id: &str,
+    ) -> Result<Option<(ConsentState, Vec<String>)>, crate::sqlx::Error> {
+        self.repository.consent_grant(user_id, client_id).await
+    }
+
     /// 撤销状态的布尔视图。
     ///
     /// 「不存在同意记录」判定为未撤销：不存在的授权无法被撤销，

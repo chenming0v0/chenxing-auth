@@ -4,13 +4,26 @@ info:
   version: 1.0.0
   description: |
     辰星通行证用户认证、OAuth 2.0/OIDC 和统一用户管理 API。
-    当前定义以仓库实际路由为准。运行期 Issuer 持久化在 PostgreSQL；未配置时仅健康检查、静态前端和初始化状态可用，其他协议路由由运行时门禁拒绝。
+    当前定义以仓库实际路由为准。运行时 Issuer 的权威来源是 PostgreSQL `app_settings` 表中的 `app_issuer` 记录，不是环境变量、请求 Host 或反向代理输入。
+    数据库与 Runtime 都没有 Issuer 时进入保护模式：只要数据库、Redis、关键 worker 与签名同步均就绪，readiness 仍视为健康；首 Owner 初始化仍可用，只有用户 ID=1 可以本地登录，
+    ADMIN_TOKEN 保留用于恢复和 Issuer 配置；除首 Owner 初始化外，公共注册与所有用户创建接口关闭。仅依赖正式 Issuer
+    的路由关闭，包括 OAuth/OIDC 协议与授权确认、Discovery、JWKS、外部登录及其 Provider 管理。Issuer 门禁发现 Runtime
+    处于 AwaitingIssuer 时会立即回读 PostgreSQL：合法持久化值会应用到当前请求并继续处理；无记录、空值/无效值、数据库读取失败、
+    Runtime 已是 Pending/Invalid，或 DB/Runtime 事实无法一致应用时才返回 503。readiness 独立要求 raw DB 与 Runtime 完全一致，
+    且四个关键后台 worker 的心跳与最近成功均在各自时限内，签名密钥同步状态允许令牌签发。
 
-    请求超时（`REQUEST_TIMEOUT_SECONDS`）或 Issuer 运行态门禁失败时，已注册的
-    `/oauth/authorize`、`/oauth/token`、`/oauth/revoke` 和 `/oauth/userinfo` 返回 RFC 6749
-    `503 temporarily_unavailable`（`OAuthErrorResponse`），不得改写为内部 API 信封。
+    ADMIN_TOKEN 为空时整个已初始化管理面 fail closed：系统 Bearer 与浏览器 Session 两条管理通道都返回 403
+    admin_disabled；唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口。WebAuthn 的显式 WEBAUTHN_RP_ID / WEBAUTHN_ORIGIN
+    覆盖始终优先；未显式覆盖时从持久化 Issuer 的 host / 根 URL 派生，绝不从请求 Host 或反向代理输入推导。
+
+    已注册的 `/oauth/authorize`、`/oauth/token`、`/oauth/revoke` 和 `/oauth/userinfo` 始终保持 RFC 6749
+    `OAuthErrorResponse` 信封。Issuer 门禁即时回读后仍不可用、OAuth 依赖不可用或请求超时
+    （`REQUEST_TIMEOUT_SECONDS`）时统一返回标准 `503 temporarily_unavailable`，不得改写为内部 API 信封。
     未知 `/oauth/*` 路径仍返回统一 404；其余应用路由使用内部 `ErrorResponse`。
     健康检查与静态 SPA fallback 不套用该请求超时。
+    所有声明 `application/json` requestBody 的内部 API 使用统一提取错误：缺少或错误 Content-Type
+    返回 415 `unsupported_media_type`，JSON 语法错误返回 400 `invalid_json`，字段类型或必填字段错误
+    返回 422 `invalid_json`；响应始终是 `ErrorResponse`，不暴露 serde 字段路径或实现类型。
 servers:
   - url: http://127.0.0.1:3000
     description: 本地开发
@@ -19,6 +32,7 @@ tags:
   - name: User Auth
   - name: User Auth/Account
   - name: User Auth/MFA
+  - name: User Auth/Security
   - name: User Auth/Sessions
   - name: User Auth/Security Events
   - name: User Auth/OAuth Clients
@@ -40,11 +54,15 @@ paths:
       summary: 就绪探针（与 /health/ready 相同）
       operationId: health
       description: |
-        兼容别名，处理逻辑与 GET /health/ready 相同：检查数据库、Redis 和 Issuer 收敛。
-        全部就绪返回 200；任一依赖不可用返回 503。响应体只暴露聚合状态，不含连接串或错误细节。
+        兼容别名，处理逻辑与 GET /health/ready 相同：检查数据库、Redis、Issuer 收敛和四个关键后台 worker。
+        raw DB 没有 Issuer 记录且 Runtime 也未加载 Issuer 是合法的保护模式，此时数据库、Redis、worker 和签名密钥同步均就绪则返回 200。
+        raw DB 存在合法 Issuer 且 generation/value 与 Runtime 完全一致时同样返回 200。raw 记录为空或无效、读取失败、
+        Runtime 已加载但数据库无记录、数据库有记录但 Runtime 未加载，或值/代次不一致时返回 503。
+        任一关键 worker 未成功启动、心跳/最近成功过期、连续失败、panic 或意外返回，或签名密钥同步异常时也返回 503。
+        响应体只暴露聚合状态，不含连接串或错误细节。
       responses:
         '200':
-          description: 数据库、Redis 与 Issuer 均已就绪
+          description: 数据库、Redis、四个关键 worker 和签名密钥同步均就绪，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
           content:
             application/json:
               schema:
@@ -73,11 +91,13 @@ paths:
       summary: 就绪探针
       operationId: healthReady
       description: |
-        检查数据库、Redis 和 Issuer 收敛。全部就绪返回 200；任一依赖超时或未就绪返回 503。
+        检查数据库、Redis、Issuer 收敛和四个关键后台 worker，并确认签名密钥同步允许令牌签发。raw DB 与 Runtime 都没有 Issuer 是合法的保护模式；raw DB 存在合法 Issuer
+        且 generation/value 与 Runtime 完全一致时也就绪。raw 记录为空或无效、读取失败、任一侧缺失、值/代次不一致，
+        任一依赖超时/未就绪，或任一关键 worker 未成功启动、心跳/最近成功过期、连续失败、panic/意外返回，或签名密钥同步异常时返回 503。
         响应体只暴露聚合状态，不含连接串、主机名或错误细节。
       responses:
         '200':
-          description: 数据库、Redis 与 Issuer 均已就绪
+          description: 数据库、Redis、四个关键 worker 和签名密钥同步均就绪，且 raw DB/Runtime 均无 Issuer，或合法 generation/value 完全一致
           content:
             application/json:
               schema:
@@ -92,7 +112,10 @@ paths:
       operationId: openidConfiguration
       description: |
         返回 OIDC Discovery 文档。公开只读元数据，允许任意来源跨域读取
-        （`Access-Control-Allow-Origin: *`，不带凭据）。
+        （`Access-Control-Allow-Origin: *`，不带凭据）。Runtime 处于 AwaitingIssuer 时，门禁立即回读 PostgreSQL；
+        合法持久化 Issuer 会应用到当前请求并继续返回 Discovery。数据库确实无记录时返回内部 `ErrorResponse`
+        信封的 503 `issuer_not_configured`；持久化空值/无效值、读取失败、Runtime Pending/Invalid，或事实无法一致应用时
+        返回 503 `issuer_runtime_invalid`。
       responses:
         '200':
           description: OIDC 配置
@@ -107,6 +130,7 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OpenIdConfiguration'
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /.well-known/jwks.json:
     get:
       tags: [OAuth/OIDC]
@@ -121,6 +145,9 @@ paths:
         缓存策略为 `Cache-Control: public, max-age=60, must-revalidate`，RP 可在 60 秒内
         直接使用共享缓存；过期后用 `If-None-Match` 发起条件请求，公钥集合未变时返回 304。
         ETag 由 JWKS 字节的 SHA-256 派生，确定性且跨实例一致；密钥轮换或吊销后 ETag 改变。
+        Runtime 处于 AwaitingIssuer 时，门禁立即回读 PostgreSQL；合法持久化 Issuer 会应用到当前请求并继续返回 JWKS。
+        数据库确实无记录时返回内部 `ErrorResponse` 信封的 503 `issuer_not_configured`；持久化空值/无效值、读取失败、
+        Runtime Pending/Invalid，或事实无法一致应用时返回 503 `issuer_runtime_invalid`。
       parameters:
         - { name: If-None-Match, in: header, required: false, description: RP 上次响应的 ETag，匹配时返回 304, schema: { type: string } }
       responses:
@@ -164,6 +191,7 @@ paths:
             Vary:
               description: 始终为 `Origin`。
               schema: { type: string }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/users:
     post:
       tags: [User Auth/Account]
@@ -173,6 +201,7 @@ paths:
         公共注册在真实的邮件投递和验证令牌消费能力接入前 fail-closed。
         格式合法的请求会返回 `email_verification_unavailable`，不会创建未证明邮箱所有权的 active 用户。
         用户名和邮箱的唯一冲突统一返回 `registration_conflict`，不暴露具体冲突字段。
+        Issuer 缺少时注册接口关闭并返回 503 `issuer_not_configured`。
       requestBody:
         required: true
         content:
@@ -192,11 +221,24 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/login:
     post:
       tags: [User Auth/Account]
       summary: 用户登录
       description: |
+        请求先经过 Issuer 门禁。Runtime 为 AwaitingIssuer 时立即回读 PostgreSQL：合法持久化 Issuer 会应用到当前请求并继续；
+        数据库确实无记录时进入保护模式，只有用户 ID=1 可以本地登录，其他用户返回 `invalid_credentials`。
+        门禁允许继续后，请求格式错误返回 415 或 422；持久化空值/无效值、读取失败或 Runtime Pending/Invalid 时，
+        在进入登录处理器前返回 503 `issuer_runtime_invalid`。
+
+        没有已启用/生效认证因子的账号在口令校验成功后直接签发普通 Session，审计
+        factor 固定为 `password`，不会创建 login ticket，也不会返回
+        `factor_setup_required`。已有生效因子时继续返回 `factor_required` 并走既有
+        ticket-only 第二步。`factor_setup_required` 保留在响应枚举中用于协议兼容。
+
         错误码：
         - 401 invalid_credentials / invalid_factor：口令或 TOTP 验证码错误，或已被限流。
         - 503 factor_key_unavailable：请求带 `totp_code` 且该账号的 TOTP 种子由已退役的
@@ -221,12 +263,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/LoginResponse'
         '202':
-          description: 密码正确但需要首次绑定或完成认证因子。通过 HttpOnly login ticket 与 holder Cookie 继续流程，不在 JSON 响应中返回 ticket
+          description: 密码正确且已有生效认证因子，需要完成第二步。通过 HttpOnly login ticket 与 holder Cookie 继续流程，不在 JSON 响应中返回 ticket
           headers:
             Set-Cookie: { $ref: '#/components/headers/SetCookie' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PendingLoginResponse' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/totp/setup:
@@ -234,6 +279,10 @@ paths:
       tags: [User Auth/MFA]
       summary: 开始 TOTP 首次绑定
       operationId: startTotpSetup
+      description: |
+        otpauth issuer 标签取自已加载 Issuer 的 host，不读取请求 Host 或代理头。
+        Issuer 门禁即时回读后仍不可用时返回 503 `issuer_not_configured` 或
+        `issuer_runtime_invalid`，不会生成来源不明的二维码标签。
       requestBody:
         required: true
         content:
@@ -246,6 +295,10 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TotpSetupResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/totp/setup/confirm:
     post:
       tags: [User Auth/MFA]
@@ -281,6 +334,9 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/totp/login:
     post:
       tags: [User Auth/MFA]
@@ -315,6 +371,9 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/passkeys/register/start:
     post:
       tags: [User Auth/MFA]
@@ -333,6 +392,9 @@ paths:
               schema: { $ref: '#/components/schemas/WebAuthnOptions' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/passkeys/register/finish:
     post:
       tags: [User Auth/MFA]
@@ -355,6 +417,9 @@ paths:
               schema: { $ref: '#/components/schemas/LoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/passkeys/authentication/start:
     post:
       tags: [User Auth/MFA]
@@ -373,6 +438,9 @@ paths:
               schema: { $ref: '#/components/schemas/WebAuthnOptions' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/passkeys/authentication/finish:
     post:
       tags: [User Auth/MFA]
@@ -395,6 +463,200 @@ paths:
               schema: { $ref: '#/components/schemas/LoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+  /api/v1/auth/security/factors:
+    get:
+      tags: [User Auth/Security]
+      summary: 查询当前用户认证因素概览
+      operationId: getCurrentUserFactorSummary
+      description: |
+        只统计已持久化确认的因素。Redis 中待确认的 TOTP 种子或 Passkey challenge
+        不会出现在 `available_methods`，也不会改变后续登录策略。
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 当前用户因素概览
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FactorSummaryResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/security/totp/enrollment/start:
+    post:
+      tags: [User Auth/Security]
+      summary: 使用当前 Session 开始 TOTP 注册
+      operationId: startCurrentUserTotpEnrollment
+      description: |
+        创建约五分钟有效、绑定当前用户、Session ID 和 session_epoch 的待确认注册。
+        同一用户同一方法只允许一份 pending；并发败者返回 409，绝不覆盖已返回的种子。
+        otpauth issuer 标签取自配置 Issuer 的 host，不读取请求 Host 或代理头。
+        Issuer 门禁即时回读后仍不可用时返回 503 `issuer_not_configured` 或
+        `issuer_runtime_invalid`，不会创建 pending enrollment。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyObject' }
+      responses:
+        '200':
+          description: 待确认 TOTP 注册
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionTotpStartResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/security/totp/enrollment/confirm:
+    post:
+      tags: [User Auth/Security]
+      summary: 确认当前 Session 的 TOTP 注册
+      operationId: confirmCurrentUserTotpEnrollment
+      description: |
+        ownership、Session ID、session_epoch 和 enrollment_id 全部匹配后才可完成。
+        成功只持久化因素，不签发或替换 Session。TOTP 已存在时拒绝；已有 Passkey 不影响注册。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionTotpConfirmInput' }
+      responses:
+        '200':
+          description: TOTP 已启用
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FactorEnrollmentResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+  /api/v1/auth/security/passkeys/registration/start:
+    post:
+      tags: [User Auth/Security]
+      summary: 使用当前 Session 开始 Passkey 注册
+      operationId: startCurrentUserPasskeyRegistration
+      description: |
+        创建绑定当前用户、Session ID 和 session_epoch 的 WebAuthn challenge。
+        已有 TOTP 或其他 Passkey 不阻止新增凭据；同一用户同一方法的并发 start 不覆盖 challenge。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyObject' }
+      responses:
+        '200':
+          description: Passkey 注册 challenge
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionPasskeyStartResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+  /api/v1/auth/security/passkeys/registration/finish:
+    post:
+      tags: [User Auth/Security]
+      summary: 完成当前 Session 的 Passkey 注册
+      operationId: finishCurrentUserPasskeyRegistration
+      description: |
+        验证 WebAuthn credential 后原子消费 ownership 匹配的 pending，并在用户 advisory
+        lock 下写入凭据。保留 credential_id 全局唯一约束。成功不签发新 Session。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionPasskeyFinishInput' }
+      responses:
+        '200':
+          description: Passkey 已启用
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FactorEnrollmentResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+  /api/v1/auth/security/factors/totp:
+    delete:
+      tags: [User Auth/Security]
+      summary: 移除当前用户的 TOTP 因素
+      operationId: removeCurrentUserTotpFactor
+      description: |
+        需要当前 Session、CSRF 和请求内显式密码再认证。成功时在同一数据库事务内删除
+        TOTP、推进 session_epoch、撤销全部 Session/Refresh Token 并写入 outbox；随后清空
+        当前浏览器认证 Cookie。密码不可用时拒绝，管理员恢复是唯一回退。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FactorRemovalInput' }
+      responses:
+        '200':
+          description: TOTP 已移除，当前及其他会话均已撤销
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FactorRemovalResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+  /api/v1/auth/security/factors/passkey:
+    delete:
+      tags: [User Auth/Security]
+      summary: 移除当前用户的全部 Passkey 凭据
+      operationId: removeCurrentUserPasskeyFactor
+      description: |
+        方法级移除：删除该用户全部已注册 Passkey。需要当前 Session、CSRF 和请求内显式
+        密码再认证；成功时原子推进 session_epoch、撤销全部 Session/Refresh Token 和 outbox，
+        并清空当前浏览器认证 Cookie。响应 `removed` 明确给出删除凭据数。
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FactorRemovalInput' }
+      responses:
+        '200':
+          description: 全部 Passkey 已移除，当前及其他会话均已撤销
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FactorRemovalResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/status:
     get:
       tags: [User Auth/Account]
@@ -406,6 +668,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthStatusResponse' }
+        '500':
+          $ref: '#/components/responses/InternalServerError'
   /api/v1/auth/me:
     get:
       tags: [User Auth/Account]
@@ -438,6 +702,9 @@ paths:
               schema: { $ref: '#/components/schemas/UserMeResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/me/avatar:
     get:
       tags: [User Auth/Account]
@@ -508,6 +775,9 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/entitlements:
     get:
       tags: [User Entitlements]
@@ -552,7 +822,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PagedSecurityEvents' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400': { $ref: '#/components/responses/InvalidPagination' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '500': { $ref: '#/components/responses/InternalServerError' }
   /api/v1/auth/security-events/{event_id}:
@@ -615,7 +885,9 @@ paths:
       summary: 创建当前用户的 OAuth 项目
       operationId: createOwnedOAuthClient
       security: [{ sessionCookie: [] }]
-      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      parameters:
+        - { $ref: '#/components/parameters/CsrfHeader' }
+        - { $ref: '#/components/parameters/IdempotencyKeyHeader' }
       requestBody:
         required: true
         content:
@@ -635,6 +907,10 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/authorized-apps:
     get:
       tags: [User Auth/Authorized Apps]
@@ -680,6 +956,9 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/oauth-clients/{client_id}/disable:
     post:
       tags: [User Auth/OAuth Clients]
@@ -717,6 +996,7 @@ paths:
       parameters:
         - { name: client_id, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
+        - { $ref: '#/components/parameters/IdempotencyKeyHeader' }
       responses:
         '200':
           description: 新 Secret，只返回一次
@@ -727,6 +1007,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/session:
     delete:
       tags: [User Auth/Sessions]
@@ -744,6 +1025,7 @@ paths:
       tags: [User Auth/Browser Login]
       summary: 查询公开的外部登录提供商
       operationId: listPublicExternalProviders
+      description: Runtime 为 AwaitingIssuer 时先回读 PostgreSQL；合法持久化 Issuer 会应用到当前请求并继续。数据库确实无记录时返回内部 `ErrorResponse` 信封的 503 `issuer_not_configured`；空值/无效值、读取失败、Runtime Pending/Invalid 或事实无法一致应用时返回 503 `issuer_runtime_invalid`，且不暴露外部登录配置。
       responses:
         '200':
           description: 当前启用的外部登录提供商，仅包含登录页所需的公开信息
@@ -752,6 +1034,7 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/PublicExternalProvider' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /auth/external/{slug}:
     get:
       tags: [User Auth/Browser Login]
@@ -759,7 +1042,9 @@ paths:
       description: >-
         自定义提供商按 OAuth 2.0 授权码流程 + UserInfo 信任模型接入，本平台在这一侧不是 OIDC 依赖方。
         scopes 可包含 openid（多数 OIDC 提供商需要它才开放 UserInfo），但它只用于换取可调用 UserInfo 的
-        access token，不代表本平台执行了 OIDC 身份断言校验。
+        access token，不代表本平台执行了 OIDC 身份断言校验。Runtime 为 AwaitingIssuer 时先回读 PostgreSQL；合法持久化
+        Issuer 会应用到当前请求并继续。数据库确实无记录时返回内部 `ErrorResponse` 信封的 503 `issuer_not_configured`；
+        空值/无效值、读取失败、Runtime Pending/Invalid 或事实无法一致应用时返回 503 `issuer_runtime_invalid`。
       operationId: startExternalOAuthLogin
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
@@ -768,6 +1053,7 @@ paths:
         '302': { description: 重定向到外部授权端点, headers: { Set-Cookie: { $ref: '#/components/headers/SetCookie' } } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /auth/external/{slug}/callback:
     get:
       tags: [User Auth/Browser Login]
@@ -777,7 +1063,11 @@ paths:
         全部按 provider 配置的 claim 路径从该响应读取。令牌响应中的 id_token 不被解析、不被存储、不参与身份判定
         （本平台不为自定义提供商保存 issuer、JWKS、允许算法或 nonce 策略，不具备验证它的条件）。只返回 id_token
         而没有 access_token 的令牌响应按失败处理，回跳 external_error=oauth_login_failed。email_verified 的
-        可信度上限就是外部 UserInfo 响应本身。
+        可信度上限就是外部 UserInfo 响应本身。首次自动建号在同一数据库事务内执行普通注册共用的邮箱域名/别名策略，
+        策略拒绝时不留下 user 或 identity 半成品并回跳 oauth_login_failed；既有绑定登录不重新应用注册策略。
+        Runtime 为 AwaitingIssuer 时先回读 PostgreSQL；合法持久化 Issuer 会应用到
+        当前请求并继续。数据库确实无记录时返回内部 `ErrorResponse` 信封的 503 `issuer_not_configured`；空值/无效值、
+        读取失败、Runtime Pending/Invalid 或事实无法一致应用时返回 503 `issuer_runtime_invalid`。
       operationId: externalOAuthCallback
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
@@ -788,6 +1078,7 @@ paths:
         '302': { description: 登录成功或失败后的页面重定向, headers: { Set-Cookie: { $ref: '#/components/headers/SetCookie' } } }
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /oauth/authorize:
     get:
       tags: [OAuth/OIDC]
@@ -797,10 +1088,18 @@ paths:
       description: |
         未登录浏览器请求仅在 client、redirect_uri、scope、state 和 PKCE 完整校验后创建 pending。
         X-Chenxing-Session 仅在 OAUTH_SESSION_HEADER_ENABLED=true 的开发兼容配置中接受，不能绕过 Session 绑定、CSRF 或 consent。
-        请求超时或 Issuer 未就绪时，中间件返回 503 `temporarily_unavailable`（RFC 6749 JSON 信封；此时尚无可用的 redirect_uri 上下文做错误重定向），不会返回内部 API 的 `{code, message}` 或 504 `request_timeout`（Issues #423、#441）。
+        Client 已加载且 redirect_uri canonicalize 后仍严格匹配注册值时，后续参数校验或依赖错误通过 302
+        回调该 canonical redirect_uri，并携带 RFC 6749 `error` / `error_description`；仅非空且不超过 512
+        个字符的 state 会被回显。注册匹配允许默认端口消除、根斜杠补全和 RFC 8252 loopback 字面 IP
+        的动态端口例外；授权码仍绑定请求提交的原始 redirect_uri 文本，Token 兑换必须原样回送。
+        Client 或 redirect_uri 不可信时绝不重定向，改用 RFC 6749 JSON 错误信封。
+        Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。无记录、空值/无效值、
+        数据库读取失败、Runtime Pending/Invalid 或事实无法一致应用，以及请求超时时，统一返回 RFC 6749 JSON 信封的
+        503 `temporarily_unavailable`。此时尚无可用的 redirect_uri 上下文做错误重定向，
+        不会返回内部 API 的 `{code, message}` 或 504 `request_timeout`（Issues #423、#441）。
       parameters:
         - { $ref: '#/components/parameters/ClientId' }
-        - { name: redirect_uri, in: query, required: true, schema: { type: string, format: uri } }
+        - { name: redirect_uri, in: query, required: true, description: "canonicalize 后必须匹配注册值；授权码兑换时必须原样回送本次请求文本", schema: { type: string, format: uri } }
         - { name: response_type, in: query, required: true, schema: { type: string, enum: [code] } }
         - { name: scope, in: query, required: true, description: "空格分隔的 scope；每个值必须同时属于服务端 OAUTH_CLIENT_ALLOWED_SCOPES allowlist（默认 openid、profile、email）和该 Client 已注册的 scope 集合", schema: { type: string, example: 'openid email profile' } }
         - { name: state, in: query, required: true, description: 最多 512 个字符, schema: { type: string, maxLength: 512 } }
@@ -813,12 +1112,48 @@ paths:
         '401': { $ref: '#/components/responses/OAuthUnauthorized' }
         '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
         '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
+    post:
+      tags: [OAuth/OIDC]
+      summary: OAuth 授权码入口（表单 POST）
+      operationId: authorizePost
+      security: [{ sessionCookie: [] }, { chenxingSession: [] }, {}]
+      description: |
+        与 GET `/oauth/authorize` 行为和安全边界相同。请求体必须使用
+        `application/x-www-form-urlencoded`。Client 已加载且 canonical redirect_uri 严格匹配注册值时，
+        后续参数校验或依赖错误通过 302 携带 RFC 6749 错误参数返回；不可信回调地址只返回 OAuth JSON 错误。
+        state 仅在非空且不超过 512 个字符时回显。
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [client_id, redirect_uri, response_type, scope, state, code_challenge, code_challenge_method]
+              properties:
+                client_id: { type: string }
+                redirect_uri: { type: string, format: uri, description: "canonicalize 后必须匹配注册值；授权码兑换时必须原样回送本次请求文本" }
+                response_type: { type: string, enum: [code] }
+                scope: { type: string, description: "空格分隔的 scope；受服务端 allowlist 和 Client 已注册 scopes 双重约束" }
+                state: { type: string, maxLength: 512 }
+                nonce: { type: string, maxLength: 512 }
+                code_challenge: { type: string }
+                code_challenge_method: { type: string, enum: [S256] }
+      responses:
+        '302': { description: 重定向到 Client 的 canonical registered redirect_uri 或登录/授权确认页；错误重定向携带 RFC 6749 error/error_description，并仅回显合法长度的 state }
+        '400': { $ref: '#/components/responses/OAuthBadRequest' }
+        '401': { $ref: '#/components/responses/OAuthUnauthorized' }
+        '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
+        '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
   /api/v1/oauth/authorize/requests/{request_id}:
     get:
       tags: [OAuth/OIDC]
       summary: 查询绑定到当前 Session 的待授权请求
       operationId: inspectAuthorizationRequest
       security: [{ sessionCookie: [] }]
+      description: |
+        pending 请求绑定创建它的 `/oauth/authorize` 请求级 Issuer generation。
+        Issuer 热切换后，旧 generation 或升级前缺失 generation 的请求会被丢弃并返回
+        400 `authorization_request_expired`，Client 必须重新发起授权。
       parameters:
         - { name: request_id, in: path, required: true, schema: { type: string } }
       responses:
@@ -829,11 +1164,16 @@ paths:
               schema: { $ref: '#/components/schemas/PendingAuthorizationResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     post:
       tags: [OAuth/OIDC]
       summary: 批准或拒绝绑定到当前 Session 的授权请求
       operationId: decideAuthorizationRequest
       security: [{ sessionCookie: [] }]
+      description: |
+        决策只能在 pending 创建时捕获的 Issuer generation 内完成。
+        Issuer 热切换后不会把旧授权意图升级为新 Issuer 的授权码；旧 generation 或缺失
+        generation 的请求会被丢弃并返回 400 `authorization_request_expired`。
       parameters:
         - { name: request_id, in: path, required: true, schema: { type: string } }
         - { $ref: '#/components/parameters/CsrfHeader' }
@@ -850,8 +1190,12 @@ paths:
               schema: { $ref: '#/components/schemas/AuthorizationDecisionResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '429': { $ref: '#/components/responses/OAuthTooManyRequests' }
-        '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalServerError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/oauth/authorize/requests/{request_id}/bind:
     post:
       tags: [OAuth/OIDC]
@@ -870,6 +1214,9 @@ paths:
 
         升级前创建的旧 pending 记录无 holder 摘要，绑定时将被拒绝（fail-secure），用户需重新发起授权流程。
 
+        pending 同时绑定创建它的请求级 Issuer generation。Issuer 热切换后，旧 generation 或升级前
+        缺失 generation 的请求会被丢弃并返回 400 `authorization_request_expired`，Client 必须重新发起授权。
+
         **受控重绑（#270）**：上述校验全部通过时，无论该 pending 请求此前绑定的是哪个 Session 摘要，
         都会被重绑到调用者当前的 Session，写入走 CAS 保证原子性。
         holder Cookie 才是所有权凭据，Session 绑定是派生状态，因此重绑不放宽任何安全边界：
@@ -877,6 +1224,8 @@ paths:
         这让「会话过期后重新登录」与「切换账号继续授权」可以自愈，
         不再固定返回 401 并在登录页与授权确认页之间形成跳转循环。
         授权码在最终 approve 时按当时持有的 Session 签发。
+        每次绑定或重绑都保留 Redis 请求键的原始剩余 TTL 与 expiry 索引截止时间；重复重绑不会延长
+        pending 的总生命周期，临界过期请求也不会被恢复为完整配置 TTL。
 
         重绑会记录审计事件 `authorization_request_rebound`（resource_type `oauth_authorization`）。
       parameters:
@@ -888,16 +1237,27 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { description: 'pending 请求正被并发修改，CAS 无法收敛（authorization_request_conflict）；重试即可', content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /oauth/token:
     post:
       tags: [OAuth/OIDC]
       summary: 交换授权码或刷新 Token
       operationId: token
       description: |
-        表单编码。Client 认证为 HTTP Basic 或 body 二选一。
-        请求超时或 Issuer 未就绪时返回 503 `temporarily_unavailable`（RFC 6749 信封），不会返回内部 API 的 `{code, message}` 或 504 `request_timeout`（Issues #423、#441）。
-      security: [{ basicClientAuth: [] }]
+        表单编码。Client 认证支持 HTTP Basic、`client_secret` 表单字段，或公开 Client 的 `none`。
+        Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。无记录、空值/无效值、
+        数据库读取失败、Runtime Pending/Invalid 或事实无法一致应用，以及请求超时时统一返回 RFC 6749 信封的
+        503 `temporarily_unavailable`。
+        授权码交换在持久化 Refresh Token 后还会最终复核授权同意版本；该复核暂时不可用时，服务销毁未披露的
+        Refresh Token，并在确认销毁后恢复授权码供重试。若无法确认销毁结果则保持授权码已消费，客户端需重新发起授权。
+        两种 503 分支都会保留套餐退款台账，没有成功 TokenResponse 的失败不会永久计入日/月授权用量。
+        授权码请求中的 redirect_uri 必须与创建授权码时的原始文本完全一致；canonical 等价但文本不同仍返回 invalid_grant。
+        Refresh 轮换在 successor 写入后回源复核同意版本/撤销状态；拒绝或存储故障先原子回滚未披露
+        successor，若 Redis 无法确认回滚状态则返回 temporarily_unavailable。所有失败分支都不返回
+        Access Token、ID Token 或新 Refresh Token。
+        不会返回内部 API 的 `{code, message}`
+        或 504 `request_timeout`（Issues #423、#441）。
+      security: [{ basicClientAuth: [] }, {}]
       requestBody:
         required: true
         content:
@@ -920,6 +1280,9 @@ paths:
       tags: [OAuth/OIDC]
       summary: 获取 OIDC UserInfo
       operationId: userinfo
+      description: |
+        Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。回读后仍不可用、
+        OAuth 依赖暂时不可用或请求超时时，返回 RFC 6749 信封的 503 `temporarily_unavailable`，不使用内部 `{code, message}`。
       security: [{ bearerAuth: [] }]
       responses:
         '200':
@@ -930,25 +1293,46 @@ paths:
                 $ref: '#/components/schemas/UserInfo'
         '401': { $ref: '#/components/responses/OAuthUnauthorized' }
         '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
+    post:
+      tags: [OAuth/OIDC]
+      summary: 获取 OIDC UserInfo（表单 POST）
+      operationId: userinfoPost
+      description: |
+        Access Token 必须通过 Authorization Bearer 或表单 `access_token` 二选一提交；
+        同时使用两种方式返回 400 `invalid_request`。Issuer 或依赖不可用时保持
+        RFC 6749 信封的 503 `temporarily_unavailable`。
+      security: [{ bearerAuth: [] }, {}]
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema: { $ref: '#/components/schemas/UserInfoPostRequest' }
+      responses:
+        '200':
+          description: 用户信息
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserInfo' }
+        '400': { $ref: '#/components/responses/OAuthBadRequest' }
+        '401': { $ref: '#/components/responses/OAuthUnauthorized' }
+        '503': { $ref: '#/components/responses/OAuthServiceUnavailable' }
   /oauth/revoke:
     post:
       tags: [OAuth/OIDC]
       summary: 撤销 Token
       operationId: revokeToken
-      security: [{ basicClientAuth: [] }]
+      description: |
+        Client 认证支持 HTTP Basic、表单 `client_id` + `client_secret`
+        (`client_secret_post`)，或公开 Client 只提交 `client_id` 的 `none`；认证方式
+        不得混用。`token` 与可选 `token_type_hint` 同样使用表单编码。
+        Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。回读后仍不可用、
+        OAuth 依赖暂时不可用或请求超时时，返回 RFC 6749 信封的 503 `temporarily_unavailable`，不使用内部 `{code, message}`。
+      security: [{ basicClientAuth: [] }, {}]
       requestBody:
         required: true
         content:
           application/x-www-form-urlencoded:
-            schema:
-              type: object
-              required: [token]
-              properties:
-                token: { type: string }
-                token_type_hint:
-                  type: string
-                  description: 可省略；仅支持 access_token 或 refresh_token，其他值返回 unsupported_token_type
-                  enum: [access_token, refresh_token]
+            schema: { $ref: '#/components/schemas/RevocationRequest' }
       responses:
         '200': { description: 撤销完成，无响应体 }
         '400': { $ref: '#/components/responses/OAuthBadRequest' }
@@ -958,7 +1342,10 @@ paths:
     post:
       tags: [Admin Auth]
       summary: 初始化首个 Owner 用户
-      description: Issuer 已配置但 Owner 尚未初始化时允许匿名调用；按可信源 IP 限制为每分钟 5 次。缺少可信源地址时遵循服务端 missing_source_ip_policy，限流依赖不可用时 fail closed。
+      description: |
+        Owner 尚未初始化时允许匿名创建首个 Owner（数据库 ID=1），无论 Issuer 是否已配置；
+        该初始化入口是保护模式的唯一用户创建例外。按可信源 IP 限制为每分钟 5 次，
+        缺少可信源地址时遵循服务端 missing_source_ip_policy，限流依赖不可用时 fail closed。
       operationId: bootstrapAdmin
       requestBody:
         required: true
@@ -976,6 +1363,9 @@ paths:
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
         '504': { $ref: '#/components/responses/RequestTimeout' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/bootstrap/status:
     get:
       tags: [Admin Auth]
@@ -1001,7 +1391,9 @@ paths:
       summary: 查询当前管理身份和权限
       description: ADMIN_TOKEN 未配置时整个管理面关闭，本端点对所有调用者返回 403 admin_disabled，不进入身份探测。
       operationId: adminMe
-      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       responses:
         '200':
           description: 管理身份摘要
@@ -1011,13 +1403,16 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '500': { $ref: '#/components/responses/InternalServerError' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/users:
     get:
       tags: [Admin Users]
       summary: 用户列表
       description: 返回用户数组。服务端强制分页上限，超出范围的 limit 会被 clamp 到 [1, 200]；需要完整分页信封时使用 /api/v1/admin/users/query。
       operationId: listUsers
-      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       parameters:
         - name: limit
           in: query
@@ -1038,12 +1433,14 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     post:
       tags: [Admin Users]
       summary: 创建用户
       description: |
         管理员创建任意角色和初始状态的用户，是 POST /api/v1/admin/admins 的一般化。
         响应只包含公开用户字段，永不返回口令、口令哈希或任何凭据材料。
+        Issuer 缺少时所有管理用户创建接口关闭并返回 503 `issuer_not_configured`；首 Owner 只能通过 bootstrap 初始化。
 
         权限：`manage_users` 为基线；`role` 为 admin 或 owner 时所需权限抬升为 `manage_roles`。
         浏览器 Session 写操作必须同时携带 HttpOnly Session Cookie、CSRF Cookie 和 X-CSRF-Token。
@@ -1053,8 +1450,11 @@ paths:
         - 403：admin_forbidden
         - 409：username_already_registered、email_already_registered、owner_bootstrap_required
       operationId: createUser
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       requestBody:
         required: true
         content:
@@ -1070,32 +1470,43 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/users/{user_id}/{status}:
     post:
       tags: [Admin Users]
       summary: 设置用户状态
       description: 基线权限为 manage_users；目标用户为 Owner 时额外要求 manage_roles。权限检查先于资源查询，低权限调用者不能据响应枚举用户或 Owner 身份。非法状态返回 400 invalid_status，不存在用户返回 404 user_not_found。管理员不能修改自己的状态，自我操作返回 403 self_status_change_forbidden。
       operationId: setUserStatus
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       parameters:
         - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
         - { name: status, in: path, required: true, schema: { type: string, example: disabled } }
-        - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
         '204': { description: 更新成功 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/users/{user_id}/role:
     post:
       tags: [Admin Users]
       summary: 修改用户角色
       operationId: setUserRole
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       parameters:
         - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
-        - { $ref: '#/components/parameters/CsrfHeader' }
       requestBody:
         required: true
         content:
@@ -1111,6 +1522,10 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/users/{user_id}/auth-factors:
     get:
       tags: [Admin Auth Factors]
@@ -1129,7 +1544,9 @@ paths:
 
         权限：`manage_users`。
       operationId: adminUserAuthFactors
-      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       parameters:
         - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
       responses:
@@ -1141,13 +1558,14 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/users/{user_id}/auth-factors/totp:
     delete:
       tags: [Admin Auth Factors]
       summary: 重置账号的 TOTP 因子
       description: |
         删除该账号的 TOTP 因子并撤销它的全部会话。账号回到「无因子」状态，
-        下次密码登录返回 `factor_setup_required`，由用户重新完成 TOTP 绑定。
+        下次密码登录直接签发普通 Session，用户可从已认证安全 API 重新绑定 TOTP。
 
         这是加密 kid 退役后唯一的恢复路径：种子已经无法解密，也就无法迁移，
         只能丢弃不可读的密文。响应中的 `previous_key_state` 说明这次重置救的是
@@ -1163,10 +1581,13 @@ paths:
         - 403：admin_forbidden
         - 404：user_not_found、totp_factor_not_found
       operationId: adminResetUserTotpFactor
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       parameters:
         - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
-        - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
         '200':
           description: 已删除 TOTP 因子并撤销该账号的全部会话
@@ -1177,14 +1598,15 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/users/{user_id}/auth-factors/passkey:
     delete:
       tags: [Admin Auth Factors]
       summary: 重置账号的全部 Passkey 凭据
       description: |
         删除该账号的全部 Passkey 凭据并撤销它的全部会话与已签发 Refresh Token。
-        Passkey-only 账号回到「无因子」状态，下次密码登录返回 `factor_setup_required`，
-        由用户重新完成因子绑定。仍绑定 TOTP 的账号保留 TOTP。
+        Passkey-only 账号回到「无因子」状态，下次密码登录直接签发普通 Session，
+        用户可从已认证安全 API 重新绑定。仍绑定 TOTP 的账号继续要求 TOTP。
 
         这是 Passkey-only 账号丢失全部认证器后的受控恢复路径。末位 Owner 丢失
         全部 Passkey 时无法签发新的管理 Session：必须使用系统 `ADMIN_TOKEN`
@@ -1202,10 +1624,13 @@ paths:
         - 403：admin_forbidden
         - 404：user_not_found、passkey_factor_not_found
       operationId: adminResetUserPasskeyFactor
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       parameters:
         - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
-        - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
         '200':
           description: 已删除全部 Passkey 凭据并撤销该账号的全部会话
@@ -1216,6 +1641,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/auth-factors/key-health:
     get:
       tags: [Admin Auth Factors]
@@ -1233,7 +1659,9 @@ paths:
 
         权限：Owner 专属的 `rotate_keys`。
       operationId: adminAuthFactorKeyHealth
-      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       responses:
         '200':
           description: 密文按可读状态的分布计数
@@ -1242,16 +1670,20 @@ paths:
               schema: { $ref: '#/components/schemas/AuthFactorKeyHealthResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/users/{user_id}/plan:
     post:
       tags: [Admin Users]
       summary: 为用户分配套餐
       description: 基线权限为 manage_users；目标用户为 Owner 时额外要求 manage_roles，且权限检查先于套餐和目标资源查询。
       operationId: assignPlanToUser
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       parameters:
         - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
-        - { $ref: '#/components/parameters/CsrfHeader' }
       requestBody:
         required: true
         content:
@@ -1264,12 +1696,18 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/plans:
     get:
       tags: [Admin Plans]
       summary: 套餐列表
       operationId: listPlans
-      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       responses:
         '200':
           description: 全部套餐（含已归档），包含已分配用户数
@@ -1278,13 +1716,16 @@ paths:
               schema: { type: array, items: { $ref: '#/components/schemas/Plan' } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     post:
       tags: [Admin Plans]
       summary: 创建套餐
       operationId: createPlan
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
-      parameters:
-        - { $ref: '#/components/parameters/CsrfHeader' }
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       requestBody:
         required: true
         content:
@@ -1300,15 +1741,22 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/plans/{id}:
     put:
       tags: [Admin Plans]
       summary: 更新套餐
       operationId: updatePlan
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
-        - { $ref: '#/components/parameters/CsrfHeader' }
       requestBody:
         required: true
         content:
@@ -1325,54 +1773,76 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/plans/{id}/archive:
     post:
       tags: [Admin Plans]
       summary: 归档套餐
       operationId: archivePlan
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
-        - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
         '204': { description: 归档成功；默认套餐也可归档，归档时一并清除默认标记，系统随之进入「无生效默认套餐」状态 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/plans/{id}/restore:
     post:
       tags: [Admin Plans]
       summary: 恢复套餐
       operationId: restorePlan
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
-        - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
         '204': { description: 恢复成功 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/clients:
     get:
       tags: [Admin Clients]
       summary: Client 列表
       operationId: listClients
-      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       responses:
         '200':
           description: Client 列表，不包含 Secret
           content:
             application/json:
               schema: { type: array, items: { $ref: '#/components/schemas/ClientSummary' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     post:
       tags: [Admin Clients]
       summary: 创建 Client
       operationId: createClient
-      security: [{ adminBearer: [] }, { sessionCookie: [] }]
-      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters:
+        - { $ref: '#/components/parameters/IdempotencyKeyHeader' }
       requestBody:
         required: true
         content:
@@ -1388,15 +1858,22 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/clients/{client_id}:
     put:
       tags: [Admin Clients]
       summary: 更新 Client
       operationId: updateClient
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       parameters:
         - { name: client_id, in: path, required: true, schema: { type: string } }
-        - { $ref: '#/components/parameters/CsrfHeader' }
       requestBody:
         required: true
         content:
@@ -1409,61 +1886,101 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/clients/{client_id}/disable:
     post:
       tags: [Admin Clients]
       summary: 禁用 Client
       operationId: disableClient
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
-      parameters: [{ name: client_id, in: path, required: true, schema: { type: string } }, { $ref: '#/components/parameters/CsrfHeader' }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
       responses:
         '204': { description: 操作成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/clients/{client_id}/enable:
     post:
       tags: [Admin Clients]
       summary: 启用 Client
       operationId: enableClient
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
-      parameters: [{ name: client_id, in: path, required: true, schema: { type: string } }, { $ref: '#/components/parameters/CsrfHeader' }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters: [{ name: client_id, in: path, required: true, schema: { type: string } }]
       responses:
         '204': { description: 操作成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/clients/{client_id}/rotate-secret:
     post:
       tags: [Admin Clients]
       summary: 轮换 Client Secret
       operationId: rotateClientSecret
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
-      parameters: [{ name: client_id, in: path, required: true, schema: { type: string } }, { $ref: '#/components/parameters/CsrfHeader' }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      parameters:
+        - { name: client_id, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/IdempotencyKeyHeader' }
       responses:
         '200':
           description: 新 Secret，只返回一次
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ClientSecretResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/admins:
     get:
       tags: [Admin Auth]
       summary: 管理员和 Owner 列表
       operationId: listAdmins
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       responses:
         '200':
           description: 管理员和 Owner 摘要
           content:
             application/json:
               schema: { type: array, items: { $ref: '#/components/schemas/AdminSummary' } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     post:
       tags: [Admin Auth]
       summary: 创建管理员或 Owner
+      description: Issuer 缺少时关闭并返回 503 `issuer_not_configured`；首 Owner 只能通过 bootstrap 初始化。
       operationId: createAdmin
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       requestBody:
         required: true
         content:
@@ -1471,22 +1988,36 @@ paths:
             schema: { $ref: '#/components/schemas/AdminInput' }
       responses:
         '201': { description: 创建成功 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/audit:
     get:
       tags: [Admin Operations]
       summary: 审计事件列表
       operationId: listAudit
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       parameters:
         - { name: limit, in: query, schema: { type: integer, default: 50, minimum: 1 } }
       responses:
         '200': { description: 审计事件列表, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/AuditEvent' } } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/overview:
     get:
       tags: [Admin Operations]
       summary: 管理后台概览统计
       operationId: adminOverview
-      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       responses:
         '200':
           description: 全局资源计数
@@ -1494,12 +2025,16 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AdminOverview' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/users/query:
     get:
       tags: [Admin Users]
       summary: 分页筛选用户
       operationId: queryUsers
-      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       parameters:
         - { $ref: '#/components/parameters/Page' }
         - { $ref: '#/components/parameters/PageSize' }
@@ -1511,14 +2046,18 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PagedUsers' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400': { $ref: '#/components/responses/InvalidPagination' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/clients/query:
     get:
       tags: [Admin Clients]
       summary: 分页筛选 OAuth Client
       operationId: queryClients
-      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       parameters:
         - { $ref: '#/components/parameters/Page' }
         - { $ref: '#/components/parameters/PageSize' }
@@ -1530,14 +2069,18 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PagedClients' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400': { $ref: '#/components/responses/InvalidPagination' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/audit/query:
     get:
       tags: [Admin Operations]
       summary: 分页筛选审计事件
       operationId: queryAudit
-      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       parameters:
         - { $ref: '#/components/parameters/Page' }
         - { $ref: '#/components/parameters/PageSize' }
@@ -1549,14 +2092,18 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PagedAudit' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400': { $ref: '#/components/responses/InvalidPagination' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/settings/registration-email:
     get:
       tags: [Admin Operations]
       summary: 查询注册邮件发件地址
       operationId: getRegistrationEmailSetting
-      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       responses:
         '200':
           description: 当前注册邮件发件地址。未配置时为 null。
@@ -1564,12 +2111,17 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/RegistrationEmailSettingResponse' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     put:
       tags: [Admin Operations]
       summary: 更新注册邮件发件地址
       operationId: updateRegistrationEmailSetting
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       requestBody:
         required: true
         content:
@@ -1584,11 +2136,15 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/settings/issuer:
     get:
       tags: [Admin]
       summary: 查询 OIDC Issuer 状态
-      description: Owner 专属。返回持久化记录、当前进程加载快照和运行阶段，不返回秘密材料。
+      description: Owner 专属。返回 PostgreSQL `app_settings` 中的持久化记录、当前进程加载快照和运行阶段，不返回秘密材料。保护模式下 ADMIN_TOKEN 是恢复访问通道。
       operationId: getIssuerSetting
       security:
         - adminBearer: []
@@ -1609,13 +2165,14 @@ paths:
       description: |
         Owner 专属，浏览器会话需要 CSRF。value 必须是无 userinfo、路径、查询和片段的
         http(s) 根 URL。expected_generation 用于 CAS 并发保护；修改已有值时 confirm 必须为 true。
-        写入与 issuer_configure/issuer_update 审计在同一事务中提交，当前进程立即热生效，其他副本按 generation 轮询收敛。
+        Issuer 写入 PostgreSQL `app_settings`；写入与 issuer_configure/issuer_update 审计在同一事务中提交，
+        当前进程立即热生效，其他副本按 generation 轮询收敛。保护模式下可使用 ADMIN_TOKEN 完成恢复配置。
       operationId: updateIssuerSetting
       security:
-        - sessionCookie: []
         - adminBearer: []
-      parameters:
-        - { $ref: '#/components/parameters/CsrfHeader' }
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       requestBody:
         required: true
         content:
@@ -1633,6 +2190,9 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
         '500': { $ref: '#/components/responses/InternalServerError' }
         '504': { $ref: '#/components/responses/RequestTimeout' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/settings/passkey:
     get:
       tags: [Admin]
@@ -1654,6 +2214,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     put:
       tags: [Admin]
       summary: 更新 Passkey / WebAuthn 设置
@@ -1661,8 +2222,8 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
+          csrfCookie: []
+          csrfHeader: []
       requestBody:
         required: true
         content:
@@ -1682,6 +2243,10 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/settings/email-policy:
     get:
       tags: [Admin]
@@ -1703,6 +2268,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     put:
       tags: [Admin]
       summary: 更新邮箱域名白名单设置
@@ -1710,8 +2276,8 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
+          csrfCookie: []
+          csrfHeader: []
       requestBody:
         required: true
         content:
@@ -1729,6 +2295,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/settings/smtp:
     get:
       tags: [Admin]
@@ -1747,6 +2317,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     put:
       tags: [Admin]
       summary: 更新 SMTP 设置
@@ -1754,8 +2325,8 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
+          csrfCookie: []
+          csrfHeader: []
       requestBody:
         required: true
         content:
@@ -1773,6 +2344,10 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/settings/security-limits:
     get:
       tags: [Admin]
@@ -1794,6 +2369,7 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     put:
       tags: [Admin]
       summary: 更新安全限流阈值
@@ -1801,8 +2377,8 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
-      parameters:
-        - $ref: '#/components/parameters/CsrfHeader'
+          csrfCookie: []
+          csrfHeader: []
       requestBody:
         required: true
         content:
@@ -1820,12 +2396,18 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/oauth/providers:
     get:
       tags: [Admin OAuth Providers]
       summary: 自定义 OAuth 提供商列表
       operationId: listOAuthProviders
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
       responses:
         '200':
           description: 提供商摘要，不包含 Client Secret；trust_model 恒为 oauth2_userinfo
@@ -1834,6 +2416,7 @@ paths:
               schema: { type: array, items: { $ref: '#/components/schemas/OAuthProviderSummary' } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
     post:
       tags: [Admin OAuth Providers]
       summary: 创建自定义 OAuth 提供商
@@ -1844,8 +2427,11 @@ paths:
         站点本地 fec0::/10、文档与保留前缀以及未分配空间一律拒绝。仅 localhost/回环地址保留本机开发例外。
         provider 专用 HTTP 客户端显式禁用系统代理，HTTP_PROXY/HTTPS_PROXY/ALL_PROXY 不生效。
       operationId: createOAuthProvider
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       requestBody:
         required: true
         content:
@@ -1859,17 +2445,25 @@ paths:
               schema: { $ref: '#/components/schemas/OAuthProviderSummary' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/oauth/providers/{slug}:
     put:
       tags: [Admin OAuth Providers]
       summary: 更新自定义 OAuth 提供商
       description: 更新时重新执行端点 scheme、IP 地址空间和连接时 DNS 解析边界校验；省略 Client Secret 时保留原值。
       operationId: updateOAuthProvider
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
-        - { $ref: '#/components/parameters/CsrfHeader' }
       requestBody:
         required: true
         content:
@@ -1879,37 +2473,52 @@ paths:
         '204': { description: 更新成功，省略 Client Secret 时保留原值 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/admin/oauth/providers/{slug}/disable:
     post:
       tags: [Admin OAuth Providers]
       summary: 停用自定义 OAuth 提供商
       operationId: disableOAuthProvider
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
-        - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
         '204': { description: 停用成功 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/oauth/providers/{slug}/enable:
     post:
       tags: [Admin OAuth Providers]
       summary: 启用自定义 OAuth 提供商
       operationId: enableOAuthProvider
       description: 缺少可用 email_verified_claim 或端点不满足公网出网边界的 provider 无法启用，返回 400 invalid_oauth_provider。
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
-        - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
         '204': { description: 启用成功 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /admin/login:
     get:
       tags: [Admin Auth]
@@ -1943,8 +2552,11 @@ paths:
       tags: [Admin Operations]
       summary: 轮换签名密钥
       operationId: rotateSigningKey
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
-      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       responses:
         '200':
           description: 轮换结果
@@ -1955,18 +2567,25 @@ paths:
                 properties:
                   key_id: { type: string }
                   published_key_count: { type: integer }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/admin/keys/{key_id}/revoke:
     post:
       tags: [Admin Operations]
       summary: 按 kid 撤销签名密钥
       operationId: revokeSigningKey
-      security: [{ sessionCookie: [] }, { adminBearer: [] }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
       parameters:
         - name: key_id
           in: path
           required: true
           schema: { type: string }
-        - { $ref: '#/components/parameters/CsrfHeader' }
       responses:
         '200':
           description: 撤销结果
@@ -1984,17 +2603,31 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
 components:
   securitySchemes:
     bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
     adminBearer: { type: http, scheme: bearer, description: 系统 ADMIN_TOKEN 自动化通道，权限等价于 Owner 且无用户 ID，不需要浏览器 CSRF。ADMIN_TOKEN 为空时整个管理面关闭：Bearer 与 sessionCookie 两条通道都被拒绝，已初始化的管理接口统一返回 403 admin_disabled；唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口 }
     basicClientAuth: { type: http, scheme: basic }
-    sessionCookie: { type: apiKey, in: cookie, name: __Host-chenxing_session, description: HTTPS 浏览器部署使用的 host-only Session Cookie；仅 loopback HTTP 本地开发使用不带前缀的兼容名称 }
+    sessionCookie: { type: apiKey, in: cookie, name: __Host-chenxing_session, description: HTTPS 浏览器部署使用的 host-only Session Cookie；仅 loopback HTTP 本地开发使用不带前缀的兼容名称。管理接口只有在 ADMIN_TOKEN 非空时才接受此通道；ADMIN_TOKEN 为空时统一返回 403 admin_disabled }
+    csrfCookie: { type: apiKey, in: cookie, name: __Host-chenxing_csrf, description: 浏览器 Session 写操作必需的 CSRF Cookie（客户端读取后复制到 X-CSRF-Token）；必须与 sessionCookie 和 csrfHeader 同时提交并绑定。HTTP 本地开发使用不带前缀的兼容名称 }
+    csrfHeader: { type: apiKey, in: header, name: X-CSRF-Token, description: 管理写操作的浏览器 Session 分支必须同时提交；ADMIN_TOKEN Bearer 分支不需要 }
     chenxingSession: { type: apiKey, in: header, name: X-Chenxing-Session, description: 仅开发兼容配置 OAUTH_SESSION_HEADER_ENABLED=true 时可用；不能替代 pending、Session 绑定、CSRF 或 consent }
   parameters:
     ClientId: { name: client_id, in: query, required: true, schema: { type: string } }
     SessionResponseMode: { name: X-Chenxing-Session-Mode, in: header, required: false, description: 非浏览器兼容模式。仅在 SESSION_TOKEN_RESPONSE_ENABLED=true 且值为 token 时将 session_id 放入 JSON；浏览器不得发送此请求头。, schema: { type: string, enum: [token] } }
     CsrfHeader: { name: X-CSRF-Token, in: header, required: true, description: 浏览器 Session 写操作必需；ADMIN_TOKEN Bearer 请求不需要。ADMIN_TOKEN 为空时整个管理面关闭，管理请求一律 403 admin_disabled，本请求头不再生效, schema: { type: string } }
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Client 创建与 Secret 轮换的可选重试键。调用方应为一次逻辑操作生成同一个 1..128 字节可见 ASCII 值，
+        并保留到收到成功响应；24 小时内同一调用者、同一键和同一请求返回相同 Client ID/Secret 且不重复写审计。
+        非法键返回 400 invalid_idempotency_key；同键更换操作或请求内容返回 409 idempotency_conflict；
+        历史结果引用的 kid 已不可用时返回 503 idempotency_key_unavailable；审计依赖不可用时回滚整个操作并返回 503 audit_unavailable。
+        服务端只保存 SHA-256 摘要，不保存原始键或明文 Secret。
+      schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]{1,128}$' }
     Page: { name: page, in: query, required: false, schema: { type: integer, minimum: 1, default: 1 } }
     PageSize: { name: page_size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
     Search: { name: search, in: query, required: false, schema: { type: string, maxLength: 128 } }
@@ -2008,17 +2641,29 @@ components:
         响应头与 JSON body 都不包含配置原文、域名或阈值。
       schema: { type: string, enum: [invalid, corrupt] }
   responses:
-    BadRequest: { description: 请求错误, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    BadRequest: { description: 请求错误；JSON 请求体无法解析时返回 400 invalid_json，且不暴露 serde 字段或类型细节, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    PayloadTooLarge: { description: JSON 请求体超过端点允许的大小时返回 413 payload_too_large，响应不包含请求体或解析细节, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' }, example: { code: payload_too_large, message: request body exceeds the allowed size } } } }
+    UnsupportedMediaType: { description: JSON 请求缺少正确的 Content-Type 时返回 415 unsupported_media_type, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' }, example: { code: unsupported_media_type, message: request Content-Type must be application/json } } } }
+    InvalidJsonData: { description: JSON 语法正确但字段类型无法反序列化时返回 422 invalid_json，响应不包含字段或 Rust/serde 类型细节, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' }, example: { code: invalid_json, message: request body must be valid JSON } } } }
+    InvalidPagination:
+      description: page/page_size 无法解析为整数、整数溢出、page 小于 1、page_size 不在 1..=100 或 offset 溢出；响应不包含 serde 细节，服务端不静默修正越界值
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+          example: { code: invalid_pagination, message: page must be a positive integer and page_size must be an integer between 1 and 100 }
     Unauthorized: { description: 未认证或凭据无效, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     Forbidden: { description: 无权限（admin_forbidden）；ADMIN_TOKEN 未配置时管理接口统一返回 admin_disabled, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-    Conflict: { description: 资源冲突（包括套餐 code 冲突、已归档套餐不能设为默认和 Passkey 禁用保护）, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    Conflict: { description: 资源冲突（包括 idempotency_conflict、套餐 code 冲突、已归档套餐不能设为默认和 Passkey 禁用保护）, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     NotFound: { description: 资源不存在, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     TooManyRequests: { description: 认证、OAuth 配额或 QPS 限流触发, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-    ServiceUnavailable: { description: 依赖或必要能力暂不可用, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+    ServiceUnavailable: { description: 依赖或必要能力暂不可用；Issuer 门禁在 Runtime Awaiting 时先回读 PostgreSQL 并应用合法值。数据库确实无 Issuer 记录时 code 为 issuer_not_configured；空值/无效值、读取失败、Runtime Pending/Invalid 或 DB/Runtime 事实无法一致应用时 code 为 issuer_runtime_invalid, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     InternalServerError: { description: 服务端内部故障, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
     HealthServiceUnavailable:
       description: |
-        数据库、Redis 或 Issuer 未收敛。响应体只暴露聚合状态，不含连接串或错误细节。
+        数据库、Redis 不可用；raw Issuer 记录为空/无效或读取失败；Runtime 已加载但数据库无记录；数据库有记录但 Runtime
+        未加载；或 generation/value 不一致。raw DB 与 Runtime 都没有 Issuer 是健康的保护模式，合法记录与 Runtime
+        完全一致时同样就绪。任一关键 worker 未成功启动、心跳/最近成功过期、连续失败、panic 或意外返回，或签名密钥同步异常时同样不可就绪。
+        响应体只暴露聚合状态，不含连接串或错误细节。
       content:
         application/json:
           schema: { $ref: '#/components/schemas/HealthResponse' }
@@ -2032,9 +2677,10 @@ components:
     OAuthTooManyRequests: { description: OAuth 限流或容量保护触发, content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } } }
     OAuthServiceUnavailable:
       description: |
-        OAuth 依赖暂时不可用、Issuer 未配置或运行态无效，或已注册的 OAuth 协议端点
-        触发请求超时（Issues #423、#441）。
-        响应始终为 RFC 6749 信封（`error=temporarily_unavailable`），不是内部 `{code, message}`。
+        Runtime Awaiting 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。数据库无记录、空值/无效值、
+        读取失败、Runtime Pending/Invalid、DB/Runtime 事实无法一致应用、OAuth 依赖暂时不可用，或请求超时
+        （Issues #423、#441）时统一返回 RFC 6749 `error=temporarily_unavailable`，
+        不使用内部 `{code, message}`。
       content: { application/json: { schema: { $ref: '#/components/schemas/OAuthErrorResponse' } } }
     RequestTimeout:
       description: |
@@ -2087,6 +2733,18 @@ components:
         identifier: { type: string, maxLength: 254, description: 用户名或邮箱；超过 254 字符按凭据错误拒绝 }
         password: { type: string, format: password, minLength: 10, maxLength: 128, description: 超过 128 字符按凭据错误拒绝，不返回独立错误码 }
         totp_code: { type: string, pattern: '^[0-9]{6}$' }
+    AuthorizationRequest:
+      type: object
+      required: [client_id, redirect_uri, response_type, scope, code_challenge, code_challenge_method]
+      properties:
+        client_id: { type: string }
+        redirect_uri: { type: string, format: uri, description: "canonicalize 后必须匹配注册值；授权码兑换时必须原样回送本次请求文本" }
+        response_type: { type: string, enum: [code] }
+        scope: { type: string, description: 空格分隔的 OAuth scope }
+        state: { type: string, maxLength: 512 }
+        nonce: { type: string, maxLength: 512 }
+        code_challenge: { type: string }
+        code_challenge_method: { type: string, enum: [S256] }
     PendingLoginResponse:
       type: object
       required: [status, methods]
@@ -2111,6 +2769,69 @@ components:
           required: [code]
           properties:
             code: { type: string, pattern: '^[0-9]{6}$' }
+    EmptyObject:
+      type: object
+      additionalProperties: false
+    FactorSummaryResponse:
+      type: object
+      required: [totp_enabled, passkey_count, available_methods]
+      properties:
+        totp_enabled: { type: boolean }
+        passkey_count: { type: integer, format: int64, minimum: 0 }
+        available_methods:
+          type: array
+          items: { type: string, enum: [totp, passkey] }
+          description: 当前登录策略实际生效的方法；不包含待确认 enrollment。
+    SessionTotpStartResponse:
+      type: object
+      required: [enrollment_id, secret_base32, otpauth_url]
+      additionalProperties: false
+      properties:
+        enrollment_id: { type: string, format: uuid }
+        secret_base32: { type: string, description: 仅在 start 响应返回一次，按凭据材料处理且不得记录日志。 }
+        otpauth_url: { type: string, format: uri, description: 仅在 start 响应返回一次，客户端应本地生成二维码。 }
+    SessionTotpConfirmInput:
+      type: object
+      required: [enrollment_id, code]
+      additionalProperties: false
+      properties:
+        enrollment_id: { type: string, format: uuid }
+        code: { type: string, pattern: '^[0-9]{6}$', writeOnly: true }
+    SessionPasskeyStartResponse:
+      type: object
+      required: [enrollment_id, options]
+      additionalProperties: false
+      properties:
+        enrollment_id: { type: string, format: uuid }
+        options: { $ref: '#/components/schemas/WebAuthnOptions' }
+    SessionPasskeyFinishInput:
+      type: object
+      required: [enrollment_id, credential]
+      additionalProperties: false
+      properties:
+        enrollment_id: { type: string, format: uuid }
+        credential: { type: object, additionalProperties: true, writeOnly: true }
+    FactorEnrollmentResponse:
+      type: object
+      required: [method, enabled]
+      additionalProperties: false
+      properties:
+        method: { type: string, enum: [totp, passkey] }
+        enabled: { type: boolean, enum: [true] }
+    FactorRemovalInput:
+      type: object
+      required: [password]
+      additionalProperties: false
+      properties:
+        password: { type: string, format: password, maxLength: 128, writeOnly: true }
+    FactorRemovalResponse:
+      type: object
+      required: [method, removed, credentials_revoked]
+      additionalProperties: false
+      properties:
+        method: { type: string, enum: [totp, passkey] }
+        removed: { type: integer, format: int64, minimum: 1, description: TOTP 固定为 1；Passkey 为本次删除的全部凭据数。 }
+        credentials_revoked: { type: boolean, enum: [true] }
     WebAuthnOptions:
       type: object
       description: WebAuthn options returned by webauthn-rs; pass through to navigator.credentials.
@@ -2278,7 +2999,7 @@ components:
       properties:
         grant_type: { type: string, enum: [authorization_code, refresh_token] }
         code: { type: string }
-        redirect_uri: { type: string, format: uri }
+        redirect_uri: { type: string, format: uri, description: "authorization_code grant 必须与授权请求中的原始 redirect_uri 文本完全一致" }
         code_verifier: { type: string }
         refresh_token: { type: string }
         scope:
@@ -2286,6 +3007,27 @@ components:
           description: refresh_token grant 可省略；空白字符串按省略处理并保留原授权 scope，非空值只能缩小原授权范围。
         client_id: { type: string }
         client_secret: { type: string, format: password }
+    RevocationRequest:
+      type: object
+      required: [token]
+      description: |
+        HTTP Basic 凭据不出现在表单中。`client_secret_post` 必须同时提交
+        `client_id` 与 `client_secret`；公开 Client 的 `none` 必须提交 `client_id`
+        且省略 `client_secret`。三种 Client 认证方式不得混用。
+      properties:
+        token: { type: string, format: password }
+        token_type_hint:
+          type: string
+          description: 可省略；仅支持 access_token 或 refresh_token，其他值返回 unsupported_token_type
+          enum: [access_token, refresh_token]
+        client_id: { type: string }
+        client_secret: { type: string, format: password }
+    UserInfoPostRequest:
+      type: object
+      required: [access_token]
+      description: 仅在不使用 Authorization Bearer 时提交；Bearer 与表单 access_token 必须二选一。
+      properties:
+        access_token: { type: string, format: password }
     TokenResponse:
       type: object
       properties:
@@ -2302,7 +3044,7 @@ components:
         azp 在单 audience 场景可省略（OIDC Core §2 允许），不签发也不声明。
       required: [iss, sub, aud, exp, iat]
       properties:
-        iss: { type: string, format: uri, description: "令牌签发者（等于 APP_ISSUER）" }
+        iss: { type: string, format: uri, description: "令牌签发者（等于 PostgreSQL app_settings 中已加载的运行时 Issuer）" }
         sub: { type: string, description: "用户主体标识符" }
         aud: { type: string, description: "接收方 client_id" }
         exp: { type: integer, format: int64, description: "过期时间（Unix 秒）" }
@@ -2335,6 +3077,8 @@ components:
         - response_types_supported
         - subject_types_supported
         - id_token_signing_alg_values_supported
+        - token_endpoint_auth_methods_supported
+        - revocation_endpoint_auth_methods_supported
       properties:
         issuer: { type: string, format: uri }
         authorization_endpoint: { type: string, format: uri }
@@ -2352,6 +3096,7 @@ components:
           description: "支持的 ID Token Claims，含 sub、iss、aud、exp、iat、email、name、nonce、auth_time"
         code_challenge_methods_supported: { type: array, items: { type: string } }
         token_endpoint_auth_methods_supported: { type: array, items: { type: string } }
+        revocation_endpoint_auth_methods_supported: { type: array, items: { type: string } }
     UserInfo:
       type: object
       required: [sub]
@@ -2533,7 +3278,10 @@ components:
         ip_location: { type: string, nullable: true, description: IP 归属地；离线归属地库未接入，恒为 null }
         user_agent: { type: string, nullable: true, description: 事件请求 User-Agent（来自 metadata user_agent 白名单提取） }
         ray_id: { type: string, nullable: true, description: 请求关联 ID；暂无对应概念，恒为 null }
-        client: { $ref: '#/components/schemas/SecurityEventClient' }
+        client:
+          allOf:
+            - $ref: '#/components/schemas/SecurityEventClient'
+          nullable: true
     SecurityEventClient:
       type: object
       description: 详情接口中 OAuth Client 的公开摘要，只来自 oauth_clients 表自身列。

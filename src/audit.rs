@@ -16,8 +16,8 @@
 //! - **同事务**（最强）：审计 INSERT 与业务写入共享一个数据库事务，通过
 //!   [`repository::insert_with`] 传入业务事务。审计失败连带回滚业务写入，因此
 //!   不存在「业务已提交、审计丢失」的中间态。代价是审计故障会让业务写入不可用，
-//!   所以只用于一生只发生一次、丢失即不可补的路径 —— 目前是 Owner 引导
-//!   （Issue #304，见 `users::repository::bootstrap_owner`）。
+//!   所以用于丢失即不可补、且权威状态也在 PostgreSQL 的路径：Owner 引导和管理侧
+//!   安全设置更新（Issue #304、#502）。
 //! - **阻断式**（[`AuditService::record_blocking`]）：业务已提交但凭据尚未交出，
 //!   审计失败则不交凭据。
 //! - **best-effort**（[`AuditService::record_best_effort`]）：业务结果已经确定且
@@ -31,6 +31,9 @@
 //!   成功后返回凭据；失败时返回通用错误，并对仍可逆的状态执行补偿。Client
 //!   secret 创建/轮换即使业务写入已经提交，也不会把 secret 返回给调用方，且
 //!   `audit.block_on_failure` 日志保留人工补账所需的上下文。
+//!   文件系统签名密钥无法与 PostgreSQL 共用事务，因此先阻断式持久化 intent，再
+//!   执行变更并持久化带同一 request id 的 outcome；outcome 写入故障时至少留下
+//!   可检索的 pending intent，不再出现完全无痕的权威密钥变更（Issue #502）。
 //! - [`AuditService::record_best_effort`] 用于普通状态变更和已经确定的拒绝路径。
 //!   这些操作的成功或拒绝结果不因审计数据库暂时不可用而被改写，也不尝试为了
 //!   审计失败回滚不可逆的业务状态。失败会统一记录

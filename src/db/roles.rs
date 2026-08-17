@@ -33,7 +33,7 @@
 
 use std::time::Duration;
 
-use crate::sqlx::{Connection, PgConnection};
+use crate::sqlx::{Connection, Executor, PgConnection, Postgres};
 
 use super::{DbError, RUNTIME_DATABASE_ROLE};
 
@@ -80,9 +80,10 @@ const PASSWORD_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// PostgreSQL role creation cannot live in the SQLx migration transaction. The nested duplicate
 /// handler keeps concurrent per-schema migrations idempotent without weakening the schema
 /// transaction itself.
-pub(super) async fn ensure_runtime_role(
-    database: &super::Database,
-) -> Result<(), crate::sqlx::Error> {
+pub(super) async fn ensure_runtime_role<'executor, E>(executor: E) -> Result<(), crate::sqlx::Error>
+where
+    E: Executor<'executor, Database = Postgres> + 'executor,
+{
     crate::sqlx::query(
         "DO $$
          BEGIN
@@ -96,7 +97,7 @@ pub(super) async fn ensure_runtime_role(
          END
          $$",
     )
-    .execute(database)
+    .execute(executor)
     .await?;
     Ok(())
 }

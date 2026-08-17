@@ -46,6 +46,9 @@ pub(crate) async fn current_user(
         .user_id
         .parse::<UserId>()
         .map_err(|_| invalid_session_response(state, "invalid_session"))?;
+    if !state.issuer.local_login_allowed(user_id) {
+        return Err(invalid_session_response(state, "invalid_session"));
+    }
     let Some(profile) = state
         .users
         .find_profile(user_id)
@@ -64,7 +67,7 @@ pub(crate) async fn current_user(
     })
 }
 
-fn invalid_session_response(state: &AppState, code: &'static str) -> Response {
+pub(crate) fn invalid_session_response(state: &AppState, code: &'static str) -> Response {
     let message = if code == "user_disabled" {
         "user account is disabled"
     } else {

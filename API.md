@@ -6,6 +6,7 @@
 
 - Base URL 使用部署后的认证服务地址，例如 `https://auth.example.com`。
 - JSON 请求发送 `Content-Type: application/json`；OAuth Token 和 Revocation 请求发送 `application/x-www-form-urlencoded`。
+- 所有 `application/json` 请求体使用同一解析契约：缺少或使用错误的 `Content-Type` 返回 `415 unsupported_media_type`，JSON 语法错误返回 `400 invalid_json`，字段类型或必填字段错误返回 `422 invalid_json`。这些响应都使用 `{code,message}`，不会回显 serde 字段路径、Rust 类型或解析器内部信息。
 - 时间使用 RFC 3339 字符串；用户、Session、OAuth Client、认证因子、外部身份、提供商和审计事件的数据库内部 ID 是从 1 开始递增的整数。Client ID、提供商 slug、Session Token、授权码等协议或凭据标识仍使用字符串。
 - 认证失败、参数错误等 JSON 错误统一为：
 
@@ -14,11 +15,12 @@
 ```
 
 - OAuth 协议端点（`/oauth/*`，如 `/oauth/token`、`/oauth/authorize`、`/oauth/revoke`、`/oauth/userinfo`）的 JSON 错误遵守 RFC 6749，字段为 `error` / `error_description`，**不是**上面的内部 `{code, message}` 信封。内部授权确认 API（`/api/v1/oauth/*`）仍使用内部信封。
-- 请求超时（`REQUEST_TIMEOUT_SECONDS`，默认 30 秒；健康检查与静态 SPA fallback 不受此限制）和 Issuer 运行态门禁失败按协议边界分流响应格式（Issues #423、#441、#451）：
+- 请求超时（`REQUEST_TIMEOUT_SECONDS`，默认 30 秒；健康检查与静态 SPA fallback 不受此限制）和已配置 Issuer 的运行态门禁失败按协议边界分流响应格式（Issues #423、#441、#451）：
   - 已注册的 `/oauth/authorize`、`/oauth/token`、`/oauth/revoke`、`/oauth/userinfo`：`503` + RFC 6749 `{"error":"temporarily_unavailable","error_description":"..."}`，与依赖暂不可用等协议错误一致；未知 `/oauth/*` 路径仍返回统一 404。
   - 其余已匹配的应用路由，以及 system 路由（`/api/v1/admin/bootstrap`、`/api/v1/admin/bootstrap/status`、`/api/v1/admin/settings/issuer`）：`504` + `{"code":"request_timeout","message":"request timed out"}`。
-- 常见状态码：`200` 成功，`201` 创建成功，`204` 成功且无响应体，`400` 参数或业务校验失败，`401` 未认证，`403` 无权限，`409` 冲突，`503` 依赖暂不可用，`504` 非 OAuth 路由请求超时，`500` 服务端错误。
+- 常见状态码：`200` 成功，`201` 创建成功，`204` 成功且无响应体，`400` 参数或业务校验失败，`401` 未认证，`403` 无权限，`409` 冲突，`413` JSON 请求体超过上限，`503` 依赖暂不可用，`504` 非 OAuth 路由请求超时，`500` 服务端错误。
 - 不要在前端日志中记录密码、Client Secret、Session、授权码或 Token。
+- 共享 Redis 的每个部署必须配置不同的 `REDIS_NAMESPACE`（1–64 位 ASCII 字母、数字、`.`、`_` 或 `-`）。新安装器会生成一次性随机值；手工部署可用 `openssl rand -hex 16` 生成并持久化，禁止在多个安装间复用。只有升级前已使用无前缀键的部署才应省略该变量或显式设为 `legacy`；这是滚动升级兼容模式，不是新生产部署默认值。生产 Compose 会在变量缺失或为空时直接失败。legacy 模式启动时会明确告警，日志始终不会记录 `REDIS_URL` 或凭据。
 
 ## 健康和 OIDC 元数据
 
@@ -32,7 +34,7 @@
 
 ### `GET /health` 与 `GET /health/ready`
 
-就绪探针。`/health` 是 `/health/ready` 的兼容别名，两者检查数据库、Redis 和 Issuer 收敛。全部就绪返回 `200` 和上面的 `status=ok` 响应；任一依赖超时或未就绪返回 `503`：
+就绪探针。`/health` 是 `/health/ready` 的兼容别名，两者检查数据库、Redis、Issuer 收敛、四个关键后台 worker 的心跳/最近成功，以及签名密钥同步状态。数据库、Redis、worker 和签名同步正常且 Issuer 尚未设置时，保护模式同样返回 `200`，不会因为缺少 Issuer 把 readiness/health 置为 `503`。任一实际依赖超时或未就绪、worker 未成功启动/心跳过期/连续失败，或签名密钥同步异常时返回 `503`：
 
 ```json
 {"status":"unavailable","service":"chenxing-auth"}
@@ -44,11 +46,15 @@
 
 返回 OIDC Discovery 文档。前端/接入方应优先读取该文档，不要硬编码协议端点。当前至少包含 `issuer`、`authorization_endpoint`、`token_endpoint`、`userinfo_endpoint`、`jwks_uri`、`revocation_endpoint` 等标准字段。
 
+保护模式尚未设置 Issuer 时，该端点关闭；完成 Owner 设置并热更新后才提供 Discovery。
+
 Discovery 是公开只读元数据，允许任意来源跨域读取：请求带 `Origin` 时响应 `Access-Control-Allow-Origin: *`；无论是否带 Origin 都响应 `Vary: Origin`，避免共享缓存混用 CORS 变体。该端点不读取 Cookie 或 Authorization，`*` 与不带凭据的请求兼容。
 
 ### `GET /.well-known/jwks.json`
 
 返回当前及验证过渡期公钥集合。只用于验证 JWT，不包含私钥。
+
+保护模式尚未设置 Issuer 时，该端点关闭；它只服务于正式 Issuer 下签发的令牌。
 
 JWKS 是被 RP 高频轮询的公开端点，缓存策略为 `Cache-Control: public, max-age=60, must-revalidate`：
 
@@ -66,7 +72,7 @@ JWKS 的 CORS 与 Discovery 一致：请求带 `Origin` 时 `Access-Control-Allo
 
 创建辰星通行证账号。
 
-当前公开注册在真实的邮件投递和验证令牌消费能力接入前 fail-closed：格式合法的请求返回 `503` 和 `email_verification_unavailable`，不会创建 active 用户，也不会写入无期限的待验证身份。系统不会把邮件标记为已验证，也不会在响应中返回验证令牌。
+当前公开注册在真实的邮件投递和验证令牌消费能力接入前 fail-closed：格式合法的请求返回 `503` 和 `email_verification_unavailable`，不会创建 active 用户，也不会写入无期限的待验证身份。保护模式下还会以 `503 issuer_not_configured` 拒绝注册。系统不会把邮件标记为已验证，也不会在响应中返回验证令牌。
 
 请求：
 
@@ -98,13 +104,13 @@ JWKS 的 CORS 与 Discovery 一致：请求带 `Origin` 时 `Access-Control-Allo
 
 `identifier` 上限 254 字符，`password` 上限 128 字符，与注册侧的口令长度上界一致。超出上界的请求在进入口令哈希、数据库查询和失败限流之前被拒绝，响应与凭据错误完全相同（`401` + `invalid_credentials`），不返回独立错误码，也不暴露账号是否存在。登录不校验口令长度下界，存量短口令仍可登录。
 
-首次登录或已绑定因子但尚未完成验证时响应 `202`，并设置短期 HttpOnly pending-login Cookie：
+已绑定因子但尚未完成验证时响应 `202`，并设置短期 HttpOnly pending-login Cookie：
 
 ```json
-{"status":"factor_setup_required","methods":["totp","passkey"]}
+{"status":"factor_required","methods":["totp","passkey"]}
 ```
 
-已绑定因子时 `status` 为 `factor_required`，`methods` 只包含当前策略允许的已绑定方式；全局禁用 Passkey 时不会发布 `passkey`。ticket 不再出现在普通 JSON 响应中，而是由 `HttpOnly`、`SameSite=Lax` 的 pending-login Cookie 携带，并绑定同一响应下发的独立 holder Cookie。TOTP 登录可在本请求中携带当前六位 `totp_code`；passkey 使用下面的 WebAuthn challenge 接口。没有可用因子时只能进入策略允许的设置流程。
+`methods` 只包含当前策略允许的已绑定方式；全局禁用 Passkey 时不会发布 `passkey`。ticket 不再出现在普通 JSON 响应中，而是由 `HttpOnly`、`SameSite=Lax` 的 pending-login Cookie 携带，并绑定同一响应下发的独立 holder Cookie。TOTP 登录可在本请求中携带当前六位 `totp_code`；passkey 使用下面的 WebAuthn challenge 接口。账号没有已绑定因子时，密码登录直接响应 `200` 并签发普通 Session；用户登录后通过安全设置 API 绑定 TOTP 或 Passkey。
 
 HTTPS 部署使用 `__Host-chenxing_login_ticket` 和 `__Host-chenxing_login_holder`；仅在 loopback HTTP 本地开发时使用 `chenxing_login_ticket` 和 `chenxing_login_holder`。两个 Cookie 都是 `Path=/`、`HttpOnly`、`SameSite=Lax`，成功签发 Session 后立即清理。
 
@@ -120,7 +126,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ### 首次 TOTP 绑定
 
-1. `POST /api/v1/auth/totp/setup`，请求 `{}`（旧客户端可附带 `login_ticket`，但必须与 HttpOnly Cookie 完全一致），响应一次性返回 `secret_base32` 和 `otpauth_url`。前端应使用项目内二维码组件将 `otpauth_url` 作为二维码内容本地生成二维码；`secret_base32` 仅用于无法扫描时手动输入或复制。服务端不调用第三方二维码服务，也不返回二维码图片。
+1. `POST /api/v1/auth/totp/setup`，请求 `{}`（旧客户端可附带 `login_ticket`，但必须与 HttpOnly Cookie 完全一致），响应一次性返回 `secret_base32` 和 `otpauth_url`。前端应使用项目内二维码组件将 `otpauth_url` 作为二维码内容本地生成二维码；`secret_base32` 仅用于无法扫描时手动输入或复制。服务端不调用第三方二维码服务，也不返回二维码图片。该端点与已登录安全中心的 `POST /api/v1/auth/security/totp/enrollment/start` 都从已加载 Issuer 生成 otpauth 标签；Issuer 门禁回读后仍不可用时返回 `503 issuer_not_configured` / `issuer_runtime_invalid`，不会创建 pending 注册。
 2. `POST /api/v1/auth/totp/setup/confirm`，请求 `{ "code":"123456" }`。验证码正确后保存加密秘钥、消费 ticket 并返回 Session Cookie；错误验证码不会消费 ticket。
 
 已有 TOTP 的待处理登录也可以调用 `POST /api/v1/auth/totp/login`，请求包含当前六位 `code`。验证码正确后消费 ticket 并返回 Session Cookie；无效或缺少 holder proof 的 ticket 返回 `400`，错误验证码返回 `401`。
@@ -136,7 +142,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 管理员通过 `PUT /api/v1/admin/settings/passkey` 禁用 Passkey 时，如果存在活跃且唯一绑定 Passkey 的账号，服务端返回 `409 passkey_disable_blocked`，设置不会变更。这样已绑定 Passkey 的账号不会因全局策略被锁定；禁用后新的登录因子响应和首次绑定选项只发布 TOTP。
 
-所有 pending-login Cookie、`login_ticket` 和 WebAuthn challenge 默认有效 5 分钟；ticket 是一次性的。Redis 中只保存 holder Cookie 的摘要，不保存 holder 原值；缺少 holder、Cookie 中 ticket 与旧请求字段不一致、或升级前无 holder 摘要的 ticket 都 fail closed，需要重新开始登录。WebAuthn 的 RP ID 和 origin 由固定配置 `WEBAUTHN_RP_ID`、`WEBAUTHN_ORIGIN` 控制，不能从请求 Host 推导。
+所有 pending-login Cookie、`login_ticket` 和 WebAuthn challenge 默认有效 5 分钟；ticket 是一次性的。Redis 中只保存 holder Cookie 的摘要，不保存 holder 原值；缺少 holder、Cookie 中 ticket 与旧请求字段不一致、或升级前无 holder 摘要的 ticket 都 fail closed，需要重新开始登录。WebAuthn 的 RP ID 和 origin 不能从请求 Host 或反向代理输入推导：显式配置 `WEBAUTHN_RP_ID`、`WEBAUTHN_ORIGIN` 时固定使用覆盖值；未显式配置时，在持久化 Issuer 加载后分别从其 host 和根 URL 派生，并随 Issuer generation 原子更新。通用 `.env.example` 不再永久固定 loopback 值；本地 HTTP 开发使用 `.env.loopback.example` 中的明确覆盖。
 
 浏览器 OAuth 登录现在由 React SPA 承接。密码步骤调用 `POST /api/v1/auth/login`，TOTP 绑定和登录分别调用 `POST /api/v1/auth/totp/setup`、`POST /api/v1/auth/totp/setup/confirm` 或 `POST /api/v1/auth/totp/login`；passkey 流程使用上面的 WebAuthn API。因子完成后，SPA 调用授权请求绑定接口并继续授权确认。
 
@@ -152,7 +158,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ### 用户中心 UI API
 
-- `GET /api/v1/auth/status`：返回当前是否登录。
+- `GET /api/v1/auth/status`：返回当前是否登录。没有会话或会话已失效时返回 `authenticated: false`；数据库或 Session 存储故障返回 `500 internal_error`，不会伪装成未登录。
 - `GET /api/v1/auth/me`：返回当前用户资料和当前 Session 到期时间。
 - `PATCH /api/v1/auth/me`：更新 `display_name`，需要用户 CSRF。
 - `POST /api/v1/auth/password`：校验当前密码并修改密码，成功返回 `204`，同时撤销该用户所有 Session。当前密码为空或超过 128 字符时与密码错误返回同一 `401 invalid_credentials`，不暴露长度。
@@ -174,16 +180,18 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ## OAuth 2.0 / OIDC
 
-### `GET /oauth/authorize`
+### `GET /oauth/authorize` / `POST /oauth/authorize`
 
-授权码入口，成功后重定向到注册的 `redirect_uri`，附带 `code` 和原始 `state`。
+授权码入口。GET 使用查询参数，POST 使用 `application/x-www-form-urlencoded` 表单；两种方法的字段、校验和响应行为相同。成功后重定向到注册的 `redirect_uri`，附带 `code` 和原始 `state`。
 
-必填查询参数：
+Client 已加载且 `redirect_uri` canonicalize 后仍严格匹配注册值时，后续参数校验失败、Session/consent/pending 存储不可用、授权码签发失败等错误通过 `302` 返回该 canonical 回调地址，并携带 RFC 6749 `error` / `error_description`。注册匹配允许 URL parser 消除默认端口、补根斜杠，并保留 RFC 8252 loopback 字面 IP 的动态端口例外；授权码本身仍绑定授权请求提交的**原始** `redirect_uri` 文本，Token 兑换必须回送完全相同的值。只有非空且不超过 512 个字符的 `state` 才会回显。Client 或回调地址不可信时绝不重定向，改为 RFC 6749 JSON 错误信封；Issuer 门禁和请求超时发生在可信回调上下文建立之前，同样返回 `503 temporarily_unavailable` JSON。
+
+必填请求字段（GET 为查询参数，POST 为表单字段）：
 
 | 参数 | 说明 |
 | --- | --- |
 | `client_id` | 已注册 Client ID |
-| `redirect_uri` | 必须精确匹配注册值 |
+| `redirect_uri` | canonicalize 后必须匹配注册值（loopback 字面 IP 可变更端口）；授权码兑换时必须原样回送本次授权请求的文本 |
 | `response_type` | 当前仅支持 `code` |
 | `scope` | 空格分隔，如 `openid email profile`；每个值必须同时属于服务端 allowlist（默认 `openid`、`profile`、`email`）和该 Client 已注册的 scopes |
 | `state` | 必填，建议由接入方随机生成，最多 512 个字符 |
@@ -191,7 +199,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 | `code_challenge_method` | 必须为 `S256` |
 | `nonce` | 使用 OIDC 时建议必填并随机生成，最多 512 个字符 |
 
-未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`；已登录但尚未授权该 scope 组合的请求进入 `/oauth/consent?request_id=...`。两条交给 SPA 的路径都会下发授权持有者 HttpOnly Cookie：HTTPS 使用 `__Host-chenxing_authz_holder`，本地 HTTP 使用 `chenxing_authz_holder`（防御 OAuth login CSRF，见下文 bind 端点说明）。非 HTML 请求返回 `401 login_required`。
+未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`；已登录但尚未授权该 scope 组合的请求进入 `/oauth/consent?request_id=...`。两条交给 SPA 的路径都会下发授权持有者 HttpOnly Cookie：HTTPS 使用 `__Host-chenxing_authz_holder`，本地 HTTP 使用 `chenxing_authz_holder`（防御 OAuth login CSRF，见下文 bind 端点说明）。pending 请求同时保存本次 `/oauth/authorize` 捕获的 Issuer generation；Issuer 热切换后，旧 generation 的授权事务不能继续。非 HTML 请求返回 `401 login_required`。
 
 ### `POST /api/v1/oauth/authorize/requests/{request_id}/bind`
 
@@ -211,13 +219,13 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 升级前创建的旧 pending 记录无摘要，绑定时被拒绝（fail-secure），用户需重新发起授权流程。
 
-**受控重绑（#270）**：上述三项校验全部通过时，无论该 pending 请求此前绑定的是哪个 Session 摘要，都会被重绑到调用者当前的 Session，写入走 CAS 保证原子性。持有者 Cookie 才是所有权凭据，Session 绑定是派生状态，因此重绑不放宽任何安全边界——没有持有者 Cookie 的第三方即使持有有效 Session 仍然被拒（`403`）。这让「会话过期后重新登录继续授权」和「切换账号继续授权」可以自愈；旧行为固定返回 `401 invalid_session`，前端跟着在登录页与授权确认页之间形成跳转循环。授权码在最终 approve 时按当时持有的 Session 签发。重绑记录审计事件 `authorization_request_rebound`。
+**受控重绑（#270）**：上述三项校验全部通过时，无论该 pending 请求此前绑定的是哪个 Session 摘要，都会被重绑到调用者当前的 Session，写入走 CAS 保证原子性。持有者 Cookie 才是所有权凭据，Session 绑定是派生状态，因此重绑不放宽任何安全边界——没有持有者 Cookie 的第三方即使持有有效 Session 仍然被拒（`403`）。这让「会话过期后重新登录继续授权」和「切换账号继续授权」可以自愈；旧行为固定返回 `401 invalid_session`，前端跟着在登录页与授权确认页之间形成跳转循环。授权码在最终 approve 时按当时持有的 Session 签发。重绑记录审计事件 `authorization_request_rebound`。重绑只替换绑定载荷并保留 Redis 请求键的原始剩余 TTL 和 expiry 索引截止时间；重复重绑不能延长 pending 的总生命周期，临界过期请求也不会被恢复为完整 TTL。
 
 幂等：同一 Session + 同一持有者 Cookie 重复调用返回 `204`，载荷不变。持续并发修改导致 CAS 无法收敛时返回 `409 authorization_request_conflict`，重试即可。
 
 ### `GET /api/v1/oauth/authorize/requests/{request_id}` / `POST ...`
 
-供 JSON 授权确认 UI 使用。请求必须绑定当前浏览器 Session；GET 返回 Client 名称、Redirect 主机、Scope 和剩余有效时间。POST JSON 请求为 `{"decision":"approve"}` 或 `{"decision":"deny"}`，需要用户 CSRF，成功返回经过校验的 `redirect_to`，请求被一次性消费。普通用户项目超过日/月配额时返回 `429 oauth_quota_exceeded`；标准 `/oauth/authorize` 流程返回协议安全的 `temporarily_unavailable` 重定向。
+供 JSON 授权确认 UI 使用。请求必须绑定当前浏览器 Session，并且 pending 的 Issuer generation 必须等于本次请求捕获的 Issuer generation；Issuer 热切换后或升级前缺失 generation 的 pending 会被丢弃并返回 `400 authorization_request_expired`，Client 必须重新发起授权。GET 返回 Client 名称、Redirect 主机、Scope 和剩余有效时间。POST JSON 请求为 `{"decision":"approve"}` 或 `{"decision":"deny"}`，需要用户 CSRF，成功返回经过校验的 `redirect_to`，请求被一次性消费。该内部 UI API 的所有错误都使用 `{code, message}`，不会返回 OAuth `{error, error_description}` 信封。普通用户项目超过日/月配额时返回 `429 authorization_unavailable`；内部一致性故障返回 `500 internal_error`，依赖故障返回对应的 `503` 内部错误。标准 `/oauth/authorize` 流程则返回协议安全的 `temporarily_unavailable` 重定向。
 
 ### React SPA 浏览器登录 `/login`
 
@@ -243,7 +251,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 外部 UserInfo 必须按配置提供合法 `email`、唯一 `sub` 和布尔型邮箱验证状态。`email_verified_claim` 是 provider 必填项：claim 缺失、类型不是布尔、或取值为 `false` 时拒绝身份解析和自动建号，回跳 `external_error=oauth_email_unverified`。缺少该配置的存量 provider 无法启用，也不会跳转外部 IdP，回跳 `external_error=oauth_provider_not_found`。
 
-首次外部登录在邮箱不存在时创建辰星账号并绑定 `(provider, sub)`；如果邮箱已存在，不会自动接管或合并本地账号，而是返回 `oauth_account_link_required` 页面提示。
+首次外部登录在邮箱不存在时创建辰星账号并绑定 `(provider, sub)`；自动建号在同一数据库事务内执行普通注册共用的邮箱域名白名单和别名限制，策略拒绝时返回模糊的 `oauth_login_failed`，且不会留下 `users` 或外部身份半成品。已经绑定的 `(provider, sub)` 登录不因管理员后来收紧注册邮箱策略而失效。如果邮箱已存在，不会自动接管或合并本地账号，而是返回 `oauth_account_link_required` 页面提示。
 
 ### React SPA 授权确认 `/oauth/consent`
 
@@ -258,6 +266,8 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 ```text
 grant_type=authorization_code&code=...&redirect_uri=https%3A%2F%2Fapp.example%2Fcallback&code_verifier=...
 ```
+
+`redirect_uri` 必须与创建该授权码的 `/oauth/authorize` 请求中的原始文本完全一致；即使两个 URL canonicalize 后等价（例如默认 `:443` 或根斜杠差异），不同文本仍返回 `invalid_grant`。
 
 刷新 Token：
 
@@ -277,6 +287,10 @@ grant_type=refresh_token&refresh_token=...
 
 授权码除 Client 和 Redirect URI 外还绑定签发时的浏览器会话。会话被撤销（用户登出）或过期后，授权码即使仍在 TTL 内也不能兑换，返回 `invalid_grant`；被拒绝的授权码不会被消费，可在会话恢复有效后重试。
 
+授权码已消费、Refresh Token 已暂存后，服务还会复核授权同意版本。若这次最终复核因数据库暂时不可用而返回 `503 temporarily_unavailable`，服务会销毁尚未披露的 Refresh Token，并在确认销毁成功时恢复授权码供同一次交换重试；若无法确认销毁结果，授权码保持已消费，客户端需重新发起授权。两种 503 分支都会保留该授权码对应的套餐退款台账，因此没有成功 `TokenResponse` 的失败不会永久计入日/月授权用量。
+
+Refresh Token 轮换在 successor 已原子写入 Redis 后同样回源复核兑换闸门看到的同意版本和撤销状态。版本变化、撤销、同意缺失或复核存储故障都会先原子回滚未披露的 successor；若 Redis 无法确认回滚状态，则返回 `temporarily_unavailable`，否则按复核结果返回 `invalid_grant` 或 `temporarily_unavailable`。所有失败分支都不会返回 Access Token、ID Token 或新的 Refresh Token；`session_epoch`、Client Secret generation、family 墓碑和审计围栏继续独立生效。
+
 Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限流，超限返回 `429 temporarily_unavailable`；套餐未配置 `max_qps`（`null`）时不限流。
 
 处理超时（见上文「基础约定」）时，`/oauth/token` 与其它 `/oauth/*` 协议端点返回 `503 temporarily_unavailable`（RFC 6749 信封），**不会**返回内部 API 的 `504 request_timeout`。
@@ -287,7 +301,7 @@ Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限�
 
 | Claim | 是否总是出现 | 说明 |
 | --- | --- | --- |
-| `iss` | 是 | 签发者，等于 `APP_ISSUER` 配置值 |
+| `iss` | 是 | 签发者，等于 PostgreSQL `app_settings` 中的运行期 Issuer；旧环境兼容导入后也以该值为准 |
 | `sub` | 是 | 用户主体标识符 |
 | `aud` | 是 | 接收方 `client_id` |
 | `exp` | 是 | 过期时间（Unix 秒） |
@@ -299,9 +313,9 @@ Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限�
 
 Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`aud`、`exp`、`iat`、`email`、`name`、`nonce`、`auth_time`。`azp` 属于单 audience 场景可省略的 Claim（OIDC Core §2），本服务不签发也不在 `claims_supported` 中声明。
 
-### `GET /oauth/userinfo`
+### `GET /oauth/userinfo` / `POST /oauth/userinfo`
 
-请求头：`Authorization: Bearer <access_token>`。
+GET 使用请求头 `Authorization: Bearer <access_token>`。POST 支持同一 Bearer 请求头，或 `application/x-www-form-urlencoded` 表单字段 `access_token`；两种方式必须二选一，同时提交返回 `400 invalid_request`。
 
 响应字段按 Scope 返回：
 
@@ -311,13 +325,11 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ### `POST /oauth/revoke`
 
-表单字段：`token` 必填，`token_type_hint` 可选（`access_token` 或 `refresh_token`），并使用同 Token 端点的 Client 认证方式。成功响应 `200` 且无响应体。
+表单字段：`token` 必填，`token_type_hint` 可选（`access_token` 或 `refresh_token`）。Client 认证与 Token 端点一致：HTTP Basic、表单 `client_id` + `client_secret`（`client_secret_post`），或公开 Client 只提交 `client_id` 的 `none`；认证方式不得混用。成功响应 `200` 且无响应体。
 
 ## 管理 API
 
-运行期 Issuer 保存在 PostgreSQL `app_settings`。数据库尚未设置 Issuer 时，服务仍提供
-`/health*`、静态前端、Owner 引导和 Owner 专属 Issuer 设置入口；其他认证、管理、OAuth/OIDC、Discovery 与 JWKS 路由由运行时门禁拒绝。
-运维可通过容器内命令 `chenxing-auth configure-issuer https://auth.example.com` 首次写入，也可由 Owner 在管理设置页配置；写入后当前进程热生效，其他副本按 generation 轮询收敛，不能从请求 Host 推导。
+运行期 Issuer 保存在 PostgreSQL `app_settings`，由 Owner 在管理设置中写入并由运行时热更新。数据库尚未设置 Issuer 时是保护模式：`/health*`、静态前端、首 Owner 引导、ID=1 Owner 登录以及未依赖正式 Issuer 的管理路径仍可用；`ADMIN_TOKEN` 是管理 API 的恢复通道。公开注册、普通用户创建、管理员/Owner 创建关闭，只有 OAuth/OIDC、Discovery、JWKS 和外部登录路由由运行时门禁拒绝。不能从请求 Host 推导 Issuer。
 
 管理员 Bearer Token 请求头：`Authorization: Bearer <ADMIN_TOKEN>`。初始化完成后，管理 API 有两条独立通道，任一通过即可继续按角色判定权限：系统 `ADMIN_TOKEN` Bearer（权限等价于 Owner，无用户 ID，豁免浏览器 CSRF），或普通用户 Session。浏览器写操作使用 `__Host-chenxing_session`、`__Host-chenxing_csrf` Cookie 和 `X-CSRF-Token` 三者绑定（loopback HTTP 开发环境使用对应的不带前缀名称）。
 
@@ -327,7 +339,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ### `POST /api/v1/admin/bootstrap`
 
-仅用于 Issuer 已配置后的首个 Owner 初始化，无需认证。只有不存在 Owner 时请求才会成功；初始化使用数据库并发锁保证最多创建一个 Owner，成功后不可重复初始化。请求按可信源 IP 限制为每分钟 5 次，缺少可信源地址或 Redis 限流不可用时按配置 fail closed。请求必须包含用户名、邮箱和密码，首个 Owner 的用户 ID 为 `1`，成功后不自动创建 Session。
+用于初始化首个 Owner，无需认证，不要求 Issuer 已配置。只有不存在 Owner 时请求才会成功；初始化使用数据库并发锁保证最多创建一个 Owner，成功后不可重复初始化。请求按可信源 IP 限制为每分钟 5 次，缺少可信源地址或 Redis 限流不可用时按配置 fail closed。请求必须包含用户名、邮箱和密码，首个 Owner 的用户 ID 为 `1`，成功后不自动创建 Session。在保护模式下，这是创建首个 Owner 的唯一公开入口。
 
 ```json
 {"username":"chenxing-owner","email":"owner@example.com","password":"at-least-10-chars"}
@@ -369,7 +381,7 @@ PUT 用 `password_action` 表达密码三态，不要再靠空字符串猜测：
 ### 用户管理
 
 - `GET /api/v1/admin/users?limit=50&offset=0`：列出用户，需要 `ManageUsers`。响应是用户数组。服务端强制分页：`limit` 默认 `50`，取值被 clamp 到 `[1, 200]`（与审计列表一致），`offset` 默认 `0`，负值按 `0` 处理。需要 `total` 和分页信封时用 `GET /api/v1/admin/users/query`。
-- `POST /api/v1/admin/users`：创建用户，提交 `{"username":"alice","email":"alice@example.com","password":"...","display_name":null,"role":"user","status":"active"}`。`display_name`、`role`、`status` 可省略，`role` 缺省 `user`，`status` 缺省 `active`。基线权限 `ManageUsers`；`role` 为 `admin` 或 `owner` 时额外要求 `ManageRoles`。成功 `201`，响应是公开用户字段，不含口令哈希或任何凭据材料。`400` 为 `invalid_role`、`invalid_status`、`invalid_username`、`invalid_email`、`password_too_short`、`password_too_long`、`display_name_too_long`、`email_domain_not_allowed`、`csrf_invalid`；`403` 为 `admin_forbidden`；`409` 为 `username_already_registered`、`email_already_registered`、`owner_bootstrap_required`。
+- `POST /api/v1/admin/users`：创建用户，提交 `{"username":"alice","email":"alice@example.com","password":"...","display_name":null,"role":"user","status":"active"}`。`display_name`、`role`、`status` 可省略，`role` 缺省 `user`，`status` 缺省 `active`。基线权限 `ManageUsers`；`role` 为 `admin` 或 `owner` 时额外要求 `ManageRoles`。Issuer 未配置的保护模式下该接口关闭并返回 `503 issuer_not_configured`，包括创建普通用户和创建特权用户。正常模式成功 `201`，响应是公开用户字段，不含口令哈希或任何凭据材料。`400` 为 `invalid_role`、`invalid_status`、`invalid_username`、`invalid_email`、`password_too_short`、`password_too_long`、`display_name_too_long`、`email_domain_not_allowed`、`csrf_invalid`；`403` 为 `admin_forbidden`；`409` 为 `username_already_registered`、`email_already_registered`、`owner_bootstrap_required`。
 - `POST /api/v1/admin/users/{user_id}/{status}`：设置用户状态，基线需要 `ManageUsers`，目标为 Owner 时额外需要 `ManageRoles`。授权先于资源查询，低权限调用者不能枚举用户或 Owner 身份。状态常用为 `active`、`disabled`；非法状态返回 `400 invalid_status`，用户不存在返回 `404 user_not_found`，成功 `204`。禁止修改自己的状态，自我操作返回 `403 self_status_change_forbidden`。
 
 用户列表元素：`id`、`username`、`email`、`display_name`、`status`、`role`、`created_at`。按 `created_at DESC, id DESC` 排序。
@@ -378,7 +390,7 @@ PUT 用 `password_action` 表达密码三态，不要再靠空字符串猜测：
 
 - `GET /api/v1/admin/users/{user_id}/auth-factors`：查看账号已绑定的因子方法；TOTP 另报 `key_state` / `readable`，不含 kid、密文或种子。需要 `ManageUsers`。
 - `DELETE /api/v1/admin/users/{user_id}/auth-factors/totp`：删除 TOTP 因子并撤销该账号全部 Session 与 Refresh Token。需要 Owner 专属的 `ManageAuthFactors`。
-- `DELETE /api/v1/admin/users/{user_id}/auth-factors/passkey`：删除该账号全部 Passkey 凭据并撤销全部 Session 与 Refresh Token。需要 `ManageAuthFactors`。Passkey-only 账号下次密码登录返回 `factor_setup_required`；仍绑定 TOTP 的账号保留 TOTP。
+- `DELETE /api/v1/admin/users/{user_id}/auth-factors/passkey`：删除该账号全部 Passkey 凭据并撤销全部 Session 与 Refresh Token。需要 `ManageAuthFactors`。Passkey-only 账号下次密码登录直接签发普通 Session，可从安全设置重新绑定；仍绑定 TOTP 的账号保留 TOTP。
 
 末位 Owner 丢失全部 Passkey 时无法再签发管理 Session。这条恢复必须使用系统 `ADMIN_TOKEN` Bearer 通道：它不依赖现有 Passkey 或用户 Session，避免形成「要先有 Passkey 才能恢复 Passkey」的闭环。`ADMIN_TOKEN` 为空时整个管理面关闭，该逃生通道一并不可用。浏览器 Session 写操作仍须携带 Session Cookie、CSRF Cookie 和 `X-CSRF-Token`。Admin 角色返回 `403 admin_forbidden`。账号没有对应因子时返回 `404 totp_factor_not_found` / `passkey_factor_not_found`，且不会推进 `session_epoch`。
 
@@ -391,7 +403,7 @@ Passkey 重置成功响应：
 ### 特权用户管理
 
 - `GET /api/v1/admin/admins`：列出角色为 `admin` 或 `owner` 的统一用户，需要 `ManageUsers`。
-- `POST /api/v1/admin/admins`：创建完整的特权用户，需要 Owner 权限和普通用户 CSRF。
+- `POST /api/v1/admin/admins`：创建完整的特权用户，需要 Owner 权限和普通用户 CSRF；保护模式下返回 `503 issuer_not_configured`。
 - `POST /api/v1/admin/users/{user_id}/role`：修改其他用户角色，仅 Owner 可用；禁止自我改角色，降级最后一个活跃 Owner 返回 `409 last_owner_required`。
 
 创建字段：`username`、`email`、`password`、`role`，角色只允许 `admin` 或 `owner`。返回的用户摘要不包含密码或哈希。
@@ -502,7 +514,7 @@ HttpOnly Session Cookie、CSRF Cookie 和匹配的 `X-CSRF-Token`；`ADMIN_TOKEN
 - `GET /api/v1/admin/clients/query?page=1&page_size=20&search=...&status=active`：分页筛选全局 Client，需要 `ManageClients`，返回 owner ID 但不返回 Secret。
 - `GET /api/v1/admin/audit/query?page=1&page_size=20&action=...&resource_type=...`：分页筛选审计，需要 `ReadAudit`。
 
-分页响应统一为 `{"items":[],"page":1,"page_size":20,"total":0}`。管理员 API 继续支持 Bearer Token；浏览器 Session 写操作必须使用普通 CSRF Cookie 和 `X-CSRF-Token`。
+分页响应统一为 `{"items":[],"page":1,"page_size":20,"total":0}`。`page` 必须是大于等于 1 的整数，`page_size` 必须是 1–100 的整数；格式错误、整数溢出、数值越界或 offset 溢出都返回不含解析细节的 `400 invalid_pagination`，不做静默修正。管理员 API 继续支持 Bearer Token；浏览器 Session 写操作必须使用普通 CSRF Cookie 和 `X-CSRF-Token`。
 
 ## 权限矩阵
 

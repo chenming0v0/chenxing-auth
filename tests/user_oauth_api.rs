@@ -146,17 +146,19 @@ async fn register_and_login_without_plan(router: &Router, suffix: &str) -> (Stri
         )
         .await
         .expect("login response");
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let pending_cookie = cookies(&response);
-    assert!(json(response).await.get("login_ticket").is_none());
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookie_header = cookies(&response);
+    let csrf_token = csrf(&cookie_header).to_owned();
+    assert!(cookie_header.contains("chenxing_session="));
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/auth/totp/setup")
+                .uri("/api/v1/auth/security/totp/enrollment/start")
                 .header("content-type", "application/json")
-                .header("cookie", &pending_cookie)
+                .header("cookie", &cookie_header)
+                .header("x-csrf-token", &csrf_token)
                 .body(Body::from(serde_json::json!({}).to_string()))
                 .expect("TOTP setup request"),
         )
@@ -164,17 +166,20 @@ async fn register_and_login_without_plan(router: &Router, suffix: &str) -> (Stri
         .expect("TOTP setup response");
     assert_eq!(response.status(), StatusCode::OK);
     let setup = json(response).await;
+    let enrollment_id = setup["enrollment_id"].as_str().expect("TOTP enrollment ID");
     let totp = TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP");
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/auth/totp/setup/confirm")
+                .uri("/api/v1/auth/security/totp/enrollment/confirm")
                 .header("content-type", "application/json")
-                .header("cookie", &pending_cookie)
+                .header("cookie", &cookie_header)
+                .header("x-csrf-token", &csrf_token)
                 .body(Body::from(
                     serde_json::json!({
+                        "enrollment_id": enrollment_id,
                         "code": totp.generate_current().expect("TOTP code")
                     })
                     .to_string(),
@@ -184,8 +189,6 @@ async fn register_and_login_without_plan(router: &Router, suffix: &str) -> (Stri
         .await
         .expect("TOTP confirmation response");
     assert_eq!(response.status(), StatusCode::OK);
-    let cookie_header = cookies(&response);
-    let csrf_token = csrf(&cookie_header).to_owned();
     (cookie_header, csrf_token)
 }
 

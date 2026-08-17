@@ -6,7 +6,7 @@ import { getDocumentTitle } from './data'
 import { LandingPage } from './pages/landing'
 import { AuthPage, BootstrapPage } from './pages/auth'
 import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './pages/oauth'
-import { ConsoleOverview, ConsolePlans, ConsoleProfile, AuthorizedApps, SecurityLogsPage } from './pages/console/account'
+import { ConsoleOverview, ConsolePlans, ConsoleProfile, ConsoleSecurity, AuthorizedApps, SecurityLogsPage } from './pages/console/account'
 import { IntegratePage, PlaygroundPage } from './pages/console/developer'
 import { AdminAudit, AdminClients, AdminDashboard, AdminPlans, AdminUsers, AdminSettings } from './pages/admin'
 import { AuthPanel, AuthShell } from './components/shells'
@@ -95,8 +95,8 @@ function AppContent() {
 
   const pages: Record<string, ReactNode> = {
     '/': <LandingPage />,
-    '/login': <AuthPage mode="login" />,
-    '/register': <AuthPage mode="register" />,
+    '/login': <AuthPage key="login" mode="login" />,
+    '/register': <AuthPage key="register" mode="register" />,
     '/bootstrap': <BootstrapPage />,
     '/oauth/account': <OAuthAccountPage />,
     '/oauth/consent': <OAuthConsentPage />,
@@ -104,6 +104,7 @@ function AppContent() {
     '/console': <ConsoleOverview />,
     '/console/plans': <ConsolePlans />,
     '/console/profile': <ConsoleProfile />,
+    '/console/security': <ConsoleSecurity />,
     '/console/apps': <AuthorizedApps />,
     '/console/logs': <SecurityLogsPage />,
     '/console/integrate': <IntegratePage />,

@@ -1,16 +1,36 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use redis::{AsyncCommands, Script};
 use sha2::{Digest, Sha256};
+#[cfg(debug_assertions)]
+use std::{
+    collections::HashSet,
+    sync::{Mutex, OnceLock},
+};
 use thiserror::Error;
 
 use super::code::AuthorizationCode;
-use super::quota::QuotaRefundCancel;
-use crate::{clock::SharedClock, redis_client::RedisClient};
+use super::quota::{QuotaRefundCancel, refund_due_unix_millis};
+use crate::{clock::SharedClock, redis_client::RedisClient, redis_keyspace::RedisKeyspace};
+
+#[cfg(debug_assertions)]
+fn restore_failures_for_tests() -> &'static Mutex<HashSet<String>> {
+    static FAILURES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    FAILURES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[cfg(debug_assertions)]
+fn take_restore_failure_for_test(code_value: &str) -> bool {
+    restore_failures_for_tests()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(code_value)
+}
 
 #[derive(Clone)]
 pub struct AuthorizationCodeStore {
     client: RedisClient,
     clock: SharedClock,
+    keyspace: RedisKeyspace,
 }
 
 #[derive(Debug, Error)]
@@ -26,6 +46,15 @@ impl AuthorizationCodeStore {
         Self {
             client: client.into(),
             clock: SharedClock::system(),
+            keyspace: RedisKeyspace::default(),
+        }
+    }
+
+    pub fn with_keyspace(client: impl Into<RedisClient>, keyspace: RedisKeyspace) -> Self {
+        Self {
+            client: client.into(),
+            clock: SharedClock::system(),
+            keyspace,
         }
     }
 
@@ -33,6 +62,15 @@ impl AuthorizationCodeStore {
     pub fn with_clock(mut self, clock: SharedClock) -> Self {
         self.clock = clock;
         self
+    }
+
+    #[doc(hidden)]
+    #[cfg(debug_assertions)]
+    pub fn fail_restore_with_quota_refund_once_for_tests(&self, code_value: &str) {
+        restore_failures_for_tests()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(code_value.to_owned());
     }
 
     pub async fn save(&self, code: &AuthorizationCode) -> Result<(), AuthorizationCodeStoreError> {
@@ -51,6 +89,58 @@ impl AuthorizationCodeStore {
         self.save_with_ttl(code, ttl_seconds).await
     }
 
+    /// Restore a consumed authorization code and its pending quota refund in
+    /// one Redis transaction. The code TTL is supplied in milliseconds so a
+    /// retry cannot gain more lifetime than remained at compensation time.
+    pub async fn restore_with_quota_refund(
+        &self,
+        code: &AuthorizationCode,
+        remaining_ttl_ms: u64,
+        quota_cancel: Option<QuotaRefundCancel>,
+    ) -> Result<(), AuthorizationCodeStoreError> {
+        let payload = serde_json::to_string(code)?;
+        #[cfg(debug_assertions)]
+        if take_restore_failure_for_test(&code.value) {
+            return Err(redis::RedisError::from((
+                redis::ErrorKind::IoError,
+                "injected authorization-code restore failure",
+            ))
+            .into());
+        }
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let code_key = self.key(&code.value);
+        let (refund_key, reservation_id, refund_score) = quota_cancel
+            .as_ref()
+            .map(|cancel| {
+                (
+                    cancel.zset_key.clone(),
+                    cancel.member.clone(),
+                    refund_due_unix_millis(code.expires_at) as f64,
+                )
+            })
+            .unwrap_or_else(|| (code_key.clone(), String::new(), 0.0));
+        let ttl_ms = i64::try_from(remaining_ttl_ms).unwrap_or(i64::MAX);
+        let _: i64 = Script::new(
+            r#"local ttl_ms = tonumber(ARGV[2])
+               if ttl_ms and ttl_ms > 0 then
+                   redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl_ms, 'NX')
+               end
+               if ARGV[3] ~= '' then
+                   redis.call('ZADD', KEYS[2], tonumber(ARGV[4]), ARGV[3])
+               end
+               return 1"#,
+        )
+        .key(code_key)
+        .key(refund_key)
+        .arg(payload)
+        .arg(ttl_ms)
+        .arg(reservation_id)
+        .arg(refund_score)
+        .invoke_async(&mut connection)
+        .await?;
+        Ok(())
+    }
+
     async fn save_with_ttl(
         &self,
         code: &AuthorizationCode,
@@ -59,7 +149,7 @@ impl AuthorizationCodeStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let payload = serde_json::to_string(code)?;
         let _: () = connection
-            .set_ex(Self::key(&code.value), payload, ttl_seconds.max(1))
+            .set_ex(self.key(&code.value), payload, ttl_seconds.max(1))
             .await?;
         Ok(())
     }
@@ -69,7 +159,7 @@ impl AuthorizationCodeStore {
         value: &str,
     ) -> Result<Option<AuthorizationCode>, AuthorizationCodeStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let payload: Option<String> = connection.get_del(Self::key(value)).await?;
+        let payload: Option<String> = connection.get_del(self.key(value)).await?;
         payload
             .map(|payload| serde_json::from_str(&payload))
             .transpose()
@@ -81,7 +171,7 @@ impl AuthorizationCodeStore {
         value: &str,
     ) -> Result<Option<AuthorizationCode>, AuthorizationCodeStoreError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let payload: Option<String> = connection.get(Self::key(value)).await?;
+        let payload: Option<String> = connection.get(self.key(value)).await?;
         payload
             .map(|payload| serde_json::from_str(&payload))
             .transpose()
@@ -99,6 +189,9 @@ impl AuthorizationCodeStore {
 
     /// 原子消费授权码（CAS），并在同一个 Lua 事务里取消关联的待退配额条目。
     ///
+    /// CAS 身份是 `value` + `cas_revision`，不比较完整 JSON。未来字段和
+    /// 已知协议字段的序列化布局变化都不会让有效授权码消费失败。
+    ///
     /// 兑换成功时配额必须保留（计数保留是正确行为），因此取消待退条目必须与
     /// 授权码的删除原子完成：分成两步会让后台退款 worker 有机会在两步之间
     /// 看到条目，把「已兑换」的配额退掉（Issue #341）。
@@ -115,7 +208,7 @@ impl AuthorizationCodeStore {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         // 没有待退条目时 KEYS[2] 用授权码键占位（脚本在 ARGV[2] 为空时不会
         // 引用它），member 传空串即退化为纯 CAS。
-        let code_key = Self::key(value);
+        let code_key = self.key(value);
         let zset_key: &str = quota_cancel
             .as_ref()
             .map(|cancel| cancel.zset_key.as_str())
@@ -124,33 +217,21 @@ impl AuthorizationCodeStore {
             .as_ref()
             .map(|cancel| cancel.member.as_str())
             .unwrap_or("");
-        let deleted: i32 = Script::new(
+        let deleted: i32 = Script::new(concat!(
+            super::cas::cas_identity_lua!(),
             r#"local current_json = redis.call('GET', KEYS[1])
                if not current_json then
                     return 0
                end
-               local current = cjson.decode(current_json)
-               local expected = cjson.decode(ARGV[1])
-               local fields = {
-                   'value', 'client_id', 'redirect_uri', 'user_id',
-                   'session_token_hash', 'quota_reservation_id', 'scopes',
-                   'code_challenge', 'nonce', 'created_at', 'expires_at', 'redeemed_at'
-               }
-               local function encoded(value)
-                   if value == nil then return 'null' end
-                   return cjson.encode(value)
-               end
-               for _, field in ipairs(fields) do
-                   if encoded(current[field]) ~= encoded(expected[field]) then
-                       return 0
-                   end
+               if not same_cas_identity(current_json, ARGV[1], 'value') then
+                    return 0
                end
                redis.call('DEL', KEYS[1])
                if ARGV[2] ~= '' then
-                   redis.call('ZREM', KEYS[2], ARGV[2])
+                    redis.call('ZREM', KEYS[2], ARGV[2])
                end
                return 1"#,
-        )
+        ))
         .key(code_key.as_str())
         .key(zset_key)
         .arg(expected)
@@ -160,10 +241,10 @@ impl AuthorizationCodeStore {
         Ok(deleted == 1)
     }
 
-    fn key(value: &str) -> String {
-        format!(
+    fn key(&self, value: &str) -> String {
+        self.keyspace.key(&format!(
             "chenxing:oauth:code:{}",
             URL_SAFE_NO_PAD.encode(Sha256::digest(value.as_bytes()))
-        )
+        ))
     }
 }

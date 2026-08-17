@@ -6,6 +6,7 @@
 //! - [`write`]：写入路径（插入、资料更新、改密）。
 //! - [`avatar`]：头像字节的读写与清除。
 //! - [`owner_bootstrap`]：Owner 引导与受 Owner 前提约束的创建。
+//! - [`management_actor`]：管理 actor/target 的统一锁顺序与事务内授权复核。
 //! - [`role_guard`]：角色与状态守卫（最后一个活跃 Owner 规则）。
 //!
 //! 全部子模块条目在此 `pub use`，`crate::users::repository::*` 的既有引用路径不变。
@@ -18,6 +19,7 @@ use super::email::EmailAddress;
 
 mod avatar;
 mod lookup;
+pub(crate) mod management_actor;
 mod owner_bootstrap;
 mod role_guard;
 mod write;
@@ -28,10 +30,13 @@ pub use lookup::{
     find_credentials_by_identifier, find_profile_by_id, list_users,
 };
 pub use owner_bootstrap::{
-    BootstrapOwnerError, BootstrapOwnerOutcome, bootstrap_owner, insert_user_after_owner,
-    owner_exists,
+    AuditedUserInsertError, BootstrapOwnerError, BootstrapOwnerOutcome, ManagedUserInsertError,
+    bootstrap_owner, insert_user_after_owner, insert_user_after_owner_with_audit, owner_exists,
 };
-pub use role_guard::{OwnerGuardOutcome, set_user_role, set_user_status_guarded};
+pub use role_guard::{
+    AuditedRoleGuardError, OwnerGuardOutcome, set_user_role, set_user_role_with_audit,
+    set_user_status_guarded,
+};
 pub use write::{
     PasswordChangeOutcome, change_password_and_revoke_all, insert_user, insert_user_in_transaction,
     update_display_name,

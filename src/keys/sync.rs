@@ -10,10 +10,10 @@
 //!   绝不能把锁竞争变成请求失败（Issue #257）。
 //!
 //! 多实例语义：各实例的内存快照最迟在一个同步周期后收敛到同一份磁盘事实。
-//! 轮换先发布公钥再激活，因此同步间隔必须短于 `KEY_ACTIVATION_DELAY_SECONDS`，
-//! 也必须远小于 `key_rotation_grace_seconds`（旧公钥保留窗口），否则别的实例
-//! 可能仍在用已被回收的私钥签名。吊销同理：非本实例执行的吊销，最长在一个
-//! 同步周期后才在本实例生效。
+//! 轮换先发布公钥再激活；落盘截止包含 `KEY_ACTIVATION_DELAY_SECONDS` 与配置的
+//! 时钟偏差围栏，因此同步间隔必须短于基础激活等待，也必须远小于
+//! `key_rotation_grace_seconds`（旧公钥保留窗口）。吊销同理：非本实例执行的
+//! 吊销，最长在一个同步周期后才在本实例生效。
 
 use std::time::Duration;
 
@@ -21,6 +21,7 @@ use tokio::time::sleep;
 
 use crate::clock::{Clock, SystemClock};
 use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
+use crate::workers::WorkerContext;
 
 use super::{KeyManager, KeyManagerError, activation, build_key_state, persistence};
 
@@ -93,6 +94,9 @@ impl KeyManager {
             &key_files,
             pending.as_ref().map(|pending| pending.key_id.as_str()),
         );
+        if self.read_state().has_replaced_materials(&key_files) {
+            return Err(KeyManagerError::MaterialReplaced);
+        }
         if unchanged {
             return Ok(KeySyncOutcome::Unchanged);
         }
@@ -111,27 +115,25 @@ impl KeyManager {
 
     /// 后台同步任务：周期性对齐磁盘，热路径提示可提前触发下一轮。
     ///
-    /// 任务永不返回，由调用方在关停时 abort。纯内存模式下立即返回，
-    /// 免得空转一个什么都不做的定时器。
-    pub async fn run_disk_sync_worker(self, interval: Duration) {
+    /// 纯内存模式不执行磁盘 IO，但仍保留一个可监督的空闲 worker；否则合法配置
+    /// 会表现成关键任务意外退出。关停信号会打断定时等待，当前同步轮次则有界完成。
+    pub async fn run_disk_sync_worker(self, interval: Duration, mut worker: WorkerContext) {
         let persisted = self.read_state().directory.is_some();
-        if !persisted {
-            return;
-        }
         let interval = interval.max(MINIMUM_KEY_SYNC_INTERVAL);
-        let hint = self.resync_hint.clone();
-        loop {
-            tokio::select! {
-                _ = sleep(interval) => {}
-                // `Notified` 在 select 中被丢弃时会把许可交还，提示不会因为
-                // 定时器先到而丢失。
-                _ = hint.notified() => {
-                    // 提示来自不可信输入，先压到最小间隔再同步。
-                    sleep(MINIMUM_KEY_SYNC_INTERVAL).await;
+        if !persisted {
+            loop {
+                worker.reporter().success();
+                if worker.sleep_or_shutdown(interval).await {
+                    return;
                 }
             }
+        }
+        let hint = self.resync_hint.clone();
+        loop {
+            worker.reporter().heartbeat();
             match self.sync_from_disk().await {
                 Ok(KeySyncOutcome::Updated) => {
+                    self.mark_sync_healthy(true);
                     // `kid` 是公开标识，可以入日志；私钥材料绝不出现在这里。
                     let active_key_id = self.key_id();
                     let published_key_count = self.jwks().keys.len();
@@ -140,21 +142,46 @@ impl KeyManager {
                         published_key_count,
                         "signing key snapshot synchronized from shared storage"
                     );
+                    worker.reporter().success();
                 }
-                Ok(_) => {}
+                Ok(KeySyncOutcome::Unchanged) | Ok(KeySyncOutcome::NotPersisted) => {
+                    self.mark_sync_healthy(true);
+                    worker.reporter().success();
+                }
+                // Lock contention proves the task is alive, but not that this instance has
+                // observed the latest snapshot. Preserve last-success so prolonged contention
+                // eventually fails readiness.
+                Ok(KeySyncOutcome::Contended) => worker.reporter().heartbeat(),
                 Err(error) => {
+                    self.mark_sync_healthy(false);
                     tracing::warn!(
                         error = %error,
                         "failed to synchronize signing keys from shared storage"
                     );
+                    worker.reporter().retryable_failure();
                 }
+            }
+            let hinted = tokio::select! {
+                _ = worker.wait_for_shutdown() => break,
+                _ = sleep(interval) => false,
+                // `Notified` 在 select 中被丢弃时会把许可交还，提示不会因为
+                // 定时器先到而丢失。
+                _ = hint.notified() => true,
+            };
+            if hinted
+                // 提示来自不可信输入，先压到最小间隔再同步。
+                && worker
+                    .sleep_or_shutdown(MINIMUM_KEY_SYNC_INTERVAL)
+                    .await
+            {
+                break;
             }
         }
     }
 }
 
-/// 锁被占用不是故障：Unix 上是 flock 的 `EWOULDBLOCK`，非 Unix 回退实现用
-/// 目录创建冲突表达同一件事。
+/// 锁被占用不是故障：Unix 的 `flock` 与 Windows 的独占文件句柄都映射为
+/// `WouldBlock`。`AlreadyExists` 只保留为旧实现/平台兼容边界。
 fn is_lock_contention(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),

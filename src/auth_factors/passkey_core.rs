@@ -25,6 +25,10 @@ pub(super) struct PendingPasskeyRegistration {
     pub(super) user_id: i64,
     pub(super) state: RegistrationState,
     pub(super) settings: crate::settings::PasskeySetting,
+    /// Issuer generation captured with the challenge; legacy payloads without
+    /// this field fail closed at finish.
+    #[serde(default)]
+    pub(super) issuer_generation: Option<i64>,
 }
 
 impl fmt::Debug for PendingPasskeyRegistration {
@@ -42,6 +46,20 @@ pub(super) struct PendingPasskeyAuthentication {
     pub(super) user_id: i64,
     pub(super) state: AuthenticationState,
     pub(super) settings: crate::settings::PasskeySetting,
+    /// 签发 challenge 时的行身份。finish 必须按这个 `id` 做 CAS，
+    /// 不能按 finish 当下的 `credential_id` 查找：删除后重新注册会换行。
+    #[serde(default)]
+    pub(super) credential_row_ids: Vec<(Vec<u8>, i64)>,
+}
+
+impl PendingPasskeyAuthentication {
+    pub(super) fn row_id_for(&self, credential_id: &[u8]) -> Option<i64> {
+        self.credential_row_ids
+            .iter()
+            .find_map(|(stored_id, row_id)| {
+                (stored_id.as_slice() == credential_id).then_some(*row_id)
+            })
+    }
 }
 
 impl fmt::Debug for PendingPasskeyAuthentication {
@@ -200,6 +218,7 @@ mod tests {
             user_id: 7,
             state,
             settings,
+            issuer_generation: None,
         };
         let pending_json = serde_json::to_value(pending).expect("pending JSON");
         assert_eq!(pending_json["settings"]["rp_name"], "Configured RP");
@@ -257,5 +276,62 @@ mod tests {
         let json = serde_json::to_value(challenge).expect("challenge JSON");
         assert_eq!(json["publicKey"]["rpId"], "example.com");
         assert_eq!(json["publicKey"]["userVerification"], "discouraged");
+    }
+
+    #[test]
+    fn pending_authentication_binds_finish_updates_to_start_row_ids() {
+        let settings = settings(
+            PasskeyUserVerification::Preferred,
+            PasskeyAuthenticatorAttachment::Any,
+        );
+        let core = build_core(&settings).expect("valid passkey core");
+        let credential: Credential = serde_json::from_value(serde_json::json!({
+            "cred_id": "AQ",
+            "cred": {
+                "type_": "ES256",
+                "key": {
+                    "EC_EC2": {
+                        "curve": "SECP256R1",
+                        "x": "BA",
+                        "y": "BQ"
+                    }
+                }
+            },
+            "counter": 0,
+            "transports": null,
+            "user_verified": false,
+            "backup_eligible": false,
+            "backup_state": false,
+            "registration_policy": "preferred",
+            "extensions": {},
+            "attestation": {"data": "None", "metadata": "None"},
+            "attestation_format": "none"
+        }))
+        .expect("credential");
+        let builder = core
+            .new_challenge_authenticate_builder(vec![credential], None)
+            .expect("authentication builder");
+        let (_, state) = core
+            .generate_challenge_authenticate(builder)
+            .expect("authentication challenge");
+        let pending = PendingPasskeyAuthentication {
+            user_id: 7,
+            state,
+            settings,
+            credential_row_ids: vec![(b"cred-a".to_vec(), 11), (b"cred-b".to_vec(), 22)],
+        };
+        assert_eq!(pending.row_id_for(b"cred-a"), Some(11));
+        assert_eq!(pending.row_id_for(b"cred-b"), Some(22));
+        assert_eq!(pending.row_id_for(b"cred-missing"), None);
+
+        let mut legacy = serde_json::to_value(&pending).expect("pending JSON");
+        legacy
+            .as_object_mut()
+            .expect("object")
+            .remove("credential_row_ids");
+        let decoded: PendingPasskeyAuthentication =
+            serde_json::from_value(legacy).expect("legacy pending still deserializes");
+        assert!(decoded.credential_row_ids.is_empty());
+        assert_eq!(decoded.row_id_for(b"cred-a"), None);
     }
 }

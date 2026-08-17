@@ -15,10 +15,12 @@ use axum::{
 use serde::Deserialize;
 use std::fmt;
 
-use super::domain::AdminPermission;
+use super::{
+    authorization::{authorize_admin_write, management_actor_validation_failed},
+    domain::AdminPermission,
+};
 use crate::{
-    api::extract::AdminWrite,
-    audit::AuditEvent,
+    api::extract::{AdminWrite, ApiJson},
     error,
     state::AppState,
     users::{
@@ -60,7 +62,7 @@ impl fmt::Debug for CreateUserInput {
 pub async fn create_user(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<CreateUserInput>,
+    ApiJson(input): ApiJson<CreateUserInput>,
 ) -> Response {
     // 角色决定所需权限，必须在守卫之前解析。状态一并在此解析：两个词表都属于
     // 公开 API 契约，先行拒绝非法值不泄露任何信息，也让两个 400 行为一致。
@@ -86,10 +88,18 @@ pub async fn create_user(
     } else {
         AdminPermission::ManageUsers
     };
-    let actor = match admin.authorize(&state, required).await {
-        Ok(actor) => actor,
+    let authorization = match authorize_admin_write(&state, &admin, required).await {
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
+    let actor = authorization.actor();
+    if !state.issuer.is_ready() {
+        return if state.issuer.is_awaiting_configuration() {
+            error::issuer_not_configured()
+        } else {
+            error::issuer_runtime_invalid()
+        };
+    }
 
     let registration = RegistrationInput {
         username: input.username,
@@ -97,27 +107,22 @@ pub async fn create_user(
         password: input.password,
         display_name: input.display_name,
     };
+    let (actor_type, actor_id) = actor.audit_fields();
     match state
         .users
-        .create_by_admin(registration, role, status)
+        .create_by_admin(
+            registration,
+            role,
+            status,
+            actor_type.to_owned(),
+            actor_id,
+            authorization.credential(),
+        )
         .await
     {
-        Ok(user) => {
-            let (actor_type, actor_id) = actor.audit_fields();
-            // 账号已经落库；审计失败不能把已完成的创建伪装成 500。
-            // 元数据只记录角色与状态，口令与哈希都不进审计。
-            state
-                .audit
-                .record_best_effort(AuditEvent::new(
-                    actor_type.to_owned(),
-                    actor_id,
-                    crate::audit::AuditAction::UserCreate,
-                    "user".to_owned(),
-                    Some(user.id.to_string()),
-                    serde_json::json!({"role": role.as_str(), "status": status.as_str()}),
-                ))
-                .await;
-            (StatusCode::CREATED, Json(user)).into_response()
+        Ok(user) => (StatusCode::CREATED, Json(user)).into_response(),
+        Err(UserServiceError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(&state, authorization, error_value).await
         }
         Err(error_value) => user_creation_error_response(error_value),
     }
@@ -242,6 +247,10 @@ mod tests {
             (
                 UserServiceError::OwnerBootstrapRequired,
                 StatusCode::CONFLICT,
+            ),
+            (
+                UserServiceError::AuditUnavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
             ),
             (
                 UserServiceError::PasswordHash,

@@ -1,6 +1,6 @@
 [package]
 name = "chenxing-auth"
-version = "1.1.2"
+version = "1.1.3"
 edition = "2024"
 description = "天穹辰星 · 辰星认证中枢"
 license = "MIT"
@@ -57,6 +57,20 @@ psl = "2"
 # Unix 上显式化，非 Unix 构建不引入这组 syscall 绑定。
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Windows 密钥目录的 NtCreateFile / DACL / 重解析点。windows-sys 已是传递依赖，
+# 这里只在 Windows 上显式化，并打开安全文件原语所需的 feature。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 # 集成测试需要生成真实 PNG 作为上传夹具。image 已是常规依赖且启用了 png，

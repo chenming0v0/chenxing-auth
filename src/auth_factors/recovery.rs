@@ -9,7 +9,7 @@
 //! - [`AuthFactorService::encryption_key_health`]：在移除旧 key **之前**就能看到
 //!   还有多少密文引用环外的 kid，把 #258 从「事后救火」变成「事前可发现」。
 //! - [`AuthFactorService::reset_totp_factor`]：丢弃不可读的密文，让账号回到
-//!   「无因子」状态，下次密码登录走 `factor_setup_required` 重新注册。
+//!   「无因子」状态；密码登录仍可签发 Session，之后从安全设置重新注册。
 //! - [`AuthFactorService::reset_passkey_factor`]：删除全部 Passkey 凭据并撤销
 //!   会话，专治 Passkey-only 锁死（#460）。授权在 HTTP 层：Owner Session 或
 //!   系统 `ADMIN_TOKEN`，后者是末位 Owner 的逃生通道。
@@ -26,7 +26,14 @@ use crate::{
         repository,
     },
     sessions::store::revoke_all_for_user_in_transaction,
-    users::domain::UserId,
+    users::{
+        ManagementActorCredential,
+        domain::{UserId, UserPermission},
+        repository::management_actor::{
+            lock_management_user_advisories, lock_management_user_rows,
+            validate_locked_management_actor_permission,
+        },
+    },
 };
 
 /// 单次密钥健康度扫描的上限。管理端诊断端点不能变成全表扫描的放大器；
@@ -108,7 +115,80 @@ pub enum TotpResetOutcome {
     UnknownUser,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelfServiceRemovalOutcome {
+    Removed { removed: i64 },
+    Missing,
+    AuthenticationChanged,
+}
+
 impl AuthFactorService {
+    pub async fn remove_own_totp_factor(
+        &self,
+        user_id: UserId,
+        authenticated_epoch: i64,
+    ) -> Result<SelfServiceRemovalOutcome, AuthFactorServiceError> {
+        self.remove_own_factor(user_id, authenticated_epoch, true)
+            .await
+    }
+
+    pub async fn remove_own_passkey_factor(
+        &self,
+        user_id: UserId,
+        authenticated_epoch: i64,
+    ) -> Result<SelfServiceRemovalOutcome, AuthFactorServiceError> {
+        self.remove_own_factor(user_id, authenticated_epoch, false)
+            .await
+    }
+
+    async fn remove_own_factor(
+        &self,
+        user_id: UserId,
+        authenticated_epoch: i64,
+        totp: bool,
+    ) -> Result<SelfServiceRemovalOutcome, AuthFactorServiceError> {
+        let mut transaction = self.pool.begin().await?;
+        crate::settings::repository::lock_passkey_policy(&mut transaction).await?;
+        crate::sessions::store::lock_user_session_scope(&mut transaction, user_id).await?;
+        let current_epoch: Option<i64> =
+            crate::sqlx::query_scalar("SELECT session_epoch FROM users WHERE id = $1 FOR UPDATE")
+                .bind(user_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if current_epoch != Some(authenticated_epoch) {
+            transaction.rollback().await?;
+            return Ok(SelfServiceRemovalOutcome::AuthenticationChanged);
+        }
+        if revoke_all_for_user_in_transaction(&mut transaction, user_id)
+            .await?
+            .is_none()
+        {
+            transaction.rollback().await?;
+            return Ok(SelfServiceRemovalOutcome::AuthenticationChanged);
+        }
+        let removed = if totp {
+            i64::from(
+                repository::delete_totp_factor_in_transaction(&mut transaction, user_id)
+                    .await?
+                    .is_some(),
+            )
+        } else {
+            repository::delete_passkeys_in_transaction(&mut transaction, user_id).await?
+        };
+        if removed == 0 {
+            transaction.rollback().await?;
+            return Ok(SelfServiceRemovalOutcome::Missing);
+        }
+        transaction.commit().await?;
+        if let Err(error) = self.clear_account_failures(user_id).await {
+            tracing::error!(error = %error, "factor removed but failure counters were not cleared");
+        }
+        if totp && let Err(error) = self.tickets.clear_totp_replay(user_id).await {
+            tracing::error!(error = %error, "TOTP removed but replay claims were not cleared");
+        }
+        Ok(SelfServiceRemovalOutcome::Removed { removed })
+    }
+
     pub async fn account_factor_status(
         &self,
         user_id: UserId,
@@ -152,14 +232,28 @@ impl AuthFactorService {
     pub async fn reset_totp_factor(
         &self,
         user_id: UserId,
+        credential: ManagementActorCredential,
     ) -> Result<TotpResetOutcome, AuthFactorServiceError> {
         let mut transaction = self.pool.begin().await?;
+        crate::settings::repository::lock_passkey_policy(&mut transaction).await?;
+        let lock_order =
+            lock_management_user_advisories(&mut transaction, user_id, credential).await?;
+        let locked = lock_management_user_rows(&mut transaction, &lock_order).await?;
+        validate_locked_management_actor_permission(
+            credential,
+            locked.actor.as_ref(),
+            UserPermission::ManageAuthFactors,
+        )?;
+        if locked.target.is_none() {
+            // 账号在本次请求期间被删除（因子行随用户级联删除）：如实回
+            // UnknownUser，撤销动作没有推进任何东西。
+            transaction.rollback().await?;
+            return Ok(TotpResetOutcome::UnknownUser);
+        }
         if revoke_all_for_user_in_transaction(&mut transaction, user_id)
             .await?
             .is_none()
         {
-            // 账号在本次请求期间被删除（因子行随用户级联删除）：如实回
-            // UnknownUser，撤销动作没有推进任何东西。
             transaction.rollback().await?;
             return Ok(TotpResetOutcome::UnknownUser);
         }
@@ -214,8 +308,22 @@ impl AuthFactorService {
     pub async fn reset_passkey_factor(
         &self,
         user_id: UserId,
+        credential: ManagementActorCredential,
     ) -> Result<PasskeyResetOutcome, AuthFactorServiceError> {
         let mut transaction = self.pool.begin().await?;
+        crate::settings::repository::lock_passkey_policy(&mut transaction).await?;
+        let lock_order =
+            lock_management_user_advisories(&mut transaction, user_id, credential).await?;
+        let locked = lock_management_user_rows(&mut transaction, &lock_order).await?;
+        validate_locked_management_actor_permission(
+            credential,
+            locked.actor.as_ref(),
+            UserPermission::ManageAuthFactors,
+        )?;
+        if locked.target.is_none() {
+            transaction.rollback().await?;
+            return Ok(PasskeyResetOutcome::UnknownUser);
+        }
         if revoke_all_for_user_in_transaction(&mut transaction, user_id)
             .await?
             .is_none()

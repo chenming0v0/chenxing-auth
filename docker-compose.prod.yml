@@ -1,3 +1,64 @@
+x-runtime-environment: &runtime-environment
+  APP_HOST: 0.0.0.0
+  APP_PORT: 3000
+  APP_ISSUER: ${APP_ISSUER-}
+  ADMIN_TOKEN: ${ADMIN_TOKEN-}
+  AUTH_ENCRYPTION_KEY: ${AUTH_ENCRYPTION_KEY:?set AUTH_ENCRYPTION_KEY}
+  AUTH_ENCRYPTION_KEYS: ${AUTH_ENCRYPTION_KEYS:-kid=active:${AUTH_ENCRYPTION_KEY}}
+  AUTH_ENCRYPTION_ACTIVE_KID: ${AUTH_ENCRYPTION_ACTIVE_KID:-active}
+  KEY_DIRECTORY: /var/lib/chenxing-auth/keys
+  KEY_ROTATION_GRACE_SECONDS: ${KEY_ROTATION_GRACE_SECONDS:-604800}
+  KEY_ROTATION_SKEW_ALLOWANCE_SECONDS: ${KEY_ROTATION_SKEW_ALLOWANCE_SECONDS:-3600}
+  KEY_ACTIVATION_DELAY_SECONDS: ${KEY_ACTIVATION_DELAY_SECONDS:-65}
+  COOKIE_SECURE: ${COOKIE_SECURE:-true}
+  OAUTH_SESSION_HEADER_ENABLED: ${OAUTH_SESSION_HEADER_ENABLED:-false}
+  SESSION_TOKEN_RESPONSE_ENABLED: ${SESSION_TOKEN_RESPONSE_ENABLED:-false}
+  OAUTH_PROVIDER_LOOPBACK_ENABLED: ${OAUTH_PROVIDER_LOOPBACK_ENABLED:-false}
+  WEB_DIST_DIR: /usr/local/share/chenxing-auth/web/dist
+  SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-604800}
+  SESSION_IDLE_TIMEOUT_SECONDS: ${SESSION_IDLE_TIMEOUT_SECONDS:-1800}
+  SESSION_MAX_CONCURRENT_SESSIONS: ${SESSION_MAX_CONCURRENT_SESSIONS:-5}
+  ACCESS_TOKEN_TTL_SECONDS: ${ACCESS_TOKEN_TTL_SECONDS:-3600}
+  ID_TOKEN_TTL_SECONDS: ${ID_TOKEN_TTL_SECONDS:-3600}
+  RUST_LOG: ${RUST_LOG:-chenxing_auth=info,tower_http=info}
+  AUTH_LIMITER_FAILURE_POLICY: ${AUTH_LIMITER_FAILURE_POLICY:-fail-closed}
+  AUTH_LIMITER_MISSING_SOURCE_IP: ${AUTH_LIMITER_MISSING_SOURCE_IP:-reject}
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES-}
+  WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID-}
+  WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN-}
+  REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-30}
+  HTTP_GRACEFUL_DRAIN_SECONDS: ${HTTP_GRACEFUL_DRAIN_SECONDS:-15}
+  OAUTH_CLIENT_MAX_REDIRECT_URIS: ${OAUTH_CLIENT_MAX_REDIRECT_URIS:-10}
+  OAUTH_CLIENT_MAX_REDIRECT_URI_LENGTH: ${OAUTH_CLIENT_MAX_REDIRECT_URI_LENGTH:-2048}
+  OAUTH_CLIENT_MAX_SCOPES: ${OAUTH_CLIENT_MAX_SCOPES:-32}
+  OAUTH_CLIENT_MAX_SCOPE_LENGTH: ${OAUTH_CLIENT_MAX_SCOPE_LENGTH:-64}
+  OAUTH_CLIENT_ALLOWED_SCOPES: ${OAUTH_CLIENT_ALLOWED_SCOPES:-openid,profile,email}
+  UNAUTHENTICATED_SOURCE_QPS: ${UNAUTHENTICATED_SOURCE_QPS:-30}
+  AUTHORIZATION_CODE_TTL_SECONDS: ${AUTHORIZATION_CODE_TTL_SECONDS:-300}
+  PENDING_REQUEST_TTL_SECONDS: ${PENDING_REQUEST_TTL_SECONDS:-600}
+  MAX_PENDING_REQUESTS_PER_CLIENT: ${MAX_PENDING_REQUESTS_PER_CLIENT:-20}
+  MAX_PENDING_REQUESTS_GLOBAL: ${MAX_PENDING_REQUESTS_GLOBAL:-1000}
+  AUTH_FAILURE_WINDOW_SECONDS: ${AUTH_FAILURE_WINDOW_SECONDS:-900}
+  ACCOUNT_FAILURE_LIMIT: ${ACCOUNT_FAILURE_LIMIT:-10}
+  IP_FAILURE_LIMIT: ${IP_FAILURE_LIMIT:-30}
+  TOTP_TICKET_FAILURE_LIMIT: ${TOTP_TICKET_FAILURE_LIMIT:-5}
+  EXTERNAL_LOGIN_STATE_TTL_SECONDS: ${EXTERNAL_LOGIN_STATE_TTL_SECONDS:-600}
+  EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS: ${EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS:-60}
+  EXTERNAL_LOGIN_STATE_RATE_LIMIT: ${EXTERNAL_LOGIN_STATE_RATE_LIMIT:-30}
+  EXTERNAL_LOGIN_STATE_MAX_PENDING: ${EXTERNAL_LOGIN_STATE_MAX_PENDING:-10000}
+  DB_MAX_CONNECTIONS: ${DB_MAX_CONNECTIONS:-10}
+  DB_ACQUIRE_TIMEOUT_SECONDS: ${DB_ACQUIRE_TIMEOUT_SECONDS:-5}
+  DB_IDLE_TIMEOUT_SECONDS: ${DB_IDLE_TIMEOUT_SECONDS:-600}
+  DB_MAX_LIFETIME_SECONDS: ${DB_MAX_LIFETIME_SECONDS:-1800}
+  DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-5000}
+  AUDIT_ARCHIVE_ENABLED: ${AUDIT_ARCHIVE_ENABLED:-false}
+  AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-2555}
+  AUDIT_ROLE_SEPARATION: ${AUDIT_ROLE_SEPARATION:-require}
+  MIGRATION_MANAGE_RUNTIME_PASSWORD: ${MIGRATION_MANAGE_RUNTIME_PASSWORD:-true}
+  DATABASE_URL: postgres://${POSTGRES_RUNTIME_USER:?set POSTGRES_RUNTIME_USER}:${POSTGRES_RUNTIME_PASSWORD:?set POSTGRES_RUNTIME_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
+  REDIS_URL: redis://redis:6379
+  REDIS_NAMESPACE: ${REDIS_NAMESPACE:?set REDIS_NAMESPACE to a unique non-empty value}
+
 services:
   app:
     build:
@@ -5,18 +66,8 @@ services:
       dockerfile: Dockerfile
     image: ${CHENXING_IMAGE:-chenxing-auth:local}
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
-      APP_HOST: 0.0.0.0
-      APP_PORT: 3000
-      KEY_DIRECTORY: /var/lib/chenxing-auth/keys
-      # Pinned here so a stray value in .env cannot point the static file
-      # service away from the bundle shipped inside the image.
-      WEB_DIST_DIR: /usr/local/share/chenxing-auth/web/dist
-      DATABASE_URL: postgres://${POSTGRES_RUNTIME_USER}:${POSTGRES_RUNTIME_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      MIGRATION_DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: redis://redis:6379
+      <<: *runtime-environment
     ports:
       - "${APP_PORT:-3000}:3000"
     volumes:
@@ -32,13 +83,29 @@ services:
       timeout: 5s
       retries: 12
 
+  migrate:
+    profiles: ["migrate"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${CHENXING_IMAGE:-chenxing-auth:local}
+    command: ["migrate"]
+    environment:
+      <<: *runtime-environment
+      MIGRATION_DATABASE_URL: postgres://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     volumes:
       - chenxing-postgres:/var/lib/postgresql/data
     healthcheck:
@@ -50,7 +117,29 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    # Authorization-code consumption and Refresh Token tombstones/revocations are
+    # authoritative here. A successful write must survive a process or host crash;
+    # a truncated AOF must stop recovery instead of loading an older credential state.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - always
+      - --no-appendfsync-on-rewrite
+      - "no"
+      - --aof-load-truncated
+      - "no"
+      - --aof-use-rdb-preamble
+      - "yes"
+      - --save
+      - ""
+      - --dir
+      - /data
+      - --appenddirname
+      - appendonlydir
+      - --appendfilename
+      - appendonly.aof
     volumes:
       - chenxing-redis:/data
     healthcheck:

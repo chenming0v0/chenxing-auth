@@ -1,24 +1,37 @@
 use chenxing_auth::{
     api,
     audit::AuditService,
-    config::Config,
+    config::{self, Config},
     db,
     keys::DEFAULT_KEY_SYNC_INTERVAL,
     oauth::quota::QUOTA_REFUND_WORKER_INTERVAL,
     settings::{InitializeIssuerOutcome, issuer},
+    shutdown,
     state::AppState,
+    workers::{WorkerName, WorkerSupervisor},
 };
-use std::net::SocketAddr;
+use std::time::Duration;
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env()?;
-    tracing_subscriber::fmt()
-        .with_env_filter(config.log_filter.clone())
-        .with_target(false)
-        .init();
+    // Construction returns posture diagnostics as data. Emit only after a
+    // subscriber exists; `tracing::warn!` inside `from_env` is dropped.
+    config::install_tracing(&config.log_filter)?;
+    config.emit_startup_warnings();
+    if config.redis_keyspace.is_legacy() {
+        warn!(
+            redis_namespace = %config.redis_keyspace,
+            "Redis legacy key mode is active; configure a unique REDIS_NAMESPACE for new deployments"
+        );
+    } else {
+        info!(
+            redis_namespace = %config.redis_keyspace,
+            "Redis key namespace configured"
+        );
+    }
 
     let mut arguments = std::env::args().skip(1);
     match arguments.next().as_deref() {
@@ -114,62 +127,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         audit_posture.separation(),
     )
     .await?;
-    // Route admission is runtime-gated, so background task startup cannot be frozen by
-    // the issuer state observed during construction. These workers are harmless while
-    // awaiting configuration and remain alive after a hot issuer promotion.
-    let issuer_sync = tokio::spawn(state.clone().run_issuer_sync_worker());
-    let session_outbox = tokio::spawn(state.sessions.clone().run_outbox_worker());
-    let key_sync = tokio::spawn(
-        state
-            .keys
-            .clone()
-            .run_disk_sync_worker(DEFAULT_KEY_SYNC_INTERVAL),
-    );
-    let quota_refund = tokio::spawn(
-        state
-            .oauth_quotas
-            .clone()
-            .run_refund_worker(state.clock.clone(), QUOTA_REFUND_WORKER_INTERVAL),
-    );
-    let workers = [issuer_sync, session_outbox, key_sync, quota_refund];
-    let app = api::router(state);
     let address = format!("{}:{}", config.host, config.port);
     let listener = TcpListener::bind(&address).await?;
+    let mut workers = WorkerSupervisor::new(state.worker_health.clone());
 
+    // Route admission is runtime-gated, so worker startup cannot be frozen by the issuer
+    // state observed during construction. All four tasks are supervised: a panic or return
+    // removes readiness immediately and initiates process shutdown.
+    let issuer_state = state.clone();
+    workers.spawn(WorkerName::IssuerSync, move |worker| {
+        issuer_state.run_issuer_sync_worker(worker)
+    });
+    let sessions = state.sessions.clone();
+    workers.spawn(WorkerName::SessionOutbox, move |worker| {
+        sessions.run_outbox_worker(worker)
+    });
+    let keys = state.keys.clone();
+    workers.spawn(WorkerName::KeySync, move |worker| {
+        keys.run_disk_sync_worker(DEFAULT_KEY_SYNC_INTERVAL, worker)
+    });
+    let quotas = state.oauth_quotas.clone();
+    let quota_clock = state.clock.clone();
+    workers.spawn(WorkerName::QuotaRefund, move |worker| {
+        quotas.run_refund_worker(quota_clock, QUOTA_REFUND_WORKER_INTERVAL, worker)
+    });
+
+    let app = api::router(state);
     info!(address = %address, "辰星认证中枢 started");
-    axum::serve(
+    shutdown::serve(
         listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+        app,
+        workers,
+        Duration::from_secs(config.http_graceful_drain_seconds),
     )
-    .with_graceful_shutdown(shutdown_signal())
     .await?;
-    for worker in workers {
-        worker.abort();
-    }
-
     Ok(())
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install terminate signal handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
 }

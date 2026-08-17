@@ -3,19 +3,77 @@ name: Build And Publish
 on:
   workflow_dispatch:
   push:
-    branches: [releases]
     tags: ['v*']
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
+  actions: read
 
 jobs:
+  verify-provenance:
+    name: Verify release provenance
+    runs-on: ubuntu-latest
+    outputs:
+      valid: ${{ steps.verify.outputs.valid }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        with:
+          fetch-depth: 0
+      - name: Validate event and commit provenance
+        id: verify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$GITHUB_EVENT_NAME" in
+            workflow_dispatch)
+              echo 'valid=true' >> "$GITHUB_OUTPUT"
+              ;;
+            workflow_run)
+              # Required provenance: workflow_run.conclusion == 'success'.
+              test '${{ github.event.workflow_run.conclusion }}' = success
+              test '${{ github.event.workflow_run.event }}' = push
+              test '${{ github.event.workflow_run.head_branch }}' = releases
+              test '${{ github.event.workflow_run.head_repository.full_name }}' = "$GITHUB_REPOSITORY"
+              echo 'valid=true' >> "$GITHUB_OUTPUT"
+              ;;
+            push)
+              case "$GITHUB_REF" in refs/tags/v*) ;; *) echo 'unexpected push ref' >&2; exit 1 ;; esac
+              git fetch origin releases --depth=1
+              tag_sha="$(git rev-list -n1 "$GITHUB_REF")"
+              git merge-base --is-ancestor "$tag_sha" FETCH_HEAD
+              runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${tag_sha}&event=push&branch=releases&per_page=100")"
+              jq -e --arg sha "$tag_sha" --arg repo "$GITHUB_REPOSITORY" '
+                .workflow_runs[]
+                | select(.head_sha == $sha and .event == "push" and .head_branch == "releases" and .conclusion == "success" and .repository.full_name == $repo)
+              ' <<< "$runs" >/dev/null
+              echo 'valid=true' >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "unsupported event: $GITHUB_EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+
   web:
     name: Build embedded web
+    needs: verify-provenance
+    if: >-
+      needs.verify-provenance.outputs.valid == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      github.event_name == 'workflow_run')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -31,7 +89,12 @@ jobs:
 
   rust-binaries:
     name: Rust ${{ matrix.target }}
-    needs: web
+    needs: [verify-provenance, web]
+    if: >-
+      needs.verify-provenance.outputs.valid == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      github.event_name == 'workflow_run')
     strategy:
       fail-fast: false
       matrix:
@@ -57,6 +120,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: web-dist
@@ -110,17 +176,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
-          tar -C "target/${{ matrix.target }}/release" \
+          package_root="$RUNNER_TEMP/chenxing-auth-${{ matrix.target }}"
+          rm -rf "$package_root"
+          mkdir -p dist "$package_root/web"
+          cp "target/${{ matrix.target }}/release/chenxing-auth" \
+            "$package_root/chenxing-auth"
+          chmod 755 "$package_root/chenxing-auth"
+          cp -R web/dist "$package_root/web/dist"
+          tar -C "$package_root" \
             -czf "dist/chenxing-auth-${{ matrix.target }}.tar.gz" \
-            chenxing-auth
+            chenxing-auth web/dist
       - name: Package Windows binary
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $packageRoot = Join-Path $env:RUNNER_TEMP "chenxing-auth-${{ matrix.target }}"
+          Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path dist | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $packageRoot "web") | Out-Null
+          Copy-Item `
+            -LiteralPath "target/${{ matrix.target }}/release/chenxing-auth.exe" `
+            -Destination (Join-Path $packageRoot "chenxing-auth.exe")
+          Copy-Item -LiteralPath "web/dist" `
+            -Destination (Join-Path $packageRoot "web") `
+            -Recurse `
+            -Force
           Compress-Archive `
-            -Path "target/${{ matrix.target }}/release/chenxing-auth.exe" `
+            -Path (Join-Path $packageRoot "*") `
             -DestinationPath "dist/chenxing-auth-${{ matrix.target }}.zip"
       - uses: actions/upload-artifact@v4
         with:
@@ -129,9 +211,14 @@ jobs:
 
   release:
     name: Publish release assets
-    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    if: >-
+      needs.verify-provenance.outputs.valid == 'true' &&
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: rust-binaries
+    needs: [verify-provenance, rust-binaries]
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -160,13 +247,81 @@ jobs:
             --pattern '*' \
             --clobber
           (cd verified-download && sha256sum -c SHA256SUMS)
+      - name: Smoke test downloaded native archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(
+            verified-download/chenxing-auth-*.tar.gz
+            verified-download/chenxing-auth-*.zip
+          )
+          if (( ${#archives[@]} == 0 )); then
+            echo "release contains no native archives" >&2
+            exit 1
+          fi
+
+          smoke_root="$RUNNER_TEMP/native-release-smoke"
+          rm -rf "$smoke_root"
+          mkdir -p "$smoke_root"
+          for archive in "${archives[@]}"; do
+            archive_name="$(basename "$archive")"
+            extract_dir="$smoke_root/$archive_name"
+            mkdir -p "$extract_dir"
+            case "$archive" in
+              *.tar.gz)
+                tar -xzf "$archive" -C "$extract_dir"
+                binary="$extract_dir/chenxing-auth"
+                ;;
+              *.zip)
+                unzip -q "$archive" -d "$extract_dir"
+                binary="$extract_dir/chenxing-auth.exe"
+                ;;
+            esac
+
+            if [ ! -f "$binary" ]; then
+              echo "release archive is missing its root binary: $archive_name" >&2
+              exit 1
+            fi
+            index="$extract_dir/web/dist/index.html"
+            if [ ! -f "$index" ]; then
+              echo "release archive is missing web/dist/index.html: $archive_name" >&2
+              exit 1
+            fi
+
+            mapfile -t assets < <(grep -oE '(src|href)="/[^"]+"' "$index" \
+              | sed -E 's/^(src|href)="//; s/"$//')
+            if (( ${#assets[@]} == 0 )); then
+              echo "release archive index.html contains no root-absolute assets: $archive_name" >&2
+              exit 1
+            fi
+            for asset in "${assets[@]}"; do
+              relative="${asset#/}"
+              relative="${relative%%[?#]*}"
+              if [ ! -f "$extract_dir/web/dist/$relative" ]; then
+                echo "release archive is missing referenced asset: $archive_name: $asset" >&2
+                exit 1
+              fi
+            done
+          done
 
   container:
     name: Multi-platform container
+    permissions:
+      contents: read
+      packages: write
     runs-on: ubuntu-latest
-    needs: [web, rust-binaries]
+    needs: [verify-provenance, web, rust-binaries]
+    if: >-
+      needs.verify-provenance.outputs.valid == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      github.event_name == 'workflow_run')
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: binary-x86_64-unknown-linux-gnu
@@ -245,10 +400,14 @@ jobs:
         id: meta
         with:
           images: ghcr.io/${{ github.repository }}
+          # A workflow_run executes with the default branch context even
+          # though checkout is pinned to workflow_run.head_sha. Do not let
+          # that context mint a misleading `dev` tag for a releases build.
           tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=manual-${{ github.sha }},enable=${{ github.event_name == 'workflow_dispatch' }}
+            type=ref,event=tag,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=releases,enable=${{ github.event_name == 'workflow_run' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' }}
       - uses: docker/build-push-action@v6
         with:
           context: .

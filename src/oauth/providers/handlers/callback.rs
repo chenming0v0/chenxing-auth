@@ -262,6 +262,7 @@ pub async fn external_callback(
             &session,
             holder_hash.as_deref(),
             user_id,
+            issuer.generation(),
         )
         .await
     {
@@ -356,12 +357,14 @@ async fn bind_and_audit(
     session: &Session,
     holder_hash: Option<&str>,
     user_id: crate::users::domain::UserId,
+    issuer_generation: i64,
 ) -> Result<(), &'static str> {
     match bind_pending_request(
         &state.authorization_requests,
         request_id,
         &session.token,
         holder_hash,
+        issuer_generation,
     )
     .await
     {
@@ -399,6 +402,7 @@ fn resolve_error_code(slug: &str, error_value: &ExternalOAuthError) -> &'static 
         // 纵深防御分支：`userinfo` 已经拦掉未验证邮箱，这里只会在
         // `ExternalUser` 被其他路径构造时触发，仍按未验证邮箱的语义回报。
         ExternalOAuthError::EmailNotVerified => "oauth_email_unverified",
+        ExternalOAuthError::EmailNotAllowed => "oauth_login_failed",
         ExternalOAuthError::OwnerBootstrapRequired => "owner_bootstrap_required",
         ExternalOAuthError::UserDisabled => "oauth_login_failed",
         _ => {

@@ -28,17 +28,22 @@ pub struct AuthorizationCode {
     /// 用户会话：会话被撤销（用户登出）后，授权码必须立即失去兑换能力，否则
     /// 登出只是清了 Cookie，5 分钟 TTL 内的授权码仍能换出 access/refresh token。
     ///
-    /// 摘要使用 base64url 无填充编码。`None` 表示降级路径：授权码不是由浏览器会话签发的（例如直接构造的
-    /// 测试代码，或升级前写入 Redis 的历史授权码），此时 Token 端点不做会话
-    /// 校验，只保留原有的 Client / Redirect URI / PKCE / 用户状态检查。
+    /// 摘要使用 base64url 无填充编码。直接构造的 `None` 只保留给不经过持久化兑换
+    /// 的内部测试路径；从 Redis 兼容读取到缺失该字段的旧授权码会被单独标记，并在
+    /// Token 端点 fail-closed，不能借兼容反序列化绕过会话校验。
     ///
     /// 反序列化 helper 的 `#[serde(default)]` + `skip_serializing_if` 是 Redis 兼容性要求，不可删除：
-    /// - `default`：升级期间在途的旧授权码 JSON 没有这个键，缺了它反序列化会
-    ///   直接失败，所有在途授权码全部作废。
-    /// - `skip_serializing_if`：保持旧载荷的稳定表示，便于混合版本部署；
-    ///   `take_if_matches` 只比较已知协议字段，未知未来字段不参与 CAS。
+    /// - `default`：升级期间在途的旧授权码 JSON 没有这个键，仍允许读取以便稳定
+    ///   返回 `invalid_grant`，但绝不允许兑换。
+    /// - `skip_serializing_if`：保持旧载荷的稳定表示，便于混合版本部署。
+    ///   CAS 身份只看 `value` + `cas_revision`，不再比较完整 JSON。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_token_hash: Option<String>,
+    /// Compatibility marker set when an older Redis payload omitted the
+    /// session binding field entirely. Such codes must fail closed at token
+    /// exchange instead of using the intentional unbound-code fallback.
+    #[serde(skip)]
+    pub(crate) legacy_unbound_session_binding: bool,
     /// 签发时配额消耗对应的 reservation id（Issue #341）。
     ///
     /// 授权码过期未兑换时，后台 worker 凭这个 id 退还配额；兑换成功时
@@ -49,12 +54,33 @@ pub struct AuthorizationCode {
     /// 期间在途的旧授权码可读，`skip_serializing_if` 保持旧载荷表示稳定。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quota_reservation_id: Option<String>,
+    /// Issuer generation captured from the request-scoped snapshot at issuance.
+    ///
+    /// Refresh Token already treats this as a hard trust-domain boundary
+    /// (Issue #492). Authorization codes must do the same (Issue #516): a code
+    /// minted under Issuer A must not redeem into tokens whose `iss` belongs to
+    /// Issuer B after a hot switch. Missing/legacy payloads cannot prove their
+    /// origin and fail closed at `/oauth/token` before CAS.
+    ///
+    /// Serialization matches `session_token_hash`: `#[serde(default)]` on the
+    /// payload keeps in-flight Redis JSON readable; `skip_serializing_if`
+    /// omits `None` so CAS still byte-compares known protocol fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer_generation: Option<i64>,
     pub scopes: Vec<String>,
     pub code_challenge: String,
     pub nonce: Option<String>,
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
     pub redeemed_at: Option<OffsetDateTime>,
+    /// Stable CAS generation. Missing on legacy payloads and treated as 0.
+    /// Authorization codes are immutable until consume, so this stays 0 and
+    /// is omitted from JSON to keep mixed-version full-JSON CAS working.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::oauth::cas::is_zero_cas_revision"
+    )]
+    pub cas_revision: u64,
 }
 
 impl fmt::Debug for AuthorizationCode {
@@ -72,12 +98,14 @@ impl fmt::Debug for AuthorizationCode {
                 "quota_reservation_id",
                 &self.quota_reservation_id.as_ref().map(|_| "<redacted>"),
             )
+            .field("issuer_generation", &self.issuer_generation)
             .field("scopes", &self.scopes)
             .field("code_challenge", &"<redacted>")
             .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
             .field("created_at", &self.created_at)
             .field("expires_at", &self.expires_at)
             .field("redeemed_at", &self.redeemed_at)
+            .field("cas_revision", &self.cas_revision)
             .finish()
     }
 }
@@ -88,16 +116,22 @@ struct AuthorizationCodePayload {
     client_id: String,
     redirect_uri: String,
     user_id: String,
+    /// A missing (or explicitly null) field is treated as a legacy payload and
+    /// marked for fail-closed handling during token exchange.
     #[serde(default)]
-    session_token_hash: Option<String>,
+    session_token_hash: Option<Option<String>>,
     #[serde(default)]
     quota_reservation_id: Option<String>,
+    #[serde(default)]
+    issuer_generation: Option<i64>,
     scopes: Vec<String>,
     code_challenge: String,
     nonce: Option<String>,
     created_at: OffsetDateTime,
     expires_at: OffsetDateTime,
     redeemed_at: Option<OffsetDateTime>,
+    #[serde(default)]
+    cas_revision: u64,
     #[serde(flatten)]
     extra: BTreeMap<String, serde_json::Value>,
 }
@@ -117,6 +151,7 @@ impl fmt::Debug for AuthorizationCodePayload {
                 "quota_reservation_id",
                 &self.quota_reservation_id.as_ref().map(|_| "<redacted>"),
             )
+            .field("issuer_generation", &self.issuer_generation)
             .field("scopes", &self.scopes)
             .field("code_challenge", &"<redacted>")
             .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
@@ -147,14 +182,17 @@ impl<'de> Deserialize<'de> for AuthorizationCode {
             client_id: payload.client_id,
             redirect_uri: payload.redirect_uri,
             user_id: payload.user_id,
-            session_token_hash: payload.session_token_hash,
+            legacy_unbound_session_binding: payload.session_token_hash.is_none(),
+            session_token_hash: payload.session_token_hash.flatten(),
             quota_reservation_id: payload.quota_reservation_id,
+            issuer_generation: payload.issuer_generation,
             scopes: payload.scopes,
             code_challenge: payload.code_challenge,
             nonce: payload.nonce,
             created_at: payload.created_at,
             expires_at: payload.expires_at,
             redeemed_at: payload.redeemed_at,
+            cas_revision: payload.cas_revision,
         })
     }
 }
@@ -283,6 +321,8 @@ impl AuthorizationCode {
     ///
     /// 签发时刻由调用方传入（Token 授权路径经 `AppState` 的共享时钟），
     /// 保证 `created_at` / `expires_at` 与 store 保存时的 TTL 计算同源。
+    /// `issuer_generation` 必须来自同一请求捕获的 Issuer 快照，不能在签发中途
+    /// 重读 runtime。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_with_nonce_and_ttl_with_session_hash_at(
         client_id: String,
@@ -293,9 +333,10 @@ impl AuthorizationCode {
         nonce: Option<String>,
         session_token_hash: Option<String>,
         ttl_seconds: u64,
+        issuer_generation: i64,
         now: OffsetDateTime,
     ) -> Self {
-        Self::new_with_nonce_and_ttl_at_hashed(
+        let mut code = Self::new_with_nonce_and_ttl_at_hashed(
             client_id,
             redirect_uri,
             user_id,
@@ -305,7 +346,9 @@ impl AuthorizationCode {
             session_token_hash,
             ttl_seconds,
             now,
-        )
+        );
+        code.issuer_generation = Some(issuer_generation);
+        code
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -326,13 +369,16 @@ impl AuthorizationCode {
             redirect_uri,
             user_id,
             session_token_hash,
+            legacy_unbound_session_binding: false,
             quota_reservation_id: None,
+            issuer_generation: None,
             scopes,
             code_challenge,
             nonce,
             created_at: now,
             expires_at: now + Duration::seconds(ttl_seconds as i64),
             redeemed_at: None,
+            cas_revision: 0,
         }
     }
 
@@ -346,142 +392,23 @@ impl AuthorizationCode {
         self.redeemed_at = Some(now);
         Ok(())
     }
+
+    /// Stamp the request-scoped Issuer generation. Test helpers that construct
+    /// a code outside the authorization handler must call this before redeeming
+    /// through `/oauth/token`; convenience constructors leave the field unset
+    /// so missing/legacy payloads stay fail-closed.
+    pub fn with_issuer_generation(mut self, generation: i64) -> Self {
+        self.issuer_generation = Some(generation);
+        self
+    }
+
+    /// Authorization codes belong to the Issuer generation that minted them.
+    /// `None` is a pre-upgrade payload and fails closed, same as a mismatch.
+    pub fn is_bound_to_issuer_generation(&self, current_generation: i64) -> bool {
+        self.issuer_generation == Some(current_generation)
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::AuthorizationCode;
-    use crate::sessions::domain::session_token_hash;
-    use time::{Duration, OffsetDateTime};
-
-    fn code_with_session(session_token: Option<&str>) -> AuthorizationCode {
-        AuthorizationCode::new_with_nonce(
-            "cx_project".to_owned(),
-            "https://project.example/callback".to_owned(),
-            "7".to_owned(),
-            vec!["openid".to_owned()],
-            "challenge".to_owned(),
-            None,
-            session_token.map(str::to_owned),
-        )
-    }
-
-    #[test]
-    fn explicit_time_constructor_sets_creation_and_expiry_times() {
-        let created_at = OffsetDateTime::UNIX_EPOCH + Duration::seconds(123);
-        let code = AuthorizationCode::new_with_nonce_and_ttl_at(
-            "cx_project".to_owned(),
-            "https://project.example/callback".to_owned(),
-            "7".to_owned(),
-            vec!["openid".to_owned()],
-            "challenge".to_owned(),
-            None,
-            None,
-            60,
-            created_at,
-        );
-
-        assert_eq!(code.created_at, created_at);
-        assert_eq!(code.expires_at, created_at + Duration::seconds(60));
-    }
-
-    /// 构造升级前的授权码 JSON：把当前的会话摘要键从载荷里删掉。
-    ///
-    /// 不写死时间戳字面量——`time` 只启用了 `serde` 特性（没有
-    /// `serde-human-readable`），`OffsetDateTime` 的序列化形式不是 RFC 3339
-    /// 字符串，硬编码字面量会与实际格式失配。
-    fn legacy_code_json(code: &AuthorizationCode) -> String {
-        let serialized = serde_json::to_string(code).expect("serialize code");
-        let hash = serde_json::to_string(
-            code.session_token_hash
-                .as_ref()
-                .expect("bound code has a session hash"),
-        )
-        .expect("serialize session hash");
-        let field = format!("\"session_token_hash\":{hash}");
-        let legacy = serialized.replace(&format!("{field},"), "");
-        assert_ne!(legacy, serialized, "session hash field must be removed");
-        legacy
-    }
-
-    /// 向后兼容回归：升级期间 Redis 里在途的授权码没有会话摘要键。
-    /// 少了 `#[serde(default)]` 就会反序列化失败，所有在途授权码直接作废。
-    #[test]
-    fn legacy_code_without_a_session_hash_deserializes_as_none() {
-        let code = code_with_session(Some("session-token"));
-        let legacy_json = legacy_code_json(&code);
-        // 前置条件：构造出的旧载荷确实不含该键，否则这个回归测试没有意义。
-        assert!(!legacy_json.contains("session_token_hash"));
-
-        let restored: AuthorizationCode =
-            serde_json::from_str(&legacy_json).expect("legacy code must remain readable");
-
-        assert!(restored.session_token_hash.is_none());
-        assert_eq!(restored.value, code.value);
-        assert_eq!(restored.client_id, code.client_id);
-        assert_eq!(restored.redirect_uri, code.redirect_uri);
-        assert_eq!(restored.user_id, code.user_id);
-        assert_eq!(restored.scopes, code.scopes);
-        assert_eq!(restored.code_challenge, code.code_challenge);
-        assert_eq!(restored.created_at, code.created_at);
-        assert_eq!(restored.expires_at, code.expires_at);
-    }
-
-    /// `take_if_matches` 靠「重新序列化 == Redis 中的原始字符串」做原子消费。
-    /// 无会话的授权码必须省略该键而不是写成 `null`，否则旧授权码永远消费不掉。
-    #[test]
-    fn code_without_a_session_hash_round_trips_byte_identically() {
-        let code = code_with_session(None);
-        let payload = serde_json::to_string(&code).expect("serialize code");
-        assert!(!payload.contains("session_token_hash"));
-
-        let restored: AuthorizationCode = serde_json::from_str(&payload).expect("deserialize code");
-
-        assert_eq!(
-            serde_json::to_string(&restored).expect("reserialize code"),
-            payload
-        );
-    }
-
-    /// 旧载荷解析后重新序列化不得带回会话摘要键或任何旧凭据。
-    #[test]
-    fn legacy_code_payload_reserializes_without_a_session_binding() {
-        let legacy_json = legacy_code_json(&code_with_session(Some("session-token")));
-        let restored: AuthorizationCode =
-            serde_json::from_str(&legacy_json).expect("legacy code payload");
-
-        let reserialized = serde_json::to_string(&restored).expect("reserialize legacy code");
-        assert_eq!(reserialized, legacy_json);
-        assert!(!reserialized.contains("session_token_hash"));
-        assert!(!reserialized.contains("session-token"));
-    }
-
-    #[test]
-    fn legacy_plaintext_session_binding_is_rejected() {
-        let mut value = serde_json::to_value(code_with_session(None)).expect("code as JSON value");
-        value
-            .as_object_mut()
-            .expect("code serializes to a JSON object")
-            .insert(
-                "session_id".to_owned(),
-                serde_json::Value::String("session-token".to_owned()),
-            );
-        let error = serde_json::from_value::<AuthorizationCode>(value)
-            .expect_err("legacy plaintext session binding must be rejected");
-        assert!(!error.to_string().contains("session-token"));
-    }
-
-    /// 有会话时摘要键必须真的写进载荷，否则 Token 端点拿不到会话、绑定形同虚设。
-    #[test]
-    fn code_with_a_session_hash_persists_without_plaintext() {
-        let code = code_with_session(Some("session-token"));
-        let payload = serde_json::to_string(&code).expect("serialize code");
-        let hash = session_token_hash("session-token");
-        assert!(payload.contains(&hash));
-        assert!(!payload.contains("session-token"));
-
-        let restored: AuthorizationCode = serde_json::from_str(&payload).expect("deserialize code");
-
-        assert_eq!(restored.session_token_hash.as_deref(), Some(hash.as_str()));
-    }
-}
+#[path = "code_tests.rs"]
+mod tests;

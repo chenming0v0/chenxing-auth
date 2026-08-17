@@ -1,23 +1,27 @@
 use redis::Script;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use time::{Date, Month, OffsetDateTime, Time};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
+use self::quota_keys::{period_keys, reservation_key};
 use super::quota_scripts::{CONSUME_SCRIPT, REFUND_SCRIPT};
 use crate::clock::{Clock, SystemClock};
 use crate::plans::domain::AuthQuotaLimits;
-use crate::redis_client::RedisClient;
+use crate::{redis_client::RedisClient, redis_keyspace::RedisKeyspace};
 
+#[path = "quota_keys.rs"]
+mod quota_keys;
 #[path = "quota_refund.rs"]
 mod quota_refund;
 
 /// 过期未兑换的授权码配额归还由后台 worker 执行（Issue #341）。
-pub use quota_refund::{QUOTA_REFUND_WORKER_INTERVAL, QuotaRefundCancel};
+pub use quota_refund::{QUOTA_REFUND_WORKER_INTERVAL, QuotaRefundCancel, refund_due_unix_millis};
 
 #[derive(Clone)]
 pub struct OAuthQuotaStore {
     client: RedisClient,
+    keyspace: RedisKeyspace,
 }
 
 /// 用量始终来自 Redis；上限来自生效套餐。
@@ -90,6 +94,14 @@ impl OAuthQuotaStore {
     pub fn new(client: impl Into<RedisClient>) -> Self {
         Self {
             client: client.into(),
+            keyspace: RedisKeyspace::default(),
+        }
+    }
+
+    pub fn with_keyspace(client: impl Into<RedisClient>, keyspace: RedisKeyspace) -> Self {
+        Self {
+            client: client.into(),
+            keyspace,
         }
     }
 
@@ -135,7 +147,7 @@ impl OAuthQuotaStore {
         limits: AuthQuotaLimits,
         now: OffsetDateTime,
     ) -> Result<QuotaConsumption, OAuthQuotaError> {
-        let (day_key, month_key, next_day, next_month) = period_keys(client_id, now)?;
+        let (day_key, month_key, next_day, next_month) = self.period_keys(client_id, now)?;
         let day_reservations_key = reservation_key(&day_key);
         let month_reservations_key = reservation_key(&month_key);
         let reservation_id = Uuid::new_v4().simple().to_string();
@@ -207,7 +219,7 @@ impl OAuthQuotaStore {
         limits: Option<AuthQuotaLimits>,
         now: OffsetDateTime,
     ) -> Result<QuotaSnapshot, OAuthQuotaError> {
-        let (day_key, month_key, _, _) = period_keys(client_id, now)?;
+        let (day_key, month_key, _, _) = self.period_keys(client_id, now)?;
         let mut connection = self.client.get_multiplexed_async_connection().await?;
         let (daily_used, monthly_used): (Option<u64>, Option<u64>) = redis::pipe()
             .cmd("GET")
@@ -223,6 +235,13 @@ impl OAuthQuotaStore {
             monthly_used: monthly_used.unwrap_or(0),
         })
     }
+    fn period_keys(
+        &self,
+        client_id: &str,
+        now: OffsetDateTime,
+    ) -> Result<(String, String, i64, i64), OAuthQuotaError> {
+        period_keys(&self.keyspace, client_id, now)
+    }
 }
 
 fn redis_limit(limit: Option<u64>) -> Result<i64, OAuthQuotaError> {
@@ -230,266 +249,4 @@ fn redis_limit(limit: Option<u64>) -> Result<i64, OAuthQuotaError> {
         .map(|limit| i64::try_from(limit).map_err(|_| OAuthQuotaError::InvalidLimit))
         .transpose()
         .map(|limit| limit.unwrap_or(-1))
-}
-fn reservation_key(period_key: &str) -> String {
-    format!("{period_key}:reservations")
-}
-
-fn period_keys(
-    client_id: &str,
-    now: OffsetDateTime,
-) -> Result<(String, String, i64, i64), OAuthQuotaError> {
-    let date = now.date();
-    let next_day = date
-        .next_day()
-        .map(|date| date.with_time(Time::MIDNIGHT).assume_utc().unix_timestamp())
-        .ok_or(OAuthQuotaError::InvalidResponse)?;
-    let next_month_date = match date.month() {
-        Month::December => Date::from_calendar_date(date.year() + 1, Month::January, 1),
-        month => Date::from_calendar_date(
-            date.year(),
-            Month::try_from(month as u8 + 1).map_err(|_| OAuthQuotaError::InvalidResponse)?,
-            1,
-        ),
-    }
-    .map_err(|_| OAuthQuotaError::InvalidResponse)?;
-    let next_month = next_month_date
-        .with_time(Time::MIDNIGHT)
-        .assume_utc()
-        .unix_timestamp();
-    Ok((
-        format!("chenxing:oauth:quota:{client_id}:day:{date}"),
-        format!(
-            "chenxing:oauth:quota:{client_id}:month:{:04}-{:02}",
-            date.year(),
-            date.month() as u8
-        ),
-        next_day,
-        next_month,
-    ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{OAuthQuotaStore, QuotaConsumeResult};
-    use crate::plans::domain::AuthQuotaLimits;
-    use uuid::Uuid;
-
-    fn store() -> OAuthQuotaStore {
-        let url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-        OAuthQuotaStore::new(redis::Client::open(url).expect("Redis URL"))
-    }
-
-    #[tokio::test]
-    async fn custom_limits_reject_daily_and_monthly_overages() {
-        let store = store();
-        let limits = AuthQuotaLimits {
-            daily_auth_limit: 2,
-            monthly_auth_limit: Some(10),
-        };
-        let daily_client = format!("quota-daily-{}", Uuid::new_v4().simple());
-        assert_eq!(
-            store
-                .consume_with_limits(&daily_client, limits)
-                .await
-                .expect("first quota use"),
-            QuotaConsumeResult::Allowed
-        );
-        assert_eq!(
-            store
-                .consume_with_limits(&daily_client, limits)
-                .await
-                .expect("second quota use"),
-            QuotaConsumeResult::Allowed
-        );
-        assert_eq!(
-            store
-                .consume_with_limits(&daily_client, limits)
-                .await
-                .expect("daily quota rejection"),
-            QuotaConsumeResult::DailyExceeded
-        );
-
-        let monthly_client = format!("quota-monthly-{}", Uuid::new_v4().simple());
-        let limits = AuthQuotaLimits {
-            daily_auth_limit: 10,
-            monthly_auth_limit: Some(2),
-        };
-        assert_eq!(
-            store
-                .consume_with_limits(&monthly_client, limits)
-                .await
-                .expect("first monthly use"),
-            QuotaConsumeResult::Allowed
-        );
-        assert_eq!(
-            store
-                .consume_with_limits(&monthly_client, limits)
-                .await
-                .expect("second monthly use"),
-            QuotaConsumeResult::Allowed
-        );
-        assert_eq!(
-            store
-                .consume_with_limits(&monthly_client, limits)
-                .await
-                .expect("monthly quota rejection"),
-            QuotaConsumeResult::MonthlyExceeded
-        );
-    }
-
-    #[tokio::test]
-    async fn null_monthly_limit_never_rejects_monthly() {
-        let store = store();
-        let client_id = format!("quota-unlimited-monthly-{}", Uuid::new_v4().simple());
-        let limits = AuthQuotaLimits {
-            daily_auth_limit: 10,
-            monthly_auth_limit: None,
-        };
-        for _ in 0..5 {
-            assert_eq!(
-                store
-                    .consume_with_limits(&client_id, limits)
-                    .await
-                    .expect("monthly use is unlimited"),
-                QuotaConsumeResult::Allowed
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn concurrent_consumers_cannot_cross_daily_limit() {
-        let store = store();
-        let client_id = format!("quota-concurrent-{}", Uuid::new_v4().simple());
-        let limits = AuthQuotaLimits {
-            daily_auth_limit: 2,
-            monthly_auth_limit: Some(10),
-        };
-        let (first, second, third) = tokio::join!(
-            store.consume_with_limits(&client_id, limits),
-            store.consume_with_limits(&client_id, limits),
-            store.consume_with_limits(&client_id, limits),
-        );
-        let results = [
-            first.expect("first"),
-            second.expect("second"),
-            third.expect("third"),
-        ];
-        assert_eq!(
-            results
-                .iter()
-                .filter(|result| **result == QuotaConsumeResult::Allowed)
-                .count(),
-            2
-        );
-        assert_eq!(
-            results
-                .iter()
-                .filter(|result| **result == QuotaConsumeResult::DailyExceeded)
-                .count(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn empty_snapshot_uses_supplied_limits_and_zero_usage() {
-        let store = store();
-        let snapshot = store
-            .snapshot(
-                &format!("quota-empty-{}", Uuid::new_v4().simple()),
-                Some(AuthQuotaLimits {
-                    daily_auth_limit: 7,
-                    monthly_auth_limit: Some(11),
-                }),
-            )
-            .await
-            .expect("empty quota snapshot");
-        assert_eq!(snapshot.daily_limit, Some(7));
-        assert_eq!(snapshot.daily_used, 0);
-        assert_eq!(snapshot.monthly_limit, Some(11));
-        assert_eq!(snapshot.monthly_used, 0);
-    }
-
-    #[tokio::test]
-    async fn snapshot_preserves_unlimited_monthly_limit_and_usage() {
-        let store = store();
-        let client_id = format!("quota-snapshot-unlimited-{}", Uuid::new_v4().simple());
-        let limits = AuthQuotaLimits {
-            daily_auth_limit: 3,
-            monthly_auth_limit: None,
-        };
-        assert_eq!(
-            store
-                .consume_with_limits(&client_id, limits)
-                .await
-                .expect("quota use"),
-            QuotaConsumeResult::Allowed
-        );
-        let snapshot = store
-            .snapshot(&client_id, Some(limits))
-            .await
-            .expect("snapshot");
-        assert_eq!(snapshot.daily_limit, Some(3));
-        assert_eq!(snapshot.daily_used, 1);
-        assert_eq!(snapshot.monthly_limit, None);
-        assert_eq!(snapshot.monthly_used, 1);
-    }
-
-    /// 没有生效套餐时快照仍然回报真实用量，但两个上限都是 `None`（序列化为 null）。
-    #[tokio::test]
-    async fn snapshot_without_plan_reports_usage_without_limits() {
-        let store = store();
-        let client_id = format!("quota-no-plan-{}", Uuid::new_v4().simple());
-        assert_eq!(
-            store
-                .consume_with_limits(
-                    &client_id,
-                    AuthQuotaLimits {
-                        daily_auth_limit: 5,
-                        monthly_auth_limit: None,
-                    }
-                )
-                .await
-                .expect("quota use"),
-            QuotaConsumeResult::Allowed
-        );
-        let snapshot = store.snapshot(&client_id, None).await.expect("snapshot");
-        assert_eq!(snapshot.daily_limit, None);
-        assert_eq!(snapshot.monthly_limit, None);
-        assert_eq!(snapshot.daily_used, 1);
-        assert_eq!(snapshot.monthly_used, 1);
-    }
-
-    #[tokio::test]
-    async fn zero_daily_limit_rejects_at_empty_boundary() {
-        let store = store();
-        let result = store
-            .consume_with_limits(
-                &format!("quota-zero-{}", Uuid::new_v4().simple()),
-                AuthQuotaLimits {
-                    daily_auth_limit: 0,
-                    monthly_auth_limit: Some(1),
-                },
-            )
-            .await
-            .expect("zero quota response");
-        assert_eq!(result, QuotaConsumeResult::DailyExceeded);
-    }
-
-    #[tokio::test]
-    async fn redis_errors_are_returned_to_callers() {
-        let store =
-            OAuthQuotaStore::new(redis::Client::open("redis://127.0.0.1:1").expect("Redis URL"));
-        let result = store
-            .snapshot(
-                "quota-error",
-                Some(AuthQuotaLimits {
-                    daily_auth_limit: 1,
-                    monthly_auth_limit: Some(1),
-                }),
-            )
-            .await;
-        assert!(result.is_err());
-    }
 }

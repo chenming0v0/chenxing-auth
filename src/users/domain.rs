@@ -34,6 +34,8 @@ pub const RESERVED_USERNAMES: &[&str] = &[
     "system",
 ];
 pub type UserId = i64;
+/// The first-owner bootstrap transaction resets the users sequence so this identity is stable.
+pub const INITIAL_OWNER_ID: UserId = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -74,7 +76,7 @@ impl UserStatus {
     ///
     /// 未知状态串（手工改库、未来新增状态值、大小写漂移）按 fail-closed 处理：
     /// 宁可拒绝降级/禁用，也不允许静默移除最后一个可用 Owner。
-    /// 该谓词必须与 `role_guard::lock_owner_scope` 的 SQL 谓词
+    /// 该谓词必须与 `role_guard::lock_active_owner_scope` 的 SQL 谓词
     /// `status <> 'disabled'` 保持一致（Issue #358）。
     pub fn is_active(value: &str) -> bool {
         Self::parse(value) != Some(Self::Disabled)

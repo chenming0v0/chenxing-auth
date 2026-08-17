@@ -275,6 +275,51 @@ async fn admin_query_rejects_an_offset_that_would_overflow() {
         .await
         .expect("overflow response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json(response).await;
+    assert_eq!(body["code"], "invalid_pagination");
+    assert_eq!(
+        body["message"],
+        "page must be a positive integer and page_size must be an integer between 1 and 100"
+    );
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE email LIKE 'admin-ui-user-%@example.com'")
+        .execute(&database)
+        .await
+        .expect("cleanup users");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn admin_queries_reject_out_of_range_pagination() {
+    let (router, database, key_directory) = setup().await;
+    for path in [
+        "/api/v1/admin/users/query?page=0",
+        "/api/v1/admin/clients/query?page_size=0",
+        "/api/v1/admin/audit/query?page_size=101",
+        "/api/v1/admin/users/query?page=abc",
+        "/api/v1/admin/clients/query?page=9223372036854775808",
+        "/api/v1/admin/audit/query?page_size=18446744073709551616",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("authorization", "Bearer admin-ui-token")
+                    .body(Body::empty())
+                    .expect("invalid pagination request"),
+            )
+            .await
+            .expect("invalid pagination response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+        let body = json(response).await;
+        assert_eq!(body["code"], "invalid_pagination", "{path}");
+        assert_eq!(
+            body["message"],
+            "page must be a positive integer and page_size must be an integer between 1 and 100",
+            "{path}"
+        );
+    }
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE email LIKE 'admin-ui-user-%@example.com'")
         .execute(&database)
@@ -442,13 +487,12 @@ async fn admin_user_and_client_queries_filter_and_page_in_the_database() {
                 .uri("/api/v1/admin/clients/query?page=1&page_size=1000")
                 .header("authorization", "Bearer admin-ui-token")
                 .body(Body::empty())
-                .expect("clamped client query"),
+                .expect("invalid client query"),
         )
         .await
-        .expect("clamped client response");
-    let clamped = json(response).await;
-    assert_eq!(clamped["page_size"], 100);
-    assert_eq!(clamped["total"], 2);
+        .expect("invalid client response");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(json(response).await["code"], "invalid_pagination");
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE username LIKE $1")
         .bind(format!("query-%-{suffix}"))

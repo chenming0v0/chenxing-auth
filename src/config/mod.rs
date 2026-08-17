@@ -3,6 +3,7 @@ use std::{fmt, num::ParseIntError};
 use thiserror::Error;
 
 use crate::clients::domain::ClientRegistrationLimits;
+use crate::redis_keyspace::RedisKeyspace;
 
 mod admin;
 mod audit;
@@ -13,10 +14,13 @@ mod limits;
 mod parsing;
 mod proxy;
 mod security;
+mod warnings;
 
 pub(crate) use construction::{parse_root_http_url, validate_cookie_security};
+pub(crate) use warnings::parse_log_filter;
 
 pub use issuer::{IssuerUrl, normalize_issuer_url};
+pub use warnings::{ConfigWarning, install_tracing};
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 // 会话配置上界常量 `MAX_SESSION_*` 统一来自 security（#365 政策封顶），
@@ -27,6 +31,7 @@ pub use crate::sessions::domain::{
 };
 
 const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 30;
+const DEFAULT_HTTP_GRACEFUL_DRAIN_SECONDS: u64 = 15;
 
 pub use audit::AuditRetentionConfig;
 // 上界常量必须公开可达 `crate::config::MAX_*`：`for_each_security_limit!` 用绝对路径
@@ -72,6 +77,11 @@ pub struct Config {
     pub port: u16,
     /// Maximum time for a matched application route to produce a response.
     pub request_timeout_seconds: u64,
+    /// Total time to finish in-flight HTTP connections after a process shutdown
+    /// signal. Static SPA/asset responses are not wrapped by
+    /// [`Self::request_timeout_seconds`], so a client that stops reading the
+    /// body can otherwise keep the Serve future alive indefinitely.
+    pub http_graceful_drain_seconds: u64,
     /// 启动时解析出的 Issuer 候选。进入 [`crate::state::AppState`] 后，运行期唯一
     /// 权威是共享的 Issuer runtime；handler 不再读取这份静态配置。
     pub issuer: Option<IssuerUrl>,
@@ -89,17 +99,18 @@ pub struct Config {
     /// 主机上没有前端产物而无法执行。
     pub web_dist_dir: String,
     pub key_rotation_grace_seconds: u64,
-    /// 跨实例时钟偏差容忍（秒），Issue #316。
+    /// 跨实例时钟偏差容忍（秒），Issues #316/#546。
     ///
-    /// `retired_at` 由退役实例的时钟写入，保留窗口判断却在当前加载实例的时钟上
-    /// 进行。该值把窗口关闭边界推到 `retired_at + grace + allowance`，保证时钟偏快
-    /// 的实例不会在真实窗口结束前删除共享密钥文件。默认 3600（1 小时），上限是
-    /// `KEY_ROTATION_GRACE_SECONDS`；单实例部署可设为 0。
+    /// `retired_at` 与待激活截止由一个实例写入，判断可能发生在另一实例。该值既把
+    /// 删除边界推到 `retired_at + grace + allowance`，也把新 key 的持久化激活截止
+    /// 推到 `published_at + activation_delay + allowance`。默认 3600（1 小时），
+    /// 上限是 `KEY_ROTATION_GRACE_SECONDS`；单实例部署可设为 0。
     pub key_rotation_skew_allowance_seconds: u64,
     /// 新公钥进入 JWKS 之后、接管签发之前的等待秒数（Issue #454）。
     ///
-    /// 生产环境至少覆盖 JWKS `max-age=60` 与一次 5 秒跨实例同步；测试构造器
-    /// 可以使用 0 立即激活。已落盘的 `activate_at` 优先于这个值。
+    /// 生产环境至少覆盖 JWKS `max-age=60` 与一次 5 秒跨实例同步；持久化截止还会
+    /// 加上 `KEY_ROTATION_SKEW_ALLOWANCE_SECONDS`。测试构造器可以使用 0 立即激活。
+    /// 已落盘的 `activate_at` 优先于之后的配置变更。
     pub key_activation_delay_seconds: u64,
     pub cookie_secure: bool,
     /// Development-only compatibility for the OAuth session header.
@@ -114,6 +125,7 @@ pub struct Config {
     pub oauth_provider_loopback_enabled: bool,
     pub database_url: String,
     pub redis_url: String,
+    pub redis_keyspace: RedisKeyspace,
     pub session_ttl_seconds: u64,
     /// Successful requests renew idle activity, but never extend `session_ttl_seconds`.
     pub session_idle_timeout_seconds: u64,
@@ -154,6 +166,10 @@ impl fmt::Debug for Config {
             .field("host", &self.host)
             .field("port", &self.port)
             .field("request_timeout_seconds", &self.request_timeout_seconds)
+            .field(
+                "http_graceful_drain_seconds",
+                &self.http_graceful_drain_seconds,
+            )
             .field("issuer", &issuer_url)
             .field("admin_token", &"REDACTED")
             .field("key_directory", &self.key_directory)
@@ -185,6 +201,7 @@ impl fmt::Debug for Config {
             )
             .field("database_url", &"<redacted>")
             .field("redis_url", &"<redacted>")
+            .field("redis_namespace", &self.redis_keyspace)
             .field("session_ttl_seconds", &self.session_ttl_seconds)
             .field(
                 "session_idle_timeout_seconds",

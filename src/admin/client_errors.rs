@@ -72,7 +72,20 @@ pub(super) fn create_client_error_response(error_value: &ClientServiceError) -> 
         ClientServiceError::Database(_)
         | ClientServiceError::SecretHash
         | ClientServiceError::InvalidData
-        | ClientServiceError::SecretRotationConflict => internal(error_value, "create_client"),
+        | ClientServiceError::SecretRotationConflict
+        | ClientServiceError::AuditUnavailable
+        | ClientServiceError::IdempotencyCorruptResult => internal(error_value, "create_client"),
+        ClientServiceError::IdempotencyKeyInvalid => {
+            error::bad_request("invalid_idempotency_key", "idempotency key is invalid")
+        }
+        ClientServiceError::IdempotencyConflict => error::conflict(
+            "idempotency_conflict",
+            "idempotency key was already used for a different request",
+        ),
+        ClientServiceError::IdempotencyKeyUnavailable => error::service_unavailable(
+            "idempotency_key_unavailable",
+            "the idempotency result cannot be recovered with the configured key ring",
+        ),
     }
 }
 
@@ -85,7 +98,12 @@ pub(super) fn update_client_error_response(error_value: &ClientServiceError) -> 
         ClientServiceError::Database(_)
         | ClientServiceError::SecretHash
         | ClientServiceError::InvalidData
-        | ClientServiceError::SecretRotationConflict => internal(error_value, "update_client"),
+        | ClientServiceError::SecretRotationConflict
+        | ClientServiceError::AuditUnavailable
+        | ClientServiceError::IdempotencyCorruptResult
+        | ClientServiceError::IdempotencyKeyUnavailable
+        | ClientServiceError::IdempotencyConflict
+        | ClientServiceError::IdempotencyKeyInvalid => internal(error_value, "update_client"),
     }
 }
 
@@ -98,7 +116,12 @@ pub(super) fn set_client_status_error_response(error_value: &ClientServiceError)
         ClientServiceError::Database(_)
         | ClientServiceError::Validation(_)
         | ClientServiceError::SecretHash
-        | ClientServiceError::SecretRotationConflict => internal(error_value, "set_client_status"),
+        | ClientServiceError::SecretRotationConflict
+        | ClientServiceError::AuditUnavailable
+        | ClientServiceError::IdempotencyCorruptResult
+        | ClientServiceError::IdempotencyKeyUnavailable
+        | ClientServiceError::IdempotencyConflict
+        | ClientServiceError::IdempotencyKeyInvalid => internal(error_value, "set_client_status"),
     }
 }
 
@@ -119,7 +142,22 @@ pub(super) fn rotate_secret_error_response(error_value: &ClientServiceError) -> 
         ),
         ClientServiceError::Database(_)
         | ClientServiceError::SecretHash
-        | ClientServiceError::Validation(_) => internal(error_value, "rotate_client_secret"),
+        | ClientServiceError::Validation(_)
+        | ClientServiceError::AuditUnavailable
+        | ClientServiceError::IdempotencyCorruptResult => {
+            internal(error_value, "rotate_client_secret")
+        }
+        ClientServiceError::IdempotencyKeyInvalid => {
+            error::bad_request("invalid_idempotency_key", "idempotency key is invalid")
+        }
+        ClientServiceError::IdempotencyConflict => error::conflict(
+            "idempotency_conflict",
+            "idempotency key was already used for a different request",
+        ),
+        ClientServiceError::IdempotencyKeyUnavailable => error::service_unavailable(
+            "idempotency_key_unavailable",
+            "the idempotency result cannot be recovered with the configured key ring",
+        ),
     }
 }
 

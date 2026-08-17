@@ -17,7 +17,7 @@ pub fn isolated_key_directory(label: &str) -> PathBuf {
             std::env::temp_dir().join(format!("chenxing-key-template-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         chenxing_auth::keys::KeyManager::load_or_generate(&path).expect("test signing keys");
-        chenxing_auth::oauth::providers::secrets::SecretManager::load_or_generate(&path)
+        chenxing_auth::oauth::providers::secrets::SecretManager::load_or_generate(&path, false)
             .expect("test provider secret");
         path
     });

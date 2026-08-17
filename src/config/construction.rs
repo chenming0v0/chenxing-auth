@@ -2,6 +2,7 @@ use std::env;
 
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 use crate::clients::domain::ClientRegistrationLimits;
+use crate::redis_keyspace::RedisKeyspace;
 use crate::web_dist::{DEFAULT_WEB_DIST_DIR, WEB_DIST_DIR_ENV};
 
 use super::admin::admin_token_from_env;
@@ -21,7 +22,10 @@ use super::security::{
     validate_activation_delay, validate_production_activation_delay, validate_session_lifetimes,
     validate_token_and_key_lifetimes,
 };
-use super::{Config, ConfigError, DEFAULT_REQUEST_TIMEOUT_SECONDS, normalize_issuer_url};
+use super::{
+    Config, ConfigError, DEFAULT_HTTP_GRACEFUL_DRAIN_SECONDS, DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    normalize_issuer_url,
+};
 
 mod test_construction;
 
@@ -29,6 +33,7 @@ struct ConfigValues {
     host: String,
     port: u16,
     request_timeout_seconds: u64,
+    http_graceful_drain_seconds: u64,
     issuer_url: Option<String>,
     legacy_issuer_import: Option<String>,
     admin_token: String,
@@ -43,6 +48,7 @@ struct ConfigValues {
     oauth_provider_loopback_enabled: bool,
     database_url: String,
     redis_url: String,
+    redis_keyspace: RedisKeyspace,
     session_ttl_seconds: u64,
     session_idle_timeout_seconds: u64,
     session_max_concurrent_sessions: u64,
@@ -73,8 +79,20 @@ impl Config {
         )?;
         let request_timeout_seconds =
             optional_u64("REQUEST_TIMEOUT_SECONDS", DEFAULT_REQUEST_TIMEOUT_SECONDS)?;
+        let http_graceful_drain_seconds = optional_u64(
+            "HTTP_GRACEFUL_DRAIN_SECONDS",
+            DEFAULT_HTTP_GRACEFUL_DRAIN_SECONDS,
+        )?;
         let database_url = required_env("DATABASE_URL")?;
         let redis_url = required_env("REDIS_URL")?;
+        let redis_keyspace = match env::var(RedisKeyspace::ENV_NAME) {
+            Ok(value) => RedisKeyspace::new(&value)
+                .map_err(|_| ConfigError::InvalidValue(RedisKeyspace::ENV_NAME))?,
+            Err(env::VarError::NotPresent) => RedisKeyspace::default(),
+            Err(env::VarError::NotUnicode(_)) => {
+                return Err(ConfigError::InvalidValue(RedisKeyspace::ENV_NAME));
+            }
+        };
         let auth_encryption_keys = parse_auth_encryption_key_ring()?;
         let auth_encryption_key = auth_encryption_keys.active_key().clone();
         // 新部署允许先启动依赖与初始化前端，再把固定 Issuer 写入数据库。旧部署的
@@ -193,10 +211,11 @@ impl Config {
         let security_limits = security_limits_from_env()?;
         let audit_retention = audit_retention_from_env()?;
 
-        Self::from_values_with_log(ConfigValues {
+        Self::from_validated_values(ConfigValues {
             host,
             port,
             request_timeout_seconds,
+            http_graceful_drain_seconds,
             issuer_url: None,
             legacy_issuer_import,
             admin_token,
@@ -211,6 +230,7 @@ impl Config {
             oauth_provider_loopback_enabled,
             database_url,
             redis_url,
+            redis_keyspace,
             session_ttl_seconds,
             session_idle_timeout_seconds,
             session_max_concurrent_sessions,
@@ -232,11 +252,12 @@ impl Config {
         })
     }
 
-    fn from_values_with_log(values: ConfigValues) -> Result<Self, ConfigError> {
+    fn from_validated_values(values: ConfigValues) -> Result<Self, ConfigError> {
         let ConfigValues {
             host,
             port,
             request_timeout_seconds,
+            http_graceful_drain_seconds,
             issuer_url,
             legacy_issuer_import,
             admin_token,
@@ -251,6 +272,7 @@ impl Config {
             oauth_provider_loopback_enabled,
             database_url,
             redis_url,
+            redis_keyspace,
             session_ttl_seconds,
             session_idle_timeout_seconds,
             session_max_concurrent_sessions,
@@ -282,6 +304,9 @@ impl Config {
         if request_timeout_seconds == 0 {
             return Err(ConfigError::InvalidValue("REQUEST_TIMEOUT_SECONDS"));
         }
+        if http_graceful_drain_seconds == 0 {
+            return Err(ConfigError::InvalidValue("HTTP_GRACEFUL_DRAIN_SECONDS"));
+        }
         let issuer_url = issuer_url
             .map(|value| normalize_issuer_url(&value))
             .transpose()?;
@@ -292,16 +317,10 @@ impl Config {
         if let Some(issuer) = issuer.as_ref() {
             validate_cookie_security(issuer, cookie_secure)?;
         }
-        if cookie_secure
-            && issuer
-                .as_ref()
-                .is_some_and(|issuer| issuer.scheme() == "http")
-        {
-            tracing::warn!(
-                issuer_scheme = "http",
-                "COOKIE_SECURE=true with an HTTP APP_ISSUER: browsers may reject the Secure cookies"
-            );
-        }
+        // Fail closed on a bad filter before Config exists as a value. The
+        // error only names `RUST_LOG`; it never formats tokens, URLs, or keys.
+        // Posture warnings stay data until `main` installs a subscriber.
+        super::parse_log_filter(&log_filter)?;
         if database_url.trim().is_empty() {
             return Err(ConfigError::MissingValue("DATABASE_URL"));
         }
@@ -329,41 +348,11 @@ impl Config {
             return Err(ConfigError::InvalidValue("WEBAUTHN_RP_ID"));
         }
         parse_root_http_url(&webauthn_origin, "WEBAUTHN_ORIGIN")?;
-        // Issue #348：AGENTS.md 规定 ADMIN_TOKEN 为空时必须拒绝所有已初始化的管理
-        // API，因此空 Token 关闭整个管理面——Bearer 与浏览器 Session 两条通道都被
-        // 拒绝（统一 403 admin_disabled），唯一例外是不存在 Owner 时公开的首个
-        // Owner 引导端点。告警文案与实现语义一致，避免部署者按旧理解误判。
-        if admin_token.is_empty() {
-            tracing::warn!(
-                "ADMIN_TOKEN not set: the admin API surface is disabled. Both the \
-                 system Bearer channel and the browser-session channel are rejected; \
-                 only the first-owner bootstrap endpoint stays public while no owner \
-                 exists."
-            );
-        }
-        // Issue #343：回环/明文 http 例外是开发开关，开启后本服务会把解密后的
-        // client secret 和用户 access token 发给回环端点。生产开启等于给「管理员
-        // 可控出网目标」开回环口子，告警语义与实现一致。
-        if oauth_provider_loopback_enabled {
-            tracing::warn!(
-                "OAUTH_PROVIDER_LOOPBACK_ENABLED=true: provider endpoints may target \
-                 loopback hosts over plaintext http. This is a development-only \
-                 exception; decrypted client secrets and user access tokens are sent \
-                 to these endpoints. Keep disabled in production."
-            );
-        }
-        // #111：未配置可信代理时告警。生产反向代理部署必须设置 TRUSTED_PROXIES，
-        // 否则按源限流退化为代理内网 IP 作 key，全服务共享额度（自我 DoS 风险）。
-        if trusted_proxies.is_empty() {
-            tracing::warn!(
-                "TRUSTED_PROXIES not set: X-Forwarded-For is ignored and all client \
-                 IPs resolve to the direct peer. Set TRUSTED_PROXIES if behind a proxy."
-            );
-        }
         Ok(Self {
             host,
             port,
             request_timeout_seconds,
+            http_graceful_drain_seconds,
             issuer: issuer_url
                 .as_deref()
                 .map(super::IssuerUrl::parse)
@@ -381,6 +370,7 @@ impl Config {
             oauth_provider_loopback_enabled,
             database_url,
             redis_url,
+            redis_keyspace,
             session_ttl_seconds,
             session_idle_timeout_seconds,
             session_max_concurrent_sessions,

@@ -9,6 +9,7 @@ use std::time::Duration;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
 use crate::oauth::token::{decode_access_token, issue_access_token};
+use crate::workers::{WorkerHealth, WorkerName, WorkerSupervisor};
 
 use super::prune::retirement_window_open_at;
 use super::{
@@ -235,20 +236,32 @@ fn in_memory_manager_sync_reports_not_persisted() {
     );
 }
 
-/// 无共享目录时后台任务必须立即退出，而不是空转一个什么都不做的定时器。
-///
-/// 传入 1ns 间隔：如果实现真的进入了循环，它会被抬到 `MINIMUM_KEY_SYNC_INTERVAL`
-/// 并持续 tick，从而撞上这里的超时。
+/// 无共享目录时后台任务不做磁盘 IO，但必须留在 supervisor 内直到合作关停。
 #[tokio::test]
-async fn disk_sync_worker_returns_immediately_without_a_key_directory() {
+async fn disk_sync_worker_stays_supervised_without_a_key_directory() {
     let manager = KeyManager::generate().expect("key generation");
+    let health = WorkerHealth::new();
+    let mut supervisor = WorkerSupervisor::new(health.clone());
+    supervisor.spawn(WorkerName::KeySync, move |worker| {
+        manager.run_disk_sync_worker(Duration::from_nanos(1), worker)
+    });
 
-    tokio::time::timeout(
-        MINIMUM_KEY_SYNC_INTERVAL,
-        manager.run_disk_sync_worker(Duration::from_nanos(1)),
-    )
+    tokio::time::timeout(MINIMUM_KEY_SYNC_INTERVAL, async {
+        loop {
+            let status = health.status(WorkerName::KeySync);
+            if status.last_success_age.is_some() {
+                assert_eq!(status.phase, crate::workers::WorkerPhase::Running);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
     .await
-    .expect("worker must not schedule ticks without a key directory");
+    .expect("the no-op pass still records worker success");
+    supervisor
+        .drain(MINIMUM_KEY_SYNC_INTERVAL)
+        .await
+        .expect("in-memory worker shutdown");
 }
 
 #[test]
@@ -323,6 +336,54 @@ async fn published_key_starts_signing_only_after_the_activation_window() {
         manager.verification_key_for(&old_key_id).is_some(),
         "old public key stays in the verification window"
     );
+}
+
+/// Issue #546：共享目录中的 `activate_at` 必须把允许的实例时钟偏差算进围栏。
+/// 写入记录的实例偏慢、执行激活的实例偏快时，不能把 JWKS 传播窗口缩短。
+#[tokio::test]
+async fn persisted_rotation_waits_for_activation_delay_plus_clock_skew() {
+    let directory = std::env::temp_dir().join(format!(
+        "chenxing-activation-skew-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let delay = Duration::from_secs(65);
+    let skew = Duration::from_secs(30);
+    let manager = KeyManager::load_or_generate_with_lifecycle(
+        &directory,
+        Duration::from_secs(DEFAULT_KEY_RETENTION_SECONDS),
+        skew,
+        delay,
+    )
+    .expect("persisted manager");
+    let old_key_id = manager.key_id();
+    let writer_now = OffsetDateTime::now_utc();
+    let rotation = manager
+        .rotate_at(writer_now)
+        .await
+        .expect("publish rotation");
+
+    assert!(
+        !manager
+            .activate_published_at(writer_now + TimeDuration::seconds(65 + 30 - 1))
+            .await
+            .expect("fast clock before safe deadline"),
+        "configured skew must not consume any part of the propagation delay"
+    );
+    assert_eq!(manager.key_id(), old_key_id);
+
+    assert!(
+        manager
+            .activate_published_at(writer_now + TimeDuration::seconds(65 + 30))
+            .await
+            .expect("safe deadline elapsed")
+    );
+    assert_eq!(manager.key_id(), rotation.key_id);
+    assert!(
+        manager.verification_key_for(&old_key_id).is_some(),
+        "the previous public key keeps its retirement grace after activation"
+    );
+
+    let _ = std::fs::remove_dir_all(directory);
 }
 
 /// 第二实例即使以 delay=0 加载，也必须遵守盘上的 `activate_at`。

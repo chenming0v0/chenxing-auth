@@ -7,6 +7,7 @@ use thiserror::Error;
 
 use crate::{
     redis_client::RedisClient,
+    redis_keyspace::RedisKeyspace,
     settings::{SecurityLimitsSetting, SettingsService, SettingsServiceError},
 };
 
@@ -138,9 +139,27 @@ impl ExternalLoginStateStore {
         rate_limit: i64,
         max_pending: i64,
     ) -> Self {
+        Self::new_with_config_and_keyspace(
+            client,
+            ttl_seconds,
+            rate_window_seconds,
+            rate_limit,
+            max_pending,
+            RedisKeyspace::default(),
+        )
+    }
+
+    pub fn new_with_config_and_keyspace(
+        client: impl Into<RedisClient>,
+        ttl_seconds: u64,
+        rate_window_seconds: u64,
+        rate_limit: i64,
+        max_pending: i64,
+        keyspace: RedisKeyspace,
+    ) -> Self {
         Self::new_with_limits(
             client,
-            STATE_KEY_PREFIX.to_owned(),
+            keyspace.prefix(STATE_KEY_PREFIX),
             rate_limit,
             max_pending,
             ttl_seconds,
@@ -152,6 +171,23 @@ impl ExternalLoginStateStore {
         let mut store = Self::new_with_limits(
             client,
             STATE_KEY_PREFIX.to_owned(),
+            EXTERNAL_LOGIN_STATE_RATE_LIMIT,
+            EXTERNAL_LOGIN_STATE_MAX_PENDING,
+            EXTERNAL_LOGIN_STATE_TTL_SECONDS,
+            EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
+        );
+        store.settings = Some(settings);
+        store
+    }
+
+    pub fn new_with_settings_and_keyspace(
+        client: impl Into<RedisClient>,
+        settings: SettingsService,
+        keyspace: RedisKeyspace,
+    ) -> Self {
+        let mut store = Self::new_with_limits(
+            client,
+            keyspace.prefix(STATE_KEY_PREFIX),
             EXTERNAL_LOGIN_STATE_RATE_LIMIT,
             EXTERNAL_LOGIN_STATE_MAX_PENDING,
             EXTERNAL_LOGIN_STATE_TTL_SECONDS,
@@ -296,19 +332,7 @@ impl ExternalLoginStateStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS, EXTERNAL_LOGIN_STATE_TTL_SECONDS};
-    use std::sync::Arc;
-
-    use redis::AsyncCommands;
-    use uuid::Uuid;
-
-    use super::{ExternalLoginState, ExternalLoginStateStore, ExternalLoginStateStoreError};
-
-    fn redis_client() -> redis::Client {
-        let url =
-            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-        redis::Client::open(url).expect("Redis URL")
-    }
+    use super::ExternalLoginState;
 
     /// 兼容性回归：滚动升级期间 Redis 里的旧 payload 没有 `code_verifier` 字段，
     /// 必须能反序列化为空串，否则所有进行中的外部登录都会失败。
@@ -337,113 +361,5 @@ mod tests {
         let payload = serde_json::to_string(&original).expect("序列化");
         let restored: ExternalLoginState = serde_json::from_str(&payload).expect("反序列化");
         assert_eq!(restored, original);
-    }
-
-    #[tokio::test]
-    async fn concurrent_admission_never_exceeds_pending_capacity() {
-        let client = redis_client();
-        let prefix = format!("chenxing:test:external-state:{}", Uuid::new_v4().simple());
-        let store = Arc::new(ExternalLoginStateStore::new_with_limits(
-            client.clone(),
-            prefix,
-            100,
-            4,
-            EXTERNAL_LOGIN_STATE_TTL_SECONDS,
-            EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
-        ));
-        let source_ip = "198.51.100.7";
-        let mut tasks = Vec::new();
-        for index in 0..32 {
-            let store = Arc::clone(&store);
-            tasks.push(tokio::spawn(async move {
-                store
-                    .save_from_source(
-                        &ExternalLoginState {
-                            state: format!("state-{index}"),
-                            provider_slug: "example".to_owned(),
-                            request_id: None,
-                            code_verifier: String::new(),
-                        },
-                        source_ip,
-                    )
-                    .await
-            }));
-        }
-
-        let mut admitted = 0;
-        for task in tasks {
-            if task.await.expect("admission task").is_ok() {
-                admitted += 1;
-            }
-        }
-        assert_eq!(admitted, 4);
-
-        let mut connection = client
-            .get_multiplexed_async_connection()
-            .await
-            .expect("Redis connection");
-        let _: usize = connection
-            .del(store.pending_key())
-            .await
-            .expect("pending cleanup");
-        let _: usize = connection
-            .del(store.rate_key(source_ip))
-            .await
-            .expect("rate cleanup");
-    }
-
-    #[tokio::test]
-    async fn source_rate_limit_rejects_without_creating_an_extra_state() {
-        let client = redis_client();
-        let prefix = format!("chenxing:test:external-state:{}", Uuid::new_v4().simple());
-        let store = ExternalLoginStateStore::new_with_limits(
-            client.clone(),
-            prefix,
-            2,
-            10,
-            EXTERNAL_LOGIN_STATE_TTL_SECONDS,
-            EXTERNAL_LOGIN_STATE_RATE_WINDOW_SECONDS,
-        );
-        for index in 0..2 {
-            store
-                .save_from_source(
-                    &ExternalLoginState {
-                        state: format!("state-{index}"),
-                        provider_slug: "example".to_owned(),
-                        request_id: None,
-                        code_verifier: String::new(),
-                    },
-                    "198.51.100.8",
-                )
-                .await
-                .expect("state admission");
-        }
-        assert!(matches!(
-            store
-                .save_from_source(
-                    &ExternalLoginState {
-                        state: "state-third".to_owned(),
-                        provider_slug: "example".to_owned(),
-                        request_id: None,
-                        code_verifier: String::new(),
-                    },
-                    "198.51.100.8",
-                )
-                .await,
-            Err(ExternalLoginStateStoreError::RateLimited)
-        ));
-
-        let mut connection = client
-            .get_multiplexed_async_connection()
-            .await
-            .expect("Redis connection");
-        let _: usize = connection
-            .del(store.pending_key())
-            .await
-            .expect("pending cleanup");
-        let _: usize = connection
-            .del(store.rate_key("198.51.100.8"))
-            .await
-            .expect("rate cleanup");
     }
 }

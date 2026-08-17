@@ -8,7 +8,7 @@ use axum::{
 };
 use chenxing_auth::{
     api, auth_factors::store::LoginTicketStore, config::Config,
-    sessions::cookies::EXTERNAL_STATE_COOKIE_PREFIX, state::AppState,
+    sessions::cookies::EXTERNAL_STATE_COOKIE_PREFIX, settings::EmailPolicySetting, state::AppState,
 };
 use redis::AsyncCommands;
 use serde::Deserialize;
@@ -225,6 +225,109 @@ fn s256_challenge(verifier: &str) -> String {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use sha2::{Digest, Sha256};
     URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+#[tokio::test]
+async fn transplanted_provider_ciphertext_is_rejected_before_token_request() {
+    let (mock, mock_state) = mock_server().await;
+    let (router, database, key_directory, source_slug) = setup(mock).await;
+    let target_slug = format!("transplant-{}", Uuid::new_v4().simple());
+    let input = serde_json::json!({
+        "name": "Transplant Target",
+        "slug": target_slug,
+        "authorization_endpoint": format!("http://{mock}/authorize"),
+        "token_endpoint": format!("http://{mock}/token"),
+        "userinfo_endpoint": format!("http://{mock}/userinfo"),
+        "client_id": "target-client",
+        "client_secret": "target-secret",
+        "scopes": ["openid", "email"],
+        "subject_claim": "sub",
+        "email_claim": "email",
+        "name_claim": "name",
+        "email_verified_claim": "email_verified",
+        "client_auth_method": "request_body"
+    });
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/oauth/providers")
+                .header("authorization", "Bearer provider-flow-admin")
+                .header("content-type", "application/json")
+                .body(Body::from(input.to_string()))
+                .expect("target provider request"),
+        )
+        .await
+        .expect("target provider response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/admin/oauth/providers/{target_slug}/enable"
+                ))
+                .header("authorization", "Bearer provider-flow-admin")
+                .body(Body::empty())
+                .expect("enable target provider"),
+        )
+        .await
+        .expect("enable target response");
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    chenxing_auth::sqlx::query(
+        "UPDATE oauth_providers AS target
+         SET client_secret_ciphertext = source.client_secret_ciphertext
+         FROM oauth_providers AS source
+         WHERE target.slug = $1 AND source.slug = $2",
+    )
+    .bind(&target_slug)
+    .bind(&source_slug)
+    .execute(&database)
+    .await
+    .expect("transplant provider ciphertext");
+
+    let start = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/auth/external/{target_slug}"))
+                .body(Body::empty())
+                .expect("start transplanted provider"),
+        )
+        .await
+        .expect("start response");
+    assert_eq!(start.status(), StatusCode::SEE_OTHER);
+    let state_cookie = set_cookie(&start, EXTERNAL_STATE_COOKIE_PREFIX);
+    let state = authorization_query(&location(&start), "state").expect("authorization state");
+    let callback = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/auth/external/{target_slug}/callback?code=mock-code&state={state}"
+                ))
+                .header("cookie", state_cookie)
+                .body(Body::empty())
+                .expect("transplanted provider callback"),
+        )
+        .await
+        .expect("callback response");
+
+    assert_eq!(callback.status(), StatusCode::SEE_OTHER);
+    assert!(
+        location(&callback).contains("external_error=oauth_login_failed"),
+        "transplanted ciphertext must use the unified external OAuth failure redirect: {}",
+        location(&callback)
+    );
+    assert!(
+        mock_state.token_form.lock().await.is_none(),
+        "a transplanted ciphertext must fail before any secret reaches the target endpoint"
+    );
+
+    let _ = std::fs::remove_dir_all(key_directory);
 }
 
 #[tokio::test]
@@ -586,6 +689,136 @@ async fn run_external_login_with_cookies(
         .expect("callback response")
 }
 
+async fn set_email_policy(
+    database: &chenxing_auth::sqlx::PgPool,
+    alias_restriction_enabled: bool,
+    allowed_domains: &[&str],
+) {
+    let policy = EmailPolicySetting {
+        whitelist_enabled: true,
+        alias_restriction_enabled,
+        allowed_domains: allowed_domains
+            .iter()
+            .map(|domain| (*domain).to_owned())
+            .collect(),
+    }
+    .validate()
+    .expect("valid email policy fixture");
+    chenxing_auth::settings::repository::set_email_policy(database, &policy)
+        .await
+        .expect("persist email policy");
+}
+
+async fn external_registration_counts(
+    database: &chenxing_auth::sqlx::PgPool,
+    subject: &str,
+    email: &str,
+) -> (i64, i64) {
+    chenxing_auth::sqlx::query_as(
+        "SELECT
+             (SELECT COUNT(*) FROM oauth_external_identities WHERE subject = $1),
+             (SELECT COUNT(*) FROM users WHERE canonical_email = $2)",
+    )
+    .bind(subject)
+    .bind(email)
+    .fetch_one(database)
+    .await
+    .expect("count external registration rows")
+}
+
+#[tokio::test]
+async fn external_registration_rejects_domain_and_alias_without_partial_writes() {
+    let (mock, mock_state) = mock_server().await;
+    let external_subject = mock_state.subject.clone();
+    let (router, database, key_directory, slug) = setup(mock).await;
+    set_email_policy(&database, true, &["corp.example"]).await;
+
+    for (email, reason) in [
+        ("person@other.example", "domain outside whitelist"),
+        ("person+alias@corp.example", "alias address"),
+    ] {
+        *mock_state.user_email.lock().await = email.to_owned();
+        let response = run_external_login(&router, &slug).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert!(
+            location(&response).contains("external_error=oauth_login_failed"),
+            "{reason} must be rejected without exposing policy details: {}",
+            location(&response)
+        );
+        assert!(
+            set_cookie_header_optional(&response, "chenxing_session=").is_none(),
+            "{reason} must not create a browser session"
+        );
+        assert_eq!(
+            external_registration_counts(&database, &external_subject, email).await,
+            (0, 0),
+            "{reason} must leave neither a user nor an external identity"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn external_registration_allows_a_whitelisted_non_alias_email() {
+    let (mock, mock_state) = mock_server().await;
+    let external_subject = mock_state.subject.clone();
+    let allowed_email = "person@corp.example";
+    *mock_state.user_email.lock().await = allowed_email.to_owned();
+    let (router, database, key_directory, slug) = setup(mock).await;
+    set_email_policy(&database, true, &["corp.example"]).await;
+
+    let response = run_external_login(&router, &slug).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(location(&response).contains("external=success"));
+    assert_eq!(
+        external_registration_counts(&database, &external_subject, allowed_email).await,
+        (1, 1)
+    );
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn existing_external_identity_ignores_later_email_policy_changes() {
+    let (mock, mock_state) = mock_server().await;
+    let external_subject = mock_state.subject.clone();
+    let external_email = mock_state.user_email.lock().await.clone();
+    let (router, database, key_directory, slug) = setup(mock).await;
+
+    let first = run_external_login(&router, &slug).await;
+    assert!(location(&first).contains("external=success"));
+    let original_user_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT user_id FROM oauth_external_identities WHERE subject = $1",
+    )
+    .bind(&external_subject)
+    .fetch_one(&database)
+    .await
+    .expect("load initially bound external user");
+
+    set_email_policy(&database, true, &["corp.example"]).await;
+    let second = run_external_login(&router, &slug).await;
+    assert_eq!(second.status(), StatusCode::SEE_OTHER);
+    assert!(
+        location(&second).contains("external=success"),
+        "an existing identity must not be re-evaluated as a new registration"
+    );
+    let rebound_user_ids: Vec<i64> = chenxing_auth::sqlx::query_scalar(
+        "SELECT user_id FROM oauth_external_identities WHERE subject = $1",
+    )
+    .bind(&external_subject)
+    .fetch_all(&database)
+    .await
+    .expect("reload external identity rows");
+    assert_eq!(rebound_user_ids, vec![original_user_id]);
+    assert_eq!(
+        external_registration_counts(&database, &external_subject, &external_email).await,
+        (1, 1)
+    );
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
 /// Issue #261：未验证邮箱既不能登录，也不能自动建号。
 ///
 /// 覆盖三种真实的 IdP 行为：完全不返回 claim、返回 false、返回非 bool 值。
@@ -829,8 +1062,24 @@ async fn password_pending_cookies(router: &axum::Router, username: &str, passwor
 async fn external_login_clears_leftover_password_mfa_ticket() {
     let (mock, mock_state) = mock_server().await;
     let external_email = mock_state.user_email.lock().await.clone();
-    let (router, _database, key_directory, slug) = setup(mock).await;
+    let (router, database, key_directory, slug) = setup(mock).await;
     let (local_username, local_email, password) = create_local_password_user(&router).await;
+    // 当前登录契约：未配置任何因子时密码直接完成登录（200），不产生待定
+    // ticket。本用例验证「旧 MFA ticket 被外部登录清除」，先种一个 TOTP
+    // 因子让密码登录进入 202 factor_required。
+    let user_id: i64 =
+        chenxing_auth::sqlx::query_scalar("SELECT id FROM users WHERE username = $1")
+            .bind(&local_username)
+            .fetch_one(&database)
+            .await
+            .expect("load local user id");
+    chenxing_auth::auth_factors::repository::insert_totp_factor_if_empty(
+        &database,
+        user_id,
+        &[1, 2, 3],
+    )
+    .await
+    .expect("seed TOTP factor");
     let pending = password_pending_cookies(&router, &local_username, &password).await;
     let ticket_id = cookie_pair_value(&pending, "chenxing_login_ticket");
     assert!(

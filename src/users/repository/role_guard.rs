@@ -4,17 +4,26 @@
 //! 降级最后一个活跃 Owner 的角色，或禁用最后一个活跃 Owner 的账号，都会让
 //! 管理面永久失去最高权限持有者，因此在事务内加锁判定后直接拒绝。
 //!
-//! 判定顺序固定：先 `FOR UPDATE` 锁住全部活跃 Owner 行，再锁目标行。
-//! 两个并发请求各自降级两个仅存 Owner 中的一个时，锁序保证后者能看到前者的结果，
-//! 不会出现"两个请求各自认为还剩一个 Owner"的竞态。
+//! 锁顺序固定（Issue #493）：先按用户 ID 升序取得 actor/target 的用户级 advisory
+//! lock，再 `FOR UPDATE` 锁住全部活跃 Owner 行，最后按用户 ID 升序锁 actor/target
+//! 行。角色变化、状态变化、会话签发和凭据撤销因此共享同一把用户级排序锁；即使两个
+//! 管理员同时执行 A 管 B / B 管 A，也不会形成 actor/target 倒锁。
 //!
-//! 「活跃」的判定口径在 [`UserStatus::is_active`] 与 `lock_owner_scope` 的 SQL 谓词
+//! 「活跃」的判定口径在 [`UserStatus::is_active`] 与 `lock_active_owner_scope` 的 SQL 谓词
 //! `status <> 'disabled'` 之间必须保持一致（Issue #358）：任何未明确禁用的状态串都按
 //! 活跃处理，防止异常状态数据绕过守卫、静默移除最后一个可用 Owner。
 
 use crate::sqlx::PgPool;
 
-use crate::users::domain::{OwnerTargetAccess, UserId, UserRole, UserStatus};
+use crate::users::{
+    ManagementActorCredential,
+    domain::{UserId, UserRole, UserStatus},
+};
+
+use super::management_actor::{
+    ManagementActorRejection, lock_management_user_advisories, lock_management_user_rows,
+    validate_management_actor,
+};
 
 /// 受 Owner 守卫保护的写操作的业务结果，角色变更与状态变更共用。
 ///
@@ -37,70 +46,187 @@ pub enum OwnerGuardOutcome {
     NotFound,
     /// 拒绝：这是最后一个活跃 Owner。
     LastOwnerRequired,
-    /// 拒绝：目标在本事务持有的行锁内是 Owner，但调用者只有 `ManageUsers`。
+    /// 拒绝：现有或请求角色需要 `ManageRoles`，但 actor 只有 `ManageUsers`。
     ManageRolesRequired,
+    /// 拒绝：用户 Session 的状态或 generation 已在初始授权后变化。
+    ActorSessionInvalid,
+    /// 拒绝：事务内锁定的 actor 角色不再具备 `ManageUsers`。
+    ActorPermissionRequired,
 }
 
-/// 读取当前活跃 Owner 数量与目标用户的 (role, status)，两者都加行锁。
+/// Lock every active Owner row in primary-key order and return the invariant count.
 ///
-/// 返回 `None` 表示目标用户不存在。调用方负责回滚事务。
-///
-/// 计数谓词 `status <> 'disabled'` 必须与 [`UserStatus::is_active`] 的 Rust 判定
-/// 保持一致（Issue #358）：两者都用「非明确禁用」定义活跃，异常状态串按活跃计入，
-/// 避免数据异常时把最后一个可用 Owner 计为零、绕过守卫。
-async fn lock_owner_scope(
+/// The caller has already acquired actor/target advisory locks and locks their rows only after
+/// this function. Keeping that three-stage order identical for role and status writes prevents
+/// both the last-Owner race and actor/target row-lock inversion.
+async fn lock_active_owner_scope(
     transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
-    id: UserId,
-) -> Result<(usize, Option<(String, String)>), crate::sqlx::Error> {
+) -> Result<usize, crate::sqlx::Error> {
+    // The SQL predicate must remain aligned with `UserStatus::is_active` (Issue #358): any
+    // non-disabled value counts as active so malformed future data cannot remove the final Owner.
     let active_owners: Vec<(UserId,)> = crate::sqlx::query_as(
         "SELECT id FROM users WHERE role = 'owner' AND status <> 'disabled' ORDER BY id FOR UPDATE",
     )
     .fetch_all(&mut **transaction)
     .await?;
-    let current: Option<(String, String)> =
-        crate::sqlx::query_as("SELECT role, status FROM users WHERE id = $1 FOR UPDATE")
-            .bind(id)
-            .fetch_optional(&mut **transaction)
-            .await?;
-    Ok((active_owners.len(), current))
+    Ok(active_owners.len())
 }
 
 pub async fn set_user_role(
     pool: &PgPool,
     id: UserId,
     role: UserRole,
-    access: OwnerTargetAccess,
+    credential: ManagementActorCredential,
 ) -> Result<OwnerGuardOutcome, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
-    let (active_owner_count, current) = lock_owner_scope(&mut transaction, id).await?;
-    let Some((current_role, status)) = current else {
-        transaction.rollback().await?;
-        return Ok(OwnerGuardOutcome::NotFound);
+    let outcome = match set_user_role_in_transaction(
+        &mut transaction,
+        id,
+        role,
+        credential,
+        None::<crate::audit::AuditEvent>,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(RoleWriteError::Database(error)) => {
+            transaction.rollback().await?;
+            return Err(error);
+        }
+        // 非审计包装层不传入审计回调，这个分支在类型上可达、在运行时不可达。
+        Err(RoleWriteError::Audit(error)) => {
+            transaction.rollback().await?;
+            return Err(crate::sqlx::Error::Protocol(format!(
+                "role write audit failed: {error}"
+            )));
+        }
     };
-    if UserRole::parse(&current_role).is_some_and(UserRole::is_privileged)
-        && !access.permits_owner()
-    {
+    // 核心不做回滚；守卫拒绝的终局没有写入，由这里释放事务。
+    if outcome != OwnerGuardOutcome::Updated {
         transaction.rollback().await?;
-        return Ok(OwnerGuardOutcome::ManageRolesRequired);
-    }
-    if current_role == "owner"
-        && role != UserRole::Owner
-        && UserStatus::is_active(&status)
-        && active_owner_count <= 1
-    {
-        transaction.rollback().await?;
-        return Ok(OwnerGuardOutcome::LastOwnerRequired);
-    }
-    crate::sqlx::query("UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1")
-        .bind(id)
-        .bind(role.as_str())
-        .execute(&mut *transaction)
-        .await?;
-    if role == UserRole::User {
-        crate::sessions::store::revoke_all_for_user_in_transaction(&mut transaction, id).await?;
+        return Ok(outcome);
     }
     transaction.commit().await?;
+    Ok(outcome)
+}
+
+#[derive(Debug)]
+enum RoleWriteError {
+    Database(crate::sqlx::Error),
+    Audit(crate::audit::AuditError),
+}
+
+impl From<crate::sqlx::Error> for RoleWriteError {
+    fn from(error: crate::sqlx::Error) -> Self {
+        Self::Database(error)
+    }
+}
+
+/// 角色与审计在同一事务内落地的共享核心：
+/// - actor 凭证在事务内锁定并复检（#493）；
+/// - 任何角色变化都推进 session_epoch 并撤销全部凭据（#493）；
+/// - 目标为特权角色时要求 Owner 权限（#424）；
+/// - 提供审计回调时，审计与角色变更原子提交（#474）。
+async fn set_user_role_in_transaction(
+    transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+    id: UserId,
+    role: UserRole,
+    credential: ManagementActorCredential,
+    audit_event: Option<crate::audit::AuditEvent>,
+) -> Result<OwnerGuardOutcome, RoleWriteError> {
+    let lock_order = lock_management_user_advisories(transaction, id, credential).await?;
+    let active_owner_count = lock_active_owner_scope(transaction).await?;
+    let locked = lock_management_user_rows(transaction, &lock_order).await?;
+    let access = match validate_management_actor(credential, locked.actor.as_ref()) {
+        Ok(access) => access,
+        Err(rejection) => {
+            return Ok(match rejection {
+                ManagementActorRejection::SessionInvalid => OwnerGuardOutcome::ActorSessionInvalid,
+                ManagementActorRejection::PermissionRequired => {
+                    OwnerGuardOutcome::ActorPermissionRequired
+                }
+            });
+        }
+    };
+    let Some(current) = locked.target else {
+        return Ok(OwnerGuardOutcome::NotFound);
+    };
+    if (UserRole::parse(&current.role).is_some_and(UserRole::is_privileged) || role.is_privileged())
+        && !access.permits_owner()
+    {
+        return Ok(OwnerGuardOutcome::ManageRolesRequired);
+    }
+    if current.role == "owner"
+        && role != UserRole::Owner
+        && UserStatus::is_active(&current.status)
+        && active_owner_count <= 1
+    {
+        return Ok(OwnerGuardOutcome::LastOwnerRequired);
+    }
+    if current.role != role.as_str() {
+        // Every role transition is a credential boundary. Revocation advances session_epoch,
+        // marks durable Cookie sessions revoked, and makes all Refresh Tokens stamped with the
+        // previous epoch fail their redemption check. This also prevents a user->admin/owner
+        // transition from passively upgrading an already-issued Session (Issue #493).
+        crate::sessions::store::revoke_all_for_user_in_transaction(transaction, id).await?;
+        crate::sqlx::query("UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1")
+            .bind(id)
+            .bind(role.as_str())
+            .execute(&mut **transaction)
+            .await?;
+    }
+    if let Some(audit_event) = audit_event {
+        crate::audit::repository::insert_with(&mut **transaction, &audit_event)
+            .await
+            .map_err(RoleWriteError::Audit)?;
+    }
     Ok(OwnerGuardOutcome::Updated)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AuditedRoleGuardError {
+    #[error("database operation failed: {0}")]
+    Database(#[from] crate::sqlx::Error),
+    #[error("audit operation failed: {0}")]
+    Audit(#[from] crate::audit::AuditError),
+}
+
+/// Role changes are privilege changes, so persist the audit event before the
+/// transaction commits. An audit outage therefore rolls the role change back
+/// instead of creating an untraceable administrator (#474).
+pub async fn set_user_role_with_audit(
+    pool: &PgPool,
+    id: UserId,
+    role: UserRole,
+    credential: ManagementActorCredential,
+    audit_event: crate::audit::AuditEvent,
+) -> Result<OwnerGuardOutcome, AuditedRoleGuardError> {
+    let mut transaction = pool.begin().await?;
+    let outcome = match set_user_role_in_transaction(
+        &mut transaction,
+        id,
+        role,
+        credential,
+        Some(audit_event),
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(RoleWriteError::Database(error)) => {
+            transaction.rollback().await?;
+            return Err(AuditedRoleGuardError::Database(error));
+        }
+        Err(RoleWriteError::Audit(error)) => {
+            transaction.rollback().await?;
+            return Err(AuditedRoleGuardError::Audit(error));
+        }
+    };
+    if outcome != OwnerGuardOutcome::Updated {
+        transaction.rollback().await?;
+        return Ok(outcome);
+    }
+    transaction.commit().await?;
+    Ok(outcome)
 }
 
 /// 变更用户状态。
@@ -111,25 +237,44 @@ pub async fn set_user_status_guarded(
     pool: &PgPool,
     id: UserId,
     status: UserStatus,
-    access: OwnerTargetAccess,
+    credential: ManagementActorCredential,
 ) -> Result<OwnerGuardOutcome, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
-    crate::sessions::store::lock_user_session_scope(&mut transaction, id).await?;
-    let (active_owner_count, current) = lock_owner_scope(&mut transaction, id).await?;
-    let Some((role, current_status)) = current else {
+    let lock_order = lock_management_user_advisories(&mut transaction, id, credential).await?;
+    let active_owner_count = lock_active_owner_scope(&mut transaction).await?;
+    let locked = lock_management_user_rows(&mut transaction, &lock_order).await?;
+    let access = match validate_management_actor(credential, locked.actor.as_ref()) {
+        Ok(access) => access,
+        Err(rejection) => {
+            transaction.rollback().await?;
+            return Ok(match rejection {
+                ManagementActorRejection::SessionInvalid => OwnerGuardOutcome::ActorSessionInvalid,
+                ManagementActorRejection::PermissionRequired => {
+                    OwnerGuardOutcome::ActorPermissionRequired
+                }
+            });
+        }
+    };
+    let Some(current) = locked.target else {
         transaction.rollback().await?;
         return Ok(OwnerGuardOutcome::NotFound);
     };
     // 角色判定和状态写入共用本事务持有的目标行锁。若目标在等待锁期间被晋升为
     // Owner，这里读取晋升后的版本并拒绝，不能继续使用 HTTP 层的旧快照（#323）。
-    if role == "owner" && !access.permits_owner() {
+    // Disabling an administrator is an effective privilege downgrade: it
+    // revokes every session and removes management access just like changing
+    // the role to `user`.  Treat both privileged target roles uniformly so a
+    // peer Admin cannot use ManageUsers to lock out another Admin (#424).
+    if UserRole::parse(&current.role).is_some_and(UserRole::is_privileged)
+        && !access.permits_owner()
+    {
         transaction.rollback().await?;
         return Ok(OwnerGuardOutcome::ManageRolesRequired);
     }
     // 守卫判定用原始状态串走 fail-closed 口径（Issue #358）：状态异常时按活跃处理，
     // 阻止静默移除最后一个可用 Owner。
-    if role == "owner"
-        && UserStatus::is_active(&current_status)
+    if current.role == "owner"
+        && UserStatus::is_active(&current.status)
         && status == UserStatus::Disabled
         && active_owner_count <= 1
     {
@@ -137,7 +282,7 @@ pub async fn set_user_status_guarded(
         return Ok(OwnerGuardOutcome::LastOwnerRequired);
     }
     // 禁用即撤销该用户全部会话：否则被禁用的账号仍能用既有 Cookie 继续访问。
-    let current_status = UserStatus::parse(&current_status);
+    let current_status = UserStatus::parse(&current.status);
     if current_status != Some(status) && status == UserStatus::Disabled {
         crate::sessions::store::revoke_all_for_user_in_transaction(&mut transaction, id).await?;
     }
@@ -148,7 +293,7 @@ pub async fn set_user_status_guarded(
             .execute(&mut *transaction)
             .await?;
     transaction.commit().await?;
-    // 目标行已在 `lock_owner_scope` 里加锁，正常路径必然影响 1 行；
+    // 目标行已在 `lock_management_user_rows` 里加锁，正常路径必然影响 1 行；
     // 这里保留判定是为了不把「行在锁定后消失」当成成功。
     Ok(if result.rows_affected() == 1 {
         OwnerGuardOutcome::Updated

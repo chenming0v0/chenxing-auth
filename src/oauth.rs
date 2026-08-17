@@ -5,6 +5,8 @@
 
 pub mod authorization;
 pub mod authorization_code_handlers;
+pub mod authorization_decision_use_case;
+mod cas;
 pub mod client_auth;
 pub mod code;
 pub mod consent;
@@ -14,6 +16,7 @@ mod form;
 mod grant_gate;
 pub mod handlers;
 pub mod id_token;
+mod issuance_fence;
 pub mod pkce;
 pub mod providers;
 pub mod quota;
@@ -30,6 +33,7 @@ mod request_store_scripts;
 pub mod response;
 pub mod revocation;
 pub mod revocation_handler;
+pub mod revoke_consent_use_case;
 pub mod session;
 pub mod store;
 pub mod token;
@@ -37,6 +41,7 @@ pub mod token_handlers;
 pub mod token_security;
 pub mod token_use_case;
 pub mod ui_handlers;
+mod ui_responses;
 pub mod userinfo;
 
 use serde::Serialize;
@@ -56,6 +61,7 @@ pub struct OpenIdConfiguration {
     pub claims_supported: Vec<&'static str>,
     pub code_challenge_methods_supported: Vec<&'static str>,
     pub token_endpoint_auth_methods_supported: Vec<&'static str>,
+    pub revocation_endpoint_auth_methods_supported: Vec<&'static str>,
 }
 
 impl OpenIdConfiguration {
@@ -96,6 +102,11 @@ impl OpenIdConfiguration {
             ],
             code_challenge_methods_supported: vec!["S256"],
             token_endpoint_auth_methods_supported: vec![
+                "client_secret_basic",
+                "client_secret_post",
+                "none",
+            ],
+            revocation_endpoint_auth_methods_supported: vec![
                 "client_secret_basic",
                 "client_secret_post",
                 "none",

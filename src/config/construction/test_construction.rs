@@ -1,5 +1,6 @@
 use crate::auth_limiter::{AuthLimiterFailurePolicy, MissingSourceIpPolicy};
 use crate::clients::domain::ClientRegistrationLimits;
+use crate::redis_keyspace::RedisKeyspace;
 use crate::web_dist::DEFAULT_WEB_DIST_DIR;
 
 use super::super::audit::AuditRetentionConfig;
@@ -10,8 +11,8 @@ use super::super::security::{
     DEFAULT_TOKEN_TTL_SECONDS,
 };
 use super::super::{
-    Config, ConfigError, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
-    DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,
+    Config, ConfigError, DEFAULT_HTTP_GRACEFUL_DRAIN_SECONDS, DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS, DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,
 };
 use super::ConfigValues;
 
@@ -41,10 +42,11 @@ impl Config {
         redis_url: String,
         session_ttl_seconds: u64,
     ) -> Result<Self, ConfigError> {
-        Self::from_values_with_log(ConfigValues {
+        Self::from_validated_values(ConfigValues {
             host,
             port,
             request_timeout_seconds: DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            http_graceful_drain_seconds: DEFAULT_HTTP_GRACEFUL_DRAIN_SECONDS,
             issuer_url: Some(issuer_url),
             legacy_issuer_import: None,
             admin_token: String::new(),
@@ -60,6 +62,7 @@ impl Config {
             oauth_provider_loopback_enabled: false,
             database_url,
             redis_url,
+            redis_keyspace: RedisKeyspace::default(),
             session_ttl_seconds,
             session_idle_timeout_seconds: DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
             session_max_concurrent_sessions: DEFAULT_SESSION_MAX_CONCURRENT_SESSIONS,

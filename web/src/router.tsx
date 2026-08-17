@@ -14,21 +14,47 @@ function currentPath() { return window.location.pathname }
  */
 let navigationBlocker: (() => boolean) | null = null
 
+export type NavigationOptions = { replace?: boolean }
+
+/**
+ * A navigation that has already passed the current blocker. The commit is
+ * deliberately one-shot so an async workflow (logout, save, etc.) cannot
+ * accidentally replay the same history mutation or re-run the blocker.
+ */
+export type NavigationIntent = {
+  commit: (to?: string, options?: NavigationOptions) => boolean
+}
+
 export function setNavigationBlocker(blocker: (() => boolean) | null) {
   navigationBlocker = blocker
 }
 
-export function navigate(to: string, options?: { replace?: boolean }) {
-  if (navigationBlocker && !navigationBlocker()) return
+export function prepareNavigation(to: string, options?: NavigationOptions): NavigationIntent | null {
+  if (navigationBlocker && !navigationBlocker()) return null
+
+  let committed = false
+  return {
+    commit(nextTo = to, nextOptions = options) {
+      if (committed) return false
+      committed = true
+      if (nextOptions?.replace) {
+        window.history.replaceState({}, '', nextTo)
+      } else {
+        window.history.pushState({}, '', nextTo)
+      }
+      window.dispatchEvent(new PopStateEvent('popstate'))
+      return true
+    },
+  }
+}
+
+export function navigate(to: string, options?: NavigationOptions) {
+  const intent = prepareNavigation(to, options)
+  if (!intent) return
   // 守卫重定向必须走 replaceState（#326）：push 会把被拦截的目标页留在历史里，
   // 用户在登录页按后退又撞回该页、守卫再次跳转，形成永远回不去的重定向陷阱。
   // 用户主动点击的链接仍用 pushState，保留正常的前进/后退语义。
-  if (options?.replace) {
-    window.history.replaceState({}, '', to)
-  } else {
-    window.history.pushState({}, '', to)
-  }
-  window.dispatchEvent(new PopStateEvent('popstate'))
+  intent.commit()
 }
 
 export function usePathname() {

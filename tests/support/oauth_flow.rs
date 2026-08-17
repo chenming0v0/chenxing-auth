@@ -5,7 +5,7 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header::SET_COOKIE},
 };
-use chenxing_auth::{api, config::Config, state::AppState};
+use chenxing_auth::{api, config::Config, redis_keyspace::RedisKeyspace, state::AppState};
 use serde_json::Value;
 use tower::ServiceExt;
 
@@ -32,11 +32,39 @@ pub mod qps_window;
 pub async fn test_state(
     binary_name: &str,
 ) -> (AppState, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
+    test_state_with_max_connections(binary_name, 2).await
+}
+
+/// Test-state variant for deterministic lock races that need more than the default two
+/// connections.
+pub async fn test_state_with_max_connections(
+    binary_name: &str,
+    max_connections: u32,
+) -> (AppState, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
+    test_state_with_max_connections_and_keyspace(
+        binary_name,
+        max_connections,
+        RedisKeyspace::default(),
+    )
+    .await
+}
+
+/// Test-state variant with an explicit Redis isolation boundary.
+pub async fn test_state_with_max_connections_and_keyspace(
+    binary_name: &str,
+    max_connections: u32,
+    redis_keyspace: RedisKeyspace,
+) -> (AppState, chenxing_auth::sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = crate::db_isolation::isolated_pool(binary_name, &database_url).await;
+    let database = crate::db_isolation::isolated_pool_with_max_connections(
+        binary_name,
+        &database_url,
+        max_connections,
+    )
+    .await;
     let key_directory = key_directory::isolated_key_directory("flow");
     let mut config = Config::from_values_with_issuer(
         "127.0.0.1".to_owned(),
@@ -50,6 +78,7 @@ pub async fn test_state(
     config.admin_token = "flow-admin-token".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
+    config.redis_keyspace = redis_keyspace;
     let mut state = AppState::new_with_pool(config, database.clone())
         .await
         .expect("test state");

@@ -20,11 +20,12 @@
 //! 后的集合**。任一环节不通过一律 fail-closed，存储故障与授权失效严格区分，
 //! 后者才允许销毁凭据。
 //!
-//! 返回值是**收窄后的 scope 集合**而不是布尔判定：调用方必须用它替换凭据里
-//! 的原始集合去签发下一枚令牌，否则「不再注册的 scope 不得续签」只是拒绝了
-//! 整个请求，而不是收窄权限。
+//! 返回值是**收窄后的 scope 集合**加上同意行的权威版本号，而不是布尔判定：
+//! 调用方必须用 scope 替换凭据里的原始集合去签发下一枚令牌，否则「不再注册
+//! 的 scope 不得续签」只是拒绝了整个请求，而不是收窄权限。授权码路径还要把
+//! 版本号带到 persist 之后复核（Issue #475），防止闸门与签发之间插入一次撤销。
 
-use crate::{state::AppState, users::domain::UserId};
+use crate::{consents::domain::scopes_are_covered, state::AppState, users::domain::UserId};
 
 /// 闸门的拒绝原因。
 ///
@@ -48,6 +49,16 @@ impl GrantGateError {
     }
 }
 
+/// 兑换闸门放行后仍然有效的授权快照。
+///
+/// `scopes` 是收窄后的集合，调用方必须用它签发下一枚令牌。`consent_version`
+/// 是那一次权威读取看到的 `user_consents.state_version`：授权码路径在 persist
+/// 之后拿它再读一次数据库，版本变了、行没了或已被撤销，就不得返回令牌。
+pub(crate) struct EffectiveGrant {
+    pub scopes: Vec<String>,
+    pub consent_version: i64,
+}
+
 /// 计算一份已签发授权在当前时刻仍然有效的 scope 集合。
 ///
 /// `granted` 是凭据签发时记录的集合（授权码的 `scopes`、Refresh Token 的
@@ -61,7 +72,7 @@ pub(crate) async fn effective_grant_scopes(
     user_id: &str,
     client_id: &str,
     granted: &[String],
-) -> Result<Vec<String>, GrantGateError> {
+) -> Result<EffectiveGrant, GrantGateError> {
     let Ok(subject) = user_id.parse::<UserId>() else {
         return Err(GrantGateError::Denied("invalid_subject"));
     };
@@ -113,14 +124,20 @@ pub(crate) async fn effective_grant_scopes(
     }
 
     // 同意行是用户意图的权威记录：二次同意可能只授予了子集，撤销后重新授权
-    // 也可能缩小了范围。收窄后的集合仍必须被它覆盖。
-    match state
-        .consents
-        .has_scopes(subject, client_id, &effective)
-        .await
-    {
-        Ok(true) => Ok(effective),
-        Ok(false) => Err(GrantGateError::Denied("consent_missing_scopes")),
+    // 也可能缩小了范围。收窄后的集合仍必须被它覆盖。版本号和 scope 必须来自
+    // 同一次读取，否则 persist 后复核拿着一个对不上那次判定的版本号。
+    match state.consents.consent_grant(subject, client_id).await {
+        Ok(Some((consent, stored))) if !consent.revoked => {
+            if !scopes_are_covered(&stored, &effective) {
+                return Err(GrantGateError::Denied("consent_missing_scopes"));
+            }
+            Ok(EffectiveGrant {
+                scopes: effective,
+                consent_version: consent.version,
+            })
+        }
+        Ok(Some(_)) => Err(GrantGateError::Denied("consent_revoked")),
+        Ok(None) => Err(GrantGateError::Denied("consent_missing_scopes")),
         Err(database_error) => {
             tracing::error!(error = %database_error, "failed to check OAuth consent scopes");
             Err(GrantGateError::Unavailable("consent_scope_check_failed"))

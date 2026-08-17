@@ -4,11 +4,15 @@ use thiserror::Error;
 use webauthn_rs::prelude::WebauthnError;
 
 use crate::{
+    audit::{AuditError, AuditEvent, AuditService},
     auth_limiter::{AuthFailureLimiter, FailureDimension, MissingSourceIpPolicy},
     clock::SharedClock,
     config::AuthEncryptionKeyRing,
     redis_client::RedisClient,
-    settings::{SettingsService, SettingsServiceError},
+    redis_keyspace::RedisKeyspace,
+    settings::{
+        PasskeySetting, SettingsService, SettingsServiceError, domain::SettingsValidationError,
+    },
     sqlx::PgPool,
     users::domain::{AuthenticatedUser, UserId},
 };
@@ -22,6 +26,8 @@ use super::{
 
 #[path = "attempt_limiter.rs"]
 mod attempt_limiter;
+#[path = "authenticated_enrollment.rs"]
+mod authenticated_enrollment;
 #[path = "passkey.rs"]
 mod passkey;
 #[path = "passkey_core.rs"]
@@ -33,9 +39,12 @@ mod totp_enrollment;
 #[path = "totp_service.rs"]
 mod totp_service;
 
+pub use authenticated_enrollment::{
+    EnrollmentFinish, EnrollmentStart, SessionFactorSummary, SessionPasskeyStart, SessionTotpStart,
+};
 pub use recovery::{
-    AccountFactorStatus, EncryptionKeyHealth, PasskeyResetOutcome, TotpFactorStatus,
-    TotpResetOutcome,
+    AccountFactorStatus, EncryptionKeyHealth, PasskeyResetOutcome, SelfServiceRemovalOutcome,
+    TotpFactorStatus, TotpResetOutcome,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,10 +129,28 @@ pub enum AuthFactorServiceError {
     SourceIpUnavailable,
     #[error("passkey credential conflicts with an existing credential")]
     PasskeyConflict,
+    /// 凭据行已消失/被换行，或有限次 CAS 重读合并后仍写不进去。
+    /// 调用方不得把它当成认证成功。
+    #[error("passkey credential update could not be applied")]
+    PasskeyUpdateConflict,
     #[error("account already has an authentication factor")]
     FirstFactorAlreadyExists,
     #[error("passkey authentication is disabled")]
     PasskeyDisabled,
+    #[error(transparent)]
+    ManagementActor(#[from] crate::users::ManagementActorValidationError),
+}
+
+#[derive(Debug, Error)]
+pub enum PasskeyPolicyUpdateError {
+    #[error("passkey disable blocked by an account without a readable alternative factor")]
+    DisableBlocked,
+    #[error("setting validation failed: {0}")]
+    Validation(#[from] SettingsValidationError),
+    #[error("database operation failed: {0}")]
+    Database(#[from] crate::sqlx::Error),
+    #[error("setting audit operation failed: {0}")]
+    Audit(#[from] AuditError),
 }
 
 impl AuthFactorService {
@@ -152,8 +179,28 @@ impl AuthFactorService {
         settings: SettingsService,
         missing_source_ip_policy: MissingSourceIpPolicy,
     ) -> Self {
+        Self::new_with_source_ip_policy_and_keyspace(
+            pool,
+            redis,
+            limiter,
+            encryption_keys,
+            settings,
+            missing_source_ip_policy,
+            RedisKeyspace::default(),
+        )
+    }
+
+    pub fn new_with_source_ip_policy_and_keyspace(
+        pool: PgPool,
+        redis: impl Into<RedisClient>,
+        limiter: Arc<dyn AuthFailureLimiter>,
+        encryption_keys: AuthEncryptionKeyRing,
+        settings: SettingsService,
+        missing_source_ip_policy: MissingSourceIpPolicy,
+        keyspace: RedisKeyspace,
+    ) -> Self {
         Self {
-            tickets: LoginTicketStore::new_with_pool(redis, pool.clone()),
+            tickets: LoginTicketStore::new_with_pool_and_keyspace(redis, pool.clone(), keyspace),
             pool,
             limiter,
             missing_source_ip_policy,
@@ -182,6 +229,10 @@ impl AuthFactorService {
         Ok(effective_factor_methods(methods, passkey_enabled))
     }
 
+    pub async fn passkey_enabled(&self) -> Result<bool, AuthFactorServiceError> {
+        Ok(self.settings.passkey().await?.enabled)
+    }
+
     pub async fn available_setup_methods(
         &self,
     ) -> Result<Vec<FactorMethod>, AuthFactorServiceError> {
@@ -190,11 +241,66 @@ impl AuthFactorService {
     }
 
     pub async fn has_active_passkey_only_accounts(&self) -> Result<bool, AuthFactorServiceError> {
-        Ok(repository::has_active_passkey_only_accounts(&self.pool).await?)
+        let rows = repository::list_active_passkey_totp_ciphertexts(&self.pool).await?;
+        Ok(rows
+            .iter()
+            .any(|ciphertext| !self.totp_ciphertext_is_readable(ciphertext.as_deref())))
+    }
+
+    pub(crate) async fn has_active_passkey_only_accounts_in_transaction(
+        &self,
+        transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+    ) -> Result<bool, crate::sqlx::Error> {
+        let rows = repository::list_active_passkey_totp_ciphertexts(&mut **transaction).await?;
+        Ok(rows
+            .iter()
+            .any(|ciphertext| !self.totp_ciphertext_is_readable(ciphertext.as_deref())))
+    }
+
+    fn totp_ciphertext_is_readable(&self, ciphertext: Option<&[u8]>) -> bool {
+        ciphertext.is_some_and(|value| {
+            crate::auth_factors::crypto::decrypt_totp_secret_with_ring(&self.encryption_keys, value)
+                .is_ok()
+        })
+    }
+
+    pub async fn set_passkey_policy_audited<F>(
+        &self,
+        value: PasskeySetting,
+        audit: &AuditService,
+        audit_event: F,
+    ) -> Result<PasskeySetting, PasskeyPolicyUpdateError>
+    where
+        F: FnOnce(&PasskeySetting) -> AuditEvent,
+    {
+        let value = value.validate()?;
+        let mut transaction = self.pool.begin().await?;
+        crate::settings::repository::lock_passkey_policy(&mut transaction).await?;
+        if !value.enabled
+            && self
+                .has_active_passkey_only_accounts_in_transaction(&mut transaction)
+                .await?
+        {
+            transaction.rollback().await?;
+            return Err(PasskeyPolicyUpdateError::DisableBlocked);
+        }
+        crate::settings::repository::set_passkey(&mut *transaction, &value).await?;
+        audit
+            .record_in_transaction(&mut transaction, audit_event(&value))
+            .await?;
+        transaction.commit().await?;
+        Ok(value)
     }
 
     pub async fn has_passkeys(&self) -> Result<bool, AuthFactorServiceError> {
         Ok(repository::has_passkeys(&self.pool).await?)
+    }
+
+    pub(crate) async fn has_passkeys_in_transaction(
+        &self,
+        transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+    ) -> Result<bool, crate::sqlx::Error> {
+        repository::has_passkeys(&mut **transaction).await
     }
 
     pub async fn is_passkey_recovery_required(
@@ -281,7 +387,7 @@ impl AuthFactorService {
             return Ok(false);
         };
         self.tickets
-            .delete(&LoginTicketStore::key(&ticket_id.to_string()))
+            .delete(&self.tickets.key_for_ticket(&ticket_id.to_string()))
             .await?;
         Ok(true)
     }

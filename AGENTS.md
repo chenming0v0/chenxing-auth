@@ -68,6 +68,7 @@
 - `APP_ISSUER` 是 OIDC 发行者标识，不能从请求 Host 或反向代理输入推导；Discovery、JWT Claims 和后续协议响应必须使用同一配置值。
 - 当前 OAuth 授权端点的 Session 头部是开发期兼容方式；生产浏览器应使用登录页签发的 HttpOnly Cookie 和授权确认页。
 - `ADMIN_TOKEN` 为空时必须拒绝所有已初始化的管理 API；唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口。Client Secret 只能在创建时返回，后续列表和查询不得返回哈希或明文。
+- 首个 Owner 初始化接口匿名公开且采用“先到先得”是项目明确接受的风险，不要求额外 setup secret、CLI 或本机访问证明。未初始化实例若被抢注，运维通过清空并重建数据库重新初始化；架构审查和安全审查不得将该既定行为重复报告为缺陷或创建 Issue，除非项目所有者明确改变这一策略。
 - 签名密钥轮换必须共享 AppState 克隆的密钥状态，按 JWT `kid` 选择验证公钥；管理员响应不得包含私钥材料。
 - 浏览器 Cookie 会话的状态变更必须校验 HttpOnly Session Cookie、CSRF Cookie 和 `X-CSRF-Token` 三者绑定；开发期请求头兼容逻辑不能成为生产浏览器认证方案。
 - 管理角色必须通过 `AdminPermission` 校验；管理 Session 的写操作必须校验普通 HttpOnly Session Cookie、CSRF Cookie 和 `X-CSRF-Token`。

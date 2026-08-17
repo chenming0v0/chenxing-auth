@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::{fmt, net::SocketAddr};
 
 use super::{
+    authorization::{authorize_admin_write, management_actor_validation_failed},
     bootstrap_guard::{
         enforce_bootstrap_attempt_limit, hidden_bootstrap_status, record_bootstrap_denial,
     },
@@ -15,8 +16,7 @@ use super::{
     user_creation::user_creation_error_response,
 };
 use crate::{
-    api::extract::AdminWrite,
-    audit::AuditEvent,
+    api::extract::{AdminWrite, ApiJson},
     error,
     state::AppState,
     users::domain::{RegistrationInput, UserRole},
@@ -87,7 +87,7 @@ pub async fn bootstrap_admin(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(input): Json<BootstrapAdmin>,
+    ApiJson(input): ApiJson<BootstrapAdmin>,
 ) -> Response {
     let source_ip = crate::api::source_ip(
         connect_info.map(|Extension(ConnectInfo(peer))| peer),
@@ -142,12 +142,21 @@ pub async fn bootstrap_admin(
 pub async fn create_admin(
     State(state): State<AppState>,
     admin: AdminWrite,
-    Json(input): Json<CreateAdmin>,
+    ApiJson(input): ApiJson<CreateAdmin>,
 ) -> Response {
-    let actor = match admin.authorize(&state, AdminPermission::ManageRoles).await {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageRoles).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
+    if !state.issuer.is_ready() {
+        return if state.issuer.is_awaiting_configuration() {
+            error::issuer_not_configured()
+        } else {
+            error::issuer_runtime_invalid()
+        };
+    }
     let Some(role) = UserRole::parse(&input.role)
         .filter(|role| matches!(role, UserRole::Admin | UserRole::Owner))
     else {
@@ -162,25 +171,25 @@ pub async fn create_admin(
         password: input.password,
         display_name: None,
     };
-    match state.users.create_privileged(registration, role).await {
-        Ok(id) => {
-            let (actor_type, actor_id) = actor.audit_fields();
-            state
-                .audit
-                .record_best_effort(AuditEvent::new(
-                    actor_type.to_owned(),
-                    actor_id,
-                    crate::audit::AuditAction::UserCreate,
-                    "user".to_owned(),
-                    Some(id.to_string()),
-                    serde_json::json!({"role": role.as_str()}),
-                ))
-                .await;
-            (
-                StatusCode::CREATED,
-                Json(serde_json::json!({"id": id, "role": role.as_str()})),
-            )
-                .into_response()
+    let (actor_type, actor_id) = actor.audit_fields();
+    match state
+        .users
+        .create_privileged(
+            registration,
+            role,
+            actor_type.to_owned(),
+            actor_id,
+            authorization.credential(),
+        )
+        .await
+    {
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({"id": id, "role": role.as_str()})),
+        )
+            .into_response(),
+        Err(crate::users::service::UserServiceError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(&state, authorization, error_value).await
         }
         Err(error_value) => user_creation_error_response(error_value),
     }

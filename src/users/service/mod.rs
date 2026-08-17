@@ -27,6 +27,7 @@ mod avatar;
 mod profile;
 mod registration;
 
+pub use administration::ManagementWriteError;
 pub use avatar::AvatarServiceError;
 
 #[derive(Clone)]
@@ -46,6 +47,8 @@ pub enum UserServiceError {
     PasswordHash,
     #[error("could not persist user")]
     Database(#[from] crate::sqlx::Error),
+    #[error(transparent)]
+    ManagementActor(#[from] crate::users::ManagementActorValidationError),
     #[error("credentials are invalid")]
     InvalidCredentials,
     #[error("login input format is invalid")]

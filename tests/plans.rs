@@ -5,6 +5,7 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use chenxing_auth::{
+    clients::{domain::ClientRegistrationInput, service::ClientServiceError},
     oauth::{
         handlers::{AuthorizationCodeIssue, issue_authorization_code_result},
         quota::QuotaConsumeResult,
@@ -13,7 +14,11 @@ use chenxing_auth::{
     plans::domain::{AuthQuotaLimits, MAX_DAILY_AUTH_LIMIT, MAX_MONTHLY_AUTH_LIMIT, MAX_QPS},
 };
 use serde_json::Value;
-use std::net::{IpAddr, SocketAddr};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
+use tokio::sync::Barrier;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -32,6 +37,29 @@ use support::{
     submit_plan, test_state, update_plan, user_session, validated_request,
     validated_request_with_challenge,
 };
+
+fn test_issuer(
+    state: &chenxing_auth::state::AppState,
+) -> std::sync::Arc<chenxing_auth::settings::IssuerSnapshot> {
+    state
+        .issuer
+        .current()
+        .expect("test state has a loaded issuer")
+}
+
+/// #508：无会话绑定的授权码在 Token 端点 fail-closed，直存授权码走兑换路径的
+/// 测试必须先把码绑定到一条已持久化的浏览器会话上。
+async fn bound_session_token(state: &chenxing_auth::state::AppState, user_id: i64) -> String {
+    use chenxing_auth::sessions::domain::Session;
+    let mut session =
+        Session::new(user_id.to_string(), std::time::Duration::from_secs(3600)).expect("session");
+    state
+        .sessions
+        .save(&mut session, std::time::Duration::from_secs(3600))
+        .await
+        .expect("persist session");
+    session.token
+}
 
 #[tokio::test]
 async fn assigned_plan_controls_client_quota_and_entitlements() {
@@ -106,6 +134,133 @@ async fn assigned_plan_controls_client_quota_and_entitlements() {
     env.cleanup().await;
 }
 
+/// Issue #479：事务外读到高配套餐后，管理员先完成降级，随后继续的创建必须
+/// 在 repository 事务内重读低配套餐，不能拿旧数字越过配额。
+#[tokio::test]
+async fn client_creation_rechecks_quota_after_plan_downgrade_commits() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+    let (cookie, csrf) = user_session(&env.state, user_id).await;
+
+    let high_plan = create_plan(
+        &router,
+        &format!("high-{suffix}"),
+        plan_limits(2, 10, Some(100), None),
+    )
+    .await;
+    let low_plan = create_plan(
+        &router,
+        &format!("low-{suffix}"),
+        plan_limits(1, 10, Some(100), None),
+    )
+    .await;
+    let high_plan_id = high_plan["id"].as_i64().expect("high plan id");
+    let low_plan_id = low_plan["id"].as_i64().expect("low plan id");
+    assert_eq!(
+        assign_plan(&router, user_id, high_plan_id, None).await,
+        StatusCode::NO_CONTENT
+    );
+    create_owned_client(&router, &cookie, &csrf, &format!("existing-{suffix}")).await;
+
+    let stale_plan_read = Arc::new(Barrier::new(2));
+    let downgrade_committed = Arc::new(Barrier::new(2));
+    let create = {
+        let plans = env.state.plans.clone();
+        let clients = env.state.clients.clone();
+        let input = service_client_input(&format!("after-downgrade-{suffix}"));
+        let stale_plan_read = Arc::clone(&stale_plan_read);
+        let downgrade_committed = Arc::clone(&downgrade_committed);
+        async move {
+            let stale = plans
+                .effective_plan_for_user(user_id)
+                .await
+                .expect("read old effective plan")
+                .expect("assigned high plan");
+            assert_eq!(stale.plan.id, high_plan_id);
+            assert_eq!(stale.plan.oauth_clients_limit, 2);
+            stale_plan_read.wait().await;
+            downgrade_committed.wait().await;
+            clients.register_for_user(user_id, input).await
+        }
+    };
+    let downgrade = {
+        let router = router.clone();
+        let stale_plan_read = Arc::clone(&stale_plan_read);
+        let downgrade_committed = Arc::clone(&downgrade_committed);
+        async move {
+            stale_plan_read.wait().await;
+            assert_eq!(
+                assign_plan(&router, user_id, low_plan_id, None).await,
+                StatusCode::NO_CONTENT
+            );
+            downgrade_committed.wait().await;
+        }
+    };
+
+    let (creation, ()) = tokio::join!(create, downgrade);
+    assert!(matches!(creation, Err(ClientServiceError::QuotaExceeded)));
+    assert_eq!(owned_client_count(&env.database, user_id).await, 1);
+
+    env.cleanup().await;
+}
+
+/// 同一用户的 COUNT + INSERT 必须由用户行锁串行化；两个同时起跑的创建在
+/// 限额为 1 时只能有一个成功，不能各自在空快照中都看到 0。
+#[tokio::test]
+async fn concurrent_client_creations_remain_serialized_by_user_lock() {
+    let env = test_state().await;
+    let router = env.router();
+    let suffix = Uuid::new_v4().simple().to_string();
+    bootstrap_owner(&router, &suffix).await;
+    let user_id = register_user(&router, &suffix).await;
+
+    let plan = create_plan(
+        &router,
+        &format!("serial-{suffix}"),
+        plan_limits(1, 10, Some(100), None),
+    )
+    .await;
+    let plan_id = plan["id"].as_i64().expect("serial plan id");
+    assert_eq!(
+        assign_plan(&router, user_id, plan_id, None).await,
+        StatusCode::NO_CONTENT
+    );
+
+    let start = Arc::new(Barrier::new(2));
+    let first = {
+        let clients = env.state.clients.clone();
+        let input = service_client_input(&format!("first-{suffix}"));
+        let start = Arc::clone(&start);
+        async move {
+            start.wait().await;
+            clients.register_for_user(user_id, input).await
+        }
+    };
+    let second = {
+        let clients = env.state.clients.clone();
+        let input = service_client_input(&format!("second-{suffix}"));
+        let start = Arc::clone(&start);
+        async move {
+            start.wait().await;
+            clients.register_for_user(user_id, input).await
+        }
+    };
+
+    let (first, second) = tokio::join!(first, second);
+    let created =
+        usize::from(matches!(&first, Ok(Some(_)))) + usize::from(matches!(&second, Ok(Some(_))));
+    let exceeded = usize::from(matches!(&first, Err(ClientServiceError::QuotaExceeded)))
+        + usize::from(matches!(&second, Err(ClientServiceError::QuotaExceeded)));
+    assert_eq!(created, 1);
+    assert_eq!(exceeded, 1);
+    assert_eq!(owned_client_count(&env.database, user_id).await, 1);
+
+    env.cleanup().await;
+}
+
 #[tokio::test]
 async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
     let env = test_state().await;
@@ -124,11 +279,15 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
 
     let client = create_owned_client(&router, &cookie, &csrf, &suffix).await;
     let client_id = client["client_id"].as_str().expect("client id").to_owned();
-    let validated = validated_request(&client_id, user_id);
+    let session_token = bound_session_token(&env.state, user_id).await;
+    let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
+    let mut validated = validated_request(&client_id, user_id);
+    validated.session_token_hash = Some(session_hash);
 
     for _ in 0..2 {
         let result = issue_authorization_code_result(
             &env.state,
+            test_issuer(&env.state).as_ref(),
             user_id.to_string(),
             validated.clone(),
             None,
@@ -138,10 +297,16 @@ async fn assigned_plan_daily_and_monthly_limits_reject_authorizations() {
         .expect("authorization within daily limit");
         assert!(matches!(result, AuthorizationCodeIssue::Redirect(_)));
     }
-    let result =
-        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
-            .await
-            .expect("authorization over daily limit");
+    let result = issue_authorization_code_result(
+        &env.state,
+        test_issuer(&env.state).as_ref(),
+        user_id.to_string(),
+        validated,
+        None,
+        None,
+    )
+    .await
+    .expect("authorization over daily limit");
     assert!(matches!(result, AuthorizationCodeIssue::QuotaExceeded));
 
     env.cleanup().await;
@@ -165,13 +330,28 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
 
     let client = create_owned_client(&router, &cookie, &csrf, &suffix).await;
     let client_id = client["client_id"].as_str().expect("client id").to_owned();
-    let validated = validated_request(&client_id, user_id);
+    let session_token = bound_session_token(&env.state, user_id).await;
+    let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
+    let mut validated = validated_request(&client_id, user_id);
+    validated.session_token_hash = Some(session_hash);
+
+    let limits = Some(AuthQuotaLimits {
+        daily_auth_limit: 1,
+        monthly_auth_limit: Some(5),
+    });
+    let before = env
+        .state
+        .oauth_quotas
+        .snapshot(&client_id, limits)
+        .await
+        .expect("quota before failed authorization");
 
     env.state.authorization_codes = AuthorizationCodeStore::new(
         redis::Client::open("redis://127.0.0.1:1").expect("unavailable Redis URL"),
     );
     let failed = issue_authorization_code_result(
         &env.state,
+        test_issuer(&env.state).as_ref(),
         user_id.to_string(),
         validated.clone(),
         None,
@@ -180,25 +360,43 @@ async fn authorization_code_save_failure_refunds_consumed_quota() {
     .await;
     assert!(failed.is_err(), "authorization code persistence must fail");
 
-    let limits = Some(AuthQuotaLimits {
-        daily_auth_limit: 1,
-        monthly_auth_limit: Some(5),
-    });
-    let snapshot = env
+    // take() 与 save() 共用一个已经损坏的存储，无法证明授权码没有落盘；此刻
+    // 立即退款可能让同一授权在码实际存在的情况下二次消耗配额，所以实现选择
+    // 保守等待：配额暂时占用，由 #341 的过期退款台账兜底。
+    let immediately_after = env
         .state
         .oauth_quotas
         .snapshot(&client_id, limits)
         .await
-        .expect("quota snapshot after refund");
-    assert_eq!(snapshot.daily_limit, Some(1));
-    assert_eq!(snapshot.daily_used, 0);
-    assert_eq!(snapshot.monthly_used, 0);
+        .expect("quota immediately after failed authorization");
+    assert_eq!(immediately_after.daily_used, before.daily_used + 1);
+
+    // 授权码 TTL 过后，退款 worker 把未兑换的 reservation 还回去。
+    env.state
+        .oauth_quotas
+        .run_refund_worker_pass(env.state.clock.now() + time::Duration::seconds(360))
+        .await
+        .expect("run quota refund worker pass");
+    let after_refund = env
+        .state
+        .oauth_quotas
+        .snapshot(&client_id, limits)
+        .await
+        .expect("quota after refund worker");
+    assert_eq!(after_refund.daily_used, before.daily_used);
+    assert_eq!(after_refund.monthly_used, before.monthly_used);
 
     env.state.authorization_codes = AuthorizationCodeStore::new(env.state.redis.clone());
-    let retry =
-        issue_authorization_code_result(&env.state, user_id.to_string(), validated, None, None)
-            .await
-            .expect("retry after quota refund");
+    let retry = issue_authorization_code_result(
+        &env.state,
+        test_issuer(&env.state).as_ref(),
+        user_id.to_string(),
+        validated,
+        None,
+        None,
+    )
+    .await
+    .expect("retry after quota refund");
     assert!(matches!(retry, AuthorizationCodeIssue::Redirect(_)));
 
     let snapshot = env
@@ -234,11 +432,15 @@ async fn unlimited_monthly_plan_never_rejects_authorizations() {
     let client_id = client["client_id"].as_str().expect("client id").to_owned();
     assert_eq!(client["quota"]["daily_limit"], 10);
     assert!(client["quota"]["monthly_limit"].is_null());
-    let validated = validated_request(&client_id, user_id);
+    let session_token = bound_session_token(&env.state, user_id).await;
+    let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
+    let mut validated = validated_request(&client_id, user_id);
+    validated.session_token_hash = Some(session_hash);
 
     for _ in 0..6 {
         let result = issue_authorization_code_result(
             &env.state,
+            test_issuer(&env.state).as_ref(),
             user_id.to_string(),
             validated.clone(),
             None,
@@ -525,10 +727,15 @@ async fn unsetting_the_last_default_plan_closes_self_service() {
 
     // 既有 Client 的授权仍然成功：这是防止「只关新增」被悄悄改成
     // 「打死既有集成」的机器保障。
+    let session_token = bound_session_token(&env.state, user_id).await;
+    let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
+    let mut validated = validated_request(&existing_client_id, user_id);
+    validated.session_token_hash = Some(session_hash);
     let result = issue_authorization_code_result(
         &env.state,
+        test_issuer(&env.state).as_ref(),
         user_id.to_string(),
-        validated_request(&existing_client_id, user_id),
+        validated,
         None,
         None,
     )
@@ -696,10 +903,16 @@ async fn no_default_plan_keeps_existing_user_clients_working() {
     .expect("save code exchange consent");
 
     let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let session_token = bound_session_token(&env.state, user_id).await;
+    let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
+    let mut validated =
+        validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier));
+    validated.session_token_hash = Some(session_hash);
     let issued = issue_authorization_code_result(
         &env.state,
+        test_issuer(&env.state).as_ref(),
         user_id.to_string(),
-        validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier)),
+        validated,
         None,
         None,
     )
@@ -822,10 +1035,16 @@ async fn admin_owned_clients_are_unaffected_by_missing_default_plan() {
     .expect("save code exchange consent");
 
     let verifier = "M25iVq8lYCr2Wl4nkPdz0oVYtIdYs1JRLmS3xN8sYAo";
+    let session_token = bound_session_token(&env.state, user_id).await;
+    let session_hash = chenxing_auth::sessions::domain::session_token_hash(&session_token);
+    let mut validated =
+        validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier));
+    validated.session_token_hash = Some(session_hash);
     let issued = issue_authorization_code_result(
         &env.state,
+        test_issuer(&env.state).as_ref(),
         user_id.to_string(),
-        validated_request_with_challenge(&client_id, user_id, &code_challenge_for(verifier)),
+        validated,
         None,
         None,
     )
@@ -1172,6 +1391,22 @@ async fn insert_plan_bypassing_service(
     .bind(max_qps)
     .fetch_one(database)
     .await
+}
+
+fn service_client_input(label: &str) -> ClientRegistrationInput {
+    ClientRegistrationInput {
+        client_name: format!("Quota race {label}"),
+        redirect_uris: vec![format!("https://{label}.example/callback")],
+        scopes: vec!["openid".to_owned()],
+    }
+}
+
+async fn owned_client_count(database: &chenxing_auth::sqlx::PgPool, user_id: i64) -> i64 {
+    chenxing_auth::sqlx::query_scalar("SELECT COUNT(*) FROM oauth_clients WHERE owner_user_id = $1")
+        .bind(user_id)
+        .fetch_one(database)
+        .await
+        .expect("owned client count")
 }
 
 /// 绕过服务层的直接写入必须被数据库 CHECK 拦住，不能再靠读侧 `.max(0)` 把

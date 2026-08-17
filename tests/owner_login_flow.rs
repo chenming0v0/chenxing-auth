@@ -15,6 +15,13 @@ mod support;
 
 use support::{cookie_header, ensure_owner_bootstrapped, json_body, test_state};
 
+fn csrf(cookies: &str) -> &str {
+    cookies
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix("chenxing_csrf="))
+        .expect("csrf cookie")
+}
+
 #[tokio::test]
 async fn owner_login_issues_shared_session_and_csrf_cookies() {
     let (state, database, key_directory) = test_state("owner_login_flow").await;
@@ -67,18 +74,23 @@ async fn owner_login_issues_shared_session_and_csrf_cookies() {
         )
         .await
         .expect("owner login response");
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
-    let pending_cookie = cookie_header(&response);
-    assert!(json_body(response).await.get("login_ticket").is_none());
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookie = cookie_header(&response);
+    let csrf_token = csrf(&cookie).to_owned();
+    assert!(cookie.contains("chenxing_session="));
+    assert!(cookie.contains("chenxing_csrf="));
+    assert!(!cookie.contains("admin_session"));
+    assert!(!cookie.contains("admin_csrf"));
 
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/auth/totp/setup")
+                .uri("/api/v1/auth/security/totp/enrollment/start")
                 .header("content-type", "application/json")
-                .header("cookie", &pending_cookie)
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf_token)
                 .body(Body::from(serde_json::json!({}).to_string()))
                 .expect("owner TOTP setup request"),
         )
@@ -86,6 +98,9 @@ async fn owner_login_issues_shared_session_and_csrf_cookies() {
         .expect("owner TOTP setup response");
     assert_eq!(response.status(), StatusCode::OK);
     let setup = json_body(response).await;
+    let enrollment_id = setup["enrollment_id"]
+        .as_str()
+        .expect("owner TOTP enrollment ID");
     let totp =
         TOTP::from_url(setup["otpauth_url"].as_str().expect("owner TOTP URI")).expect("owner TOTP");
 
@@ -94,11 +109,13 @@ async fn owner_login_issues_shared_session_and_csrf_cookies() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/v1/auth/totp/setup/confirm")
+                .uri("/api/v1/auth/security/totp/enrollment/confirm")
                 .header("content-type", "application/json")
-                .header("cookie", &pending_cookie)
+                .header("cookie", &cookie)
+                .header("x-csrf-token", &csrf_token)
                 .body(Body::from(
                     serde_json::json!({
+                        "enrollment_id": enrollment_id,
                         "code": totp.generate_current().expect("owner TOTP code")
                     })
                     .to_string(),
@@ -108,11 +125,6 @@ async fn owner_login_issues_shared_session_and_csrf_cookies() {
         .await
         .expect("owner TOTP confirmation response");
     assert_eq!(response.status(), StatusCode::OK);
-    let cookie = cookie_header(&response);
-    assert!(cookie.contains("chenxing_session="));
-    assert!(cookie.contains("chenxing_csrf="));
-    assert!(!cookie.contains("admin_session"));
-    assert!(!cookie.contains("admin_csrf"));
 
     let response = router
         .clone()

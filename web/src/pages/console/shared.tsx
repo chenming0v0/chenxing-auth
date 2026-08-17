@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   apiFetch, getEntitlements,
   type AuthorizedOAuthApp, type EntitlementItem, type EntitlementsResponse,
-  type OwnedOAuthClient, type SessionItem,
+  type OwnedOAuthClient, type OwnedOAuthClientList, type SessionItem,
 } from '../../api'
 import { Icon } from '../../components/ui'
 
@@ -33,6 +33,29 @@ export function useEntitlements() {
   return { data, error, loading, retry: useCallback(() => load(true), [load]) }
 }
 
+/**
+ * 读取当前用户的全部 OAuth Client。接口按 limit/offset 分页，调用方不需要
+ * 关心 200 条上限或手动拼接页；响应缺少 total 时仍按短页兼容旧后端。
+ */
+export async function listAllOwnedOAuthClients(): Promise<OwnedOAuthClient[]> {
+  const limit = 200
+  const clients: OwnedOAuthClient[] = []
+  let offset = 0
+
+  while (true) {
+    const path = offset === 0
+      ? '/api/v1/auth/oauth-clients'
+      : `/api/v1/auth/oauth-clients?limit=${limit}&offset=${offset}`
+    const response = await apiFetch<OwnedOAuthClientList>(path)
+    clients.push(...response.items)
+    offset += response.items.length
+    const total = response.total
+    if (response.items.length < limit || (typeof total === 'number' && offset >= total)) break
+  }
+
+  return clients
+}
+
 export type AccountSummary = {
   clients: OwnedOAuthClient[]
   sessions: SessionItem[]
@@ -58,12 +81,12 @@ export function useAccountSummary() {
     setLoading(true)
     setError('')
     return Promise.all([
-      apiFetch<{ items: OwnedOAuthClient[] }>('/api/v1/auth/oauth-clients'),
+      listAllOwnedOAuthClients(),
       apiFetch<{ items: SessionItem[] }>('/api/v1/auth/sessions'),
       apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps'),
     ]).then(([clientResponse, sessionResponse, appResponse]) => {
       if (id !== requestId.current) return
-      setData({ clients: clientResponse.items, sessions: sessionResponse.items, apps: appResponse.items })
+      setData({ clients: clientResponse, sessions: sessionResponse.items, apps: appResponse.items })
       setError('')
     }).catch((reason: unknown) => {
       if (id !== requestId.current) return

@@ -42,6 +42,49 @@ where
     Ok(())
 }
 
+/// Materialize and lock the mirrored email-setting rows in one stable order.
+///
+/// Both multi-key writers call this immediately after opening their transaction.
+/// The returned SMTP value comes from the locked snapshot, so password retention
+/// and sender mirroring never depend on a second unlocked read (#482).
+pub(crate) async fn lock_registration_email_and_smtp(
+    connection: &mut crate::sqlx::PgConnection,
+) -> Result<Option<StoredSmtpSetting>, crate::sqlx::Error> {
+    let mut keys = [REGISTRATION_EMAIL_FROM_KEY, SMTP_KEY];
+    keys.sort_unstable();
+    for key in &keys {
+        crate::sqlx::query(
+            "INSERT INTO app_settings (setting_key, setting_value, updated_at)
+             VALUES ($1, NULL, NOW())
+             ON CONFLICT (setting_key) DO NOTHING",
+        )
+        .bind(*key)
+        .execute(&mut *connection)
+        .await?;
+    }
+
+    let rows = crate::sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT setting_key, setting_value
+         FROM app_settings
+         WHERE setting_key IN ($1, $2)
+         ORDER BY setting_key
+         FOR UPDATE",
+    )
+    .bind(keys[0])
+    .bind(keys[1])
+    .fetch_all(&mut *connection)
+    .await?;
+    if rows.len() != keys.len() {
+        return Err(crate::sqlx::Error::RowNotFound);
+    }
+    let smtp_raw = rows
+        .into_iter()
+        .find(|(key, _)| key == SMTP_KEY)
+        .ok_or(crate::sqlx::Error::RowNotFound)?
+        .1;
+    decode_smtp(smtp_raw)
+}
+
 pub async fn get_registration_email_from<'e, E>(
     executor: E,
 ) -> Result<Option<String>, crate::sqlx::Error>
@@ -72,6 +115,22 @@ where
     set_text(executor, PASSKEY_KEY, Some(&raw)).await
 }
 
+/// Serialize passkey policy writes with authentication decisions that read the
+/// policy inside a session/factor transaction.
+///
+/// A setting row lock is insufficient when the row does not exist yet, so both
+/// sides use this stable advisory key. This keeps the default-enabled case
+/// atomic with the first persisted setting write as well.
+pub(crate) async fn lock_passkey_policy(
+    transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+) -> Result<(), crate::sqlx::Error> {
+    crate::db::advisory_lock::lock_business(
+        transaction,
+        crate::db::advisory_lock::BusinessLock::PasskeyPolicy,
+    )
+    .await
+}
+
 pub async fn set_email_policy<'e, E>(
     executor: E,
     value: &EmailPolicySetting,
@@ -100,12 +159,47 @@ pub(crate) async fn get_smtp<'e, E>(
 where
     E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
 {
-    match get_text(executor, SMTP_KEY).await? {
+    decode_smtp(get_text(executor, SMTP_KEY).await?)
+}
+
+fn decode_smtp(value: Option<String>) -> Result<Option<StoredSmtpSetting>, crate::sqlx::Error> {
+    match value {
         Some(raw) if !raw.trim().is_empty() => {
             serde_json::from_str(&raw).map(Some).map_err(json_error)
         }
         _ => Ok(None),
     }
+}
+
+/// Whether the SMTP setting contains a non-empty encrypted password.
+///
+/// Parse through the same typed representation as normal reads. Malformed persisted JSON is
+/// an error, not evidence that startup may safely generate a replacement encryption key.
+pub(crate) async fn has_smtp_password_ciphertext(
+    pool: &crate::sqlx::PgPool,
+) -> Result<bool, crate::sqlx::Error> {
+    Ok(get_smtp(pool).await?.is_some_and(|setting| {
+        setting
+            .password_ciphertext
+            .as_deref()
+            .is_some_and(|ciphertext| !ciphertext.is_empty())
+    }))
+}
+
+pub(crate) async fn lock_smtp_for_secret_migration(
+    connection: &mut crate::sqlx::PgConnection,
+) -> Result<Option<StoredSmtpSetting>, crate::sqlx::Error> {
+    let value = crate::sqlx::query_scalar::<_, Option<String>>(
+        "SELECT setting_value
+         FROM app_settings
+         WHERE setting_key = $1
+         FOR UPDATE",
+    )
+    .bind(SMTP_KEY)
+    .fetch_optional(&mut *connection)
+    .await?
+    .flatten();
+    decode_smtp(value)
 }
 
 pub(crate) async fn set_smtp<'e, E>(

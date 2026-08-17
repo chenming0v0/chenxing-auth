@@ -1,7 +1,11 @@
 //! Client Secret rotation and refresh-token revocation.
 
 use super::{ClientService, ClientServiceError, RotatedClientSecret};
-use crate::clients::{credentials::generate_client_secret, repository};
+use crate::clients::{
+    credentials::{generate_client_secret, hash_client_secret},
+    idempotency::{ClientIdempotencyContext, ClientIdempotencyError, IdempotencyKey},
+    repository,
+};
 use crate::users::domain::UserId;
 
 impl ClientService {
@@ -10,6 +14,15 @@ impl ClientService {
         client_id: &str,
     ) -> Result<RotatedClientSecret, ClientServiceError> {
         self.rotate_secret_in_scope(None, client_id).await
+    }
+
+    pub async fn rotate_secret_with_audit(
+        &self,
+        client_id: &str,
+        audit_event: crate::audit::AuditEvent,
+    ) -> Result<RotatedClientSecret, ClientServiceError> {
+        self.rotate_secret_in_scope_with_audit(None, client_id, audit_event)
+            .await
     }
 
     pub async fn rotate_secret_for_user(
@@ -56,6 +69,163 @@ impl ClientService {
             client_id: client_id.to_owned(),
             client_secret,
         })
+    }
+
+    pub async fn rotate_secret_for_user_with_audit(
+        &self,
+        owner_user_id: UserId,
+        client_id: &str,
+        audit_event: crate::audit::AuditEvent,
+    ) -> Result<RotatedClientSecret, ClientServiceError> {
+        self.rotate_secret_in_scope_with_audit(Some(owner_user_id), client_id, audit_event)
+            .await
+    }
+
+    pub async fn rotate_secret_with_audit_idempotent(
+        &self,
+        client_id: &str,
+        actor_scope: String,
+        key: IdempotencyKey,
+        audit_event: crate::audit::AuditEvent,
+    ) -> Result<RotatedClientSecret, ClientServiceError> {
+        self.rotate_secret_idempotent(None, client_id, actor_scope, key, audit_event)
+            .await
+    }
+
+    pub async fn rotate_secret_for_user_with_audit_idempotent(
+        &self,
+        owner_user_id: UserId,
+        client_id: &str,
+        actor_scope: String,
+        key: IdempotencyKey,
+        audit_event: crate::audit::AuditEvent,
+    ) -> Result<RotatedClientSecret, ClientServiceError> {
+        self.rotate_secret_idempotent(
+            Some(owner_user_id),
+            client_id,
+            actor_scope,
+            key,
+            audit_event,
+        )
+        .await
+    }
+
+    async fn rotate_secret_idempotent(
+        &self,
+        owner_user_id: Option<UserId>,
+        client_id: &str,
+        actor_scope: String,
+        key: IdempotencyKey,
+        audit_event: crate::audit::AuditEvent,
+    ) -> Result<RotatedClientSecret, ClientServiceError> {
+        let Some(expected_version) =
+            repository::find_client_secret_version(&self.pool, owner_user_id, client_id).await?
+        else {
+            return Err(ClientServiceError::InvalidData);
+        };
+        let context = ClientIdempotencyContext::for_rotation(actor_scope, key, client_id);
+        let keys = self
+            .idempotency_keys
+            .as_ref()
+            .ok_or(ClientServiceError::IdempotencyKeyUnavailable)?;
+        let active_kid = keys.active_kid().to_owned();
+        let client_secret = context
+            .derive_secret(keys, &active_kid)
+            .map_err(map_idempotency_crypto_error)?;
+        let hash = hash_client_secret(&client_secret)?;
+        let persisted = repository::rotate_client_secret_idempotent_with_audit(
+            &self.pool,
+            repository::IdempotentClientRotation {
+                owner_user_id,
+                client_id,
+                expected_version,
+                client_secret_hash: &hash,
+                context: &context,
+                active_secret_kid: &active_kid,
+                audit_event,
+            },
+        )
+        .await;
+        let persisted = match persisted {
+            Ok(value) => value,
+            Err(repository::IdempotentClientOperationError::MutationConflict) => {
+                return Err(ClientServiceError::SecretRotationConflict);
+            }
+            Err(repository::IdempotentClientOperationError::IdempotencyConflict) => {
+                return Err(ClientServiceError::IdempotencyConflict);
+            }
+            Err(repository::IdempotentClientOperationError::CorruptResult) => {
+                return Err(ClientServiceError::IdempotencyCorruptResult);
+            }
+            Err(repository::IdempotentClientOperationError::Database(error)) => {
+                return Err(ClientServiceError::Database(error));
+            }
+            Err(repository::IdempotentClientOperationError::Audit(error)) => {
+                tracing::error!(event = "client_secret_rotate.audit_unavailable", error = %error);
+                return Err(ClientServiceError::AuditUnavailable);
+            }
+            Err(repository::IdempotentClientOperationError::QuotaExceeded) => {
+                return Err(ClientServiceError::QuotaExceeded);
+            }
+        };
+        if persisted.applied {
+            self.revoke_refresh_tokens_best_effort(
+                client_id,
+                RefreshTokenCleanupReason::SecretRotation,
+            )
+            .await;
+        }
+        let client_secret = context
+            .derive_secret(keys, &persisted.secret_kid)
+            .map_err(map_idempotency_crypto_error)?;
+        Ok(RotatedClientSecret {
+            client_id: persisted.value.client_id,
+            client_secret,
+        })
+    }
+
+    async fn rotate_secret_in_scope_with_audit(
+        &self,
+        owner_user_id: Option<UserId>,
+        client_id: &str,
+        audit_event: crate::audit::AuditEvent,
+    ) -> Result<RotatedClientSecret, ClientServiceError> {
+        let Some(expected_version) =
+            repository::find_client_secret_version(&self.pool, owner_user_id, client_id).await?
+        else {
+            return Err(ClientServiceError::InvalidData);
+        };
+        let (client_secret, hash) = generate_client_secret()?;
+        match repository::update_client_secret_if_version_with_audit(
+            &self.pool,
+            owner_user_id,
+            client_id,
+            expected_version,
+            &hash,
+            audit_event,
+        )
+        .await
+        {
+            Ok(true) => {
+                self.revoke_refresh_tokens_best_effort(
+                    client_id,
+                    RefreshTokenCleanupReason::SecretRotation,
+                )
+                .await;
+                Ok(RotatedClientSecret {
+                    client_id: client_id.to_owned(),
+                    client_secret,
+                })
+            }
+            Ok(false) => Err(ClientServiceError::SecretRotationConflict),
+            Err(repository::AuditedRotationError::Database(error)) => {
+                Err(ClientServiceError::Database(error))
+            }
+            Err(repository::AuditedRotationError::Audit(error)) => {
+                tracing::error!(event = "client_secret_rotate.audit_unavailable", error = %error);
+                Err(ClientServiceError::AuditUnavailable)
+            }
+        }
     }
 
     /// Secret 轮换后撤销该 Client 的全部 Refresh Token（Issue #62）。
@@ -106,6 +276,13 @@ impl ClientService {
                 );
             }
         }
+    }
+}
+
+fn map_idempotency_crypto_error(error: ClientIdempotencyError) -> ClientServiceError {
+    match error {
+        ClientIdempotencyError::UnknownKeyId => ClientServiceError::IdempotencyKeyUnavailable,
+        ClientIdempotencyError::InvalidKey => ClientServiceError::IdempotencyKeyInvalid,
     }
 }
 

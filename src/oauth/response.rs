@@ -88,6 +88,10 @@ pub fn with_no_store_headers(mut response: Response) -> Response {
 }
 
 async fn issue_token_response_inner(state: &AppState, params: TokenIssueParams<'_>) -> Response {
+    if !state.keys.signing_ready() {
+        tracing::error!("OAuth token signing is disabled until key synchronization recovers");
+        return error::oauth_temporarily_unavailable();
+    }
     match active_user_id(state, params.user_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {

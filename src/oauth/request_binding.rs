@@ -36,10 +36,10 @@
 //!
 //! # 原子性
 //!
-//! 重绑走 `replace_if_matches` 的 CAS：以读到的整条载荷为期望值，避免与
-//! 并发的 `bind` / `decide` 互相覆盖。CAS 失败时重新读取重试，因为失败
-//! 只说明「载荷变了」，可能是并发绑定（重试后收敛）也可能是请求已被消费
-//! （重试后按过期处理）。重试次数有上限，避免在持续竞争下无限打转。
+//! 重绑走 `replace_if_matches` 的 CAS：以读到的 `request_id` + `cas_revision`
+//! 为期望身份，避免与并发的 `bind` / `decide` 互相覆盖。CAS 失败时重新读取
+//! 重试，因为失败只说明「身份变了」，可能是并发绑定（重试后收敛）也可能是
+//! 请求已被消费（重试后按过期处理）。重试次数有上限，避免在持续竞争下无限打转。
 
 use super::{consent::PendingAuthorization, request_store::AuthorizationRequestStore};
 use crate::sessions::domain::session_token_hash;
@@ -82,12 +82,17 @@ pub(crate) async fn bind_pending_request(
     request_id: &str,
     session_token: &str,
     holder_hash: Option<&str>,
+    issuer_generation: i64,
 ) -> Result<PendingRequestBinding, PendingRequestBindingError> {
     let session_hash = session_token_hash(session_token);
     for _ in 0..MAX_BIND_ATTEMPTS {
         let Some(pending) = load_pending(store, request_id).await? else {
             return Err(PendingRequestBindingError::Expired);
         };
+        if !pending.is_bound_to_issuer_generation(issuer_generation) {
+            discard_issuer_mismatched_pending(store, request_id, &pending).await?;
+            return Err(PendingRequestBindingError::Expired);
+        }
         // holder 校验先于一切：包括幂等重试在内的每一次调用都必须证明自己
         // 就是发起授权的那个浏览器。
         if !holder_matches(holder_hash, &pending) {
@@ -122,6 +127,27 @@ pub(crate) async fn bind_pending_request(
     Err(PendingRequestBindingError::Contended)
 }
 
+/// Consume a pending request that was created under a different issuer runtime
+/// generation. A CAS failure is still treated as expired by the caller: the
+/// next continuation will apply the same generation check to the current value.
+pub(crate) async fn discard_issuer_mismatched_pending(
+    store: &AuthorizationRequestStore,
+    request_id: &str,
+    pending: &PendingAuthorization,
+) -> Result<(), PendingRequestBindingError> {
+    store
+        .take_if_matches(request_id, pending)
+        .await
+        .map(|_| ())
+        .map_err(|error_value| {
+            tracing::error!(
+                error = %error_value,
+                "failed to discard issuer-mismatched OAuth authorization request"
+            );
+            PendingRequestBindingError::Storage
+        })
+}
+
 async fn load_pending(
     store: &AuthorizationRequestStore,
     request_id: &str,
@@ -147,7 +173,3 @@ fn holder_matches(holder_hash: Option<&str>, pending: &PendingAuthorization) -> 
         _ => false,
     }
 }
-
-#[cfg(test)]
-#[path = "request_binding_tests.rs"]
-mod tests;

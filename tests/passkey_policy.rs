@@ -3,8 +3,15 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, sqlx, state::AppState};
+use chenxing_auth::{
+    api,
+    auth_factors::crypto::encrypt_totp_secret_with_ring,
+    config::{AuthEncryptionKey, AuthEncryptionKeyRing, Config},
+    sqlx,
+    state::AppState,
+};
 use serde_json::Value;
+use std::time::Duration;
 use totp_rs::TOTP;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -16,12 +23,31 @@ mod oauth_flow;
 
 const PASSWORD: &str = "correct horse battery";
 
+fn current_key_ring() -> AuthEncryptionKeyRing {
+    AuthEncryptionKeyRing::single(AuthEncryptionKey::new([0_u8; 32]))
+}
+
+fn retired_key_ring() -> AuthEncryptionKeyRing {
+    AuthEncryptionKeyRing::from_entries(
+        "retired".to_owned(),
+        vec![("retired".to_owned(), AuthEncryptionKey::new([1_u8; 32]))],
+    )
+    .expect("retired test key ring")
+}
+
 async fn setup() -> (Router, sqlx::PgPool, std::path::PathBuf) {
+    setup_with_derived_webauthn(false).await
+}
+
+async fn setup_with_derived_webauthn(
+    derive_webauthn_from_issuer: bool,
+) -> (Router, sqlx::PgPool, std::path::PathBuf) {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
-    let database = db_isolation::isolated_pool("passkey_policy", &database_url).await;
+    let database =
+        db_isolation::isolated_pool_with_max_connections("passkey_policy", &database_url, 6).await;
     set_passkey_setting(&database, true).await;
 
     let key_directory =
@@ -38,6 +64,11 @@ async fn setup() -> (Router, sqlx::PgPool, std::path::PathBuf) {
     config.admin_token = "passkey-policy-token".to_owned();
     config.cookie_secure = false;
     config.key_directory = key_directory.to_string_lossy().into_owned();
+    config.auth_encryption_keys = current_key_ring();
+    if derive_webauthn_from_issuer {
+        config.webauthn_rp_id_explicit = false;
+        config.webauthn_origin_explicit = false;
+    }
     let router = api::router(
         AppState::new_with_pool(config, database.clone())
             .await
@@ -78,12 +109,13 @@ async fn request(
         .expect("response")
 }
 
-async fn request_with_cookie(
+async fn request_with_session(
     router: &Router,
     method: &str,
     uri: &str,
     body: Value,
     cookie: &str,
+    csrf: &str,
 ) -> axum::response::Response {
     router
         .clone()
@@ -93,6 +125,7 @@ async fn request_with_cookie(
                 .uri(uri)
                 .header("content-type", "application/json")
                 .header("cookie", cookie)
+                .header("x-csrf-token", csrf)
                 .body(Body::from(body.to_string()))
                 .expect("request"),
         )
@@ -109,6 +142,14 @@ fn cookie_header(response: &axum::response::Response) -> String {
         .map(|value| value.split(';').next().expect("cookie pair"))
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+fn cookie_value(cookie: &str, name: &str) -> String {
+    cookie
+        .split(';')
+        .find_map(|part| part.trim().strip_prefix(&format!("{name}=")))
+        .expect("cookie value")
+        .to_owned()
 }
 
 async fn create_user(router: &Router, database: &sqlx::PgPool) -> (i64, String) {
@@ -156,13 +197,19 @@ async fn insert_passkey(database: &sqlx::PgPool, user_id: i64) {
 }
 
 async fn insert_totp(database: &sqlx::PgPool, user_id: i64) {
+    let encrypted_secret = encrypt_totp_secret_with_ring(&current_key_ring(), b"JBSWY3DPEHPK3PXP")
+        .expect("encrypt test TOTP secret");
+    insert_totp_ciphertext(database, user_id, &encrypted_secret).await;
+}
+
+async fn insert_totp_ciphertext(database: &sqlx::PgPool, user_id: i64, ciphertext: &[u8]) {
     sqlx::query(
         "INSERT INTO user_totp_factors
             (user_id, encrypted_secret, created_at, updated_at)
          VALUES ($1, $2, NOW(), NOW())",
     )
     .bind(user_id)
-    .bind([1_u8, 2, 3, 4].as_slice())
+    .bind(ciphertext)
     .execute(database)
     .await
     .expect("TOTP factor");
@@ -199,7 +246,10 @@ async fn login(router: &Router, username: &str) -> Value {
         None,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert!(matches!(
+        response.status(),
+        StatusCode::OK | StatusCode::ACCEPTED
+    ));
     json(response).await
 }
 
@@ -262,7 +312,7 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
     );
     assert_eq!(
         login(&router, &empty_username).await["methods"],
-        serde_json::json!(["totp", "passkey"])
+        serde_json::Value::Null
     );
 
     let response = update_passkey_setting(&router, false).await;
@@ -278,9 +328,9 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
         .await
         .expect("remove recovery factor");
 
-    let (passkey_pending, pending_cookie) = login_with_cookie(&router, &passkey_username).await;
-    assert_eq!(passkey_pending["status"], "factor_setup_required");
-    assert_eq!(passkey_pending["methods"], serde_json::json!(["totp"]));
+    let (passkey_login, session_cookie) = login_with_cookie(&router, &passkey_username).await;
+    assert!(passkey_login["expires_at"].as_str().is_some());
+    assert!(passkey_login.get("status").is_none());
     let recovery_audit: Option<String> = sqlx::query_scalar(
         "SELECT action FROM audit_events
          WHERE actor_user_id = $1 AND action = 'passkey_recovery_required'
@@ -291,26 +341,30 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
     .await
     .expect("recovery audit event");
     assert_eq!(recovery_audit.as_deref(), Some("passkey_recovery_required"));
-    let setup_response = request_with_cookie(
+    let csrf = cookie_value(&session_cookie, "chenxing_csrf");
+    let setup_response = request_with_session(
         &router,
         "POST",
-        "/api/v1/auth/totp/setup",
+        "/api/v1/auth/security/totp/enrollment/start",
         serde_json::json!({}),
-        &pending_cookie,
+        &session_cookie,
+        &csrf,
     )
     .await;
     assert_eq!(setup_response.status(), StatusCode::OK);
     let setup = json(setup_response).await;
     let totp =
         TOTP::from_url(setup["otpauth_url"].as_str().expect("TOTP URI")).expect("TOTP setup");
-    let response = request_with_cookie(
+    let response = request_with_session(
         &router,
         "POST",
-        "/api/v1/auth/totp/setup/confirm",
+        "/api/v1/auth/security/totp/enrollment/confirm",
         serde_json::json!({
+            "enrollment_id": setup["enrollment_id"],
             "code": totp.generate_current().expect("TOTP code")
         }),
-        &pending_cookie,
+        &session_cookie,
+        &csrf,
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -328,9 +382,10 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
         login(&router, &mixed_username).await["methods"],
         serde_json::json!(["totp"])
     );
-    assert_eq!(
-        login(&router, &empty_username).await["methods"],
-        serde_json::json!(["totp"])
+    assert!(
+        login(&router, &empty_username).await["expires_at"]
+            .as_str()
+            .is_some()
     );
 
     let response = update_passkey_setting(&router, true).await;
@@ -347,9 +402,10 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
         login(&router, &mixed_username).await["methods"],
         serde_json::json!(["passkey", "totp"])
     );
-    assert_eq!(
-        login(&router, &empty_username).await["methods"],
-        serde_json::json!(["totp", "passkey"])
+    assert!(
+        login(&router, &empty_username).await["expires_at"]
+            .as_str()
+            .is_some()
     );
 
     let user_ids = vec![passkey_user, totp_user, mixed_user, empty_user];
@@ -358,5 +414,191 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
         .execute(&database)
         .await
         .expect("cleanup users");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn passkey_disable_rejects_unavailable_totp_ciphertext() {
+    let (router, database, key_directory) = setup().await;
+    let (user_id, _) = create_user(&router, &database).await;
+    insert_passkey(&database, user_id).await;
+    insert_totp_ciphertext(&database, user_id, &[1, 2, 3, 4]).await;
+
+    let response = update_passkey_setting(&router, false).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(json(response).await["code"], "passkey_disable_blocked");
+    let enabled: bool = sqlx::query_scalar(
+        "SELECT (setting_value::jsonb ->> 'enabled')::boolean
+         FROM app_settings WHERE setting_key = 'passkey'",
+    )
+    .fetch_one(&database)
+    .await
+    .expect("passkey setting");
+    assert!(enabled);
+
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn passkey_disable_rejects_totp_encrypted_by_retired_key() {
+    let (router, database, key_directory) = setup().await;
+    let (user_id, _) = create_user(&router, &database).await;
+    insert_passkey(&database, user_id).await;
+    let encrypted_secret = encrypt_totp_secret_with_ring(&retired_key_ring(), b"JBSWY3DPEHPK3PXP")
+        .expect("encrypt retired-key TOTP secret");
+    insert_totp_ciphertext(&database, user_id, &encrypted_secret).await;
+
+    let response = update_passkey_setting(&router, false).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = json(response).await;
+    assert_eq!(body["code"], "passkey_disable_blocked");
+    assert!(!body.to_string().contains("retired"));
+
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn passkey_disable_rechecks_after_a_registration_commits_under_policy_lock() {
+    let (router, database, key_directory) = setup().await;
+    let (user_id, _) = create_user(&router, &database).await;
+    let mut gate = database.begin().await.expect("policy gate transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(0, 7341931)")
+        .execute(&mut *gate)
+        .await
+        .expect("hold Passkey policy lock");
+    sqlx::query(
+        "INSERT INTO user_passkeys
+            (user_id, credential_id, credential, created_at, updated_at)
+         VALUES ($1, $2, '{}'::jsonb, NOW(), NOW())",
+    )
+    .bind(user_id)
+    .bind(Uuid::new_v4().into_bytes().to_vec())
+    .execute(&mut *gate)
+    .await
+    .expect("stage concurrent Passkey registration");
+
+    let request = tokio::spawn({
+        let router = router.clone();
+        async move { update_passkey_setting(&router, false).await }
+    });
+    let mut blocked = false;
+    for _ in 0..100 {
+        blocked = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pg_locks
+                 WHERE NOT granted AND locktype = 'advisory'
+                   AND classid = 0 AND objid = 7341931
+             )",
+        )
+        .fetch_one(&database)
+        .await
+        .expect("observe policy lock waiter");
+        if blocked {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        blocked,
+        "disable request must wait for the registration policy lock"
+    );
+    gate.commit()
+        .await
+        .expect("commit staged Passkey registration");
+    let response = request.await.expect("join disable request");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(json(response).await["code"], "passkey_disable_blocked");
+
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn issuer_update_rechecks_passkeys_after_policy_lock() {
+    let (router, database, key_directory) = setup_with_derived_webauthn(true).await;
+    let (user_id, _) = create_user(&router, &database).await;
+    let mut gate = database.begin().await.expect("policy gate transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(0, 7341931)")
+        .execute(&mut *gate)
+        .await
+        .expect("hold Passkey policy lock");
+    sqlx::query(
+        "INSERT INTO user_passkeys
+            (user_id, credential_id, credential, created_at, updated_at)
+         VALUES ($1, $2, '{}'::jsonb, NOW(), NOW())",
+    )
+    .bind(user_id)
+    .bind(Uuid::new_v4().into_bytes().to_vec())
+    .execute(&mut *gate)
+    .await
+    .expect("stage concurrent Passkey registration");
+
+    let request = tokio::spawn({
+        let router = router.clone();
+        async move {
+            request(
+                &router,
+                "PUT",
+                "/api/v1/admin/settings/issuer",
+                serde_json::json!({
+                    "value": "http://localhost:3000",
+                    "expected_generation": 0,
+                    "confirm": true
+                }),
+                Some("Bearer passkey-policy-token"),
+            )
+            .await
+        }
+    });
+    let mut blocked = false;
+    for _ in 0..100 {
+        blocked = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pg_locks
+                 WHERE NOT granted AND locktype = 'advisory'
+                   AND classid = 0 AND objid = 7341931
+             )",
+        )
+        .fetch_one(&database)
+        .await
+        .expect("observe issuer policy lock waiter");
+        if blocked {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        blocked,
+        "issuer update must wait for the registration policy lock"
+    );
+    gate.commit()
+        .await
+        .expect("commit staged Passkey registration");
+    let response = request.await.expect("join issuer update");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        json(response).await["code"],
+        "issuer_passkey_migration_required"
+    );
+
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
     let _ = std::fs::remove_dir_all(key_directory);
 }

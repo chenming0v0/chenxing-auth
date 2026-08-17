@@ -58,6 +58,62 @@ fn authorization_error_redirects_only_after_exact_uri_verification() {
 }
 
 #[test]
+fn authorization_error_redirects_after_canonical_uri_verification() {
+    let mut request = request("https://client.example:443/callback");
+    request.response_type = "token".to_owned();
+    let response = authorization_error(
+        &request,
+        &client(),
+        AuthorizationRequestError::UnsupportedResponseType,
+    );
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("verified canonical redirect location");
+    assert!(location.starts_with("https://client.example/callback?"));
+    assert!(location.contains("error=unsupported_response_type"));
+}
+
+#[test]
+fn authorization_error_accepts_a_loopback_ipv4_dynamic_port() {
+    let mut client = client();
+    client.redirect_uris = vec!["http://127.0.0.1:41000/callback".to_owned()];
+    let mut request = request("http://127.0.0.1:52000/callback");
+    request.response_type = "token".to_owned();
+
+    let response = authorization_error(
+        &request,
+        &client,
+        AuthorizationRequestError::UnsupportedResponseType,
+    );
+
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("verified loopback redirect location");
+    assert!(location.starts_with("http://127.0.0.1:52000/callback?"));
+}
+
+#[test]
+fn authorization_error_rejects_a_loopback_host_change() {
+    let mut client = client();
+    client.redirect_uris = vec!["http://127.0.0.1:41000/callback".to_owned()];
+    let response = authorization_error(
+        &request("http://127.0.0.2:52000/callback"),
+        &client,
+        AuthorizationRequestError::RedirectUriNotAllowed,
+    );
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(response.headers().get(LOCATION).is_none());
+}
+
+#[test]
 fn authorization_error_does_not_reflect_overlong_state() {
     let mut request = request("https://client.example/callback");
     request.state = Some("x".repeat(MAX_STATE_LENGTH + 1));

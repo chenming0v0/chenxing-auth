@@ -20,22 +20,55 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
+const AUTH_SYNC_CHANNEL = 'chenxing-auth-sync'
+const AUTH_SYNC_STORAGE_KEY = 'chenxing-auth-sync-event'
+const REVALIDATE_THROTTLE_MS = 5_000
+
+type AuthSyncEvent = { type: 'logout'; nonce: string }
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserMe | null>(null)
   const [status, setStatus] = useState<AuthContextValue['status']>('loading')
   const [bootstrap, setBootstrap] = useState<BootstrapState>('loading')
   const loaded = useRef(false)
-  // 每次 clear() 递增，用于丢弃在 logout 之后才落地的过期 refresh() 写入。
+  const channelRef = useRef<BroadcastChannel | null>(null)
+  const sessionExpiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastRevalidationRef = useRef(0)
+  // generation：clear/logout 时递增，丢弃登出后才落地的 refresh 写入（#99）。
+  // refreshSeq：同一代内每次 refresh 递增。代数分辨不了同代并发请求，
+  // 启动时的 /auth/me 与登录后的 refresh 会重叠，只有最新序号可以写回（#473）。
   // 使用 useRef 而非 useState：不触发重渲染，且读到的始终是最新值而非快照。
   const generationRef = useRef<number>(0)
+  const refreshSeqRef = useRef<number>(0)
+  const userIdRef = useRef<UserMe['id'] | null>(null)
 
-  const clear = useCallback(() => {
+  const clearLocal = useCallback(() => {
     // 递增代数——所有正在进行的 refresh() await 返回后会发现代数不匹配，自动丢弃结果
     generationRef.current += 1
     setUser(null)
     setStatus('unauthenticated')
+    userIdRef.current = null
     clearApiCache()
   }, [])
+
+  const broadcastLogout = useCallback(() => {
+    const event: AuthSyncEvent = { type: 'logout', nonce: `${Date.now()}-${Math.random()}` }
+    try {
+      channelRef.current?.postMessage(event)
+    } catch {
+      // BroadcastChannel may be unavailable or closed; localStorage remains the fallback.
+    }
+    try {
+      window.localStorage.setItem(AUTH_SYNC_STORAGE_KEY, JSON.stringify(event))
+    } catch {
+      // Storage can be disabled in privacy-restricted browser contexts.
+    }
+  }, [])
+
+  const clear = useCallback(() => {
+    clearLocal()
+    if (typeof window !== 'undefined') broadcastLogout()
+  }, [broadcastLogout, clearLocal])
 
   const refreshBootstrap = useCallback(async () => {
     // 重试（错误面板的按钮）时回到 loading，界面显示检查中而不是旧错误。
@@ -64,9 +97,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const refresh = useCallback(async () => {
-    // 记录启动时的代数。若 clear() / logout() 在 await 期间运行，gen 会与
-    // generationRef.current 不一致，届时应丢弃结果，不得覆盖已清除的认证状态。
-    const gen = generationRef.current
+    // 记下本轮代数和序号。logout 改代数；后续 refresh 改序号。
+    // 任一不匹配都说明自己过期，不得覆盖当前 user/status。
+    const generation = generationRef.current
+    const requestId = ++refreshSeqRef.current
+    const isCurrentRequest = () =>
+      generation === generationRef.current && requestId === refreshSeqRef.current
     // 已认证页面刷新资料时保持现有内容；初次加载、登录完成和错误重试则进入 loading。
     setStatus((current) => current === 'authenticated' ? current : 'loading')
     try {
@@ -74,17 +110,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // 未认证时 /auth/me 返回 401，由 catch 块处理；无需额外往返。
       const profile = await apiFetch<UserMe>('/api/v1/auth/me', { redirectOn401: false })
 
-      // Issue #99：await 返回后检查代数。若 logout 已在 await 期间运行，则代数
-      // 已被递增，此处丢弃结果避免将已登出的会话重新写回 authenticated 状态。
-      if (gen !== generationRef.current) return null
+      // await 返回后核对代数和序号：logout 改代数，更新的 refresh 改序号。
+      // 过期结果直接丢弃，避免把已登出或已被更新请求覆盖的状态写回去。
+      if (!isCurrentRequest()) return null
 
+      if (userIdRef.current !== null && String(userIdRef.current) !== String(profile.id)) {
+        // Entitlements are account-scoped. Invalidate both the completed value and any
+        // in-flight request before exposing the new identity to the rest of the SPA.
+        clearApiCache()
+      }
+      userIdRef.current = profile.id
       setUser(profile)
       setStatus('authenticated')
       return profile
     } catch (error) {
-      // 竞态保护：若 logout 已在 await 期间完成，跳过后续 state 操作。
-      // 不在此处再次调用 clear()，避免二次递增代数而使新一轮 refresh() 失效。
-      if (gen !== generationRef.current) return null
+      // 过期请求不得写状态。尤其是旧 401：再调 clear() 会把登录后的新状态清掉（#473）。
+      if (!isCurrentRequest()) return null
 
       // 只有明确的 401 才代表未认证，应清空本地状态。
       // 网络错误（ApiError.status === 0）和服务端错误（5xx）不等于已登出：
@@ -99,6 +140,83 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return null
     }
   }, [clear])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+
+    const onRemoteLogout = (event: AuthSyncEvent | null) => {
+      if (event?.type === 'logout') clearLocal()
+    }
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== AUTH_SYNC_STORAGE_KEY || !event.newValue) return
+      try {
+        onRemoteLogout(JSON.parse(event.newValue) as AuthSyncEvent)
+      } catch {
+        // Ignore malformed values from other applications using localStorage.
+      }
+    }
+
+    window.addEventListener('storage', onStorage)
+    if ('BroadcastChannel' in window) {
+      try {
+        const channel = new BroadcastChannel(AUTH_SYNC_CHANNEL)
+        channelRef.current = channel
+        channel.addEventListener('message', (event: MessageEvent<AuthSyncEvent>) => onRemoteLogout(event.data))
+      } catch {
+        channelRef.current = null
+      }
+    }
+
+    return () => {
+      window.removeEventListener('storage', onStorage)
+      channelRef.current?.close()
+      channelRef.current = null
+    }
+  }, [clearLocal])
+
+  useEffect(() => {
+    if (sessionExpiryTimerRef.current) clearTimeout(sessionExpiryTimerRef.current)
+    sessionExpiryTimerRef.current = null
+    if (!user?.current_session_expires_at) return
+
+    const expiresAt = new Date(user.current_session_expires_at).getTime()
+    if (!Number.isFinite(expiresAt)) return
+    // setTimeout 的 delay 超过 2^31-1 ms 时宿主会按溢出立即触发（HTML 标准行为），
+    // 远期到期时间（如 2099）会被当成“已到期”在下个 tick 直接登出。这里把单次
+    // 延迟钳制到上限，并在每次触发时复核剩余时间：未到期就重新续订，只有真正
+    // 过期才清除认证状态（#504 的到期定时器边界）。
+    const MAX_TIMEOUT_MS = 2_147_483_647
+    const arm = () => {
+      const remaining = expiresAt - Date.now()
+      if (remaining <= 0) {
+        clear()
+        return
+      }
+      sessionExpiryTimerRef.current = setTimeout(arm, Math.min(remaining, MAX_TIMEOUT_MS))
+    }
+    arm()
+    return () => {
+      if (sessionExpiryTimerRef.current) clearTimeout(sessionExpiryTimerRef.current)
+      sessionExpiryTimerRef.current = null
+    }
+  }, [clear, user?.current_session_expires_at])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const revalidate = () => {
+      if (document.visibilityState !== 'visible' || status !== 'authenticated') return
+      const now = Date.now()
+      if (now - lastRevalidationRef.current < REVALIDATE_THROTTLE_MS) return
+      lastRevalidationRef.current = now
+      void refresh()
+    }
+    window.addEventListener('focus', revalidate)
+    document.addEventListener('visibilitychange', revalidate)
+    return () => {
+      window.removeEventListener('focus', revalidate)
+      document.removeEventListener('visibilitychange', revalidate)
+    }
+  }, [refresh, status])
 
   useEffect(() => {
     if (loaded.current) return

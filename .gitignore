@@ -16,6 +16,7 @@ coverage/
 .codex/skills/*
 !.codex/skills/chenxing-hud-panel/
 !.codex/skills/sync-openapi/
+!.codex/skills/src-line-limit/
 /.claude/*
 !/.claude/skills/
 /.claude/skills/*
@@ -38,3 +39,4 @@ container-web-dist/
 
 # 临时目录
 /temp/
+web/.build-fingerprint

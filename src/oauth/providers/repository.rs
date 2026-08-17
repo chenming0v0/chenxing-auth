@@ -1,11 +1,13 @@
-use crate::sqlx::PgPool;
+use crate::sqlx::{PgConnection, PgPool};
 use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use super::domain::{ClientAuthMethod, ProviderRecord, ValidatedProviderInput};
+use crate::db::advisory_lock::{BusinessLock, lock_business};
 use crate::users::domain::{UserId, UserStatus};
 use crate::users::email::EmailAddress;
+use crate::users::email_policy::evaluate_email_policy;
 
 #[derive(Debug, Clone)]
 pub struct ExternalIdentity {
@@ -18,7 +20,7 @@ pub struct ExternalIdentity {
 }
 
 pub async fn insert_provider(
-    pool: &PgPool,
+    connection: &mut PgConnection,
     input: &ValidatedProviderInput,
     ciphertext: Vec<u8>,
 ) -> Result<ProviderRecord, crate::sqlx::Error> {
@@ -54,7 +56,7 @@ pub async fn insert_provider(
     .bind(auth_method_value(input.client_auth_method))
     .bind(input.pkce_enabled)
     .bind(now)
-    .fetch_one(pool)
+    .fetch_one(&mut *connection)
     .await?;
     parse_provider_row(row)
 }
@@ -69,6 +71,23 @@ pub async fn list_providers(pool: &PgPool) -> Result<Vec<ProviderRecord>, crate:
     .fetch_all(pool)
     .await?;
     rows.into_iter().map(parse_provider_row).collect()
+}
+
+/// Whether PostgreSQL already contains provider credentials encrypted with the
+/// provider secret key. Startup uses this before touching the key directory so a
+/// missing key cannot be mistaken for a fresh installation.
+pub(crate) async fn has_client_secret_ciphertext(
+    pool: &PgPool,
+) -> Result<bool, crate::sqlx::Error> {
+    crate::sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+             FROM oauth_providers
+             WHERE octet_length(client_secret_ciphertext) > 0
+         )",
+    )
+    .fetch_one(pool)
+    .await
 }
 
 pub async fn find_by_slug(
@@ -87,8 +106,24 @@ pub async fn find_by_slug(
     row.map(parse_provider_row).transpose()
 }
 
+pub async fn lock_by_slug(
+    connection: &mut PgConnection,
+    slug: &str,
+) -> Result<Option<ProviderRecord>, crate::sqlx::Error> {
+    let row = crate::sqlx::query_as::<_, ProviderRow>(
+        "SELECT id, name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
+                client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
+                name_claim, email_verified_claim, client_auth_method, pkce_enabled, status
+         FROM oauth_providers WHERE slug = $1 FOR UPDATE",
+    )
+    .bind(slug)
+    .fetch_optional(&mut *connection)
+    .await?;
+    row.map(parse_provider_row).transpose()
+}
+
 pub async fn update_provider(
-    pool: &PgPool,
+    connection: &mut PgConnection,
     slug: &str,
     input: &ValidatedProviderInput,
     ciphertext: Vec<u8>,
@@ -118,9 +153,45 @@ pub async fn update_provider(
     .bind(input.pkce_enabled)
     // 保留墙钟（Issue #299 的明确例外）：配置行 updated_at。
     .bind(OffsetDateTime::now_utc())
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
     Ok(result.rows_affected() == 1)
+}
+
+pub(crate) async fn update_client_secret_ciphertext(
+    connection: &mut PgConnection,
+    provider_id: i64,
+    ciphertext: &[u8],
+) -> Result<(), crate::sqlx::Error> {
+    let result = crate::sqlx::query(
+        "UPDATE oauth_providers
+         SET client_secret_ciphertext = $2, updated_at = $3
+         WHERE id = $1",
+    )
+    .bind(provider_id)
+    .bind(ciphertext)
+    .bind(OffsetDateTime::now_utc())
+    .execute(&mut *connection)
+    .await?;
+    if result.rows_affected() == 1 {
+        Ok(())
+    } else {
+        Err(crate::sqlx::Error::RowNotFound)
+    }
+}
+
+pub(crate) async fn lock_client_secret_ciphertexts(
+    connection: &mut PgConnection,
+) -> Result<Vec<(i64, Vec<u8>)>, crate::sqlx::Error> {
+    crate::sqlx::query_as(
+        "SELECT id, client_secret_ciphertext
+         FROM oauth_providers
+         WHERE octet_length(client_secret_ciphertext) > 0
+         ORDER BY id
+         FOR UPDATE",
+    )
+    .fetch_all(&mut *connection)
+    .await
 }
 
 pub async fn set_status(
@@ -178,9 +249,7 @@ pub async fn create_user_with_identity(
     password_hash: &str,
 ) -> Result<UserId, CreateIdentityError> {
     let mut transaction = pool.begin().await?;
-    crate::sqlx::query("SELECT pg_advisory_xact_lock(0, 7341928)")
-        .execute(&mut *transaction)
-        .await?;
+    lock_business(&mut transaction, BusinessLock::OwnerBootstrap).await?;
     let existing_identity: Option<(UserId, String)> = crate::sqlx::query_as(
         "SELECT i.user_id, u.status
          FROM oauth_external_identities i
@@ -210,6 +279,17 @@ pub async fn create_user_with_identity(
     if existing_user.is_some() {
         transaction.rollback().await?;
         return Err(CreateIdentityError::EmailAlreadyRegistered);
+    }
+
+    // 外部身份自动建号与普通注册共用同一准入策略（Issue #550）。读取和判定
+    // 必须发生在创建事务内，并且位于任何 INSERT 之前：策略拒绝、损坏配置或
+    // 后续数据库错误都不能留下 users / oauth_external_identities 半成品。
+    let email_policy_raw =
+        crate::settings::repository::get_text(&mut *transaction, crate::settings::EMAIL_POLICY_KEY)
+            .await?;
+    if evaluate_email_policy(email_policy_raw, email).is_err() {
+        transaction.rollback().await?;
+        return Err(CreateIdentityError::EmailPolicyRejected);
     }
 
     let owner_exists: bool =
@@ -262,6 +342,8 @@ pub enum CreateIdentityError {
     Database(#[from] crate::sqlx::Error),
     #[error("email is already registered")]
     EmailAlreadyRegistered,
+    #[error("email is not allowed by the registration policy")]
+    EmailPolicyRejected,
     #[error("external user is disabled")]
     UserDisabled,
     #[error("owner bootstrap is required before creating external users")]

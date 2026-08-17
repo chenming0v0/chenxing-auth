@@ -137,6 +137,27 @@ pub fn bad_request(code: &'static str, message: impl Into<String>) -> Response {
         .into_response()
 }
 
+pub fn json_rejection(status: StatusCode) -> Response {
+    let (code, message) = match status {
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => (
+            "unsupported_media_type",
+            "request Content-Type must be application/json",
+        ),
+        StatusCode::PAYLOAD_TOO_LARGE => {
+            ("payload_too_large", "request body exceeds the allowed size")
+        }
+        _ => ("invalid_json", "request body must be valid JSON"),
+    };
+    (
+        status,
+        Json(ErrorResponse {
+            code: code.to_owned(),
+            message: message.to_owned(),
+        }),
+    )
+        .into_response()
+}
+
 pub fn conflict(code: &'static str, message: impl Into<String>) -> Response {
     (
         StatusCode::CONFLICT,
@@ -218,6 +239,20 @@ pub fn service_unavailable(code: &'static str, message: impl Into<String>) -> Re
         }),
     )
         .into_response()
+}
+
+pub fn issuer_not_configured() -> Response {
+    service_unavailable(
+        "issuer_not_configured",
+        "the application issuer is not configured",
+    )
+}
+
+pub fn issuer_runtime_invalid() -> Response {
+    service_unavailable(
+        "issuer_runtime_invalid",
+        "the persisted application issuer could not be loaded",
+    )
 }
 
 pub fn internal() -> Response {

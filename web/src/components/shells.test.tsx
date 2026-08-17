@@ -1,12 +1,15 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react'
+import { act, render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react'
 import { AuthShell, ConsoleLayout, OAuthShell } from './shells'
 import { navGroups } from '../data'
+import { useDraftLeaveGuard } from '../pages/admin/settings/panel'
+import { setNavigationBlocker } from '../router'
 
 // 可变的桩用户：角色过滤用例需要切换 role。vi.mock 工厂引用 hoisted 对象，
 // 测试间直接改属性即可，不必为每个用例重新 mock 整个模块。
-const { mockUser } = vi.hoisted(() => ({
+const { mockUser, mockLogout } = vi.hoisted(() => ({
   mockUser: { id: 1, username: 'chenxing', display_name: '测试员', role: 'admin' },
+  mockLogout: vi.fn(),
 }))
 
 // ConsoleLayout 依赖 useAuth；mock 掉 auth-state，避免 AuthProvider 挂载时
@@ -20,7 +23,7 @@ vi.mock('../auth-state', () => ({
     refresh: () => Promise.resolve(null),
     refreshBootstrap: () => Promise.resolve('ready'),
     clear: () => {},
-    logout: () => Promise.resolve(),
+    logout: mockLogout,
   }),
 }))
 
@@ -31,9 +34,16 @@ beforeEach(() => {
   // useLocation 在渲染时读取 window.location.pathname
   window.history.replaceState({}, '', '/console')
   mockUser.role = 'admin'
+  mockLogout.mockReset()
+  mockLogout.mockResolvedValue({ revoked: true })
+  vi.spyOn(window, 'confirm').mockReturnValue(true)
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  setNavigationBlocker(null)
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 function renderConsole() {
   render(
@@ -366,5 +376,50 @@ describe('无行为控件改为静态文本（#240）', () => {
     expect(menu).toBeTruthy()
     expect(within(menu).queryByRole('button', { name: /应用广场/ })).toBeNull()
     expect(within(menu).getByText('应用广场').tagName).toBe('SPAN')
+  })
+})
+
+describe('退出登录遵守设置草稿守卫（#530）', () => {
+  function DirtyGuard() {
+    useDraftLeaveGuard(true)
+    return null
+  }
+
+  function openAccountMenu() {
+    render(
+      <>
+        <DirtyGuard />
+        <ConsoleLayout><div>页面内容</div></ConsoleLayout>
+      </>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '账户菜单' }))
+  }
+
+  it('does not revoke the session when the draft confirmation is declined', () => {
+    const confirm = vi.mocked(window.confirm)
+    confirm.mockReturnValue(false)
+    openAccountMenu()
+
+    fireEvent.click(screen.getByRole('button', { name: '退出' }))
+
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(mockLogout).not.toHaveBeenCalled()
+    expect(window.location.pathname).toBe('/console')
+  })
+
+  it('confirms once before logout and commits the result without re-prompting', async () => {
+    const confirm = vi.mocked(window.confirm)
+    let resolveLogout: ((result: { revoked: boolean }) => void) | undefined
+    mockLogout.mockReturnValue(new Promise((resolve) => { resolveLogout = resolve }))
+    openAccountMenu()
+
+    fireEvent.click(screen.getByRole('button', { name: '退出' }))
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(mockLogout).toHaveBeenCalledTimes(1)
+    expect(window.location.pathname).toBe('/console')
+
+    await act(async () => { resolveLogout?.({ revoked: true }) })
+    await waitFor(() => expect(window.location.pathname).toBe('/login'))
+    expect(confirm).toHaveBeenCalledTimes(1)
   })
 })

@@ -14,8 +14,9 @@ const CLIENT: OwnedOAuthClient = {
   quota: { daily_limit: null, daily_used: 0, monthly_limit: null, monthly_used: 0 },
 }
 
-const { apiFetchMock } = vi.hoisted(() => ({
+const { apiFetchMock, listAllOwnedOAuthClientsMock } = vi.hoisted(() => ({
   apiFetchMock: vi.fn(async (_path: string, _init?: RequestInit): Promise<unknown> => ({ items: [CLIENT] })),
+  listAllOwnedOAuthClientsMock: vi.fn(async () => [CLIENT]),
 }))
 
 vi.mock('../../api', () => ({
@@ -34,11 +35,14 @@ vi.mock('./shared', () => ({
   }),
   SelfServiceClosedBlock: ({ children }: { children: ReactNode }) => <>{children}</>,
   useEntitlements: () => ({ data: null, error: '', loading: false, retry: vi.fn() }),
+  listAllOwnedOAuthClients: listAllOwnedOAuthClientsMock,
 }))
 
 beforeEach(() => {
   apiFetchMock.mockClear()
   apiFetchMock.mockResolvedValue({ items: [CLIENT] })
+  listAllOwnedOAuthClientsMock.mockClear()
+  listAllOwnedOAuthClientsMock.mockResolvedValue([CLIENT])
   if (!globalThis.crypto.subtle?.digest) {
     vi.stubGlobal('crypto', {
       ...globalThis.crypto,
@@ -67,7 +71,7 @@ async function generateAuthorizeUrl() {
 
 describe('PlaygroundPage 加载期间不闪空态（Issue #371）', () => {
   it('fetch 未完成时显示加载占位，不渲染「需要先注册一个应用」', () => {
-    apiFetchMock.mockImplementation(() => new Promise(() => {}))
+    listAllOwnedOAuthClientsMock.mockImplementation(() => new Promise(() => {}))
     render(<PlaygroundPage />)
     expect(screen.getByText('正在加载可用于测试的应用。')).toBeTruthy()
     expect(screen.queryByText('需要先注册一个应用')).toBeNull()
@@ -75,7 +79,7 @@ describe('PlaygroundPage 加载期间不闪空态（Issue #371）', () => {
   })
 
   it('确认没有应用后才展示空态', async () => {
-    apiFetchMock.mockResolvedValue({ items: [] })
+    listAllOwnedOAuthClientsMock.mockResolvedValue([])
     render(<PlaygroundPage />)
     expect(await screen.findByText('需要先注册一个应用')).toBeTruthy()
     expect(screen.queryByText('正在加载可用于测试的应用。')).toBeNull()

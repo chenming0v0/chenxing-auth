@@ -36,6 +36,48 @@ fn family_revoked_key(family_id: &str) -> String {
     format!("cx:refresh:family_revoked:{family_id}")
 }
 
+#[tokio::test]
+async fn final_fence_failure_revokes_a_successor_refresh_token_from_the_grant() {
+    let store = RefreshTokenStore::new(redis_client());
+    let client_id = format!("cx_final_fence_{}", Uuid::new_v4().simple());
+    let user_id = format!("user-final-fence-{}", Uuid::new_v4().simple());
+    let original = RefreshToken::new(
+        client_id.clone(),
+        user_id.clone(),
+        vec!["openid".to_owned()],
+    );
+    let successor = original.rotate(vec!["openid".to_owned()]);
+    store.save(&original).await.expect("save original token");
+    assert_eq!(
+        store
+            .rotate_if_matches(&original.value, &original, &successor)
+            .await
+            .expect("rotate successor"),
+        RotationOutcome::Rotated
+    );
+    assert!(
+        store
+            .find(&successor.value)
+            .await
+            .expect("find successor")
+            .is_some()
+    );
+
+    let removed = store
+        .revoke_grant_tokens(&user_id, &client_id)
+        .await
+        .expect("revoke grant after final fence failure");
+    assert_eq!(removed, 1);
+    assert!(
+        store
+            .find(&successor.value)
+            .await
+            .expect("find revoked successor")
+            .is_none(),
+        "a consent or epoch fence failure must not leave a usable successor"
+    );
+}
+
 /// Issue #109：绝对生命周期限制生效，轮换不能无限延长有效期。
 #[tokio::test]
 async fn refresh_token_absolute_lifetime_is_enforced() {
@@ -1008,6 +1050,9 @@ async fn revoking_a_legacy_token_does_not_touch_other_legacy_tokens() {
         client_secret_version: None,
         // 旧格式 payload 没有 session_epoch（Issue #409 之前签发）
         session_epoch: None,
+        // 旧格式 payload 没有 issuer_generation（Issue #492 之前签发）
+        issuer_generation: None,
+        cas_revision: 0,
     };
     let revoked = legacy("revoked");
     let untouched = legacy("untouched");
@@ -1062,10 +1107,11 @@ async fn revoking_a_legacy_token_does_not_touch_other_legacy_tokens() {
         .expect("cleanup legacy revoke");
 }
 
-/// 旧格式 token（无 `issued_at` / `family_id` / `client_secret_version`）能反序列化并轮换。
+/// 旧格式 token 能反序列化，但缺失的安全代际字段会在兑换路径 fail-closed。
 #[test]
 fn legacy_token_without_new_fields_can_rotate() {
-    // 构造旧格式 token（无 issued_at / family_id / client_secret_version / session_epoch）
+    // 构造旧格式 token（无 issued_at / family_id / client_secret_version /
+    // session_epoch / issuer_generation）。
     let now = OffsetDateTime::now_utc();
     let legacy = RefreshToken {
         value: "cx-refresh-legacy123".to_owned(),
@@ -1080,6 +1126,9 @@ fn legacy_token_without_new_fields_can_rotate() {
         client_secret_version: None,
         // 旧格式 payload 没有 session_epoch，兑换路径对其 fail-closed
         session_epoch: None,
+        // 旧格式 payload 没有 issuer_generation，兑换路径同样 fail-closed
+        issuer_generation: None,
+        cas_revision: 0,
     };
 
     // issued_at() 回退到 created_at
@@ -1108,6 +1157,10 @@ fn legacy_token_without_new_fields_can_rotate() {
         "family_id should not serialize when empty"
     );
     assert!(
+        serialized.get("issuer_generation").is_none(),
+        "issuer_generation should not serialize when absent"
+    );
+    assert!(
         serialized.get("client_secret_version").is_none(),
         "client_secret_version should not serialize when None"
     );
@@ -1118,6 +1171,11 @@ fn legacy_token_without_new_fields_can_rotate() {
     assert_eq!(deserialized.issued_at, None);
     assert_eq!(deserialized.family_id, "");
     assert_eq!(deserialized.client_secret_version, None);
+    assert_eq!(deserialized.issuer_generation, None);
+    assert!(
+        !deserialized.is_bound_to_issuer_generation(1),
+        "legacy refresh tokens without an issuer generation must fail closed"
+    );
     assert!(
         deserialized.is_bound_to_client_secret_version(7, true),
         "legacy tokens remain usable during the rollout compatibility window"
@@ -1129,6 +1187,7 @@ fn legacy_token_without_new_fields_can_rotate() {
     let rebound =
         deserialized.rotate_at_with_client_secret_version(vec!["openid".to_owned()], 7, now);
     assert_eq!(rebound.client_secret_version, Some(7));
+    assert_eq!(rebound.issuer_generation, None);
 }
 
 /// 索引和墓碑的 TTL 存在（防止 Redis 无界增长）。

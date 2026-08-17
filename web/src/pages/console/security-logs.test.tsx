@@ -53,14 +53,13 @@ describe('SecurityLogsPage', () => {
     expect(screen.getAllByText('mystery_action')).toHaveLength(2)
   })
 
-  it('接口 404（尚未实现）时落到示例数据预览并标注 #307', async () => {
+  it('列表接口 404 时展示错误且不注入示例事件', async () => {
     apiFetchMock.mockRejectedValue(new ApiError('请求的资源不存在或已失效。', 404))
     render(<SecurityLogsPage />)
-    const notice = await screen.findByText(/示例数据预览/)
-    expect(notice.textContent).toContain('#307')
-    // 示例事件已渲染（桌面表格 + 移动卡片各一份）
-    expect(screen.getAllByText('WONG 公益站备用').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('登录').length).toBeGreaterThan(0)
+    expect(await screen.findByText('请求的资源不存在或已失效。')).toBeTruthy()
+    expect(screen.getAllByText(/无法加载活动记录/).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/示例数据预览/)).toBeNull()
+    expect(screen.queryByText('WONG 公益站备用')).toBeNull()
   })
 
   it('其他错误展示警告信息', async () => {
@@ -76,27 +75,22 @@ describe('SecurityLogsPage', () => {
     for (const link of links) expect(link.getAttribute('href')).toBe('/console/logs?id=2')
   })
 
-  it('接口上线后若当前页越界则收敛页码，不把空列表卡成空态（#372）', async () => {
-    // 预览 47 条 / 20 = 3 页。翻到第 3 页后接口上线，真实 total 只够 1 页。
+  it('当前页越界时收敛页码，不把空列表卡成空态（#372）', async () => {
     apiFetchMock
-      .mockRejectedValueOnce(new ApiError('请求的资源不存在或已失效。', 404))
-      .mockRejectedValueOnce(new ApiError('请求的资源不存在或已失效。', 404))
-      .mockResolvedValueOnce({ items: [], page: 3, page_size: 20, total: 3 })
+      .mockResolvedValueOnce({ ...sampleEvents, total: 47 })
+      .mockResolvedValueOnce({ items: [], page: 2, page_size: 20, total: 3 })
       .mockResolvedValueOnce(sampleEvents)
 
     render(<SecurityLogsPage />)
-    await screen.findByText(/示例数据预览/)
-    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
-    await screen.findByText('第 2 / 3 页 · 共 47 条')
+    await screen.findByText('第 1 / 3 页 · 共 47 条')
     fireEvent.click(screen.getByRole('button', { name: '下一页' }))
 
     await screen.findByText('共 3 条')
     expect(screen.queryByText('暂无活动记录。')).toBeNull()
-    expect(screen.queryByText(/示例数据预览/)).toBeNull()
-    expect(screen.queryByText('第 3 / 1 页')).toBeNull()
+    expect(screen.queryByText('第 2 / 1 页')).toBeNull()
     expect(await screen.findAllByText('登录')).toHaveLength(2)
     await waitFor(() => {
-      expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events?page=3&page_size=20')
+      expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events?page=2&page_size=20')
       expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events?page=1&page_size=20')
     })
   })
@@ -111,15 +105,28 @@ describe('SecurityLogDetail（经 ?id= 进入）', () => {
     expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events/42')
   })
 
-  it('404 落到示例详情：敏感字段默认打码，点眼睛才显示明文', async () => {
+  it('真实详情中的敏感字段默认打码，点眼睛才显示明文', async () => {
     window.history.replaceState({}, '', '/console/logs?id=11045978')
-    apiFetchMock.mockRejectedValue(new ApiError('请求的资源不存在或已失效。', 404))
+    apiFetchMock.mockResolvedValue({
+      ...sampleEvents.items[1],
+      id: 11045978,
+      category: 'authorization',
+      severity: 'notice',
+      ip: '203.0.113.10',
+      ip_location: 'SG',
+      user_agent: 'Test Browser',
+      ray_id: 'cx-test-ray',
+      client: {
+        client_id: 'cx_demo',
+        client_name: '示例应用',
+        created_at: '2025-12-20T11:55:31Z',
+        status: 'active',
+      },
+    })
     render(<SecurityLogsPage />)
-    await screen.findByText(/示例数据预览/)
-    // 事件信息与应用信息面板（#11045978 是 oauth_consent，带 client）
-    expect(screen.getByText('事件信息')).toBeTruthy()
+    expect(await screen.findByText('事件信息')).toBeTruthy()
     expect(screen.getByText('应用信息')).toBeTruthy()
-    expect(screen.getByText('WONG 公益站备用')).toBeTruthy()
+    expect(screen.getByText('示例应用')).toBeTruthy()
     // IP 默认打码
     expect(screen.queryByText(/203\.0\.113\./)).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '显示IP 地址' }))
@@ -128,11 +135,13 @@ describe('SecurityLogDetail（经 ?id= 进入）', () => {
     expect(screen.queryByText(/203\.0\.113\./)).toBeNull()
   })
 
-  it('404 且 id 不在示例数据中时提示记录不存在', async () => {
-    window.history.replaceState({}, '', '/console/logs?id=99')
+  it('任何详情 404 都提示记录不存在且不渲染示例数据', async () => {
+    window.history.replaceState({}, '', '/console/logs?id=11045978')
     apiFetchMock.mockRejectedValue(new ApiError('请求的资源不存在或已失效。', 404))
     render(<SecurityLogsPage />)
     expect(await screen.findByText('日志记录不存在或已失效。')).toBeTruthy()
+    expect(screen.queryByText('事件信息')).toBeNull()
+    expect(screen.queryByText('WONG 公益站备用')).toBeNull()
   })
 
   it('详情页提供返回列表的链接', async () => {

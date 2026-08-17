@@ -21,7 +21,7 @@ use super::{
 };
 use crate::{
     clock::SharedClock, config::AuthEncryptionKeyRing, redis_client::RedisClient,
-    users::domain::UserId,
+    redis_keyspace::RedisKeyspace, users::domain::UserId,
 };
 
 mod postgres;
@@ -31,11 +31,13 @@ mod redis_only;
 #[path = "store_tests.rs"]
 mod tests;
 
-// 两个函数本体在 postgres 子模块，可见性保持 `pub(crate)`：
+// 跨边界类型/函数本体在 postgres 子模块，可见性保持 `pub(crate)`：
 // `users::repository` 通过 `crate::sessions::store::...` 调用，路径不变。
 // 这里必须用 `pub(crate) use` 而非 `pub use`——`pub use` 重导出 `pub(crate)` 条目
 // 会触发 E0365。
-pub(crate) use postgres::{lock_user_session_scope, revoke_all_for_user_in_transaction};
+pub(crate) use postgres::{
+    SessionIssuanceGuard, lock_user_session_scope, revoke_all_for_user_in_transaction,
+};
 
 #[derive(Clone)]
 pub struct SessionStore {
@@ -86,6 +88,18 @@ pub enum SessionStoreError {
     Database(#[from] crate::sqlx::Error),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveFactorState {
+    pub totp: bool,
+    pub passkey: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasswordSessionPersistence {
+    Stored,
+    FactorBecameRequired(EffectiveFactorState),
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionSummary {
     pub id: i64,
@@ -107,6 +121,7 @@ pub struct SessionSummary {
 pub enum SessionEpochBinding {
     Current,
     Authenticated(i64),
+    PasswordAuthenticated { authenticated_epoch: i64 },
 }
 
 impl SessionStore {
@@ -182,6 +197,11 @@ impl SessionStore {
         self
     }
 
+    pub fn with_keyspace(mut self, keyspace: RedisKeyspace) -> Self {
+        self.key_prefix = keyspace.prefix("chenxing:session:");
+        self
+    }
+
     pub fn with_absolute_ttl(mut self, absolute_ttl: Duration) -> Self {
         if !absolute_ttl.is_zero() && time::Duration::try_from(absolute_ttl).is_ok() {
             self.policy.absolute_ttl = absolute_ttl;
@@ -219,6 +239,7 @@ impl SessionStore {
     ) -> Result<(), SessionStoreError> {
         self.save_bound(session, ttl, SessionEpochBinding::Current)
             .await
+            .map(|_| ())
     }
 
     /// 写入一条绑定认证 epoch 的会话。
@@ -239,6 +260,23 @@ impl SessionStore {
             SessionEpochBinding::Authenticated(authenticated_epoch),
         )
         .await
+        .map(|_| ())
+    }
+
+    pub async fn save_password_authenticated(
+        &self,
+        session: &mut Session,
+        ttl: Duration,
+        authenticated_epoch: i64,
+    ) -> Result<PasswordSessionPersistence, SessionStoreError> {
+        self.save_bound(
+            session,
+            ttl,
+            SessionEpochBinding::PasswordAuthenticated {
+                authenticated_epoch,
+            },
+        )
+        .await
     }
 
     async fn save_bound(
@@ -246,7 +284,7 @@ impl SessionStore {
         session: &mut Session,
         ttl: Duration,
         binding: SessionEpochBinding,
-    ) -> Result<(), SessionStoreError> {
+    ) -> Result<PasswordSessionPersistence, SessionStoreError> {
         session.set_idle_timeout(self.policy.idle_timeout);
         if self.metadata.is_some() {
             postgres::save_with_metadata(self, session, ttl, binding).await
@@ -254,10 +292,11 @@ impl SessionStore {
             // 纯 Redis 路径没有 users 表可读，无法校验 epoch。缺少校验能力时
             // 拒绝签发，而不是降级成"当作校验通过"：后者会让一条本应被拒绝的
             // 凭据在配置退化时静默生效。生产 AppState 始终带 Postgres 元数据。
-            if matches!(binding, SessionEpochBinding::Authenticated(_)) {
+            if !matches!(binding, SessionEpochBinding::Current) {
                 return Err(SessionStoreError::MetadataUnavailable);
             }
-            redis_only::save_redis_only(self, session, ttl).await
+            redis_only::save_redis_only(self, session, ttl).await?;
+            Ok(PasswordSessionPersistence::Stored)
         }
     }
 
@@ -279,6 +318,33 @@ impl SessionStore {
         } else {
             redis_only::find_redis_only_by_token_hash(self, token_hash).await
         }
+    }
+
+    /// Acquire the final PostgreSQL ordering boundary for token issuance.
+    pub(crate) async fn acquire_issuance_guard(
+        &self,
+        session_id: i64,
+        user_id: UserId,
+        token_hash: &[u8],
+        expected_epoch: i64,
+    ) -> Result<Option<SessionIssuanceGuard>, SessionStoreError> {
+        if self.metadata.is_none() {
+            return Err(SessionStoreError::MetadataUnavailable);
+        }
+        postgres::acquire_issuance_guard(self, session_id, user_id, token_hash, expected_epoch)
+            .await
+    }
+
+    /// Session-less `session_epoch` fence after Refresh Token rotation.
+    pub(crate) async fn acquire_user_generation_guard(
+        &self,
+        user_id: UserId,
+        expected_epoch: i64,
+    ) -> Result<Option<SessionIssuanceGuard>, SessionStoreError> {
+        if self.metadata.is_none() {
+            return Err(SessionStoreError::MetadataUnavailable);
+        }
+        postgres::acquire_user_generation_guard(self, user_id, expected_epoch).await
     }
 
     pub async fn revoke(&self, token: &str) -> Result<(), SessionStoreError> {

@@ -55,7 +55,7 @@ return 1
 /// - `KEYS[6]` 墓碑键
 /// - `KEYS[7]` 新 family 的撤销墓志键
 /// - `KEYS[8]` grant 索引键（user + client；轮换前后同一个 grant）
-/// - `ARGV[1]` 预期旧 token JSON（只比较当前协议字段，忽略未来字段）
+/// - `ARGV[1]` 预期旧 token JSON（只比较 `value` + `cas_revision`）
 /// - `ARGV[2]` 新 token JSON
 /// - `ARGV[3]` 新主键 TTL（秒）
 /// - `ARGV[4]` 索引 TTL（秒）
@@ -73,24 +73,9 @@ return 1
 /// （重放），也可能是滑动/绝对期限边界过期、Redis 驱逐或应用与 Redis 时钟
 /// 偏差（良性）。脚本无法区分，调用方必须读取墓碑：存在 `Consumed` 墓碑才是
 /// 重放并撤销 family；没有墓碑则只是键消失，绝不能撤销整个 grant。
-pub const ROTATE_WITH_TOMBSTONE_SCRIPT: &str = r#"
-local function same_payload(current_json, expected_json)
-    local current = cjson.decode(current_json)
-    local expected = cjson.decode(expected_json)
-    local fields = {
-        'value', 'client_id', 'user_id', 'scopes', 'created_at', 'expires_at',
-        'revoked_at', 'issued_at', 'family_id', 'client_secret_version', 'session_epoch'
-    }
-    local function encoded(value)
-        if value == nil then return 'null' end
-        return cjson.encode(value)
-    end
-    for _, field in ipairs(fields) do
-        if encoded(current[field]) ~= encoded(expected[field]) then return false end
-    end
-    return true
-end
-
+pub const ROTATE_WITH_TOMBSTONE_SCRIPT: &str = concat!(
+    super::cas::cas_identity_lua!(),
+    r#"
 if redis.call('EXISTS', KEYS[7]) == 1 then
     return -1
 end
@@ -98,7 +83,7 @@ local current = redis.call('GET', KEYS[1])
 if current == false then
     return 2
 end
-if not same_payload(current, ARGV[1]) then
+if not same_cas_identity(current, ARGV[1], 'value') then
     return 0
 end
 redis.call('SETEX', KEYS[2], ARGV[3], ARGV[2])
@@ -119,7 +104,8 @@ if ARGV[10] ~= '' then
 end
 redis.call('SETEX', KEYS[6], ARGV[8], ARGV[7])
 return 1
-"#;
+"#
+);
 
 /// 原子删除单个 token 并清理索引，不写也不删任何 tombstone。
 ///
@@ -153,15 +139,15 @@ return 1
 /// 原子 CAS 删除 token、清理索引并写墓碑（授权码换取路径的单次消费）。
 ///
 /// 这是唯一会写 `Consumed` 墓碑的删除脚本。先做 CAS 比较：只有当前值
-/// 与预期协议字段一致时才消费，避免并发请求各自删掉对方刚写入的 token；
-/// 未知未来字段不参与比较，以支持滚动升级。
+/// 的 `value` + `cas_revision` 与预期一致时才消费，避免并发请求各自删掉
+/// 对方刚写入的 token；未知未来字段不参与比较，以支持滚动升级。
 ///
 /// - `KEYS[1]` token 主键
 /// - `KEYS[2]` client 索引键
 /// - `KEYS[3]` family 索引键（`ARGV[6]` 为空时不使用）
 /// - `KEYS[4]` 墓碑键
 /// - `KEYS[5]` grant 索引键（user + client）
-/// - `ARGV[1]` 预期 token JSON（只比较当前协议字段，忽略未来字段）
+/// - `ARGV[1]` 预期 token JSON（只比较 `value` + `cas_revision`）
 /// - `ARGV[2]` token_hash
 /// - `ARGV[3]` 墓碑 JSON
 /// - `ARGV[4]` 墓碑 TTL（秒）
@@ -169,26 +155,11 @@ return 1
 /// - `ARGV[6]` family_id，空表示旧格式 token
 ///
 /// 返回 `1` 消费成功，`0` 表示 CAS 失败。
-pub const TAKE_IF_MATCHES_SCRIPT: &str = r#"
-local function same_payload(current_json, expected_json)
-    local current = cjson.decode(current_json)
-    local expected = cjson.decode(expected_json)
-    local fields = {
-        'value', 'client_id', 'user_id', 'scopes', 'created_at', 'expires_at',
-        'revoked_at', 'issued_at', 'family_id', 'client_secret_version', 'session_epoch'
-    }
-    local function encoded(value)
-        if value == nil then return 'null' end
-        return cjson.encode(value)
-    end
-    for _, field in ipairs(fields) do
-        if encoded(current[field]) ~= encoded(expected[field]) then return false end
-    end
-    return true
-end
-
+pub const TAKE_IF_MATCHES_SCRIPT: &str = concat!(
+    super::cas::cas_identity_lua!(),
+    r#"
 local current = redis.call('GET', KEYS[1])
-if not current or not same_payload(current, ARGV[1]) then
+if not current or not same_cas_identity(current, ARGV[1], 'value') then
     return 0
 end
 redis.call('DEL', KEYS[1])
@@ -202,7 +173,8 @@ if ARGV[6] ~= '' then
 end
 redis.call('SETEX', KEYS[4], ARGV[4], ARGV[3])
 return 1
-"#;
+"#
+);
 
 /// 原子撤销整个 Token Family（RFC 9700 §4.14.2 的重放响应，以及显式
 /// `/oauth/revoke` 的撤销单元）。

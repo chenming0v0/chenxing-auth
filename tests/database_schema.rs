@@ -14,22 +14,36 @@ async fn database() -> chenxing_auth::sqlx::PgPool {
 async fn business_advisory_locks_do_not_collide_with_user_ids() {
     let pool = database().await;
 
-    for key in [7_341_928_i64, 7_341_929_i64] {
+    // OwnerBootstrap, DefaultPlan, PasskeyPolicy — keep in sync with BusinessLock.
+    for business_key in [7_341_928_i32, 7_341_929_i32, 7_341_931_i32] {
+        let user_id = i64::from(business_key);
         let mut user_transaction = pool.begin().await.expect("begin user lock transaction");
-        chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(key)
+        chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock($1::bigint)")
+            .bind(user_id)
             .execute(&mut *user_transaction)
             .await
             .expect("acquire user bigint lock");
-        let business_lock_available: bool =
-            chenxing_auth::sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(0, $1)")
-                .bind(i32::try_from(key).expect("business lock key fits int4"))
+        let duplicate_user_available: bool =
+            chenxing_auth::sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1::bigint)")
+                .bind(user_id)
                 .fetch_one(&pool)
                 .await
-                .expect("try business lock while user lock is held");
+                .expect("try duplicate user lock");
+        assert!(
+            !duplicate_user_available,
+            "user lock {user_id} stopped serializing callers"
+        );
+        let business_lock_available: bool = chenxing_auth::sqlx::query_scalar(
+            "SELECT pg_try_advisory_xact_lock($1::integer, $2::integer)",
+        )
+        .bind(0_i32)
+        .bind(business_key)
+        .fetch_one(&pool)
+        .await
+        .expect("try business lock while user lock is held");
         assert!(
             business_lock_available,
-            "business lock collided with user id {key}"
+            "business lock collided with user id {user_id}"
         );
         user_transaction
             .rollback()
@@ -37,20 +51,23 @@ async fn business_advisory_locks_do_not_collide_with_user_ids() {
             .expect("release user lock");
 
         let mut business_transaction = pool.begin().await.expect("begin business lock transaction");
-        chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock(0, $1)")
-            .bind(i32::try_from(key).expect("business lock key fits int4"))
+        chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock($1::integer, $2::integer)")
+            .bind(0_i32)
+            .bind(business_key)
             .execute(&mut *business_transaction)
             .await
             .expect("acquire business lock");
-        let duplicate_available: bool =
-            chenxing_auth::sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(0, $1)")
-                .bind(i32::try_from(key).expect("business lock key fits int4"))
-                .fetch_one(&pool)
-                .await
-                .expect("try duplicate business lock");
+        let duplicate_available: bool = chenxing_auth::sqlx::query_scalar(
+            "SELECT pg_try_advisory_xact_lock($1::integer, $2::integer)",
+        )
+        .bind(0_i32)
+        .bind(business_key)
+        .fetch_one(&pool)
+        .await
+        .expect("try duplicate business lock");
         assert!(
             !duplicate_available,
-            "business lock {key} stopped serializing callers"
+            "business lock {business_key} stopped serializing callers"
         );
         business_transaction
             .rollback()
@@ -205,6 +222,7 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     assert_check_contains(&pool, "users", "users_role_check").await;
     assert_table_missing(&pool, "admins").await;
     assert_column(&pool, "user_passkeys", "user_id", "bigint", false).await;
+    assert_column(&pool, "user_passkeys", "state_version", "bigint", false).await;
     assert_fk(&pool, "user_passkeys", "user_id", "users", "id").await;
     assert_column(&pool, "oauth_clients", "id", "bigint", false).await;
     assert_identity(&pool, "oauth_clients", "id").await;
@@ -496,6 +514,110 @@ async fn runtime_role_cannot_delete_audit_and_uses_security_definer_archive() {
         .await
         .expect("runtime role can archive through SECURITY DEFINER function");
     assert_eq!(archived, 1);
+
+    let ledger_rows: i64 =
+        chenxing_auth::sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&runtime_pool)
+            .await
+            .expect("runtime role can inspect the migration ledger");
+    assert!(ledger_rows > 0);
+
+    for (operation, statement) in [
+        (
+            "INSERT",
+            "INSERT INTO _sqlx_migrations
+                 (version, description, success, checksum, execution_time)
+             VALUES (9547000, 'runtime privilege probe', TRUE, ''::bytea, 0)",
+        ),
+        (
+            "UPDATE",
+            "UPDATE _sqlx_migrations
+             SET description = description
+             WHERE version = 9547000",
+        ),
+        (
+            "DELETE",
+            "DELETE FROM _sqlx_migrations WHERE version = 9547000",
+        ),
+        ("TRUNCATE", "TRUNCATE _sqlx_migrations"),
+    ] {
+        let mut transaction = runtime_pool
+            .begin()
+            .await
+            .expect("begin runtime ledger probe");
+        let result = chenxing_auth::sqlx::query(statement)
+            .execute(&mut *transaction)
+            .await;
+        transaction
+            .rollback()
+            .await
+            .expect("rollback runtime ledger probe");
+        assert!(
+            result.is_err(),
+            "runtime role must not {operation} the SQLx migration ledger"
+        );
+    }
+
+    let mut migration_transaction = pool
+        .begin()
+        .await
+        .expect("begin migration-role ledger probe");
+    chenxing_auth::sqlx::query(
+        "INSERT INTO _sqlx_migrations
+             (version, description, success, checksum, execution_time)
+         VALUES (9547000, 'migration role privilege probe', TRUE, ''::bytea, 0)",
+    )
+    .execute(&mut *migration_transaction)
+    .await
+    .expect("migration role can insert migration ledger rows");
+    chenxing_auth::sqlx::query(
+        "UPDATE _sqlx_migrations
+         SET description = 'migration role updated privilege probe'
+         WHERE version = 9547000",
+    )
+    .execute(&mut *migration_transaction)
+    .await
+    .expect("migration role can update migration ledger rows");
+    chenxing_auth::sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 9547000")
+        .execute(&mut *migration_transaction)
+        .await
+        .expect("migration role can delete migration ledger rows");
+    chenxing_auth::sqlx::query("TRUNCATE _sqlx_migrations")
+        .execute(&mut *migration_transaction)
+        .await
+        .expect("migration role can truncate the migration ledger");
+    migration_transaction
+        .rollback()
+        .await
+        .expect("rollback migration-role ledger probe");
+
+    chenxing_auth::sqlx::query("CREATE TABLE runtime_default_privilege_probe (id BIGINT)")
+        .execute(&pool)
+        .await
+        .expect("create table after the runtime privilege migration");
+    chenxing_auth::sqlx::query("SELECT * FROM runtime_default_privilege_probe")
+        .execute(&runtime_pool)
+        .await
+        .expect("default privileges preserve runtime SELECT on new tables");
+    let runtime_insert =
+        chenxing_auth::sqlx::query("INSERT INTO runtime_default_privilege_probe (id) VALUES (1)")
+            .execute(&runtime_pool)
+            .await;
+    chenxing_auth::sqlx::query("DROP TABLE runtime_default_privilege_probe")
+        .execute(&pool)
+        .await
+        .expect("drop default privilege probe table");
+    assert!(
+        runtime_insert.is_err(),
+        "default privileges must not regrant table mutation to the runtime role"
+    );
+
+    let latest_migration: i64 =
+        chenxing_auth::sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .expect("read latest migration version");
+    assert_eq!(latest_migration, 32);
 }
 
 /// Owner 初始化要求 `users.id` 从 1 开始，`bootstrap_owner` 因此在插入前调

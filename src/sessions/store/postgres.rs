@@ -5,165 +5,122 @@
 //! 撤销通过更新 `revoked_at` 列表达，并将撤销通知写进 `session_outbox`，由
 //! outbox 处理器异步同步到 Redis。
 
-use std::time::Duration;
-
-use super::{SessionEpochBinding, SessionStore, SessionStoreError};
+use super::{SessionStore, SessionStoreError};
 use crate::{
-    sessions::domain::{Session, SessionPayload, session_token_hash_bytes},
     sqlx::{Postgres, Transaction},
-    users::domain::{UserId, UserStatus},
+    users::domain::UserId,
 };
 
 #[path = "postgres_find.rs"]
 mod find;
 #[path = "postgres_lookup.rs"]
 mod lookup;
+#[path = "postgres_save.rs"]
+mod save;
 
 pub(super) use find::{find_with_metadata, find_with_metadata_by_token_hash};
 pub(super) use lookup::{list_for_user, revoke_for_user};
+pub(super) use save::save_with_metadata;
 
-/// 写入会话元数据。
+/// A short PostgreSQL row lock that orders one OAuth token publication against Session logout.
+pub(crate) struct SessionIssuanceGuard {
+    transaction: crate::sqlx::Transaction<'static, crate::sqlx::Postgres>,
+}
+
+impl SessionIssuanceGuard {
+    pub(crate) async fn release(self) -> Result<(), crate::sqlx::Error> {
+        self.transaction.rollback().await
+    }
+}
+
+/// Begin the shared user-generation fence used by token issuance (Issue #476).
 ///
-/// `binding` 为 [`SessionEpochBinding::Authenticated`] 时，epoch 比对发生在本事务
-/// 已经持有该用户的 advisory 锁与 `users` 行锁之后（Issue #274）。这一点是原子性的
-/// 全部来源：改密走的 `revoke_all_for_user_in_transaction` 需要同一把 advisory 锁，
-/// 因此两个事务只能串行——要么改密先提交、本次读到新 epoch 并拒绝写入，要么本次
-/// 先提交、改密随后把这条会话一起撤销。不存在"读到旧 epoch 又按新 epoch 落库"的
-/// 中间态。比对失败直接返回错误，事务连一行都没插入。
-pub(super) async fn save_with_metadata(
+/// `revoke_all_for_user_in_transaction` takes the same advisory lock before
+/// advancing `users.session_epoch`. Taking it here first, then locking the
+/// `users` row, is what makes an epoch bump conflict with issuance. A lockless
+/// re-read, or `FOR SHARE OF sessions` alone, does not.
+async fn begin_user_generation_fence(
     store: &SessionStore,
-    session: &mut Session,
-    _ttl: Duration,
-    binding: SessionEpochBinding,
-) -> Result<(), SessionStoreError> {
+    user_id: UserId,
+) -> Result<crate::sqlx::Transaction<'static, crate::sqlx::Postgres>, SessionStoreError> {
     let pool = store
         .metadata
         .as_ref()
         .ok_or(SessionStoreError::MetadataUnavailable)?;
-    let user_id = session
-        .user_id
-        .parse::<UserId>()
-        .map_err(|_| SessionStoreError::InvalidUserId)?;
-    let token_hash = session_token_hash_bytes(&session.token).to_vec();
     let mut transaction = pool.begin().await?;
+    crate::sqlx::query("SET LOCAL lock_timeout = '5s'")
+        .execute(&mut *transaction)
+        .await?;
+    crate::sqlx::query("SET LOCAL idle_in_transaction_session_timeout = '5s'")
+        .execute(&mut *transaction)
+        .await?;
     lock_user_session_scope(&mut transaction, user_id).await?;
-    let user_state: Option<(i64, String)> =
-        crate::sqlx::query_as("SELECT session_epoch, status FROM users WHERE id = $1 FOR UPDATE")
-            .bind(user_id)
-            .fetch_optional(&mut *transaction)
-            .await?;
-    let Some((session_epoch, status)) = user_state else {
-        return Err(SessionStoreError::UserNotFound);
-    };
-    if UserStatus::parse(&status) != Some(UserStatus::Active) {
-        return Err(SessionStoreError::UserDisabled);
-    }
-    if let SessionEpochBinding::Authenticated(authenticated_epoch) = binding
-        && authenticated_epoch != session_epoch
-    {
-        tracing::warn!(
-            event = "session.authentication_epoch_stale",
-            user_id,
-            "session issuance rejected because credentials were invalidated concurrently"
-        );
-        return Err(SessionStoreError::AuthenticationEpochChanged);
-    }
-    let active_count: i64 = crate::sqlx::query_scalar(
-        "SELECT COUNT(*)
-         FROM user_sessions
-         WHERE user_id = $1
-           AND revoked_at IS NULL
-           AND expires_at > NOW()
-           AND last_seen_at > NOW() - $2
-           AND session_epoch >= $3",
+    Ok(transaction)
+}
+
+/// Final Session liveness and `session_epoch` fence (Issues #506 / #476).
+///
+/// `expected_epoch` is the generation already stamped on the Refresh Token.
+/// It is compared under the user lock; this function must not re-read epoch
+/// outside that lock.
+pub(super) async fn acquire_issuance_guard(
+    store: &SessionStore,
+    session_id: i64,
+    user_id: UserId,
+    token_hash: &[u8],
+    expected_epoch: i64,
+) -> Result<Option<SessionIssuanceGuard>, SessionStoreError> {
+    let mut transaction = begin_user_generation_fence(store, user_id).await?;
+    let active: Option<bool> = crate::sqlx::query_scalar(
+        "SELECT TRUE
+         FROM user_sessions AS sessions
+         JOIN users ON users.id = sessions.user_id
+         WHERE sessions.id = $1
+           AND sessions.token_hash = $2
+           AND sessions.user_id = $3
+           AND sessions.revoked_at IS NULL
+           AND sessions.expires_at > NOW()
+           AND sessions.last_seen_at > NOW() - $4
+           AND sessions.session_epoch >= users.session_epoch
+           AND users.status = 'active'
+           AND users.session_epoch = $5
+         FOR SHARE OF sessions, users",
     )
+    .bind(session_id)
+    .bind(token_hash)
     .bind(user_id)
     .bind(store.idle_timeout_interval())
-    .bind(session_epoch)
-    .fetch_one(&mut *transaction)
+    .bind(expected_epoch)
+    .fetch_optional(&mut *transaction)
     .await?;
-    let max_sessions = i64::try_from(store.policy.max_concurrent_sessions).unwrap_or(i64::MAX);
-    let revoke_count = active_count
-        .saturating_sub(max_sessions.saturating_sub(1))
-        .max(0);
-    let active_sessions: Vec<(i64, Vec<u8>)> = if revoke_count == 0 {
-        Vec::new()
-    } else {
-        crate::sqlx::query_as(
-            "SELECT id, token_hash
-             FROM user_sessions
-             WHERE user_id = $1
-               AND revoked_at IS NULL
-               AND expires_at > NOW()
-               AND last_seen_at > NOW() - $2
-               AND session_epoch >= $3
-             ORDER BY created_at ASC, id ASC
-             LIMIT $4
-             FOR UPDATE",
-        )
-        .bind(user_id)
-        .bind(store.idle_timeout_interval())
-        .bind(session_epoch)
-        .bind(revoke_count)
-        .fetch_all(&mut *transaction)
-        .await?
-    };
-    for (session_id, old_token_hash) in active_sessions {
-        crate::sqlx::query(
-            "UPDATE user_sessions
-             SET revoked_at = COALESCE(revoked_at, NOW())
-             WHERE id = $1",
-        )
-        .bind(session_id)
-        .execute(&mut *transaction)
-        .await?;
-        crate::sqlx::query(
-            "INSERT INTO session_outbox
-                 (operation, session_id, user_id, token_hash, generation)
-             VALUES ('revoke_session', $1, $2, $3, $4)",
-        )
-        .bind(session_id)
-        .bind(user_id)
-        .bind(old_token_hash)
-        .bind(session_epoch)
-        .execute(&mut *transaction)
-        .await?;
+    if active.is_none() {
+        transaction.rollback().await?;
+        return Ok(None);
     }
-    // The database row owns the session id.  A new payload uses the same id=0
-    // placeholder as the Redis-only store; PostgreSQL reads always overwrite
-    // it with the authoritative row id.
-    let stored_payload = SessionPayload::from(&*session);
-    let encrypted_payload = store.encrypt_payload(&serde_json::to_vec(&stored_payload)?)?;
-    let id: i64 = crate::sqlx::query_scalar(
-        "INSERT INTO user_sessions
-             (token_hash, user_id, created_at, expires_at, last_seen_at,
-              session_payload, session_epoch)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id",
+    Ok(Some(SessionIssuanceGuard { transaction }))
+}
+
+/// Session-less `session_epoch` fence for Refresh Token rotation (Issue #476).
+pub(super) async fn acquire_user_generation_guard(
+    store: &SessionStore,
+    user_id: UserId,
+    expected_epoch: i64,
+) -> Result<Option<SessionIssuanceGuard>, SessionStoreError> {
+    let mut transaction = begin_user_generation_fence(store, user_id).await?;
+    let current: Option<i64> = crate::sqlx::query_scalar(
+        "SELECT session_epoch
+         FROM users
+         WHERE id = $1 AND status = 'active'
+         FOR SHARE",
     )
-    .bind(&token_hash)
     .bind(user_id)
-    .bind(session.created_at)
-    .bind(session.expires_at)
-    .bind(session.last_seen_at)
-    .bind(encrypted_payload)
-    .bind(session_epoch)
-    .fetch_one(&mut *transaction)
+    .fetch_optional(&mut *transaction)
     .await?;
-    session.id = id;
-    crate::sqlx::query(
-        "INSERT INTO session_outbox
-             (operation, session_id, user_id, token_hash, generation)
-         VALUES ('sync_session', $1, $2, $3, $4)",
-    )
-    .bind(id)
-    .bind(user_id)
-    .bind(&token_hash)
-    .bind(session_epoch)
-    .execute(&mut *transaction)
-    .await?;
-    transaction.commit().await?;
-    Ok(())
+    if current != Some(expected_epoch) {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+    Ok(Some(SessionIssuanceGuard { transaction }))
 }
 
 /// 按令牌哈希撤销单条会话。
@@ -238,11 +195,7 @@ pub(crate) async fn lock_user_session_scope(
     transaction: &mut Transaction<'_, Postgres>,
     user_id: UserId,
 ) -> Result<(), crate::sqlx::Error> {
-    crate::sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(user_id)
-        .execute(&mut **transaction)
-        .await?;
-    Ok(())
+    crate::db::advisory_lock::lock_user(transaction, user_id).await
 }
 
 pub(crate) async fn revoke_all_for_user_in_transaction(

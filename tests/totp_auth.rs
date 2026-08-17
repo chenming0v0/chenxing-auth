@@ -3,18 +3,24 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, state::AppState};
+use chenxing_auth::{
+    api, auth_factors::domain::FactorMethod, clock::SharedClock, config::Config, sessions::cookies,
+    state::AppState, users::domain::AuthenticatedUser,
+};
 use totp_rs::{Secret, TOTP};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
+#[path = "support/totp_time.rs"]
+mod totp_time;
 
 const ADMIN_TOKEN: &str = "totp-admin-token";
 
 async fn setup() -> (
     Router,
+    AppState,
     chenxing_auth::sqlx::PgPool,
     std::path::PathBuf,
     String,
@@ -40,8 +46,9 @@ async fn setup() -> (
     let owner_suffix = Uuid::new_v4().simple().to_string();
     let state = AppState::new_with_pool(config, database.clone())
         .await
-        .expect("test state");
-    let router = api::router(state);
+        .expect("test state")
+        .with_clock(SharedClock::fixed(totp_time::centered_now()));
+    let router = api::router(state.clone());
     let bootstrap = router
         .clone()
         .oneshot(
@@ -69,7 +76,7 @@ async fn setup() -> (
     // 用户拿到小号 ID，TOTP 时间步 claim 键在共享 Redis 上跨测试碰撞（#301）。
     db_isolation::isolate_user_ids(&database, "totp_auth").await;
     let email = format!("totp-{}@example.com", Uuid::new_v4().simple());
-    (router, database, key_directory, email)
+    (router, state, database, key_directory, email)
 }
 
 async fn json_body(response: axum::response::Response) -> serde_json::Value {
@@ -122,6 +129,35 @@ async fn create_user(router: &Router, username: &str, email: &str, password: &st
     assert_eq!(response.status(), StatusCode::CREATED);
 }
 
+async fn legacy_totp_ticket(
+    state: &AppState,
+    database: &chenxing_auth::sqlx::PgPool,
+    email: &str,
+) -> String {
+    let (user_id, session_epoch): (i64, i64) =
+        chenxing_auth::sqlx::query_as("SELECT id, session_epoch FROM users WHERE email = $1")
+            .bind(email)
+            .fetch_one(database)
+            .await
+            .expect("user credentials");
+    let holder = cookies::new_login_ticket_holder();
+    let holder_hash = cookies::login_ticket_holder_hash(&holder);
+    let (ticket_id, _) = state
+        .factors
+        .create_login_ticket(
+            AuthenticatedUser::new(user_id, session_epoch),
+            vec![FactorMethod::Totp],
+            &holder_hash,
+        )
+        .await
+        .expect("legacy login ticket");
+    format!(
+        "{}={ticket_id}; {}={holder}",
+        cookies::login_ticket_cookie_name(false),
+        cookies::login_ticket_holder_cookie_name(false)
+    )
+}
+
 fn pending_cookie(response: &axum::response::Response) -> String {
     response
         .headers()
@@ -155,8 +191,8 @@ async fn request_with_cookie(
 }
 
 #[tokio::test]
-async fn password_login_without_factor_returns_pending_setup_ticket() {
-    let (router, database, key_directory, email) = setup().await;
+async fn password_login_without_factor_issues_session() {
+    let (router, _state, database, key_directory, email) = setup().await;
     let username = format!("totp-{}", Uuid::new_v4().simple());
     let password = "correct horse battery";
     create_user(&router, &username, &email, password).await;
@@ -175,14 +211,13 @@ async fn password_login_without_factor_returns_pending_setup_ticket() {
         )
         .await
         .expect("login response");
-    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    assert_eq!(response.status(), StatusCode::OK);
     let cookie = pending_cookie(&response);
     let body = json_body(response).await;
-    assert_eq!(body["status"], "factor_setup_required");
-    assert!(body.get("login_ticket").is_none());
-    assert!(cookie.contains("chenxing_login_ticket="));
-    assert!(cookie.contains("chenxing_login_holder="));
-    assert_eq!(body["methods"][0], "totp");
+    assert!(body["expires_at"].as_str().is_some());
+    assert!(body.get("status").is_none());
+    assert!(cookie.contains("chenxing_session="));
+    assert!(cookie.contains("chenxing_csrf="));
 
     let user_id: (i64,) = chenxing_auth::sqlx::query_as("SELECT id FROM users WHERE email = $1")
         .bind(&email)
@@ -199,19 +234,12 @@ async fn password_login_without_factor_returns_pending_setup_ticket() {
 
 #[tokio::test]
 async fn totp_login_endpoint_completes_a_pending_factor_ticket() {
-    let (router, database, key_directory, email) = setup().await;
+    let (router, state, database, key_directory, email) = setup().await;
     let username = format!("totp-login-{}", Uuid::new_v4().simple());
     let password = "correct horse battery";
     create_user(&router, &username, &email, password).await;
 
-    let login_response = request(
-        &router,
-        "/api/v1/auth/login",
-        serde_json::json!({"identifier": username, "password": password}),
-    )
-    .await;
-    let cookie = pending_cookie(&login_response);
-    let _pending = json_body(login_response).await;
+    let cookie = legacy_totp_ticket(&state, &database, &email).await;
     let setup = json_body(
         request_with_cookie(
             &router,
@@ -253,19 +281,12 @@ async fn totp_login_endpoint_completes_a_pending_factor_ticket() {
 
 #[tokio::test]
 async fn totp_login_ticket_is_invalidated_after_five_failed_codes() {
-    let (router, database, key_directory, email) = setup().await;
+    let (router, state, database, key_directory, email) = setup().await;
     let username = format!("totp-limit-{}", Uuid::new_v4().simple());
     let password = "correct horse battery";
     create_user(&router, &username, &email, password).await;
 
-    let login_response = request(
-        &router,
-        "/api/v1/auth/login",
-        serde_json::json!({"identifier": username, "password": password}),
-    )
-    .await;
-    let cookie = pending_cookie(&login_response);
-    let _pending = json_body(login_response).await;
+    let cookie = legacy_totp_ticket(&state, &database, &email).await;
     let response = request_with_cookie(
         &router,
         "/api/v1/auth/totp/setup",
@@ -305,19 +326,12 @@ async fn totp_login_ticket_is_invalidated_after_five_failed_codes() {
 
 #[tokio::test]
 async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
-    let (router, database, key_directory, email) = setup().await;
+    let (router, state, database, key_directory, email) = setup().await;
     let username = format!("totp-{}", Uuid::new_v4().simple());
     let password = "correct horse battery";
     create_user(&router, &username, &email, password).await;
 
-    let response = request(
-        &router,
-        "/api/v1/auth/login",
-        serde_json::json!({"identifier": username, "password": password}),
-    )
-    .await;
-    let cookie = pending_cookie(&response);
-    let _pending = json_body(response).await;
+    let cookie = legacy_totp_ticket(&state, &database, &email).await;
 
     let response = request_with_cookie(
         &router,
@@ -336,13 +350,7 @@ async fn totp_setup_confirm_issues_session_and_consumes_ticket() {
     // 注册用**上一个时间步**的码：注册确认现在也会 claim `user/timestep`（#301），
     // 而本用例末尾还要用当前步的码断言内联登录成功。用当前步注册会把那一步烧掉。
     // 上一步的码仍在 ±1 步接受窗口内。
-    let code = totp.generate(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system time")
-            .as_secs()
-            .saturating_sub(30),
-    );
+    let code = totp.generate(totp_time::previous_timestep(state.clock.now()));
 
     let response = request_with_cookie(
         &router,

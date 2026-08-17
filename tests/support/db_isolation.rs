@@ -78,7 +78,8 @@ pub async fn isolated_pool_with_max_connections(
     max_connections: u32,
 ) -> PgPool {
     let test_identity = current_test_identity();
-    let schema = schema_name(binary_name, &test_identity);
+    let execution_identity = current_execution_identity(&test_identity);
+    let schema = schema_name(binary_name, &execution_identity);
     // 建 schema 和跑迁移是 owner 的活（CREATE TABLE / GRANT / ALTER FUNCTION），
     // 运行时角色拿不到 CREATE ON DATABASE。角色分离部署下 DATABASE_URL 指向受限的
     // 运行时角色，因此优先用 MIGRATION_DATABASE_URL；单角色环境两者相同，行为不变。
@@ -113,7 +114,7 @@ pub async fn isolated_pool_with_max_connections(
     // 应用的少数 Redis 键以 user_id 作为组成部分。每个 schema 都从独立的序列区间
     // 开始，避免测试之间共用 Redis 时把不同 schema 的用户误认为同一个用户。
     if !matches!(binary_name, "admin_api" | "bootstrap_invariant") {
-        let user_id_start = user_id_sequence_start(binary_name, &test_identity);
+        let user_id_start = user_id_sequence_start(binary_name, &execution_identity);
         chenxing_auth::sqlx::query(
             "SELECT setval(pg_get_serial_sequence('users', 'id'), $1, false)",
         )
@@ -164,7 +165,9 @@ pub async fn isolate_user_ids(database: &PgPool, binary_name: &str) {
     if matches!(binary_name, "admin_api" | "bootstrap_invariant") {
         return;
     }
-    let user_id_start = user_id_sequence_start(binary_name, &current_test_identity());
+    let test_identity = current_test_identity();
+    let user_id_start =
+        user_id_sequence_start(binary_name, &current_execution_identity(&test_identity));
     chenxing_auth::sqlx::query("SELECT setval(pg_get_serial_sequence('users', 'id'), $1, false)")
         .bind(user_id_start)
         .execute(database)
@@ -188,6 +191,15 @@ fn current_test_identity() -> String {
     format!("{:?}", thread.id())
 }
 
+fn current_execution_identity(test_identity: &str) -> String {
+    // 同一测试名在 nextest、coverage 或手动 cargo test 的不同进程中可能并发执行。
+    // schema 若只由名称派生，两个进程会交叉 DROP/CREATE，同一个测试会���到缺失的
+    // `_sqlx_migrations` 或半迁移结构。进程 ID 只作为本次执行的隔离盐；单进程内
+    // 同一测试的重复 setup 仍使用同一 schema 并由下方 DROP + CREATE 重置。
+    format!("{test_identity}-pid-{}", std::process::id())
+}
+
+/// 将测试二进制名和测试身份转换为合法 Postgres schema 名。
 /// 将测试二进制名和测试身份转换为合法 Postgres schema 名。
 ///
 /// 规则：`ctest_` 前缀 + binary name + test identity，所有非 ASCII 字母数字字符

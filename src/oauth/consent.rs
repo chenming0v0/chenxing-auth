@@ -44,6 +44,10 @@ pub struct PendingAuthorization {
     pub redirect_uri: String,
     pub scope: String,
     pub state: String,
+    /// Issuer runtime generation captured when the authorization request began.
+    /// Missing on legacy payloads and therefore rejected by continuation paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer_generation: Option<i64>,
     pub nonce: Option<String>,
     pub code_challenge: String,
     pub code_challenge_method: String,
@@ -63,13 +67,21 @@ pub struct PendingAuthorization {
     /// 反序列化 helper 的 `#[serde(default)]` + `skip_serializing_if` 是 Redis 兼容性要求，不可删除：
     /// - `default`：升级期间在途的旧 pending JSON 没有这个键，缺了它反序列化会
     ///   直接失败，所有在途授权请求全部作废。
-    /// - `skip_serializing_if`：保持旧载荷表示稳定；`take_if_matches` /
-    ///   `replace_if_matches` 只比较已知协议字段，未知未来字段不参与 CAS。
+    /// - `skip_serializing_if`：保持旧载荷表示稳定。CAS 身份只看
+    ///   `request_id` + `cas_revision`，不再比较完整 JSON。
     ///
     /// 缺失该字段的旧记录在绑定端点上 fail-secure：直接拒绝，不留「无 holder
     /// 即放行」的绕过窗口。代价是升级瞬间在途的授权请求需要重新发起。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holder_hash: Option<String>,
+    /// Stable CAS generation. Missing on legacy payloads and treated as 0.
+    /// In-place rebinds increment this so a stale reader cannot overwrite a
+    /// newer binding. Revision 0 is omitted to keep mixed-version JSON stable.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::oauth::cas::is_zero_cas_revision"
+    )]
+    pub cas_revision: u64,
 }
 
 impl fmt::Debug for PendingAuthorization {
@@ -80,6 +92,7 @@ impl fmt::Debug for PendingAuthorization {
             .field("redirect_uri", &self.redirect_uri)
             .field("scope", &self.scope)
             .field("state", &"<redacted>")
+            .field("issuer_generation", &self.issuer_generation)
             .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
             .field("code_challenge", &"<redacted>")
             .field("code_challenge_method", &self.code_challenge_method)
@@ -91,6 +104,7 @@ impl fmt::Debug for PendingAuthorization {
                 "holder_hash",
                 &self.holder_hash.as_ref().map(|_| "<redacted>"),
             )
+            .field("cas_revision", &self.cas_revision)
             .finish()
     }
 }
@@ -102,6 +116,8 @@ struct PendingAuthorizationPayload {
     redirect_uri: String,
     scope: String,
     state: String,
+    #[serde(default)]
+    issuer_generation: Option<i64>,
     nonce: Option<String>,
     code_challenge: String,
     code_challenge_method: String,
@@ -109,6 +125,8 @@ struct PendingAuthorizationPayload {
     session_token_hash: Option<String>,
     #[serde(default)]
     holder_hash: Option<String>,
+    #[serde(default)]
+    cas_revision: u64,
     #[serde(flatten)]
     extra: BTreeMap<String, serde_json::Value>,
 }
@@ -121,6 +139,7 @@ impl fmt::Debug for PendingAuthorizationPayload {
             .field("redirect_uri", &self.redirect_uri)
             .field("scope", &self.scope)
             .field("state", &"<redacted>")
+            .field("issuer_generation", &self.issuer_generation)
             .field("nonce", &self.nonce.as_ref().map(|_| "<redacted>"))
             .field("code_challenge", &"<redacted>")
             .field("code_challenge_method", &self.code_challenge_method)
@@ -157,12 +176,22 @@ impl<'de> Deserialize<'de> for PendingAuthorization {
             redirect_uri: payload.redirect_uri,
             scope: payload.scope,
             state: payload.state,
+            issuer_generation: payload.issuer_generation,
             nonce: payload.nonce,
             code_challenge: payload.code_challenge,
             code_challenge_method: payload.code_challenge_method,
             session_token_hash: payload.session_token_hash,
             holder_hash: payload.holder_hash,
+            cas_revision: payload.cas_revision,
         })
+    }
+}
+
+impl PendingAuthorization {
+    /// Returns whether this pending request belongs to the request's issuer snapshot.
+    /// Legacy records without a generation fail closed.
+    pub fn is_bound_to_issuer_generation(&self, generation: i64) -> bool {
+        self.issuer_generation == Some(generation)
     }
 }
 
@@ -202,6 +231,11 @@ mod tests {
         let restored: PendingAuthorization =
             serde_json::from_str(legacy_json).expect("legacy pending must deserialize");
         assert!(restored.holder_hash.is_none());
+        assert!(restored.issuer_generation.is_none());
+        assert!(
+            !restored.is_bound_to_issuer_generation(1),
+            "legacy pending requests without an issuer generation must fail closed"
+        );
     }
 
     #[test]
@@ -223,8 +257,8 @@ mod tests {
     }
 
     /// 回归 #115：`holder_hash: None` 重新序列化后应完全不含该键
-    /// （不能是 `"holder_hash":null`），保证 `take_if_matches` 的逐字节相等判定
-    /// 对旧记录仍然有效。
+    /// （不能是 `"holder_hash":null`）。混部时仍按完整 JSON 比较的旧实例
+    /// 才能继续消费 revision 0 的在途载荷。
     #[test]
     fn pending_without_holder_serializes_without_the_key() {
         let pending = PendingAuthorization {
@@ -238,6 +272,8 @@ mod tests {
             code_challenge_method: "S256".to_owned(),
             session_token_hash: None,
             holder_hash: None,
+            issuer_generation: None,
+            cas_revision: 0,
         };
         let serialized = serde_json::to_string(&pending).expect("serialize pending");
         // 关键：JSON 中不能出现 `"holder_hash":null` 或 `"holder_hash":`，
@@ -259,10 +295,44 @@ mod tests {
             code_challenge_method: "S256".to_owned(),
             session_token_hash: None,
             holder_hash: Some("abc123hash".to_owned()),
+            issuer_generation: Some(7),
+            cas_revision: 0,
         };
         let serialized = serde_json::to_string(&pending).expect("serialize");
         let restored: PendingAuthorization =
             serde_json::from_str(&serialized).expect("deserialize");
         assert_eq!(restored.holder_hash.as_deref(), Some("abc123hash"));
+        assert_eq!(restored.issuer_generation, Some(7));
+        assert!(restored.is_bound_to_issuer_generation(7));
+        assert!(!restored.is_bound_to_issuer_generation(8));
+        assert_eq!(restored.cas_revision, 0);
+        assert!(!serialized.contains("cas_revision"));
+    }
+
+    #[test]
+    fn future_fields_do_not_change_cas_identity() {
+        let pending = PendingAuthorization {
+            request_id: "req-future".to_owned(),
+            client_id: "client-1".to_owned(),
+            redirect_uri: "https://client.example/callback".to_owned(),
+            scope: "openid".to_owned(),
+            state: "state-future".to_owned(),
+            nonce: None,
+            code_challenge: "challenge".to_owned(),
+            code_challenge_method: "S256".to_owned(),
+            session_token_hash: None,
+            holder_hash: None,
+            issuer_generation: None,
+            cas_revision: 0,
+        };
+        let mut value = serde_json::to_value(&pending).expect("pending as JSON");
+        value
+            .as_object_mut()
+            .expect("pending serializes to an object")
+            .insert("future_field".to_owned(), serde_json::json!({"version": 2}));
+        let restored: PendingAuthorization =
+            serde_json::from_value(value).expect("future fields must be ignored");
+        assert_eq!(restored.request_id, pending.request_id);
+        assert_eq!(restored.cas_revision, 0);
     }
 }

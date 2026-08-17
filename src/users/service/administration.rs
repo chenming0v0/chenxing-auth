@@ -1,14 +1,33 @@
 //! 管理侧列表、计数、角色与状态变更。
 //!
 //! 角色与状态的"最后一个活跃 Owner"守卫在仓储层判定，这里只把仓储层的业务终局
-//! 翻译成 `UserServiceError`（Issue #126 / #283），两条写路径共用同一张翻译表。
+//! 翻译成管理写专用的 [`ManagementWriteError`]（Issue #126 / #283 / #493），
+//! 两条写路径共用同一张翻译表，不把并发授权终局泄漏到注册、登录等无关用例。
 
 use super::{UserService, UserServiceError};
+use crate::audit::AuditEvent;
 use crate::users::{
-    domain::{OwnerTargetAccess, UserId, UserRole, UserStatus},
+    ManagementActorCredential,
+    domain::{UserId, UserRole, UserStatus},
     query_repository,
     repository::{self, OwnerGuardOutcome},
 };
+
+#[derive(Debug, thiserror::Error)]
+pub enum ManagementWriteError {
+    #[error("could not persist the management write")]
+    Database(#[from] crate::sqlx::Error),
+    #[error("last active owner is required")]
+    LastOwnerRequired,
+    #[error("managing an owner requires role management permission")]
+    ManageRolesRequired,
+    #[error("the management actor session is no longer valid")]
+    ActorSessionInvalid,
+    #[error("the management actor no longer has user management permission")]
+    ActorPermissionRequired,
+    #[error("the audit record could not be written; the change was rolled back")]
+    AuditUnavailable,
+}
 
 impl UserService {
     pub async fn list(&self) -> Result<Vec<repository::ListedUser>, UserServiceError> {
@@ -44,9 +63,36 @@ impl UserService {
         &self,
         id: UserId,
         role: UserRole,
-        access: OwnerTargetAccess,
-    ) -> Result<bool, UserServiceError> {
-        translate_owner_guard(repository::set_user_role(&self.pool, id, role, access).await?)
+        credential: ManagementActorCredential,
+    ) -> Result<bool, ManagementWriteError> {
+        translate_owner_guard(repository::set_user_role(&self.pool, id, role, credential).await?)
+    }
+
+    pub async fn set_role_with_audit(
+        &self,
+        id: UserId,
+        role: UserRole,
+        credential: ManagementActorCredential,
+        audit_event: AuditEvent,
+    ) -> Result<bool, ManagementWriteError> {
+        let outcome = repository::set_user_role_with_audit(
+            &self.pool,
+            id,
+            role,
+            credential,
+            audit_event,
+        )
+        .await
+        .map_err(|error| match error {
+            repository::AuditedRoleGuardError::Database(error) => {
+                ManagementWriteError::Database(error)
+            }
+            repository::AuditedRoleGuardError::Audit(error) => {
+                tracing::error!(event = "user_role_update.audit_unavailable", error = %error);
+                ManagementWriteError::AuditUnavailable
+            }
+        })?;
+        translate_owner_guard(outcome)
     }
 
     /// 变更用户状态。
@@ -58,28 +104,32 @@ impl UserService {
         &self,
         id: UserId,
         status: UserStatus,
-        access: OwnerTargetAccess,
-    ) -> Result<bool, UserServiceError> {
+        credential: ManagementActorCredential,
+    ) -> Result<bool, ManagementWriteError> {
         translate_owner_guard(
-            repository::set_user_status_guarded(&self.pool, id, status, access).await?,
+            repository::set_user_status_guarded(&self.pool, id, status, credential).await?,
         )
     }
 }
 
 /// Owner 守卫终局 → 服务层结果。角色与状态变更共用同一张翻译表。
-fn translate_owner_guard(outcome: OwnerGuardOutcome) -> Result<bool, UserServiceError> {
+fn translate_owner_guard(outcome: OwnerGuardOutcome) -> Result<bool, ManagementWriteError> {
     match outcome {
         OwnerGuardOutcome::Updated => Ok(true),
         OwnerGuardOutcome::NotFound => Ok(false),
-        OwnerGuardOutcome::LastOwnerRequired => Err(UserServiceError::LastOwnerRequired),
-        OwnerGuardOutcome::ManageRolesRequired => Err(UserServiceError::ManageRolesRequired),
+        OwnerGuardOutcome::LastOwnerRequired => Err(ManagementWriteError::LastOwnerRequired),
+        OwnerGuardOutcome::ManageRolesRequired => Err(ManagementWriteError::ManageRolesRequired),
+        OwnerGuardOutcome::ActorSessionInvalid => Err(ManagementWriteError::ActorSessionInvalid),
+        OwnerGuardOutcome::ActorPermissionRequired => {
+            Err(ManagementWriteError::ActorPermissionRequired)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::translate_owner_guard;
-    use crate::users::{repository::OwnerGuardOutcome, service::UserServiceError};
+    use super::{ManagementWriteError, translate_owner_guard};
+    use crate::users::repository::OwnerGuardOutcome;
 
     /// Issue #126 / #283 / #323：每个变体必须映射到确定的服务层结果。
     ///
@@ -98,11 +148,19 @@ mod tests {
         ));
         assert!(matches!(
             translate_owner_guard(OwnerGuardOutcome::LastOwnerRequired),
-            Err(UserServiceError::LastOwnerRequired)
+            Err(ManagementWriteError::LastOwnerRequired)
         ));
         assert!(matches!(
             translate_owner_guard(OwnerGuardOutcome::ManageRolesRequired),
-            Err(UserServiceError::ManageRolesRequired)
+            Err(ManagementWriteError::ManageRolesRequired)
+        ));
+        assert!(matches!(
+            translate_owner_guard(OwnerGuardOutcome::ActorSessionInvalid),
+            Err(ManagementWriteError::ActorSessionInvalid)
+        ));
+        assert!(matches!(
+            translate_owner_guard(OwnerGuardOutcome::ActorPermissionRequired),
+            Err(ManagementWriteError::ActorPermissionRequired)
         ));
     }
 

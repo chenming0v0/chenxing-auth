@@ -44,8 +44,8 @@ pub struct RefreshToken {
     /// 轮换时不变，用于计算凭据家族的总生命周期。旧格式 token 缺失此字段时，
     /// 反序列化为 `None`，`issued_at()` 方法会回退到 `created_at`（保守兼容）。
     ///
-    /// `skip_serializing_if` 保持旧 token 的序列化表示稳定；存储层 CAS 只比较
-    /// 已知协议字段，未知未来字段不会导致轮换失败。
+    /// `skip_serializing_if` 保持旧 token 的序列化表示稳定。CAS 身份只看
+    /// `value` + `cas_revision`，未知未来字段不会导致轮换失败。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issued_at: Option<OffsetDateTime>,
     /// Token Family ID（RFC 9700 §4.14.2：检测重放攻击的撤销单元）。
@@ -91,6 +91,27 @@ pub struct RefreshToken {
     /// 客户端重新走一次授权流程换取新代际凭据即可。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_epoch: Option<i64>,
+    /// Refresh Token 签发时的 Issuer 配置代际（Issue #492）。
+    ///
+    /// Issuer 热切换会改变后续 Access Token / ID Token 的 `iss`。如果不把
+    /// Refresh Token 绑定到签发时的 generation，旧 Issuer 下取得的长期凭据
+    /// 就能在新 Issuer 下继续兑换，等价于跨越了两个独立的信任域。兑换必须与
+    /// 当前请求捕获的 [`IssuerSnapshot`](crate::settings::IssuerSnapshot) 严格比对。
+    ///
+    /// 轮换后继继承该值，不能重新 stamp 当前 generation；否则一次旧代际兑换
+    /// 会把整个 grant 洗到新 Issuer。旧 payload 缺失该字段时无法证明来源，
+    /// 因此兑换路径 fail-closed，要求客户端重新走授权流程。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer_generation: Option<i64>,
+    /// Stable CAS generation. Missing on legacy payloads and treated as 0.
+    /// Each token value is a new Redis key, so successors start at 0 and omit
+    /// the field. In-place compare-and-swap still uses this so a stale reader
+    /// cannot consume a replaced payload.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::oauth::cas::is_zero_cas_revision"
+    )]
+    pub cas_revision: u64,
 }
 
 impl fmt::Debug for RefreshToken {
@@ -107,6 +128,8 @@ impl fmt::Debug for RefreshToken {
             .field("family_id", &self.family_id)
             .field("client_secret_version", &self.client_secret_version)
             .field("session_epoch", &self.session_epoch)
+            .field("issuer_generation", &self.issuer_generation)
+            .field("cas_revision", &self.cas_revision)
             .finish()
     }
 }
@@ -125,6 +148,7 @@ mod tests {
             vec!["openid".to_owned()],
             7,
             3,
+            11,
             created_at,
         );
         let rotated_at = created_at + Duration::days(2);
@@ -138,6 +162,7 @@ mod tests {
         // Issue #409：凭据代际必须由轮换继承，轮换不能重新读取当前 epoch，
         // 否则撤销与轮换的竞态会把已撤销的 grant 重新救活。
         assert_eq!(rotated.session_epoch, token.session_epoch);
+        assert_eq!(rotated.issuer_generation, token.issuer_generation);
     }
 
     /// Issue #313：旧格式 token（空 `family_id`）轮换后，后继必须留在由旧值
@@ -152,6 +177,7 @@ mod tests {
             vec!["openid".to_owned()],
             7,
             3,
+            11,
             created_at,
         );
         // 模拟旧格式 payload：family_id 缺失，反序列化为空串。
@@ -168,6 +194,61 @@ mod tests {
         // 家族随轮换链一路继承，后续轮换不再派生新家族。
         let second = rotated.rotate_at(vec!["openid".to_owned()], created_at + Duration::days(3));
         assert_eq!(second.family_id, rotated.family_id);
+    }
+
+    /// Issue #492：Issuer generation 是严格的信任域边界。旧 payload 的缺失值
+    /// 和其它 generation 都不能被当作当前 Issuer 的凭据。
+    #[test]
+    fn issuer_generation_binding_is_strict_and_legacy_payloads_fail_closed() {
+        let mut token = RefreshToken::new_at_with_client_secret_version(
+            "client".to_owned(),
+            "user".to_owned(),
+            vec!["openid".to_owned()],
+            7,
+            3,
+            11,
+            OffsetDateTime::UNIX_EPOCH + Duration::days(1),
+        );
+
+        assert!(token.is_bound_to_issuer_generation(11));
+        assert!(!token.is_bound_to_issuer_generation(12));
+
+        token.issuer_generation = None;
+        assert!(!token.is_bound_to_issuer_generation(11));
+        assert_eq!(
+            token
+                .rotate_at(
+                    vec!["openid".to_owned()],
+                    OffsetDateTime::UNIX_EPOCH + Duration::days(2),
+                )
+                .issuer_generation,
+            None,
+            "rotation must never upgrade an unbound legacy token into the current issuer"
+        );
+    }
+
+    #[test]
+    fn future_fields_do_not_change_cas_identity() {
+        let token = RefreshToken::new_at_with_client_secret_version(
+            "client".to_owned(),
+            "user".to_owned(),
+            vec!["openid".to_owned()],
+            7,
+            3,
+            11,
+            OffsetDateTime::UNIX_EPOCH + Duration::days(1),
+        );
+        let mut value = serde_json::to_value(&token).expect("token as JSON");
+        value
+            .as_object_mut()
+            .expect("token serializes to an object")
+            .insert("future_field".to_owned(), serde_json::json!(["v2"]));
+        let restored: RefreshToken =
+            serde_json::from_value(value).expect("future fields must be ignored");
+        assert_eq!(restored.value, token.value);
+        assert_eq!(restored.cas_revision, 0);
+        let serialized = serde_json::to_string(&token).expect("serialize token");
+        assert!(!serialized.contains("cas_revision"));
     }
 }
 
@@ -200,19 +281,20 @@ impl RefreshToken {
     ) -> Self {
         // 测试便捷构造：绑定到 epoch 0（注册接口创建的用户默认从 0 开始）。
         // 需要精确控制凭据代际的测试应使用完整构造器。
-        Self::new_at_with_client_secret_version(client_id, user_id, scopes, 0, 0, now)
+        Self::new_at_with_client_secret_version(client_id, user_id, scopes, 0, 0, 0, now)
     }
 
-    /// Construct a token bound to the Client credential snapshot that passed
-    /// authentication at the token endpoint, and to the user's current
-    /// `session_epoch` (Issue #409: the credential generation the token was
-    /// issued under, checked again at every exchange).
+    /// Construct a token bound to the Client credential snapshot, the user's
+    /// current `session_epoch`, and the request-scoped Issuer generation that
+    /// passed the token endpoint gates. Every binding is checked again on
+    /// refresh; successors inherit all three generations.
     pub fn new_at_with_client_secret_version(
         client_id: String,
         user_id: String,
         scopes: Vec<String>,
         client_secret_version: i64,
         session_epoch: i64,
+        issuer_generation: i64,
         now: OffsetDateTime,
     ) -> Self {
         Self {
@@ -227,6 +309,8 @@ impl RefreshToken {
             family_id: Uuid::new_v4().simple().to_string(),
             client_secret_version: Some(client_secret_version),
             session_epoch: Some(session_epoch),
+            issuer_generation: Some(issuer_generation),
+            cas_revision: 0,
         }
     }
 
@@ -261,11 +345,15 @@ impl RefreshToken {
             family_id: self.family_identifier(),
             client_secret_version: self.client_secret_version,
             session_epoch: self.session_epoch,
+            issuer_generation: self.issuer_generation,
+            cas_revision: 0,
         }
     }
 
-    /// Rotate and bind a legacy or current token to the generation authenticated
-    /// by the token endpoint. This is the production refresh path.
+    /// Rotate and bind a legacy or current token to the Client Secret generation
+    /// authenticated by the token endpoint. This method deliberately does not
+    /// stamp an Issuer generation: that binding is inherited by `rotate_at`, and
+    /// an unbound legacy payload must remain unbound so the use case rejects it.
     pub fn rotate_at_with_client_secret_version(
         &self,
         scopes: Vec<String>,
@@ -299,6 +387,15 @@ impl RefreshToken {
     /// 没有 epoch、无法证明签发时刻，同样 fail-closed 拒绝。
     pub fn is_bound_to_session_epoch(&self, current_epoch: i64) -> bool {
         self.session_epoch == Some(current_epoch)
+    }
+
+    /// 校验 Refresh Token 是否属于当前请求捕获的 Issuer 代际（Issue #492）。
+    ///
+    /// `None` 代表升级前 payload；与不匹配的 generation 一样 fail-closed。
+    /// 调用方必须使用请求入口注入的快照，不能在兑换中途重读 runtime，否则
+    /// 同一请求可能混用两个 Issuer 代际。
+    pub fn is_bound_to_issuer_generation(&self, current_generation: i64) -> bool {
+        self.issuer_generation == Some(current_generation)
     }
 
     /// 返回凭据的首次签发时刻（绝对有效期计算的起点）。

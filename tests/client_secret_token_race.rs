@@ -16,12 +16,12 @@ use std::sync::Arc;
 use chenxing_auth::{
     api,
     clients::{domain::ClientAuthMethod, service::AuthenticatedClient},
-    config::IssuerUrl,
     oauth::{
         code::AuthorizationCode,
         refresh::RefreshToken,
         token_use_case::{self, OAuthError, RefreshExchangeError, TokenRequest, TokenResponse},
     },
+    settings::{IssuerSnapshot, issuer::IssuerRecord},
     state::AppState,
 };
 use time::OffsetDateTime;
@@ -87,16 +87,36 @@ async fn authenticate(
         .expect("valid client credentials")
 }
 
-fn test_issuer(state: &AppState) -> IssuerUrl {
+fn test_issuer(state: &AppState) -> Arc<IssuerSnapshot> {
     state
         .issuer
         .current()
         .expect("test state has a loaded issuer")
-        .issuer()
-        .clone()
 }
 
-fn authorization_code(client_id: &str, user_id: i64) -> AuthorizationCode {
+/// #508：无会话绑定的授权码在 Token 端点 fail-closed，走兑换路径的测试
+/// 必须先把码绑定到一条已持久化的浏览器会话上。
+async fn browser_session_token(harness: &Harness) -> String {
+    let mut session = chenxing_auth::sessions::domain::Session::new(
+        harness.user_id.to_string(),
+        std::time::Duration::from_secs(3600),
+    )
+    .expect("session");
+    harness
+        .state
+        .sessions
+        .save(&mut session, std::time::Duration::from_secs(3600))
+        .await
+        .expect("persist session");
+    session.token
+}
+
+fn authorization_code(
+    client_id: &str,
+    user_id: i64,
+    session_token: &str,
+    issuer_generation: i64,
+) -> AuthorizationCode {
     AuthorizationCode::new_with_nonce(
         client_id.to_owned(),
         REDIRECT_URI.to_owned(),
@@ -104,8 +124,9 @@ fn authorization_code(client_id: &str, user_id: i64) -> AuthorizationCode {
         vec!["openid".to_owned()],
         CHALLENGE.to_owned(),
         None,
-        None,
+        Some(session_token.to_owned()),
     )
+    .with_issuer_generation(issuer_generation)
 }
 
 fn code_request(client_id: &str, code: &str) -> TokenRequest {
@@ -172,7 +193,13 @@ async fn authorization_code_cannot_persist_after_authenticated_secret_version_ch
     let harness = setup().await;
     let authenticated =
         authenticate(&harness.state, &harness.client_id, &harness.client_secret).await;
-    let code = authorization_code(&harness.client_id, harness.user_id);
+    let session_token = browser_session_token(&harness).await;
+    let code = authorization_code(
+        &harness.client_id,
+        harness.user_id,
+        &session_token,
+        test_issuer(&harness.state).generation(),
+    );
     harness
         .state
         .authorization_codes
@@ -213,6 +240,143 @@ async fn authorization_code_cannot_persist_after_authenticated_secret_version_ch
     cleanup(&harness).await;
 }
 
+/// Issue #492: a Refresh Token is a credential of the Issuer generation that
+/// created it. After a hot switch, the old grant must not be upgraded into a
+/// token response whose `iss` belongs to the new Issuer.
+#[tokio::test]
+async fn refresh_token_cannot_cross_an_issuer_generation_change() {
+    let harness = setup().await;
+    let authenticated =
+        authenticate(&harness.state, &harness.client_id, &harness.client_secret).await;
+    let session_token = browser_session_token(&harness).await;
+    let code = authorization_code(
+        &harness.client_id,
+        harness.user_id,
+        &session_token,
+        test_issuer(&harness.state).generation(),
+    );
+    harness
+        .state
+        .authorization_codes
+        .save(&code)
+        .await
+        .expect("save authorization code");
+    save_consent(&harness).await;
+
+    let issuer_a = test_issuer(&harness.state);
+    let response = token_use_case::exchange_code(
+        &harness.state,
+        code_request(&harness.client_id, &code.value),
+        authenticated.clone(),
+        &issuer_a,
+    )
+    .await
+    .expect("exchange authorization code under issuer A");
+    let refresh_value = issued_refresh(response);
+    let stored = harness
+        .state
+        .refresh_tokens
+        .find(&refresh_value)
+        .await
+        .expect("load issuer-bound refresh token")
+        .expect("refresh token was persisted");
+    assert_eq!(stored.issuer_generation, Some(issuer_a.generation()));
+
+    harness
+        .state
+        .issuer
+        .apply(&IssuerRecord {
+            // COOKIE_SECURE=false 只放行 loopback HTTP issuer（issuer_runtime 的
+            // apply 校验），Issuer B 必须保持同族形式；#492 验证的是代际边界，
+            // 不依赖具体 URL。
+            value: "http://127.0.0.1:3999".to_owned(),
+            generation: issuer_a.generation() + 1,
+            updated_at: harness.state.clock.now(),
+        })
+        .expect("apply issuer B");
+    let issuer_b = test_issuer(&harness.state);
+    assert_ne!(issuer_b.generation(), issuer_a.generation());
+
+    let mut legacy_refresh = RefreshToken::new_at_with_client_secret_version(
+        harness.client_id.clone(),
+        harness.user_id.to_string(),
+        vec!["openid".to_owned()],
+        authenticated.client_secret_version(),
+        current_session_epoch(&harness).await,
+        issuer_b.generation(),
+        harness.state.clock.now(),
+    );
+    legacy_refresh.issuer_generation = None;
+    harness
+        .state
+        .refresh_tokens
+        .save(&legacy_refresh)
+        .await
+        .expect("save legacy refresh token without issuer generation");
+
+    let result = token_use_case::exchange_refresh_token(
+        &harness.state,
+        &issuer_b,
+        refresh_request(&harness.client_id, &refresh_value),
+        authenticated.clone(),
+    )
+    .await;
+    assert!(matches!(
+        result,
+        Err(RefreshExchangeError::OAuth(OAuthError::BadRequest {
+            code: "invalid_grant",
+            ..
+        }))
+    ));
+    let preserved = harness
+        .state
+        .refresh_tokens
+        .find(&refresh_value)
+        .await
+        .expect("reload rejected refresh token")
+        .expect("generation rejection must happen before token rotation");
+    assert_eq!(preserved.issuer_generation, Some(issuer_a.generation()));
+
+    let legacy_result = token_use_case::exchange_refresh_token(
+        &harness.state,
+        &issuer_b,
+        refresh_request(&harness.client_id, &legacy_refresh.value),
+        authenticated,
+    )
+    .await;
+    assert!(matches!(
+        legacy_result,
+        Err(RefreshExchangeError::OAuth(OAuthError::BadRequest {
+            code: "invalid_grant",
+            ..
+        }))
+    ));
+    assert!(
+        harness
+            .state
+            .refresh_tokens
+            .find(&legacy_refresh.value)
+            .await
+            .expect("reload rejected legacy refresh token")
+            .is_some(),
+        "legacy generation rejection must happen before token rotation"
+    );
+
+    harness
+        .state
+        .refresh_tokens
+        .remove(&refresh_value)
+        .await
+        .expect("cleanup refresh token");
+    harness
+        .state
+        .refresh_tokens
+        .remove(&legacy_refresh.value)
+        .await
+        .expect("cleanup legacy refresh token");
+    cleanup(&harness).await;
+}
+
 #[tokio::test]
 async fn refresh_written_after_rotation_is_inert_even_if_revocation_already_ran() {
     let harness = setup().await;
@@ -235,6 +399,7 @@ async fn refresh_written_after_rotation_is_inert_even_if_revocation_already_ran(
         vec!["openid".to_owned()],
         stale_authentication.client_secret_version(),
         current_session_epoch(&harness).await,
+        test_issuer(&harness.state).generation(),
         harness.state.clock.now(),
     );
     let mut stale_legacy_refresh = RefreshToken::new_at_with_client_secret_version(
@@ -243,6 +408,7 @@ async fn refresh_written_after_rotation_is_inert_even_if_revocation_already_ran(
         vec!["openid".to_owned()],
         0,
         current_session_epoch(&harness).await,
+        test_issuer(&harness.state).generation(),
         harness.state.clock.now(),
     );
     stale_legacy_refresh.client_secret_version = None;
@@ -361,7 +527,13 @@ async fn concurrent_rotation_leaves_no_live_refresh_from_either_issuance_path() 
     let mut codes = Vec::with_capacity(per_path);
     let mut code_tasks = Vec::with_capacity(per_path);
     for _ in 0..per_path {
-        let code = authorization_code(&harness.client_id, harness.user_id);
+        let session_token = browser_session_token(&harness).await;
+        let code = authorization_code(
+            &harness.client_id,
+            harness.user_id,
+            &session_token,
+            test_issuer(&harness.state).generation(),
+        );
         harness
             .state
             .authorization_codes
@@ -400,6 +572,7 @@ async fn concurrent_rotation_leaves_no_live_refresh_from_either_issuance_path() 
             vec!["openid".to_owned()],
             authenticated.client_secret_version(),
             current_session_epoch(&harness).await,
+            test_issuer(&harness.state).generation(),
             harness.state.clock.now(),
         );
         harness
