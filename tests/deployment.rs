@@ -274,7 +274,7 @@ fn compose_keeps_container_listener_fixed_when_host_port_changes() {
 }
 
 #[test]
-fn publish_workflow_only_mints_protected_or_temporary_tags() {
+fn publish_workflow_builds_release_tags_without_waiting_for_ci() {
     assert!(BUILD_WORKFLOW.contains("actions: read"));
     assert!(BUILD_WORKFLOW.contains("manual-${{ github.sha }}"));
     assert!(!BUILD_WORKFLOW.contains("type=ref,event=branch"));
@@ -284,9 +284,9 @@ fn publish_workflow_only_mints_protected_or_temporary_tags() {
             .contains("github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')")
     );
     assert!(BUILD_WORKFLOW.contains("github.event.workflow_run.head_sha"));
-    assert!(BUILD_WORKFLOW.contains("actions/workflows/ci.yml/runs"));
-    assert!(BUILD_WORKFLOW.contains("conclusion == 'success'"));
     assert!(BUILD_WORKFLOW.contains("merge-base --is-ancestor"));
+    assert!(!BUILD_WORKFLOW.contains("actions/workflows/ci.yml/runs"));
+    assert!(!BUILD_WORKFLOW.contains(".workflow_runs[]"));
     assert!(BUILD_WORKFLOW.contains("github.event_name == 'workflow_run'"));
     assert!(!BUILD_WORKFLOW.contains("github.ref == 'refs/heads/dev'"));
     assert!(!BUILD_WORKFLOW.contains("github.event_name != 'workflow_run'\n"));

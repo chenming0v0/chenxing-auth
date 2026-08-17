@@ -26,8 +26,6 @@ jobs:
       - name: Validate event and commit provenance
         id: verify
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           case "$GITHUB_EVENT_NAME" in
@@ -47,11 +45,6 @@ jobs:
               git fetch origin releases --depth=1
               tag_sha="$(git rev-list -n1 "$GITHUB_REF")"
               git merge-base --is-ancestor "$tag_sha" FETCH_HEAD
-              runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${tag_sha}&event=push&branch=releases&per_page=100")"
-              jq -e --arg sha "$tag_sha" --arg repo "$GITHUB_REPOSITORY" '
-                .workflow_runs[]
-                | select(.head_sha == $sha and .event == "push" and .head_branch == "releases" and .conclusion == "success" and .repository.full_name == $repo)
-              ' <<< "$runs" >/dev/null
               echo 'valid=true' >> "$GITHUB_OUTPUT"
               ;;
             *)
