@@ -112,28 +112,12 @@ impl SecureDir {
             uuid::Uuid::new_v4().simple()
         );
         let result = self.write_temporary(&temporary, name, contents, replace_existing);
-        if result.is_err() {
-            if let Ok(file) = self.open_regular(&temporary, file_write_access(), None) {
-                let _ = dispose_file(&file);
-            }
+        if result.is_err()
+            && let Ok(file) = self.open_regular(&temporary, file_write_access(), None)
+        {
+            let _ = dispose_file(&file);
         }
         result
-    }
-
-    pub(crate) fn open_or_create(&self, name: &str) -> io::Result<File> {
-        match self.open_regular(name, file_write_access(), None) {
-            Ok(file) => Ok(file),
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                match self.create_exclusive(name) {
-                    Ok(file) => Ok(file),
-                    Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                        self.open_regular(name, file_write_access(), None)
-                    }
-                    Err(error) => Err(error),
-                }
-            }
-            Err(error) => Err(error),
-        }
     }
 
     fn write_temporary(

@@ -2,8 +2,9 @@ use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
-use chenxing_auth::{api, config::Config, state::AppState};
+use chenxing_auth::{api, config::Config, oauth::refresh::RefreshToken, state::AppState};
 use serde_json::Value;
+use time::{Duration, OffsetDateTime};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -13,6 +14,7 @@ mod db_isolation;
 mod key_directory;
 
 async fn setup() -> (
+    AppState,
     axum::Router,
     chenxing_auth::sqlx::PgPool,
     std::path::PathBuf,
@@ -37,7 +39,7 @@ async fn setup() -> (
     let state = AppState::new_with_pool(config, database.clone())
         .await
         .expect("state");
-    (api::router(state), database, key_directory)
+    (state.clone(), api::router(state), database, key_directory)
 }
 
 fn client_body(name: &str) -> String {
@@ -81,7 +83,7 @@ async fn json(response: axum::response::Response) -> Value {
 
 #[tokio::test]
 async fn create_retry_replays_the_same_secret_without_duplicate_mutation_or_audit() {
-    let (router, database, key_directory) = setup().await;
+    let (_state, router, database, key_directory) = setup().await;
     let key = format!("create-{}", Uuid::new_v4().simple());
     let body = client_body("Idempotent create");
 
@@ -128,7 +130,7 @@ async fn create_retry_replays_the_same_secret_without_duplicate_mutation_or_audi
 
 #[tokio::test]
 async fn concurrent_create_requests_with_the_same_key_serialize_to_one_result() {
-    let (router, database, key_directory) = setup().await;
+    let (_state, router, database, key_directory) = setup().await;
     let key = format!("concurrent-create-{}", Uuid::new_v4().simple());
     let body = client_body("Concurrent create");
     let first = router.clone().oneshot(create_request(&key, body.clone()));
@@ -153,7 +155,7 @@ async fn concurrent_create_requests_with_the_same_key_serialize_to_one_result() 
 
 #[tokio::test]
 async fn changed_create_request_with_the_same_key_conflicts() {
-    let (router, database, key_directory) = setup().await;
+    let (_state, router, database, key_directory) = setup().await;
     let key = format!("create-conflict-{}", Uuid::new_v4().simple());
 
     let first = router
@@ -182,7 +184,7 @@ async fn changed_create_request_with_the_same_key_conflicts() {
 
 #[tokio::test]
 async fn rotation_retry_replays_the_same_secret_and_rotates_once() {
-    let (router, database, key_directory) = setup().await;
+    let (state, router, database, key_directory) = setup().await;
     let create = router
         .clone()
         .oneshot(create_request(
@@ -205,6 +207,32 @@ async fn rotation_retry_replays_the_same_secret_and_rotates_once() {
     assert_eq!(first.status(), StatusCode::OK);
     let first = json(first).await;
 
+    // A retry must replay the committed response without repeating lifecycle
+    // side effects. Leave a token behind after the first rotation so a replay
+    // that calls revoke_client_tokens again is observable.
+    let now = OffsetDateTime::now_utc();
+    let sentinel = RefreshToken {
+        value: format!("sentinel-{}", Uuid::new_v4().simple()),
+        client_id: client_id.to_owned(),
+        user_id: "idempotency-test-user".to_owned(),
+        scopes: vec!["openid".to_owned()],
+        created_at: now,
+        expires_at: now + Duration::hours(1),
+        revoked_at: None,
+        issued_at: Some(now),
+        family_id: format!("family-{}", Uuid::new_v4().simple()),
+        client_secret_version: Some(1),
+        session_epoch: Some(0),
+        issuer_generation: Some(0),
+        cas_revision: 0,
+    };
+    let sentinel_value = sentinel.value.clone();
+    state
+        .refresh_tokens
+        .save(&sentinel)
+        .await
+        .expect("save sentinel refresh token");
+
     let retry = router
         .clone()
         .oneshot(rotate_request(client_id, &key))
@@ -214,6 +242,20 @@ async fn rotation_retry_replays_the_same_secret_and_rotates_once() {
     let retry = json(retry).await;
     assert_eq!(retry["client_secret"], first["client_secret"]);
     assert_ne!(retry["client_secret"], original_secret);
+    assert!(
+        state
+            .refresh_tokens
+            .find(&sentinel_value)
+            .await
+            .expect("find sentinel refresh token")
+            .is_some(),
+        "idempotent rotation replay must not revoke refresh tokens again"
+    );
+    state
+        .refresh_tokens
+        .remove(&sentinel_value)
+        .await
+        .expect("remove sentinel refresh token");
 
     let version: i64 = chenxing_auth::sqlx::query_scalar(
         "SELECT client_secret_version FROM oauth_clients WHERE client_id = $1",
@@ -237,7 +279,7 @@ async fn rotation_retry_replays_the_same_secret_and_rotates_once() {
 
 #[tokio::test]
 async fn audit_failure_rolls_back_the_client_and_idempotency_result() {
-    let (router, database, key_directory) = setup().await;
+    let (_state, router, database, key_directory) = setup().await;
     chenxing_auth::sqlx::query(
         "CREATE FUNCTION reject_client_create_audit() RETURNS trigger AS $$
          BEGIN

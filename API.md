@@ -199,7 +199,7 @@ Client 已加载且 `redirect_uri` canonicalize 后仍严格匹配注册值时�
 | `code_challenge_method` | 必须为 `S256` |
 | `nonce` | 使用 OIDC 时建议必填并随机生成，最多 512 个字符 |
 
-未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`；已登录但尚未授权该 scope 组合的请求进入 `/oauth/consent?request_id=...`。两条交给 SPA 的路径都会下发授权持有者 HttpOnly Cookie：HTTPS 使用 `__Host-chenxing_authz_holder`，本地 HTTP 使用 `chenxing_authz_holder`（防御 OAuth login CSRF，见下文 bind 端点说明）。非 HTML 请求返回 `401 login_required`。
+未登录的浏览器请求会重定向到 React SPA 的 `/login?request_id=...`；已登录但尚未授权该 scope 组合的请求进入 `/oauth/consent?request_id=...`。两条交给 SPA 的路径都会下发授权持有者 HttpOnly Cookie：HTTPS 使用 `__Host-chenxing_authz_holder`，本地 HTTP 使用 `chenxing_authz_holder`（防御 OAuth login CSRF，见下文 bind 端点说明）。pending 请求同时保存本次 `/oauth/authorize` 捕获的 Issuer generation；Issuer 热切换后，旧 generation 的授权事务不能继续。非 HTML 请求返回 `401 login_required`。
 
 ### `POST /api/v1/oauth/authorize/requests/{request_id}/bind`
 
@@ -219,13 +219,13 @@ Client 已加载且 `redirect_uri` canonicalize 后仍严格匹配注册值时�
 
 升级前创建的旧 pending 记录无摘要，绑定时被拒绝（fail-secure），用户需重新发起授权流程。
 
-**受控重绑（#270）**：上述三项校验全部通过时，无论该 pending 请求此前绑定的是哪个 Session 摘要，都会被重绑到调用者当前的 Session，写入走 CAS 保证原子性。持有者 Cookie 才是所有权凭据，Session 绑定是派生状态，因此重绑不放宽任何安全边界——没有持有者 Cookie 的第三方即使持有有效 Session 仍然被拒（`403`）。这让「会话过期后重新登录继续授权」和「切换账号继续授权」可以自愈；旧行为固定返回 `401 invalid_session`，前端跟着在登录页与授权确认页之间形成跳转循环。授权码在最终 approve 时按当时持有的 Session 签发。重绑记录审计事件 `authorization_request_rebound`。
+**受控重绑（#270）**：上述三项校验全部通过时，无论该 pending 请求此前绑定的是哪个 Session 摘要，都会被重绑到调用者当前的 Session，写入走 CAS 保证原子性。持有者 Cookie 才是所有权凭据，Session 绑定是派生状态，因此重绑不放宽任何安全边界——没有持有者 Cookie 的第三方即使持有有效 Session 仍然被拒（`403`）。这让「会话过期后重新登录继续授权」和「切换账号继续授权」可以自愈；旧行为固定返回 `401 invalid_session`，前端跟着在登录页与授权确认页之间形成跳转循环。授权码在最终 approve 时按当时持有的 Session 签发。重绑记录审计事件 `authorization_request_rebound`。重绑只替换绑定载荷并保留 Redis 请求键的原始剩余 TTL 和 expiry 索引截止时间；重复重绑不能延长 pending 的总生命周期，临界过期请求也不会被恢复为完整 TTL。
 
 幂等：同一 Session + 同一持有者 Cookie 重复调用返回 `204`，载荷不变。持续并发修改导致 CAS 无法收敛时返回 `409 authorization_request_conflict`，重试即可。
 
 ### `GET /api/v1/oauth/authorize/requests/{request_id}` / `POST ...`
 
-供 JSON 授权确认 UI 使用。请求必须绑定当前浏览器 Session；GET 返回 Client 名称、Redirect 主机、Scope 和剩余有效时间。POST JSON 请求为 `{"decision":"approve"}` 或 `{"decision":"deny"}`，需要用户 CSRF，成功返回经过校验的 `redirect_to`，请求被一次性消费。该内部 UI API 的所有错误都使用 `{code, message}`，不会返回 OAuth `{error, error_description}` 信封。普通用户项目超过日/月配额时返回 `429 authorization_unavailable`；内部一致性故障返回 `500 internal_error`，依赖故障返回对应的 `503` 内部错误。标准 `/oauth/authorize` 流程则返回协议安全的 `temporarily_unavailable` 重定向。
+供 JSON 授权确认 UI 使用。请求必须绑定当前浏览器 Session，并且 pending 的 Issuer generation 必须等于本次请求捕获的 Issuer generation；Issuer 热切换后或升级前缺失 generation 的 pending 会被丢弃并返回 `400 authorization_request_expired`，Client 必须重新发起授权。GET 返回 Client 名称、Redirect 主机、Scope 和剩余有效时间。POST JSON 请求为 `{"decision":"approve"}` 或 `{"decision":"deny"}`，需要用户 CSRF，成功返回经过校验的 `redirect_to`，请求被一次性消费。该内部 UI API 的所有错误都使用 `{code, message}`，不会返回 OAuth `{error, error_description}` 信封。普通用户项目超过日/月配额时返回 `429 authorization_unavailable`；内部一致性故障返回 `500 internal_error`，依赖故障返回对应的 `503` 内部错误。标准 `/oauth/authorize` 流程则返回协议安全的 `temporarily_unavailable` 重定向。
 
 ### React SPA 浏览器登录 `/login`
 
@@ -284,6 +284,8 @@ grant_type=refresh_token&refresh_token=...
 `refresh_token` 会轮换；包含 `openid` Scope 时返回 `id_token`。授权码和刷新 Token 均为一次性消费。
 
 授权码除 Client 和 Redirect URI 外还绑定签发时的浏览器会话。会话被撤销（用户登出）或过期后，授权码即使仍在 TTL 内也不能兑换，返回 `invalid_grant`；被拒绝的授权码不会被消费，可在会话恢复有效后重试。
+
+授权码已消费、Refresh Token 已暂存后，服务还会复核授权同意版本。若这次最终复核因数据库暂时不可用而返回 `503 temporarily_unavailable`，服务会销毁尚未披露的 Refresh Token，并在确认销毁成功时恢复授权码供同一次交换重试；若无法确认销毁结果，授权码保持已消费，客户端需重新发起授权。两种 503 分支都会保留该授权码对应的套餐退款台账，因此没有成功 `TokenResponse` 的失败不会永久计入日/月授权用量。
 
 Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限流，超限返回 `429 temporarily_unavailable`；套餐未配置 `max_qps`（`null`）时不限流。
 

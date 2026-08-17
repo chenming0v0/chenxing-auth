@@ -33,9 +33,15 @@ impl AuthFactorService {
     pub(super) async fn enabled_passkey_settings(
         &self,
     ) -> Result<crate::settings::PasskeySetting, AuthFactorServiceError> {
-        let settings = self.settings.passkey().await?;
+        Ok(self.enabled_passkey_settings_with_generation().await?.0)
+    }
+
+    pub(super) async fn enabled_passkey_settings_with_generation(
+        &self,
+    ) -> Result<(crate::settings::PasskeySetting, i64), AuthFactorServiceError> {
+        let (settings, generation) = self.settings.passkey_with_issuer_binding().await?;
         if settings.enabled {
-            Ok(settings)
+            Ok((settings, generation.unwrap_or_default()))
         } else {
             Err(AuthFactorServiceError::PasskeyDisabled)
         }
@@ -49,7 +55,7 @@ impl AuthFactorService {
         user_name: &str,
         display_name: &str,
     ) -> Result<Option<CreationChallengeResponse>, AuthFactorServiceError> {
-        let settings = self.enabled_passkey_settings().await?;
+        let (settings, issuer_generation) = self.enabled_passkey_settings_with_generation().await?;
         let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(None);
         };
@@ -101,6 +107,7 @@ impl AuthFactorService {
                     user_id: ticket.user_id,
                     state,
                     settings,
+                    issuer_generation: Some(issuer_generation),
                 },
                 LoginTicket::TTL.whole_seconds() as u64,
             )
@@ -115,7 +122,8 @@ impl AuthFactorService {
         source_ip: Option<&str>,
         credential: &RegisterPublicKeyCredential,
     ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
-        self.enabled_passkey_settings().await?;
+        let (_, current_issuer_generation) =
+            self.enabled_passkey_settings_with_generation().await?;
         let Some(ticket) = self.tickets.find_for_holder(ticket_id, holder_hash).await? else {
             return Ok(PasskeyConfirmation::InvalidTicket);
         };
@@ -130,6 +138,12 @@ impl AuthFactorService {
             return Ok(PasskeyConfirmation::InvalidTicket);
         };
         if pending.user_id != ticket.user_id {
+            return Ok(PasskeyConfirmation::InvalidTicket);
+        }
+        if pending.issuer_generation != Some(current_issuer_generation) {
+            self.tickets
+                .delete(&self.passkey_registration_key(ticket_id))
+                .await?;
             return Ok(PasskeyConfirmation::InvalidTicket);
         }
         // 预留额度必须在 WebAuthn 验签和写库之前完成，否则伪造 credential 可以在 ticket TTL
@@ -177,16 +191,18 @@ impl AuthFactorService {
             PasskeyConfirmation::InvalidTicket,
             self.tickets.take_for_holder(ticket_id, holder_hash),
             async {
-                match repository::insert_passkey_if_empty(
+                match repository::insert_passkey_if_empty_with_issuer_generation(
                     &self.pool,
                     ticket.user_id,
                     passkey.cred_id(),
                     &passkey,
+                    current_issuer_generation,
                 )
                 .await?
                 {
                     repository::PasskeyPersistenceResult::Stored => Ok(()),
-                    repository::PasskeyPersistenceResult::Conflict => {
+                    repository::PasskeyPersistenceResult::Conflict
+                    | repository::PasskeyPersistenceResult::IssuerChanged => {
                         Err(AuthFactorServiceError::FirstFactorAlreadyExists)
                     }
                 }

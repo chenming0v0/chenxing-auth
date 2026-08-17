@@ -293,6 +293,11 @@ if not same_cas_identity(current, ARGV[1], 'request_id') then return 0 end
 local current_client_id = cjson.decode(current)['client_id']
 local replacement_client_id = cjson.decode(ARGV[2])['client_id']
 if current_client_id ~= replacement_client_id then return 0 end
+local remaining_ms = tonumber(redis.call('PTTL', KEYS[1]))
+if not remaining_ms or remaining_ms <= 0 then
+    release(ARGV[3], current_client_id)
+    return 0
+end
 local indexed_client_id = redis.call('HGET', KEYS[2], ARGV[3])
 if not indexed_client_id then
     if sync_client_count(replacement_client_id) >= tonumber(ARGV[5])
@@ -302,8 +307,14 @@ if not indexed_client_id then
     redis.call('SADD', client_index_prefix .. replacement_client_id, ARGV[3])
     redis.call('HSET', KEYS[2], ARGV[3], replacement_client_id)
 end
-redis.call('SETEX', KEYS[1], ARGV[4], ARGV[2])
-redis.call('ZADD', KEYS[4], tonumber(redis.call('TIME')[1]) + tonumber(ARGV[4]), ARGV[3])
+redis.call('SET', KEYS[1], ARGV[2], 'PX', remaining_ms)
+local now = redis.call('TIME')
+local replacement_deadline = tonumber(now[1]) + tonumber(now[2]) / 1000000 + remaining_ms / 1000
+local original_deadline = tonumber(redis.call('ZSCORE', KEYS[4], ARGV[3]))
+if original_deadline and original_deadline < replacement_deadline then
+    replacement_deadline = original_deadline
+end
+redis.call('ZADD', KEYS[4], replacement_deadline, ARGV[3])
 sync_client_count(replacement_client_id)
 sync_global_count()
 return 1

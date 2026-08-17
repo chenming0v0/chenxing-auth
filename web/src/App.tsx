@@ -95,8 +95,8 @@ function AppContent() {
 
   const pages: Record<string, ReactNode> = {
     '/': <LandingPage />,
-    '/login': <AuthPage mode="login" />,
-    '/register': <AuthPage mode="register" />,
+    '/login': <AuthPage key="login" mode="login" />,
+    '/register': <AuthPage key="register" mode="register" />,
     '/bootstrap': <BootstrapPage />,
     '/oauth/account': <OAuthAccountPage />,
     '/oauth/consent': <OAuthConsentPage />,

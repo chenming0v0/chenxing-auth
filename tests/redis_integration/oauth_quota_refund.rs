@@ -307,3 +307,77 @@ async fn legacy_second_score_does_not_refund_until_next_second() {
     assert_eq!(refunded.daily_used, 0);
     assert_eq!(refunded.monthly_used, 0);
 }
+
+#[tokio::test]
+async fn full_modern_batch_still_refunds_a_due_legacy_reservation() {
+    let (store, _codes, keyspace) = stores();
+    let client_id = format!("quota-refund-fair-{}", Uuid::new_v4().simple());
+    let limits = AuthQuotaLimits {
+        daily_auth_limit: 200,
+        monthly_auth_limit: Some(200),
+    };
+    let now = align_to_millis(OffsetDateTime::now_utc());
+    let expires_at = now + Duration::seconds(60);
+
+    let legacy_consumption = store
+        .consume_with_limits_and_reservation_at(&client_id, limits, now)
+        .await
+        .expect("legacy quota consumption");
+    let legacy = legacy_consumption
+        .reservation()
+        .expect("legacy reservation");
+    store
+        .schedule_refund(&legacy, expires_at)
+        .await
+        .expect("schedule legacy refund");
+
+    let pending_key = keyspace.key("chenxing:oauth:quota:refund-pending");
+    let mut connection = redis::Client::open(redis_url())
+        .expect("Redis URL")
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    let _: () = connection
+        .zadd(
+            &pending_key,
+            legacy.id(),
+            expires_at.unix_timestamp() as f64,
+        )
+        .await
+        .expect("rewrite legacy score in unix seconds");
+
+    for _ in 0..100 {
+        let consumption = store
+            .consume_with_limits_and_reservation_at(&client_id, limits, now)
+            .await
+            .expect("modern quota consumption");
+        let reservation = consumption.reservation().expect("modern reservation");
+        store
+            .schedule_refund(&reservation, expires_at)
+            .await
+            .expect("schedule modern refund");
+    }
+
+    let pass_time = OffsetDateTime::from_unix_timestamp(expires_at.unix_timestamp() + 1)
+        .expect("whole next second");
+    let processed = store
+        .run_refund_worker_pass(pass_time)
+        .await
+        .expect("mixed-format refund pass");
+    assert_eq!(processed, 100, "worker batch size remains bounded");
+    assert_eq!(
+        connection
+            .zscore::<_, _, Option<f64>>(&pending_key, legacy.id())
+            .await
+            .expect("legacy pending score"),
+        None,
+        "a continuously full modern queue must not starve the legacy reservation"
+    );
+
+    let snapshot = store
+        .snapshot(&client_id, Some(limits))
+        .await
+        .expect("quota snapshot after fair pass");
+    assert_eq!(snapshot.daily_used, 1);
+    assert_eq!(snapshot.monthly_used, 1);
+}

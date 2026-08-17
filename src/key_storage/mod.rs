@@ -6,7 +6,7 @@
 //! 叶子只授给当前进程/服务帐户和 SYSTEM，重解析点与宽松/外来 ACL fail-closed。
 //! 其它目标没有这套原语，安全文件操作返回 `Unsupported`。
 
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 use std::fs::File;
 use std::{
     io::{self, ErrorKind},
@@ -258,16 +258,9 @@ pub(crate) fn inspect_secure_file(path: &Path) -> io::Result<bool> {
     }
 }
 
-#[cfg(any(unix, windows))]
+#[cfg(unix)]
 pub(crate) fn open_or_create_regular_file(directory: &Path, name: &str) -> io::Result<File> {
-    #[cfg(unix)]
-    {
-        unix::SecureDir::open(directory)?.open_or_create(name)
-    }
-    #[cfg(windows)]
-    {
-        windows::SecureDir::open(directory)?.open_or_create(name)
-    }
+    unix::SecureDir::open(directory)?.open_or_create(name)
 }
 
 fn read_secure_named_at(

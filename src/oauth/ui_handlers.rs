@@ -8,9 +8,14 @@ use serde::Deserialize;
 use std::net::SocketAddr;
 
 use super::{
-    authorization_decision_use_case::{AuthorizationDecision, DecisionError, decide_authorization},
+    authorization_decision_use_case::{
+        AuthorizationDecision, AuthorizationDecisionCommand, DecisionError, decide_authorization,
+    },
     consent::parse_decision,
-    request_binding::{PendingRequestBinding, PendingRequestBindingError, bind_pending_request},
+    request_binding::{
+        PendingRequestBinding, PendingRequestBindingError, bind_pending_request,
+        discard_issuer_mismatched_pending,
+    },
     ui_responses::{DecisionResponse, PendingRequestResponse},
 };
 use crate::{
@@ -32,6 +37,7 @@ pub struct DecisionInput {
 /// 身份不能来自开发期兼容的 `x-chenxing-session` 请求头。
 pub async fn inspect_authorization_request(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     session: SessionRead,
     Path(request_id): Path<String>,
 ) -> Response {
@@ -46,6 +52,22 @@ pub async fn inspect_authorization_request(
             );
         }
     };
+    if !pending.is_bound_to_issuer_generation(issuer.generation()) {
+        return match discard_issuer_mismatched_pending(
+            &state.authorization_requests,
+            &request_id,
+            &pending,
+        )
+        .await
+        {
+            Ok(()) => pending_expired(),
+            Err(PendingRequestBindingError::Storage) => error::service_unavailable(
+                "storage_unavailable",
+                "authorization request storage is unavailable",
+            ),
+            Err(_) => pending_expired(),
+        };
+    }
     let current_session_hash = session_token_hash(&session.session.token);
     if pending.session_token_hash.as_deref() != Some(current_session_hash.as_str()) {
         return error::unauthorized(
@@ -117,6 +139,7 @@ pub async fn inspect_authorization_request(
 /// 详见 [`crate::oauth::request_binding`] 的模块文档。
 pub async fn bind_authorization_request(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     headers: HeaderMap,
     session: SessionWrite,
     Path(request_id): Path<String>,
@@ -134,6 +157,7 @@ pub async fn bind_authorization_request(
         &request_id,
         &session.session.token,
         holder_hash.as_deref(),
+        issuer.generation(),
     )
     .await
     {
@@ -208,12 +232,14 @@ pub async fn decide_authorization_request(
     match decide_authorization(
         &state,
         issuer.snapshot(),
-        &request_id,
-        session.user_id,
-        &session.session.token,
-        decision,
-        source_ip.as_deref(),
-        user_agent.as_deref(),
+        AuthorizationDecisionCommand::new(
+            &request_id,
+            session.user_id,
+            &session.session.token,
+            decision,
+            source_ip.as_deref(),
+            user_agent.as_deref(),
+        ),
     )
     .await
     {

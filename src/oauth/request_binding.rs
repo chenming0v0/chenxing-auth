@@ -82,12 +82,17 @@ pub(crate) async fn bind_pending_request(
     request_id: &str,
     session_token: &str,
     holder_hash: Option<&str>,
+    issuer_generation: i64,
 ) -> Result<PendingRequestBinding, PendingRequestBindingError> {
     let session_hash = session_token_hash(session_token);
     for _ in 0..MAX_BIND_ATTEMPTS {
         let Some(pending) = load_pending(store, request_id).await? else {
             return Err(PendingRequestBindingError::Expired);
         };
+        if !pending.is_bound_to_issuer_generation(issuer_generation) {
+            discard_issuer_mismatched_pending(store, request_id, &pending).await?;
+            return Err(PendingRequestBindingError::Expired);
+        }
         // holder 校验先于一切：包括幂等重试在内的每一次调用都必须证明自己
         // 就是发起授权的那个浏览器。
         if !holder_matches(holder_hash, &pending) {
@@ -120,6 +125,27 @@ pub(crate) async fn bind_pending_request(
         }
     }
     Err(PendingRequestBindingError::Contended)
+}
+
+/// Consume a pending request that was created under a different issuer runtime
+/// generation. A CAS failure is still treated as expired by the caller: the
+/// next continuation will apply the same generation check to the current value.
+pub(crate) async fn discard_issuer_mismatched_pending(
+    store: &AuthorizationRequestStore,
+    request_id: &str,
+    pending: &PendingAuthorization,
+) -> Result<(), PendingRequestBindingError> {
+    store
+        .take_if_matches(request_id, pending)
+        .await
+        .map(|_| ())
+        .map_err(|error_value| {
+            tracing::error!(
+                error = %error_value,
+                "failed to discard issuer-mismatched OAuth authorization request"
+            );
+            PendingRequestBindingError::Storage
+        })
 }
 
 async fn load_pending(

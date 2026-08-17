@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthProvider, useAuth } from './auth-state'
+import { clearApiCache, getEntitlements } from './api'
 import { installCsrfCookie } from './test/csrf-cookie'
 
 // logout() 走 DELETE /auth/session，缺 CSRF 会在发请求前被 apiFetch 拦住。
@@ -53,6 +54,7 @@ async function resolveDeferred(
 
 afterEach(() => {
   cleanup()
+  clearApiCache()
   vi.unstubAllGlobals()
 })
 
@@ -195,5 +197,78 @@ describe('refresh request ordering (#473)', () => {
     await resolveDeferred(resolveInFlight, jsonResponse(ownerProfile('stale')))
     expect(screen.getByLabelText('认证状态').textContent).toBe('unauthenticated')
     expect(screen.getByLabelText('当前用户').textContent).toBe('')
+  })
+
+  it('clears entitlement cache when refresh switches to a different account (#527)', async () => {
+    let profileCalls = 0
+    let entitlementCalls = 0
+    vi.stubGlobal('fetch', vi.fn((path: string) => {
+      if (path === '/api/v1/admin/bootstrap/status') {
+        return Promise.resolve(jsonResponse({ initialized: true }))
+      }
+      if (path === '/api/v1/auth/me') {
+        profileCalls += 1
+        return Promise.resolve(jsonResponse(profileCalls === 1 ? ownerProfile('account-a') : { ...ownerProfile('account-b'), id: 2 }))
+      }
+      if (path === '/api/v1/auth/entitlements') {
+        entitlementCalls += 1
+        return Promise.resolve(jsonResponse({
+          entitlements: [{ key: 'daily_auth', used: entitlementCalls, limit: 10 }],
+        }))
+      }
+      throw new Error(`unexpected request: ${path}`)
+    }))
+
+    render(<AuthProvider><AuthStateProbe /></AuthProvider>)
+    await waitFor(() => expect(screen.getByLabelText('当前用户').textContent).toBe('account-a'))
+    await act(async () => { await getEntitlements() })
+
+    fireEvent.click(screen.getByRole('button', { name: '重试认证' }))
+    await waitFor(() => expect(screen.getByLabelText('当前用户').textContent).toBe('account-b'))
+    const entitlements = await getEntitlements()
+
+    expect(entitlementCalls).toBe(2)
+    expect(entitlements.entitlements[0]?.used).toBe(2)
+  })
+
+  it('does not let an old entitlement response repopulate the new account cache (#527)', async () => {
+    let profileCalls = 0
+    let entitlementCalls = 0
+    let resolveOld: ((response: Response) => void) | undefined
+    let resolveNew: ((response: Response) => void) | undefined
+    vi.stubGlobal('fetch', vi.fn((path: string) => {
+      if (path === '/api/v1/admin/bootstrap/status') {
+        return Promise.resolve(jsonResponse({ initialized: true }))
+      }
+      if (path === '/api/v1/auth/me') {
+        profileCalls += 1
+        return Promise.resolve(jsonResponse(profileCalls === 1 ? ownerProfile('account-a') : { ...ownerProfile('account-b'), id: 2 }))
+      }
+      if (path === '/api/v1/auth/entitlements') {
+        entitlementCalls += 1
+        return new Promise<Response>((resolve) => {
+          if (entitlementCalls === 1) resolveOld = resolve
+          else resolveNew = resolve
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    }))
+
+    render(<AuthProvider><AuthStateProbe /></AuthProvider>)
+    await waitFor(() => expect(screen.getByLabelText('当前用户').textContent).toBe('account-a'))
+    const oldRequest = getEntitlements()
+
+    fireEvent.click(screen.getByRole('button', { name: '重试认证' }))
+    await waitFor(() => expect(screen.getByLabelText('当前用户').textContent).toBe('account-b'))
+    const newRequest = getEntitlements()
+    await resolveDeferred(resolveNew, jsonResponse({ entitlements: [{ key: 'daily_auth', used: 2, limit: 10 }] }))
+    await resolveDeferred(resolveOld, jsonResponse({ entitlements: [{ key: 'daily_auth', used: 1, limit: 10 }] }))
+    await oldRequest
+    await newRequest
+
+    expect(await getEntitlements()).toEqual({
+      entitlements: [{ key: 'daily_auth', used: 2, limit: 10 }],
+    })
+    expect(entitlementCalls).toBe(2)
   })
 })

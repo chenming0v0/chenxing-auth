@@ -25,6 +25,10 @@ pub(super) struct PendingPasskeyRegistration {
     pub(super) user_id: i64,
     pub(super) state: RegistrationState,
     pub(super) settings: crate::settings::PasskeySetting,
+    /// Issuer generation captured with the challenge; legacy payloads without
+    /// this field fail closed at finish.
+    #[serde(default)]
+    pub(super) issuer_generation: Option<i64>,
 }
 
 impl fmt::Debug for PendingPasskeyRegistration {
@@ -214,6 +218,7 @@ mod tests {
             user_id: 7,
             state,
             settings,
+            issuer_generation: None,
         };
         let pending_json = serde_json::to_value(pending).expect("pending JSON");
         assert_eq!(pending_json["settings"]["rp_name"], "Configured RP");

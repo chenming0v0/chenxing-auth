@@ -20,9 +20,12 @@ use chenxing_auth::{
     clients::{domain::ClientAuthMethod, service::AuthenticatedClient},
     oauth::{
         code::AuthorizationCode,
+        quota::QuotaConsumeResult,
         revoke_consent_use_case::{RevokeConsentServices, revoke_consent},
         token_use_case::{self, OAuthError, TokenRequest},
     },
+    plans::domain::AuthQuotaLimits,
+    redis_keyspace::RedisKeyspace,
     sessions::domain::Session,
     settings::IssuerSnapshot,
     state::AppState,
@@ -33,7 +36,7 @@ use uuid::Uuid;
 
 use support::{
     create_test_client, ensure_owner_bootstrapped, register_test_user,
-    test_state_with_max_connections,
+    test_state_with_max_connections_and_keyspace,
 };
 
 const REDIRECT_URI: &str = "https://disabled.example/callback";
@@ -50,10 +53,16 @@ struct Harness {
 }
 
 async fn setup() -> Harness {
-    let (state, database, key_directory) =
-        test_state_with_max_connections("consent_code_exchange_race", 32).await;
-    let router = api::router(state.clone());
     let suffix = Uuid::new_v4().simple().to_string();
+    let redis_keyspace = RedisKeyspace::new(&format!("consent-code-race-{suffix}"))
+        .expect("isolated Redis namespace");
+    let (state, database, key_directory) = test_state_with_max_connections_and_keyspace(
+        "consent_code_exchange_race",
+        32,
+        redis_keyspace,
+    )
+    .await;
+    let router = api::router(state.clone());
     ensure_owner_bootstrapped(&router, &database, "consent_code_exchange_race", &suffix).await;
     let (user_id, _, _, _) = register_test_user(&router, &suffix).await;
     let (client_id, client_secret) = create_test_client(&router, "flow-admin-token").await;
@@ -215,6 +224,60 @@ async fn refresh_count_for_grant(harness: &Harness) -> i64 {
         .expect("refresh grant index size")
 }
 
+async fn pending_refund_exists(harness: &Harness, reservation_id: &str) -> bool {
+    let mut redis = harness
+        .state
+        .redis
+        .get_multiplexed_async_connection()
+        .await
+        .expect("Redis connection");
+    redis
+        .zscore::<_, _, Option<f64>>(
+            harness
+                .state
+                .config
+                .redis_keyspace
+                .key("chenxing:oauth:quota:refund-pending"),
+            reservation_id,
+        )
+        .await
+        .expect("pending refund score")
+        .is_some()
+}
+
+async fn metered_authorization_code(
+    harness: &Harness,
+    session_token: String,
+) -> (
+    AuthorizationCode,
+    String,
+    AuthQuotaLimits,
+    time::OffsetDateTime,
+) {
+    let limits = AuthQuotaLimits {
+        daily_auth_limit: 10,
+        monthly_auth_limit: Some(10),
+    };
+    let quota_now = harness.state.clock.now();
+    let consumption = harness
+        .state
+        .oauth_quotas
+        .consume_with_limits_and_reservation_at(&harness.client_id, limits, quota_now)
+        .await
+        .expect("consume metered authorization quota");
+    assert_eq!(consumption.result, QuotaConsumeResult::Allowed);
+    let reservation = consumption.reservation().expect("quota reservation");
+    let mut code = authorization_code(harness, session_token);
+    code.quota_reservation_id = Some(reservation.id().to_owned());
+    harness
+        .state
+        .oauth_quotas
+        .schedule_refund(&reservation, code.expires_at)
+        .await
+        .expect("schedule authorization quota refund");
+    (code, reservation.id().to_owned(), limits, quota_now)
+}
+
 async fn park_exchange_behind_client_guard(
     harness: &Harness,
     code: &AuthorizationCode,
@@ -326,6 +389,260 @@ async fn revoke_committed_after_gate_but_before_persist_returns_no_tokens() {
         "fence rejection must not restore the already-consumed authorization code"
     );
 
+    cleanup(&harness).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn final_consent_query_failure_restores_code_and_quota_for_retry() {
+    let harness = setup().await;
+    save_consent(&harness).await;
+    let session = saved_session(&harness).await;
+    let (code, reservation_id, limits, quota_now) =
+        metered_authorization_code(&harness, session.token.clone()).await;
+    harness
+        .state
+        .authorization_codes
+        .save(&code)
+        .await
+        .expect("save authorization code");
+
+    let (client_barrier, exchange) = park_exchange_behind_client_guard(&harness, &code).await;
+    chenxing_auth::sqlx::query(
+        "ALTER TABLE user_consents RENAME TO user_consents_final_fence_unavailable",
+    )
+    .execute(&harness.database)
+    .await
+    .expect("hide consent table after the grant gate");
+    client_barrier
+        .rollback()
+        .await
+        .expect("release Client barrier into final fence failure");
+
+    let first = exchange.await.expect("join failed code exchange");
+    chenxing_auth::sqlx::query(
+        "ALTER TABLE user_consents_final_fence_unavailable RENAME TO user_consents",
+    )
+    .execute(&harness.database)
+    .await
+    .expect("restore consent table for retry");
+    assert_eq!(
+        first.expect_err("final consent query failure must not return tokens"),
+        OAuthError::TemporarilyUnavailable
+    );
+    assert_eq!(
+        refresh_count_for_grant(&harness).await,
+        0,
+        "the undisclosed Refresh Token must be removed before restoring the code"
+    );
+    assert!(
+        harness
+            .state
+            .authorization_codes
+            .find(&code.value)
+            .await
+            .expect("reload compensated authorization code")
+            .is_some(),
+        "a temporary final-fence failure must restore the authorization code"
+    );
+    assert!(
+        pending_refund_exists(&harness, &reservation_id).await,
+        "authorization-code restore and quota reservation restore must stay paired"
+    );
+    let held = harness
+        .state
+        .oauth_quotas
+        .snapshot_at(&harness.client_id, Some(limits), quota_now)
+        .await
+        .expect("quota snapshot after compensation");
+    assert_eq!(held.daily_used, 1);
+    assert_eq!(held.monthly_used, 1);
+
+    let retry = token_use_case::exchange_code(
+        &harness.state,
+        code_request(&harness.client_id, &code.value),
+        authenticate(&harness).await,
+        &issuer(&harness.state),
+    )
+    .await
+    .expect("same authorization code must succeed after the database recovers");
+    assert!(!retry.access_token.is_empty());
+    assert_eq!(refresh_count_for_grant(&harness).await, 1);
+    assert!(
+        !pending_refund_exists(&harness, &reservation_id).await,
+        "successful retry must atomically cancel the restored refund reservation"
+    );
+    let retained = harness
+        .state
+        .oauth_quotas
+        .snapshot_at(&harness.client_id, Some(limits), quota_now)
+        .await
+        .expect("quota snapshot after successful retry");
+    assert_eq!(retained.daily_used, 1);
+    assert_eq!(retained.monthly_used, 1);
+
+    if let Some(refresh) = retry.refresh_token {
+        let _ = harness.state.refresh_tokens.remove(&refresh).await;
+    }
+    cleanup(&harness).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn final_consent_query_failure_keeps_quota_refundable_when_code_restore_fails() {
+    let harness = setup().await;
+    save_consent(&harness).await;
+    let session = saved_session(&harness).await;
+    let (code, reservation_id, limits, quota_now) =
+        metered_authorization_code(&harness, session.token.clone()).await;
+    harness
+        .state
+        .authorization_codes
+        .save(&code)
+        .await
+        .expect("save authorization code");
+    harness
+        .state
+        .authorization_codes
+        .fail_restore_with_quota_refund_once_for_tests(&code.value);
+
+    let (client_barrier, exchange) = park_exchange_behind_client_guard(&harness, &code).await;
+    chenxing_auth::sqlx::query(
+        "ALTER TABLE user_consents RENAME TO user_consents_final_restore_failure",
+    )
+    .execute(&harness.database)
+    .await
+    .expect("hide consent table after the grant gate");
+    client_barrier
+        .rollback()
+        .await
+        .expect("release Client barrier into final fence failure");
+
+    let result = exchange.await.expect("join failed code exchange");
+    chenxing_auth::sqlx::query(
+        "ALTER TABLE user_consents_final_restore_failure RENAME TO user_consents",
+    )
+    .execute(&harness.database)
+    .await
+    .expect("restore consent table after failed exchange");
+    assert_eq!(
+        result.expect_err("final consent query failure must not return tokens"),
+        OAuthError::TemporarilyUnavailable
+    );
+    assert_eq!(refresh_count_for_grant(&harness).await, 0);
+    assert!(
+        harness
+            .state
+            .authorization_codes
+            .find(&code.value)
+            .await
+            .expect("find authorization code after injected restore failure")
+            .is_none(),
+        "a failed restore must leave the authorization code consumed"
+    );
+    assert!(
+        pending_refund_exists(&harness, &reservation_id).await,
+        "quota refund must be re-enqueued when atomic code restoration fails"
+    );
+
+    harness
+        .state
+        .oauth_quotas
+        .run_refund_worker_pass(code.expires_at + time::Duration::milliseconds(1))
+        .await
+        .expect("refund quota after the original authorization-code deadline");
+    let refunded = harness
+        .state
+        .oauth_quotas
+        .snapshot_at(&harness.client_id, Some(limits), quota_now)
+        .await
+        .expect("quota snapshot after fallback refund");
+    assert_eq!(refunded.daily_used, 0);
+    assert_eq!(refunded.monthly_used, 0);
+
+    cleanup(&harness).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn final_consent_query_failure_keeps_quota_refundable_when_refresh_remove_fails() {
+    let harness = setup().await;
+    save_consent(&harness).await;
+    let session = saved_session(&harness).await;
+    let (code, reservation_id, limits, quota_now) =
+        metered_authorization_code(&harness, session.token.clone()).await;
+    harness
+        .state
+        .authorization_codes
+        .save(&code)
+        .await
+        .expect("save authorization code");
+    harness
+        .state
+        .refresh_tokens
+        .fail_remove_once_for_client_for_tests(&harness.client_id);
+
+    let (client_barrier, exchange) = park_exchange_behind_client_guard(&harness, &code).await;
+    chenxing_auth::sqlx::query(
+        "ALTER TABLE user_consents RENAME TO user_consents_final_remove_failure",
+    )
+    .execute(&harness.database)
+    .await
+    .expect("hide consent table after the grant gate");
+    client_barrier
+        .rollback()
+        .await
+        .expect("release Client barrier into final fence failure");
+
+    let result = exchange.await.expect("join failed code exchange");
+    chenxing_auth::sqlx::query(
+        "ALTER TABLE user_consents_final_remove_failure RENAME TO user_consents",
+    )
+    .execute(&harness.database)
+    .await
+    .expect("restore consent table after failed exchange");
+    assert_eq!(
+        result.expect_err("final consent query failure must not return tokens"),
+        OAuthError::TemporarilyUnavailable
+    );
+    assert_eq!(
+        refresh_count_for_grant(&harness).await,
+        1,
+        "the injected remove failure must leave the undisclosed Refresh Token present"
+    );
+    assert!(
+        harness
+            .state
+            .authorization_codes
+            .find(&code.value)
+            .await
+            .expect("find authorization code after injected remove failure")
+            .is_none(),
+        "an uncertain Refresh Token removal must keep the authorization code consumed"
+    );
+    assert!(
+        pending_refund_exists(&harness, &reservation_id).await,
+        "quota refund must be re-enqueued even when Refresh Token removal is uncertain"
+    );
+
+    harness
+        .state
+        .oauth_quotas
+        .run_refund_worker_pass(code.expires_at + time::Duration::milliseconds(1))
+        .await
+        .expect("refund quota after the original authorization-code deadline");
+    let refunded = harness
+        .state
+        .oauth_quotas
+        .snapshot_at(&harness.client_id, Some(limits), quota_now)
+        .await
+        .expect("quota snapshot after remove-failure refund");
+    assert_eq!(refunded.daily_used, 0);
+    assert_eq!(refunded.monthly_used, 0);
+
+    harness
+        .state
+        .refresh_tokens
+        .revoke_grant_tokens(&harness.user_id.to_string(), &harness.client_id)
+        .await
+        .expect("clean up orphaned Refresh Token after injected removal failure");
     cleanup(&harness).await;
 }
 

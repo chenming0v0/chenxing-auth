@@ -2,7 +2,7 @@ use chenxing_auth::{
     config::Config,
     oauth::providers::{
         domain::{ClientAuthMethod, ProviderInput},
-        secrets::{SecretError, SecretManager},
+        secrets::{SecretContext, SecretError, SecretManager},
     },
     settings::{SmtpPasswordAction, SmtpSettingUpdate},
     state::{AppState, StateError},
@@ -100,8 +100,10 @@ async fn provider_ciphertext_blocks_replacement_key_and_accepts_restored_key() {
         .create(provider_input())
         .await
         .expect("persist encrypted provider secret");
-    let ciphertext: Vec<u8> = chenxing_auth::sqlx::query_scalar(
-        "SELECT client_secret_ciphertext FROM oauth_providers WHERE slug = 'recovery-provider'",
+    let (provider_id, ciphertext): (i64, Vec<u8>) = chenxing_auth::sqlx::query_as(
+        "SELECT id, client_secret_ciphertext
+         FROM oauth_providers
+         WHERE slug = 'recovery-provider'",
     )
     .fetch_one(&database)
     .await
@@ -124,7 +126,7 @@ async fn provider_ciphertext_blocks_replacement_key_and_accepts_restored_key() {
         SecretManager::load_or_generate(&key_directory, true).expect("load restored provider key");
     assert_eq!(
         manager
-            .decrypt(&ciphertext)
+            .decrypt_for(SecretContext::Provider(provider_id), &ciphertext)
             .expect("decrypt stored provider secret"),
         "recoverable-provider-secret"
     );

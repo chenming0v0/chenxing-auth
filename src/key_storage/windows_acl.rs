@@ -293,7 +293,7 @@ fn read_dacl(handle: HANDLE, sids: &TrustedSids) -> io::Result<DaclSnapshot> {
     let null_dacl = present && dacl_ptr.is_null();
     let protected = control & SE_DACL_PROTECTED != 0;
     let aces = if present && !dacl_ptr.is_null() {
-        collect_aces(dacl_ptr, &sids)?
+        collect_aces(dacl_ptr, sids)?
     } else {
         Vec::new()
     };

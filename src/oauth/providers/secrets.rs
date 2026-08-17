@@ -1,6 +1,6 @@
 use aes_gcm::{
     Aes256Gcm, Nonce,
-    aead::{Aead, KeyInit, rand_core::RngCore},
+    aead::{Aead, KeyInit, Payload, rand_core::RngCore},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use std::path::{Path, PathBuf};
@@ -14,11 +14,34 @@ use crate::key_storage::{
 const SECRET_KEY_FILE: &str = "oauth-provider-secret.key";
 const KEY_LENGTH: usize = 32;
 const NONCE_LENGTH: usize = 12;
+const ENVELOPE_MAGIC: &[u8; 4] = b"CXSE";
+const ENVELOPE_VERSION: u8 = 1;
+const ENVELOPE_HEADER_LENGTH: usize = ENVELOPE_MAGIC.len() + 1;
 
 #[derive(Clone)]
 pub struct SecretManager {
     key: [u8; KEY_LENGTH],
     path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretContext {
+    Provider(i64),
+    Smtp,
+}
+
+impl SecretContext {
+    fn aad(self) -> Vec<u8> {
+        let mut aad = b"chenxing-secret-envelope\0".to_vec();
+        match self {
+            Self::Provider(provider_id) => {
+                aad.extend_from_slice(b"oauth-provider\0");
+                aad.extend_from_slice(&provider_id.to_be_bytes());
+            }
+            Self::Smtp => aad.extend_from_slice(b"smtp\0app_settings.smtp"),
+        }
+        aad
+    }
 }
 
 #[derive(Debug, Error)]
@@ -35,6 +58,8 @@ pub enum SecretError {
     Encryption,
     #[error("secret encoding failed")]
     Encoding,
+    #[error("secret ciphertext envelope version is unsupported")]
+    UnsupportedEnvelope,
 }
 
 impl SecretManager {
@@ -84,19 +109,79 @@ impl SecretManager {
         Self { key, path: None }
     }
 
-    pub fn encrypt(&self, plaintext: &str) -> Result<Vec<u8>, SecretError> {
+    pub fn encrypt_for(
+        &self,
+        context: SecretContext,
+        plaintext: &str,
+    ) -> Result<Vec<u8>, SecretError> {
         let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|_| SecretError::Encryption)?;
+        let aad = context.aad();
         let mut nonce_bytes = [0_u8; NONCE_LENGTH];
         rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
         let ciphertext = cipher
-            .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_bytes())
+            .encrypt(
+                Nonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: plaintext.as_bytes(),
+                    aad: &aad,
+                },
+            )
             .map_err(|_| SecretError::Encryption)?;
-        let mut encoded = nonce_bytes.to_vec();
+        let mut encoded = ENVELOPE_MAGIC.to_vec();
+        encoded.push(ENVELOPE_VERSION);
+        encoded.extend_from_slice(&nonce_bytes);
         encoded.extend(ciphertext);
         Ok(encoded)
     }
 
-    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<String, SecretError> {
+    pub fn decrypt_for(
+        &self,
+        context: SecretContext,
+        ciphertext: &[u8],
+    ) -> Result<String, SecretError> {
+        let encrypted = self.current_payload(ciphertext)?;
+        let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|_| SecretError::Encryption)?;
+        let aad = context.aad();
+        let plaintext = cipher
+            .decrypt(
+                Nonce::from_slice(&encrypted[..NONCE_LENGTH]),
+                Payload {
+                    msg: &encrypted[NONCE_LENGTH..],
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| SecretError::Encoding)?;
+        String::from_utf8(plaintext).map_err(|_| SecretError::Encoding)
+    }
+
+    /// Verify a current envelope or explicitly re-encrypt a legacy nonce+ciphertext blob.
+    /// `None` means the current envelope was verified and needs no write.
+    pub fn migrate_legacy_for(
+        &self,
+        context: SecretContext,
+        ciphertext: &[u8],
+    ) -> Result<Option<Vec<u8>>, SecretError> {
+        if ciphertext.starts_with(ENVELOPE_MAGIC) {
+            self.decrypt_for(context, ciphertext)?;
+            return Ok(None);
+        }
+        let plaintext = self.decrypt_legacy(ciphertext)?;
+        self.encrypt_for(context, &plaintext).map(Some)
+    }
+
+    fn current_payload<'a>(&self, ciphertext: &'a [u8]) -> Result<&'a [u8], SecretError> {
+        if ciphertext.len() <= ENVELOPE_HEADER_LENGTH + NONCE_LENGTH
+            || &ciphertext[..ENVELOPE_MAGIC.len()] != ENVELOPE_MAGIC
+        {
+            return Err(SecretError::Encoding);
+        }
+        if ciphertext[ENVELOPE_MAGIC.len()] != ENVELOPE_VERSION {
+            return Err(SecretError::UnsupportedEnvelope);
+        }
+        Ok(&ciphertext[ENVELOPE_HEADER_LENGTH..])
+    }
+
+    fn decrypt_legacy(&self, ciphertext: &[u8]) -> Result<String, SecretError> {
         if ciphertext.len() <= NONCE_LENGTH {
             return Err(SecretError::Encoding);
         }
@@ -108,6 +193,19 @@ impl SecretManager {
             )
             .map_err(|_| SecretError::Encoding)?;
         String::from_utf8(plaintext).map_err(|_| SecretError::Encoding)
+    }
+
+    #[cfg(test)]
+    fn encrypt_legacy(&self, plaintext: &str) -> Result<Vec<u8>, SecretError> {
+        let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|_| SecretError::Encryption)?;
+        let mut nonce_bytes = [0_u8; NONCE_LENGTH];
+        rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+        let ciphertext = cipher
+            .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_bytes())
+            .map_err(|_| SecretError::Encryption)?;
+        let mut encoded = nonce_bytes.to_vec();
+        encoded.extend(ciphertext);
+        Ok(encoded)
     }
 
     pub fn encode(ciphertext: &[u8]) -> String {
@@ -127,21 +225,77 @@ impl SecretManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{SecretError, SecretManager};
+    use super::{SecretContext, SecretError, SecretManager};
     use std::fs;
 
     #[test]
     fn encrypted_secret_can_be_decrypted_but_does_not_contain_plaintext() {
         let manager = SecretManager::from_key([7_u8; 32]);
-        let ciphertext = manager.encrypt("top-secret").expect("encrypt");
+        let ciphertext = manager
+            .encrypt_for(SecretContext::Provider(7), "top-secret")
+            .expect("encrypt");
 
         assert!(
             !ciphertext
                 .windows("top-secret".len())
                 .any(|window| window == b"top-secret")
         );
-        assert_eq!(manager.decrypt(&ciphertext).expect("decrypt"), "top-secret");
-        assert!(manager.decrypt(b"invalid").is_err());
+        assert_eq!(
+            manager
+                .decrypt_for(SecretContext::Provider(7), &ciphertext)
+                .expect("decrypt"),
+            "top-secret"
+        );
+        assert!(
+            manager
+                .decrypt_for(SecretContext::Provider(8), &ciphertext)
+                .is_err()
+        );
+        assert!(
+            manager
+                .decrypt_for(SecretContext::Smtp, &ciphertext)
+                .is_err()
+        );
+        assert!(
+            manager
+                .decrypt_for(SecretContext::Provider(7), b"invalid")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn legacy_ciphertext_requires_explicit_context_bound_migration() {
+        let manager = SecretManager::from_key([9_u8; 32]);
+        let legacy = manager
+            .encrypt_legacy("legacy-secret")
+            .expect("legacy encrypt");
+        assert!(
+            manager
+                .decrypt_for(SecretContext::Provider(41), &legacy)
+                .is_err()
+        );
+
+        let migrated = manager
+            .migrate_legacy_for(SecretContext::Provider(41), &legacy)
+            .expect("migrate legacy")
+            .expect("legacy needs migration");
+        assert_eq!(
+            manager
+                .decrypt_for(SecretContext::Provider(41), &migrated)
+                .expect("decrypt migrated"),
+            "legacy-secret"
+        );
+        assert!(
+            manager
+                .decrypt_for(SecretContext::Provider(42), &migrated)
+                .is_err()
+        );
+        assert!(
+            manager
+                .migrate_legacy_for(SecretContext::Provider(41), &migrated)
+                .expect("verify current envelope")
+                .is_none()
+        );
     }
 
     #[test]
@@ -186,9 +340,16 @@ mod tests {
             .into_iter()
             .map(|worker| worker.join().expect("worker").expect("init"))
             .collect();
-        let probe = managers[0].encrypt("same-key").expect("encrypt");
+        let probe = managers[0]
+            .encrypt_for(SecretContext::Smtp, "same-key")
+            .expect("encrypt");
         for manager in &managers {
-            assert_eq!(manager.decrypt(&probe).expect("decrypt"), "same-key");
+            assert_eq!(
+                manager
+                    .decrypt_for(SecretContext::Smtp, &probe)
+                    .expect("decrypt"),
+                "same-key"
+            );
         }
 
         let _ = fs::remove_dir_all(directory);
@@ -216,7 +377,9 @@ mod tests {
         ));
         let manager =
             SecretManager::load_or_generate(&directory, false).expect("initial provider secret");
-        let ciphertext = manager.encrypt("recoverable-secret").expect("encrypt");
+        let ciphertext = manager
+            .encrypt_for(SecretContext::Provider(17), "recoverable-secret")
+            .expect("encrypt");
         let key_path = manager.path().expect("persisted key path").to_path_buf();
         let original_key = fs::read(&key_path).expect("read original key for recovery fixture");
         drop(manager);
@@ -236,7 +399,7 @@ mod tests {
             SecretManager::load_or_generate(&directory, true).expect("load restored key");
         assert_eq!(
             recovered
-                .decrypt(&ciphertext)
+                .decrypt_for(SecretContext::Provider(17), &ciphertext)
                 .expect("decrypt after recovery"),
             "recoverable-secret"
         );

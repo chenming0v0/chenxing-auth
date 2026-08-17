@@ -1,11 +1,30 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use redis::{AsyncCommands, Script};
 use sha2::{Digest, Sha256};
+#[cfg(debug_assertions)]
+use std::{
+    collections::HashSet,
+    sync::{Mutex, OnceLock},
+};
 use thiserror::Error;
 
 use super::code::AuthorizationCode;
-use super::quota::QuotaRefundCancel;
+use super::quota::{QuotaRefundCancel, refund_due_unix_millis};
 use crate::{clock::SharedClock, redis_client::RedisClient, redis_keyspace::RedisKeyspace};
+
+#[cfg(debug_assertions)]
+fn restore_failures_for_tests() -> &'static Mutex<HashSet<String>> {
+    static FAILURES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    FAILURES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[cfg(debug_assertions)]
+fn take_restore_failure_for_test(code_value: &str) -> bool {
+    restore_failures_for_tests()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(code_value)
+}
 
 #[derive(Clone)]
 pub struct AuthorizationCodeStore {
@@ -45,6 +64,15 @@ impl AuthorizationCodeStore {
         self
     }
 
+    #[doc(hidden)]
+    #[cfg(debug_assertions)]
+    pub fn fail_restore_with_quota_refund_once_for_tests(&self, code_value: &str) {
+        restore_failures_for_tests()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(code_value.to_owned());
+    }
+
     pub async fn save(&self, code: &AuthorizationCode) -> Result<(), AuthorizationCodeStoreError> {
         // TTL 来自授权码本身的 expires_at，与配置的 security_limits.authorization_code_ttl_seconds
         // 保持一致（#121）。remaining_seconds 不足1时强制设为1而不是0（Redis 不接受0）。
@@ -59,6 +87,58 @@ impl AuthorizationCodeStore {
         ttl_seconds: u64,
     ) -> Result<(), AuthorizationCodeStoreError> {
         self.save_with_ttl(code, ttl_seconds).await
+    }
+
+    /// Restore a consumed authorization code and its pending quota refund in
+    /// one Redis transaction. The code TTL is supplied in milliseconds so a
+    /// retry cannot gain more lifetime than remained at compensation time.
+    pub async fn restore_with_quota_refund(
+        &self,
+        code: &AuthorizationCode,
+        remaining_ttl_ms: u64,
+        quota_cancel: Option<QuotaRefundCancel>,
+    ) -> Result<(), AuthorizationCodeStoreError> {
+        let payload = serde_json::to_string(code)?;
+        #[cfg(debug_assertions)]
+        if take_restore_failure_for_test(&code.value) {
+            return Err(redis::RedisError::from((
+                redis::ErrorKind::IoError,
+                "injected authorization-code restore failure",
+            ))
+            .into());
+        }
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let code_key = self.key(&code.value);
+        let (refund_key, reservation_id, refund_score) = quota_cancel
+            .as_ref()
+            .map(|cancel| {
+                (
+                    cancel.zset_key.clone(),
+                    cancel.member.clone(),
+                    refund_due_unix_millis(code.expires_at) as f64,
+                )
+            })
+            .unwrap_or_else(|| (code_key.clone(), String::new(), 0.0));
+        let ttl_ms = i64::try_from(remaining_ttl_ms).unwrap_or(i64::MAX);
+        let _: i64 = Script::new(
+            r#"local ttl_ms = tonumber(ARGV[2])
+               if ttl_ms and ttl_ms > 0 then
+                   redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl_ms, 'NX')
+               end
+               if ARGV[3] ~= '' then
+                   redis.call('ZADD', KEYS[2], tonumber(ARGV[4]), ARGV[3])
+               end
+               return 1"#,
+        )
+        .key(code_key)
+        .key(refund_key)
+        .arg(payload)
+        .arg(ttl_ms)
+        .arg(reservation_id)
+        .arg(refund_score)
+        .invoke_async(&mut connection)
+        .await?;
+        Ok(())
     }
 
     async fn save_with_ttl(

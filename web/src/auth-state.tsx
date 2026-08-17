@@ -40,12 +40,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 使用 useRef 而非 useState：不触发重渲染，且读到的始终是最新值而非快照。
   const generationRef = useRef<number>(0)
   const refreshSeqRef = useRef<number>(0)
+  const userIdRef = useRef<UserMe['id'] | null>(null)
 
   const clearLocal = useCallback(() => {
     // 递增代数——所有正在进行的 refresh() await 返回后会发现代数不匹配，自动丢弃结果
     generationRef.current += 1
     setUser(null)
     setStatus('unauthenticated')
+    userIdRef.current = null
     clearApiCache()
   }, [])
 
@@ -112,6 +114,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // 过期结果直接丢弃，避免把已登出或已被更新请求覆盖的状态写回去。
       if (!isCurrentRequest()) return null
 
+      if (userIdRef.current !== null && String(userIdRef.current) !== String(profile.id)) {
+        // Entitlements are account-scoped. Invalidate both the completed value and any
+        // in-flight request before exposing the new identity to the rest of the SPA.
+        clearApiCache()
+      }
+      userIdRef.current = profile.id
       setUser(profile)
       setStatus('authenticated')
       return profile

@@ -12,7 +12,10 @@ use crate::{
     db::Database,
     keys::{KeyManager, KeyManagerError},
     oauth::providers::{
-        endpoint_policy::EndpointPolicy, secrets::SecretManager, service::ExternalOAuthService,
+        endpoint_policy::EndpointPolicy,
+        secret_migration::{SecretMigrationError, migrate_persisted_credentials},
+        secrets::SecretManager,
+        service::ExternalOAuthService,
         state_store::ExternalLoginStateStore,
     },
     oauth::quota::OAuthQuotaStore,
@@ -90,6 +93,8 @@ pub enum StateError {
     ExternalOAuth(#[from] crate::oauth::providers::service::ExternalOAuthError),
     #[error("external OAuth secret initialization failed: {0}")]
     ExternalOAuthSecret(#[from] crate::oauth::providers::secrets::SecretError),
+    #[error("persisted credential migration failed: {0}")]
+    SecretMigration(#[from] SecretMigrationError),
     /// 静态根校验与密钥加载都放在阻塞线程池执行，线程 panic 或被取消时只能观察到
     /// JoinError。保留这个变体而不是 unwrap，启动失败时才不会丢掉真实原因。
     #[error("startup blocking task failed: {0}")]
@@ -278,6 +283,8 @@ impl AppState {
             )
         })
         .await??;
+
+        migrate_persisted_credentials(&database, &secret_manager).await?;
 
         let settings = SettingsService::with_security_limits(
             database.clone(),

@@ -1,19 +1,29 @@
 use crate::sqlx::PgPool;
 use crate::users::domain::UserId;
 
+// `AppState::new_with_pool` represents an explicitly configured, not-yet-persisted
+// Issuer as generation 1. Missing rows must never match later generations.
+const INITIAL_ISSUER_GENERATION: i64 = 1;
+
+fn issuer_generation_matches(current: Option<i64>, expected: i64) -> bool {
+    current.unwrap_or(INITIAL_ISSUER_GENERATION) == expected
+}
+
 #[path = "repository_authenticated.rs"]
 mod authenticated;
 pub use authenticated::{
     AuthenticatedPasskeyPersistenceResult, AuthenticatedTotpPersistenceResult,
-    insert_authenticated_passkey, insert_authenticated_totp_factor,
+    insert_authenticated_passkey, insert_authenticated_passkey_with_issuer_generation,
+    insert_authenticated_totp_factor,
 };
 
 #[path = "repository_passkey.rs"]
 mod passkey;
 pub use passkey::{
     PasskeyPersistOutcome, PasskeyPersistenceResult, PasskeyUpdateOutcome, StoredPasskey,
-    count_passkeys, find_passkey_row, insert_passkey_if_empty, list_passkeys,
-    list_passkeys_with_versions, persist_passkey_authentication, update_passkey,
+    count_passkeys, find_passkey_row, insert_passkey_if_empty,
+    insert_passkey_if_empty_with_issuer_generation, list_passkeys, list_passkeys_with_versions,
+    persist_passkey_authentication, update_passkey,
 };
 
 pub async fn insert_totp_factor(
@@ -285,26 +295,35 @@ pub async fn list_factor_methods(
 }
 
 pub async fn has_active_passkey_only_accounts(pool: &PgPool) -> Result<bool, crate::sqlx::Error> {
+    list_active_passkey_totp_ciphertexts(pool)
+        .await
+        .map(|rows| rows.into_iter().any(|ciphertext| ciphertext.is_none()))
+}
+
+pub async fn list_active_passkey_totp_ciphertexts<'e, E>(
+    executor: E,
+) -> Result<Vec<Option<Vec<u8>>>, crate::sqlx::Error>
+where
+    E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
+{
     crate::sqlx::query_scalar(
-        "SELECT EXISTS(
-             SELECT 1
-             FROM users
-             WHERE status = 'active'
-               AND EXISTS (
-                   SELECT 1 FROM user_passkeys WHERE user_passkeys.user_id = users.id
-               )
-               AND NOT EXISTS (
-                   SELECT 1 FROM user_totp_factors WHERE user_totp_factors.user_id = users.id
-               )
-         )",
+        "SELECT t.encrypted_secret
+         FROM users u
+         JOIN user_passkeys p ON p.user_id = u.id
+         LEFT JOIN user_totp_factors t ON t.user_id = u.id
+         WHERE u.status = 'active'
+         GROUP BY u.id, t.encrypted_secret",
     )
-    .fetch_one(pool)
+    .fetch_all(executor)
     .await
 }
 
-pub async fn has_passkeys(pool: &PgPool) -> Result<bool, crate::sqlx::Error> {
+pub async fn has_passkeys<'e, E>(executor: E) -> Result<bool, crate::sqlx::Error>
+where
+    E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
+{
     crate::sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM user_passkeys)")
-        .fetch_one(pool)
+        .fetch_one(executor)
         .await
 }
 

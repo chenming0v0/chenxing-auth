@@ -1,4 +1,4 @@
-use super::lock_factor_account;
+use super::{issuer_generation_matches, lock_factor_account};
 use crate::{sqlx::PgPool, users::domain::UserId};
 use webauthn_rs::prelude::Passkey;
 
@@ -14,6 +14,7 @@ pub enum AuthenticatedPasskeyPersistenceResult {
     Stored,
     Conflict,
     AuthenticationChanged,
+    IssuerChanged,
 }
 
 pub async fn insert_authenticated_totp_factor(
@@ -57,8 +58,57 @@ pub async fn insert_authenticated_passkey(
     credential_id: &[u8],
     passkey: &Passkey,
 ) -> Result<AuthenticatedPasskeyPersistenceResult, crate::sqlx::Error> {
+    insert_authenticated_passkey_with_generation(
+        pool,
+        user_id,
+        expected_session_epoch,
+        credential_id,
+        passkey,
+        None,
+    )
+    .await
+}
+
+pub async fn insert_authenticated_passkey_with_issuer_generation(
+    pool: &PgPool,
+    user_id: UserId,
+    expected_session_epoch: i64,
+    credential_id: &[u8],
+    passkey: &Passkey,
+    expected_issuer_generation: i64,
+) -> Result<AuthenticatedPasskeyPersistenceResult, crate::sqlx::Error> {
+    insert_authenticated_passkey_with_generation(
+        pool,
+        user_id,
+        expected_session_epoch,
+        credential_id,
+        passkey,
+        Some(expected_issuer_generation),
+    )
+    .await
+}
+
+async fn insert_authenticated_passkey_with_generation(
+    pool: &PgPool,
+    user_id: UserId,
+    expected_session_epoch: i64,
+    credential_id: &[u8],
+    passkey: &Passkey,
+    expected_issuer_generation: Option<i64>,
+) -> Result<AuthenticatedPasskeyPersistenceResult, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
     crate::settings::repository::lock_passkey_policy(&mut transaction).await?;
+    if let Some(expected) = expected_issuer_generation {
+        let current: Option<i64> = crate::sqlx::query_scalar(
+            "SELECT generation FROM app_settings WHERE setting_key = 'app_issuer'",
+        )
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if !issuer_generation_matches(current, expected) {
+            transaction.rollback().await?;
+            return Ok(AuthenticatedPasskeyPersistenceResult::IssuerChanged);
+        }
+    }
     let enabled = match crate::settings::repository::get_text(
         &mut *transaction,
         crate::settings::PASSKEY_KEY,

@@ -452,6 +452,7 @@ pub async fn exchange_code(
         &code.user_id,
         client_id,
         grant.consent_version,
+        &code,
         &refresh.value,
     )
     .await?;

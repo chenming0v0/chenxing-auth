@@ -21,6 +21,7 @@ use chenxing_auth::{
     api,
     config::Config,
     sessions::domain::{Session, session_token_hash},
+    settings::issuer::IssuerRecord,
     state::AppState,
 };
 use serde_json::Value;
@@ -238,6 +239,20 @@ async fn inspect(router: &Router, request_id: &str, cookie: &str) -> StatusCode 
         .await
         .expect("inspect response")
         .status()
+}
+
+fn switch_issuer_generation(state: &AppState) -> i64 {
+    let current = state.issuer.current().expect("current issuer");
+    let next_generation = current.generation() + 1;
+    state
+        .issuer
+        .apply(&IssuerRecord {
+            value: "http://127.0.0.1:3999".to_owned(),
+            generation: next_generation,
+            updated_at: state.clock.now(),
+        })
+        .expect("apply next issuer generation");
+    next_generation
 }
 
 async fn cleanup(
@@ -707,5 +722,85 @@ async fn legacy_pending_request_without_holder_hash_is_rejected() {
         .take(&request_id)
         .await
         .expect("cleanup pending request");
+    cleanup(&database, &client_id, &[user_id], key_directory).await;
+}
+
+/// Issue #523: every continuation of a pending authorization stays in the
+/// issuer generation captured by the original `/oauth/authorize` request.
+#[tokio::test]
+async fn issuer_change_expires_pending_requests_before_bind_inspect_or_decide() {
+    let (router, state, database, key_directory) = setup().await;
+    let user_id = create_user(&router, "rebind-issuer-generation").await;
+    let client_id = create_client(&router).await;
+    let session = persisted_session(&state, user_id).await;
+    let issuer_a = state.issuer.current().expect("issuer A");
+
+    let mut requests = Vec::new();
+    for _ in 0..3 {
+        let (request_id, holder) = start_unauthenticated_authorization(&router, &client_id).await;
+        let cookie = format!("{}; {holder}", session_cookie(&session));
+        assert_eq!(
+            bind(&router, &request_id, &cookie, &session.csrf_token).await,
+            StatusCode::NO_CONTENT
+        );
+        let stored = state
+            .authorization_requests
+            .find(&request_id)
+            .await
+            .expect("load issuer-bound pending request")
+            .expect("pending request exists");
+        assert_eq!(stored.issuer_generation, Some(issuer_a.generation()));
+        requests.push((request_id, cookie));
+    }
+
+    let issuer_b_generation = switch_issuer_generation(&state);
+    assert_ne!(issuer_b_generation, issuer_a.generation());
+
+    assert_eq!(
+        bind(&router, &requests[0].0, &requests[0].1, &session.csrf_token).await,
+        StatusCode::BAD_REQUEST,
+        "an A-era pending request must not bind under issuer B"
+    );
+    assert_eq!(
+        inspect(&router, &requests[1].0, &requests[1].1).await,
+        StatusCode::BAD_REQUEST,
+        "an A-era pending request must not be inspected under issuer B"
+    );
+
+    let decision = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!(
+                    "/api/v1/oauth/authorize/requests/{}",
+                    requests[2].0
+                ))
+                .header("cookie", &requests[2].1)
+                .header("x-csrf-token", &session.csrf_token)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"decision":"approve"}"#))
+                .expect("approve stale issuer request"),
+        )
+        .await
+        .expect("stale issuer decision response");
+    assert_eq!(
+        decision.status(),
+        StatusCode::BAD_REQUEST,
+        "an A-era pending request must not issue a B-era authorization code"
+    );
+
+    for (request_id, _) in &requests {
+        assert!(
+            state
+                .authorization_requests
+                .find(request_id)
+                .await
+                .expect("reload rejected pending request")
+                .is_none(),
+            "issuer-mismatched pending requests must be discarded"
+        );
+    }
+
     cleanup(&database, &client_id, &[user_id], key_directory).await;
 }

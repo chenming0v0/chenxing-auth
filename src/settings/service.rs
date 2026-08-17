@@ -11,7 +11,7 @@ use super::{
 use crate::{
     audit::{AuditError, AuditEvent, AuditService},
     config::AuthEncryptionKey,
-    oauth::providers::secrets::{SecretError, SecretManager},
+    oauth::providers::secrets::{SecretContext, SecretError, SecretManager},
     users::email::EmailAddress,
 };
 use thiserror::Error;
@@ -386,7 +386,7 @@ impl SettingsService {
                 .and_then(|value| value.password_ciphertext.clone()),
             |plaintext| {
                 self.secrets
-                    .encrypt(&plaintext)
+                    .encrypt_for(SecretContext::Smtp, &plaintext)
                     .map(|secret| SecretManager::encode(&secret))
             },
         )?;

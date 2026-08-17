@@ -41,6 +41,7 @@ fn pending(request_id: String, client_id: &str) -> PendingAuthorization {
         code_challenge_method: "S256".to_owned(),
         session_token_hash: None,
         holder_hash: None,
+        issuer_generation: None,
         cas_revision: 0,
     }
 }

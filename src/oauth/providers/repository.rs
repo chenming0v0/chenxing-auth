@@ -1,4 +1,4 @@
-use crate::sqlx::PgPool;
+use crate::sqlx::{PgConnection, PgPool};
 use serde_json::Value;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -19,7 +19,7 @@ pub struct ExternalIdentity {
 }
 
 pub async fn insert_provider(
-    pool: &PgPool,
+    connection: &mut PgConnection,
     input: &ValidatedProviderInput,
     ciphertext: Vec<u8>,
 ) -> Result<ProviderRecord, crate::sqlx::Error> {
@@ -55,7 +55,7 @@ pub async fn insert_provider(
     .bind(auth_method_value(input.client_auth_method))
     .bind(input.pkce_enabled)
     .bind(now)
-    .fetch_one(pool)
+    .fetch_one(&mut *connection)
     .await?;
     parse_provider_row(row)
 }
@@ -105,8 +105,24 @@ pub async fn find_by_slug(
     row.map(parse_provider_row).transpose()
 }
 
+pub async fn lock_by_slug(
+    connection: &mut PgConnection,
+    slug: &str,
+) -> Result<Option<ProviderRecord>, crate::sqlx::Error> {
+    let row = crate::sqlx::query_as::<_, ProviderRow>(
+        "SELECT id, name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint,
+                client_id, client_secret_ciphertext, scopes, subject_claim, email_claim,
+                name_claim, email_verified_claim, client_auth_method, pkce_enabled, status
+         FROM oauth_providers WHERE slug = $1 FOR UPDATE",
+    )
+    .bind(slug)
+    .fetch_optional(&mut *connection)
+    .await?;
+    row.map(parse_provider_row).transpose()
+}
+
 pub async fn update_provider(
-    pool: &PgPool,
+    connection: &mut PgConnection,
     slug: &str,
     input: &ValidatedProviderInput,
     ciphertext: Vec<u8>,
@@ -136,9 +152,45 @@ pub async fn update_provider(
     .bind(input.pkce_enabled)
     // 保留墙钟（Issue #299 的明确例外）：配置行 updated_at。
     .bind(OffsetDateTime::now_utc())
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
     Ok(result.rows_affected() == 1)
+}
+
+pub(crate) async fn update_client_secret_ciphertext(
+    connection: &mut PgConnection,
+    provider_id: i64,
+    ciphertext: &[u8],
+) -> Result<(), crate::sqlx::Error> {
+    let result = crate::sqlx::query(
+        "UPDATE oauth_providers
+         SET client_secret_ciphertext = $2, updated_at = $3
+         WHERE id = $1",
+    )
+    .bind(provider_id)
+    .bind(ciphertext)
+    .bind(OffsetDateTime::now_utc())
+    .execute(&mut *connection)
+    .await?;
+    if result.rows_affected() == 1 {
+        Ok(())
+    } else {
+        Err(crate::sqlx::Error::RowNotFound)
+    }
+}
+
+pub(crate) async fn lock_client_secret_ciphertexts(
+    connection: &mut PgConnection,
+) -> Result<Vec<(i64, Vec<u8>)>, crate::sqlx::Error> {
+    crate::sqlx::query_as(
+        "SELECT id, client_secret_ciphertext
+         FROM oauth_providers
+         WHERE octet_length(client_secret_ciphertext) > 0
+         ORDER BY id
+         FOR UPDATE",
+    )
+    .fetch_all(&mut *connection)
+    .await
 }
 
 pub async fn set_status(

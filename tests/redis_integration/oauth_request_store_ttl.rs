@@ -4,6 +4,7 @@ use chenxing_auth::{
     settings::SecurityLimitsSetting,
 };
 use redis::AsyncCommands;
+use tokio::time::{Duration, sleep};
 
 struct StoreHarness {
     store: AuthorizationRequestStore,
@@ -35,6 +36,7 @@ fn pending(request_id: String, client_id: &str) -> PendingAuthorization {
         code_challenge_method: "S256".to_owned(),
         session_token_hash: None,
         holder_hash: None,
+        issuer_generation: None,
         cas_revision: 0,
     }
 }
@@ -95,6 +97,24 @@ async fn assert_shared_ttl_covers_long_lived(
             "shared key {key} TTL must stay near the long-lived request, got {ttl}"
         );
     }
+}
+
+async fn redis_now_ms(connection: &mut redis::aio::MultiplexedConnection) -> i64 {
+    let (seconds, microseconds): (i64, i64) = redis::cmd("TIME")
+        .query_async(connection)
+        .await
+        .expect("Redis TIME");
+    seconds * 1_000 + microseconds / 1_000
+}
+
+async fn request_deadline_ms(connection: &mut redis::aio::MultiplexedConnection, key: &str) -> i64 {
+    let now = redis_now_ms(connection).await;
+    let remaining: i64 = connection.pttl(key).await.expect("request PTTL");
+    assert!(
+        remaining > 0,
+        "request must still be live, got PTTL {remaining}"
+    );
+    now + remaining
 }
 
 #[tokio::test]
@@ -219,4 +239,162 @@ async fn restoring_near_expiry_request_does_not_shrink_shared_index_ttl() {
         .take(&replacement.request_id)
         .await
         .expect("cleanup replacement request");
+}
+
+#[tokio::test]
+async fn repeated_rebind_preserves_the_original_pending_deadline() {
+    let StoreHarness { store, keyspace } = store();
+    let mut connection = redis_connection().await;
+    let limits = tight_pending_limits();
+    let client_id = format!("pending-rebind-{}", uuid::Uuid::new_v4().simple());
+    let request = pending(
+        format!("pending-rebind-request-{}", uuid::Uuid::new_v4().simple()),
+        &client_id,
+    );
+    assert!(
+        store
+            .save_limited_with_limits_and_ttl(&request, &limits, Some(2_400))
+            .await
+            .expect("save short-lived pending request")
+    );
+
+    let key = request_key(&keyspace, &request.request_id);
+    let expiry_key = global_expiry_key(&keyspace);
+    let original_deadline = request_deadline_ms(&mut connection, &key).await;
+    let original_expiry_score: f64 = connection
+        .zscore(&expiry_key, &request.request_id)
+        .await
+        .expect("original expiry score");
+
+    let mut expected = request;
+    for revision in 1..=2 {
+        sleep(Duration::from_millis(250)).await;
+        let mut replacement = expected.clone();
+        replacement.session_token_hash = Some(format!("session-{revision}"));
+        assert!(
+            store
+                .replace_if_matches(&replacement.request_id, &expected, &replacement)
+                .await
+                .expect("replace pending binding")
+        );
+        expected = store
+            .find(&replacement.request_id)
+            .await
+            .expect("reload rebound request")
+            .expect("rebound request remains live");
+
+        let rebound_deadline = request_deadline_ms(&mut connection, &key).await;
+        assert!(
+            rebound_deadline <= original_deadline + 25,
+            "rebind {revision} moved deadline from {original_deadline} to {rebound_deadline}"
+        );
+        let expiry_score: f64 = connection
+            .zscore(&expiry_key, &expected.request_id)
+            .await
+            .expect("rebound expiry score");
+        assert!(
+            expiry_score <= original_expiry_score,
+            "rebind {revision} moved expiry index from {original_expiry_score} to {expiry_score}"
+        );
+        assert!(
+            connection
+                .sismember::<_, _, bool>(
+                    client_index_key(&keyspace, &client_id),
+                    &expected.request_id
+                )
+                .await
+                .expect("client index membership")
+        );
+        assert_eq!(
+            connection
+                .hget::<_, _, Option<String>>(global_index_key(&keyspace), &expected.request_id)
+                .await
+                .expect("global index owner")
+                .as_deref(),
+            Some(client_id.as_str())
+        );
+    }
+
+    store
+        .take(&expected.request_id)
+        .await
+        .expect("cleanup rebound request");
+}
+
+#[tokio::test]
+async fn near_expiry_rebind_cannot_revive_request_or_hold_capacity() {
+    let StoreHarness { store, keyspace } = store();
+    let mut connection = redis_connection().await;
+    let mut limits = tight_pending_limits();
+    limits.max_pending_requests_per_client = 1;
+    limits.max_pending_requests_global = 1;
+    let client_id = format!("pending-race-{}", uuid::Uuid::new_v4().simple());
+    let request = pending(
+        format!("pending-race-request-{}", uuid::Uuid::new_v4().simple()),
+        &client_id,
+    );
+    assert!(
+        store
+            .save_limited_with_limits_and_ttl(&request, &limits, Some(1_000))
+            .await
+            .expect("save race fixture")
+    );
+
+    let key = request_key(&keyspace, &request.request_id);
+    let _: bool = connection
+        .pexpire(&key, 5)
+        .await
+        .expect("move request near expiry");
+    let mut replacement = request.clone();
+    replacement.session_token_hash = Some("near-expiry-session".to_owned());
+    let _ = store
+        .replace_if_matches(&request.request_id, &request, &replacement)
+        .await
+        .expect("race-safe replacement");
+    sleep(Duration::from_millis(40)).await;
+    assert!(
+        store
+            .find(&request.request_id)
+            .await
+            .expect("reload near-expiry request")
+            .is_none(),
+        "a replace racing expiry must not revive the request with the configured full TTL"
+    );
+
+    let successor = pending(
+        format!("pending-race-successor-{}", uuid::Uuid::new_v4().simple()),
+        &client_id,
+    );
+    assert!(
+        store
+            .save_limited_with_limits(&successor, &limits)
+            .await
+            .expect("reclaim expired request capacity"),
+        "expired request metadata must not keep client/global capacity occupied"
+    );
+    assert!(
+        !connection
+            .sismember::<_, _, bool>(client_index_key(&keyspace, &client_id), &request.request_id)
+            .await
+            .expect("stale client index membership")
+    );
+    assert_eq!(
+        connection
+            .hget::<_, _, Option<String>>(global_index_key(&keyspace), &request.request_id)
+            .await
+            .expect("stale global index owner"),
+        None
+    );
+    assert_eq!(
+        connection
+            .zscore::<_, _, Option<f64>>(global_expiry_key(&keyspace), &request.request_id)
+            .await
+            .expect("stale expiry index score"),
+        None
+    );
+
+    store
+        .take(&successor.request_id)
+        .await
+        .expect("cleanup successor request");
 }

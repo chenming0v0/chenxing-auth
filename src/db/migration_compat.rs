@@ -213,13 +213,44 @@ async fn verify_flattened_schema(
             AND to_regprocedure(
                     format('%I.archive_audit_events(integer,integer)', current_schema())
                 ) IS NOT NULL
-            AND EXISTS (
-                SELECT 1 FROM pg_trigger
-                WHERE tgname = 'audit_events_append_only_trigger' AND NOT tgisinternal
-            )
-            AND EXISTS (
-                SELECT 1 FROM pg_trigger
-                WHERE tgname = 'audit_events_archive_append_only_trigger' AND NOT tgisinternal
+            AND NOT EXISTS (
+                SELECT 1
+                FROM (VALUES
+                    (
+                        'audit_events_append_only_trigger',
+                        'audit_events',
+                        'reject_audit_event_mutation',
+                        58
+                    ),
+                    (
+                        'audit_events_archive_append_only_trigger',
+                        'audit_events_archive',
+                        'reject_audit_event_mutation',
+                        58
+                    )
+                ) AS required(trigger_name, table_name, function_name, trigger_type)
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM pg_trigger AS trigger_row
+                    JOIN pg_class AS relation ON relation.oid = trigger_row.tgrelid
+                    JOIN pg_namespace AS relation_namespace
+                      ON relation_namespace.oid = relation.relnamespace
+                    JOIN pg_proc AS routine ON routine.oid = trigger_row.tgfoid
+                    JOIN pg_namespace AS routine_namespace
+                      ON routine_namespace.oid = routine.pronamespace
+                    WHERE trigger_row.tgname = required.trigger_name
+                      AND NOT trigger_row.tgisinternal
+                      AND trigger_row.tgenabled = 'O'
+                      AND trigger_row.tgtype = required.trigger_type::smallint
+                      AND trigger_row.tgnargs = 0
+                      AND relation_namespace.nspname = current_schema()
+                      AND relation.relname = required.table_name
+                      AND relation.relkind IN ('r', 'p')
+                      AND routine_namespace.nspname = current_schema()
+                      AND routine.proname = required.function_name
+                      AND routine.pronargs = 0
+                      AND routine.prorettype = 'trigger'::regtype
+                )
             )
             AND (
                 $1 < 28
@@ -234,9 +265,26 @@ async fn verify_flattened_schema(
                             format('%I.set_app_issuer(text,bigint)', current_schema())
                         ) IS NOT NULL
                     AND EXISTS (
-                        SELECT 1 FROM pg_trigger
-                        WHERE tgname = 'app_issuer_controlled_write_trigger'
-                          AND NOT tgisinternal
+                        SELECT 1
+                        FROM pg_trigger AS trigger_row
+                        JOIN pg_class AS relation ON relation.oid = trigger_row.tgrelid
+                        JOIN pg_namespace AS relation_namespace
+                          ON relation_namespace.oid = relation.relnamespace
+                        JOIN pg_proc AS routine ON routine.oid = trigger_row.tgfoid
+                        JOIN pg_namespace AS routine_namespace
+                          ON routine_namespace.oid = routine.pronamespace
+                        WHERE trigger_row.tgname = 'app_issuer_controlled_write_trigger'
+                          AND NOT trigger_row.tgisinternal
+                          AND trigger_row.tgenabled = 'O'
+                          AND trigger_row.tgtype = 31
+                          AND trigger_row.tgnargs = 0
+                          AND relation_namespace.nspname = current_schema()
+                          AND relation.relname = 'app_settings'
+                          AND relation.relkind IN ('r', 'p')
+                          AND routine_namespace.nspname = current_schema()
+                          AND routine.proname = 'guard_app_issuer_mutation'
+                          AND routine.pronargs = 0
+                          AND routine.prorettype = 'trigger'::regtype
                     )
                 )
             )

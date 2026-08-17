@@ -186,6 +186,22 @@ pub(crate) async fn has_smtp_password_ciphertext(
     }))
 }
 
+pub(crate) async fn lock_smtp_for_secret_migration(
+    connection: &mut crate::sqlx::PgConnection,
+) -> Result<Option<StoredSmtpSetting>, crate::sqlx::Error> {
+    let value = crate::sqlx::query_scalar::<_, Option<String>>(
+        "SELECT setting_value
+         FROM app_settings
+         WHERE setting_key = $1
+         FOR UPDATE",
+    )
+    .bind(SMTP_KEY)
+    .fetch_optional(&mut *connection)
+    .await?
+    .flatten();
+    decode_smtp(value)
+}
+
 pub(crate) async fn set_smtp<'e, E>(
     executor: E,
     value: &StoredSmtpSetting,

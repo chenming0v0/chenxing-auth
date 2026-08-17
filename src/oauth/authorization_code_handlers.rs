@@ -390,6 +390,7 @@ pub(crate) fn authorization_code_issue_error_response(
 /// 避免两个来源不一致时静默丢掉绑定。
 pub(crate) fn pending_from_validated(
     request: &ValidatedAuthorizationRequest,
+    issuer_generation: i64,
 ) -> PendingAuthorization {
     PendingAuthorization {
         request_id: uuid::Uuid::new_v4().to_string(),
@@ -397,6 +398,7 @@ pub(crate) fn pending_from_validated(
         redirect_uri: request.redirect_uri.clone(),
         scope: request.scopes.join(" "),
         state: request.state.clone(),
+        issuer_generation: Some(issuer_generation),
         nonce: request.nonce.clone(),
         code_challenge: request.code_challenge.clone(),
         code_challenge_method: "S256".to_owned(),
@@ -433,7 +435,7 @@ pub async fn issue_authorization_code(
     source_ip: Option<&str>,
     user_agent: Option<&str>,
 ) -> Response {
-    let pending = pending_from_validated(&validated);
+    let pending = pending_from_validated(&validated, issuer.generation());
     match issue_authorization_code_result(state, issuer, user_id, validated, source_ip, user_agent)
         .await
     {

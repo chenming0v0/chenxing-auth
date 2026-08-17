@@ -89,6 +89,31 @@ fn reservation_record_key(keyspace: &RedisKeyspace, reservation_id: &str) -> Str
     ))
 }
 
+/// Merge the two on-disk score formats fairly so a full modern queue cannot
+/// starve upgrade-era legacy reservations. Legacy entries lead each pair to
+/// guarantee progress even when the batch is filled on every pass.
+fn fair_merge_due(modern: Vec<String>, legacy: Vec<String>) -> Vec<String> {
+    let mut due = Vec::with_capacity(REFUND_BATCH_SIZE as usize);
+    let mut modern_index = 0;
+    let mut legacy_index = 0;
+    while due.len() < REFUND_BATCH_SIZE as usize
+        && (modern_index < modern.len() || legacy_index < legacy.len())
+    {
+        if let Some(reservation_id) = legacy.get(legacy_index) {
+            due.push(reservation_id.clone());
+            legacy_index += 1;
+        }
+        if due.len() >= REFUND_BATCH_SIZE as usize {
+            break;
+        }
+        if let Some(reservation_id) = modern.get(modern_index) {
+            due.push(reservation_id.clone());
+            modern_index += 1;
+        }
+    }
+    due
+}
+
 /// 兑换授权码时原子取消待退条目的参数，与授权码 CAS 在同一个 Lua 脚本里执行。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuotaRefundCancel {
@@ -170,7 +195,7 @@ impl OAuthQuotaStore {
         // with an exclusive next-second bound so mixed-version entries cannot
         // refund while the code is still redeemable.
         let now_millis = refund_query_unix_millis(now);
-        let mut due: Vec<String> = connection
+        let modern: Vec<String> = connection
             .zrangebyscore_limit(
                 &pending_refunds_key,
                 LEGACY_UNIX_SECOND_SCORE_LIMIT,
@@ -179,14 +204,15 @@ impl OAuthQuotaStore {
                 REFUND_BATCH_SIZE,
             )
             .await?;
-        let remaining = REFUND_BATCH_SIZE.saturating_sub(due.len() as isize);
         let legacy_max = now.unix_timestamp().saturating_sub(1);
-        if remaining > 0 && legacy_max >= 0 {
-            let mut legacy: Vec<String> = connection
-                .zrangebyscore_limit(&pending_refunds_key, 0, legacy_max, 0, remaining)
-                .await?;
-            due.append(&mut legacy);
-        }
+        let legacy: Vec<String> = if legacy_max >= 0 {
+            connection
+                .zrangebyscore_limit(&pending_refunds_key, 0, legacy_max, 0, REFUND_BATCH_SIZE)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let due = fair_merge_due(modern, legacy);
         let mut refunded = 0usize;
         for reservation_id in due {
             let record: Option<String> = connection

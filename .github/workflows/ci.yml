@@ -73,12 +73,14 @@ jobs:
           trap cleanup_validation_files EXIT
           bash -n install.sh
           bash -n deploy/install.sh
+          bash -n test_sh/deployment_contract.sh
           bash -n test_sh/test_runner_contract.sh
           bash -n test_sh/redis_crash_recovery.sh
+          bash test_sh/deployment_contract.sh
           bash test_sh/test_runner_contract.sh
           cp .env.example .env
           sed -i 's/^REDIS_NAMESPACE=$/REDIS_NAMESPACE=ci-validation/' .env
-          docker compose --env-file .env -f docker-compose.prod.yml config --quiet
+          APP_PORT=8080 docker compose --env-file .env -f docker-compose.prod.yml config --quiet
           CHENXING_INSTALL_DIR="$remote_install_dir" CHENXING_PORT=3000 \
             bash install.sh --prepare-only
           docker compose --env-file "$remote_install_dir/.env" \

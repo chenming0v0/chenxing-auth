@@ -168,11 +168,13 @@ impl ClientService {
                 return Err(ClientServiceError::QuotaExceeded);
             }
         };
-        self.revoke_refresh_tokens_best_effort(
-            client_id,
-            RefreshTokenCleanupReason::SecretRotation,
-        )
-        .await;
+        if persisted.applied {
+            self.revoke_refresh_tokens_best_effort(
+                client_id,
+                RefreshTokenCleanupReason::SecretRotation,
+            )
+            .await;
+        }
         let client_secret = context
             .derive_secret(keys, &persisted.secret_kid)
             .map_err(map_idempotency_crypto_error)?;
