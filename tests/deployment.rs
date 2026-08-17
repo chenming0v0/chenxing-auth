@@ -1079,9 +1079,11 @@ fn database_uses_forward_only_transactional_migration_history() {
         DB_MODULE
             .contains("include_str!(\"../../migrations/0031_client_operation_idempotency.sql\")")
     );
-    assert!(DB_MODULE.contains(
-        "include_str!(\"../../migrations/0032_runtime_migration_ledger_boundary.sql\")"
-    ));
+    assert!(
+        DB_MODULE.contains(
+            "include_str!(\"../../migrations/0032_runtime_migration_ledger_boundary.sql\")"
+        )
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")

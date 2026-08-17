@@ -433,10 +433,7 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
         ("post", "/api/v1/admin/users"),
         ("post", "/api/v1/admin/users/{user_id}/{status}"),
         ("post", "/api/v1/admin/users/{user_id}/role"),
-        (
-            "delete",
-            "/api/v1/admin/users/{user_id}/auth-factors/totp",
-        ),
+        ("delete", "/api/v1/admin/users/{user_id}/auth-factors/totp"),
         (
             "delete",
             "/api/v1/admin/users/{user_id}/auth-factors/passkey",
@@ -466,8 +463,7 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
         ("post", "/api/v1/admin/keys/{key_id}/revoke"),
     ];
     let read_security = "security:\n        - adminBearer: []\n        - sessionCookie: []";
-    let write_security =
-        "security:\n        - adminBearer: []\n        - sessionCookie: []\n          csrfCookie: []\n          csrfHeader: []";
+    let write_security = "security:\n        - adminBearer: []\n        - sessionCookie: []\n          csrfCookie: []\n          csrfHeader: []";
 
     for (method, path) in read_operations {
         let operation = openapi_operation(path, method);
@@ -501,12 +497,8 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
         }
     }
 
-    assert!(OPENAPI.contains(
-        "csrfHeader: { type: apiKey, in: header, name: X-CSRF-Token"
-    ));
-    assert!(OPENAPI.contains(
-        "csrfCookie: { type: apiKey, in: cookie, name: __Host-chenxing_csrf"
-    ));
+    assert!(OPENAPI.contains("csrfHeader: { type: apiKey, in: header, name: X-CSRF-Token"));
+    assert!(OPENAPI.contains("csrfCookie: { type: apiKey, in: cookie, name: __Host-chenxing_csrf"));
 }
 
 #[test]
@@ -703,10 +695,7 @@ async fn issuer_gate_preserves_protocol_and_internal_error_envelopes() {
             "/auth/external/example/callback?state=contract-state",
         ),
         (Method::POST, "/api/v1/auth/totp/setup"),
-        (
-            Method::POST,
-            "/api/v1/auth/security/totp/enrollment/start",
-        ),
+        (Method::POST, "/api/v1/auth/security/totp/enrollment/start"),
     ] {
         let response = send(&router, method, path).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
