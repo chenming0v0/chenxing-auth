@@ -1,4 +1,4 @@
-use super::{io, Path, KEY_STORAGE_LOCK_FILE};
+use super::{KEY_STORAGE_LOCK_FILE, Path, io};
 use std::{
     fs::{self, File, OpenOptions},
     io::{ErrorKind, Read, Seek, SeekFrom, Write},
@@ -144,7 +144,11 @@ fn host_id() -> String {
 }
 
 fn encode(record: &LeaseRecord) -> String {
-    let state = if record.released { "released" } else { "active" };
+    let state = if record.released {
+        "released"
+    } else {
+        "active"
+    };
     format!(
         "{state}|{}|{}|{}|{}\n",
         record.identity.host,
@@ -257,11 +261,7 @@ pub(super) struct Heartbeat {
 }
 
 impl Heartbeat {
-    pub(super) fn start(
-        owner_path: PathBuf,
-        identity: LeaseIdentity,
-        interval: Duration,
-    ) -> Self {
+    pub(super) fn start(owner_path: PathBuf, identity: LeaseIdentity, interval: Duration) -> Self {
         let shared = Arc::new(HeartbeatShared {
             stop: Mutex::new(false),
             condvar: Condvar::new(),
@@ -384,11 +384,7 @@ fn observe(path: &Path) -> io::Result<ObservedLock> {
     })
 }
 
-pub(super) fn is_stale(
-    observed: ObservedLock,
-    current: &LeaseIdentity,
-    now: SystemTime,
-) -> bool {
+pub(super) fn is_stale(observed: ObservedLock, current: &LeaseIdentity, now: SystemTime) -> bool {
     let Some(last_heartbeat) = observed.last_heartbeat else {
         return false;
     };

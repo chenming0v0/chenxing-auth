@@ -170,11 +170,8 @@ fn fallback_heartbeat_refreshes_only_the_matching_fencing_token() {
         .set_modified(SystemTime::UNIX_EPOCH)
         .expect("set old heartbeat");
 
-    let mut heartbeat = directory_lock::Heartbeat::start(
-        owner_path.clone(),
-        owner,
-        Duration::from_millis(10),
-    );
+    let mut heartbeat =
+        directory_lock::Heartbeat::start(owner_path.clone(), owner, Duration::from_millis(10));
     let refresh_deadline = Instant::now() + Duration::from_secs(2);
     loop {
         let modified = fs::metadata(&owner_path)
@@ -286,7 +283,10 @@ fn fallback_release_marker_allows_a_successor_to_acquire() {
     let mut predecessor =
         directory_lock::acquire(directory.path(), false).expect("predecessor lease");
     predecessor.release();
-    assert!(directory.lock_path().is_dir(), "release leaves a fenced marker");
+    assert!(
+        directory.lock_path().is_dir(),
+        "release leaves a fenced marker"
+    );
 
     let mut successor =
         directory_lock::acquire(directory.path(), false).expect("successor reclaims marker");

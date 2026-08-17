@@ -10,6 +10,7 @@ const KEY_STORAGE_LOCK_FILE: &str = ".chenxing-key.lock";
 /// 两条路径都把所有权绑定到内核句柄：进程退出会自动释放，进程暂停不会让锁过期，
 /// PID、mtime 与文件内容都不参与 fencing。释放只关闭句柄，绝不删除 Windows 锁路径。
 /// 其它平台保留带 fencing token 与 heartbeat 的目录回退，兼容 Issue #355。
+#[derive(Debug)]
 pub(crate) struct KeyStorageLock {
     #[cfg(unix)]
     file: File,
