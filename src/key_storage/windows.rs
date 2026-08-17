@@ -1,7 +1,7 @@
 //! Windows 密钥目录：沿路径用目录句柄 + NtCreateFile 前进，打开后校验。
 //!
 //! 路径级 `CreateFile` 再检查有 TOCTOU。这里每一步都绑定已验证的目录句柄，
-//! 最终分量带 `FILE_OPEN_REPARSE_POINT`。已有宽松/外来 DACL fail-closed，
+//! 最终分量带 `FILE_OPEN_REPARSE_POINT`。已有外来 Owner、宽松/非规范 DACL fail-closed，
 //! 只在我们自己创建的对象上写入受保护 ACL。
 
 use std::{
@@ -12,7 +12,7 @@ use std::{
 };
 
 use super::policy::{FileInode, invalid_storage_path, require_same_inode};
-use super::windows_acl::{ProtectedSd, TrustedSids, apply_protected_dacl, validate_leaf_dacl};
+use super::windows_acl::{ProtectedSd, TrustedSids, apply_protected_dacl, validate_leaf_security};
 use super::windows_policy::{
     ancestor_kind_trusted, leaf_directory_kind_trusted, regular_file_kind_trusted,
 };
@@ -148,7 +148,7 @@ impl SecureDir {
         )?;
         require_regular(&file, None)?;
         apply_protected_dacl(raw_handle(&file), &sids, false)?;
-        validate_leaf_dacl(raw_handle(&file), &sids)?;
+        validate_leaf_security(raw_handle(&file), &sids)?;
         Ok(file)
     }
 
@@ -242,7 +242,7 @@ fn finish_dir(file: File, treat_as_leaf: bool, just_created: bool) -> io::Result
         if just_created {
             apply_protected_dacl(raw_handle(&file), &sids, true)?;
         }
-        validate_leaf_dacl(raw_handle(&file), &sids)?;
+        validate_leaf_security(raw_handle(&file), &sids)?;
     } else if !ancestor_kind_trusted(kind) {
         return Err(invalid_storage_path());
     }
@@ -255,7 +255,7 @@ fn require_regular(file: &File, expected: Option<FileInode>) -> io::Result<FileI
         return Err(invalid_storage_path());
     }
     let sids = TrustedSids::load()?;
-    validate_leaf_dacl(raw_handle(file), &sids)?;
+    validate_leaf_security(raw_handle(file), &sids)?;
     let actual = inode_of(file)?;
     if let Some(expected) = expected {
         require_same_inode(expected, actual)?;

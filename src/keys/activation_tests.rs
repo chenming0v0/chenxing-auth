@@ -11,7 +11,10 @@ use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_kn
 use super::super::KeyManagerError;
 use super::super::KeyMaterial;
 use super::super::persistence::{ACTIVE_KEY_ID_FILE, key_file_name, load_materials};
-use super::{PENDING_ACTIVATION_FILE, PendingPublishedKey, activate_at, clear, record, recover};
+use super::{
+    PENDING_ACTIVATION_FILE, PendingPublishedKey, activate_at, activation_deadline, clear, record,
+    recover,
+};
 
 const RETENTION: Duration = Duration::from_secs(3600);
 
@@ -88,6 +91,52 @@ fn activate_at_adds_a_bounded_delay() {
         activate_at(now, Duration::from_secs(65)),
         now + TimeDuration::seconds(65)
     );
+}
+
+#[test]
+fn activation_deadline_includes_the_configured_clock_skew_fence() {
+    let now = test_now();
+    assert_eq!(
+        activation_deadline(now, Duration::from_secs(65), Duration::from_secs(30),),
+        now + TimeDuration::seconds(95)
+    );
+}
+
+#[test]
+fn a_fast_instance_cannot_activate_before_the_real_propagation_window() {
+    let writer_now = test_now();
+    let delay = Duration::from_secs(65);
+    let skew = Duration::from_secs(30);
+    let pending = PendingPublishedKey::new(
+        "cx-new".to_owned(),
+        "cx-previous".to_owned(),
+        activation_deadline(writer_now, delay, skew),
+    );
+
+    let fast_clock_just_before_the_window = writer_now + TimeDuration::seconds(65 + 30 - 1);
+    assert!(
+        !pending.is_due(fast_clock_just_before_the_window),
+        "a reader ahead by the allowed skew must not shorten the 65-second propagation window"
+    );
+    assert!(pending.is_due(writer_now + TimeDuration::seconds(65 + 30)));
+}
+
+#[test]
+fn a_slow_instance_delays_activation_instead_of_shortening_the_window() {
+    let writer_now = test_now();
+    let delay = Duration::from_secs(65);
+    let skew = Duration::from_secs(30);
+    let pending = PendingPublishedKey::new(
+        "cx-new".to_owned(),
+        "cx-previous".to_owned(),
+        activation_deadline(writer_now, delay, skew),
+    );
+
+    assert!(
+        !pending.is_due(writer_now + TimeDuration::seconds(65)),
+        "the conservative fence may delay a slow clock, but it must never activate early"
+    );
+    assert!(pending.is_due(writer_now + TimeDuration::seconds(95)));
 }
 
 #[test]

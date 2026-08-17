@@ -338,6 +338,54 @@ async fn published_key_starts_signing_only_after_the_activation_window() {
     );
 }
 
+/// Issue #546：共享目录中的 `activate_at` 必须把允许的实例时钟偏差算进围栏。
+/// 写入记录的实例偏慢、执行激活的实例偏快时，不能把 JWKS 传播窗口缩短。
+#[tokio::test]
+async fn persisted_rotation_waits_for_activation_delay_plus_clock_skew() {
+    let directory = std::env::temp_dir().join(format!(
+        "chenxing-activation-skew-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let delay = Duration::from_secs(65);
+    let skew = Duration::from_secs(30);
+    let manager = KeyManager::load_or_generate_with_lifecycle(
+        &directory,
+        Duration::from_secs(DEFAULT_KEY_RETENTION_SECONDS),
+        skew,
+        delay,
+    )
+    .expect("persisted manager");
+    let old_key_id = manager.key_id();
+    let writer_now = OffsetDateTime::now_utc();
+    let rotation = manager
+        .rotate_at(writer_now)
+        .await
+        .expect("publish rotation");
+
+    assert!(
+        !manager
+            .activate_published_at(writer_now + TimeDuration::seconds(65 + 30 - 1))
+            .await
+            .expect("fast clock before safe deadline"),
+        "configured skew must not consume any part of the propagation delay"
+    );
+    assert_eq!(manager.key_id(), old_key_id);
+
+    assert!(
+        manager
+            .activate_published_at(writer_now + TimeDuration::seconds(65 + 30))
+            .await
+            .expect("safe deadline elapsed")
+    );
+    assert_eq!(manager.key_id(), rotation.key_id);
+    assert!(
+        manager.verification_key_for(&old_key_id).is_some(),
+        "the previous public key keeps its retirement grace after activation"
+    );
+
+    let _ = std::fs::remove_dir_all(directory);
+}
+
 /// 第二实例即使以 delay=0 加载，也必须遵守盘上的 `activate_at`。
 #[tokio::test]
 async fn a_second_instance_sees_the_published_kid_before_it_signs() {

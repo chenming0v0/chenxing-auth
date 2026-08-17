@@ -212,9 +212,9 @@ impl KeyManager {
 
     /// 带完整生命周期参数的加载：保留窗口、时钟偏差容忍、发布后激活等待。
     ///
-    /// 已落盘的 `pending-activation.record` 里的 `activate_at` 优先于
-    /// `activation_delay`，所以第二实例即使以 delay=0 加载，也不会提前签发
-    /// 仍在传播窗口内的新密钥。
+    /// 已落盘的 `pending-activation.record` 里的 `activate_at` 已包含发布时配置的
+    /// `activation_delay + skew_allowance`，并优先于加载实例的当前配置。因此第二
+    /// 实例即使以 delay=0 加载，也不会提前签发仍在传播窗口内的新密钥。
     pub fn load_or_generate_with_lifecycle(
         directory: impl AsRef<Path>,
         retention: Duration,
