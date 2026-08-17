@@ -1412,3 +1412,35 @@ fn installer_runs_migrations_before_starting_the_application() {
         .expect("installer must start the app explicitly");
     assert!(migrate_at < start_at, "migration must precede app startup");
 }
+
+#[test]
+fn production_app_requires_the_migration_job_to_finish_successfully() {
+    let app = PRODUCTION_COMPOSE
+        .split_once("  app:\n")
+        .map(|(_, rest)| rest)
+        .and_then(|rest| rest.split_once("\n  migrate:\n").map(|(app, _)| app))
+        .expect("production compose must define app before migrate");
+    assert!(
+        app.contains("      migrate:\n        condition: service_completed_successfully"),
+        "app must not start before the migration job succeeds"
+    );
+
+    let migrate = PRODUCTION_COMPOSE
+        .split_once("\n  migrate:\n")
+        .map(|(_, rest)| rest)
+        .and_then(|rest| {
+            rest.split_once("\n  postgres:\n")
+                .map(|(migrate, _)| migrate)
+        })
+        .expect("production compose must define migrate before postgres");
+    assert!(
+        !migrate.contains("profiles:"),
+        "the migration dependency must be active during a normal app startup"
+    );
+
+    let main = include_str!("../src/main.rs");
+    assert!(
+        main.contains("db::verify_schema_current(&startup_database).await?;"),
+        "the web process must reject a stale migration ledger before constructing application state"
+    );
+}

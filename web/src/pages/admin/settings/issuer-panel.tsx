@@ -37,7 +37,7 @@ export function IssuerPanel(props: SettingsPanelProps) {
   const [busy, setBusy] = useState(false)
   const [validationError, setValidationError] = useState<string | null>(null)
 
-  const { loading, reload } = useSettingsResource<IssuerSettingResponse>({
+  const { loading, failed, reload } = useSettingsResource<IssuerSettingResponse>({
     path: '/api/v1/admin/settings/issuer',
     onMessage: props.onMessage,
     failureMessage: 'Issuer 设置加载失败。',
@@ -104,8 +104,15 @@ export function IssuerPanel(props: SettingsPanelProps) {
           刷新
         </Button>
       </div>
-      {loading || !setting ? (
+      {loading ? (
         <div className="mt-5"><Notice>正在加载 Issuer 状态。</Notice></div>
+      ) : failed || !setting ? (
+        <div className="mt-5 flex flex-col items-start gap-3">
+          <Notice tone="warning">Issuer 设置暂时无法加载。</Notice>
+          <Button icon="refresh-cw" onClick={() => void reload()} aria-label="重新加载 Issuer 设置">
+            重新加载
+          </Button>
+        </div>
       ) : (
         <form className="mt-5 flex flex-col gap-4" noValidate onSubmit={save}>
           <Field

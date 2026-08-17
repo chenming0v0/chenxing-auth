@@ -10,6 +10,7 @@ mod canonical_email;
 mod migrate;
 mod migration_compat;
 mod migration_preflight;
+mod migration_state;
 mod pool;
 mod roles;
 
@@ -20,6 +21,7 @@ pub use migrate::{
     AUDIT_ROLE_SEPARATION_ENV, MANAGE_RUNTIME_PASSWORD_ENV, MIGRATION_DATABASE_URL_ENV,
     MigrationPlan, MigrationPlanError, RuntimeAuditPosture,
 };
+pub use migration_state::{SchemaStateError, verify_schema_current};
 pub use pool::{PoolRole, PoolSettingsError};
 pub use roles::{RuntimePasswordPolicy, configure_runtime_role};
 
