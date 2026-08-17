@@ -412,9 +412,14 @@
   max-height: 70vh;
   overflow-y: auto;
   overscroll-behavior: contain;
+  -ms-overflow-style: none;
   scrollbar-width: none;
 }
-.chenxing-topbar-drawer-inner::-webkit-scrollbar { width: 0; height: 0; }
+.chenxing-topbar-drawer-inner::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
 
 /* hamburger nav 遮罩：面板已移进胶囊，遮罩只剩「压暗并模糊背景」这一职责，
    不再承担布局。lamalama 的 blurPanel 同样是独立的一层。 */

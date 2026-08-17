@@ -117,6 +117,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {}
     }
 
+    // The web process never mutates schema, but it must not serve a newer binary against an
+    // older database. Verify the ledger before application-state construction performs queries
+    // that depend on the latest columns and functions.
+    let startup_database = db::connect(&config)?;
+    db::verify_schema_current(&startup_database).await?;
+    startup_database.close().await;
     let state = AppState::new_with_persisted_issuer(config.clone()).await?;
     // Migrations verify this boundary once, but grants can change before service startup.
     // Recheck before workers or the listener start so the web process fails closed (#427).

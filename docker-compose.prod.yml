@@ -73,6 +73,8 @@ services:
     volumes:
       - chenxing-keys:/var/lib/chenxing-auth/keys
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -84,7 +86,6 @@ services:
       retries: 12
 
   migrate:
-    profiles: ["migrate"]
     build:
       context: .
       dockerfile: Dockerfile

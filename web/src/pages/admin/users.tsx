@@ -4,10 +4,10 @@ import {
   apiFetch, type Paged, type PublicUser,
 } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
+import { Avatar, Badge, Button, HudPanel, Icon, Notice, PageIntro } from '../../components/ui'
 import { DataTable, TablePagination } from '../../components/data-table'
 import { Select, type SelectOption } from '../../components/select'
-import { formatDate, initialOf } from '../../data'
+import { formatDate } from '../../data'
 import { AdminGate, parsePageParam, useAdminAccess, type AdminAccess } from './shared'
 import { AssignPlanDrawer } from './plan-assign'
 import { UserCreateDrawer } from './user-create-drawer'
@@ -192,7 +192,7 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                   <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{user.id}</td>
                   <td>
                     <div className="flex items-center gap-3">
-                      <span className="chenxing-avatar h-9 w-9 text-sm">{initialOf(user.display_name || user.username)}</span>
+                      <Avatar className="h-9 w-9 text-sm" name={user.display_name || user.username} />
                       <div>
                         <p className="chenxing-body text-sm font-semibold">{user.display_name || user.username}</p>
                         <p className="chenxing-caption text-xs">{user.email}</p>

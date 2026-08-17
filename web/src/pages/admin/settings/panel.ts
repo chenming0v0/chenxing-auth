@@ -116,7 +116,7 @@ type SettingsResourceOptions<T> = {
   onFailure?: () => void
 }
 
-export type SettingsResource = { loading: boolean; reload: () => Promise<void> }
+export type SettingsResource = { loading: boolean; failed: boolean; reload: () => Promise<void> }
 
 /**
  * 设置面板的加载生命周期。
@@ -129,6 +129,7 @@ export type SettingsResource = { loading: boolean; reload: () => Promise<void> }
 export function useSettingsResource<T>(options: SettingsResourceOptions<T>): SettingsResource {
   const { path } = options
   const [loading, setLoading] = useState(true)
+  const [failed, setFailed] = useState(false)
   const handlers = useRef(options)
   /** 每次加载持有一个代号；卸载或再次加载都会作废旧代号，避免过期响应写回状态。 */
   const generation = useRef(0)
@@ -140,6 +141,7 @@ export function useSettingsResource<T>(options: SettingsResourceOptions<T>): Set
   const reload = useCallback(async () => {
     const token = (generation.current += 1)
     setLoading(true)
+    setFailed(false)
     try {
       const value = await apiFetch<T>(path)
       if (generation.current !== token) return
@@ -147,6 +149,7 @@ export function useSettingsResource<T>(options: SettingsResourceOptions<T>): Set
     } catch (reason) {
       if (generation.current !== token) return
       handlers.current.onFailure?.()
+      setFailed(true)
       handlers.current.onMessage(
         reason instanceof Error ? reason.message : handlers.current.failureMessage,
         'warning',
@@ -161,5 +164,5 @@ export function useSettingsResource<T>(options: SettingsResourceOptions<T>): Set
     return () => { generation.current += 1 }
   }, [reload])
 
-  return { loading, reload }
+  return { loading, failed, reload }
 }
