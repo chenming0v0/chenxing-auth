@@ -9,7 +9,8 @@ import {
   User, UserPlus, Users, Wallet, X, Zap, type LucideIcon,
 } from 'lucide-react'
 import logoUrl from '../assets/logo.png'
-import { initialOf } from '../data'
+
+const DEFAULT_AVATAR_URL = '/user.png'
 
 const icons: Record<string, LucideIcon> = {
   activity: Activity, 'alert-triangle': AlertTriangle, 'arrow-down': ArrowDown, 'arrow-left': ArrowLeft, 'arrow-right': ArrowRight, 'arrow-up-right': ArrowUpRight,
@@ -36,7 +37,7 @@ export function BrandMark({ className = 'h-8 w-8 rounded-[var(--chenxing-radius-
 }
 
 /**
- * 头像内容：有图渲染图片，无图回落到首字母。
+ * 头像内容：有自定义头像时渲染它，否则使用产品默认头像。
  *
  * 单独导出「内容」而不只导出容器，是因为顶栏的头像本身就是一个菜单触发按钮，
  * 容器必须由调用方持有。两处若各自判断「有没有头像」，回落规则迟早会分叉。
@@ -44,9 +45,8 @@ export function BrandMark({ className = 'h-8 w-8 rounded-[var(--chenxing-radius-
  * 图片是纯装饰：相邻文本已经给出用户名，`alt=""` 让屏幕阅读器跳过它，
  * 避免把同一个信息读两遍（WCAG 2.1 SC 1.1.1 的装饰性图像约定）。
  */
-export function AvatarContent({ src, name }: { src?: string; name?: string | null }) {
-  if (!src) return <>{initialOf(name)}</>
-  return <img src={src} alt="" className="chenxing-avatar-image" draggable={false} />
+export function AvatarContent({ src }: { src?: string; name?: string | null }) {
+  return <img src={src || DEFAULT_AVATAR_URL} alt="" className="chenxing-avatar-image" draggable={false} />
 }
 
 /** 非交互场景的头像容器。交互场景（菜单触发器、上传入口）自持容器并内嵌 `AvatarContent`。 */

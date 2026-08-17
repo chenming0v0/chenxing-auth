@@ -1,10 +1,22 @@
 import { describe, expect, it, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import type { FormEvent } from 'react'
-import { Button, Chip, HudPanel } from './ui'
+import { AvatarContent, Button, Chip, HudPanel } from './ui'
 
 // 多个用例渲染相同文案，不清理会让 getByText 命中多个节点。
 afterEach(cleanup)
+
+describe('AvatarContent', () => {
+  it('uses the product default avatar when the user has no custom avatar', () => {
+    const { container } = render(<AvatarContent name="辰星用户" />)
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('/user.png')
+  })
+
+  it('prefers the user custom avatar when one is available', () => {
+    const { container } = render(<AvatarContent src="/api/v1/auth/me/avatar?v=1" name="辰星用户" />)
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('/api/v1/auth/me/avatar?v=1')
+  })
+})
 
 describe('HudPanel', () => {
   it('renders a div by default with chenxing-hud-panel class', () => {
