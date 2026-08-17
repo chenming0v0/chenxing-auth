@@ -1,6 +1,6 @@
-//! Windows 密钥对象的受保护 DACL。
+//! Windows 密钥对象的受信 Owner 与受保护 DACL。
 //!
-//! 叶子只授给当前进程 SID 与 SYSTEM。已有对象只校验、不改写。
+//! 叶子只允许当前进程 SID / SYSTEM 持有并取得完整控制权。已有对象只校验、不改写。
 
 use std::{io, mem, ptr};
 
@@ -8,12 +8,13 @@ use windows_sys::Win32::{
     Foundation::{CloseHandle, GENERIC_ALL, GetLastError, HANDLE, LocalFree},
     Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo},
     Security::{
-        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_REVISION, AddAccessAllowedAceEx,
-        CONTAINER_INHERIT_ACE, CopySid, CreateWellKnownSid, DACL_SECURITY_INFORMATION, EqualSid,
-        GetAce, GetLengthSid, GetSecurityDescriptorControl, GetSecurityDescriptorDacl,
-        GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor, IsValidSid,
-        OBJECT_INHERIT_ACE, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-        SE_DACL_PROTECTED, SECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_CONTROL, SECURITY_MAX_SID_SIZE,
+        ACCESS_ALLOWED_ACE, ACCESS_DENIED_ACE, ACE_HEADER, ACL, ACL_REVISION,
+        AddAccessAllowedAceEx, CONTAINER_INHERIT_ACE, CopySid, CreateWellKnownSid,
+        DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetLengthSid, GetSecurityDescriptorControl,
+        GetSecurityDescriptorDacl, GetTokenInformation, InitializeAcl,
+        InitializeSecurityDescriptor, IsValidSid, OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
+        SECURITY_DESCRIPTOR, SECURITY_DESCRIPTOR_CONTROL, SECURITY_MAX_SID_SIZE,
         SetSecurityDescriptorControl, SetSecurityDescriptorDacl, TOKEN_QUERY, TOKEN_USER,
         TokenUser, WinAuthenticatedUserSid, WinBuiltinUsersSid, WinLocalSystemSid, WinWorldSid,
     },
@@ -213,7 +214,7 @@ pub(super) fn apply_protected_dacl(
     Ok(())
 }
 
-pub(super) fn validate_leaf_dacl(handle: HANDLE, sids: &TrustedSids) -> io::Result<()> {
+pub(super) fn validate_leaf_security(handle: HANDLE, sids: &TrustedSids) -> io::Result<()> {
     let snapshot = read_dacl(handle, sids)?;
     if leaf_dacl_trusted(snapshot.view()) {
         Ok(())
@@ -224,6 +225,7 @@ pub(super) fn validate_leaf_dacl(handle: HANDLE, sids: &TrustedSids) -> io::Resu
 
 struct DaclSnapshot {
     _sd: LocalSd,
+    owner: WellKnownPrincipal,
     present: bool,
     null_dacl: bool,
     protected: bool,
@@ -233,6 +235,7 @@ struct DaclSnapshot {
 impl DaclSnapshot {
     fn view(&self) -> DaclView<'_> {
         DaclView {
+            owner: self.owner,
             present: self.present,
             null_dacl: self.null_dacl,
             protected: self.protected,
@@ -261,7 +264,7 @@ fn read_dacl(handle: HANDLE, sids: &TrustedSids) -> io::Result<DaclSnapshot> {
         GetSecurityInfo(
             handle,
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
+            DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
             &mut owner,
             &mut group,
             &mut dacl,
@@ -273,6 +276,7 @@ fn read_dacl(handle: HANDLE, sids: &TrustedSids) -> io::Result<DaclSnapshot> {
         return Err(io::Error::from_raw_os_error(status as i32));
     }
     let sd = LocalSd(sd);
+    let owner = sids.classify(owner);
     let mut present = 0;
     let mut defaulted = 0;
     let mut dacl_ptr = ptr::null_mut();
@@ -299,6 +303,7 @@ fn read_dacl(handle: HANDLE, sids: &TrustedSids) -> io::Result<DaclSnapshot> {
     };
     Ok(DaclSnapshot {
         _sd: sd,
+        owner,
         present,
         null_dacl,
         protected,
@@ -322,14 +327,24 @@ fn collect_aces(acl: *const ACL, sids: &TrustedSids) -> io::Result<Vec<AceView>>
             ACCESS_DENIED_ACE_TYPE => AceKind::Deny,
             _ => AceKind::Other,
         };
-        let principal = if kind == AceKind::Other {
-            WellKnownPrincipal::Foreign
-        } else {
-            let allowed = ace.cast::<ACCESS_ALLOWED_ACE>();
-            let sid = unsafe { ptr::addr_of!((*allowed).SidStart) as PSID };
-            sids.classify(sid)
+        let (principal, mask) = match kind {
+            AceKind::Allow => {
+                let allowed = ace.cast::<ACCESS_ALLOWED_ACE>();
+                let sid = unsafe { ptr::addr_of!((*allowed).SidStart) as PSID };
+                (sids.classify(sid), unsafe { (*allowed).Mask })
+            }
+            AceKind::Deny => {
+                let denied = ace.cast::<ACCESS_DENIED_ACE>();
+                let sid = unsafe { ptr::addr_of!((*denied).SidStart) as PSID };
+                (sids.classify(sid), unsafe { (*denied).Mask })
+            }
+            AceKind::Other => (WellKnownPrincipal::Foreign, 0),
         };
-        aces.push(AceView { kind, principal });
+        aces.push(AceView {
+            kind,
+            principal,
+            mask,
+        });
     }
     Ok(aces)
 }

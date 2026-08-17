@@ -255,6 +255,24 @@ async fn advance_epoch_without_revoking_session(
     barrier.commit().await.expect("commit epoch barrier");
 }
 
+async fn revoke_consent_authoritatively(harness: &Harness) -> i64 {
+    chenxing_auth::sqlx::query_scalar(
+        "UPDATE user_consents AS consent
+         SET revoked_at = NOW(), state_version = consent.state_version + 1
+         FROM oauth_clients AS client
+         WHERE consent.user_id = $1
+           AND consent.client_id = client.id
+           AND client.client_id = $2
+           AND consent.revoked_at IS NULL
+         RETURNING consent.state_version",
+    )
+    .bind(harness.user_id)
+    .bind(&harness.client_id)
+    .fetch_one(&harness.database)
+    .await
+    .expect("commit authoritative consent revoke")
+}
+
 async fn refresh_count_for_grant(harness: &Harness) -> i64 {
     let mut redis = harness
         .state
@@ -442,6 +460,87 @@ async fn epoch_advance_without_session_revoke_rejects_refresh_and_rolls_back() {
 
     let _ = harness.state.refresh_tokens.remove(&previous.value).await;
     cleanup(&harness).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consent_revoke_after_refresh_rotation_rejects_response_and_rolls_back() {
+    let harness = setup().await;
+    save_consent(&harness).await;
+    let _session = saved_session(&harness).await;
+    let authenticated = authenticate(&harness).await;
+    let previous = persist_refresh(&harness, &authenticated).await;
+
+    let mut barrier = begin_epoch_barrier(&harness).await;
+    let start = Arc::new(Barrier::new(2));
+    let exchange = {
+        let state = harness.state.clone();
+        let client_id = harness.client_id.clone();
+        let issuer = issuer(&state);
+        let refresh_value = previous.value.clone();
+        let start = start.clone();
+        tokio::spawn(async move {
+            start.wait().await;
+            token_use_case::exchange_refresh_token(
+                &state,
+                &issuer,
+                refresh_request(&client_id, &refresh_value),
+                authenticated,
+            )
+            .await
+        })
+    };
+    start.wait().await;
+    if !wait_until_exchange_takes_user_lock(&mut barrier, &exchange).await {
+        if exchange.is_finished() {
+            let early = exchange.await.expect("join early refresh exchange");
+            panic!("refresh finished before the post-rotation fence: {early:?}");
+        }
+        panic!("refresh did not reach the post-rotation fence within 5s");
+    }
+    assert!(
+        harness
+            .state
+            .refresh_tokens
+            .find(&previous.value)
+            .await
+            .expect("find consumed previous refresh token")
+            .is_none(),
+        "the controlled race must begin after Redis persisted the successor"
+    );
+
+    let revoked_version = revoke_consent_authoritatively(&harness).await;
+    assert!(revoked_version > 1);
+    barrier
+        .rollback()
+        .await
+        .expect("release post-rotation fence after consent revoke");
+
+    let result = exchange.await.expect("join refresh exchange");
+    let restored = harness
+        .state
+        .refresh_tokens
+        .find(&previous.value)
+        .await
+        .expect("find previous refresh token after consent fence");
+    let refresh_count = refresh_count_for_grant(&harness).await;
+    if let Ok(token) = &result {
+        if let Some(successor) = token.refresh_token.as_deref() {
+            let _ = harness.state.refresh_tokens.remove(successor).await;
+        }
+    } else {
+        let _ = harness.state.refresh_tokens.remove(&previous.value).await;
+    }
+    cleanup(&harness).await;
+
+    assert_invalid_grant_refresh(&result);
+    assert!(
+        restored.is_some(),
+        "consent fence rejection must roll the undisclosed successor back to the previous token"
+    );
+    assert_eq!(
+        refresh_count, 1,
+        "rollback must leave exactly the previous Refresh Token in the grant index"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

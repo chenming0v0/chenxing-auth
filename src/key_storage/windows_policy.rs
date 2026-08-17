@@ -28,11 +28,13 @@ pub(crate) enum AceKind {
 pub(crate) struct AceView {
     pub kind: AceKind,
     pub principal: WellKnownPrincipal,
+    pub mask: u32,
 }
 
 /// 叶子目录或密钥文件上看到的安全描述符摘要。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DaclView<'a> {
+    pub owner: WellKnownPrincipal,
     pub present: bool,
     pub null_dacl: bool,
     pub protected: bool,
@@ -66,12 +68,16 @@ pub(crate) fn principal_is_trusted(principal: WellKnownPrincipal) -> bool {
     )
 }
 
-/// 叶子 DACL：必须存在、非 NULL、受保护，且每个 Allow ACE 只授给受信主体。
+const GENERIC_ALL_MASK: u32 = 0x1000_0000;
+const FILE_ALL_ACCESS_MASK: u32 = 0x001f_01ff;
+
+/// 叶子安全描述符：Owner 必须受信；DACL 必须存在、非 NULL、受保护，且每个
+/// Allow ACE 只把完整控制权授给受信主体。
 ///
 /// NULL DACL 等于 Everyone:F。未保护的 DACL 会在父目录改 ACL 后悄悄扩大。
-/// 已有宽松/外来 ACE 必须 fail-closed，不能在打开时静默改写。
+/// 外来 Owner 即使暂时留下受限 DACL，仍能重新放宽权限；两者都必须 fail-closed。
 pub(crate) fn leaf_dacl_trusted(view: DaclView<'_>) -> bool {
-    if !view.present || view.null_dacl || !view.protected {
+    if !principal_is_trusted(view.owner) || !view.present || view.null_dacl || !view.protected {
         return false;
     }
     view.aces.iter().all(ace_is_trusted)
@@ -80,16 +86,22 @@ pub(crate) fn leaf_dacl_trusted(view: DaclView<'_>) -> bool {
 fn ace_is_trusted(ace: &AceView) -> bool {
     match ace.kind {
         AceKind::Deny => true,
-        AceKind::Allow => principal_is_trusted(ace.principal),
+        AceKind::Allow => {
+            principal_is_trusted(ace.principal) && allow_mask_grants_full_control(ace.mask)
+        }
         AceKind::Other => false,
     }
+}
+
+fn allow_mask_grants_full_control(mask: u32) -> bool {
+    mask & GENERIC_ALL_MASK != 0 || mask & FILE_ALL_ACCESS_MASK == FILE_ALL_ACCESS_MASK
 }
 
 #[cfg(windows)]
 pub(crate) fn invalid_acl() -> io::Error {
     io::Error::new(
         ErrorKind::PermissionDenied,
-        "secure storage ACL is not restricted to the service account",
+        "secure storage owner or ACL is not restricted to the service account",
     )
 }
 
@@ -109,11 +121,13 @@ mod tests {
         AceView {
             kind: AceKind::Allow,
             principal,
+            mask: GENERIC_ALL_MASK,
         }
     }
 
     fn view<'a>(aces: &'a [AceView], protected: bool) -> DaclView<'a> {
         DaclView {
+            owner: WellKnownPrincipal::CurrentUser,
             present: true,
             null_dacl: false,
             protected,
@@ -139,8 +153,47 @@ mod tests {
         let aces = [AceView {
             kind: AceKind::Deny,
             principal: WellKnownPrincipal::Foreign,
+            mask: GENERIC_ALL_MASK,
         }];
         assert!(leaf_dacl_trusted(view(&aces, true)));
+    }
+
+    #[test]
+    fn leaf_rejects_an_untrusted_owner_even_when_the_dacl_is_restricted() {
+        let aces = [
+            allow(WellKnownPrincipal::CurrentUser),
+            allow(WellKnownPrincipal::LocalSystem),
+        ];
+        let mut descriptor = view(&aces, true);
+        descriptor.owner = WellKnownPrincipal::Foreign;
+
+        assert!(
+            !leaf_dacl_trusted(descriptor),
+            "外来 owner 可重写 DACL，不能仅凭当前 ACL 看似受限就信任对象"
+        );
+    }
+
+    #[test]
+    fn leaf_requires_full_control_masks_for_trusted_allow_aces() {
+        let read_only = [AceView {
+            kind: AceKind::Allow,
+            principal: WellKnownPrincipal::CurrentUser,
+            mask: 0x8000_0000,
+        }];
+        assert!(
+            !leaf_dacl_trusted(view(&read_only, true)),
+            "只校验 SID、不校验 mask 会接受非规范 ACL"
+        );
+
+        let expanded_full_control = [AceView {
+            kind: AceKind::Allow,
+            principal: WellKnownPrincipal::CurrentUser,
+            mask: FILE_ALL_ACCESS_MASK,
+        }];
+        assert!(
+            leaf_dacl_trusted(view(&expanded_full_control, true)),
+            "Windows 可把 GENERIC_ALL 映射成 FILE_ALL_ACCESS"
+        );
     }
 
     #[test]
@@ -171,12 +224,14 @@ mod tests {
     fn leaf_rejects_null_unprotected_or_missing_dacl() {
         let aces = [allow(WellKnownPrincipal::CurrentUser)];
         assert!(!leaf_dacl_trusted(DaclView {
+            owner: WellKnownPrincipal::CurrentUser,
             present: true,
             null_dacl: true,
             protected: true,
             aces: &aces,
         }));
         assert!(!leaf_dacl_trusted(DaclView {
+            owner: WellKnownPrincipal::CurrentUser,
             present: false,
             null_dacl: false,
             protected: true,
@@ -193,6 +248,7 @@ mod tests {
         let aces = [AceView {
             kind: AceKind::Other,
             principal: WellKnownPrincipal::CurrentUser,
+            mask: GENERIC_ALL_MASK,
         }];
         assert!(!leaf_dacl_trusted(view(&aces, true)));
     }

@@ -126,7 +126,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ### 首次 TOTP 绑定
 
-1. `POST /api/v1/auth/totp/setup`，请求 `{}`（旧客户端可附带 `login_ticket`，但必须与 HttpOnly Cookie 完全一致），响应一次性返回 `secret_base32` 和 `otpauth_url`。前端应使用项目内二维码组件将 `otpauth_url` 作为二维码内容本地生成二维码；`secret_base32` 仅用于无法扫描时手动输入或复制。服务端不调用第三方二维码服务，也不返回二维码图片。
+1. `POST /api/v1/auth/totp/setup`，请求 `{}`（旧客户端可附带 `login_ticket`，但必须与 HttpOnly Cookie 完全一致），响应一次性返回 `secret_base32` 和 `otpauth_url`。前端应使用项目内二维码组件将 `otpauth_url` 作为二维码内容本地生成二维码；`secret_base32` 仅用于无法扫描时手动输入或复制。服务端不调用第三方二维码服务，也不返回二维码图片。该端点与已登录安全中心的 `POST /api/v1/auth/security/totp/enrollment/start` 都从已加载 Issuer 生成 otpauth 标签；Issuer 门禁回读后仍不可用时返回 `503 issuer_not_configured` / `issuer_runtime_invalid`，不会创建 pending 注册。
 2. `POST /api/v1/auth/totp/setup/confirm`，请求 `{ "code":"123456" }`。验证码正确后保存加密秘钥、消费 ticket 并返回 Session Cookie；错误验证码不会消费 ticket。
 
 已有 TOTP 的待处理登录也可以调用 `POST /api/v1/auth/totp/login`，请求包含当前六位 `code`。验证码正确后消费 ticket 并返回 Session Cookie；无效或缺少 holder proof 的 ticket 返回 `400`，错误验证码返回 `401`。
@@ -184,14 +184,14 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 授权码入口。GET 使用查询参数，POST 使用 `application/x-www-form-urlencoded` 表单；两种方法的字段、校验和响应行为相同。成功后重定向到注册的 `redirect_uri`，附带 `code` 和原始 `state`。
 
-Client 已加载且 `redirect_uri` canonicalize 后仍严格匹配注册值时，后续参数校验失败、Session/consent/pending 存储不可用、授权码签发失败等错误通过 `302` 返回该 canonical 回调地址，并携带 RFC 6749 `error` / `error_description`。只有非空且不超过 512 个字符的 `state` 才会回显。Client 或回调地址不可信时绝不重定向，改为 RFC 6749 JSON 错误信封；Issuer 门禁和请求超时发生在可信回调上下文建立之前，同样返回 `503 temporarily_unavailable` JSON。
+Client 已加载且 `redirect_uri` canonicalize 后仍严格匹配注册值时，后续参数校验失败、Session/consent/pending 存储不可用、授权码签发失败等错误通过 `302` 返回该 canonical 回调地址，并携带 RFC 6749 `error` / `error_description`。注册匹配允许 URL parser 消除默认端口、补根斜杠，并保留 RFC 8252 loopback 字面 IP 的动态端口例外；授权码本身仍绑定授权请求提交的**原始** `redirect_uri` 文本，Token 兑换必须回送完全相同的值。只有非空且不超过 512 个字符的 `state` 才会回显。Client 或回调地址不可信时绝不重定向，改为 RFC 6749 JSON 错误信封；Issuer 门禁和请求超时发生在可信回调上下文建立之前，同样返回 `503 temporarily_unavailable` JSON。
 
 必填请求字段（GET 为查询参数，POST 为表单字段）：
 
 | 参数 | 说明 |
 | --- | --- |
 | `client_id` | 已注册 Client ID |
-| `redirect_uri` | 必须精确匹配注册值 |
+| `redirect_uri` | canonicalize 后必须匹配注册值（loopback 字面 IP 可变更端口）；授权码兑换时必须原样回送本次授权请求的文本 |
 | `response_type` | 当前仅支持 `code` |
 | `scope` | 空格分隔，如 `openid email profile`；每个值必须同时属于服务端 allowlist（默认 `openid`、`profile`、`email`）和该 Client 已注册的 scopes |
 | `state` | 必填，建议由接入方随机生成，最多 512 个字符 |
@@ -251,7 +251,7 @@ Client 已加载且 `redirect_uri` canonicalize 后仍严格匹配注册值时�
 
 外部 UserInfo 必须按配置提供合法 `email`、唯一 `sub` 和布尔型邮箱验证状态。`email_verified_claim` 是 provider 必填项：claim 缺失、类型不是布尔、或取值为 `false` 时拒绝身份解析和自动建号，回跳 `external_error=oauth_email_unverified`。缺少该配置的存量 provider 无法启用，也不会跳转外部 IdP，回跳 `external_error=oauth_provider_not_found`。
 
-首次外部登录在邮箱不存在时创建辰星账号并绑定 `(provider, sub)`；如果邮箱已存在，不会自动接管或合并本地账号，而是返回 `oauth_account_link_required` 页面提示。
+首次外部登录在邮箱不存在时创建辰星账号并绑定 `(provider, sub)`；自动建号在同一数据库事务内执行普通注册共用的邮箱域名白名单和别名限制，策略拒绝时返回模糊的 `oauth_login_failed`，且不会留下 `users` 或外部身份半成品。已经绑定的 `(provider, sub)` 登录不因管理员后来收紧注册邮箱策略而失效。如果邮箱已存在，不会自动接管或合并本地账号，而是返回 `oauth_account_link_required` 页面提示。
 
 ### React SPA 授权确认 `/oauth/consent`
 
@@ -266,6 +266,8 @@ Client 已加载且 `redirect_uri` canonicalize 后仍严格匹配注册值时�
 ```text
 grant_type=authorization_code&code=...&redirect_uri=https%3A%2F%2Fapp.example%2Fcallback&code_verifier=...
 ```
+
+`redirect_uri` 必须与创建该授权码的 `/oauth/authorize` 请求中的原始文本完全一致；即使两个 URL canonicalize 后等价（例如默认 `:443` 或根斜杠差异），不同文本仍返回 `invalid_grant`。
 
 刷新 Token：
 
@@ -286,6 +288,8 @@ grant_type=refresh_token&refresh_token=...
 授权码除 Client 和 Redirect URI 外还绑定签发时的浏览器会话。会话被撤销（用户登出）或过期后，授权码即使仍在 TTL 内也不能兑换，返回 `invalid_grant`；被拒绝的授权码不会被消费，可在会话恢复有效后重试。
 
 授权码已消费、Refresh Token 已暂存后，服务还会复核授权同意版本。若这次最终复核因数据库暂时不可用而返回 `503 temporarily_unavailable`，服务会销毁尚未披露的 Refresh Token，并在确认销毁成功时恢复授权码供同一次交换重试；若无法确认销毁结果，授权码保持已消费，客户端需重新发起授权。两种 503 分支都会保留该授权码对应的套餐退款台账，因此没有成功 `TokenResponse` 的失败不会永久计入日/月授权用量。
+
+Refresh Token 轮换在 successor 已原子写入 Redis 后同样回源复核兑换闸门看到的同意版本和撤销状态。版本变化、撤销、同意缺失或复核存储故障都会先原子回滚未披露的 successor；若 Redis 无法确认回滚状态，则返回 `temporarily_unavailable`，否则按复核结果返回 `invalid_grant` 或 `temporarily_unavailable`。所有失败分支都不会返回 Access Token、ID Token 或新的 Refresh Token；`session_epoch`、Client Secret generation、family 墓碑和审计围栏继续独立生效。
 
 Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限流，超限返回 `429 temporarily_unavailable`；套餐未配置 `max_qps`（`null`）时不限流。
 
@@ -309,9 +313,9 @@ Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限�
 
 Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`aud`、`exp`、`iat`、`email`、`name`、`nonce`、`auth_time`。`azp` 属于单 audience 场景可省略的 Claim（OIDC Core §2），本服务不签发也不在 `claims_supported` 中声明。
 
-### `GET /oauth/userinfo`
+### `GET /oauth/userinfo` / `POST /oauth/userinfo`
 
-请求头：`Authorization: Bearer <access_token>`。
+GET 使用请求头 `Authorization: Bearer <access_token>`。POST 支持同一 Bearer 请求头，或 `application/x-www-form-urlencoded` 表单字段 `access_token`；两种方式必须二选一，同时提交返回 `400 invalid_request`。
 
 响应字段按 Scope 返回：
 
@@ -321,7 +325,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ### `POST /oauth/revoke`
 
-表单字段：`token` 必填，`token_type_hint` 可选（`access_token` 或 `refresh_token`），并使用同 Token 端点的 Client 认证方式。成功响应 `200` 且无响应体。
+表单字段：`token` 必填，`token_type_hint` 可选（`access_token` 或 `refresh_token`）。Client 认证与 Token 端点一致：HTTP Basic、表单 `client_id` + `client_secret`（`client_secret_post`），或公开 Client 只提交 `client_id` 的 `none`；认证方式不得混用。成功响应 `200` 且无响应体。
 
 ## 管理 API
 

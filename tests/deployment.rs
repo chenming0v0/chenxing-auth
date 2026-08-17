@@ -68,6 +68,32 @@ fn shell_function_body<'a>(script: &'a str, name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("installer function is not terminated: {name}"))
 }
 
+fn workflow_job<'a>(workflow: &'a str, name: &str) -> &'a str {
+    let marker = format!("\n  {name}:\n");
+    let start = workflow
+        .find(&marker)
+        .unwrap_or_else(|| panic!("workflow is missing job: {name}"))
+        + 1;
+    let rest = &workflow[start..];
+    let end = rest
+        .match_indices("\n  ")
+        .find_map(|(offset, _)| {
+            let candidate = &rest[offset + 1..];
+            let line = candidate.lines().next()?;
+            (!line.starts_with("    ") && line.ends_with(':')).then_some(offset)
+        })
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
+fn workflow_top_level_permissions(workflow: &str) -> &str {
+    workflow
+        .split_once("\npermissions:\n")
+        .and_then(|(_, rest)| rest.split_once("\njobs:\n"))
+        .map(|(permissions, _)| permissions)
+        .expect("workflow must declare top-level permissions before jobs")
+}
+
 #[test]
 fn release_workflow_publishes_versioned_archives_and_checksums() {
     for marker in [
@@ -85,6 +111,39 @@ fn release_workflow_publishes_versioned_archives_and_checksums() {
         assert!(
             BUILD_WORKFLOW.contains(marker),
             "release workflow is missing marker: {marker}"
+        );
+    }
+}
+
+#[test]
+fn build_workflow_scopes_write_permissions_and_drops_checkout_credentials() {
+    let defaults = workflow_top_level_permissions(BUILD_WORKFLOW);
+    assert!(defaults.contains("  contents: read"));
+    assert!(defaults.contains("  actions: read"));
+    assert!(!defaults.contains("write"));
+
+    let release = workflow_job(BUILD_WORKFLOW, "release");
+    assert!(release.contains("permissions:\n      contents: write"));
+    assert!(!release.contains("packages: write"));
+
+    let container = workflow_job(BUILD_WORKFLOW, "container");
+    assert!(container.contains("permissions:\n      contents: read\n      packages: write"));
+    assert!(!container.contains("contents: write"));
+
+    for name in ["verify-provenance", "web", "rust-binaries"] {
+        let job = workflow_job(BUILD_WORKFLOW, name);
+        assert!(
+            !job.contains("contents: write") && !job.contains("packages: write"),
+            "ordinary build job {name} must not receive write permissions"
+        );
+    }
+
+    for name in ["web", "rust-binaries", "container"] {
+        let job = workflow_job(BUILD_WORKFLOW, name);
+        assert!(job.contains("actions/checkout@v4"));
+        assert!(
+            job.contains("persist-credentials: false"),
+            "repository code checkout in {name} must not persist the job token"
         );
     }
 }
@@ -1012,7 +1071,7 @@ fn database_uses_forward_only_transactional_migration_history() {
     assert!(DB_MODULE.contains("include_str!(\"../../migrations/0001_initial.sql\")"));
     assert!(DB_MODULE.contains("include_str!(\"../../migrations/0029_plan_quota_bounds.sql\")"));
     // 0030/0031（passkey state version、client operation idempotency）来自
-    // #50-479 批次的合并，重编号后接在恢复的历史链尾部。
+    // #50-479 批次的合并；0032 收紧 SQLx migration ledger 的运行时权限。
     assert!(
         DB_MODULE.contains("include_str!(\"../../migrations/0030_passkey_state_version.sql\")")
     );
@@ -1020,11 +1079,16 @@ fn database_uses_forward_only_transactional_migration_history() {
         DB_MODULE
             .contains("include_str!(\"../../migrations/0031_client_operation_idempotency.sql\")")
     );
+    assert!(
+        DB_MODULE.contains(
+            "include_str!(\"../../migrations/0032_runtime_migration_ledger_boundary.sql\")"
+        )
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        31
+        32
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1068,14 +1132,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 31);
+    assert_eq!(migrations.len(), 32);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0031_client_operation_idempotency.sql")
+        Some("0032_runtime_migration_ledger_boundary.sql")
     );
     for (index, name) in migrations.iter().enumerate() {
         let expected_prefix = format!("{:04}_", index + 1);
@@ -1166,6 +1230,8 @@ fn migration_history_declares_final_security_and_consistency_invariants() {
         "CREATE TRIGGER audit_events_append_only_trigger",
         "CREATE TRIGGER audit_events_archive_append_only_trigger",
         "GRANT UPDATE ON SEQUENCE %s TO chenxing_runtime",
+        "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I._sqlx_migrations",
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA %I REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLES",
     ] {
         assert!(
             history.contains(marker),

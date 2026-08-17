@@ -53,6 +53,10 @@ pub struct RegisteredClient {
 #[derive(Clone, PartialEq, Eq)]
 pub struct ValidatedAuthorizationRequest {
     pub client_id: String,
+    /// 授权请求提交的原始 `redirect_uri` 文本。
+    ///
+    /// 注册匹配使用 canonical 形式，但授权码必须绑定这份原始文本；Token
+    /// 端点只接受同一原始值，不能把 `:443`、根斜杠等文本差异再规范化掉。
     pub redirect_uri: String,
     pub scopes: Vec<String>,
     pub state: String,
@@ -173,7 +177,7 @@ pub fn validate_authorization_request_with_allowlist(
 
     Ok(ValidatedAuthorizationRequest {
         client_id: request.client_id,
-        redirect_uri: canonical_redirect_uri,
+        redirect_uri: request.redirect_uri,
         scopes,
         state,
         nonce,

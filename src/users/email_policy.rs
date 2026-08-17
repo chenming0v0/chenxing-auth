@@ -7,6 +7,10 @@ use crate::sqlx::PgPool;
 use super::email::EmailAddress;
 use super::service::UserServiceError;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("email is not allowed by the registration policy")]
+pub(crate) struct EmailPolicyRejection;
+
 /// 解析已存储的邮箱域名策略并判定单个邮箱是否放行。
 ///
 /// 这里把"未配置"和"配置损坏 / 越界"区分成两种语义，二者绝不能混为一谈：
@@ -18,12 +22,12 @@ use super::service::UserServiceError;
 ///   会把损坏配置静默降级为"放行一切"。#449 的 `parse_email_policy` 负责缺字段
 ///   升级；`whitelist_enabled` 本身缺失仍视为结构漂移，不得补 `false`。
 ///
-/// 拒绝时统一返回 `EmailDomainNotAllowed`：对调用者而言判定结果就是"不允许"，
-/// 具体的解析失败原因只写进日志，不进 HTTP 响应，避免泄露内部结构与配置内容。
-fn evaluate_email_policy(
+/// 拒绝时统一返回不携带配置细节的 `EmailPolicyRejection`。边界层再把它映射成
+/// 各自的公开错误；具体的解析失败原因只写进日志，避免泄露内部结构与配置内容。
+pub(crate) fn evaluate_email_policy(
     raw: Option<String>,
     email: &EmailAddress,
-) -> Result<(), UserServiceError> {
+) -> Result<(), EmailPolicyRejection> {
     let policy = match decode_persisted::<EmailPolicySetting>(raw.as_deref()).require(
         EmailPolicySetting::default(),
         |policy| policy,
@@ -32,13 +36,13 @@ fn evaluate_email_policy(
         Ok(policy) => policy,
         Err(error) => {
             log_unusable_email_policy(&error);
-            return Err(UserServiceError::EmailDomainNotAllowed);
+            return Err(EmailPolicyRejection);
         }
     };
     if policy.allows_email(email) {
         Ok(())
     } else {
-        Err(UserServiceError::EmailDomainNotAllowed)
+        Err(EmailPolicyRejection)
     }
 }
 
@@ -68,7 +72,7 @@ pub(super) async fn ensure_email_policy_allows(
     email: &EmailAddress,
 ) -> Result<(), UserServiceError> {
     let raw = crate::settings::repository::get_text(pool, EMAIL_POLICY_KEY).await?;
-    evaluate_email_policy(raw, email)
+    evaluate_email_policy(raw, email).map_err(|_| UserServiceError::EmailDomainNotAllowed)
 }
 
 #[cfg(test)]
@@ -116,7 +120,7 @@ mod tests {
         let error =
             evaluate_email_policy(Some(whitelist_policy_json()), &email("user@other.example"))
                 .expect_err("domain outside the whitelist must be rejected");
-        assert!(matches!(error, UserServiceError::EmailDomainNotAllowed));
+        assert_eq!(error, EmailPolicyRejection);
     }
 
     #[test]
@@ -126,7 +130,7 @@ mod tests {
             &email("user+tag@corp.example"),
         )
         .expect_err("alias address must be rejected");
-        assert!(matches!(error, UserServiceError::EmailDomainNotAllowed));
+        assert_eq!(error, EmailPolicyRejection);
     }
 
     #[test]
@@ -142,7 +146,7 @@ mod tests {
                 evaluate_email_policy(Some(raw.to_owned()), &email("user@anywhere.example"))
                     .expect_err("broken policy configuration must fail closed");
             assert!(
-                matches!(error, UserServiceError::EmailDomainNotAllowed),
+                error == EmailPolicyRejection,
                 "unexpected error for {raw:?}"
             );
         }
@@ -154,7 +158,7 @@ mod tests {
         let raw = serde_json::json!({ "domains": ["corp.example"] }).to_string();
         let error = evaluate_email_policy(Some(raw), &email("user@anywhere.example"))
             .expect_err("structural drift must fail closed");
-        assert!(matches!(error, UserServiceError::EmailDomainNotAllowed));
+        assert_eq!(error, EmailPolicyRejection);
     }
 
     /// #449：旧行可以没有后来才出现的 `alias_restriction_enabled`，
@@ -165,7 +169,7 @@ mod tests {
         assert!(evaluate_email_policy(Some(raw.to_owned()), &email("user@corp.example")).is_ok());
         let error = evaluate_email_policy(Some(raw.to_owned()), &email("user@other.example"))
             .expect_err("whitelist must still apply after schema upgrade");
-        assert!(matches!(error, UserServiceError::EmailDomainNotAllowed));
+        assert_eq!(error, EmailPolicyRejection);
     }
 
     #[test]
@@ -178,7 +182,7 @@ mod tests {
         .to_string();
         let error = evaluate_email_policy(Some(raw), &email("user@anywhere.example"))
             .expect_err("an empty enabled whitelist must fail closed");
-        assert!(matches!(error, UserServiceError::EmailDomainNotAllowed));
+        assert_eq!(error, EmailPolicyRejection);
     }
 
     #[test]

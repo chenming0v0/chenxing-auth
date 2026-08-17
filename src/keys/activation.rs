@@ -1,8 +1,9 @@
 //! 已发布、尚未签发的轮换密钥（Issue #454）。
 //!
 //! 轮换拆成两个持久化阶段：先把新公钥写入 JWKS（published），等到记录里的
-//! `activate_at` 之后才把签发权切过去（active）。截止时刻写在独立文件里，
-//! 重启和多实例恢复看的是同一份时间，而不是进程内 sleep。
+//! `activate_at` 之后才把签发权切过去（active）。截止时刻已经包含配置的跨实例
+//! 时钟偏差围栏，并写在独立文件里；重启和多实例恢复看的是同一份时间，而不是
+//! 进程内 sleep 或各自重新解释当前配置。
 //!
 //! 记录文件刻意不复用 `pending-rotation.record`：那份 journal 仍只负责
 //! “材料落盘 / 回滚”的崩溃窗口，格式保持两行。旧二进制不认识本文件，
@@ -11,7 +12,10 @@
 
 use std::{path::Path, time::Duration};
 
-use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{
+    Duration as TimeDuration, OffsetDateTime, PlainDateTime,
+    format_description::well_known::Rfc3339,
+};
 
 use crate::key_storage::{atomic_write, read_secure_file_limited, remove_secure_file};
 
@@ -57,12 +61,24 @@ impl PendingPublishedKey {
     }
 }
 
-/// `now + delay`；无法表示的 delay 退回 `now`（立即到期），由配置上界兜住。
+/// `now + delay`；无法表示的 delay 取时间上界，按“永不到期”安全失败。
 pub(super) fn activate_at(now: OffsetDateTime, delay: Duration) -> OffsetDateTime {
     TimeDuration::try_from(delay)
         .ok()
         .and_then(|delay| now.checked_add(delay))
-        .unwrap_or(now)
+        .unwrap_or_else(|| PlainDateTime::MAX.assume_utc())
+}
+
+/// 持久化的安全激活截止：JWKS 传播等待加跨实例最大时钟偏差。
+///
+/// 偏慢的发布实例写入截止、偏快的激活实例读取截止时，`skew_allowance` 不能消耗
+/// `activation_delay` 的任何一秒。截止一旦落盘就不受之后的配置变更影响。
+pub(super) fn activation_deadline(
+    now: OffsetDateTime,
+    activation_delay: Duration,
+    skew_allowance: Duration,
+) -> OffsetDateTime {
+    activate_at(now, activation_delay.saturating_add(skew_allowance))
 }
 
 /// 把“已发布、待激活”落盘。返回成功即表示新公钥必须进入 JWKS，签发权仍留在旧 key。

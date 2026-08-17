@@ -60,9 +60,9 @@ pub(super) fn validate_token_and_key_lifetimes(
         MIN_KEY_ROTATION_GRACE_SECONDS,
         MAX_KEY_ROTATION_GRACE_SECONDS,
     )?;
-    // Issue #316：跨实例时钟偏差容忍。允许为 0（单实例部署没有跨实例偏差），
-    // 上限是保留窗口本身——容忍值超过窗口意味着运维对时钟失准的预期比密钥
-    // 保留期还长，基本是配置笔误，拒绝而不是静默接受。
+    // Issues #316/#546：同一容忍值保护旧 key 回收和新 key 激活。允许为 0
+    // （单实例部署没有跨实例偏差）；上限是保留窗口本身——再大说明运维对时钟
+    // 失准的预期比密钥保留期还长，基本是配置笔误，拒绝而不是静默接受。
     validate_range(
         "KEY_ROTATION_SKEW_ALLOWANCE_SECONDS",
         key_rotation_skew_allowance_seconds,

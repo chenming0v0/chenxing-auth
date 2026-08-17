@@ -10,10 +10,10 @@
 //!   绝不能把锁竞争变成请求失败（Issue #257）。
 //!
 //! 多实例语义：各实例的内存快照最迟在一个同步周期后收敛到同一份磁盘事实。
-//! 轮换先发布公钥再激活，因此同步间隔必须短于 `KEY_ACTIVATION_DELAY_SECONDS`，
-//! 也必须远小于 `key_rotation_grace_seconds`（旧公钥保留窗口），否则别的实例
-//! 可能仍在用已被回收的私钥签名。吊销同理：非本实例执行的吊销，最长在一个
-//! 同步周期后才在本实例生效。
+//! 轮换先发布公钥再激活；落盘截止包含 `KEY_ACTIVATION_DELAY_SECONDS` 与配置的
+//! 时钟偏差围栏，因此同步间隔必须短于基础激活等待，也必须远小于
+//! `key_rotation_grace_seconds`（旧公钥保留窗口）。吊销同理：非本实例执行的
+//! 吊销，最长在一个同步周期后才在本实例生效。
 
 use std::time::Duration;
 
@@ -180,8 +180,8 @@ impl KeyManager {
     }
 }
 
-/// 锁被占用不是故障：Unix 上是 flock 的 `EWOULDBLOCK`，非 Unix 回退实现用
-/// 目录创建冲突表达同一件事。
+/// 锁被占用不是故障：Unix 的 `flock` 与 Windows 的独占文件句柄都映射为
+/// `WouldBlock`。`AlreadyExists` 只保留为旧实现/平台兼容边界。
 fn is_lock_contention(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),

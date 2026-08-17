@@ -87,6 +87,8 @@ fn requires_configured_issuer(path: &str) -> bool {
             "/.well-known/openid-configuration"
                 | "/.well-known/jwks.json"
                 | "/api/v1/auth/external-providers"
+                | "/api/v1/auth/totp/setup"
+                | "/api/v1/auth/security/totp/enrollment/start"
         )
         || exact_dynamic_route(path, &["api", "v1", "oauth", "authorize", "requests"], None)
         || exact_dynamic_route(
@@ -135,6 +137,8 @@ mod tests {
             "/oauth/token",
             "/oauth/revoke",
             "/oauth/userinfo",
+            "/api/v1/auth/totp/setup",
+            "/api/v1/auth/security/totp/enrollment/start",
             "/api/v1/oauth/authorize/requests/request-id",
             "/api/v1/oauth/authorize/requests/request-id/bind",
             "/api/v1/admin/oauth/providers",
@@ -150,7 +154,6 @@ mod tests {
 
         for path in [
             "/api/v1/auth/login",
-            "/api/v1/auth/totp/setup",
             "/api/v1/auth/me",
             "/api/v1/admin/auth/me",
             "/api/v1/admin/settings/issuer",
