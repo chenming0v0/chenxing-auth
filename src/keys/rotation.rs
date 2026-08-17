@@ -18,7 +18,8 @@ use super::{
 /// 1. 若已有未到期的 published key，本调用是幂等的——再生成一把从未签发的密钥
 ///    只会制造 JWKS 抖动。
 /// 2. 新材料落盘并写入 `pending-activation.record` 之后，签发权仍留在旧 active。
-/// 3. `now >= activate_at` 时才切换 `active-rs256.kid` 并给旧 key 盖退役章。
+/// 3. `activate_at` 已包含发布等待与时钟偏差围栏；`now >= activate_at` 时才切换
+///    `active-rs256.kid` 并给旧 key 盖退役章。
 pub(super) fn rotate_blocking_at(
     manager: &KeyManager,
     now: OffsetDateTime,
@@ -95,7 +96,7 @@ pub(super) fn rotate_blocking_at(
     let pending = activation::PendingPublishedKey::new(
         key_id.clone(),
         previous_active_key_id.clone(),
-        activation::activate_at(now, activation_delay),
+        activation::activation_deadline(now, activation_delay, skew_allowance),
     );
     let activate_now = pending.is_due(now);
     let mut active_key_id = previous_active_key_id.clone();
