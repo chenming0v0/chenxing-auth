@@ -90,6 +90,40 @@ fn openapi_section(start: &str, end: &str) -> String {
         .unwrap_or_else(|| panic!("missing OpenAPI section end: {end}"))
 }
 
+fn openapi_operation(path: &str, method: &str) -> String {
+    let normalized = OPENAPI.replace("\r\n", "\n");
+    let path_marker = format!("  {path}:\n");
+    let (_, path_and_after) = normalized
+        .split_once(&path_marker)
+        .unwrap_or_else(|| panic!("missing OpenAPI path: {path}"));
+    let path_section = path_and_after
+        .split_once("\n  /")
+        .map_or(path_and_after, |(section, _)| section);
+    let method_marker = format!("    {method}:\n");
+    let (_, operation_and_after) = path_section
+        .split_once(&method_marker)
+        .unwrap_or_else(|| panic!("missing OpenAPI operation: {method} {path}"));
+    let end = operation_and_after
+        .match_indices("\n    ")
+        .find_map(|(offset, _)| {
+            let line = operation_and_after[offset + 1..].lines().next()?;
+            matches!(
+                line,
+                "    get:" | "    post:" | "    put:" | "    patch:" | "    delete:"
+            )
+            .then_some(offset)
+        })
+        .unwrap_or(operation_and_after.len());
+    operation_and_after[..end].to_owned()
+}
+
+fn assert_openapi_response(operation: &str, status: &str, method: &str, path: &str) {
+    assert!(
+        operation.contains(&format!("        '{status}':")),
+        "{method} {path} must declare runtime response {status}"
+    );
+}
+
 fn security_event_detail(client: Option<SecurityEventClient>) -> SecurityEventDetail {
     SecurityEventDetail {
         id: 488,
@@ -347,6 +381,144 @@ fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
 }
 
 #[test]
+fn openapi_documents_oauth_body_credential_alternatives() {
+    let revoke = openapi_operation("/oauth/revoke", "post");
+    assert!(revoke.contains("security: [{ basicClientAuth: [] }, {}]"));
+    assert!(revoke.contains("$ref: '#/components/schemas/RevocationRequest'"));
+
+    let revocation_schema =
+        openapi_section("    RevocationRequest:\n", "    UserInfoPostRequest:\n");
+    assert!(revocation_schema.contains("required: [token]"));
+    assert!(revocation_schema.contains("client_id:"));
+    assert!(revocation_schema.contains("client_secret:"));
+    assert!(revocation_schema.contains("client_secret_post"));
+    assert!(revocation_schema.contains("公开 Client 的 `none`"));
+
+    let userinfo = openapi_operation("/oauth/userinfo", "post");
+    assert!(userinfo.contains("security: [{ bearerAuth: [] }, {}]"));
+    assert!(userinfo.contains("requestBody:\n        required: false"));
+    assert!(userinfo.contains("$ref: '#/components/schemas/UserInfoPostRequest'"));
+
+    let userinfo_schema = openapi_section("    UserInfoPostRequest:\n", "    TokenResponse:\n");
+    assert!(userinfo_schema.contains("required: [access_token]"));
+    assert!(userinfo_schema.contains("access_token:"));
+    assert!(userinfo_schema.contains("Bearer"));
+    assert!(userinfo_schema.contains("二选一"));
+}
+
+#[test]
+fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
+    let read_operations = [
+        ("get", "/api/v1/admin/auth/me"),
+        ("get", "/api/v1/admin/users"),
+        ("get", "/api/v1/admin/users/{user_id}/auth-factors"),
+        ("get", "/api/v1/admin/auth-factors/key-health"),
+        ("get", "/api/v1/admin/plans"),
+        ("get", "/api/v1/admin/clients"),
+        ("get", "/api/v1/admin/admins"),
+        ("get", "/api/v1/admin/audit"),
+        ("get", "/api/v1/admin/overview"),
+        ("get", "/api/v1/admin/users/query"),
+        ("get", "/api/v1/admin/clients/query"),
+        ("get", "/api/v1/admin/audit/query"),
+        ("get", "/api/v1/admin/settings/registration-email"),
+        ("get", "/api/v1/admin/settings/issuer"),
+        ("get", "/api/v1/admin/settings/passkey"),
+        ("get", "/api/v1/admin/settings/email-policy"),
+        ("get", "/api/v1/admin/settings/smtp"),
+        ("get", "/api/v1/admin/settings/security-limits"),
+        ("get", "/api/v1/admin/oauth/providers"),
+    ];
+    let write_operations = [
+        ("post", "/api/v1/admin/users"),
+        ("post", "/api/v1/admin/users/{user_id}/{status}"),
+        ("post", "/api/v1/admin/users/{user_id}/role"),
+        (
+            "delete",
+            "/api/v1/admin/users/{user_id}/auth-factors/totp",
+        ),
+        (
+            "delete",
+            "/api/v1/admin/users/{user_id}/auth-factors/passkey",
+        ),
+        ("post", "/api/v1/admin/users/{user_id}/plan"),
+        ("post", "/api/v1/admin/plans"),
+        ("put", "/api/v1/admin/plans/{id}"),
+        ("post", "/api/v1/admin/plans/{id}/archive"),
+        ("post", "/api/v1/admin/plans/{id}/restore"),
+        ("post", "/api/v1/admin/clients"),
+        ("put", "/api/v1/admin/clients/{client_id}"),
+        ("post", "/api/v1/admin/clients/{client_id}/disable"),
+        ("post", "/api/v1/admin/clients/{client_id}/enable"),
+        ("post", "/api/v1/admin/clients/{client_id}/rotate-secret"),
+        ("post", "/api/v1/admin/admins"),
+        ("put", "/api/v1/admin/settings/registration-email"),
+        ("put", "/api/v1/admin/settings/issuer"),
+        ("put", "/api/v1/admin/settings/passkey"),
+        ("put", "/api/v1/admin/settings/email-policy"),
+        ("put", "/api/v1/admin/settings/smtp"),
+        ("put", "/api/v1/admin/settings/security-limits"),
+        ("post", "/api/v1/admin/oauth/providers"),
+        ("put", "/api/v1/admin/oauth/providers/{slug}"),
+        ("post", "/api/v1/admin/oauth/providers/{slug}/disable"),
+        ("post", "/api/v1/admin/oauth/providers/{slug}/enable"),
+        ("post", "/api/v1/admin/keys/rotate"),
+        ("post", "/api/v1/admin/keys/{key_id}/revoke"),
+    ];
+    let read_security = "security:\n        - adminBearer: []\n        - sessionCookie: []";
+    let write_security =
+        "security:\n        - adminBearer: []\n        - sessionCookie: []\n          csrfHeader: []";
+
+    for (method, path) in read_operations {
+        let operation = openapi_operation(path, method);
+        assert!(
+            operation.contains(read_security),
+            "{method} {path} must allow admin Bearer OR browser Session"
+        );
+        for status in ["401", "403"] {
+            assert_openapi_response(&operation, status, method, path);
+        }
+        if path != "/api/v1/admin/settings/issuer" {
+            assert_openapi_response(&operation, "503", method, path);
+        }
+    }
+
+    for (method, path) in write_operations {
+        let operation = openapi_operation(path, method);
+        assert!(
+            operation.contains(write_security),
+            "{method} {path} must allow admin Bearer OR Session plus CSRF"
+        );
+        assert!(
+            !operation.contains("#/components/parameters/CsrfHeader"),
+            "{method} {path} must not require CSRF on the Bearer branch"
+        );
+        for status in ["400", "401", "403"] {
+            assert_openapi_response(&operation, status, method, path);
+        }
+        if path != "/api/v1/admin/settings/issuer" {
+            assert_openapi_response(&operation, "503", method, path);
+        }
+    }
+
+    assert!(OPENAPI.contains(
+        "csrfHeader: { type: apiKey, in: header, name: X-CSRF-Token"
+    ));
+}
+
+#[test]
+fn totp_setup_operations_declare_the_issuer_gate() {
+    for path in [
+        "/api/v1/auth/totp/setup",
+        "/api/v1/auth/security/totp/enrollment/start",
+    ] {
+        let operation = openapi_operation(path, "post");
+        assert!(operation.contains("Issuer"), "{path}");
+        assert_openapi_response(&operation, "503", "post", path);
+    }
+}
+
+#[test]
 fn openapi_paths_match_all_static_axum_routes() {
     let routes = static_route_paths(ROUTE_SOURCES);
     let paths = openapi_paths();
@@ -513,16 +685,27 @@ async fn issuer_gate_preserves_protocol_and_internal_error_envelopes() {
         assert!(body.get("message").is_none(), "{path}");
     }
 
-    for path in [
-        "/.well-known/openid-configuration",
-        "/.well-known/jwks.json",
-        "/api/v1/oauth/authorize/requests/contract-request",
-        "/api/v1/admin/oauth/providers",
-        "/api/v1/auth/external-providers",
-        "/auth/external/example",
-        "/auth/external/example/callback?state=contract-state",
+    for (method, path) in [
+        (Method::GET, "/.well-known/openid-configuration"),
+        (Method::GET, "/.well-known/jwks.json"),
+        (
+            Method::GET,
+            "/api/v1/oauth/authorize/requests/contract-request",
+        ),
+        (Method::GET, "/api/v1/admin/oauth/providers"),
+        (Method::GET, "/api/v1/auth/external-providers"),
+        (Method::GET, "/auth/external/example"),
+        (
+            Method::GET,
+            "/auth/external/example/callback?state=contract-state",
+        ),
+        (Method::POST, "/api/v1/auth/totp/setup"),
+        (
+            Method::POST,
+            "/api/v1/auth/security/totp/enrollment/start",
+        ),
     ] {
-        let response = send(&router, Method::GET, path).await;
+        let response = send(&router, method, path).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
         assert_eq!(
             json_content_type(&response),
