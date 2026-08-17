@@ -1055,7 +1055,9 @@ paths:
         全部按 provider 配置的 claim 路径从该响应读取。令牌响应中的 id_token 不被解析、不被存储、不参与身份判定
         （本平台不为自定义提供商保存 issuer、JWKS、允许算法或 nonce 策略，不具备验证它的条件）。只返回 id_token
         而没有 access_token 的令牌响应按失败处理，回跳 external_error=oauth_login_failed。email_verified 的
-        可信度上限就是外部 UserInfo 响应本身。Runtime 为 AwaitingIssuer 时先回读 PostgreSQL；合法持久化 Issuer 会应用到
+        可信度上限就是外部 UserInfo 响应本身。首次自动建号在同一数据库事务内执行普通注册共用的邮箱域名/别名策略，
+        策略拒绝时不留下 user 或 identity 半成品并回跳 oauth_login_failed；既有绑定登录不重新应用注册策略。
+        Runtime 为 AwaitingIssuer 时先回读 PostgreSQL；合法持久化 Issuer 会应用到
         当前请求并继续。数据库确实无记录时返回内部 `ErrorResponse` 信封的 503 `issuer_not_configured`；空值/无效值、
         读取失败、Runtime Pending/Invalid 或事实无法一致应用时返回 503 `issuer_runtime_invalid`。
       operationId: externalOAuthCallback
@@ -1080,14 +1082,16 @@ paths:
         X-Chenxing-Session 仅在 OAUTH_SESSION_HEADER_ENABLED=true 的开发兼容配置中接受，不能绕过 Session 绑定、CSRF 或 consent。
         Client 已加载且 redirect_uri canonicalize 后仍严格匹配注册值时，后续参数校验或依赖错误通过 302
         回调该 canonical redirect_uri，并携带 RFC 6749 `error` / `error_description`；仅非空且不超过 512
-        个字符的 state 会被回显。Client 或 redirect_uri 不可信时绝不重定向，改用 RFC 6749 JSON 错误信封。
+        个字符的 state 会被回显。注册匹配允许默认端口消除、根斜杠补全和 RFC 8252 loopback 字面 IP
+        的动态端口例外；授权码仍绑定请求提交的原始 redirect_uri 文本，Token 兑换必须原样回送。
+        Client 或 redirect_uri 不可信时绝不重定向，改用 RFC 6749 JSON 错误信封。
         Runtime 为 AwaitingIssuer 时门禁先回读 PostgreSQL，合法持久化 Issuer 会应用到当前请求并继续。无记录、空值/无效值、
         数据库读取失败、Runtime Pending/Invalid 或事实无法一致应用，以及请求超时时，统一返回 RFC 6749 JSON 信封的
         503 `temporarily_unavailable`。此时尚无可用的 redirect_uri 上下文做错误重定向，
         不会返回内部 API 的 `{code, message}` 或 504 `request_timeout`（Issues #423、#441）。
       parameters:
         - { $ref: '#/components/parameters/ClientId' }
-        - { name: redirect_uri, in: query, required: true, schema: { type: string, format: uri } }
+        - { name: redirect_uri, in: query, required: true, description: "canonicalize 后必须匹配注册值；授权码兑换时必须原样回送本次请求文本", schema: { type: string, format: uri } }
         - { name: response_type, in: query, required: true, schema: { type: string, enum: [code] } }
         - { name: scope, in: query, required: true, description: "空格分隔的 scope；每个值必须同时属于服务端 OAUTH_CLIENT_ALLOWED_SCOPES allowlist（默认 openid、profile、email）和该 Client 已注册的 scope 集合", schema: { type: string, example: 'openid email profile' } }
         - { name: state, in: query, required: true, description: 最多 512 个字符, schema: { type: string, maxLength: 512 } }
@@ -1119,7 +1123,7 @@ paths:
               required: [client_id, redirect_uri, response_type, scope, state, code_challenge, code_challenge_method]
               properties:
                 client_id: { type: string }
-                redirect_uri: { type: string, format: uri }
+                redirect_uri: { type: string, format: uri, description: "canonicalize 后必须匹配注册值；授权码兑换时必须原样回送本次请求文本" }
                 response_type: { type: string, enum: [code] }
                 scope: { type: string, description: "空格分隔的 scope；受服务端 allowlist 和 Client 已注册 scopes 双重约束" }
                 state: { type: string, maxLength: 512 }
@@ -1239,6 +1243,10 @@ paths:
         授权码交换在持久化 Refresh Token 后还会最终复核授权同意版本；该复核暂时不可用时，服务销毁未披露的
         Refresh Token，并在确认销毁后恢复授权码供重试。若无法确认销毁结果则保持授权码已消费，客户端需重新发起授权。
         两种 503 分支都会保留套餐退款台账，没有成功 TokenResponse 的失败不会永久计入日/月授权用量。
+        授权码请求中的 redirect_uri 必须与创建授权码时的原始文本完全一致；canonical 等价但文本不同仍返回 invalid_grant。
+        Refresh 轮换在 successor 写入后回源复核同意版本/撤销状态；拒绝或存储故障先原子回滚未披露
+        successor，若 Redis 无法确认回滚状态则返回 temporarily_unavailable。所有失败分支都不返回
+        Access Token、ID Token 或新 Refresh Token。
         不会返回内部 API 的 `{code, message}`
         或 504 `request_timeout`（Issues #423、#441）。
       security: [{ basicClientAuth: [] }, {}]
@@ -2562,7 +2570,7 @@ components:
       required: [client_id, redirect_uri, response_type, scope, code_challenge, code_challenge_method]
       properties:
         client_id: { type: string }
-        redirect_uri: { type: string, format: uri }
+        redirect_uri: { type: string, format: uri, description: "canonicalize 后必须匹配注册值；授权码兑换时必须原样回送本次请求文本" }
         response_type: { type: string, enum: [code] }
         scope: { type: string, description: 空格分隔的 OAuth scope }
         state: { type: string, maxLength: 512 }
@@ -2823,7 +2831,7 @@ components:
       properties:
         grant_type: { type: string, enum: [authorization_code, refresh_token] }
         code: { type: string }
-        redirect_uri: { type: string, format: uri }
+        redirect_uri: { type: string, format: uri, description: "authorization_code grant 必须与授权请求中的原始 redirect_uri 文本完全一致" }
         code_verifier: { type: string }
         refresh_token: { type: string }
         scope:

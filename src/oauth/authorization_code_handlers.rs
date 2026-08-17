@@ -11,8 +11,10 @@ use super::{
     quota::{QuotaConsumeResult, QuotaReservation},
     session::active_user_id,
 };
-use crate::audit::AuditEvent;
-use crate::{error, settings::IssuerSnapshot, state::AppState};
+use crate::{
+    audit::AuditEvent, clients::domain::canonicalize_redirect_uri, error, settings::IssuerSnapshot,
+    state::AppState,
+};
 
 pub enum AuthorizationCodeIssue {
     Redirect(String),
@@ -100,11 +102,13 @@ pub async fn issue_authorization_code_result(
     else {
         return Err(AuthorizationCodeIssueError::InvalidClient);
     };
+    let redirect_target = canonicalize_redirect_uri(&validated.redirect_uri)
+        .ok_or(AuthorizationCodeIssueError::InvalidRequest)?;
     if validated.client_id != client.client_id
         || !client
             .redirect_uris
             .iter()
-            .any(|uri| redirect_uri_matches(uri, &validated.redirect_uri))
+            .any(|uri| redirect_uri_matches(uri, &redirect_target))
         || !scopes_are_allowed(
             &client,
             &validated.scopes,
@@ -270,7 +274,7 @@ pub async fn issue_authorization_code_result(
         return Err(AuthorizationCodeIssueError::ServerError);
     }
 
-    let mut redirect_uri = match url::Url::parse(&validated.redirect_uri) {
+    let mut redirect_uri = match url::Url::parse(&redirect_target) {
         Ok(uri) => uri,
         Err(parse_error) => {
             remove_authorization_code_after_failure(

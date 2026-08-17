@@ -7,6 +7,7 @@ use super::domain::{ClientAuthMethod, ProviderRecord, ValidatedProviderInput};
 use crate::db::advisory_lock::{BusinessLock, lock_business};
 use crate::users::domain::{UserId, UserStatus};
 use crate::users::email::EmailAddress;
+use crate::users::email_policy::evaluate_email_policy;
 
 #[derive(Debug, Clone)]
 pub struct ExternalIdentity {
@@ -280,6 +281,17 @@ pub async fn create_user_with_identity(
         return Err(CreateIdentityError::EmailAlreadyRegistered);
     }
 
+    // 外部身份自动建号与普通注册共用同一准入策略（Issue #550）。读取和判定
+    // 必须发生在创建事务内，并且位于任何 INSERT 之前：策略拒绝、损坏配置或
+    // 后续数据库错误都不能留下 users / oauth_external_identities 半成品。
+    let email_policy_raw =
+        crate::settings::repository::get_text(&mut *transaction, crate::settings::EMAIL_POLICY_KEY)
+            .await?;
+    if evaluate_email_policy(email_policy_raw, email).is_err() {
+        transaction.rollback().await?;
+        return Err(CreateIdentityError::EmailPolicyRejected);
+    }
+
     let owner_exists: bool =
         crate::sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE role = 'owner')")
             .fetch_one(&mut *transaction)
@@ -330,6 +342,8 @@ pub enum CreateIdentityError {
     Database(#[from] crate::sqlx::Error),
     #[error("email is already registered")]
     EmailAlreadyRegistered,
+    #[error("email is not allowed by the registration policy")]
+    EmailPolicyRejected,
     #[error("external user is disabled")]
     UserDisabled,
     #[error("owner bootstrap is required before creating external users")]

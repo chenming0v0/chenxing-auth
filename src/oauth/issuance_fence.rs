@@ -1,16 +1,20 @@
-//! Persist 之后的签发围栏（Issue #475 / #476）。
+//! Persist 之后的签发围栏（Issue #475 / #476 / #542）。
 //!
 //! 授权码兑换的闸门在 Client 行锁和 Redis CAS 之前。撤销同意在闸门通过之后、
 //! Refresh Token 落盘之前提交时，闸门看到的是旧版本，撤销也看不到尚未存在的
 //! family。这里在 persist 之后再读一次 PostgreSQL 权威行：版本变了、已撤销或
 //! 行没了，就不得返回令牌。
 //!
+//! Refresh 轮换同样必须保留闸门读到的版本号，并在 successor 已写入 Redis 后
+//! 复用这里回源复核。否则撤销在轮换与响应之间提交时，请求仍会泄露一整套新
+//! Token；调用方负责在拒绝或存储故障时回滚未披露的 successor。
+//!
 //! Redis 同意缓存只能拒绝、不能放行，300 秒 TTL 也太粗，围栏必须回源数据库。
 
 use crate::{consents::domain::ConsentState, state::AppState, users::domain::UserId};
 
-/// 闸门放行时拍下的签发快照。`#475` 填 `consent_version`；`session_epoch`
-/// 留给 `#476`，本文件不实现代际复核。
+/// 闸门放行时拍下的签发快照。授权码与 Refresh 路径都填
+/// `consent_version`；`session_epoch` 由各自持锁的代际围栏复核。
 pub struct IssuanceSnapshot {
     pub consent_version: Option<i64>,
     pub session_epoch: Option<i64>,
