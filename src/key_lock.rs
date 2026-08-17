@@ -26,18 +26,18 @@ impl KeyStorageLock {
         {
             let file = unix_lock::open(directory)?;
             unix_lock::lock(&file, false)?;
-            return Ok(Self { file });
+            Ok(Self { file })
         }
 
         #[cfg(windows)]
         {
-            return windows_lock::acquire(directory, true).map(|file| Self { _file: file });
+            windows_lock::acquire(directory, true).map(|file| Self { _file: file })
         }
 
         #[cfg(not(any(unix, windows)))]
         {
             let lock = directory_lock::acquire(directory, true)?;
-            return Ok(Self { lock });
+            Ok(Self { lock })
         }
     }
 
@@ -46,18 +46,18 @@ impl KeyStorageLock {
         {
             let file = unix_lock::open(directory)?;
             unix_lock::lock(&file, true)?;
-            return Ok(Self { file });
+            Ok(Self { file })
         }
 
         #[cfg(windows)]
         {
-            return windows_lock::acquire(directory, false).map(|file| Self { _file: file });
+            windows_lock::acquire(directory, false).map(|file| Self { _file: file })
         }
 
         #[cfg(not(any(unix, windows)))]
         {
             let lock = directory_lock::acquire(directory, false)?;
-            return Ok(Self { lock });
+            Ok(Self { lock })
         }
     }
 }

@@ -292,7 +292,7 @@ impl Heartbeat {
     pub(super) fn is_finished(&self) -> bool {
         self.thread
             .as_ref()
-            .map_or(true, |thread| thread.is_finished())
+            .is_none_or(|thread| thread.is_finished())
     }
 }
 
@@ -388,10 +388,10 @@ pub(super) fn is_stale(observed: ObservedLock, current: &LeaseIdentity, now: Sys
     let Some(last_heartbeat) = observed.last_heartbeat else {
         return false;
     };
-    if let Some(record) = observed.record {
-        if record.released || record.identity.same_process(current) {
-            return record.released;
-        }
+    if let Some(record) = observed.record
+        && (record.released || record.identity.same_process(current))
+    {
+        return record.released;
     }
     now.duration_since(last_heartbeat)
         .is_ok_and(|age| age >= STALE_LOCK_AGE)
