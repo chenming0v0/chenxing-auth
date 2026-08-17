@@ -467,7 +467,7 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
     ];
     let read_security = "security:\n        - adminBearer: []\n        - sessionCookie: []";
     let write_security =
-        "security:\n        - adminBearer: []\n        - sessionCookie: []\n          csrfHeader: []";
+        "security:\n        - adminBearer: []\n        - sessionCookie: []\n          csrfCookie: []\n          csrfHeader: []";
 
     for (method, path) in read_operations {
         let operation = openapi_operation(path, method);
@@ -503,6 +503,9 @@ fn openapi_models_admin_bearer_or_session_csrf_and_runtime_errors() {
 
     assert!(OPENAPI.contains(
         "csrfHeader: { type: apiKey, in: header, name: X-CSRF-Token"
+    ));
+    assert!(OPENAPI.contains(
+        "csrfCookie: { type: apiKey, in: cookie, name: __Host-chenxing_csrf"
     ));
 }
 

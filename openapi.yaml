@@ -1445,6 +1445,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       requestBody:
         required: true
@@ -1474,6 +1475,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
@@ -1493,6 +1495,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
@@ -1573,6 +1576,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
@@ -1615,6 +1619,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
@@ -1667,6 +1672,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: user_id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
@@ -1710,6 +1716,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       requestBody:
         required: true
@@ -1738,6 +1745,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
@@ -1769,6 +1777,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
@@ -1787,6 +1796,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
@@ -1821,6 +1831,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { $ref: '#/components/parameters/IdempotencyKeyHeader' }
@@ -1851,6 +1862,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: client_id, in: path, required: true, schema: { type: string } }
@@ -1878,6 +1890,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: client_id, in: path, required: true, schema: { type: string } }
@@ -1897,6 +1910,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters: [{ name: client_id, in: path, required: true, schema: { type: string } }]
       responses:
@@ -1915,6 +1929,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: client_id, in: path, required: true, schema: { type: string } }
@@ -1956,6 +1971,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       requestBody:
         required: true
@@ -2096,6 +2112,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       requestBody:
         required: true
@@ -2146,6 +2163,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       requestBody:
         required: true
@@ -2196,6 +2214,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       requestBody:
         required: true
@@ -2249,6 +2268,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       requestBody:
         required: true
@@ -2297,6 +2317,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       requestBody:
         required: true
@@ -2348,6 +2369,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       requestBody:
         required: true
@@ -2400,6 +2422,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       requestBody:
         required: true
@@ -2429,6 +2452,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
@@ -2456,6 +2480,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
@@ -2475,6 +2500,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
@@ -2521,6 +2547,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       responses:
         '200':
@@ -2544,6 +2571,7 @@ paths:
       security:
         - adminBearer: []
         - sessionCookie: []
+          csrfCookie: []
           csrfHeader: []
       parameters:
         - name: key_id
@@ -2574,6 +2602,7 @@ components:
     adminBearer: { type: http, scheme: bearer, description: 系统 ADMIN_TOKEN 自动化通道，权限等价于 Owner 且无用户 ID，不需要浏览器 CSRF。ADMIN_TOKEN 为空时整个管理面关闭：Bearer 与 sessionCookie 两条通道都被拒绝，已初始化的管理接口统一返回 403 admin_disabled；唯一例外是不存在 Owner 时公开的首个 Owner 初始化接口 }
     basicClientAuth: { type: http, scheme: basic }
     sessionCookie: { type: apiKey, in: cookie, name: __Host-chenxing_session, description: HTTPS 浏览器部署使用的 host-only Session Cookie；仅 loopback HTTP 本地开发使用不带前缀的兼容名称。管理接口只有在 ADMIN_TOKEN 非空时才接受此通道；ADMIN_TOKEN 为空时统一返回 403 admin_disabled }
+    csrfCookie: { type: apiKey, in: cookie, name: __Host-chenxing_csrf, description: 浏览器 Session 写操作必需的 CSRF Cookie（客户端读取后复制到 X-CSRF-Token）；必须与 sessionCookie 和 csrfHeader 同时提交并绑定。HTTP 本地开发使用不带前缀的兼容名称 }
     csrfHeader: { type: apiKey, in: header, name: X-CSRF-Token, description: 管理写操作的浏览器 Session 分支必须同时提交；ADMIN_TOKEN Bearer 分支不需要 }
     chenxingSession: { type: apiKey, in: header, name: X-Chenxing-Session, description: 仅开发兼容配置 OAUTH_SESSION_HEADER_ENABLED=true 时可用；不能替代 pending、Session 绑定、CSRF 或 consent }
   parameters:
