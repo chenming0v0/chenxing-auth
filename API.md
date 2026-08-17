@@ -126,7 +126,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ### 首次 TOTP 绑定
 
-1. `POST /api/v1/auth/totp/setup`，请求 `{}`（旧客户端可附带 `login_ticket`，但必须与 HttpOnly Cookie 完全一致），响应一次性返回 `secret_base32` 和 `otpauth_url`。前端应使用项目内二维码组件将 `otpauth_url` 作为二维码内容本地生成二维码；`secret_base32` 仅用于无法扫描时手动输入或复制。服务端不调用第三方二维码服务，也不返回二维码图片。
+1. `POST /api/v1/auth/totp/setup`，请求 `{}`（旧客户端可附带 `login_ticket`，但必须与 HttpOnly Cookie 完全一致），响应一次性返回 `secret_base32` 和 `otpauth_url`。前端应使用项目内二维码组件将 `otpauth_url` 作为二维码内容本地生成二维码；`secret_base32` 仅用于无法扫描时手动输入或复制。服务端不调用第三方二维码服务，也不返回二维码图片。该端点与已登录安全中心的 `POST /api/v1/auth/security/totp/enrollment/start` 都从已加载 Issuer 生成 otpauth 标签；Issuer 门禁回读后仍不可用时返回 `503 issuer_not_configured` / `issuer_runtime_invalid`，不会创建 pending 注册。
 2. `POST /api/v1/auth/totp/setup/confirm`，请求 `{ "code":"123456" }`。验证码正确后保存加密秘钥、消费 ticket 并返回 Session Cookie；错误验证码不会消费 ticket。
 
 已有 TOTP 的待处理登录也可以调用 `POST /api/v1/auth/totp/login`，请求包含当前六位 `code`。验证码正确后消费 ticket 并返回 Session Cookie；无效或缺少 holder proof 的 ticket 返回 `400`，错误验证码返回 `401`。
@@ -313,9 +313,9 @@ Token 请求按 Client 所属用户的套餐 `max_qps` 做 1 秒滑动窗口限�
 
 Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`aud`、`exp`、`iat`、`email`、`name`、`nonce`、`auth_time`。`azp` 属于单 audience 场景可省略的 Claim（OIDC Core §2），本服务不签发也不在 `claims_supported` 中声明。
 
-### `GET /oauth/userinfo`
+### `GET /oauth/userinfo` / `POST /oauth/userinfo`
 
-请求头：`Authorization: Bearer <access_token>`。
+GET 使用请求头 `Authorization: Bearer <access_token>`。POST 支持同一 Bearer 请求头，或 `application/x-www-form-urlencoded` 表单字段 `access_token`；两种方式必须二选一，同时提交返回 `400 invalid_request`。
 
 响应字段按 Scope 返回：
 
@@ -325,7 +325,7 @@ Discovery 的 `claims_supported` 与实际签发保持一致：`sub`、`iss`、`
 
 ### `POST /oauth/revoke`
 
-表单字段：`token` 必填，`token_type_hint` 可选（`access_token` 或 `refresh_token`），并使用同 Token 端点的 Client 认证方式。成功响应 `200` 且无响应体。
+表单字段：`token` 必填，`token_type_hint` 可选（`access_token` 或 `refresh_token`）。Client 认证与 Token 端点一致：HTTP Basic、表单 `client_id` + `client_secret`（`client_secret_post`），或公开 Client 只提交 `client_id` 的 `none`；认证方式不得混用。成功响应 `200` 且无响应体。
 
 ## 管理 API
 

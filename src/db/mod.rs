@@ -292,6 +292,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "client operation idempotency",
             include_str!("../../migrations/0031_client_operation_idempotency.sql"),
         ),
+        (
+            32,
+            "runtime migration ledger boundary",
+            include_str!("../../migrations/0032_runtime_migration_ledger_boundary.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {
