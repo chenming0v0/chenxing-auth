@@ -143,7 +143,7 @@ export function IssuerPanel(props: SettingsPanelProps) {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <Button icon="save" disabled={busy || !dirty}>
+            <Button type="submit" icon="save" disabled={busy || !dirty}>
               保存 Issuer
             </Button>
             {dirty ? <span className="chenxing-caption">有未保存修改</span> : null}
