@@ -175,8 +175,10 @@ fn deployment_runtime_and_migration_credentials_are_separated() {
         .split_once("\n  migrate:")
         .map(|(_, rest)| rest)
         .expect("production compose must define a migrate service");
+    // migrate 不再挂在 profile 后面：app 通过 depends_on 等待它完成，
+    // production_app_requires_the_migration_job_to_finish_successfully
+    // 负责断言 profiles 缺席，这里只校验凭据分离所需的标记。
     for marker in [
-        "profiles:",
         "command: [\"migrate\"]",
         "MIGRATION_DATABASE_URL:",
         "DATABASE_URL:",
