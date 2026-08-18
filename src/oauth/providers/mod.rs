@@ -6,6 +6,7 @@ mod error_helpers;
 pub mod external_flow;
 pub mod handlers;
 pub mod http_client;
+pub mod identity_repository;
 pub mod repository;
 pub mod secret_migration;
 pub mod secrets;

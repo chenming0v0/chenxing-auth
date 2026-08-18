@@ -164,6 +164,61 @@ impl SettingsService {
             ))
     }
 
+    pub async fn session_lifetime(
+        &self,
+    ) -> Result<crate::settings::SessionLifetimeSetting, SettingsServiceError> {
+        self.decode_stored::<crate::settings::SessionLifetimeSetting>()
+            .await?
+            .require(
+                crate::settings::SessionLifetimeSetting::default(),
+                |value| value,
+                crate::settings::SessionLifetimeSetting::validate,
+            )
+            .map_err(Self::persist_error::<crate::settings::SessionLifetimeSetting>)
+    }
+
+    pub async fn inspect_session_lifetime(
+        &self,
+    ) -> Result<SettingInspection<crate::settings::SessionLifetimeSetting>, SettingsServiceError>
+    {
+        Ok(self
+            .decode_stored::<crate::settings::SessionLifetimeSetting>()
+            .await?
+            .inspect(
+                crate::settings::SessionLifetimeSetting::default(),
+                |value| value,
+                crate::settings::SessionLifetimeSetting::validate,
+            ))
+    }
+
+    pub async fn set_session_lifetime(
+        &self,
+        value: crate::settings::SessionLifetimeSetting,
+    ) -> Result<crate::settings::SessionLifetimeSetting, SettingsServiceError> {
+        let value = value.validate()?;
+        repository::set_session_lifetime(&self.pool, &value).await?;
+        Ok(value)
+    }
+
+    pub async fn set_session_lifetime_audited<F>(
+        &self,
+        value: crate::settings::SessionLifetimeSetting,
+        audit: &AuditService,
+        audit_event: F,
+    ) -> Result<crate::settings::SessionLifetimeSetting, SettingsServiceError>
+    where
+        F: FnOnce(&crate::settings::SessionLifetimeSetting) -> AuditEvent,
+    {
+        let value = value.validate()?;
+        let mut transaction = self.pool.begin().await?;
+        repository::set_session_lifetime(&mut *transaction, &value).await?;
+        audit
+            .record_in_transaction(&mut transaction, audit_event(&value))
+            .await?;
+        transaction.commit().await?;
+        Ok(value)
+    }
+
     fn passkey_runtime_default(&self) -> PasskeySetting {
         self.issuer_runtime
             .as_ref()

@@ -285,7 +285,6 @@ impl SessionStore {
         ttl: Duration,
         binding: SessionEpochBinding,
     ) -> Result<PasswordSessionPersistence, SessionStoreError> {
-        session.set_idle_timeout(self.policy.idle_timeout);
         if self.metadata.is_some() {
             postgres::save_with_metadata(self, session, ttl, binding).await
         } else {

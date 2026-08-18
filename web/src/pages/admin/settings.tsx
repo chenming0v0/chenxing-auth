@@ -7,6 +7,7 @@ import { EmailPolicyPanel } from './settings/email-policy-panel'
 import { OAuthProvidersPanel } from './settings/oauth-providers-panel'
 import { PasskeyPanel } from './settings/passkey-panel'
 import { SecurityLimitsPanel } from './settings/security-limits-panel'
+import { SessionLifetimePanel } from './settings/session-lifetime-panel'
 import { SmtpPanel } from './settings/smtp-panel'
 import { IssuerPanel } from './settings/issuer-panel'
 import { useDraftLeaveGuard, useFlashMessage } from './settings/panel'
@@ -57,6 +58,7 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
   const reportEmailPolicyDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportSmtpDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportSecurityLimitsDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
+  const reportSessionLifetimeDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportOAuthDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportIssuerDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const canManageIssuer = Boolean(access.data?.permissions.includes('manage_issuer'))
@@ -83,6 +85,7 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
       <EmailPolicyPanel onMessage={flash} onDirtyChange={reportEmailPolicyDirty} />
       <SmtpPanel onMessage={flash} onDirtyChange={reportSmtpDirty} />
       <SecurityLimitsPanel onMessage={flash} onDirtyChange={reportSecurityLimitsDirty} />
+      <SessionLifetimePanel onMessage={flash} onDirtyChange={reportSessionLifetimeDirty} />
       {canManageProviders ? (
         <OAuthProvidersPanel onMessage={flash} onDirtyChange={reportOAuthDirty} />
       ) : (

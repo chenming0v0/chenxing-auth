@@ -13,7 +13,8 @@ use crate::{
     error,
     settings::{
         EmailPolicySetting, PasskeySetting, REGISTRATION_EMAIL_FROM_KEY, SECURITY_LIMITS_KEY,
-        SecurityLimitsSetting, SettingInspection, SettingsServiceError, SmtpSettingUpdate,
+        SESSION_LIFETIME_KEY, SecurityLimitsSetting, SessionLifetimeSetting, SettingInspection,
+        SettingsServiceError, SmtpSettingUpdate,
     },
     state::AppState,
 };
@@ -298,6 +299,60 @@ pub async fn update_smtp_setting(
         }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update smtp setting");
+            error::internal()
+        }
+    }
+}
+
+pub async fn get_session_lifetime_setting(
+    State(state): State<AppState>,
+    admin: AdminRead,
+) -> Response {
+    if let Err(response) = admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
+    {
+        return response;
+    }
+    match state.settings.inspect_session_lifetime().await {
+        Ok(inspection) => respond_setting_inspection("session_lifetime", inspection),
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load session lifetime setting");
+            error::internal()
+        }
+    }
+}
+
+pub async fn update_session_lifetime_setting(
+    State(state): State<AppState>,
+    admin: AdminWrite,
+    ApiJson(input): ApiJson<SessionLifetimeSetting>,
+) -> Response {
+    let actor = match admin
+        .authorize(&state, AdminPermission::ManageSettings)
+        .await
+    {
+        Ok(actor) => actor,
+        Err(response) => return response,
+    };
+    match state
+        .settings
+        .set_session_lifetime_audited(input, &state.audit, move |setting| {
+            setting_event(
+                actor,
+                crate::audit::AuditAction::SessionLifetimeUpdate,
+                SESSION_LIFETIME_KEY,
+                serde_json::json!({"session_ttl_seconds": setting.session_ttl_seconds}),
+            )
+        })
+        .await
+    {
+        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
+        Err(SettingsServiceError::Validation(error_value)) => {
+            error::bad_request("invalid_session_lifetime", error_value.to_string())
+        }
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to update session lifetime setting");
             error::internal()
         }
     }

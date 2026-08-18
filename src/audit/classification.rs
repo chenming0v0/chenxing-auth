@@ -77,6 +77,8 @@ audit_actions! {
     OauthProviderUpdate => "oauth_provider_update" => (Auth, Critical),
     OauthProviderActive => "oauth_provider_active" => (Auth, Critical),
     OauthProviderDisabled => "oauth_provider_disabled" => (Auth, Warning),
+    ExternalIdentityLink => "external_identity_link" => (Account, Notice),
+    ExternalIdentityUnlink => "external_identity_unlink" => (Account, Critical),
     PasskeySettingUpdate => "passkey_setting_update" => (Auth, Critical),
 
     SessionRevoke => "session_revoke" => (Session, Warning),
@@ -129,6 +131,7 @@ audit_actions! {
     EmailPolicyUpdate => "email_policy_update" => (Account, Critical),
     SmtpSettingUpdate => "smtp_setting_update" => (Account, Critical),
     SecurityLimitsUpdate => "security_limits_update" => (Account, Critical),
+    SessionLifetimeUpdate => "session_lifetime_update" => (Session, Critical),
 }
 
 /// 列表与详情共用的 action 分类入口。未知历史值保持可见并沿用旧回退。

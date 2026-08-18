@@ -131,14 +131,32 @@ async fn setup(
             .expect("state"),
     );
     let slug = format!("mock-{}", Uuid::new_v4().simple());
+    create_enabled_provider(&router, mock, &slug).await;
+    oauth_flow::ensure_owner_bootstrapped(
+        &router,
+        &database,
+        "oauth_provider_flow",
+        "oauth_provider_flow",
+    )
+    .await;
+    (router, database, key_directory, slug)
+}
+
+async fn create_enabled_provider(router: &axum::Router, mock: SocketAddr, slug: &str) {
     let input = serde_json::json!({
-        "name":"Mock Provider", "slug":slug,
-        "authorization_endpoint":format!("http://{mock}/authorize"),
-        "token_endpoint":format!("http://{mock}/token"),
-        "userinfo_endpoint":format!("http://{mock}/userinfo"),
-        "client_id":"mock-client", "client_secret":"mock-secret",
-        "scopes":["openid","profile","email"], "subject_claim":"sub", "email_claim":"email",
-        "name_claim":"name", "email_verified_claim":"email_verified", "client_auth_method":"request_body"
+        "name": format!("Mock Provider {slug}"),
+        "slug": slug,
+        "authorization_endpoint": format!("http://{mock}/authorize"),
+        "token_endpoint": format!("http://{mock}/token"),
+        "userinfo_endpoint": format!("http://{mock}/userinfo"),
+        "client_id": "mock-client",
+        "client_secret": "mock-secret",
+        "scopes": ["openid", "profile", "email"],
+        "subject_claim": "sub",
+        "email_claim": "email",
+        "name_claim": "name",
+        "email_verified_claim": "email_verified",
+        "client_auth_method": "request_body"
     });
     let response = router
         .clone()
@@ -154,6 +172,7 @@ async fn setup(
         .await
         .expect("provider response");
     assert_eq!(response.status(), StatusCode::CREATED);
+
     let response = router
         .clone()
         .oneshot(
@@ -167,14 +186,6 @@ async fn setup(
         .await
         .expect("enable response");
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    oauth_flow::ensure_owner_bootstrapped(
-        &router,
-        &database,
-        "oauth_provider_flow",
-        "oauth_provider_flow",
-    )
-    .await;
-    (router, database, key_directory, slug)
 }
 
 fn location(response: &axum::response::Response) -> String {
@@ -325,6 +336,120 @@ async fn transplanted_provider_ciphertext_is_rejected_before_token_request() {
     assert!(
         mock_state.token_form.lock().await.is_none(),
         "a transplanted ciphertext must fail before any secret reaches the target endpoint"
+    );
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn callback_provider_slug_mismatch_preserves_login_state_and_cookie() {
+    let (mock, _mock_state) = mock_server().await;
+    let (router, _database, key_directory, provider_a) = setup(mock).await;
+    let provider_b = format!("mock-{}", Uuid::new_v4().simple());
+    create_enabled_provider(&router, mock, &provider_b).await;
+
+    let start = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/auth/external/{provider_a}"))
+                .body(Body::empty())
+                .expect("provider A login start request"),
+        )
+        .await
+        .expect("provider A login start response");
+    assert_eq!(start.status(), StatusCode::SEE_OTHER);
+    let state_cookie = set_cookie(&start, EXTERNAL_STATE_COOKIE_PREFIX);
+    let state_cookie_name = state_cookie
+        .split_once('=')
+        .map(|(name, _)| name)
+        .expect("state cookie name");
+    let state = authorization_query(&location(&start), "state").expect("authorization state");
+
+    let wrong_provider = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/auth/external/{provider_b}/callback?code=mock-code&state={state}"
+                ))
+                .header("cookie", &state_cookie)
+                .body(Body::empty())
+                .expect("provider B callback request"),
+        )
+        .await
+        .expect("provider B callback response");
+    assert_eq!(wrong_provider.status(), StatusCode::SEE_OTHER);
+    assert!(
+        location(&wrong_provider).contains("external_error=oauth_login_failed"),
+        "a provider mismatch must retain the existing external login failure response"
+    );
+    assert!(
+        set_cookie_header_optional(&wrong_provider, &format!("{state_cookie_name}=")).is_none(),
+        "a provider mismatch must not clear provider A's valid state cookie"
+    );
+
+    let correct_provider = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/auth/external/{provider_a}/callback?code=mock-code&state={state}"
+                ))
+                .header("cookie", &state_cookie)
+                .body(Body::empty())
+                .expect("provider A callback request"),
+        )
+        .await
+        .expect("provider A callback response");
+    assert_eq!(correct_provider.status(), StatusCode::SEE_OTHER);
+    assert!(
+        location(&correct_provider).contains("external=success"),
+        "the original provider must still be able to consume its state: {}",
+        location(&correct_provider)
+    );
+    assert!(
+        set_cookie_header(&correct_provider, &format!("{state_cookie_name}="))
+            .contains("Max-Age=0"),
+        "a state consumed by the correct provider must still clear its state cookie"
+    );
+
+    let error_start = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/auth/external/{provider_a}"))
+                .body(Body::empty())
+                .expect("provider A error-path login start request"),
+        )
+        .await
+        .expect("provider A error-path login start response");
+    let error_state_cookie = set_cookie(&error_start, EXTERNAL_STATE_COOKIE_PREFIX);
+    let error_state_cookie_name = error_state_cookie
+        .split_once('=')
+        .map(|(name, _)| name)
+        .expect("error-path state cookie name");
+    let error_state = authorization_query(&location(&error_start), "state")
+        .expect("error-path authorization state");
+    let consumed_error = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/auth/external/{provider_a}/callback?error=access_denied&state={error_state}"
+                ))
+                .header("cookie", &error_state_cookie)
+                .body(Body::empty())
+                .expect("provider A error callback request"),
+        )
+        .await
+        .expect("provider A error callback response");
+    assert_eq!(consumed_error.status(), StatusCode::SEE_OTHER);
+    assert!(location(&consumed_error).contains("external_error=oauth_login_failed"));
+    assert!(
+        set_cookie_header(&consumed_error, &format!("{error_state_cookie_name}="))
+            .contains("Max-Age=0"),
+        "a state consumed before a provider error must still clear its state cookie"
     );
 
     let _ = std::fs::remove_dir_all(key_directory);
@@ -524,6 +649,14 @@ async fn custom_provider_registers_reuses_identity_and_rejects_state_replay() {
         .expect("replay response");
     assert_eq!(replay.status(), StatusCode::SEE_OTHER);
     assert!(location(&replay).contains("external_error=oauth_login_failed"));
+    let replay_state_cookie_name = second_state_cookie
+        .split_once('=')
+        .map(|(name, _)| name)
+        .expect("replay state cookie name");
+    assert!(
+        set_cookie_header(&replay, &format!("{replay_state_cookie_name}=")).contains("Max-Age=0"),
+        "a replayed state must clear its stale browser state cookie"
+    );
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

@@ -20,7 +20,7 @@ function AppContent() {
     document.title = getDocumentTitle(path)
   }, [path])
 
-  const protectedPath = path.startsWith('/console') || path === '/oauth/account' || path === '/oauth/consent'
+  const protectedPath = path.startsWith('/console') || path === '/settings/security' || path === '/oauth/account' || path === '/oauth/consent'
   const adminPath = path.startsWith('/admin')
   const bootstrapPath = path === '/bootstrap'
 
@@ -105,6 +105,7 @@ function AppContent() {
     '/console/plans': <ConsolePlans />,
     '/console/profile': <ConsoleProfile />,
     '/console/security': <ConsoleSecurity />,
+    '/settings/security': <ConsoleSecurity />,
     '/console/apps': <AuthorizedApps />,
     '/console/logs': <SecurityLogsPage />,
     '/console/integrate': <IntegratePage />,

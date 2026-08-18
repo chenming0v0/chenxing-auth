@@ -42,6 +42,10 @@ fn state(state: impl Into<String>, provider_slug: &str) -> ExternalLoginState {
         provider_slug: provider_slug.to_owned(),
         request_id: None,
         code_verifier: String::new(),
+        purpose: "login".to_owned(),
+        user_id: None,
+        session_id: None,
+        session_epoch: None,
     }
 }
 
@@ -141,4 +145,76 @@ async fn source_rate_limit_rejects_without_creating_an_extra_state() {
                 .is_some()
         );
     }
+}
+
+#[tokio::test]
+async fn purpose_and_provider_mismatch_preserve_state_until_valid_consumer() {
+    let store = store(10, 10);
+    let pending = ExternalLoginState {
+        state: "binding-state".to_owned(),
+        provider_slug: "provider-a".to_owned(),
+        request_id: None,
+        code_verifier: String::new(),
+        purpose: "binding".to_owned(),
+        user_id: Some(7),
+        session_id: Some(9),
+        session_epoch: Some(3),
+    };
+    store.save(&pending).await.expect("save binding state");
+
+    assert_eq!(
+        store
+            .take_for_purpose_and_provider(&pending.state, "login", "provider-a")
+            .await
+            .expect("purpose check"),
+        chenxing_auth::oauth::providers::state_store::ExternalLoginStateTake::Mismatch,
+    );
+    assert_eq!(
+        store
+            .take_for_purpose_and_provider(&pending.state, "binding", "provider-b")
+            .await
+            .expect("provider check"),
+        chenxing_auth::oauth::providers::state_store::ExternalLoginStateTake::Mismatch,
+    );
+    assert_eq!(
+        store
+            .take_for_purpose_and_provider(&pending.state, "binding", "provider-a")
+            .await
+            .expect("consume binding state"),
+        chenxing_auth::oauth::providers::state_store::ExternalLoginStateTake::Consumed(pending),
+    );
+    assert_eq!(
+        store
+            .take_for_purpose_and_provider("binding-state", "binding", "provider-a")
+            .await
+            .expect("replay check"),
+        chenxing_auth::oauth::providers::state_store::ExternalLoginStateTake::MissingOrConsumed,
+    );
+}
+
+#[tokio::test]
+async fn concurrent_provider_aware_consumption_is_single_use() {
+    let store = Arc::new(store(10, 10));
+    let pending = state("single-use", "provider");
+    store.save(&pending).await.expect("save state");
+    let mut tasks = Vec::new();
+    for _ in 0..16 {
+        let store = Arc::clone(&store);
+        tasks.push(tokio::spawn(async move {
+            store
+                .take_for_purpose_and_provider("single-use", "login", "provider")
+                .await
+                .expect("consume state")
+        }));
+    }
+    let mut consumed = 0;
+    for task in tasks {
+        if matches!(
+            task.await.expect("consumer task"),
+            chenxing_auth::oauth::providers::state_store::ExternalLoginStateTake::Consumed(_)
+        ) {
+            consumed += 1;
+        }
+    }
+    assert_eq!(consumed, 1);
 }

@@ -11,6 +11,7 @@ use crate::{
                 external_error, external_error_with_request,
             },
             service::ExternalOAuthError,
+            state_store::ExternalLoginStateTake,
         },
         request_binding::{
             PendingRequestBinding, PendingRequestBindingError, bind_pending_request,
@@ -89,9 +90,19 @@ pub async fn external_callback(
         )
         .await;
     }
-    let stored_state = match state.external_login_states.take(returned_state).await {
-        Ok(Some(value)) if value.provider_slug == slug => value,
-        Ok(_) => {
+    let stored_state = match state
+        .external_login_states
+        .take_for_purpose_and_provider(returned_state, "login", &slug)
+        .await
+    {
+        Ok(ExternalLoginStateTake::Consumed(value)) => value,
+        Ok(ExternalLoginStateTake::Mismatch) => {
+            // A state sent to another provider slug remains valid for its original
+            // callback. Preserve the matching browser cookie with the Redis state.
+            return external_error_with_request(&state, &slug, None, None, "oauth_login_failed")
+                .await;
+        }
+        Ok(ExternalLoginStateTake::MissingOrConsumed) => {
             return external_error_with_request(
                 &state,
                 &slug,
@@ -205,8 +216,16 @@ pub async fn external_callback(
             .await;
         }
     };
-    let ttl = std::time::Duration::from_secs(state.config.session_ttl_seconds);
-    let idle_timeout = std::time::Duration::from_secs(state.config.session_idle_timeout_seconds);
+    let session_lifetime = match state.settings.session_lifetime().await {
+        Ok(setting) => setting,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load browser session lifetime setting");
+            return error::internal();
+        }
+    };
+    let ttl = std::time::Duration::from_secs(session_lifetime.session_ttl_seconds);
+    let idle_timeout =
+        std::time::Duration::from_secs(session_lifetime.session_idle_timeout_seconds);
     let mut session = match Session::new_at_with_idle_timeout(
         user_id.to_string(),
         ttl,
@@ -326,7 +345,7 @@ pub async fn external_callback(
         response.headers_mut(),
         &session.token,
         &session.csrf_token,
-        state.config.session_ttl_seconds,
+        session_lifetime.session_ttl_seconds,
         state.config.cookie_secure,
     ) {
         tracing::error!(error = %cookie_error, "failed to build external OAuth login cookies");

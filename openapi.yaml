@@ -1020,6 +1020,91 @@ paths:
         '204': { description: 注销成功 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/auth/external-identities:
+    get:
+      tags: [User Auth/Security]
+      summary: 查询当前用户已绑定的外部身份
+      operationId: listLinkedExternalIdentities
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: 当前 Session 所属用户已绑定的外部 OAuth 身份；外部身份不属于 TOTP 或 Passkey 因子。
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExternalIdentityListResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/external-identities/{slug}/bind:
+    post:
+      tags: [User Auth/Security]
+      summary: 发起当前用户的外部身份绑定
+      operationId: startExternalIdentityBinding
+      security: [{ sessionCookie: [] }]
+      description: >-
+        必须同时携带有效 Session Cookie、CSRF Cookie 和 X-CSRF-Token。服务端创建独立的一次性 binding state，
+        将 purpose、用户 ID、Session ID 和 session_epoch 与 PKCE verifier 一起保存在 Redis；该流程不会调用
+        自动建号逻辑，也不会按 email 自动关联用户。
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      responses:
+        '200':
+          description: >-
+            已创建独立的一次性 binding state、PKCE verifier 及安全 state Cookie；响应返回外部 OAuth
+            授权 URL，浏览器必须在读取同源 JSON 后自行导航到该 URL。
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExternalIdentityBindingStartResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /auth/external/{slug}/bind/callback:
+    get:
+      tags: [User Auth/Security]
+      summary: 完成外部身份绑定回调
+      operationId: externalIdentityBindingCallback
+      security: [{ sessionCookie: [] }]
+      description: >-
+        消费仅一次的 binding state、校验 state Cookie、回调路径 provider slug、purpose 和 PKCE，并要求回调时仍为同一用户、同一 Session、同一 session_epoch。
+        slug 或 purpose 不匹配不会消费有效 state；成功消费后重放一律失败。UserInfo 的 subject 已被其他用户占用时返回 409；本回调绝不自动创建用户，也绝不按 email 自动关联。
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+        - { name: code, in: query, schema: { type: string } }
+        - { name: state, in: query, required: true, schema: { type: string } }
+        - { name: error, in: query, schema: { type: string } }
+      responses:
+        '302': { description: 绑定成功后重定向到安全设置页, headers: { Set-Cookie: { $ref: '#/components/headers/SetCookie' } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/external-identities/{slug}:
+    delete:
+      tags: [User Auth/Security]
+      summary: 解除当前用户的外部身份绑定
+      operationId: unlinkExternalIdentity
+      security: [{ sessionCookie: [] }]
+      description: >-
+        必须通过 Session Cookie、CSRF Cookie、X-CSRF-Token 及当前密码复验。仅 TOTP 不是独立登录凭据：密码登录已禁用且没有 Passkey 时，不能解除最后一个外部身份，返回 409 oauth_last_login_credential。操作在同一事务内检查凭据并删除身份，成功解绑不会改变当前 session_epoch，竞态导致 epoch 变更时返回 401。成功后记录 external_identity_unlink 审计事件。
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+        - { $ref: '#/components/parameters/CsrfHeader' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExternalIdentityUnlinkInput' }
+      responses:
+        '204': { description: 已解除绑定 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
   /api/v1/auth/external-providers:
     get:
       tags: [User Auth/Browser Login]
@@ -2348,6 +2433,53 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/settings/session-lifetime:
+    get:
+      tags: [Admin]
+      summary: 获取登录保持时间
+      operationId: getSessionLifetimeSetting
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+      responses:
+        "200":
+          description: 当前登录保持时间；无记录时默认 14 天
+          headers:
+            X-Chenxing-Setting-Diagnostic:
+              $ref: "#/components/headers/SettingDiagnostic"
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionLifetimeSetting" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+    put:
+      tags: [Admin]
+      summary: 更新登录保持时间
+      operationId: updateSessionLifetimeSetting
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SessionLifetimeSetting" }
+      responses:
+        "200":
+          description: 已更新的登录保持时间；只影响之后新签发的会话
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionLifetimeSetting" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/InvalidJsonData" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
   /api/v1/admin/settings/security-limits:
     get:
       tags: [Admin]
@@ -2710,6 +2842,39 @@ components:
           enum: [ok, unavailable]
           description: ok 表示该探针通过；unavailable 仅出现在就绪探针 503
         service: { type: string, example: chenxing-auth }
+    ExternalIdentityListResponse:
+      type: object
+      required: [items]
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ExternalIdentity' }
+    ExternalIdentity:
+      type: object
+      required: [provider, provider_name, subject, email, linked_at]
+      additionalProperties: false
+      properties:
+        provider: { type: string, description: Provider slug }
+        provider_name: { type: string }
+        subject: { type: string, description: External OAuth UserInfo subject }
+        email: { type: string, format: email, description: Email snapshot received when the identity was linked }
+        linked_at: { type: string, format: date-time }
+    ExternalIdentityBindingStartResponse:
+      type: object
+      required: [authorization_url]
+      additionalProperties: false
+      properties:
+        authorization_url:
+          type: string
+          format: uri
+          description: 外部 OAuth 授权 URL；不包含 Client Secret、PKCE verifier 或其他服务端凭据。
+    ExternalIdentityUnlinkInput:
+      type: object
+      required: [password]
+      additionalProperties: false
+      properties:
+        password: { type: string, format: password, maxLength: 128, writeOnly: true }
     RegistrationInput:
       type: object
       required: [username, email, password]
@@ -3419,6 +3584,25 @@ components:
         password_action:
           $ref: '#/components/schemas/SmtpPasswordAction'
         password: { type: string, format: password, nullable: true, writeOnly: true, maxLength: 512 }
+    SessionLifetimeSetting:
+      type: object
+      description: 浏览器会话的绝对与空闲有效期；修改只影响之后新签发的会话
+      required: [session_ttl_seconds, session_idle_timeout_seconds]
+      properties:
+        session_ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 7776000
+          default: 1209600
+          description: 会话绝对有效期（秒），默认 14 天，最长 90 天
+        session_idle_timeout_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 2592000
+          default: 1209600
+          description: 会话连续无操作超时（秒），默认 14 天，最长 30 天
     SecurityLimitsSetting:
       type: object
       description: >-

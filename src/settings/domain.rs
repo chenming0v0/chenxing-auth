@@ -95,6 +95,8 @@ pub enum SettingsValidationError {
     SmtpPasswordRequired,
     #[error("security limit field is invalid: {0}")]
     InvalidSecurityLimit(&'static str),
+    #[error("browser session lifetime is invalid")]
+    InvalidSessionLifetime,
 }
 
 impl PasskeySetting {

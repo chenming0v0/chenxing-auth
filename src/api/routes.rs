@@ -24,9 +24,9 @@ use crate::{
     admin::provider_web_handlers::oauth_settings,
     admin::settings_handlers::{
         get_email_policy_setting, get_passkey_setting, get_registration_email,
-        get_security_limits_setting, get_smtp_setting, update_email_policy_setting,
-        update_passkey_setting, update_registration_email, update_security_limits_setting,
-        update_smtp_setting,
+        get_security_limits_setting, get_session_lifetime_setting, get_smtp_setting,
+        update_email_policy_setting, update_passkey_setting, update_registration_email,
+        update_security_limits_setting, update_session_lifetime_setting, update_smtp_setting,
     },
     admin::ui_handlers::{admin_me, admin_overview, query_audit, query_clients, query_users},
     admin::user_creation::create_user,
@@ -42,7 +42,11 @@ use crate::{
         start_security_totp_enrollment,
     },
     oauth::handlers::{authorize, authorize_post, token},
-    oauth::providers::handlers::{external_callback, list_public_providers, start_external_login},
+    oauth::providers::handlers::{
+        external_binding_callback, external_callback, list_linked_identities,
+        list_public_providers, start_external_binding, start_external_login,
+        unlink_external_identity,
+    },
     oauth::revocation_handler::revoke,
     oauth::ui_handlers::{
         bind_authorization_request, decide_authorization_request, inspect_authorization_request,
@@ -219,6 +223,10 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
             get(get_smtp_setting).put(update_smtp_setting),
         )
         .route(
+            "/api/v1/admin/settings/session-lifetime",
+            get(get_session_lifetime_setting).put(update_session_lifetime_setting),
+        )
+        .route(
             "/api/v1/admin/settings/security-limits",
             get(get_security_limits_setting).put(update_security_limits_setting),
         )
@@ -246,6 +254,22 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
         )
         .route("/auth/external/{slug}", get(start_external_login))
         .route("/auth/external/{slug}/callback", get(external_callback))
+        .route(
+            "/api/v1/auth/external-identities",
+            get(list_linked_identities),
+        )
+        .route(
+            "/api/v1/auth/external-identities/{slug}/bind",
+            post(start_external_binding),
+        )
+        .route(
+            "/auth/external/{slug}/bind/callback",
+            get(external_binding_callback),
+        )
+        .route(
+            "/api/v1/auth/external-identities/{slug}",
+            delete(unlink_external_identity),
+        )
         .route(
             "/api/v1/auth/session",
             axum::routing::delete(revoke_session),
