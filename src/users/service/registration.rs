@@ -1,10 +1,15 @@
 //! 注册、Owner 引导与管理侧用户创建。
 //!
-//! 管理侧创建和 Owner 引导共享校验、口令哈希和仓储事务边界；公开注册则在
-//! 邮件所有权验证能力接入前 fail-closed，不创建未验证身份。
+//! 管理侧创建和 Owner 引导共享校验、口令哈希和仓储事务边界。公开注册由
+//! [`UserService::register`] 的闸门链控制：注册开关（`registration` 设置）→
+//! 邮件验证要求 → 输入校验 → 邮箱域名策略 → 按源 IP 尝试配额 → Owner 前提，
+//! 全部通过后才创建最低权限的 active 用户。开关默认关闭；
+//! `email_verification_required` 打开时，在邮件所有权验证能力接入前保持
+//! fail-closed，不创建未验证身份。
 
 use super::{BootstrapOwnerResult, UserService, UserServiceError};
 use crate::audit::AuditEvent;
+use crate::auth_limiter::domain::AuthLimiterError;
 use crate::users::{
     ManagementActorCredential,
     credentials::hash_password,
@@ -13,23 +18,107 @@ use crate::users::{
         validate_registration,
     },
     email::EmailAddress,
+    registration_policy,
     repository::{self, NewUser},
 };
 
+/// 单个源 IP 在一个窗口内允许的公开注册尝试次数。
+///
+/// 口径仿 Owner 引导守卫（`admin::bootstrap_guard`）：给人类留出输错重试的余量，
+/// 同时把扫描器的批量尝试成本放大到分钟级。注册通过后紧跟 Argon2 慢哈希，
+/// 配额必须在慢哈希之前生效。
+const REGISTRATION_ATTEMPT_LIMIT: u32 = 10;
+
+/// 注册尝试的滑动窗口长度（毫秒）。
+const REGISTRATION_ATTEMPT_WINDOW_MS: i64 = 60_000;
+
 impl UserService {
+    /// 公开注册用例。
+    ///
+    /// 闸门顺序是有意的：便宜的策略判定（设置开关、邮件验证要求、输入校验、
+    /// 邮箱策略）先于有成本的步骤（限流配额、Argon2、写库）。任何一道闸门
+    /// 失败都不消耗后续步骤的资源。
+    ///
+    /// TODO(Issue #554)：邀请码机制。注册打开后的进一步准入控制将叠加在
+    /// 本闸门链之上，届时在此处扩展一道闸门，不改变现有闸门的顺序语义。
     pub async fn register(
         &self,
         input: RegistrationInput,
-        _source_ip: Option<&str>,
+        source_ip: Option<&str>,
     ) -> Result<PublicUser, UserServiceError> {
-        // A valid input is not enough to create an active account. The current
-        // repository has SMTP settings, but no delivery adapter or verification
-        // token consumer, so accepting this request would create an account whose
-        // email ownership cannot be proved. Fail closed without hashing or writing
-        // any identity data; a future real verifier can replace this boundary with
-        // an expiring, atomically reserved pending-registration flow.
-        validate_registration(input)?;
-        Err(UserServiceError::EmailVerificationUnavailable)
+        let setting = registration_policy::load_registration_setting(&self.pool)
+            .await
+            .map_err(UserServiceError::Database)?;
+        if !setting.enabled {
+            return Err(UserServiceError::RegistrationDisabled);
+        }
+        if setting.email_verification_required {
+            // The setting demands proved email ownership, but the repository has
+            // SMTP settings without a delivery adapter or verification token
+            // consumer. Fail closed without hashing or writing any identity data;
+            // a future real verifier can replace this boundary with an expiring,
+            // atomically reserved pending-registration flow.
+            return Err(UserServiceError::EmailVerificationUnavailable);
+        }
+        let mut registration = validate_registration(input)?;
+        // 与管理侧创建同一份域名策略：公开注册不能绕过白名单（Issue #133 的对称面）。
+        self.ensure_email_policy_allows(&registration.email).await?;
+        let source_ip = self.source_ip(source_ip)?;
+        self.enforce_registration_attempt_limit(source_ip.as_deref())
+            .await?;
+        // 明文按值 move 进哈希任务：take 之后 `registration` 里只剩空串，
+        // 明文不会继续流向仓储层。
+        let password = std::mem::take(&mut registration.password);
+        let password_hash = hash_password(password)
+            .await
+            .map_err(|_| UserServiceError::PasswordHash)?;
+        let user = repository::insert_public_user(&self.pool, registration, password_hash)
+            .await
+            .map_err(UserServiceError::Database)?
+            .ok_or(UserServiceError::OwnerBootstrapRequired)?;
+        Ok(public_user(user))
+    }
+
+    /// 校验源 IP 的注册尝试配额，口径仿 `admin::bootstrap_guard`。
+    ///
+    /// - 无源 IP（`missing_source_ip_policy = Skip`）：没有配额维度，直接放行。
+    ///   与引导守卫一致——限流不是唯一防线，Owner 前提与邮箱策略仍在。
+    /// - 配额耗尽：[`UserServiceError::RateLimited`]，边界层映射 429。
+    /// - 限流器故障或未注入：fail-closed。限流器不可用时放行等于
+    ///   「打掉 Redis 就能无限注册」，与引导守卫同一立场。
+    async fn enforce_registration_attempt_limit(
+        &self,
+        source_ip: Option<&str>,
+    ) -> Result<(), UserServiceError> {
+        let Some(source_ip) = source_ip else {
+            return Ok(());
+        };
+        let Some(limiter) = self.registration_attempt_limiter.as_ref() else {
+            tracing::error!(
+                event = "registration.rate_limit_unavailable",
+                "registration attempt limiter is not configured; failing closed"
+            );
+            return Err(UserServiceError::Limiter(AuthLimiterError::Storage));
+        };
+        match limiter
+            .allow_scoped(
+                &registration_attempt_scope(source_ip),
+                REGISTRATION_ATTEMPT_LIMIT,
+                REGISTRATION_ATTEMPT_WINDOW_MS,
+            )
+            .await
+        {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(UserServiceError::RateLimited),
+            Err(error) => {
+                tracing::error!(
+                    error = %error,
+                    event = "registration.rate_limit_unavailable",
+                    "registration attempt rate limit check failed"
+                );
+                Err(UserServiceError::Limiter(AuthLimiterError::Storage))
+            }
+        }
     }
 
     /// 管理侧创建用户（Issue #133）。
@@ -292,4 +381,13 @@ fn public_user(user: NewUser) -> PublicUser {
         role: user.role,
         created_at: user.created_at,
     }
+}
+
+/// 注册尝试配额的 Redis 作用域 key。
+///
+/// 命名空间与 `chenxing:qps:*`（OAuth QPS）和 `chenxing:bootstrap:attempt:*`
+/// （Owner 引导）互不重叠：三个配额各自独立计数，注册尝试不消耗引导额度，
+/// 反之亦然。
+fn registration_attempt_scope(source_ip: &str) -> String {
+    format!("chenxing:registration:attempt:{source_ip}")
 }

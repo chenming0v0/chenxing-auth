@@ -129,11 +129,8 @@ async fn oauth_ui_approval_failure_keeps_pending_request_for_retry() {
         )
         .await
         .expect("register response");
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(
-        json(response).await["code"],
-        "email_verification_unavailable"
-    );
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json(response).await["code"], "registration_disabled");
 
     let response = router
         .clone()

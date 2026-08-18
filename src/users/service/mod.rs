@@ -37,6 +37,11 @@ pub struct UserService {
     pub(super) pool: PgPool,
     pub(super) limiter: Arc<dyn AuthFailureLimiter>,
     pub(super) missing_source_ip_policy: MissingSourceIpPolicy,
+    /// 公开注册的按源 IP 尝试配额（仿 Owner 引导守卫，#279 的同构面）。
+    ///
+    /// `Option` 是构造器兼容：生产路径在 `state.rs` 里必然注入；未注入的服务
+    /// 调用 `register` 会 fail-closed（见 `registration::enforce_registration_attempt_limit`）。
+    pub(super) registration_attempt_limiter: Option<crate::oauth::rate_limit::QpsRateLimiter>,
 }
 
 #[derive(Debug, Error)]
@@ -71,6 +76,8 @@ pub enum UserServiceError {
     AuditUnavailable,
     #[error("owner bootstrap is required before public registration")]
     OwnerBootstrapRequired,
+    #[error("public registration is not open")]
+    RegistrationDisabled,
     #[error("email domain is not allowed by policy")]
     EmailDomainNotAllowed,
     #[error("email ownership verification is unavailable")]
@@ -95,7 +102,20 @@ impl UserService {
             pool,
             limiter,
             missing_source_ip_policy,
+            registration_attempt_limiter: None,
         }
+    }
+
+    /// 注入公开注册尝试配额使用的滑动窗口限流器。
+    ///
+    /// 与 OAuth QPS 共用同一个 [`crate::oauth::rate_limit::QpsRateLimiter`]
+    /// 实例：底层 Lua 是通用滑动窗口，作用域 key 由各调用方自带命名空间。
+    pub fn with_registration_attempt_limiter(
+        mut self,
+        limiter: crate::oauth::rate_limit::QpsRateLimiter,
+    ) -> Self {
+        self.registration_attempt_limiter = Some(limiter);
+        self
     }
 }
 

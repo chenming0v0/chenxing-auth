@@ -201,6 +201,19 @@ export type SecurityEventDetail = SecurityEvent & {
   client: SecurityEventClient | null
 }
 export type RegistrationEmailSetting = { registration_email_from: string | null }
+/** 管理端公开注册设置（GET/PUT /api/v1/admin/settings/registration）。 */
+export type RegistrationSetting = {
+  enabled: boolean
+  email_verification_required: boolean
+}
+/**
+ * 登录页可见的公开注册状态（GET /api/v1/auth/registration-status，匿名可读）。
+ * 与管理端设置同形状，但 `enabled` 已是服务端计入 Issuer 闸门后的有效值。
+ */
+export type RegistrationStatus = {
+  enabled: boolean
+  email_verification_required: boolean
+}
 export type PasskeyUserVerification = 'preferred' | 'required' | 'discouraged'
 export type PasskeyAuthenticatorAttachment = 'any' | 'platform' | 'cross_platform'
 export type PasskeySetting = {

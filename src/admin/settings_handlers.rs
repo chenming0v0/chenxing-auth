@@ -433,7 +433,7 @@ pub async fn update_security_limits_setting(
 pub(crate) const SETTING_DIAGNOSTIC_HEADER: HeaderName =
     HeaderName::from_static("x-chenxing-setting-diagnostic");
 
-fn respond_setting_inspection<T: Serialize>(
+pub(crate) fn respond_setting_inspection<T: Serialize>(
     setting_key: &'static str,
     inspection: SettingInspection<T>,
 ) -> Response {
@@ -457,7 +457,7 @@ fn respond_setting_inspection<T: Serialize>(
 #[path = "settings_handlers_tests.rs"]
 mod tests;
 
-fn setting_event(
+pub(crate) fn setting_event(
     actor: super::authorization::AdminActor,
     action: crate::audit::AuditAction,
     resource_id: &str,

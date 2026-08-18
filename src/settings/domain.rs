@@ -58,6 +58,28 @@ impl Default for PasskeySetting {
     }
 }
 
+/// 公开注册开关（`POST /api/v1/users` 的准入门）。
+///
+/// 双布尔默认全关：未配置实例的公开注册保持关闭，管理员必须显式打开。
+/// `email_verification_required` 为真时，即使 `enabled` 打开，注册仍在
+/// 邮件验证能力缺失处 fail-closed（503），见 `users::service::registration`。
+///
+/// TODO(Issue #554)：邀请码机制。注册打开后的进一步准入控制（邀请码/审批）
+/// 将叠加在本开关之上，本结构届时保持向后兼容。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RegistrationSetting {
+    pub enabled: bool,
+    pub email_verification_required: bool,
+}
+
+impl RegistrationSetting {
+    /// 纯布尔结构没有取值校验，保留该入口是为了与其它设置共用同一条
+    /// `PersistedDecode::require` / `inspect` 管道。
+    pub fn validate(self) -> Result<Self, SettingsValidationError> {
+        Ok(self)
+    }
+}
+
 /// 管理 API 与运行时使用的邮箱域名策略。
 ///
 /// 反序列化保持全字段必填。回读缺字段的兼容转换见 `settings::persisted`：

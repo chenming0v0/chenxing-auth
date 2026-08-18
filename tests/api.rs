@@ -699,8 +699,26 @@ async fn discovery_endpoint_omits_acao_but_varies_on_origin_when_request_has_no_
 }
 
 #[tokio::test]
-async fn registration_endpoint_rejects_invalid_email_without_database_call() {
+async fn registration_endpoint_rejects_invalid_email_after_registration_gate() {
     let (router, key_directory) = test_router().await;
+    // 注册闸门先于输入校验：先打开公开注册，非法邮箱才走到 validate_registration。
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/admin/settings/registration")
+                .header("authorization", "Bearer api-test-admin")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"enabled":true,"email_verification_required":false}"#,
+                ))
+                .expect("enable registration request"),
+        )
+        .await
+        .expect("enable registration response");
+    assert_eq!(response.status(), StatusCode::OK);
+
     let response = router
         .oneshot(
             Request::builder()

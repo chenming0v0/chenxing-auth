@@ -10,6 +10,7 @@ import { SecurityLimitsPanel } from './settings/security-limits-panel'
 import { SessionLifetimePanel } from './settings/session-lifetime-panel'
 import { SmtpPanel } from './settings/smtp-panel'
 import { IssuerPanel } from './settings/issuer-panel'
+import { RegistrationPanel } from './settings/registration-panel'
 import { useDraftLeaveGuard, useFlashMessage } from './settings/panel'
 
 export function AdminSettings() {
@@ -40,7 +41,7 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
   /* flash 的引用跨渲染稳定，面板的加载 effect 不会因为消息状态变化而重跑（#268）。 */
   const { flash, message } = useFlashMessage()
 
-  /* #381：聚合五块面板的未保存草稿。每个面板拿到独立且跨渲染稳定的上报回调
+  /* #381：聚合各面板的未保存草稿。每个面板拿到独立且跨渲染稳定的上报回调
      （useMemo 锁定工厂产物），回调闭包各自记住自己的脏标记，只在状态翻转时更新
      计数——「一块面板保存后」不会把其它面板的脏标记清掉。 */
   const dirtyCount = useRef(0)
@@ -61,6 +62,7 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
   const reportSessionLifetimeDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportOAuthDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const reportIssuerDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
+  const reportRegistrationDirty = useMemo(() => makeDirtyReporter(), [makeDirtyReporter])
   const canManageIssuer = Boolean(access.data?.permissions.includes('manage_issuer'))
   /* 任一面板有草稿时，路由跳转与刷新/关页前都提示确认。 */
   useDraftLeaveGuard(dirty)
@@ -98,6 +100,7 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
         </HudPanel>
       )}
       {canManageIssuer ? <IssuerPanel onMessage={flash} onDirtyChange={reportIssuerDirty} /> : null}
+      <RegistrationPanel onMessage={flash} onDirtyChange={reportRegistrationDirty} />
       <HudPanel>
         <h2 className="chenxing-h2 flex items-center gap-2">
           <Icon name="key-round" className="text-[var(--chenxing-cyan)]" size={18} />

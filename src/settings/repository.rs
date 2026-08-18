@@ -1,7 +1,8 @@
 use super::{
-    EMAIL_POLICY_KEY, PASSKEY_KEY, REGISTRATION_EMAIL_FROM_KEY, SECURITY_LIMITS_KEY,
-    SESSION_LIFETIME_KEY, SMTP_KEY, SecurityLimitsSetting, SessionLifetimeSetting,
-    domain::{EmailPolicySetting, PasskeySetting},
+    EMAIL_POLICY_KEY, PASSKEY_KEY, REGISTRATION_EMAIL_FROM_KEY, REGISTRATION_SETTING_KEY,
+    SECURITY_LIMITS_KEY, SESSION_LIFETIME_KEY, SMTP_KEY, SecurityLimitsSetting,
+    SessionLifetimeSetting,
+    domain::{EmailPolicySetting, PasskeySetting, RegistrationSetting},
     smtp::StoredSmtpSetting,
 };
 
@@ -113,6 +114,17 @@ where
 {
     let raw = serde_json::to_string(value).map_err(json_error)?;
     set_text(executor, PASSKEY_KEY, Some(&raw)).await
+}
+
+pub async fn set_registration<'e, E>(
+    executor: E,
+    value: &RegistrationSetting,
+) -> Result<(), crate::sqlx::Error>
+where
+    E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
+{
+    let raw = serde_json::to_string(value).map_err(json_error)?;
+    set_text(executor, REGISTRATION_SETTING_KEY, Some(&raw)).await
 }
 
 /// Serialize passkey policy writes with authentication decisions that read the

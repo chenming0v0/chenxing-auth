@@ -144,12 +144,14 @@ pub async fn register_test_user(router: &Router, suffix: &str) -> (i64, String, 
         .expect("registration response");
     let status = response.status();
     let body = json_body(response).await;
+    // 公开注册默认关闭（registration 设置双 false 初始值）：闸门在输入校验之前，
+    // 合法与非法请求都先撞 403 registration_disabled。
     assert_eq!(
         status,
-        StatusCode::SERVICE_UNAVAILABLE,
+        StatusCode::FORBIDDEN,
         "registration response: {body}"
     );
-    assert_eq!(body["code"], "email_verification_unavailable");
+    assert_eq!(body["code"], "registration_disabled");
 
     let response = router
         .clone()

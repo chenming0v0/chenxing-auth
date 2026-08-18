@@ -151,11 +151,8 @@ async fn password_success_does_not_reset_mfa_account_failures() {
         serde_json::json!({"username": username, "email": email, "password": password}),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(
-        json(response).await["code"],
-        "email_verification_unavailable"
-    );
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json(response).await["code"], "registration_disabled");
 
     let response = router
         .clone()

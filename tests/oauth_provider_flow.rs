@@ -684,10 +684,10 @@ async fn custom_provider_does_not_auto_link_existing_email() {
         )
         .await
         .expect("registration response");
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert_eq!(
         oauth_flow::json_body(response).await["code"],
-        "email_verification_unavailable"
+        "registration_disabled"
     );
 
     let response = router

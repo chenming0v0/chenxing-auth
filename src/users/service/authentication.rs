@@ -149,7 +149,14 @@ impl UserService {
         Ok(authenticated)
     }
 
-    fn source_ip(&self, source_ip: Option<&str>) -> Result<Option<String>, UserServiceError> {
+    /// 按 `missing_source_ip_policy` 处理缺失的源 IP。
+    ///
+    /// 登录与公开注册共用：Skip 记日志并继续（注册侧没有 IP 则不占配额维度），
+    /// Reject 直接失败。
+    pub(super) fn source_ip(
+        &self,
+        source_ip: Option<&str>,
+    ) -> Result<Option<String>, UserServiceError> {
         match (source_ip, self.missing_source_ip_policy) {
             (Some(source_ip), _) => Ok(Some(source_ip.to_owned())),
             (None, MissingSourceIpPolicy::Skip) => {

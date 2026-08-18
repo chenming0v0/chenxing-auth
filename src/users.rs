@@ -12,6 +12,7 @@ pub mod login_use_case;
 mod management;
 pub mod oauth_client_handlers;
 pub mod query_repository;
+pub(crate) mod registration_policy;
 pub mod repository;
 pub mod security_event_handlers;
 pub mod service;

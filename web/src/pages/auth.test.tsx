@@ -46,6 +46,11 @@ beforeEach(() => {
   authStub.profile = null
   authStub.clearCalls = 0
   vi.stubGlobal('fetch', (path: string, init?: RequestInit) => {
+    // 注册页挂载时先拉公开注册状态；它与表单提交断言无关，独立应答且不计入 requests，
+    // 默认按「开放且不要求邮箱验证」返回，保持既有注册用例的行为不变。
+    if (path === '/api/v1/auth/registration-status') {
+      return Promise.resolve(jsonResponse({ enabled: true, email_verification_required: false }))
+    }
     const raw = typeof init?.body === 'string' ? init.body : '{}'
     requests.push({ path, body: JSON.parse(raw) as Record<string, unknown> })
     return Promise.resolve(jsonResponse({ expires_at: '2099-01-01T00:00:00Z' }))
@@ -120,6 +125,8 @@ describe('AuthPage 注册页服务条款同意（#89）', () => {
     expect(requests[0].body.email).toBe('user@chenxing.star')
   })
 })
+
+// 注册页公开注册状态三态见 auth-registration-status.test.tsx（本文件的行数上限）。
 
 describe('AuthPage 登录页移除失效的 keepLogin 控件（#88）', () => {
   it('登录表单不再渲染「保持登录」复选框', () => {

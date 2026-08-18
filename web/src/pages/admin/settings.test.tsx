@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type {
   EmailPolicySetting,
+  IssuerSettingResponse,
   OAuthProviderSummary,
   PasskeySetting,
+  RegistrationSetting,
   SecurityLimitsSetting,
   SmtpSetting,
 } from '../../api'
@@ -61,6 +63,19 @@ const SECURITY_LIMITS: SecurityLimitsSetting = {
   external_login_state_max_pending: 10000,
 }
 
+const REGISTRATION: RegistrationSetting = {
+  enabled: false,
+  email_verification_required: false,
+}
+
+/* 公开注册面板挂载时会读 Issuer 运行时状态推导闸门；给一个就绪的 Issuer，
+   让工作区测试不受闸门警告影响。 */
+const ISSUER: IssuerSettingResponse = {
+  persisted: null,
+  loaded: { value: 'https://auth.example.com', generation: 1, updated_at: '2026-01-01T00:00:00Z' },
+  phase: 'issuer_loaded',
+}
+
 const PROVIDER: OAuthProviderSummary = {
   id: 1,
   name: 'GitLab',
@@ -94,6 +109,8 @@ function loadedBody(path: string): unknown {
   if (path === '/api/v1/admin/settings/email-policy') return EMAIL_POLICY
   if (path === '/api/v1/admin/settings/smtp') return SMTP
   if (path === '/api/v1/admin/settings/security-limits') return SECURITY_LIMITS
+  if (path === '/api/v1/admin/settings/registration') return REGISTRATION
+  if (path === '/api/v1/admin/settings/issuer') return ISSUER
   if (path === '/api/v1/admin/oauth/providers') return [PROVIDER]
   return null
 }
@@ -165,6 +182,7 @@ function expectSingleLoadPerEndpoint() {
   expect(getCount('/api/v1/admin/settings/email-policy')).toBe(1)
   expect(getCount('/api/v1/admin/settings/smtp')).toBe(1)
   expect(getCount('/api/v1/admin/settings/security-limits')).toBe(1)
+  expect(getCount('/api/v1/admin/settings/registration')).toBe(1)
 }
 
 function submitByButton(name: string) {
