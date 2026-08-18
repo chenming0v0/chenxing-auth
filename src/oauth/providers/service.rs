@@ -56,7 +56,30 @@ pub enum ExternalOAuthError {
     OwnerBootstrapRequired,
 }
 
-/// 外部 IdP 的令牌响应里本服务实际使用的部分。
+#[derive(Debug, Error)]
+pub enum ExternalIdentityUnlinkError {
+    #[error("database operation failed: {0}")]
+    Database(#[from] crate::sqlx::Error),
+    #[error("external identity was not found")]
+    Missing,
+    #[error("external identity is the last usable login credential")]
+    LastCredential,
+}
+
+#[derive(Debug, Error)]
+pub enum ExternalIdentityBindingError {
+    #[error("database operation failed: {0}")]
+    Database(#[from] crate::sqlx::Error),
+    #[error("external identity is already linked")]
+    AlreadyOwned,
+    #[error("external identity is owned by another user")]
+    OwnedByAnotherUser,
+    #[error("external identity binding session is no longer current")]
+    AuthenticationChanged,
+    #[error("external email is not verified")]
+    EmailNotVerified,
+}
+
 ///
 /// **信任模型（Issue #296）**：自定义 provider 是 OAuth 2.0 + UserInfo，不是 OIDC
 /// 依赖方。本服务不解析、不验证、不消费 `id_token`；身份事实只来自用 access token
@@ -105,6 +128,59 @@ impl ExternalOAuthService {
             .into_iter()
             .map(|provider| provider.summary())
             .collect())
+    }
+
+    pub async fn list_identities(
+        &self,
+        user_id: UserId,
+    ) -> Result<Vec<repository::LinkedExternalIdentity>, ExternalOAuthError> {
+        Ok(repository::list_identities(&self.pool, user_id).await?)
+    }
+
+    pub async fn bind_identity(
+        &self,
+        user_id: UserId,
+        expected_session_epoch: i64,
+        provider_id: i64,
+        external: &ExternalUser,
+    ) -> Result<(), ExternalIdentityBindingError> {
+        if !external.email_verified {
+            return Err(ExternalIdentityBindingError::EmailNotVerified);
+        }
+        repository::bind_identity(
+            &self.pool,
+            user_id,
+            expected_session_epoch,
+            provider_id,
+            external,
+        )
+        .await
+        .map_err(|error| match error {
+            repository::BindIdentityError::Database(error) => {
+                ExternalIdentityBindingError::Database(error)
+            }
+            repository::BindIdentityError::AlreadyOwned => {
+                ExternalIdentityBindingError::AlreadyOwned
+            }
+            repository::BindIdentityError::OwnedByAnotherUser => {
+                ExternalIdentityBindingError::OwnedByAnotherUser
+            }
+            repository::BindIdentityError::AuthenticationChanged => {
+                ExternalIdentityBindingError::AuthenticationChanged
+            }
+        })
+    }
+
+    pub async fn unlink_identity(
+        &self,
+        user_id: UserId,
+        expected_session_epoch: i64,
+        provider_slug: &str,
+    ) -> Result<repository::UnlinkIdentityOutcome, ExternalIdentityUnlinkError> {
+        Ok(
+            repository::unlink_identity(&self.pool, user_id, expected_session_epoch, provider_slug)
+                .await?,
+        )
     }
 
     pub async fn find(&self, slug: &str) -> Result<ProviderRecord, ExternalOAuthError> {

@@ -315,7 +315,7 @@ impl AppState {
             Duration::from_secs(config.session_idle_timeout_seconds),
             config.session_max_concurrent_sessions,
         )
-        .with_absolute_ttl(Duration::from_secs(config.session_ttl_seconds))
+        .with_absolute_ttl(Duration::from_secs(crate::config::MAX_SESSION_TTL_SECONDS))
         .with_clock(clock.clone());
         let users = UserService::with_source_ip_policy(
             database.clone(),

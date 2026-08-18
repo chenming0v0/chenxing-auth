@@ -8,6 +8,7 @@ pub mod repository;
 pub mod security_limits;
 pub mod security_limits_cache;
 pub mod service;
+pub mod session_lifetime;
 mod smtp;
 mod smtp_sender;
 
@@ -25,6 +26,7 @@ pub use security_limits_cache::{
     SecurityLimitsCache, SecurityLimitsSource,
 };
 pub use service::{SettingsService, SettingsServiceError};
+pub use session_lifetime::{DEFAULT_SESSION_TTL_SECONDS, SessionLifetimeSetting};
 pub use smtp::{SmtpPasswordAction, SmtpSetting, SmtpSettingUpdate};
 
 pub const REGISTRATION_EMAIL_FROM_KEY: &str = "registration_email_from";
@@ -32,3 +34,4 @@ pub const PASSKEY_KEY: &str = "passkey";
 pub const EMAIL_POLICY_KEY: &str = "email_policy";
 pub const SMTP_KEY: &str = "smtp";
 pub const SECURITY_LIMITS_KEY: &str = "security_limits";
+pub const SESSION_LIFETIME_KEY: &str = "session_lifetime";

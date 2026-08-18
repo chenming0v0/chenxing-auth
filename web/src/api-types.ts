@@ -41,6 +41,17 @@ export type SecurityRemovalResult = {
   credentials_revoked: boolean
 }
 
+export type ExternalIdentity = {
+  provider: string
+  provider_name: string
+  /** Only render a masked form of this value; it is not a user-facing identifier. */
+  subject: string
+  email: string
+  linked_at: string
+}
+export type ExternalIdentityListResponse = { items: ExternalIdentity[] }
+export type ExternalIdentityUnlinkInput = { password: string }
+
 /** 登录页可见的外部身份源，仅包含渲染入口所需的公开字段。 */
 export type PublicExternalProvider = { slug: string; name: string }
 
@@ -225,6 +236,10 @@ export type SmtpSettingUpdate = {
   force_auth_login: boolean
   password_action?: SmtpPasswordAction
   password?: string | null
+}
+export type SessionLifetimeSetting = {
+  session_ttl_seconds: number
+  session_idle_timeout_seconds: number
 }
 export type SecurityLimitsSetting = {
   unauthenticated_source_qps: number

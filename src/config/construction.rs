@@ -171,7 +171,7 @@ impl Config {
             env::var("SESSION_TTL_SECONDS")
                 .ok()
                 .as_deref()
-                .unwrap_or("604800"),
+                .unwrap_or("1209600"),
         )?;
         let session_idle_timeout_seconds = parse_u64(
             "SESSION_IDLE_TIMEOUT_SECONDS",

@@ -49,6 +49,12 @@ end
 return 1
 "#;
 
+const DISCARD_STATE_SCRIPT: &str = r#"
+redis.call('DEL', KEYS[1])
+redis.call('ZREM', KEYS[2], ARGV[1])
+return 1
+"#;
+
 const TAKE_STATE_SCRIPT: &str = r#"
 local payload = redis.call('GET', KEYS[1])
 if payload then
@@ -56,6 +62,39 @@ if payload then
     redis.call('ZREM', KEYS[2], ARGV[1])
 end
 return payload
+"#;
+
+const TAKE_STATE_FOR_PURPOSE_SCRIPT: &str = r#"
+local payload = redis.call('GET', KEYS[1])
+if not payload then return nil end
+local decoded = cjson.decode(payload)
+local expected_purpose = ARGV[2]
+local actual_purpose = decoded['purpose']
+if expected_purpose == 'login' then
+  if actual_purpose and actual_purpose ~= '' and actual_purpose ~= 'login' then return nil end
+elseif actual_purpose ~= expected_purpose then
+  return nil
+end
+redis.call('DEL', KEYS[1])
+redis.call('ZREM', KEYS[2], ARGV[1])
+return payload
+"#;
+
+const TAKE_STATE_FOR_PURPOSE_AND_PROVIDER_SCRIPT: &str = r#"
+local payload = redis.call('GET', KEYS[1])
+if not payload then return {'missing'} end
+local decoded = cjson.decode(payload)
+local expected_purpose = ARGV[2]
+local actual_purpose = decoded['purpose']
+if expected_purpose == 'login' then
+  if actual_purpose and actual_purpose ~= '' and actual_purpose ~= 'login' then return {'mismatch'} end
+elseif actual_purpose ~= expected_purpose then
+  return {'mismatch'}
+end
+if decoded['provider_slug'] ~= ARGV[3] then return {'mismatch'} end
+redis.call('DEL', KEYS[1])
+redis.call('ZREM', KEYS[2], ARGV[1])
+return {'consumed', payload}
 "#;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,6 +113,15 @@ pub struct ExternalLoginState {
     /// 会相应地不发送 `code_verifier`。
     #[serde(default)]
     pub code_verifier: String,
+    /// Purpose and authenticated-session binding for non-login OAuth flows.
+    #[serde(default)]
+    pub purpose: String,
+    #[serde(default)]
+    pub user_id: Option<crate::users::domain::UserId>,
+    #[serde(default)]
+    pub session_id: Option<i64>,
+    #[serde(default)]
+    pub session_epoch: Option<i64>,
 }
 
 impl fmt::Debug for ExternalLoginState {
@@ -86,8 +134,19 @@ impl fmt::Debug for ExternalLoginState {
                 &self.request_id.as_ref().map(|_| "<redacted>"),
             )
             .field("code_verifier", &"<redacted>")
+            .field("purpose", &self.purpose)
+            .field("user_id", &self.user_id)
+            .field("session_id", &self.session_id)
+            .field("session_epoch", &self.session_epoch)
             .finish()
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExternalLoginStateTake {
+    Consumed(ExternalLoginState),
+    Mismatch,
+    MissingOrConsumed,
 }
 
 #[derive(Clone)]
@@ -281,6 +340,61 @@ impl ExternalLoginStateStore {
             .map_err(Into::into)
     }
 
+    pub async fn take_for_purpose(
+        &self,
+        state: &str,
+        purpose: &str,
+    ) -> Result<Option<ExternalLoginState>, ExternalLoginStateStoreError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let payload: Option<String> = Script::new(TAKE_STATE_FOR_PURPOSE_SCRIPT)
+            .key(self.state_key(state))
+            .key(self.pending_key())
+            .arg(state)
+            .arg(purpose)
+            .invoke_async(&mut connection)
+            .await?;
+        payload
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    pub async fn discard(&self, state: &str) -> Result<(), ExternalLoginStateStoreError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        Script::new(DISCARD_STATE_SCRIPT)
+            .key(self.state_key(state))
+            .key(self.pending_key())
+            .arg(state)
+            .invoke_async::<i64>(&mut connection)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn take_for_purpose_and_provider(
+        &self,
+        state: &str,
+        purpose: &str,
+        provider_slug: &str,
+    ) -> Result<ExternalLoginStateTake, ExternalLoginStateStoreError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let response: Vec<String> = Script::new(TAKE_STATE_FOR_PURPOSE_AND_PROVIDER_SCRIPT)
+            .key(self.state_key(state))
+            .key(self.pending_key())
+            .arg(state)
+            .arg(purpose)
+            .arg(provider_slug)
+            .invoke_async(&mut connection)
+            .await?;
+        match response.as_slice() {
+            [status] if status == "mismatch" => Ok(ExternalLoginStateTake::Mismatch),
+            [status] if status == "missing" => Ok(ExternalLoginStateTake::MissingOrConsumed),
+            [status, payload] if status == "consumed" => Ok(ExternalLoginStateTake::Consumed(
+                serde_json::from_str(payload)?,
+            )),
+            _ => Err(ExternalLoginStateStoreError::InvalidResponse),
+        }
+    }
+
     fn new_with_limits(
         client: impl Into<RedisClient>,
         prefix: String,
@@ -348,6 +462,10 @@ mod tests {
             restored.code_verifier, "",
             "缺失的 code_verifier 应回退为空串（表示本次登录未使用 PKCE）"
         );
+        assert!(restored.purpose.is_empty());
+        assert_eq!(restored.user_id, None);
+        assert_eq!(restored.session_id, None);
+        assert_eq!(restored.session_epoch, None);
     }
 
     #[test]
@@ -357,6 +475,10 @@ mod tests {
             provider_slug: "example".to_owned(),
             request_id: Some("request-value".to_owned()),
             code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".to_owned(),
+            purpose: "login".to_owned(),
+            user_id: None,
+            session_id: None,
+            session_epoch: None,
         };
         let payload = serde_json::to_string(&original).expect("序列化");
         let restored: ExternalLoginState = serde_json::from_str(&payload).expect("反序列化");

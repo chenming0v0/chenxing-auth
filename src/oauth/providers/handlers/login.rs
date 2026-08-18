@@ -126,6 +126,10 @@ pub async fn start_external_login(
         provider_slug: slug.clone(),
         request_id: query.request_id.clone().filter(|value| !value.is_empty()),
         code_verifier: code_verifier.clone(),
+        purpose: "login".to_owned(),
+        user_id: None,
+        session_id: None,
+        session_epoch: None,
     };
     let save_result = match source_ip.as_deref() {
         Some(source_ip) => {

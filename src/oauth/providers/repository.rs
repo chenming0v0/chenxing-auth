@@ -19,6 +19,11 @@ pub struct ExternalIdentity {
     pub user_status: String,
 }
 
+pub use super::identity_repository::{
+    BindIdentityError, LinkedExternalIdentity, UnlinkIdentityOutcome, bind_identity,
+    list_identities, unlink_identity,
+};
+
 pub async fn insert_provider(
     connection: &mut PgConnection,
     input: &ValidatedProviderInput,

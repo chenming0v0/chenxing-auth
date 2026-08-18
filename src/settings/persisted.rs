@@ -18,7 +18,8 @@ use serde::Serialize;
 use serde::de::{DeserializeOwned, Error as DeError};
 
 use super::{
-    EMAIL_POLICY_KEY, PASSKEY_KEY, SECURITY_LIMITS_KEY, SecurityLimitsSetting,
+    EMAIL_POLICY_KEY, PASSKEY_KEY, SECURITY_LIMITS_KEY, SESSION_LIFETIME_KEY,
+    SecurityLimitsSetting, SessionLifetimeSetting,
     domain::{EmailPolicySetting, PasskeySetting, SettingsValidationError},
 };
 
@@ -41,6 +42,10 @@ pub fn parse_email_policy(raw: &str) -> Result<EmailPolicySetting, serde_json::E
 
 pub fn parse_security_limits(raw: &str) -> Result<SecurityLimitsSetting, serde_json::Error> {
     overlay_defaults(raw, &SecurityLimitsSetting::default())
+}
+
+pub fn parse_session_lifetime(raw: &str) -> Result<SessionLifetimeSetting, serde_json::Error> {
+    overlay_defaults(raw, &SessionLifetimeSetting::default())
 }
 
 fn overlay_defaults<T>(raw: &str, defaults: &T) -> Result<T, serde_json::Error>
@@ -183,6 +188,13 @@ impl PersistedSetting for SecurityLimitsSetting {
     const KEY: &'static str = SECURITY_LIMITS_KEY;
     fn parse_stored(raw: &str) -> Result<Self, serde_json::Error> {
         parse_security_limits(raw)
+    }
+}
+
+impl PersistedSetting for SessionLifetimeSetting {
+    const KEY: &'static str = SESSION_LIFETIME_KEY;
+    fn parse_stored(raw: &str) -> Result<Self, serde_json::Error> {
+        parse_session_lifetime(raw)
     }
 }
 

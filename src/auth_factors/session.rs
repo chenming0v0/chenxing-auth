@@ -101,8 +101,15 @@ pub async fn issue_user_session(
     if UserStatus::parse(&profile.status) != Some(UserStatus::Active) {
         return error::unauthorized("user_disabled", "user account is disabled");
     }
-    let ttl = Duration::from_secs(state.config.session_ttl_seconds);
-    let idle_timeout = Duration::from_secs(state.config.session_idle_timeout_seconds);
+    let session_lifetime = match state.settings.session_lifetime().await {
+        Ok(setting) => setting,
+        Err(error_value) => {
+            tracing::error!(error = %error_value, "failed to load browser session lifetime setting");
+            return error::internal();
+        }
+    };
+    let ttl = Duration::from_secs(session_lifetime.session_ttl_seconds);
+    let idle_timeout = Duration::from_secs(session_lifetime.session_idle_timeout_seconds);
     let mut session = match Session::new_at_with_idle_timeout(
         user_id.to_string(),
         ttl,
@@ -209,7 +216,7 @@ pub async fn issue_user_session(
         response.headers_mut(),
         &session.token,
         &session.csrf_token,
-        state.config.session_ttl_seconds,
+        session_lifetime.session_ttl_seconds,
         state.config.cookie_secure,
     )
     .and_then(|()| {

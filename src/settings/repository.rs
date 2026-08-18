@@ -1,6 +1,6 @@
 use super::{
-    EMAIL_POLICY_KEY, PASSKEY_KEY, REGISTRATION_EMAIL_FROM_KEY, SECURITY_LIMITS_KEY, SMTP_KEY,
-    SecurityLimitsSetting,
+    EMAIL_POLICY_KEY, PASSKEY_KEY, REGISTRATION_EMAIL_FROM_KEY, SECURITY_LIMITS_KEY,
+    SESSION_LIFETIME_KEY, SMTP_KEY, SecurityLimitsSetting, SessionLifetimeSetting,
     domain::{EmailPolicySetting, PasskeySetting},
     smtp::StoredSmtpSetting,
 };
@@ -151,6 +151,17 @@ where
 {
     let raw = serde_json::to_string(value).map_err(json_error)?;
     set_text(executor, SECURITY_LIMITS_KEY, Some(&raw)).await
+}
+
+pub async fn set_session_lifetime<'e, E>(
+    executor: E,
+    value: &SessionLifetimeSetting,
+) -> Result<(), crate::sqlx::Error>
+where
+    E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
+{
+    let raw = serde_json::to_string(value).map_err(json_error)?;
+    set_text(executor, SESSION_LIFETIME_KEY, Some(&raw)).await
 }
 
 pub(crate) async fn get_smtp<'e, E>(
