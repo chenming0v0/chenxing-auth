@@ -97,11 +97,8 @@ async fn browser_oauth_code_flow_reaches_userinfo_and_refresh_with_no_store_head
         )
         .await
         .expect("registration response");
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(
-        json_body(response).await["code"],
-        "email_verification_unavailable"
-    );
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json_body(response).await["code"], "registration_disabled");
 
     let response = router
         .clone()

@@ -15,7 +15,7 @@ use crate::db::advisory_lock::{BusinessLock, lock_business};
 use crate::users::email::EmailAddress;
 use crate::users::{
     ManagementActorCredential, ManagementActorValidationError,
-    domain::{UserCreation, UserId, UserPermission},
+    domain::{UserCreation, UserId, UserPermission, UserRole, UserStatus, ValidatedRegistration},
 };
 
 use super::{NewUser, UserProfile};
@@ -118,6 +118,61 @@ pub enum ManagedUserInsertError {
     Database(#[from] crate::sqlx::Error),
     #[error(transparent)]
     ManagementActor(#[from] ManagementActorValidationError),
+}
+
+/// 在 Owner 已存在的前提下创建公开注册用户。
+///
+/// 与 [`insert_user_after_owner`] 的差异只有两点，且都是有意为之：
+/// - 不做 management-actor 校验：调用方是匿名公开注册，它的「凭据」是此前通过的
+///   全部注册闸门（设置开关、邮箱策略、按 IP 尝试配额），不存在管理身份。
+/// - (role, status) 硬编码为 `'user'` / `'active'`：公开注册永远只能产出最低权限
+///   的活跃账号，其它 (role, status) 组合必须走带审计的管理路径。把这两个值钉在
+///   SQL 里，任何未来调用方都无法借本函数提权或创建禁用态账号。
+///
+/// 返回 `Ok(None)` 表示尚未完成 Owner 引导：advisory lock 与引导事务用同一个
+/// key，因此「判定 Owner 存在」与「插入新用户」之间不存在竞态窗口。
+pub async fn insert_public_user(
+    pool: &PgPool,
+    registration: ValidatedRegistration,
+    password_hash: String,
+) -> Result<Option<NewUser>, crate::sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    lock_business(&mut transaction, BusinessLock::OwnerBootstrap).await?;
+    if !owner_exists(&mut *transaction).await? {
+        transaction.rollback().await?;
+        return Ok(None);
+    }
+
+    let username = registration.username;
+    let email = registration.email;
+    let display_name = registration.display_name;
+    // 保留墙钟（Issue #299 的明确例外）：行创建时间，不参与生命周期判定。
+    let created_at = OffsetDateTime::now_utc();
+    let id: UserId = crate::sqlx::query_scalar(
+        "INSERT INTO users (username, email, canonical_email, password_hash, display_name, role, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, 'user', 'active', $6, $6)
+         RETURNING id",
+    )
+    .bind(&username)
+    .bind(email.display())
+    .bind(email.canonical())
+    .bind(&password_hash)
+    .bind(&display_name)
+    .bind(created_at)
+    .fetch_one(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+
+    Ok(Some(NewUser {
+        id,
+        username,
+        email,
+        password_hash,
+        display_name,
+        role: UserRole::User,
+        status: UserStatus::Active,
+        created_at,
+    }))
 }
 
 /// Create a managed user and persist its audit event in the same transaction.

@@ -198,10 +198,15 @@ paths:
       summary: 注册用户
       operationId: registerUser
       description: |
-        公共注册在真实的邮件投递和验证令牌消费能力接入前 fail-closed。
-        格式合法的请求会返回 `email_verification_unavailable`，不会创建未证明邮箱所有权的 active 用户。
+        公开注册由 `registration` 设置闸门控制，默认关闭：
+        - 开关关闭时返回 403 `registration_disabled`。
+        - 开关打开且 `email_verification_required=true` 时，在邮件所有权验证能力接入前
+          fail-closed，返回 503 `email_verification_unavailable`，不创建未验证身份。
+        - 其余情况执行真实创建：输入校验、邮箱域名策略、按源 IP 的注册尝试配额、
+          Owner 前提全部通过后，创建 role=user、status=active 的账号。
         用户名和邮箱的唯一冲突统一返回 `registration_conflict`，不暴露具体冲突字段。
         Issuer 缺少时注册接口关闭并返回 503 `issuer_not_configured`。
+        有效注册状态（开关 AND Issuer 就绪）见 GET /api/v1/auth/registration-status。
       requestBody:
         required: true
         content:
@@ -218,6 +223,7 @@ paths:
                 properties:
                   user: { $ref: '#/components/schemas/PublicUser' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '429': { $ref: '#/components/responses/TooManyRequests' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
@@ -1123,6 +1129,21 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/PublicExternalProvider' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/registration-status:
+    get:
+      tags: [User Auth/Account]
+      summary: 查询公开注册状态
+      description: |
+        匿名端点，无鉴权。`enabled` 是有效值：存储开关 AND Issuer 就绪；
+        Issuer 未配置或设置不可读时一律报关（fail-closed）。
+        `email_verification_required` 是存储值。
+      operationId: getRegistrationStatus
+      responses:
+        '200':
+          description: 当前公开注册状态
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegistrationStatusResponse' }
   /auth/external/{slug}:
     get:
       tags: [User Auth/Browser Login]
@@ -2224,6 +2245,61 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/settings/registration:
+    get:
+      tags: [Admin]
+      summary: 获取公开注册设置
+      description: 返回 `registration` 设置键的存储值（双布尔，默认全关）。有效注册状态还取决于 Issuer 就绪，见 GET /api/v1/auth/registration-status。
+      operationId: getRegistrationSetting
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+      responses:
+        '200':
+          description: 公开注册设置。已持久化行无法用于热路径时带 X-Chenxing-Setting-Diagnostic。
+          headers:
+            X-Chenxing-Setting-Diagnostic:
+              $ref: '#/components/headers/SettingDiagnostic'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegistrationSetting' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+    put:
+      tags: [Admin]
+      summary: 更新公开注册设置
+      description: |
+        写入与 registration_setting_update 审计在同一事务中提交。
+        `enabled=true` 要求 Issuer 已就绪，否则返回 503 `issuer_not_configured`：
+        注册出来的账号必须能走完整认证/授权流程，避免「开关打开但注册全部 503」的分裂状态。
+      operationId: updateRegistrationSetting
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegistrationSetting' }
+      responses:
+        '200':
+          description: 已更新的公开注册设置
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegistrationSetting' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
@@ -3551,6 +3627,25 @@ components:
           type: array
           maxItems: 128
           items: { type: string, maxLength: 253 }
+    RegistrationSetting:
+      type: object
+      description: >-
+        公开注册开关。双布尔默认全关：未配置实例的公开注册保持关闭。
+        email_verification_required 为真时，即使 enabled 打开，注册仍在邮件验证
+        能力缺失处 fail-closed（503 email_verification_unavailable）。
+      required: [enabled, email_verification_required]
+      properties:
+        enabled: { type: boolean }
+        email_verification_required: { type: boolean }
+    RegistrationStatusResponse:
+      type: object
+      description: >-
+        匿名注册状态。enabled 是有效值（存储开关 AND Issuer 就绪），
+        email_verification_required 是存储值。
+      required: [enabled, email_verification_required]
+      properties:
+        enabled: { type: boolean }
+        email_verification_required: { type: boolean }
     SmtpSetting:
       type: object
       required: [host, port, username, from_address, ssl_enabled, force_auth_login, password_configured]

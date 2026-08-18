@@ -129,6 +129,7 @@ audit_actions! {
     UserDisabled => "user_disabled" => (Account, Critical),
     UserRoleUpdate => "user_role_update" => (Account, Critical),
     EmailPolicyUpdate => "email_policy_update" => (Account, Critical),
+    RegistrationSettingUpdate => "registration_setting_update" => (Account, Critical),
     SmtpSettingUpdate => "smtp_setting_update" => (Account, Critical),
     SecurityLimitsUpdate => "security_limits_update" => (Account, Critical),
     SessionLifetimeUpdate => "session_lifetime_update" => (Session, Critical),

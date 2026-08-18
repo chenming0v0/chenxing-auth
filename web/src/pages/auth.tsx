@@ -1,7 +1,7 @@
-import { useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link, useLocation, useNavigate } from '../router'
 import { useAuth } from '../auth-state'
-import { apiFetch, bindAuthorizationRequest, externalLoginErrorMessage, type LoginResponse, type PendingLoginResponse } from '../api'
+import { apiFetch, bindAuthorizationRequest, externalLoginErrorMessage, type LoginResponse, type PendingLoginResponse, type RegistrationStatus } from '../api'
 import { AuthPanel, AuthShell } from '../components/shells'
 import { Button, Field, HudPanel, Icon, Notice, PasswordField } from '../components/ui'
 import { FactorOrchestrator } from './auth/factor-orchestrator'
@@ -95,10 +95,38 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const [pending, setPending] = useState<PendingLoginResponse | null>(null)
   // 绑定失败后置位，渲染「进入控制台」出口：会话仍然有效，登录页不再是死路。
   const [bindFailed, setBindFailed] = useState(false)
-  // busy updates after React renders; the ref closes the same-event submit window.
+  // 公开注册状态（仅注册模式拉取）：null = 未取回或取回失败，保持现状由后端兜底。
+  const [registrationStatus, setRegistrationStatus] = useState<RegistrationStatus | null>(null)
+  // busy updates after React render; the ref closes the same-event submit window.
   const submitLockRef = useRef(false)
   const isLogin = mode === 'login'
   const externalError = query.get('external_error')
+
+  useEffect(() => {
+    if (mode === 'login') return
+    let active = true
+    apiFetch<RegistrationStatus>('/api/v1/auth/registration-status', { redirectOn401: false })
+      .then((value) => {
+        // 形状不合法时视同取回失败：不阻塞表单，提交时由后端给出权威结果。
+        if (active
+          && typeof value.enabled === 'boolean'
+          && typeof value.email_verification_required === 'boolean') {
+          setRegistrationStatus(value)
+        }
+      })
+      .catch(() => { /* 取回失败不阻塞注册表单，由后端在提交时兜底。 */ })
+    return () => { active = false }
+  }, [mode])
+
+  /* 注册页如实状态：enabled 已是服务端计入 Issuer 闸门后的有效值；
+     邮箱验证投递能力在建，要求验证期间注册同样不可用。 */
+  const registrationBlockedMessage = isLogin || registrationStatus === null
+    ? null
+    : !registrationStatus.enabled
+      ? '自助注册未开放，请联系管理员创建账号。'
+      : registrationStatus.email_verification_required
+        ? '平台要求邮箱所有权验证，验证投递能力在建，注册暂不可用。'
+        : null
 
   function acquireSubmitLock(): boolean {
     if (submitLockRef.current) return false
@@ -173,6 +201,11 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
     try {
       setMessage('')
       setBindFailed(false)
+      // fieldset/按钮禁用之外的兜底：注册被平台状态关闭时不发出注册请求。
+      if (!isLogin && registrationBlockedMessage) {
+        setMessage(registrationBlockedMessage)
+        return
+      }
       if (!email || !password || (!isLogin && !username)) {
         setMessage('请完整填写必填信息。')
         return
@@ -250,6 +283,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
           </div>
         ) : null}
         {externalError ? <div className="mt-5"><Notice tone="warning">{externalLoginErrorMessage(externalError)}</Notice></div> : null}
+        {registrationBlockedMessage ? <div className="mt-5"><Notice tone="warning">{registrationBlockedMessage}</Notice></div> : null}
         {message ? <div className="mt-5"><Notice tone="warning">{message}</Notice></div> : null}
         {bindFailed ? (
           <div className="mt-3">
@@ -269,51 +303,56 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
           </div>
         ) : (
           <form className="mt-5 space-y-4" onSubmit={submit} noValidate>
-            {!isLogin ? (
-              <Field label="昵称" icon="user" placeholder="你的星际代号" autoComplete="nickname" value={displayName || username} onChange={(event) => { setDisplayName(event.target.value); if (!username) setUsername(event.target.value) }} />
-            ) : null}
-            {!isLogin ? (
-              <Field label="用户名" icon="user" placeholder="chenxing_user" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required />
-            ) : null}
-            <Field
-              label={isLogin ? '邮箱或用户名' : '邮箱'}
-              icon="mail"
-              type={isLogin ? 'text' : 'email'}
-              placeholder={isLogin ? 'you@chenxing.star' : 'you@chenxing.star'}
-              autoComplete="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-            />
-            <PasswordField
-              label="密码"
-              icon="lock-keyhole"
-              placeholder={isLogin ? '输入通行凭证' : `${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个字符`}
-              autoComplete={isLogin ? 'current-password' : 'new-password'}
-              value={password}
-              onChange={(event) => setPassword(isLogin ? event.target.value : limitPasswordInput(event.target.value))}
-              maxLength={!isLogin ? PASSWORD_MAX_INPUT_LENGTH : undefined}
-              hint={!isLogin ? `长度为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个 Unicode 字符。` : undefined}
-            />
-            {!isLogin ? (
-              <label className="flex cursor-pointer items-start gap-2 text-[0.8125rem] leading-relaxed text-[var(--chenxing-muted-foreground)]">
-                <input type="checkbox" checked={agree} onChange={(event) => setAgree(event.target.checked)} className="mt-1 h-4 w-4 rounded accent-[var(--chenxing-primary)]" />
-                <span>我已阅读并同意《辰星通行证服务条款》与《隐私政策》</span>
-              </label>
-            ) : (
-              // Issue #88：后端 LoginInput 只接受 identifier / password / totp_code，
-              // 没有 keep_login 字段，会话有效期完全由服务端配置决定。
-              // 「在此设备保持登录」复选框对实际行为零影响，属于误导性 UI，故移除。
-              // Issue #240：后端没有自助重置密码流程，不渲染指向 # 的伪链接；
-              // 初始密码由管理员创建用户时设置，改为联系管理员的静态引导。
-              <div className="flex items-center justify-end">
-                <span className="chenxing-caption text-[12.5px] text-[var(--chenxing-muted-foreground)]">忘记密码？请联系管理员重置。</span>
-              </div>
-            )}
-            {/* 未同意条款时禁用提交按钮，避免出现「无同意记录却完成注册」的情况 */}
-            <Button type="submit" variant="primary" className="w-full py-3" disabled={busy || (!isLogin && !agree)}>
-              {busy ? '处理中…' : isLogin ? '登录 · 进入星门' : '创建通行证'}
-              <Icon name="arrow-right" size={16} />
-            </Button>
+            {/* 注册被平台状态关闭时整表禁用（fieldset disabled 模式）；
+                display:contents 保持既有 space-y 布局，间距由 fieldset 自身承接。
+                登录模式不受影响：disabled 恒为 false。 */}
+            <fieldset disabled={!isLogin && (busy || registrationBlockedMessage !== null)} className="contents space-y-4">
+              {!isLogin ? (
+                <Field label="昵称" icon="user" placeholder="你的星际代号" autoComplete="nickname" value={displayName || username} onChange={(event) => { setDisplayName(event.target.value); if (!username) setUsername(event.target.value) }} />
+              ) : null}
+              {!isLogin ? (
+                <Field label="用户名" icon="user" placeholder="chenxing_user" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required />
+              ) : null}
+              <Field
+                label={isLogin ? '邮箱或用户名' : '邮箱'}
+                icon="mail"
+                type={isLogin ? 'text' : 'email'}
+                placeholder={isLogin ? 'you@chenxing.star' : 'you@chenxing.star'}
+                autoComplete="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+              />
+              <PasswordField
+                label="密码"
+                icon="lock-keyhole"
+                placeholder={isLogin ? '输入通行凭证' : `${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个字符`}
+                autoComplete={isLogin ? 'current-password' : 'new-password'}
+                value={password}
+                onChange={(event) => setPassword(isLogin ? event.target.value : limitPasswordInput(event.target.value))}
+                maxLength={!isLogin ? PASSWORD_MAX_INPUT_LENGTH : undefined}
+                hint={!isLogin ? `长度为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个 Unicode 字符。` : undefined}
+              />
+              {!isLogin ? (
+                <label className="flex cursor-pointer items-start gap-2 text-[0.8125rem] leading-relaxed text-[var(--chenxing-muted-foreground)]">
+                  <input type="checkbox" checked={agree} onChange={(event) => setAgree(event.target.checked)} className="mt-1 h-4 w-4 rounded accent-[var(--chenxing-primary)]" />
+                  <span>我已阅读并同意《辰星通行证服务条款》与《隐私政策》</span>
+                </label>
+              ) : (
+                // Issue #88：后端 LoginInput 只接受 identifier / password / totp_code，
+                // 没有 keep_login 字段，会话有效期完全由服务端配置决定。
+                // 「在此设备保持登录」复选框对实际行为零影响，属于误导性 UI，故移除。
+                // Issue #240：后端没有自助重置密码流程，不渲染指向 # 的伪链接；
+                // 初始密码由管理员创建用户时设置，改为联系管理员的静态引导。
+                <div className="flex items-center justify-end">
+                  <span className="chenxing-caption text-[12.5px] text-[var(--chenxing-muted-foreground)]">忘记密码？请联系管理员重置。</span>
+                </div>
+              )}
+              {/* 未同意条款或注册被平台状态关闭时禁用提交按钮，避免出现「无同意记录却完成注册」的情况 */}
+              <Button type="submit" variant="primary" className="w-full py-3" disabled={busy || (!isLogin && (!agree || registrationBlockedMessage !== null))}>
+                {busy ? '处理中…' : isLogin ? '登录 · 进入星门' : '创建通行证'}
+                <Icon name="arrow-right" size={16} />
+              </Button>
+            </fieldset>
           </form>
         )}
 

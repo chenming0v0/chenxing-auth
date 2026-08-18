@@ -317,11 +317,15 @@ impl AppState {
         )
         .with_absolute_ttl(Duration::from_secs(crate::config::MAX_SESSION_TTL_SECONDS))
         .with_clock(clock.clone());
+        // 先于 users 构造：公开注册的按 IP 尝试配额复用这个限流器实例。
+        let qps = QpsRateLimiter::with_keyspace(redis.clone(), config.redis_keyspace.clone());
         let users = UserService::with_source_ip_policy(
             database.clone(),
             auth_limiter.clone(),
             config.missing_source_ip_policy,
-        );
+        )
+        // 公开注册的按 IP 尝试配额复用同一个 QPS 限流器（作用域 key 独立）。
+        .with_registration_attempt_limiter(qps.clone());
         let factors = AuthFactorService::new_with_source_ip_policy_and_keyspace(
             database.clone(),
             redis.clone(),
@@ -357,7 +361,6 @@ impl AppState {
         );
         let oauth_quotas =
             OAuthQuotaStore::with_keyspace(redis.clone(), config.redis_keyspace.clone());
-        let qps = QpsRateLimiter::with_keyspace(redis.clone(), config.redis_keyspace.clone());
         let plans = PlanService::new(database.clone()).with_clock(clock.clone());
         let admin = AdminAuthenticator::new(config.admin_token.clone());
         let audit = AuditService::new(database.clone()).with_clock(clock.clone());

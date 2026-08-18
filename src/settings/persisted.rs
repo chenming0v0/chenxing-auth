@@ -18,13 +18,17 @@ use serde::Serialize;
 use serde::de::{DeserializeOwned, Error as DeError};
 
 use super::{
-    EMAIL_POLICY_KEY, PASSKEY_KEY, SECURITY_LIMITS_KEY, SESSION_LIFETIME_KEY,
-    SecurityLimitsSetting, SessionLifetimeSetting,
-    domain::{EmailPolicySetting, PasskeySetting, SettingsValidationError},
+    EMAIL_POLICY_KEY, PASSKEY_KEY, REGISTRATION_SETTING_KEY, SECURITY_LIMITS_KEY,
+    SESSION_LIFETIME_KEY, SecurityLimitsSetting, SessionLifetimeSetting,
+    domain::{EmailPolicySetting, PasskeySetting, RegistrationSetting, SettingsValidationError},
 };
 
 pub fn parse_passkey(raw: &str) -> Result<PasskeySetting, serde_json::Error> {
     overlay_defaults(raw, &PasskeySetting::default())
+}
+
+pub fn parse_registration(raw: &str) -> Result<RegistrationSetting, serde_json::Error> {
+    overlay_defaults(raw, &RegistrationSetting::default())
 }
 
 pub fn parse_email_policy(raw: &str) -> Result<EmailPolicySetting, serde_json::Error> {
@@ -174,6 +178,13 @@ impl PersistedSetting for PasskeySetting {
     const KEY: &'static str = PASSKEY_KEY;
     fn parse_stored(raw: &str) -> Result<Self, serde_json::Error> {
         parse_passkey(raw)
+    }
+}
+
+impl PersistedSetting for RegistrationSetting {
+    const KEY: &'static str = REGISTRATION_SETTING_KEY;
+    fn parse_stored(raw: &str) -> Result<Self, serde_json::Error> {
+        parse_registration(raw)
     }
 }
 

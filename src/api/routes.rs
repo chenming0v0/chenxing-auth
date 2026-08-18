@@ -22,6 +22,9 @@ use crate::{
         create_provider, disable_provider, enable_provider, list_providers, update_provider,
     },
     admin::provider_web_handlers::oauth_settings,
+    admin::registration_settings_handlers::{
+        get_registration_setting, update_registration_setting,
+    },
     admin::settings_handlers::{
         get_email_policy_setting, get_passkey_setting, get_registration_email,
         get_security_limits_setting, get_session_lifetime_setting, get_smtp_setting,
@@ -58,7 +61,7 @@ use crate::{
     },
     users::avatar_image::MAX_UPLOAD_BYTES,
     users::entitlements_handlers::current_entitlements,
-    users::handlers::{login_user, register_user, revoke_session},
+    users::handlers::{login_user, register_user, registration_status, revoke_session},
     users::oauth_client_handlers::{
         create_owned_client, disable_owned_client, enable_owned_client, list_authorized_apps,
         list_owned_clients, revoke_authorized_app, rotate_owned_client_secret, update_owned_client,
@@ -211,6 +214,10 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
             get(get_registration_email).put(update_registration_email),
         )
         .route(
+            "/api/v1/admin/settings/registration",
+            get(get_registration_setting).put(update_registration_setting),
+        )
+        .route(
             "/api/v1/admin/settings/passkey",
             get(get_passkey_setting).put(update_passkey_setting),
         )
@@ -252,6 +259,10 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
             "/api/v1/auth/external-providers",
             get(list_public_providers),
         )
+        // 匿名注册状态：有效值（存储开关 AND Issuer 就绪），前端据此决定是否
+        // 展示注册入口。不在 issuer 门禁的「必须配置」清单内——Issuer 缺失时
+        // 照常返回 enabled=false，而不是 503。
+        .route("/api/v1/auth/registration-status", get(registration_status))
         .route("/auth/external/{slug}", get(start_external_login))
         .route("/auth/external/{slug}/callback", get(external_callback))
         .route(

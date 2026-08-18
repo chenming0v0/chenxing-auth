@@ -31,7 +31,8 @@ pub use lookup::{
 };
 pub use owner_bootstrap::{
     AuditedUserInsertError, BootstrapOwnerError, BootstrapOwnerOutcome, ManagedUserInsertError,
-    bootstrap_owner, insert_user_after_owner, insert_user_after_owner_with_audit, owner_exists,
+    bootstrap_owner, insert_public_user, insert_user_after_owner,
+    insert_user_after_owner_with_audit, owner_exists,
 };
 pub use role_guard::{
     AuditedRoleGuardError, OwnerGuardOutcome, set_user_role, set_user_role_with_audit,

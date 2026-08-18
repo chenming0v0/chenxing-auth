@@ -30,6 +30,44 @@ struct CreatedUserResponse {
     user: super::domain::PublicUser,
 }
 
+/// 匿名注册状态：`enabled` 是有效值（存储开关 AND Issuer 就绪），
+/// `email_verification_required` 是存储值。
+#[derive(Debug, Serialize)]
+struct RegistrationStatusResponse {
+    enabled: bool,
+    email_verification_required: bool,
+}
+
+/// 公开注册状态查询（匿名，无鉴权）。
+///
+/// `enabled` 必须反映有效状态而不是裸存储值：Issuer 未配置时
+/// `POST /api/v1/users` 被 issuer 闸门关闭，存储开关即使是开的，
+/// 对外也必须报关，否则前端会引导用户进入必然失败的注册。
+/// 设置不可读时同样报关（fail-closed），不向匿名调用者暴露内部故障细节。
+pub async fn registration_status(State(state): State<AppState>) -> Response {
+    let (enabled, email_verification_required) = match state.settings.registration().await {
+        Ok(setting) => (
+            setting.enabled && state.issuer.is_ready(),
+            setting.email_verification_required,
+        ),
+        Err(error_value) => {
+            tracing::error!(
+                error = %error_value,
+                "failed to load registration setting; reporting public registration as closed"
+            );
+            (false, false)
+        }
+    };
+    (
+        StatusCode::OK,
+        Json(RegistrationStatusResponse {
+            enabled,
+            email_verification_required,
+        }),
+    )
+        .into_response()
+}
+
 pub async fn register_user(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
@@ -88,6 +126,9 @@ pub async fn register_user(
             "email_verification_unavailable",
             "email ownership verification is temporarily unavailable",
         ),
+        Err(UserServiceError::RegistrationDisabled) => {
+            error::forbidden("registration_disabled", "public registration is not open")
+        }
         Err(UserServiceError::Database(database_error))
             if database_error
                 .as_database_error()

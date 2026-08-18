@@ -239,11 +239,8 @@ async fn bootstrap_admin_can_login_and_use_cookie_session() {
         )
         .await
         .expect("user registration response");
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(
-        json(response).await["code"],
-        "email_verification_unavailable"
-    );
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(json(response).await["code"], "registration_disabled");
 
     let public_registration_count: i64 = chenxing_auth::sqlx::query_scalar(
         "SELECT COUNT(*) FROM users WHERE username = $1 OR email = $2",

@@ -153,10 +153,10 @@ async fn spa_json_oauth_flow_requires_session_and_reuses_consent() {
         )
         .await
         .expect("registration response");
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let registration_error: serde_json::Value =
         serde_json::from_str(&body(response).await).expect("registration error JSON");
-    assert_eq!(registration_error["code"], "email_verification_unavailable");
+    assert_eq!(registration_error["code"], "registration_disabled");
 
     let response = router
         .clone()

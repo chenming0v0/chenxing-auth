@@ -2,7 +2,7 @@ use super::{SettingsService, SettingsServiceError};
 use crate::audit::{AuditEvent, AuditService};
 use crate::settings::{
     SecurityLimitsSetting,
-    domain::{EmailPolicySetting, PasskeySetting},
+    domain::{EmailPolicySetting, PasskeySetting, RegistrationSetting},
     persisted::{
         PersistedDecode, PersistedLoadError, PersistedSetting, SettingInspection, decode_persisted,
     },
@@ -125,6 +125,50 @@ impl SettingsService {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
         repository::set_email_policy(&mut *transaction, &value).await?;
+        audit
+            .record_in_transaction(&mut transaction, audit_event(&value))
+            .await?;
+        transaction.commit().await?;
+        Ok(value)
+    }
+
+    /// 公开注册开关的热路径读取：损坏或越界 fail-closed，与 email policy 同管道。
+    ///
+    /// 注册闸门（`users::service::registration::register`）与匿名状态端点都走这里；
+    /// 管理读取走 [`Self::inspect_registration`]。
+    pub async fn registration(&self) -> Result<RegistrationSetting, SettingsServiceError> {
+        self.decode_stored::<RegistrationSetting>()
+            .await?
+            .require(
+                RegistrationSetting::default(),
+                |value| value,
+                RegistrationSetting::validate,
+            )
+            .map_err(Self::persist_error::<RegistrationSetting>)
+    }
+
+    pub async fn inspect_registration(
+        &self,
+    ) -> Result<SettingInspection<RegistrationSetting>, SettingsServiceError> {
+        Ok(self.decode_stored::<RegistrationSetting>().await?.inspect(
+            RegistrationSetting::default(),
+            |value| value,
+            RegistrationSetting::validate,
+        ))
+    }
+
+    pub async fn set_registration_audited<F>(
+        &self,
+        value: RegistrationSetting,
+        audit: &AuditService,
+        audit_event: F,
+    ) -> Result<RegistrationSetting, SettingsServiceError>
+    where
+        F: FnOnce(&RegistrationSetting) -> AuditEvent,
+    {
+        let value = value.validate()?;
+        let mut transaction = self.pool.begin().await?;
+        repository::set_registration(&mut *transaction, &value).await?;
         audit
             .record_in_transaction(&mut transaction, audit_event(&value))
             .await?;

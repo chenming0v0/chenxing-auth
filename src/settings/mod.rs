@@ -14,6 +14,7 @@ mod smtp_sender;
 
 pub use domain::{
     EmailPolicySetting, PasskeyAuthenticatorAttachment, PasskeySetting, PasskeyUserVerification,
+    RegistrationSetting,
 };
 pub use issuer::{InitializeIssuerOutcome, IssuerSettingError};
 pub use issuer_runtime::{
@@ -30,6 +31,7 @@ pub use session_lifetime::{DEFAULT_SESSION_TTL_SECONDS, SessionLifetimeSetting};
 pub use smtp::{SmtpPasswordAction, SmtpSetting, SmtpSettingUpdate};
 
 pub const REGISTRATION_EMAIL_FROM_KEY: &str = "registration_email_from";
+pub const REGISTRATION_SETTING_KEY: &str = "registration";
 pub const PASSKEY_KEY: &str = "passkey";
 pub const EMAIL_POLICY_KEY: &str = "email_policy";
 pub const SMTP_KEY: &str = "smtp";
