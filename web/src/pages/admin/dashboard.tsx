@@ -46,8 +46,8 @@ export function AdminDashboard() {
       <PageIntro eyebrow="// Admin · Dashboard" title="仪表盘" description="辰星认证中枢的运行状态、认证流量与安全事件总览。" />
       <AdminGate access={access} permission="manage_clients">
         {error ? <div className="mb-4"><Notice tone="warning">{error}</Notice></div> : null}
-        {overview ? (
-          <div className="flex flex-col gap-6">
+        <div className="flex flex-col gap-6">
+          {overview ? (
             <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <HudPanel className="!p-5">
                 <p className="chenxing-label flex items-center gap-2"><Icon name="users" className="text-[var(--chenxing-cyan)]" size={16} />注册用户</p>
@@ -70,29 +70,29 @@ export function AdminDashboard() {
                 <p className="chenxing-caption mt-1.5 text-[var(--chenxing-warning)]">安全与管理操作索引</p>
               </HudPanel>
             </div>
-            <TablePanel
-              icon="activity"
-              title="最近审计"
-              description="只展示非敏感索引字段。"
-              notice={auditError ? <Notice tone="warning">{auditError}</Notice> : null}
+          ) : null}
+          <TablePanel
+            icon="activity"
+            title="最近审计"
+            description="只展示非敏感索引字段。"
+            notice={auditError ? <Notice tone="warning">{auditError}</Notice> : null}
+          >
+            <DataTable
+              minWidth={720}
+              columns={['时间', '事件', '主体', { label: '资源', align: 'right' }]}
+              empty={audits.length ? null : auditError ? '最近审计暂时不可用。' : access.data?.permissions.includes('read_audit') ? '暂无审计事件。' : '暂无审计事件或缺少 read_audit 权限'}
             >
-              <DataTable
-                minWidth={720}
-                columns={['时间', '事件', '主体', { label: '资源', align: 'right' }]}
-                empty={audits.length ? null : auditError ? '最近审计暂时不可用。' : access.data?.permissions.includes('read_audit') ? '暂无审计事件。' : '暂无审计事件或缺少 read_audit 权限'}
-              >
-                {audits.map((event, index) => (
-                  <tr key={event.id ?? `${event.created_at}-${index}`}>
-                    <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(event.created_at)}</td>
-                    <td className="chenxing-body text-sm">{event.action || '—'}</td>
-                    <td className="chenxing-body text-sm">{event.actor_type || '—'}{event.actor_id ? ` · ${event.actor_id}` : ''}</td>
-                    <td className="text-right"><span className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{event.resource_type || '—'}</span></td>
-                  </tr>
-                ))}
-              </DataTable>
-            </TablePanel>
-          </div>
-        ) : null}
+              {audits.map((event, index) => (
+                <tr key={event.id ?? `${event.created_at}-${index}`}>
+                  <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{formatDate(event.created_at)}</td>
+                  <td className="chenxing-body text-sm">{event.action || '—'}</td>
+                  <td className="chenxing-body text-sm">{event.actor_type || '—'}{event.actor_id ? ` · ${event.actor_id}` : ''}</td>
+                  <td className="text-right"><span className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{event.resource_type || '—'}</span></td>
+                </tr>
+              ))}
+            </DataTable>
+          </TablePanel>
+        </div>
       </AdminGate>
     </ConsoleLayout>
   )

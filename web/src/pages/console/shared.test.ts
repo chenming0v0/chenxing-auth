@@ -49,8 +49,13 @@ describe('formatQuota', () => {
       .toBe('今日 3/100 · 本月 12/2000')
   })
 
-  it('renders null limits as ∞ instead of undefined', () => {
+  it('renders no-plan limits as unavailable', () => {
     expect(formatQuota({ quota: { daily_used: 0, daily_limit: null, monthly_used: 0, monthly_limit: null } }))
-      .toBe('今日 0/∞ · 本月 0/∞')
+      .toBe('今日 不可用 · 本月 不可用')
+  })
+
+  it('renders an unlimited monthly limit only for an effective plan', () => {
+    expect(formatQuota({ quota: { daily_used: 3, daily_limit: 100, monthly_used: 12, monthly_limit: null } }))
+      .toBe('今日 3/100 · 本月 12/∞')
   })
 })

@@ -115,7 +115,10 @@ export function UsersTable({ access }: { access: AdminAccess }) {
   }, [location.search, page, refreshKey])
 
   async function setUserStatus(user: PublicUser) {
-    if (!access.data?.permissions.includes('manage_users')) return
+    const permissions = access.data?.permissions ?? []
+    const isSelf = user.id === access.data?.user_id
+    const needsRolePermission = user.role === 'admin' || user.role === 'owner'
+    if (!permissions.includes('manage_users') || isSelf || (needsRolePermission && !permissions.includes('manage_roles'))) return
     const nextStatus = user.status === 'disabled' ? 'active' : 'disabled'
     const nextStatusLabel = nextStatus === 'disabled' ? '已禁用' : '已启用'
     const consequence = nextStatus === 'disabled'
@@ -187,6 +190,10 @@ export function UsersTable({ access }: { access: AdminAccess }) {
       >
         {result?.items.map((user) => {
           const isSelf = user.id === access.data?.user_id
+          const canManageRoles = Boolean(access.data?.permissions.includes('manage_roles'))
+          const canManagePrivilegedTarget = canManageRoles || (user.role !== 'admin' && user.role !== 'owner')
+          const canAssignPlan = Boolean(access.data?.permissions.includes('manage_users')) && canManagePrivilegedTarget
+          const canChangeStatus = Boolean(access.data?.permissions.includes('manage_users')) && canManagePrivilegedTarget && !isSelf
           return (
             <tr key={user.id}>
                   <td className="chenxing-mono text-xs text-[var(--chenxing-muted-foreground)]">{user.id}</td>
@@ -224,8 +231,8 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                     <button
                       type="button"
                       className="chenxing-link chenxing-row-action"
-                      disabled={!access.data?.permissions.includes('manage_users')}
-                      title={access.data?.permissions.includes('manage_users') ? undefined : '套餐分配需要 manage_users 权限'}
+                      disabled={!canAssignPlan}
+                      title={canAssignPlan ? undefined : isSelf ? '不能为自己分配套餐' : '为管理员或 Owner 分配套餐需要 manage_roles 权限'}
                       onClick={() => setAssignTarget(user.id)}
                     >
                       <Icon name="crown" size={13} />
@@ -237,7 +244,8 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                     <button
                       type="button"
                       className={`chenxing-link chenxing-row-action${user.status === 'active' ? ' text-[var(--chenxing-error)]' : ''}`}
-                      disabled={!access.data?.permissions.includes('manage_users') || busy.has(user.id)}
+                      disabled={!canChangeStatus || busy.has(user.id)}
+                      title={canChangeStatus ? undefined : isSelf ? '不能修改自己的状态' : '修改管理员或 Owner 状态需要 manage_roles 权限'}
                       onClick={() => void setUserStatus(user)}
                     >
                       {user.status === 'active' ? '禁用' : '启用'}

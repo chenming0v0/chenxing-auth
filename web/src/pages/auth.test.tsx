@@ -127,6 +127,21 @@ describe('AuthPage 注册页服务条款同意（#89）', () => {
 
 // 注册页公开注册状态三态见 auth-registration-status.test.tsx（本文件的行数上限）。
 
+describe('AuthPage 登录模式选择器（#634）', () => {
+  it('exposes the selected login mode through aria-pressed', () => {
+    render(<AuthPage mode="login" />)
+    const account = screen.getByRole('button', { name: '账号登录' })
+    const auth = screen.getByRole('button', { name: 'Auth 登录' })
+
+    expect(account.getAttribute('aria-pressed')).toBe('true')
+    expect(auth.getAttribute('aria-pressed')).toBe('false')
+
+    fireEvent.click(auth)
+    expect(account.getAttribute('aria-pressed')).toBe('false')
+    expect(auth.getAttribute('aria-pressed')).toBe('true')
+  })
+})
+
 describe('AuthPage 登录页移除失效的 keepLogin 控件（#88）', () => {
   it('登录表单不再渲染「保持登录」复选框', () => {
     render(<AuthPage mode="login" />)

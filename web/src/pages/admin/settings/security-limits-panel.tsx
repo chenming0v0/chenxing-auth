@@ -125,7 +125,7 @@ export function SecurityLimitsPanel({ onMessage, onDirtyChange }: SettingsPanelP
       const next = toDraft(updated)
       setDraft(next)
       setSavedDraft(next)
-      onMessage('安全限流配置已保存，重启服务后生效。', 'warning')
+      onMessage('安全限流配置已保存；当前实例立即生效，其他实例将在约 5 秒内同步。')
     } catch (reason) {
       onMessage(reason instanceof Error ? reason.message : '安全限流配置保存失败。', 'warning')
     } finally {
@@ -139,7 +139,7 @@ export function SecurityLimitsPanel({ onMessage, onDirtyChange }: SettingsPanelP
         <Icon name="shield" className="text-[var(--chenxing-cyan)]" size={18} />
         配置安全限流阈值
       </h2>
-      <p className="chenxing-caption mt-1.5">用以在暴力破解或洪泛发生时调整边界；配置保存后需重启服务才能生效。</p>
+      <p className="chenxing-caption mt-1.5">用以在暴力破解或洪泛发生时调整边界；保存后当前实例立即使用新配置，其他实例将在约 5 秒内同步。</p>
       {loading || !draft ? (
         <div className="mt-5"><Notice>正在加载安全限流配置。</Notice></div>
       ) : (

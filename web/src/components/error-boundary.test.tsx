@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
 import { ErrorBoundary } from './error-boundary'
+import { subscribeToMediaQuery } from './motion'
 
 // 恢复界面复用 SpaceBackdrop（星野 canvas + matchMedia）与 AuthPanel。
 // jsdom 不实现 matchMedia，补一个最小桩；canvas 2d 上下文在 jsdom 返回 null，
@@ -28,6 +29,39 @@ const originalLocation = Object.getOwnPropertyDescriptor(window, 'location')
 function Bomb(): never {
   throw new Error('leaked-secret-detail')
 }
+
+describe('MediaQueryList compatibility', () => {
+  it('uses legacy listeners when modern methods are unavailable', () => {
+    const addListener = vi.fn()
+    const removeListener = vi.fn()
+    const listener = vi.fn()
+    const mq = { addListener, removeListener } as unknown as MediaQueryList
+
+    const unsubscribe = subscribeToMediaQuery(mq, listener)
+
+    expect(addListener).toHaveBeenCalledWith(listener)
+    expect(removeListener).not.toHaveBeenCalled()
+    unsubscribe()
+    expect(removeListener).toHaveBeenCalledWith(listener)
+  })
+
+  it('prefers modern listeners when both APIs exist', () => {
+    const addEventListener = vi.fn()
+    const removeEventListener = vi.fn()
+    const addListener = vi.fn()
+    const removeListener = vi.fn()
+    const listener = vi.fn()
+    const mq = { addEventListener, removeEventListener, addListener, removeListener } as unknown as MediaQueryList
+
+    const unsubscribe = subscribeToMediaQuery(mq, listener)
+
+    expect(addEventListener).toHaveBeenCalledWith('change', listener)
+    expect(addListener).not.toHaveBeenCalled()
+    unsubscribe()
+    expect(removeEventListener).toHaveBeenCalledWith('change', listener)
+    expect(removeListener).not.toHaveBeenCalled()
+  })
+})
 
 describe('ErrorBoundary', () => {
   beforeEach(() => {
@@ -60,7 +94,11 @@ describe('ErrorBoundary', () => {
         <Bomb />
       </ErrorBoundary>,
     )
-    expect(screen.getByRole('heading', { name: '界面遇到问题' })).toBeTruthy()
+    const heading = screen.getByRole('heading', { name: '界面遇到问题' })
+    expect(heading).toBeTruthy()
+    expect(heading.getAttribute('tabindex')).toBe('-1')
+    expect(document.activeElement).toBe(heading)
+    expect(heading.closest('[role="alert"]')?.getAttribute('aria-live')).toBe('assertive')
     expect(screen.queryByText('正常内容')).toBeNull()
   })
 
