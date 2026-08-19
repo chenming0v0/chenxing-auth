@@ -41,7 +41,14 @@ if redis.call('ZCARD', pending_key) >= pending_limit then return -1 end
 if not redis.call('SET', state_key, payload, 'EX', ttl_seconds, 'NX') then return -2 end
 
 redis.call('ZADD', pending_key, now + (ttl_seconds * 1000), state)
-redis.call('EXPIRE', pending_key, ttl_seconds + 1)
+local pending_ttl = ttl_seconds + 1
+local current_pending_ttl = redis.call('TTL', pending_key)
+if current_pending_ttl < pending_ttl then
+    -- The index is shared by states admitted under different runtime settings.
+    -- Never shorten it when a later configuration uses a smaller payload TTL:
+    -- an older payload/member may still be alive and must remain capacity-visible.
+    redis.call('EXPIRE', pending_key, pending_ttl)
+end
 if source_rate_enabled then
     redis.call('ZADD', rate_key, now, state)
     redis.call('EXPIRE', rate_key, window_seconds + 1)

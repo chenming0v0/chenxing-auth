@@ -200,10 +200,12 @@ impl SessionStore {
         if entry.attempts >= self.outbox_policy.max_attempts {
             crate::sqlx::query(
                 "UPDATE session_outbox
-                 SET dead_lettered_at = NOW(), last_error = $2
-                 WHERE id = $1 AND processed_at IS NULL",
+                 SET dead_lettered_at = NOW(), last_error = $4
+                 WHERE id = $1 AND processed_at IS NULL AND claim_generation = $2 AND claim_token = $3",
             )
             .bind(entry.id)
+            .bind(entry.generation)
+            .bind(&entry.claim_token)
             .bind(error_value.to_string())
             .execute(pool)
             .await?;
@@ -223,8 +225,8 @@ impl SessionStore {
             .min(300);
         crate::sqlx::query(
             "UPDATE session_outbox
-             SET available_at = NOW() + $2, last_error = $3
-             WHERE id = $1",
+             SET available_at = NOW() + $4, last_error = $5
+             WHERE id = $1 AND processed_at IS NULL AND claim_generation = $2 AND claim_token = $3",
         )
         .bind(entry.id)
         .bind(time::Duration::seconds(delay_seconds))
