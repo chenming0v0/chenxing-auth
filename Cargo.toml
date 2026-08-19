@@ -1,6 +1,6 @@
 [package]
 name = "chenxing-auth"
-version = "1.1.10"
+version = "1.1.11"
 edition = "2024"
 description = "天穹辰星 · 辰星认证中枢"
 license = "MIT"
@@ -45,7 +45,7 @@ tower-http = { version = "0.6", features = ["fs", "timeout", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2"
-webauthn-rs = { version = "0.6.1-dev", default-features = false, features = ["danger-allow-state-serialisation"] }
+webauthn-rs = { version = "0.6.1-dev", default-features = false, features = ["danger-allow-state-serialisation", "resident-key-support"] }
 webauthn-rs-core = "=0.6.1-dev"
 uuid = { version = "1", features = ["serde", "v4"] }
 zeroize = { version = "1", features = ["derive"] }

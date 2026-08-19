@@ -32,6 +32,8 @@ mod authenticated_enrollment;
 mod passkey;
 #[path = "passkey_core.rs"]
 mod passkey_core;
+#[path = "passkey_discoverable.rs"]
+mod passkey_discoverable;
 #[path = "recovery.rs"]
 mod recovery;
 #[path = "totp_enrollment.rs"]
@@ -42,6 +44,7 @@ mod totp_service;
 pub use authenticated_enrollment::{
     EnrollmentFinish, EnrollmentStart, SessionFactorSummary, SessionPasskeyStart, SessionTotpStart,
 };
+pub use passkey_discoverable::DiscoverablePasskeyConfirmation;
 pub use recovery::{
     AccountFactorStatus, EncryptionKeyHealth, PasskeyResetOutcome, SelfServiceRemovalOutcome,
     TotpFactorStatus, TotpResetOutcome,

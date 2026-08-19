@@ -6,6 +6,8 @@ import { AuthPanel, AuthShell } from '../components/shells'
 import { Button, Field, HudPanel, Icon, Notice, PasswordField } from '../components/ui'
 import { FactorOrchestrator } from './auth/factor-orchestrator'
 import { ExternalProviders } from './auth/external-providers'
+import { passkeyErrorMessage, supportsWebAuthnGet } from '../passkey'
+import { loginWithDiscoverablePasskey } from './auth/passkey-login'
 
 type AuthMode = 'login' | 'register'
 
@@ -17,18 +19,15 @@ const PASSWORD_MAX_INPUT_LENGTH = PASSWORD_MAX_LENGTH * 2
 function passwordCodePointLength(value: string): number {
   return Array.from(value).length
 }
-
 function limitPasswordInput(value: string): string {
   return Array.from(value).slice(0, PASSWORD_MAX_LENGTH).join('')
 }
-
 const DEFAULT_RETURN_TO = '/console'
 
 export function safeReturnTo(value: string | null): string {
   if (!value) return DEFAULT_RETURN_TO
   try {
-    // URLSearchParams.get() already decodes one layer. Validate any remaining
-    // escapes without using the decoded result, so double-encoded paths stay paths.
+    // Validate remaining escapes without decoding the navigation target a second time.
     decodeURIComponent(value)
     const target = new URL(value.replace(/\\/g, '/'), window.location.origin)
     if (target.origin !== window.location.origin || target.username || target.password) return DEFAULT_RETURN_TO
@@ -38,16 +37,7 @@ export function safeReturnTo(value: string | null): string {
   }
 }
 
-/**
- * 绑定失败后把已失效的 request_id 从地址栏与 returnTo 里一并移除（#395）。
- *
- * 顶层 request_id 决定登录后是否重新绑定待授权请求：不清除它，用户重新登录
- * 后仍会绑定同一失效请求、再次失败，陷入无出口循环。returnTo 里也可能埋着
- * 同一个 request_id（#270 的 401 提升逻辑），只清顶层时重新登录会直接跳回
- * 同一失效请求的确认页，同样没有出路。两处同值参数一起清，重新登录才会
- * 落到 returnTo 指向的真实目标（默认控制台）。随后派发 popstate 通知路由
- * 重渲染，让本页重新读取到的 requestId 变为 null。
- */
+/** 清除失效授权请求的全部入口，避免重新登录后再次绑定并形成循环（#395）。 */
 function dropDeadRequestId(requestId: string): void {
   const params = new URLSearchParams(window.location.search)
   const returnTo = params.get('returnTo')
@@ -180,14 +170,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
     navigate(returnTo)
   }
 
-  /**
-   * login_ticket 失效后从 MFA 步骤回到登录表单。pending 置空会卸载整个
-   * 因子编排器，其内部的 setup/选中/验证码状态随之销毁；已填凭据保留，
-   * 用户直接重新提交即可，不打断登录流程也不把用户卡死。
-   * authTab 同时复位到 'account'（#385）：MFA 流程可能从「Auth 登录」页签
-   * 发起，pending 清空后若页签仍停在 'auth'，渲染会落到外部身份源列表，
-   * 账号登录表单被隐藏，用户看到提示却找不到表单。
-   */
+  /** login_ticket 失效时卸载因子状态，并回到账号表单提供明确恢复出口（#385）。 */
   function resetToLogin() {
     releaseSubmitLock()
     setMessage('验证流程已失效，请重新登录。')
@@ -254,6 +237,22 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
     }
   }
 
+  async function loginWithPasskey(): Promise<void> {
+    if (!isLogin || !supportsWebAuthnGet() || !acquireSubmitLock()) {
+      if (!supportsWebAuthnGet()) setMessage('当前浏览器不支持 Passkey，请使用支持 WebAuthn 的浏览器。')
+      return
+    }
+    try {
+      setMessage('')
+      setBusy(true)
+      await loginWithDiscoverablePasskey(setPending, completeLogin)
+    } catch (error) {
+      setMessage(passkeyErrorMessage(error))
+    } finally {
+      releaseSubmitLock()
+    }
+  }
+
   return (
     <AuthShell
       status={isLogin ? '统一登录' : '创建通行证'}
@@ -298,7 +297,11 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
             <FactorOrchestrator pending={pending} busy={busy} onComplete={completeLogin} onBusy={setAuthBusy} onMessage={setMessage} onRelogin={resetToLogin} />
           </div>
         ) : isLogin && authTab === 'auth' ? (
-          <div className="mt-5">
+          <div className="mt-5 space-y-5">
+            <Button type="button" variant="primary" icon="key-round" className="w-full py-3" onClick={() => void loginWithPasskey()} disabled={busy}>
+              {busy ? '验证中…' : '使用 Passkey 登录'}
+            </Button>
+            <div className="flex items-center gap-3 text-[11px] uppercase tracking-[0.16em] text-[var(--chenxing-muted-foreground)]"><span className="h-px flex-1 bg-[var(--chenxing-border)]" /><span>外部身份源</span><span className="h-px flex-1 bg-[var(--chenxing-border)]" /></div>
             <ExternalProviders requestId={requestId} />
           </div>
         ) : (

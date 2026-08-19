@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmptyInput {}
+
 #[derive(Deserialize)]
 pub struct TotpSetupInput {
     #[serde(default)]
@@ -104,6 +108,21 @@ impl fmt::Debug for PasskeyAuthenticationInput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PasskeyAuthenticationInput")
             .field("login_ticket", &"<redacted>")
+            .field("credential", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DiscoverablePasskeyFinishInput {
+    pub challenge_id: String,
+    pub credential: PublicKeyCredential,
+}
+
+impl fmt::Debug for DiscoverablePasskeyFinishInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DiscoverablePasskeyFinishInput")
+            .field("challenge_id", &"<redacted>")
             .field("credential", &"<redacted>")
             .finish()
     }

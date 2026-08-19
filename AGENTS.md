@@ -177,13 +177,15 @@ CHENXING_TEST_ROLE=orchestrator ./test_sh/test.sh --full
 
 #### 子代理
 
-允许：`fmt` / `check` 的全部形式；`test.sh --lib`、`--test NAME`、`--clean-only`。
+**禁止子代理执行任何会产生 `target/` 文件的命令。** 子代理只能运行不触发编译的命令。`cargo check`、`cargo test`、`cargo build`、`cargo clippy` 等一切涉及编译入口的命令全部禁止——它们生成的 `target/` 目录（每个约 5-20 GB）是工作树膨胀的元凶，且子代理的产物不会被自动清理。
+
+允许：`cargo fmt --check`（不编译，不产生 `target/`）。
 
 禁止：
 
-- 任何会运行全部用例的命令，包括 `test.sh --full` / `--gate` / `--coverage`。
+- 任何会产生 `target/` 文件的命令，包括但不限于 `cargo check`、`cargo build`、`cargo test`、`cargo clippy`、`cargo llvm-cov` 以及它们的任何变体。
+- 任何 `test.sh` 调用——脚本本身调用 `cargo test` 或 `cargo llvm-cov`，必然产生 `target/`。
 - `-E / --filter`。`-E 'all()'` 等于全量套件，会绕过门控。
-- 全部执行用例的裸 Cargo 命令：`cargo test --all-features`、`cargo nextest run --all-features`、`cargo llvm-cov`。
 - 绕过运行器直接调用裸 Cargo 测试命令。
 
 #### 编排者

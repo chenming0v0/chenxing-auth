@@ -15,13 +15,12 @@ use crate::{
 };
 
 use super::super::{
-    EffectiveFactorState, PasswordSessionPersistence, SessionEpochBinding, SessionStore,
-    SessionStoreError,
+    PrimaryFactorSessionPersistence, SessionEpochBinding, SessionStore, SessionStoreError,
 };
 
 /// 写入会话元数据。
 ///
-/// `binding` 为 [`SessionEpochBinding::Authenticated`] 时，epoch 比对发生在本事务
+/// `binding` 绑定本地认证 epoch 时，比对发生在本事务
 /// 已经持有该用户的 advisory 锁与 `users` 行锁之后（Issue #274）。这一点是原子性的
 /// 全部来源：改密走的 `revoke_all_for_user_in_transaction` 需要同一把 advisory 锁，
 /// 因此两个事务只能串行——要么改密先提交、本次读到新 epoch 并拒绝写入，要么本次
@@ -32,7 +31,7 @@ pub(in crate::sessions::store) async fn save_with_metadata(
     session: &mut Session,
     _ttl: Duration,
     binding: SessionEpochBinding,
-) -> Result<PasswordSessionPersistence, SessionStoreError> {
+) -> Result<PrimaryFactorSessionPersistence, SessionStoreError> {
     let pool = store
         .metadata
         .as_ref()
@@ -43,9 +42,6 @@ pub(in crate::sessions::store) async fn save_with_metadata(
         .map_err(|_| SessionStoreError::InvalidUserId)?;
     let token_hash = session_token_hash_bytes(&session.token).to_vec();
     let mut transaction = pool.begin().await?;
-    if matches!(binding, SessionEpochBinding::PasswordAuthenticated { .. }) {
-        crate::settings::repository::lock_passkey_policy(&mut transaction).await?;
-    }
     super::lock_user_session_scope(&mut transaction, user_id).await?;
     let user_state: Option<(i64, String)> =
         crate::sqlx::query_as("SELECT session_epoch, status FROM users WHERE id = $1 FOR UPDATE")
@@ -61,7 +57,7 @@ pub(in crate::sessions::store) async fn save_with_metadata(
     let authenticated_epoch = match binding {
         SessionEpochBinding::Current => None,
         SessionEpochBinding::Authenticated(epoch)
-        | SessionEpochBinding::PasswordAuthenticated {
+        | SessionEpochBinding::PrimaryFactorAuthenticated {
             authenticated_epoch: epoch,
             ..
         } => Some(epoch),
@@ -74,33 +70,16 @@ pub(in crate::sessions::store) async fn save_with_metadata(
         );
         return Err(SessionStoreError::AuthenticationEpochChanged);
     }
-    if let SessionEpochBinding::PasswordAuthenticated { .. } = binding {
-        let factors: (bool, bool) = crate::sqlx::query_as(
-            "SELECT
-                 EXISTS(SELECT 1 FROM user_totp_factors WHERE user_id = $1),
-                 EXISTS(SELECT 1 FROM user_passkeys WHERE user_id = $1)",
+    if let SessionEpochBinding::PrimaryFactorAuthenticated { .. } = binding {
+        let totp_enabled: bool = crate::sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM user_totp_factors WHERE user_id = $1)",
         )
         .bind(user_id)
         .fetch_one(&mut *transaction)
         .await?;
-        let passkey_enabled = match crate::settings::repository::get_text(
-            &mut *transaction,
-            crate::settings::PASSKEY_KEY,
-        )
-        .await?
-        {
-            None => true,
-            Some(raw) => serde_json::from_str::<crate::settings::PasskeySetting>(&raw)
-                .map(|setting| setting.enabled)
-                .unwrap_or(false),
-        };
-        let effective = EffectiveFactorState {
-            totp: factors.0,
-            passkey: passkey_enabled && factors.1,
-        };
-        if effective.totp || effective.passkey {
+        if totp_enabled {
             transaction.rollback().await?;
-            return Ok(PasswordSessionPersistence::FactorBecameRequired(effective));
+            return Ok(PrimaryFactorSessionPersistence::TotpBecameRequired);
         }
     }
     evict_overflow_sessions(store, &mut transaction, user_id, session_epoch).await?;
@@ -118,7 +97,7 @@ pub(in crate::sessions::store) async fn save_with_metadata(
     // cannot leak a sequence value into the caller-visible Session.
     session.id = id;
     session.set_credential_generation(session_epoch);
-    Ok(PasswordSessionPersistence::Stored)
+    Ok(PrimaryFactorSessionPersistence::Stored)
 }
 
 async fn evict_overflow_sessions(

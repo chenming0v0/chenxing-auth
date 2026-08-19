@@ -54,12 +54,15 @@ const PRE_SESSION_MUTATION_PATHS = new Set([
   '/api/v1/auth/passkeys/register/finish',
   '/api/v1/auth/passkeys/authentication/start',
   '/api/v1/auth/passkeys/authentication/finish',
+  '/api/v1/auth/passkeys/discoverable/start',
+  '/api/v1/auth/passkeys/discoverable/finish',
 ])
 
 /** 安全错误码文案映射，使用 Map 避免原型链污染（Object 字面量索引可访问 constructor 等原型属性）。 */
 const safeMessages = new Map<string, string>([
   ['invalid_credentials', '账号或密码不正确。'],
   ['invalid_factor', '验证码不正确，请重试。'],
+  ['invalid_passkey', 'Passkey 验证未通过，请重试。'],
   ['invalid_login_ticket', '验证流程已失效，请重新登录。'],
   ['email_already_registered', '注册信息无法使用，请检查后重试。'],
   ['email_domain_not_allowed', '当前邮箱域名不允许注册。'],

@@ -18,7 +18,10 @@ use crate::{
     audit::AuditEvent,
     auth_factors::{
         handlers::factor_key_unavailable_response,
-        session::{StaleCredentialCode, factor_required_ticket_response, issue_user_session},
+        session::{
+            StaleCredentialCode, factor_required_ticket_response, issue_primary_factor_session,
+            issue_verified_session,
+        },
     },
     error,
     sessions::cookies,
@@ -300,14 +303,13 @@ pub async fn login_user(
             )
         }
         Ok(LoginDecision::TotpAccepted(authenticated)) => {
-            issue_user_session(
+            issue_verified_session(
                 &state,
                 authenticated,
                 "totp",
                 &headers,
                 source_ip.as_deref(),
                 StaleCredentialCode::InvalidCredentials,
-                false,
             )
             .await
         }
@@ -364,14 +366,13 @@ pub async fn login_user(
                 )
                 .await;
             }
-            issue_user_session(
+            issue_primary_factor_session(
                 &state,
                 authenticated,
                 "password",
                 &headers,
                 source_ip.as_deref(),
                 StaleCredentialCode::InvalidCredentials,
-                true,
             )
             .await
         }

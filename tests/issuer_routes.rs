@@ -588,7 +588,7 @@ async fn issuer_gate_does_not_turn_malformed_dynamic_paths_into_503() {
 #[tokio::test]
 async fn final_session_issuance_rechecks_issuer_login_policy() {
     use chenxing_auth::{
-        auth_factors::session::{StaleCredentialCode, issue_user_session},
+        auth_factors::session::{StaleCredentialCode, issue_verified_session},
         users::domain::AuthenticatedUser,
     };
 
@@ -596,14 +596,13 @@ async fn final_session_issuance_rechecks_issuer_login_policy() {
     let headers = axum::http::HeaderMap::new();
 
     for factor in ["totp", "passkey"] {
-        let response = issue_user_session(
+        let response = issue_verified_session(
             &state,
             AuthenticatedUser::new(2, 0),
             factor,
             &headers,
             None,
             StaleCredentialCode::InvalidFactor,
-            false,
         )
         .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{factor}");
@@ -623,14 +622,13 @@ async fn final_session_issuance_rechecks_issuer_login_policy() {
     );
 
     state.issuer = IssuerRuntime::new_invalid(&state.config, 1);
-    let response = issue_user_session(
+    let response = issue_verified_session(
         &state,
         AuthenticatedUser::new(1, 0),
         "totp",
         &headers,
         None,
         StaleCredentialCode::InvalidFactor,
-        false,
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);

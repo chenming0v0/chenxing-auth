@@ -367,6 +367,10 @@ async fn passkey_registration_start_returns_creation_challenge_for_login_ticket(
     let body = json_response(response).await;
     assert!(body["publicKey"]["challenge"].as_str().is_some());
     assert!(body["publicKey"]["rp"]["id"].as_str().is_some());
+    assert_eq!(
+        body["publicKey"]["authenticatorSelection"]["residentKey"],
+        "required"
+    );
     assert!(body["session_id"].is_null());
 
     let response = post_with_cookie(
@@ -404,6 +408,29 @@ async fn passkey_registration_start_returns_creation_challenge_for_login_ticket(
         .execute(&database)
         .await
         .expect("user cleanup");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn discoverable_passkey_start_returns_a_usernameless_challenge() {
+    let (router, _state, _database, key_directory, _email) = setup().await;
+    let response = post_with_cookie(
+        &router,
+        "/api/v1/auth/passkeys/discoverable/start",
+        serde_json::json!({}),
+        "",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_response(response).await;
+    assert!(Uuid::parse_str(body["challenge_id"].as_str().expect("challenge id")).is_ok());
+    assert!(body["options"]["publicKey"]["challenge"].as_str().is_some());
+    assert_eq!(body["options"]["publicKey"]["userVerification"], "required");
+    assert!(
+        body["options"]["publicKey"]["allowCredentials"]
+            .as_array()
+            .is_none_or(Vec::is_empty)
+    );
     let _ = std::fs::remove_dir_all(key_directory);
 }
 

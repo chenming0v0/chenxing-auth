@@ -291,7 +291,7 @@ impl AuthFactorService {
             )?
             .attestation(AttestationConveyancePreference::None)
             .credential_algorithms(COSEAlgorithm::secure_algs())
-            .require_resident_key(false)
+            .require_resident_key(true)
             .authenticator_attachment(authenticator_attachment(&settings))
             .user_verification_policy(user_verification_policy(&settings))
             .reject_synchronised_authenticators(false)

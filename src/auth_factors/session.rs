@@ -13,7 +13,7 @@ use crate::{
     sessions::{
         cookies,
         domain::Session,
-        store::{PasswordSessionPersistence, SessionStoreError},
+        store::{PrimaryFactorSessionPersistence, SessionStoreError},
     },
     state::AppState,
     users::domain::{AuthenticatedUser, UserStatus},
@@ -69,21 +69,61 @@ impl StaleCredentialCode {
 
 /// 签发浏览器会话。
 ///
-/// `authenticated` 必须来自一次真实的第一因子校验（口令）或由该校验派生的
-/// login ticket，会话写入会在持锁事务内确认它携带的 `session_epoch` 仍是当前值
+/// `authenticated` 必须来自真实的密码、Passkey 或 TOTP 校验。会话写入会在持锁
+/// 事务内确认它携带的 `session_epoch` 仍是当前值；第一因子入口还会原子检查 TOTP
 /// （Issue #274）。版本漂移只可能由"改密并撤销全部会话"造成，因此按认证失败处理，
 /// 不回落成"用当前 epoch 重签"。
 ///
 /// `source_ip` 必须已经过可信代理解析；User-Agent 从这里直接提取。两者写入审计
 /// metadata，供安全日志详情展示（Issue #308）。
-pub async fn issue_user_session(
+pub async fn issue_primary_factor_session(
     state: &AppState,
     authenticated: AuthenticatedUser,
     factor: &str,
     headers: &HeaderMap,
     source_ip: Option<&str>,
     stale_credential: StaleCredentialCode,
-    require_no_effective_factors: bool,
+) -> Response {
+    issue_session(
+        state,
+        authenticated,
+        factor,
+        headers,
+        source_ip,
+        stale_credential,
+        true,
+    )
+    .await
+}
+
+pub async fn issue_verified_session(
+    state: &AppState,
+    authenticated: AuthenticatedUser,
+    factor: &str,
+    headers: &HeaderMap,
+    source_ip: Option<&str>,
+    stale_credential: StaleCredentialCode,
+) -> Response {
+    issue_session(
+        state,
+        authenticated,
+        factor,
+        headers,
+        source_ip,
+        stale_credential,
+        false,
+    )
+    .await
+}
+
+async fn issue_session(
+    state: &AppState,
+    authenticated: AuthenticatedUser,
+    factor: &str,
+    headers: &HeaderMap,
+    source_ip: Option<&str>,
+    stale_credential: StaleCredentialCode,
+    require_totp_completion: bool,
 ) -> Response {
     let user_id = authenticated.id;
     if !state.issuer.local_login_allowed(user_id) {
@@ -122,17 +162,17 @@ pub async fn issue_user_session(
             return error::internal();
         }
     };
-    let persistence = if require_no_effective_factors {
+    let persistence = if require_totp_completion {
         state
             .sessions
-            .save_password_authenticated(&mut session, ttl, authenticated.session_epoch)
+            .save_primary_factor_authenticated(&mut session, ttl, authenticated.session_epoch)
             .await
     } else {
         state
             .sessions
             .save_authenticated(&mut session, ttl, authenticated.session_epoch)
             .await
-            .map(|()| PasswordSessionPersistence::Stored)
+            .map(|()| PrimaryFactorSessionPersistence::Stored)
     };
     let persistence = match persistence {
         Ok(persistence) => persistence,
@@ -152,15 +192,9 @@ pub async fn issue_user_session(
             return error::internal();
         }
     };
-    if let PasswordSessionPersistence::FactorBecameRequired(factors) = persistence {
-        let mut methods = Vec::with_capacity(2);
-        if factors.passkey {
-            methods.push(FactorMethod::Passkey);
-        }
-        if factors.totp {
-            methods.push(FactorMethod::Totp);
-        }
-        return factor_required_ticket_response(state, authenticated, methods).await;
+    if persistence == PrimaryFactorSessionPersistence::TotpBecameRequired {
+        return factor_required_ticket_response(state, authenticated, vec![FactorMethod::Totp])
+            .await;
     }
     if state
         .audit
