@@ -16,6 +16,13 @@ pub const IP_FAILURE_LIMIT: i64 = 30;
 /// TOTP failures allowed for one pending login ticket before it is invalidated.
 pub const TOTP_TICKET_FAILURE_LIMIT: i64 = 5;
 
+/// Minimum lifetime of an authentication verification reservation.
+///
+/// This is deliberately independent from the failure-history window: operators may
+/// use a short failure window for policy tests or aggressive lockout while Argon2,
+/// TOTP, or WebAuthn verification is still in progress.
+pub const AUTH_VERIFICATION_LEASE_SECONDS: i64 = 15 * 60;
+
 /// 运行期可配置的认证失败阈值（#121）。
 ///
 /// 上面的常量保留为默认值，`FailureDimension::limit()` 也保持原语义不变——

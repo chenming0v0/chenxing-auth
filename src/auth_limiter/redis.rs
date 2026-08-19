@@ -5,6 +5,7 @@ use super::domain::{
     AuthFailureLimiter, AuthFailureLimits, AuthLimiterFailurePolicy, AuthReservation,
     FailureDimension, FailureRecord, LimiterDimension, LimiterFuture,
 };
+use super::domain::AUTH_VERIFICATION_LEASE_SECONDS;
 use super::policy::{
     LimiterPolicy, count_failure_records, log_blocked_dimension, log_limit, value_hash,
 };
@@ -230,8 +231,9 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                 invocation.key(self.pending_key(*dimension, value));
             }
             invocation.arg(dimensions.len());
-            invocation.arg(limits.window());
+            invocation.arg(AUTH_VERIFICATION_LEASE_SECONDS);
             invocation.arg(&token);
+            invocation.arg(limits.window());
             for (dimension, _) in &dimensions {
                 invocation.arg(limits.limit_for(*dimension));
             }
@@ -276,8 +278,9 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
                 invocation.key(self.pending_key(*dimension, value));
             }
             invocation.arg(dimensions.len());
-            invocation.arg(limits.window());
+            invocation.arg(AUTH_VERIFICATION_LEASE_SECONDS);
             invocation.arg(&reservation.leases[0].token);
+            invocation.arg(limits.window());
             for (dimension, _) in &dimensions {
                 invocation.arg(limits.limit_for(*dimension));
             }

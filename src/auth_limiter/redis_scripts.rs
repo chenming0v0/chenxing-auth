@@ -90,13 +90,13 @@ return reached
 /// 因此过期 reservation 不会误减后来请求的活跃 reservation。
 pub(crate) const RESERVE_ATTEMPT_SCRIPT: &str = r#"
 local count = tonumber(ARGV[1])
-local window_seconds = tonumber(ARGV[2])
+local lease_seconds = tonumber(ARGV[2])
 local token = ARGV[3]
-local window = window_seconds * 1000
+local window = tonumber(ARGV[4]) * 1000
 local time = redis.call('TIME')
 local now = (tonumber(time[1]) * 1000) + math.floor(tonumber(time[2]) / 1000)
 local cutoff = now - window
-local lease_until = now + window
+local lease_until = now + lease_seconds * 1000
 for index = 1, count do
     local failure_key = KEYS[index]
     local pending_key = KEYS[count + index]
@@ -110,7 +110,7 @@ for index = 1, count do
 end
 for index = 1, count do
     redis.call('ZADD', KEYS[count + index], lease_until, token)
-    redis.call('EXPIRE', KEYS[count + index], window_seconds + 1)
+    redis.call('EXPIRE', KEYS[count + index], lease_seconds + 1)
 end
 return 0
 "#;
@@ -118,9 +118,9 @@ return 0
 /// 把预留提交为一次真实失败：只消费 token 仍持有的 lease。
 pub(crate) const RECORD_RESERVED_FAILURE_SCRIPT: &str = r#"
 local count = tonumber(ARGV[1])
-local window_seconds = tonumber(ARGV[2])
+local lease_seconds = tonumber(ARGV[2])
 local token = ARGV[3]
-local window = window_seconds * 1000
+local window = tonumber(ARGV[4]) * 1000
 local time = redis.call('TIME')
 local now = (tonumber(time[1]) * 1000) + math.floor(tonumber(time[2]) / 1000)
 local cutoff = now - window
