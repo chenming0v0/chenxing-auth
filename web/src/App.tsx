@@ -6,7 +6,7 @@ import { getDocumentTitle } from './data'
 import { LandingPage } from './pages/landing'
 import { AuthPage, BootstrapPage } from './pages/auth'
 import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './pages/oauth'
-import { ConsoleOverview, ConsolePlans, ConsoleProfile, ConsoleSecurity, AuthorizedApps, SecurityLogsPage } from './pages/console/account'
+import { ConsoleOverview, ConsolePlans, ConsoleProfile, AuthorizedApps, SecurityLogsPage } from './pages/console/account'
 import { IntegratePage, PlaygroundPage } from './pages/console/developer'
 import { AdminAudit, AdminClients, AdminDashboard, AdminPlans, AdminUsers, AdminSettings } from './pages/admin'
 import { AuthPanel, AuthShell } from './components/shells'
@@ -14,7 +14,7 @@ import { Button, Notice } from './components/ui'
 
 function AppContent() {
   const path = usePathname()
-  const { status, user, bootstrap, refresh, refreshBootstrap } = useAuth()
+  const { status, user, bootstrap, refresh } = useAuth()
 
   useEffect(() => {
     document.title = getDocumentTitle(path)
@@ -24,30 +24,11 @@ function AppContent() {
   const adminPath = path.startsWith('/admin')
   const bootstrapPath = path === '/bootstrap'
 
-  if (bootstrap === 'loading' || (status === 'loading' && (protectedPath || adminPath))) {
+  if (status === 'loading' && (protectedPath || adminPath)) {
     return (
-      <AuthShell status={bootstrap === 'loading' ? '检查系统状态' : '校验会话'}>
+      <AuthShell status="校验会话">
         <AuthPanel>
-          <Notice tone="info">
-            {bootstrap === 'loading' ? '正在检查系统初始化状态，请稍候。' : '正在检查登录状态，请稍候。'}
-          </Notice>
-        </AuthPanel>
-      </AuthShell>
-    )
-  }
-
-  // 瞬态故障（网络错误 / 5xx）后初始化状态未知：不渲染任何页面，提供重试。
-  // 不能在此处回退到 ready——未初始化系统会被踢到 /login，而登录又被后端拒绝。
-  if (bootstrap === 'error') {
-    return (
-      <AuthShell status="系统状态检查失败">
-        <AuthPanel>
-          <div className="space-y-4">
-            <Notice tone="warning">暂时无法确认系统初始化状态，请检查后端服务或网络连接后重试。</Notice>
-            <Button type="button" icon="refresh-cw" className="w-full" onClick={() => void refreshBootstrap()}>
-              重新检查系统状态
-            </Button>
-          </div>
+          <Notice tone="info">正在检查登录状态，请稍候。</Notice>
         </AuthPanel>
       </AuthShell>
     )
@@ -104,8 +85,8 @@ function AppContent() {
     '/console': <ConsoleOverview />,
     '/console/plans': <ConsolePlans />,
     '/console/profile': <ConsoleProfile />,
-    '/console/security': <ConsoleSecurity />,
-    '/settings/security': <ConsoleSecurity />,
+    '/console/security': <ConsoleProfile />,
+    '/settings/security': <ConsoleProfile />,
     '/console/apps': <AuthorizedApps />,
     '/console/logs': <SecurityLogsPage />,
     '/console/integrate': <IntegratePage />,

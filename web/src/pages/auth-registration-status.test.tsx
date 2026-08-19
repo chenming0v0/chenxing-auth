@@ -8,7 +8,7 @@ import type { UserMe } from '../api'
 installCsrfCookie()
 
 // AuthPage 依赖 useAuth。mock 掉 auth-state，避免 AuthProvider 挂载时额外发出
-// /auth/me 与 /admin/bootstrap/status 请求，污染下面对请求次数的断言。
+// /auth/me 请求，污染下面对请求次数的断言。
 const authStub = vi.hoisted(() => ({
   profile: null as UserMe | null,
 }))
@@ -19,7 +19,6 @@ vi.mock('../auth-state', () => ({
     status: 'unauthenticated',
     bootstrap: 'ready',
     refresh: () => Promise.resolve(authStub.profile),
-    refreshBootstrap: () => Promise.resolve('ready'),
     clear: () => {},
     logout: () => Promise.resolve(),
   }),

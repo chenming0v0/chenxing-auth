@@ -9,7 +9,7 @@ import type { UserMe } from '../api'
 installCsrfCookie()
 
 // AuthPage 依赖 useAuth。这里 mock 掉 auth-state，避免 AuthProvider 挂载时额外发出
-// /auth/me 与 /admin/bootstrap/status 请求，污染下面对请求 body 的断言。
+// /auth/me 请求，污染下面对请求 body 的断言。
 // 桩的可变部分放在 vi.hoisted 里：vi.mock 的工厂在被 mock 模块首次导入时执行，
 // 时机早于本文件顶层 const 初始化，直接引用普通顶层变量会触发 TDZ 错误。
 const authStub = vi.hoisted(() => ({
@@ -25,7 +25,6 @@ vi.mock('../auth-state', () => ({
     status: 'unauthenticated',
     bootstrap: 'ready',
     refresh: () => Promise.resolve(authStub.profile),
-    refreshBootstrap: () => Promise.resolve('ready'),
     clear: () => { authStub.clearCalls += 1 },
     logout: () => Promise.resolve(),
   }),

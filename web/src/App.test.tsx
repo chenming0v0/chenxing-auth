@@ -12,7 +12,6 @@ vi.mock('./auth-state', () => ({
     status: 'unauthenticated',
     bootstrap: 'ready',
     refresh: () => Promise.resolve(null),
-    refreshBootstrap: () => Promise.resolve('ready'),
     clear: () => {},
     logout: () => Promise.resolve({ revoked: true }),
   }),

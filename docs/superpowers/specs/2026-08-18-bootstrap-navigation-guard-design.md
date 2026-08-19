@@ -33,20 +33,22 @@ does not turn static delivery into an HTML error page.
 The existing `/api/v1/admin/bootstrap/status` route and its generic `404` response remain
 unchanged for API consumers and anonymous probes.
 
-### 2. Production SPA behavior
+### 2. SPA behavior
 
-`AuthProvider` skips the bootstrap status request in production builds. Its existing probe remains
-available in Vite development (`import.meta.env.DEV`) so a local fresh database keeps the current
-automatic redirect behavior when the Vite server, rather than the Rust static server, owns the
-document navigation.
+`AuthProvider` never calls the bootstrap status API. It initializes the local bootstrap state from
+the document path selected by the navigation boundary: `/bootstrap` means bootstrap is required;
+all other documents mean the instance is ready. After Owner creation it changes that local state to
+ready before navigating to `/login`.
 
-The production `BootstrapPage` no longer re-probes after a successful Owner creation; the form can
-show its existing success state directly. The backend navigation guard handles subsequent full-page
-loads.
+In production, Rust owns document navigation directly. In Vite development, a small dev-server
+middleware classifies the same SPA document requests and sends a `HEAD` request to the Rust server.
+It forwards only redirect responses and otherwise lets Vite serve the SPA shell. This preserves the
+fresh-database redirect without reintroducing a browser-visible API `404`.
 
 ### 3. Failure and compatibility behavior
 
-- Network/5xx bootstrap probe handling remains unchanged for development builds.
+- If the backend is temporarily unavailable during Vite document navigation, Vite still serves the
+  shell; ordinary API requests expose the dependency failure through the existing recoverable UI.
 - Direct API calls still receive the current documented `200 {initialized:false}` or generic `404`
   contract.
 - Existing SPA routes, OAuth protocol routes, and static asset protections remain in place.
@@ -59,7 +61,7 @@ loads.
   asset, non-HTML, `/bootstrap`, initialized, and uninitialized cases.
 - Add an integration regression test that sends browser-like HTML navigation requests through the
   router and verifies redirects for an isolated empty/initialized database.
-- Extend frontend auth-state tests to verify the production branch does not fetch
-  `/api/v1/admin/bootstrap/status` while development behavior remains covered by existing tests.
+- Extend frontend auth-state tests to verify startup never fetches
+  `/api/v1/admin/bootstrap/status`, and cover the shared Vite navigation classifier.
 - Run targeted Rust and web tests, `cargo fmt --check`, `cargo check --all-features`, and rebuild
   `web/dist` before completion.

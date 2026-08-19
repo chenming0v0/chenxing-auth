@@ -553,6 +553,87 @@ async fn bootstrap_status_stops_answering_once_the_owner_exists() {
     let _ = std::fs::remove_dir_all(key_directory);
 }
 
+/// 浏览器 HTML 导航由后端直接完成首屏引导，不再让生产 SPA 用预期的 404 探测初始化状态。
+#[tokio::test]
+async fn html_navigation_keeps_bootstrap_redirects_without_status_probe() {
+    let (router, database, key_directory) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+
+    let html_navigation = |path: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(path)
+            .header("accept", "text/html,application/xhtml+xml")
+            .header("sec-fetch-dest", "document")
+            .body(Body::empty())
+            .expect("HTML navigation request")
+    };
+
+    let response = router
+        .clone()
+        .oneshot(html_navigation("/login"))
+        .await
+        .expect("uninitialized login navigation response");
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(response.headers().get("location").unwrap(), "/bootstrap");
+
+    let response = router
+        .clone()
+        .oneshot(html_navigation("/bootstrap"))
+        .await
+        .expect("uninitialized bootstrap navigation response");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/html; charset=utf-8")
+    );
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/bootstrap")
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(SocketAddr::new(unique_test_ip(), 41004)))
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": format!("owner-{suffix}"),
+                        "email": format!("owner-{suffix}@example.com"),
+                        "password": "1234567890"
+                    })
+                    .to_string(),
+                ))
+                .expect("bootstrap request"),
+        )
+        .await
+        .expect("bootstrap response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let response = router
+        .clone()
+        .oneshot(html_navigation("/bootstrap"))
+        .await
+        .expect("initialized bootstrap navigation response");
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(response.headers().get("location").unwrap(), "/login");
+
+    let response = router
+        .oneshot(html_navigation("/login"))
+        .await
+        .expect("initialized login navigation response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    chenxing_auth::sqlx::query("DELETE FROM users")
+        .execute(&database)
+        .await
+        .expect("cleanup users");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
 /// #279：引导 POST 必须受按源 IP 的滑动窗口配额约束。
 ///
 /// 直接饱和 Redis 窗口而不是连发 HTTP：走 HTTP 打满配额要付
