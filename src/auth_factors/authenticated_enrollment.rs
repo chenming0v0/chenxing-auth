@@ -128,6 +128,29 @@ impl AuthFactorService {
         })
     }
 
+    pub async fn cancel_session_factor_enrollment(
+        &self,
+        user_id: UserId,
+        session_id: i64,
+        session_epoch: i64,
+        method: FactorMethod,
+        enrollment_id: &str,
+    ) -> Result<bool, AuthFactorServiceError> {
+        let key = self.session_enrollment_key(user_id, method);
+        Ok(self
+            .tickets
+            .take_session_enrollment_if_owner(
+                &key,
+                user_id,
+                session_id,
+                session_epoch,
+                method,
+                enrollment_id,
+            )
+            .await?
+            .is_some())
+    }
+
     pub async fn start_session_totp_enrollment(
         &self,
         user_id: UserId,

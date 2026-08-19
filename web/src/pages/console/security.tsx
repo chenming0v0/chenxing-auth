@@ -76,6 +76,27 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     }
   }
 
+  function cancelTotp(): void {
+    if (totp.phase !== 'ready' || busy) {
+      if (totp.phase === 'idle') return
+      setTotp({ phase: 'idle' })
+      setCode('')
+      return
+    }
+    const enrollmentId = totp.data.enrollment_id
+    setBusy('totp-cancel')
+    void apiFetch<{ cancelled: true }>('/api/v1/auth/security/factor/enrollment/cancel', {
+      method: 'POST',
+      body: JSON.stringify({ enrollment_id: enrollmentId, method: 'totp' }),
+    }).then(() => {
+      setTotp({ phase: 'idle' })
+      setCode('')
+    }).catch((error) => {
+      show(error instanceof Error ? error.message : '取消 TOTP 绑定失败，请重试。')
+    }).finally(() => {
+      setBusy(null)
+    })
+  }
   async function confirmTotp(event: FormEvent): Promise<void> {
     event.preventDefault()
     if (busy || !/^\d{6}$/.test(code)) {
@@ -197,7 +218,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
                 code={code}
                 onCode={setCode}
                 onStartTotp={() => void startTotp()}
-                onCancelTotp={() => { setTotp({ phase: 'idle' }); setCode('') }}
+                onCancelTotp={cancelTotp}
                 onConfirmTotp={(event) => void confirmTotp(event)}
                 onStartPasskey={() => void startPasskey()}
                 onRemove={setRemoving}

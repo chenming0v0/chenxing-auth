@@ -83,6 +83,13 @@ pub struct FactorRemovalInput {
     password: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancelEnrollmentInput {
+    enrollment_id: String,
+    method: crate::auth_factors::domain::FactorMethod,
+}
+
 impl fmt::Debug for FactorRemovalInput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FactorRemovalInput")
@@ -102,6 +109,43 @@ pub struct RemovalResponse {
     method: &'static str,
     removed: i64,
     credentials_revoked: bool,
+}
+
+pub async fn cancel_security_factor_enrollment(
+    State(state): State<AppState>,
+    session: SessionWrite,
+    ApiJson(input): ApiJson<CancelEnrollmentInput>,
+) -> Response {
+    let session_epoch = match state.users.active_session_epoch(session.user_id).await {
+        Ok(Some(epoch)) => epoch,
+        Ok(None) => return error::unauthorized("invalid_session", "user session is invalid"),
+        Err(user_error) => {
+            tracing::error!(error = %user_error, "failed to load session epoch");
+            return error::internal();
+        }
+    };
+    match state
+        .factors
+        .cancel_session_factor_enrollment(
+            session.user_id,
+            session.session.id,
+            session_epoch,
+            input.method,
+            &input.enrollment_id,
+        )
+        .await
+    {
+        Ok(true) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "cancelled": true })),
+        )
+            .into_response(),
+        Ok(false) => error::not_found(
+            "invalid_factor_enrollment",
+            "factor enrollment is invalid or expired",
+        ),
+        Err(factor_error) => factor_internal(factor_error, "cancel authenticated enrollment"),
+    }
 }
 
 pub async fn current_security_factors(
