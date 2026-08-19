@@ -746,6 +746,42 @@ paths:
               schema: { $ref: '#/components/schemas/AuthStatusResponse' }
         '500':
           $ref: '#/components/responses/InternalServerError'
+  /api/v1/auth/email-change/start:
+    post:
+      tags: [User Auth/Account]
+      summary: 发起邮箱变更
+      operationId: startEmailChange
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StartEmailChangeInput' }
+      responses:
+        '202': { description: 验证码已发送, content: { application/json: { schema: { $ref: '#/components/schemas/EmailChangeStartResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/auth/email-change/confirm:
+    post:
+      tags: [User Auth/Account]
+      summary: 确认邮箱变更
+      operationId: confirmEmailChange
+      security: [{ sessionCookie: [] }]
+      parameters: [{ $ref: '#/components/parameters/CsrfHeader' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfirmEmailChangeInput' }
+      responses:
+        '204': { description: 邮箱已变更并撤销全部会话 }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
   /api/v1/auth/me:
     get:
       tags: [User Auth/Account]
@@ -3270,6 +3306,27 @@ components:
       properties:
         slug: { type: string }
         name: { type: string }
+    StartEmailChangeInput:
+      type: object
+      additionalProperties: false
+      required: [new_email, current_password]
+      properties:
+        new_email: { type: string, format: email, maxLength: 254 }
+        current_password: { type: string, format: password, maxLength: 128, writeOnly: true }
+    EmailChangeStartResponse:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, expires_at]
+      properties:
+        challenge_id: { type: string, format: uuid }
+        expires_at: { type: string, format: date-time }
+    ConfirmEmailChangeInput:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, code]
+      properties:
+        challenge_id: { type: string, format: uuid }
+        code: { type: string, pattern: '^[0-9]{6}$', writeOnly: true }
     UserMeResponse:
       type: object
       required: [id, username, email, status, role, current_session_expires_at]

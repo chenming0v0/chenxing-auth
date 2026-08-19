@@ -78,8 +78,8 @@ describe('ConsoleProfile 账户设置布局', () => {
     expect(within(emailDialog).getByText('user@chenxing.star')).toBeTruthy()
     expect(within(emailDialog).getByLabelText('新邮箱地址')).toBeTruthy()
     expect(within(emailDialog).getByLabelText('当前密码')).toBeTruthy()
-    expect(within(emailDialog).getByText(/邮箱变更后端尚未实现/)).toBeTruthy()
-    expect(within(emailDialog).getByRole('button', { name: '等待后端接入' })).toBeTruthy()
+    expect(within(emailDialog).getByText(/验证码将发送到新邮箱/)).toBeTruthy()
+    expect(within(emailDialog).getByRole('button', { name: '发送验证码' })).toBeTruthy()
   })
 
   it('用户名修改提交真实 PATCH，并在成功后进入下一步', async () => {
@@ -101,13 +101,18 @@ describe('ConsoleProfile 账户设置布局', () => {
     expect(screen.queryByText(/等待接口接入|Issue #558/)).toBeNull()
   })
 
-  it('邮箱变更弹窗保持独立，并在后端未接入时不发起请求', async () => {
+  it('邮箱变更先发送验证码，再提交确认码', async () => {
     render(<ConsoleProfile />)
     fireEvent.click(screen.getByRole('tab', { name: '安全设置' }))
     fireEvent.click(screen.getByRole('button', { name: '更改邮箱' }))
-    fireEvent.click(screen.getByRole('button', { name: '等待后端接入' }))
-    expect(screen.getByText(/邮箱变更后端尚未实现/)).toBeTruthy()
-    expect(requests.some(({ path }) => path.includes('email-change'))).toBe(false)
+    fireEvent.change(screen.getByLabelText('新邮箱地址'), { target: { value: 'new@example.com' } })
+    fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'correct-password' } })
+    fireEvent.click(screen.getByRole('button', { name: '发送验证码' }))
+    await waitFor(() => expect(screen.getByLabelText('邮箱验证码')).toBeTruthy())
+    expect(requests.some(({ path }) => path === '/api/v1/auth/email-change/start')).toBe(true)
+    fireEvent.change(screen.getByLabelText('邮箱验证码'), { target: { value: '123456' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认变更' }))
+    await waitFor(() => expect(requests.some(({ path }) => path === '/api/v1/auth/email-change/confirm')).toBe(true))
   })
 
   it('修改密码只在独立弹窗中展示，不在安全设置项内展开', async () => {

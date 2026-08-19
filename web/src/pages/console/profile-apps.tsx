@@ -40,6 +40,8 @@ export function ConsoleProfile() {
   const [showProfileEditor, setShowProfileEditor] = useState(false)
   const [newEmail, setNewEmail] = useState('')
   const [emailPassword, setEmailPassword] = useState('')
+  const [emailCode, setEmailCode] = useState('')
+  const [emailChallengeId, setEmailChallengeId] = useState<string | null>(null)
   const [showEmailEditor, setShowEmailEditor] = useState(false)
   const [sessions, setSessions] = useState<SessionItem[]>([])
   const [showPassword, setShowPassword] = useState(false)
@@ -192,9 +194,23 @@ export function ConsoleProfile() {
     setShowPassword(false)
   }
 
-  function requestEmailChange(event: FormEvent) {
+  async function requestEmailChange(event: FormEvent) {
     event.preventDefault()
-    warn('邮箱变更后端尚未实现，当前不会提交修改。')
+    setNotice(null)
+    setBusy(true)
+    try {
+      if (!emailChallengeId) {
+        const result = await apiFetch<{ challenge_id: string }>('/api/v1/auth/email-change/start', { method: 'POST', body: JSON.stringify({ new_email: newEmail.trim(), current_password: emailPassword }) })
+        setEmailChallengeId(result.challenge_id)
+        notify('验证码已发送到新邮箱。', 'success')
+      } else {
+        await apiFetch<void>('/api/v1/auth/email-change/confirm', { method: 'POST', body: JSON.stringify({ challenge_id: emailChallengeId, code: emailCode }) })
+        clear()
+        navigate('/login?returnTo=%2Fconsole%2Fprofile')
+      }
+    } catch (error) {
+      warn(error instanceof Error ? error.message : '邮箱变更失败。')
+    } finally { setBusy(false) }
   }
 
   return (
@@ -257,8 +273,11 @@ export function ConsoleProfile() {
             currentEmail={user?.email || '—'}
             newEmail={newEmail}
             password={emailPassword}
+            code={emailCode}
+            stage={emailChallengeId ? 'verify' : 'details'}
             onNewEmail={(value) => setNewEmail(value.slice(0, 254))}
             onPassword={setEmailPassword}
+            onCode={setEmailCode}
             onCancel={closeEmailEditor}
             onSubmit={requestEmailChange}
           />

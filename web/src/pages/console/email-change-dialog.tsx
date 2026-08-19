@@ -5,8 +5,11 @@ type EmailChangeDialogProps = {
   currentEmail: string
   newEmail: string
   password: string
+  code: string
+  stage: 'details' | 'verify'
   onNewEmail: (value: string) => void
   onPassword: (value: string) => void
+  onCode: (value: string) => void
   onCancel: () => void
   onSubmit: (event: FormEvent) => void
 }
@@ -15,8 +18,11 @@ export function EmailChangeDialog({
   currentEmail,
   newEmail,
   password,
+  code,
+  stage,
   onNewEmail,
   onPassword,
+  onCode,
   onCancel,
   onSubmit,
 }: EmailChangeDialogProps) {
@@ -25,7 +31,7 @@ export function EmailChangeDialog({
   useEffect(() => { cancelRef.current = onCancel }, [onCancel])
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    document.getElementById('new-email-address')?.focus()
+    document.getElementById(stage === 'details' ? 'new-email-address' : 'email-change-code')?.focus()
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
       event.preventDefault()
@@ -36,7 +42,7 @@ export function EmailChangeDialog({
       document.removeEventListener('keydown', handleKeyDown)
       previousFocus?.focus()
     }
-  }, [])
+  }, [stage])
 
   return (
     <div
@@ -61,15 +67,22 @@ export function EmailChangeDialog({
           <p className="chenxing-body chenxing-mono mt-1 break-all text-sm font-semibold">{currentEmail}</p>
         </div>
 
-        <div className="mt-5 space-y-4">
-          <Field id="new-email-address" label="新邮箱地址" icon="mail" type="email" autoComplete="email" value={newEmail} maxLength={254} required onChange={(event) => onNewEmail(event.target.value)} />
-          <PasswordField label="当前密码" autoComplete="current-password" value={password} required hint="邮箱变化属于敏感操作，需要重新确认当前密码。" onChange={(event) => onPassword(event.target.value)} />
-          <Notice tone="warning">邮箱变更后端尚未实现，当前不会提交修改。</Notice>
-        </div>
+        {stage === 'details' ? (
+          <div className="mt-5 space-y-4">
+            <Field id="new-email-address" label="新邮箱地址" icon="mail" type="email" autoComplete="email" value={newEmail} maxLength={254} required onChange={(event) => onNewEmail(event.target.value)} />
+            <PasswordField label="当前密码" autoComplete="current-password" value={password} required hint="邮箱变化属于敏感操作，需要重新确认当前密码。" onChange={(event) => onPassword(event.target.value)} />
+            <Notice tone="info">验证码将发送到新邮箱，10 分钟内有效。</Notice>
+          </div>
+        ) : (
+          <div className="mt-5 space-y-4">
+            <Field id="email-change-code" label="邮箱验证码" icon="shield-check" inputMode="numeric" autoComplete="one-time-code" value={code} maxLength={6} pattern="[0-9]{6}" required onChange={(event) => onCode(event.target.value.replace(/[^0-9]/g, '').slice(0, 6))} />
+            <Notice tone="info">验证码已发送到 {newEmail}。确认后所有登录会话都会退出。</Notice>
+          </div>
+        )}
 
         <div className="mt-6 flex flex-wrap justify-end gap-3">
           <Button type="button" variant="ghost" onClick={onCancel}>取消</Button>
-          <Button type="submit" icon="mail" aria-disabled="true">等待后端接入</Button>
+          <Button type="submit" icon={stage === 'details' ? 'mail' : 'shield-check'}>{stage === 'details' ? '发送验证码' : '确认变更'}</Button>
         </div>
       </HudPanel>
     </div>

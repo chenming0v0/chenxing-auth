@@ -109,6 +109,7 @@ audit_actions! {
     UserAvatarRemove => "user_avatar_remove" => (Account, Info),
     UserProfileUpdate => "user_profile_update" => (Account, Info),
     UserUsernameChange => "user_username_change" => (Account, Critical),
+    UserEmailChange => "user_email_change" => (Account, Critical),
     UserRegister => "user_register" => (Account, Notice),
     RegistrationEmailUpdate => "registration_email_update" => (Account, Notice),
     PlanCreate => "plan_create" => (Account, Notice),

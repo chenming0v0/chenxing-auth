@@ -304,6 +304,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "registration invitation codes",
             include_str!("../../migrations/0033_registration_invitation_codes.sql"),
         ),
+        (
+            34,
+            "user email change challenges",
+            include_str!("../../migrations/0034_user_email_change_challenges.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {
