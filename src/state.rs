@@ -11,6 +11,7 @@ use crate::{
     consents::ConsentService,
     db::Database,
     keys::{KeyManager, KeyManagerError},
+    notifications::{EmailSender, SmtpEmailSender},
     oauth::providers::{
         endpoint_policy::EndpointPolicy,
         secret_migration::{SecretMigrationError, migrate_persisted_credentials},
@@ -72,6 +73,7 @@ pub struct AppState {
     pub audit: AuditService,
     pub factors: AuthFactorService,
     pub external_oauth: ExternalOAuthService,
+    pub email_sender: Arc<dyn EmailSender>,
     pub external_login_states: ExternalLoginStateStore,
 }
 
@@ -183,6 +185,11 @@ impl AppState {
     ///
     /// 用途是集成测试：先用 `new_with_pool` 建好状态，再换成固定时钟驱动
     /// 授权码、Refresh Token、Session 和 MFA 的到期边界。
+    pub fn with_email_sender(mut self, sender: Arc<dyn EmailSender>) -> Self {
+        self.email_sender = sender;
+        self
+    }
+
     pub fn with_clock(mut self, clock: SharedClock) -> Self {
         self.authorization_codes = self.authorization_codes.clone().with_clock(clock.clone());
         self.refresh_tokens = self.refresh_tokens.clone().with_clock(clock.clone());
@@ -366,6 +373,7 @@ impl AppState {
         let audit = AuditService::new(database.clone()).with_clock(clock.clone());
         // 复用已加载的 secret_manager，避免第二次 load_or_generate 创建独立副本。
         // 出网边界策略来自配置（Issue #343）：回环/明文例外默认关闭。
+        let email_sender: Arc<dyn EmailSender> = Arc::new(SmtpEmailSender::new(settings.clone()));
         let external_oauth = ExternalOAuthService::new(
             database.clone(),
             secret_manager,
@@ -403,6 +411,7 @@ impl AppState {
             factors,
             external_oauth,
             external_login_states,
+            email_sender,
         })
     }
 
