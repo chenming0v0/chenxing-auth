@@ -45,14 +45,14 @@ impl AuthFactorService {
     ) -> Result<FactorVerification, AuthFactorServiceError> {
         let account_key = self.account_key(user_id).await?;
         let dimensions = self.failure_dimensions(&account_key, None, source_ip)?;
-        if self.ensure_dimensions_allowed(dimensions.clone()).await? {
+        let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Err(AuthFactorServiceError::RateLimited);
         }
         let encrypted_secret = match repository::find_totp_secret(&self.pool, user_id).await {
             Ok(encrypted_secret) => encrypted_secret,
             Err(error) => {
                 // 已确定返回错误：归还失败只记日志，不覆盖真实故障原因。
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(error.into());
             }
         };
@@ -62,7 +62,7 @@ impl AuthFactorService {
             // 按旧状态提交验证码。没有因子就没有可校验的密钥，重试永远失败，
             // 不存在可爆破的目标；记入账号维度会烧掉与密码失败共享的额度，把
             // 受害者从「TOTP 不可用」推进到「连密码登录都被限流」。
-            self.release_dimensions_for_missing_factor(dimensions).await;
+            self.release_dimensions_for_missing_factor(reservation).await;
             return Ok(FactorVerification::Rejected);
         };
         let decrypted =
@@ -73,7 +73,7 @@ impl AuthFactorService {
                     return Ok(FactorVerification::KeyUnavailable);
                 }
                 Err(error) => {
-                    self.release_dimensions_after_error(dimensions).await;
+                    self.release_dimensions_after_error(reservation).await;
                     return Err(error.into());
                 }
             };
@@ -82,7 +82,7 @@ impl AuthFactorService {
         // （后面还要传给 reencrypt_totp_secret_if_needed），等于没有真正擦除。
         let timestep = verify_totp_code_now_timestep(&decrypted.plaintext, code, self.clock.now());
         let Some(timestep) = timestep else {
-            if !self.record_failure(dimensions).await?.reached.is_empty() {
+            if !self.record_failure(reservation).await?.reached.is_empty() {
                 return Err(AuthFactorServiceError::RateLimited);
             }
             return Ok(FactorVerification::Rejected);
@@ -130,14 +130,14 @@ impl AuthFactorService {
         }
         let account_key = self.account_key(ticket.user_id).await?;
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
-        if self.ensure_dimensions_allowed(dimensions.clone()).await? {
+        let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(TotpConfirmation::RateLimited);
         }
         let encrypted_secret = match repository::find_totp_secret(&self.pool, ticket.user_id).await
         {
             Ok(encrypted_secret) => encrypted_secret,
             Err(error) => {
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(error.into());
             }
         };
@@ -146,7 +146,7 @@ impl AuthFactorService {
             // 且不记失败（#340）。因子不存在就不是用户输错码，记账只会烧掉与密码
             // 失败共享的账号额度；ticket 也不在此作废——它可能还支持其他因子
             // （如 passkey），留到 TTL 自然过期即可。
-            self.release_dimensions_for_missing_factor(dimensions).await;
+            self.release_dimensions_for_missing_factor(reservation).await;
             return Ok(TotpConfirmation::InvalidTicket);
         };
         let decrypted =
@@ -157,13 +157,13 @@ impl AuthFactorService {
                     return Ok(TotpConfirmation::KeyUnavailable);
                 }
                 Err(error) => {
-                    self.release_dimensions_after_error(dimensions).await;
+                    self.release_dimensions_after_error(reservation).await;
                     return Err(error.into());
                 }
             };
         let valid = verify_totp_code_now_timestep(&decrypted.plaintext, code, self.clock.now());
         let Some(timestep) = valid else {
-            let record = self.record_failure(dimensions).await?;
+            let record = self.record_failure(reservation).await?;
             if record.reached(FailureDimension::Ticket) {
                 self.invalidate_ticket(ticket_id, holder_hash).await?;
                 return Ok(TotpConfirmation::RateLimited);
@@ -225,7 +225,7 @@ impl AuthFactorService {
         dimensions: Vec<LimiterDimension>,
         stage: &'static str,
     ) {
-        self.release_dimensions_for_key_unavailable(dimensions)
+        self.release_dimensions_for_key_unavailable(reservation)
             .await;
         tracing::error!(
             event = "auth_factor.totp.decrypt_key_unavailable",
@@ -251,11 +251,11 @@ impl AuthFactorService {
         let claimed = match self.tickets.claim_totp_timestep(user_id, timestep).await {
             Ok(claimed) => claimed,
             Err(error) => {
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(error.into());
             }
         };
-        self.release_dimensions(dimensions).await?;
+        self.release_dimensions(reservation).await?;
         Ok(claimed)
     }
 

@@ -2,8 +2,8 @@ use ::redis::Script;
 use uuid::Uuid;
 
 use super::domain::{
-    AuthFailureLimiter, AuthFailureLimits, AuthLimiterFailurePolicy, FailureDimension,
-    FailureRecord, LimiterDimension, LimiterFuture,
+    AuthFailureLimiter, AuthFailureLimits, AuthLimiterFailurePolicy, AuthReservation,
+    FailureDimension, FailureRecord, LimiterDimension, LimiterFuture,
 };
 use super::policy::{
     LimiterPolicy, count_failure_records, log_blocked_dimension, log_limit, value_hash,
@@ -210,12 +210,13 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
         })
     }
 
-    fn reserve<'a>(&'a self, dimensions: Vec<LimiterDimension>) -> LimiterFuture<'a, bool> {
+    fn reserve<'a>(&'a self, dimensions: Vec<LimiterDimension>) -> LimiterFuture<'a, AuthReservation> {
         Box::pin(async move {
             if dimensions.is_empty() {
-                return Ok(true);
+                return Ok(AuthReservation::single(dimensions, AuthReservation::token()));
             }
             let limits = self.policy.current_limits("reserve", &dimensions).await?;
+            let token = AuthReservation::token();
             let mut connection = match self.client.get_multiplexed_async_connection().await {
                 Ok(connection) => connection,
                 Err(_) => return self.policy.unavailable_reservation("reserve", &dimensions),
@@ -230,29 +231,29 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             }
             invocation.arg(dimensions.len());
             invocation.arg(limits.window());
+            invocation.arg(&token);
             for (dimension, _) in &dimensions {
                 invocation.arg(limits.limit_for(*dimension));
             }
-            // 与 check 共用约定：返回第一个触发上限的维度下标（1-based），0 表示预留成功。
             let blocked: i64 = match invocation.invoke_async(&mut connection).await {
                 Ok(blocked) => blocked,
                 Err(_) => return self.policy.unavailable_reservation("reserve", &dimensions),
             };
-            Ok(!log_blocked_dimension(
-                blocked,
-                &dimensions,
-                limits.window(),
-            ))
+            if log_blocked_dimension(blocked, &dimensions, limits.window()) {
+                return Ok(AuthReservation::single(Vec::new(), token));
+            }
+            Ok(AuthReservation::single(dimensions, token))
         })
     }
 
     fn record_reserved_failures<'a>(
         &'a self,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
     ) -> LimiterFuture<'a, FailureRecord> {
         Box::pin(async move {
+            let dimensions = reservation.dimensions();
             if dimensions.is_empty() {
-                return Ok(FailureRecord::recorded(Vec::new()));
+                return Ok(FailureRecord::not_recorded());
             }
             let limits = self
                 .policy
@@ -276,7 +277,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             }
             invocation.arg(dimensions.len());
             invocation.arg(limits.window());
-            invocation.arg(Self::failure_member());
+            invocation.arg(&reservation.leases[0].token);
             for (dimension, _) in &dimensions {
                 invocation.arg(limits.limit_for(*dimension));
             }
@@ -304,9 +305,10 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
     /// 归还预留。与 `clear` 同理：pending key 不带窗口后缀，DECR 不需要窗口时长，
     /// 因此不读取阈值——认证已经成功，此时再因为读不到配置而失败只会把在途配额白白
     /// 挂到 TTL 过期。
-    fn release<'a>(&'a self, dimensions: Vec<LimiterDimension>) -> LimiterFuture<'a, ()> {
+    fn release<'a>(&'a self, reservation: AuthReservation) -> LimiterFuture<'a, ()> {
         Box::pin(async move {
-            if dimensions.is_empty() {
+            let dimensions = reservation.dimensions();
+            if reservation.is_empty() {
                 return Ok(());
             }
             let mut connection = match self.client.get_multiplexed_async_connection().await {
@@ -318,6 +320,8 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             for (dimension, value) in &dimensions {
                 invocation.key(self.pending_key(*dimension, value));
             }
+            invocation.arg(dimensions.len());
+            invocation.arg(&reservation.leases[0].token);
             let result: Result<i64, _> = invocation.invoke_async(&mut connection).await;
             if result.is_err() {
                 return self.policy.unavailable_unit("release", &dimensions);

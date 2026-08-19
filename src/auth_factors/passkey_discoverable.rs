@@ -108,13 +108,13 @@ impl AuthFactorService {
             Err(error) => return Err(error),
         };
         let dimensions = self.failure_dimensions(&account_key, None, source_ip)?;
-        if self.ensure_dimensions_allowed(dimensions.clone()).await? {
+        let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(DiscoverablePasskeyConfirmation::RateLimited);
         }
         let passkeys = match repository::list_passkeys_with_versions(&self.pool, user_id).await {
             Ok(passkeys) => passkeys,
             Err(error) => {
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(error.into());
             }
         };
@@ -127,14 +127,14 @@ impl AuthFactorService {
         let stored_credential = match core_credential(stored.passkey()) {
             Ok(credential) => credential,
             Err(error) => {
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(error);
             }
         };
         let core = match build_core(&pending.settings) {
             Ok(core) => core,
             Err(error) => {
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(error);
             }
         };
@@ -148,11 +148,11 @@ impl AuthFactorService {
             match crate::users::repository::find_active_session_epoch(&self.pool, user_id).await {
                 Ok(Some(epoch)) => epoch,
                 Ok(None) => {
-                    self.release_dimensions(dimensions).await?;
+                    self.release_dimensions(reservation).await?;
                     return Ok(DiscoverablePasskeyConfirmation::Invalid);
                 }
                 Err(error) => {
-                    self.release_dimensions_after_error(dimensions).await;
+                    self.release_dimensions_after_error(reservation).await;
                     return Err(error.into());
                 }
             };
@@ -163,11 +163,11 @@ impl AuthFactorService {
         {
             Ok(Some(consumed)) => consumed,
             Ok(None) => {
-                self.release_dimensions(dimensions).await?;
+                self.release_dimensions(reservation).await?;
                 return Ok(DiscoverablePasskeyConfirmation::Invalid);
             }
             Err(error) => {
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(error.into());
             }
         };
@@ -183,7 +183,7 @@ impl AuthFactorService {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.restore_discoverable_after_error(&key, &consumed).await;
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(error.into());
             }
         };
@@ -191,16 +191,16 @@ impl AuthFactorService {
             repository::PasskeyPersistOutcome::Applied
             | repository::PasskeyPersistOutcome::AlreadyCurrent => {}
             repository::PasskeyPersistOutcome::Missing => {
-                self.release_dimensions(dimensions).await?;
+                self.release_dimensions(reservation).await?;
                 return Ok(DiscoverablePasskeyConfirmation::Invalid);
             }
             repository::PasskeyPersistOutcome::Exhausted => {
                 self.restore_discoverable_after_error(&key, &consumed).await;
-                self.release_dimensions_after_error(dimensions).await;
+                self.release_dimensions_after_error(reservation).await;
                 return Err(AuthFactorServiceError::PasskeyUpdateConflict);
             }
         }
-        self.release_dimensions(dimensions.clone()).await?;
+        self.release_dimensions(reservation.clone()).await?;
         for (dimension, value) in dimensions {
             self.limiter.clear(dimension, &value).await?;
         }
@@ -213,7 +213,7 @@ impl AuthFactorService {
         &self,
         dimensions: Vec<LimiterDimension>,
     ) -> Result<DiscoverablePasskeyConfirmation, AuthFactorServiceError> {
-        if self.record_failure(dimensions).await?.reached.is_empty() {
+        if self.record_failure(reservation).await?.reached.is_empty() {
             Ok(DiscoverablePasskeyConfirmation::Invalid)
         } else {
             Ok(DiscoverablePasskeyConfirmation::RateLimited)
@@ -238,7 +238,7 @@ impl AuthFactorService {
                 return Err(AuthFactorServiceError::SourceIpUnavailable);
             }
         };
-        if self.ensure_dimensions_allowed(dimensions.clone()).await? {
+        let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(DiscoverablePasskeyConfirmation::RateLimited);
         }
         self.discoverable_failure(dimensions).await

@@ -7,7 +7,7 @@ use super::{AuthFactorService, AuthFactorServiceError};
 use crate::{
     auth_factors::repository,
     auth_limiter::{
-        AuthFailureLimiter, FailureDimension, LimiterDimension, MissingSourceIpPolicy,
+        AuthFailureLimiter, AuthReservation, FailureDimension, LimiterDimension, MissingSourceIpPolicy,
         domain::{FailureRecord, commit_reserved_failure, release_reserved},
     },
     users::domain::UserId,
@@ -59,45 +59,43 @@ impl AuthFactorService {
     pub(super) async fn ensure_dimensions_allowed(
         &self,
         dimensions: Vec<LimiterDimension>,
-    ) -> Result<bool, AuthFactorServiceError> {
-        Ok(!self.limiter.reserve(dimensions).await?)
+    ) -> Result<Option<AuthReservation>, AuthFactorServiceError> {
+        let reservation = self.limiter.reserve(dimensions).await?;
+        Ok((!reservation.is_empty()).then_some(reservation))
     }
 
     /// 把已预留的尝试提交为一次失败。限流后端出错时预留额度会被尽力归还，
     /// 不会悬挂到 pending 计数器的 TTL 过期。
     pub(super) async fn record_failure(
         &self,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
     ) -> Result<FailureRecord, AuthFactorServiceError> {
-        Ok(commit_reserved_failure(self.limiter.as_ref(), dimensions).await?)
+        Ok(commit_reserved_failure(self.limiter.as_ref(), reservation).await?)
     }
 
     pub(super) async fn release_dimensions(
         &self,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
     ) -> Result<(), AuthFactorServiceError> {
-        Ok(self.limiter.release(dimensions).await?)
+        Ok(self.limiter.release(reservation).await?)
     }
 
-    /// 已经确定要返回错误时的归还路径：归还本身失败只记日志，不覆盖调用方手上
-    /// 那个更本质的错误原因。
-    pub(super) async fn release_dimensions_after_error(&self, dimensions: Vec<LimiterDimension>) {
-        release_reserved(self.limiter.as_ref(), dimensions, "attempt_failed").await;
+    pub(super) async fn release_dimensions_after_error(&self, reservation: AuthReservation) {
+        release_reserved(self.limiter.as_ref(), reservation, "attempt_failed").await;
     }
 
     pub(super) async fn release_dimensions_for_key_unavailable(
         &self,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
     ) {
-        release_key_unavailable(self.limiter.as_ref(), dimensions).await;
+        release_key_unavailable(self.limiter.as_ref(), reservation).await;
     }
 
-    /// 账号不存在该因子时的归还路径：归还预留额度，**不记账**（#340）。
     pub(super) async fn release_dimensions_for_missing_factor(
         &self,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
     ) {
-        release_factor_missing(self.limiter.as_ref(), dimensions).await;
+        release_factor_missing(self.limiter.as_ref(), reservation).await;
     }
 }
 
@@ -108,9 +106,9 @@ impl AuthFactorService {
 /// 惩罚受害者。抽成自由函数是为了能用测试替身断言「只 release、绝不 record」。
 pub(super) async fn release_key_unavailable(
     limiter: &dyn AuthFailureLimiter,
-    dimensions: Vec<LimiterDimension>,
+    reservation: AuthReservation,
 ) {
-    release_reserved(limiter, dimensions, "factor_key_unavailable").await;
+    release_reserved(limiter, reservation, "factor_key_unavailable").await;
 }
 
 /// 账号没有 TOTP 因子时的归还：归还预留额度，**不记账**（#340）。
@@ -123,9 +121,9 @@ pub(super) async fn release_key_unavailable(
 /// 函数是为了能用测试替身断言「只 release、绝不 record」。
 pub(super) async fn release_factor_missing(
     limiter: &dyn AuthFailureLimiter,
-    dimensions: Vec<LimiterDimension>,
+    reservation: AuthReservation,
 ) {
-    release_reserved(limiter, dimensions, "factor_missing").await;
+    release_reserved(limiter, reservation, "factor_missing").await;
 }
 
 #[cfg(test)]

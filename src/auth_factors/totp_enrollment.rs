@@ -158,7 +158,7 @@ impl AuthFactorService {
         let passkey_recovery = self.is_disabled_passkey_only(&factor_methods).await?;
         let account_key = self.account_key(ticket.user_id).await?;
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
-        if self.ensure_dimensions_allowed(dimensions.clone()).await? {
+        let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(TotpConfirmation::RateLimited);
         }
         let decrypted =
@@ -176,13 +176,13 @@ impl AuthFactorService {
                     return Ok(TotpConfirmation::KeyUnavailable);
                 }
                 Err(error) => {
-                    self.release_dimensions_after_error(dimensions).await;
+                    self.release_dimensions_after_error(reservation).await;
                     return Err(error.into());
                 }
             };
         let valid = verify_totp_code_now_timestep(&decrypted.plaintext, code, self.clock.now());
         let Some(timestep) = valid else {
-            let record = self.record_failure(dimensions).await?;
+            let record = self.record_failure(reservation).await?;
             if record.reached(FailureDimension::Ticket) {
                 self.invalidate_ticket(ticket_id, holder_hash).await?;
                 return Ok(TotpConfirmation::RateLimited);
