@@ -100,16 +100,29 @@ impl UserService {
     /// 入参是已解析的 [`UserStatus`]，所以 `Ok(false)` 只有一种含义：目标用户不存在。
     /// 旧实现同时用 `Ok(false)` 表示「状态串非法」，HTTP 层因此无法区分 400 与 404
     /// （Issue #283）；现在非法状态在类型上就到不了这里。
-    pub async fn set_status_guarded(
+    pub async fn set_status_guarded_with_audit(
         &self,
         id: UserId,
         status: UserStatus,
         credential: ManagementActorCredential,
+        audit_event: AuditEvent,
     ) -> Result<bool, ManagementWriteError> {
-        translate_owner_guard(
-            repository::set_user_status_guarded(&self.pool, id, status, credential).await?,
+        let outcome = repository::set_user_status_guarded_with_audit(
+            &self.pool, id, status, credential, audit_event,
         )
+        .await
+        .map_err(|error| match error {
+            repository::AuditedStatusGuardError::Database(error) => {
+                ManagementWriteError::Database(error)
+            }
+            repository::AuditedStatusGuardError::Audit(error) => {
+                tracing::error!(event = "user_status_update.audit_unavailable", error = %error);
+                ManagementWriteError::AuditUnavailable
+            }
+        })?;
+        translate_owner_guard(outcome)
     }
+
 }
 
 /// Owner 守卫终局 → 服务层结果。角色与状态变更共用同一张翻译表。

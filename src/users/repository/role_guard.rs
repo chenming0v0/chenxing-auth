@@ -239,65 +239,108 @@ pub async fn set_user_status_guarded(
     status: UserStatus,
     credential: ManagementActorCredential,
 ) -> Result<OwnerGuardOutcome, crate::sqlx::Error> {
+    set_user_status_guarded_inner(pool, id, status, credential, None)
+        .await
+        .map(|outcome| outcome)
+}
+
+pub async fn set_user_status_guarded_with_audit(
+    pool: &PgPool,
+    id: UserId,
+    status: UserStatus,
+    credential: ManagementActorCredential,
+    audit_event: crate::audit::AuditEvent,
+) -> Result<OwnerGuardOutcome, AuditedStatusGuardError> {
     let mut transaction = pool.begin().await?;
-    let lock_order = lock_management_user_advisories(&mut transaction, id, credential).await?;
-    let active_owner_count = lock_active_owner_scope(&mut transaction).await?;
-    let locked = lock_management_user_rows(&mut transaction, &lock_order).await?;
+    let outcome = set_user_status_in_transaction(
+        &mut transaction,
+        id,
+        status,
+        credential,
+        Some(audit_event),
+    )
+    .await
+    .map_err(|error| match error {
+        StatusWriteError::Database(error) => AuditedStatusGuardError::Database(error),
+        StatusWriteError::Audit(error) => AuditedStatusGuardError::Audit(error),
+    })?;
+    if outcome == OwnerGuardOutcome::Updated {
+        transaction.commit().await?;
+    } else {
+        transaction.rollback().await?;
+    }
+    Ok(outcome)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AuditedStatusGuardError {
+    #[error("database operation failed: {0}")]
+    Database(#[from] crate::sqlx::Error),
+    #[error("audit operation failed: {0}")]
+    Audit(#[from] crate::audit::AuditError),
+}
+
+type StatusWriteResult = Result<OwnerGuardOutcome, StatusWriteError>;
+
+#[derive(Debug)]
+enum StatusWriteError {
+    Database(crate::sqlx::Error),
+    Audit(crate::audit::AuditError),
+}
+
+impl From<crate::sqlx::Error> for StatusWriteError {
+    fn from(error: crate::sqlx::Error) -> Self { Self::Database(error) }
+}
+
+async fn set_user_status_guarded_inner(
+    pool: &PgPool,
+    id: UserId,
+    status: UserStatus,
+    credential: ManagementActorCredential,
+    audit_event: Option<crate::audit::AuditEvent>,
+) -> StatusWriteResult {
+    let mut transaction = pool.begin().await?;
+    let outcome = set_user_status_in_transaction(
+        &mut transaction, id, status, credential, audit_event,
+    ).await?;
+    if outcome == OwnerGuardOutcome::Updated { transaction.commit().await?; }
+    else { transaction.rollback().await?; }
+    Ok(outcome)
+}
+
+async fn set_user_status_in_transaction(
+    transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+    id: UserId,
+    status: UserStatus,
+    credential: ManagementActorCredential,
+    audit_event: Option<crate::audit::AuditEvent>,
+) -> StatusWriteResult {
+    let lock_order = lock_management_user_advisories(transaction, id, credential).await?;
+    let active_owner_count = lock_active_owner_scope(transaction).await?;
+    let locked = lock_management_user_rows(transaction, &lock_order).await?;
     let access = match validate_management_actor(credential, locked.actor.as_ref()) {
         Ok(access) => access,
-        Err(rejection) => {
-            transaction.rollback().await?;
-            return Ok(match rejection {
-                ManagementActorRejection::SessionInvalid => OwnerGuardOutcome::ActorSessionInvalid,
-                ManagementActorRejection::PermissionRequired => {
-                    OwnerGuardOutcome::ActorPermissionRequired
-                }
-            });
-        }
+        Err(ManagementActorRejection::SessionInvalid) => return Ok(OwnerGuardOutcome::ActorSessionInvalid),
+        Err(ManagementActorRejection::PermissionRequired) => return Ok(OwnerGuardOutcome::ActorPermissionRequired),
     };
-    let Some(current) = locked.target else {
-        transaction.rollback().await?;
-        return Ok(OwnerGuardOutcome::NotFound);
-    };
-    // 角色判定和状态写入共用本事务持有的目标行锁。若目标在等待锁期间被晋升为
-    // Owner，这里读取晋升后的版本并拒绝，不能继续使用 HTTP 层的旧快照（#323）。
-    // Disabling an administrator is an effective privilege downgrade: it
-    // revokes every session and removes management access just like changing
-    // the role to `user`.  Treat both privileged target roles uniformly so a
-    // peer Admin cannot use ManageUsers to lock out another Admin (#424).
-    if UserRole::parse(&current.role).is_some_and(UserRole::is_privileged)
-        && !access.permits_owner()
-    {
-        transaction.rollback().await?;
+    let Some(current) = locked.target else { return Ok(OwnerGuardOutcome::NotFound); };
+    if UserRole::parse(&current.role).is_some_and(UserRole::is_privileged) && !access.permits_owner() {
         return Ok(OwnerGuardOutcome::ManageRolesRequired);
     }
-    // 守卫判定用原始状态串走 fail-closed 口径（Issue #358）：状态异常时按活跃处理，
-    // 阻止静默移除最后一个可用 Owner。
-    if current.role == "owner"
-        && UserStatus::is_active(&current.status)
-        && status == UserStatus::Disabled
-        && active_owner_count <= 1
-    {
-        transaction.rollback().await?;
+    if current.role == "owner" && UserStatus::is_active(&current.status)
+        && status == UserStatus::Disabled && active_owner_count <= 1 {
         return Ok(OwnerGuardOutcome::LastOwnerRequired);
     }
-    // 禁用即撤销该用户全部会话：否则被禁用的账号仍能用既有 Cookie 继续访问。
-    let current_status = UserStatus::parse(&current.status);
-    if current_status != Some(status) && status == UserStatus::Disabled {
-        crate::sessions::store::revoke_all_for_user_in_transaction(&mut transaction, id).await?;
+    if UserStatus::parse(&current.status) != Some(status) && status == UserStatus::Disabled {
+        crate::sessions::store::revoke_all_for_user_in_transaction(transaction, id).await?;
     }
-    let result =
-        crate::sqlx::query("UPDATE users SET status = $2, updated_at = NOW() WHERE id = $1")
-            .bind(id)
-            .bind(status.as_str())
-            .execute(&mut *transaction)
-            .await?;
-    transaction.commit().await?;
-    // 目标行已在 `lock_management_user_rows` 里加锁，正常路径必然影响 1 行；
-    // 这里保留判定是为了不把「行在锁定后消失」当成成功。
-    Ok(if result.rows_affected() == 1 {
-        OwnerGuardOutcome::Updated
-    } else {
-        OwnerGuardOutcome::NotFound
-    })
+    let result = crate::sqlx::query("UPDATE users SET status = $2, updated_at = NOW() WHERE id = $1")
+        .bind(id).bind(status.as_str()).execute(&mut **transaction).await?;
+    if result.rows_affected() == 1 {
+        if let Some(event) = audit_event {
+            crate::audit::repository::insert_with(&mut **transaction, &event)
+                .await.map_err(StatusWriteError::Audit)?;
+        }
+        Ok(OwnerGuardOutcome::Updated)
+    } else { Ok(OwnerGuardOutcome::NotFound) }
 }
