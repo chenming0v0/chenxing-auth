@@ -281,9 +281,6 @@ where
         transaction.rollback().await?;
         return Ok(BootstrapOwnerOutcome::RequiresEmptyDatabase);
     }
-    crate::sqlx::query("SELECT setval(pg_get_serial_sequence('users', 'id'), 1, false)")
-        .execute(&mut *transaction)
-        .await?;
     let id: UserId = crate::sqlx::query_scalar(
         "INSERT INTO users (username, email, canonical_email, password_hash, role, status, created_at, updated_at)
          VALUES ($1, $2, $3, $4, 'owner', 'active', NOW(), NOW()) RETURNING id",
