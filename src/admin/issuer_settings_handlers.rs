@@ -12,7 +12,7 @@ use crate::{
     api::extract::{AdminRead, AdminWrite, ApiJson},
     audit::AuditEvent,
     error,
-    settings::issuer::{self, RawIssuerRecord},
+    settings::issuer::{self, IssuerRecord, RawIssuerRecord},
     state::AppState,
 };
 
@@ -51,7 +51,7 @@ impl From<&IssuerRecord> for IssuerRecordResponse {
 
 fn issuer_setting_response(
     state: &AppState,
-    persisted: Option<&crate::settings::issuer::RawIssuerRecord>,
+    persisted: Option<&RawIssuerRecord>,
 ) -> IssuerSettingResponse {
     let runtime = state.issuer.state();
     let loaded = runtime.loaded().map(|snapshot| IssuerRecordResponse {

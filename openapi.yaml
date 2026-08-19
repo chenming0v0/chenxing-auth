@@ -2601,7 +2601,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/EmailPolicySetting' }
+            schema: { $ref: '#/components/schemas/UpdateEmailPolicySetting' }
       responses:
         '200':
           description: 已更新的邮箱域名策略
@@ -3820,7 +3820,7 @@ components:
           items: { type: string, format: uri }
     EmailPolicySetting:
       type: object
-      required: [whitelist_enabled, alias_restriction_enabled, allowed_domains]
+      required: [whitelist_enabled, alias_restriction_enabled, allowed_domains, generation]
       properties:
         whitelist_enabled: { type: boolean }
         alias_restriction_enabled: { type: boolean }
@@ -3828,6 +3828,18 @@ components:
           type: array
           maxItems: 128
           items: { type: string, maxLength: 253 }
+        generation: { type: integer, format: int64, minimum: 0 }
+    UpdateEmailPolicySetting:
+      type: object
+      required: [whitelist_enabled, alias_restriction_enabled, allowed_domains, expected_generation]
+      properties:
+        whitelist_enabled: { type: boolean }
+        alias_restriction_enabled: { type: boolean }
+        allowed_domains:
+          type: array
+          maxItems: 128
+          items: { type: string, maxLength: 253 }
+        expected_generation: { type: integer, format: int64, minimum: 0 }
     RegistrationSetting:
       type: object
       description: >-
