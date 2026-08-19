@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ApiError, apiFetch, clearApiCache, type UserMe } from './api'
 
-export type BootstrapState = 'loading' | 'required' | 'ready' | 'error'
+export type BootstrapState = 'required' | 'ready'
 
 /** logout 的撤销结果。revoked=false 表示服务端会话可能仍然有效（#325）。 */
 export type LogoutResult = {
@@ -13,7 +13,7 @@ type AuthContextValue = {
   status: 'loading' | 'authenticated' | 'unauthenticated' | 'error'
   bootstrap: BootstrapState
   refresh: () => Promise<UserMe | null>
-  refreshBootstrap: () => Promise<BootstrapState>
+  completeBootstrap: () => void
   clear: () => void
   logout: () => Promise<LogoutResult>
 }
@@ -29,7 +29,11 @@ type AuthSyncEvent = { type: 'logout'; nonce: string }
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserMe | null>(null)
   const [status, setStatus] = useState<AuthContextValue['status']>('loading')
-  const [bootstrap, setBootstrap] = useState<BootstrapState>('loading')
+  const [bootstrap, setBootstrap] = useState<BootstrapState>(() => {
+    return typeof window !== 'undefined' && window.location.pathname === '/bootstrap'
+      ? 'required'
+      : 'ready'
+  })
   const loaded = useRef(false)
   const channelRef = useRef<BroadcastChannel | null>(null)
   const sessionExpiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -70,30 +74,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (typeof window !== 'undefined') broadcastLogout()
   }, [broadcastLogout, clearLocal])
 
-  const refreshBootstrap = useCallback(async () => {
-    // 重试（错误面板的按钮）时回到 loading，界面显示检查中而不是旧错误。
-    setBootstrap('loading')
-    try {
-      const result = await apiFetch<{ initialized: boolean }>('/api/v1/admin/bootstrap/status', {
-        redirectOn401: false,
-      })
-      const next: BootstrapState = result.initialized ? 'ready' : 'required'
-      setBootstrap(next)
-      return next
-    } catch (error) {
-      // bootstrap_status 协议：未初始化返回 200 {initialized:false}；已初始化实例
-      // 刻意返回与未注册路由一致的 404（bootstrap_guard::hidden_bootstrap_status），
-      // 401 同理只可能来自已就绪实例。只有这两种是「已初始化」的确定信号。
-      // 网络错误（status === 0）和 5xx 是瞬态故障：若误判为 ready，未初始化系统
-      // 会被踢到 /login，而登录接口同样拒绝未初始化实例——用户被锁死（#324）。
-      // 瞬态故障进入 error 状态，由界面提供 refreshBootstrap() 重试入口。
-      if (error instanceof ApiError && (error.status === 404 || error.status === 401)) {
-        setBootstrap('ready')
-        return 'ready'
-      }
-      setBootstrap('error')
-      return 'error'
-    }
+  const completeBootstrap = useCallback(() => {
+    setBootstrap('ready')
   }, [])
 
   const refresh = useCallback(async () => {
@@ -221,8 +203,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (loaded.current) return
     loaded.current = true
-    void Promise.all([refreshBootstrap(), refresh()])
-  }, [refresh, refreshBootstrap])
+    void refresh()
+  }, [refresh])
 
   // logout 的网络请求失败时仍须本地登出（fail-secure）：
   // 服务端不可达不等于会话仍有效，保守做法是始终清除本地状态。
@@ -247,7 +229,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [clear])
 
   return (
-    <AuthContext.Provider value={{ user, status, bootstrap, refresh, refreshBootstrap, clear, logout }}>
+    <AuthContext.Provider value={{ user, status, bootstrap, refresh, completeBootstrap, clear, logout }}>
       {children}
     </AuthContext.Provider>
   )

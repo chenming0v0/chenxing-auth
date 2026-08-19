@@ -38,9 +38,25 @@ struct UserMeResponse {
     avatar_updated_at: Option<time::OffsetDateTime>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateProfileInput {
     pub display_name: Option<String>,
+    pub username: Option<String>,
+    pub current_password: Option<String>,
+}
+
+impl fmt::Debug for UpdateProfileInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UpdateProfileInput")
+            .field("display_name", &self.display_name)
+            .field("username", &self.username)
+            .field(
+                "current_password",
+                &self.current_password.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]
@@ -97,19 +113,91 @@ pub async fn current_user_profile(State(state): State<AppState>, session: Sessio
 
 pub async fn update_current_user_profile(
     State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     session: SessionWrite,
     ApiJson(input): ApiJson<UpdateProfileInput>,
 ) -> Response {
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
     match state
         .users
-        .update_display_name(session.user_id, input.display_name)
+        .update_profile(
+            session.user_id,
+            input.display_name,
+            input.username,
+            input.current_password.as_deref(),
+            source_ip.as_deref(),
+        )
         .await
     {
-        Ok(Some(profile)) => profile_response(&session, profile),
-        Ok(None) => error::unauthorized("invalid_session", "user session is invalid"),
-        Err(crate::users::service::UserServiceError::Validation(validation_error)) => {
-            error::bad_request("invalid_display_name", validation_error.to_string())
+        Ok(crate::users::service::ProfileUpdateOutcome::Updated {
+            profile,
+            username_changed,
+        }) => {
+            state
+                .audit
+                .record_best_effort(AuditEvent::new(
+                    "user".to_owned(),
+                    Some(session.user_id.to_string()),
+                    if username_changed {
+                        crate::audit::AuditAction::UserUsernameChange
+                    } else {
+                        crate::audit::AuditAction::UserProfileUpdate
+                    },
+                    "user_profile".to_owned(),
+                    Some(session.user_id.to_string()),
+                    serde_json::json!({
+                        "result": "success",
+                        "username_changed": username_changed,
+                    }),
+                ))
+                .await;
+            profile_response(&session, profile)
         }
+        Ok(crate::users::service::ProfileUpdateOutcome::UserMissing) => {
+            error::unauthorized("invalid_session", "user session is invalid")
+        }
+        Ok(crate::users::service::ProfileUpdateOutcome::AuthenticationChanged) => {
+            error::unauthorized(
+                "password_reauthentication_failed",
+                "password reauthentication failed",
+            )
+        }
+        Ok(crate::users::service::ProfileUpdateOutcome::UsernameUnavailable) => {
+            error::conflict("username_unavailable", "username is unavailable")
+        }
+        Err(crate::users::service::UserServiceError::Validation(validation_error)) => {
+            let code = if matches!(&validation_error, RegistrationError::InvalidUsername) {
+                "invalid_username"
+            } else {
+                "invalid_display_name"
+            };
+            error::bad_request(code, validation_error.to_string())
+        }
+        Err(crate::users::service::UserServiceError::CurrentPasswordRequired) => {
+            error::bad_request(
+                "current_password_required",
+                "current password is required when changing username",
+            )
+        }
+        Err(crate::users::service::UserServiceError::InvalidCredentials) => error::unauthorized(
+            "password_reauthentication_failed",
+            "password reauthentication failed",
+        ),
+        Err(crate::users::service::UserServiceError::PasswordReauthenticationUnavailable) => {
+            error::forbidden(
+                "password_reauthentication_unavailable",
+                "password reauthentication is unavailable",
+            )
+        }
+        Err(crate::users::service::UserServiceError::RateLimited) => error::too_many_requests(
+            "profile_update_rate_limited",
+            "too many profile update attempts; try again later",
+        ),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update user profile");
             error::internal()
@@ -283,7 +371,7 @@ pub(crate) fn profile_response(
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionItem, UserMeResponse};
+    use super::{SessionItem, UpdateProfileInput, UserMeResponse};
     use crate::users::domain::UserRole;
 
     #[test]
@@ -316,5 +404,19 @@ mod tests {
         assert!(profile["avatar_updated_at"].is_null());
         assert_eq!(session["created_at"], "1970-01-01T00:00:00Z");
         assert_eq!(session["expires_at"], "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn profile_input_debug_redacts_current_password() {
+        let input = UpdateProfileInput {
+            display_name: Some("Chen Xing".to_owned()),
+            username: Some("chenxing".to_owned()),
+            current_password: Some("current-password-secret".to_owned()),
+        };
+
+        let rendered = format!("{input:?}");
+        assert!(!rendered.contains("current-password-secret"));
+        assert!(rendered.contains("<redacted>"));
+        assert!(rendered.contains("chenxing"));
     }
 }

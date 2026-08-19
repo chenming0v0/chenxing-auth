@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { ConsoleSecurity } from './security'
+import { AccountManagement } from './security'
 import { installCsrfCookie } from '../../test/csrf-cookie'
 
 /**
- * ConsoleSecurity 可选因子绑定（#470）。
+ * 个人信息页内嵌的 AccountManagement 可选因子绑定（#470）。
  *
  * 无已启用因子时展示登录验证列表及已绑定账户空态；TOTP / Passkey 从本页按需绑定或移除。
  * 写操作走真实 apiFetch：Session Cookie（credentials: include）+ CSRF Cookie + X-CSRF-Token。
@@ -38,7 +38,11 @@ type CapturedRequest = { path: string; method: string; body: Record<string, unkn
 const NONE = { totp_enabled: false, passkey_count: 0, available_methods: ['totp', 'passkey'] }
 const TOTP_ON = { totp_enabled: true, passkey_count: 0, available_methods: ['totp'] }
 const IDENTITIES = { items: [{ provider: 'github', provider_name: 'GitHub', subject: 'subject-secret', email: 'user@example.com', linked_at: '2026-08-18T10:00:00Z' }] }
-const PROVIDERS = [{ slug: 'github', name: 'GitHub' }, { slug: 'google', name: 'Google' }]
+const PROVIDERS = [
+  { slug: 'github', name: 'GitHub' },
+  { slug: 'google', name: 'Google' },
+  { slug: 'chenxing-passport', name: '辰星通行证' },
+]
 const TOTP_START = {
   enrollment_id: 'enroll-totp-1',
   secret_base32: 'JBSWY3DPEHPK3PXP',
@@ -65,6 +69,22 @@ function capture(path: string, init?: RequestInit): CapturedRequest {
   }
 }
 
+async function openSecurityTab(): Promise<void> {
+  fireEvent.click(await screen.findByRole('tab', { name: '安全设置' }))
+}
+
+function renderAccountManagement() {
+  return render(
+    <AccountManagement
+      userEmail="user@chenxing.star"
+      profileSummary="显示名称：辰星 · 用户名：@chenxing"
+      profileAction={<button type="button">修改账户资料</button>}
+      emailAction={<button type="button">更改邮箱</button>}
+      passwordAction={<a href="#password">修改密码</a>}
+    />,
+  )
+}
+
 beforeEach(() => {
   requests = []
   bindingResponse = null
@@ -72,7 +92,7 @@ beforeEach(() => {
   identities = { items: [] }
   clearMock.mockReset()
 
-  window.history.replaceState({}, '', '/console/security')
+  window.history.replaceState({}, '', '/console/profile')
   vi.stubGlobal('fetch', vi.fn((path: string, init?: RequestInit) => {
     const request = capture(path, init)
     requests.push(request)
@@ -114,46 +134,60 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('ConsoleSecurity 可选因子（#470）', () => {
-  it('无已启用因子时展示密码登录空态，列表请求不带 CSRF', async () => {
-    render(<ConsoleSecurity />)
-    expect(await screen.findByText('当前使用密码登录')).toBeTruthy()
-    expect(screen.getByText('没有启用验证方式时，密码验证成功会直接建立普通会话。')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '启用 TOTP' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '注册 Passkey' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: '移除验证器应用' })).toBeNull()
-    expect(screen.getByRole('heading', { name: '登录验证' })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: '已绑定账户' })).toBeTruthy()
-    expect(screen.getByText('尚未绑定外部账户')).toBeTruthy()
+describe('AccountManagement 可选因子（#470）', () => {
+  it('默认展示可扩展的账户绑定 Tab，任意后端 provider 自动成为绑定项', async () => {
+    renderAccountManagement()
+    expect(await screen.findByRole('heading', { name: '账户管理' })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: '账户绑定' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByText('user@chenxing.star')).toBeTruthy()
+    expect(screen.getByText('辰星通行证')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '绑定 辰星通行证' })).toBeTruthy()
     expect(screen.getByRole('button', { name: '绑定 GitHub' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '注册 Passkey' })).toBeNull()
 
     const list = requests.find((request) => request.path === '/api/v1/auth/security/factors')
     expect(list).toMatchObject({ method: 'GET' })
     expect(list?.headers.get('X-CSRF-Token')).toBeNull()
   })
 
+  it('切换到安全设置后展示密码、Passkey 和验证器操作', async () => {
+    renderAccountManagement()
+    await openSecurityTab()
+
+    expect(screen.getByRole('link', { name: '修改密码' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '修改账户资料' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '更改邮箱' })).toBeTruthy()
+    expect(screen.getByText('邮箱地址')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '注册 Passkey' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '绑定验证器' })).toBeTruthy()
+    expect(screen.getByText('当前使用密码登录')).toBeTruthy()
+    expect(screen.getByText('没有启用额外验证方式时，密码验证成功会直接建立普通会话。')).toBeTruthy()
+  })
+
   it('缺少 CSRF Cookie 时不发出绑定请求', async () => {
     document.cookie = 'chenxing_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
-    render(<ConsoleSecurity />)
-    await screen.findByRole('button', { name: '启用 TOTP' })
-    fireEvent.click(screen.getByRole('button', { name: '启用 TOTP' }))
+    renderAccountManagement()
+    await openSecurityTab()
+    fireEvent.click(screen.getByRole('button', { name: '绑定验证器' }))
     expect(await screen.findByText('请求校验失败，请刷新页面后重试。')).toBeTruthy()
     expect(requests.some((request) => request.path.endsWith('/enrollment/start'))).toBe(false)
   })
 
   it('从安全设置开始并确认 TOTP，写请求携带 Session/CSRF 绑定头', async () => {
-    render(<ConsoleSecurity />)
-    await screen.findByRole('button', { name: '启用 TOTP' })
-    fireEvent.click(screen.getByRole('button', { name: '启用 TOTP' }))
+    renderAccountManagement()
+    await openSecurityTab()
+    expect(screen.queryByRole('dialog', { name: '绑定验证器应用' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '绑定验证器' }))
 
-    expect(await screen.findByLabelText('确认验证码')).toBeTruthy()
-    expect(screen.getByText('JBSWY3DPEHPK3PXP')).toBeTruthy()
+    const totpDialog = await screen.findByRole('dialog', { name: '绑定验证器应用' })
+    expect(within(totpDialog).getByLabelText('确认验证码')).toBeTruthy()
+    expect(within(totpDialog).getByText('JBSWY3DPEHPK3PXP')).toBeTruthy()
     const start = requests.find((request) => request.path.endsWith('/enrollment/start'))
     expect(start).toMatchObject({ method: 'POST', body: {} })
     expect(start?.headers.get('X-CSRF-Token')).toBe('test-csrf-token')
 
-    fireEvent.change(screen.getByLabelText('确认验证码'), { target: { value: '123456' } })
-    fireEvent.click(screen.getByRole('button', { name: '确认并启用' }))
+    fireEvent.change(within(totpDialog).getByLabelText('确认验证码'), { target: { value: '123456' } })
+    fireEvent.click(within(totpDialog).getByRole('button', { name: '确认并启用' }))
 
     await screen.findByText('TOTP 已启用。下次登录将需要验证码。')
     expect(screen.queryByText('当前使用密码登录')).toBeNull()
@@ -167,19 +201,20 @@ describe('ConsoleSecurity 可选因子（#470）', () => {
 
   it('显示回调成功结果并清理回调查询参数', async () => {
     window.history.replaceState({}, '', '/settings/security?external=linked')
-    render(<ConsoleSecurity />)
+    renderAccountManagement()
     expect(await screen.findByText('外部账户已绑定。')).toBeTruthy()
     expect(window.location.search).toBe('')
+    expect(window.location.pathname).toBe('/console/profile')
   })
 
   it('展示外部账户列表，隐藏 subject，并以密码和 CSRF 解除绑定', async () => {
     identities = IDENTITIES
-    render(<ConsoleSecurity />)
+    renderAccountManagement()
     expect(await screen.findByText('GitHub')).toBeTruthy()
     expect(screen.getByText('user@example.com')).toBeTruthy()
     expect(screen.queryByText('subject-secret')).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: '解除绑定' }))
+    fireEvent.click(screen.getByRole('button', { name: '解除 GitHub 绑定' }))
     fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'current-password' } })
     fireEvent.click(screen.getByRole('button', { name: '确认解除绑定' }))
 
@@ -190,7 +225,7 @@ describe('ConsoleSecurity 可选因子（#470）', () => {
   })
 
   it('通过受 CSRF 保护的绑定端点启动外部账户绑定', async () => {
-    render(<ConsoleSecurity />)
+    renderAccountManagement()
     fireEvent.click(await screen.findByRole('button', { name: '绑定 Google' }))
 
     await waitFor(() => {

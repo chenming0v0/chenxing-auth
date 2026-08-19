@@ -44,6 +44,7 @@ export const pageStatus: Record<string, string> = {
   '/console': '控制台 · 总览',
   '/console/plans': '控制台 · 套餐与权益',
   '/console/profile': '控制台 · 个人信息',
+  '/console/security': '控制台 · 个人信息',
   '/console/apps': '控制台 · 已授权应用',
   '/console/logs': '控制台 · 安全日志',
   '/console/integrate': '控制台 · 接入应用',

@@ -16,7 +16,7 @@ import { OAuthAccountPage, OAuthConsentPage, OAuthRedirectPage } from './oauth'
 installCsrfCookie()
 
 // OAuthConsentPage 依赖 useAuth 提供当前用户；mock 掉 auth-state，
-// 避免 AuthProvider 挂载时额外发出 /auth/me 与 /admin/bootstrap/status 请求。
+// 避免 AuthProvider 挂载时额外发出 /auth/me 请求。
 vi.mock('../auth-state', () => ({
   useAuth: () => ({
     user: {
@@ -27,7 +27,6 @@ vi.mock('../auth-state', () => ({
     status: 'authenticated',
     bootstrap: 'ready',
     refresh: () => Promise.resolve(null),
-    refreshBootstrap: () => Promise.resolve('ready'),
     clear: () => {},
     logout: () => Promise.resolve(),
   }),

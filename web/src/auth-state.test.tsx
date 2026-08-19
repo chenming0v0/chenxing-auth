@@ -29,14 +29,14 @@ function ownerProfile(username = 'owner') {
 }
 
 function AuthStateProbe() {
-  const { status, bootstrap, user, refresh, refreshBootstrap, logout } = useAuth()
+  const { status, bootstrap, user, refresh, completeBootstrap, logout } = useAuth()
   return (
     <div>
       <output aria-label="认证状态">{status}</output>
       <output aria-label="引导状态">{bootstrap}</output>
       <output aria-label="当前用户">{user?.username ?? ''}</output>
       <button type="button" onClick={() => void refresh()}>重试认证</button>
-      <button type="button" onClick={() => void refreshBootstrap()}>重试引导</button>
+      <button type="button" onClick={completeBootstrap}>完成引导</button>
       <button type="button" onClick={() => void logout()}>退出登录</button>
     </div>
   )
@@ -56,15 +56,13 @@ afterEach(() => {
   cleanup()
   clearApiCache()
   vi.unstubAllGlobals()
+  window.history.replaceState({}, '', '/login')
 })
 
 describe('AuthProvider recoverable failures (#250)', () => {
   it('moves an initial non-401 /auth/me failure into an error state and can retry', async () => {
     let profileAttempts = 0
     vi.stubGlobal('fetch', vi.fn((path: string) => {
-      if (path === '/api/v1/admin/bootstrap/status') {
-        return Promise.resolve(jsonResponse({ initialized: true }))
-      }
       if (path === '/api/v1/auth/me') {
         profileAttempts += 1
         if (profileAttempts === 1) {
@@ -82,19 +80,11 @@ describe('AuthProvider recoverable failures (#250)', () => {
     await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('authenticated'))
     expect(profileAttempts).toBe(2)
   })
-})
 
-describe('refreshBootstrap failure semantics (#324)', () => {
-  it('keeps a transient 5xx recoverable instead of locking out an uninitialized system', async () => {
-    let statusAttempts = 0
+  it('skips the bootstrap status probe when the server owns document navigation', async () => {
+    const requests: string[] = []
     vi.stubGlobal('fetch', vi.fn((path: string) => {
-      if (path === '/api/v1/admin/bootstrap/status') {
-        statusAttempts += 1
-        if (statusAttempts === 1) {
-          return Promise.resolve(jsonResponse({ code: 'temporarily_unavailable' }, 503))
-        }
-        return Promise.resolve(jsonResponse({ initialized: false }))
-      }
+      requests.push(path)
       if (path === '/api/v1/auth/me') {
         return Promise.resolve(jsonResponse({ code: 'unauthorized' }, 401))
       }
@@ -103,26 +93,15 @@ describe('refreshBootstrap failure semantics (#324)', () => {
 
     render(<AuthProvider><AuthStateProbe /></AuthProvider>)
 
-    // 瞬态 5xx 不得把 bootstrap 误判为 ready/required：进入 error，等待重试。
-    await waitFor(() => expect(screen.getByLabelText('引导状态').textContent).toBe('error'))
-    fireEvent.click(screen.getByRole('button', { name: '重试引导' }))
-    await waitFor(() => expect(screen.getByLabelText('引导状态').textContent).toBe('required'))
-    expect(statusAttempts).toBe(2)
+    await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('unauthenticated'))
+    expect(screen.getByLabelText('引导状态').textContent).toBe('ready')
+    expect(requests).toEqual(['/api/v1/auth/me'])
   })
 
-  it('treats a network error (status 0) as transient, not as initialized', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('network down'))))
-
-    render(<AuthProvider><AuthStateProbe /></AuthProvider>)
-
-    await waitFor(() => expect(screen.getByLabelText('引导状态').textContent).toBe('error'))
-  })
-
-  it('maps the hidden 404 of an initialized instance to ready', async () => {
+  it('does not probe bootstrap status during normal startup', async () => {
+    const requests: string[] = []
     vi.stubGlobal('fetch', vi.fn((path: string) => {
-      if (path === '/api/v1/admin/bootstrap/status') {
-        return Promise.resolve(jsonResponse({ code: 'not_found' }, 404))
-      }
+      requests.push(path)
       if (path === '/api/v1/auth/me') {
         return Promise.resolve(jsonResponse({ code: 'unauthorized' }, 401))
       }
@@ -131,16 +110,34 @@ describe('refreshBootstrap failure semantics (#324)', () => {
 
     render(<AuthProvider><AuthStateProbe /></AuthProvider>)
 
-    await waitFor(() => expect(screen.getByLabelText('引导状态').textContent).toBe('ready'))
+    await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('unauthenticated'))
+    expect(requests).toEqual(['/api/v1/auth/me'])
+  })
+
+  it('trusts a server-routed bootstrap document until the user completes initialization', async () => {
+    window.history.replaceState({}, '', '/bootstrap')
+    const requests: string[] = []
+    vi.stubGlobal('fetch', vi.fn((path: string) => {
+      requests.push(path)
+      if (path === '/api/v1/auth/me') {
+        return Promise.resolve(jsonResponse({ code: 'unauthorized' }, 401))
+      }
+      throw new Error(`unexpected request: ${path}`)
+    }))
+
+    render(<AuthProvider><AuthStateProbe /></AuthProvider>)
+
+    await waitFor(() => expect(screen.getByLabelText('认证状态').textContent).toBe('unauthenticated'))
+    expect(screen.getByLabelText('引导状态').textContent).toBe('required')
+    fireEvent.click(screen.getByRole('button', { name: '完成引导' }))
+    expect(screen.getByLabelText('引导状态').textContent).toBe('ready')
+    expect(requests).toEqual(['/api/v1/auth/me'])
   })
 })
 
 describe('refresh request ordering (#473)', () => {
   function stubAuthNetwork(onMe: () => Promise<Response>) {
     vi.stubGlobal('fetch', vi.fn((path: string, init?: RequestInit) => {
-      if (path === '/api/v1/admin/bootstrap/status') {
-        return Promise.resolve(jsonResponse({ initialized: true }))
-      }
       if (path === '/api/v1/auth/session' && String(init?.method).toUpperCase() === 'DELETE') {
         return Promise.resolve(emptyResponse(204))
       }
@@ -203,9 +200,6 @@ describe('refresh request ordering (#473)', () => {
     let profileCalls = 0
     let entitlementCalls = 0
     vi.stubGlobal('fetch', vi.fn((path: string) => {
-      if (path === '/api/v1/admin/bootstrap/status') {
-        return Promise.resolve(jsonResponse({ initialized: true }))
-      }
       if (path === '/api/v1/auth/me') {
         profileCalls += 1
         return Promise.resolve(jsonResponse(profileCalls === 1 ? ownerProfile('account-a') : { ...ownerProfile('account-b'), id: 2 }))
@@ -237,9 +231,6 @@ describe('refresh request ordering (#473)', () => {
     let resolveOld: ((response: Response) => void) | undefined
     let resolveNew: ((response: Response) => void) | undefined
     vi.stubGlobal('fetch', vi.fn((path: string) => {
-      if (path === '/api/v1/admin/bootstrap/status') {
-        return Promise.resolve(jsonResponse({ initialized: true }))
-      }
       if (path === '/api/v1/auth/me') {
         profileCalls += 1
         return Promise.resolve(jsonResponse(profileCalls === 1 ? ownerProfile('account-a') : { ...ownerProfile('account-b'), id: 2 }))

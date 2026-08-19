@@ -22,6 +22,8 @@ use uuid::Uuid;
 
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
+#[path = "support/key_directory.rs"]
+mod key_directory;
 #[path = "support/oauth_flow.rs"]
 mod oauth_flow;
 #[path = "support/totp_time.rs"]
@@ -52,8 +54,7 @@ impl TestApp {
         let redis_url =
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
         let database = db_isolation::isolated_pool(test_name, &database_url).await;
-        let key_directory =
-            std::env::temp_dir().join(format!("chenxing-factor-security-{}", Uuid::new_v4()));
+        let key_directory = key_directory::isolated_key_directory("factor-security");
         let mut config = Config::from_values_with_issuer(
             "127.0.0.1".to_owned(),
             3000,

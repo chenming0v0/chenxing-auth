@@ -372,7 +372,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
 
 export function BootstrapPage() {
   const navigate = useNavigate()
-  const { refreshBootstrap } = useAuth()
+  const { completeBootstrap } = useAuth()
   const [done, setDone] = useState(false)
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
@@ -414,7 +414,6 @@ export function BootstrapPage() {
         csrf: 'pre-session',
         body: JSON.stringify({ username, email, password }),
       })
-      await refreshBootstrap()
       setDone(true)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '初始化未完成，请稍后重试。')
@@ -452,7 +451,17 @@ export function BootstrapPage() {
             {done ? (
               <div className="mt-6 space-y-4">
                 <Notice tone="success">Owner 初始化成功，请使用新账号登录。</Notice>
-                <Button type="button" className="w-full py-3" icon="log-in" onClick={() => navigate('/login')}>前往登录</Button>
+                <Button
+                  type="button"
+                  className="w-full py-3"
+                  icon="log-in"
+                  onClick={() => {
+                    completeBootstrap()
+                    navigate('/login')
+                  }}
+                >
+                  前往登录
+                </Button>
               </div>
             ) : (
               <form className="mt-6 space-y-4" onSubmit={submit} noValidate>

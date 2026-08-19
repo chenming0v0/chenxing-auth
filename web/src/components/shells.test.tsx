@@ -13,7 +13,7 @@ const { mockUser, mockLogout } = vi.hoisted(() => ({
 }))
 
 // ConsoleLayout 依赖 useAuth；mock 掉 auth-state，避免 AuthProvider 挂载时
-// 额外发出 /auth/me 与 /admin/bootstrap/status 请求。
+// 额外发出 /auth/me 请求。
 // 工厂在模块首次导入时执行，只能引用 hoisted 变量，不能引用文件顶层 const。
 vi.mock('../auth-state', () => ({
   useAuth: () => ({
@@ -21,7 +21,6 @@ vi.mock('../auth-state', () => ({
     status: 'authenticated',
     bootstrap: 'ready',
     refresh: () => Promise.resolve(null),
-    refreshBootstrap: () => Promise.resolve('ready'),
     clear: () => {},
     logout: mockLogout,
   }),
@@ -172,6 +171,16 @@ describe('汉堡/账户菜单 Disclosure 可访问性（#220）', () => {
     expect(hamburgerId).toBeTruthy()
     expect(accountId).toBeTruthy()
     expect(hamburgerId).not.toBe(accountId)
+  })
+
+  it('账户菜单只保留个人信息入口，不重复提供独立安全页', () => {
+    renderConsole()
+    const button = screen.getByRole('button', { name: '账户菜单' })
+    fireEvent.click(button)
+    const panelId = button.getAttribute('aria-controls') as string
+    const panel = document.getElementById(panelId) as HTMLElement
+    expect(within(panel).getByRole('link', { name: '账户设置' }).getAttribute('href')).toBe('/console/profile')
+    expect(within(panel).queryByRole('link', { name: '账户与安全' })).toBeNull()
   })
 
   it('Escape 关闭汉堡菜单并把焦点还给触发器按钮', async () => {
