@@ -122,8 +122,33 @@ impl SettingsService {
     where
         F: FnOnce(&EmailPolicySetting) -> AuditEvent,
     {
+        self.set_email_policy_audited_if_generation(
+            value,
+            repository::get_generation(&self.pool, crate::settings::EMAIL_POLICY_KEY).await?,
+            audit,
+            audit_event,
+        )
+        .await
+    }
+
+    pub async fn set_email_policy_audited_if_generation<F>(
+        &self,
+        value: EmailPolicySetting,
+        expected_generation: i64,
+        audit: &AuditService,
+        audit_event: F,
+    ) -> Result<EmailPolicySetting, SettingsServiceError>
+    where
+        F: FnOnce(&EmailPolicySetting) -> AuditEvent,
+    {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
+        let actual =
+            repository::get_generation(&mut *transaction, crate::settings::EMAIL_POLICY_KEY)
+                .await?;
+        if actual != expected_generation {
+            return Err(SettingsServiceError::Conflict);
+        }
         repository::set_email_policy(&mut *transaction, &value).await?;
         audit
             .record_in_transaction(&mut transaction, audit_event(&value))

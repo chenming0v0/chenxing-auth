@@ -22,6 +22,19 @@ where
     Ok(row.and_then(|(value,)| value))
 }
 
+pub async fn get_generation<'e, E>(executor: E, key: &str) -> Result<i64, crate::sqlx::Error>
+where
+    E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
+{
+    Ok(crate::sqlx::query_scalar::<_, i64>(
+        "SELECT generation FROM app_settings WHERE setting_key = $1",
+    )
+    .bind(key)
+    .fetch_optional(executor)
+    .await?
+    .unwrap_or(0))
+}
+
 pub async fn set_text<'e, E>(
     executor: E,
     key: &str,

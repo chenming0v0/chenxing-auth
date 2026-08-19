@@ -221,6 +221,13 @@ export function UsersTable({ access }: { access: AdminAccess }) {
                     </div>
                   </td>
                   <td>
+                    {user.plan ? (
+                      <div>
+                        <p className="chenxing-body text-sm">{user.plan.name}</p>
+                        <p className="chenxing-mono text-xs text-[var(--chenxing-cyan)]">{user.plan.code}</p>
+                        {user.plan.expires_at ? <p className="chenxing-caption text-xs">到期 {formatDate(user.plan.expires_at)}</p> : null}
+                      </div>
+                    ) : <span className="chenxing-caption">未挂载</span>}
                     <button
                       type="button"
                       className="chenxing-link chenxing-row-action"

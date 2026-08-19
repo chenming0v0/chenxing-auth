@@ -143,11 +143,18 @@ export type AdminOverview = {
   administrators: number
   audit_events: number
 }
-/** 管理端用户对象。该接口不返回头像版本号，因此显式排除，避免类型宣称后端没给的字段。 */
 export type PublicUser = Omit<
   UserMe,
   'current_session_expires_at' | 'avatar_updated_at'
-> & { created_at: string }
+> & {
+  created_at: string
+  plan: {
+    id: number
+    code: string
+    name: string
+    expires_at: string | null
+  } | null
+}
 /** 管理端建号入参；display_name 留空时传 null，role / status 省略时由服务端取默认值。 */
 export type AdminCreateUserInput = {
   username: string
@@ -230,6 +237,7 @@ export type EmailPolicySetting = {
   whitelist_enabled: boolean
   alias_restriction_enabled: boolean
   allowed_domains: string[]
+  generation?: number
 }
 export type SmtpSetting = {
   host: string

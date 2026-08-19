@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type KeyboardEvent } from 'react'
-import { apiFetch, type EmailPolicySetting } from '../../../api'
+import { ApiError, apiFetch, type EmailPolicySetting } from '../../../api'
 import { Button, Chip, Field, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
@@ -115,13 +115,16 @@ export function EmailPolicyPanel({ onMessage, onDirtyChange }: SettingsPanelProp
     try {
       const value = await apiFetch<EmailPolicySetting>('/api/v1/admin/settings/email-policy', {
         method: 'PUT',
-        body: JSON.stringify(setting),
+        body: JSON.stringify({ ...setting, expected_generation: savedSetting?.generation ?? 0 }),
       })
       setSetting(value)
       setSavedSetting(value)
       onMessage('邮箱域名白名单设置已保存。')
-    } catch (reason) {
-      onMessage(reason instanceof Error ? reason.message : '邮箱域名白名单保存失败。', 'warning')
+      } catch (reason) {
+        const message = reason instanceof ApiError && reason.code === 'setting_conflict'
+          ? '邮箱域名白名单已被其他管理员修改，请刷新后重新编辑。'
+          : reason instanceof Error ? reason.message : '邮箱域名白名单保存失败。'
+        onMessage(message, 'warning')
     } finally {
       setBusy(false)
     }

@@ -208,10 +208,17 @@ pub async fn get_email_policy_setting(State(state): State<AppState>, admin: Admi
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct UpdateEmailPolicySetting {
+    #[serde(flatten)]
+    setting: EmailPolicySetting,
+    expected_generation: i64,
+}
+
 pub async fn update_email_policy_setting(
     State(state): State<AppState>,
     admin: AdminWrite,
-    ApiJson(input): ApiJson<EmailPolicySetting>,
+    ApiJson(input): ApiJson<UpdateEmailPolicySetting>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -222,23 +229,31 @@ pub async fn update_email_policy_setting(
     };
     match state
         .settings
-        .set_email_policy_audited(input, &state.audit, move |setting| {
-            setting_event(
-                actor,
-                crate::audit::AuditAction::EmailPolicyUpdate,
-                "email_policy",
-                serde_json::json!({
-                    "whitelist_enabled": setting.whitelist_enabled,
-                    "alias_restriction_enabled": setting.alias_restriction_enabled,
-                    "domain_count": setting.allowed_domains.len(),
-                }),
-            )
-        })
+        .set_email_policy_audited_if_generation(
+            input.setting,
+            input.expected_generation,
+            &state.audit,
+            move |setting| {
+                setting_event(
+                    actor,
+                    crate::audit::AuditAction::EmailPolicyUpdate,
+                    "email_policy",
+                    serde_json::json!({
+                        "whitelist_enabled": setting.whitelist_enabled,
+                        "alias_restriction_enabled": setting.alias_restriction_enabled,
+                        "domain_count": setting.allowed_domains.len(),
+                    }),
+                )
+            },
+        )
         .await
     {
         Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
         Err(SettingsServiceError::Validation(error_value)) => {
             error::bad_request("invalid_email_policy", error_value.to_string())
+        }
+        Err(SettingsServiceError::Conflict) => {
+            error::conflict("setting_conflict", "setting changed; reload and retry")
         }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update email policy setting");

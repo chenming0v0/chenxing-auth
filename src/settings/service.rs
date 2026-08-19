@@ -38,6 +38,8 @@ pub enum SettingsServiceError {
     InvalidEmail,
     #[error("setting validation failed: {0}")]
     Validation(#[from] SettingsValidationError),
+    #[error("setting was modified concurrently")]
+    Conflict,
     #[error("stored setting {key} is unreadable")]
     Corrupt { key: &'static str },
     #[error("secret operation failed: {0}")]

@@ -120,7 +120,8 @@ export function OAuthProvidersPanel({ onMessage, onDirtyChange }: SettingsPanelP
       const slug = await persist(form, target)
       /* 配置已经落库，这一步之后不允许再回到「保存失败」的语义：
          状态切换失败只影响启用与否，弹层必须关闭并刷新列表，避免用户重复提交创建。 */
-      const currentActive = target ? target.status === 'active' : false
+      const currentProvider = providers?.find((provider) => provider.slug === slug) ?? target
+      const currentActive = currentProvider?.status === 'active'
       const action: StatusAction | null = form.enabled === currentActive ? null : form.enabled ? 'enable' : 'disable'
       const status = action ? await applyStatus(slug, action) : { ok: true as const }
       setOpen(false)

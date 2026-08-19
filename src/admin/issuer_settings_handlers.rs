@@ -12,7 +12,7 @@ use crate::{
     api::extract::{AdminRead, AdminWrite, ApiJson},
     audit::AuditEvent,
     error,
-    settings::issuer::{self, IssuerRecord},
+    settings::issuer::{self, RawIssuerRecord},
     state::AppState,
 };
 
@@ -51,7 +51,7 @@ impl From<&IssuerRecord> for IssuerRecordResponse {
 
 fn issuer_setting_response(
     state: &AppState,
-    persisted: Option<&IssuerRecord>,
+    persisted: Option<&crate::settings::issuer::RawIssuerRecord>,
 ) -> IssuerSettingResponse {
     let runtime = state.issuer.state();
     let loaded = runtime.loaded().map(|snapshot| IssuerRecordResponse {
@@ -60,7 +60,13 @@ fn issuer_setting_response(
         updated_at: snapshot.updated_at(),
     });
     IssuerSettingResponse {
-        persisted: persisted.map(IssuerRecordResponse::from),
+        persisted: persisted.map(|record| IssuerRecordResponse {
+            // Keep the raw value visible to the authorized settings editor so an invalid
+            // persisted issuer can be replaced using its actual CAS generation.
+            value: record.value.clone().unwrap_or_default(),
+            generation: record.generation,
+            updated_at: record.updated_at,
+        }),
         loaded,
         phase: runtime.phase(),
     }
@@ -71,22 +77,11 @@ pub async fn get_issuer_setting(State(state): State<AppState>, admin: AdminRead)
         return response;
     }
     match issuer::load_raw(&state.database).await {
-        Ok(Some(raw)) => {
-            let persisted = raw.value.as_deref().and_then(|value| {
-                crate::config::IssuerUrl::parse(value)
-                    .ok()
-                    .map(|issuer| IssuerRecord {
-                        value: issuer.as_str().to_owned(),
-                        generation: raw.generation,
-                        updated_at: raw.updated_at,
-                    })
-            });
-            (
-                StatusCode::OK,
-                Json(issuer_setting_response(&state, persisted.as_ref())),
-            )
-                .into_response()
-        }
+        Ok(Some(raw)) => (
+            StatusCode::OK,
+            Json(issuer_setting_response(&state, Some(&raw))),
+        )
+            .into_response(),
         Ok(None) => (StatusCode::OK, Json(issuer_setting_response(&state, None))).into_response(),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load issuer setting");
