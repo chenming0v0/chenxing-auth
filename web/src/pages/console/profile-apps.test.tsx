@@ -110,7 +110,19 @@ describe('ConsoleProfile 账户设置布局', () => {
     expect(requests.some(({ path }) => path.includes('email-change'))).toBe(false)
   })
 
-  it('修改密码只在独立弹窗中展示，不在安全设置项内展开', async () => {
+  it('ignores an older session reload after a newer revoke reload', async () => {
+    const deferred: Array<(value: Response) => void> = []
+    vi.stubGlobal('fetch', vi.fn((path: string, init?: RequestInit) => {
+      requests.push({ path, init })
+      if (path === '/api/v1/auth/sessions') return new Promise<Response>((resolve) => deferred.push(resolve))
+      return Promise.reject(new Error(`unexpected request: ${path}`))
+    }))
+    render(<ConsoleProfile />)
+    deferred.shift()?.(jsonResponse({ items: [{ id: 1, current: false, created_at: '2099-01-01', expires_at: '2099-01-02' }] }))
+    await screen.findByText('其他会话')
+    expect(deferred).toHaveLength(0)
+  })
+
     render(<ConsoleProfile />)
 
     await screen.findByRole('heading', { name: '账户管理' })

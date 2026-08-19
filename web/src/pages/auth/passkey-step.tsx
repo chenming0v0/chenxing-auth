@@ -45,7 +45,9 @@ export function PasskeyStep({
         onTicketInvalid()
         return
       }
-      onMessage(passkeyErrorMessage(error))
+      onMessage(passkeyErrorMessage(error instanceof ApiError && error.code === 'invalid_factor'
+        ? new ApiError('Passkey 验证未通过，请重试。', error.status, 'invalid_passkey')
+        : error))
     } finally {
       onBusy(false)
     }

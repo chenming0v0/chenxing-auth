@@ -147,7 +147,19 @@ describe('SecurityLogDetail（经 ?id= 进入）', () => {
     expect(screen.queryByText('WONG 公益站备用')).toBeNull()
   })
 
-  it('详情页提供返回列表的链接', async () => {
+  it('malformed detail ids stay on the list route', async () => {
+    for (const id of ['123abc', '1.5', '+123', ' 123']) {
+      window.history.replaceState({}, '', `/console/logs?id=${encodeURIComponent(id)}`)
+      apiFetchMock.mockResolvedValue(sampleEvents)
+      render(<SecurityLogsPage />)
+      await screen.findByText('共 3 条')
+      expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/security-events?page=1&page_size=20')
+      cleanup()
+      apiFetchMock.mockReset()
+    }
+  })
+
+
     window.history.replaceState({}, '', '/console/logs?id=11045978')
     apiFetchMock.mockRejectedValue(new ApiError('请求的资源不存在或已失效。', 404))
     render(<SecurityLogsPage />)
