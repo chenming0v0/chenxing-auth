@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react'
+import { subscribeToMediaQuery } from './motion'
 
 function Starfield({ opacity = 0.7 }: { opacity?: number }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -64,11 +65,11 @@ function Starfield({ opacity = 0.7 }: { opacity?: number }) {
     resize()
     sync()
     window.addEventListener('resize', resize)
-    mq.addEventListener('change', sync)
+    const unsubscribe = subscribeToMediaQuery(mq, sync)
     return () => {
       cancelAnimationFrame(raf)
       window.removeEventListener('resize', resize)
-      mq.removeEventListener('change', sync)
+      unsubscribe()
     }
   }, [])
   return <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" style={{ opacity }} aria-hidden="true" />
@@ -166,11 +167,11 @@ export function WarpField({ className = '', stars = 200 }: { className?: string;
     resize()
     sync()
     window.addEventListener('resize', resize)
-    mq.addEventListener('change', sync)
+    const unsubscribe = subscribeToMediaQuery(mq, sync)
     return () => {
       cancelAnimationFrame(raf)
       window.removeEventListener('resize', resize)
-      mq.removeEventListener('change', sync)
+      unsubscribe()
     }
   }, [stars])
   return <canvas ref={canvasRef} className={className} aria-hidden="true" />
