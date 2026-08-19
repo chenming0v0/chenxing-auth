@@ -176,8 +176,16 @@ describe('UsersTable 自己的角色不可修改（对齐 self_role_change_forbi
     expect(roleSelectIn('副星主').disabled).toBe(false)
   })
 
+  it('disables self status and privileged target actions without manage_roles', async () => {
+    renderTable(['manage_users'])
+    await screen.findByText('星主')
+    expect((within(rowOf('星主')).getByRole('button', { name: '禁用' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((within(rowOf('副星主')).getByRole('button', { name: '禁用' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((within(rowOf('副星主')).getByRole('button', { name: '分配套餐' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((within(rowOf('星尘')).getByRole('button', { name: '禁用' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
   it('缺少 manage_roles 权限时角色下拉禁用，且自己的行仍显示说明', async () => {
-    renderTable(['manage_users', 'manage_settings'])
     await screen.findByText('星尘')
     expect(roleSelectIn('星尘').disabled).toBe(true)
     expect(within(rowOf('星尘')).queryByText('不能修改自己的角色')).toBeNull()

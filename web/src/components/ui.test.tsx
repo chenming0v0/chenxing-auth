@@ -1,11 +1,19 @@
 import { describe, expect, it, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import type { FormEvent } from 'react'
-import { AvatarContent, Button, Chip, HudPanel } from './ui'
+import { AvatarContent, Button, Chip, HudPanel, Icon } from './ui'
 
 // 多个用例渲染相同文案，不清理会让 getByText 命中多个节点。
 afterEach(cleanup)
 
+describe('Icon registry', () => {
+  it('renders the registered settings icons instead of the fallback circle', () => {
+    const { container } = render(<><Icon name="clock-3" /><Icon name="globe-2" /></>)
+    const icons = container.querySelectorAll('svg')
+    expect(icons).toHaveLength(2)
+    expect(icons[0].innerHTML).not.toBe(icons[1].innerHTML)
+  })
+})
 describe('AvatarContent', () => {
   it('uses the product default avatar when the user has no custom avatar', () => {
     const { container } = render(<AvatarContent name="辰星用户" />)
