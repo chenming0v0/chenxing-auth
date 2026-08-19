@@ -1,10 +1,19 @@
 use super::{
-    inputs::{PasskeyAuthenticationInput, PasskeyRegistrationInput, PasskeyTicketInput},
+    inputs::{
+        DiscoverablePasskeyFinishInput, EmptyInput, PasskeyAuthenticationInput,
+        PasskeyRegistrationInput, PasskeyTicketInput,
+    },
     responses::{mfa_failure_response, passkey_confirmation_response},
     ticket_proof::ticket_proof,
 };
 use crate::{
-    api::extract::ApiJson, auth_factors::service::AuthFactorServiceError, error, state::AppState,
+    api::extract::ApiJson,
+    auth_factors::{
+        service::{AuthFactorServiceError, DiscoverablePasskeyConfirmation},
+        session::{StaleCredentialCode, issue_primary_factor_session},
+    },
+    error,
+    state::AppState,
 };
 use axum::{
     Json,
@@ -13,6 +22,95 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use std::net::SocketAddr;
+
+#[derive(serde::Serialize)]
+struct DiscoverablePasskeyStartResponse {
+    challenge_id: String,
+    options: webauthn_rs_core::proto::RequestChallengeResponse,
+}
+
+pub async fn start_discoverable_passkey_authentication(
+    State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    ApiJson(_): ApiJson<EmptyInput>,
+) -> Response {
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    match state
+        .factors
+        .start_discoverable_passkey_authentication(source_ip.as_deref())
+        .await
+    {
+        Ok(Some((challenge_id, options))) => (
+            axum::http::StatusCode::OK,
+            Json(DiscoverablePasskeyStartResponse {
+                challenge_id,
+                options,
+            }),
+        )
+            .into_response(),
+        Ok(None) => error::conflict("passkey_operation_pending", "Passkey operation is pending"),
+        Err(AuthFactorServiceError::PasskeyDisabled) => {
+            error::bad_request("passkey_disabled", "passkey authentication is disabled")
+        }
+        Err(AuthFactorServiceError::RateLimited) => {
+            error::unauthorized("invalid_factor", "authentication factor is invalid")
+        }
+        Err(factor_error) => {
+            tracing::error!(error = %factor_error, "failed to start discoverable Passkey authentication");
+            error::internal()
+        }
+    }
+}
+
+pub async fn finish_discoverable_passkey_authentication(
+    State(state): State<AppState>,
+    connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
+    ApiJson(input): ApiJson<DiscoverablePasskeyFinishInput>,
+) -> Response {
+    let source_ip = crate::api::source_ip(
+        connect_info.map(|Extension(ConnectInfo(peer))| peer),
+        &headers,
+        &state.config.trusted_proxies,
+    );
+    match state
+        .factors
+        .finish_discoverable_passkey_authentication(
+            &input.challenge_id,
+            source_ip.as_deref(),
+            &input.credential,
+        )
+        .await
+    {
+        Ok(DiscoverablePasskeyConfirmation::Completed(authenticated)) => {
+            issue_primary_factor_session(
+                &state,
+                authenticated,
+                "passkey",
+                &headers,
+                source_ip.as_deref(),
+                StaleCredentialCode::InvalidFactor,
+            )
+            .await
+        }
+        Ok(DiscoverablePasskeyConfirmation::Invalid)
+        | Ok(DiscoverablePasskeyConfirmation::RateLimited) => {
+            error::unauthorized("invalid_passkey", "Passkey authentication is invalid")
+        }
+        Err(AuthFactorServiceError::PasskeyDisabled) => {
+            error::bad_request("passkey_disabled", "passkey authentication is disabled")
+        }
+        Err(factor_error) => {
+            tracing::error!(error = %factor_error, "failed to finish discoverable Passkey authentication");
+            error::internal()
+        }
+    }
+}
 
 pub async fn start_passkey_registration(
     State(state): State<AppState>,

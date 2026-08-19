@@ -240,10 +240,10 @@ paths:
         门禁允许继续后，请求格式错误返回 415 或 422；持久化空值/无效值、读取失败或 Runtime Pending/Invalid 时，
         在进入登录处理器前返回 503 `issuer_runtime_invalid`。
 
-        没有已启用/生效认证因子的账号在口令校验成功后直接签发普通 Session，审计
-        factor 固定为 `password`，不会创建 login ticket，也不会返回
-        `factor_setup_required`。已有生效因子时继续返回 `factor_required` 并走既有
-        ticket-only 第二步。`factor_setup_required` 保留在响应枚举中用于协议兼容。
+        没有绑定 TOTP 的账号在口令校验成功后直接签发普通 Session，审计 factor 固定为
+        `password`。已绑定 TOTP 时返回 `factor_required`，并通过 ticket-only 流程完成
+        验证器应用确认。Passkey 是独立的第一因子，不会在密码之后作为第二步出现。
+        `factor_setup_required` 保留在响应枚举中用于协议兼容。
 
         错误码：
         - 401 invalid_credentials / invalid_factor：口令或 TOTP 验证码错误，或已被限流。
@@ -269,7 +269,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/LoginResponse'
         '202':
-          description: 密码正确且已有生效认证因子，需要完成第二步。通过 HttpOnly login ticket 与 holder Cookie 继续流程，不在 JSON 响应中返回 ticket
+          description: 密码正确且账号已绑定 TOTP，需要完成验证器应用第二步。通过 HttpOnly login ticket 与 holder Cookie 继续流程，不在 JSON 响应中返回 ticket
           headers:
             Set-Cookie: { $ref: '#/components/headers/SetCookie' }
           content:
@@ -415,12 +415,19 @@ paths:
             schema: { $ref: '#/components/schemas/PasskeyRegistrationInput' }
       responses:
         '200':
-          description: passkey 注册成功，已设置 Session 和 CSRF Cookie
+          description: passkey 注册成功且无需 TOTP，已设置 Session 和 CSRF Cookie
           headers:
             Set-Cookie: { $ref: '#/components/headers/SetCookie' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/LoginResponse' }
+        '202':
+          description: Passkey 注册验证成功，但账号已绑定 TOTP，必须继续完成验证器应用确认
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PendingLoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
@@ -461,16 +468,73 @@ paths:
             schema: { $ref: '#/components/schemas/PasskeyAuthenticationInput' }
       responses:
         '200':
-          description: passkey 验证成功，已设置 Session 和 CSRF Cookie
+          description: Passkey 验证成功且无需 TOTP，已设置 Session 和 CSRF Cookie
           headers:
             Set-Cookie: { $ref: '#/components/headers/SetCookie' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/LoginResponse' }
+        '202':
+          description: Passkey 验证成功，但账号已绑定 TOTP，必须继续完成验证器应用确认
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PendingLoginResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+  /api/v1/auth/passkeys/discoverable/start:
+    post:
+      tags: [User Auth/Browser Login]
+      summary: 开始无密码 Passkey 登录
+      operationId: startDiscoverablePasskeyAuthentication
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyObject' }
+      responses:
+        '200':
+          description: WebAuthn discoverable challenge
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscoverablePasskeyStartResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/InvalidJsonData' }
+  /api/v1/auth/passkeys/discoverable/finish:
+    post:
+      tags: [User Auth/Browser Login]
+      summary: 完成无密码 Passkey 登录
+      operationId: finishDiscoverablePasskeyAuthentication
+      parameters:
+        - { $ref: '#/components/parameters/SessionResponseMode' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DiscoverablePasskeyFinishInput' }
+      responses:
+        '200':
+          description: Passkey 验证成功且无需 TOTP，已设置 Session 和 CSRF Cookie
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LoginResponse' }
+        '202':
+          description: Passkey 验证成功，但账号已绑定 TOTP，必须继续完成验证器应用确认
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/SetCookie' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PendingLoginResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
   /api/v1/auth/security/factors:
     get:
@@ -3096,6 +3160,18 @@ components:
           required: [credential]
           properties:
             credential: { type: object, additionalProperties: true }
+    DiscoverablePasskeyStartResponse:
+      type: object
+      required: [challenge_id, options]
+      properties:
+        challenge_id: { type: string, format: uuid }
+        options: { $ref: '#/components/schemas/WebAuthnOptions' }
+    DiscoverablePasskeyFinishInput:
+      type: object
+      required: [challenge_id, credential]
+      properties:
+        challenge_id: { type: string, format: uuid }
+        credential: { type: object, additionalProperties: true }
     PublicUser:
       type: object
       required: [id, username, email, status, role, created_at]

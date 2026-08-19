@@ -2,7 +2,7 @@ use axum::{http::HeaderMap, response::Response};
 
 use super::super::{
     service::{AuthFactorServiceError, PasskeyConfirmation, TotpConfirmation},
-    session::{StaleCredentialCode, issue_user_session},
+    session::{StaleCredentialCode, issue_primary_factor_session, issue_verified_session},
 };
 use crate::{audit::AuditEvent, error, state::AppState, users::domain::UserId};
 
@@ -15,14 +15,13 @@ pub(super) async fn totp_confirmation_response(
 ) -> Response {
     match confirmation {
         TotpConfirmation::Completed(authenticated) => {
-            issue_user_session(
+            issue_verified_session(
                 state,
                 authenticated,
                 "totp",
                 headers,
                 source_ip,
                 StaleCredentialCode::InvalidFactor,
-                false,
             )
             .await
         }
@@ -72,14 +71,13 @@ pub(super) async fn passkey_confirmation_response(
 ) -> Response {
     match confirmation {
         PasskeyConfirmation::Completed(authenticated) => {
-            issue_user_session(
+            issue_primary_factor_session(
                 state,
                 authenticated,
                 "passkey",
                 headers,
                 source_ip,
                 StaleCredentialCode::InvalidFactor,
-                false,
             )
             .await
         }

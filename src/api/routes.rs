@@ -35,8 +35,10 @@ use crate::{
     admin::user_creation::create_user,
     admin::web_handlers::login_page,
     auth_factors::handlers::{
-        confirm_totp_setup, finish_passkey_authentication, finish_passkey_registration, login_totp,
-        start_passkey_authentication, start_passkey_registration, start_totp_setup,
+        confirm_totp_setup, finish_discoverable_passkey_authentication,
+        finish_passkey_authentication, finish_passkey_registration, login_totp,
+        start_discoverable_passkey_authentication, start_passkey_authentication,
+        start_passkey_registration, start_totp_setup,
     },
     auth_factors::security_handlers::{
         confirm_security_totp_enrollment, current_security_factors,
@@ -117,6 +119,14 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
         .route(
             "/api/v1/auth/passkeys/authentication/finish",
             post(finish_passkey_authentication),
+        )
+        .route(
+            "/api/v1/auth/passkeys/discoverable/start",
+            post(start_discoverable_passkey_authentication),
+        )
+        .route(
+            "/api/v1/auth/passkeys/discoverable/finish",
+            post(finish_discoverable_passkey_authentication),
         )
         .route("/api/v1/auth/status", get(auth_status))
         .route(

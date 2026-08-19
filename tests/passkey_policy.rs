@@ -287,7 +287,7 @@ async fn update_passkey_setting(router: &Router, enabled: bool) -> axum::respons
 }
 
 #[tokio::test]
-async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
+async fn passkey_policy_does_not_turn_passkey_into_password_mfa() {
     let (router, database, key_directory) = setup().await;
     let (passkey_user, passkey_username) = create_user(&router, &database).await;
     let (totp_user, totp_username) = create_user(&router, &database).await;
@@ -298,9 +298,10 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
     insert_passkey(&database, mixed_user).await;
     insert_totp(&database, mixed_user).await;
 
-    assert_eq!(
-        login(&router, &passkey_username).await["methods"],
-        serde_json::json!(["passkey"])
+    assert!(
+        login(&router, &passkey_username).await["expires_at"]
+            .as_str()
+            .is_some()
     );
     assert_eq!(
         login(&router, &totp_username).await["methods"],
@@ -308,11 +309,12 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
     );
     assert_eq!(
         login(&router, &mixed_username).await["methods"],
-        serde_json::json!(["passkey", "totp"])
+        serde_json::json!(["totp"])
     );
-    assert_eq!(
-        login(&router, &empty_username).await["methods"],
-        serde_json::Value::Null
+    assert!(
+        login(&router, &empty_username).await["expires_at"]
+            .as_str()
+            .is_some()
     );
 
     let response = update_passkey_setting(&router, false).await;
@@ -390,9 +392,10 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
 
     let response = update_passkey_setting(&router, true).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        login(&router, &passkey_username).await["methods"],
-        serde_json::json!(["passkey"])
+    assert!(
+        login(&router, &passkey_username).await["expires_at"]
+            .as_str()
+            .is_some()
     );
     assert_eq!(
         login(&router, &totp_username).await["methods"],
@@ -400,7 +403,7 @@ async fn disabled_passkey_policy_exposes_only_recoverable_factor_methods() {
     );
     assert_eq!(
         login(&router, &mixed_username).await["methods"],
-        serde_json::json!(["passkey", "totp"])
+        serde_json::json!(["totp"])
     );
     assert!(
         login(&router, &empty_username).await["expires_at"]

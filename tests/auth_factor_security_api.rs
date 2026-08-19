@@ -7,7 +7,8 @@ use base64::Engine;
 use chenxing_auth::{
     api,
     auth_factors::{
-        domain::FactorMethod, repository, session::issue_user_session, store::LoginTicketStore,
+        domain::FactorMethod, repository, session::issue_primary_factor_session,
+        store::LoginTicketStore,
     },
     clock::SharedClock,
     config::Config,
@@ -22,8 +23,6 @@ use uuid::Uuid;
 
 #[path = "support/db_isolation.rs"]
 mod db_isolation;
-#[path = "support/key_directory.rs"]
-mod key_directory;
 #[path = "support/oauth_flow.rs"]
 mod oauth_flow;
 #[path = "support/totp_time.rs"]
@@ -54,7 +53,7 @@ impl TestApp {
         let redis_url =
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
         let database = db_isolation::isolated_pool(test_name, &database_url).await;
-        let key_directory = key_directory::isolated_key_directory("factor-security");
+        let key_directory = oauth_flow::isolated_key_directory("factor-security");
         let mut config = Config::from_values_with_issuer(
             "127.0.0.1".to_owned(),
             3000,
@@ -430,14 +429,13 @@ async fn committed_enrollment_wins_before_password_session_write() {
     .expect("enrollment insert");
     enrollment.commit().await.expect("enrollment commit");
 
-    let response = issue_user_session(
+    let response = issue_primary_factor_session(
         &app.state,
         authenticated,
         "password",
         &HeaderMap::new(),
         None,
         chenxing_auth::auth_factors::session::StaleCredentialCode::InvalidCredentials,
-        true,
     )
     .await;
     assert_eq!(response.status(), StatusCode::ACCEPTED);
@@ -580,10 +578,10 @@ async fn authenticated_passkey_finish_persists_and_consumes_once() {
     assert_eq!(cross_user.status(), StatusCode::CONFLICT);
 
     let factor_login = app.login(&username, PASSWORD).await;
-    assert_eq!(factor_login.status(), StatusCode::ACCEPTED);
+    assert_eq!(factor_login.status(), StatusCode::OK);
     let factor_body = json(factor_login).await;
-    assert_eq!(factor_body["status"], "factor_required");
-    assert_eq!(factor_body["methods"], serde_json::json!(["passkey"]));
+    assert!(factor_body["expires_at"].as_str().is_some());
+    assert!(factor_body.get("status").is_none());
 }
 
 #[tokio::test]

@@ -89,15 +89,9 @@ pub enum SessionStoreError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EffectiveFactorState {
-    pub totp: bool,
-    pub passkey: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PasswordSessionPersistence {
+pub enum PrimaryFactorSessionPersistence {
     Stored,
-    FactorBecameRequired(EffectiveFactorState),
+    TotpBecameRequired,
 }
 
 #[derive(Debug, Clone)]
@@ -109,19 +103,17 @@ pub struct SessionSummary {
 
 /// 新会话与用户 `session_epoch` 的绑定方式（Issue #274）。
 ///
-/// 两个变体不是同一件事的强弱版本，而是两类不同的登录来源：
+/// 三个变体对应三类登录来源：
 ///
-/// - [`SessionEpochBinding::Current`]：签发依据与口令无关（外部 IdP 回调、
-///   管理侧或测试直接建会话）。改密撤销的是"口令泄露后建立的会话"，
-///   把一次刚完成的外部登录也拒掉既没有安全收益，也会造成无法自洽的失败。
-/// - [`SessionEpochBinding::Authenticated`]：签发依据是一次口令校验（或由该
-///   校验派生的 login ticket）。写入必须在同一事务内确认当前 epoch 仍等于
-///   认证时读到的值，否则并发改密后旧口令仍能换出有效会话。
+/// - [`SessionEpochBinding::Current`]：外部 IdP 回调、管理侧或测试直接建会话。
+/// - [`SessionEpochBinding::Authenticated`]：密码/Passkey 之后的所有本地验证已经完成。
+/// - [`SessionEpochBinding::PrimaryFactorAuthenticated`]：密码或 Passkey 第一因子刚完成；
+///   写入事务必须同时确认 epoch 未变化且账号没有启用 TOTP，否则返回待验证状态而不落会话。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionEpochBinding {
     Current,
     Authenticated(i64),
-    PasswordAuthenticated { authenticated_epoch: i64 },
+    PrimaryFactorAuthenticated { authenticated_epoch: i64 },
 }
 
 impl SessionStore {
@@ -229,8 +221,8 @@ impl SessionStore {
 
     /// 写入一条采用当前 epoch 的会话。
     ///
-    /// 只用于签发依据与口令无关的路径（外部 IdP 回调、管理侧、测试夹具）。
-    /// 口令登录与 login ticket 兑换必须走 [`Self::save_authenticated`]，
+    /// 只用于无需绑定本地凭据 epoch 的路径（外部 IdP 回调、管理侧、测试夹具）。
+    /// 本地密码、Passkey 与 TOTP 登录必须走带认证 epoch 的写入路径，
     /// 否则并发改密的撤销语义会被绕过（Issue #274）。
     pub async fn save(
         &self,
@@ -263,16 +255,20 @@ impl SessionStore {
         .map(|_| ())
     }
 
-    pub async fn save_password_authenticated(
+    /// 写入密码或 Passkey 第一因子完成后的候选会话。
+    ///
+    /// 事务内若发现账号已启用 TOTP，则回滚候选会话并返回
+    /// [`PrimaryFactorSessionPersistence::TotpBecameRequired`]。
+    pub async fn save_primary_factor_authenticated(
         &self,
         session: &mut Session,
         ttl: Duration,
         authenticated_epoch: i64,
-    ) -> Result<PasswordSessionPersistence, SessionStoreError> {
+    ) -> Result<PrimaryFactorSessionPersistence, SessionStoreError> {
         self.save_bound(
             session,
             ttl,
-            SessionEpochBinding::PasswordAuthenticated {
+            SessionEpochBinding::PrimaryFactorAuthenticated {
                 authenticated_epoch,
             },
         )
@@ -284,7 +280,7 @@ impl SessionStore {
         session: &mut Session,
         ttl: Duration,
         binding: SessionEpochBinding,
-    ) -> Result<PasswordSessionPersistence, SessionStoreError> {
+    ) -> Result<PrimaryFactorSessionPersistence, SessionStoreError> {
         if self.metadata.is_some() {
             postgres::save_with_metadata(self, session, ttl, binding).await
         } else {
@@ -295,7 +291,7 @@ impl SessionStore {
                 return Err(SessionStoreError::MetadataUnavailable);
             }
             redis_only::save_redis_only(self, session, ttl).await?;
-            Ok(PasswordSessionPersistence::Stored)
+            Ok(PrimaryFactorSessionPersistence::Stored)
         }
     }
 

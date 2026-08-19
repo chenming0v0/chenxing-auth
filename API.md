@@ -104,13 +104,13 @@ JWKS 的 CORS 与 Discovery 一致：请求带 `Origin` 时 `Access-Control-Allo
 
 `identifier` 上限 254 字符，`password` 上限 128 字符，与注册侧的口令长度上界一致。超出上界的请求在进入口令哈希、数据库查询和失败限流之前被拒绝，响应与凭据错误完全相同（`401` + `invalid_credentials`），不返回独立错误码，也不暴露账号是否存在。登录不校验口令长度下界，存量短口令仍可登录。
 
-已绑定因子但尚未完成验证时响应 `202`，并设置短期 HttpOnly pending-login Cookie：
+已绑定 TOTP 但尚未完成验证时响应 `202`，并设置短期 HttpOnly pending-login Cookie：
 
 ```json
-{"status":"factor_required","methods":["totp","passkey"]}
+{"status":"factor_required","methods":["totp"]}
 ```
 
-`methods` 只包含当前策略允许的已绑定方式；全局禁用 Passkey 时不会发布 `passkey`。ticket 不再出现在普通 JSON 响应中，而是由 `HttpOnly`、`SameSite=Lax` 的 pending-login Cookie 携带，并绑定同一响应下发的独立 holder Cookie。TOTP 登录可在本请求中携带当前六位 `totp_code`；passkey 使用下面的 WebAuthn challenge 接口。账号没有已绑定因子时，密码登录直接响应 `200` 并签发普通 Session；用户登录后通过安全设置 API 绑定 TOTP 或 Passkey。
+`methods` 只发布 `totp`。Passkey 是独立的无密码登录方式，不会在密码验证成功后再次作为二次因子出现。ticket 不再出现在普通 JSON 响应中，而是由 `HttpOnly`、`SameSite=Lax` 的 pending-login Cookie 携带，并绑定同一响应下发的独立 holder Cookie。TOTP 登录可在本请求中携带当前六位 `totp_code`。账号没有绑定 TOTP 时，密码登录直接响应 `200` 并签发普通 Session；用户登录后可通过安全设置 API 绑定 TOTP 或 Passkey。
 
 HTTPS 部署使用 `__Host-chenxing_login_ticket` 和 `__Host-chenxing_login_holder`；仅在 loopback HTTP 本地开发时使用 `chenxing_login_ticket` 和 `chenxing_login_holder`。两个 Cookie 都是 `Path=/`、`HttpOnly`、`SameSite=Lax`，成功签发 Session 后立即清理。
 
@@ -135,6 +135,8 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 ### Passkey / WebAuthn
 
+- `POST /api/v1/auth/passkeys/discoverable/start`：无需账号或密码，请求 `{}`，返回不含凭据白名单的 WebAuthn challenge。
+- `POST /api/v1/auth/passkeys/discoverable/finish`：提交 `challenge_id` 和浏览器 `navigator.credentials.get()` 返回的 `credential`；认证器通过可发现凭据的 `userHandle` 标识账号。账号未绑定 TOTP 时直接签发 Session；已绑定 TOTP 时响应 `202` 与 `{"status":"factor_required","methods":["totp"]}`，继续进入验证器应用确认。
 - `POST /api/v1/auth/passkeys/register/start`：请求 `{}`，返回 WebAuthn `PublicKeyCredentialCreationOptions`。
 - `POST /api/v1/auth/passkeys/register/finish`：请求浏览器 `navigator.credentials.create()` 返回的 `credential`，验证通过后保存公开凭据并返回 Session Cookie。
 - `POST /api/v1/auth/passkeys/authentication/start`：请求 `{}`，返回 `PublicKeyCredentialRequestOptions`。
@@ -144,7 +146,7 @@ Session 同时有固定的绝对截止时间和可滑动的空闲窗口：`SESSI
 
 所有 pending-login Cookie、`login_ticket` 和 WebAuthn challenge 默认有效 5 分钟；ticket 是一次性的。Redis 中只保存 holder Cookie 的摘要，不保存 holder 原值；缺少 holder、Cookie 中 ticket 与旧请求字段不一致、或升级前无 holder 摘要的 ticket 都 fail closed，需要重新开始登录。WebAuthn 的 RP ID 和 origin 不能从请求 Host 或反向代理输入推导：显式配置 `WEBAUTHN_RP_ID`、`WEBAUTHN_ORIGIN` 时固定使用覆盖值；未显式配置时，在持久化 Issuer 加载后分别从其 host 和根 URL 派生，并随 Issuer generation 原子更新。通用 `.env.example` 不再永久固定 loopback 值；本地 HTTP 开发使用 `.env.loopback.example` 中的明确覆盖。
 
-浏览器 OAuth 登录现在由 React SPA 承接。密码步骤调用 `POST /api/v1/auth/login`，TOTP 绑定和登录分别调用 `POST /api/v1/auth/totp/setup`、`POST /api/v1/auth/totp/setup/confirm` 或 `POST /api/v1/auth/totp/login`；passkey 流程使用上面的 WebAuthn API。因子完成后，SPA 调用授权请求绑定接口并继续授权确认。
+浏览器 OAuth 登录现在由 React SPA 承接。密码步骤调用 `POST /api/v1/auth/login`，密码登录后的二次确认只使用 TOTP；“Auth 登录”页签可直接调用 discoverable Passkey 接口，无需先提交账号和密码。Passkey 只替代密码这一步：账号若已启用验证器应用，Passkey 成功后仍必须完成 TOTP。所有必要验证完成后，SPA 调用授权请求绑定接口并继续授权确认。
 
 ### `DELETE /api/v1/auth/session`
 

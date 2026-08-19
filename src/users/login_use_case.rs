@@ -130,7 +130,8 @@ where
     if !issuer.local_login_allowed(authenticated.id) {
         return Err(LoginUseCaseError::IssuerRestricted(authenticated.id));
     }
-    let methods = factors.available_methods(authenticated.id).await?;
+    let mut methods = factors.available_methods(authenticated.id).await?;
+    methods.retain(|method| *method == FactorMethod::Totp);
     if methods.contains(&FactorMethod::Totp) && totp_code.is_some() {
         return Ok(
             match factors
@@ -284,6 +285,25 @@ mod tests {
                 passkey_recovery_required: true,
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn passkey_is_not_offered_after_password_authentication() {
+        let users = FakeUsers {
+            authenticated: AuthenticatedUser::new(42, 7),
+        };
+        let decision = decide_login(
+            &users,
+            &factors(vec![FactorMethod::Passkey], TotpOutcome::Accepted),
+            &FakeIssuer(true),
+            input(None),
+            "user@example.com",
+            Some("192.0.2.1"),
+        )
+        .await
+        .expect("Passkey must remain a direct-login method");
+
+        assert!(matches!(decision, LoginDecision::PasswordOnly { .. }));
     }
 
     #[tokio::test]
