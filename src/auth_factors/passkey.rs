@@ -94,7 +94,7 @@ impl AuthFactorService {
             .reject_synchronised_authenticators(false)
             .exclude_credentials(exclude)
             .hints(None)
-            .extensions(Some(passkey_registration_extensions()));
+            .extensions(Some(passkey_registration_extensions(&settings)));
         let (challenge, state) = core.generate_challenge_register(builder)?;
         // Challenge 和校验状态是一对不可拆分的一次性材料。用 SET NX EX 原子预留，
         // 确保重复或并发 start 的败者不会用新状态覆盖已经返回给胜者的 challenge。
