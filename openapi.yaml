@@ -647,6 +647,7 @@ paths:
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
+  /api/v1/auth/security/passkeys/registration/start:
     post:
       tags: [User Auth/Security]
       summary: 使用当前 Session 开始 Passkey 注册
@@ -3225,6 +3226,7 @@ components:
       properties:
         enrollment_id: { type: string, format: uuid }
         method: { type: string, enum: [totp, passkey] }
+    SessionTotpConfirmInput:
       type: object
       required: [enrollment_id, code]
       additionalProperties: false
