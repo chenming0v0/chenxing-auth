@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type KeyboardEvent } from 'react'
-import { ApiError, apiFetch, type EmailPolicySetting } from '../../../api'
+import { ApiError, apiFetch, type EmailPolicySetting, type UpdateEmailPolicySetting } from '../../../api'
 import { Button, Chip, Field, HudPanel, Icon, Notice, ToggleRow } from '../../../components/ui'
 import { settingsEqual, useDirtyReport, useSettingsResource, type SettingsPanelProps } from './panel'
 
@@ -113,9 +113,15 @@ export function EmailPolicyPanel({ onMessage, onDirtyChange }: SettingsPanelProp
     ) return
     setBusy(true)
     try {
+      const payload: UpdateEmailPolicySetting = {
+        whitelist_enabled: setting.whitelist_enabled,
+        alias_restriction_enabled: setting.alias_restriction_enabled,
+        allowed_domains: setting.allowed_domains,
+        expected_generation: savedSetting?.generation ?? 0,
+      }
       const value = await apiFetch<EmailPolicySetting>('/api/v1/admin/settings/email-policy', {
         method: 'PUT',
-        body: JSON.stringify({ ...setting, expected_generation: savedSetting?.generation ?? 0 }),
+        body: JSON.stringify(payload),
       })
       setSetting(value)
       setSavedSetting(value)

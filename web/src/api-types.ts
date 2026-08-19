@@ -237,7 +237,10 @@ export type EmailPolicySetting = {
   whitelist_enabled: boolean
   alias_restriction_enabled: boolean
   allowed_domains: string[]
-  generation?: number
+  generation: number
+}
+export type UpdateEmailPolicySetting = Omit<EmailPolicySetting, 'generation'> & {
+  expected_generation: number
 }
 export type SmtpSetting = {
   host: string

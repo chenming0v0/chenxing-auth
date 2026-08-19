@@ -12,9 +12,9 @@ use crate::{
     audit::AuditEvent,
     error,
     settings::{
-        EmailPolicySetting, PasskeySetting, REGISTRATION_EMAIL_FROM_KEY, SECURITY_LIMITS_KEY,
-        SESSION_LIFETIME_KEY, SecurityLimitsSetting, SessionLifetimeSetting, SettingInspection,
-        SettingsServiceError, SmtpSettingUpdate,
+        EMAIL_POLICY_KEY, EmailPolicySetting, PasskeySetting, REGISTRATION_EMAIL_FROM_KEY,
+        SECURITY_LIMITS_KEY, SESSION_LIFETIME_KEY, SecurityLimitsSetting, SessionLifetimeSetting,
+        SettingInspection, SettingsServiceError, SmtpSettingUpdate,
     },
     state::AppState,
 };
@@ -192,6 +192,25 @@ pub async fn update_passkey_setting(
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct EmailPolicySettingResponse {
+    pub whitelist_enabled: bool,
+    pub alias_restriction_enabled: bool,
+    pub allowed_domains: Vec<String>,
+    pub generation: i64,
+}
+
+impl EmailPolicySettingResponse {
+    fn from_setting(setting: EmailPolicySetting, generation: i64) -> Self {
+        Self {
+            whitelist_enabled: setting.whitelist_enabled,
+            alias_restriction_enabled: setting.alias_restriction_enabled,
+            allowed_domains: setting.allowed_domains,
+            generation,
+        }
+    }
+}
+
 pub async fn get_email_policy_setting(State(state): State<AppState>, admin: AdminRead) -> Response {
     if let Err(response) = admin
         .authorize(&state, AdminPermission::ManageSettings)
@@ -200,7 +219,28 @@ pub async fn get_email_policy_setting(State(state): State<AppState>, admin: Admi
         return response;
     }
     match state.settings.inspect_email_policy().await {
-        Ok(inspection) => respond_setting_inspection("email_policy", inspection),
+        Ok(inspection) => {
+            let generation = match crate::settings::repository::get_generation(
+                &state.database,
+                EMAIL_POLICY_KEY,
+            )
+            .await
+            {
+                Ok(generation) => generation,
+                Err(error_value) => {
+                    tracing::error!(error = %error_value, "failed to load email policy generation");
+                    return error::internal();
+                }
+            };
+            let response = respond_setting_inspection(
+                "email_policy",
+                SettingInspection {
+                    value: EmailPolicySettingResponse::from_setting(inspection.value, generation),
+                    diagnostic: inspection.diagnostic,
+                },
+            );
+            response
+        }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load email policy setting");
             error::internal()
@@ -248,7 +288,27 @@ pub async fn update_email_policy_setting(
         )
         .await
     {
-        Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
+        Ok(setting) => {
+            let generation = match crate::settings::repository::get_generation(
+                &state.database,
+                EMAIL_POLICY_KEY,
+            )
+            .await
+            {
+                Ok(generation) => generation,
+                Err(error_value) => {
+                    tracing::error!(error = %error_value, "failed to load email policy generation");
+                    return error::internal();
+                }
+            };
+            (
+                StatusCode::OK,
+                Json(EmailPolicySettingResponse::from_setting(
+                    setting, generation,
+                )),
+            )
+                .into_response()
+        }
         Err(SettingsServiceError::Validation(error_value)) => {
             error::bad_request("invalid_email_policy", error_value.to_string())
         }
