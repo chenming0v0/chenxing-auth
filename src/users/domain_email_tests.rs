@@ -17,6 +17,7 @@ fn registration(email: String) -> RegistrationInput {
         email,
         password: "correct horse battery staple".to_owned(),
         display_name: None,
+        invitation_code: None,
     }
 }
 

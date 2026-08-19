@@ -48,7 +48,7 @@ beforeEach(() => {
     // 注册页挂载时先拉公开注册状态；它与表单提交断言无关，独立应答且不计入 requests，
     // 默认按「开放且不要求邮箱验证」返回，保持既有注册用例的行为不变。
     if (path === '/api/v1/auth/registration-status') {
-      return Promise.resolve(jsonResponse({ enabled: true, email_verification_required: false }))
+      return Promise.resolve(jsonResponse({ enabled: true, email_verification_required: false, invitation_code_required: false }))
     }
     const raw = typeof init?.body === 'string' ? init.body : '{}'
     requests.push({ path, body: JSON.parse(raw) as Record<string, unknown> })

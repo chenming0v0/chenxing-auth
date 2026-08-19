@@ -11,6 +11,7 @@ import { SessionLifetimePanel } from './settings/session-lifetime-panel'
 import { SmtpPanel } from './settings/smtp-panel'
 import { IssuerPanel } from './settings/issuer-panel'
 import { RegistrationPanel } from './settings/registration-panel'
+import { InvitationCodesPanel } from './settings/invitation-codes-panel'
 import { useDraftLeaveGuard, useFlashMessage } from './settings/panel'
 
 export function AdminSettings() {
@@ -101,6 +102,7 @@ export function SettingsWorkspace({ access }: { access: AdminAccess }) {
       )}
       {canManageIssuer ? <IssuerPanel onMessage={flash} onDirtyChange={reportIssuerDirty} /> : null}
       <RegistrationPanel onMessage={flash} onDirtyChange={reportRegistrationDirty} />
+      <InvitationCodesPanel />
       <HudPanel>
         <h2 className="chenxing-h2 flex items-center gap-2">
           <Icon name="key-round" className="text-[var(--chenxing-cyan)]" size={18} />

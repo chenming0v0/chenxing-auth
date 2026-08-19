@@ -205,6 +205,7 @@ export type RegistrationEmailSetting = { registration_email_from: string | null 
 export type RegistrationSetting = {
   enabled: boolean
   email_verification_required: boolean
+  invitation_code_required: boolean
 }
 /**
  * 登录页可见的公开注册状态（GET /api/v1/auth/registration-status，匿名可读）。
@@ -213,6 +214,7 @@ export type RegistrationSetting = {
 export type RegistrationStatus = {
   enabled: boolean
   email_verification_required: boolean
+  invitation_code_required: boolean
 }
 export type PasskeyUserVerification = 'preferred' | 'required' | 'discouraged'
 export type PasskeyAuthenticatorAttachment = 'any' | 'platform' | 'cross_platform'

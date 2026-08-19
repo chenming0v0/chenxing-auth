@@ -68,6 +68,7 @@ pub async fn update_registration_setting(
                 serde_json::json!({
                     "enabled": setting.enabled,
                     "email_verification_required": setting.email_verification_required,
+                    "invitation_code_required": setting.invitation_code_required,
                 }),
             )
         })

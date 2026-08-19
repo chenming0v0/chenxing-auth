@@ -8,6 +8,9 @@ import { FactorOrchestrator } from './auth/factor-orchestrator'
 import { ExternalProviders } from './auth/external-providers'
 import { passkeyErrorMessage, supportsWebAuthnGet } from '../passkey'
 import { loginWithDiscoverablePasskey } from './auth/passkey-login'
+import { dropDeadRequestId, safeReturnTo } from './auth/navigation'
+
+export { safeReturnTo } from './auth/navigation'
 
 type AuthMode = 'login' | 'register'
 
@@ -22,49 +25,6 @@ function passwordCodePointLength(value: string): number {
 function limitPasswordInput(value: string): string {
   return Array.from(value).slice(0, PASSWORD_MAX_LENGTH).join('')
 }
-const DEFAULT_RETURN_TO = '/console'
-
-export function safeReturnTo(value: string | null): string {
-  if (!value) return DEFAULT_RETURN_TO
-  try {
-    // Validate remaining escapes without decoding the navigation target a second time.
-    decodeURIComponent(value)
-    const target = new URL(value.replace(/\\/g, '/'), window.location.origin)
-    if (target.origin !== window.location.origin || target.username || target.password) return DEFAULT_RETURN_TO
-    return `${target.pathname}${target.search}${target.hash}`
-  } catch {
-    return DEFAULT_RETURN_TO
-  }
-}
-
-/** 清除失效授权请求的全部入口，避免重新登录后再次绑定并形成循环（#395）。 */
-function dropDeadRequestId(requestId: string): void {
-  const params = new URLSearchParams(window.location.search)
-  const returnTo = params.get('returnTo')
-  if (returnTo) {
-    try {
-      // 与 safeReturnTo 相同的解析规则：值已经过 URLSearchParams 解码一层，
-      // 反斜杠归一后按同源 URL 解析，畸形时交给 safeReturnTo 兜底。
-      const target = new URL(returnTo.replace(/\\/g, '/'), window.location.origin)
-      if (target.searchParams.get('request_id') === requestId) {
-        target.searchParams.delete('request_id')
-        // set() 会自行编码，与 loginRecoveryTarget 产出的编码形式一致，不能先手动 encode。
-        params.set('returnTo', `${target.pathname}${target.search}${target.hash}`)
-      }
-    } catch {
-      // returnTo 畸形时保持原样；实际导航时 safeReturnTo 会兜底到 /console。
-    }
-  }
-  if (params.get('request_id') === requestId) {
-    params.delete('request_id')
-  }
-  const hash = window.location.hash
-  const search = params.toString()
-  const next = `${window.location.pathname}${search ? `?${search}` : ''}${hash}`
-  if (next === window.location.pathname + window.location.search + hash) return
-  window.history.replaceState({}, '', next)
-  window.dispatchEvent(new PopStateEvent('popstate'))
-}
 
 export function AuthPage({ mode }: { mode: AuthMode }) {
   const navigate = useNavigate()
@@ -77,6 +37,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
   const [displayName, setDisplayName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [invitationCode, setInvitationCode] = useState('')
   // Issue #89：服务条款同意必须是用户主动的肯定性行为，初始值不得预勾选。
   const [agree, setAgree] = useState(false)
   const [authTab, setAuthTab] = useState<'account' | 'auth'>('account')
@@ -214,7 +175,13 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
           method: 'POST',
           redirectOn401: false,
           csrf: 'pre-session',
-          body: JSON.stringify({ username, email, password, display_name: displayName || null }),
+          body: JSON.stringify({
+            username,
+            email,
+            password,
+            display_name: displayName || null,
+            invitation_code: registrationStatus?.invitation_code_required ? invitationCode : null,
+          }),
         })
         navigate('/login?registered=1')
         return
@@ -335,6 +302,17 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
                 maxLength={!isLogin ? PASSWORD_MAX_INPUT_LENGTH : undefined}
                 hint={!isLogin ? `长度为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个 Unicode 字符。` : undefined}
               />
+              {!isLogin && registrationStatus?.invitation_code_required ? (
+                <Field
+                  label="邀请码"
+                  icon="ticket"
+                  placeholder="输入管理员提供的邀请码"
+                  autoComplete="off"
+                  value={invitationCode}
+                  onChange={(event) => setInvitationCode(event.target.value)}
+                  required
+                />
+              ) : null}
               {!isLogin ? (
                 <label className="flex cursor-pointer items-start gap-2 text-[0.8125rem] leading-relaxed text-[var(--chenxing-muted-foreground)]">
                   <input type="checkbox" checked={agree} onChange={(event) => setAgree(event.target.checked)} className="mt-1 h-4 w-4 rounded accent-[var(--chenxing-primary)]" />

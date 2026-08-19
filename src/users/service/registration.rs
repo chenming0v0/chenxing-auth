@@ -43,7 +43,7 @@ impl UserService {
     /// 本闸门链之上，届时在此处扩展一道闸门，不改变现有闸门的顺序语义。
     pub async fn register(
         &self,
-        input: RegistrationInput,
+        mut input: RegistrationInput,
         source_ip: Option<&str>,
     ) -> Result<PublicUser, UserServiceError> {
         let setting = registration_policy::load_registration_setting(&self.pool)
@@ -60,6 +60,11 @@ impl UserService {
             // atomically reserved pending-registration flow.
             return Err(UserServiceError::EmailVerificationUnavailable);
         }
+        let invitation_code = input.invitation_code.take();
+        if setting.invitation_code_required && invitation_code.as_deref().is_none_or(str::is_empty)
+        {
+            return Err(UserServiceError::InvalidInvitationCode);
+        }
         let mut registration = validate_registration(input)?;
         // 与管理侧创建同一份域名策略：公开注册不能绕过白名单（Issue #133 的对称面）。
         self.ensure_email_policy_allows(&registration.email).await?;
@@ -72,10 +77,24 @@ impl UserService {
         let password_hash = hash_password(password)
             .await
             .map_err(|_| UserServiceError::PasswordHash)?;
-        let user = repository::insert_public_user(&self.pool, registration, password_hash)
-            .await
-            .map_err(UserServiceError::Database)?
-            .ok_or(UserServiceError::OwnerBootstrapRequired)?;
+        let invitation_digest = invitation_code
+            .as_deref()
+            .filter(|_| setting.invitation_code_required)
+            .map(crate::invitation_codes::digest);
+        let user = repository::insert_public_user(
+            &self.pool,
+            registration,
+            password_hash,
+            invitation_digest.as_ref(),
+        )
+        .await
+        .map_err(|error| match error {
+            repository::PublicUserInsertError::InvalidInvitation => {
+                UserServiceError::InvalidInvitationCode
+            }
+            repository::PublicUserInsertError::Database(error) => UserServiceError::Database(error),
+        })?
+        .ok_or(UserServiceError::OwnerBootstrapRequired)?;
         Ok(public_user(user))
     }
 

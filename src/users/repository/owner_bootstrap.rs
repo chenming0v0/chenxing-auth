@@ -135,13 +135,31 @@ pub async fn insert_public_user(
     pool: &PgPool,
     registration: ValidatedRegistration,
     password_hash: String,
-) -> Result<Option<NewUser>, crate::sqlx::Error> {
+    invitation_digest: Option<&[u8; 32]>,
+) -> Result<Option<NewUser>, PublicUserInsertError> {
     let mut transaction = pool.begin().await?;
     lock_business(&mut transaction, BusinessLock::OwnerBootstrap).await?;
     if !owner_exists(&mut *transaction).await? {
         transaction.rollback().await?;
         return Ok(None);
     }
+
+    let invitation_id = if let Some(digest) = invitation_digest {
+        Some(
+            crate::sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM registration_invitation_codes
+                 WHERE code_digest = $1 AND disabled_at IS NULL
+                   AND (expires_at IS NULL OR expires_at > NOW()) AND use_count < max_uses
+                 FOR UPDATE",
+            )
+            .bind(digest.as_slice())
+            .fetch_optional(&mut *transaction)
+            .await?
+            .ok_or(PublicUserInsertError::InvalidInvitation)?,
+        )
+    } else {
+        None
+    };
 
     let username = registration.username;
     let email = registration.email;
@@ -161,6 +179,21 @@ pub async fn insert_public_user(
     .bind(created_at)
     .fetch_one(&mut *transaction)
     .await?;
+    if let Some(invitation_id) = invitation_id {
+        crate::sqlx::query(
+            "INSERT INTO registration_invitation_uses (invitation_id, user_id) VALUES ($1, $2)",
+        )
+        .bind(invitation_id)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+        crate::sqlx::query(
+            "UPDATE registration_invitation_codes SET use_count = use_count + 1 WHERE id = $1",
+        )
+        .bind(invitation_id)
+        .execute(&mut *transaction)
+        .await?;
+    }
     transaction.commit().await?;
 
     Ok(Some(NewUser {
@@ -173,6 +206,14 @@ pub async fn insert_public_user(
         status: UserStatus::Active,
         created_at,
     }))
+}
+
+#[derive(Debug, Error)]
+pub enum PublicUserInsertError {
+    #[error("invitation code is invalid")]
+    InvalidInvitation,
+    #[error(transparent)]
+    Database(#[from] crate::sqlx::Error),
 }
 
 /// Create a managed user and persist its audit event in the same transaction.
