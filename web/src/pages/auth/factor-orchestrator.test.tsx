@@ -13,6 +13,7 @@ function renderOrchestrator(pending: PendingLoginResponse, onRelogin: () => void
       pending={pending}
       busy={false}
       onComplete={async () => {}}
+      onPending={() => {}}
       onBusy={() => {}}
       onMessage={() => {}}
       onRelogin={onRelogin}
@@ -117,6 +118,7 @@ describe('FactorOrchestrator 登录凭证失效恢复（#195）', () => {
         pending={pendingWith(['totp'], 'factor_required')}
         busy={false}
         onComplete={async () => {}}
+        onPending={() => {}}
         onBusy={() => {}}
         onMessage={() => {}}
         onRelogin={onRelogin}

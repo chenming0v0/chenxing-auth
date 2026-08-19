@@ -261,7 +261,7 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
 
         {pending ? (
           <div className="mt-5">
-            <FactorOrchestrator pending={pending} busy={busy} onComplete={completeLogin} onBusy={setAuthBusy} onMessage={setMessage} onRelogin={resetToLogin} />
+            <FactorOrchestrator pending={pending} busy={busy} onComplete={completeLogin} onPending={setPending} onBusy={setAuthBusy} onMessage={setMessage} onRelogin={resetToLogin} />
           </div>
         ) : isLogin && authTab === 'auth' ? (
           <div className="mt-5 space-y-5">

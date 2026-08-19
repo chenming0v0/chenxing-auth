@@ -93,6 +93,7 @@ const PROVIDER: OAuthProviderSummary = {
   name_claim: null,
   email_verified_claim: 'email_verified',
   client_auth_method: 'basic',
+  pkce_enabled: true,
 }
 
 let requests: CapturedRequest[] = []
