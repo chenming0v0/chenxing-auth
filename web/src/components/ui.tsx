@@ -32,8 +32,8 @@ export function Icon({ name, size = 16, className = '', strokeWidth = 1.8 }: { n
   return <Component size={size} strokeWidth={strokeWidth} className={className} aria-hidden="true" />
 }
 
-export function BrandMark({ className = 'h-8 w-8 rounded-[var(--chenxing-radius-md)]' }: { className?: string }) {
-  return <img src={logoUrl} alt="天穹辰星" className={className} />
+export function BrandMark({ className = 'h-8 w-8 rounded-[var(--chenxing-radius-md)]', decorative = false }: { className?: string; decorative?: boolean }) {
+  return <img src={logoUrl} alt={decorative ? '' : '天穹辰星'} className={className} />
 }
 
 /**
@@ -61,7 +61,7 @@ export function Avatar({ src, name, className = '' }: { src?: string; name?: str
 export function BrandLockup({ subtitle = '辰星认证中枢', compact = false }: { subtitle?: string; compact?: boolean }) {
   return (
     <span className="flex items-center gap-2.5">
-      <BrandMark className={compact ? 'chenxing-brand-logo' : 'h-8 w-8 rounded-[var(--chenxing-radius-md)]'} />
+      <BrandMark decorative className={compact ? 'chenxing-brand-logo' : 'h-8 w-8 rounded-[var(--chenxing-radius-md)]'} />
       <span className={compact ? undefined : 'hidden sm:block'}>
         <span className={compact ? 'chenxing-wordmark text-aurora block text-base' : 'chenxing-body block text-sm font-semibold leading-tight'}>天穹辰星</span>
         <span className={compact ? 'chenxing-mono block text-[9px] uppercase tracking-[0.24em] text-[var(--chenxing-muted-foreground)]' : 'chenxing-caption block text-[10px] leading-tight tracking-[0.08em]'}>{subtitle}</span>

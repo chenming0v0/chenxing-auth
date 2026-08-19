@@ -237,8 +237,8 @@ export function AuthPage({ mode }: { mode: AuthMode }) {
 
         {isLogin ? (
           <div className="cx-auth-tabs mt-6">
-            <button type="button" className={`cx-auth-tab${authTab === 'account' ? ' is-active' : ''}`} onClick={() => setAuthTab('account')}>账号登录</button>
-            <button type="button" className={`cx-auth-tab${authTab === 'auth' ? ' is-active' : ''}`} onClick={() => setAuthTab('auth')}>Auth 登录</button>
+            <button type="button" className={`cx-auth-tab${authTab === 'account' ? ' is-active' : ''}`} aria-pressed={authTab === 'account'} onClick={() => setAuthTab('account')}>账号登录</button>
+            <button type="button" className={`cx-auth-tab${authTab === 'auth' ? ' is-active' : ''}`} aria-pressed={authTab === 'auth'} onClick={() => setAuthTab('auth')}>Auth 登录</button>
           </div>
         ) : null}
 

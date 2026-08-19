@@ -1,7 +1,7 @@
 import { describe, expect, it, afterEach } from 'vitest'
 import { render, screen, cleanup } from '@testing-library/react'
 import type { FormEvent } from 'react'
-import { AvatarContent, Button, Chip, HudPanel, Icon } from './ui'
+import { AvatarContent, BrandLockup, BrandMark, Button, Chip, HudPanel, Icon } from './ui'
 
 // 多个用例渲染相同文案，不清理会让 getByText 命中多个节点。
 afterEach(cleanup)
@@ -23,6 +23,21 @@ describe('AvatarContent', () => {
   it('prefers the user custom avatar when one is available', () => {
     const { container } = render(<AvatarContent src="/api/v1/auth/me/avatar?v=1" name="辰星用户" />)
     expect(container.querySelector('img')?.getAttribute('src')).toBe('/api/v1/auth/me/avatar?v=1')
+  })
+})
+
+describe('BrandLockup accessible name（#636）', () => {
+  it('marks the composed logo decorative while retaining the visible wordmark name', () => {
+    render(<BrandLockup subtitle="用户中心" compact />)
+    expect(screen.getByRole('img').getAttribute('alt')).toBe('')
+    expect(screen.getByText('天穹辰星')).toBeTruthy()
+    expect(screen.getByText('用户中心')).toBeTruthy()
+  })
+
+  it('keeps standalone brand marks named', () => {
+    const { unmount } = render(<BrandMark />)
+    expect(screen.getByRole('img').getAttribute('alt')).toBe('天穹辰星')
+    unmount()
   })
 })
 

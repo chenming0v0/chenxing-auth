@@ -94,7 +94,11 @@ describe('ErrorBoundary', () => {
         <Bomb />
       </ErrorBoundary>,
     )
-    expect(screen.getByRole('heading', { name: '界面遇到问题' })).toBeTruthy()
+    const heading = screen.getByRole('heading', { name: '界面遇到问题' })
+    expect(heading).toBeTruthy()
+    expect(heading.getAttribute('tabindex')).toBe('-1')
+    expect(document.activeElement).toBe(heading)
+    expect(heading.closest('[role="alert"]')?.getAttribute('aria-live')).toBe('assertive')
     expect(screen.queryByText('正常内容')).toBeNull()
   })
 
