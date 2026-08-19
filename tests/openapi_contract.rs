@@ -289,6 +289,7 @@ fn apifox_import_removes_resources_absent_from_openapi() {
 
 #[test]
 fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
+    let openapi = OPENAPI.replace("\r\n", "\n");
     for path in [
         "  /health:",
         "  /health/live:",
@@ -296,74 +297,74 @@ fn openapi_declares_health_probes_admin_login_and_valid_error_refs() {
         "  /admin/login:",
         "  /admin/settings/oauth:",
     ] {
-        assert!(OPENAPI.contains(path), "missing path {path}");
+        assert!(openapi.contains(path), "missing path {path}");
     }
     assert!(
-        OPENAPI.contains("  /oauth/authorize:\n    get:")
-            && OPENAPI.contains(
+        openapi.contains("  /oauth/authorize:\n    get:")
+            && openapi.contains(
                 "    post:\n      tags: [OAuth/OIDC]\n      summary: OAuth 授权码入口（表单 POST）"
             )
     );
-    assert!(OPENAPI.contains("  /oauth/userinfo:\n    get:") && OPENAPI.contains("    post:\n      tags: [OAuth/OIDC]\n      summary: 获取 OIDC UserInfo（表单 POST）"));
+    assert!(openapi.contains("  /oauth/userinfo:\n    get:") && openapi.contains("    post:\n      tags: [OAuth/OIDC]\n      summary: 获取 OIDC UserInfo（表单 POST）"));
     for operation_id in [
         "operationId: healthLive",
         "operationId: healthReady",
         "operationId: adminLoginPage",
         "operationId: oauthProviderSettingsPage",
     ] {
-        assert!(OPENAPI.contains(operation_id), "missing {operation_id}");
+        assert!(openapi.contains(operation_id), "missing {operation_id}");
     }
     assert!(
-        !OPENAPI.contains("#/components/responses/InternalError"),
+        !openapi.contains("#/components/responses/InternalError"),
         "broken InternalError $ref must not remain"
     );
     assert!(
-        OPENAPI.contains("#/components/responses/InternalServerError"),
+        openapi.contains("#/components/responses/InternalServerError"),
         "issuer settings 500 must use InternalServerError"
     );
     assert!(
-        OPENAPI.contains("#/components/responses/HealthServiceUnavailable"),
+        openapi.contains("#/components/responses/HealthServiceUnavailable"),
         "ready probes must declare the 503 health schema"
     );
     for marker in ["PostgreSQL `app_settings`", "用户 ID=1", "ADMIN_TOKEN"] {
         assert!(
-            OPENAPI.contains(marker),
+            openapi.contains(marker),
             "missing protection-mode marker: {marker}"
         );
     }
     for response in ["'413':", "'415':", "'422':"] {
-        assert!(OPENAPI.contains(response), "login must declare {response}");
+        assert!(openapi.contains(response), "login must declare {response}");
     }
     assert_eq!(
-        OPENAPI
+        openapi
             .matches("#/components/responses/PayloadTooLarge")
             .count(),
-        40,
+        42,
         "every JSON request-body operation must declare the unified 413 envelope"
     );
     assert_eq!(
-        OPENAPI
+        openapi
             .matches("#/components/responses/UnsupportedMediaType")
             .count(),
-        40,
+        42,
         "every JSON request-body operation must declare the unified 415 envelope"
     );
     assert_eq!(
-        OPENAPI
+        openapi
             .matches("#/components/responses/InvalidJsonData")
             .count(),
-        40,
+        42,
         "every JSON request-body operation must declare the unified 422 envelope"
     );
     assert_eq!(
-        OPENAPI
+        openapi
             .matches("#/components/responses/InvalidPagination")
             .count(),
         4,
         "every pagination operation must declare invalid_pagination"
     );
-    assert!(!OPENAPI.contains("issuer_pending"));
-    assert!(!OPENAPI.contains("issuer_runtime_pending"));
+    assert!(!openapi.contains("issuer_pending"));
+    assert!(!openapi.contains("issuer_runtime_pending"));
 
     let login = openapi_section("  /api/v1/auth/login:\n", "  /api/v1/auth/totp/setup:\n");
     assert!(login.contains("请求先经过 Issuer 门禁"));
@@ -517,10 +518,10 @@ fn totp_setup_operations_declare_the_issuer_gate() {
 fn openapi_paths_match_all_static_axum_routes() {
     let routes = static_route_paths(ROUTE_SOURCES);
     let paths = openapi_paths();
-    assert_eq!(routes.len(), 94, "route inventory changed; review contract");
+    assert_eq!(routes.len(), 96, "route inventory changed; review contract");
     assert_eq!(
         paths.len(),
-        94,
+        96,
         "OpenAPI path inventory changed; review contract"
     );
     assert_eq!(routes, paths, "Axum and OpenAPI path inventories diverged");
