@@ -18,6 +18,7 @@ use super::domain::{UserId, UserRole, UserStatus};
 use super::email::EmailAddress;
 
 mod avatar;
+pub(crate) mod email_change;
 mod lookup;
 pub(crate) mod management_actor;
 mod owner_bootstrap;

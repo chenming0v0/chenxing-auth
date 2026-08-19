@@ -65,6 +65,7 @@ use crate::{
         current_user_avatar, delete_current_user_avatar, upload_current_user_avatar,
     },
     users::avatar_image::MAX_UPLOAD_BYTES,
+    users::email_change_handlers::{confirm_email_change, start_email_change},
     users::entitlements_handlers::current_entitlements,
     users::handlers::{login_user, register_user, registration_status, revoke_session},
     users::oauth_client_handlers::{
@@ -144,6 +145,11 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
                 .put(upload_current_user_avatar)
                 .delete(delete_current_user_avatar)
                 .route_layer(axum::extract::DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
+        )
+        .route("/api/v1/auth/email-change/start", post(start_email_change))
+        .route(
+            "/api/v1/auth/email-change/confirm",
+            post(confirm_email_change),
         )
         .route("/api/v1/auth/password", post(change_current_user_password))
         .route("/api/v1/auth/entitlements", get(current_entitlements))

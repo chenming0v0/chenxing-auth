@@ -24,11 +24,13 @@ use crate::{
 mod administration;
 mod authentication;
 mod avatar;
+mod email_change;
 mod profile;
 mod registration;
 
 pub use administration::ManagementWriteError;
 pub use avatar::AvatarServiceError;
+pub use email_change::{EmailChangeConfirmation, EmailChangeError, EmailChangeStart};
 
 #[derive(Clone)]
 pub struct UserService {
