@@ -15,7 +15,7 @@ use super::{
     AuthFactorService, AuthFactorServiceError,
     passkey_core::{
         PendingPasskeyRegistration, authenticator_attachment, build_core, passkey_from_credential,
-        passkey_registration_extensions, user_verification_policy,
+        user_verification_policy,
     },
 };
 use crate::{
@@ -297,7 +297,7 @@ impl AuthFactorService {
             .reject_synchronised_authenticators(false)
             .exclude_credentials(exclude)
             .hints(None)
-            .extensions(Some(passkey_registration_extensions(&settings)));
+            .extensions(None);
         let (options, state) = core.generate_challenge_register(builder)?;
         let pending = PendingSessionEnrollment {
             binding: PendingSessionBinding::new(user_id, session_id, session_epoch),

@@ -8,8 +8,7 @@ use webauthn_rs::prelude::Passkey;
 use webauthn_rs_core::{
     WebauthnCore,
     proto::{
-        AuthenticationState, AuthenticatorAttachment, CredProtect, Credential,
-        CredentialProtectionPolicy, RegistrationState, RequestRegistrationExtensions,
+        AuthenticationState, AuthenticatorAttachment, Credential, RegistrationState,
         UserVerificationPolicy,
     },
 };
@@ -132,27 +131,6 @@ pub(super) fn authenticator_attachment(
         crate::settings::PasskeyAuthenticatorAttachment::CrossPlatform => {
             Some(AuthenticatorAttachment::CrossPlatform)
         }
-    }
-}
-
-pub(super) fn passkey_registration_extensions(
-    settings: &crate::settings::PasskeySetting,
-) -> RequestRegistrationExtensions {
-    let credential_protection_policy = match settings.user_verification {
-        crate::settings::PasskeyUserVerification::Required => {
-            CredentialProtectionPolicy::UserVerificationRequired
-        }
-        _ => CredentialProtectionPolicy::UserVerificationOptional,
-    };
-    RequestRegistrationExtensions {
-        cred_protect: Some(CredProtect {
-            credential_protection_policy,
-            enforce_credential_protection_policy: Some(false),
-        }),
-        uvm: Some(true),
-        cred_props: Some(true),
-        min_pin_length: None,
-        hmac_create_secret: None,
     }
 }
 
