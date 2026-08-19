@@ -297,7 +297,7 @@ impl AuthFactorService {
             .reject_synchronised_authenticators(false)
             .exclude_credentials(exclude)
             .hints(None)
-            .extensions(Some(passkey_registration_extensions()));
+            .extensions(Some(passkey_registration_extensions(&settings)));
         let (options, state) = core.generate_challenge_register(builder)?;
         let pending = PendingSessionEnrollment {
             binding: PendingSessionBinding::new(user_id, session_id, session_epoch),

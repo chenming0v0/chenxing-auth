@@ -135,10 +135,18 @@ pub(super) fn authenticator_attachment(
     }
 }
 
-pub(super) fn passkey_registration_extensions() -> RequestRegistrationExtensions {
+pub(super) fn passkey_registration_extensions(
+    settings: &crate::settings::PasskeySetting,
+) -> RequestRegistrationExtensions {
+    let credential_protection_policy = match settings.user_verification {
+        crate::settings::PasskeyUserVerification::Required => {
+            CredentialProtectionPolicy::UserVerificationRequired
+        }
+        _ => CredentialProtectionPolicy::UserVerificationOptional,
+    };
     RequestRegistrationExtensions {
         cred_protect: Some(CredProtect {
-            credential_protection_policy: CredentialProtectionPolicy::UserVerificationRequired,
+            credential_protection_policy,
             enforce_credential_protection_policy: Some(false),
         }),
         uvm: Some(true),
