@@ -24,9 +24,23 @@
   border-color: var(--chenxing-border-strong);
   box-shadow: 0 0 20px rgba(56, 189, 248, 0.12);
 }
-.chenxing-app-row + .chenxing-app-row { margin-top: 0.65rem; }
+@media (max-width: 640px) {
+  .chenxing-app-row {
+    grid-template-columns: 2rem minmax(0, 1fr);
+    align-items: start;
+  }
+  .chenxing-app-row > div:last-child {
+    grid-column: 2;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .chenxing-app-row > div:last-child button {
+    min-width: 0;
+  }
+}
 
-/* ---------- drawer: right-side sheet (newapi style) ---------- */
+ */
 .chenxing-drawer-overlay {
   position: fixed;
   top: 0;

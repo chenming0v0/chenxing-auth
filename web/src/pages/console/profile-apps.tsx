@@ -52,6 +52,7 @@ export function ConsoleProfile() {
      每加一条成功提示都得记得让文案命中那个子串，是等着出错的写法。 */
   const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
   const [busy, setBusy] = useState(false)
+  const profileRequestIdRef = useRef(0)
   /* 撤销在途的会话 id。与 AuthorizedApps 的 busyClientId 同款约定：
      null 表示无在途请求，非 null 期间所有撤销按钮禁用，防止快速连点并发 DELETE。 */
   const [busySessionId, setBusySessionId] = useState<number | null>(null)
@@ -71,6 +72,8 @@ export function ConsoleProfile() {
 
   async function updateProfile(event: FormEvent) {
     event.preventDefault()
+    if (busy) return
+    const requestId = ++profileRequestIdRef.current
     setNotice(null)
     const normalizedUsername = username.trim().toLowerCase()
     const usernameChanged = Boolean(user) && normalizedUsername !== user?.username
@@ -98,19 +101,23 @@ export function ConsoleProfile() {
           ...(usernameChanged ? { current_password: profilePassword } : {}),
         }),
       })
+      if (requestId !== profileRequestIdRef.current) return
       if (updated.username !== normalizedUsername) {
         warn('服务端返回的用户名与本次修改不一致，请刷新后重试。')
         return
       }
       await refresh()
+      if (requestId !== profileRequestIdRef.current) return
       setDisplayName(updated.display_name || '')
       setUsername(updated.username)
       setProfilePassword('')
       setShowProfileEditor(false)
       notify('账户资料已保存。', 'success')
     } catch (error) {
-      warn(error instanceof Error ? error.message : '资料保存失败。')
-    } finally { setBusy(false) }
+      if (requestId === profileRequestIdRef.current) warn(error instanceof Error ? error.message : '资料保存失败。')
+    } finally {
+      if (requestId === profileRequestIdRef.current) setBusy(false)
+    }
   }
 
   async function updatePassword(event: FormEvent) {

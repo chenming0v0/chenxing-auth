@@ -3086,12 +3086,11 @@ components:
           items: { $ref: '#/components/schemas/ExternalIdentity' }
     ExternalIdentity:
       type: object
-      required: [provider, provider_name, subject, email, linked_at]
+      required: [provider, provider_name, email, linked_at]
       additionalProperties: false
       properties:
         provider: { type: string, description: Provider slug }
         provider_name: { type: string }
-        subject: { type: string, description: External OAuth UserInfo subject }
         email: { type: string, format: email, description: Email snapshot received when the identity was linked }
         linked_at: { type: string, format: date-time }
     ExternalIdentityBindingStartResponse:

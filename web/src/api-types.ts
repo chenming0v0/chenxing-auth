@@ -44,8 +44,7 @@ export type SecurityRemovalResult = {
 export type ExternalIdentity = {
   provider: string
   provider_name: string
-  /** Only render a masked form of this value; it is not a user-facing identifier. */
-  subject: string
+  /** Internal IdP subject is intentionally not exposed by the public API. */
   email: string
   linked_at: string
 }

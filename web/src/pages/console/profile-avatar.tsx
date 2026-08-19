@@ -57,6 +57,8 @@ export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarP
   const inputRef = useRef<HTMLInputElement>(null)
   const [loaded, setLoaded] = useState<LoadedSource | null>(null)
   const [busy, setBusy] = useState(false)
+  const decodeRequestRef = useRef(0)
+  const uploadRequestRef = useRef(0)
 
   // Object URL 是显式分配的资源：状态更替和组件卸载都必须释放，否则每选一张图
   // 就泄漏一份图片内存，直到整页刷新。
@@ -76,8 +78,13 @@ export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarP
       onMessage(localRejectionMessage(rejection), 'warning')
       return
     }
+    const requestId = ++decodeRequestRef.current
     try {
       const decoded = await decodeFile(file)
+      if (requestId !== decodeRequestRef.current) {
+        URL.revokeObjectURL(decoded.url)
+        return
+      }
       const sizeRejection = rejectDecodedSize(decoded.source)
       if (sizeRejection) {
         URL.revokeObjectURL(decoded.url)
@@ -91,17 +98,21 @@ export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarP
   }
 
   async function upload(blob: Blob) {
+    if (busy) return
+    const requestId = ++uploadRequestRef.current
     setBusy(true)
     try {
       // 直接 PUT Blob：它自带 MIME，apiFetch 不会覆盖 Content-Type。
       await apiFetch<UserMe>('/api/v1/auth/me/avatar', { method: 'PUT', body: blob })
+      if (requestId !== uploadRequestRef.current) return
       await refresh()
+      if (requestId !== uploadRequestRef.current) return
       setLoaded(null)
       onMessage('头像已更新。', 'success')
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : '头像上传失败。', 'warning')
+      if (requestId === uploadRequestRef.current) onMessage(error instanceof Error ? error.message : '头像上传失败。', 'warning')
     } finally {
-      setBusy(false)
+      if (requestId === uploadRequestRef.current) setBusy(false)
     }
   }
 
