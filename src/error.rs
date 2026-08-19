@@ -158,6 +158,17 @@ pub fn json_rejection(status: StatusCode) -> Response {
         .into_response()
 }
 
+pub fn parameter_rejection(status: StatusCode) -> Response {
+    (
+        status,
+        Json(ErrorResponse {
+            code: "invalid_parameters".to_owned(),
+            message: "request path or query parameters are invalid".to_owned(),
+        }),
+    )
+        .into_response()
+}
+
 pub fn conflict(code: &'static str, message: impl Into<String>) -> Response {
     (
         StatusCode::CONFLICT,

@@ -8,28 +8,19 @@ pub enum SchemaStateError {
         "database schema is at migration {applied}, but this release requires migration {required}; run `chenxing-auth migrate` before starting the web service"
     )]
     Outdated { applied: i64, required: i64 },
+    #[error("database schema migration ledger is inconsistent")]
+    InconsistentLedger,
     #[error("database schema version could not be verified")]
     Database(#[from] crate::sqlx::Error),
 }
 
-fn require_current_version(applied: Option<i64>, required: i64) -> Result<(), SchemaStateError> {
-    match applied {
-        Some(applied) if applied == required => Ok(()),
-        Some(applied) => Err(SchemaStateError::Outdated { applied, required }),
-        None => Err(SchemaStateError::MissingLedger),
-    }
-}
-
 pub async fn verify_schema_current(database: &super::Database) -> Result<(), SchemaStateError> {
-    let required = super::embedded_migrator()
-        .iter()
-        .map(|migration| migration.version)
-        .max()
-        .expect("embedded migration history must not be empty");
-    let applied = crate::sqlx::query_scalar::<_, Option<i64>>(
-        "SELECT MAX(version) FILTER (WHERE success) FROM _sqlx_migrations",
+    let migrations = super::embedded_migrator();
+    let expected = migrations.iter().collect::<Vec<_>>();
+    let rows = crate::sqlx::query_as::<_, (i64, Vec<u8>, bool)>(
+        "SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version",
     )
-    .fetch_one(database)
+    .fetch_all(database)
     .await
     .map_err(|error| {
         if error
@@ -43,36 +34,44 @@ pub async fn verify_schema_current(database: &super::Database) -> Result<(), Sch
             SchemaStateError::Database(error)
         }
     })?;
-    require_current_version(applied, required)
+
+    if rows.len() != expected.len()
+        || rows.iter().zip(expected.iter()).enumerate().any(
+            |(index, ((version, checksum, success), migration))| {
+                *version != migration.version
+                    || !*success
+                    || checksum.as_slice() != migration.checksum.as_ref()
+                    || *version != (index + 1) as i64
+            },
+        )
+    {
+        return Err(SchemaStateError::InconsistentLedger);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SchemaStateError, require_current_version};
-
-    const REQUIRED: i64 = 32;
+    use super::SchemaStateError;
 
     #[test]
-    fn current_schema_version_is_accepted() {
-        assert!(require_current_version(Some(REQUIRED), REQUIRED).is_ok());
+    fn inconsistent_ledger_is_a_distinct_startup_failure() {
+        let error = SchemaStateError::InconsistentLedger;
+        assert_eq!(
+            error.to_string(),
+            "database schema migration ledger is inconsistent"
+        );
     }
 
     #[test]
-    fn stale_schema_version_is_rejected_with_the_required_version() {
+    fn missing_ledger_remains_distinct_from_inconsistent_ledger() {
         assert!(matches!(
-            require_current_version(Some(27), REQUIRED),
-            Err(SchemaStateError::Outdated {
-                applied: 27,
-                required: REQUIRED
-            })
+            SchemaStateError::MissingLedger,
+            SchemaStateError::MissingLedger
         ));
-    }
-
-    #[test]
-    fn missing_migration_ledger_is_rejected() {
-        assert!(matches!(
-            require_current_version(None, REQUIRED),
-            Err(SchemaStateError::MissingLedger)
+        assert!(!matches!(
+            SchemaStateError::MissingLedger,
+            SchemaStateError::InconsistentLedger
         ));
     }
 }

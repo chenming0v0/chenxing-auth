@@ -110,6 +110,7 @@ fn requires_configured_issuer(path: &str) -> bool {
         )
         || exact_dynamic_route(path, &["auth", "external"], None)
         || exact_dynamic_route(path, &["auth", "external"], Some("callback"))
+        || exact_dynamic_route_with_suffix(path, &["auth", "external"], &["bind", "callback"])
 }
 
 fn exact_dynamic_route(path: &str, prefix: &[&str], suffix: Option<&str>) -> bool {
@@ -122,6 +123,15 @@ fn exact_dynamic_route(path: &str, prefix: &[&str], suffix: Option<&str>) -> boo
         return false;
     }
     suffix.is_none_or(|suffix| segments.last() == Some(&suffix))
+}
+
+fn exact_dynamic_route_with_suffix(path: &str, prefix: &[&str], suffix: &[&str]) -> bool {
+    let segments: Vec<_> = path.split('/').skip(1).collect();
+    let expected_len = prefix.len() + 1 + suffix.len();
+    segments.len() == expected_len
+        && segments[..prefix.len()] == *prefix
+        && !segments[prefix.len()].is_empty()
+        && segments[prefix.len() + 1..] == *suffix
 }
 
 #[cfg(test)]
@@ -148,6 +158,7 @@ mod tests {
             "/api/v1/auth/external-providers",
             "/auth/external/example",
             "/auth/external/example/callback",
+            "/auth/external/example/bind/callback",
         ] {
             assert!(requires_configured_issuer(path), "path={path}");
         }
@@ -165,6 +176,7 @@ mod tests {
             "/api/v1/admin/oauth/providers/example/disable/extra",
             "/auth/external/",
             "/auth/external/example/callback/extra",
+            "/auth/external/example/bind/callback/extra",
         ] {
             assert!(!requires_configured_issuer(path), "path={path}");
         }

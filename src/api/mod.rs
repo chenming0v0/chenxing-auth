@@ -1,7 +1,7 @@
 use axum::{
     Router,
     extract::{Request as AxumRequest, State},
-    http::{HeaderMap, Request, header::ACCEPT},
+    http::{HeaderMap, Request, StatusCode, header::ACCEPT},
     middleware::{Next, from_fn, from_fn_with_state},
     response::{IntoResponse, Redirect, Response},
     routing::get,
@@ -63,6 +63,7 @@ pub fn router(state: AppState) -> Router {
         .fallback_service(static_service)
         .with_state(state)
         .layer(TraceLayer::new_for_http().make_span_with(request_span))
+        .layer(from_fn(map_api_parameter_rejection))
         .layer(from_fn(timeout::map_request_timeout_by_path))
         .layer(from_fn_with_state(
             state_for_middleware.clone(),
@@ -72,6 +73,23 @@ pub fn router(state: AppState) -> Router {
             state_for_middleware,
             apply_security_headers,
         ))
+}
+
+async fn map_api_parameter_rejection(request: AxumRequest, next: Next) -> Response {
+    let is_api = request.uri().path().starts_with("/api/");
+    let response = next.run(request).await;
+    let is_parameter_rejection = matches!(
+        response.status(),
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+    ) && response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_none_or(|value| !value.starts_with("application/json"));
+    if is_api && is_parameter_rejection {
+        return crate::error::parameter_rejection(response.status());
+    }
+    response
 }
 
 async fn apply_security_headers(

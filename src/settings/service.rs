@@ -317,6 +317,36 @@ impl SettingsService {
         Ok(value)
     }
 
+    pub(crate) async fn smtp_delivery_config(
+        &self,
+    ) -> Result<crate::settings::SmtpDeliveryConfig, SettingsServiceError> {
+        let stored =
+            repository::get_smtp(&self.pool)
+                .await?
+                .ok_or(SettingsServiceError::Corrupt {
+                    key: crate::settings::SMTP_KEY,
+                })?;
+        let ciphertext =
+            stored
+                .password_ciphertext
+                .as_deref()
+                .ok_or(SettingsServiceError::Corrupt {
+                    key: crate::settings::SMTP_KEY,
+                })?;
+        let password = self
+            .secrets
+            .decrypt_for(SecretContext::Smtp, &SecretManager::decode(ciphertext)?)?;
+        Ok(crate::settings::SmtpDeliveryConfig {
+            host: stored.host,
+            port: stored.port,
+            username: stored.username,
+            from_address: stored.from_address,
+            ssl_enabled: stored.ssl_enabled,
+            force_auth_login: stored.force_auth_login,
+            password,
+        })
+    }
+
     pub async fn smtp(&self) -> Result<SmtpSetting, SettingsServiceError> {
         Ok(match repository::get_smtp(&self.pool).await? {
             Some(stored) => SmtpSetting {

@@ -258,3 +258,9 @@ Session payload 使用 AES-256-GCM 并携带 key id。`AUTH_ENCRYPTION_KEY` 保�
 ## 开源协议
 
 本项目采用 [MIT License](LICENSE) 开源。除非另有明确说明，项目中的源代码和文档均按该许可证发布。
+
+## SMTP 邮件投递
+
+邮件投递由应用层 `EmailSender` 抽象提供，生产环境使用 SMTP 适配器，业务用例可以注入 fake sender 做单元测试。SMTP 管理设置中的密码始终以加密密文保存，适配器只在发送边界解密，且不会把密码、邮件正文或验证码写入日志和错误响应。
+
+在管理设置中配置 SMTP Host、Port、Username、From 和加密模式：`ssl_enabled=true` 使用隐式 TLS，`ssl_enabled=false` 使用必需的 STARTTLS。SMTP 未配置、密钥无法解密、发件人无效或连接/投递失败时，发送返回稳定的内部错误，不会报告“已发送”。
