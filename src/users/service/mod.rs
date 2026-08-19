@@ -56,6 +56,10 @@ pub enum UserServiceError {
     ManagementActor(#[from] crate::users::ManagementActorValidationError),
     #[error("credentials are invalid")]
     InvalidCredentials,
+    #[error("current password is required")]
+    CurrentPasswordRequired,
+    #[error("password reauthentication is unavailable")]
+    PasswordReauthenticationUnavailable,
     #[error("login input format is invalid")]
     InvalidLoginInput,
     #[error("authentication rate limit reached")]
@@ -117,6 +121,17 @@ impl UserService {
         self.registration_attempt_limiter = Some(limiter);
         self
     }
+}
+
+#[derive(Debug)]
+pub enum ProfileUpdateOutcome {
+    Updated {
+        profile: repository::UserProfile,
+        username_changed: bool,
+    },
+    AuthenticationChanged,
+    UsernameUnavailable,
+    UserMissing,
 }
 
 #[derive(Debug)]

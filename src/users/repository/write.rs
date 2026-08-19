@@ -85,6 +85,50 @@ pub async fn update_display_name(
     Ok(result.rows_affected() == 1)
 }
 
+#[derive(Debug)]
+pub enum ProfileUpdateRepositoryOutcome {
+    Updated(super::UserProfile),
+    AuthenticationChanged,
+    UserMissing,
+}
+
+pub async fn update_profile_with_epoch(
+    pool: &PgPool,
+    id: UserId,
+    username: &str,
+    display_name: Option<&str>,
+    authenticated_epoch: i64,
+) -> Result<ProfileUpdateRepositoryOutcome, crate::sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    crate::sessions::store::lock_user_session_scope(&mut transaction, id).await?;
+    let current_epoch: Option<i64> =
+        crate::sqlx::query_scalar("SELECT session_epoch FROM users WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let Some(current_epoch) = current_epoch else {
+        transaction.rollback().await?;
+        return Ok(ProfileUpdateRepositoryOutcome::UserMissing);
+    };
+    if current_epoch != authenticated_epoch {
+        transaction.rollback().await?;
+        return Ok(ProfileUpdateRepositoryOutcome::AuthenticationChanged);
+    }
+    crate::sqlx::query(
+        "UPDATE users SET username = $2, display_name = $3, updated_at = NOW() WHERE id = $1",
+    )
+    .bind(id)
+    .bind(username)
+    .bind(display_name)
+    .execute(&mut *transaction)
+    .await?;
+    let profile = super::lookup::find_profile_by_id(&mut *transaction, id).await?;
+    transaction.commit().await?;
+    Ok(profile
+        .map(ProfileUpdateRepositoryOutcome::Updated)
+        .unwrap_or(ProfileUpdateRepositoryOutcome::UserMissing))
+}
+
 /// 改密的三种结果。
 ///
 /// `EpochChanged` 与 `UserMissing` 分开，是因为它们的成因完全不同：前者是并发

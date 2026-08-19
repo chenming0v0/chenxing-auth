@@ -156,6 +156,13 @@ pub async fn register_user(
             tracing::error!("invalid credentials reached registration handler");
             error::internal()
         }
+        Err(
+            UserServiceError::CurrentPasswordRequired
+            | UserServiceError::PasswordReauthenticationUnavailable,
+        ) => {
+            tracing::error!("profile-only authentication error reached registration handler");
+            error::internal()
+        }
         Err(UserServiceError::RateLimited) => error::too_many_requests(
             "registration_rate_limited",
             "too many registration attempts; try again later",

@@ -1,17 +1,24 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { Link, useNavigate } from '../../router'
+import { useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
-import { apiFetch, ApiError, type AuthorizedOAuthApp, type SessionItem, type UserMe } from '../../api'
+import { apiFetch, ApiError, type SessionItem, type UserMe } from '../../api'
 import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, Chip, EmptyState, Field, HudPanel, Icon, Notice, PageIntro, PasswordField } from '../../components/ui'
+import { Badge, Button, EmptyState, HudPanel, Icon, Notice } from '../../components/ui'
 import { ProfileAvatar, type MessageTone } from './profile-avatar'
 import { formatDate } from '../../data'
 import logoSrc from '../../assets/logo.png'
+import { AccountManagement } from './security'
+import { ProfileEditorDialog } from './profile-editor-dialog'
+import { EmailChangeDialog } from './email-change-dialog'
+import { PasswordChangeDialog } from './password-change-dialog'
 
 const PASSWORD_MIN_LENGTH = 10
 const PASSWORD_MAX_LENGTH = 128
 // 服务端 validate_display_name 先 trim 再按 code point 计数，上限 128。
 const DISPLAY_NAME_MAX_LENGTH = 128
+const USERNAME_MIN_LENGTH = 3
+const USERNAME_MAX_LENGTH = 64
+const USERNAME_PATTERN = /^[a-z0-9._-]+$/
 // HTML maxLength counts UTF-16 code units; two units per code point is the safe upper bound.
 const PASSWORD_MAX_INPUT_LENGTH = PASSWORD_MAX_LENGTH * 2
 const DISPLAY_NAME_MAX_INPUT_LENGTH = DISPLAY_NAME_MAX_LENGTH * 2
@@ -28,6 +35,12 @@ export function ConsoleProfile() {
   const { user, clear, refresh } = useAuth()
   const navigate = useNavigate()
   const [displayName, setDisplayName] = useState('')
+  const [username, setUsername] = useState('')
+  const [profilePassword, setProfilePassword] = useState('')
+  const [showProfileEditor, setShowProfileEditor] = useState(false)
+  const [newEmail, setNewEmail] = useState('')
+  const [emailPassword, setEmailPassword] = useState('')
+  const [showEmailEditor, setShowEmailEditor] = useState(false)
   const [sessions, setSessions] = useState<SessionItem[]>([])
   const [showPassword, setShowPassword] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
@@ -43,7 +56,10 @@ export function ConsoleProfile() {
   const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
   const warn = (text: string) => notify(text, 'warning')
 
-  useEffect(() => { setDisplayName(user?.display_name || '') }, [user?.display_name])
+  useEffect(() => {
+    setDisplayName(user?.display_name || '')
+    setUsername(user?.username || '')
+  }, [user?.display_name, user?.username])
   const loadSessions = () => {
     void apiFetch<{ items: SessionItem[] }>('/api/v1/auth/sessions')
       .then((response) => setSessions(response.items))
@@ -54,17 +70,42 @@ export function ConsoleProfile() {
   async function updateProfile(event: FormEvent) {
     event.preventDefault()
     setNotice(null)
+    const normalizedUsername = username.trim().toLowerCase()
+    const usernameChanged = Boolean(user) && normalizedUsername !== user?.username
     // 与服务端 validate_display_name 同款复核：先 trim 再按 code point 计数。
     // 输入虽已被 limitByCodePoints 截断，提交前仍兜底检查一次（粘贴/自动填充可绕过 maxLength）。
     if (codePointLength(displayName.trim()) > DISPLAY_NAME_MAX_LENGTH) {
       warn(`显示名称不能超过 ${DISPLAY_NAME_MAX_LENGTH} 个字符。`)
       return
     }
+    if (normalizedUsername.length < USERNAME_MIN_LENGTH || normalizedUsername.length > USERNAME_MAX_LENGTH || !USERNAME_PATTERN.test(normalizedUsername)) {
+      warn(`用户名需要 ${USERNAME_MIN_LENGTH}-${USERNAME_MAX_LENGTH} 位，只能包含小写字母、数字、点、下划线和连字符。`)
+      return
+    }
+    if (usernameChanged && !profilePassword) {
+      warn('修改用户名需要输入当前密码。')
+      return
+    }
     setBusy(true)
     try {
-      await apiFetch<UserMe>('/api/v1/auth/me', { method: 'PATCH', body: JSON.stringify({ display_name: displayName || null }) })
+      const updated = await apiFetch<UserMe>('/api/v1/auth/me', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          display_name: displayName.trim() || null,
+          username: normalizedUsername,
+          ...(usernameChanged ? { current_password: profilePassword } : {}),
+        }),
+      })
+      if (updated.username !== normalizedUsername) {
+        warn('服务端返回的用户名与本次修改不一致，请刷新后重试。')
+        return
+      }
       await refresh()
-      notify('资料已保存。', 'success')
+      setDisplayName(updated.display_name || '')
+      setUsername(updated.username)
+      setProfilePassword('')
+      setShowProfileEditor(false)
+      notify('账户资料已保存。', 'success')
     } catch (error) {
       warn(error instanceof Error ? error.message : '资料保存失败。')
     } finally { setBusy(false) }
@@ -107,6 +148,54 @@ export function ConsoleProfile() {
   }
 
   const name = user?.display_name || user?.username || '用户'
+  const usernameChanged = Boolean(user) && username.trim().toLowerCase() !== user?.username
+
+  function resetProfileEditor() {
+    setDisplayName(user?.display_name || '')
+    setUsername(user?.username || '')
+    setProfilePassword('')
+  }
+
+  function openProfileEditor() {
+    resetProfileEditor()
+    setShowProfileEditor(true)
+  }
+
+  function closeProfileEditor() {
+    resetProfileEditor()
+    setShowProfileEditor(false)
+  }
+
+  function openEmailEditor() {
+    setNewEmail('')
+    setEmailPassword('')
+    setShowEmailEditor(true)
+  }
+
+  function closeEmailEditor() {
+    setNewEmail('')
+    setEmailPassword('')
+    setShowEmailEditor(false)
+  }
+
+  function openPasswordEditor() {
+    setCurrentPassword('')
+    setNewPassword('')
+    setConfirmPassword('')
+    setShowPassword(true)
+  }
+
+  function closePasswordEditor() {
+    setCurrentPassword('')
+    setNewPassword('')
+    setConfirmPassword('')
+    setShowPassword(false)
+  }
+
+  function requestEmailChange(event: FormEvent) {
+    event.preventDefault()
+    warn('邮箱变更后端尚未实现，当前不会提交修改。')
+  }
 
   return (
     <ConsoleLayout>
@@ -140,39 +229,58 @@ export function ConsoleProfile() {
 
         {notice ? <Notice tone={notice.tone}>{notice.text}</Notice> : null}
 
-        <div className="grid gap-6 xl:grid-cols-2">
-          <HudPanel>
-            <div className="mb-5 flex items-center justify-between">
-              <div><h2 className="chenxing-h2">基本资料</h2><p className="chenxing-caption mt-1">页面只展示公开用户资料。</p></div>
-              <Icon name="user" className="text-[var(--chenxing-cyan)]" size={18} />
-            </div>
-            <form className="space-y-4" onSubmit={updateProfile}>
-              <Field label="显示名称" value={displayName} onChange={(event) => setDisplayName(limitByCodePoints(event.target.value, DISPLAY_NAME_MAX_LENGTH))} maxLength={DISPLAY_NAME_MAX_INPUT_LENGTH} hint={`最多 ${DISPLAY_NAME_MAX_LENGTH} 个 Unicode 字符。`} />
-              <Field label="用户名" value={user?.username || ''} readOnly />
-              <Field label="邮箱地址" type="email" value={user?.email || ''} readOnly hint="邮箱修改需要单独的验证流程。" />
-              <Button type="submit" icon="check" disabled={busy}>保存资料</Button>
-            </form>
-          </HudPanel>
-          <HudPanel>
-            <div className="mb-5 flex items-center justify-between">
-              <div><h2 className="chenxing-h2">安全设置</h2><p className="chenxing-caption mt-1">密码成功修改后所有会话都会被撤销。</p></div>
-              <Icon name="lock-keyhole" className="text-[var(--chenxing-cyan)]" size={18} />
-            </div>
-            {showPassword ? (
-              <form className="space-y-4" onSubmit={updatePassword}>
-                <PasswordField label="当前密码" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required />
-                <PasswordField label="新密码" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(limitByCodePoints(event.target.value, PASSWORD_MAX_LENGTH))} maxLength={PASSWORD_MAX_INPUT_LENGTH} required hint={`长度为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个 Unicode 字符。`} />
-                <PasswordField label="确认新密码" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(limitByCodePoints(event.target.value, PASSWORD_MAX_LENGTH))} maxLength={PASSWORD_MAX_INPUT_LENGTH} required error={codePointLength(confirmPassword) > 0 && confirmPassword !== newPassword} hint={codePointLength(confirmPassword) > 0 && confirmPassword !== newPassword ? '两次输入的新密码不一致。' : '再次输入新密码以确认。'} />
-                <div className="flex flex-wrap gap-3">
-                  <Button type="submit" icon="key-round" disabled={busy}>确认修改</Button>
-                  <Button type="button" variant="ghost" onClick={() => setShowPassword(false)}>取消</Button>
-                </div>
-              </form>
-            ) : (
-              <Button variant="ghost" icon="key-round" onClick={() => setShowPassword(true)}>修改密码</Button>
-            )}
-          </HudPanel>
-        </div>
+        <AccountManagement
+          userEmail={user?.email || '—'}
+          profileSummary={`显示名称：${name} · 用户名：@${user?.username || '—'}`}
+          profileAction={<Button variant="ghost" icon="pencil" onClick={openProfileEditor}>修改账户资料</Button>}
+          emailAction={<Button variant="ghost" icon="mail" onClick={openEmailEditor}>更改邮箱</Button>}
+          passwordAction={<Button variant="ghost" icon="key-round" onClick={openPasswordEditor}>修改密码</Button>}
+        />
+
+        {showProfileEditor ? (
+          <ProfileEditorDialog
+            displayName={displayName}
+            username={username}
+            password={profilePassword}
+            busy={busy}
+            usernameChangePending={usernameChanged}
+            onDisplayName={(value) => setDisplayName(limitByCodePoints(value, DISPLAY_NAME_MAX_LENGTH))}
+            onUsername={(value) => setUsername(value.toLowerCase().replace(/[^a-z0-9._-]/g, '').slice(0, USERNAME_MAX_LENGTH))}
+            onPassword={setProfilePassword}
+            onCancel={closeProfileEditor}
+            onSubmit={updateProfile}
+          />
+        ) : null}
+
+        {showEmailEditor ? (
+          <EmailChangeDialog
+            currentEmail={user?.email || '—'}
+            newEmail={newEmail}
+            password={emailPassword}
+            onNewEmail={(value) => setNewEmail(value.slice(0, 254))}
+            onPassword={setEmailPassword}
+            onCancel={closeEmailEditor}
+            onSubmit={requestEmailChange}
+          />
+        ) : null}
+
+        {showPassword ? (
+          <PasswordChangeDialog
+            currentPassword={currentPassword}
+            newPassword={newPassword}
+            confirmPassword={confirmPassword}
+            busy={busy}
+            maxInputLength={PASSWORD_MAX_INPUT_LENGTH}
+            passwordHint={`长度为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个 Unicode 字符。`}
+            confirmError={codePointLength(confirmPassword) > 0 && confirmPassword !== newPassword}
+            confirmHint={codePointLength(confirmPassword) > 0 && confirmPassword !== newPassword ? '两次输入的新密码不一致。' : '再次输入新密码以确认。'}
+            onCurrentPassword={setCurrentPassword}
+            onNewPassword={(value) => setNewPassword(limitByCodePoints(value, PASSWORD_MAX_LENGTH))}
+            onConfirmPassword={(value) => setConfirmPassword(limitByCodePoints(value, PASSWORD_MAX_LENGTH))}
+            onCancel={closePasswordEditor}
+            onSubmit={updatePassword}
+          />
+        ) : null}
 
         <HudPanel>
           <div className="mb-5 flex items-center justify-between">
@@ -198,115 +306,6 @@ export function ConsoleProfile() {
           )}
         </HudPanel>
       </section>
-    </ConsoleLayout>
-  )
-}
-
-export function AuthorizedApps() {
-  const [apps, setApps] = useState<AuthorizedOAuthApp[]>([])
-  /* 提示语连同语气一起存，撤销成功显式写 success，不用文案子串反推语气。 */
-  const [notice, setNotice] = useState<{ text: string; tone: MessageTone } | null>(null)
-  const [busyClientId, setBusyClientId] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-  const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
-  const warn = (text: string) => notify(text, 'warning')
-
-  /* 整页加载：重置 loading 与提示，失败时给出警告。 */
-  async function loadApps(): Promise<void> {
-    setLoading(true)
-    setNotice(null)
-    try {
-      const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
-      setApps(response.items)
-    } catch (reason) {
-      warn(reason instanceof Error ? reason.message : '应用列表加载失败。')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  /* 静默刷新：不重置 loading、不覆盖提示。撤销成功的提示必须先于刷新写入，
-     刷新失败时旧列表与新提示并存，成功事实不被掩盖；下次进入页面列表自然一致。 */
-  async function refreshAppsSilently(): Promise<void> {
-    try {
-      const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
-      setApps(response.items)
-    } catch {
-      // 静默失败：保留旧列表，撤销成功的提示不被刷新错误覆盖。
-    }
-  }
-
-  useEffect(() => { void loadApps() }, [])
-
-  async function revokeApp(app: AuthorizedOAuthApp) {
-    if (!window.confirm(`确认撤销“${app.client_name}”的授权吗？撤销后，该应用将立即失去访问账户数据的权限，若要继续使用，必须重新授权。`)) return
-    setBusyClientId(app.client_id)
-    setNotice(null)
-    try {
-      await apiFetch<void>(`/api/v1/auth/authorized-apps/${encodeURIComponent(app.client_id)}`, { method: 'DELETE' })
-      /* 撤销成功与列表刷新解耦：DELETE 成功就无条件提示成功，刷新失败不再掩盖成功事实。
-         旧实现用 loadApps 的返回值决定是否提示，刷新失败时用户只看到
-         “应用列表加载失败”，误以为撤销失败而重复点击，触发多余的重复 DELETE。 */
-      notify('应用授权已撤销。', 'success')
-      await refreshAppsSilently()
-    } catch (reason) {
-      warn(reason instanceof Error ? reason.message : '应用授权撤销失败。')
-    } finally {
-      setBusyClientId(null)
-    }
-  }
-
-  const openScopes = apps.reduce((sum, app) => sum + app.scopes.length, 0)
-
-  return (
-    <ConsoleLayout>
-      <PageIntro
-        eyebrow="// Connections"
-        title="已授权应用"
-        description="管理已通过辰星通行证登录的第三方应用与其权限范围。"
-        action={<Link className="chenxing-btn-ghost" to="/console/integrate">接入应用</Link>}
-      />
-      {notice ? <div className="mb-4"><Notice tone={notice.tone}>{notice.text}</Notice></div> : null}
-      <div className="mb-6 grid grid-cols-3 gap-3 sm:gap-4">
-        <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">已授权应用</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading ? '—' : apps.length}</p></HudPanel>
-        <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">开放权限域</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading ? '—' : openScopes}</p></HudPanel>
-        <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">服务端记录</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">LIVE</p></HudPanel>
-      </div>
-      <div className="space-y-4">
-        {apps.map((app) => (
-          <HudPanel as="article" key={app.client_id} className="!p-5 sm:!p-6">
-            <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-start gap-4">
-                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-[rgba(125,211,252,0.4)] bg-[rgba(56,189,248,0.12)] text-[var(--chenxing-cyan)] shadow-[var(--chenxing-shadow-cyan-float)]">
-                    <Icon name="box" size={22} />
-                  </span>
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="chenxing-h3">{app.client_name}</h3>
-                      <Badge tone="success"><Icon name="check" size={12} />已连接</Badge>
-                    </div>
-                    <p className="chenxing-caption mt-1 chenxing-mono">{app.client_id}</p>
-                  </div>
-                </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {app.scopes.map((scope) => <Chip key={scope}><Icon name="fingerprint" size={14} />{scope}</Chip>)}
-                </div>
-                <p className="chenxing-caption mt-3">最近授权 {formatDate(app.updated_at)}</p>
-              </div>
-              <div className="flex shrink-0 items-center gap-4 lg:flex-col lg:items-end lg:gap-3">
-                <Button variant="ghost" icon="eye" disabled title="详情接口尚未提供">查看详情</Button>
-                <Button variant="danger" icon="unlink" disabled={busyClientId !== null} onClick={() => void revokeApp(app)}>撤销授权</Button>
-              </div>
-            </div>
-          </HudPanel>
-        ))}
-        {!loading && !apps.length ? (
-          <HudPanel>
-            <EmptyState icon="shield-check" title="暂无已授权应用" description="完成 OAuth 授权后，应用会显示在这里。" action={<Link className="chenxing-btn-primary mt-2" to="/console/playground">去授权测试</Link>} />
-          </HudPanel>
-        ) : null}
-      </div>
     </ConsoleLayout>
   )
 }

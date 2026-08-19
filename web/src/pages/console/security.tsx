@@ -1,31 +1,25 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import QRCode from 'qrcode'
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import { useLocation, useNavigate } from '../../router'
 import { useAuth } from '../../auth-state'
 import { apiFetch, type SecurityEnrollmentResult, type SecurityFactorSummary, type SecurityPasskeyStart, type SecurityRemovalResult, type SecurityTotpStart } from '../../api'
 import { assertPublicKeyCredential, decodeCreationOptions, serializeAttestation, supportsWebAuthnCreate, type PasskeyChallenge } from '../../passkey'
-import { ConsoleLayout } from '../../components/shells'
-import { Badge, Button, CopyValue, EmptyState, HudPanel, Icon, Notice, PageIntro, PasswordField } from '../../components/ui'
+import { Badge, Button, HudPanel, Icon, Notice, PasswordField } from '../../components/ui'
 import { ExternalIdentities } from './external-identities'
 import type { MessageTone } from './profile-avatar'
+import { SecuritySettings } from './security-settings'
 
 type NoticeState = { text: string; tone: MessageTone }
 type TotpState = { phase: 'idle' } | { phase: 'ready'; data: SecurityTotpStart }
 
-type VerificationMethod = {
-  key: 'passkey' | 'totp'
-  title: string
-  description: string
-  icon: string
-  accentClass: string
-}
+type AccountTab = 'bindings' | 'security'
 
-const verificationMethods: VerificationMethod[] = [
-  { key: 'passkey', title: 'Passkey', description: '使用设备生物识别或安全密钥登录，不需要输入验证码。', icon: 'key-round', accentClass: 'text-[var(--chenxing-gold)]' },
-  { key: 'totp', title: '验证器应用', description: '使用验证器应用生成一次性验证码，作为密码登录后的第二步验证。', icon: 'shield-check', accentClass: 'text-[var(--chenxing-cyan)]' },
-]
-
-export function ConsoleSecurity() {
+export function AccountManagement({ userEmail, profileSummary, profileAction, emailAction, passwordAction }: {
+  userEmail: string
+  profileSummary: string
+  profileAction: ReactNode
+  emailAction: ReactNode
+  passwordAction: ReactNode
+}) {
   const { clear } = useAuth()
   const navigate = useNavigate()
   const { search } = useLocation()
@@ -37,6 +31,7 @@ export function ConsoleSecurity() {
   const [code, setCode] = useState('')
   const [password, setPassword] = useState('')
   const [removing, setRemoving] = useState<'totp' | 'passkey' | null>(null)
+  const [activeTab, setActiveTab] = useState<AccountTab>('bindings')
 
   async function loadFactors(): Promise<void> {
     setLoading(true)
@@ -56,7 +51,7 @@ export function ConsoleSecurity() {
     const error = new URLSearchParams(search).get('external_error')
     if (result === 'linked') show('外部账户已绑定。', 'success')
     else if (error) show(externalBindingErrorMessage(error))
-    if (result || error) window.history.replaceState({}, '', '/console/security')
+    if (result || error) window.history.replaceState({}, '', '/console/profile')
   }, [search])
 
   function show(text: string, tone: MessageTone = 'warning') {
@@ -151,7 +146,7 @@ export function ConsoleSecurity() {
       setRemoving(null)
       setPassword('')
       clear()
-      navigate('/login?returnTo=%2Fconsole%2Fsecurity')
+      navigate('/login?returnTo=%2Fconsole%2Fprofile')
       void result
     } catch (error) {
       show(error instanceof Error ? error.message : '认证因子移除失败。')
@@ -165,86 +160,94 @@ export function ConsoleSecurity() {
   const readyTotp = totp.phase === 'ready' ? totp : null
 
   return (
-    <ConsoleLayout>
-      <PageIntro
-        eyebrow="// Account · Login Security"
-        title="登录安全"
-        description="主动启用 TOTP 或 Passkey。启用后，后续密码登录会要求完成第二步验证。"
-      />
-      {notice ? <div className="mb-5"><Notice tone={notice.tone}>{notice.text}</Notice></div> : null}
-
-      <HudPanel as="section" aria-labelledby="login-verification-title">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="mb-2 flex items-center gap-2"><Icon name="shield-check" className="text-[var(--chenxing-cyan)]" size={20} /><h2 id="login-verification-title" className="chenxing-h2">登录验证</h2></div>
-            <p className="chenxing-caption max-w-2xl">为密码登录增加独立验证方式。每种方式可单独启用，按需保留多个 Passkey 凭据。</p>
+    <div className="min-w-0 space-y-4">
+      {notice ? <Notice tone={notice.tone}>{notice.text}</Notice> : null}
+      <HudPanel id="account-management" as="section" aria-labelledby="account-management-title" className="!p-4 sm:!p-6">
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[var(--chenxing-border)] pb-5">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[rgba(103,232,249,0.24)] bg-[var(--chenxing-cyan-soft)] text-[var(--chenxing-cyan)]">
+              <Icon name="user-plus" size={20} />
+            </span>
+            <div>
+              <h2 id="account-management-title" className="chenxing-h2">账户管理</h2>
+              <p className="chenxing-caption mt-1">账户绑定、安全设置和身份验证集中在这里管理。</p>
+            </div>
           </div>
-          <Badge tone={totpEnabled || passkeyCount > 0 ? 'success' : 'neutral'}>{loading ? '读取中' : totpEnabled || passkeyCount > 0 ? '已保护' : '仅密码'}</Badge>
+          <Badge tone={totpEnabled || passkeyCount > 0 ? 'success' : 'neutral'}>{loading ? '同步中' : totpEnabled || passkeyCount > 0 ? '安全增强已启用' : '基础保护'}</Badge>
         </div>
 
-        <div className="mt-6 divide-y divide-[var(--chenxing-border)] border-y border-[var(--chenxing-border)]">
-          {verificationMethods.map((method) => {
-            const enabled = method.key === 'totp' ? totpEnabled : passkeyCount > 0
-            const status = method.key === 'totp'
-              ? enabled ? '已启用' : '未启用'
-              : enabled ? `${passkeyCount} 个凭据` : '未启用'
-            return (
-              <div key={method.key} className="py-5 first:pt-4 last:pb-4">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div className="flex min-w-0 items-start gap-3">
-                    <span className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)] ${method.accentClass}`}><Icon name={method.icon} size={18} /></span>
-                    <div>
-                      <h3 className="chenxing-body text-sm font-semibold">{method.title}</h3>
-                      <p className="chenxing-caption mt-1 max-w-2xl">{method.description}</p>
-                    </div>
-                  </div>
-                  <Badge tone={enabled ? 'success' : 'neutral'}>{loading ? '读取中' : status}</Badge>
-                </div>
+        <div className="mt-5 grid grid-cols-2 gap-1 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.5)] p-1" role="tablist" aria-label="账户管理">
+          <AccountTabButton tab="bindings" activeTab={activeTab} icon="link" label="账户绑定" onSelect={setActiveTab} />
+          <AccountTabButton tab="security" activeTab={activeTab} icon="shield-check" label="安全设置" onSelect={setActiveTab} />
+        </div>
 
-                {method.key === 'totp' ? (
-                  totpEnabled ? (
-                    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 pl-12">
-                      <p className="chenxing-caption">移除后当前会话会失效，需要重新登录。</p>
-                      <Button variant="danger" icon="trash-2" disabled={busy !== null} onClick={() => setRemoving('totp')}>移除验证器应用</Button>
-                    </div>
-                  ) : readyTotp ? (
-                    <div className="mt-5 space-y-5 pl-12">
-                      <TotpQr url={readyTotp.data.otpauth_url} />
-                      <div><span className="chenxing-label">手动密钥</span><CopyValue value={readyTotp.data.secret_base32} ariaLabel="复制 TOTP 手动密钥" announceValue /></div>
-                      <form className="space-y-4" onSubmit={(event) => void confirmTotp(event)}>
-                        <label className="chenxing-label" htmlFor="security-totp-code">确认验证码</label>
-                        <input id="security-totp-code" className="chenxing-field" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))} aria-describedby="security-totp-hint" />
-                        <p id="security-totp-hint" className="chenxing-caption">在验证器中输入当前 6 位验证码以完成绑定。</p>
-                        <div className="flex flex-wrap gap-3"><Button type="submit" icon="check" disabled={busy !== null}>{busy === 'totp-confirm' ? '确认中…' : '确认并启用'}</Button><Button type="button" variant="ghost" onClick={() => setTotp({ phase: 'idle' })} disabled={busy !== null}>取消</Button></div>
-                      </form>
-                    </div>
-                  ) : <div className="mt-4 pl-12"><Button icon="plus" disabled={busy !== null || loading} onClick={() => void startTotp()}>{busy === 'totp-start' ? '准备中…' : '启用 TOTP'}</Button></div>
-                ) : (
-                  <div className="mt-4 flex flex-wrap items-center gap-3 pl-12">
-                    <p className="chenxing-caption mr-auto">{passkeyCount > 0 ? '新增设备不会移除已有凭据。' : '注册后，下次登录可选择使用 Passkey。'}</p>
-                    <Button icon="key-round" disabled={busy !== null || loading} onClick={() => void startPasskey()}>{busy === 'passkey' ? '等待设备确认…' : '注册 Passkey'}</Button>
-                    {passkeyCount > 0 ? <Button variant="danger" icon="trash-2" disabled={busy !== null} onClick={() => setRemoving('passkey')}>移除全部 Passkey</Button> : null}
-                  </div>
-                )}
-              </div>
-            )
-          })}
+        <div className="mt-6">
+          {activeTab === 'bindings' ? (
+            <div id="account-bindings-panel" role="tabpanel" aria-labelledby="account-bindings-tab">
+              <ExternalIdentities userEmail={userEmail} busy={busy} onBusy={setBusy} onNotice={setNotice} />
+            </div>
+          ) : (
+            <div id="security-settings-panel" role="tabpanel" aria-labelledby="security-settings-tab">
+              <SecuritySettings
+                loading={loading}
+                busy={busy}
+                totpEnabled={totpEnabled}
+                passkeyCount={passkeyCount}
+                totpData={readyTotp?.data ?? null}
+                code={code}
+                onCode={setCode}
+                onStartTotp={() => void startTotp()}
+                onCancelTotp={() => { setTotp({ phase: 'idle' }); setCode('') }}
+                onConfirmTotp={(event) => void confirmTotp(event)}
+                onStartPasskey={() => void startPasskey()}
+                onRemove={setRemoving}
+                profileSummary={profileSummary}
+                profileAction={profileAction}
+                userEmail={userEmail}
+                emailAction={emailAction}
+                passwordAction={passwordAction}
+              />
+            </div>
+          )}
         </div>
       </HudPanel>
 
-      <ExternalIdentities busy={busy} onBusy={setBusy} onNotice={setNotice} />
-
-      {!loading && !totpEnabled && passkeyCount === 0 ? <HudPanel className="mt-5"><EmptyState icon="shield" title="当前使用密码登录" description="没有启用验证方式时，密码验证成功会直接建立普通会话。" /></HudPanel> : null}
-
       {removing ? <RemovalDialog method={removing} password={password} busy={busy !== null} onPassword={setPassword} onCancel={() => { setRemoving(null); setPassword('') }} onConfirm={() => void removeFactor()} /> : null}
-    </ConsoleLayout>
+    </div>
+  )
+}
+
+function AccountTabButton({ tab, activeTab, icon, label, onSelect }: {
+  tab: AccountTab
+  activeTab: AccountTab
+  icon: string
+  label: string
+  onSelect: (tab: AccountTab) => void
+}) {
+  const selected = activeTab === tab
+  const tabId = tab === 'bindings' ? 'account-bindings-tab' : 'security-settings-tab'
+  const panelId = tab === 'bindings' ? 'account-bindings-panel' : 'security-settings-panel'
+  return (
+    <button
+      id={tabId}
+      type="button"
+      role="tab"
+      aria-selected={selected}
+      aria-controls={panelId}
+      tabIndex={selected ? 0 : -1}
+      className={`flex min-h-11 items-center justify-center gap-2 rounded-[calc(var(--chenxing-radius-md)-2px)] px-3 text-sm font-semibold transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--chenxing-cyan)] ${selected ? 'bg-[var(--chenxing-muted)] text-[var(--chenxing-foreground)] shadow-[inset_0_0_0_1px_var(--chenxing-border-strong)]' : 'text-[var(--chenxing-muted-foreground)] hover:bg-[rgba(255,255,255,0.04)] hover:text-[var(--chenxing-foreground)]'}`}
+      onClick={() => onSelect(tab)}
+    >
+      <Icon name={icon} size={16} className={selected ? 'text-[var(--chenxing-cyan)]' : ''} />
+      {label}
+    </button>
   )
 }
 
 function RemovalDialog({ method, password, busy, onPassword, onCancel, onConfirm }: { method: 'totp' | 'passkey'; password: string; busy: boolean; onPassword: (value: string) => void; onCancel: () => void; onConfirm: () => void }) {
   return (
-    <div className="fixed inset-0 z-[var(--chenxing-z-modal)] flex items-center justify-center bg-black/70 p-4" role="presentation">
-      <HudPanel as="section" role="dialog" aria-modal="true" aria-labelledby="remove-factor-title" className="w-full max-w-md">
+    <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-black/70 p-4" role="presentation">
+      <HudPanel as="section" role="dialog" aria-modal="true" aria-labelledby="remove-factor-title" className="relative z-[var(--chenxing-z-dialog)] w-full max-w-md">
         <div className="flex items-start justify-between gap-4"><div><p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-error)]">// Re-authentication</p><h2 id="remove-factor-title" className="chenxing-h2 mt-2">移除{method === 'totp' ? ' TOTP' : '全部 Passkey'}</h2></div><button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel}><Icon name="x" size={17} /></button></div>
         <p className="chenxing-caption mt-4">这是敏感安全操作。移除后所有活跃会话都会失效，并需要重新登录。请输入当前密码确认身份。</p>
         <div className="mt-5"><PasswordField label="当前密码" autoComplete="current-password" value={password} onChange={(event) => onPassword(event.target.value)} /></div>
@@ -265,10 +268,4 @@ function externalBindingErrorMessage(code: string): string {
     oauth_provider_not_found: '该外部身份源不可用或已停用。',
   }
   return messages[code] ?? '外部账户绑定未完成，请重试。'
-}
-
-function TotpQr({ url }: { url: string }) {
-  const [data, setData] = useState<string | null>(null)
-  useEffect(() => { let cancelled = false; void QRCode.toDataURL(url, { errorCorrectionLevel: 'M', margin: 1, width: 220, color: { dark: '#06101f', light: '#f8fbff' } }).then((value) => { if (!cancelled) setData(value) }).catch(() => { if (!cancelled) setData(null) }); return () => { cancelled = true } }, [url])
-  return <div><span className="chenxing-label">扫码绑定</span><div className="cx-totp-qr mt-2">{data ? <img src={data} alt="TOTP 绑定二维码" className="cx-totp-qr-image" /> : <span className="chenxing-caption">二维码生成失败，请使用手动密钥。</span>}</div></div>
 }

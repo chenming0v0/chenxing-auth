@@ -75,6 +75,77 @@ impl UserService {
         Ok(repository::find_profile_by_id(&self.pool, id).await?)
     }
 
+    pub async fn update_profile(
+        &self,
+        id: UserId,
+        display_name: Option<String>,
+        username: Option<String>,
+        current_password: Option<&str>,
+        source_ip: Option<&str>,
+    ) -> Result<super::ProfileUpdateOutcome, UserServiceError> {
+        let display_name = validate_display_name(display_name)?;
+        let Some(current_profile) = repository::find_profile_by_id(&self.pool, id).await? else {
+            return Ok(super::ProfileUpdateOutcome::UserMissing);
+        };
+        let normalized_username =
+            normalized_username_change(&current_profile.username, username.as_deref())?;
+        let username_changed = normalized_username.is_some();
+
+        if !username_changed {
+            if !repository::update_display_name(&self.pool, id, display_name.as_deref()).await? {
+                return Ok(super::ProfileUpdateOutcome::UserMissing);
+            }
+            return Ok(repository::find_profile_by_id(&self.pool, id)
+                .await?
+                .map(|profile| super::ProfileUpdateOutcome::Updated {
+                    profile,
+                    username_changed: false,
+                })
+                .unwrap_or(super::ProfileUpdateOutcome::UserMissing));
+        }
+
+        let Some(current_password) = current_password else {
+            return Err(UserServiceError::CurrentPasswordRequired);
+        };
+        let authenticated = self
+            .reauthenticate_password(id, current_password, source_ip)
+            .await?;
+        let Some(authenticated) = authenticated else {
+            return Err(UserServiceError::PasswordReauthenticationUnavailable);
+        };
+        match repository::update_profile_with_epoch(
+            &self.pool,
+            id,
+            normalized_username.as_deref().expect("changed username"),
+            display_name.as_deref(),
+            authenticated.session_epoch,
+        )
+        .await
+        {
+            Ok(repository::ProfileUpdateRepositoryOutcome::Updated(profile)) => {
+                Ok(super::ProfileUpdateOutcome::Updated {
+                    profile,
+                    username_changed: true,
+                })
+            }
+            Ok(repository::ProfileUpdateRepositoryOutcome::AuthenticationChanged) => {
+                Ok(super::ProfileUpdateOutcome::AuthenticationChanged)
+            }
+            Ok(repository::ProfileUpdateRepositoryOutcome::UserMissing) => {
+                Ok(super::ProfileUpdateOutcome::UserMissing)
+            }
+            Err(error)
+                if error
+                    .as_database_error()
+                    .and_then(|database_error| database_error.constraint())
+                    .is_some_and(|constraint| constraint == "users_username_key") =>
+            {
+                Ok(super::ProfileUpdateOutcome::UsernameUnavailable)
+            }
+            Err(error) => Err(UserServiceError::Database(error)),
+        }
+    }
+
     /// 修改口令。
     ///
     /// 新口令走与注册同一个 `validate_password_length`，上下界不允许漂移（Issue #122）。
@@ -184,6 +255,18 @@ impl UserService {
     }
 }
 
+fn normalized_username_change(
+    current_username: &str,
+    requested_username: Option<&str>,
+) -> Result<Option<String>, crate::users::domain::RegistrationError> {
+    let Some(requested_username) = requested_username else {
+        return Ok(None);
+    };
+    let normalized = crate::users::domain::validate_username(requested_username)
+        .ok_or(crate::users::domain::RegistrationError::InvalidUsername)?;
+    Ok((normalized != current_username).then_some(normalized))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{
@@ -242,6 +325,22 @@ mod tests {
             .connect_lazy("postgres://invalid-host/unused")
             .expect("lazy pool");
         UserService::new(pool, limiter)
+    }
+
+    #[test]
+    fn username_normalization_distinguishes_real_changes() {
+        assert_eq!(
+            super::normalized_username_change("chenxing", Some(" ChenXing ")),
+            Ok(None)
+        );
+        assert_eq!(
+            super::normalized_username_change("chenxing", Some("renamed-user")),
+            Ok(Some("renamed-user".to_owned()))
+        );
+        assert_eq!(
+            super::normalized_username_change("chenxing", Some("admin")),
+            Err(RegistrationError::InvalidUsername)
+        );
     }
 
     /// Issue #462：超长当前口令必须在查库、限流预留和 Argon2 之前被拒绝。

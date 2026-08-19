@@ -39,8 +39,8 @@ pub use role_guard::{
     set_user_status_guarded,
 };
 pub use write::{
-    PasswordChangeOutcome, change_password_and_revoke_all, insert_user, insert_user_in_transaction,
-    update_display_name,
+    PasswordChangeOutcome, ProfileUpdateRepositoryOutcome, change_password_and_revoke_all,
+    insert_user, insert_user_in_transaction, update_display_name, update_profile_with_epoch,
 };
 
 /// 刚写入的用户行。

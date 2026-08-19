@@ -70,6 +70,8 @@ const safeMessages = new Map<string, string>([
   ['invalid_factor_enrollment', '认证因子绑定已失效，请重新开始。'],
   ['password_reauthentication_failed', '当前密码不正确，未执行安全操作。'],
   ['password_reauthentication_unavailable', '当前账号无法使用密码重新认证，请联系管理员恢复。'],
+  ['current_password_required', '修改用户名需要输入当前密码。'],
+  ['username_unavailable', '该用户名已被占用，请更换后重试。'],
   ['factor_key_unavailable', '服务端暂时无法读取认证密钥，请联系管理员处理。'],
   ['passkey_credential_conflict', '该 Passkey 已在其他账号或设备记录中使用。'],
   ['username_already_registered', '注册信息无法使用，请检查后重试。'],

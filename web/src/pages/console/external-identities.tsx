@@ -1,19 +1,25 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { apiFetch, type ExternalIdentity, type ExternalIdentityListResponse, type PublicExternalProvider } from '../../api'
-import { Button, EmptyState, HudPanel, Icon, PasswordField } from '../../components/ui'
+import { Badge, Button, HudPanel, Icon, PasswordField } from '../../components/ui'
 import type { MessageTone } from './profile-avatar'
 
 type NoticeState = { text: string; tone: MessageTone }
-
 type ExternalBindingStart = { authorization_url: string }
 
 type ExternalIdentitiesProps = {
+  userEmail: string
   busy: string | null
   onBusy: (value: string | null) => void
   onNotice: (notice: NoticeState | null) => void
 }
 
-export function ExternalIdentities({ busy, onBusy, onNotice }: ExternalIdentitiesProps) {
+type ProviderBinding = {
+  slug: string
+  name: string
+  identity: ExternalIdentity | null
+}
+
+export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: ExternalIdentitiesProps) {
   const [identities, setIdentities] = useState<ExternalIdentity[]>([])
   const [providers, setProviders] = useState<PublicExternalProvider[]>([])
   const [loading, setLoading] = useState(true)
@@ -37,6 +43,9 @@ export function ExternalIdentities({ busy, onBusy, onNotice }: ExternalIdentitie
   }
 
   useEffect(() => { void load() }, [])
+
+  const bindings = useMemo(() => mergeProviderBindings(providers, identities), [providers, identities])
+  const boundCount = bindings.filter((binding) => binding.identity).length + 1
 
   async function startBinding(slug: string): Promise<void> {
     if (busy) return
@@ -79,35 +88,167 @@ export function ExternalIdentities({ busy, onBusy, onNotice }: ExternalIdentitie
     }
   }
 
-  const availableProviders = providers.filter((provider) => !identities.some((identity) => identity.provider === provider.slug))
+  return (
+    <div aria-labelledby="account-bindings-heading">
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 id="account-bindings-heading" className="chenxing-h3">登录身份</h3>
+          <p className="chenxing-caption mt-1 max-w-2xl">绑定后可以使用对应身份源登录。新的登录提供方启用后会自动出现在这里。</p>
+        </div>
+        <Badge tone="success">{loading ? '读取中' : `${boundCount} 个可用身份`}</Badge>
+      </div>
 
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <IdentityCard
+          icon="mail"
+          name="邮箱"
+          value={userEmail}
+          status={<Badge tone="success">主身份</Badge>}
+        />
+        {loading ? <LoadingBindingRows /> : bindings.map((binding) => (
+          <IdentityCard
+            key={binding.slug}
+            icon={providerIcon(binding.slug, binding.name)}
+            iconTone={providerIconTone(binding.slug, binding.name)}
+            name={binding.name}
+            value={binding.identity?.email || '尚未绑定'}
+            status={binding.identity ? <Badge tone="success">已绑定</Badge> : <Badge>可绑定</Badge>}
+            action={binding.identity ? (
+              <Button
+                className="min-h-11"
+                variant="danger"
+                icon="unlink"
+                aria-label={`解除 ${binding.name} 绑定`}
+                disabled={busy !== null}
+                onClick={() => { setUnlinking(binding.identity); setPassword('') }}
+              >
+                解除
+              </Button>
+            ) : (
+              <Button
+                className="min-h-11"
+                variant="ghost"
+                icon="link"
+                aria-label={`绑定 ${binding.name}`}
+                disabled={busy !== null}
+                onClick={() => void startBinding(binding.slug)}
+              >
+                {busy === `bind-${binding.slug}` ? '跳转中…' : '绑定'}
+              </Button>
+            )}
+          />
+        ))}
+      </div>
+
+      {!loading && bindings.length === 0 ? (
+        <div className="mt-4 flex items-start gap-2 border-t border-[var(--chenxing-border)] pt-4">
+          <Icon name="info" size={16} className="mt-0.5 shrink-0 text-[var(--chenxing-muted-foreground)]" />
+          <p className="chenxing-caption">管理员尚未启用其他登录身份。启用新的 OAuth/OIDC 提供方后，本列表会自动扩展。</p>
+        </div>
+      ) : null}
+
+      {unlinking ? (
+        <UnlinkDialog
+          identity={unlinking}
+          password={password}
+          busy={busy !== null}
+          onPassword={setPassword}
+          onCancel={() => { setUnlinking(null); setPassword('') }}
+          onConfirm={() => void unlink()}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+function IdentityCard({ icon, iconTone = 'cyan', name, value, status, action }: {
+  icon: string
+  iconTone?: 'cyan' | 'gold' | 'neutral'
+  name: string
+  value: string
+  status: React.ReactNode
+  action?: React.ReactNode
+}) {
+  const iconToneClass = iconTone === 'gold'
+    ? 'text-[var(--chenxing-gold)]'
+    : iconTone === 'neutral'
+      ? 'text-[var(--chenxing-foreground)]'
+      : 'text-[var(--chenxing-cyan)]'
+  return (
+    <section className="flex min-h-[92px] items-center justify-between gap-3 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.38)] p-4 transition-colors duration-200 hover:border-[var(--chenxing-border-strong)]">
+      <div className="flex min-w-0 items-center gap-3">
+        <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)] ${iconToneClass}`}>
+          <Icon name={icon} size={18} />
+        </span>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="chenxing-body text-sm font-semibold">{name}</h4>
+            {status}
+          </div>
+          <p className="chenxing-caption mt-1 truncate" title={value}>{value}</p>
+        </div>
+      </div>
+      {action ? <div className="shrink-0">{action}</div> : null}
+    </section>
+  )
+}
+
+function LoadingBindingRows() {
   return (
     <>
-      <HudPanel as="section" className="mt-5" aria-labelledby="linked-accounts-title">
-        <div className="flex items-start gap-3">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)] text-[var(--chenxing-cyan)]"><Icon name="link" size={18} /></span>
-          <div><h2 id="linked-accounts-title" className="chenxing-h2">已绑定账户</h2><p className="chenxing-caption mt-1">在此管理可用于登录的外部身份账户。</p></div>
+      {[0, 1].map((item) => (
+        <div key={item} className="flex min-h-[92px] animate-pulse items-center gap-3 rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[rgba(4,8,16,0.28)] p-4" aria-hidden="true">
+          <span className="h-10 w-10 rounded-[var(--chenxing-radius-md)] bg-[var(--chenxing-muted)]" />
+          <span className="h-4 w-32 rounded bg-[var(--chenxing-muted)]" />
         </div>
-        {loading ? <p className="chenxing-caption mt-6 py-4">正在加载外部账户…</p> : identities.length > 0 ? (
-          <div className="mt-6 divide-y divide-[var(--chenxing-border)] border-y border-[var(--chenxing-border)]">
-            {identities.map((identity) => <IdentityRow key={identity.provider} identity={identity} disabled={busy !== null} onUnlink={() => { setUnlinking(identity); setPassword('') }} />)}
-          </div>
-        ) : <div className="mt-6"><EmptyState icon="link" title="尚未绑定外部账户" description="绑定后可使用已启用的外部身份源登录辰星通行证。" /></div>}
-        {!loading && availableProviders.length > 0 ? (
-          <div className="mt-6 border-t border-[var(--chenxing-border)] pt-5"><p className="chenxing-label">添加外部账户</p><div className="mt-3 flex flex-wrap gap-3">{availableProviders.map((provider) => <Button key={provider.slug} icon="globe" disabled={busy !== null} onClick={() => void startBinding(provider.slug)}>{busy === `bind-${provider.slug}` ? '跳转中…' : `绑定 ${provider.name}`}</Button>)}</div></div>
-        ) : null}
-      </HudPanel>
-      {unlinking ? <UnlinkDialog identity={unlinking} password={password} busy={busy !== null} onPassword={setPassword} onCancel={() => { setUnlinking(null); setPassword('') }} onConfirm={() => void unlink()} /> : null}
+      ))}
     </>
   )
 }
 
-function IdentityRow({ identity, disabled, onUnlink }: { identity: ExternalIdentity; disabled: boolean; onUnlink: () => void }) {
-  return <div className="flex flex-wrap items-center justify-between gap-4 py-4"><div className="flex min-w-0 items-center gap-3"><span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--chenxing-radius-md)] border border-[var(--chenxing-border)] bg-[var(--chenxing-muted)] text-[var(--chenxing-cyan)]"><Icon name="globe" size={18} /></span><div className="min-w-0"><p className="chenxing-body text-sm font-semibold">{identity.provider_name}</p><p className="chenxing-caption truncate">{identity.email}</p></div></div><Button variant="danger" icon="unlink" disabled={disabled} onClick={onUnlink}>解除绑定</Button></div>
+function UnlinkDialog({ identity, password, busy, onPassword, onCancel, onConfirm }: {
+  identity: ExternalIdentity
+  password: string
+  busy: boolean
+  onPassword: (value: string) => void
+  onCancel: () => void
+  onConfirm: () => void
+}) {
+  return (
+    <div className="fixed inset-0 z-[var(--chenxing-z-overlay)] flex items-center justify-center bg-black/70 p-4" role="presentation">
+      <HudPanel as="section" role="dialog" aria-modal="true" aria-labelledby="unlink-external-title" className="relative z-[var(--chenxing-z-dialog)] w-full max-w-md">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-error)]">// Re-authentication</p>
+            <h2 id="unlink-external-title" className="chenxing-h2 mt-2">解除 {identity.provider_name}</h2>
+          </div>
+          <button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel}><Icon name="x" size={17} /></button>
+        </div>
+        <p className="chenxing-caption mt-4">这是敏感安全操作。请输入当前密码确认身份，外部账户不会再用于登录。</p>
+        <div className="mt-5"><PasswordField label="当前密码" autoComplete="current-password" value={password} onChange={(event) => onPassword(event.target.value)} /></div>
+        <div className="mt-5 flex flex-wrap justify-end gap-3">
+          <Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>取消</Button>
+          <Button type="button" variant="danger" icon="unlink" onClick={onConfirm} disabled={busy}>{busy ? '处理中…' : '确认解除绑定'}</Button>
+        </div>
+      </HudPanel>
+    </div>
+  )
 }
 
-function UnlinkDialog({ identity, password, busy, onPassword, onCancel, onConfirm }: { identity: ExternalIdentity; password: string; busy: boolean; onPassword: (value: string) => void; onCancel: () => void; onConfirm: () => void }) {
-  return <div className="fixed inset-0 z-[var(--chenxing-z-modal)] flex items-center justify-center bg-black/70 p-4" role="presentation"><HudPanel as="section" role="dialog" aria-modal="true" aria-labelledby="unlink-external-title" className="w-full max-w-md"><div className="flex items-start justify-between gap-4"><div><p className="chenxing-mono text-[11px] uppercase tracking-[0.2em] text-[var(--chenxing-error)]">// Re-authentication</p><h2 id="unlink-external-title" className="chenxing-h2 mt-2">解除 {identity.provider_name}</h2></div><button type="button" className="chenxing-icon-btn" aria-label="关闭" onClick={onCancel}><Icon name="x" size={17} /></button></div><p className="chenxing-caption mt-4">这是敏感安全操作。请输入当前密码确认身份，外部账户不会再用于登录。</p><div className="mt-5"><PasswordField label="当前密码" autoComplete="current-password" value={password} onChange={(event) => onPassword(event.target.value)} /></div><div className="mt-5 flex flex-wrap justify-end gap-3"><Button type="button" variant="ghost" onClick={onCancel} disabled={busy}>取消</Button><Button type="button" variant="danger" icon="unlink" onClick={onConfirm} disabled={busy}>{busy ? '处理中…' : '确认解除绑定'}</Button></div></HudPanel></div>
+function mergeProviderBindings(providers: PublicExternalProvider[], identities: ExternalIdentity[]): ProviderBinding[] {
+  const identityByProvider = new Map(identities.map((identity) => [identity.provider, identity]))
+  const bindings = providers.map((provider) => ({
+    slug: provider.slug,
+    name: provider.name,
+    identity: identityByProvider.get(provider.slug) ?? null,
+  }))
+  const known = new Set(bindings.map((binding) => binding.slug))
+  for (const identity of identities) {
+    if (!known.has(identity.provider)) {
+      bindings.push({ slug: identity.provider, name: identity.provider_name, identity })
+    }
+  }
+  return bindings
 }
 
 function isExternalBindingStart(value: unknown): value is ExternalBindingStart {
@@ -118,4 +259,20 @@ function isExternalBindingStart(value: unknown): value is ExternalBindingStart {
 
 function isProvider(provider: PublicExternalProvider): boolean {
   return typeof provider?.slug === 'string' && provider.slug.length > 0 && typeof provider?.name === 'string' && provider.name.length > 0
+}
+
+function providerIcon(slug: string, name: string): string {
+  const identity = `${slug} ${name}`.toLowerCase()
+  if (identity.includes('github') || identity.includes('gitlab') || identity.includes('gitee')) return 'github'
+  if (identity.includes('chenxing') || identity.includes('辰星')) return 'shield-check'
+  if (identity.includes('oidc') || identity.includes('saml') || identity.includes('enterprise') || identity.includes('企业')) return 'server'
+  if (identity.includes('google') || identity.includes('microsoft')) return 'badge-check'
+  return 'globe'
+}
+
+function providerIconTone(slug: string, name: string): 'cyan' | 'gold' | 'neutral' {
+  const identity = `${slug} ${name}`.toLowerCase()
+  if (identity.includes('chenxing') || identity.includes('辰星')) return 'gold'
+  if (identity.includes('github') || identity.includes('gitlab') || identity.includes('gitee')) return 'neutral'
+  return 'cyan'
 }

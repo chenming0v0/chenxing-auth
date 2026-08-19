@@ -708,6 +708,8 @@ paths:
               schema: { $ref: '#/components/schemas/UserMeResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
         '413': { $ref: '#/components/responses/PayloadTooLarge' }
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
@@ -3156,8 +3158,21 @@ components:
           description: 头像版本时间戳；null 表示未设置头像。同时作为头像 URL 的缓存击穿参数。
     UpdateProfileInput:
       type: object
+      additionalProperties: false
       properties:
         display_name: { type: string, nullable: true, maxLength: 128 }
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+          pattern: '^[A-Za-z0-9._-]+$'
+          description: 规范化为 ASCII 小写；与当前用户名相同的请求不需要 current_password
+        current_password:
+          type: string
+          format: password
+          maxLength: 128
+          writeOnly: true
+          description: 仅在修改用户名时要求；不会出现在响应或日志中
     ChangePasswordInput:
       type: object
       required: [current_password, new_password]
