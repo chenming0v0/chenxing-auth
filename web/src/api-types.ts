@@ -143,11 +143,14 @@ export type AdminOverview = {
   administrators: number
   audit_events: number
 }
+/** 公共用户对象不携带管理查询专用的套餐投影。 */
 export type PublicUser = Omit<
   UserMe,
   'current_session_expires_at' | 'avatar_updated_at'
-> & {
-  created_at: string
+> & { created_at: string }
+
+/** 管理用户查询结果；套餐投影只由 GET /api/v1/admin/users/query 返回。 */
+export type AdminUserQueryItem = PublicUser & {
   plan: {
     id: number
     code: string
