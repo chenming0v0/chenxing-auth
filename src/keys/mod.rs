@@ -317,6 +317,9 @@ impl KeyManager {
     /// 未命中时提示后台任务尽快同步一次共享目录，让别的实例刚轮换出的 `kid`
     /// 在下一次同步后可验证。
     pub fn verification_key_for(&self, key_id: &str) -> Option<DecodingKey> {
+        if !self.signing_ready() {
+            return None;
+        }
         let key = self.read_state().verification_keys.get(key_id).cloned();
         if key.is_none() {
             self.hint_resync();
@@ -325,6 +328,9 @@ impl KeyManager {
     }
 
     pub fn decoding_key(&self) -> Result<DecodingKey, jsonwebtoken::errors::Error> {
+        if !self.signing_ready() {
+            return Err(invalid_decoding_key_error());
+        }
         let state = self.read_state();
         state
             .verification_keys
