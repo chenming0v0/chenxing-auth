@@ -66,6 +66,7 @@ const SECURITY_LIMITS: SecurityLimitsSetting = {
 const REGISTRATION: RegistrationSetting = {
   enabled: false,
   email_verification_required: false,
+  invitation_code_required: false,
 }
 
 /* 公开注册面板挂载时会读 Issuer 运行时状态推导闸门；给一个就绪的 Issuer，

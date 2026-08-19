@@ -9,6 +9,7 @@ fn registration_normalizes_email_and_keeps_display_name() {
         email: "  User@Example.COM ".to_owned(),
         password: "correct horse battery".to_owned(),
         display_name: Some("辰星用户".to_owned()),
+        invitation_code: None,
     })
     .expect("valid registration");
 
@@ -34,6 +35,7 @@ fn registration_canonicalizes_unicode_domains() {
             email: email.to_owned(),
             password: "correct horse battery".to_owned(),
             display_name: None,
+            invitation_code: None,
         })
         .expect("valid registration")
         .email
@@ -58,6 +60,7 @@ fn registration_accepts_a_ten_character_password() {
         email: "user@example.com".to_owned(),
         password: "1234567890".to_owned(),
         display_name: None,
+        invitation_code: None,
     });
 
     assert!(result.is_ok());
@@ -70,6 +73,7 @@ fn registration_rejects_short_password() {
         email: "user@example.com".to_owned(),
         password: "too-short".to_owned(),
         display_name: None,
+        invitation_code: None,
     })
     .expect_err("short password must be rejected");
 
@@ -83,6 +87,7 @@ fn registration_rejects_invalid_email() {
         email: "not-an-email".to_owned(),
         password: "correct horse battery".to_owned(),
         display_name: None,
+        invitation_code: None,
     })
     .expect_err("invalid email must be rejected");
 
@@ -96,6 +101,7 @@ fn registration_requires_a_valid_username() {
         email: "user@example.com".to_owned(),
         password: "correct horse battery".to_owned(),
         display_name: None,
+        invitation_code: None,
     })
     .expect_err("short username must be rejected");
 
@@ -146,6 +152,7 @@ fn registration_rejects_password_longer_than_the_upper_bound() {
         email: "user@example.com".to_owned(),
         password: "a".repeat(129),
         display_name: None,
+        invitation_code: None,
     })
     .expect_err("129-character password must be rejected");
 
@@ -160,6 +167,7 @@ fn registration_accepts_password_at_the_upper_bound() {
         email: "user@example.com".to_owned(),
         password: "a".repeat(128),
         display_name: None,
+        invitation_code: None,
     });
 
     assert!(result.is_ok(), "128-character password must be accepted");
@@ -173,6 +181,7 @@ fn password_length_counts_characters_not_bytes() {
         email: "user@example.com".to_owned(),
         password: "辰".repeat(129),
         display_name: None,
+        invitation_code: None,
     })
     .expect_err("129 multibyte characters must be rejected");
     assert_eq!(error, RegistrationError::PasswordTooLong);
@@ -184,6 +193,7 @@ fn password_length_counts_characters_not_bytes() {
             email: "user@example.com".to_owned(),
             password: "辰".repeat(128),
             display_name: None,
+            invitation_code: None,
         })
         .is_ok(),
         "128 multibyte characters must be accepted"

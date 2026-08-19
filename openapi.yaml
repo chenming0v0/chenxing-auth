@@ -202,6 +202,8 @@ paths:
         - 开关关闭时返回 403 `registration_disabled`。
         - 开关打开且 `email_verification_required=true` 时，在邮件所有权验证能力接入前
           fail-closed，返回 503 `email_verification_unavailable`，不创建未验证身份。
+        - `invitation_code_required=true` 时必须提供有效邀请码；邀请码与用户创建在同一
+          数据库事务中消费，失败请求不会占用次数。
         - 其余情况执行真实创建：输入校验、邮箱域名策略、按源 IP 的注册尝试配额、
           Owner 前提全部通过后，创建 role=user、status=active 的账号。
         用户名和邮箱的唯一冲突统一返回 `registration_conflict`，不暴露具体冲突字段。
@@ -1206,7 +1208,7 @@ paths:
       description: |
         匿名端点，无鉴权。`enabled` 是有效值：存储开关 AND Issuer 就绪；
         Issuer 未配置或设置不可读时一律报关（fail-closed）。
-        `email_verification_required` 是存储值。
+        `email_verification_required` 与 `invitation_code_required` 是存储值。
       operationId: getRegistrationStatus
       responses:
         '200':
@@ -2374,6 +2376,53 @@ paths:
         '415': { $ref: '#/components/responses/UnsupportedMediaType' }
         '422': { $ref: '#/components/responses/InvalidJsonData' }
         '503': { $ref: '#/components/responses/ServiceUnavailable' }
+  /api/v1/admin/registration-invitation-codes:
+    get:
+      tags: [Admin]
+      summary: 列出注册邀请码
+      operationId: listRegistrationInvitationCodes
+      security: [{ adminBearer: [] }, { sessionCookie: [] }]
+      responses:
+        '200':
+          description: 邀请码状态列表，不包含明文或摘要
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/InvitationCodeSummary' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin]
+      summary: 批量生成注册邀请码
+      operationId: createRegistrationInvitationCodes
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/CreateInvitationCodesInput' } } }
+      responses:
+        '201':
+          description: 新建邀请码；明文 code 仅在本响应返回一次
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/CreatedInvitationCode' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /api/v1/admin/registration-invitation-codes/{id}/disable:
+    post:
+      tags: [Admin]
+      summary: 停用注册邀请码
+      operationId: disableRegistrationInvitationCode
+      parameters: [{ name: id, in: path, required: true, schema: { type: integer, format: int64 } }]
+      security:
+        - adminBearer: []
+        - sessionCookie: []
+          csrfCookie: []
+          csrfHeader: []
+      responses:
+        '200': { description: 已停用的邀请码, content: { application/json: { schema: { $ref: '#/components/schemas/InvitationCodeSummary' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/admin/settings/issuer:
     get:
       tags: [Admin]
@@ -3032,6 +3081,7 @@ components:
         email: { type: string, format: email }
         password: { type: string, format: password, minLength: 10, maxLength: 128 }
         display_name: { type: string, nullable: true, maxLength: 128 }
+        invitation_code: { type: string, nullable: true, writeOnly: true, description: 仅公开注册在策略要求时消费 }
     CreateUserInput:
       description: 管理侧创建用户输入。基础字段与注册一致，额外允许指定角色和初始状态。
       allOf:
@@ -3728,19 +3778,47 @@ components:
         公开注册开关。双布尔默认全关：未配置实例的公开注册保持关闭。
         email_verification_required 为真时，即使 enabled 打开，注册仍在邮件验证
         能力缺失处 fail-closed（503 email_verification_unavailable）。
-      required: [enabled, email_verification_required]
+      required: [enabled, email_verification_required, invitation_code_required]
       properties:
         enabled: { type: boolean }
         email_verification_required: { type: boolean }
+        invitation_code_required: { type: boolean }
     RegistrationStatusResponse:
       type: object
       description: >-
         匿名注册状态。enabled 是有效值（存储开关 AND Issuer 就绪），
         email_verification_required 是存储值。
-      required: [enabled, email_verification_required]
+      required: [enabled, email_verification_required, invitation_code_required]
       properties:
         enabled: { type: boolean }
         email_verification_required: { type: boolean }
+        invitation_code_required: { type: boolean }
+    InvitationCodeSummary:
+      type: object
+      required: [id, max_uses, use_count, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        label: { type: string, nullable: true, maxLength: 128 }
+        max_uses: { type: integer, minimum: 1, maximum: 10000 }
+        use_count: { type: integer, minimum: 0 }
+        expires_at: { type: string, format: date-time, nullable: true }
+        disabled_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+    CreateInvitationCodesInput:
+      type: object
+      required: [count, max_uses, expires_at, label]
+      properties:
+        count: { type: integer, minimum: 1, maximum: 100 }
+        max_uses: { type: integer, minimum: 1, maximum: 10000 }
+        expires_at: { type: string, format: date-time, nullable: true }
+        label: { type: string, nullable: true, maxLength: 128 }
+    CreatedInvitationCode:
+      allOf:
+        - $ref: '#/components/schemas/InvitationCodeSummary'
+        - type: object
+          required: [code]
+          properties:
+            code: { type: string, writeOnly: true, description: 仅创建响应返回一次 }
     SmtpSetting:
       type: object
       required: [host, port, username, from_address, ssl_enabled, force_auth_login, password_configured]

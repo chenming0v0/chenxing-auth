@@ -108,6 +108,13 @@ export function RegistrationPanel({ onMessage, onDirtyChange }: SettingsPanelPro
               disabled={busy}
               onChange={(email_verification_required) => updateSetting({ email_verification_required })}
             />
+            <ToggleRow
+              title="注册要求邀请码"
+              description="开启后注册者必须提供有效邀请码；可与邮箱域名白名单和邮箱验证叠加。"
+              checked={setting.invitation_code_required}
+              disabled={busy}
+              onChange={(invitation_code_required) => updateSetting({ invitation_code_required })}
+            />
             <div>
               <Button type="submit" icon="save" disabled={busy}>保存公开注册设置</Button>
             </div>

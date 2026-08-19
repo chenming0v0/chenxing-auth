@@ -86,6 +86,8 @@ pub enum UserServiceError {
     EmailDomainNotAllowed,
     #[error("email ownership verification is unavailable")]
     EmailVerificationUnavailable,
+    #[error("a valid invitation code is required")]
+    InvalidInvitationCode,
 }
 
 impl UserService {

@@ -10,6 +10,7 @@ pub mod consents;
 pub mod db;
 pub mod error;
 pub mod extensions;
+pub mod invitation_codes;
 mod key_storage;
 pub mod keys;
 pub mod notifications;

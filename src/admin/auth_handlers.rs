@@ -104,6 +104,7 @@ pub async fn bootstrap_admin(
         email: input.email,
         password: input.password,
         display_name: None,
+        invitation_code: None,
     };
     match state
         .users
@@ -170,6 +171,7 @@ pub async fn create_admin(
         email: input.email,
         password: input.password,
         display_name: None,
+        invitation_code: None,
     };
     let (actor_type, actor_id) = actor.audit_fields();
     match state

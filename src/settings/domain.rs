@@ -70,6 +70,7 @@ impl Default for PasskeySetting {
 pub struct RegistrationSetting {
     pub enabled: bool,
     pub email_verification_required: bool,
+    pub invitation_code_required: bool,
 }
 
 impl RegistrationSetting {

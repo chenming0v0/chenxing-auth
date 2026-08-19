@@ -132,6 +132,8 @@ audit_actions! {
     UserRoleUpdate => "user_role_update" => (Account, Critical),
     EmailPolicyUpdate => "email_policy_update" => (Account, Critical),
     RegistrationSettingUpdate => "registration_setting_update" => (Account, Critical),
+    InvitationCodeCreate => "invitation_code_create" => (Account, Critical),
+    InvitationCodeDisable => "invitation_code_disable" => (Account, Critical),
     SmtpSettingUpdate => "smtp_setting_update" => (Account, Critical),
     SecurityLimitsUpdate => "security_limits_update" => (Account, Critical),
     SessionLifetimeUpdate => "session_lifetime_update" => (Session, Critical),

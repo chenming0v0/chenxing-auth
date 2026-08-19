@@ -10,6 +10,7 @@ mod client_errors;
 pub mod domain;
 pub mod factor_handlers;
 pub mod handlers;
+pub mod invitation_code_handlers;
 pub mod issuer_settings_handlers;
 pub mod key_handlers;
 pub mod management_handlers;

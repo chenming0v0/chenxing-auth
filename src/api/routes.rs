@@ -10,6 +10,9 @@ use crate::{
     admin::handlers::{
         create_client, disable_client, enable_client, list_clients, rotate_secret, update_client,
     },
+    admin::invitation_code_handlers::{
+        create_invitation_codes, disable_invitation_code, list_invitation_codes,
+    },
     admin::key_handlers::{revoke_signing_key, rotate_signing_key},
     admin::management_handlers::{
         list_admins, list_audit, list_users, set_user_role, set_user_status,
@@ -226,6 +229,14 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
         .route(
             "/api/v1/admin/settings/registration",
             get(get_registration_setting).put(update_registration_setting),
+        )
+        .route(
+            "/api/v1/admin/registration-invitation-codes",
+            get(list_invitation_codes).post(create_invitation_codes),
+        )
+        .route(
+            "/api/v1/admin/registration-invitation-codes/{id}/disable",
+            post(disable_invitation_code),
         )
         .route(
             "/api/v1/admin/settings/passkey",

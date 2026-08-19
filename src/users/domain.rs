@@ -165,24 +165,7 @@ impl UserRole {
     }
 }
 
-#[derive(Deserialize)]
-pub struct RegistrationInput {
-    pub username: String,
-    pub email: String,
-    pub password: String,
-    pub display_name: Option<String>,
-}
-
-impl fmt::Debug for RegistrationInput {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RegistrationInput")
-            .field("username", &self.username)
-            .field("email", &self.email)
-            .field("password", &"<redacted>")
-            .field("display_name", &self.display_name)
-            .finish()
-    }
-}
+pub use super::registration_input::RegistrationInput;
 
 #[derive(Deserialize)]
 pub struct LoginInput {

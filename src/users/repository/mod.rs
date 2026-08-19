@@ -29,6 +29,7 @@ pub use lookup::{
     find_active_session_epoch, find_credentials_by_email, find_credentials_by_id,
     find_credentials_by_identifier, find_profile_by_id, list_users,
 };
+pub use owner_bootstrap::PublicUserInsertError;
 pub use owner_bootstrap::{
     AuditedUserInsertError, BootstrapOwnerError, BootstrapOwnerOutcome, ManagedUserInsertError,
     bootstrap_owner, insert_public_user, insert_user_after_owner,

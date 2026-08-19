@@ -77,7 +77,7 @@ function registerForm(): HTMLFormElement {
 
 describe('AuthPage 注册页如实展示公开注册状态', () => {
   it('enabled=false：提示自助注册未开放并禁用提交', async () => {
-    stubRegistrationStatus({ enabled: false, email_verification_required: false })
+    stubRegistrationStatus({ enabled: false, email_verification_required: false, invitation_code_required: false })
     render(<AuthPage mode="register" />)
     expect(await screen.findByText('自助注册未开放，请联系管理员创建账号。')).toBeTruthy()
     // fieldset disabled 模式：整表控件不可用，强行提交也发不出注册请求
@@ -87,7 +87,7 @@ describe('AuthPage 注册页如实展示公开注册状态', () => {
   })
 
   it('enabled=true 且要求邮箱验证：提示投递能力在建并禁用提交', async () => {
-    stubRegistrationStatus({ enabled: true, email_verification_required: true })
+    stubRegistrationStatus({ enabled: true, email_verification_required: true, invitation_code_required: false })
     render(<AuthPage mode="register" />)
     expect(await screen.findByText('平台要求邮箱所有权验证，验证投递能力在建，注册暂不可用。')).toBeTruthy()
     expect(registerForm().querySelector('fieldset')?.disabled).toBe(true)
@@ -96,7 +96,7 @@ describe('AuthPage 注册页如实展示公开注册状态', () => {
   })
 
   it('enabled=true 且不要求邮箱验证：现有注册流程不变', async () => {
-    stubRegistrationStatus({ enabled: true, email_verification_required: false })
+    stubRegistrationStatus({ enabled: true, email_verification_required: false, invitation_code_required: false })
     render(<AuthPage mode="register" />)
     await screen.findByRole('button', { name: /创建通行证/ })
     expect(screen.queryByText('自助注册未开放，请联系管理员创建账号。')).toBeNull()

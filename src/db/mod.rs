@@ -299,6 +299,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "runtime migration ledger boundary",
             include_str!("../../migrations/0032_runtime_migration_ledger_boundary.sql"),
         ),
+        (
+            33,
+            "registration invitation codes",
+            include_str!("../../migrations/0033_registration_invitation_codes.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {
