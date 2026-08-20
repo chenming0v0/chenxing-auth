@@ -295,8 +295,9 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .await
     .expect("read upgraded migration history");
     // 0030/0031 来自 #50-479 批次合并；0032 修复运行时 migration ledger 权限。
-    // 0033–0036 是后续追加的邀请码、邮箱变更、outbox fence 与 access-token 撤销。
-    assert_eq!(applied, (1_i64..=36).collect::<Vec<_>>());
+    // 0033–0037 是后续追加的邀请码、邮箱变更、outbox fence、archive INSERT
+    // 回收与 access-token 撤销。
+    assert_eq!(applied, (1_i64..=37).collect::<Vec<_>>());
 
     // A database initialized by v1.1.2 has the same schema but records the
     // flattened baseline plus the two then-current migrations as versions 1-3.
@@ -362,7 +363,7 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .fetch_all(&pool)
     .await
     .expect("read repaired v1.1.2 migration history");
-    assert_eq!(repaired, (1_i64..=36).collect::<Vec<_>>());
+    assert_eq!(repaired, (1_i64..=37).collect::<Vec<_>>());
 
     let preserved: (i64, i64, i64) = chenxing_auth::sqlx::query_as(
         "SELECT \

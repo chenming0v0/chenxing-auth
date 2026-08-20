@@ -1099,13 +1099,17 @@ fn database_uses_forward_only_transactional_migration_history() {
             .contains("include_str!(\"../../migrations/0035_session_outbox_claim_fence.sql\")")
     );
     assert!(
-        DB_MODULE.contains("include_str!(\"../../migrations/0036_revoked_access_tokens.sql\")")
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0036_revoke_runtime_archive_insert.sql\")")
+    );
+    assert!(
+        DB_MODULE.contains("include_str!(\"../../migrations/0037_revoked_access_tokens.sql\")")
     );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        36
+        37
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1149,14 +1153,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 36);
+    assert_eq!(migrations.len(), 37);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0036_revoked_access_tokens.sql")
+        Some("0037_revoked_access_tokens.sql")
     );
     for (index, name) in migrations.iter().enumerate() {
         let expected_prefix = format!("{:04}_", index + 1);
