@@ -124,4 +124,3 @@ async fn remove_factor(
     }
     response
 }
-

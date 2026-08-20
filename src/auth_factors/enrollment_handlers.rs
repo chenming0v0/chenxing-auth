@@ -284,4 +284,3 @@ async fn enrollment_finish_response(
         Err(factor_error) => factor_internal(factor_error, "finish authenticated enrollment"),
     }
 }
-
