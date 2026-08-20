@@ -66,6 +66,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     try {
       const data = await apiFetch<SecurityTotpStart>('/api/v1/auth/security/totp/enrollment/start', {
         method: 'POST',
+        redirectOn401: false,
         body: JSON.stringify({}),
       })
       setTotp({ phase: 'ready', data })
@@ -88,6 +89,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     setBusy('totp-cancel')
     void apiFetch<{ cancelled: true }>('/api/v1/auth/security/factor/enrollment/cancel', {
       method: 'POST',
+      redirectOn401: false,
       body: JSON.stringify({ enrollment_id: enrollmentId, method: 'totp' }),
     }).then(() => {
       setTotp({ phase: 'idle' })
@@ -111,6 +113,7 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     try {
       const result = await apiFetch<SecurityEnrollmentResult>('/api/v1/auth/security/totp/enrollment/confirm', {
         method: 'POST',
+        redirectOn401: false,
         body: JSON.stringify({ enrollment_id: data.enrollment_id, code }),
       })
       setTotp({ phase: 'idle' })
@@ -135,12 +138,28 @@ export function AccountManagement({ userEmail, profileSummary, profileAction, em
     try {
       const start = await apiFetch<SecurityPasskeyStart>('/api/v1/auth/security/passkeys/registration/start', {
         method: 'POST',
+        redirectOn401: false,
         body: JSON.stringify({}),
       })
       const options = decodeCreationOptions(start.options as PasskeyChallenge)
-      const credential = assertPublicKeyCredential(await navigator.credentials.create({ publicKey: options }))
+      let credential: PublicKeyCredential
+      try {
+        credential = assertPublicKeyCredential(await navigator.credentials.create({ publicKey: options }))
+      } catch (error) {
+        if (error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
+          await apiFetch('/api/v1/auth/security/factor/enrollment/cancel', {
+            method: 'POST',
+            redirectOn401: false,
+            body: JSON.stringify({ enrollment_id: start.enrollment_id, method: 'passkey' }),
+          }).catch(() => undefined)
+          show('Passkey 注册已取消，可以立即重试。')
+          return
+        }
+        throw error
+      }
       const result = await apiFetch<SecurityEnrollmentResult>('/api/v1/auth/security/passkeys/registration/finish', {
         method: 'POST',
+        redirectOn401: false,
         body: JSON.stringify({ enrollment_id: start.enrollment_id, credential: serializeAttestation(credential) }),
       })
       show(result.enabled ? 'Passkey 已启用。下次登录可使用此设备验证。' : 'Passkey 尚未启用。', 'success')

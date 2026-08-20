@@ -6,7 +6,7 @@ use std::time::Duration;
 use time::OffsetDateTime;
 
 impl SessionStore {
-    pub(super) fn encrypt_payload(&self, payload: &[u8]) -> Result<Vec<u8>, SessionStoreError> {
+    pub(crate) fn encrypt_payload(&self, payload: &[u8]) -> Result<Vec<u8>, SessionStoreError> {
         let keys = self
             .encryption_keys
             .as_ref()
@@ -21,7 +21,7 @@ impl SessionStore {
     ///
     /// 升级前写入的载荷含有 `token` 字段；`SessionPayload` 未标注
     /// `deny_unknown_fields`，serde 会忽略这个多余字段，因此历史数据继续可读。
-    pub(super) fn decode_payload(
+    pub(crate) fn decode_payload(
         &self,
         payload: &[u8],
     ) -> Result<Option<SessionPayload>, SessionStoreError> {
@@ -38,19 +38,19 @@ impl SessionStore {
         self.key_hash(&session_token_hash_bytes(token))
     }
 
-    pub(super) fn key_hash(&self, hash: &[u8]) -> String {
+    pub(crate) fn key_hash(&self, hash: &[u8]) -> String {
         format!("{}{}", self.key_prefix, URL_SAFE_NO_PAD.encode(hash))
     }
 
-    pub(super) fn revocation_key(&self, user_id: &str) -> String {
+    pub(crate) fn revocation_key(&self, user_id: &str) -> String {
         format!("{}revoked-epoch:{user_id}", self.key_prefix)
     }
 
-    pub(super) fn redis_only_revocation_key(&self, user_id: &str) -> String {
+    pub(crate) fn redis_only_revocation_key(&self, user_id: &str) -> String {
         format!("{}revoked-before:{user_id}", self.key_prefix)
     }
 
-    pub(super) fn redis_only_token_revocation_key(&self, hash: &[u8]) -> String {
+    pub(crate) fn redis_only_token_revocation_key(&self, hash: &[u8]) -> String {
         format!(
             "{}revoked-token:{}",
             self.key_prefix,
@@ -58,7 +58,7 @@ impl SessionStore {
         )
     }
 
-    pub(super) fn redis_only_token_renewal_key(&self, hash: &[u8]) -> String {
+    pub(crate) fn redis_only_token_renewal_key(&self, hash: &[u8]) -> String {
         format!(
             "{}renewed-token:{}",
             self.key_prefix,
@@ -66,7 +66,7 @@ impl SessionStore {
         )
     }
 
-    pub(super) fn idle_timeout_interval(&self) -> time::Duration {
+    pub(crate) fn idle_timeout_interval(&self) -> time::Duration {
         time::Duration::seconds(
             i64::try_from(self.current_idle_timeout().as_secs())
                 .unwrap_or(i64::MAX)
@@ -90,7 +90,7 @@ impl SessionStore {
     ///
     /// 启动配置把 `SESSION_TTL_SECONDS` 封顶在 90 天（#365），所以这个值
     /// 必然落在 Redis `EX` 的 i64 上限内，不会触发 `ERR invalid expire time`。
-    pub(super) fn revocation_ttl_seconds(&self) -> u64 {
+    pub(crate) fn revocation_ttl_seconds(&self) -> u64 {
         self.policy.absolute_ttl.as_secs().max(1)
     }
 
@@ -120,7 +120,7 @@ impl SessionStore {
     }
 }
 
-pub(super) fn timestamp_watermark(value: OffsetDateTime) -> i64 {
+pub(crate) fn timestamp_watermark(value: OffsetDateTime) -> i64 {
     value
         .unix_timestamp_nanos()
         .clamp(i64::MIN as i128, i64::MAX as i128) as i64

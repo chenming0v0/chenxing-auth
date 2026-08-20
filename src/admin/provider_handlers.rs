@@ -37,8 +37,15 @@ fn provider_response(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ProviderStatusPath {
-    pub slug: String,
+pub struct UpdateProviderInput {
+    #[serde(flatten)]
+    provider: ProviderInput,
+    expected_version: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProviderStatusInput {
+    expected_version: i64,
 }
 
 pub async fn list_providers(
@@ -115,9 +122,10 @@ pub async fn create_provider(
 
 pub async fn update_provider(
     State(state): State<AppState>,
+    issuer: RequestIssuer,
     admin: AdminWrite,
     Path(slug): Path<String>,
-    ApiJson(input): ApiJson<ProviderInput>,
+    ApiJson(input): ApiJson<UpdateProviderInput>,
 ) -> Response {
     let actor = match admin
         .authorize(&state, AdminPermission::ManageIdentityProviders)
@@ -126,26 +134,29 @@ pub async fn update_provider(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    if input.slug != slug {
+    if input.provider.slug != slug {
         return error::bad_request("invalid_oauth_provider", "provider slug cannot be changed");
     }
-    match state.external_oauth.update(&slug, input.clone()).await {
-        Ok(true) => {
+    match state
+        .external_oauth
+        .update(&slug, input.provider.clone(), input.expected_version)
+        .await
+    {
+        Ok(provider) => {
             record_provider_event(
                 &state,
                 actor,
                 crate::audit::AuditAction::OauthProviderUpdate,
                 &slug,
                 serde_json::json!({
-                    "authorization_endpoint": input.authorization_endpoint,
-                    "token_endpoint": input.token_endpoint,
-                    "userinfo_endpoint": input.userinfo_endpoint,
+                    "authorization_endpoint": input.provider.authorization_endpoint,
+                    "token_endpoint": input.provider.token_endpoint,
+                    "userinfo_endpoint": input.provider.userinfo_endpoint,
                 }),
             )
             .await;
-            StatusCode::NO_CONTENT.into_response()
+            (StatusCode::OK, Json(provider_response(&issuer, provider))).into_response()
         }
-        Ok(false) => error::not_found("oauth_provider_not_found", "provider was not found"),
         Err(error_value) => provider_error_response(error_value, "update_provider"),
     }
 }
@@ -154,16 +165,18 @@ pub async fn enable_provider(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(slug): Path<String>,
+    ApiJson(input): ApiJson<ProviderStatusInput>,
 ) -> Response {
-    set_provider_status(&state, &admin, &slug, "active").await
+    set_provider_status(&state, &admin, &slug, "active", input.expected_version).await
 }
 
 pub async fn disable_provider(
     State(state): State<AppState>,
     admin: AdminWrite,
     Path(slug): Path<String>,
+    ApiJson(input): ApiJson<ProviderStatusInput>,
 ) -> Response {
-    set_provider_status(&state, &admin, &slug, "disabled").await
+    set_provider_status(&state, &admin, &slug, "disabled", input.expected_version).await
 }
 
 /// 启用/停用的公共实现。授权由调用点传入的 `AdminWrite` 完成，
@@ -173,6 +186,7 @@ async fn set_provider_status(
     admin: &AdminWrite,
     slug: &str,
     status: &str,
+    expected_version: i64,
 ) -> Response {
     let actor = match admin
         .authorize(state, AdminPermission::ManageIdentityProviders)
@@ -181,8 +195,12 @@ async fn set_provider_status(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    match state.external_oauth.set_status(slug, status).await {
-        Ok(true) => {
+    match state
+        .external_oauth
+        .set_status(slug, status, expected_version)
+        .await
+    {
+        Ok(version) => {
             record_provider_event(
                 state,
                 actor,
@@ -195,9 +213,12 @@ async fn set_provider_status(
                 serde_json::json!({"result": "success"}),
             )
             .await;
-            StatusCode::NO_CONTENT.into_response()
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "state_version": version })),
+            )
+                .into_response()
         }
-        Ok(false) => error::not_found("oauth_provider_not_found", "provider was not found"),
         Err(error_value) => provider_error_response(error_value, "set_provider_status"),
     }
 }
@@ -229,6 +250,10 @@ fn provider_error_response(error_value: ExternalOAuthError, operation: &'static 
                 "provider slug is already registered",
             )
         }
+        ExternalOAuthError::Conflict => error::conflict(
+            "oauth_provider_version_conflict",
+            "provider changed; reload and retry",
+        ),
         ExternalOAuthError::Database(_)
         | ExternalOAuthError::Secret(_)
         | ExternalOAuthError::MissingSecret

@@ -1,7 +1,9 @@
 pub mod crypto;
 pub mod domain;
+mod enrollment_handlers;
 pub mod handlers;
 mod persistence;
+pub mod removal_handlers;
 pub mod repository;
 pub mod security_handlers;
 pub mod service;

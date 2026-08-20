@@ -106,6 +106,7 @@ pub struct ProviderSummary {
     pub client_auth_method: ClientAuthMethod,
     pub pkce_enabled: bool,
     pub status: String,
+    pub state_version: i64,
     pub client_secret_configured: bool,
 }
 
@@ -167,6 +168,7 @@ pub struct ProviderRecord {
     pub client_auth_method: ClientAuthMethod,
     pub pkce_enabled: bool,
     pub status: String,
+    pub state_version: i64,
 }
 
 impl fmt::Debug for ProviderRecord {
@@ -188,6 +190,7 @@ impl fmt::Debug for ProviderRecord {
             .field("client_auth_method", &self.client_auth_method)
             .field("pkce_enabled", &self.pkce_enabled)
             .field("status", &self.status)
+            .field("state_version", &self.state_version)
             .finish()
     }
 }
@@ -291,6 +294,7 @@ impl ProviderRecord {
             client_auth_method: self.client_auth_method,
             pkce_enabled: self.pkce_enabled,
             status: self.status.clone(),
+            state_version: self.state_version,
             client_secret_configured: !self.client_secret_ciphertext.is_empty(),
         }
     }

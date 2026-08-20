@@ -42,6 +42,8 @@ pub enum SettingsServiceError {
     Validation(#[from] SettingsValidationError),
     #[error("setting was modified concurrently")]
     Conflict,
+    #[error("setting repair confirmation is required")]
+    RepairRequired,
     #[error("stored setting {key} is unreadable")]
     Corrupt { key: &'static str },
     #[error("secret operation failed: {0}")]

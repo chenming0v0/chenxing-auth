@@ -44,7 +44,7 @@ function PlansManager() {
     const operation = plan.status === 'active' ? 'archive' : 'restore'
     // 归档默认套餐会直接关闭全站自助接入，确认文案必须说明这个后果
     const defaultWarning = plan.is_default ? '这是当前的默认套餐，归档后全站自助接入将关闭，用户无法自行创建 OAuth 应用。' : ''
-    if (operation === 'archive' && !window.confirm(`确认归档套餐「${plan.name}」吗？${defaultWarning}归档后不能再分配给用户，已挂载的 ${plan.assigned_users} 个用户将在到期或重新分配后回退默认套餐。`)) return
+    if (operation === 'archive' && !window.confirm(`确认归档套餐「${plan.name}」吗？${defaultWarning}归档后不能再分配给用户，已挂载的 ${plan.assigned_users} 个用户会立即停止使用此套餐，并回退到当前启用的默认套餐；没有可用默认套餐时，自助接入会立即关闭。`)) return
     setBusyIds((prev) => new Set(prev).add(plan.id))
     setError('')
     try {

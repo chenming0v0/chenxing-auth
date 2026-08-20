@@ -4,11 +4,10 @@
 //! cannot satisfy login policy and is bound to one user, browser session and
 //! session epoch until it is confirmed or expires.
 
-use super::session_enrollment_types::{
+use crate::auth_factors::session_enrollment_types::{
     PendingSessionBinding, PendingSessionEnrollment, PendingTotpPayload,
 };
-use std::fmt;
-use time::OffsetDateTime;
+use serde::{Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 use webauthn_rs_core::proto::CreationChallengeResponse;

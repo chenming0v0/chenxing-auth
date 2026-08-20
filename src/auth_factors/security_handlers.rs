@@ -1,31 +1,27 @@
 use axum::{
-    Json,
-    extract::{ConnectInfo, Extension, State},
-    http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    extract::{ConnectInfo, Extension},
+    http::HeaderMap,
+    response::Response,
 };
 use serde::{Deserialize, Serialize};
 use std::{fmt, net::SocketAddr};
 use webauthn_rs::prelude::RegisterPublicKeyCredential;
 use webauthn_rs_core::proto::CreationChallengeResponse;
 
-use crate::{
-    api::extract::{ApiJson, RequestIssuer, SessionRead, SessionWrite},
-    audit::AuditEvent,
-    auth_factors::service::{
-        AuthFactorServiceError, EnrollmentFinish, EnrollmentStart, SelfServiceRemovalOutcome,
-    },
-    error,
-    sessions::cookies,
-    state::AppState,
-    users::service::UserServiceError,
+use crate::{auth_factors::service::AuthFactorServiceError, error, state::AppState};
+
+pub use super::enrollment_handlers::{
+    cancel_security_factor_enrollment, confirm_security_totp_enrollment, current_security_factors,
+    finish_security_passkey_registration, start_security_passkey_registration,
+    start_security_totp_enrollment,
 };
+pub use super::removal_handlers::{remove_security_passkey_factor, remove_security_totp_factor};
 
 #[derive(Debug, Serialize)]
 pub struct FactorSummaryResponse {
-    totp_enabled: bool,
-    passkey_count: i64,
-    available_methods: Vec<crate::auth_factors::domain::FactorMethod>,
+    pub(crate) totp_enabled: bool,
+    pub(crate) passkey_count: i64,
+    pub(crate) available_methods: Vec<crate::auth_factors::domain::FactorMethod>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,16 +30,16 @@ pub struct EmptyInput {}
 
 #[derive(Debug, Serialize)]
 pub struct TotpStartResponse<'a> {
-    enrollment_id: &'a str,
-    secret_base32: &'a str,
-    otpauth_url: &'a str,
+    pub(crate) enrollment_id: &'a str,
+    pub(crate) secret_base32: &'a str,
+    pub(crate) otpauth_url: &'a str,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TotpConfirmInput {
-    enrollment_id: String,
-    code: String,
+    pub(super) enrollment_id: String,
+    pub(super) code: String,
 }
 
 impl fmt::Debug for TotpConfirmInput {
@@ -57,15 +53,15 @@ impl fmt::Debug for TotpConfirmInput {
 
 #[derive(Debug, Serialize)]
 pub struct PasskeyStartResponse {
-    enrollment_id: String,
-    options: CreationChallengeResponse,
+    pub(crate) enrollment_id: String,
+    pub(crate) options: CreationChallengeResponse,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PasskeyFinishInput {
-    enrollment_id: String,
-    credential: RegisterPublicKeyCredential,
+    pub(super) enrollment_id: String,
+    pub(super) credential: RegisterPublicKeyCredential,
 }
 
 impl fmt::Debug for PasskeyFinishInput {
@@ -80,14 +76,14 @@ impl fmt::Debug for PasskeyFinishInput {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FactorRemovalInput {
-    password: String,
+    pub(super) password: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CancelEnrollmentInput {
-    enrollment_id: String,
-    method: crate::auth_factors::domain::FactorMethod,
+    pub(super) enrollment_id: String,
+    pub(super) method: crate::auth_factors::domain::FactorMethod,
 }
 
 impl fmt::Debug for FactorRemovalInput {
@@ -100,15 +96,15 @@ impl fmt::Debug for FactorRemovalInput {
 
 #[derive(Debug, Serialize)]
 pub struct EnrollmentResponse {
-    method: &'static str,
-    enabled: bool,
+    pub(crate) method: &'static str,
+    pub(crate) enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct RemovalResponse {
-    method: &'static str,
-    removed: i64,
-    credentials_revoked: bool,
+    pub(crate) method: &'static str,
+    pub(crate) removed: i64,
+    pub(crate) credentials_revoked: bool,
 }
 
 pub(crate) fn trusted_source_ip(

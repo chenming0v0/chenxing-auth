@@ -241,9 +241,12 @@ export type EmailPolicySetting = {
   alias_restriction_enabled: boolean
   allowed_domains: string[]
   generation: number
+  diagnostic?: 'invalid' | 'corrupt'
+  repair_required?: boolean
 }
-export type UpdateEmailPolicySetting = Omit<EmailPolicySetting, 'generation'> & {
+export type UpdateEmailPolicySetting = Omit<EmailPolicySetting, 'generation' | 'diagnostic' | 'repair_required'> & {
   expected_generation: number
+  confirm_repair?: boolean
 }
 export type SmtpSetting = {
   host: string
@@ -306,6 +309,7 @@ export type OAuthProviderSummary = {
   email_verified_claim?: string | null
   client_auth_method: 'basic' | 'request_body'
   status: 'active' | 'disabled' | string
+  state_version?: number
   client_secret_configured: boolean
 }
 export type OAuthProviderInput = {

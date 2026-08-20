@@ -111,6 +111,8 @@ export function EmailPolicyPanel({ onMessage, onDirtyChange }: SettingsPanelProp
           : '当前未启用别名限制。'}`,
       )
     ) return
+    const needsRepairConfirmation = Boolean(savedSetting?.repair_required)
+    if (needsRepairConfirmation && !window.confirm('服务端检测到已保存的邮箱策略损坏。继续保存会用当前表单明确覆盖损坏值，并恢复新的 fail-closed 策略。确认修复吗？')) return
     setBusy(true)
     try {
       const payload: UpdateEmailPolicySetting = {
@@ -118,6 +120,7 @@ export function EmailPolicyPanel({ onMessage, onDirtyChange }: SettingsPanelProp
         alias_restriction_enabled: setting.alias_restriction_enabled,
         allowed_domains: setting.allowed_domains,
         expected_generation: savedSetting?.generation ?? 0,
+        confirm_repair: Boolean(savedSetting?.repair_required),
       }
       const value = await apiFetch<EmailPolicySetting>('/api/v1/admin/settings/email-policy', {
         method: 'PUT',
@@ -163,6 +166,7 @@ export function EmailPolicyPanel({ onMessage, onDirtyChange }: SettingsPanelProp
               onChange={(alias_restriction_enabled) => { if (!busy) setSetting({ ...setting, alias_restriction_enabled }) }}
             />
           </fieldset>
+          {setting.repair_required ? <Notice tone="warning">服务端检测到已保存的邮箱策略损坏（{setting.diagnostic ?? 'unknown'}）。当前表单只是 fail-closed 修复预览；保存前必须确认显式修复。</Notice> : null}
           <Notice>
             {setting.whitelist_enabled
               ? '白名单开启时，只允许与下方列表精确匹配的邮箱域名；列表至少需要一个域名。'

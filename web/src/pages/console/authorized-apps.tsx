@@ -48,6 +48,7 @@ export function AuthorizedApps() {
     setNotice(null)
     try {
       await apiFetch<void>(`/api/v1/auth/authorized-apps/${encodeURIComponent(app.client_id)}`, { method: 'DELETE' })
+      setApps((current) => current.filter((item) => item.client_id !== app.client_id))
       notify('应用授权已撤销。', 'success')
       await refreshAppsSilently()
     } catch (reason) {
@@ -70,8 +71,8 @@ export function AuthorizedApps() {
       {notice ? <div className="mb-4"><Notice tone={notice.tone}>{notice.text}</Notice></div> : null}
       {loadError ? <div className="mb-4"><Notice tone="warning">应用列表不可用。{loadError} <button type="button" className="chenxing-link ml-2" onClick={() => void loadApps()}>重试</button></Notice></div> : null}
       <div className="mb-6 grid grid-cols-3 gap-3 sm:gap-4">
-        <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">已授权应用</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading ? '—' : apps.length}</p></HudPanel>
-        <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">开放权限域</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading ? '—' : openScopes}</p></HudPanel>
+        <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">已授权应用</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading || loadError ? '—' : apps.length}</p></HudPanel>
+        <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">开放权限域</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">{loading || loadError ? '—' : openScopes}</p></HudPanel>
         <HudPanel className="!p-4 sm:!p-5"><p className="chenxing-mono text-[10px] uppercase tracking-[0.2em] text-[var(--chenxing-muted-foreground)]">服务端记录</p><p className="chenxing-display mt-2 text-3xl font-bold text-aurora">LIVE</p></HudPanel>
       </div>
       <div className="space-y-4">

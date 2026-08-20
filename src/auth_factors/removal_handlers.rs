@@ -1,9 +1,25 @@
-use axum::{extract::{ConnectInfo, Extension, State}, http::HeaderMap, response::{IntoResponse, Response}, Json};
+use axum::{
+    Json,
+    extract::{ConnectInfo, Extension, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+};
 use std::net::SocketAddr;
 
-use crate::{api::extract::SessionWrite, audit::AuditEvent, auth_factors::service::{AuthFactorServiceError, SelfServiceRemovalOutcome}, error, sessions::cookies, state::AppState, users::service::UserServiceError};
-
-use super::{factor_internal, FactorRemovalInput, RemovalResponse, trusted_source_ip};
+use crate::{
+    api::extract::{ApiJson, SessionWrite},
+    audit::AuditEvent,
+    auth_factors::{
+        security_handlers::{
+            FactorRemovalInput, RemovalResponse, factor_internal, trusted_source_ip,
+        },
+        service::SelfServiceRemovalOutcome,
+    },
+    error,
+    sessions::cookies,
+    state::AppState,
+    users::service::UserServiceError,
+};
 
 pub async fn remove_security_totp_factor(
     State(state): State<AppState>,

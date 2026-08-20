@@ -122,39 +122,60 @@ impl SettingsService {
     where
         F: FnOnce(&EmailPolicySetting) -> AuditEvent,
     {
-        self.set_email_policy_audited_if_generation(
-            value,
-            repository::get_generation(&self.pool, crate::settings::EMAIL_POLICY_KEY).await?,
-            audit,
-            audit_event,
-        )
-        .await
+        let (setting, _) = self
+            .set_email_policy_audited_if_generation(
+                value,
+                repository::get_generation(&self.pool, crate::settings::EMAIL_POLICY_KEY).await?,
+                false,
+                audit,
+                audit_event,
+            )
+            .await?;
+        Ok(setting)
     }
 
     pub async fn set_email_policy_audited_if_generation<F>(
         &self,
         value: EmailPolicySetting,
         expected_generation: i64,
+        confirm_repair: bool,
         audit: &AuditService,
         audit_event: F,
-    ) -> Result<EmailPolicySetting, SettingsServiceError>
+    ) -> Result<(EmailPolicySetting, i64), SettingsServiceError>
     where
         F: FnOnce(&EmailPolicySetting) -> AuditEvent,
     {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
+        let raw =
+            repository::lock_text(&mut *transaction, crate::settings::EMAIL_POLICY_KEY).await?;
+        if raw.as_deref().is_some_and(|raw| {
+            matches!(
+                decode_persisted::<EmailPolicySetting>(Some(raw)),
+                PersistedDecode::Corrupt(_)
+            )
+        }) && !confirm_repair
+        {
+            return Err(SettingsServiceError::RepairRequired);
+        }
         let actual =
             repository::get_generation(&mut *transaction, crate::settings::EMAIL_POLICY_KEY)
                 .await?;
         if actual != expected_generation {
             return Err(SettingsServiceError::Conflict);
         }
-        repository::set_email_policy(&mut *transaction, &value).await?;
+        let generation = repository::set_email_policy_with_generation(
+            &mut *transaction,
+            &value,
+            expected_generation,
+        )
+        .await?
+        .ok_or(SettingsServiceError::Conflict)?;
         audit
             .record_in_transaction(&mut transaction, audit_event(&value))
             .await?;
         transaction.commit().await?;
-        Ok(value)
+        Ok((value, generation))
     }
 
     /// 公开注册开关的热路径读取：损坏或越界 fail-closed，与 email policy 同管道。

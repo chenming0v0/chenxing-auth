@@ -14,13 +14,12 @@ use std::{
     time::Duration,
 };
 
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use thiserror::Error;
 use time::OffsetDateTime;
 
 use super::{
-    SessionOutboxPolicy, crypto,
-    domain::{Session, SessionLookup, SessionPayload, SessionPolicy, session_token_hash_bytes},
+    SessionOutboxPolicy,
+    domain::{Session, SessionLookup, SessionPolicy, session_token_hash_bytes},
 };
 use crate::{
     clock::SharedClock, config::AuthEncryptionKeyRing, redis_client::RedisClient,
@@ -39,6 +38,7 @@ mod tests;
 // `users::repository` 通过 `crate::sessions::store::...` 调用，路径不变。
 // 这里必须用 `pub(crate) use` 而非 `pub use`——`pub use` 重导出 `pub(crate)` 条目
 // 会触发 E0365。
+pub(crate) use helpers::timestamp_watermark;
 pub(crate) use postgres::{
     SessionIssuanceGuard, lock_user_session_scope, revoke_all_for_user_in_transaction,
 };

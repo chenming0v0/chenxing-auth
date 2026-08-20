@@ -4,7 +4,7 @@ use axum::{
     http::{HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::domain::AdminPermission;
 use crate::{
@@ -12,9 +12,9 @@ use crate::{
     audit::AuditEvent,
     error,
     settings::{
-        EMAIL_POLICY_KEY, EmailPolicySetting, PasskeySetting, REGISTRATION_EMAIL_FROM_KEY,
-        SECURITY_LIMITS_KEY, SESSION_LIFETIME_KEY, SecurityLimitsSetting, SessionLifetimeSetting,
-        SettingInspection, SettingsServiceError, SmtpSettingUpdate,
+        EMAIL_POLICY_KEY, EmailPolicySetting, PasskeySetting, SECURITY_LIMITS_KEY,
+        SESSION_LIFETIME_KEY, SecurityLimitsSetting, SessionLifetimeSetting, SettingInspection,
+        SettingsServiceError, SmtpSettingUpdate,
     },
     state::AppState,
 };
@@ -22,6 +22,10 @@ use crate::{
 pub use super::issuer_settings_handlers::{
     IssuerRecordResponse, IssuerSettingResponse, UpdateIssuerSetting, get_issuer_setting,
     update_issuer_setting,
+};
+pub use super::registration_email_settings_handlers::{
+    RegistrationEmailSettingResponse, UpdateRegistrationEmail, get_registration_email,
+    update_registration_email,
 };
 
 pub async fn get_passkey_setting(State(state): State<AppState>, admin: AdminRead) -> Response {
@@ -96,15 +100,24 @@ pub struct EmailPolicySettingResponse {
     pub alias_restriction_enabled: bool,
     pub allowed_domains: Vec<String>,
     pub generation: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<&'static str>,
+    pub repair_required: bool,
 }
 
 impl EmailPolicySettingResponse {
-    fn from_setting(setting: EmailPolicySetting, generation: i64) -> Self {
+    fn from_setting(
+        setting: EmailPolicySetting,
+        generation: i64,
+        diagnostic: Option<&'static str>,
+    ) -> Self {
         Self {
             whitelist_enabled: setting.whitelist_enabled,
             alias_restriction_enabled: setting.alias_restriction_enabled,
             allowed_domains: setting.allowed_domains,
             generation,
+            repair_required: diagnostic.is_some(),
+            diagnostic,
         }
     }
 }
@@ -130,14 +143,24 @@ pub async fn get_email_policy_setting(State(state): State<AppState>, admin: Admi
                     return error::internal();
                 }
             };
-            let response = respond_setting_inspection(
-                "email_policy",
-                SettingInspection {
-                    value: EmailPolicySettingResponse::from_setting(inspection.value, generation),
-                    diagnostic: inspection.diagnostic,
-                },
-            );
-            response
+            let diagnostic = inspection.diagnostic.as_ref().map(|value| value.as_str());
+            if let Some(diagnostic) = diagnostic {
+                tracing::warn!(
+                    event = "settings.admin_read_needs_repair",
+                    setting_key = "email_policy",
+                    diagnostic,
+                    "stored setting requires explicit repair before it can be overwritten"
+                );
+            }
+            (
+                StatusCode::OK,
+                Json(EmailPolicySettingResponse::from_setting(
+                    inspection.value,
+                    generation,
+                    diagnostic,
+                )),
+            )
+                .into_response()
         }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to load email policy setting");
@@ -151,6 +174,8 @@ pub struct UpdateEmailPolicySetting {
     #[serde(flatten)]
     setting: EmailPolicySetting,
     expected_generation: i64,
+    #[serde(default)]
+    confirm_repair: bool,
 }
 
 pub async fn update_email_policy_setting(
@@ -170,6 +195,7 @@ pub async fn update_email_policy_setting(
         .set_email_policy_audited_if_generation(
             input.setting,
             input.expected_generation,
+            input.confirm_repair,
             &state.audit,
             move |setting| {
                 setting_event(
@@ -186,30 +212,20 @@ pub async fn update_email_policy_setting(
         )
         .await
     {
-        Ok(setting) => {
-            let generation = match crate::settings::repository::get_generation(
-                &state.database,
-                EMAIL_POLICY_KEY,
-            )
-            .await
-            {
-                Ok(generation) => generation,
-                Err(error_value) => {
-                    tracing::error!(error = %error_value, "failed to load email policy generation");
-                    return error::internal();
-                }
-            };
-            (
-                StatusCode::OK,
-                Json(EmailPolicySettingResponse::from_setting(
-                    setting, generation,
-                )),
-            )
-                .into_response()
-        }
+        Ok((setting, generation)) => (
+            StatusCode::OK,
+            Json(EmailPolicySettingResponse::from_setting(
+                setting, generation, None,
+            )),
+        )
+            .into_response(),
         Err(SettingsServiceError::Validation(error_value)) => {
             error::bad_request("invalid_email_policy", error_value.to_string())
         }
+        Err(SettingsServiceError::RepairRequired) => error::conflict(
+            "setting_repair_required",
+            "stored email policy is corrupt; confirm explicit repair",
+        ),
         Err(SettingsServiceError::Conflict) => {
             error::conflict("setting_conflict", "setting changed; reload and retry")
         }

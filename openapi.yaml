@@ -2606,10 +2606,7 @@ paths:
         - sessionCookie: []
       responses:
         '200':
-          description: 邮箱域名策略。已持久化行无法用于热路径时带 X-Chenxing-Setting-Diagnostic。
-          headers:
-            X-Chenxing-Setting-Diagnostic:
-              $ref: '#/components/headers/SettingDiagnostic'
+          description: 邮箱域名策略。持久化值损坏或越界时，body 中 diagnostic/repair_required 明确要求管理员确认修复。
           content:
             application/json:
               schema: { $ref: '#/components/schemas/EmailPolicySetting' }
@@ -2866,7 +2863,11 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/OAuthProviderUpdateInput' }
       responses:
-        '204': { description: 更新成功，省略 Client Secret 时保留原值 }
+        '200':
+          description: 更新成功；返回包含递增 state_version 的最新提供商摘要，省略 Client Secret 时保留原值
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthProviderSummary' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2888,8 +2889,17 @@ paths:
           csrfHeader: []
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OAuthProviderStatusInput' }
       responses:
-        '204': { description: 停用成功 }
+        '200':
+          description: 停用成功，返回递增后的 state_version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthProviderStatusResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2908,8 +2918,17 @@ paths:
           csrfHeader: []
       parameters:
         - { name: slug, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/OAuthProviderStatusInput' }
       responses:
-        '204': { description: 启用成功 }
+        '200':
+          description: 启用成功，返回递增后的 state_version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OAuthProviderStatusResponse' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -3857,7 +3876,7 @@ components:
           items: { type: string, format: uri }
     EmailPolicySetting:
       type: object
-      required: [whitelist_enabled, alias_restriction_enabled, allowed_domains, generation]
+      required: [whitelist_enabled, alias_restriction_enabled, allowed_domains, generation, repair_required]
       properties:
         whitelist_enabled: { type: boolean }
         alias_restriction_enabled: { type: boolean }
@@ -3866,6 +3885,11 @@ components:
           maxItems: 128
           items: { type: string, maxLength: 253 }
         generation: { type: integer, format: int64, minimum: 0 }
+        diagnostic:
+          type: string
+          enum: [invalid, corrupt]
+          description: 仅持久化设置无法安全用于热路径时返回；响应 value 是 fail-closed 修复预览。
+        repair_required: { type: boolean, description: true 时 PUT 必须显式 confirm_repair=true 才能覆盖原值。 }
     UpdateEmailPolicySetting:
       type: object
       required: [whitelist_enabled, alias_restriction_enabled, allowed_domains, expected_generation]
@@ -3877,6 +3901,7 @@ components:
           maxItems: 128
           items: { type: string, maxLength: 253 }
         expected_generation: { type: integer, format: int64, minimum: 0 }
+        confirm_repair: { type: boolean, default: false }
     RegistrationSetting:
       type: object
       description: >-
@@ -4136,7 +4161,7 @@ components:
         client_auth_method: { type: string, enum: [basic, request_body], default: basic }
     OAuthProviderUpdateInput:
       type: object
-      required: [name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, scopes, email_verified_claim]
+      required: [name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, scopes, email_verified_claim, expected_version]
       description: client_secret 可省略，省略时保留原值
       properties:
         name: { type: string, maxLength: 128 }
@@ -4169,11 +4194,25 @@ components:
           type: string
           description: 指向布尔型邮箱验证状态的 claim 路径。必填：缺失、空白、非 bool 或 false 时服务端拒绝身份解析与自动建号。
         client_auth_method: { type: string, enum: [basic, request_body], default: basic }
+        expected_version: { type: integer, format: int64, minimum: 1, description: 列表或最近写响应返回的 state_version。 }
+    OAuthProviderStatusInput:
+      type: object
+      additionalProperties: false
+      required: [expected_version]
+      properties:
+        expected_version: { type: integer, format: int64, minimum: 1 }
+    OAuthProviderStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [state_version]
+      properties:
+        state_version: { type: integer, format: int64, minimum: 1 }
     OAuthProviderSummary:
       type: object
       description: >-
         自定义提供商摘要。身份建立只依赖 UserInfo 响应；本平台不为该提供商验证 ID Token，
         因此契约中不存在 issuer、jwks_uri 或 id_token 相关字段。
+      required: [id, name, slug, trust_model, callback_uri, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, scopes, subject_claim, email_claim, client_auth_method, status, state_version, client_secret_configured]
       properties:
         id: { type: integer, format: int64, minimum: 1 }
         name: { type: string }
@@ -4200,6 +4239,7 @@ components:
           description: null 表示存量遗留配置，该 provider 无法判断邮箱验证状态，不能被启用，也不会放行外部登录。
         client_auth_method: { type: string, enum: [basic, request_body] }
         status: { type: string, enum: [active, disabled] }
+        state_version: { type: integer, format: int64, minimum: 1 }
         client_secret_configured: { type: boolean }
     ClientInput:
       type: object

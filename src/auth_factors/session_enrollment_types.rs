@@ -1,4 +1,4 @@
-use super::super::domain::FactorMethod;
+use super::domain::FactorMethod;
 use crate::users::domain::UserId;
 use serde::{Deserialize, Serialize};
 use std::fmt;

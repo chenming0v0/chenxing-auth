@@ -31,19 +31,27 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
   async function load(): Promise<void> {
     setLoading(true)
     setLoadError(null)
-    try {
-      const [identityResponse, providerResponse] = await Promise.all([
-        apiFetch<ExternalIdentityListResponse>('/api/v1/auth/external-identities'),
-        apiFetch<PublicExternalProvider[]>('/api/v1/auth/external-providers', { redirectOn401: false }),
-      ])
-      setIdentities(Array.isArray(identityResponse.items) ? identityResponse.items : [])
-      setProviders(providerResponse.filter(isProvider))
-    } catch (error) {
-      setLoadError(error instanceof Error ? error.message : '外部账户状态加载失败。')
-      onNotice({ text: error instanceof Error ? error.message : '外部账户状态加载失败。', tone: 'warning' })
-    } finally {
-      setLoading(false)
+    const [identityResult, providerResult] = await Promise.allSettled([
+      apiFetch<ExternalIdentityListResponse>('/api/v1/auth/external-identities'),
+      apiFetch<PublicExternalProvider[]>('/api/v1/auth/external-providers', { redirectOn401: false }),
+    ])
+    const errors: string[] = []
+    if (identityResult.status === 'fulfilled') {
+      setIdentities(Array.isArray(identityResult.value.items) ? identityResult.value.items : [])
+    } else {
+      errors.push(identityResult.reason instanceof Error ? identityResult.reason.message : '已绑定身份加载失败。')
     }
+    if (providerResult.status === 'fulfilled') {
+      setProviders(providerResult.value.filter(isProvider))
+    } else {
+      errors.push(providerResult.reason instanceof Error ? providerResult.reason.message : '可用身份源加载失败。')
+    }
+    if (errors.length) {
+      const message = errors.join(' ')
+      setLoadError(message)
+      onNotice({ text: message, tone: 'warning' })
+    }
+    setLoading(false)
   }
 
   useEffect(() => { void load() }, [])
