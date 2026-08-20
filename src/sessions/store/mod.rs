@@ -429,20 +429,17 @@ impl SessionStore {
         )
     }
 
-    pub(super) fn idle_timeout_interval(&self) -> time::Duration {
-        time::Duration::seconds(
-            i64::try_from(self.policy.idle_timeout.as_secs())
-                .unwrap_or(i64::MAX)
-                .max(1),
-        )
-    }
-
-    pub(super) fn renewal_interval(&self) -> time::Duration {
-        time::Duration::seconds(
-            i64::try_from(self.policy.idle_timeout.as_secs() / 2)
-                .unwrap_or(i64::MAX)
-                .max(1),
-        )
+    /// Redis-only idle renewal uses the session's own issuance window.
+    ///
+    /// PostgreSQL lookup encodes the same half-window in SQL against
+    /// `user_sessions.idle_timeout_seconds` so a later admin change cannot
+    /// rewrite already-issued sessions (#644).
+    pub(super) fn session_renewal_interval(&self, session: &Session) -> time::Duration {
+        let idle_secs = session
+            .idle_timeout()
+            .unwrap_or(self.policy.idle_timeout)
+            .as_secs();
+        time::Duration::seconds(i64::try_from(idle_secs / 2).unwrap_or(i64::MAX).max(1))
     }
 
     /// 撤销标记（单条 tombstone 与用户级水位）的存活时长。

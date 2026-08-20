@@ -26,7 +26,7 @@ impl SessionLifetimeSetting {
     /// 绝对寿命必须来自 `SESSION_TTL_SECONDS`：缺行若回落到
     /// [`DEFAULT_SESSION_TTL_SECONDS`]（14 天），运维把环境变量收成 1 小时也
     /// 签不出对应窗口的会话（#645）。空闲超时一并带上启动配置，只作为缺行
-    /// 默认；查找路径仍用 store 的启动期 idle 策略（#644）。
+    /// 签发默认；已签发会话的 idle 窗口存在会话自身，查找不再读当前设置（#644）。
     pub fn from_boot_config(session_ttl_seconds: u64, session_idle_timeout_seconds: u64) -> Self {
         Self {
             session_ttl_seconds,

@@ -225,6 +225,7 @@ pub async fn external_callback(
         }
     };
     let ttl = std::time::Duration::from_secs(session_lifetime.session_ttl_seconds);
+    // 签发时写入 Session；查找用会话自己的窗口，不读当前 Settings（#644）。
     let idle_timeout =
         std::time::Duration::from_secs(session_lifetime.session_idle_timeout_seconds);
     let mut session = match Session::new_at_with_idle_timeout(
