@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use super::{
-    IssuerRuntime, SecurityLimitsSetting,
+    IssuerRuntime, SecurityLimitsSetting, SessionLifetimeSetting,
     domain::{PasskeySetting, SettingsValidationError},
     repository,
     security_limits_cache::{CachedSecurityLimits, SecurityLimitsCache, SecurityLimitsSource},
@@ -28,6 +28,8 @@ pub struct SettingsService {
     default_passkey: PasskeySetting,
     /// 启动期默认阈值（来自环境变量配置），同时是缓存的初始「最后已知安全值」。
     default_security_limits: SecurityLimitsSetting,
+    /// 未写入 `session_lifetime` 行时的部署默认值，来自 `SESSION_TTL_SECONDS`。
+    default_session_lifetime: SessionLifetimeSetting,
     /// 认证热路径共享的阈值缓存（#300）。`Arc` 让本服务的全部克隆共享同一份状态，
     /// 因此管理接口写入后的主动刷新对同进程内所有读取路径立即生效。
     security_limits_cache: Arc<SecurityLimitsCache>,
@@ -84,6 +86,7 @@ impl SettingsService {
                 default_security_limits.clone(),
             )),
             default_security_limits,
+            default_session_lifetime: SessionLifetimeSetting::default(),
             issuer_runtime: None,
         }
     }
@@ -91,34 +94,6 @@ impl SettingsService {
     pub fn with_issuer_runtime(mut self, issuer_runtime: IssuerRuntime) -> Self {
         self.issuer_runtime = Some(issuer_runtime);
         self
-    }
-
-    /// 用自定义 TTL / 退避的缓存替换默认缓存。仅用于测试缓存与降级路径。
-    #[cfg(test)]
-    pub(crate) fn with_security_limits_cache(mut self, cache: SecurityLimitsCache) -> Self {
-        self.security_limits_cache = Arc::new(cache);
-        self
-    }
-
-    /// 构造一个 settings 读取必然失败的服务：连接池指向不可达地址，
-    /// `connect_lazy` 不在构造时连接，第一次查询才失败。
-    ///
-    /// 用于验证阈值读取故障时的降级取值与 `AuthLimiterFailurePolicy` 分发（#300），
-    /// 不需要真实 PostgreSQL。`acquire_timeout` 必须显式压到 100ms：默认 30 秒会让
-    /// 每个降级用例干等半分钟。
-    #[cfg(test)]
-    pub(crate) fn unreachable_for_tests(default_security_limits: SecurityLimitsSetting) -> Self {
-        let pool = crate::sqlx::PgPoolOptions::new()
-            .acquire_timeout(std::time::Duration::from_millis(100))
-            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
-            .expect("lazy pool");
-        Self::with_security_limits(
-            pool,
-            SecretManager::from_key([0_u8; 32]),
-            "localhost",
-            "http://localhost",
-            default_security_limits,
-        )
     }
 
     pub fn from_encryption_key(

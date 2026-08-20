@@ -216,6 +216,7 @@ pub async fn external_callback(
             .await;
         }
     };
+    // 与本地登录共用 SettingsService：缺行走启动配置 SESSION_TTL_SECONDS（#645）。
     let session_lifetime = match state.settings.session_lifetime().await {
         Ok(setting) => setting,
         Err(error_value) => {

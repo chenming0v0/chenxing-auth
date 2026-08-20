@@ -5,6 +5,7 @@ use axum::{
 };
 use chenxing_auth::{api, clock::SharedClock, config::Config, state::AppState};
 use serde_json::Value;
+use time::format_description::well_known::Rfc3339;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -253,6 +254,104 @@ async fn password_success_does_not_reset_mfa_account_failures() {
     .await;
     assert_eq!(blocked.status(), StatusCode::UNAUTHORIZED);
     assert!(json(blocked).await.get("login_ticket").is_none());
+
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE email = $1")
+        .bind(email)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+const FOURTEEN_DAY_SECONDS: i64 = 14 * 24 * 60 * 60;
+
+async fn create_user(router: &Router, username: &str, email: &str, password: &str) {
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/users")
+                .header("authorization", format!("Bearer {ADMIN_TOKEN}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "username": username,
+                        "email": email,
+                        "password": password
+                    })
+                    .to_string(),
+                ))
+                .expect("admin user creation request"),
+        )
+        .await
+        .expect("admin user creation response");
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+fn cookie_max_age(response: &axum::response::Response, name: &str) -> i64 {
+    let header = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .find(|value| value.starts_with(&format!("{name}=")))
+        .unwrap_or_else(|| panic!("missing {name} cookie"));
+    header
+        .split(';')
+        .find_map(|part| {
+            part.trim()
+                .strip_prefix("Max-Age=")
+                .and_then(|value| value.parse().ok())
+        })
+        .unwrap_or_else(|| panic!("{name} cookie is missing Max-Age"))
+}
+
+/// #645：SESSION_TTL_SECONDS=3600 且没有持久化行时，本地登录必须签发 1 小时会话，
+/// 不能静默变成 14 天。
+#[tokio::test]
+async fn missing_session_lifetime_row_honors_configured_ttl() {
+    let (router, database, key_directory, now) = setup().await;
+    let suffix = Uuid::new_v4().simple().to_string();
+    let username = format!("ttl-{suffix}");
+    let email = format!("ttl-{suffix}@example.com");
+    let password = "correct horse battery";
+    create_user(&router, &username, &email, password).await;
+
+    let missing = chenxing_auth::sqlx::query_scalar::<_, Option<String>>(
+        "SELECT setting_value FROM app_settings WHERE setting_key = 'session_lifetime'",
+    )
+    .fetch_optional(&database)
+    .await
+    .expect("session_lifetime lookup")
+    .flatten();
+    assert!(
+        missing.as_deref().is_none_or(str::is_empty),
+        "fixture must not persist a session_lifetime row"
+    );
+
+    let login_response = request(
+        &router,
+        "/api/v1/auth/login",
+        serde_json::json!({"identifier": username, "password": password}),
+    )
+    .await;
+    assert_eq!(login_response.status(), StatusCode::OK);
+    assert_eq!(cookie_max_age(&login_response, "chenxing_session"), 3600);
+    assert_eq!(cookie_max_age(&login_response, "chenxing_csrf"), 3600);
+
+    let expires_at = time::OffsetDateTime::parse(
+        json(login_response).await["expires_at"]
+            .as_str()
+            .expect("expires_at"),
+        &Rfc3339,
+    )
+    .expect("rfc3339 expires_at");
+    assert_eq!(expires_at, now + time::Duration::seconds(3600));
+    assert_ne!(
+        expires_at,
+        now + time::Duration::seconds(FOURTEEN_DAY_SECONDS)
+    );
 
     chenxing_auth::sqlx::query("DELETE FROM users WHERE email = $1")
         .bind(email)

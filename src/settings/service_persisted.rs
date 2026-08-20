@@ -231,13 +231,21 @@ impl SettingsService {
             ))
     }
 
+    pub fn with_session_lifetime_default(
+        mut self,
+        default_session_lifetime: crate::settings::SessionLifetimeSetting,
+    ) -> Self {
+        self.default_session_lifetime = default_session_lifetime;
+        self
+    }
+
     pub async fn session_lifetime(
         &self,
     ) -> Result<crate::settings::SessionLifetimeSetting, SettingsServiceError> {
         self.decode_stored::<crate::settings::SessionLifetimeSetting>()
             .await?
             .require(
-                crate::settings::SessionLifetimeSetting::default(),
+                self.default_session_lifetime.clone(),
                 |value| value,
                 crate::settings::SessionLifetimeSetting::validate,
             )
@@ -252,7 +260,7 @@ impl SettingsService {
             .decode_stored::<crate::settings::SessionLifetimeSetting>()
             .await?
             .inspect(
-                crate::settings::SessionLifetimeSetting::default(),
+                self.default_session_lifetime.clone(),
                 |value| value,
                 crate::settings::SessionLifetimeSetting::validate,
             ))
