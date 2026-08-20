@@ -1,7 +1,16 @@
-import { describe, expect, it } from 'vitest'
-import type { EntitlementsResponse } from '../../api'
-import { entitlementState } from './shared'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { EntitlementsResponse, OwnedOAuthClient } from '../../api'
+import { entitlementState, listAllOwnedOAuthClients, OWNED_CLIENT_LIST_COMPAT_ERROR } from './shared'
 import { formatQuota } from './developer-shared'
+
+const { apiFetchMock } = vi.hoisted(() => ({
+  apiFetchMock: vi.fn((_path: string, _init?: RequestInit): Promise<unknown> => Promise.resolve({ items: [] })),
+}))
+
+vi.mock('../../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api')>()),
+  apiFetch: apiFetchMock,
+}))
 
 const withPlan: EntitlementsResponse = {
   plan: { code: 'basic', name: '基础版', description: null, validity: 'permanent' },
@@ -40,6 +49,93 @@ describe('entitlementState', () => {
   it('falls back to a generic message when the failure carries no text', () => {
     const state = entitlementState({ data: null, error: '', loading: false })
     expect(state).toEqual({ kind: 'failed', message: '权益数据加载失败。' })
+  })
+})
+
+function fakeClient(id: number): OwnedOAuthClient {
+  return {
+    id,
+    client_id: `cx-${id}`,
+    client_name: `应用 ${id}`,
+    redirect_uris: ['https://example.com/cb'],
+    scopes: ['openid'],
+    status: 'active',
+    quota: { daily_limit: null, daily_used: 0, monthly_limit: null, monthly_used: 0 },
+  }
+}
+
+function fakeClients(count: number, startId = 1): OwnedOAuthClient[] {
+  return Array.from({ length: count }, (_, index) => fakeClient(startId + index))
+}
+
+describe('listAllOwnedOAuthClients', () => {
+  beforeEach(() => {
+    apiFetchMock.mockReset()
+  })
+
+  it('follows total across full pages and stops when offset covers the count', async () => {
+    const first = fakeClients(200, 1)
+    const second = fakeClients(50, 201)
+    apiFetchMock
+      .mockResolvedValueOnce({ items: first, total: 250 })
+      .mockResolvedValueOnce({ items: second, total: 250 })
+
+    const clients = await listAllOwnedOAuthClients()
+
+    expect(clients.map((item) => item.id)).toEqual([...first, ...second].map((item) => item.id))
+    expect(apiFetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/v1/auth/oauth-clients',
+      '/api/v1/auth/oauth-clients?limit=200&offset=200',
+    ])
+  })
+
+  it('does not request another page when total is covered by the first full page', async () => {
+    const items = fakeClients(200)
+    apiFetchMock.mockResolvedValueOnce({ items, total: 200 })
+
+    const clients = await listAllOwnedOAuthClients()
+
+    expect(clients).toHaveLength(200)
+    expect(apiFetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats a short page without total as the complete legacy list', async () => {
+    const items = fakeClients(50)
+    apiFetchMock.mockResolvedValueOnce({ items })
+
+    const clients = await listAllOwnedOAuthClients()
+
+    expect(clients).toEqual(items)
+    expect(apiFetchMock).toHaveBeenCalledTimes(1)
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/auth/oauth-clients')
+  })
+
+  it('stops a no-total full page followed by a short last page', async () => {
+    const first = fakeClients(200, 1)
+    const last = fakeClients(10, 201)
+    apiFetchMock
+      .mockResolvedValueOnce({ items: first })
+      .mockResolvedValueOnce({ items: last })
+
+    const clients = await listAllOwnedOAuthClients()
+
+    expect(clients).toHaveLength(210)
+    expect(apiFetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/v1/auth/oauth-clients',
+      '/api/v1/auth/oauth-clients?limit=200&offset=200',
+    ])
+  })
+
+  it('fails when a legacy full page repeats instead of looping forever', async () => {
+    const page = fakeClients(200)
+    apiFetchMock.mockResolvedValue({ items: page })
+
+    await expect(listAllOwnedOAuthClients()).rejects.toThrow(OWNED_CLIENT_LIST_COMPAT_ERROR)
+    expect(apiFetchMock).toHaveBeenCalledTimes(2)
+    expect(apiFetchMock.mock.calls.map(([path]) => path)).toEqual([
+      '/api/v1/auth/oauth-clients',
+      '/api/v1/auth/oauth-clients?limit=200&offset=200',
+    ])
   })
 })
 
