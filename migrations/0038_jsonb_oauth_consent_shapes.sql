@@ -13,9 +13,11 @@
 --   user_passkeys.credential              → JSON object
 --
 -- String-array CHECKs use `jsonb_path_exists` because PostgreSQL forbids
--- subqueries in CHECK. The path `$[*] ? (@.type() != "string")` is true iff
--- any element is not a JSON string (number, object, null, nested array).
--- Empty arrays (`[]`, the column default) have no matching elements and pass.
+-- subqueries in CHECK. The path must be `strict $[*] ? (@.type() != "string")`:
+-- lax mode unwraps nested arrays, so `[["https://..."]]` looks like a string
+-- and would pass while `Json<Vec<String>>` cannot decode it. Strict mode
+-- reports the inner array's type as "array". Empty arrays (`[]`, the column
+-- default) have no matching elements and pass.
 --
 -- Passkey `credential` is only required to be an object. The inner WebAuthn
 -- envelope is owned by webauthn-rs and must not be duplicated in SQL; test
@@ -46,9 +48,9 @@ BEGIN
     INTO offending
     FROM oauth_clients
     WHERE jsonb_typeof(redirect_uris) <> 'array'
-       OR jsonb_path_exists(redirect_uris, '$[*] ? (@.type() != "string")')
+       OR jsonb_path_exists(redirect_uris, 'strict $[*] ? (@.type() != "string")')
        OR jsonb_typeof(scopes) <> 'array'
-       OR jsonb_path_exists(scopes, '$[*] ? (@.type() != "string")');
+       OR jsonb_path_exists(scopes, 'strict $[*] ? (@.type() != "string")');
 
     IF offending IS NOT NULL THEN
         RAISE EXCEPTION
@@ -66,7 +68,7 @@ BEGIN
     INTO offending
     FROM user_consents
     WHERE jsonb_typeof(scopes) <> 'array'
-       OR jsonb_path_exists(scopes, '$[*] ? (@.type() != "string")');
+       OR jsonb_path_exists(scopes, 'strict $[*] ? (@.type() != "string")');
 
     IF offending IS NOT NULL THEN
         RAISE EXCEPTION
@@ -84,7 +86,7 @@ BEGIN
     INTO offending
     FROM oauth_providers
     WHERE jsonb_typeof(scopes) <> 'array'
-       OR jsonb_path_exists(scopes, '$[*] ? (@.type() != "string")');
+       OR jsonb_path_exists(scopes, 'strict $[*] ? (@.type() != "string")');
 
     IF offending IS NOT NULL THEN
         RAISE EXCEPTION
@@ -115,26 +117,26 @@ ALTER TABLE oauth_clients
     ADD CONSTRAINT oauth_clients_redirect_uris_check
         CHECK (
             jsonb_typeof(redirect_uris) = 'array'
-            AND NOT jsonb_path_exists(redirect_uris, '$[*] ? (@.type() != "string")')
+            AND NOT jsonb_path_exists(redirect_uris, 'strict $[*] ? (@.type() != "string")')
         ),
     ADD CONSTRAINT oauth_clients_scopes_check
         CHECK (
             jsonb_typeof(scopes) = 'array'
-            AND NOT jsonb_path_exists(scopes, '$[*] ? (@.type() != "string")')
+            AND NOT jsonb_path_exists(scopes, 'strict $[*] ? (@.type() != "string")')
         );
 
 ALTER TABLE user_consents
     ADD CONSTRAINT user_consents_scopes_check
         CHECK (
             jsonb_typeof(scopes) = 'array'
-            AND NOT jsonb_path_exists(scopes, '$[*] ? (@.type() != "string")')
+            AND NOT jsonb_path_exists(scopes, 'strict $[*] ? (@.type() != "string")')
         );
 
 ALTER TABLE oauth_providers
     ADD CONSTRAINT oauth_providers_scopes_check
         CHECK (
             jsonb_typeof(scopes) = 'array'
-            AND NOT jsonb_path_exists(scopes, '$[*] ? (@.type() != "string")')
+            AND NOT jsonb_path_exists(scopes, 'strict $[*] ? (@.type() != "string")')
         );
 
 ALTER TABLE user_passkeys
