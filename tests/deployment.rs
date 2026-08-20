@@ -1105,11 +1105,15 @@ fn database_uses_forward_only_transactional_migration_history() {
     assert!(
         DB_MODULE.contains("include_str!(\"../../migrations/0037_revoked_access_tokens.sql\")")
     );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0038_jsonb_oauth_consent_shapes.sql\")")
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        37
+        38
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1153,14 +1157,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 37);
+    assert_eq!(migrations.len(), 38);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0037_revoked_access_tokens.sql")
+        Some("0038_jsonb_oauth_consent_shapes.sql")
     );
     for (index, name) in migrations.iter().enumerate() {
         let expected_prefix = format!("{:04}_", index + 1);
@@ -1253,6 +1257,13 @@ fn migration_history_declares_final_security_and_consistency_invariants() {
         "GRANT UPDATE ON SEQUENCE %s TO chenxing_runtime",
         "CREATE TABLE revoked_access_tokens",
         "GRANT SELECT, INSERT, DELETE ON TABLE revoked_access_tokens TO chenxing_runtime",
+        "CONSTRAINT oauth_clients_redirect_uris_check",
+        "CONSTRAINT oauth_clients_scopes_check",
+        "CONSTRAINT user_consents_scopes_check",
+        "CONSTRAINT oauth_providers_scopes_check",
+        "CONSTRAINT user_passkeys_credential_check",
+        "jsonb_typeof(redirect_uris) = 'array'",
+        "jsonb_typeof(credential) = 'object'",
         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I._sqlx_migrations",
         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I.audit_events_archive FROM chenxing_runtime",
         "ALTER DEFAULT PRIVILEGES IN SCHEMA %I REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLES",
