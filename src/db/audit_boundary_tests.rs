@@ -32,6 +32,7 @@ fn boundary_is_enforced_when_the_runtime_role_cannot_mutate_audit() {
 #[test]
 fn single_role_deployment_is_rejected_by_default() {
     // 默认策略下"迁移角色 == 运行时角色"必须失败，而不是静默声称隔离有效。
+    // 归档 INSERT 也走同一条 can_mutate 路径（Issue #648）。
     assert_eq!(
         audit_boundary_verdict(single_role(), AuditRoleSeparation::Require),
         AuditBoundaryVerdict::Violated

@@ -1138,14 +1138,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 33);
+    assert_eq!(migrations.len(), 36);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0033_registration_invitation_codes.sql")
+        Some("0036_revoke_runtime_archive_insert.sql")
     );
     for (index, name) in migrations.iter().enumerate() {
         let expected_prefix = format!("{:04}_", index + 1);
@@ -1237,6 +1237,7 @@ fn migration_history_declares_final_security_and_consistency_invariants() {
         "CREATE TRIGGER audit_events_archive_append_only_trigger",
         "GRANT UPDATE ON SEQUENCE %s TO chenxing_runtime",
         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I._sqlx_migrations",
+        "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I.audit_events_archive FROM chenxing_runtime",
         "ALTER DEFAULT PRIVILEGES IN SCHEMA %I REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLES",
     ] {
         assert!(

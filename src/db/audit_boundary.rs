@@ -4,7 +4,8 @@
 //!
 //! 当前数据库基线把审计 append-only 从"触发器"升级为"PostgreSQL 权限"，做法是让
 //! 迁移角色持有审计表 owner，再对 `chenxing_runtime` 执行
-//! `REVOKE UPDATE, DELETE, TRUNCATE`。这条边界只在"运行时角色 ≠ 表 owner"时成立：
+//! `REVOKE UPDATE, DELETE, TRUNCATE`（热表）以及归档表上的 `INSERT`。这条边界只在
+//! "运行时角色 ≠ 表 owner"时成立：
 //! owner 在 PostgreSQL 里隐含全部表权限，REVOKE 对自己无效。
 //!
 //! 因此未配置 `MIGRATION_DATABASE_URL` 的部署（迁移与运行时共用同一角色）里，
@@ -12,10 +13,11 @@
 //! 旁路标记是会话级 GUC，任何能连库的会话都能设置。这种降级过去是静默的：
 //! migrate 正常成功，日志里看不出边界已经不存在。
 //!
-//! 这里的做法是直接问数据库：`has_table_privilege(runtime_role, 'audit_events',
-//! 'DELETE')`。这个函数把 owner 隐含权限、`GRANT`、角色继承和 superuser 旁路都算
-//! 进去了，所以它回答的正是"运行时角色实际上能不能删审计行"，而不是"我们以为
-//! 我们 REVOKE 过"。返回 true 就按策略拒绝启动或强告警，不再静默继续。
+//! 这里的做法是直接问数据库：`has_table_privilege(runtime_role, table, privilege)`。
+//! 这个函数把 owner 隐含权限、`GRANT`、角色继承和 superuser 旁路都算进去了，所以
+//! 它回答的正是"运行时角色实际上能不能改审计行"，而不是"我们以为我们 REVOKE
+//! 过"。热表 DELETE 和归档 INSERT 都算 mutability。返回 true 就按策略拒绝启动或
+//! 强告警，不再静默继续。
 
 use super::RUNTIME_DATABASE_ROLE;
 
@@ -47,7 +49,8 @@ pub struct AuditPrivileges {
     pub can_select: bool,
     /// 通过 `SECURITY DEFINER` 归档函数搬运过期事件所必需。
     pub can_archive: bool,
-    /// 必须为 false：这三个权限任意一个存在，append-only 边界就不成立。
+    /// 必须为 false：热表或归档表上的 UPDATE/DELETE/TRUNCATE，以及归档表上的
+    /// INSERT，任意一个存在，append-only 边界就不成立。
     pub can_mutate: bool,
 }
 
@@ -65,10 +68,11 @@ pub enum AuditBoundaryVerdict {
 #[derive(Debug, thiserror::Error)]
 pub enum AuditBoundaryError {
     #[error(
-        "runtime database role {role} can still UPDATE/DELETE/TRUNCATE the audit tables, so the \
-         append-only boundary from the current baseline is not in effect. Configure \
-         MIGRATION_DATABASE_URL with the owner role and keep DATABASE_URL on {expected_role}, or \
-         set AUDIT_ROLE_SEPARATION=allow-single-role to accept a trigger-only audit boundary"
+        "runtime database role {role} can still mutate the audit tables (UPDATE/DELETE/TRUNCATE, \
+         or INSERT on the archive), so the append-only boundary from the current baseline is not \
+         in effect. Configure MIGRATION_DATABASE_URL with the owner role and keep DATABASE_URL on \
+         {expected_role}, or set AUDIT_ROLE_SEPARATION=allow-single-role to accept a trigger-only \
+         audit boundary"
     )]
     RuntimeRoleCanMutateAudit {
         role: String,
@@ -127,10 +131,10 @@ pub async fn verify_audit_append_only_boundary(
                 role = runtime_role,
                 policy = separation.as_str(),
                 "AUDIT APPEND-ONLY IS TRIGGER-ONLY: the runtime role owns or was granted \
-                 UPDATE/DELETE/TRUNCATE on the audit tables, so the baseline REVOKE has no \
-                 effect. The archive bypass marker is a session GUC that any session holding \
-                 this role can set. Do not run production this way: set MIGRATION_DATABASE_URL \
-                 to the owner role and keep DATABASE_URL on the runtime role"
+                 UPDATE/DELETE/TRUNCATE on the audit tables, or INSERT on the archive, so the \
+                 baseline REVOKE has no effect. The archive bypass marker is a session GUC that \
+                 any session holding this role can set. Do not run production this way: set \
+                 MIGRATION_DATABASE_URL to the owner role and keep DATABASE_URL on the runtime role"
             );
             Ok(privileges)
         }
@@ -174,6 +178,12 @@ async fn audit_privileges(
                 can_mutate = true;
             }
         }
+    }
+    // Archive INSERT is not an append-only hot write. It forges immutable
+    // security-event history, or preinserts a colliding id so archival skips
+    // the real row (`ON CONFLICT DO NOTHING`, Issue #648).
+    if has_table_privilege(database, runtime_role, AUDIT_ARCHIVE_TABLE, "INSERT").await? {
+        can_mutate = true;
     }
 
     Ok(AuditPrivileges {
