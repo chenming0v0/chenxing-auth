@@ -3,12 +3,41 @@
 //! 覆盖注册发件人邮箱规范化（Issue #302）、Unicode 域名 punycode 转换，
 //! 以及 SecurityLimits 缓存的降级与回退语义（#300）。
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use super::{
     SecurityLimitsCache, SecurityLimitsSetting, SecurityLimitsSource, SettingsService,
     extract_email, normalize_email,
 };
+use crate::oauth::providers::secrets::SecretManager;
+
+impl SettingsService {
+    /// 用自定义 TTL / 退避的缓存替换默认缓存。仅用于测试缓存与降级路径。
+    pub(crate) fn with_security_limits_cache(mut self, cache: SecurityLimitsCache) -> Self {
+        self.security_limits_cache = Arc::new(cache);
+        self
+    }
+
+    /// 构造一个 settings 读取必然失败的服务：连接池指向不可达地址，
+    /// `connect_lazy` 不在构造时连接，第一次查询才失败。
+    ///
+    /// 用于验证阈值读取故障时的降级取值与 `AuthLimiterFailurePolicy` 分发（#300），
+    /// 不需要真实 PostgreSQL。`acquire_timeout` 必须显式压到 100ms：默认 30 秒会让
+    /// 每个降级用例干等半分钟。
+    pub(crate) fn unreachable_for_tests(default_security_limits: SecurityLimitsSetting) -> Self {
+        let pool = crate::sqlx::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(100))
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+            .expect("lazy pool");
+        Self::with_security_limits(
+            pool,
+            SecretManager::from_key([0_u8; 32]),
+            "localhost",
+            "http://localhost",
+            default_security_limits,
+        )
+    }
+}
 
 fn tightened() -> SecurityLimitsSetting {
     SecurityLimitsSetting {
