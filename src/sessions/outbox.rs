@@ -233,7 +233,7 @@ impl SessionStore {
                     }
                     // During payload migration an active row can legitimately have no
                     // PostgreSQL payload. Redis is then the only payload source used by
-                    // `find_with_metadata`; a sync event must leave that fallback intact.
+                    // `find_authenticated_with_metadata`; a sync event must leave that fallback intact.
                     (true, None) => {
                         transaction.commit().await?;
                         return Ok(());

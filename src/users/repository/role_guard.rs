@@ -168,6 +168,8 @@ async fn set_user_role_in_transaction(
         // marks durable Cookie sessions revoked, and makes all Refresh Tokens stamped with the
         // previous epoch fail their redemption check. This also prevents a user->admin/owner
         // transition from passively upgrading an already-issued Session (Issue #493).
+        // Authentication must read the session row and the new role from one snapshot
+        // (Issue #646); a split read can let a revoked pre-promotion Cookie inherit Owner.
         crate::sessions::store::revoke_all_for_user_in_transaction(transaction, id).await?;
         crate::sqlx::query("UPDATE users SET role = $2, updated_at = NOW() WHERE id = $1")
             .bind(id)
