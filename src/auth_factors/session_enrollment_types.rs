@@ -1,8 +1,8 @@
+use super::super::domain::FactorMethod;
+use crate::users::domain::UserId;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use time::OffsetDateTime;
-use super::super::domain::FactorMethod;
-use crate::users::domain::UserId;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct PendingSessionEnrollment<P> {

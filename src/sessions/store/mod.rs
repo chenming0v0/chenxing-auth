@@ -27,9 +27,9 @@ use crate::{
     redis_keyspace::RedisKeyspace, users::domain::UserId,
 };
 
+mod helpers;
 mod postgres;
 mod redis_only;
-mod helpers;
 
 #[cfg(test)]
 #[path = "store_tests.rs"]
@@ -415,5 +415,4 @@ impl SessionStore {
             redis_only::revoke_all_redis_only(self, user_id).await
         }
     }
-
 }

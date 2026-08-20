@@ -5,8 +5,8 @@
 //! session epoch until it is confirmed or expires.
 
 mod session_enrollment_types;
-use session_enrollment_types::{PendingSessionEnrollment, PendingTotpPayload};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use session_enrollment_types::{PendingSessionEnrollment, PendingTotpPayload};
 use std::fmt;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -68,7 +68,6 @@ pub struct SessionPasskeyStart {
     pub enrollment_id: String,
     pub options: CreationChallengeResponse,
 }
-
 
 impl AuthFactorService {
     pub async fn session_factor_summary(
