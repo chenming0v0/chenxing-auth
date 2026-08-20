@@ -324,6 +324,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "revoked access tokens",
             include_str!("../../migrations/0037_revoked_access_tokens.sql"),
         ),
+        (
+            38,
+            "jsonb oauth consent shapes",
+            include_str!("../../migrations/0038_jsonb_oauth_consent_shapes.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {
