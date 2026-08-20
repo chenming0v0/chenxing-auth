@@ -30,7 +30,7 @@ assert_private_mode "$env_file"
 
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     unset AUTH_ENCRYPTION_KEY
-    config="$(docker compose --profile migrate --env-file "$env_file" -f "$compose_file" config --format json)"
+    config="$(docker compose --env-file "$env_file" -f "$compose_file" config --format json)"
     python -c '
 import json, sys
 data = json.load(sys.stdin)
@@ -42,6 +42,8 @@ assert str(env["APP_PORT"]) == "3000"
 assert str(port["published"]) == "8080" and str(port["target"]) == "3000"
 assert env.get("MIGRATION_DATABASE_URL") is None
 assert env.get("POSTGRES_USER") is None and env.get("POSTGRES_PASSWORD") is None
+assert app["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
+assert "migrate" in data["services"]
 assert "chenxing" in str(data["services"]["migrate"]["environment"]["MIGRATION_DATABASE_URL"])
 ' <<< "$config"
 fi

@@ -75,8 +75,10 @@ pub struct KeyManager {
     /// 通道只承载“该同步了”这一个事实，不携带数据；后台任务自带最小间隔，
     /// 因此伪造 `kid` 的请求无法把提示放大成任意频率的磁盘 IO。
     resync_hint: Arc<Notify>,
-    /// 共享目录同步异常时停止签发，避免用不再受一致性保护的材料继续产生 Token。
+    /// 共享目录同步异常或尚未证明已观察到最新吊销代际时停止签发。
     sync_healthy: Arc<AtomicBool>,
+    /// 最近一次成功同步/本实例吊销提交后观察到的共享吊销代际。
+    revocation_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 struct KeyState {
     directory: Option<PathBuf>,
@@ -165,6 +167,8 @@ pub enum KeyManagerError {
     KeyWorker,
     #[error("persisted key material was replaced for an existing key id")]
     MaterialReplaced,
+    #[error("persisted revocation generation is invalid")]
+    InvalidRevocationGeneration,
     #[error("cannot revoke the active signing key without another valid signing key")]
     NoActiveKeyReplacement,
 }
@@ -288,15 +292,40 @@ impl KeyManager {
         }
     }
 
-    /// Return a consistent signing snapshot only while shared-directory synchronization is
-    /// healthy. The flag is checked before and after cloning the state so a synchronization
-    /// failure published during the read fails closed before a new signature is produced.
+    /// Return a consistent signing snapshot only if a non-blocking shared-directory generation
+    /// check proves this instance has observed every committed revocation. Any contention, I/O
+    /// error, corrupt watermark, or stale generation fails closed before cloning signing material.
     pub fn active_signing_key_if_ready(&self) -> Option<ActiveSigningKey> {
-        if !self.signing_ready() {
+        if !self.refresh_revocation_readiness() {
             return None;
         }
         let signing_key = self.active_signing_key();
-        self.signing_ready().then_some(signing_key)
+        if self.refresh_revocation_readiness() {
+            Some(signing_key)
+        } else {
+            None
+        }
+    }
+
+    fn refresh_revocation_readiness(&self) -> bool {
+        let directory = self.read_state().directory.clone();
+        let Some(directory) = directory else {
+            return self.signing_ready();
+        };
+        let ready = (|| {
+            let _lock = KeyStorageLock::try_acquire(&directory).ok()?;
+            let generation = journal::revocation_generation(&directory).ok()?;
+            Some(
+                self.signing_ready()
+                    && generation == self.revocation_generation.load(Ordering::Acquire),
+            )
+        })()
+        .unwrap_or(false);
+        if !ready {
+            self.mark_sync_healthy(false);
+            self.hint_resync();
+        }
+        ready
     }
 
     /// Whether the latest shared-directory synchronization permits token signing.
@@ -306,6 +335,12 @@ impl KeyManager {
 
     pub(crate) fn mark_sync_healthy(&self, healthy: bool) {
         self.sync_healthy.store(healthy, Ordering::Release);
+    }
+
+    pub(crate) fn observe_revocation_generation(&self, generation: u64) {
+        self.revocation_generation
+            .store(generation, Ordering::Release);
+        self.mark_sync_healthy(true);
     }
 
     /// 按 `kid` 取验证公钥，只读内存快照。
@@ -392,6 +427,11 @@ impl KeyManager {
         materials: BTreeMap<String, KeyMaterial>,
         pending: Option<PendingPublishedKey>,
     ) -> Result<Self, KeyManagerError> {
+        let persisted_generation = directory
+            .as_ref()
+            .map(|directory| journal::revocation_generation(directory))
+            .transpose()?
+            .unwrap_or(0);
         Ok(Self {
             state: Arc::new(RwLock::new(build_key_state(
                 directory,
@@ -405,6 +445,9 @@ impl KeyManager {
             rotation_lock: Arc::new(Mutex::new(())),
             resync_hint: Arc::new(Notify::new()),
             sync_healthy: Arc::new(AtomicBool::new(true)),
+            revocation_generation: Arc::new(std::sync::atomic::AtomicU64::new(
+                persisted_generation,
+            )),
         })
     }
 

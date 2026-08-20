@@ -86,6 +86,7 @@ impl KeyManager {
         let now = SystemClock.now();
         let (active_key_id, key_files) =
             persistence::load_materials(&directory, retention, skew_allowance, now, false)?;
+        let generation = super::journal::revocation_generation(&directory)?;
         let pending = activation::read(&directory)?;
         // 读锁绑定成独立语句后立即释放：下面的 `write_state` 是同一线程再取写锁，
         // 读锁若还活着就是自死锁。
@@ -98,6 +99,7 @@ impl KeyManager {
             return Err(KeyManagerError::MaterialReplaced);
         }
         if unchanged {
+            self.observe_revocation_generation(generation);
             return Ok(KeySyncOutcome::Unchanged);
         }
         let next_state = build_key_state(
@@ -110,6 +112,7 @@ impl KeyManager {
             pending,
         )?;
         *self.write_state() = next_state;
+        self.observe_revocation_generation(generation);
         Ok(KeySyncOutcome::Updated)
     }
 
@@ -148,10 +151,12 @@ impl KeyManager {
                     self.mark_sync_healthy(true);
                     worker.reporter().success();
                 }
-                // Lock contention proves the task is alive, but not that this instance has
-                // observed the latest snapshot. Preserve last-success so prolonged contention
-                // eventually fails readiness.
-                Ok(KeySyncOutcome::Contended) => worker.reporter().heartbeat(),
+                // Contention may be a remote revocation holding the shared lock. Fail closed until
+                // a complete snapshot and its generation are observed.
+                Ok(KeySyncOutcome::Contended) => {
+                    self.mark_sync_healthy(false);
+                    worker.reporter().heartbeat();
+                }
                 Err(error) => {
                     self.mark_sync_healthy(false);
                     tracing::warn!(

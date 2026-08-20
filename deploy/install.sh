@@ -78,6 +78,44 @@ ensure_env_value() {
     mv -f "$temp" .env
 }
 
+url_encode() {
+    local value="$1" char encoded='' byte
+    LC_ALL=C
+    while [[ -n "$value" ]]; do
+        char="${value:0:1}"
+        value="${value:1}"
+        if [[ "$char" =~ [a-zA-Z0-9.~_-] ]]; then
+            encoded+="$char"
+        else
+            printf -v byte '%02X' "'${char}"
+            encoded+="%${byte}"
+        fi
+    done
+    printf '%s' "$encoded"
+}
+
+database_url() {
+    local user="$1" password="$2" database="$3"
+    printf 'postgres://%s:%s@postgres:5432/%s' \
+        "$(url_encode "$user")" "$(url_encode "$password")" "$(url_encode "$database")"
+}
+
+set_env_value() {
+    local key="$1" value="$2" temp
+    temp="$(mktemp .env.tmp.XXXXXX)"
+    awk -v key="$key" -v value="$value" '
+        BEGIN { prefix = key "="; replaced = 0 }
+        index($0, prefix) == 1 {
+            if (!replaced) { print prefix value; replaced = 1 }
+            next
+        }
+        { print }
+        END { if (!replaced) print prefix value }
+    ' .env > "$temp"
+    chmod 600 "$temp"
+    mv -f "$temp" .env
+}
+
 legacy_project_name() {
     local name
     name="$(basename -- "$ROOT_DIR")"
@@ -197,17 +235,25 @@ fi
 
 POSTGRES_DB="$(read_env_value POSTGRES_DB)"
 POSTGRES_USER="$(read_env_value POSTGRES_USER)"
+POSTGRES_PASSWORD="$(read_env_value POSTGRES_PASSWORD)"
 POSTGRES_RUNTIME_USER="$(read_env_value POSTGRES_RUNTIME_USER)"
 POSTGRES_RUNTIME_PASSWORD="$(read_env_value POSTGRES_RUNTIME_PASSWORD)"
-# MIGRATION_DATABASE_URL is constructed by docker-compose.prod.yml from the
-# POSTGRES_USER/POSTGRES_PASSWORD pair, while DATABASE_URL uses the runtime role.
 if [[ -z "$POSTGRES_RUNTIME_USER" ]]; then
     POSTGRES_RUNTIME_USER="chenxing_runtime"
     ensure_env_value POSTGRES_RUNTIME_USER "$POSTGRES_RUNTIME_USER"
 fi
 if [[ -z "$POSTGRES_RUNTIME_PASSWORD" ]]; then
-    ensure_env_value POSTGRES_RUNTIME_PASSWORD "$(generate_secret)"
+    POSTGRES_RUNTIME_PASSWORD="$(generate_secret)"
+    ensure_env_value POSTGRES_RUNTIME_PASSWORD "$POSTGRES_RUNTIME_PASSWORD"
 fi
+[[ -n "$POSTGRES_DB" && -n "$POSTGRES_USER" && -n "$POSTGRES_PASSWORD" ]] || {
+    printf '%s\n' '.env is missing PostgreSQL migration credentials.' >&2
+    exit 1
+}
+set_env_value DATABASE_URL \
+    "$(database_url "$POSTGRES_RUNTIME_USER" "$POSTGRES_RUNTIME_PASSWORD" "$POSTGRES_DB")"
+set_env_value MIGRATION_DATABASE_URL \
+    "$(database_url "$POSTGRES_USER" "$POSTGRES_PASSWORD" "$POSTGRES_DB")"
 
 validate_issuer
 if [[ -z "$COOKIE_SECURE" ]]; then

@@ -37,6 +37,9 @@ use super::{KeyManagerError, activation, persistence, retirement};
 /// `cleanup_stale_temporary_files` 当成中断的半成品删掉；也不带 `rs256-`
 /// 前缀，因此不会被 `discover_key_files` 当成密钥材料读进来。
 const PENDING_REVOCATION_FILE: &str = "pending-revocation.record";
+/// 单调递增的共享吊销代际。吊销提交时在同一目录锁内递增；每个实例只有观察到
+/// 最新代际后才可继续签发，避免同步锁竞争窗口继续使用已吊销 `kid`。
+pub(super) const REVOCATION_GENERATION_FILE: &str = "revocation-generation";
 /// 轮换意图记录文件，命名约束与吊销记录相同（Issue #318）。
 const PENDING_ROTATION_FILE: &str = "pending-rotation.record";
 const MAX_PENDING_RECORD_BYTES: u64 = 1024;
@@ -123,7 +126,10 @@ impl PendingRotation {
 /// 提交点之后，调用方必须让内存快照立即放弃被吊销的 key 的签发权，即使本次
 /// 收敛被瞬时 IO 失败打断——磁盘恢复只是时间问题，而内存继续签名会立刻产出
 /// 其余实例验不过的 token（Issue #315）。
-pub(super) fn record(directory: &Path, pending: &PendingRevocation) -> Result<(), KeyManagerError> {
+pub(super) fn record(
+    directory: &Path,
+    pending: &PendingRevocation,
+) -> Result<u64, KeyManagerError> {
     validate_pair(&pending.revoked_key_id, &pending.active_key_id)?;
     let contents = format!("{}\n{}\n", pending.revoked_key_id, pending.active_key_id);
     atomic_write(
@@ -131,7 +137,34 @@ pub(super) fn record(directory: &Path, pending: &PendingRevocation) -> Result<()
         contents.as_bytes(),
         true,
     )?;
-    Ok(())
+    bump_revocation_generation(directory)
+}
+
+pub(super) fn revocation_generation(directory: &Path) -> Result<u64, KeyManagerError> {
+    let path = directory.join(REVOCATION_GENERATION_FILE);
+    let contents = match read_secure_file_limited(&path, 32) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+    let value = std::str::from_utf8(&contents)
+        .ok()
+        .map(str::trim)
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or(KeyManagerError::InvalidRevocationGeneration)?;
+    Ok(value)
+}
+
+fn bump_revocation_generation(directory: &Path) -> Result<u64, KeyManagerError> {
+    let generation = revocation_generation(directory)?
+        .checked_add(1)
+        .ok_or(KeyManagerError::InvalidRevocationGeneration)?;
+    atomic_write(
+        &directory.join(REVOCATION_GENERATION_FILE),
+        generation.to_string().as_bytes(),
+        true,
+    )?;
+    Ok(generation)
 }
 
 /// 把轮换意图落盘。返回成功即表示这次轮换已提交：崩溃后加载路径会把它补完或
