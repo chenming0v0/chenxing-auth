@@ -165,19 +165,24 @@ pub async fn update_passkey_setting(
     let actor = authorization.actor();
     match state
         .factors
-        .set_passkey_policy_audited(input, &state.audit, authorization.credential(), move |setting| {
-            setting_event(
-                actor,
-                crate::audit::AuditAction::PasskeySettingUpdate,
-                "passkey",
-                serde_json::json!({
-                    "enabled": setting.enabled,
-                    "rp_id": setting.rp_id.clone(),
-                    "allow_insecure_origin": setting.allow_insecure_origin,
-                    "origin_count": setting.allowed_origins.len(),
-                }),
-            )
-        })
+        .set_passkey_policy_audited(
+            input,
+            &state.audit,
+            authorization.credential(),
+            move |setting| {
+                setting_event(
+                    actor,
+                    crate::audit::AuditAction::PasskeySettingUpdate,
+                    "passkey",
+                    serde_json::json!({
+                        "enabled": setting.enabled,
+                        "rp_id": setting.rp_id.clone(),
+                        "allow_insecure_origin": setting.allow_insecure_origin,
+                        "origin_count": setting.allowed_origins.len(),
+                    }),
+                )
+            },
+        )
         .await
     {
         Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
@@ -194,9 +199,9 @@ pub async fn update_passkey_setting(
         Err(crate::auth_factors::service::PasskeyPolicyUpdateError::Validation(error_value)) => {
             error::bad_request("invalid_passkey_setting", error_value.to_string())
         }
-        Err(crate::auth_factors::service::PasskeyPolicyUpdateError::ManagementActor(error_value)) => {
-            management_actor_validation_failed(&state, authorization, error_value).await
-        }
+        Err(crate::auth_factors::service::PasskeyPolicyUpdateError::ManagementActor(
+            error_value,
+        )) => management_actor_validation_failed(&state, authorization, error_value).await,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update passkey setting");
             error::internal()
@@ -233,18 +238,23 @@ pub async fn update_email_policy_setting(
     let actor = authorization.actor();
     match state
         .settings
-        .set_email_policy_audited(input, &state.audit, authorization.credential(), move |setting| {
-            setting_event(
-                actor,
-                crate::audit::AuditAction::EmailPolicyUpdate,
-                "email_policy",
-                serde_json::json!({
-                    "whitelist_enabled": setting.whitelist_enabled,
-                    "alias_restriction_enabled": setting.alias_restriction_enabled,
-                    "domain_count": setting.allowed_domains.len(),
-                }),
-            )
-        })
+        .set_email_policy_audited(
+            input,
+            &state.audit,
+            authorization.credential(),
+            move |setting| {
+                setting_event(
+                    actor,
+                    crate::audit::AuditAction::EmailPolicyUpdate,
+                    "email_policy",
+                    serde_json::json!({
+                        "whitelist_enabled": setting.whitelist_enabled,
+                        "alias_restriction_enabled": setting.alias_restriction_enabled,
+                        "domain_count": setting.allowed_domains.len(),
+                    }),
+                )
+            },
+        )
         .await
     {
         Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
@@ -290,20 +300,25 @@ pub async fn update_smtp_setting(
     let actor = authorization.actor();
     match state
         .settings
-        .set_smtp_audited(input, &state.audit, authorization.credential(), move |(setting, password_action)| {
-            setting_event(
-                actor,
-                crate::audit::AuditAction::SmtpSettingUpdate,
-                "smtp",
-                serde_json::json!({
-                    "host_configured": !setting.host.is_empty(),
-                    "ssl_enabled": setting.ssl_enabled,
-                    "force_auth_login": setting.force_auth_login,
-                    "password_configured": setting.password_configured,
-                    "password_action": password_action,
-                }),
-            )
-        })
+        .set_smtp_audited(
+            input,
+            &state.audit,
+            authorization.credential(),
+            move |(setting, password_action)| {
+                setting_event(
+                    actor,
+                    crate::audit::AuditAction::SmtpSettingUpdate,
+                    "smtp",
+                    serde_json::json!({
+                        "host_configured": !setting.host.is_empty(),
+                        "ssl_enabled": setting.ssl_enabled,
+                        "force_auth_login": setting.force_auth_login,
+                        "password_configured": setting.password_configured,
+                        "password_action": password_action,
+                    }),
+                )
+            },
+        )
         .await
     {
         Ok((setting, _)) => (StatusCode::OK, Json(setting)).into_response(),
@@ -352,14 +367,19 @@ pub async fn update_session_lifetime_setting(
     let actor = authorization.actor();
     match state
         .settings
-        .set_session_lifetime_audited(input, &state.audit, authorization.credential(), move |setting| {
-            setting_event(
-                actor,
-                crate::audit::AuditAction::SessionLifetimeUpdate,
-                SESSION_LIFETIME_KEY,
-                serde_json::json!({"session_ttl_seconds": setting.session_ttl_seconds}),
-            )
-        })
+        .set_session_lifetime_audited(
+            input,
+            &state.audit,
+            authorization.credential(),
+            move |setting| {
+                setting_event(
+                    actor,
+                    crate::audit::AuditAction::SessionLifetimeUpdate,
+                    SESSION_LIFETIME_KEY,
+                    serde_json::json!({"session_ttl_seconds": setting.session_ttl_seconds}),
+                )
+            },
+        )
         .await
     {
         Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),

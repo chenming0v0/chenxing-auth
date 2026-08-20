@@ -21,7 +21,7 @@ use crate::{
         persistence::consume_then_persist,
         repository,
     },
-    auth_limiter::{FailureDimension, LimiterDimension},
+    auth_limiter::{AuthReservation, FailureDimension},
     users::domain::UserId,
 };
 
@@ -150,7 +150,7 @@ impl AuthFactorService {
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
         let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(PasskeyConfirmation::RateLimited(ticket.user_id));
-        }
+        };
         let core = match build_core(&pending.settings) {
             Ok(core) => core,
             Err(error) => {
@@ -167,7 +167,7 @@ impl AuthFactorService {
                         holder_hash,
                         ticket.user_id,
                         &self.passkey_registration_key(ticket_id),
-                        dimensions,
+                        reservation,
                     )
                     .await;
             }
@@ -314,7 +314,7 @@ impl AuthFactorService {
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
         let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(PasskeyConfirmation::RateLimited(ticket.user_id));
-        }
+        };
         let core = match build_core(&pending.settings) {
             Ok(core) => core,
             Err(error) => {
@@ -331,7 +331,7 @@ impl AuthFactorService {
                         holder_hash,
                         ticket.user_id,
                         &self.passkey_authentication_key(ticket_id),
-                        dimensions,
+                        reservation,
                     )
                     .await;
             }
@@ -345,7 +345,7 @@ impl AuthFactorService {
                     holder_hash,
                     ticket.user_id,
                     &self.passkey_authentication_key(ticket_id),
-                    dimensions,
+                    reservation,
                 )
                 .await;
         };
@@ -412,7 +412,7 @@ impl AuthFactorService {
         holder_hash: &str,
         user_id: UserId,
         pending_key: &str,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
     ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
         let record = self.record_failure(reservation).await?;
         if record.reached(FailureDimension::Ticket) {

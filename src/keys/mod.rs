@@ -315,8 +315,10 @@ impl KeyManager {
         let ready = (|| {
             let _lock = KeyStorageLock::try_acquire(&directory).ok()?;
             let generation = journal::revocation_generation(&directory).ok()?;
+            let pending = journal::revocation_pending(&directory).ok()?;
             Some(
                 self.signing_ready()
+                    && !pending
                     && generation == self.revocation_generation.load(Ordering::Acquire),
             )
         })()

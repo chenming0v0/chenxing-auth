@@ -14,7 +14,7 @@ use crate::{
         repository,
         totp::verify_totp_code_now_timestep,
     },
-    auth_limiter::{FailureDimension, LimiterDimension},
+    auth_limiter::{AuthReservation, FailureDimension},
     users::domain::UserId,
 };
 
@@ -47,7 +47,7 @@ impl AuthFactorService {
         let dimensions = self.failure_dimensions(&account_key, None, source_ip)?;
         let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Err(AuthFactorServiceError::RateLimited);
-        }
+        };
         let encrypted_secret = match repository::find_totp_secret(&self.pool, user_id).await {
             Ok(encrypted_secret) => encrypted_secret,
             Err(error) => {
@@ -62,14 +62,15 @@ impl AuthFactorService {
             // 按旧状态提交验证码。没有因子就没有可校验的密钥，重试永远失败，
             // 不存在可爆破的目标；记入账号维度会烧掉与密码失败共享的额度，把
             // 受害者从「TOTP 不可用」推进到「连密码登录都被限流」。
-            self.release_dimensions_for_missing_factor(reservation).await;
+            self.release_dimensions_for_missing_factor(reservation)
+                .await;
             return Ok(FactorVerification::Rejected);
         };
         let decrypted =
             match decrypt_totp_secret_with_ring(&self.encryption_keys, &encrypted_secret) {
                 Ok(value) => value,
                 Err(SecretCryptoError::UnknownKeyId) => {
-                    self.report_retired_key(dimensions, "verify").await;
+                    self.report_retired_key(reservation, "verify").await;
                     return Ok(FactorVerification::KeyUnavailable);
                 }
                 Err(error) => {
@@ -88,7 +89,7 @@ impl AuthFactorService {
             return Ok(FactorVerification::Rejected);
         };
         if !self
-            .claim_totp_timestep(user_id, timestep, dimensions)
+            .claim_totp_timestep(user_id, timestep, reservation)
             .await?
         {
             return Ok(FactorVerification::Rejected);
@@ -132,7 +133,7 @@ impl AuthFactorService {
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
         let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(TotpConfirmation::RateLimited);
-        }
+        };
         let encrypted_secret = match repository::find_totp_secret(&self.pool, ticket.user_id).await
         {
             Ok(encrypted_secret) => encrypted_secret,
@@ -146,14 +147,15 @@ impl AuthFactorService {
             // 且不记失败（#340）。因子不存在就不是用户输错码，记账只会烧掉与密码
             // 失败共享的账号额度；ticket 也不在此作废——它可能还支持其他因子
             // （如 passkey），留到 TTL 自然过期即可。
-            self.release_dimensions_for_missing_factor(reservation).await;
+            self.release_dimensions_for_missing_factor(reservation)
+                .await;
             return Ok(TotpConfirmation::InvalidTicket);
         };
         let decrypted =
             match decrypt_totp_secret_with_ring(&self.encryption_keys, &encrypted_secret) {
                 Ok(value) => value,
                 Err(SecretCryptoError::UnknownKeyId) => {
-                    self.report_retired_key(dimensions, "login").await;
+                    self.report_retired_key(reservation, "login").await;
                     return Ok(TotpConfirmation::KeyUnavailable);
                 }
                 Err(error) => {
@@ -174,7 +176,7 @@ impl AuthFactorService {
             return Ok(TotpConfirmation::InvalidCode);
         };
         if !self
-            .claim_totp_timestep(ticket.user_id, timestep, dimensions)
+            .claim_totp_timestep(ticket.user_id, timestep, reservation)
             .await?
         {
             return Ok(TotpConfirmation::InvalidCode);
@@ -222,7 +224,7 @@ impl AuthFactorService {
     ///    必须能被告警规则捕获。日志不含 kid、邮箱和种子。
     pub(super) async fn report_retired_key(
         &self,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
         stage: &'static str,
     ) {
         self.release_dimensions_for_key_unavailable(reservation)
@@ -246,7 +248,7 @@ impl AuthFactorService {
         &self,
         user_id: UserId,
         timestep: u64,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
     ) -> Result<bool, AuthFactorServiceError> {
         let claimed = match self.tickets.claim_totp_timestep(user_id, timestep).await {
             Ok(claimed) => claimed,

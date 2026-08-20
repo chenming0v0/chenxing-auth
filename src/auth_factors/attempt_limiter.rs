@@ -7,7 +7,8 @@ use super::{AuthFactorService, AuthFactorServiceError};
 use crate::{
     auth_factors::repository,
     auth_limiter::{
-        AuthFailureLimiter, AuthReservation, FailureDimension, LimiterDimension, MissingSourceIpPolicy,
+        AuthFailureLimiter, AuthReservation, FailureDimension, LimiterDimension,
+        MissingSourceIpPolicy,
         domain::{FailureRecord, commit_reserved_failure, release_reserved},
     },
     users::domain::UserId,
@@ -91,10 +92,7 @@ impl AuthFactorService {
         release_key_unavailable(self.limiter.as_ref(), reservation).await;
     }
 
-    pub(super) async fn release_dimensions_for_missing_factor(
-        &self,
-        reservation: AuthReservation,
-    ) {
+    pub(super) async fn release_dimensions_for_missing_factor(&self, reservation: AuthReservation) {
         release_factor_missing(self.limiter.as_ref(), reservation).await;
     }
 }

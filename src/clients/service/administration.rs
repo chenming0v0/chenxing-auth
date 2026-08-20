@@ -134,12 +134,19 @@ impl ClientService {
     ) -> Result<bool, ClientServiceError> {
         let registration = validate_client_registration_with_limits(input, &self.limits)?;
         repository::update_client_with_audit(
-            &self.pool, None, client_id, &registration.client_name,
-            &registration.redirect_uris, &registration.scopes, audit_event,
+            &self.pool,
+            None,
+            client_id,
+            &registration.client_name,
+            &registration.redirect_uris,
+            &registration.scopes,
+            audit_event,
         )
         .await
         .map_err(|error| match error {
-            repository::AuditedClientMutationError::Database(error) => ClientServiceError::Database(error),
+            repository::AuditedClientMutationError::Database(error) => {
+                ClientServiceError::Database(error)
+            }
             repository::AuditedClientMutationError::Audit(error) => {
                 tracing::error!(event = "client_update.audit_unavailable", error = %error);
                 ClientServiceError::AuditUnavailable
@@ -172,9 +179,14 @@ impl ClientService {
     ) -> Result<bool, ClientServiceError> {
         let registration = validate_client_registration_with_limits(input, &self.limits)?;
         Ok(repository::update_client(
-            &self.pool, None, client_id, &registration.client_name,
-            &registration.redirect_uris, &registration.scopes,
-        ).await?)
+            &self.pool,
+            None,
+            client_id,
+            &registration.client_name,
+            &registration.redirect_uris,
+            &registration.scopes,
+        )
+        .await?)
     }
 
     pub async fn update_for_user(

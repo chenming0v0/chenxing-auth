@@ -1,11 +1,11 @@
 use ::redis::Script;
 use uuid::Uuid;
 
+use super::domain::AUTH_VERIFICATION_LEASE_SECONDS;
 use super::domain::{
     AuthFailureLimiter, AuthFailureLimits, AuthLimiterFailurePolicy, AuthReservation,
     FailureDimension, FailureRecord, LimiterDimension, LimiterFuture,
 };
-use super::domain::AUTH_VERIFICATION_LEASE_SECONDS;
 use super::policy::{
     LimiterPolicy, count_failure_records, log_blocked_dimension, log_limit, value_hash,
 };
@@ -211,10 +211,16 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
         })
     }
 
-    fn reserve<'a>(&'a self, dimensions: Vec<LimiterDimension>) -> LimiterFuture<'a, AuthReservation> {
+    fn reserve<'a>(
+        &'a self,
+        dimensions: Vec<LimiterDimension>,
+    ) -> LimiterFuture<'a, AuthReservation> {
         Box::pin(async move {
             if dimensions.is_empty() {
-                return Ok(AuthReservation::single(dimensions, AuthReservation::token()));
+                return Ok(AuthReservation::single(
+                    dimensions,
+                    AuthReservation::token(),
+                ));
             }
             let limits = self.policy.current_limits("reserve", &dimensions).await?;
             let token = AuthReservation::token();

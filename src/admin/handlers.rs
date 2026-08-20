@@ -212,21 +212,32 @@ pub async fn update_client(
     ApiJson(input): ApiJson<ClientRegistrationInput>,
 ) -> Response {
     let authorization = match super::authorization::authorize_admin_write(
-        &state, &admin, AdminPermission::ManageClients,
-    ).await {
+        &state,
+        &admin,
+        AdminPermission::ManageClients,
+    )
+    .await
+    {
         Ok(authorization) => authorization,
         Err(response) => return response,
     };
     let actor = authorization.actor();
-    match state.clients.update_with_audit(
-        &client_id,
-        input,
-        AuditEvent::new(
-            actor.actor_type().to_owned(), actor.user_id().map(|id| id.to_string()),
-            crate::audit::AuditAction::ClientUpdate, "oauth_client".to_owned(),
-            Some(client_id.clone()), serde_json::json!({"result": "success"}),
-        ),
-    ).await {
+    match state
+        .clients
+        .update_with_audit(
+            &client_id,
+            input,
+            AuditEvent::new(
+                actor.actor_type().to_owned(),
+                actor.user_id().map(|id| id.to_string()),
+                crate::audit::AuditAction::ClientUpdate,
+                "oauth_client".to_owned(),
+                Some(client_id.clone()),
+                serde_json::json!({"result": "success"}),
+            ),
+        )
+        .await
+    {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error::not_found("client_not_found", "client was not found"),
         Err(ClientServiceError::AuditUnavailable) => error::service_unavailable(
@@ -244,8 +255,12 @@ async fn set_client_status(
     status: &'static str,
 ) -> Response {
     let authorization = match super::authorization::authorize_admin_write(
-        &state, &admin, AdminPermission::ManageClients,
-    ).await {
+        &state,
+        &admin,
+        AdminPermission::ManageClients,
+    )
+    .await
+    {
         Ok(authorization) => authorization,
         Err(response) => return response,
     };
@@ -255,14 +270,22 @@ async fn set_client_status(
         "disabled" => crate::audit::AuditAction::ClientDisabled,
         _ => unreachable!("client status is validated by the service"),
     };
-    match state.clients.set_status_with_audit(
-        &client_id, status,
-        AuditEvent::new(
-            actor.actor_type().to_owned(), actor.user_id().map(|id| id.to_string()),
-            action, "oauth_client".to_owned(), Some(client_id.clone()),
-            serde_json::json!({"result": "success"}),
-        ),
-    ).await {
+    match state
+        .clients
+        .set_status_with_audit(
+            &client_id,
+            status,
+            AuditEvent::new(
+                actor.actor_type().to_owned(),
+                actor.user_id().map(|id| id.to_string()),
+                action,
+                "oauth_client".to_owned(),
+                Some(client_id.clone()),
+                serde_json::json!({"result": "success"}),
+            ),
+        )
+        .await
+    {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error::not_found("client_not_found", "client was not found"),
         Err(ClientServiceError::AuditUnavailable) => error::service_unavailable(

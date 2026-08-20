@@ -140,6 +140,10 @@ pub(super) fn record(
     bump_revocation_generation(directory)
 }
 
+pub(super) fn revocation_pending(directory: &Path) -> Result<bool, KeyManagerError> {
+    Ok(read(directory)?.is_some())
+}
+
 pub(super) fn revocation_generation(directory: &Path) -> Result<u64, KeyManagerError> {
     let path = directory.join(REVOCATION_GENERATION_FILE);
     let contents = match read_secure_file_limited(&path, 32) {

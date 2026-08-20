@@ -4,8 +4,8 @@ pub mod redis;
 mod redis_scripts;
 
 pub use domain::{
-    AuthFailureLimiter, AuthFailureLimits, AuthLimiterFailurePolicy, AuthReservation, FailureDimension,
-    FailureRecord, LimiterDimension, MissingSourceIpPolicy,
+    AuthFailureLimiter, AuthFailureLimits, AuthLimiterFailurePolicy, AuthReservation,
+    FailureDimension, FailureRecord, LimiterDimension, MissingSourceIpPolicy,
 };
 pub use policy::{AuthLimiterMetrics, metrics};
 pub use redis::RedisAuthFailureLimiter;

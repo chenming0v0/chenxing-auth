@@ -137,7 +137,7 @@ for index = 1, count do
     local current = redis.call('ZCARD', failure_key)
     if owned and current < limit then
         current = current + redis.call('ZADD', failure_key, now, token .. ':' .. index)
-        redis.call('EXPIRE', failure_key, window_seconds + 1)
+        redis.call('EXPIRE', failure_key, tonumber(ARGV[4]) + 1)
     end
     reached[index] = (current >= limit) and 1 or 0
 end

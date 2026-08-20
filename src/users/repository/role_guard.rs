@@ -241,7 +241,12 @@ pub async fn set_user_status_guarded(
 ) -> Result<OwnerGuardOutcome, crate::sqlx::Error> {
     set_user_status_guarded_inner(pool, id, status, credential, None)
         .await
-        .map(|outcome| outcome)
+        .map_err(|error| match error {
+            StatusWriteError::Database(error) => error,
+            StatusWriteError::Audit(_) => {
+                unreachable!("unaudited status mutation cannot produce an audit error")
+            }
+        })
 }
 
 pub async fn set_user_status_guarded_with_audit(
@@ -252,18 +257,13 @@ pub async fn set_user_status_guarded_with_audit(
     audit_event: crate::audit::AuditEvent,
 ) -> Result<OwnerGuardOutcome, AuditedStatusGuardError> {
     let mut transaction = pool.begin().await?;
-    let outcome = set_user_status_in_transaction(
-        &mut transaction,
-        id,
-        status,
-        credential,
-        Some(audit_event),
-    )
-    .await
-    .map_err(|error| match error {
-        StatusWriteError::Database(error) => AuditedStatusGuardError::Database(error),
-        StatusWriteError::Audit(error) => AuditedStatusGuardError::Audit(error),
-    })?;
+    let outcome =
+        set_user_status_in_transaction(&mut transaction, id, status, credential, Some(audit_event))
+            .await
+            .map_err(|error| match error {
+                StatusWriteError::Database(error) => AuditedStatusGuardError::Database(error),
+                StatusWriteError::Audit(error) => AuditedStatusGuardError::Audit(error),
+            })?;
     if outcome == OwnerGuardOutcome::Updated {
         transaction.commit().await?;
     } else {
@@ -289,7 +289,9 @@ enum StatusWriteError {
 }
 
 impl From<crate::sqlx::Error> for StatusWriteError {
-    fn from(error: crate::sqlx::Error) -> Self { Self::Database(error) }
+    fn from(error: crate::sqlx::Error) -> Self {
+        Self::Database(error)
+    }
 }
 
 async fn set_user_status_guarded_inner(
@@ -300,11 +302,14 @@ async fn set_user_status_guarded_inner(
     audit_event: Option<crate::audit::AuditEvent>,
 ) -> StatusWriteResult {
     let mut transaction = pool.begin().await?;
-    let outcome = set_user_status_in_transaction(
-        &mut transaction, id, status, credential, audit_event,
-    ).await?;
-    if outcome == OwnerGuardOutcome::Updated { transaction.commit().await?; }
-    else { transaction.rollback().await?; }
+    let outcome =
+        set_user_status_in_transaction(&mut transaction, id, status, credential, audit_event)
+            .await?;
+    if outcome == OwnerGuardOutcome::Updated {
+        transaction.commit().await?;
+    } else {
+        transaction.rollback().await?;
+    }
     Ok(outcome)
 }
 
@@ -320,27 +325,45 @@ async fn set_user_status_in_transaction(
     let locked = lock_management_user_rows(transaction, &lock_order).await?;
     let access = match validate_management_actor(credential, locked.actor.as_ref()) {
         Ok(access) => access,
-        Err(ManagementActorRejection::SessionInvalid) => return Ok(OwnerGuardOutcome::ActorSessionInvalid),
-        Err(ManagementActorRejection::PermissionRequired) => return Ok(OwnerGuardOutcome::ActorPermissionRequired),
+        Err(ManagementActorRejection::SessionInvalid) => {
+            return Ok(OwnerGuardOutcome::ActorSessionInvalid);
+        }
+        Err(ManagementActorRejection::PermissionRequired) => {
+            return Ok(OwnerGuardOutcome::ActorPermissionRequired);
+        }
     };
-    let Some(current) = locked.target else { return Ok(OwnerGuardOutcome::NotFound); };
-    if UserRole::parse(&current.role).is_some_and(UserRole::is_privileged) && !access.permits_owner() {
+    let Some(current) = locked.target else {
+        return Ok(OwnerGuardOutcome::NotFound);
+    };
+    if UserRole::parse(&current.role).is_some_and(UserRole::is_privileged)
+        && !access.permits_owner()
+    {
         return Ok(OwnerGuardOutcome::ManageRolesRequired);
     }
-    if current.role == "owner" && UserStatus::is_active(&current.status)
-        && status == UserStatus::Disabled && active_owner_count <= 1 {
+    if current.role == "owner"
+        && UserStatus::is_active(&current.status)
+        && status == UserStatus::Disabled
+        && active_owner_count <= 1
+    {
         return Ok(OwnerGuardOutcome::LastOwnerRequired);
     }
     if UserStatus::parse(&current.status) != Some(status) && status == UserStatus::Disabled {
         crate::sessions::store::revoke_all_for_user_in_transaction(transaction, id).await?;
     }
-    let result = crate::sqlx::query("UPDATE users SET status = $2, updated_at = NOW() WHERE id = $1")
-        .bind(id).bind(status.as_str()).execute(&mut **transaction).await?;
+    let result =
+        crate::sqlx::query("UPDATE users SET status = $2, updated_at = NOW() WHERE id = $1")
+            .bind(id)
+            .bind(status.as_str())
+            .execute(&mut **transaction)
+            .await?;
     if result.rows_affected() == 1 {
         if let Some(event) = audit_event {
             crate::audit::repository::insert_with(&mut **transaction, &event)
-                .await.map_err(StatusWriteError::Audit)?;
+                .await
+                .map_err(StatusWriteError::Audit)?;
         }
         Ok(OwnerGuardOutcome::Updated)
-    } else { Ok(OwnerGuardOutcome::NotFound) }
+    } else {
+        Ok(OwnerGuardOutcome::NotFound)
+    }
 }

@@ -8,13 +8,13 @@ use super::{
     smtp::{SmtpPasswordAction, SmtpSetting, SmtpSettingUpdate, StoredSmtpSetting},
     smtp_sender::parse_smtp_sender,
 };
+use crate::users::{ManagementActorCredential, domain::UserPermission};
 use crate::{
     audit::{AuditError, AuditEvent, AuditService},
     config::AuthEncryptionKey,
     oauth::providers::secrets::{SecretContext, SecretError, SecretManager},
     users::email::EmailAddress,
 };
-use crate::users::{ManagementActorCredential, domain::UserPermission};
 
 use thiserror::Error;
 

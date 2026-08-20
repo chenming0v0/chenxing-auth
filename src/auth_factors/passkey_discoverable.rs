@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     auth_factors::{domain::LoginTicket, repository},
-    auth_limiter::{FailureDimension, LimiterDimension, MissingSourceIpPolicy},
+    auth_limiter::{AuthReservation, FailureDimension, MissingSourceIpPolicy},
 };
 
 const DISCOVERABLE_PASSKEY_PREFIX: &str = "chenxing:auth:passkey-discoverable:";
@@ -110,7 +110,7 @@ impl AuthFactorService {
         let dimensions = self.failure_dimensions(&account_key, None, source_ip)?;
         let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(DiscoverablePasskeyConfirmation::RateLimited);
-        }
+        };
         let passkeys = match repository::list_passkeys_with_versions(&self.pool, user_id).await {
             Ok(passkeys) => passkeys,
             Err(error) => {
@@ -122,7 +122,7 @@ impl AuthFactorService {
             .into_iter()
             .find(|p| p.credential_id == credential.get_credential_id())
         else {
-            return self.discoverable_failure(dimensions).await;
+            return self.discoverable_failure(reservation).await;
         };
         let stored_credential = match core_credential(stored.passkey()) {
             Ok(credential) => credential,
@@ -142,7 +142,7 @@ impl AuthFactorService {
         state.set_allowed_credentials(vec![stored_credential]);
         let result = match core.authenticate_credential(credential, &state) {
             Ok(result) => result,
-            Err(_) => return self.discoverable_failure(dimensions).await,
+            Err(_) => return self.discoverable_failure(reservation).await,
         };
         let epoch =
             match crate::users::repository::find_active_session_epoch(&self.pool, user_id).await {
@@ -211,7 +211,7 @@ impl AuthFactorService {
 
     async fn discoverable_failure(
         &self,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
     ) -> Result<DiscoverablePasskeyConfirmation, AuthFactorServiceError> {
         if self.record_failure(reservation).await?.reached.is_empty() {
             Ok(DiscoverablePasskeyConfirmation::Invalid)
@@ -240,8 +240,8 @@ impl AuthFactorService {
         };
         let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(DiscoverablePasskeyConfirmation::RateLimited);
-        }
-        self.discoverable_failure(dimensions).await
+        };
+        self.discoverable_failure(reservation).await
     }
 
     async fn restore_discoverable_passkey(

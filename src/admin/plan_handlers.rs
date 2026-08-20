@@ -159,8 +159,12 @@ pub async fn archive_plan(
     let actor = authorization.actor();
     let (actor_type, actor_id) = actor.audit_fields();
     let event = AuditEvent::new(
-        actor_type.to_owned(), actor_id, crate::audit::AuditAction::PlanArchive,
-        "plan".to_owned(), Some(id.to_string()), serde_json::json!({"result": "success"}),
+        actor_type.to_owned(),
+        actor_id,
+        crate::audit::AuditAction::PlanArchive,
+        "plan".to_owned(),
+        Some(id.to_string()),
+        serde_json::json!({"result": "success"}),
     );
     let result = state
         .plans
@@ -189,8 +193,12 @@ pub async fn restore_plan(
     let actor = authorization.actor();
     let (actor_type, actor_id) = actor.audit_fields();
     let event = AuditEvent::new(
-        actor_type.to_owned(), actor_id, crate::audit::AuditAction::PlanRestore,
-        "plan".to_owned(), Some(id.to_string()), serde_json::json!({"result": "success"}),
+        actor_type.to_owned(),
+        actor_id,
+        crate::audit::AuditAction::PlanRestore,
+        "plan".to_owned(),
+        Some(id.to_string()),
+        serde_json::json!({"result": "success"}),
     );
     let result = state
         .plans

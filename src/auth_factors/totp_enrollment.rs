@@ -160,7 +160,7 @@ impl AuthFactorService {
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
         let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(TotpConfirmation::RateLimited);
-        }
+        };
         let decrypted =
             match decrypt_totp_secret_with_ring(&self.encryption_keys, &pending.encrypted_secret) {
                 Ok(value) => value,
@@ -171,7 +171,7 @@ impl AuthFactorService {
                     // 只删掉这份读不出来的 pending 注册，**保留 ticket**：用户重新
                     // 调用 setup 就能拿到当前 active key 加密的新种子，无需重新输入
                     // 口令。连 ticket 一起废掉会把一个可自助恢复的场景升级成重新登录。
-                    self.report_retired_key(dimensions, "enrollment").await;
+                    self.report_retired_key(reservation, "enrollment").await;
                     self.tickets.delete(&self.totp_setup_key(ticket_id)).await?;
                     return Ok(TotpConfirmation::KeyUnavailable);
                 }
@@ -205,7 +205,7 @@ impl AuthFactorService {
         // 冲突，pending 注册和 ticket 都保留，用户输下一个码即可。`claim_totp_timestep`
         // 已在成功与失败两条路径上处理完预留额度，这里不再重复归还。
         if !self
-            .claim_totp_timestep(ticket.user_id, timestep, dimensions)
+            .claim_totp_timestep(ticket.user_id, timestep, reservation)
             .await?
         {
             return Ok(TotpConfirmation::InvalidCode);

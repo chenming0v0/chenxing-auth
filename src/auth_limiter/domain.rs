@@ -168,6 +168,8 @@ impl FailureRecord {
     }
 }
 
+pub type LimiterDimension = (FailureDimension, String);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthReservation {
     pub(crate) leases: Vec<ReservationLease>,
@@ -206,10 +208,6 @@ impl AuthReservation {
             .collect()
     }
 
-    pub(crate) fn tokens(&self) -> Vec<String> {
-        self.leases.iter().map(|lease| lease.token.clone()).collect()
-    }
-
     pub(crate) fn is_empty(&self) -> bool {
         self.leases.is_empty()
     }
@@ -229,8 +227,7 @@ pub(crate) async fn commit_reserved_failure(
     limiter: &dyn AuthFailureLimiter,
     reservation: AuthReservation,
 ) -> Result<FailureRecord, AuthLimiterError> {
-    let dimensions = reservation.dimensions();
-    match limiter.record_reserved_failures(reservation).await {
+    match limiter.record_reserved_failures(reservation.clone()).await {
         Ok(record) => {
             if !record.was_recorded() {
                 release_reserved(limiter, reservation.clone(), "record_reserved_failures").await;
@@ -283,12 +280,21 @@ pub trait AuthFailureLimiter: Send + Sync {
 
     fn clear<'a>(&'a self, dimension: FailureDimension, value: &str) -> LimiterFuture<'a, ()>;
 
-    fn reserve<'a>(&'a self, dimensions: Vec<LimiterDimension>) -> LimiterFuture<'a, AuthReservation> {
+    fn reserve<'a>(
+        &'a self,
+        dimensions: Vec<LimiterDimension>,
+    ) -> LimiterFuture<'a, AuthReservation> {
         Box::pin(async move {
             if self.any_limited(dimensions.clone()).await? {
-                Ok(AuthReservation::single(Vec::new(), AuthReservation::token()))
+                Ok(AuthReservation::single(
+                    Vec::new(),
+                    AuthReservation::token(),
+                ))
             } else {
-                Ok(AuthReservation::single(dimensions, AuthReservation::token()))
+                Ok(AuthReservation::single(
+                    dimensions,
+                    AuthReservation::token(),
+                ))
             }
         })
     }

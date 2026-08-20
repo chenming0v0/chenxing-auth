@@ -1,5 +1,8 @@
 use super::{SettingsService, SettingsServiceError};
-use crate::users::{ManagementActorCredential, domain::UserPermission};
+use crate::{
+    audit::{AuditEvent, AuditService},
+    users::{ManagementActorCredential, domain::UserPermission},
+};
 
 async fn validate_settings_actor(
     transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,

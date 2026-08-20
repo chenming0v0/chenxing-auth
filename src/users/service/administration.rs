@@ -108,7 +108,11 @@ impl UserService {
         audit_event: AuditEvent,
     ) -> Result<bool, ManagementWriteError> {
         let outcome = repository::set_user_status_guarded_with_audit(
-            &self.pool, id, status, credential, audit_event,
+            &self.pool,
+            id,
+            status,
+            credential,
+            audit_event,
         )
         .await
         .map_err(|error| match error {
@@ -122,7 +126,6 @@ impl UserService {
         })?;
         translate_owner_guard(outcome)
     }
-
 }
 
 /// Owner 守卫终局 → 服务层结果。角色与状态变更共用同一张翻译表。

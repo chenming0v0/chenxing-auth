@@ -123,7 +123,8 @@ impl PlanService {
         credential: ManagementActorCredential,
         audit_event: AuditEvent,
     ) -> Result<(), PlanServiceError> {
-        self.set_status(id, "archived", credential, audit_event).await
+        self.set_status(id, "archived", credential, audit_event)
+            .await
     }
 
     pub async fn restore(

@@ -79,16 +79,12 @@ pub async fn create_provider(
     admin: AdminWrite,
     ApiJson(input): ApiJson<ProviderInput>,
 ) -> Response {
-    let authorization = match authorize_admin_write(
-        &state,
-        &admin,
-        AdminPermission::ManageIdentityProviders,
-    )
-    .await
-    {
-        Ok(authorization) => authorization,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageIdentityProviders).await
+        {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
     let actor = authorization.actor();
     if input.client_secret.as_deref().is_none_or(str::is_empty) {
         return error::bad_request(
@@ -132,16 +128,12 @@ pub async fn update_provider(
     Path(slug): Path<String>,
     ApiJson(input): ApiJson<ProviderInput>,
 ) -> Response {
-    let authorization = match authorize_admin_write(
-        &state,
-        &admin,
-        AdminPermission::ManageIdentityProviders,
-    )
-    .await
-    {
-        Ok(authorization) => authorization,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageIdentityProviders).await
+        {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
     let actor = authorization.actor();
     if input.slug != slug {
         return error::bad_request("invalid_oauth_provider", "provider slug cannot be changed");
@@ -197,16 +189,11 @@ async fn set_provider_status(
     slug: &str,
     status: &str,
 ) -> Response {
-    let authorization = match authorize_admin_write(
-        state,
-        admin,
-        AdminPermission::ManageIdentityProviders,
-    )
-    .await
-    {
-        Ok(authorization) => authorization,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(state, admin, AdminPermission::ManageIdentityProviders).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
     let actor = authorization.actor();
     let action = match status {
         "active" => crate::audit::AuditAction::OauthProviderActive,

@@ -37,8 +37,8 @@ pub use owner_bootstrap::{
     insert_user_after_owner_with_audit, owner_exists,
 };
 pub use role_guard::{
-    AuditedRoleGuardError, OwnerGuardOutcome, set_user_role, set_user_role_with_audit,
-    set_user_status_guarded,
+    AuditedRoleGuardError, AuditedStatusGuardError, OwnerGuardOutcome, set_user_role,
+    set_user_role_with_audit, set_user_status_guarded, set_user_status_guarded_with_audit,
 };
 pub use write::{
     PasswordChangeOutcome, ProfileUpdateRepositoryOutcome, change_password_and_revoke_all,
