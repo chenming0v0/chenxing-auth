@@ -1,4 +1,4 @@
-//! 授权码「过期未兑换」的配额归还台账（Issue #341）。
+//! 授权码「过期未兑换」的配额归还台账（Issue #341 / #657）。
 //!
 //! 配额在授权码**签发**时消耗、兑换成功时保留。若授权码过期且从未被兑换，
 //! 这次消耗必须退还给 day/month 计数器，否则行为异常的 Client（或攻击者
@@ -12,33 +12,26 @@
 //!   的成员会被 worker 处理。升级前写入的秒级 score（约 1.7e9）按
 //!   「整秒过完才到期」解释，禁止在精确 `expires_at` 之前退款。
 //! - 记录键 `chenxing:oauth:quota:reservation:{id}`：reservation 的 JSON
-//!   序列化（含周期键），EXPIREAT 到与月度计数器相同的月边界，保证 worker
-//!   在计数器存活期间总能找到退款所需的数据；周期结束后记录随计数器一起
-//!   过期，退款自动退化为空操作。
+//!   序列化（含周期键），EXPIREAT 到与月度计数器相同的月边界。
+//! - 周期 hash 里的 reservation id：这次 INCR 仍可退款的一次性 claim。
 //! - 授权码 payload 里的 `quota_reservation_id` 把码与台账条目关联起来。
 //!
-//! # 为什么兑换路径必须原子取消台账条目
+//! # 兑换与退款互斥
 //!
-//! 兑换成功时配额应当保留（计数保留是正确行为）。`take_if_matches` 的 CAS
-//! 脚本在删除授权码的同一个 Lua 事务里 ZREM 掉台账成员：如果分成两步，后台
-//! worker 可能在两步之间看到条目，把「已兑换」的配额退掉。
-//!
-//! # 为什么 worker 不需要检查授权码是否还存在
-//!
-//! worker 只处理「精确过期时刻已到」的成员：新条目的毫秒 score 由
-//! [`refund_due_unix_millis`] 从 `expires_at` 向上取整，查询上界是 `now` 的
-//! 毫秒向下取整，因此 `score <= now_millis` 蕴含 `now >= expires_at`，与
-//! `validate_code_binding` 的过期判定一致。兑换发生在过期之前的情形，其台账
-//! 条目已经在 CAS 里被原子取消，worker 永远不会看到。
-//!
-//! 多个实例同时跑 worker 也安全：`REFUND_SCRIPT` 用 HDEL 的返回值判定谁真正
-//! DECR，重复退款是幂等的空操作；ZREM 同样幂等。
+//! 周期 hash 上的 HDEL 是唯一的 claim。兑换 CAS 在删除授权码的同一 Lua
+//! 事务里 HDEL 且不 DECR；退款脚本只有 HDEL 返回 1 才 DECR。worker 先
+//! 快照到期 member 再退款也不再能把已兑换的配额退掉：CAS 已经把 hash
+//! 拿走，随后的退款是空操作。签发失败补偿走同样的 `refund()`：授权码
+//! 从未写入时 hash 还在，退款成立；已被成功兑换时 hash 已没了，空操作。
 
 use std::time::Duration;
 
 use redis::{AsyncCommands, Script};
 
-use super::super::quota_scripts::SCHEDULE_REFUND_SCRIPT;
+use super::super::quota_scripts::{
+    REFUND_SCRIPT, RESCHEDULE_REFUND_SCRIPT, SCHEDULE_REFUND_SCRIPT,
+};
+use super::quota_keys::{PENDING_REFUNDS_ZSET, fair_merge_due, reservation_record_key};
 use super::{OAuthQuotaError, OAuthQuotaStore, QuotaReservation};
 use crate::clock::SharedClock;
 use crate::redis_keyspace::RedisKeyspace;
@@ -55,9 +48,6 @@ const MINIMUM_QUOTA_REFUND_INTERVAL: Duration = Duration::from_secs(1);
 
 /// 每轮最多处理的过期条目数：一轮处理不完留到下一轮，不长时间占住连接。
 const REFUND_BATCH_SIZE: isize = 100;
-
-/// 待退台账 ZSET：member = reservation id，score = 授权码过期时刻（Unix 毫秒）。
-pub(crate) const PENDING_REFUNDS_ZSET: &str = "chenxing:oauth:quota:refund-pending";
 
 /// Scores below this are pre-#522 unix-second ZSET entries.
 /// ~1973 in milliseconds; current unix seconds sit near 1.7e9.
@@ -83,42 +73,12 @@ fn refund_query_unix_millis(now: time::OffsetDateTime) -> i64 {
     i64::try_from(now.unix_timestamp_nanos().div_euclid(1_000_000)).unwrap_or(i64::MAX)
 }
 
-fn reservation_record_key(keyspace: &RedisKeyspace, reservation_id: &str) -> String {
-    keyspace.key(&format!(
-        "chenxing:oauth:quota:reservation:{reservation_id}"
-    ))
-}
-
-/// Merge the two on-disk score formats fairly so a full modern queue cannot
-/// starve upgrade-era legacy reservations. Legacy entries lead each pair to
-/// guarantee progress even when the batch is filled on every pass.
-fn fair_merge_due(modern: Vec<String>, legacy: Vec<String>) -> Vec<String> {
-    let mut due = Vec::with_capacity(REFUND_BATCH_SIZE as usize);
-    let mut modern_index = 0;
-    let mut legacy_index = 0;
-    while due.len() < REFUND_BATCH_SIZE as usize
-        && (modern_index < modern.len() || legacy_index < legacy.len())
-    {
-        if let Some(reservation_id) = legacy.get(legacy_index) {
-            due.push(reservation_id.clone());
-            legacy_index += 1;
-        }
-        if due.len() >= REFUND_BATCH_SIZE as usize {
-            break;
-        }
-        if let Some(reservation_id) = modern.get(modern_index) {
-            due.push(reservation_id.clone());
-            modern_index += 1;
-        }
-    }
-    due
-}
-
-/// 兑换授权码时原子取消待退条目的参数，与授权码 CAS 在同一个 Lua 脚本里执行。
+/// 兑换授权码时原子占用配额 reservation 的参数，与授权码 CAS 在同一个 Lua 脚本里执行。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuotaRefundCancel {
     pub(crate) zset_key: String,
     pub(crate) member: String,
+    pub(crate) record_key: String,
 }
 
 impl QuotaRefundCancel {
@@ -130,6 +90,7 @@ impl QuotaRefundCancel {
         Self {
             zset_key: keyspace.key(PENDING_REFUNDS_ZSET),
             member: id.to_owned(),
+            record_key: reservation_record_key(keyspace, id),
         }
     }
 }
@@ -160,23 +121,44 @@ impl OAuthQuotaStore {
 
     /// 授权码兑换失败被补偿恢复后，重新登记待退条目。
     ///
-    /// CAS 脚本在原子消费时已经 ZREM 掉原成员；记录键没有被删除，因此这里
-    /// 只需要把成员加回来。恢复的授权码仍可能在新的过期时刻之前被兑换
-    /// （CAS 再次原子取消），也可能再次过期未兑换（worker 凭记录退款）。
+    /// CAS 已经 ZREM 掉待退成员并 HDEL 了周期 hash。记录键还在，这里把成员
+    /// 加回来，同时把 hash claim 写回，否则 worker 稍后 HDEL 只能空操作，
+    /// 过期未兑换的配额就退不回去。
     pub async fn reschedule_refund(
         &self,
         reservation_id: &str,
         expires_at: time::OffsetDateTime,
     ) -> Result<(), OAuthQuotaError> {
         let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let _: () = connection
-            .zadd(
-                self.pending_refunds_key(),
-                reservation_id,
-                refund_due_unix_millis(expires_at) as f64,
-            )
+        let _: i64 = Script::new(RESCHEDULE_REFUND_SCRIPT)
+            .key(self.pending_refunds_key())
+            .key(reservation_record_key(&self.keyspace, reservation_id))
+            .arg(refund_due_unix_millis(expires_at) as f64)
+            .arg(reservation_id)
+            .invoke_async(&mut connection)
             .await?;
         Ok(())
+    }
+
+    /// Worker 退款：先 ZREM 待退成员，成功才 HDEL+DECR。
+    ///
+    /// 返回 `true` 表示这次确实减了计数。成员已被兑换 CAS 拿走时返回
+    /// `false`，记录键留下给可能的补偿恢复使用。
+    async fn refund_if_still_pending(
+        &self,
+        reservation: &QuotaReservation,
+    ) -> Result<bool, OAuthQuotaError> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let refunded: i64 = Script::new(REFUND_SCRIPT)
+            .key(reservation.day_key.as_str())
+            .key(reservation.month_key.as_str())
+            .key(reservation.day_reservations_key.as_str())
+            .key(reservation.month_reservations_key.as_str())
+            .key(self.pending_refunds_key())
+            .arg(reservation.id.as_str())
+            .invoke_async(&mut connection)
+            .await?;
+        Ok(refunded == 1)
     }
 
     /// 处理一批已过期的待退条目：先退还配额，再清掉台账数据。
@@ -212,7 +194,7 @@ impl OAuthQuotaStore {
         } else {
             Vec::new()
         };
-        let due = fair_merge_due(modern, legacy);
+        let due = fair_merge_due(modern, legacy, REFUND_BATCH_SIZE as usize);
         let mut refunded = 0usize;
         for reservation_id in due {
             let record: Option<String> = connection
@@ -239,20 +221,21 @@ impl OAuthQuotaStore {
                     continue;
                 }
             };
-            if let Err(error) = self.refund(&reservation).await {
-                tracing::warn!(
-                    error = %error,
-                    "failed to refund expired OAuth authorization quota; will retry next pass"
-                );
-                continue;
+            match self.refund_if_still_pending(&reservation).await {
+                Ok(true) => {
+                    let _: () = connection
+                        .del(reservation_record_key(&self.keyspace, &reservation_id))
+                        .await?;
+                    refunded += 1;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "failed to refund expired OAuth authorization quota; will retry next pass"
+                    );
+                }
             }
-            let _: () = connection
-                .zrem(&pending_refunds_key, &reservation_id)
-                .await?;
-            let _: () = connection
-                .del(reservation_record_key(&self.keyspace, &reservation_id))
-                .await?;
-            refunded += 1;
         }
         Ok(refunded)
     }

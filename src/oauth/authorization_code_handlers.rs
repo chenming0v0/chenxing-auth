@@ -305,6 +305,11 @@ async fn remove_authorization_code_after_failure(
     // Refund only after Redis gives a definitive result. If the operation
     // fails, the code may still exist and remain redeemable, so refunding
     // would let the same authorization consume quota twice.
+    //
+    // `Ok(None)` used to be ambiguous: the code was never stored, or a
+    // concurrent redemption already consumed it. Reservation hashes are a
+    // single-use claim (Issue #657), so `refund()` is a no-op after a
+    // successful CAS and still refunds when the code was never written.
     match state.authorization_codes.take(&code.value).await {
         Ok(_) => refund_quota_if_consumed(state, client_id, quota_reservation).await,
         Err(error_value) => {

@@ -7,6 +7,8 @@ const AUTHORIZATION_CODE_HANDLERS: &str =
     include_str!("../src/oauth/authorization_code_handlers.rs");
 const TOKEN_USE_CASE_SUPPORT: &str = include_str!("../src/oauth/token_use_case_support.rs");
 const QUOTA_REFUND: &str = include_str!("../src/oauth/quota_refund.rs");
+const QUOTA_SCRIPTS: &str = include_str!("../src/oauth/quota_scripts.rs");
+const AUTHORIZATION_CODE_STORE: &str = include_str!("../src/oauth/store.rs");
 
 #[test]
 fn quota_store_can_be_constructed_from_redis_client() {
@@ -146,5 +148,25 @@ fn authorization_paths_schedule_refunds_from_exact_expiry() {
     assert!(
         QUOTA_REFUND.contains("refund_query_unix_millis(now)"),
         "worker query must use millisecond precision"
+    );
+}
+
+#[test]
+fn redemption_and_refund_share_a_single_reservation_claim() {
+    assert!(
+        QUOTA_SCRIPTS.contains("claimed = claimed + redis.call('HDEL'"),
+        "successful redemption must HDEL reservation hashes without decrementing counters"
+    );
+    assert!(
+        QUOTA_SCRIPTS.contains("if #KEYS >= 5 then"),
+        "worker refund must claim pending ZSET membership before DECR"
+    );
+    assert!(
+        AUTHORIZATION_CODE_STORE.contains("take_code_and_claim_quota_lua!"),
+        "authorization-code CAS must claim the quota reservation in the same Lua script"
+    );
+    assert!(
+        AUTHORIZATION_CODE_HANDLERS.contains("single-use claim (Issue #657)"),
+        "issue-path compensation must document why Ok(None) refund is safe after redemption"
     );
 }
