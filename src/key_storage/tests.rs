@@ -231,3 +231,65 @@ fn cleanup_only_removes_temporaries_from_the_requested_namespace() {
         "persisted files must survive secret cleanup"
     );
 }
+
+fn dir_with_two_keys(name: &str) -> TempDirGuard {
+    let guard = prepare_key_dir(name);
+    fs::write(guard.path().join("rs256-a.pkcs1.der"), b"a").expect("key a");
+    fs::write(guard.path().join("rs256-b.pkcs1.der"), b"b").expect("key b");
+    guard
+}
+
+fn listed_names(directory: &Path) -> io::Result<Vec<String>> {
+    let mut names = list_secure_names(directory)?
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+    names.sort();
+    Ok(names)
+}
+
+fn assert_complete_two_key_inventory(names: Vec<String>) {
+    assert_eq!(
+        names,
+        vec![
+            "rs256-a.pkcs1.der".to_string(),
+            "rs256-b.pkcs1.der".to_string()
+        ]
+    );
+}
+
+#[test]
+fn list_dir_fails_closed_on_mid_enumeration_readdir_errors() {
+    for errno in [libc::EIO, libc::ENOMEM, libc::EBADF] {
+        let guard = dir_with_two_keys("readdir-partial");
+        // 3 次成功之后通常已读完 `.`/`..` 和第一个密钥；下一次失败不得返回前缀。
+        let _fault = super::unix_sys::readdir_test::fail_after(3, errno);
+        let error = list_secure_names(guard.path())
+            .expect_err("readdir failure must not return a partial inventory");
+        assert_eq!(error.raw_os_error(), Some(errno), "errno {errno}");
+    }
+}
+
+#[test]
+fn list_dir_retries_eintr_and_returns_complete_inventory() {
+    let guard = dir_with_two_keys("readdir-eintr");
+    let _fault = super::unix_sys::readdir_test::fail_after(3, libc::EINTR);
+    let names = listed_names(guard.path()).expect("EINTR must be retried");
+    assert_complete_two_key_inventory(names);
+}
+
+#[test]
+fn list_dir_treats_null_with_cleared_errno_as_eof() {
+    let guard = dir_with_two_keys("readdir-eof");
+    let _stale = super::unix_sys::readdir_test::stale_errno(libc::EIO);
+    let names = listed_names(guard.path()).expect("stale errno must not turn EOF into an error");
+    assert_complete_two_key_inventory(names);
+}
+
+#[test]
+fn cleanup_fails_closed_when_readdir_errors() {
+    let guard = dir_with_two_keys("readdir-cleanup");
+    let _fault = super::unix_sys::readdir_test::fail_after(3, libc::EIO);
+    cleanup_stale_temporary_files(guard.path())
+        .expect_err("inventory error must fail closed on cleanup");
+}

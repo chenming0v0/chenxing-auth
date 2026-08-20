@@ -12,6 +12,7 @@ use std::{
         fd::{AsRawFd, FromRawFd, RawFd},
         unix::ffi::OsStrExt,
     },
+    ptr::NonNull,
 };
 
 use super::policy::invalid_storage_path;
@@ -166,6 +167,44 @@ pub(super) fn fchmod(file: &File, mode: u32) -> io::Result<()> {
     cvt(result)
 }
 
+/// POSIX `readdir`：调用前清 errno。NULL + errno 0 是 EOF；EINTR 重试；
+/// 其余错误失败。不得把已读到的前缀当成完整清单。
+pub(super) fn readdir(dirp: *mut libc::DIR) -> io::Result<Option<NonNull<libc::dirent>>> {
+    loop {
+        #[cfg(test)]
+        if let Some(errno) = readdir_test::take_fault() {
+            if errno == libc::EINTR {
+                continue;
+            }
+            return Err(io::Error::from_raw_os_error(errno));
+        }
+
+        #[cfg(test)]
+        if let Some(errno) = readdir_test::stale_errno_value() {
+            set_errno(errno);
+        }
+        // POSIX：readdir 前必须把 errno 置 0。NULL + 0 才是 EOF；NULL + 非 0 是错误。
+        set_errno(0);
+
+        // SAFETY: dirp 来自 fdopendir，且尚未 closedir。
+        let entry = unsafe { libc::readdir(dirp) };
+        if entry.is_null() {
+            let errno = current_errno();
+            if errno == 0 {
+                return Ok(None);
+            }
+            if errno == libc::EINTR {
+                continue;
+            }
+            return Err(io::Error::from_raw_os_error(errno));
+        }
+        #[cfg(test)]
+        readdir_test::record_success();
+        // SAFETY: readdir 成功时返回非空 dirent，有效直到下次 readdir/closedir。
+        return Ok(Some(unsafe { NonNull::new_unchecked(entry) }));
+    }
+}
+
 fn validate_basename(name: &OsStr) -> io::Result<()> {
     if name.is_empty() || name == "." || name == ".." {
         return Err(invalid_storage_path());
@@ -205,5 +244,88 @@ fn cvt(result: libc::c_int) -> io::Result<()> {
         Ok(())
     } else {
         Err(map_open_error(io::Error::last_os_error()))
+    }
+}
+
+fn set_errno(value: i32) {
+    // SAFETY: errno 是线程局部的；写入当前线程的 errno 单元。
+    unsafe {
+        *errno_ptr() = value;
+    }
+}
+
+fn current_errno() -> i32 {
+    // SAFETY: 读取当前线程 errno。
+    unsafe { *errno_ptr() }
+}
+
+fn errno_ptr() -> *mut libc::c_int {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        // SAFETY: __errno_location 返回当前线程 errno 的指针。
+        unsafe { libc::__errno_location() }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        // SAFETY: __error 返回当前线程 errno 的指针。
+        unsafe { libc::__error() }
+    }
+}
+
+#[cfg(test)]
+pub(super) mod readdir_test {
+    use std::cell::Cell;
+
+    thread_local! {
+        static FAULT: Cell<Option<(u32, i32)>> = const { Cell::new(None) };
+        static SUCCESSES: Cell<u32> = const { Cell::new(0) };
+        static STALE_ERRNO: Cell<Option<i32>> = const { Cell::new(None) };
+    }
+
+    pub struct FaultGuard {
+        _private: (),
+    }
+
+    impl Drop for FaultGuard {
+        fn drop(&mut self) {
+            clear();
+        }
+    }
+
+    pub fn fail_after(successes: u32, errno: i32) -> FaultGuard {
+        clear();
+        FAULT.set(Some((successes, errno)));
+        FaultGuard { _private: () }
+    }
+
+    pub fn stale_errno(errno: i32) -> FaultGuard {
+        clear();
+        STALE_ERRNO.set(Some(errno));
+        FaultGuard { _private: () }
+    }
+
+    pub(super) fn take_fault() -> Option<i32> {
+        let Some((after, errno)) = FAULT.get() else {
+            return None;
+        };
+        if SUCCESSES.get() < after {
+            return None;
+        }
+        FAULT.set(None);
+        Some(errno)
+    }
+
+    pub(super) fn record_success() {
+        SUCCESSES.set(SUCCESSES.get() + 1);
+    }
+
+    pub(super) fn stale_errno_value() -> Option<i32> {
+        STALE_ERRNO.get()
+    }
+
+    fn clear() {
+        FAULT.set(None);
+        SUCCESSES.set(0);
+        STALE_ERRNO.set(None);
     }
 }
