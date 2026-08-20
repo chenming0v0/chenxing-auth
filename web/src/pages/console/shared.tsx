@@ -72,6 +72,7 @@ const EMPTY_SUMMARY: AccountSummary = { clients: [], sessions: [], apps: [] }
  */
 export function useAccountSummary() {
   const [data, setData] = useState<AccountSummary>(EMPTY_SUMMARY)
+  const [hasData, setHasData] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const requestId = useRef(0)
@@ -87,6 +88,7 @@ export function useAccountSummary() {
     ]).then(([clientResponse, sessionResponse, appResponse]) => {
       if (id !== requestId.current) return
       setData({ clients: clientResponse, sessions: sessionResponse.items, apps: appResponse.items })
+      setHasData(true)
       setError('')
     }).catch((reason: unknown) => {
       if (id !== requestId.current) return
@@ -102,7 +104,7 @@ export function useAccountSummary() {
     return () => { requestId.current += 1 }
   }, [load])
 
-  return { data, error, loading, retry: load }
+  return { data, error, loading, hasData, retry: load }
 }
 
 /**
