@@ -421,7 +421,7 @@ pub async fn assign_to_user(
     // before this transaction can alter entitlements (Issue #493).
     let lock_order = lock_management_user_advisories(&mut transaction, user_id, credential).await?;
     let locked = lock_management_user_rows(&mut transaction, &lock_order).await?;
-    let access = match validate_management_actor(credential, locked.actor.as_ref()) {
+    let access = match validate_management_actor(credential, &locked) {
         Ok(access) => access,
         Err(ManagementActorRejection::SessionInvalid) => {
             transaction.rollback().await?;

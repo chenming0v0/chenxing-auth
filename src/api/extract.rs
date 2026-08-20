@@ -323,16 +323,23 @@ impl AdminWrite {
 
     /// Build the credential proof carried into a high-risk management transaction.
     ///
-    /// The Session variant uses the generation read from the authoritative `user_sessions` row,
-    /// never a fresh `users.session_epoch` query. A fresh query could stamp an old Cookie with a
-    /// newly elevated generation between Session lookup and handler authorization (Issue #493).
+    /// The Session variant uses the id and generation read from the authoritative
+    /// `user_sessions` row, never a fresh `users.session_epoch` query. A fresh query could
+    /// stamp an old Cookie with a newly elevated generation between Session lookup and
+    /// handler authorization (Issue #493). The write transaction must re-lock that exact
+    /// row: single-session revocation does not bump the user epoch (Issue #647).
     pub(crate) fn management_actor_credential(&self) -> Option<ManagementActorCredential> {
         match &self.caller {
             AdminCaller::SystemToken => Some(ManagementActorCredential::SystemToken),
             AdminCaller::Session(context) => {
+                let session_id = context.session.id;
+                if session_id <= 0 {
+                    return None;
+                }
                 context.session.credential_generation().map(|generation| {
                     ManagementActorCredential::UserSession {
                         user_id: context.user_id,
+                        session_id,
                         generation,
                     }
                 })
