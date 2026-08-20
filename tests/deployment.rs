@@ -1313,9 +1313,12 @@ fn database_baseline_enforces_runtime_role_least_privilege() {
 #[test]
 fn migrate_command_verifies_the_audit_boundary_instead_of_trusting_the_migration() {
     for marker in [
-        // 判定依据必须是数据库实际权限，而不是"变量有没有设置"。
+        // 判定依据必须是这条连接上的有效主体，而不是 URL 用户名（Issue #649）。
         "has_table_privilege(",
         "has_function_privilege(",
+        "current_user",
+        "session_user",
+        "EffectiveRoleMismatch",
         "RuntimeRoleCanMutateAudit",
         // 单角色部署要么被拒，要么走显式开关并强告警。
         "AllowSingleRole",
@@ -1346,9 +1349,11 @@ fn migrate_command_verifies_the_audit_boundary_instead_of_trusting_the_migration
     }
 
     // 校验必须在 migrate 分支里被调用，否则策略只是个没人读的枚举。
+    // Issue #649：必须连 runtime URL 再验，不能在 owner 连接上拿 URL 用户名做目录检查。
     let main = include_str!("../src/main.rs");
     assert!(main.contains("db::MigrationPlan::from_env("));
     assert!(main.contains("db::verify_audit_append_only_boundary("));
+    assert!(main.contains("connect_maintenance(plan.runtime_database_url())"));
 
     for marker in [
         "AUDIT_ROLE_SEPARATION",

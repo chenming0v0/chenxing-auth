@@ -678,8 +678,28 @@ async fn audit_boundary_verification_accepts_the_runtime_role_and_rejects_the_ow
     .await
     .expect("configure runtime role");
 
+    let schema: String = chenxing_auth::sqlx::query_scalar("SELECT current_schema()")
+        .fetch_one(&pool)
+        .await
+        .expect("current schema");
+    let schema_for_pool = schema.clone();
+    let runtime_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .after_connect(move |connection, _meta| {
+            let schema = schema_for_pool.clone();
+            Box::pin(async move {
+                chenxing_auth::sqlx::query(&format!("SET search_path TO {schema}"))
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(runtime_url.as_str())
+        .await
+        .expect("runtime role connection");
+
     let privileges = chenxing_auth::db::verify_audit_append_only_boundary(
-        &pool,
+        &runtime_pool,
         chenxing_auth::db::RUNTIME_DATABASE_ROLE,
         chenxing_auth::db::AuditRoleSeparation::Require,
     )
@@ -694,6 +714,22 @@ async fn audit_boundary_verification_accepts_the_runtime_role_and_rejects_the_ow
         .fetch_one(&pool)
         .await
         .expect("owner role name");
+    // URL 声称 chenxing_runtime、连接却是 owner：旧实现会检查那个名字的目录权限
+    // 并放行。有效主体才是 owner，必须拒绝（Issue #649）。
+    let mismatch = chenxing_auth::db::verify_audit_append_only_boundary(
+        &pool,
+        chenxing_auth::db::RUNTIME_DATABASE_ROLE,
+        chenxing_auth::db::AuditRoleSeparation::Require,
+    )
+    .await
+    .expect_err("an owner session claiming the runtime role name must fail closed");
+    assert!(
+        matches!(
+            mismatch,
+            chenxing_auth::db::AuditBoundaryError::EffectiveRoleMismatch { .. }
+        ),
+        "verifier must reject a principal mismatch, got {mismatch}"
+    );
     let error = chenxing_auth::db::verify_audit_append_only_boundary(
         &pool,
         &owner,
