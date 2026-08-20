@@ -47,6 +47,7 @@ where
 ///   ticket consumed so a revoked epoch cannot be replayed.
 /// - `Err(_)`: infrastructure failure. No durable write happened, so restore
 ///   the ticket for retry. Lookup failure is not a security rejection.
+#[cfg(test)]
 pub(super) async fn accept_or_restore_taken_ticket<C, CF, R, RF, RE, E>(
     ticket: LoginTicket,
     check: C,

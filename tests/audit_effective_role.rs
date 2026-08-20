@@ -196,11 +196,11 @@ async fn verifier_rejects_runtime_login_that_set_role_to_a_mutating_principal() 
             let set_role_target = set_role_target.clone();
             Box::pin(async move {
                 chenxing_auth::sqlx::query(&format!("SET search_path TO {schema}"))
-                    .execute(connection)
+                    .execute(&mut *connection)
                     .await?;
                 chenxing_auth::sqlx::query("SELECT set_config('role', $1, false)")
                     .bind(set_role_target)
-                    .execute(connection)
+                    .execute(&mut *connection)
                     .await?;
                 Ok(())
             })
