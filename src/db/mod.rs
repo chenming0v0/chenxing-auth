@@ -314,6 +314,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "session outbox claim fence",
             include_str!("../../migrations/0035_session_outbox_claim_fence.sql"),
         ),
+        (
+            36,
+            "revoked access tokens",
+            include_str!("../../migrations/0036_revoked_access_tokens.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

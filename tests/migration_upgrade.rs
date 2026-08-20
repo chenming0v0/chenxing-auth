@@ -295,23 +295,30 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .await
     .expect("read upgraded migration history");
     // 0030/0031 来自 #50-479 批次合并；0032 修复运行时 migration ledger 权限。
-    assert_eq!(applied, (1_i64..=32).collect::<Vec<_>>());
+    // 0033–0036 是后续追加的邀请码、邮箱变更、outbox fence 与 access-token 撤销。
+    assert_eq!(applied, (1_i64..=36).collect::<Vec<_>>());
 
     // A database initialized by v1.1.2 has the same schema but records the
     // flattened baseline plus the two then-current migrations as versions 1-3.
     // The compatibility path must recognize and repair that exact ledger too.
     //
-    // 真实 v1.1.2 库的 schema 止于 29 号终态；上一段升级已经把 0030/0031
-    // 应用进来，先把这两步的 schema 变更回退，模拟才忠实。列/表均为空，
+    // 真实 v1.1.2 库的 schema 止于 29 号终态；上一段升级已经把 0030 之后的
+    // 步骤应用进来，先把这些 schema 变更回退，模拟才忠实。列/表均为空，
     // 回退不影响被保留的身份数据。
-    chenxing_auth::sqlx::query("ALTER TABLE user_passkeys DROP COLUMN state_version")
-        .execute(&pool)
-        .await
-        .expect("revert 0030 before v1.1.2 simulation");
-    chenxing_auth::sqlx::query("DROP TABLE client_operation_idempotency")
-        .execute(&pool)
-        .await
-        .expect("revert 0031 before v1.1.2 simulation");
+    for statement in [
+        "ALTER TABLE user_passkeys DROP COLUMN state_version",
+        "DROP TABLE client_operation_idempotency",
+        "DROP TABLE registration_invitation_uses",
+        "DROP TABLE registration_invitation_codes",
+        "DROP TABLE user_email_change_challenges",
+        "ALTER TABLE session_outbox DROP COLUMN claim_generation, DROP COLUMN claim_token",
+        "DROP TABLE revoked_access_tokens",
+    ] {
+        chenxing_auth::sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .unwrap_or_else(|error| panic!("revert post-v1.1.2 schema ({statement}): {error}"));
+    }
     chenxing_auth::sqlx::query("DELETE FROM _sqlx_migrations")
         .execute(&pool)
         .await
@@ -355,7 +362,7 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .fetch_all(&pool)
     .await
     .expect("read repaired v1.1.2 migration history");
-    assert_eq!(repaired, (1_i64..=32).collect::<Vec<_>>());
+    assert_eq!(repaired, (1_i64..=36).collect::<Vec<_>>());
 
     let preserved: (i64, i64, i64) = chenxing_auth::sqlx::query_as(
         "SELECT \
@@ -420,6 +427,11 @@ async fn flattened_repair_rejects_trigger_names_from_other_schema_or_wrong_table
     for statement in [
         "ALTER TABLE user_passkeys DROP COLUMN state_version",
         "DROP TABLE client_operation_idempotency",
+        "DROP TABLE registration_invitation_uses",
+        "DROP TABLE registration_invitation_codes",
+        "DROP TABLE user_email_change_challenges",
+        "ALTER TABLE session_outbox DROP COLUMN claim_generation, DROP COLUMN claim_token",
+        "DROP TABLE revoked_access_tokens",
         "DROP TRIGGER audit_events_append_only_trigger ON audit_events",
         "CREATE TABLE trigger_decoy_target (id BIGINT)",
         "CREATE FUNCTION trigger_decoy_function() RETURNS trigger

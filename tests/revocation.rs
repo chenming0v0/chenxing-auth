@@ -1,5 +1,7 @@
 use chenxing_auth::oauth::revocation::TokenRevocationStore;
 
+/// Redis 快路径：标记存在即拒绝。权威持久化与 Redis 丢失后的回源由
+/// `tests/access_token_revocation_durability.rs` 覆盖（Issue #656）。
 #[tokio::test]
 async fn revoked_access_token_is_rejected_until_its_expiry() {
     let client = redis::Client::open("redis://127.0.0.1:6379").expect("Redis URL");
