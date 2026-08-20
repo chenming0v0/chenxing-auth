@@ -48,7 +48,7 @@ pub enum OwnerGuardOutcome {
     LastOwnerRequired,
     /// 拒绝：现有或请求角色需要 `ManageRoles`，但 actor 只有 `ManageUsers`。
     ManageRolesRequired,
-    /// 拒绝：用户 Session 的状态或 generation 已在初始授权后变化。
+    /// 拒绝：用户 Session 的状态、generation 或精确会话行已在初始授权后变化。
     ActorSessionInvalid,
     /// 拒绝：事务内锁定的 actor 角色不再具备 `ManageUsers`。
     ActorPermissionRequired,
@@ -137,7 +137,7 @@ async fn set_user_role_in_transaction(
     let lock_order = lock_management_user_advisories(transaction, id, credential).await?;
     let active_owner_count = lock_active_owner_scope(transaction).await?;
     let locked = lock_management_user_rows(transaction, &lock_order).await?;
-    let access = match validate_management_actor(credential, locked.actor.as_ref()) {
+    let access = match validate_management_actor(credential, &locked) {
         Ok(access) => access,
         Err(rejection) => {
             return Ok(match rejection {
@@ -323,7 +323,7 @@ async fn set_user_status_in_transaction(
     let lock_order = lock_management_user_advisories(transaction, id, credential).await?;
     let active_owner_count = lock_active_owner_scope(transaction).await?;
     let locked = lock_management_user_rows(transaction, &lock_order).await?;
-    let access = match validate_management_actor(credential, locked.actor.as_ref()) {
+    let access = match validate_management_actor(credential, &locked) {
         Ok(access) => access,
         Err(ManagementActorRejection::SessionInvalid) => {
             return Ok(OwnerGuardOutcome::ActorSessionInvalid);

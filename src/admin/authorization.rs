@@ -37,8 +37,9 @@ impl AdminActor {
 
 /// 已通过目标无关的 `ManageUsers` 基线授权，以及要带入写事务的 actor 凭据。
 ///
-/// 这里只保存初始审计身份与 Session generation，不把事务外观察到的角色当作最终授权。
-/// 目标角色、actor active/role/generation 都由具体写事务持行锁复核（Issue #323/#493）。
+/// 这里只保存初始审计身份与 Session 行身份，不把事务外观察到的角色当作最终授权。
+/// 目标角色、actor active/role/generation 和精确会话行都由具体写事务持行锁复核
+/// （Issue #323/#493/#647）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AdminWriteAuthorization {
     actor: AdminActor,
