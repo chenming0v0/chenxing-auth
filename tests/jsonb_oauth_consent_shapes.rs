@@ -76,9 +76,10 @@ async fn insert_client(
 ) -> Result<(i64, String), chenxing_auth::sqlx::Error> {
     let client_id = format!("jsonb-client-{suffix}");
     let id = chenxing_auth::sqlx::query_scalar(
-        "INSERT INTO oauth_clients (client_id, client_name, redirect_uris, scopes, created_at)
-         VALUES ($1, $2, $3, $4, NOW())
-         RETURNING id",
+        "INSERT INTO oauth_clients
+          (client_id, client_name, redirect_uris, scopes, auth_method, created_at)
+          VALUES ($1, $2, $3, $4, 'none', NOW())
+          RETURNING id",
     )
     .bind(&client_id)
     .bind("JSONB Client")

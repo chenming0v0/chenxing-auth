@@ -329,6 +329,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "jsonb oauth consent shapes",
             include_str!("../../migrations/0038_jsonb_oauth_consent_shapes.sql"),
         ),
+        (
+            40,
+            "oauth client auth method secret",
+            include_str!("../../migrations/0040_oauth_client_auth_method_secret.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

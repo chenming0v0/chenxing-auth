@@ -35,15 +35,18 @@ pub async fn verify_schema_current(database: &super::Database) -> Result<(), Sch
         }
     })?;
 
+    // Versions are matched to the embedded migrator, not to 1..=N. A reserved
+    // gap (currently 0039, held for #644) is a valid ledger as long as every
+    // applied row matches the corresponding embedded migration.
     if rows.len() != expected.len()
-        || rows.iter().zip(expected.iter()).enumerate().any(
-            |(index, ((version, checksum, success), migration))| {
+        || rows
+            .iter()
+            .zip(expected.iter())
+            .any(|((version, checksum, success), migration)| {
                 *version != migration.version
                     || !*success
                     || checksum.as_slice() != migration.checksum.as_ref()
-                    || *version != (index + 1) as i64
-            },
-        )
+            })
     {
         return Err(SchemaStateError::InconsistentLedger);
     }
