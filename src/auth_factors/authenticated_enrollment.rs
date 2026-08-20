@@ -4,6 +4,8 @@
 //! cannot satisfy login policy and is bound to one user, browser session and
 //! session epoch until it is confirmed or expires.
 
+mod session_enrollment_types;
+use session_enrollment_types::{PendingSessionEnrollment, PendingTotpPayload};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::fmt;
 use time::OffsetDateTime;
@@ -67,48 +69,6 @@ pub struct SessionPasskeyStart {
     pub options: CreationChallengeResponse,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct PendingSessionEnrollment<P> {
-    binding: PendingSessionBinding,
-    method: FactorMethod,
-    enrollment_id: String,
-    expires_at: OffsetDateTime,
-    payload: P,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PendingSessionBinding {
-    user_id: String,
-    session_id: String,
-    session_epoch: String,
-}
-
-impl PendingSessionBinding {
-    fn new(user_id: UserId, session_id: i64, session_epoch: i64) -> Self {
-        Self {
-            user_id: user_id.to_string(),
-            session_id: session_id.to_string(),
-            session_epoch: session_epoch.to_string(),
-        }
-    }
-}
-
-impl<P> fmt::Debug for PendingSessionEnrollment<P> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PendingSessionEnrollment")
-            .field("binding", &self.binding)
-            .field("method", &self.method)
-            .field("enrollment_id", &self.enrollment_id)
-            .field("expires_at", &self.expires_at)
-            .field("payload", &"<redacted>")
-            .finish()
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct PendingTotpPayload {
-    encrypted_secret: Vec<u8>,
-}
 
 impl AuthFactorService {
     pub async fn session_factor_summary(
@@ -497,22 +457,5 @@ impl AuthFactorService {
         };
         self.tickets
             .namespaced(&format!("{SESSION_ENROLLMENT_PREFIX}{user_id}:{method}"))
-    }
-}
-
-impl<P> PendingSessionEnrollment<P> {
-    fn matches(
-        &self,
-        user_id: UserId,
-        session_id: i64,
-        session_epoch: i64,
-        method: FactorMethod,
-        enrollment_id: &str,
-    ) -> bool {
-        self.binding.user_id == user_id.to_string()
-            && self.binding.session_id == session_id.to_string()
-            && self.binding.session_epoch == session_epoch.to_string()
-            && self.method == method
-            && self.enrollment_id == enrollment_id
     }
 }
