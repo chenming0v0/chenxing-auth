@@ -3,6 +3,7 @@
 //! Protocol behavior must be built on a mature Rust protocol library instead
 //! of reimplementing token signing or protocol parsing here.
 
+mod access_token_revocation;
 pub mod authorization;
 pub mod authorization_code_handlers;
 pub mod authorization_decision_use_case;

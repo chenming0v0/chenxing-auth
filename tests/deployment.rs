@@ -1090,11 +1090,26 @@ fn database_uses_forward_only_transactional_migration_history() {
         DB_MODULE
             .contains("include_str!(\"../../migrations/0033_registration_invitation_codes.sql\")")
     );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0034_user_email_change_challenges.sql\")")
+    );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0035_session_outbox_claim_fence.sql\")")
+    );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0036_revoke_runtime_archive_insert.sql\")")
+    );
+    assert!(
+        DB_MODULE.contains("include_str!(\"../../migrations/0037_revoked_access_tokens.sql\")")
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        33
+        37
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1138,14 +1153,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 36);
+    assert_eq!(migrations.len(), 37);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0036_revoke_runtime_archive_insert.sql")
+        Some("0037_revoked_access_tokens.sql")
     );
     for (index, name) in migrations.iter().enumerate() {
         let expected_prefix = format!("{:04}_", index + 1);
@@ -1236,6 +1251,8 @@ fn migration_history_declares_final_security_and_consistency_invariants() {
         "CREATE TRIGGER audit_events_append_only_trigger",
         "CREATE TRIGGER audit_events_archive_append_only_trigger",
         "GRANT UPDATE ON SEQUENCE %s TO chenxing_runtime",
+        "CREATE TABLE revoked_access_tokens",
+        "GRANT SELECT, INSERT, DELETE ON TABLE revoked_access_tokens TO chenxing_runtime",
         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I._sqlx_migrations",
         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I.audit_events_archive FROM chenxing_runtime",
         "ALTER DEFAULT PRIVILEGES IN SCHEMA %I REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLES",

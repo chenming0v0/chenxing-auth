@@ -319,6 +319,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "revoke runtime archive insert",
             include_str!("../../migrations/0036_revoke_runtime_archive_insert.sql"),
         ),
+        (
+            37,
+            "revoked access tokens",
+            include_str!("../../migrations/0037_revoked_access_tokens.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {
