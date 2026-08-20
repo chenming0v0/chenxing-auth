@@ -112,6 +112,12 @@ pub struct SessionPayload {
     pub last_seen_at: Option<OffsetDateTime>,
     pub csrf_token: String,
     pub revoked_at: Option<OffsetDateTime>,
+    /// Issuance-time idle window in seconds. Missing on pre-#644 payloads;
+    /// those sessions fall back to the boot-time store policy on Redis-only
+    /// lookup. PostgreSQL lookup uses the `user_sessions.idle_timeout_seconds`
+    /// column instead of this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_timeout_seconds: Option<u64>,
 }
 
 impl fmt::Debug for SessionPayload {
@@ -124,6 +130,7 @@ impl fmt::Debug for SessionPayload {
             .field("last_seen_at", &self.last_seen_at)
             .field("csrf_token", &"<redacted>")
             .field("revoked_at", &self.revoked_at)
+            .field("idle_timeout_seconds", &self.idle_timeout_seconds)
             .finish()
     }
 }
@@ -155,11 +162,6 @@ impl SessionLookup {
     pub fn is_active(&self) -> bool {
         self.is_active_at(SystemClock.now())
     }
-
-    pub(crate) fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
-        self.idle_timeout = Some(idle_timeout);
-        self
-    }
 }
 
 impl From<&Session> for SessionPayload {
@@ -172,6 +174,7 @@ impl From<&Session> for SessionPayload {
             last_seen_at: Some(session.last_seen_at),
             csrf_token: session.csrf_token.clone(),
             revoked_at: session.revoked_at,
+            idle_timeout_seconds: session.idle_timeout.map(|timeout| timeout.as_secs()),
         }
     }
 }
@@ -192,7 +195,7 @@ impl SessionPayload {
             csrf_token: self.csrf_token,
             revoked_at: self.revoked_at,
             credential_generation: None,
-            idle_timeout: None,
+            idle_timeout: idle_timeout_from_seconds(self.idle_timeout_seconds),
         }
     }
 
@@ -204,7 +207,7 @@ impl SessionPayload {
             expires_at: self.expires_at,
             last_seen_at: self.last_seen_at.unwrap_or(self.created_at),
             revoked_at: self.revoked_at,
-            idle_timeout: None,
+            idle_timeout: idle_timeout_from_seconds(self.idle_timeout_seconds),
         }
     }
 }
@@ -323,8 +326,21 @@ impl Session {
             && idle_active_at(self.last_seen_at, self.idle_timeout, now)
     }
 
+    pub(crate) fn idle_timeout(&self) -> Option<Duration> {
+        self.idle_timeout
+    }
+
     pub(crate) fn set_idle_timeout(&mut self, idle_timeout: Duration) {
         self.idle_timeout = Some(idle_timeout);
+    }
+
+    /// Pre-#644 payloads omit the issuance window. Those sessions were
+    /// evaluated against the boot-time store policy; do not overwrite a
+    /// persisted value with a later admin or boot setting.
+    pub(crate) fn restore_idle_timeout(&mut self, fallback: Duration) {
+        if self.idle_timeout.is_none() {
+            self.idle_timeout = Some(fallback);
+        }
     }
 
     /// Credential generation recorded by the authoritative session metadata row.
@@ -375,6 +391,10 @@ impl Session {
         // 逐字节比较无数据相关分支。
         self.csrf_token.as_bytes().ct_eq(token.as_bytes()).into()
     }
+}
+
+fn idle_timeout_from_seconds(seconds: Option<u64>) -> Option<Duration> {
+    seconds.filter(|&secs| secs > 0).map(Duration::from_secs)
 }
 
 fn idle_active_at(

@@ -197,12 +197,12 @@ impl SessionStore {
                     "SELECT sessions.session_payload,
                                 sessions.revoked_at IS NULL
                                     AND sessions.expires_at > NOW()
-                                    AND sessions.last_seen_at + $2 > NOW()
+                                    AND sessions.last_seen_at + MAKE_INTERVAL(secs => sessions.idle_timeout_seconds) > NOW()
                                     AND sessions.session_epoch >= users.session_epoch
                                     AND users.status = 'active',
                                 EXTRACT(EPOCH FROM LEAST(
                                     sessions.expires_at,
-                                    sessions.last_seen_at + $2
+                                    sessions.last_seen_at + MAKE_INTERVAL(secs => sessions.idle_timeout_seconds)
                                 ) - NOW())::bigint,
                                 sessions.last_seen_at,
                                 sessions.session_epoch, sessions.user_id
@@ -212,7 +212,6 @@ impl SessionStore {
                          FOR UPDATE OF sessions",
                 )
                 .bind(session_id)
-                .bind(self.idle_timeout_interval())
                 .fetch_optional(&mut *transaction)
                 .await?;
                 let Some((payload, active, remaining_seconds, last_seen_at, generation, user_id)) =

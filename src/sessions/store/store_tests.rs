@@ -96,8 +96,8 @@ fn session_at(now: OffsetDateTime, ttl: Duration, idle_timeout: Duration) -> Ses
 fn redis_ttl_follows_the_idle_deadline_when_it_is_nearer() {
     let absolute = Duration::from_secs(3_600);
     let idle = Duration::from_secs(600);
-    // `new_at_with_idle_timeout` 已经把 idle 写进会话；生产路径里 `save_bound`
-    // 会用 store policy 覆盖它，这里两者取同一个值，判定等价。
+    // `new_at_with_idle_timeout` 把签发时的 idle 写进会话；查找用这个值，
+    // 不再被 store 启动策略覆盖（#644）。
     let session = session_at(CREATED_AT, absolute, idle);
     let store = store_at(CREATED_AT).with_absolute_ttl(absolute);
 
@@ -151,6 +151,22 @@ fn session_activity_flips_exactly_at_absolute_expiry() {
     assert!(!session.is_active_at(SharedClock::fixed(deadline).now()));
 }
 
+/// 会话自己的 idle 窗口决定 Redis TTL，store 启动策略缩短之后也不能改写已签发会话。
+#[test]
+fn redis_ttl_follows_the_session_idle_not_the_store_policy() {
+    let absolute = Duration::from_secs(3_600);
+    let issued_idle = Duration::from_secs(1_800);
+    let session = session_at(CREATED_AT, absolute, issued_idle);
+    let store = store_at(CREATED_AT)
+        .with_absolute_ttl(absolute)
+        .with_session_policy(Duration::from_secs(60), 5);
+
+    assert_eq!(
+        store.redis_ttl_seconds(&session, absolute, store.clock.now()),
+        1_800
+    );
+}
+
 /// idle 超时同样在截止时刻翻转，且早于绝对过期。
 #[test]
 fn session_activity_flips_exactly_at_the_idle_deadline() {
@@ -166,4 +182,19 @@ fn session_activity_flips_exactly_at_the_idle_deadline() {
         "idle 截止必须先于绝对过期让会话失效"
     );
     assert!(idle_deadline < session.expires_at);
+}
+
+/// #644：查找不得把启动期 store policy 盖到已签发会话上。
+#[test]
+fn lookup_paths_do_not_overwrite_issuance_idle_with_store_policy() {
+    let find = include_str!("postgres_find.rs");
+    let redis = include_str!("redis_only.rs");
+    assert!(
+        !find.contains("store.policy.idle_timeout"),
+        "PostgreSQL lookup must use the session row, not the boot-time store policy"
+    );
+    assert!(
+        !redis.contains("session.set_idle_timeout(store.policy.idle_timeout)"),
+        "Redis-only lookup must not overwrite a persisted issuance window"
+    );
 }

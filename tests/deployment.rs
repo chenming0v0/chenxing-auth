@@ -1109,11 +1109,15 @@ fn database_uses_forward_only_transactional_migration_history() {
         DB_MODULE
             .contains("include_str!(\"../../migrations/0038_jsonb_oauth_consent_shapes.sql\")")
     );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0039_session_issued_idle_timeout.sql\")")
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        38
+        39
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1157,14 +1161,14 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 38);
+    assert_eq!(migrations.len(), 39);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0038_jsonb_oauth_consent_shapes.sql")
+        Some("0039_session_issued_idle_timeout.sql")
     );
     for (index, name) in migrations.iter().enumerate() {
         let expected_prefix = format!("{:04}_", index + 1);
@@ -1262,6 +1266,8 @@ fn migration_history_declares_final_security_and_consistency_invariants() {
         "CONSTRAINT user_consents_scopes_check",
         "CONSTRAINT oauth_providers_scopes_check",
         "CONSTRAINT user_passkeys_credential_check",
+        "CONSTRAINT user_sessions_idle_timeout_seconds_range",
+        "idle_timeout_seconds BIGINT",
         "jsonb_typeof(redirect_uris) = 'array'",
         "jsonb_typeof(credential) = 'object'",
         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I._sqlx_migrations",

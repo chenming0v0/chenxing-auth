@@ -170,7 +170,7 @@ pub(super) async fn find_redis_only(
     };
     // Redis 键由令牌哈希派生，能读到这条记录就说明调用方持有该令牌。
     let mut session = stored_payload.into_session(token.to_owned());
-    session.set_idle_timeout(store.policy.idle_timeout);
+    session.restore_idle_timeout(store.policy.idle_timeout);
     let now = store.clock.now();
     if !session.is_active_at(now) {
         return Ok(None);
@@ -189,7 +189,7 @@ pub(super) async fn find_redis_only(
     if is_revoked_by_watermark(marker.as_deref(), session.created_at) {
         return Ok(None);
     }
-    if session.last_seen_at <= now - store.renewal_interval() {
+    if session.last_seen_at <= now - store.session_renewal_interval(&session) {
         session.last_seen_at = now;
         let payload =
             store.encrypt_payload(&serde_json::to_vec(&SessionPayload::from(&session))?)?;
@@ -222,7 +222,7 @@ pub(super) async fn find_redis_only_by_token_hash(
         return Ok(None);
     };
     let mut session = stored_payload.into_session(String::new());
-    session.set_idle_timeout(store.policy.idle_timeout);
+    session.restore_idle_timeout(store.policy.idle_timeout);
     let now = store.clock.now();
     if !session.is_active_at(now) {
         return Ok(None);
@@ -239,7 +239,7 @@ pub(super) async fn find_redis_only_by_token_hash(
     if is_revoked_by_watermark(marker.as_deref(), session.created_at) {
         return Ok(None);
     }
-    if session.last_seen_at <= now - store.renewal_interval() {
+    if session.last_seen_at <= now - store.session_renewal_interval(&session) {
         session.last_seen_at = now;
         let payload =
             store.encrypt_payload(&serde_json::to_vec(&SessionPayload::from(&session))?)?;
@@ -256,11 +256,7 @@ pub(super) async fn find_redis_only_by_token_hash(
             return Ok(None);
         }
     }
-    Ok(Some(
-        SessionPayload::from(&session)
-            .into_lookup()
-            .with_idle_timeout(store.policy.idle_timeout),
-    ))
+    Ok(Some(SessionPayload::from(&session).into_lookup()))
 }
 
 pub(super) async fn revoke_redis_only(

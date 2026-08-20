@@ -269,6 +269,21 @@ async fn unified_identity_schema_uses_bigint_entities_and_no_admin_table() {
     .await;
     assert_column(&pool, "users", "session_epoch", "bigint", false).await;
     assert_column(&pool, "user_sessions", "session_epoch", "bigint", false).await;
+    assert_column(
+        &pool,
+        "user_sessions",
+        "idle_timeout_seconds",
+        "bigint",
+        false,
+    )
+    .await;
+    assert_constraint_contains(
+        &pool,
+        "user_sessions",
+        "user_sessions_idle_timeout_seconds_range",
+        &["idle_timeout_seconds", "2592000"],
+    )
+    .await;
     assert_column(&pool, "session_outbox", "id", "bigint", false).await;
     assert_identity(&pool, "session_outbox", "id").await;
     assert_column(

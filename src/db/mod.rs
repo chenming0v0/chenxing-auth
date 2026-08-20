@@ -329,6 +329,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "jsonb oauth consent shapes",
             include_str!("../../migrations/0038_jsonb_oauth_consent_shapes.sql"),
         ),
+        (
+            39,
+            "session issued idle timeout",
+            include_str!("../../migrations/0039_session_issued_idle_timeout.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

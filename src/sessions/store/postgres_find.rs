@@ -9,6 +9,8 @@
 //! transition that revokes the Cookie cannot be observed as (live session,
 //! new Owner/Admin role).
 
+use std::time::Duration;
+
 use redis::AsyncCommands;
 use time::OffsetDateTime;
 
@@ -39,6 +41,7 @@ type ActiveSessionSqlRow = (
     OffsetDateTime,
     OffsetDateTime,
     i64,
+    i64,
     bool,
     Option<Vec<u8>>,
     String,
@@ -54,6 +57,7 @@ impl From<ActiveSessionSqlRow> for ActiveSessionRow {
             expires_at,
             last_seen_at,
             session_epoch,
+            idle_timeout_seconds,
             needs_renewal,
             payload,
             role,
@@ -67,6 +71,7 @@ impl From<ActiveSessionSqlRow> for ActiveSessionRow {
             expires_at,
             last_seen_at,
             session_epoch,
+            idle_timeout: idle_timeout_from_seconds(idle_timeout_seconds),
             needs_renewal,
             payload,
             role,
@@ -82,10 +87,15 @@ struct ActiveSessionRow {
     expires_at: OffsetDateTime,
     last_seen_at: OffsetDateTime,
     session_epoch: i64,
+    idle_timeout: Duration,
     needs_renewal: bool,
     payload: Option<Vec<u8>>,
     role: String,
     status: String,
+}
+
+fn idle_timeout_from_seconds(seconds: i64) -> Duration {
+    Duration::from_secs(u64::try_from(seconds).unwrap_or(1).max(1))
 }
 
 impl SessionStore {
@@ -120,7 +130,7 @@ pub(in crate::sessions::store) async fn find_authenticated_with_metadata(
 
     // Unlocked authority check. Holding FOR UPDATE here would pin the row for
     // the entire find — including Redis fallback I/O on migration rows.
-    let Some(row) = load_active_by_token_hash(pool, store, &token_hash).await? else {
+    let Some(row) = load_active_by_token_hash(pool, &token_hash).await? else {
         return Ok(None);
     };
     let Some((role, status)) = UserRole::from_authenticated_row(&row.role, &row.status) else {
@@ -139,7 +149,7 @@ pub(in crate::sessions::store) async fn find_authenticated_with_metadata(
     // After external I/O, re-check authority without taking a lock. Shrinks the
     // window where a revoke that committed during Redis fallback would otherwise
     // still authenticate. Renewal path re-validates again under FOR UPDATE.
-    if used_redis_fallback && !session_still_active(pool, store, row.id).await? {
+    if used_redis_fallback && !session_still_active(pool, row.id).await? {
         return Ok(None);
     }
 
@@ -152,7 +162,7 @@ pub(in crate::sessions::store) async fn find_authenticated_with_metadata(
     session.last_seen_at = row.last_seen_at;
     session.revoked_at = None;
     session.set_credential_generation(row.session_epoch);
-    session.set_idle_timeout(store.policy.idle_timeout);
+    session.set_idle_timeout(row.idle_timeout);
 
     if row.needs_renewal {
         let Some(renewed_at) = renew_session_activity(
@@ -189,7 +199,7 @@ pub(in crate::sessions::store) async fn find_with_metadata_by_token_hash(
         .as_ref()
         .ok_or(SessionStoreError::MetadataUnavailable)?;
 
-    let Some(row) = load_active_by_token_hash(pool, store, token_hash).await? else {
+    let Some(row) = load_active_by_token_hash(pool, token_hash).await? else {
         return Ok(None);
     };
 
@@ -214,23 +224,19 @@ pub(in crate::sessions::store) async fn find_with_metadata_by_token_hash(
         row.last_seen_at
     };
 
-    Ok(Some(
-        SessionLookup {
-            id: row.id,
-            user_id: row.user_id.to_string(),
-            created_at: row.created_at,
-            expires_at: row.expires_at,
-            last_seen_at,
-            revoked_at: None,
-            idle_timeout: None,
-        }
-        .with_idle_timeout(store.policy.idle_timeout),
-    ))
+    Ok(Some(SessionLookup {
+        id: row.id,
+        user_id: row.user_id.to_string(),
+        created_at: row.created_at,
+        expires_at: row.expires_at,
+        last_seen_at,
+        revoked_at: None,
+        idle_timeout: Some(row.idle_timeout),
+    }))
 }
 
 async fn load_active_by_token_hash(
     pool: &crate::sqlx::PgPool,
-    store: &SessionStore,
     token_hash: &[u8],
 ) -> Result<Option<ActiveSessionRow>, SessionStoreError> {
     // `users.role` / `users.status` are selected here, not in a later query.
@@ -239,7 +245,8 @@ async fn load_active_by_token_hash(
     let row = crate::sqlx::query_as::<_, ActiveSessionSqlRow>(
         "SELECT sessions.id, sessions.user_id, sessions.created_at,
                 sessions.expires_at, sessions.last_seen_at, sessions.session_epoch,
-                sessions.last_seen_at <= NOW() - $3 AS needs_renewal,
+                sessions.idle_timeout_seconds,
+                sessions.last_seen_at <= NOW() - MAKE_INTERVAL(secs => GREATEST(sessions.idle_timeout_seconds / 2, 1)) AS needs_renewal,
                 sessions.session_payload,
                 users.role,
                 users.status
@@ -248,13 +255,11 @@ async fn load_active_by_token_hash(
          WHERE sessions.token_hash = $1
            AND sessions.revoked_at IS NULL
            AND sessions.expires_at > NOW()
-           AND sessions.last_seen_at > NOW() - $2
+           AND sessions.last_seen_at > NOW() - MAKE_INTERVAL(secs => sessions.idle_timeout_seconds)
            AND sessions.session_epoch >= users.session_epoch
            AND users.status = 'active'",
     )
     .bind(token_hash)
-    .bind(store.idle_timeout_interval())
-    .bind(store.renewal_interval())
     .fetch_optional(pool)
     .await?;
 
@@ -264,7 +269,6 @@ async fn load_active_by_token_hash(
 /// Cheap unlocked liveness probe used after Redis fallback.
 async fn session_still_active(
     pool: &crate::sqlx::PgPool,
-    store: &SessionStore,
     session_id: i64,
 ) -> Result<bool, SessionStoreError> {
     let active: Option<bool> = crate::sqlx::query_scalar(
@@ -274,12 +278,11 @@ async fn session_still_active(
          WHERE sessions.id = $1
            AND sessions.revoked_at IS NULL
            AND sessions.expires_at > NOW()
-           AND sessions.last_seen_at > NOW() - $2
+           AND sessions.last_seen_at > NOW() - MAKE_INTERVAL(secs => sessions.idle_timeout_seconds)
            AND sessions.session_epoch >= users.session_epoch
            AND users.status = 'active'",
     )
     .bind(session_id)
-    .bind(store.idle_timeout_interval())
     .fetch_optional(pool)
     .await?;
     Ok(active.unwrap_or(false))
@@ -349,20 +352,18 @@ async fn renew_session_activity(
     let mut transaction = pool.begin().await?;
     let locked: Option<(OffsetDateTime, bool)> = crate::sqlx::query_as(
         "SELECT sessions.last_seen_at,
-                sessions.last_seen_at <= NOW() - $3 AS needs_renewal
+                sessions.last_seen_at <= NOW() - MAKE_INTERVAL(secs => GREATEST(sessions.idle_timeout_seconds / 2, 1)) AS needs_renewal
          FROM user_sessions AS sessions
          JOIN users ON users.id = sessions.user_id
          WHERE sessions.id = $1
            AND sessions.revoked_at IS NULL
            AND sessions.expires_at > NOW()
-           AND sessions.last_seen_at > NOW() - $2
+           AND sessions.last_seen_at > NOW() - MAKE_INTERVAL(secs => sessions.idle_timeout_seconds)
            AND sessions.session_epoch >= users.session_epoch
            AND users.status = 'active'
          FOR UPDATE OF sessions",
     )
     .bind(session_id)
-    .bind(store.idle_timeout_interval())
-    .bind(store.renewal_interval())
     .fetch_optional(&mut *transaction)
     .await?;
 

@@ -21,13 +21,12 @@ pub(in crate::sessions::store) async fn list_for_user(
          WHERE sessions.user_id = $1
             AND sessions.revoked_at IS NULL
             AND sessions.expires_at > NOW()
-            AND sessions.last_seen_at > NOW() - $2
+            AND sessions.last_seen_at > NOW() - MAKE_INTERVAL(secs => sessions.idle_timeout_seconds)
             AND sessions.session_epoch >= users.session_epoch
             AND users.status = 'active'
           ORDER BY sessions.created_at DESC",
     )
     .bind(user_id)
-    .bind(store.idle_timeout_interval())
     .fetch_all(pool)
     .await?;
     Ok(rows
@@ -62,12 +61,11 @@ pub(in crate::sessions::store) async fn revoke_for_user(
             AND user_id = $2
             AND revoked_at IS NULL
             AND expires_at > NOW()
-            AND last_seen_at > NOW() - $3
+            AND last_seen_at > NOW() - MAKE_INTERVAL(secs => idle_timeout_seconds)
           FOR UPDATE",
     )
     .bind(session_id)
     .bind(user_id)
-    .bind(store.idle_timeout_interval())
     .fetch_optional(&mut *transaction)
     .await?;
     let Some((hash, session_epoch)) = found else {
