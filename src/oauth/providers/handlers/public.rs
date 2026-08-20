@@ -20,7 +20,7 @@ pub async fn list_public_providers(State(state): State<AppState>) -> Response {
         Ok(providers) => {
             let active: Vec<PublicProvider> = providers
                 .into_iter()
-                .filter(|provider| provider.status == "active")
+                .filter(|provider| provider.status == "active" && provider.claim_mapping().is_ok())
                 .map(|provider| PublicProvider {
                     slug: provider.slug,
                     name: provider.name,

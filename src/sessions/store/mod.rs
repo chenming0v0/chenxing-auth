@@ -339,7 +339,9 @@ impl SessionStore {
 
     pub async fn find(&self, token: &str) -> Result<Option<Session>, SessionStoreError> {
         if self.metadata.is_some() {
-            postgres::find_with_metadata(self, token).await
+            Ok(postgres::find_authenticated_with_metadata(self, token)
+                .await?
+                .map(|bound| bound.session))
         } else {
             redis_only::find_redis_only(self, token).await
         }

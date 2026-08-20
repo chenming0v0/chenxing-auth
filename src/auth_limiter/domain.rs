@@ -1,6 +1,7 @@
 use std::{future::Future, pin::Pin};
 
 use thiserror::Error;
+use uuid::Uuid;
 
 /// Sliding-window duration shared by account, IP, and login-ticket counters.
 ///
@@ -14,6 +15,13 @@ pub const ACCOUNT_FAILURE_LIMIT: i64 = 10;
 pub const IP_FAILURE_LIMIT: i64 = 30;
 /// TOTP failures allowed for one pending login ticket before it is invalidated.
 pub const TOTP_TICKET_FAILURE_LIMIT: i64 = 5;
+
+/// Minimum lifetime of an authentication verification reservation.
+///
+/// This is deliberately independent from the failure-history window: operators may
+/// use a short failure window for policy tests or aggressive lockout while Argon2,
+/// TOTP, or WebAuthn verification is still in progress.
+pub const AUTH_VERIFICATION_LEASE_SECONDS: i64 = 15 * 60;
 
 /// 运行期可配置的认证失败阈值（#121）。
 ///
@@ -162,24 +170,89 @@ impl FailureRecord {
 
 pub type LimiterDimension = (FailureDimension, String);
 
-/// Commits a previously reserved failure and closes the reservation lifecycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthReservation {
+    pub(crate) leases: Vec<ReservationLease>,
+    /// Distinct from empty leases. `reserve([])` is a vacuous allow
+    /// (nothing to count, e.g. Skip + missing source IP). A blocked
+    /// attempt is an explicit denial and must not share that representation.
+    denied: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReservationLease {
+    pub(crate) dimension: FailureDimension,
+    pub(crate) value: String,
+    pub(crate) token: String,
+}
+
+impl AuthReservation {
+    pub(crate) fn single(dimensions: Vec<LimiterDimension>, token: String) -> Self {
+        Self {
+            leases: dimensions
+                .into_iter()
+                .map(|(dimension, value)| ReservationLease {
+                    dimension,
+                    value,
+                    token: token.clone(),
+                })
+                .collect(),
+            denied: false,
+        }
+    }
+
+    pub(crate) fn denied() -> Self {
+        Self {
+            leases: Vec::new(),
+            denied: true,
+        }
+    }
+
+    pub(crate) fn merge(mut self, other: Self) -> Self {
+        self.denied |= other.denied;
+        self.leases.extend(other.leases);
+        self
+    }
+
+    pub(crate) fn dimensions(&self) -> Vec<LimiterDimension> {
+        self.leases
+            .iter()
+            .map(|lease| (lease.dimension, lease.value.clone()))
+            .collect()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.leases.is_empty()
+    }
+
+    pub(crate) fn is_denied(&self) -> bool {
+        self.denied
+    }
+}
+
+impl AuthReservation {
+    pub(crate) fn token() -> String {
+        Uuid::new_v4().simple().to_string()
+    }
+}
+
 ///
 /// FailOpen may return a successful `NotRecorded` result when storage is
 /// unavailable. That result must release the pending reservation just like a
 /// storage error; an actual record remains the only path that consumes it.
 pub(crate) async fn commit_reserved_failure(
     limiter: &dyn AuthFailureLimiter,
-    dimensions: Vec<LimiterDimension>,
+    reservation: AuthReservation,
 ) -> Result<FailureRecord, AuthLimiterError> {
-    match limiter.record_reserved_failures(dimensions.clone()).await {
+    match limiter.record_reserved_failures(reservation.clone()).await {
         Ok(record) => {
             if !record.was_recorded() {
-                release_reserved(limiter, dimensions, "record_reserved_failures").await;
+                release_reserved(limiter, reservation.clone(), "record_reserved_failures").await;
             }
             Ok(record)
         }
         Err(error) => {
-            release_reserved(limiter, dimensions, "record_reserved_failures").await;
+            release_reserved(limiter, reservation, "record_reserved_failures").await;
             Err(error)
         }
     }
@@ -189,11 +262,11 @@ pub(crate) async fn commit_reserved_failure(
 /// limiter failure is more useful than a release failure and must be preserved.
 pub(crate) async fn release_reserved(
     limiter: &dyn AuthFailureLimiter,
-    dimensions: Vec<LimiterDimension>,
+    reservation: AuthReservation,
     operation: &str,
 ) {
-    let dimension_count = dimensions.len();
-    if let Err(release_error) = limiter.release(dimensions).await {
+    let dimension_count = reservation.leases.len();
+    if let Err(release_error) = limiter.release(reservation).await {
         tracing::error!(
             event = "auth_limiter.reservation_release_failed",
             operation,
@@ -224,32 +297,34 @@ pub trait AuthFailureLimiter: Send + Sync {
 
     fn clear<'a>(&'a self, dimension: FailureDimension, value: &str) -> LimiterFuture<'a, ()>;
 
-    /// Atomically reserves one authentication attempt across all dimensions.
-    /// The result is false when a dimension is already at its limit.
-    fn reserve<'a>(&'a self, dimensions: Vec<LimiterDimension>) -> LimiterFuture<'a, bool> {
+    fn reserve<'a>(
+        &'a self,
+        dimensions: Vec<LimiterDimension>,
+    ) -> LimiterFuture<'a, AuthReservation> {
         Box::pin(async move {
-            if self.any_limited(dimensions).await? {
-                Ok(false)
+            if self.any_limited(dimensions.clone()).await? {
+                Ok(AuthReservation::denied())
             } else {
-                Ok(true)
+                Ok(AuthReservation::single(
+                    dimensions,
+                    AuthReservation::token(),
+                ))
             }
         })
     }
 
-    /// Commits a previously reserved attempt as a failed authentication.
-    /// A FailOpen fallback is returned as `FailureRecordStatus::NotRecorded`;
-    /// callers must use `commit_reserved_failure` so that pending quota is released.
+    /// Commits a previously reserved attempt.
     fn record_reserved_failures<'a>(
         &'a self,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
     ) -> LimiterFuture<'a, FailureRecord> {
-        self.record_failures(dimensions)
+        self.record_failures(reservation.dimensions())
     }
 
-    /// Releases a previously reserved attempt after successful authentication.
-    fn release<'a>(&'a self, dimensions: Vec<LimiterDimension>) -> LimiterFuture<'a, ()> {
+    /// Releases only the owned reservation lease; implementations must be idempotent.
+    fn release<'a>(&'a self, reservation: AuthReservation) -> LimiterFuture<'a, ()> {
         Box::pin(async move {
-            let _ = dimensions;
+            let _ = reservation;
             Ok(())
         })
     }

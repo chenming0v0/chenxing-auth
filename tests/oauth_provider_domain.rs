@@ -56,6 +56,13 @@ fn provider_record() -> ProviderRecord {
 }
 
 #[test]
+fn active_provider_with_invalid_claim_mapping_is_not_bindable() {
+    let mut provider = provider_record();
+    provider.email_verified_claim = Some("profile.email_verified".to_owned());
+    assert!(provider.claim_mapping().is_err());
+}
+
+#[test]
 fn provider_input_accepts_standard_https_configuration() {
     let provider = valid_input()
         .validate(EndpointPolicy::PRODUCTION)

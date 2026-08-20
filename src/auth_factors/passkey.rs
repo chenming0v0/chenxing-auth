@@ -21,7 +21,7 @@ use crate::{
         persistence::consume_then_persist,
         repository,
     },
-    auth_limiter::{FailureDimension, LimiterDimension},
+    auth_limiter::{AuthReservation, FailureDimension},
     users::domain::UserId,
 };
 
@@ -148,13 +148,13 @@ impl AuthFactorService {
         // 内反复触发证明解析与数据库写入，限流也就防不住计算放大。
         let account_key = self.account_key(ticket.user_id).await?;
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
-        if self.ensure_dimensions_allowed(dimensions.clone()).await? {
+        let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(PasskeyConfirmation::RateLimited(ticket.user_id));
-        }
+        };
         let core = match build_core(&pending.settings) {
             Ok(core) => core,
             Err(error) => {
-                self.release_dimensions(dimensions).await?;
+                self.release_dimensions(reservation).await?;
                 return Err(error);
             }
         };
@@ -167,7 +167,7 @@ impl AuthFactorService {
                         holder_hash,
                         ticket.user_id,
                         &self.passkey_registration_key(ticket_id),
-                        dimensions,
+                        reservation,
                     )
                     .await;
             }
@@ -175,12 +175,12 @@ impl AuthFactorService {
         let passkey = match passkey_from_credential(credential) {
             Ok(passkey) => passkey,
             Err(error) => {
-                self.release_dimensions(dimensions).await?;
+                self.release_dimensions(reservation).await?;
                 return Err(error);
             }
         };
         // 验签通过即视为一次成功尝试，先归还预留额度再消费 ticket，避免额度悬挂。
-        self.release_dimensions(dimensions).await?;
+        self.release_dimensions(reservation).await?;
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
@@ -192,6 +192,7 @@ impl AuthFactorService {
                 match repository::insert_passkey_if_empty_with_issuer_generation(
                     &self.pool,
                     ticket.user_id,
+                    ticket.session_epoch,
                     passkey.cred_id(),
                     &passkey,
                     current_issuer_generation,
@@ -203,6 +204,9 @@ impl AuthFactorService {
                     | repository::PasskeyPersistenceResult::IssuerChanged => {
                         Err(AuthFactorServiceError::FirstFactorAlreadyExists)
                     }
+                    repository::PasskeyPersistenceResult::AuthenticationChanged => {
+                        Err(AuthFactorServiceError::AuthenticationEpochChanged)
+                    }
                 }
             },
             |ticket| self.tickets.restore(ticket_id, ticket),
@@ -210,7 +214,10 @@ impl AuthFactorService {
         .await
         {
             Ok(confirmation) => confirmation,
-            Err(AuthFactorServiceError::FirstFactorAlreadyExists) => {
+            Err(
+                AuthFactorServiceError::FirstFactorAlreadyExists
+                | AuthFactorServiceError::AuthenticationEpochChanged,
+            ) => {
                 let _ = self.tickets.take_for_holder(ticket_id, holder_hash).await?;
                 self.tickets
                     .delete(&self.passkey_registration_key(ticket_id))
@@ -324,13 +331,13 @@ impl AuthFactorService {
         // ticket 在 5 分钟 TTL 内可以反复提交伪造 credential，每次都会付出一轮验签代价。
         let account_key = self.account_key(ticket.user_id).await?;
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
-        if self.ensure_dimensions_allowed(dimensions.clone()).await? {
+        let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(PasskeyConfirmation::RateLimited(ticket.user_id));
-        }
+        };
         let core = match build_core(&pending.settings) {
             Ok(core) => core,
             Err(error) => {
-                self.release_dimensions(dimensions).await?;
+                self.release_dimensions(reservation).await?;
                 return Err(error);
             }
         };
@@ -343,7 +350,7 @@ impl AuthFactorService {
                         holder_hash,
                         ticket.user_id,
                         &self.passkey_authentication_key(ticket_id),
-                        dimensions,
+                        reservation,
                     )
                     .await;
             }
@@ -357,12 +364,12 @@ impl AuthFactorService {
                     holder_hash,
                     ticket.user_id,
                     &self.passkey_authentication_key(ticket_id),
-                    dimensions,
+                    reservation,
                 )
                 .await;
         };
         // 验签与凭据匹配都通过，先归还预留额度并清空 ticket 维度计数，再消费 ticket。
-        self.release_dimensions(dimensions).await?;
+        self.release_dimensions(reservation).await?;
         self.limiter
             .clear(FailureDimension::Ticket, ticket_id)
             .await?;
@@ -424,9 +431,9 @@ impl AuthFactorService {
         holder_hash: &str,
         user_id: UserId,
         pending_key: &str,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
     ) -> Result<PasskeyConfirmation, AuthFactorServiceError> {
-        let record = self.record_failure(dimensions).await?;
+        let record = self.record_failure(reservation).await?;
         if record.reached(FailureDimension::Ticket) {
             self.invalidate_ticket(ticket_id, holder_hash).await?;
             self.tickets.delete(pending_key).await?;

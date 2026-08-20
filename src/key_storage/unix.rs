@@ -20,7 +20,8 @@ use super::policy::{
     leaf_directory_owned, leaf_directory_trusted, regular_file_owned, require_same_inode,
 };
 use super::unix_sys::{
-    fchmod, linkat, map_open_error, mkdirat, open_beneath, open_path_component, renameat, unlinkat,
+    fchmod, linkat, map_open_error, mkdirat, open_beneath, open_path_component, readdir, renameat,
+    unlinkat,
 };
 use super::{
     KEY_DIRECTORY_MODE, PRIVATE_FILE_MODE, SecureFileData, TEMPORARY_FILE_SUFFIX, TemporaryFileKind,
@@ -361,6 +362,15 @@ fn same_file(left: &File, right: &File) -> io::Result<bool> {
     Ok(left.dev() == right.dev() && left.ino() == right.ino())
 }
 
+struct DirStream(*mut libc::DIR);
+
+impl Drop for DirStream {
+    fn drop(&mut self) {
+        // SAFETY: fdopendir 成功后由 closedir 释放 DIR 与 dup fd。
+        unsafe { libc::closedir(self.0) };
+    }
+}
+
 fn list_dir(dir: &File) -> io::Result<Vec<SecureDirEntry>> {
     // SAFETY: dup 出的 fd 交给 fdopendir；失败时自行 close，成功后 closedir 负责释放。
     let dup = unsafe { libc::dup(dir.as_raw_fd()) };
@@ -373,41 +383,31 @@ fn list_dir(dir: &File) -> io::Result<Vec<SecureDirEntry>> {
         unsafe { libc::close(dup) };
         return Err(error);
     }
+    let dirp = DirStream(dirp);
     let dir_dev = dir.metadata()?.dev();
     let mut entries = Vec::new();
-    let listed = (|| {
-        loop {
-            // SAFETY: dirp 来自 fdopendir；NULL 表示 EOF 或错误。
-            let entry = unsafe { libc::readdir(dirp) };
-            if entry.is_null() {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::EBADF) {
-                    return Err(error);
-                }
-                break;
-            }
-            // SAFETY: d_name 是 dirent 内的 NUL 结尾数组。
-            let raw = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
-            let name = OsStr::from_bytes(raw.to_bytes());
-            if name == "." || name == ".." {
-                continue;
-            }
-            let Some(name) = name.to_str() else {
-                continue;
-            };
-            entries.push(SecureDirEntry {
-                name: name.to_owned(),
-                inode: FileInode {
-                    dev: dir_dev,
-                    ino: unsafe { (*entry).d_ino } as u64,
-                },
-            });
+    loop {
+        // readdir 失败用 ? 退出，已收集的前缀随 entries drop，不当成完整清单。
+        let Some(entry) = readdir(dirp.0)? else {
+            break;
+        };
+        // SAFETY: d_name 是 dirent 内的 NUL 结尾数组；指针在下次 readdir/closedir 前有效。
+        let raw = unsafe { CStr::from_ptr((*entry.as_ptr()).d_name.as_ptr()) };
+        let name = OsStr::from_bytes(raw.to_bytes());
+        if name == "." || name == ".." {
+            continue;
         }
-        Ok(())
-    })();
-    // SAFETY: closedir 关闭 fdopendir 接管的 dup fd。
-    unsafe { libc::closedir(dirp) };
-    listed?;
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        entries.push(SecureDirEntry {
+            name: name.to_owned(),
+            inode: FileInode {
+                dev: dir_dev,
+                ino: unsafe { (*entry.as_ptr()).d_ino } as u64,
+            },
+        });
+    }
     Ok(entries)
 }
 

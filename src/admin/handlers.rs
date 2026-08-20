@@ -211,30 +211,39 @@ pub async fn update_client(
     Path(client_id): Path<String>,
     ApiJson(input): ApiJson<ClientRegistrationInput>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageClients)
-        .await
+    let authorization = match super::authorization::authorize_admin_write(
+        &state,
+        &admin,
+        AdminPermission::ManageClients,
+    )
+    .await
     {
-        Ok(actor) => actor,
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
-    match state.clients.update(&client_id, input).await {
-        Ok(true) => {
-            let (actor_type, actor_id) = actor.audit_fields();
-            state
-                .audit
-                .record_best_effort(AuditEvent::new(
-                    actor_type.to_owned(),
-                    actor_id,
-                    crate::audit::AuditAction::ClientUpdate,
-                    "oauth_client".to_owned(),
-                    Some(client_id.clone()),
-                    serde_json::json!({"result": "success"}),
-                ))
-                .await;
-            StatusCode::NO_CONTENT.into_response()
-        }
+    let actor = authorization.actor();
+    match state
+        .clients
+        .update_with_audit(
+            &client_id,
+            input,
+            AuditEvent::new(
+                actor.actor_type().to_owned(),
+                actor.user_id().map(|id| id.to_string()),
+                crate::audit::AuditAction::ClientUpdate,
+                "oauth_client".to_owned(),
+                Some(client_id.clone()),
+                serde_json::json!({"result": "success"}),
+            ),
+        )
+        .await
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error::not_found("client_not_found", "client was not found"),
+        Err(ClientServiceError::AuditUnavailable) => error::service_unavailable(
+            "audit_unavailable",
+            "the operation was rolled back because its audit record could not be written; retry later",
+        ),
         Err(error_value) => update_client_error_response(&error_value),
     }
 }
@@ -245,34 +254,44 @@ async fn set_client_status(
     client_id: String,
     status: &'static str,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageClients)
-        .await
+    let authorization = match super::authorization::authorize_admin_write(
+        &state,
+        &admin,
+        AdminPermission::ManageClients,
+    )
+    .await
     {
-        Ok(actor) => actor,
+        Ok(authorization) => authorization,
         Err(response) => return response,
     };
-    match state.clients.set_status(&client_id, status).await {
-        Ok(true) => {
-            let (actor_type, actor_id) = actor.audit_fields();
-            state
-                .audit
-                .record_best_effort(AuditEvent::new(
-                    actor_type.to_owned(),
-                    actor_id,
-                    match status {
-                        "active" => crate::audit::AuditAction::ClientActive,
-                        "disabled" => crate::audit::AuditAction::ClientDisabled,
-                        _ => unreachable!("client status is validated by the service"),
-                    },
-                    "oauth_client".to_owned(),
-                    Some(client_id.clone()),
-                    serde_json::json!({"result": "success"}),
-                ))
-                .await;
-            StatusCode::NO_CONTENT.into_response()
-        }
+    let actor = authorization.actor();
+    let action = match status {
+        "active" => crate::audit::AuditAction::ClientActive,
+        "disabled" => crate::audit::AuditAction::ClientDisabled,
+        _ => unreachable!("client status is validated by the service"),
+    };
+    match state
+        .clients
+        .set_status_with_audit(
+            &client_id,
+            status,
+            AuditEvent::new(
+                actor.actor_type().to_owned(),
+                actor.user_id().map(|id| id.to_string()),
+                action,
+                "oauth_client".to_owned(),
+                Some(client_id.clone()),
+                serde_json::json!({"result": "success"}),
+            ),
+        )
+        .await
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error::not_found("client_not_found", "client was not found"),
+        Err(ClientServiceError::AuditUnavailable) => error::service_unavailable(
+            "audit_unavailable",
+            "the operation was rolled back because its audit record could not be written; retry later",
+        ),
         Err(error_value) => set_client_status_error_response(&error_value),
     }
 }

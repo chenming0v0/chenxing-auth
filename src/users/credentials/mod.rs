@@ -1,19 +1,26 @@
-//! 口令哈希与校验边界（Issue #122 / #124）。
+//! 口令哈希与校验边界（Issue #122 / #124 / #658）。
 //!
 //! Argon2 的默认参数是 19 MiB 内存、2 次迭代，单次哈希约 50 ms 且 CPU 密集。
 //! 这类调用不能留在 async 函数体里直接执行：Tokio worker 在 `.await` 之前无法
 //! 被抢占，一次登录就会占住整个线程 50 ms。并发登录量稍高时，worker 全部卡在
 //! Argon2 上，同一运行时里的所有任务（含健康检查和已建立连接的读写）一起停摆。
 //!
-//! 因此本模块只暴露 async 接口，内部统一经 `tokio::task::spawn_blocking` 把计算
-//! 搬到阻塞线程池。口令按值 move 进闭包（`String` 而非 `&str`）：闭包要求
-//! `'static + Send`，借用无法满足，而调用方本来就持有 owned 明文并在调用后丢弃。
+//! 因此本模块只暴露 async 接口，内部统一经有界 `spawn_blocking` 把计算搬到阻塞
+//! 线程池。口令按值 move 进闭包（`String` 而非 `&str`）：闭包要求 `'static + Send`，
+//! 借用无法满足，而调用方本来就持有 owned 明文并在调用后丢弃。
+//!
+//! 真实校验、哑校验和哈希抢同一把进程级许可（Issue #658）。许可活在阻塞闭包里，
+//! 请求超时只能取消还在排队的 `acquire`，不能把已经在跑的 Argon2 变成无界在途。
+
+mod gate;
 
 use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use std::sync::OnceLock;
+
+use gate::{Argon2SpawnError, active_gate};
 
 const DUMMY_PASSWORD: &str = "chenxing-auth-dummy-password";
 static DUMMY_PASSWORD_HASH: OnceLock<String> = OnceLock::new();
@@ -64,33 +71,51 @@ fn verify_password_blocking(password: &str, encoded_hash: &str) -> bool {
         .is_ok()
 }
 
+async fn run_argon2<T, F>(work: F) -> Result<T, Argon2SpawnError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    active_gate().spawn_blocking(work).await
+}
+
+fn hash_spawn_error(error: Argon2SpawnError) -> argon2::password_hash::Error {
+    match error {
+        Argon2SpawnError::Saturated => {
+            tracing::warn!("password hashing rejected: argon2 concurrency bound saturated");
+        }
+        Argon2SpawnError::Join(error) => {
+            tracing::error!(error = %error, "password hashing task failed to join");
+        }
+    }
+    argon2::password_hash::Error::Algorithm
+}
+
 /// 计算口令哈希。
 ///
 /// 口令按值接收：调用方持有 owned 明文，move 进阻塞闭包既满足 `'static`，
 /// 也避免为跨线程再复制一份明文。
 pub async fn hash_password(password: String) -> Result<String, argon2::password_hash::Error> {
-    // spawn_blocking 的 JoinError 只在闭包 panic 或运行时关闭时出现。Argon2 哈希
-    // 不 panic，这里把 JoinError 归一为 password_hash::Error::Algorithm 而不是
-    // unwrap：启动关闭竞争期的请求应当收到失败响应，不该让整个 worker 崩掉。
-    match tokio::task::spawn_blocking(move || hash_password_blocking(&password)).await {
+    // JoinError / 许可关闭都归一为 password_hash::Error::Algorithm 而不是 unwrap：
+    // 启动关闭竞争期的请求应当收到失败响应，不该让整个 worker 崩掉。
+    match run_argon2(move || hash_password_blocking(&password)).await {
         Ok(result) => result,
-        Err(error) => {
-            tracing::error!(error = %error, "password hashing task failed to join");
-            Err(argon2::password_hash::Error::Algorithm)
-        }
+        Err(error) => Err(hash_spawn_error(error)),
     }
 }
 
 /// 校验口令与哈希是否匹配。
 ///
-/// 任何内部失败（解析失败、任务 join 失败）都返回 `false`：校验是安全判定，
-/// 出错时必须 fail-closed，不能把不确定状态当成通过。
+/// 任何内部失败（解析失败、任务 join 失败、闸门关闭）都返回 `false`：校验是
+/// 安全判定，出错时必须 fail-closed，不能把不确定状态当成通过。
 pub async fn verify_password(password: String, encoded_hash: String) -> bool {
-    match tokio::task::spawn_blocking(move || verify_password_blocking(&password, &encoded_hash))
-        .await
-    {
+    match run_argon2(move || verify_password_blocking(&password, &encoded_hash)).await {
         Ok(valid) => valid,
-        Err(error) => {
+        Err(Argon2SpawnError::Saturated) => {
+            tracing::warn!("password verification rejected: argon2 concurrency bound saturated");
+            false
+        }
+        Err(Argon2SpawnError::Join(error)) => {
             tracing::error!(error = %error, "password verification task failed to join");
             false
         }
@@ -116,12 +141,19 @@ pub async fn verify_login_password(password: String, encoded_hash: Option<String
         None => {
             // 哑哈希的读取和 Argon2 计算一并放进阻塞线程：首次调用可能需要现场
             // 生成哈希（本身就是一次 Argon2），不能留在 async 上下文里执行。
-            let joined = tokio::task::spawn_blocking(move || {
-                verify_password_blocking(&password, dummy_password_hash())
-            })
-            .await;
-            if let Err(error) = joined {
-                tracing::error!(error = %error, "dummy password verification task failed to join");
+            // 与真实校验共用同一把许可，攻击者不能靠「用户不存在」绕过上限。
+            match run_argon2(move || verify_password_blocking(&password, dummy_password_hash()))
+                .await
+            {
+                Ok(_) => {}
+                Err(Argon2SpawnError::Saturated) => {
+                    tracing::warn!(
+                        "dummy password verification rejected: argon2 concurrency bound saturated"
+                    );
+                }
+                Err(Argon2SpawnError::Join(error)) => {
+                    tracing::error!(error = %error, "dummy password verification task failed to join");
+                }
             }
             false
         }
@@ -155,6 +187,9 @@ fn dummy_password_hash() -> &'static str {
         }
     }
 }
+
+#[cfg(test)]
+mod bound_tests;
 
 #[cfg(test)]
 mod tests {

@@ -141,6 +141,8 @@ async fn issue_session(
     if UserStatus::parse(&profile.status) != Some(UserStatus::Active) {
         return error::unauthorized("user_disabled", "user account is disabled");
     }
+    // 与外部登录回调共用 SettingsService：缺行走启动配置 SESSION_TTL_SECONDS，
+    // 已写入的管理设置覆盖它；损坏或越界 fail-closed，不能回落成 14 天（#645）。
     let session_lifetime = match state.settings.session_lifetime().await {
         Ok(setting) => setting,
         Err(error_value) => {
@@ -149,6 +151,7 @@ async fn issue_session(
         }
     };
     let ttl = Duration::from_secs(session_lifetime.session_ttl_seconds);
+    // 签发时写入 Session；查找用会话自己的窗口，不读当前 Settings（#644）。
     let idle_timeout = Duration::from_secs(session_lifetime.session_idle_timeout_seconds);
     let mut session = match Session::new_at_with_idle_timeout(
         user_id.to_string(),

@@ -11,6 +11,7 @@ import { AccountManagement } from './security'
 import { ProfileEditorDialog } from './profile-editor-dialog'
 import { EmailChangeDialog } from './email-change-dialog'
 import { PasswordChangeDialog } from './password-change-dialog'
+import { useMutationLock } from '../../use-mutation-lock'
 
 const PASSWORD_MIN_LENGTH = 10
 const PASSWORD_MAX_LENGTH = 128
@@ -56,6 +57,7 @@ export function ConsoleProfile() {
   /* 撤销在途的会话 id。与 AuthorizedApps 的 busyClientId 同款约定：
      null 表示无在途请求，非 null 期间所有撤销按钮禁用，防止快速连点并发 DELETE。 */
   const [busySessionId, setBusySessionId] = useState<number | null>(null)
+  const sessionsRequestId = useRef(0)
   const notify = (text: string, tone: MessageTone) => setNotice({ text, tone })
   const warn = (text: string) => notify(text, 'warning')
 
@@ -63,12 +65,16 @@ export function ConsoleProfile() {
     setDisplayName(user?.display_name || '')
     setUsername(user?.username || '')
   }, [user?.display_name, user?.username])
-  const loadSessions = () => {
-    void apiFetch<{ items: SessionItem[] }>('/api/v1/auth/sessions')
-      .then((response) => setSessions(response.items))
-      .catch((reason: unknown) => warn(reason instanceof Error ? reason.message : '会话列表加载失败。'))
+  const loadSessions = async () => {
+    const requestId = ++sessionsRequestId.current
+    try {
+      const response = await apiFetch<{ items: SessionItem[] }>('/api/v1/auth/sessions')
+      if (requestId === sessionsRequestId.current) setSessions(response.items)
+    } catch (reason: unknown) {
+      if (requestId === sessionsRequestId.current) warn(reason instanceof Error ? reason.message : '会话列表加载失败。')
+    }
   }
-  useEffect(() => { loadSessions() }, [])
+  useEffect(() => { void loadSessions() }, [])
 
   async function updateProfile(event: FormEvent) {
     event.preventDefault()
@@ -151,10 +157,11 @@ export function ConsoleProfile() {
         return
       }
     } finally {
-      setBusySessionId(null)
+      if (session.current) setBusySessionId(null)
     }
     if (session.current) { clear(); navigate('/login?returnTo=%2Fconsole%2Fprofile'); return }
-    loadSessions()
+    await loadSessions()
+    setBusySessionId(null)
   }
 
   const name = user?.display_name || user?.username || '用户'
@@ -216,9 +223,7 @@ export function ConsoleProfile() {
         clear()
         navigate('/login?returnTo=%2Fconsole%2Fprofile')
       }
-    } catch (error) {
-      warn(error instanceof Error ? error.message : '邮箱变更失败。')
-    } finally { setBusy(false) }
+    })
   }
 
   return (

@@ -1,4 +1,6 @@
-use super::{account_has_factor, issuer_generation_matches, lock_factor_account};
+use super::{
+    account_has_factor, active_user_epoch_matches, issuer_generation_matches, lock_factor_account,
+};
 use crate::{sqlx::PgPool, users::domain::UserId};
 use webauthn_rs::prelude::{AuthenticationResult, Passkey};
 
@@ -29,6 +31,8 @@ pub enum PasskeyPersistenceResult {
     Stored,
     Conflict,
     IssuerChanged,
+    /// Ticket 上盖的 epoch 已不是当前值，或账号已不是 active。
+    AuthenticationChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,15 +124,25 @@ pub async fn count_passkeys(pool: &PgPool, user_id: UserId) -> Result<i64, crate
 pub async fn insert_passkey_if_empty(
     pool: &PgPool,
     user_id: UserId,
+    expected_session_epoch: i64,
     credential_id: &[u8],
     passkey: &Passkey,
 ) -> Result<PasskeyPersistenceResult, crate::sqlx::Error> {
-    insert_passkey_if_empty_with_generation(pool, user_id, credential_id, passkey, None).await
+    insert_passkey_if_empty_with_generation(
+        pool,
+        user_id,
+        expected_session_epoch,
+        credential_id,
+        passkey,
+        None,
+    )
+    .await
 }
 
 pub async fn insert_passkey_if_empty_with_issuer_generation(
     pool: &PgPool,
     user_id: UserId,
+    expected_session_epoch: i64,
     credential_id: &[u8],
     passkey: &Passkey,
     expected_issuer_generation: i64,
@@ -136,6 +150,7 @@ pub async fn insert_passkey_if_empty_with_issuer_generation(
     insert_passkey_if_empty_with_generation(
         pool,
         user_id,
+        expected_session_epoch,
         credential_id,
         passkey,
         Some(expected_issuer_generation),
@@ -146,6 +161,7 @@ pub async fn insert_passkey_if_empty_with_issuer_generation(
 async fn insert_passkey_if_empty_with_generation(
     pool: &PgPool,
     user_id: UserId,
+    expected_session_epoch: i64,
     credential_id: &[u8],
     passkey: &Passkey,
     expected_issuer_generation: Option<i64>,
@@ -179,6 +195,10 @@ async fn insert_passkey_if_empty_with_generation(
         return Ok(PasskeyPersistenceResult::Conflict);
     }
     lock_factor_account(&mut transaction, user_id).await?;
+    if !active_user_epoch_matches(&mut transaction, user_id, expected_session_epoch).await? {
+        transaction.rollback().await?;
+        return Ok(PasskeyPersistenceResult::AuthenticationChanged);
+    }
     if account_has_factor(&mut transaction, user_id).await? {
         transaction.commit().await?;
         return Ok(PasskeyPersistenceResult::Conflict);

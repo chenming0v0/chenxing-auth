@@ -26,6 +26,8 @@ pub enum PlanRepositoryError {
     Mutation(#[from] PlanMutationError),
     #[error(transparent)]
     ManagementActor(#[from] ManagementActorValidationError),
+    #[error(transparent)]
+    Audit(#[from] crate::audit::AuditError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,6 +275,7 @@ pub async fn insert(
     pool: &PgPool,
     input: &ValidatedPlanInput,
     credential: ManagementActorCredential,
+    audit_event: crate::audit::AuditEvent,
 ) -> Result<Plan, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
     crate::users::repository::management_actor::validate_management_actor_in_transaction(
@@ -304,6 +307,7 @@ pub async fn insert(
     .bind(input.is_default)
     .fetch_one(&mut *transaction)
     .await?;
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
     transaction.commit().await?;
     Ok(row_to_plan(row))
 }
@@ -313,6 +317,7 @@ pub async fn update(
     id: i64,
     input: &ValidatedPlanInput,
     credential: ManagementActorCredential,
+    audit_event: crate::audit::AuditEvent,
 ) -> Result<Option<PlanWithUsers>, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
     crate::users::repository::management_actor::validate_management_actor_in_transaction(
@@ -356,6 +361,7 @@ pub async fn update(
     .await?;
     // 更新成功后在同一事务中统计挂载用户数；避免提交后再查询时失败导致响应丢失更新结果
     let assigned_users = count_assigned_users(&mut transaction, id).await?;
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
     transaction.commit().await?;
     Ok(Some(PlanWithUsers {
         plan: row_to_plan(row),
@@ -373,6 +379,7 @@ pub async fn set_status(
     id: i64,
     status: &str,
     credential: ManagementActorCredential,
+    audit_event: crate::audit::AuditEvent,
 ) -> Result<bool, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
     crate::users::repository::management_actor::validate_management_actor_in_transaction(
@@ -395,6 +402,7 @@ pub async fn set_status(
         transaction.rollback().await?;
         return Ok(false);
     }
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
     transaction.commit().await?;
     Ok(true)
 }
@@ -405,6 +413,7 @@ pub async fn assign_to_user(
     plan_id: i64,
     expires_at: Option<OffsetDateTime>,
     credential: ManagementActorCredential,
+    audit_event: crate::audit::AuditEvent,
 ) -> Result<PlanAssignmentResult, PlanRepositoryError> {
     let mut transaction = pool.begin().await?;
     // Actor and target use the same ordered advisory/row-lock protocol as role and status writes.
@@ -412,7 +421,7 @@ pub async fn assign_to_user(
     // before this transaction can alter entitlements (Issue #493).
     let lock_order = lock_management_user_advisories(&mut transaction, user_id, credential).await?;
     let locked = lock_management_user_rows(&mut transaction, &lock_order).await?;
-    let access = match validate_management_actor(credential, locked.actor.as_ref()) {
+    let access = match validate_management_actor(credential, &locked) {
         Ok(access) => access,
         Err(ManagementActorRejection::SessionInvalid) => {
             transaction.rollback().await?;
@@ -451,6 +460,7 @@ pub async fn assign_to_user(
         transaction.rollback().await?;
         return Ok(PlanAssignmentResult::UserNotFound);
     }
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
     transaction.commit().await?;
     Ok(PlanAssignmentResult::Assigned)
 }

@@ -261,6 +261,8 @@ impl AdminCaller {
         match self {
             Self::SystemToken => Ok(AdminActor::SystemToken),
             Self::Session(context) => {
+                // Role is the snapshot bound to this Session row (Issue #646).
+                // Write transactions still re-lock that exact row (Issue #647).
                 if !context.role.allows(permission) {
                     // 已认证但权限不足：留痕以便发现低权限账号的探测行为。
                     record_authz_denial(state, context.user_id, permission, "insufficient_role")
@@ -323,16 +325,23 @@ impl AdminWrite {
 
     /// Build the credential proof carried into a high-risk management transaction.
     ///
-    /// The Session variant uses the generation read from the authoritative `user_sessions` row,
-    /// never a fresh `users.session_epoch` query. A fresh query could stamp an old Cookie with a
-    /// newly elevated generation between Session lookup and handler authorization (Issue #493).
+    /// The Session variant uses the id and generation read from the authoritative
+    /// `user_sessions` row, never a fresh `users.session_epoch` query. A fresh query could
+    /// stamp an old Cookie with a newly elevated generation between Session lookup and
+    /// handler authorization (Issue #493). The write transaction must re-lock that exact
+    /// row: single-session revocation does not bump the user epoch (Issue #647).
     pub(crate) fn management_actor_credential(&self) -> Option<ManagementActorCredential> {
         match &self.caller {
             AdminCaller::SystemToken => Some(ManagementActorCredential::SystemToken),
             AdminCaller::Session(context) => {
+                let session_id = context.session.id;
+                if session_id <= 0 {
+                    return None;
+                }
                 context.session.credential_generation().map(|generation| {
                     ManagementActorCredential::UserSession {
                         user_id: context.user_id,
+                        session_id,
                         generation,
                     }
                 })

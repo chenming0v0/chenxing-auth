@@ -1,4 +1,4 @@
-use super::{issuer_generation_matches, lock_factor_account};
+use super::{active_user_epoch_matches, issuer_generation_matches, lock_factor_account};
 use crate::{sqlx::PgPool, users::domain::UserId};
 use webauthn_rs::prelude::Passkey;
 
@@ -149,21 +149,4 @@ async fn insert_authenticated_passkey_with_generation(
     } else {
         AuthenticatedPasskeyPersistenceResult::Conflict
     })
-}
-
-async fn active_user_epoch_matches(
-    transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
-    user_id: UserId,
-    expected_session_epoch: i64,
-) -> Result<bool, crate::sqlx::Error> {
-    let state: Option<(i64, String)> =
-        crate::sqlx::query_as("SELECT session_epoch, status FROM users WHERE id = $1 FOR UPDATE")
-            .bind(user_id)
-            .fetch_optional(&mut **transaction)
-            .await?;
-    Ok(state.is_some_and(|(epoch, status)| {
-        epoch == expected_session_epoch
-            && crate::users::domain::UserStatus::parse(&status)
-                == Some(crate::users::domain::UserStatus::Active)
-    }))
 }

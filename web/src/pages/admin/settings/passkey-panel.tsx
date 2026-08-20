@@ -44,11 +44,9 @@ export function validatePasskeyOrigins(
 ): PasskeyOriginsValidation {
   const origins = splitOrigins(text)
   if (origins.length === 0) return { error: '请至少填写一个 Origin。' }
-  if (origins.length > MAX_ALLOWED_ORIGINS) {
-    return { error: `Origin 数量不能超过 ${MAX_ALLOWED_ORIGINS} 个。` }
-  }
   const rp = rpId.trim().toLowerCase()
   if (!rp) return { error: '请先填写 RP ID：Origin 的 host 必须等于 RP ID 或是它的子域。' }
+  const normalized: string[] = []
   for (const origin of origins) {
     const message = (reason: string) => `「${origin}」${reason}`
     let url: URL
@@ -77,8 +75,15 @@ export function validatePasskeyOrigins(
     if (!(host === rp || host.endsWith(`.${rp}`))) {
       return { error: message(`的 host 必须等于 RP ID（${rp}）或是它的子域。`) }
     }
+    const value = `${url.protocol}//${host}${url.port ? `:${url.port}` : ''}`
+    if (!normalized.includes(value)) {
+      normalized.push(value)
+      if (normalized.length > MAX_ALLOWED_ORIGINS) {
+        return { error: `Origin 数量不能超过 ${MAX_ALLOWED_ORIGINS} 个。` }
+      }
+    }
   }
-  return { origins }
+  return { origins: normalized }
 }
 
 export function PasskeyPanel({ onMessage, onDirtyChange }: SettingsPanelProps) {

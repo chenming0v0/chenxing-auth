@@ -217,10 +217,10 @@ pub async fn ensure_owner_bootstrapped(
         "unexpected bootstrap response: {}",
         response.status()
     );
-    // bootstrap 会把 users 序列重置回 1（生产语义：首个 Owner 固定 id=1），
-    // 必须重新施加身份派生的用户 ID 偏移，否则后续创建的用户拿到小号 ID，
-    // 按 user_id 命名的 Redis 键（TOTP 时间步 claim、会话吊销）会在并行
-    // 测试之间碰撞。收敛到这一个入口，测试就无需各自记得调用。
+    // 把后续用户 ID 保持在测试身份派生的高位区间，避免按 user_id 命名的 Redis
+    // 键（TOTP 时间步 claim、会话吊销）在并行测试之间碰撞。引导不再把序列打回
+    // 1：隔离 schema 已分配的 Owner identity 必须保留，isolate_user_ids 只向前
+    // 推进。收敛到这一个入口，测试就无需各自记得调用。
     crate::db_isolation::isolate_user_ids(pool, binary_name).await;
 }
 

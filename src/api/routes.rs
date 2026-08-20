@@ -2,7 +2,6 @@ use axum::{
     Router,
     routing::{delete, get, post},
 };
-use std::time::Duration;
 
 use crate::{
     admin::auth_handlers::create_admin,
@@ -81,7 +80,7 @@ use crate::{
 
 use super::discovery::{jwks, openid_configuration};
 
-pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> Router<AppState> {
+pub(super) fn register(router: Router<AppState>) -> Router<AppState> {
     router
         .route(
             "/.well-known/openid-configuration",
@@ -369,7 +368,4 @@ pub(super) fn register(router: Router<AppState>, request_timeout: Duration) -> R
             "/api/v1/admin/keys/{key_id}/revoke",
             axum::routing::post(revoke_signing_key),
         )
-        // Health probes have their own 2s dependency budget. The static fallback may
-        // stream files, so neither should inherit this handler-future timeout.
-        .route_layer(super::timeout::request_timeout_layer(request_timeout))
 }

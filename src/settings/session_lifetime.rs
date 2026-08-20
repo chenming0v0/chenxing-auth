@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::domain::SettingsValidationError;
 
-pub const DEFAULT_SESSION_TTL_SECONDS: u64 = 14 * 24 * 60 * 60;
+pub const DEFAULT_SESSION_TTL_SECONDS: u64 = crate::config::DEFAULT_BROWSER_SESSION_TTL_SECONDS;
 
 /// 浏览器会话生命周期。修改只影响之后签发的会话；已签发会话保留创建时的截止时间。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,6 +21,19 @@ impl Default for SessionLifetimeSetting {
 }
 
 impl SessionLifetimeSetting {
+    /// 未写入管理设置时的部署默认值。
+    ///
+    /// 绝对寿命必须来自 `SESSION_TTL_SECONDS`：缺行若回落到
+    /// [`DEFAULT_SESSION_TTL_SECONDS`]（14 天），运维把环境变量收成 1 小时也
+    /// 签不出对应窗口的会话（#645）。空闲超时一并带上启动配置，只作为缺行
+    /// 签发默认；已签发会话的 idle 窗口存在会话自身，查找不再读当前设置（#644）。
+    pub fn from_boot_config(session_ttl_seconds: u64, session_idle_timeout_seconds: u64) -> Self {
+        Self {
+            session_ttl_seconds,
+            session_idle_timeout_seconds,
+        }
+    }
+
     pub fn validate(self) -> Result<Self, SettingsValidationError> {
         if !(1..=crate::config::MAX_SESSION_TTL_SECONDS).contains(&self.session_ttl_seconds)
             || !(1..=crate::config::MAX_SESSION_IDLE_TIMEOUT_SECONDS)
@@ -31,3 +44,7 @@ impl SessionLifetimeSetting {
         Ok(self)
     }
 }
+
+#[cfg(test)]
+#[path = "session_lifetime_tests.rs"]
+mod tests;

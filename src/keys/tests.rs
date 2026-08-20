@@ -11,6 +11,7 @@ use std::time::Duration;
 use time::{Duration as TimeDuration, OffsetDateTime};
 use zeroize::Zeroizing;
 
+use super::material::recovery_signing_key_id;
 use super::{KeyMaterial, key_material, newest_key_id, prune};
 
 const TEST_NOW_UNIX_SECONDS: i64 = 1_700_000_000;
@@ -79,6 +80,59 @@ fn newest_key_id_falls_back_to_creation_time_for_an_equal_retirement_instant() {
     materials.insert("cx-newer".to_owned(), newer);
 
     assert_eq!(newest_key_id(&materials).as_deref(), Some("cx-newer"));
+}
+
+/// 缺指针时必须保住上一把在役 key：pending 密钥从未退役、创建更晚，
+/// 按 newest 会提前接管签发（Issue #655）。
+#[test]
+fn recovery_signing_key_id_prefers_the_last_active_over_a_pending_key() {
+    let now = test_now();
+    let previous = key_material(Zeroizing::new(vec![1]), now - TimeDuration::seconds(60));
+    let pending = key_material(Zeroizing::new(vec![2]), now);
+    let mut materials = BTreeMap::new();
+    materials.insert("cx-previous".to_owned(), previous);
+    materials.insert("cx-pending".to_owned(), pending);
+
+    assert_eq!(
+        newest_key_id(&materials).as_deref(),
+        Some("cx-pending"),
+        "the naive recency pick is exactly the early-activation bug"
+    );
+    assert_eq!(
+        recovery_signing_key_id(&materials, Some("cx-previous"), Some("cx-pending")).as_deref(),
+        Some("cx-previous")
+    );
+}
+
+#[test]
+fn recovery_signing_key_id_adopts_a_due_pending_key() {
+    let now = test_now();
+    let previous = key_material(Zeroizing::new(vec![1]), now - TimeDuration::seconds(60));
+    let pending = key_material(Zeroizing::new(vec![2]), now);
+    let mut materials = BTreeMap::new();
+    materials.insert("cx-previous".to_owned(), previous);
+    materials.insert("cx-pending".to_owned(), pending);
+
+    assert_eq!(
+        recovery_signing_key_id(&materials, Some("cx-pending"), None).as_deref(),
+        Some("cx-pending")
+    );
+}
+
+#[test]
+fn recovery_signing_key_id_does_not_fall_back_to_an_excluded_pending_key() {
+    let now = test_now();
+    let mut materials = BTreeMap::new();
+    materials.insert(
+        "cx-pending".to_owned(),
+        key_material(Zeroizing::new(vec![2]), now),
+    );
+
+    assert_eq!(
+        recovery_signing_key_id(&materials, Some("cx-previous"), Some("cx-pending")),
+        None,
+        "fail closed: never persist a not-due pending key as active"
+    );
 }
 
 /// 无跨实例时钟偏差的裁剪调用（单实例/内存模式语义）。

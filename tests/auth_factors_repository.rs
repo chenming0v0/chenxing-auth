@@ -145,14 +145,14 @@ async fn passkey_first_factor_insert_rejects_repeat_and_cross_user_collisions() 
     let passkey = test_passkey(&credential_id);
 
     assert_eq!(
-        repository::insert_passkey_if_empty(&pool, user_ids[0], &credential_id, &passkey)
+        repository::insert_passkey_if_empty(&pool, user_ids[0], 0, &credential_id, &passkey)
             .await
             .expect("insert passkey"),
         repository::PasskeyPersistenceResult::Stored
     );
     // 账号已有首因子，重复注册被 if_empty 守卫拒绝；行数不变，幂等性由数据库保证。
     assert_eq!(
-        repository::insert_passkey_if_empty(&pool, user_ids[0], &credential_id, &passkey)
+        repository::insert_passkey_if_empty(&pool, user_ids[0], 0, &credential_id, &passkey)
             .await
             .expect("repeat passkey insert"),
         repository::PasskeyPersistenceResult::Conflict
@@ -175,7 +175,7 @@ async fn passkey_first_factor_insert_rejects_repeat_and_cross_user_collisions() 
     );
     // 另一个账号无首因子，但 credential_id 唯一约束触发 DO NOTHING，同样拒绝。
     assert_eq!(
-        repository::insert_passkey_if_empty(&pool, user_ids[1], &credential_id, &passkey)
+        repository::insert_passkey_if_empty(&pool, user_ids[1], 0, &credential_id, &passkey)
             .await
             .expect("cross-user collision result"),
         repository::PasskeyPersistenceResult::Conflict
@@ -211,7 +211,7 @@ async fn passkey_updates_use_row_id_user_and_version_cas() {
     .expect("insert passkey CAS user");
     let credential_id = Uuid::new_v4().into_bytes().to_vec();
     let original = test_passkey_with_counter(&credential_id, 0);
-    repository::insert_passkey_if_empty(&pool, user_id, &credential_id, &original)
+    repository::insert_passkey_if_empty(&pool, user_id, 0, &credential_id, &original)
         .await
         .expect("insert passkey");
     let stored = repository::list_passkeys_with_versions(&pool, user_id)
@@ -266,7 +266,7 @@ async fn passkey_updates_use_row_id_user_and_version_cas() {
     // 重新注册用同一 credential_id 且 counter 仍是 0：旧实现按 cred_id+version
     // 会命中新行。CAS 必须按旧行 id 判定 Missing，不能改写新行。
     let replacement = test_passkey_with_counter(&credential_id, 0);
-    repository::insert_passkey_if_empty(&pool, user_id, &credential_id, &replacement)
+    repository::insert_passkey_if_empty(&pool, user_id, 0, &credential_id, &replacement)
         .await
         .expect("re-register credential");
     let re_registered = repository::list_passkeys_with_versions(&pool, user_id)
@@ -329,13 +329,14 @@ async fn first_factor_race_allows_only_one_factor_type_to_win() {
     let totp_pool = pool.clone();
     let totp_task = tokio::spawn(async move {
         totp_barrier.wait().await;
-        repository::insert_totp_factor_if_empty(&totp_pool, user_id, &[1, 2, 3]).await
+        repository::insert_totp_factor_if_empty(&totp_pool, user_id, 0, &[1, 2, 3]).await
     });
     let passkey_barrier = Arc::clone(&barrier);
     let passkey_pool = pool.clone();
     let passkey_task = tokio::spawn(async move {
         passkey_barrier.wait().await;
-        repository::insert_passkey_if_empty(&passkey_pool, user_id, &credential_id, &passkey).await
+        repository::insert_passkey_if_empty(&passkey_pool, user_id, 0, &credential_id, &passkey)
+            .await
     });
     // Release both contenders together so this test exercises the database
     // uniqueness/first-factor boundary instead of merely testing call order.
@@ -402,7 +403,7 @@ async fn delete_passkeys_in_transaction_removes_all_credentials_for_one_user() {
         let credential_id = Uuid::new_v4().into_bytes().to_vec();
         let passkey = test_passkey(&credential_id);
         assert_eq!(
-            repository::insert_passkey_if_empty(&pool, *user_id, &credential_id, &passkey)
+            repository::insert_passkey_if_empty(&pool, *user_id, 0, &credential_id, &passkey)
                 .await
                 .expect("insert passkey"),
             repository::PasskeyPersistenceResult::Stored,
@@ -534,4 +535,222 @@ async fn authenticated_factor_inserts_require_active_user_and_exact_epoch() {
         .execute(&pool)
         .await
         .expect("cleanup authenticated factor users");
+}
+
+async fn insert_first_factor_user(pool: &chenxing_auth::sqlx::PgPool, label: &str) -> i64 {
+    let suffix = Uuid::new_v4().simple();
+    chenxing_auth::sqlx::query_scalar(
+        "INSERT INTO users (username, email, canonical_email, password_hash, status, created_at)
+         VALUES ($1, $2, lower($2), 'test-hash', 'active', NOW())
+         RETURNING id",
+    )
+    .bind(format!("{label}-{suffix}"))
+    .bind(format!("{label}-{suffix}@example.com"))
+    .fetch_one(pool)
+    .await
+    .expect("insert first-factor user")
+}
+
+async fn advance_session_epoch(pool: &chenxing_auth::sqlx::PgPool, user_id: i64) {
+    chenxing_auth::sqlx::query("UPDATE users SET session_epoch = session_epoch + 1 WHERE id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("advance session epoch");
+}
+
+async fn cleanup_first_factor_user(pool: &chenxing_auth::sqlx::PgPool, user_id: i64) {
+    chenxing_auth::sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .expect("cleanup first-factor user");
+}
+
+/// #653：ticket 在 epoch E 被 take 之后，管理端重置把水位推到 E+1。
+/// 过期请求再写入时必须在持锁事务内比对 ticket epoch，不得把因子装回去。
+#[tokio::test]
+async fn stale_ticket_epoch_cannot_install_factors_after_session_reset() {
+    let pool = database().await;
+    let totp_user = insert_first_factor_user(&pool, "stale-totp").await;
+    let passkey_user = insert_first_factor_user(&pool, "stale-passkey").await;
+    let recovery_user = insert_first_factor_user(&pool, "stale-recovery").await;
+    let credential_id = Uuid::new_v4().into_bytes().to_vec();
+    let passkey = test_passkey(&credential_id);
+    let recovery_credential = Uuid::new_v4().into_bytes().to_vec();
+
+    assert_eq!(
+        repository::insert_passkey_if_empty(
+            &pool,
+            recovery_user,
+            0,
+            &recovery_credential,
+            &test_passkey(&recovery_credential),
+        )
+        .await
+        .expect("seed passkey for recovery path"),
+        repository::PasskeyPersistenceResult::Stored
+    );
+
+    advance_session_epoch(&pool, totp_user).await;
+    advance_session_epoch(&pool, passkey_user).await;
+    advance_session_epoch(&pool, recovery_user).await;
+
+    assert_eq!(
+        repository::insert_totp_factor_if_empty(&pool, totp_user, 0, &[1, 2, 3])
+            .await
+            .expect("stale TOTP insert"),
+        repository::FirstFactorPersistenceResult::AuthenticationChanged
+    );
+    assert!(
+        repository::find_totp_secret(&pool, totp_user)
+            .await
+            .expect("stale TOTP lookup")
+            .is_none(),
+        "stale TOTP ticket must not install a factor after epoch advance"
+    );
+
+    assert_eq!(
+        repository::insert_passkey_if_empty(&pool, passkey_user, 0, &credential_id, &passkey)
+            .await
+            .expect("stale Passkey insert"),
+        repository::PasskeyPersistenceResult::AuthenticationChanged
+    );
+    assert!(
+        repository::list_passkeys(&pool, passkey_user)
+            .await
+            .expect("stale Passkey lookup")
+            .is_empty(),
+        "stale Passkey ticket must not install a factor after epoch advance"
+    );
+
+    assert_eq!(
+        repository::insert_totp_factor_for_passkey_recovery(&pool, recovery_user, 0, &[4, 5, 6])
+            .await
+            .expect("stale recovery TOTP insert"),
+        repository::FirstFactorPersistenceResult::AuthenticationChanged
+    );
+    assert!(
+        repository::find_totp_secret(&pool, recovery_user)
+            .await
+            .expect("stale recovery TOTP lookup")
+            .is_none(),
+        "stale recovery TOTP ticket must not install after epoch advance"
+    );
+
+    assert_eq!(
+        repository::insert_totp_factor_if_empty(&pool, totp_user, 1, &[1, 2, 3])
+            .await
+            .expect("fresh TOTP insert after reset"),
+        repository::FirstFactorPersistenceResult::Stored
+    );
+    assert_eq!(
+        repository::insert_passkey_if_empty(&pool, passkey_user, 1, &credential_id, &passkey)
+            .await
+            .expect("fresh Passkey insert after reset"),
+        repository::PasskeyPersistenceResult::Stored
+    );
+    assert_eq!(
+        repository::insert_totp_factor_for_passkey_recovery(&pool, recovery_user, 1, &[4, 5, 6])
+            .await
+            .expect("fresh recovery TOTP insert after reset"),
+        repository::FirstFactorPersistenceResult::Stored
+    );
+
+    cleanup_first_factor_user(&pool, totp_user).await;
+    cleanup_first_factor_user(&pool, passkey_user).await;
+    cleanup_first_factor_user(&pool, recovery_user).await;
+}
+
+/// #653：重置事务先拿到账号锁并推进 epoch，尚未提交；过期的 insert 必须等锁，
+/// 提交后读到新水位并中止。这就是 take 与 insert 之间的交错。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn first_factor_insert_aborts_after_waiting_for_epoch_bump() {
+    let pool = database().await;
+    let totp_user = insert_first_factor_user(&pool, "epoch-interleave-totp").await;
+    let passkey_user = insert_first_factor_user(&pool, "epoch-interleave-passkey").await;
+    let credential_id = Uuid::new_v4().into_bytes().to_vec();
+    let passkey = test_passkey(&credential_id);
+
+    let mut totp_reset = pool.begin().await.expect("begin TOTP reset");
+    chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock($1::bigint)")
+        .bind(totp_user)
+        .execute(&mut *totp_reset)
+        .await
+        .expect("lock TOTP account");
+    chenxing_auth::sqlx::query("UPDATE users SET session_epoch = session_epoch + 1 WHERE id = $1")
+        .bind(totp_user)
+        .execute(&mut *totp_reset)
+        .await
+        .expect("bump TOTP epoch under lock");
+
+    let totp_pool = pool.clone();
+    let totp_insert = tokio::spawn(async move {
+        repository::insert_totp_factor_if_empty(&totp_pool, totp_user, 0, &[7, 8, 9]).await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        !totp_insert.is_finished(),
+        "TOTP insert must wait for the reset lock instead of writing past it"
+    );
+    totp_reset.commit().await.expect("commit TOTP reset");
+    assert_eq!(
+        totp_insert
+            .await
+            .expect("join TOTP insert")
+            .expect("TOTP insert"),
+        repository::FirstFactorPersistenceResult::AuthenticationChanged
+    );
+    assert!(
+        repository::find_totp_secret(&pool, totp_user)
+            .await
+            .expect("TOTP after interleaved reset")
+            .is_none()
+    );
+
+    let mut passkey_reset = pool.begin().await.expect("begin Passkey reset");
+    chenxing_auth::sqlx::query("SELECT pg_advisory_xact_lock($1::bigint)")
+        .bind(passkey_user)
+        .execute(&mut *passkey_reset)
+        .await
+        .expect("lock Passkey account");
+    chenxing_auth::sqlx::query("UPDATE users SET session_epoch = session_epoch + 1 WHERE id = $1")
+        .bind(passkey_user)
+        .execute(&mut *passkey_reset)
+        .await
+        .expect("bump Passkey epoch under lock");
+
+    let passkey_pool = pool.clone();
+    let passkey_insert = tokio::spawn(async move {
+        repository::insert_passkey_if_empty(
+            &passkey_pool,
+            passkey_user,
+            0,
+            &credential_id,
+            &passkey,
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        !passkey_insert.is_finished(),
+        "Passkey insert must wait for the reset lock instead of writing past it"
+    );
+    passkey_reset.commit().await.expect("commit Passkey reset");
+    assert_eq!(
+        passkey_insert
+            .await
+            .expect("join Passkey insert")
+            .expect("Passkey insert"),
+        repository::PasskeyPersistenceResult::AuthenticationChanged
+    );
+    assert!(
+        repository::list_passkeys(&pool, passkey_user)
+            .await
+            .expect("Passkey after interleaved reset")
+            .is_empty()
+    );
+
+    cleanup_first_factor_user(&pool, totp_user).await;
+    cleanup_first_factor_user(&pool, passkey_user).await;
 }

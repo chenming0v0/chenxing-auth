@@ -32,18 +32,19 @@ impl UserService {
         }
         let dimensions =
             self.password_change_dimensions(&credentials.canonical_email, source_ip)?;
-        if !self.limiter.reserve(dimensions.clone()).await? {
+        let reservation = self.limiter.reserve(dimensions.clone()).await?;
+        if reservation.is_denied() {
             return Err(UserServiceError::RateLimited);
         }
         if UserStatus::parse(&credentials.status) != Some(UserStatus::Active)
             || !verify_password(password.to_owned(), credentials.password_hash.clone()).await
         {
-            return match self.record_password_failure(dimensions).await {
+            return match self.record_password_failure(reservation).await {
                 Ok(()) => Err(UserServiceError::InvalidCredentials),
                 Err(error) => Err(error),
             };
         }
-        self.limiter.release(dimensions).await?;
+        self.limiter.release(reservation).await?;
         Ok(Some(credentials.authenticated()))
     }
 
@@ -170,12 +171,13 @@ impl UserService {
         // 与登录同一个账号维度键：匹配值，不是展示值（Issue #302）。
         let dimensions =
             self.password_change_dimensions(&credentials.canonical_email, source_ip)?;
-        if !self.limiter.reserve(dimensions.clone()).await? {
+        let reservation = self.limiter.reserve(dimensions.clone()).await?;
+        if reservation.is_denied() {
             return Err(UserServiceError::RateLimited);
         }
 
         if UserStatus::parse(&credentials.status) != Some(UserStatus::Active) {
-            self.limiter.release(dimensions).await?;
+            self.limiter.release(reservation).await?;
             return Err(UserServiceError::InvalidCredentials);
         }
 
@@ -185,12 +187,12 @@ impl UserService {
         )
         .await
         {
-            return self.record_password_failure(dimensions).await;
+            return self.record_password_failure(reservation).await;
         }
 
         // Current-password authentication succeeded. The hash and transaction below are
         // non-authentication failures, so return the reservation before doing either.
-        self.limiter.release(dimensions).await?;
+        self.limiter.release(reservation).await?;
 
         // 认证 epoch 与被校验的 `password_hash` 同一次读取（Issue #274）：写入事务
         // 内再比对一次，并发改密的败者不会用已作废的当前口令改出新口令。
@@ -244,9 +246,9 @@ impl UserService {
 
     async fn record_password_failure(
         &self,
-        dimensions: Vec<LimiterDimension>,
+        reservation: crate::auth_limiter::AuthReservation,
     ) -> Result<(), UserServiceError> {
-        let record = commit_reserved_failure(self.limiter.as_ref(), dimensions).await?;
+        let record = commit_reserved_failure(self.limiter.as_ref(), reservation).await?;
         if record.reached.is_empty() {
             Err(UserServiceError::InvalidCredentials)
         } else {

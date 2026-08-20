@@ -240,6 +240,22 @@ describe('UserCreateDrawer 提交', () => {
     release()
     await pending
   })
+
+  it('busy 尚未重渲染时重复提交只发出一个请求（#586）', async () => {
+    renderDrawer()
+    fill()
+    let release = () => {}
+    const pending = new Promise<Response>((resolve) => { release = () => resolve(jsonResponse(CREATED, 201)) })
+    const fetchMock = vi.fn(() => pending)
+    vi.stubGlobal('fetch', fetchMock)
+    const form = screen.getByRole('button', { name: '创建用户' }).closest('form') as HTMLFormElement
+    fireEvent.submit(form)
+    fireEvent.submit(form)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    release()
+    await pending
+  })
 })
 
 describe('UserCreateDrawer 角色权限', () => {

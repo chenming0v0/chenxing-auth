@@ -135,29 +135,28 @@ pub async fn set_user_status(
     let Some(status) = UserStatus::parse(&status) else {
         return error::bad_request("invalid_status", "status is invalid");
     };
+    let (actor_type, actor_id) = actor.audit_fields();
     match state
         .users
-        .set_status_guarded(user_id, status, authorization.credential())
+        .set_status_guarded_with_audit(
+            user_id,
+            status,
+            authorization.credential(),
+            crate::audit::AuditEvent::new(
+                actor_type.to_owned(),
+                actor_id,
+                match status {
+                    UserStatus::Active => crate::audit::AuditAction::UserActive,
+                    UserStatus::Disabled => crate::audit::AuditAction::UserDisabled,
+                },
+                "user".to_owned(),
+                Some(user_id.to_string()),
+                serde_json::json!({"result":"success"}),
+            ),
+        )
         .await
     {
-        Ok(true) => {
-            let (actor_type, actor_id) = actor.audit_fields();
-            state
-                .audit
-                .record_best_effort(crate::audit::AuditEvent::new(
-                    actor_type.to_owned(),
-                    actor_id,
-                    match status {
-                        UserStatus::Active => crate::audit::AuditAction::UserActive,
-                        UserStatus::Disabled => crate::audit::AuditAction::UserDisabled,
-                    },
-                    "user".to_owned(),
-                    Some(user_id.to_string()),
-                    serde_json::json!({"result":"success"}),
-                ))
-                .await;
-            StatusCode::NO_CONTENT.into_response()
-        }
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
         // 状态串已在上面解析过，`false` 只剩一种含义：目标用户不存在。
         Ok(false) => error::not_found("user_not_found", "user was not found"),
         // 有权限的调用者试图禁用最后一个活跃 Owner：这是安全相关决策，必须留痕（Issue #304）。

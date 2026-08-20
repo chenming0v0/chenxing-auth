@@ -10,9 +10,9 @@ use time::OffsetDateTime;
 
 use super::{
     authorization::{
-        AdminActor, AdminWriteAuthorization, authorize_admin_write, authorize_user_write,
-        management_actor_permission_denied, management_actor_session_invalid,
-        management_actor_validation_failed, owner_write_permission_denied,
+        authorize_admin_write, authorize_user_write, management_actor_permission_denied,
+        management_actor_session_invalid, management_actor_validation_failed,
+        owner_write_permission_denied,
     },
     domain::AdminPermission,
 };
@@ -83,15 +83,21 @@ pub async fn create_plan(
             Err(response) => return response,
         };
     let actor = authorization.actor();
-    match state.plans.create(input, authorization.credential()).await {
+    let (actor_type, actor_id) = actor.audit_fields();
+    let event = AuditEvent::new(
+        actor_type.to_owned(),
+        actor_id,
+        crate::audit::AuditAction::PlanCreate,
+        "plan".to_owned(),
+        Some(input.code.clone()),
+        serde_json::json!({"result": "success"}),
+    );
+    match state
+        .plans
+        .create(input, authorization.credential(), event)
+        .await
+    {
         Ok(plan) => {
-            record_plan_event(
-                &state,
-                actor,
-                crate::audit::AuditAction::PlanCreate,
-                &plan.code,
-            )
-            .await;
             // 新建套餐尚无分配用户，直接返回 0
             (StatusCode::CREATED, Json(plan_response(plan, 0))).into_response()
         }
@@ -114,19 +120,21 @@ pub async fn update_plan(
             Err(response) => return response,
         };
     let actor = authorization.actor();
+    let (actor_type, actor_id) = actor.audit_fields();
+    let event = AuditEvent::new(
+        actor_type.to_owned(),
+        actor_id,
+        crate::audit::AuditAction::PlanUpdate,
+        "plan".to_owned(),
+        Some(input.code.clone()),
+        serde_json::json!({"result": "success"}),
+    );
     match state
         .plans
-        .update(id, input, authorization.credential())
+        .update(id, input, authorization.credential(), event)
         .await
     {
         Ok(updated) => {
-            record_plan_event(
-                &state,
-                actor,
-                crate::audit::AuditAction::PlanUpdate,
-                &updated.plan.code,
-            )
-            .await;
             // assigned_users 由 repository.update 在同一事务中统计，与 list_plans 行为一致
             let response = plan_response(updated.plan, updated.assigned_users);
             (StatusCode::OK, Json(response)).into_response()
@@ -148,8 +156,20 @@ pub async fn archive_plan(
             Ok(authorization) => authorization,
             Err(response) => return response,
         };
-    // 直接调用 archive，不经字符串分发；操作语义由调用点决定，而非运行时字符串比较
-    let result = state.plans.archive(id, authorization.credential()).await;
+    let actor = authorization.actor();
+    let (actor_type, actor_id) = actor.audit_fields();
+    let event = AuditEvent::new(
+        actor_type.to_owned(),
+        actor_id,
+        crate::audit::AuditAction::PlanArchive,
+        "plan".to_owned(),
+        Some(id.to_string()),
+        serde_json::json!({"result": "success"}),
+    );
+    let result = state
+        .plans
+        .archive(id, authorization.credential(), event)
+        .await;
     finish_plan_status_change(
         &state,
         authorization,
@@ -170,8 +190,20 @@ pub async fn restore_plan(
             Ok(authorization) => authorization,
             Err(response) => return response,
         };
-    // 直接调用 restore，与 archive_plan 对称；不存在 silent fallthrough 的分支
-    let result = state.plans.restore(id, authorization.credential()).await;
+    let actor = authorization.actor();
+    let (actor_type, actor_id) = actor.audit_fields();
+    let event = AuditEvent::new(
+        actor_type.to_owned(),
+        actor_id,
+        crate::audit::AuditAction::PlanRestore,
+        "plan".to_owned(),
+        Some(id.to_string()),
+        serde_json::json!({"result": "success"}),
+    );
+    let result = state
+        .plans
+        .restore(id, authorization.credential(), event)
+        .await;
     finish_plan_status_change(
         &state,
         authorization,
@@ -186,17 +218,13 @@ pub async fn restore_plan(
 /// 接收已确定的操作结果，消除字符串选择操作的分发模式。
 async fn finish_plan_status_change(
     state: &AppState,
-    authorization: AdminWriteAuthorization,
+    authorization: super::authorization::AdminWriteAuthorization,
     result: Result<(), PlanServiceError>,
-    action: crate::audit::AuditAction,
-    resource_id: &str,
+    _action: crate::audit::AuditAction,
+    _resource_id: &str,
 ) -> Response {
-    let actor = authorization.actor();
     match result {
-        Ok(()) => {
-            record_plan_event(state, actor, action, resource_id).await;
-            StatusCode::NO_CONTENT.into_response()
-        }
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(PlanServiceError::ManagementActor(error_value)) => {
             management_actor_validation_failed(state, authorization, error_value).await
         }
@@ -234,6 +262,14 @@ pub async fn assign_plan(
         Ok(expires_at) => expires_at,
         Err(message) => return error::bad_request("invalid_expiration", message),
     };
+    let event = AuditEvent::new(
+        actor.actor_type().to_owned(),
+        actor.user_id().map(|id| id.to_string()),
+        crate::audit::AuditAction::UserPlanAssign,
+        "user".to_owned(),
+        Some(user_id.to_string()),
+        serde_json::json!({"result": "success"}),
+    );
     match state
         .plans
         .assign_to_user(
@@ -241,19 +277,11 @@ pub async fn assign_plan(
             input.plan_id,
             expires_at,
             authorization.credential(),
+            event,
         )
         .await
     {
-        Ok(()) => {
-            record_plan_event(
-                &state,
-                actor,
-                crate::audit::AuditAction::UserPlanAssign,
-                &user_id.to_string(),
-            )
-            .await;
-            StatusCode::NO_CONTENT.into_response()
-        }
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(PlanServiceError::ManageRolesRequired) => {
             owner_write_permission_denied(&state, authorization).await
         }
@@ -313,29 +341,16 @@ fn plan_error_response(error_value: PlanServiceError) -> Response {
             tracing::error!(error = %error_value, "management actor outcome escaped the plan handler");
             error::internal()
         }
+        PlanServiceError::Audit(error_value) => {
+            tracing::error!(error = %error_value, "plan mutation rolled back because audit failed");
+            error::service_unavailable(
+                "audit_unavailable",
+                "the operation was rolled back because its audit record could not be written; retry later",
+            )
+        }
         PlanServiceError::Database(database_error) => {
             tracing::error!(error = %database_error, "plan database operation failed");
             error::internal()
         }
     }
-}
-
-async fn record_plan_event(
-    state: &AppState,
-    actor: AdminActor,
-    action: crate::audit::AuditAction,
-    resource_id: &str,
-) {
-    let (actor_type, actor_id) = actor.audit_fields();
-    state
-        .audit
-        .record_best_effort(AuditEvent::new(
-            actor_type.to_owned(),
-            actor_id,
-            action,
-            "plan".to_owned(),
-            Some(resource_id.to_owned()),
-            serde_json::json!({"result": "success"}),
-        ))
-        .await;
 }

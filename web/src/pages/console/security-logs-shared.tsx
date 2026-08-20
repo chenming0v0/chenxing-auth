@@ -27,7 +27,9 @@ export const ACTION_PRESENTATION: Record<string, { label: string; tone: 'success
 }
 
 export function ActionBadge({ action }: { action: string }) {
-  const known = ACTION_PRESENTATION[action]
+  const known = Object.prototype.hasOwnProperty.call(ACTION_PRESENTATION, action)
+    ? ACTION_PRESENTATION[action]
+    : undefined
   if (!known) return <span className="chenxing-mono text-sm">{action || '—'}</span>
   return <Badge tone={known.tone}>{known.label}</Badge>
 }

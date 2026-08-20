@@ -216,6 +216,7 @@ pub async fn external_callback(
             .await;
         }
     };
+    // 与本地登录共用 SettingsService：缺行走启动配置 SESSION_TTL_SECONDS（#645）。
     let session_lifetime = match state.settings.session_lifetime().await {
         Ok(setting) => setting,
         Err(error_value) => {
@@ -224,6 +225,7 @@ pub async fn external_callback(
         }
     };
     let ttl = std::time::Duration::from_secs(session_lifetime.session_ttl_seconds);
+    // 签发时写入 Session；查找用会话自己的窗口，不读当前 Settings（#644）。
     let idle_timeout =
         std::time::Duration::from_secs(session_lifetime.session_idle_timeout_seconds);
     let mut session = match Session::new_at_with_idle_timeout(

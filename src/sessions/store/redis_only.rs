@@ -226,7 +226,7 @@ pub(super) async fn find_redis_only(
     if is_revoked_by_watermark(marker.as_deref(), session.created_at) {
         return Ok(None);
     }
-    if session.last_seen_at <= now - store.renewal_interval() {
+    if session.last_seen_at <= now - store.session_renewal_interval(&session) {
         session.last_seen_at = now;
         let payload =
             store.encrypt_payload(&serde_json::to_vec(&SessionPayload::from(&session))?)?;
@@ -290,7 +290,7 @@ pub(super) async fn find_redis_only_by_token_hash(
     if is_revoked_by_watermark(marker.as_deref(), session.created_at) {
         return Ok(None);
     }
-    if session.last_seen_at <= now - store.renewal_interval() {
+    if session.last_seen_at <= now - store.session_renewal_interval(&session) {
         session.last_seen_at = now;
         let payload =
             store.encrypt_payload(&serde_json::to_vec(&SessionPayload::from(&session))?)?;

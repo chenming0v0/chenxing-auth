@@ -35,15 +35,17 @@ pub async fn verify_schema_current(database: &super::Database) -> Result<(), Sch
         }
     })?;
 
+    // Versions and checksums must match the embedded migrator exactly. Do not
+    // assume 1..=N: the ledger is whatever the migrator actually embeds.
     if rows.len() != expected.len()
-        || rows.iter().zip(expected.iter()).enumerate().any(
-            |(index, ((version, checksum, success), migration))| {
+        || rows
+            .iter()
+            .zip(expected.iter())
+            .any(|((version, checksum, success), migration)| {
                 *version != migration.version
                     || !*success
                     || checksum.as_slice() != migration.checksum.as_ref()
-                    || *version != (index + 1) as i64
-            },
-        )
+            })
     {
         return Err(SchemaStateError::InconsistentLedger);
     }

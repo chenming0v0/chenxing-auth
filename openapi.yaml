@@ -4159,6 +4159,10 @@ components:
           type: string
           description: 指向布尔型邮箱验证状态的 claim 路径。必填：缺失、空白、非 bool 或 false 时服务端拒绝身份解析与自动建号。
         client_auth_method: { type: string, enum: [basic, request_body], default: basic }
+        pkce_enabled:
+          type: boolean
+          default: true
+          description: 是否对该外部提供商启用 PKCE；默认开启，只有明确确认提供商不支持时才关闭。
     OAuthProviderUpdateInput:
       type: object
       required: [name, slug, authorization_endpoint, token_endpoint, userinfo_endpoint, client_id, scopes, email_verified_claim, expected_version]
@@ -4238,6 +4242,7 @@ components:
           nullable: true
           description: null 表示存量遗留配置，该 provider 无法判断邮箱验证状态，不能被启用，也不会放行外部登录。
         client_auth_method: { type: string, enum: [basic, request_body] }
+        pkce_enabled: { type: boolean }
         status: { type: string, enum: [active, disabled] }
         state_version: { type: integer, format: int64, minimum: 1 }
         client_secret_configured: { type: boolean }

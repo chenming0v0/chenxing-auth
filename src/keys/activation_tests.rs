@@ -3,7 +3,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use time::{Duration as TimeDuration, OffsetDateTime, format_description::well_known::Rfc3339};
@@ -57,6 +57,14 @@ fn test_now() -> OffsetDateTime {
 
 fn write_key(directory: &TempKeyDir, key_id: &str) {
     fs::write(directory.key_path(key_id), format!("material-{key_id}")).expect("key material");
+}
+
+fn age_key(directory: &TempKeyDir, key_id: &str, age_seconds: u64) {
+    let modified = SystemTime::now() - Duration::from_secs(age_seconds);
+    fs::File::open(directory.key_path(key_id))
+        .expect("open key")
+        .set_modified(modified)
+        .expect("age key");
 }
 
 fn write_active_key_id(directory: &TempKeyDir, key_id: &str) {
@@ -137,6 +145,49 @@ fn a_slow_instance_delays_activation_instead_of_shortening_the_window() {
         "the conservative fence may delay a slow clock, but it must never activate early"
     );
     assert!(pending.is_due(writer_now + TimeDuration::seconds(95)));
+}
+
+/// Issue #655：active 指针丢失时，恢复不得把未到期的 pending key 写成 active。
+/// pending 密钥从未退役、mtime 更新，按 newest 会赢过上一把真正的签发密钥。
+#[test]
+fn recover_without_active_pointer_does_not_promote_a_future_key() {
+    let directory = TempKeyDir::new("missing-kid-future");
+    write_key(&directory, "cx-previous");
+    age_key(&directory, "cx-previous", 60);
+    write_key(&directory, "cx-new");
+    write_activation(
+        &directory,
+        &PendingPublishedKey::new(
+            "cx-new".to_owned(),
+            "cx-previous".to_owned(),
+            test_now() + TimeDuration::seconds(65),
+        ),
+    );
+
+    recover(directory.path(), test_now()).expect("recover");
+
+    assert_eq!(read_active_key_id(&directory), "cx-previous");
+    assert!(
+        directory.activation_path().exists(),
+        "future activation must survive a restart that lost the active pointer"
+    );
+}
+
+#[test]
+fn recover_without_active_pointer_promotes_a_due_key() {
+    let directory = TempKeyDir::new("missing-kid-due");
+    write_key(&directory, "cx-previous");
+    age_key(&directory, "cx-previous", 60);
+    write_key(&directory, "cx-new");
+    write_activation(
+        &directory,
+        &PendingPublishedKey::new("cx-new".to_owned(), "cx-previous".to_owned(), test_now()),
+    );
+
+    recover(directory.path(), test_now()).expect("recover");
+
+    assert_eq!(read_active_key_id(&directory), "cx-new");
+    assert!(!directory.activation_path().exists());
 }
 
 #[test]
@@ -271,6 +322,66 @@ fn load_before_activate_at_publishes_the_new_key_without_signing() {
         directory.activation_path().exists(),
         "second instance must keep the same activate_at"
     );
+}
+
+/// Issue #655：缺指针 + 未到期 pending，加载必须恢复上一把 key，并把该选择落盘。
+/// 随后窗口到期的第二次加载才允许激活——覆盖“先恢复、后到期”的交错。
+#[test]
+fn load_without_active_pointer_keeps_a_future_key_pending_then_promotes_when_due() {
+    let directory = TempKeyDir::new("missing-kid-interleave");
+    write_key(&directory, "cx-previous");
+    age_key(&directory, "cx-previous", 60);
+    write_key(&directory, "cx-new");
+    write_activation(
+        &directory,
+        &PendingPublishedKey::new(
+            "cx-new".to_owned(),
+            "cx-previous".to_owned(),
+            test_now() + TimeDuration::seconds(65),
+        ),
+    );
+
+    let (active_key_id, materials) = load_at(&directory, test_now()).expect("load before deadline");
+    assert_eq!(active_key_id, "cx-previous");
+    assert_eq!(read_active_key_id(&directory), "cx-previous");
+    assert!(
+        materials.contains_key("cx-new"),
+        "new public key must stay published for JWKS propagation"
+    );
+    assert!(
+        directory.activation_path().exists(),
+        "pending record must remain until activate_at"
+    );
+
+    let (active_key_id, materials) =
+        load_at(&directory, test_now() + TimeDuration::seconds(65)).expect("load after deadline");
+    assert_eq!(active_key_id, "cx-new");
+    assert_eq!(read_active_key_id(&directory), "cx-new");
+    assert!(materials["cx-previous"].retired_at.is_some());
+    assert!(!directory.activation_path().exists());
+}
+
+/// 上一把材料也不在时，不得把未到期的 pending key 当成唯一候选写进 active。
+#[test]
+fn load_without_active_pointer_refuses_to_adopt_the_only_pending_key_early() {
+    let directory = TempKeyDir::new("only-pending");
+    write_key(&directory, "cx-new");
+    write_activation(
+        &directory,
+        &PendingPublishedKey::new(
+            "cx-new".to_owned(),
+            "cx-previous".to_owned(),
+            test_now() + TimeDuration::seconds(65),
+        ),
+    );
+
+    let error = load_at(&directory, test_now()).expect_err("must not activate a future key");
+    assert!(matches!(error, KeyManagerError::MissingActiveKeyMaterial));
+    assert!(
+        !directory.active_key_id_path().exists(),
+        "recovery must not persist the pending key as active"
+    );
+    assert!(directory.activation_path().exists());
 }
 
 #[test]

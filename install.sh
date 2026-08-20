@@ -94,6 +94,49 @@ valid_port() {
     [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 ))
 }
 
+url_encode() {
+    local value="$1" char encoded='' byte
+    LC_ALL=C
+    while [[ -n "$value" ]]; do
+        char="${value:0:1}"
+        value="${value:1}"
+        if [[ "$char" =~ [a-zA-Z0-9.~_-] ]]; then
+            encoded+="$char"
+        else
+            printf -v byte '%02X' "'${char}"
+            encoded+="%${byte}"
+        fi
+    done
+    printf '%s' "$encoded"
+}
+
+set_env_value() {
+    local key="$1" value="$2" temp
+    temp="$(mktemp "${ENV_FILE}.tmp.XXXXXX")"
+    awk -v key="$key" -v value="$value" '
+        BEGIN { prefix = key "="; replaced = 0 }
+        index($0, prefix) == 1 {
+            if (!replaced) { print prefix value; replaced = 1 }
+            next
+        }
+        { print }
+        END { if (!replaced) print prefix value }
+    ' "$ENV_FILE" > "$temp"
+    chmod 600 "$temp"
+    mv -f "$temp" "$ENV_FILE"
+}
+
+default_database_urls() {
+    local runtime_user runtime_password migration_user migration_password database
+    runtime_user="$(url_encode "$POSTGRES_RUNTIME_USER")"
+    runtime_password="$(url_encode "$POSTGRES_RUNTIME_PASSWORD")"
+    migration_user="$(url_encode "$POSTGRES_USER")"
+    migration_password="$(url_encode "$POSTGRES_PASSWORD")"
+    database="$(url_encode "$POSTGRES_DB")"
+    DATABASE_URL="postgres://${runtime_user}:${runtime_password}@postgres:5432/${database}"
+    MIGRATION_DATABASE_URL="postgres://${migration_user}:${migration_password}@postgres:5432/${database}"
+}
+
 generate_env() {
     local port="$1" auth_encryption_key
     auth_encryption_key="$(openssl rand -base64 32)"
@@ -188,7 +231,7 @@ x-runtime-environment: &runtime-environment
   AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-2555}
   AUDIT_ROLE_SEPARATION: ${AUDIT_ROLE_SEPARATION:-require}
   MIGRATION_MANAGE_RUNTIME_PASSWORD: ${MIGRATION_MANAGE_RUNTIME_PASSWORD:-true}
-  DATABASE_URL: postgres://${POSTGRES_RUNTIME_USER:?set POSTGRES_RUNTIME_USER}:${POSTGRES_RUNTIME_PASSWORD:?set POSTGRES_RUNTIME_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
+  DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
   REDIS_URL: redis://redis:6379
   REDIS_NAMESPACE: ${REDIS_NAMESPACE:?set REDIS_NAMESPACE to a unique non-empty value}
 
@@ -207,6 +250,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://127.0.0.1:3000/health/ready"]
       interval: 10s
@@ -214,12 +259,11 @@ services:
       retries: 12
 
   migrate:
-    profiles: ["migrate"]
     image: ${CHENXING_IMAGE}
     command: ["migrate"]
     environment:
       <<: *runtime-environment
-      MIGRATION_DATABASE_URL: postgres://${POSTGRES_USER:?set POSTGRES_USER}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:?set POSTGRES_DB}
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:?set MIGRATION_DATABASE_URL}
     depends_on:
       postgres:
         condition: service_healthy
@@ -403,7 +447,13 @@ APP_PORT="$(read_env_value APP_PORT)"
 APP_ISSUER="$(read_env_value APP_ISSUER)"
 POSTGRES_DB="$(read_env_value POSTGRES_DB)"
 POSTGRES_USER="$(read_env_value POSTGRES_USER)"
+POSTGRES_PASSWORD="$(read_env_value POSTGRES_PASSWORD)"
+POSTGRES_RUNTIME_USER="$(read_env_value POSTGRES_RUNTIME_USER)"
+POSTGRES_RUNTIME_PASSWORD="$(read_env_value POSTGRES_RUNTIME_PASSWORD)"
 AUTH_ENCRYPTION_KEY="$(read_env_value AUTH_ENCRYPTION_KEY)"
+default_database_urls
+set_env_value DATABASE_URL "$DATABASE_URL"
+set_env_value MIGRATION_DATABASE_URL "$MIGRATION_DATABASE_URL"
 
 valid_port "$APP_PORT" || fail ".env 中的 APP_PORT 无效。"
 [[ -n "$CHENXING_IMAGE" && "$CHENXING_IMAGE" != *[[:space:]]* ]] || fail "辰星镜像名称无效。"

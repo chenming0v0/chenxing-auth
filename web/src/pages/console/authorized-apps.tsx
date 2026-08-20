@@ -22,6 +22,7 @@ export function AuthorizedApps() {
     try {
       const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
       setApps(response.items)
+      setHasData(true)
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : '应用列表加载失败。'
       setLoadError(message)
@@ -35,6 +36,7 @@ export function AuthorizedApps() {
     try {
       const response = await apiFetch<{ items: AuthorizedOAuthApp[] }>('/api/v1/auth/authorized-apps')
       setApps(response.items)
+      setHasData(true)
     } catch {
       // 撤销已经生效时保留旧列表与成功提示，不用刷新错误覆盖成功事实。
     }

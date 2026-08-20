@@ -50,13 +50,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .await?;
             // 迁移文件里写了 REVOKE 不等于边界成立：owner 隐含全部表权限。
-            // 这一步直接问数据库运行时角色此刻能不能改审计表。
+            // 校验读的是这条连接上的 current_user / session_user，所以必须连
+            // DATABASE_URL 声称的运行时角色，而不是刚跑完 DDL 的 owner 连接
+            // （Issue #649：代理或 SET ROLE 会让 URL 用户名和有效主体分叉）。
+            let runtime_database = db::connect_maintenance(plan.runtime_database_url())?;
             db::verify_audit_append_only_boundary(
-                &database,
+                &runtime_database,
                 plan.runtime_role(),
                 plan.separation(),
             )
             .await?;
+            runtime_database.close().await;
             info!("database migrations completed");
             return Ok(());
         }
@@ -125,7 +129,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     startup_database.close().await;
     let state = AppState::new_with_persisted_issuer(config.clone()).await?;
     // Migrations verify this boundary once, but grants can change before service startup.
-    // Recheck before workers or the listener start so the web process fails closed (#427).
+    // Recheck the application pool before workers start so the web process fails closed
+    // (#427). The URL username is only the claimed role; the verifier reads
+    // current_user / session_user on a live connection (#649).
     let audit_posture = db::RuntimeAuditPosture::from_env(&config.database_url)?;
     db::verify_audit_append_only_boundary(
         &state.database,

@@ -59,6 +59,21 @@ impl PendingPublishedKey {
     pub(super) fn is_due(&self, now: OffsetDateTime) -> bool {
         now >= self.activate_at
     }
+
+    /// 缺 active 指针时：(preferred, excluded)。
+    ///
+    /// 窗口未到：保住上一把真正在役的 key，排除本 pending key，避免重启把未来
+    /// 密钥提前写成 active（Issue #655）。窗口已到：本 key 就是该激活的对象。
+    pub(super) fn recovery_choice(&self, now: OffsetDateTime) -> (Option<&str>, Option<&str>) {
+        if self.is_due(now) {
+            (Some(self.key_id.as_str()), None)
+        } else {
+            (
+                Some(self.previous_key_id.as_str()),
+                Some(self.key_id.as_str()),
+            )
+        }
+    }
 }
 
 /// `now + delay`；无法表示的 delay 取时间上界，按“永不到期”安全失败。
@@ -131,6 +146,8 @@ pub(super) fn clear(directory: &Path) -> Result<(), KeyManagerError> {
 /// 窗口已到就把签发权切到已发布的 key；未到则原样留下记录。
 ///
 /// 材料缺失时丢弃记录：没有公钥可发布，签发权绝不能切过去。
+/// 窗口未到且 active 指针丢失（或内容非法）时，把上一把真正在役的 key 写回去，
+/// 绝不能让“选 newest”把 pending 密钥提前激活（Issue #655）。
 pub(super) fn recover(directory: &Path, now: OffsetDateTime) -> Result<(), KeyManagerError> {
     let pending = match read(directory) {
         Ok(Some(pending)) => pending,
@@ -153,11 +170,30 @@ pub(super) fn recover(directory: &Path, now: OffsetDateTime) -> Result<(), KeyMa
         );
         return clear(directory);
     }
-    if !pending.is_due(now) {
-        return Ok(());
+    if pending.is_due(now) {
+        persistence::persist_active_key_id(directory, &pending.key_id)?;
+        return clear(directory);
     }
-    persistence::persist_active_key_id(directory, &pending.key_id)?;
-    clear(directory)
+    if active_pointer_missing(directory)?
+        && persistence::has_key_material(directory, &pending.previous_key_id)?
+    {
+        tracing::warn!(
+            previous_key_id = %pending.previous_key_id,
+            "active key id file is missing during a pending activation; \
+             restoring the last active signing key"
+        );
+        persistence::persist_active_key_id(directory, &pending.previous_key_id)?;
+    }
+    Ok(())
+}
+
+fn active_pointer_missing(directory: &Path) -> Result<bool, KeyManagerError> {
+    match persistence::declared_active_key_id(directory) {
+        Ok(None) => Ok(true),
+        Ok(Some(_)) => Ok(false),
+        Err(KeyManagerError::InvalidKeyId) => Ok(true),
+        Err(error) => Err(error),
+    }
 }
 
 fn parse(contents: &[u8]) -> Result<Option<PendingPublishedKey>, KeyManagerError> {

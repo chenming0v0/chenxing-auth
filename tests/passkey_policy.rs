@@ -7,6 +7,7 @@ use chenxing_auth::{
     api,
     auth_factors::crypto::encrypt_totp_secret_with_ring,
     config::{AuthEncryptionKey, AuthEncryptionKeyRing, Config},
+    settings::{IssuerRuntime, issuer},
     sqlx,
     state::AppState,
 };
@@ -597,6 +598,278 @@ async fn issuer_update_rechecks_passkeys_after_policy_lock() {
         json(response).await["code"],
         "issuer_passkey_migration_required"
     );
+
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+async fn setup_awaiting_derived_webauthn(
+    invalid_runtime: bool,
+) -> (Router, sqlx::PgPool, std::path::PathBuf, IssuerRuntime) {
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://chenxing:chenxing@127.0.0.1:5432/chenxing_auth".to_owned());
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_owned());
+    let database =
+        db_isolation::isolated_pool_with_max_connections("passkey_policy", &database_url, 6).await;
+    set_passkey_setting(&database, true).await;
+
+    let key_directory =
+        std::env::temp_dir().join(format!("chenxing-passkey-policy-{}", Uuid::new_v4()));
+    let mut config =
+        Config::from_values("127.0.0.1".to_owned(), 3000, database_url, redis_url, 3600)
+            .expect("config");
+    config.issuer = None;
+    config.admin_token = "passkey-policy-token".to_owned();
+    config.key_directory = key_directory.to_string_lossy().into_owned();
+    config.auth_encryption_keys = current_key_ring();
+    config.webauthn_rp_id_explicit = false;
+    config.webauthn_origin_explicit = false;
+    let mut state = AppState::new_with_pool(config, database.clone())
+        .await
+        .expect("state");
+    if invalid_runtime {
+        state.issuer = IssuerRuntime::new_invalid(&state.config, 1);
+    }
+    let runtime = state.issuer.clone();
+    assert!(
+        runtime.current().is_none(),
+        "regression requires no runtime snapshot"
+    );
+    let router = api::router(state);
+    if !invalid_runtime {
+        oauth_flow::ensure_owner_bootstrapped(
+            &router,
+            &database,
+            "passkey_policy",
+            "passkey_policy",
+        )
+        .await;
+    }
+    (router, database, key_directory, runtime)
+}
+
+async fn insert_user(database: &sqlx::PgPool) -> i64 {
+    let suffix = Uuid::new_v4().simple().to_string();
+    sqlx::query_scalar(
+        "INSERT INTO users (username, email, canonical_email, password_hash, status, created_at)
+         VALUES ($1, $2, lower($2), 'test-hash', 'active', NOW())
+         RETURNING id",
+    )
+    .bind(format!("passkey-policy-{suffix}"))
+    .bind(format!("passkey-policy-{suffix}@example.com"))
+    .fetch_one(database)
+    .await
+    .expect("insert user")
+}
+
+async fn put_issuer(
+    router: &Router,
+    value: &str,
+    expected_generation: i64,
+) -> axum::response::Response {
+    request(
+        router,
+        "PUT",
+        "/api/v1/admin/settings/issuer",
+        serde_json::json!({
+            "value": value,
+            "expected_generation": expected_generation,
+            "confirm": true
+        }),
+        Some("Bearer passkey-policy-token"),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn issuer_update_without_runtime_snapshot_rejects_passkey_incompatible_change() {
+    let (router, database, key_directory, runtime) = setup_awaiting_derived_webauthn(false).await;
+    issuer::initialize(&database, "https://auth.example.com")
+        .await
+        .expect("persist issuer without loading a snapshot");
+    assert!(
+        runtime.current().is_none(),
+        "persisting issuer must not create a snapshot on this replica"
+    );
+    // Admin user creation goes through the issuer gate, which would converge the
+    // persisted row onto this replica and destroy the no-snapshot fixture.
+    let user_id = insert_user(&database).await;
+    insert_passkey(&database, user_id).await;
+
+    let response = put_issuer(&router, "https://other.example.com", 1).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        json(response).await["code"],
+        "issuer_passkey_migration_required"
+    );
+    assert_eq!(
+        issuer::load(&database)
+            .await
+            .expect("load persisted issuer")
+            .expect("issuer row")
+            .value,
+        "https://auth.example.com"
+    );
+    assert!(runtime.current().is_none());
+
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn invalid_runtime_still_rejects_passkey_incompatible_issuer_change() {
+    let (router, database, key_directory, runtime) = setup_awaiting_derived_webauthn(true).await;
+    issuer::initialize(&database, "https://auth.example.com")
+        .await
+        .expect("persist issuer");
+    let user_id = insert_user(&database).await;
+    insert_passkey(&database, user_id).await;
+
+    let response = put_issuer(&router, "https://other.example.com", 1).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        json(response).await["code"],
+        "issuer_passkey_migration_required"
+    );
+    assert_eq!(
+        issuer::load(&database)
+            .await
+            .expect("load persisted issuer")
+            .expect("issuer row")
+            .value,
+        "https://auth.example.com"
+    );
+    assert!(runtime.current().is_none());
+
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(&database)
+        .await
+        .expect("cleanup user");
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn first_time_issuer_set_without_passkeys_does_not_require_migration() {
+    let (router, database, key_directory, runtime) = setup_awaiting_derived_webauthn(false).await;
+    assert_eq!(
+        issuer::load(&database).await.expect("load empty issuer"),
+        None
+    );
+
+    let response = put_issuer(&router, "https://auth.example.com", 0).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        issuer::load(&database)
+            .await
+            .expect("load persisted issuer")
+            .expect("issuer row")
+            .value,
+        "https://auth.example.com"
+    );
+    assert!(runtime.current().is_some());
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test]
+async fn issuer_update_without_passkeys_can_change_identity_without_snapshot() {
+    let (router, database, key_directory, _runtime) = setup_awaiting_derived_webauthn(false).await;
+    issuer::initialize(&database, "https://auth.example.com")
+        .await
+        .expect("persist issuer");
+
+    let response = put_issuer(&router, "https://other.example.com", 1).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        issuer::load(&database)
+            .await
+            .expect("load persisted issuer")
+            .expect("issuer row")
+            .value,
+        "https://other.example.com"
+    );
+
+    let _ = std::fs::remove_dir_all(key_directory);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn issuer_update_without_snapshot_rechecks_passkeys_after_policy_lock() {
+    let (router, database, key_directory, runtime) = setup_awaiting_derived_webauthn(false).await;
+    issuer::initialize(&database, "https://auth.example.com")
+        .await
+        .expect("persist issuer without loading a snapshot");
+    // Same as the snapshot-free rejection test: do not create the user through
+    // a gated admin route or this replica would load the persisted issuer.
+    let user_id = insert_user(&database).await;
+    let mut gate = database.begin().await.expect("policy gate transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(0, 7341931)")
+        .execute(&mut *gate)
+        .await
+        .expect("hold Passkey policy lock");
+    sqlx::query(
+        "INSERT INTO user_passkeys
+            (user_id, credential_id, credential, created_at, updated_at)
+         VALUES ($1, $2, '{}'::jsonb, NOW(), NOW())",
+    )
+    .bind(user_id)
+    .bind(Uuid::new_v4().into_bytes().to_vec())
+    .execute(&mut *gate)
+    .await
+    .expect("stage concurrent Passkey registration");
+
+    let request = tokio::spawn({
+        let router = router.clone();
+        async move { put_issuer(&router, "https://other.example.com", 1).await }
+    });
+    let mut blocked = false;
+    for _ in 0..100 {
+        blocked = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pg_locks
+                 WHERE NOT granted AND locktype = 'advisory'
+                   AND classid = 0 AND objid = 7341931
+             )",
+        )
+        .fetch_one(&database)
+        .await
+        .expect("observe issuer policy lock waiter");
+        if blocked {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        blocked,
+        "issuer update must wait for the registration policy lock"
+    );
+    gate.commit()
+        .await
+        .expect("commit staged Passkey registration");
+    let response = request.await.expect("join issuer update");
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        json(response).await["code"],
+        "issuer_passkey_migration_required"
+    );
+    assert_eq!(
+        issuer::load(&database)
+            .await
+            .expect("load persisted issuer")
+            .expect("issuer row")
+            .value,
+        "https://auth.example.com"
+    );
+    assert!(runtime.current().is_none());
 
     sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(user_id)

@@ -16,10 +16,11 @@ type LoadState =
 /** 列表与详情共用一条路由：`/console/logs?id=<事件id>` 展示详情，无 id 展示列表。 */
 export function SecurityLogsPage() {
   const location = useLocation()
-  const detailId = Number.parseInt(new URLSearchParams(location.search).get('id') ?? '', 10)
+  const rawDetailId = new URLSearchParams(location.search).get('id') ?? ''
+  const detailId = /^\d+$/.test(rawDetailId) ? Number(rawDetailId) : NaN
   return (
     <ConsoleLayout>
-      {Number.isInteger(detailId) && detailId > 0 ? <SecurityLogDetail id={detailId} /> : <SecurityLogList />}
+      {Number.isSafeInteger(detailId) && detailId > 0 ? <SecurityLogDetail id={detailId} /> : <SecurityLogList />}
     </ConsoleLayout>
   )
 }

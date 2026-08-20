@@ -49,7 +49,12 @@ describe('validatePasskeyOrigins', () => {
     })
   })
 
-  it('rejects non-URL input, non-origin schemes, and credentials', () => {
+  it('normalizes and deduplicates before applying the limit', () => {
+    const duplicates = Array.from({ length: 33 }, () => 'HTTPS://AUTH.CLYA.TOP').join(' ')
+    expect(validatePasskeyOrigins(duplicates, RP_ID, false)).toEqual({ origins: ['https://auth.clya.top'] })
+  })
+
+
     expect(validatePasskeyOrigins('auth.clya.top', RP_ID, false)).toEqual({
       error: '「auth.clya.top」不是合法的 URL，请填写完整 Origin，例如 https://auth.clya.top。',
     })

@@ -244,6 +244,7 @@ fn payload_round_trip_restores_every_field_except_the_token() {
     assert_eq!(restored.last_seen_at, original.last_seen_at);
     assert_eq!(restored.csrf_token, original.csrf_token);
     assert_eq!(restored.revoked_at, original.revoked_at);
+    assert_eq!(restored.idle_timeout(), original.idle_timeout());
     assert!(restored.validates_csrf(&original.csrf_token));
 }
 
@@ -258,4 +259,46 @@ fn payload_round_trip_preserves_the_revocation_timestamp() {
 
     assert_eq!(decoded.revoked_at, session.revoked_at);
     assert!(!decoded.into_session(session.token.clone()).is_active());
+}
+
+/// #644：签发时的 idle 窗口必须进入载荷；查找用这个值，不能事后读当前设置。
+#[test]
+fn payload_preserves_the_issuance_idle_timeout() {
+    let created_at = OffsetDateTime::UNIX_EPOCH;
+    let session = Session::new_at_with_idle_timeout(
+        "42".to_owned(),
+        Duration::from_secs(3_600),
+        Duration::from_secs(1_800),
+        created_at,
+    )
+    .expect("session");
+    let payload = SessionPayload::from(&session);
+    assert_eq!(payload.idle_timeout_seconds, Some(1_800));
+
+    let restored = payload.into_session("token-from-request".to_owned());
+    assert_eq!(restored.idle_timeout(), Some(Duration::from_secs(1_800)));
+    assert!(restored.is_active_at(created_at + time::Duration::seconds(90)));
+    assert!(restored.is_active_at(created_at + time::Duration::seconds(1_799)));
+    assert!(!restored.is_active_at(created_at + time::Duration::seconds(1_800)));
+}
+
+/// 升级前载荷没有 idle 字段。serde 必须当成缺失而不是解析失败。
+#[test]
+fn legacy_payload_without_idle_timeout_remains_readable() {
+    let session = Session::new("42".to_owned(), Duration::from_secs(60)).expect("session");
+    let mut value =
+        serde_json::to_value(SessionPayload::from(&session)).expect("payload as JSON value");
+    value
+        .as_object_mut()
+        .expect("payload serializes to a JSON object")
+        .remove("idle_timeout_seconds");
+    let payload: SessionPayload =
+        serde_json::from_value(value).expect("legacy payload must remain readable");
+    assert!(payload.idle_timeout_seconds.is_none());
+    assert!(
+        payload
+            .into_session("token-from-request".to_owned())
+            .idle_timeout()
+            .is_none()
+    );
 }

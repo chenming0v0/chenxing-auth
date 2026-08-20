@@ -6,7 +6,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::domain::AdminPermission;
+use super::{
+    authorization::{authorize_admin_write, management_actor_validation_failed},
+    domain::AdminPermission,
+};
 use crate::{
     api::extract::{AdminRead, AdminWrite, ApiJson},
     audit::AuditEvent,
@@ -49,28 +52,32 @@ pub async fn update_passkey_setting(
     admin: AdminWrite,
     ApiJson(input): ApiJson<PasskeySetting>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageSettings)
-        .await
-    {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
     match state
         .factors
-        .set_passkey_policy_audited(input, &state.audit, move |setting| {
-            setting_event(
-                actor,
-                crate::audit::AuditAction::PasskeySettingUpdate,
-                "passkey",
-                serde_json::json!({
-                    "enabled": setting.enabled,
-                    "rp_id": setting.rp_id.clone(),
-                    "allow_insecure_origin": setting.allow_insecure_origin,
-                    "origin_count": setting.allowed_origins.len(),
-                }),
-            )
-        })
+        .set_passkey_policy_audited(
+            input,
+            &state.audit,
+            authorization.credential(),
+            move |setting| {
+                setting_event(
+                    actor,
+                    crate::audit::AuditAction::PasskeySettingUpdate,
+                    "passkey",
+                    serde_json::json!({
+                        "enabled": setting.enabled,
+                        "rp_id": setting.rp_id.clone(),
+                        "allow_insecure_origin": setting.allow_insecure_origin,
+                        "origin_count": setting.allowed_origins.len(),
+                    }),
+                )
+            },
+        )
         .await
     {
         Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
@@ -87,6 +94,9 @@ pub async fn update_passkey_setting(
         Err(crate::auth_factors::service::PasskeyPolicyUpdateError::Validation(error_value)) => {
             error::bad_request("invalid_passkey_setting", error_value.to_string())
         }
+        Err(crate::auth_factors::service::PasskeyPolicyUpdateError::ManagementActor(
+            error_value,
+        )) => management_actor_validation_failed(&state, authorization, error_value).await,
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update passkey setting");
             error::internal()
@@ -183,13 +193,12 @@ pub async fn update_email_policy_setting(
     admin: AdminWrite,
     ApiJson(input): ApiJson<UpdateEmailPolicySetting>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageSettings)
-        .await
-    {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
     match state
         .settings
         .set_email_policy_audited_if_generation(
@@ -257,34 +266,41 @@ pub async fn update_smtp_setting(
     admin: AdminWrite,
     ApiJson(input): ApiJson<SmtpSettingUpdate>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageSettings)
-        .await
-    {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
     match state
         .settings
-        .set_smtp_audited(input, &state.audit, move |(setting, password_action)| {
-            setting_event(
-                actor,
-                crate::audit::AuditAction::SmtpSettingUpdate,
-                "smtp",
-                serde_json::json!({
-                    "host_configured": !setting.host.is_empty(),
-                    "ssl_enabled": setting.ssl_enabled,
-                    "force_auth_login": setting.force_auth_login,
-                    "password_configured": setting.password_configured,
-                    "password_action": password_action,
-                }),
-            )
-        })
+        .set_smtp_audited(
+            input,
+            &state.audit,
+            authorization.credential(),
+            move |(setting, password_action)| {
+                setting_event(
+                    actor,
+                    crate::audit::AuditAction::SmtpSettingUpdate,
+                    "smtp",
+                    serde_json::json!({
+                        "host_configured": !setting.host.is_empty(),
+                        "ssl_enabled": setting.ssl_enabled,
+                        "force_auth_login": setting.force_auth_login,
+                        "password_configured": setting.password_configured,
+                        "password_action": password_action,
+                    }),
+                )
+            },
+        )
         .await
     {
         Ok((setting, _)) => (StatusCode::OK, Json(setting)).into_response(),
         Err(SettingsServiceError::Validation(error_value)) => {
             error::bad_request("invalid_smtp_setting", error_value.to_string())
+        }
+        Err(SettingsServiceError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(&state, authorization, error_value).await
         }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update smtp setting");
@@ -317,28 +333,35 @@ pub async fn update_session_lifetime_setting(
     admin: AdminWrite,
     ApiJson(input): ApiJson<SessionLifetimeSetting>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageSettings)
-        .await
-    {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
     match state
         .settings
-        .set_session_lifetime_audited(input, &state.audit, move |setting| {
-            setting_event(
-                actor,
-                crate::audit::AuditAction::SessionLifetimeUpdate,
-                SESSION_LIFETIME_KEY,
-                serde_json::json!({"session_ttl_seconds": setting.session_ttl_seconds}),
-            )
-        })
+        .set_session_lifetime_audited(
+            input,
+            &state.audit,
+            authorization.credential(),
+            move |setting| {
+                setting_event(
+                    actor,
+                    crate::audit::AuditAction::SessionLifetimeUpdate,
+                    SESSION_LIFETIME_KEY,
+                    serde_json::json!({"session_ttl_seconds": setting.session_ttl_seconds}),
+                )
+            },
+        )
         .await
     {
         Ok(setting) => (StatusCode::OK, Json(setting)).into_response(),
         Err(SettingsServiceError::Validation(error_value)) => {
             error::bad_request("invalid_session_lifetime", error_value.to_string())
+        }
+        Err(SettingsServiceError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(&state, authorization, error_value).await
         }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update session lifetime setting");
@@ -371,16 +394,15 @@ pub async fn update_security_limits_setting(
     admin: AdminWrite,
     ApiJson(input): ApiJson<SecurityLimitsSetting>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageSettings)
-        .await
-    {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageSettings).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
     match state
         .settings
-        .set_security_limits_audited(input, &state.audit, move |setting| {
+        .set_security_limits_audited(input, &state.audit, authorization.credential(), move |setting| {
             setting_event(
                 actor,
                 crate::audit::AuditAction::SecurityLimitsUpdate,
@@ -409,6 +431,9 @@ pub async fn update_security_limits_setting(
         }
         Err(SettingsServiceError::Validation(error_value)) => {
             error::bad_request("invalid_security_limits", error_value.to_string())
+        }
+        Err(SettingsServiceError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(&state, authorization, error_value).await
         }
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to update security limits setting");

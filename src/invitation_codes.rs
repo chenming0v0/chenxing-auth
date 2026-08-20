@@ -4,7 +4,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
-use crate::sqlx::PgPool;
+use crate::{
+    audit::{AuditError, AuditEvent},
+    sqlx::PgPool,
+    users::{ManagementActorCredential, ManagementActorValidationError, domain::UserPermission},
+};
 
 const MAX_BATCH_SIZE: u16 = 100;
 
@@ -22,6 +26,10 @@ pub enum InvitationCodeError {
     InvalidInput,
     #[error("invitation code was not found")]
     NotFound,
+    #[error(transparent)]
+    Audit(#[from] AuditError),
+    #[error(transparent)]
+    ManagementActor(#[from] ManagementActorValidationError),
     #[error(transparent)]
     Database(#[from] crate::sqlx::Error),
 }
@@ -102,13 +110,21 @@ fn validate_input(
     Ok(input)
 }
 
-pub async fn create_batch(
+pub async fn create_batch_with_audit(
     pool: &PgPool,
     input: CreateInvitationCodesInput,
     created_by: Option<i64>,
+    credential: ManagementActorCredential,
+    audit_event: impl FnOnce(&[CreatedInvitationCode]) -> AuditEvent,
 ) -> Result<Vec<CreatedInvitationCode>, InvitationCodeError> {
     let input = validate_input(input)?;
     let mut transaction = pool.begin().await?;
+    crate::users::repository::management_actor::validate_management_actor_in_transaction(
+        &mut transaction,
+        credential,
+        UserPermission::ManageSettings,
+    )
+    .await?;
     let mut created = Vec::with_capacity(input.count.into());
     for _ in 0..input.count {
         let code = generate_code();
@@ -124,6 +140,7 @@ pub async fn create_batch(
             code,
         });
     }
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event(&created)).await?;
     transaction.commit().await?;
     Ok(created)
 }
@@ -138,15 +155,29 @@ pub async fn list(pool: &PgPool) -> Result<Vec<InvitationCodeSummary>, crate::sq
     Ok(rows.into_iter().map(summary).collect())
 }
 
-pub async fn disable(pool: &PgPool, id: i64) -> Result<InvitationCodeSummary, InvitationCodeError> {
+pub async fn disable_with_audit(
+    pool: &PgPool,
+    id: i64,
+    credential: ManagementActorCredential,
+    audit_event: AuditEvent,
+) -> Result<InvitationCodeSummary, InvitationCodeError> {
+    let mut transaction = pool.begin().await?;
+    crate::users::repository::management_actor::validate_management_actor_in_transaction(
+        &mut transaction,
+        credential,
+        UserPermission::ManageSettings,
+    )
+    .await?;
     let row: InvitationCodeRow = crate::sqlx::query_as(
         "UPDATE registration_invitation_codes SET disabled_at = COALESCE(disabled_at, NOW()) WHERE id = $1
          RETURNING id, label, max_uses, use_count, expires_at, disabled_at, created_at",
     )
     .bind(id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *transaction)
     .await?
     .ok_or(InvitationCodeError::NotFound)?;
+    crate::audit::repository::insert_with(&mut *transaction, &audit_event).await?;
+    transaction.commit().await?;
     Ok(summary(row))
 }
 

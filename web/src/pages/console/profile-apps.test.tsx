@@ -115,7 +115,20 @@ describe('ConsoleProfile 账户设置布局', () => {
     await waitFor(() => expect(requests.some(({ path }) => path === '/api/v1/auth/email-change/confirm')).toBe(true))
   })
 
-  it('修改密码只在独立弹窗中展示，不在安全设置项内展开', async () => {
+  it('ignores an older session reload after a newer revoke reload', async () => {
+    const deferred: Array<(value: Response) => void> = []
+    vi.stubGlobal('fetch', vi.fn((path: string, init?: RequestInit) => {
+      requests.push({ path, init })
+      if (path === '/api/v1/auth/sessions') return new Promise<Response>((resolve) => deferred.push(resolve))
+      return Promise.reject(new Error(`unexpected request: ${path}`))
+    }))
+    render(<ConsoleProfile />)
+    deferred.shift()?.(jsonResponse({ items: [{ id: 1, current: false, created_at: '2099-01-01', expires_at: '2099-01-02' }] }))
+    await screen.findByText('其他会话')
+    expect(deferred).toHaveLength(0)
+  })
+
+  it('密码修改使用独立弹窗', async () => {
     render(<ConsoleProfile />)
 
     await screen.findByRole('heading', { name: '账户管理' })
@@ -129,5 +142,80 @@ describe('ConsoleProfile 账户设置布局', () => {
     expect(within(passwordDialog).getByLabelText('当前密码')).toBeTruthy()
     expect(within(passwordDialog).getByLabelText('新密码')).toBeTruthy()
     expect(within(passwordDialog).getByLabelText('确认新密码')).toBeTruthy()
+  })
+})
+
+describe('ConsoleProfile 提交互斥（#586）', () => {
+  function hangMutations() {
+    const fetchMock = vi.fn((path: string, init?: RequestInit) => {
+      requests.push({ path, init })
+      if (path === '/api/v1/auth/sessions') return Promise.resolve(jsonResponse({ items: [] }))
+      if (path === '/api/v1/auth/security/factors') return Promise.resolve(jsonResponse({ totp_enabled: false, passkey_count: 0, available_methods: ['totp', 'passkey'] }))
+      if (path === '/api/v1/auth/external-identities') return Promise.resolve(jsonResponse({ items: [] }))
+      if (path === '/api/v1/auth/external-providers') return Promise.resolve(jsonResponse([]))
+      if (path === '/api/v1/auth/me' && init?.method === 'PATCH') return new Promise<Response>(() => {})
+      if (path === '/api/v1/auth/password') return new Promise<Response>(() => {})
+      if (path === '/api/v1/auth/email-change/start') return new Promise<Response>(() => {})
+      return Promise.reject(new Error(`unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it('资料保存在 busy 尚未重渲染时重复提交只发出一个 PATCH', async () => {
+    hangMutations()
+    render(<ConsoleProfile />)
+    await screen.findByRole('heading', { name: '账户管理' })
+    fireEvent.click(screen.getByRole('tab', { name: '安全设置' }))
+    fireEvent.click(screen.getByRole('button', { name: '修改账户资料' }))
+    fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: '更新后的用户' } })
+
+    const form = screen.getByRole('button', { name: '保存账户资料' }).closest('form') as HTMLFormElement
+    fireEvent.submit(form)
+    fireEvent.submit(form)
+
+    await waitFor(() => {
+      expect(requests.filter(({ path, init }) => path === '/api/v1/auth/me' && init?.method === 'PATCH')).toHaveLength(1)
+    })
+    expect(requests.filter(({ path, init }) => path === '/api/v1/auth/me' && init?.method === 'PATCH')).toHaveLength(1)
+  })
+
+  it('密码修改在 busy 尚未重渲染时重复提交只发出一个 POST', async () => {
+    hangMutations()
+    render(<ConsoleProfile />)
+    await screen.findByRole('heading', { name: '账户管理' })
+    fireEvent.click(screen.getByRole('tab', { name: '安全设置' }))
+    fireEvent.click(screen.getByRole('button', { name: '修改密码' }))
+    fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'old-password-long' } })
+    fireEvent.change(screen.getByLabelText('新密码'), { target: { value: 'new-password-long' } })
+    fireEvent.change(screen.getByLabelText('确认新密码'), { target: { value: 'new-password-long' } })
+
+    const form = screen.getByRole('button', { name: '确认修改' }).closest('form') as HTMLFormElement
+    fireEvent.submit(form)
+    fireEvent.submit(form)
+
+    await waitFor(() => {
+      expect(requests.filter(({ path }) => path === '/api/v1/auth/password')).toHaveLength(1)
+    })
+    expect(requests.filter(({ path }) => path === '/api/v1/auth/password')).toHaveLength(1)
+  })
+
+  it('邮箱变更在 busy 尚未重渲染时重复提交只发出一个 start 请求', async () => {
+    hangMutations()
+    render(<ConsoleProfile />)
+    await screen.findByRole('heading', { name: '账户管理' })
+    fireEvent.click(screen.getByRole('tab', { name: '安全设置' }))
+    fireEvent.click(screen.getByRole('button', { name: '更改邮箱' }))
+    fireEvent.change(screen.getByLabelText('新邮箱地址'), { target: { value: 'new@example.com' } })
+    fireEvent.change(screen.getByLabelText('当前密码'), { target: { value: 'correct-password' } })
+
+    const form = screen.getByRole('button', { name: '发送验证码' }).closest('form') as HTMLFormElement
+    fireEvent.submit(form)
+    fireEvent.submit(form)
+
+    await waitFor(() => {
+      expect(requests.filter(({ path }) => path === '/api/v1/auth/email-change/start')).toHaveLength(1)
+    })
+    expect(requests.filter(({ path }) => path === '/api/v1/auth/email-change/start')).toHaveLength(1)
   })
 })

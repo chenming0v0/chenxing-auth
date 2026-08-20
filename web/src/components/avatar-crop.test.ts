@@ -3,11 +3,15 @@ import {
   EXPORT_EDGE,
   MAX_SCALE,
   MAX_SOURCE_FILE_BYTES,
+  MAX_SOURCE_EDGE,
+  MAX_SOURCE_PIXELS,
   MAX_UPLOAD_BYTES,
   MIN_SCALE,
   MIN_SOURCE_EDGE,
   clampOffset,
   clampScale,
+  hasSupportedImageSignature,
+  imageDimensionsFromBytes,
   localRejectionMessage,
   previewTransform,
   rejectDecodedSize,
@@ -117,6 +121,13 @@ describe('previewTransform', () => {
 })
 
 describe('local pre-flight checks', () => {
+  it('recognizes supported signatures and parses PNG dimensions', () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0x49, 0x48, 0x44, 0x52, 0, 0, 0xFA, 0, 0, 0, 0xFA, 8, 6])
+    expect(hasSupportedImageSignature(png)).toBe(true)
+    expect(imageDimensionsFromBytes(png)).toEqual({ width: 64000, height: 250 })
+  })
+
+
   it('gates the source file on the source budget, not the upload budget', () => {
     /* 回归保护：源文件曾被按上传额度（5 MiB）判定，导致一张普通手机照片在打开
        编辑器之前就被拒。裁剪后的上传体与源文件大小几乎无关，两个预算必须分开。 */
@@ -133,11 +144,16 @@ describe('local pre-flight checks', () => {
     expect(rejectExportSize(MAX_UPLOAD_BYTES)).toBeUndefined()
   })
 
-  it('rejects formats outside the allowlist and treats a missing MIME as unknown', () => {
+  it('allows empty MIME metadata to reach byte/decode validation', () => {
+    expect(rejectFileBeforeDecode(file(1024, ''))).toBeUndefined()
     expect(rejectFileBeforeDecode(file(1024, 'image/gif'))).toBe('unsupported_format')
-    // 空 type 无法确认格式：放行会让 BMP/GIF/SVG 绕过预检（解码只验证「可解码」），
-    // 必须与未知格式一样拒绝。
-    expect(rejectFileBeforeDecode(file(1024, ''))).toBe('unsupported_format')
+  })
+
+  it('rejects decoded dimensions that exceed browser memory budgets', () => {
+    expect(rejectDecodedSize({ width: MAX_SOURCE_EDGE + 1, height: 1000 })).toBe('too_large_dimensions')
+    expect(rejectDecodedSize({ width: 4097, height: 4097 })).toBe('too_large_dimensions')
+    expect(rejectDecodedSize({ width: MAX_SOURCE_EDGE, height: 1000 })).toBeUndefined()
+    expect(rejectDecodedSize({ width: MIN_SOURCE_EDGE, height: MIN_SOURCE_EDGE })).toBeUndefined()
   })
 
   it('rejects sources below the minimum edge', () => {

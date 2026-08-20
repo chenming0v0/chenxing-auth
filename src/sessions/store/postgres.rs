@@ -2,6 +2,7 @@
 //!
 //! 会话元数据写进 `user_sessions` 表，载荷优先从库里取，库里找不到时回退到 Redis。
 //! `find` 的 Redis 回退在行锁外执行（Issue #432）；`FOR UPDATE` 只包住 idle 续期写。
+//! idle 判定用行上签发时写入的 `idle_timeout_seconds`（#644），不用 store 启动策略。
 //! 撤销通过更新 `revoked_at` 列表达，并将撤销通知写进 `session_outbox`，由
 //! outbox 处理器异步同步到 Redis。
 
@@ -18,7 +19,8 @@ mod lookup;
 #[path = "postgres_save.rs"]
 mod save;
 
-pub(super) use find::{find_with_metadata, find_with_metadata_by_token_hash};
+pub use find::AuthenticatedSession;
+pub(super) use find::{find_authenticated_with_metadata, find_with_metadata_by_token_hash};
 pub(super) use lookup::{list_for_user, revoke_for_user};
 pub(super) use save::save_with_metadata;
 
@@ -80,16 +82,15 @@ pub(super) async fn acquire_issuance_guard(
            AND sessions.user_id = $3
            AND sessions.revoked_at IS NULL
            AND sessions.expires_at > NOW()
-           AND sessions.last_seen_at > NOW() - $4
+           AND sessions.last_seen_at > NOW() - MAKE_INTERVAL(secs => sessions.idle_timeout_seconds)
            AND sessions.session_epoch >= users.session_epoch
            AND users.status = 'active'
-           AND users.session_epoch = $5
+           AND users.session_epoch = $4
          FOR SHARE OF sessions, users",
     )
     .bind(session_id)
     .bind(token_hash)
     .bind(user_id)
-    .bind(store.idle_timeout_interval())
     .bind(expected_epoch)
     .fetch_optional(&mut *transaction)
     .await?;

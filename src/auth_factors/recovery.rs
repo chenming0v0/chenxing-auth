@@ -241,7 +241,7 @@ impl AuthFactorService {
         let locked = lock_management_user_rows(&mut transaction, &lock_order).await?;
         validate_locked_management_actor_permission(
             credential,
-            locked.actor.as_ref(),
+            &locked,
             UserPermission::ManageAuthFactors,
         )?;
         if locked.target.is_none() {
@@ -317,7 +317,7 @@ impl AuthFactorService {
         let locked = lock_management_user_rows(&mut transaction, &lock_order).await?;
         validate_locked_management_actor_permission(
             credential,
-            locked.actor.as_ref(),
+            &locked,
             UserPermission::ManageAuthFactors,
         )?;
         if locked.target.is_none() {

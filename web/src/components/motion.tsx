@@ -1,5 +1,18 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 
+/** Subscribe to MediaQueryList changes across modern and legacy browser APIs. */
+export function subscribeToMediaQuery(mq: MediaQueryList, listener: (event: MediaQueryListEvent) => void): () => void {
+  if (typeof mq.addEventListener === 'function' && typeof mq.removeEventListener === 'function') {
+    mq.addEventListener('change', listener)
+    return () => mq.removeEventListener('change', listener)
+  }
+  if (typeof mq.addListener === 'function' && typeof mq.removeListener === 'function') {
+    mq.addListener(listener)
+    return () => mq.removeListener(listener)
+  }
+  return () => {}
+}
+
 /** 当前用户是否要求减少动态效果。matchMedia 不可用时按「减少」处理，宁可静止不可晕眩。 */
 export function usePrefersReducedMotion() {
   const [reduced, setReduced] = useState(
@@ -9,8 +22,7 @@ export function usePrefersReducedMotion() {
     if (typeof window.matchMedia !== 'function') return
     const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
     const onChange = () => setReduced(mq.matches)
-    mq.addEventListener('change', onChange)
-    return () => mq.removeEventListener('change', onChange)
+    return subscribeToMediaQuery(mq, onChange)
   }, [])
   return reduced
 }

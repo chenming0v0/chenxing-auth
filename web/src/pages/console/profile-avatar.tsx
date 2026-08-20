@@ -5,6 +5,8 @@ import { AvatarEditor } from '../../components/avatar-editor'
 import {
   ACCEPTED_UPLOAD_TYPES,
   localRejectionMessage,
+  hasSupportedImageSignature,
+  imageDimensionsFromBytes,
   rejectDecodedSize,
   rejectFileBeforeDecode,
   type SourceSize,
@@ -13,6 +15,17 @@ import {
 export type MessageTone = 'success' | 'warning'
 
 type LoadedSource = { image: HTMLImageElement; source: SourceSize; url: string }
+
+async function hasSupportedBytes(file: File): Promise<boolean> {
+  const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer())
+  return hasSupportedImageSignature(bytes)
+}
+
+async function rejectOversizedHeader(file: File): Promise<boolean> {
+  const bytes = new Uint8Array(await file.slice(0, 64).arrayBuffer())
+  const dimensions = imageDimensionsFromBytes(bytes)
+  return dimensions !== undefined && Boolean(rejectDecodedSize(dimensions))
+}
 
 /**
  * 在浏览器里解码待上传图片。
@@ -56,9 +69,14 @@ type ProfileAvatarProps = {
 export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [loaded, setLoaded] = useState<LoadedSource | null>(null)
+  const [avatarUser, setAvatarUser] = useState(user)
   const [busy, setBusy] = useState(false)
   const decodeRequestRef = useRef(0)
   const uploadRequestRef = useRef(0)
+
+  useEffect(() => {
+    setAvatarUser(user)
+  }, [user])
 
   // Object URL 是显式分配的资源：状态更替和组件卸载都必须释放，否则每选一张图
   // 就泄漏一份图片内存，直到整页刷新。
@@ -80,6 +98,14 @@ export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarP
     }
     const requestId = ++decodeRequestRef.current
     try {
+      if (!file.type && !(await hasSupportedBytes(file))) {
+        onMessage(localRejectionMessage('unsupported_format'), 'warning')
+        return
+      }
+      if (await rejectOversizedHeader(file)) {
+        onMessage(localRejectionMessage('too_large_dimensions'), 'warning')
+        return
+      }
       const decoded = await decodeFile(file)
       if (requestId !== decodeRequestRef.current) {
         URL.revokeObjectURL(decoded.url)
@@ -127,7 +153,7 @@ export function ProfileAvatar({ user, name, onMessage, refresh }: ProfileAvatarP
           disabled={busy}
           aria-label="更换头像"
         >
-          <AvatarContent src={avatarUrl(user)} name={name} />
+          <AvatarContent src={avatarUrl(avatarUser)} name={name} />
           <span className="chenxing-avatar-overlay" aria-hidden="true"><Icon name="pencil" size={18} /></span>
         </button>
         <span className="absolute -bottom-1 -right-1 inline-flex h-8 w-8 items-center justify-center rounded-full border border-[rgba(103,232,249,0.4)] bg-[var(--chenxing-background)]">

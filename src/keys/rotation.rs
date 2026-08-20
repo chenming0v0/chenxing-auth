@@ -4,7 +4,7 @@ use crate::key_storage::{KeyStorageLock, ensure_secure_directory};
 
 use super::{
     KeyManager, KeyManagerError, KeyRotation, activation, build_key_state, generate_rsa_key,
-    key_material, persistence, prune, retirement,
+    journal, key_material, persistence, prune, retirement,
 };
 
 /// 轮换：先把新公钥发布进 JWKS，等到 `activate_at` 才接管签发。
@@ -85,6 +85,11 @@ pub(super) fn rotate_blocking_at(
         let published_key_count = next_state.jwks.keys.len();
         let key_id = pending.key_id.clone();
         *manager.write_state() = next_state;
+        if let Some(directory) = directory.as_ref() {
+            if let Ok(generation) = journal::revocation_generation(directory) {
+                manager.observe_revocation_generation(generation);
+            }
+        }
         return Ok(KeyRotation {
             key_id,
             published_key_count,
@@ -137,6 +142,9 @@ pub(super) fn rotate_blocking_at(
     *manager.write_state() = next_state;
 
     if let Some(directory) = directory.as_ref() {
+        if let Ok(generation) = journal::revocation_generation(directory) {
+            manager.observe_revocation_generation(generation);
+        }
         for expired_key_id in &expired {
             if let Err(error) = persistence::remove_key(directory, expired_key_id) {
                 tracing::warn!(

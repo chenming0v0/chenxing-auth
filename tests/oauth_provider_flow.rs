@@ -1209,6 +1209,7 @@ async fn external_login_clears_leftover_password_mfa_ticket() {
     chenxing_auth::auth_factors::repository::insert_totp_factor_if_empty(
         &database,
         user_id,
+        0,
         &[1, 2, 3],
     )
     .await

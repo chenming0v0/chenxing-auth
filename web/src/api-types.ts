@@ -308,6 +308,7 @@ export type OAuthProviderSummary = {
   name_claim?: string | null
   email_verified_claim?: string | null
   client_auth_method: 'basic' | 'request_body'
+  pkce_enabled: boolean
   status: 'active' | 'disabled' | string
   state_version?: number
   client_secret_configured: boolean
@@ -327,6 +328,8 @@ export type OAuthProviderInput = {
   /** 必填：指向布尔型邮箱验证状态的 claim 路径。缺失时后端拒绝配置（Issue #261）。 */
   email_verified_claim: string
   client_auth_method?: 'basic' | 'request_body'
+  /** 是否启用 PKCE；省略时后端按安全默认值开启。 */
+  pkce_enabled?: boolean
 }
 export type AdminPlan = {
   id: number

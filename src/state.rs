@@ -28,7 +28,10 @@ use crate::{
     plans::service::PlanService,
     redis_client::RedisClient,
     sessions::store::SessionStore,
-    settings::{IssuerRuntime, SecurityLimitsSetting, SettingsService, issuer::IssuerRecord},
+    settings::{
+        IssuerRuntime, SecurityLimitsSetting, SessionLifetimeSetting, SettingsService,
+        issuer::IssuerRecord,
+    },
     users::service::UserService,
     web_dist::{WebDistError, WebDistRoot},
     workers::{WorkerContext, WorkerHealth},
@@ -324,6 +327,8 @@ impl AppState {
             config.auth_encryption_keys.clone(),
         )
         .with_keyspace(config.redis_keyspace.clone())
+        // idle 只给并发上限和 Redis-only 旧载荷兜底。生产查找用会话行上
+        // 签发时写入的 idle_timeout_seconds（#644），不读启动配置。
         .with_session_policy(
             Duration::from_secs(session_lifetime.session_idle_timeout_seconds),
             config.session_max_concurrent_sessions,

@@ -1090,11 +1090,39 @@ fn database_uses_forward_only_transactional_migration_history() {
         DB_MODULE
             .contains("include_str!(\"../../migrations/0033_registration_invitation_codes.sql\")")
     );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0034_user_email_change_challenges.sql\")")
+    );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0035_session_outbox_claim_fence.sql\")")
+    );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0036_revoke_runtime_archive_insert.sql\")")
+    );
+    assert!(
+        DB_MODULE.contains("include_str!(\"../../migrations/0037_revoked_access_tokens.sql\")")
+    );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0038_jsonb_oauth_consent_shapes.sql\")")
+    );
+    assert!(
+        DB_MODULE
+            .contains("include_str!(\"../../migrations/0039_session_issued_idle_timeout.sql\")")
+    );
+    assert!(
+        DB_MODULE.contains(
+            "include_str!(\"../../migrations/0040_oauth_client_auth_method_secret.sql\")"
+        )
+    );
     assert_eq!(
         DB_MODULE
             .matches("include_str!(\"../../migrations/")
             .count(),
-        33
+        40
     );
     assert!(
         DB_MODULE.contains("normalize_migration_sql(sql)")
@@ -1138,22 +1166,25 @@ fn database_uses_forward_only_transactional_migration_history() {
         .map(|entry| entry.file_name())
         .collect::<Vec<_>>();
     migrations.sort();
-    assert_eq!(migrations.len(), 33);
+    assert_eq!(migrations.len(), 40);
     assert_eq!(
         migrations.first().and_then(|name| name.to_str()),
         Some("0001_initial.sql")
     );
     assert_eq!(
         migrations.last().and_then(|name| name.to_str()),
-        Some("0033_registration_invitation_codes.sql")
+        Some("0040_oauth_client_auth_method_secret.sql")
     );
-    for (index, name) in migrations.iter().enumerate() {
-        let expected_prefix = format!("{:04}_", index + 1);
-        assert!(
-            name.to_string_lossy().starts_with(&expected_prefix),
-            "migration history must be contiguous at {expected_prefix}"
-        );
-    }
+    let versions = migrations
+        .iter()
+        .map(|name| {
+            let file_name = name.to_string_lossy();
+            file_name[..4]
+                .parse::<u32>()
+                .expect("migration filename starts with a version prefix")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(versions, (1..=40).collect::<Vec<_>>());
 
     assert_eq!(
         DATABASE_BASELINE.matches("CREATE TABLE ").count(),
@@ -1236,7 +1267,22 @@ fn migration_history_declares_final_security_and_consistency_invariants() {
         "CREATE TRIGGER audit_events_append_only_trigger",
         "CREATE TRIGGER audit_events_archive_append_only_trigger",
         "GRANT UPDATE ON SEQUENCE %s TO chenxing_runtime",
+        "CREATE TABLE revoked_access_tokens",
+        "GRANT SELECT, INSERT, DELETE ON TABLE revoked_access_tokens TO chenxing_runtime",
+        "CONSTRAINT oauth_clients_redirect_uris_check",
+        "CONSTRAINT oauth_clients_scopes_check",
+        "CONSTRAINT user_consents_scopes_check",
+        "CONSTRAINT oauth_providers_scopes_check",
+        "CONSTRAINT user_passkeys_credential_check",
+        "CONSTRAINT user_sessions_idle_timeout_seconds_range",
+        "idle_timeout_seconds BIGINT",
+        "jsonb_typeof(redirect_uris) = 'array'",
+        "jsonb_typeof(credential) = 'object'",
+        "CONSTRAINT oauth_clients_auth_method_secret_check",
+        "auth_method = 'none' AND client_secret_hash IS NULL",
+        "auth_method IN ('client_secret_basic', 'client_secret_post')",
         "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I._sqlx_migrations",
+        "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE %I.audit_events_archive FROM chenxing_runtime",
         "ALTER DEFAULT PRIVILEGES IN SCHEMA %I REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLES",
     ] {
         assert!(
@@ -1312,9 +1358,12 @@ fn database_baseline_enforces_runtime_role_least_privilege() {
 #[test]
 fn migrate_command_verifies_the_audit_boundary_instead_of_trusting_the_migration() {
     for marker in [
-        // 判定依据必须是数据库实际权限，而不是"变量有没有设置"。
+        // 判定依据必须是这条连接上的有效主体，而不是 URL 用户名（Issue #649）。
         "has_table_privilege(",
         "has_function_privilege(",
+        "current_user",
+        "session_user",
+        "EffectiveRoleMismatch",
         "RuntimeRoleCanMutateAudit",
         // 单角色部署要么被拒，要么走显式开关并强告警。
         "AllowSingleRole",
@@ -1345,9 +1394,11 @@ fn migrate_command_verifies_the_audit_boundary_instead_of_trusting_the_migration
     }
 
     // 校验必须在 migrate 分支里被调用，否则策略只是个没人读的枚举。
+    // Issue #649：必须连 runtime URL 再验，不能在 owner 连接上拿 URL 用户名做目录检查。
     let main = include_str!("../src/main.rs");
     assert!(main.contains("db::MigrationPlan::from_env("));
     assert!(main.contains("db::verify_audit_append_only_boundary("));
+    assert!(main.contains("connect_maintenance(plan.runtime_database_url())"));
 
     for marker in [
         "AUDIT_ROLE_SEPARATION",

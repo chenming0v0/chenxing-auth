@@ -161,6 +161,11 @@ fn owner_database_url(runtime_url: &str) -> String {
 }
 
 /// 在测试 bootstrap owner 后重新设置用户序列，避免 Redis 中按 user_id 命名的键碰撞。
+///
+/// Owner 引导曾经把序列打回 1（`INITIAL_OWNER_ID`），所以这里必须再跳到测试
+/// 身份派生的高位区间。引导现在保留已分配的 identity：schema 初始化已经把
+/// 序列放到 `user_id_start`，Owner 行占用了那个值。若这里再 `setval(start,
+/// false)`，下一次 `INSERT` 会撞主键，管理端建号被翻成 500 `internal_error`。
 pub async fn isolate_user_ids(database: &PgPool, binary_name: &str) {
     if matches!(binary_name, "admin_api" | "bootstrap_invariant") {
         return;
@@ -168,8 +173,15 @@ pub async fn isolate_user_ids(database: &PgPool, binary_name: &str) {
     let test_identity = current_test_identity();
     let user_id_start =
         user_id_sequence_start(binary_name, &current_execution_identity(&test_identity));
+    let next_id: i64 = chenxing_auth::sqlx::query_scalar(
+        "SELECT GREATEST($1::bigint, COALESCE((SELECT MAX(id) FROM users), 0) + 1)",
+    )
+    .bind(user_id_start)
+    .fetch_one(database)
+    .await
+    .expect("db_isolation: compute next user id after owner bootstrap");
     chenxing_auth::sqlx::query("SELECT setval(pg_get_serial_sequence('users', 'id'), $1, false)")
-        .bind(user_id_start)
+        .bind(next_id)
         .execute(database)
         .await
         .expect("db_isolation: reset user id sequence after owner bootstrap");

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { apiFetch, type ExternalIdentity, type ExternalIdentityListResponse, type PublicExternalProvider } from '../../api'
 import { useDrawerFocus } from '../../components/drawer'
 import { Badge, Button, HudPanel, Icon, PasswordField } from '../../components/ui'
+import { safeRedirectTarget } from '../../safe-redirect'
 import type { MessageTone } from './profile-avatar'
 
 type NoticeState = { text: string; tone: MessageTone }
@@ -67,8 +68,9 @@ export function ExternalIdentities({ userEmail, busy, onBusy, onNotice }: Extern
       const result = await apiFetch<ExternalBindingStart>(`/api/v1/auth/external-identities/${encodeURIComponent(slug)}/bind`, {
         method: 'POST',
       })
-      if (!isExternalBindingStart(result)) throw new Error('外部授权入口不可用，请稍后重试。')
-      window.location.assign(result.authorization_url)
+      const target = bindingRedirectTarget(result)
+      if (!target) throw new Error('外部授权入口不可用，请稍后重试。')
+      window.location.assign(target)
     } catch (error) {
       onNotice({ text: error instanceof Error ? error.message : '无法开始外部账户绑定。', tone: 'warning' })
       onBusy(null)
@@ -273,10 +275,10 @@ function mergeProviderBindings(providers: PublicExternalProvider[], identities: 
   return bindings
 }
 
-function isExternalBindingStart(value: unknown): value is ExternalBindingStart {
-  if (typeof value !== 'object' || value === null) return false
+function bindingRedirectTarget(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null) return null
   const candidate = value as { authorization_url?: unknown }
-  return typeof candidate.authorization_url === 'string' && candidate.authorization_url.length > 0
+  return typeof candidate.authorization_url === 'string' ? safeRedirectTarget(candidate.authorization_url) : null
 }
 
 function isProvider(provider: PublicExternalProvider): boolean {
