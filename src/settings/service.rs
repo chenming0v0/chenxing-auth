@@ -14,6 +14,8 @@ use crate::{
     oauth::providers::secrets::{SecretContext, SecretError, SecretManager},
     users::email::EmailAddress,
 };
+use crate::users::{ManagementActorCredential, domain::UserPermission};
+
 use thiserror::Error;
 
 #[path = "service_persisted.rs"]
@@ -46,6 +48,8 @@ pub enum SettingsServiceError {
     Database(#[from] crate::sqlx::Error),
     #[error("setting audit operation failed: {0}")]
     Audit(#[from] AuditError),
+    #[error(transparent)]
+    ManagementActor(#[from] crate::users::ManagementActorValidationError),
 }
 
 impl SettingsService {
@@ -157,6 +161,7 @@ impl SettingsService {
         &self,
         value: Option<String>,
         audit: &AuditService,
+        credential: ManagementActorCredential,
         audit_event: F,
     ) -> Result<Option<String>, SettingsServiceError>
     where
@@ -164,6 +169,12 @@ impl SettingsService {
     {
         let value = normalize_email(value)?;
         let mut transaction = self.pool.begin().await?;
+        crate::users::repository::management_actor::validate_management_actor_in_transaction(
+            &mut transaction,
+            credential,
+            UserPermission::ManageSettings,
+        )
+        .await?;
         self.persist_registration_email_from(&mut transaction, &value)
             .await?;
         audit
@@ -301,6 +312,7 @@ impl SettingsService {
         &self,
         value: SecurityLimitsSetting,
         audit: &AuditService,
+        credential: ManagementActorCredential,
         audit_event: F,
     ) -> Result<SecurityLimitsSetting, SettingsServiceError>
     where
@@ -308,6 +320,12 @@ impl SettingsService {
     {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
+        crate::users::repository::management_actor::validate_management_actor_in_transaction(
+            &mut transaction,
+            credential,
+            UserPermission::ManageSettings,
+        )
+        .await?;
         repository::set_security_limits(&mut *transaction, &value).await?;
         audit
             .record_in_transaction(&mut transaction, audit_event(&value))
@@ -385,12 +403,19 @@ impl SettingsService {
         &self,
         update: SmtpSettingUpdate,
         audit: &AuditService,
+        credential: ManagementActorCredential,
         audit_event: F,
     ) -> Result<(SmtpSetting, SmtpPasswordAction), SettingsServiceError>
     where
         F: FnOnce(&(SmtpSetting, SmtpPasswordAction)) -> AuditEvent,
     {
         let mut transaction = self.pool.begin().await?;
+        crate::users::repository::management_actor::validate_management_actor_in_transaction(
+            &mut transaction,
+            credential,
+            UserPermission::ManageSettings,
+        )
+        .await?;
         let result = self.persist_smtp(&mut transaction, update).await?;
         audit
             .record_in_transaction(&mut transaction, audit_event(&result))

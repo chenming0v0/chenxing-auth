@@ -154,6 +154,8 @@ pub enum PasskeyPolicyUpdateError {
     Database(#[from] crate::sqlx::Error),
     #[error("setting audit operation failed: {0}")]
     Audit(#[from] AuditError),
+    #[error(transparent)]
+    ManagementActor(#[from] crate::users::ManagementActorValidationError),
 }
 
 impl AuthFactorService {
@@ -271,6 +273,7 @@ impl AuthFactorService {
         &self,
         value: PasskeySetting,
         audit: &AuditService,
+        credential: crate::users::ManagementActorCredential,
         audit_event: F,
     ) -> Result<PasskeySetting, PasskeyPolicyUpdateError>
     where
@@ -278,6 +281,12 @@ impl AuthFactorService {
     {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
+        crate::users::repository::management_actor::validate_management_actor_in_transaction(
+            &mut transaction,
+            credential,
+            crate::users::domain::UserPermission::ManageSettings,
+        )
+        .await?;
         crate::settings::repository::lock_passkey_policy(&mut transaction).await?;
         if !value.enabled
             && self
