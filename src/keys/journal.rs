@@ -250,7 +250,7 @@ fn clear_record(directory: &Path, file_name: &str) -> Result<(), KeyManagerError
 /// 清除，所以任何中断点都能从同一条记录继续，不会留下"记录已丢、active 仍缺失"的
 /// 新故障窗口。
 pub(super) fn recover(directory: &Path, now: time::OffsetDateTime) -> Result<(), KeyManagerError> {
-    recover_rotation(directory)?;
+    recover_rotation(directory, now)?;
     let Some(record) = read(directory)? else {
         activation::recover(directory, now)?;
         return Ok(());
@@ -320,7 +320,7 @@ fn recover_pending(
 ///
 /// 旧 key 的退役记录不在这里补：加载路径的 `retirement::reconcile` 会为记录缺失
 /// 的非 active key 统一盖章，避免恢复路径与 reconcile 各写一份。
-fn recover_rotation(directory: &Path) -> Result<(), KeyManagerError> {
+fn recover_rotation(directory: &Path, now: time::OffsetDateTime) -> Result<(), KeyManagerError> {
     let Some(record) = read_rotation(directory)? else {
         return Ok(());
     };
@@ -349,7 +349,7 @@ fn recover_rotation(directory: &Path) -> Result<(), KeyManagerError> {
             }
             clear_rotation(directory)?;
         }
-        RotationJournalRecord::Corrupt(corrupt) => recover_corrupt(directory, corrupt)?,
+        RotationJournalRecord::Corrupt(corrupt) => recover_corrupt(directory, corrupt, now)?,
     }
     Ok(())
 }

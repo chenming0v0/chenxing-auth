@@ -22,7 +22,6 @@ pub(crate) async fn reject_if_issuer_breaks_existing_passkeys(
         Ok(defaults) => defaults,
         Err(error_value) => {
             tracing::info!(error = %error_value, "issuer update rejected by WebAuthn policy");
-            let _ = transaction.rollback().await;
             return Err(error::conflict(
                 "issuer_passkey_migration_required",
                 "issuer change is incompatible with the current WebAuthn configuration",
@@ -36,7 +35,6 @@ pub(crate) async fn reject_if_issuer_breaks_existing_passkeys(
                 error = %error_value,
                 "failed to load issuer for passkey compatibility"
             );
-            let _ = transaction.rollback().await;
             return Err(error::internal());
         }
     };
@@ -51,16 +49,12 @@ pub(crate) async fn reject_if_issuer_breaks_existing_passkeys(
     }
     match state.factors.has_passkeys_in_transaction(transaction).await {
         Ok(false) => Ok(()),
-        Ok(true) => {
-            let _ = transaction.rollback().await;
-            Err(error::conflict(
-                "issuer_passkey_migration_required",
-                "configure a stable WebAuthn RP ID and origin before changing issuer",
-            ))
-        }
+        Ok(true) => Err(error::conflict(
+            "issuer_passkey_migration_required",
+            "configure a stable WebAuthn RP ID and origin before changing issuer",
+        )),
         Err(error_value) => {
             tracing::error!(error = %error_value, "failed to check passkey compatibility");
-            let _ = transaction.rollback().await;
             Err(error::service_unavailable(
                 "issuer_passkey_check_unavailable",
                 "could not verify WebAuthn compatibility",
