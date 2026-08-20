@@ -172,41 +172,14 @@ pub async fn update_issuer_setting(
         let _ = transaction.rollback().await;
         return error::internal();
     }
-    if let Some(snapshot) = state.issuer.current() {
-        let defaults = match state.issuer.webauthn_defaults_for(&value) {
-            Ok(defaults) => defaults,
-            Err(error_value) => {
-                tracing::info!(error = %error_value, "issuer update rejected by WebAuthn policy");
-                return error::conflict(
-                    "issuer_passkey_migration_required",
-                    "issuer change is incompatible with the current WebAuthn configuration",
-                );
-            }
-        };
-        if defaults.0 != snapshot.webauthn_rp_id() || defaults.1 != snapshot.webauthn_origin() {
-            match state
-                .factors
-                .has_passkeys_in_transaction(&mut transaction)
-                .await
-            {
-                Ok(true) => {
-                    let _ = transaction.rollback().await;
-                    return error::conflict(
-                        "issuer_passkey_migration_required",
-                        "configure a stable WebAuthn RP ID and origin before changing issuer",
-                    );
-                }
-                Ok(false) => {}
-                Err(error_value) => {
-                    tracing::error!(error = %error_value, "failed to check passkey compatibility");
-                    let _ = transaction.rollback().await;
-                    return error::service_unavailable(
-                        "issuer_passkey_check_unavailable",
-                        "could not verify WebAuthn compatibility",
-                    );
-                }
-            }
-        }
+    if let Err(response) = super::issuer_passkey_compat::reject_if_issuer_breaks_existing_passkeys(
+        &state,
+        &mut transaction,
+        &value,
+    )
+    .await
+    {
+        return response;
     }
     let write =
         match issuer::set_in_transaction(&mut transaction, &value, input.expected_generation).await

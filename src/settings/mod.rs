@@ -1,5 +1,8 @@
 pub mod domain;
 pub mod issuer;
+pub(crate) mod issuer_passkey;
+#[cfg(test)]
+mod issuer_passkey_tests;
 pub mod issuer_runtime;
 #[cfg(test)]
 mod issuer_runtime_tests;
