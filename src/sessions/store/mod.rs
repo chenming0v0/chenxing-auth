@@ -9,7 +9,10 @@
 //! `pub(crate)` 的 `lock_user_session_scope` 和 `revoke_all_for_user_in_transaction`
 //! 在此 re-export，`users::repository` 的既有调用路径不变。
 
-use std::time::Duration;
+use std::{
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use thiserror::Error;
@@ -46,6 +49,7 @@ pub struct SessionStore {
     pub(super) metadata: Option<crate::sqlx::PgPool>,
     pub(super) encryption_keys: Option<AuthEncryptionKeyRing>,
     pub(super) policy: SessionPolicy,
+    pub(super) runtime_policy: Option<Arc<RwLock<crate::settings::SessionLifetimeSetting>>>,
     pub(super) outbox_policy: SessionOutboxPolicy,
     /// 会话有效期、idle 判定和 Redis TTL 的时间来源。
     ///
@@ -124,6 +128,7 @@ impl SessionStore {
             metadata: None,
             encryption_keys: None,
             policy: SessionPolicy::default(),
+            runtime_policy: None,
             outbox_policy: SessionOutboxPolicy::default(),
             clock: SharedClock::system(),
         }
@@ -138,6 +143,7 @@ impl SessionStore {
                 crate::config::AuthEncryptionKey::new(encryption_key),
             )),
             policy: SessionPolicy::default(),
+            runtime_policy: None,
             outbox_policy: SessionOutboxPolicy::default(),
             clock: SharedClock::system(),
         }
@@ -166,6 +172,7 @@ impl SessionStore {
             metadata: Some(metadata),
             encryption_keys: Some(encryption_keys),
             policy: SessionPolicy::default(),
+            runtime_policy: None,
             outbox_policy: SessionOutboxPolicy::default(),
             clock: SharedClock::system(),
         }
@@ -210,7 +217,41 @@ impl SessionStore {
         self
     }
 
-    /// 注入共享时钟（`AppState` 构造时调用）。
+    pub fn with_runtime_policy(
+        mut self,
+        runtime_policy: Arc<RwLock<crate::settings::SessionLifetimeSetting>>,
+    ) -> Self {
+        self.runtime_policy = Some(runtime_policy);
+        self
+    }
+
+    pub fn runtime_policy(&self) -> Option<Arc<RwLock<crate::settings::SessionLifetimeSetting>>> {
+        self.runtime_policy.clone()
+    }
+
+    pub(super) fn current_policy(&self) -> SessionPolicy {
+        let Some(runtime) = &self.runtime_policy else {
+            return self.policy;
+        };
+        let Ok(runtime) = runtime.read() else {
+            return self.policy;
+        };
+        SessionPolicy {
+            absolute_ttl: self.policy.absolute_ttl,
+            idle_timeout: Duration::from_secs(runtime.session_idle_timeout_seconds),
+            max_concurrent_sessions: self.policy.max_concurrent_sessions,
+        }
+    }
+
+    pub(super) fn current_idle_timeout(&self) -> Duration {
+        self.current_policy().idle_timeout
+    }
+
+    pub(super) fn current_max_concurrent_sessions(&self) -> u64 {
+        self.current_policy().max_concurrent_sessions
+    }
+
+    /// Inject a shared clock (called when constructing `AppState`).
     ///
     /// 固定时钟可以把 idle 续期阈值和绝对过期推到边界两侧，因此
     /// 「idle 刚好超时」这类用例不需要真实等待 30 分钟。
@@ -436,7 +477,7 @@ impl SessionStore {
 
     pub(super) fn idle_timeout_interval(&self) -> time::Duration {
         time::Duration::seconds(
-            i64::try_from(self.policy.idle_timeout.as_secs())
+            i64::try_from(self.current_idle_timeout().as_secs())
                 .unwrap_or(i64::MAX)
                 .max(1),
         )
@@ -444,7 +485,7 @@ impl SessionStore {
 
     pub(super) fn renewal_interval(&self) -> time::Duration {
         time::Duration::seconds(
-            i64::try_from(self.policy.idle_timeout.as_secs() / 2)
+            i64::try_from(self.current_idle_timeout().as_secs() / 2)
                 .unwrap_or(i64::MAX)
                 .max(1),
         )

@@ -207,7 +207,7 @@ pub(super) async fn find_redis_only(
     };
     // Redis 键由令牌哈希派生，能读到这条记录就说明调用方持有该令牌。
     let mut session = stored_payload.into_session(token.to_owned());
-    session.set_idle_timeout(store.policy.idle_timeout);
+    session.set_idle_timeout(store.current_idle_timeout());
     let now = store.clock.now();
     if !session.is_active_at(now) {
         return Ok(None);
@@ -273,7 +273,7 @@ pub(super) async fn find_redis_only_by_token_hash(
         return Ok(None);
     };
     let mut session = stored_payload.into_session(String::new());
-    session.set_idle_timeout(store.policy.idle_timeout);
+    session.set_idle_timeout(store.current_idle_timeout());
     let now = store.clock.now();
     if !session.is_active_at(now) {
         return Ok(None);
@@ -324,7 +324,7 @@ pub(super) async fn find_redis_only_by_token_hash(
     Ok(Some(
         SessionPayload::from(&session)
             .into_lookup()
-            .with_idle_timeout(store.policy.idle_timeout),
+            .with_idle_timeout(store.current_idle_timeout()),
     ))
 }
 
