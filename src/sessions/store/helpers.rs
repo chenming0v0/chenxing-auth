@@ -124,4 +124,3 @@ pub(super) fn timestamp_watermark(value: OffsetDateTime) -> i64 {
         .unix_timestamp_nanos()
         .clamp(i64::MIN as i128, i64::MAX as i128) as i64
 }
-
