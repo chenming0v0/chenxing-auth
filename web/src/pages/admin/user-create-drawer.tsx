@@ -3,6 +3,7 @@ import { ApiError, apiFetch, type AdminCreateUserInput, type PublicUser, type Us
 import { Drawer } from '../../components/drawer'
 import { Button, Field, HudPanel, Notice, PasswordField } from '../../components/ui'
 import { SelectField, type SelectOption } from '../../components/select'
+import { useMutationLock } from '../../use-mutation-lock'
 
 /* 校验规则与服务端 src/users/domain.rs 一致：用户名 3-64 字符，仅含 ASCII 字母、数字、
    点号、下划线或连字符且不能使用系统保留名，密码 10-128 字符，显示名称 ≤128 字符，
@@ -143,7 +144,7 @@ export function UserCreateDrawer({ canManageRoles, onClose, onCreated }: {
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
   const [errors, setErrors] = useState<FieldErrors>({})
   const [message, setMessage] = useState('')
-  const [saving, setSaving] = useState(false)
+  const { busy: saving, run } = useMutationLock()
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((current) => ({ ...current, [key]: value }))
@@ -175,27 +176,26 @@ export function UserCreateDrawer({ canManageRoles, onClose, onCreated }: {
       role: form.role,
       status: form.status,
     }
-    setSaving(true)
-    try {
-      const user = await apiFetch<PublicUser>('/api/v1/admin/users', { method: 'POST', body: JSON.stringify(input) })
-      onCreated(user)
-    } catch (reason) {
-      const code = reason instanceof ApiError ? reason.code : undefined
-      const field = code ? CONFLICT_FIELD[code] : undefined
-      const text = (code ? CONFLICT_MESSAGE[code] : undefined)
-        ?? (reason instanceof Error ? reason.message : '用户创建失败，请稍后重试。')
-      if (field) {
-        const nextFieldErrors = { [field]: text } as FieldErrors
-        setErrors(nextFieldErrors)
-        focusFirstError(nextFieldErrors)
-      } else if (reason instanceof ApiError && reason.status === 403) {
-        setMessage('当前管理身份不能创建该角色的账号，请改用普通用户，或由 Owner 操作。')
-      } else {
-        setMessage(text)
+    await run(async () => {
+      try {
+        const user = await apiFetch<PublicUser>('/api/v1/admin/users', { method: 'POST', body: JSON.stringify(input) })
+        onCreated(user)
+      } catch (reason) {
+        const code = reason instanceof ApiError ? reason.code : undefined
+        const field = code ? CONFLICT_FIELD[code] : undefined
+        const text = (code ? CONFLICT_MESSAGE[code] : undefined)
+          ?? (reason instanceof Error ? reason.message : '用户创建失败，请稍后重试。')
+        if (field) {
+          const nextFieldErrors = { [field]: text } as FieldErrors
+          setErrors(nextFieldErrors)
+          focusFirstError(nextFieldErrors)
+        } else if (reason instanceof ApiError && reason.status === 403) {
+          setMessage('当前管理身份不能创建该角色的账号，请改用普通用户，或由 Owner 操作。')
+        } else {
+          setMessage(text)
+        }
       }
-    } finally {
-      setSaving(false)
-    }
+    })
   }
 
   return (

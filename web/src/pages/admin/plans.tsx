@@ -5,6 +5,7 @@ import { ConsoleLayout } from '../../components/shells'
 import { Badge, Button, Field, HudPanel, Icon, Notice, PageIntro, TextAreaField, ToggleRow } from '../../components/ui'
 import { DataTable } from '../../components/data-table'
 import { AdminGate, useAdminAccess } from './shared'
+import { useMutationLock } from '../../use-mutation-lock'
 
 export function formatLimit(value: number | null): string {
   return value === null ? '∞' : value.toLocaleString('zh-CN')
@@ -225,7 +226,7 @@ function PlanEditorDrawer({ initial, defaultOn = false, onSaved, onCancel }: {
   const [maxQps, setMaxQps] = useState(initial?.max_qps == null ? '' : String(initial.max_qps))
   const [isDefault, setIsDefault] = useState(initial?.is_default ?? defaultOn)
   const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
+  const { busy: saving, run } = useMutationLock()
   // 取消唯一默认套餐会让全站自助接入关闭，这是允许的操作，但必须提前说清后果。
   const clearingLastDefault = Boolean(initial?.is_default && initial.status === 'active' && !isDefault)
 
@@ -263,18 +264,17 @@ function PlanEditorDrawer({ initial, defaultOn = false, onSaved, onCancel }: {
       setError(reason instanceof Error ? reason.message : '表单校验失败。')
       return
     }
-    setSaving(true)
-    try {
-      await apiFetch<AdminPlan>(initial ? `/api/v1/admin/plans/${initial.id}` : '/api/v1/admin/plans', {
-        method: initial ? 'PUT' : 'POST',
-        body: JSON.stringify(input),
-      })
-      onSaved()
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '套餐保存失败。')
-    } finally {
-      setSaving(false)
-    }
+    await run(async () => {
+      try {
+        await apiFetch<AdminPlan>(initial ? `/api/v1/admin/plans/${initial.id}` : '/api/v1/admin/plans', {
+          method: initial ? 'PUT' : 'POST',
+          body: JSON.stringify(input),
+        })
+        onSaved()
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : '套餐保存失败。')
+      }
+    })
   }
 
   return (

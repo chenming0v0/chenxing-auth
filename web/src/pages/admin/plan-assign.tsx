@@ -3,6 +3,7 @@ import { apiFetch, type AdminPlan, type AssignPlanInput } from '../../api'
 import { Button, Field, HudPanel, Notice } from '../../components/ui'
 import { Drawer } from '../../components/drawer'
 import { SelectField } from '../../components/select'
+import { useMutationLock } from '../../use-mutation-lock'
 
 /** 复用共享 Drawer 的套餐分配抽屉；分配走 POST /admin/users/{id}/plan。 */
 export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
@@ -15,7 +16,7 @@ export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
   const [planId, setPlanId] = useState('')
   const [expiresAt, setExpiresAt] = useState('')
   const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
+  const { busy: saving, run } = useMutationLock()
 
   // 每次打开抽屉都重新拉取套餐列表，不设模块级缓存（#373）：
   // 套餐的新建/归档/恢复/编辑发生在套餐管理页，注销换账号也没有失效入口，
@@ -45,20 +46,19 @@ export function AssignPlanDrawer({ userId, userName, onAssigned, onClose }: {
     event.preventDefault()
     if (!planId) { setError('请选择要分配的套餐。'); return }
     setError('')
-    setSaving(true)
-    try {
-      const input: AssignPlanInput = {
-        plan_id: Number(planId),
-        expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
+    await run(async () => {
+      try {
+        const input: AssignPlanInput = {
+          plan_id: Number(planId),
+          expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
+        }
+        await apiFetch<void>(`/api/v1/admin/users/${userId}/plan`, { method: 'POST', body: JSON.stringify(input) })
+        onAssigned()
+        onClose()
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : '套餐分配失败。')
       }
-      await apiFetch<void>(`/api/v1/admin/users/${userId}/plan`, { method: 'POST', body: JSON.stringify(input) })
-      onAssigned()
-      onClose()
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '套餐分配失败。')
-    } finally {
-      setSaving(false)
-    }
+    })
   }
 
   return (
