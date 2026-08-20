@@ -11,6 +11,7 @@ pub mod domain;
 pub mod factor_handlers;
 pub mod handlers;
 pub mod invitation_code_handlers;
+mod issuer_passkey_compat;
 pub mod issuer_settings_handlers;
 pub mod key_handlers;
 pub mod management_handlers;

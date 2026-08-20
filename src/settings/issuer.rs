@@ -45,15 +45,18 @@ pub async fn load(pool: &crate::sqlx::PgPool) -> Result<Option<IssuerRecord>, Is
     load_with(pool).await
 }
 
-pub(crate) async fn load_raw(
-    pool: &crate::sqlx::PgPool,
-) -> Result<Option<RawIssuerRecord>, IssuerSettingError> {
+pub(crate) async fn load_raw<'e, E>(
+    executor: E,
+) -> Result<Option<RawIssuerRecord>, IssuerSettingError>
+where
+    E: crate::sqlx::Executor<'e, Database = crate::sqlx::Postgres>,
+{
     let row = crate::sqlx::query_as::<_, (Option<String>, i64, OffsetDateTime)>(
         "SELECT setting_value, generation, updated_at
          FROM app_settings
          WHERE setting_key = 'app_issuer'",
     )
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await?;
     Ok(row.map(|(value, generation, updated_at)| RawIssuerRecord {
         value,
