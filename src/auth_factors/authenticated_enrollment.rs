@@ -4,9 +4,9 @@
 //! cannot satisfy login policy and is bound to one user, browser session and
 //! session epoch until it is confirmed or expires.
 
-mod session_enrollment_types;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use session_enrollment_types::{PendingSessionEnrollment, PendingTotpPayload};
+use super::session_enrollment_types::{
+    PendingSessionBinding, PendingSessionEnrollment, PendingTotpPayload,
+};
 use std::fmt;
 use time::OffsetDateTime;
 use uuid::Uuid;

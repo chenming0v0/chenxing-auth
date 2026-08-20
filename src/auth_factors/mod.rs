@@ -6,5 +6,6 @@ pub mod repository;
 pub mod security_handlers;
 pub mod service;
 pub mod session;
+mod session_enrollment_types;
 pub mod store;
 pub mod totp;

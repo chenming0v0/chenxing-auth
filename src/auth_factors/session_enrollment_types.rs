@@ -6,11 +6,11 @@ use time::OffsetDateTime;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct PendingSessionEnrollment<P> {
-    binding: PendingSessionBinding,
-    method: FactorMethod,
-    enrollment_id: String,
-    expires_at: OffsetDateTime,
-    payload: P,
+    pub(super) binding: PendingSessionBinding,
+    pub(super) method: FactorMethod,
+    pub(super) enrollment_id: String,
+    pub(super) expires_at: OffsetDateTime,
+    pub(super) payload: P,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,7 +21,7 @@ pub(super) struct PendingSessionBinding {
 }
 
 impl PendingSessionBinding {
-    fn new(user_id: UserId, session_id: i64, session_epoch: i64) -> Self {
+    pub(super) fn new(user_id: UserId, session_id: i64, session_epoch: i64) -> Self {
         Self {
             user_id: user_id.to_string(),
             session_id: session_id.to_string(),
@@ -44,11 +44,11 @@ impl<P> fmt::Debug for PendingSessionEnrollment<P> {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(super) struct PendingTotpPayload {
-    encrypted_secret: Vec<u8>,
+    pub(super) encrypted_secret: Vec<u8>,
 }
 
 impl<P> PendingSessionEnrollment<P> {
-    fn matches(
+    pub(super) fn matches(
         &self,
         user_id: UserId,
         session_id: i64,

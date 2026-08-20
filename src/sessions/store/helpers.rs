@@ -1,3 +1,4 @@
+use super::super::crypto;
 use super::super::domain::{Session, SessionPayload, session_token_hash_bytes};
 use super::{SessionStore, SessionStoreError};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
