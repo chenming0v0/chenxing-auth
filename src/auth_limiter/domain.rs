@@ -173,6 +173,10 @@ pub type LimiterDimension = (FailureDimension, String);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthReservation {
     pub(crate) leases: Vec<ReservationLease>,
+    /// Distinct from empty leases. `reserve([])` is a vacuous allow
+    /// (nothing to count, e.g. Skip + missing source IP). A blocked
+    /// attempt is an explicit denial and must not share that representation.
+    denied: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,10 +197,19 @@ impl AuthReservation {
                     token: token.clone(),
                 })
                 .collect(),
+            denied: false,
+        }
+    }
+
+    pub(crate) fn denied() -> Self {
+        Self {
+            leases: Vec::new(),
+            denied: true,
         }
     }
 
     pub(crate) fn merge(mut self, other: Self) -> Self {
+        self.denied |= other.denied;
         self.leases.extend(other.leases);
         self
     }
@@ -210,6 +223,10 @@ impl AuthReservation {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.leases.is_empty()
+    }
+
+    pub(crate) fn is_denied(&self) -> bool {
+        self.denied
     }
 }
 
@@ -286,10 +303,7 @@ pub trait AuthFailureLimiter: Send + Sync {
     ) -> LimiterFuture<'a, AuthReservation> {
         Box::pin(async move {
             if self.any_limited(dimensions.clone()).await? {
-                Ok(AuthReservation::single(
-                    Vec::new(),
-                    AuthReservation::token(),
-                ))
+                Ok(AuthReservation::denied())
             } else {
                 Ok(AuthReservation::single(
                     dimensions,
