@@ -20,12 +20,13 @@ function isInvalidLoginTicket(error: unknown): boolean {
  * challenge 解码方向和序列化函数，因此共用同一个组件，由 register 决定分支。
  */
 export function PasskeyStep({
-  pending, register, busy, onComplete, onBusy, onMessage, onTicketInvalid,
+  pending, register, busy, onComplete, onPending, onBusy, onMessage, onTicketInvalid,
 }: {
   pending: PendingLoginResponse
   register: boolean
   busy: boolean
   onComplete: () => Promise<void>
+  onPending: (value: PendingLoginResponse) => void
   onBusy: (value: boolean) => boolean | void
   onMessage: (value: string) => void
   onTicketInvalid: () => void
@@ -38,7 +39,11 @@ export function PasskeyStep({
     if (onBusy(true) === false) return
     onMessage('')
     try {
-      await (register ? registerPasskey() : authenticatePasskey())
+      const response = register ? await registerPasskey() : await authenticatePasskey()
+      if ('status' in response && 'methods' in response) {
+        onPending(response)
+        return
+      }
       await onComplete()
     } catch (error) {
       if (isInvalidLoginTicket(error)) {
@@ -67,25 +72,25 @@ export function PasskeyStep({
   )
 }
 
-async function registerPasskey(): Promise<void> {
+async function registerPasskey(): Promise<LoginResponse> {
   const challenge = await apiFetch<PasskeyChallenge>('/api/v1/auth/passkeys/register/start', {
     method: 'POST', redirectOn401: false, csrf: 'pre-session', body: JSON.stringify({}),
   })
   const publicKey = decodeCreationOptions(challenge)
   const credential = assertPublicKeyCredential(await navigator.credentials.create({ publicKey }))
-  await apiFetch<LoginResponse>('/api/v1/auth/passkeys/register/finish', {
+  return apiFetch<LoginResponse>('/api/v1/auth/passkeys/register/finish', {
     method: 'POST', redirectOn401: false, csrf: 'pre-session',
     body: JSON.stringify({ credential: serializeAttestation(credential) }),
   })
 }
 
-async function authenticatePasskey(): Promise<void> {
+async function authenticatePasskey(): Promise<LoginResponse | PendingLoginResponse> {
   const challenge = await apiFetch<PasskeyChallenge>('/api/v1/auth/passkeys/authentication/start', {
     method: 'POST', redirectOn401: false, csrf: 'pre-session', body: JSON.stringify({}),
   })
   const publicKey = decodeRequestOptions(challenge)
   const credential = assertPublicKeyCredential(await navigator.credentials.get({ publicKey }))
-  await apiFetch<LoginResponse>('/api/v1/auth/passkeys/authentication/finish', {
+  return apiFetch<LoginResponse | PendingLoginResponse>('/api/v1/auth/passkeys/authentication/finish', {
     method: 'POST', redirectOn401: false, csrf: 'pre-session',
     body: JSON.stringify({ credential: serializeAssertion(credential) }),
   })

@@ -158,9 +158,9 @@ impl AuthFactorService {
         let passkey_recovery = self.is_disabled_passkey_only(&factor_methods).await?;
         let account_key = self.account_key(ticket.user_id).await?;
         let dimensions = self.failure_dimensions(&account_key, Some(ticket_id), source_ip)?;
-        if self.ensure_dimensions_allowed(dimensions.clone()).await? {
+        let Some(reservation) = self.ensure_dimensions_allowed(dimensions.clone()).await? else {
             return Ok(TotpConfirmation::RateLimited);
-        }
+        };
         let decrypted =
             match decrypt_totp_secret_with_ring(&self.encryption_keys, &pending.encrypted_secret) {
                 Ok(value) => value,
@@ -171,18 +171,18 @@ impl AuthFactorService {
                     // 只删掉这份读不出来的 pending 注册，**保留 ticket**：用户重新
                     // 调用 setup 就能拿到当前 active key 加密的新种子，无需重新输入
                     // 口令。连 ticket 一起废掉会把一个可自助恢复的场景升级成重新登录。
-                    self.report_retired_key(dimensions, "enrollment").await;
+                    self.report_retired_key(reservation, "enrollment").await;
                     self.tickets.delete(&self.totp_setup_key(ticket_id)).await?;
                     return Ok(TotpConfirmation::KeyUnavailable);
                 }
                 Err(error) => {
-                    self.release_dimensions_after_error(dimensions).await;
+                    self.release_dimensions_after_error(reservation).await;
                     return Err(error.into());
                 }
             };
         let valid = verify_totp_code_now_timestep(&decrypted.plaintext, code, self.clock.now());
         let Some(timestep) = valid else {
-            let record = self.record_failure(dimensions).await?;
+            let record = self.record_failure(reservation).await?;
             if record.reached(FailureDimension::Ticket) {
                 self.invalidate_ticket(ticket_id, holder_hash).await?;
                 return Ok(TotpConfirmation::RateLimited);
@@ -205,7 +205,7 @@ impl AuthFactorService {
         // 冲突，pending 注册和 ticket 都保留，用户输下一个码即可。`claim_totp_timestep`
         // 已在成功与失败两条路径上处理完预留额度，这里不再重复归还。
         if !self
-            .claim_totp_timestep(ticket.user_id, timestep, dimensions)
+            .claim_totp_timestep(ticket.user_id, timestep, reservation)
             .await?
         {
             return Ok(TotpConfirmation::InvalidCode);

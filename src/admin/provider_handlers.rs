@@ -7,7 +7,10 @@ use axum::{
 use serde::Deserialize;
 
 use crate::{
-    admin::{authorization::AdminActor, domain::AdminPermission},
+    admin::{
+        authorization::{authorize_admin_write, management_actor_validation_failed},
+        domain::AdminPermission,
+    },
     api::extract::{AdminRead, AdminWrite, ApiJson, RequestIssuer},
     audit::AuditEvent,
     error,
@@ -76,38 +79,44 @@ pub async fn create_provider(
     admin: AdminWrite,
     ApiJson(input): ApiJson<ProviderInput>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageIdentityProviders)
-        .await
-    {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageIdentityProviders).await
+        {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
     if input.client_secret.as_deref().is_none_or(str::is_empty) {
         return error::bad_request(
             "invalid_oauth_provider",
             "client_secret is required when creating a provider",
         );
     }
-    match state.external_oauth.create(input.clone()).await {
-        Ok(provider) => {
-            record_provider_event(
-                &state,
-                actor,
-                crate::audit::AuditAction::OauthProviderCreate,
-                &provider.slug,
-                serde_json::json!({
-                    "authorization_endpoint": input.authorization_endpoint,
-                    "token_endpoint": input.token_endpoint,
-                    "userinfo_endpoint": input.userinfo_endpoint,
-                }),
-            )
-            .await;
-            (
-                StatusCode::CREATED,
-                Json(provider_response(&issuer, provider)),
-            )
-                .into_response()
+    let (actor_type, actor_id) = actor.audit_fields();
+    let event = AuditEvent::new(
+        actor_type.to_owned(),
+        actor_id,
+        crate::audit::AuditAction::OauthProviderCreate,
+        "oauth_provider".to_owned(),
+        Some(input.slug.clone()),
+        serde_json::json!({
+            "authorization_endpoint": input.authorization_endpoint,
+            "token_endpoint": input.token_endpoint,
+            "userinfo_endpoint": input.userinfo_endpoint,
+        }),
+    );
+    match state
+        .external_oauth
+        .create_with_audit(input, authorization.credential(), event)
+        .await
+    {
+        Ok(provider) => (
+            StatusCode::CREATED,
+            Json(provider_response(&issuer, provider)),
+        )
+            .into_response(),
+        Err(ExternalOAuthError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(&state, authorization, error_value).await
         }
         Err(error_value) => provider_error_response(error_value, "create_provider"),
     }
@@ -119,33 +128,39 @@ pub async fn update_provider(
     Path(slug): Path<String>,
     ApiJson(input): ApiJson<ProviderInput>,
 ) -> Response {
-    let actor = match admin
-        .authorize(&state, AdminPermission::ManageIdentityProviders)
-        .await
-    {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageIdentityProviders).await
+        {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
     if input.slug != slug {
         return error::bad_request("invalid_oauth_provider", "provider slug cannot be changed");
     }
-    match state.external_oauth.update(&slug, input.clone()).await {
-        Ok(true) => {
-            record_provider_event(
-                &state,
-                actor,
-                crate::audit::AuditAction::OauthProviderUpdate,
-                &slug,
-                serde_json::json!({
-                    "authorization_endpoint": input.authorization_endpoint,
-                    "token_endpoint": input.token_endpoint,
-                    "userinfo_endpoint": input.userinfo_endpoint,
-                }),
-            )
-            .await;
-            StatusCode::NO_CONTENT.into_response()
-        }
+    let (actor_type, actor_id) = actor.audit_fields();
+    let event = AuditEvent::new(
+        actor_type.to_owned(),
+        actor_id,
+        crate::audit::AuditAction::OauthProviderUpdate,
+        "oauth_provider".to_owned(),
+        Some(slug.clone()),
+        serde_json::json!({
+            "authorization_endpoint": input.authorization_endpoint,
+            "token_endpoint": input.token_endpoint,
+            "userinfo_endpoint": input.userinfo_endpoint,
+        }),
+    );
+    match state
+        .external_oauth
+        .update_with_audit(&slug, input, authorization.credential(), event)
+        .await
+    {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error::not_found("oauth_provider_not_found", "provider was not found"),
+        Err(ExternalOAuthError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(&state, authorization, error_value).await
+        }
         Err(error_value) => provider_error_response(error_value, "update_provider"),
     }
 }
@@ -174,30 +189,36 @@ async fn set_provider_status(
     slug: &str,
     status: &str,
 ) -> Response {
-    let actor = match admin
-        .authorize(state, AdminPermission::ManageIdentityProviders)
+    let authorization =
+        match authorize_admin_write(state, admin, AdminPermission::ManageIdentityProviders).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
+    let action = match status {
+        "active" => crate::audit::AuditAction::OauthProviderActive,
+        "disabled" => crate::audit::AuditAction::OauthProviderDisabled,
+        _ => unreachable!("provider status is validated by the service"),
+    };
+    let (actor_type, actor_id) = actor.audit_fields();
+    let event = AuditEvent::new(
+        actor_type.to_owned(),
+        actor_id,
+        action,
+        "oauth_provider".to_owned(),
+        Some(slug.to_owned()),
+        serde_json::json!({"result": "success"}),
+    );
+    match state
+        .external_oauth
+        .set_status_with_audit(slug, status, authorization.credential(), event)
         .await
     {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
-    match state.external_oauth.set_status(slug, status).await {
-        Ok(true) => {
-            record_provider_event(
-                state,
-                actor,
-                match status {
-                    "active" => crate::audit::AuditAction::OauthProviderActive,
-                    "disabled" => crate::audit::AuditAction::OauthProviderDisabled,
-                    _ => unreachable!("provider status is validated by the service"),
-                },
-                slug,
-                serde_json::json!({"result": "success"}),
-            )
-            .await;
-            StatusCode::NO_CONTENT.into_response()
-        }
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => error::not_found("oauth_provider_not_found", "provider was not found"),
+        Err(ExternalOAuthError::ManagementActor(error_value)) => {
+            management_actor_validation_failed(state, authorization, error_value).await
+        }
         Err(error_value) => provider_error_response(error_value, "set_provider_status"),
     }
 }
@@ -229,7 +250,9 @@ fn provider_error_response(error_value: ExternalOAuthError, operation: &'static 
                 "provider slug is already registered",
             )
         }
-        ExternalOAuthError::Database(_)
+        ExternalOAuthError::Audit(_)
+        | ExternalOAuthError::ManagementActor(_)
+        | ExternalOAuthError::Database(_)
         | ExternalOAuthError::Secret(_)
         | ExternalOAuthError::MissingSecret
         | ExternalOAuthError::RemoteRequest
@@ -253,25 +276,4 @@ fn internal(error_value: &ExternalOAuthError, operation: &'static str) -> Respon
         "admin external OAuth provider operation failed"
     );
     error::internal()
-}
-
-async fn record_provider_event(
-    state: &AppState,
-    actor: AdminActor,
-    action: crate::audit::AuditAction,
-    slug: &str,
-    details: serde_json::Value,
-) {
-    let (actor_type, actor_id) = actor.audit_fields();
-    state
-        .audit
-        .record_best_effort(AuditEvent::new(
-            actor_type.to_owned(),
-            actor_id,
-            action,
-            "oauth_provider".to_owned(),
-            Some(slug.to_owned()),
-            details,
-        ))
-        .await;
 }

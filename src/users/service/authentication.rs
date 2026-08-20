@@ -9,7 +9,8 @@
 use super::{UserService, UserServiceError};
 use crate::{
     auth_limiter::{
-        FailureDimension, LimiterDimension, MissingSourceIpPolicy, domain::commit_reserved_failure,
+        AuthReservation, FailureDimension, LimiterDimension, MissingSourceIpPolicy,
+        domain::commit_reserved_failure,
     },
     users::{
         credentials::verify_login_password,
@@ -20,7 +21,7 @@ use crate::{
 
 enum AuthenticationFailure {
     RateLimited,
-    RecordFailure(Vec<LimiterDimension>),
+    RecordFailure(AuthReservation),
 }
 
 /// 保证一次登录尝试最多只消耗一次 Argon2 校验。
@@ -75,7 +76,8 @@ impl UserService {
             .as_deref()
             .map(|source_ip| vec![(FailureDimension::SourceIp, source_ip.to_owned())])
             .unwrap_or_default();
-        if !self.reserve_dimensions(source_dimensions.clone()).await? {
+        let source_reservation = self.reserve_dimensions(source_dimensions.clone()).await?;
+        if source_reservation.is_empty() {
             return self
                 .finish_authentication_failure(&mut password, AuthenticationFailure::RateLimited)
                 .await;
@@ -84,7 +86,7 @@ impl UserService {
             match repository::find_credentials_by_identifier(&self.pool, &login.identifier).await {
                 Ok(credentials) => credentials,
                 Err(error) => {
-                    self.release_dimensions(source_dimensions).await?;
+                    self.release_dimensions(source_reservation).await?;
                     return Err(UserServiceError::Database(error));
                 }
             };
@@ -92,7 +94,7 @@ impl UserService {
             return self
                 .finish_authentication_failure(
                     &mut password,
-                    AuthenticationFailure::RecordFailure(source_dimensions),
+                    AuthenticationFailure::RecordFailure(source_reservation),
                 )
                 .await;
         };
@@ -101,12 +103,13 @@ impl UserService {
         // 按展示值分桶会让攻击者变换书写就换到一个新的失败计数桶。
         let account_key = credentials.canonical_email.clone();
         let account_dimensions = vec![(FailureDimension::Account, account_key)];
-        let account_reserved = match self.reserve_dimensions(account_dimensions.clone()).await {
+        let account_reservation = match self.reserve_dimensions(account_dimensions.clone()).await {
             Ok(reserved) => reserved,
             Err(error) => {
                 // 账户预留失败不会替 source 预留做回滚，先尽力归还再传播原错误。
                 let dimension_count = source_dimensions.len();
-                if let Err(release_error) = self.release_dimensions(source_dimensions.clone()).await
+                if let Err(release_error) =
+                    self.release_dimensions(source_reservation.clone()).await
                 {
                     tracing::error!(
                         event = "auth_limiter.reservation_release_failed",
@@ -119,14 +122,13 @@ impl UserService {
                 return Err(error);
             }
         };
-        if !account_reserved {
-            self.release_dimensions(source_dimensions).await?;
+        if account_reservation.is_empty() {
+            self.release_dimensions(source_reservation).await?;
             return self
                 .finish_authentication_failure(&mut password, AuthenticationFailure::RateLimited)
                 .await;
         }
-        let mut dimensions = source_dimensions;
-        dimensions.extend(account_dimensions);
+        let reservation = source_reservation.merge(account_reservation);
         // 认证身份在消费 password_hash 之前取出：两个值来自同一行，绑定关系
         // 由 `find_credentials_by_identifier` 的单条 SELECT 保证。
         let authenticated = credentials.authenticated();
@@ -140,12 +142,12 @@ impl UserService {
             return self
                 .finish_authentication_failure(
                     &mut password,
-                    AuthenticationFailure::RecordFailure(dimensions),
+                    AuthenticationFailure::RecordFailure(reservation),
                 )
                 .await;
         }
 
-        self.release_dimensions(dimensions).await?;
+        self.release_dimensions(reservation).await?;
         Ok(authenticated)
     }
 
@@ -181,22 +183,22 @@ impl UserService {
     async fn reserve_dimensions(
         &self,
         dimensions: Vec<LimiterDimension>,
-    ) -> Result<bool, UserServiceError> {
+    ) -> Result<AuthReservation, UserServiceError> {
         Ok(self.limiter.reserve(dimensions).await?)
     }
 
     async fn release_dimensions(
         &self,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
     ) -> Result<(), UserServiceError> {
-        Ok(self.limiter.release(dimensions).await?)
+        Ok(self.limiter.release(reservation).await?)
     }
 
     async fn record_failure(
         &self,
-        dimensions: Vec<LimiterDimension>,
+        reservation: AuthReservation,
     ) -> Result<crate::auth_limiter::domain::FailureRecord, UserServiceError> {
-        Ok(commit_reserved_failure(self.limiter.as_ref(), dimensions).await?)
+        Ok(commit_reserved_failure(self.limiter.as_ref(), reservation).await?)
     }
 
     async fn finish_authentication_failure(
@@ -207,8 +209,8 @@ impl UserService {
         password.fill_if_unverified().await;
         let error = match failure {
             AuthenticationFailure::RateLimited => UserServiceError::RateLimited,
-            AuthenticationFailure::RecordFailure(dimensions) => {
-                if self.record_failure(dimensions).await?.reached.is_empty() {
+            AuthenticationFailure::RecordFailure(reservation) => {
+                if self.record_failure(reservation).await?.reached.is_empty() {
                     UserServiceError::InvalidCredentials
                 } else {
                     UserServiceError::RateLimited

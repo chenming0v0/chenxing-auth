@@ -200,7 +200,7 @@ pub(crate) async fn lock_client_secret_ciphertexts(
 }
 
 pub async fn set_status(
-    pool: &PgPool,
+    connection: &mut PgConnection,
     slug: &str,
     status: &str,
 ) -> Result<bool, crate::sqlx::Error> {
@@ -211,7 +211,7 @@ pub async fn set_status(
     .bind(status)
     // 保留墙钟（Issue #299 的明确例外）：配置行 updated_at。
     .bind(OffsetDateTime::now_utc())
-    .execute(pool)
+    .execute(&mut *connection)
     .await?;
     Ok(result.rows_affected() == 1)
 }

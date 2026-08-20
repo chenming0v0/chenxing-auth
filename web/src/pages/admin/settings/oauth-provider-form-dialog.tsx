@@ -18,6 +18,7 @@ export type ProviderForm = {
   name_claim: string
   email_verified_claim: string
   client_auth_method: 'basic' | 'request_body'
+  pkce_enabled: boolean
   enabled: boolean
 }
 
@@ -35,6 +36,7 @@ const emptyForm: ProviderForm = {
   name_claim: 'name',
   email_verified_claim: 'email_verified',
   client_auth_method: 'basic',
+  pkce_enabled: true,
   enabled: true,
 }
 
@@ -97,6 +99,7 @@ function toForm(provider?: OAuthProviderSummary | null): ProviderForm {
     name_claim: provider.name_claim || '',
     email_verified_claim: provider.email_verified_claim || '',
     client_auth_method: provider.client_auth_method === 'request_body' ? 'request_body' : 'basic',
+    pkce_enabled: provider.pkce_enabled ?? true,
     enabled: provider.status === 'active',
   }
 }
@@ -115,6 +118,7 @@ export function toInput(form: ProviderForm): OAuthProviderInput {
     name_claim: form.name_claim.trim() || null,
     email_verified_claim: form.email_verified_claim.trim(),
     client_auth_method: form.client_auth_method,
+    pkce_enabled: form.pkce_enabled,
   }
   if (form.client_secret.trim()) input.client_secret = form.client_secret
   return input
@@ -264,6 +268,12 @@ export function OAuthProviderFormDialog({ editing, busy, onSubmit, onClose, onMe
               { value: 'basic', label: 'basic' },
               { value: 'request_body', label: 'request_body' },
             ]}
+          />
+          <ToggleRow
+            title="启用 PKCE"
+            checked={form.pkce_enabled}
+            disabled={busy}
+            onChange={(pkce_enabled) => setForm({ ...form, pkce_enabled })}
           />
           {editing?.callback_uri ? <Field label="Callback URI" value={editing.callback_uri} readOnly /> : null}
         </fieldset>

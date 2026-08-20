@@ -7,7 +7,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
-use super::domain::AdminPermission;
+use super::{
+    authorization::{authorize_admin_write, management_actor_validation_failed},
+    domain::AdminPermission,
+};
 use crate::{
     api::extract::{AdminRead, AdminWrite, ApiJson},
     audit::AuditEvent,
@@ -102,10 +105,12 @@ pub async fn update_issuer_setting(
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     ApiJson(input): ApiJson<UpdateIssuerSetting>,
 ) -> Response {
-    let actor = match admin.authorize(&state, AdminPermission::ManageIssuer).await {
-        Ok(actor) => actor,
-        Err(response) => return response,
-    };
+    let authorization =
+        match authorize_admin_write(&state, &admin, AdminPermission::ManageIssuer).await {
+            Ok(authorization) => authorization,
+            Err(response) => return response,
+        };
+    let actor = authorization.actor();
     if input.expected_generation < 0 {
         return error::bad_request(
             "invalid_issuer_generation",
@@ -149,6 +154,17 @@ pub async fn update_issuer_setting(
             return error::internal();
         }
     };
+    if let Err(error_value) =
+        crate::users::repository::management_actor::validate_management_actor_in_transaction(
+            &mut transaction,
+            authorization.credential(),
+            AdminPermission::ManageIssuer,
+        )
+        .await
+    {
+        let _ = transaction.rollback().await;
+        return management_actor_validation_failed(&state, authorization, error_value).await;
+    }
     if let Err(error_value) =
         crate::settings::repository::lock_passkey_policy(&mut transaction).await
     {

@@ -1,5 +1,22 @@
 use super::{SettingsService, SettingsServiceError};
-use crate::audit::{AuditEvent, AuditService};
+use crate::{
+    audit::{AuditEvent, AuditService},
+    users::{ManagementActorCredential, domain::UserPermission},
+};
+
+async fn validate_settings_actor(
+    transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+    credential: ManagementActorCredential,
+) -> Result<(), SettingsServiceError> {
+    crate::users::repository::management_actor::validate_management_actor_in_transaction(
+        transaction,
+        credential,
+        UserPermission::ManageSettings,
+    )
+    .await
+    .map_err(SettingsServiceError::from)
+}
+
 use crate::settings::{
     SecurityLimitsSetting,
     domain::{EmailPolicySetting, PasskeySetting, RegistrationSetting},
@@ -67,6 +84,7 @@ impl SettingsService {
         &self,
         value: PasskeySetting,
         audit: &AuditService,
+        credential: ManagementActorCredential,
         audit_event: F,
     ) -> Result<PasskeySetting, SettingsServiceError>
     where
@@ -74,6 +92,7 @@ impl SettingsService {
     {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
+        validate_settings_actor(&mut transaction, credential).await?;
         repository::lock_passkey_policy(&mut transaction).await?;
         repository::set_passkey(&mut *transaction, &value).await?;
         audit
@@ -117,6 +136,7 @@ impl SettingsService {
         &self,
         value: EmailPolicySetting,
         audit: &AuditService,
+        credential: ManagementActorCredential,
         audit_event: F,
     ) -> Result<EmailPolicySetting, SettingsServiceError>
     where
@@ -124,6 +144,7 @@ impl SettingsService {
     {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
+        validate_settings_actor(&mut transaction, credential).await?;
         repository::set_email_policy(&mut *transaction, &value).await?;
         audit
             .record_in_transaction(&mut transaction, audit_event(&value))
@@ -161,6 +182,7 @@ impl SettingsService {
         &self,
         value: RegistrationSetting,
         audit: &AuditService,
+        credential: ManagementActorCredential,
         audit_event: F,
     ) -> Result<RegistrationSetting, SettingsServiceError>
     where
@@ -168,6 +190,7 @@ impl SettingsService {
     {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
+        validate_settings_actor(&mut transaction, credential).await?;
         repository::set_registration(&mut *transaction, &value).await?;
         audit
             .record_in_transaction(&mut transaction, audit_event(&value))
@@ -248,6 +271,7 @@ impl SettingsService {
         &self,
         value: crate::settings::SessionLifetimeSetting,
         audit: &AuditService,
+        credential: ManagementActorCredential,
         audit_event: F,
     ) -> Result<crate::settings::SessionLifetimeSetting, SettingsServiceError>
     where
@@ -255,6 +279,7 @@ impl SettingsService {
     {
         let value = value.validate()?;
         let mut transaction = self.pool.begin().await?;
+        validate_settings_actor(&mut transaction, credential).await?;
         repository::set_session_lifetime(&mut *transaction, &value).await?;
         audit
             .record_in_transaction(&mut transaction, audit_event(&value))

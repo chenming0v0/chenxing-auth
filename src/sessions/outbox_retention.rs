@@ -197,48 +197,65 @@ impl SessionStore {
         entry: &super::OutboxEntry,
         error_value: &SessionStoreError,
     ) -> Result<(), SessionStoreError> {
-        if entry.attempts >= self.outbox_policy.max_attempts {
-            crate::sqlx::query(
+        let outcome = if entry.attempts >= self.outbox_policy.max_attempts {
+            let outcome = crate::sqlx::query(
                 "UPDATE session_outbox
-                 SET dead_lettered_at = NOW(), last_error = $2
-                 WHERE id = $1 AND processed_at IS NULL",
+                 SET dead_lettered_at = NOW(), last_error = $4
+                 WHERE id = $1 AND processed_at IS NULL AND claim_generation = $2 AND claim_token = $3",
             )
             .bind(entry.id)
+            .bind(entry.claim_generation)
+            .bind(&entry.claim_token)
             .bind(error_value.to_string())
             .execute(pool)
             .await?;
-            tracing::error!(
+            if outcome.rows_affected() == 1 {
+                tracing::error!(
+                    outbox_id = entry.id,
+                    operation = %entry.operation,
+                    attempts = entry.attempts,
+                    max_attempts = self.outbox_policy.max_attempts,
+                    error = %error_value,
+                    "session Redis projection dead-lettered after exhausting delivery attempts"
+                );
+            }
+            outcome
+        } else {
+            let delay_seconds = 2_i64
+                .saturating_pow(entry.attempts.saturating_sub(1) as u32)
+                .min(300);
+            let outcome = crate::sqlx::query(
+                "UPDATE session_outbox
+                 SET available_at = NOW() + $4, last_error = $5
+                 WHERE id = $1 AND processed_at IS NULL AND claim_generation = $2 AND claim_token = $3",
+            )
+            .bind(entry.id)
+            .bind(entry.claim_generation)
+            .bind(&entry.claim_token)
+            .bind(time::Duration::seconds(delay_seconds))
+            .bind(error_value.to_string())
+            .execute(pool)
+            .await?;
+            if outcome.rows_affected() == 1 {
+                tracing::error!(
+                    outbox_id = entry.id,
+                    operation = %entry.operation,
+                    attempts = entry.attempts,
+                    retry_in_seconds = delay_seconds,
+                    error = %error_value,
+                    "session Redis projection failed; retry scheduled"
+                );
+            }
+            outcome
+        };
+        if outcome.rows_affected() == 0 {
+            tracing::warn!(
                 outbox_id = entry.id,
-                operation = %entry.operation,
-                attempts = entry.attempts,
-                max_attempts = self.outbox_policy.max_attempts,
-                error = %error_value,
-                "session Redis projection dead-lettered after exhausting delivery attempts"
+                claim_generation = entry.claim_generation,
+                event = "session_outbox.stale_claim",
+                "stale session outbox failure ignored"
             );
-            return Ok(());
         }
-
-        let delay_seconds = 2_i64
-            .saturating_pow(entry.attempts.saturating_sub(1) as u32)
-            .min(300);
-        crate::sqlx::query(
-            "UPDATE session_outbox
-             SET available_at = NOW() + $2, last_error = $3
-             WHERE id = $1",
-        )
-        .bind(entry.id)
-        .bind(time::Duration::seconds(delay_seconds))
-        .bind(error_value.to_string())
-        .execute(pool)
-        .await?;
-        tracing::error!(
-            outbox_id = entry.id,
-            operation = %entry.operation,
-            attempts = entry.attempts,
-            retry_in_seconds = delay_seconds,
-            error = %error_value,
-            "session Redis projection failed; retry scheduled"
-        );
         Ok(())
     }
 

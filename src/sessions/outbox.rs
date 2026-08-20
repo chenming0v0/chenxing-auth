@@ -1,6 +1,7 @@
 use redis::{AsyncCommands, Script};
 use std::fmt;
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 use super::store::{SessionStore, SessionStoreError};
 use crate::users::domain::UserId;
@@ -39,6 +40,8 @@ type ClaimedOutboxRow = (
     Option<Vec<u8>>,
     i32,
     i64,
+    i64,
+    String,
 );
 type SessionProjectionRow = (Option<Vec<u8>>, bool, i64, OffsetDateTime, i64, UserId);
 
@@ -51,6 +54,8 @@ struct OutboxEntry {
     /// 领取时自增后的尝试次数，从 1 开始。dead-letter 判定直接比较这个值。
     attempts: i32,
     generation: i64,
+    claim_generation: i64,
+    claim_token: String,
 }
 
 impl fmt::Debug for OutboxEntry {
@@ -63,6 +68,7 @@ impl fmt::Debug for OutboxEntry {
             .field("token_hash", &"<redacted>")
             .field("attempts", &self.attempts)
             .field("generation", &self.generation)
+            .field("claim_generation", &self.claim_generation)
             .finish()
     }
 }
@@ -80,15 +86,26 @@ impl SessionStore {
                     // 的租约到期后本实例重新领取了同一行，而那个实例随后判定它
                     // 用尽预算并写了 dead-letter。投递确实成功了，终态必须收敛到
                     // processed；CHECK 约束也不允许两个终态时间戳同时非空。
-                    crate::sqlx::query(
+                    let outcome = crate::sqlx::query(
                         "UPDATE session_outbox
                          SET processed_at = NOW(), dead_lettered_at = NULL, last_error = NULL
-                         WHERE id = $1",
+                         WHERE id = $1 AND claim_generation = $2 AND claim_token = $3",
                     )
                     .bind(entry.id)
+                    .bind(entry.claim_generation)
+                    .bind(&entry.claim_token)
                     .execute(pool)
                     .await?;
-                    processed += 1;
+                    if outcome.rows_affected() == 1 {
+                        processed += 1;
+                    } else {
+                        tracing::warn!(
+                            outbox_id = entry.id,
+                            claim_generation = entry.claim_generation,
+                            event = "session_outbox.stale_claim",
+                            "stale session outbox completion ignored"
+                        );
+                    }
                 }
                 Err(error_value) => {
                     self.record_delivery_failure(pool, &entry, &error_value)
@@ -107,6 +124,7 @@ impl SessionStore {
         // dead-letter 行被排除在领取之外，这是"不再无限重试"的实际执行点：
         // `session_outbox_pending_idx` 的部分条件与这里的 WHERE 一致，坏行既不在
         // 索引里，也不会被扫到。
+        let claim_token = Uuid::new_v4().simple().to_string();
         let row: Option<ClaimedOutboxRow> = crate::sqlx::query_as(
             "WITH next AS (
                  SELECT id
@@ -120,18 +138,22 @@ impl SessionStore {
              )
              UPDATE session_outbox AS outbox
              SET attempts = outbox.attempts + 1,
-                 available_at = NOW() + $1
+                     claim_generation = outbox.claim_generation + 1,
+                     claim_token = $2,
+                     available_at = NOW() + $1
              FROM next
              WHERE outbox.id = next.id
              RETURNING outbox.id, outbox.operation, outbox.session_id, outbox.user_id,
-                       outbox.token_hash, outbox.attempts, outbox.generation",
+                       outbox.token_hash, outbox.attempts, outbox.generation,
+                       outbox.claim_generation, outbox.claim_token",
         )
         .bind(OUTBOX_LEASE)
+        .bind(&claim_token)
         .fetch_optional(&mut *transaction)
         .await?;
         transaction.commit().await?;
         Ok(row.map(
-            |(id, operation, session_id, user_id, token_hash, attempts, generation)| OutboxEntry {
+            |(
                 id,
                 operation,
                 session_id,
@@ -139,6 +161,18 @@ impl SessionStore {
                 token_hash,
                 attempts,
                 generation,
+                claim_generation,
+                claim_token,
+            )| OutboxEntry {
+                id,
+                operation,
+                session_id,
+                user_id,
+                token_hash,
+                attempts,
+                generation,
+                claim_generation,
+                claim_token,
             },
         ))
     }

@@ -4,8 +4,8 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
 use super::domain::{
-    AuthFailureLimits, AuthLimiterError, AuthLimiterFailurePolicy, FailureDimension, FailureRecord,
-    LimiterDimension,
+    AuthFailureLimits, AuthLimiterError, AuthLimiterFailurePolicy, AuthReservation,
+    FailureDimension, FailureRecord, LimiterDimension,
 };
 use crate::settings::{SecurityLimitsSetting, SettingsService};
 
@@ -203,10 +203,13 @@ impl LimiterPolicy {
         &self,
         operation: &str,
         dimensions: &[LimiterDimension],
-    ) -> Result<bool, AuthLimiterError> {
+    ) -> Result<AuthReservation, AuthLimiterError> {
         self.log_storage_error(operation, dimensions);
         match self.failure_policy {
-            AuthLimiterFailurePolicy::FailOpen => Ok(true),
+            AuthLimiterFailurePolicy::FailOpen => Ok(AuthReservation::single(
+                dimensions.to_owned(),
+                AuthReservation::token(),
+            )),
             AuthLimiterFailurePolicy::FailClosed => Err(AuthLimiterError::Storage),
         }
     }
