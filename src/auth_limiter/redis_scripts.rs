@@ -88,6 +88,10 @@ return reached
 /// 预留一次尝试：pending 是按 reservation token 持有的 ZSET lease，而不是共享计数器。
 /// 每次操作先清理已过期 lease，再按 ZCARD 判定；释放和提交只删除调用方自己的 token，
 /// 因此过期 reservation 不会误减后来请求的活跃 reservation。
+///
+/// ARGV 与 `redis.rs` 的 packing 对齐，1-based index `i` 的阈值在 `ARGV[i + 4]`：
+/// `[1] count, [2] lease_seconds, [3] token, [4] window_seconds, [5..] limits`。
+/// 写成 `ARGV[i + 3]` 会把 window（默认 900）当成账户阈值（10），账户永远锁不上。
 pub(crate) const RESERVE_ATTEMPT_SCRIPT: &str = r#"
 local count = tonumber(ARGV[1])
 local lease_seconds = tonumber(ARGV[2])
@@ -104,7 +108,7 @@ for index = 1, count do
     redis.call('ZREMRANGEBYSCORE', pending_key, '-inf', now)
     local failures = redis.call('ZCARD', failure_key)
     local pending = redis.call('ZCARD', pending_key)
-    if failures + pending >= tonumber(ARGV[index + 3]) then
+    if failures + pending >= tonumber(ARGV[index + 4]) then
         return index
     end
 end
@@ -116,6 +120,9 @@ return 0
 "#;
 
 /// 把预留提交为一次真实失败：只消费 token 仍持有的 lease。
+///
+/// ARGV 布局与 `RESERVE_ATTEMPT_SCRIPT` 相同：阈值在 `ARGV[index + 4]`，
+/// 不是 `ARGV[index + 3]`（那一格是 window）。
 pub(crate) const RECORD_RESERVED_FAILURE_SCRIPT: &str = r#"
 local count = tonumber(ARGV[1])
 local lease_seconds = tonumber(ARGV[2])
@@ -131,7 +138,7 @@ for index = 1, count do
     if owned then
         redis.call('ZREM', pending_key, token)
     end
-    local limit = tonumber(ARGV[index + 3])
+    local limit = tonumber(ARGV[index + 4])
     local failure_key = KEYS[index]
     redis.call('ZREMRANGEBYSCORE', failure_key, '-inf', cutoff)
     local current = redis.call('ZCARD', failure_key)
@@ -207,6 +214,25 @@ mod tests {
             assert!(
                 !super::CHECK_LIMITS_SCRIPT.contains(command),
                 "check script must stay read-only, found {command}"
+            );
+        }
+    }
+
+    /// 插入 `lease_seconds` 之后阈值从 `ARGV[index + 3]` 挪到 `ARGV[index + 4]`。
+    /// 漏改会把 window（900）当成账户上限（10），MFA 失败满 10 次仍不会锁账户。
+    #[test]
+    fn reserve_scripts_read_per_dimension_limits_after_the_fixed_args() {
+        for (name, script) in [
+            ("reserve", super::RESERVE_ATTEMPT_SCRIPT),
+            ("record_reserved", super::RECORD_RESERVED_FAILURE_SCRIPT),
+        ] {
+            assert!(
+                script.contains("ARGV[index + 4]"),
+                "{name} must read per-dimension limits at ARGV[index + 4]"
+            );
+            assert!(
+                !script.contains("ARGV[index + 3]"),
+                "{name} must not read limits from ARGV[index + 3] (that slot is the window)"
             );
         }
     }

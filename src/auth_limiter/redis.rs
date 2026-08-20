@@ -239,6 +239,9 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             for (dimension, value) in &dimensions {
                 invocation.key(self.pending_key(*dimension, value));
             }
+            // ARGV: count, lease_seconds, token, window, then per-dimension limits.
+            // Lua reads limits at ARGV[index + 4]; shifting this packing without
+            // the matching script change treats window (900) as the account cap (10).
             invocation.arg(dimensions.len());
             invocation.arg(AUTH_VERIFICATION_LEASE_SECONDS);
             invocation.arg(&token);
@@ -286,6 +289,7 @@ impl AuthFailureLimiter for RedisAuthFailureLimiter {
             for (dimension, value) in &dimensions {
                 invocation.key(self.pending_key(*dimension, value));
             }
+            // Same ARGV layout as reserve(): count, lease, token, window, limits.
             invocation.arg(dimensions.len());
             invocation.arg(AUTH_VERIFICATION_LEASE_SECONDS);
             invocation.arg(&reservation.leases[0].token);
