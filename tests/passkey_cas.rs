@@ -93,6 +93,7 @@ async fn persist_keeps_newer_counter_when_stale_result_loses_cas() {
     repository::insert_passkey_if_empty(
         &pool,
         user_id,
+        0,
         &credential_id,
         &test_passkey(&credential_id, 0),
     )
@@ -150,6 +151,7 @@ async fn persist_does_not_touch_re_registered_row_with_same_credential_id() {
     repository::insert_passkey_if_empty(
         &pool,
         user_id,
+        0,
         &credential_id,
         &test_passkey(&credential_id, 0),
     )
@@ -169,6 +171,7 @@ async fn persist_does_not_touch_re_registered_row_with_same_credential_id() {
     repository::insert_passkey_if_empty(
         &pool,
         user_id,
+        0,
         &credential_id,
         &test_passkey(&credential_id, 0),
     )
@@ -213,6 +216,7 @@ async fn persist_does_not_claim_success_when_row_is_gone() {
     repository::insert_passkey_if_empty(
         &pool,
         user_id,
+        0,
         &credential_id,
         &test_passkey(&credential_id, 0),
     )

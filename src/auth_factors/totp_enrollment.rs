@@ -91,7 +91,7 @@ impl AuthFactorService {
     /// 2. 预留失败额度 → 解密预留的种子 → 校验验证码。
     /// 3. **claim user/timestep**：与登录同一个原语，码在这一步变成已消费。
     /// 4. 消费 ticket（原子 take）。
-    /// 5. 写入因子；失败则恢复 ticket。
+    /// 5. 写入因子：事务内持锁比对 ticket 上的 `session_epoch`，失败则恢复 ticket。
     ///
     /// 失败语义（按发生位置）：
     ///
@@ -109,6 +109,8 @@ impl AuthFactorService {
     ///   边界等于白做。代价上限是等一个时间步，换来的是 replay 边界无洞。
     /// - **因子已存在（并发注册的败者）**：废 ticket 与 pending，`InvalidTicket`，
     ///   claim 保持烧毁——这个码确实被用于做了一次判断。
+    /// - **ticket epoch 已推进（管理端重置）**：插入事务持锁再读 `session_epoch`，
+    ///   对不上则中止，因子不落库；废 ticket 与 pending，`InvalidTicket`。
     ///
     /// 任何失败路径都不会留下「已写入但无法验证」的因子：写入是最后一步，且只在
     /// ticket 被原子消费之后执行。
@@ -222,6 +224,7 @@ impl AuthFactorService {
                     repository::insert_totp_factor_for_passkey_recovery(
                         &self.pool,
                         ticket.user_id,
+                        ticket.session_epoch,
                         &pending.encrypted_secret,
                     )
                     .await?
@@ -229,6 +232,7 @@ impl AuthFactorService {
                     repository::insert_totp_factor_if_empty(
                         &self.pool,
                         ticket.user_id,
+                        ticket.session_epoch,
                         &pending.encrypted_secret,
                     )
                     .await?
@@ -238,6 +242,9 @@ impl AuthFactorService {
                     repository::FirstFactorPersistenceResult::AlreadyExists => {
                         Err(AuthFactorServiceError::FirstFactorAlreadyExists)
                     }
+                    repository::FirstFactorPersistenceResult::AuthenticationChanged => {
+                        Err(AuthFactorServiceError::AuthenticationEpochChanged)
+                    }
                 }
             },
             |ticket| self.tickets.restore(ticket_id, ticket),
@@ -245,7 +252,10 @@ impl AuthFactorService {
         .await
         {
             Ok(confirmation) => confirmation,
-            Err(AuthFactorServiceError::FirstFactorAlreadyExists) => {
+            Err(
+                AuthFactorServiceError::FirstFactorAlreadyExists
+                | AuthFactorServiceError::AuthenticationEpochChanged,
+            ) => {
                 let _ = self.tickets.take_for_holder(ticket_id, holder_hash).await?;
                 self.tickets.delete(&self.totp_setup_key(ticket_id)).await?;
                 return Ok(TotpConfirmation::InvalidTicket);

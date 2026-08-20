@@ -192,6 +192,7 @@ impl AuthFactorService {
                 match repository::insert_passkey_if_empty_with_issuer_generation(
                     &self.pool,
                     ticket.user_id,
+                    ticket.session_epoch,
                     passkey.cred_id(),
                     &passkey,
                     current_issuer_generation,
@@ -203,6 +204,9 @@ impl AuthFactorService {
                     | repository::PasskeyPersistenceResult::IssuerChanged => {
                         Err(AuthFactorServiceError::FirstFactorAlreadyExists)
                     }
+                    repository::PasskeyPersistenceResult::AuthenticationChanged => {
+                        Err(AuthFactorServiceError::AuthenticationEpochChanged)
+                    }
                 }
             },
             |ticket| self.tickets.restore(ticket_id, ticket),
@@ -210,7 +214,10 @@ impl AuthFactorService {
         .await
         {
             Ok(confirmation) => confirmation,
-            Err(AuthFactorServiceError::FirstFactorAlreadyExists) => {
+            Err(
+                AuthFactorServiceError::FirstFactorAlreadyExists
+                | AuthFactorServiceError::AuthenticationEpochChanged,
+            ) => {
                 let _ = self.tickets.take_for_holder(ticket_id, holder_hash).await?;
                 self.tickets
                     .delete(&self.passkey_registration_key(ticket_id))
