@@ -18,7 +18,7 @@ use uuid::Uuid;
 const MIGRATION_SQL: &str = include_str!("../migrations/0038_jsonb_oauth_consent_shapes.sql");
 
 const STRING_ARRAY_CHECK: &str = r#"jsonb_typeof(redirect_uris) = 'array'
-            AND NOT jsonb_path_exists(redirect_uris, '$[*] ? (@.type() != "string")')"#;
+            AND NOT jsonb_path_exists(redirect_uris, 'strict $[*] ? (@.type() != "string")')"#;
 
 async fn database() -> PgPool {
     let database_url = env::var("DATABASE_URL")
@@ -31,6 +31,13 @@ fn is_check_violation(error: &chenxing_auth::sqlx::Error) -> bool {
         .as_database_error()
         .and_then(|database_error| database_error.code())
         .is_some_and(|code| code == "23514")
+}
+
+fn is_row_decode_error(error: &chenxing_auth::sqlx::Error) -> bool {
+    matches!(
+        error,
+        chenxing_auth::sqlx::Error::ColumnDecode { .. } | chenxing_auth::sqlx::Error::Decode(_)
+    )
 }
 
 async fn constraint_definition(pool: &PgPool, table: &str, name: &str) -> String {
@@ -90,22 +97,42 @@ async fn jsonb_shape_constraints_match_repository_decode() {
         (
             "oauth_clients",
             "oauth_clients_redirect_uris_check",
-            ["jsonb_typeof(redirect_uris)", r#"@.type() != "string""#].as_slice(),
+            [
+                "jsonb_typeof(redirect_uris)",
+                r#"strict $[*]"#,
+                r#"@.type() != "string""#,
+            ]
+            .as_slice(),
         ),
         (
             "oauth_clients",
             "oauth_clients_scopes_check",
-            ["jsonb_typeof(scopes)", r#"@.type() != "string""#].as_slice(),
+            [
+                "jsonb_typeof(scopes)",
+                r#"strict $[*]"#,
+                r#"@.type() != "string""#,
+            ]
+            .as_slice(),
         ),
         (
             "user_consents",
             "user_consents_scopes_check",
-            ["jsonb_typeof(scopes)", r#"@.type() != "string""#].as_slice(),
+            [
+                "jsonb_typeof(scopes)",
+                r#"strict $[*]"#,
+                r#"@.type() != "string""#,
+            ]
+            .as_slice(),
         ),
         (
             "oauth_providers",
             "oauth_providers_scopes_check",
-            ["jsonb_typeof(scopes)", r#"@.type() != "string""#].as_slice(),
+            [
+                "jsonb_typeof(scopes)",
+                r#"strict $[*]"#,
+                r#"@.type() != "string""#,
+            ]
+            .as_slice(),
         ),
         (
             "user_passkeys",
@@ -328,7 +355,7 @@ async fn adding_the_constraint_fails_closed_on_existing_malformed_rows() {
         "SELECT string_agg(client_id, ', ' ORDER BY client_id)
          FROM oauth_clients
          WHERE jsonb_typeof(redirect_uris) <> 'array'
-            OR jsonb_path_exists(redirect_uris, '$[*] ? (@.type() != \"string\")')",
+            OR jsonb_path_exists(redirect_uris, 'strict $[*] ? (@.type() != \"string\")')",
     )
     .fetch_one(&pool)
     .await
@@ -340,7 +367,7 @@ async fn adding_the_constraint_fails_closed_on_existing_malformed_rows() {
          ADD CONSTRAINT oauth_clients_redirect_uris_check
              CHECK (
                  jsonb_typeof(redirect_uris) = 'array'
-                 AND NOT jsonb_path_exists(redirect_uris, '$[*] ? (@.type() != \"string\")')
+                 AND NOT jsonb_path_exists(redirect_uris, 'strict $[*] ? (@.type() != \"string\")')
              )",
     )
     .execute(&pool)
@@ -376,8 +403,8 @@ async fn repositories_cannot_decode_malformed_rows_that_bypass_the_check() {
         .await
         .expect_err("object redirect_uris must fail Json<Vec<String>>");
     assert!(
-        matches!(client_error, chenxing_auth::sqlx::Error::Decode(_)),
-        "client decode must be Decode, got {client_error}"
+        is_row_decode_error(&client_error),
+        "client decode must be ColumnDecode/Decode, got {client_error}"
     );
 
     let (client_pk, consent_client_id) = insert_client(
@@ -410,8 +437,8 @@ async fn repositories_cannot_decode_malformed_rows_that_bypass_the_check() {
         .await
         .expect_err("object consent scopes must fail Json<Vec<String>>");
     assert!(
-        matches!(consent_error, chenxing_auth::sqlx::Error::Decode(_)),
-        "consent decode must be Decode, got {consent_error}"
+        is_row_decode_error(&consent_error),
+        "consent decode must be ColumnDecode/Decode, got {consent_error}"
     );
 
     chenxing_auth::sqlx::query(
@@ -437,8 +464,8 @@ async fn repositories_cannot_decode_malformed_rows_that_bypass_the_check() {
         .await
         .expect_err("object provider scopes must fail Vec<String> decode");
     assert!(
-        matches!(provider_error, chenxing_auth::sqlx::Error::Decode(_)),
-        "provider decode must be Decode, got {provider_error}"
+        is_row_decode_error(&provider_error),
+        "provider decode must be ColumnDecode/Decode, got {provider_error}"
     );
 
     chenxing_auth::sqlx::query(
@@ -461,7 +488,7 @@ async fn repositories_cannot_decode_malformed_rows_that_bypass_the_check() {
         .await
         .expect_err("array credential must fail Passkey decode");
     assert!(
-        matches!(passkey_error, chenxing_auth::sqlx::Error::Decode(_)),
-        "passkey decode must be Decode, got {passkey_error}"
+        is_row_decode_error(&passkey_error),
+        "passkey decode must be ColumnDecode/Decode, got {passkey_error}"
     );
 }
