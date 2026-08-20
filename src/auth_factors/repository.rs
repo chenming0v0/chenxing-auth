@@ -48,15 +48,25 @@ pub async fn insert_totp_factor(
 pub enum FirstFactorPersistenceResult {
     Stored,
     AlreadyExists,
+    /// Ticket 上盖的 epoch 已不是当前值，或账号已不是 active。
+    ///
+    /// 管理端重置会推进 `session_epoch` 并删掉因子；插入必须在同一把锁下再读一次
+    /// 当前水位，否则 take 之后、insert 之前的重置会把过期 ticket 的因子写回去。
+    AuthenticationChanged,
 }
 
 pub async fn insert_totp_factor_if_empty(
     pool: &PgPool,
     user_id: UserId,
+    expected_session_epoch: i64,
     encrypted_secret: &[u8],
 ) -> Result<FirstFactorPersistenceResult, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
     lock_factor_account(&mut transaction, user_id).await?;
+    if !active_user_epoch_matches(&mut transaction, user_id, expected_session_epoch).await? {
+        transaction.rollback().await?;
+        return Ok(FirstFactorPersistenceResult::AuthenticationChanged);
+    }
     if account_has_factor(&mut transaction, user_id).await? {
         transaction.commit().await?;
         return Ok(FirstFactorPersistenceResult::AlreadyExists);
@@ -76,10 +86,15 @@ pub async fn insert_totp_factor_if_empty(
 pub async fn insert_totp_factor_for_passkey_recovery(
     pool: &PgPool,
     user_id: UserId,
+    expected_session_epoch: i64,
     encrypted_secret: &[u8],
 ) -> Result<FirstFactorPersistenceResult, crate::sqlx::Error> {
     let mut transaction = pool.begin().await?;
     lock_factor_account(&mut transaction, user_id).await?;
+    if !active_user_epoch_matches(&mut transaction, user_id, expected_session_epoch).await? {
+        transaction.rollback().await?;
+        return Ok(FirstFactorPersistenceResult::AuthenticationChanged);
+    }
     let passkey_only: bool = crate::sqlx::query_scalar(
         "SELECT EXISTS(
              SELECT 1 FROM user_passkeys WHERE user_id = $1
@@ -332,6 +347,25 @@ pub(super) async fn lock_factor_account(
     user_id: UserId,
 ) -> Result<(), crate::sqlx::Error> {
     crate::db::advisory_lock::lock_user(transaction, user_id).await
+}
+
+/// 持锁重读当前 `session_epoch` 与账号状态。因子写入必须走这条比对：
+/// ticket take 时的检查在事务外，重置可以在检查与 INSERT 之间提交。
+pub(super) async fn active_user_epoch_matches(
+    transaction: &mut crate::sqlx::Transaction<'_, crate::sqlx::Postgres>,
+    user_id: UserId,
+    expected_session_epoch: i64,
+) -> Result<bool, crate::sqlx::Error> {
+    let state: Option<(i64, String)> =
+        crate::sqlx::query_as("SELECT session_epoch, status FROM users WHERE id = $1 FOR UPDATE")
+            .bind(user_id)
+            .fetch_optional(&mut **transaction)
+            .await?;
+    Ok(state.is_some_and(|(epoch, status)| {
+        epoch == expected_session_epoch
+            && crate::users::domain::UserStatus::parse(&status)
+                == Some(crate::users::domain::UserStatus::Active)
+    }))
 }
 
 pub(super) async fn account_has_factor(
