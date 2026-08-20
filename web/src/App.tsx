@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react'
+import { Fragment, useEffect, type ReactNode } from 'react'
 import { Navigate, usePathname } from './router'
 import { loginRecoveryTarget } from './api'
 import { AuthProvider, useAuth } from './auth-state'
@@ -14,7 +14,7 @@ import { Button, Notice } from './components/ui'
 
 function AppContent() {
   const path = usePathname()
-  const { status, user, bootstrap, refresh } = useAuth()
+  const { status, user, bootstrap, refresh, generation } = useAuth()
 
   useEffect(() => {
     document.title = getDocumentTitle(path)
@@ -99,7 +99,7 @@ function AppContent() {
     '/admin/settings': <AdminSettings />,
   }
 
-  return pages[path] ?? <Navigate replace to="/" />
+  return <Fragment key={generation}>{pages[path] ?? <Navigate replace to="/" />}</Fragment>
 }
 
 export default function App() {

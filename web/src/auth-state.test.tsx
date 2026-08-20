@@ -29,12 +29,13 @@ function ownerProfile(username = 'owner') {
 }
 
 function AuthStateProbe() {
-  const { status, bootstrap, user, refresh, completeBootstrap, logout } = useAuth()
+  const { status, bootstrap, user, refresh, completeBootstrap, logout, generation } = useAuth()
   return (
     <div>
       <output aria-label="认证状态">{status}</output>
       <output aria-label="引导状态">{bootstrap}</output>
       <output aria-label="当前用户">{user?.username ?? ''}</output>
+      <output aria-label="认证代数">{generation}</output>
       <button type="button" onClick={() => void refresh()}>重试认证</button>
       <button type="button" onClick={completeBootstrap}>完成引导</button>
       <button type="button" onClick={() => void logout()}>退出登录</button>
@@ -215,10 +216,12 @@ describe('refresh request ordering (#473)', () => {
 
     render(<AuthProvider><AuthStateProbe /></AuthProvider>)
     await waitFor(() => expect(screen.getByLabelText('当前用户').textContent).toBe('account-a'))
+    const firstGeneration = screen.getByLabelText('认证代数').textContent
     await act(async () => { await getEntitlements() })
 
     fireEvent.click(screen.getByRole('button', { name: '重试认证' }))
     await waitFor(() => expect(screen.getByLabelText('当前用户').textContent).toBe('account-b'))
+    expect(screen.getByLabelText('认证代数').textContent).not.toBe(firstGeneration)
     const entitlements = await getEntitlements()
 
     expect(entitlementCalls).toBe(2)

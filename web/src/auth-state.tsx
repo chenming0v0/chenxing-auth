@@ -16,6 +16,8 @@ type AuthContextValue = {
   completeBootstrap: () => void
   clear: () => void
   logout: () => Promise<LogoutResult>
+  /** Changes whenever the authenticated account/session generation changes. */
+  generation: number
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -40,6 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const channelRef = useRef<BroadcastChannel | null>(null)
   const sessionExpiryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastRevalidationRef = useRef(0)
+  const [generation, setGeneration] = useState(0)
   // generation：clear/logout 时递增，丢弃登出后才落地的 refresh 写入（#99）。
   // refreshSeq：同一代内每次 refresh 递增。代数分辨不了同代并发请求，
   // 启动时的 /auth/me 与登录后的 refresh 会重叠，只有最新序号可以写回（#473）。
@@ -55,6 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const clearLocal = useCallback(() => {
     // 递增代数——所有正在进行的 refresh() await 返回后会发现代数不匹配，自动丢弃结果
     generationRef.current += 1
+    setGeneration(generationRef.current)
     setUser(null)
     setStatus('unauthenticated')
     userIdRef.current = null
@@ -106,9 +110,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!isCurrentRequest()) return null
 
       if (userIdRef.current !== null && String(userIdRef.current) !== String(profile.id)) {
-        // Entitlements are account-scoped. Invalidate both the completed value and any
-        // in-flight request before exposing the new identity to the rest of the SPA.
+        // Entitlements and every mounted account-scoped view belong to the previous
+        // identity. Advance the public generation before exposing the new profile so
+        // keyed consumers synchronously discard their data and in-flight effects.
         clearApiCache()
+        generationRef.current += 1
+        setGeneration(generationRef.current)
       }
       const wasAuthenticated = statusRef.current === 'authenticated'
       userIdRef.current = profile.id
@@ -244,7 +251,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [clear])
 
   return (
-    <AuthContext.Provider value={{ user, status, bootstrap, refresh, completeBootstrap, clear, logout }}>
+    <AuthContext.Provider value={{ user, status, bootstrap, refresh, completeBootstrap, clear, logout, generation }}>
       {children}
     </AuthContext.Provider>
   )
