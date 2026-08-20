@@ -9,9 +9,9 @@ use crate::key_storage::{
     remove_secure_file,
 };
 
+use super::material::recovery_signing_key_id;
 use super::{
-    KeyManagerError, KeyMaterial, generate_rsa_key, journal, key_material, newest_key_id, prune,
-    retirement,
+    KeyManagerError, KeyMaterial, generate_rsa_key, journal, key_material, prune, retirement,
 };
 
 pub(super) const ACTIVE_KEY_ID_FILE: &str = "active-rs256.kid";
@@ -43,8 +43,9 @@ pub(super) fn load_materials(
     journal::recover(directory, now)?;
     let declared_active_id = declared_active_key_id(directory)?;
     // 先把材料连同退役时刻整份读进来，再判断谁是 active、谁过期。过期判定必须在
-    // 确定 active kid 之后进行：`declared_active_id` 可能缺失，此时 active 由最新
-    // 材料推定，用它之前的值裁剪会误删真正的 active key（Issue #298）。
+    // 确定 active kid 之后进行：`declared_active_id` 可能缺失，此时 active 由恢复
+    // 规则推定（保住上一把在役 key，排除未到期 pending），用它之前的值裁剪会误删
+    // 真正的 active key（Issue #298 / #655）。
     let mut key_files = discover_key_files(directory)?;
 
     let migrated_id = if key_files.is_empty() {
@@ -63,8 +64,16 @@ pub(super) fn load_materials(
     // 不在盘上"：这不是首次初始化，而是私钥丢失或目录被破坏。此时生成替代密钥会静默
     // 作废所有已签发令牌、把 JWKS 换成全新公钥，并覆盖唯一还能指认丢失材料的证据
     // （kid 文件本身），使故障无法追溯。
-    let newest_id = newest_key_id(&key_files);
-    let active_key_id = match (migrated_id, declared_active_id, newest_id) {
+    //
+    // 缺指针时必须看 pending 激活状态：未到期的 published key 的 `retired_at` 也是
+    // None，按“最近在役”会赢过真正的上一把 active，提前接管签发（Issue #655）。
+    let pending_activation = super::activation::read(directory)?;
+    let (preferred_id, excluded_id) = pending_activation
+        .as_ref()
+        .map(|pending| pending.recovery_choice(now))
+        .unwrap_or((None, None));
+    let recovered_id = recovery_signing_key_id(&key_files, preferred_id, excluded_id);
+    let active_key_id = match (migrated_id, declared_active_id, recovered_id) {
         // 迁移刚刚落盘并写好 kid，材料就是它自己。
         (Some(key_id), _, _) => key_id,
         // 正常路径：kid 指向的材料在盘上。
@@ -79,17 +88,19 @@ pub(super) fn load_materials(
             );
             return Err(KeyManagerError::MissingActiveKeyMaterial);
         }
-        // kid 文件丢失但材料仍在：可以从材料自身恢复，不作废任何已签发令牌。
+        // kid 文件丢失但材料仍在：恢复上一把真正在役的 key，绝不把未到期的
+        // pending key 写成 active。
         (None, None, Some(key_id)) => {
             tracing::warn!(
                 active_key_id = %key_id,
                 discovered_key_count = key_files.len(),
-                "active key id file is missing; adopting the newest persisted signing key"
+                "active key id file is missing; restoring a signing key that is not pending activation"
             );
             persist_active_key_id(directory, &key_id)?;
             key_id
         }
-        // 真正的空目录：既没有 kid 也没有任何材料，才允许首次初始化。
+        // 空目录，或只剩未到期的 pending 材料：首次初始化才允许生成；同步路径
+        // fail-closed，以免把未来密钥提前激活。
         (None, None, None) => {
             if !generate_if_empty {
                 return Err(KeyManagerError::MissingActiveKeyMaterial);
@@ -101,7 +112,7 @@ pub(super) fn load_materials(
     // 落实“active key 没有退役记录，其余都有记录”这条不变量后再裁剪：升级前的历史
     // 目录和崩溃遗留的半成品都在这里自愈，因此下面的裁剪对每个非 active key 都有
     // 明确的退役时刻可用，不需要退回按创建时刻推断。
-    let published_key_id = super::activation::read(directory)?
+    let published_key_id = pending_activation
         .map(|pending| pending.key_id)
         .filter(|key_id| key_id != &active_key_id);
     retirement::reconcile(
@@ -278,13 +289,26 @@ pub(super) fn discard_all_key_material(directory: &Path) -> Result<(), KeyManage
 /// 绝不退回 mtime，见 Issue #318），避免无谓作废旧 token；没有候选才生成新 key。
 /// 扫描只读取文件名、mtime 与退役记录，不把私钥内容复制到恢复日志或临时容器。
 /// active 指针写好后 journal 才会被调用方清除，因此中途崩溃仍可重放。
+///
+/// 未到期的 pending 密钥不能成为恢复 active：它的退役记录同样缺失，按“最近在役”
+/// 会赢过上一把真正的签发密钥（Issue #655）。已到期的 pending 可以接管。
 pub(super) fn establish_recovery_active_key(
     directory: &Path,
     revoked_key_id: Option<&str>,
+    now: OffsetDateTime,
 ) -> Result<String, KeyManagerError> {
     if let Some(revoked_key_id) = revoked_key_id {
         validate_key_id(revoked_key_id)?;
     }
+    let pending = match super::activation::read(directory) {
+        Ok(pending) => pending,
+        Err(KeyManagerError::InvalidKeyId) => None,
+        Err(error) => return Err(error),
+    };
+    let (preferred_id, excluded_id) = pending
+        .as_ref()
+        .map(|pending| pending.recovery_choice(now))
+        .unwrap_or((None, None));
     let mut candidates = Vec::new();
     for entry in list_secure_names(directory)? {
         let file_name = entry.name;
@@ -295,11 +319,23 @@ pub(super) fn establish_recovery_active_key(
             continue;
         };
         validate_key_id(key_id)?;
-        if Some(key_id) != revoked_key_id {
-            let retired_at = retirement::read_retired_at(directory, key_id)?;
-            let mtime = read_secure_named(directory, &file_name, entry.inode)?.modified;
-            candidates.push((retired_at, mtime, key_id.to_owned()));
+        if Some(key_id) == revoked_key_id || Some(key_id) == excluded_id {
+            continue;
         }
+        let retired_at = retirement::read_retired_at(directory, key_id)?;
+        let mtime = read_secure_named(directory, &file_name, entry.inode)?.modified;
+        candidates.push((retired_at, mtime, key_id.to_owned()));
+    }
+
+    if let Some(preferred_id) = preferred_id
+        && Some(preferred_id) != revoked_key_id
+        && candidates
+            .iter()
+            .any(|(_, _, key_id)| key_id == preferred_id)
+    {
+        persist_active_key_id(directory, preferred_id)?;
+        retirement::clear(directory, preferred_id)?;
+        return Ok(preferred_id.to_owned());
     }
 
     if let Some((_, _, key_id)) =

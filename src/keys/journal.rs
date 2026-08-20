@@ -257,15 +257,19 @@ pub(super) fn recover(directory: &Path, now: time::OffsetDateTime) -> Result<(),
     };
 
     match record {
-        JournalRecord::Pending(pending) => recover_pending(directory, &pending)?,
-        JournalRecord::Corrupt(corrupt) => recover_corrupt(directory, corrupt)?,
+        JournalRecord::Pending(pending) => recover_pending(directory, &pending, now)?,
+        JournalRecord::Corrupt(corrupt) => recover_corrupt(directory, corrupt, now)?,
     }
     // 吊销恢复可能已经删掉 pending 材料或把它提升为 active，再收敛激活记录。
     activation::recover(directory, now)?;
     Ok(())
 }
 
-fn recover_pending(directory: &Path, pending: &PendingRevocation) -> Result<(), KeyManagerError> {
+fn recover_pending(
+    directory: &Path,
+    pending: &PendingRevocation,
+    now: time::OffsetDateTime,
+) -> Result<(), KeyManagerError> {
     let active_key_id = recoverable_active_key_id(directory)?;
 
     // 已有另一个可用 active 说明目录在 journal 之后已经前进，绝不能回退到记录里的
@@ -289,6 +293,7 @@ fn recover_pending(directory: &Path, pending: &PendingRevocation) -> Result<(), 
             let fallback_key_id = persistence::establish_recovery_active_key(
                 directory,
                 Some(pending.revoked_key_id.as_str()),
+                now,
             )?;
             tracing::warn!(
                 revoked_key_id = %pending.revoked_key_id,
@@ -349,14 +354,18 @@ fn recover_rotation(directory: &Path) -> Result<(), KeyManagerError> {
     Ok(())
 }
 
-fn recover_corrupt(directory: &Path, corrupt: CorruptJournal) -> Result<(), KeyManagerError> {
+fn recover_corrupt(
+    directory: &Path,
+    corrupt: CorruptJournal,
+    now: time::OffsetDateTime,
+) -> Result<(), KeyManagerError> {
     // journal 没有完整性校验，局部合法不代表该字段没被改写。保留任意旧材料都可能
     // 把真正已吊销的 key 重新发布，因此损坏记录只有一个安全出口：丢弃整个旧 keyset
     // 并立即生成新 key。日志只记录分类，不记录 journal 原文，避免把被篡改文件里的
     // 任意字节带进日志。两份记录文件（吊销与轮换）都清除，任何一份残留都会让
     // 下一次加载再次进入这条路径。
     persistence::discard_all_key_material(directory)?;
-    let replacement_key_id = persistence::establish_recovery_active_key(directory, None)?;
+    let replacement_key_id = persistence::establish_recovery_active_key(directory, None, now)?;
     clear(directory)?;
     clear_rotation(directory)?;
     tracing::error!(
