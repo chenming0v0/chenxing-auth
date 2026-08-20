@@ -12,6 +12,7 @@ import {
 import { OAuthShell } from '../components/shells'
 import { BrandMark, HudPanel, Icon, Notice } from '../components/ui'
 import { initialOf } from '../data'
+import { safeRedirectTarget } from '../safe-redirect'
 
 function useRequestId(): string | null {
   return new URLSearchParams(useLocation().search).get('request_id')
@@ -64,21 +65,6 @@ function usePendingAuthorization(requestId: string | null): {
 
 function appMark(name?: string) {
   return (name || 'A').trim().slice(0, 1).toUpperCase()
-}
-
-/**
- * 校验后端返回的跳转地址：只允许 http/https。
- * 后端响应一旦被污染，`javascript:` 之类的伪协议会在用户点「允许」时执行脚本，
- * 因此这里在导航前强制解析并检查协议；畸形输入让 `new URL` 抛错，统一按无效处理。
- */
-function safeRedirectTarget(raw: string): string | null {
-  try {
-    const url = new URL(raw, window.location.origin)
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
-    return url.href
-  } catch {
-    return null
-  }
 }
 
 /**
