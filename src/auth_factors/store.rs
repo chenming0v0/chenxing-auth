@@ -165,7 +165,9 @@ impl LoginTicketStore {
     }
 
     async fn find(&self, ticket_id: &str) -> Result<Option<LoginTicket>, LoginTicketStoreError> {
-        self.read(ticket_id, false).await
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let payload: Option<String> = connection.get(self.key_for_ticket(ticket_id)).await?;
+        self.decode_ticket_payload(payload).await
     }
 
     pub async fn find_for_holder(
@@ -190,7 +192,7 @@ impl LoginTicketStore {
             .arg(holder_hash)
             .invoke_async(&mut connection)
             .await?;
-        self.decode_ticket_payload(payload).await
+        self.decode_consumed_ticket(ticket_id, payload).await
     }
 
     pub async fn restore(
@@ -210,42 +212,59 @@ impl LoginTicketStore {
         Ok(())
     }
 
-    async fn read(
+    fn parse_ticket_payload(
+        payload: Option<String>,
+    ) -> Result<Option<LoginTicket>, LoginTicketStoreError> {
+        payload
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map_err(LoginTicketStoreError::from)
+    }
+
+    async fn ticket_matches_current_epoch(
+        &self,
+        ticket: &LoginTicket,
+    ) -> Result<bool, LoginTicketStoreError> {
+        let Some(pool) = &self.metadata else {
+            return Ok(true);
+        };
+        let current_epoch: Option<i64> =
+            crate::sqlx::query_scalar("SELECT session_epoch FROM users WHERE id = $1")
+                .bind(ticket.user_id)
+                .fetch_optional(pool)
+                .await?;
+        Ok(current_epoch == Some(ticket.session_epoch))
+    }
+
+    /// Redis already deleted the ticket. A transient epoch lookup must put it
+    /// back; a known-stale epoch must not, or a revoked ticket becomes replayable.
+    async fn decode_consumed_ticket(
         &self,
         ticket_id: &str,
-        consume: bool,
+        payload: Option<String>,
     ) -> Result<Option<LoginTicket>, LoginTicketStoreError> {
-        let mut connection = self.client.get_multiplexed_async_connection().await?;
-        let payload: Option<String> = if consume {
-            connection.get_del(self.key_for_ticket(ticket_id)).await?
-        } else {
-            connection.get(self.key_for_ticket(ticket_id)).await?
+        let Some(ticket) = Self::parse_ticket_payload(payload)? else {
+            return Ok(None);
         };
-        self.decode_ticket_payload(payload).await
+        super::persistence::accept_or_restore_taken_ticket(
+            ticket,
+            |ticket| self.ticket_matches_current_epoch(ticket),
+            |ticket| self.restore(ticket_id, ticket),
+        )
+        .await
     }
 
     async fn decode_ticket_payload(
         &self,
         payload: Option<String>,
     ) -> Result<Option<LoginTicket>, LoginTicketStoreError> {
-        let ticket: Option<LoginTicket> = payload
-            .map(|value| serde_json::from_str(&value))
-            .transpose()
-            .map_err(LoginTicketStoreError::from)?;
-        let Some(ticket) = ticket else {
+        let Some(ticket) = Self::parse_ticket_payload(payload)? else {
             return Ok(None);
         };
-        if let Some(pool) = &self.metadata {
-            let current_epoch: Option<i64> =
-                crate::sqlx::query_scalar("SELECT session_epoch FROM users WHERE id = $1")
-                    .bind(ticket.user_id)
-                    .fetch_optional(pool)
-                    .await?;
-            if current_epoch != Some(ticket.session_epoch) {
-                return Ok(None);
-            }
-        }
-        Ok(Some(ticket))
+        Ok(self
+            .ticket_matches_current_epoch(&ticket)
+            .await?
+            .then_some(ticket))
     }
 
     pub fn key(ticket_id: &str) -> String {
