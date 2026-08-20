@@ -632,7 +632,7 @@ async fn runtime_role_cannot_delete_audit_and_uses_security_definer_archive() {
             .fetch_one(&pool)
             .await
             .expect("read latest migration version");
-    assert_eq!(latest_migration, 38);
+    assert_eq!(latest_migration, 40);
 }
 
 /// Owner 初始化要求 `users.id` 从 1 开始，`bootstrap_owner` 因此在插入前调

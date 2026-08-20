@@ -334,6 +334,11 @@ fn embedded_migrator() -> crate::sqlx::migrate::Migrator {
             "session issued idle timeout",
             include_str!("../../migrations/0039_session_issued_idle_timeout.sql"),
         ),
+        (
+            40,
+            "oauth client auth method secret",
+            include_str!("../../migrations/0040_oauth_client_auth_method_secret.sql"),
+        ),
     ]
     .into_iter()
     .map(|(version, description, sql)| {

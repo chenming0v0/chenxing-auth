@@ -214,10 +214,10 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .expect("seed published user");
     let client_id: i64 = chenxing_auth::sqlx::query_scalar(
         "INSERT INTO oauth_clients
-             (client_id, client_name, redirect_uris, scopes, owner_user_id, created_at)
-         VALUES ('upgrade-client', 'Upgrade Client', '[\"https://client.example/callback\"]',
-                 '[\"openid\"]', $1, NOW())
-         RETURNING id",
+              (client_id, client_name, redirect_uris, scopes, auth_method, owner_user_id, created_at)
+          VALUES ('upgrade-client', 'Upgrade Client', '[\"https://client.example/callback\"]',
+                  '[\"openid\"]', 'none', $1, NOW())
+          RETURNING id",
     )
     .bind(user_id)
     .fetch_one(&pool)
@@ -295,9 +295,10 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .await
     .expect("read upgraded migration history");
     // 0030/0031 来自 #50-479 批次合并；0032 修复运行时 migration ledger 权限。
-    // 0033–0039 是后续追加的邀请码、邮箱变更、outbox fence、archive INSERT
-    // 回收、access-token 撤销、JSONB shape CHECK 与签发时 idle 窗口。
-    assert_eq!(applied, (1_i64..=39).collect::<Vec<_>>());
+    // 0033–0040 是后续追加的邀请码、邮箱变更、outbox fence、archive INSERT
+    // 回收、access-token 撤销、JSONB shape CHECK、签发时 idle 窗口，以及
+    // auth_method 与 secret 哈希配对 CHECK。
+    assert_eq!(applied, (1_i64..=40).collect::<Vec<_>>());
 
     // A database initialized by v1.1.2 has the same schema but records the
     // flattened baseline plus the two then-current migrations as versions 1-3.
@@ -319,6 +320,7 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
         "ALTER TABLE oauth_providers DROP CONSTRAINT oauth_providers_scopes_check",
         "ALTER TABLE user_passkeys DROP CONSTRAINT user_passkeys_credential_check",
         "ALTER TABLE user_sessions DROP COLUMN idle_timeout_seconds",
+        "ALTER TABLE oauth_clients DROP CONSTRAINT oauth_clients_auth_method_secret_check",
     ] {
         chenxing_auth::sqlx::query(statement)
             .execute(&pool)
@@ -368,7 +370,7 @@ async fn published_database_upgrades_in_place_without_losing_identity_or_audit_d
     .fetch_all(&pool)
     .await
     .expect("read repaired v1.1.2 migration history");
-    assert_eq!(repaired, (1_i64..=39).collect::<Vec<_>>());
+    assert_eq!(repaired, (1_i64..=40).collect::<Vec<_>>());
 
     let preserved: (i64, i64, i64) = chenxing_auth::sqlx::query_as(
         "SELECT \
@@ -443,6 +445,7 @@ async fn flattened_repair_rejects_trigger_names_from_other_schema_or_wrong_table
         "ALTER TABLE oauth_providers DROP CONSTRAINT oauth_providers_scopes_check",
         "ALTER TABLE user_passkeys DROP CONSTRAINT user_passkeys_credential_check",
         "ALTER TABLE user_sessions DROP COLUMN idle_timeout_seconds",
+        "ALTER TABLE oauth_clients DROP CONSTRAINT oauth_clients_auth_method_secret_check",
         "DROP TRIGGER audit_events_append_only_trigger ON audit_events",
         "CREATE TABLE trigger_decoy_target (id BIGINT)",
         "CREATE FUNCTION trigger_decoy_function() RETURNS trigger
